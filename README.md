@@ -1,6 +1,13 @@
 # gRParse
 
-gRParse is a C++ gRPC service that turns PDF pages and raster images into text with the maintained C++ [RapidOcrOnnx](https://github.com/RapidAI/RapidOcrOnnx) implementation. It targets NVIDIA CUDA through ONNX Runtime. The host was detected with an NVIDIA GeForce RTX 4080 SUPER; the included container exposes it with Compose's `gpus: all` setting.
+C++ gRPC document parse service: **diskless PDF/image → streamed page JSON** with boxes and stable offsets. All **ONNX** models run here on **ONNX Runtime** (NVIDIA CUDA and **Intel Arc / OpenVINO**, e.g. B70; OCR today; layout/tables/figures next). Java owns language decoration, office bridges, and UI-facing geometry.
+
+- Architecture (runtime split, anti-seesaw pipeline, offset contract): [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- Epics & tasks (C++ vs Java ownership, milestones): [docs/EPICS.md](docs/EPICS.md)
+
+**Speed thesis:** pipelined pages, warm ORT session pools, selective OCR, early stream emit — keep CPU and GPU busy (no stage seesaw).
+
+gRParse turns PDF pages and raster images into text with the maintained C++ [RapidOcrOnnx](https://github.com/RapidAI/RapidOcrOnnx) implementation. It targets NVIDIA CUDA through ONNX Runtime. The host was detected with an NVIDIA GeForce RTX 4080 SUPER; the included container exposes it with Compose's `gpus: all` setting.
 
 ## Run
 
