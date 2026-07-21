@@ -5,32 +5,27 @@
 #include <atomic>
 #include <chrono>
 #include <cctype>
-#include <cstdlib>
-#include <fstream>
+#include <condition_variable>
+#include <deque>
+#include <exception>
 #include <google/protobuf/arena.h>
 #include <limits>
+#include <memory>
 #include <stdexcept>
+#include <thread>
 #include <vector>
+
+#include <opencv2/imgcodecs.hpp>
+#include <poppler/cpp/poppler-document.h>
+#include <poppler/cpp/poppler-image.h>
+#include <poppler/cpp/poppler-page.h>
+#include <poppler/cpp/poppler-page-renderer.h>
 
 namespace fs = std::filesystem;
 namespace docling = ai::docling;
 
 namespace grparse {
 namespace {
-
-class TemporaryDirectory {
- public:
-  TemporaryDirectory() : path_(fs::temp_directory_path() / ("grparse-" + std::to_string(++counter_))) {
-    fs::create_directories(path_);
-  }
-  ~TemporaryDirectory() { std::error_code ignored; fs::remove_all(path_, ignored); }
-  const fs::path& path() const { return path_; }
-
- private:
-  fs::path path_;
-  static std::atomic_uint64_t counter_;
-};
-std::atomic_uint64_t TemporaryDirectory::counter_{0};
 
 std::string decode_base64(const std::string& value) {
   static constexpr unsigned char kInvalid = 255;
@@ -101,51 +96,46 @@ bool is_pdf(const std::string& content, const fs::path& filename) {
          (content.size() >= 5 && content.compare(0, 5, "%PDF-") == 0);
 }
 
-void write_document(const fs::path& path, const std::string& content) {
-  std::ofstream output(path, std::ios::binary);
-  output.write(content.data(), static_cast<std::streamsize>(content.size()));
-  if (!output) throw std::runtime_error("Could not persist request document");
-}
+class PdfRenderer {
+ public:
+  explicit PdfRenderer(const std::string& bytes) : bytes_(bytes) {}
 
-std::vector<fs::path> render_pdf(const fs::path& pdf, const fs::path& output_directory) {
-  const auto prefix = output_directory / "page";
-  const auto command = "pdftoppm -png -r 200 '" + pdf.string() + "' '" + prefix.string() + "'";
-  if (std::system(command.c_str()) != 0) throw std::runtime_error("pdftoppm could not render the PDF");
-  std::vector<fs::path> pages;
-  for (const auto& entry : fs::directory_iterator(output_directory)) {
-    if (entry.path().extension() == ".png") pages.push_back(entry.path());
+  int page_count() const {
+    auto document = load();
+    const int pages = document->pages();
+    if (pages <= 0) throw std::runtime_error("PDF does not contain a renderable page");
+    return pages;
   }
-  std::sort(pages.begin(), pages.end());
-  if (pages.empty()) throw std::runtime_error("PDF did not produce renderable pages");
-  return pages;
-}
 
-int pdf_page_count(const fs::path& pdf, const fs::path& output_directory) {
-  const auto info = output_directory / "pdfinfo.txt";
-  const auto command = "pdfinfo '" + pdf.string() + "' > '" + info.string() + "'";
-  if (std::system(command.c_str()) != 0) throw std::runtime_error("pdfinfo could not inspect the PDF");
-  std::ifstream input(info);
-  std::string line;
-  while (std::getline(input, line)) {
-    if (line.rfind("Pages:", 0) == 0) {
-      const int pages = std::stoi(line.substr(6));
-      if (pages > 0) return pages;
-    }
+  cv::Mat render_page(int page_number) const {
+    auto document = load();
+    std::unique_ptr<poppler::page> page(document->create_page(page_number - 1));
+    if (!page) throw std::runtime_error("PDF page could not be opened");
+    poppler::page_renderer renderer;
+    renderer.set_image_format(poppler::image::format_bgr24);
+    const poppler::image image = renderer.render_page(page.get(), 200.0, 200.0);
+    if (!image.is_valid()) throw std::runtime_error("PDF page could not be rendered in memory");
+    return cv::Mat(image.height(), image.width(), CV_8UC3, const_cast<char*>(image.const_data()),
+                   static_cast<size_t>(image.bytes_per_row()))
+        .clone();
   }
-  throw std::runtime_error("pdfinfo did not report a positive page count");
-}
 
-fs::path render_pdf_page(const fs::path& pdf, int page_number, const fs::path& output_directory) {
-  const auto page_directory = output_directory / ("page-" + std::to_string(page_number));
-  fs::create_directories(page_directory);
-  const auto prefix = page_directory / "render";
-  const auto command = "pdftoppm -png -r 200 -f " + std::to_string(page_number) + " -l " +
-                       std::to_string(page_number) + " '" + pdf.string() + "' '" + prefix.string() + "'";
-  if (std::system(command.c_str()) != 0) throw std::runtime_error("pdftoppm could not render PDF page");
-  for (const auto& entry : fs::directory_iterator(page_directory)) {
-    if (entry.path().extension() == ".png") return entry.path();
+ private:
+  std::unique_ptr<poppler::document> load() const {
+    auto* raw = poppler::document::load_from_raw_data(bytes_.data(), static_cast<int>(bytes_.size()));
+    if (raw == nullptr) throw std::runtime_error("PDF could not be opened from memory");
+    return std::unique_ptr<poppler::document>(raw);
   }
-  throw std::runtime_error("PDF page did not produce a renderable image");
+
+  const std::string& bytes_;
+};
+
+cv::Mat decode_image(const std::string& bytes) {
+  const auto* begin = reinterpret_cast<const unsigned char*>(bytes.data());
+  std::vector<unsigned char> encoded(begin, begin + bytes.size());
+  const cv::Mat image = cv::imdecode(encoded, cv::IMREAD_COLOR);
+  if (image.empty()) throw std::runtime_error("Raster image could not be decoded from memory");
+  return image;
 }
 
 void append_page(const OcrEngine::Page& source, int page_number, docling::core::v1::DoclingDocument* document,
@@ -237,7 +227,7 @@ int append_page_data(const OcrEngine::Page& source, int page_number, int text_of
 
 }  // namespace
 
-DocumentParserService::DocumentParserService(OcrEngine& engine) : engine_(engine) {}
+DocumentParserService::DocumentParserService(OcrEnginePool& engines) : engines_(engines) {}
 
 grpc::Status DocumentParserService::ConvertSource(
     grpc::ServerContext*, const docling::serve::v1::ConvertSourceRequest* request,
@@ -252,17 +242,7 @@ grpc::Status DocumentParserService::ConvertSource(
     const auto& source = sources.Get(0).file();
     const std::string bytes = decode_base64(source.base64_string());
     const fs::path requested_name = source.filename().empty() ? "document.pdf" : fs::path(source.filename()).filename();
-    TemporaryDirectory temporary;
-    std::vector<fs::path> pages;
-    if (is_pdf(bytes, requested_name)) {
-      const auto pdf = temporary.path() / "document.pdf";
-      write_document(pdf, bytes);
-      pages = render_pdf(pdf, temporary.path());
-    } else {
-      const auto image = temporary.path() / (requested_name.extension().empty() ? "document.png" : requested_name);
-      write_document(image, bytes);
-      pages.push_back(image);
-    }
+    const bool pdf = is_pdf(bytes, requested_name);
 
     auto* converted = response->mutable_response();
     auto* result = converted->mutable_document();
@@ -279,8 +259,14 @@ grpc::Status DocumentParserService::ConvertSource(
     document->mutable_body()->set_content_layer(docling::core::v1::CONTENT_LAYER_BODY);
 
     std::string plain_text;
-    for (size_t index = 0; index < pages.size(); ++index) {
-      append_page(engine_.extract_page(pages[index]), static_cast<int>(index + 1), document, &plain_text);
+    if (pdf) {
+      PdfRenderer renderer(bytes);
+      const int pages = renderer.page_count();
+      for (int page_number = 1; page_number <= pages; ++page_number) {
+        append_page(engines_.extract_page(renderer.render_page(page_number)), page_number, document, &plain_text);
+      }
+    } else {
+      append_page(engines_.extract_page(decode_image(bytes)), 1, document, &plain_text);
     }
     if (requested(request->request().options(), docling::serve::v1::OUTPUT_FORMAT_TEXT)) {
       result->mutable_exports()->set_text(plain_text);
@@ -305,7 +291,7 @@ grpc::Status DocumentParserService::Health(grpc::ServerContext*, const docling::
   return grpc::Status::OK;
 }
 
-DocumentStreamingService::DocumentStreamingService(OcrEngine& engine) : engine_(engine) {}
+DocumentStreamingService::DocumentStreamingService(OcrEnginePool& engines) : engines_(engines) {}
 
 grpc::Status DocumentStreamingService::StreamProcessDocument(
     grpc::ServerContext*,
@@ -341,21 +327,80 @@ grpc::Status DocumentStreamingService::StreamProcessDocument(
   }
 
   try {
-    TemporaryDirectory temporary;
     const bool pdf = content_type == "application/pdf" || is_pdf(bytes, filename);
-    const auto source_path = temporary.path() / (pdf ? "document.pdf" : filename);
-    write_document(source_path, bytes);
-    const int total_pages = pdf ? pdf_page_count(source_path, temporary.path()) : 1;
+    const int total_pages = pdf ? PdfRenderer(bytes).page_count() : 1;
+    struct Completion {
+      int page_number;
+      std::unique_ptr<OcrEngine::Page> page;
+      std::exception_ptr error;
+    };
+    std::mutex completed_mutex;
+    std::condition_variable completed_cv;
+    std::deque<Completion> completed;
+    std::atomic<int> next_page{1};
+    std::atomic<bool> stop{false};
+    const size_t worker_count = std::min<size_t>(total_pages, engines_.size());
+    std::vector<std::thread> workers;
+    workers.reserve(worker_count);
+    for (size_t worker = 0; worker < worker_count; ++worker) {
+      workers.emplace_back([&] {
+        try {
+          auto lease = engines_.acquire();
+          std::unique_ptr<PdfRenderer> renderer;
+          if (pdf) renderer = std::make_unique<PdfRenderer>(bytes);
+          while (!stop.load()) {
+            const int page_number = next_page.fetch_add(1);
+            if (page_number > total_pages) return;
+            cv::Mat image = pdf ? renderer->render_page(page_number) : decode_image(bytes);
+            auto result = std::make_unique<OcrEngine::Page>(lease.engine().extract_page(image));
+            {
+              std::lock_guard<std::mutex> lock(completed_mutex);
+              completed.push_back(Completion{page_number, std::move(result), nullptr});
+            }
+            completed_cv.notify_one();
+          }
+        } catch (...) {
+          {
+            std::lock_guard<std::mutex> lock(completed_mutex);
+            completed.push_back(Completion{0, nullptr, std::current_exception()});
+          }
+          stop.store(true);
+          completed_cv.notify_one();
+        }
+      });
+    }
+
     int text_offset = 0;
-    for (int page_number = 1; page_number <= total_pages; ++page_number) {
-      const auto image = pdf ? render_pdf_page(source_path, page_number, temporary.path()) : source_path;
+    int pages_sent = 0;
+    std::exception_ptr failure;
+    while (pages_sent < total_pages) {
+      Completion completion;
+      {
+        std::unique_lock<std::mutex> lock(completed_mutex);
+        completed_cv.wait(lock, [&] { return !completed.empty(); });
+        completion = std::move(completed.front());
+        completed.pop_front();
+      }
+      if (completion.error) {
+        failure = completion.error;
+        stop.store(true);
+        break;
+      }
       google::protobuf::Arena page_arena;
       auto* event = google::protobuf::Arena::Create<docling::serve::v1::DocumentStreamEvent>(&page_arena);
       event->set_document_id(document_id);
       event->set_total_pages(total_pages);
-      text_offset = append_page_data(engine_.extract_page(image), page_number, text_offset, event->mutable_page());
-      if (!stream->Write(*event)) return grpc::Status::OK;
+      text_offset = append_page_data(*completion.page, completion.page_number, text_offset, event->mutable_page());
+      ++pages_sent;
+      if (!stream->Write(*event)) {
+        stop.store(true);
+        break;
+      }
     }
+    for (auto& worker : workers) worker.join();
+    if (failure) std::rethrow_exception(failure);
+    if (pages_sent != total_pages) return grpc::Status::OK;
+
     google::protobuf::Arena final_arena;
     auto* final_event = google::protobuf::Arena::Create<docling::serve::v1::DocumentStreamEvent>(&final_arena);
     final_event->set_document_id(document_id);

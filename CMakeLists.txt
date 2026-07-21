@@ -25,6 +25,8 @@ set_target_properties(onnxruntime PROPERTIES
   INTERFACE_INCLUDE_DIRECTORIES "${onnxruntime_SOURCE_DIR}/include")
 
 find_package(OpenCV 4.5 REQUIRED COMPONENTS core imgcodecs imgproc)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(POPPLER_CPP REQUIRED IMPORTED_TARGET poppler-cpp)
 
 file(GLOB RAPIDOCR_SOURCES CONFIGURE_DEPENDS "${rapidocr_SOURCE_DIR}/src/*.cpp")
 list(REMOVE_ITEM RAPIDOCR_SOURCES "${rapidocr_SOURCE_DIR}/src/main.cpp")
@@ -103,6 +105,9 @@ add_executable(grparse-server
   src/document_parser_service.cpp
   src/ocr_engine.cpp)
 target_include_directories(grparse-server PRIVATE include)
-target_link_libraries(grparse-server PRIVATE docling_proto rapidocr)
+target_link_libraries(grparse-server PRIVATE docling_proto rapidocr PkgConfig::POPPLER_CPP)
 
-install(TARGETS grparse-server RUNTIME DESTINATION bin)
+add_executable(grparse-stream-client src/stream_pdf_client.cpp)
+target_link_libraries(grparse-stream-client PRIVATE docling_proto)
+
+install(TARGETS grparse-server grparse-stream-client RUNTIME DESTINATION bin)

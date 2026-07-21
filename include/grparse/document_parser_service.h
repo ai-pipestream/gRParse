@@ -10,7 +10,7 @@ namespace grparse {
 
 class DocumentParserService final : public ai::docling::serve::v1::DoclingServeService::Service {
  public:
-  explicit DocumentParserService(OcrEngine& engine);
+  explicit DocumentParserService(OcrEnginePool& engines);
 
   grpc::Status ConvertSource(
       grpc::ServerContext* context,
@@ -21,12 +21,12 @@ class DocumentParserService final : public ai::docling::serve::v1::DoclingServeS
                       ai::docling::serve::v1::HealthResponse* response) override;
 
  private:
-  OcrEngine& engine_;
+  OcrEnginePool& engines_;
 };
 
 class DocumentStreamingService final : public ai::docling::serve::v1::DoclingStreamingService::Service {
  public:
-  explicit DocumentStreamingService(OcrEngine& engine);
+  explicit DocumentStreamingService(OcrEnginePool& engines);
 
   grpc::Status StreamProcessDocument(
       grpc::ServerContext* context,
@@ -34,7 +34,7 @@ class DocumentStreamingService final : public ai::docling::serve::v1::DoclingStr
                                ai::docling::serve::v1::DocumentChunk>* stream) override;
 
  private:
-  OcrEngine& engine_;
+  OcrEnginePool& engines_;
 };
 
 }  // namespace grparse

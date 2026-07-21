@@ -11,7 +11,7 @@ gRParse is a C++ gRPC service that turns PDF pages and raster images into text w
    docker compose up --build
    ```
 
-The service listens on `localhost:50051` and implements `ai.docling.serve.v1.DoclingServeService` from the local `docling_serve.proto` contract. `ConvertSource` currently accepts one `FileSource` containing base64-encoded PDF, PNG, JPEG, or TIFF bytes. PDFs are rendered with Poppler at 200 DPI, then each page is processed on CUDA device 0.
+The service listens on `localhost:50051` and implements `ai.docling.serve.v1.DoclingServeService` from the local `docling_serve.proto` contract. `ConvertSource` currently accepts one `FileSource` containing base64-encoded PDF, PNG, JPEG, or TIFF bytes. PDFs are rendered by Poppler's C++ API at 200 DPI and raster images are decoded with OpenCV, both directly from request memory. No input document or page image is written to disk.
 
 `ConvertSource` returns the contract's `ConvertDocumentResponse`, populated with a native `DoclingDocument`. Each OCR line becomes a `TextItem`, with its page and bounding box in `provenance`; pages and the `#/body` to `#/texts/N` reference graph are also populated. It deliberately leaves tables, pictures, semantic headings, chunking, asynchronous jobs, and remote sources unimplemented until appropriate layout or extraction models are added.
 
@@ -34,13 +34,27 @@ content type with the chunks, then set `complete = true` on the last one. The
 server accepts PDFs and single raster images, up to 50 MiB.
 
 It emits one `DocumentStreamEvent.page` per completed page, followed by one
-`DocumentStreamEvent.complete`. A page event contains the supplied Docling
+`DocumentStreamEvent.complete`. Page events may arrive out of page-number order;
+clients must use `PageData.page_number`. A page event contains the supplied Docling
 `PageItem` and the page's supplied `BaseTextItem` records. The original
 `DoclingDocument` shape is unchanged: this is only a transport envelope for
 incremental delivery. Each page event is allocated in its own
 `google::protobuf::Arena`; the arena, page image, and event state are discarded
-before the next page is rasterized. RapidOCR currently produces text, so `tables` and
-`pictures` remain empty until dedicated extraction models are connected.
+after gRPC serializes the event. The server has a bounded pool of CUDA RapidOCR
+sessions, with two page workers by default. Set `GRPARSE_PAGE_WORKERS` to tune
+the concurrency for the available GPU memory. RapidOCR currently produces text,
+so `tables` and `pictures` remain empty until dedicated extraction models are
+connected.
+
+The image also includes `grparse-stream-client`, a bidirectional gRPC client
+that sends a PDF in chunks and prints each page event as it arrives:
+
+```bash
+docker run --rm --network host \
+  -v /path/to/document.pdf:/input/document.pdf:ro \
+  --entrypoint /usr/local/bin/grparse-stream-client \
+  grparse-grparse /input/document.pdf localhost:50051
+```
 
 ## Development
 
