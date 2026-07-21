@@ -1,0 +1,8 @@
+services:
+  grparse:
+    build: .
+    ports:
+      - "50051:50051"
+    volumes:
+      - ./models:/models:ro
+    gpus: all

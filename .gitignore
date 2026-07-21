@@ -67,3 +67,8 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Downloaded OCR models are provided at deployment time.
+models/*.onnx
+models/ppocr_keys_v1.txt
+!models/README.md
