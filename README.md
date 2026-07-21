@@ -33,6 +33,10 @@ docker compose up -d
 ./scripts/parse_pdf.sh /path/to/document.pdf
 ```
 
+The helper invokes the compiled bidirectional-streaming client. It reads the
+source and sends fixed-size chunks directly to gRPC; it does not base64-encode
+the document or create temporary files.
+
 ## Page-streaming OCR
 
 `ai.docling.serve.v1.DoclingStreamingService/StreamProcessDocument` accepts a
@@ -45,9 +49,14 @@ It emits one `DocumentStreamEvent.page` per completed page, followed by one
 clients must use `PageData.page_number`. A page event contains the supplied Docling
 `PageItem` and the page's supplied `BaseTextItem` records. The original
 `DoclingDocument` shape is unchanged: this is only a transport envelope for
-incremental delivery. Each page event is allocated in its own
-`google::protobuf::Arena`; the arena, page image, and event state are discarded
-after gRPC serializes the event. The server has a bounded pool of CUDA RapidOCR
+incremental delivery. Each page event and its nested protobuf messages are
+allocated in a short-lived `google::protobuf::Arena`; the arena, page image,
+and event state are discarded after the synchronous gRPC write serializes the
+event. Protobuf Arena does not own Poppler, OpenCV, or ONNX Runtime buffers;
+those libraries release their own in-memory buffers at the page boundary. The
+server never writes input documents, rendered pages, OCR intermediates, or
+results to disk. It only reads the installed binaries and OCR model files. The
+server has a bounded pool of CUDA RapidOCR
 sessions, with two page workers by default. Set `GRPARSE_PAGE_WORKERS` to tune
 the concurrency for the available GPU memory. RapidOCR currently produces text,
 so `tables` and `pictures` remain empty until dedicated extraction models are
@@ -65,7 +74,14 @@ docker run --rm --network host \
 
 ## Development
 
-The container is the supported build environment because it runs Ubuntu 26.04 with CUDA 13.3, cuDNN 9, ONNX Runtime GPU 1.26.0 for CUDA 13, RapidOcrOnnx 1.2.3 C++ sources, and gRPC 1.82.1. It needs an NVIDIA Container Toolkit-enabled Docker installation. A CUDA-capable ONNX Runtime build is required for the provider to exist; a CPU-only runtime cannot activate the GPU.
+The container is the supported build environment because it runs Ubuntu 26.04
+with CUDA 13.3, cuDNN 9, ONNX Runtime GPU 1.27.1 for CUDA 13,
+RapidOcrOnnx 1.2.3 C++ sources, and gRPC 1.82.1. These are the newest applicable
+upstream versions as of 2026-07-21. RapidOCR 3.9.2 is the current Python package
+release; its C++ entry point still directs users to RapidOcrOnnx, whose newest
+C++ tag is 1.2.3. The container needs an NVIDIA Container Toolkit-enabled
+Docker installation. A CUDA-capable ONNX Runtime build is required for the
+provider to exist; a CPU-only runtime cannot activate the GPU.
 
 ```bash
 docker compose build

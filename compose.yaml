@@ -5,4 +5,7 @@ services:
       - "50051:50051"
     volumes:
       - ./models:/models:ro
+    environment:
+      CUDA_CACHE_DISABLE: "1"
     gpus: all
+    read_only: true

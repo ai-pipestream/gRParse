@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
-RUN --mount=type=cache,target=/build cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+RUN cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release \
  && cmake --build /build --target grparse-server grparse-stream-client --parallel 4 \
  && mkdir -p /out \
  && cp /build/grparse-server /out/grparse-server \

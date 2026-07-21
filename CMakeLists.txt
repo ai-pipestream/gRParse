@@ -16,7 +16,8 @@ FetchContent_Declare(rapidocr SOURCE_SUBDIR disabled
 FetchContent_MakeAvailable(rapidocr)
 
 FetchContent_Declare(onnxruntime
-  URL https://github.com/microsoft/onnxruntime/releases/download/v1.26.0/onnxruntime-linux-x64-gpu_cuda13-1.26.0.tgz)
+  URL https://github.com/microsoft/onnxruntime/releases/download/v1.27.1/onnxruntime-linux-x64-gpu_cuda13-1.27.1.tgz
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(onnxruntime)
 
 add_library(onnxruntime SHARED IMPORTED GLOBAL)
