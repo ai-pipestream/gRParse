@@ -75,12 +75,13 @@ queue memory with `GRPARSE_PAGE_WORKERS`, `GRPARSE_RENDER_WORKERS`,
 open concurrently; it defaults to `GRPARSE_RENDER_WORKERS` and costs one parsed
 document structure per slot. Select the NVIDIA device with
 `GRPARSE_CUDA_DEVICE`. `GRPARSE_ORT_EP` picks the ONNX Runtime execution
-provider: `cuda` (default, fails startup if CUDA cannot initialize), `cpu`
-(explicit CPU inference), or `auto` (tries CUDA, logs and falls back to CPU).
-`openvino` is reserved for the Intel Arc path and is rejected with a clear
-error until that provider ships. An OCR session that throws during inference
-is destroyed and rebuilt on next use instead of staying in the pool poisoned.
-Optional RapidOCR detect knobs:
+provider: `cuda` (default, fails startup if CUDA cannot initialize),
+`openvino` (Intel GPU/CPU/NPU through the OpenVINO build — see below), `cpu`
+(explicit CPU inference), or `auto` (prefers CUDA, then OpenVINO, then CPU,
+logging each fallback). Requesting a provider the linked ONNX Runtime does not
+offer fails with the list that is actually available. An OCR session that
+throws during inference is destroyed and rebuilt on next use instead of
+staying in the pool poisoned. Optional RapidOCR detect knobs:
 `GRPARSE_OCR_PADDING`, `GRPARSE_OCR_MAX_SIDE`, `GRPARSE_OCR_BOX_SCORE`,
 `GRPARSE_OCR_BOX_THRESH`, `GRPARSE_OCR_UNCLIP`. These are read and range-checked
 once at startup: a malformed or out-of-range value fails the server immediately
@@ -101,6 +102,29 @@ acquire/discard/wait totals, and a page-latency histogram from schedule to
 delivery. Render and inference busy percentages climbing together under load
 is the pipeline overlap working; one stage pegged while its neighbor idles
 identifies where to add workers.
+
+## Intel GPUs (OpenVINO)
+
+`Dockerfile.openvino` builds an Intel variant with no CUDA anywhere: ONNX
+Runtime 1.24.1 with the OpenVINO execution provider (OpenVINO 2025.4.1 and its
+Intel GPU/CPU/NPU plugins, from Intel's prebuilt distribution) plus the NEO
+OpenCL compute runtime. It targets Arc discrete cards (Battlemage/Alchemist),
+integrated Xe graphics, CPUs, and NPUs:
+
+```bash
+docker build -f Dockerfile.openvino -t grparse-openvino .
+docker run --rm --device /dev/dri -v /path/to/models:/models:ro \
+  -p 50051:50051 grparse-openvino
+```
+
+The image defaults to `GRPARSE_ORT_EP=openvino` with
+`GRPARSE_OPENVINO_DEVICE=GPU`; set the device to `GPU.<n>`, `CPU`, `NPU`, or
+an `AUTO:`/`HETERO:` list. Startup fails loudly if the device cannot
+initialize — the host needs `/dev/dri` passed through and a kernel new enough
+for the card. Provider selection is centralized in a small patch to the
+RapidOcrOnnx session setup (`patches/rapidocr-session-ep.patch`); the server
+refuses to start if a stale dependency cache produced an unpatched build, so
+the configured provider can never silently degrade to CPU.
 
 The image also includes `grparse-stream-client`, a bidirectional gRPC client
 that sends a PDF in chunks and prints each page event as it arrives:
