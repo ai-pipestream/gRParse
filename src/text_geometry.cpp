@@ -22,15 +22,15 @@ AxisAlignedBox bounding_box(const OcrLine& line) {
 }
 
 float intersection_over_union(const AxisAlignedBox& a, const AxisAlignedBox& b) {
-  const int left = std::max(a.left, b.left);
-  const int top = std::max(a.top, b.top);
-  const int right = std::min(a.right, b.right);
-  const int bottom = std::min(a.bottom, b.bottom);
-  const int intersection = std::max(0, right - left) * std::max(0, bottom - top);
-  if (intersection == 0) return 0.0F;
-  const int union_area = a.area() + b.area() - intersection;
+  const int64_t left = std::max<int64_t>(a.left, b.left);
+  const int64_t top = std::max<int64_t>(a.top, b.top);
+  const int64_t right = std::min<int64_t>(a.right, b.right);
+  const int64_t bottom = std::min<int64_t>(a.bottom, b.bottom);
+  const int64_t intersection = std::max<int64_t>(0, right - left) * std::max<int64_t>(0, bottom - top);
+  if (intersection <= 0) return 0.0F;
+  const int64_t union_area = a.area() + b.area() - intersection;
   if (union_area <= 0) return 0.0F;
-  return static_cast<float>(intersection) / static_cast<float>(union_area);
+  return static_cast<float>(static_cast<double>(intersection) / static_cast<double>(union_area));
 }
 
 bool boxes_overlap_significantly(const AxisAlignedBox& a, const AxisAlignedBox& b,
@@ -45,38 +45,46 @@ OcrPage merge_digital_and_ocr(OcrPage digital, OcrPage ocr) {
   merged.height = digital.height > 0 ? digital.height : ocr.height;
   merged.source = OcrPage::Source::kMerged;
   merged.skip_ocr = false;
-  merged.lines.reserve(digital.lines.size() + ocr.lines.size());
 
-  std::vector<AxisAlignedBox> digital_boxes;
-  digital_boxes.reserve(digital.lines.size());
+  // Bounding boxes are computed once per line and carried through dedup and
+  // sorting.  Recomputing them inside the comparator rescanned every polygon
+  // O(n log n) times on pages that can carry thousands of lines.
+  struct Entry {
+    OcrLine line;
+    AxisAlignedBox box;
+  };
+  std::vector<Entry> entries;
+  entries.reserve(digital.lines.size() + ocr.lines.size());
+
   for (auto& line : digital.lines) {
     if (line.text.empty() || line.polygon.empty()) continue;
+    const AxisAlignedBox box = bounding_box(line);
     if (!line.origin.has_value()) line.origin = TextOrigin::kDigitalPdf;
-    digital_boxes.push_back(bounding_box(line));
-    merged.lines.push_back(std::move(line));
+    entries.push_back(Entry{std::move(line), box});
   }
+  const size_t digital_count = entries.size();
 
   for (auto& line : ocr.lines) {
     if (line.text.empty() || line.polygon.empty()) continue;
     const AxisAlignedBox box = bounding_box(line);
     bool duplicate = false;
-    for (const auto& digital_box : digital_boxes) {
-      if (boxes_overlap_significantly(digital_box, box)) {
+    for (size_t index = 0; index < digital_count; ++index) {
+      if (boxes_overlap_significantly(entries[index].box, box)) {
         duplicate = true;
         break;
       }
     }
     if (duplicate) continue;
     if (!line.origin.has_value()) line.origin = TextOrigin::kOcr;
-    merged.lines.push_back(std::move(line));
+    entries.push_back(Entry{std::move(line), box});
   }
 
-  std::stable_sort(merged.lines.begin(), merged.lines.end(), [](const OcrLine& a, const OcrLine& b) {
-    const auto ba = bounding_box(a);
-    const auto bb = bounding_box(b);
-    if (ba.top != bb.top) return ba.top < bb.top;
-    return ba.left < bb.left;
+  std::stable_sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) {
+    if (a.box.top != b.box.top) return a.box.top < b.box.top;
+    return a.box.left < b.box.left;
   });
+  merged.lines.reserve(entries.size());
+  for (auto& entry : entries) merged.lines.push_back(std::move(entry.line));
   return merged;
 }
 

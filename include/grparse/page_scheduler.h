@@ -31,6 +31,9 @@ class PageScheduler final {
     size_t assembly_workers = 2;
     size_t page_window = 4;
     size_t max_active_documents = 32;
+    // Concurrent Poppler parsers per PDF for the built-in page source.
+    // 0 tracks render_workers, which is what keeps render fan-out real.
+    size_t pdf_parsers = 0;
   };
 
   enum class DeliveryResult { kAccepted, kAcceptedAndRelease, kCancelled };
@@ -68,14 +71,19 @@ class PageScheduler final {
     std::weak_ptr<State> state_;
   };
 
+  // An empty source_factory installs the in-memory PDF/image source sized from
+  // Options.
   PageScheduler(PageRecognizer& recognizer, Options options,
-                PageSourceFactory source_factory = open_in_memory_document);
+                PageSourceFactory source_factory = PageSourceFactory{});
   PageScheduler(const PageScheduler&) = delete;
   PageScheduler& operator=(const PageScheduler&) = delete;
   ~PageScheduler();
 
   Ticket submit(std::shared_ptr<const std::string> bytes, bool pdf, Callbacks callbacks);
   Metrics metrics() const;
+  // Pages a single document may hold undelivered before it needs credits back.
+  // Stream reactors must size their own buffers from this, not from a constant.
+  size_t page_window() const;
 
  private:
   class Impl;

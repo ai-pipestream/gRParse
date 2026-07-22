@@ -4,6 +4,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #include "grparse/text_geometry.h"
 
@@ -95,13 +96,20 @@ void append_page_to_document(const OcrPage& source, int page_number, AssemblyCur
   }
   docling::serve::v1::PageData page;
   append_page_data(source, page_number, cursor, &page);
-  (*document->mutable_pages())[page_number].CopyFrom(page.page_meta());
-  for (const auto& text : page.texts()) {
+  (*document->mutable_pages())[page_number] = std::move(*page.mutable_page_meta());
+
+  auto* texts = page.mutable_texts();
+  document->mutable_texts()->Reserve(document->texts_size() + texts->size());
+  document->mutable_body()->mutable_children()->Reserve(document->body().children_size() +
+                                                        texts->size());
+  for (auto& text : *texts) {
+    // Read everything needed from `text` before it is moved out.
     const auto& base = text.text().base();
     document->mutable_body()->add_children()->set_ref(base.self_ref());
-    document->add_texts()->CopyFrom(text);
     if (!plain_text->empty()) plain_text->push_back('\n');
     plain_text->append(base.text());
+    // Hand the item over instead of deep-copying every box and string again.
+    *document->add_texts() = std::move(text);
   }
 }
 

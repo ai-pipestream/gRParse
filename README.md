@@ -20,7 +20,7 @@ gRParse turns PDF pages and raster images into text with the maintained C++ [Rap
 
 The service listens on `localhost:50051` and implements `ai.docling.serve.v1.DoclingServeService` from the local `docling_serve.proto` contract. `ConvertSource` currently accepts one `FileSource` containing base64-encoded PDF, PNG, JPEG, or TIFF bytes. It accepts only TEXT output and returns `INVALID_ARGUMENT` for populated options it does not implement. It does not label plain text as Markdown.
 
-Each PDF request opens one Poppler document directly from the request bytes. Full native-text pages skip raster OCR. Weak/partial digital layers keep their native boxes and still run OCR; geometry merge drops overlapping OCR duplicates so headers and scan body can coexist. Image-only pages render at 200 DPI into RapidOCR. Raster inputs decode with OpenCV from request memory. Nothing is written to disk on the hot path.
+Each PDF request opens a small pool of Poppler documents directly from the request bytes, so render and digital-text extraction for different pages of the same document proceed in parallel. Full native-text pages skip raster OCR. Weak/partial digital layers keep their native boxes and still run OCR; geometry merge drops overlapping OCR duplicates so headers and scan body can coexist. Image-only pages render at 200 DPI into RapidOCR. Raster inputs decode with OpenCV from request memory. Nothing is written to disk on the hot path.
 
 `ConvertSource` returns the contract's `ConvertDocumentResponse`, populated with a native `DoclingDocument`. Each OCR line becomes a `TextItem`, with its page and bounding box in `provenance`; pages and the `#/body` to `#/texts/N` reference graph are also populated. It deliberately leaves tables, pictures, semantic headings, chunking, asynchronous jobs, and remote sources unimplemented until appropriate layout or extraction models are added.
 
@@ -61,16 +61,24 @@ server has globally bounded document, render, inference, and assembly queues.
 RapidOCR inference workers never perform gRPC writes. A stream that does not
 consume events stops returning page credits to the scheduler, so that document
 cannot advance beyond its configured page window. Other admitted documents can
-continue through the global queues.
+continue through the global queues, and a stalled document keeps its scheduler
+state until the client's credits return or the stream ends. The reactor's
+in-flight write buffer is sized from `GRPARSE_PAGE_WINDOW`, so raising the page
+window raises both bounds together.
 
 The server has two CUDA RapidOCR sessions by default. Tune concurrency and
 queue memory with `GRPARSE_PAGE_WORKERS`, `GRPARSE_RENDER_WORKERS`,
 `GRPARSE_ASSEMBLY_WORKERS`, `GRPARSE_DOCUMENT_QUEUE`, `GRPARSE_RENDER_QUEUE`,
-`GRPARSE_INFERENCE_QUEUE`, `GRPARSE_ASSEMBLY_QUEUE`, `GRPARSE_PAGE_WINDOW`, and
-`GRPARSE_MAX_ACTIVE_DOCUMENTS`. Select the NVIDIA device with
+`GRPARSE_INFERENCE_QUEUE`, `GRPARSE_ASSEMBLY_QUEUE`, `GRPARSE_PAGE_WINDOW`,
+`GRPARSE_PDF_PARSERS`, and `GRPARSE_MAX_ACTIVE_DOCUMENTS`.
+`GRPARSE_PDF_PARSERS` sets how many Poppler documents a single PDF request may
+open concurrently; it defaults to `GRPARSE_RENDER_WORKERS` and costs one parsed
+document structure per slot. Select the NVIDIA device with
 `GRPARSE_CUDA_DEVICE`. Optional RapidOCR detect knobs:
 `GRPARSE_OCR_PADDING`, `GRPARSE_OCR_MAX_SIDE`, `GRPARSE_OCR_BOX_SCORE`,
-`GRPARSE_OCR_BOX_THRESH`, `GRPARSE_OCR_UNCLIP`. gRPC memory, thread,
+`GRPARSE_OCR_BOX_THRESH`, `GRPARSE_OCR_UNCLIP`. These are read and range-checked
+once at startup: a malformed or out-of-range value fails the server immediately
+rather than being silently ignored per page. gRPC memory, thread,
 and stream limits use `GRPARSE_GRPC_MEMORY_MIB`, `GRPARSE_GRPC_MAX_THREADS`,
 and `GRPARSE_MAX_CONCURRENT_STREAMS`. RapidOCR currently produces text,
 so `tables` and `pictures` remain empty until dedicated extraction models are
@@ -105,6 +113,28 @@ provider to exist; a CPU-only runtime cannot activate the GPU.
 docker compose build
 ```
 
-The build runs assembly, geometry-merge, base64, scheduler (including partial
-digital→OCR merge), unary, and streaming contract tests. Generated protobuf and
-gRPC sources stay inside the build directory and are not committed.
+The build compiles with `-DGRPARSE_WERROR=ON` and runs the full `grparse`-labelled
+CTest set: base64, document assembly, geometry merge (including overflow bounds),
+scheduler (page credits, backpressure, partial digital→OCR merge), PDF page source
+(Poppler text/raster geometry, `/Rotate`, concurrent access), resource pool, and
+streaming/unary contract tests. Third-party dependencies register their own CTest
+suites, so the label filter is what keeps `ctest` scoped to this project:
+
+```bash
+ctest --test-dir /build --output-on-failure -L grparse
+```
+
+Two CMake options exist for local work: `-DGRPARSE_WERROR=OFF` relaxes the
+warning gate, and `-DGRPARSE_SANITIZE=address` (or `thread`, `undefined`, or a
+comma-separated list) instruments the gRParse targets. ThreadSanitizer cannot
+start under `docker build`, which does not allow disabling ASLR; build the test
+binaries there and run them with
+`docker run --security-opt seccomp=unconfined`. The scheduler, resource pool,
+and PDF page source tests are the concurrency-carrying ones and are expected to
+be ThreadSanitizer-clean and, with
+`LSAN_OPTIONS=suppressions=tests/lsan.supp`, AddressSanitizer- and
+UndefinedBehaviorSanitizer-clean. The suppression file covers fontconfig's
+one-time global config cache, which Poppler reaches when it substitutes a
+base-14 font; it is not a per-page allocation. Generated protobuf and
+gRPC sources stay inside the build directory and are not committed; the
+`docling_document` messages live in a single canonical `docling_document.proto`.

@@ -1,12 +1,13 @@
 #include "grparse/page_scheduler.h"
 
 #include <algorithm>
-#include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -20,9 +21,17 @@ class BoundedQueue final {
     if (capacity == 0) throw std::invalid_argument("Queue capacity must be positive");
   }
 
-  bool try_push(T value) {
+  // Pushes when there is room.  On a full queue the optional waiter is recorded
+  // and run exactly once by whichever pop next frees a slot; registering it
+  // under the same lock that observed "full" is what makes the handoff
+  // race-free, so producers never have to poll or sleep.
+  bool try_push(T value, std::function<void()> on_space = nullptr) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (closed_ || queue_.size() >= capacity_) return false;
+    if (closed_) return false;
+    if (queue_.size() >= capacity_) {
+      if (on_space) space_waiters_.push_back(std::move(on_space));
+      return false;
+    }
     queue_.push_back(std::move(value));
     not_empty_.notify_one();
     return true;
@@ -38,28 +47,31 @@ class BoundedQueue final {
   }
 
   bool pop(T* value) {
-    std::unique_lock<std::mutex> lock(mutex_);
-    not_empty_.wait(lock, [&] { return closed_ || !queue_.empty(); });
-    if (queue_.empty()) return false;
-    *value = std::move(queue_.front());
-    queue_.pop_front();
-    not_full_.notify_one();
+    std::vector<std::function<void()>> waiters;
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      not_empty_.wait(lock, [&] { return closed_ || !queue_.empty(); });
+      if (queue_.empty()) return false;
+      *value = std::move(queue_.front());
+      queue_.pop_front();
+      waiters.swap(space_waiters_);
+      not_full_.notify_one();
+    }
+    // Outside the queue lock: waiters take scheduler locks of their own.
+    for (auto& waiter : waiters) waiter();
     return true;
   }
 
-  // Block until there is room, the queue closes, or the timeout elapses.
-  bool wait_for_space(std::chrono::milliseconds timeout) {
-    std::unique_lock<std::mutex> lock(mutex_);
-    return not_full_.wait_for(lock, timeout, [&] { return closed_ || queue_.size() < capacity_; });
-  }
-
   void close() {
+    std::vector<std::function<void()>> waiters;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       closed_ = true;
+      waiters.swap(space_waiters_);
     }
     not_empty_.notify_all();
     not_full_.notify_all();
+    for (auto& waiter : waiters) waiter();
   }
 
   size_t size() const {
@@ -73,20 +85,12 @@ class BoundedQueue final {
   std::condition_variable not_empty_;
   std::condition_variable not_full_;
   std::deque<T> queue_;
+  std::vector<std::function<void()>> space_waiters_;
   bool closed_ = false;
 };
 
-enum class PageJobState {
-  kQueuedForRender,
-  kRendering,
-  kQueuedForInference,
-  kInferencing,
-  kQueuedForAssembly,
-  kAssembling,
-  kCompleted,
-  kCancelled,
-  kFailed,
-};
+// Terminal disposition of a page job; every page reaches exactly one of these.
+enum class PageOutcome { kCompleted, kCancelled, kFailed };
 
 }  // namespace
 
@@ -106,6 +110,17 @@ struct PageScheduler::Ticket::State {
   std::exception_ptr get_failure() const {
     std::lock_guard<std::mutex> lock(failure_mutex);
     return failure;
+  }
+
+  // Single implementation of "return page credits and re-run the scheduler",
+  // shared by the delivery callback and the public Ticket.
+  static void release_slots(const std::shared_ptr<State>& state, size_t slots) {
+    if (slots == 0 || state->finish_called.load()) return;
+    {
+      std::lock_guard<std::mutex> lock(state->schedule_mutex);
+      state->available_slots = std::min(state->page_window, state->available_slots + slots);
+    }
+    if (state->wake_scheduler) state->wake_scheduler(state);
   }
 
   Callbacks callbacks;
@@ -136,7 +151,6 @@ class PageScheduler::Impl final {
     std::shared_ptr<PageSource> source;
     std::shared_ptr<Ticket::State> request;
     int page_number = 0;
-    std::atomic<PageJobState> state{PageJobState::kQueuedForRender};
   };
 
   struct InferenceJob {
@@ -158,40 +172,38 @@ class PageScheduler::Impl final {
         render_(options.render_queue_capacity),
         inference_(options.inference_queue_capacity),
         assembly_(options.assembly_queue_capacity) {
-    if (!source_factory_) throw std::invalid_argument("Page source factory is required");
-    if (options_.render_workers == 0 || options_.inference_workers == 0 || options_.assembly_workers == 0 ||
-        options_.page_window == 0 || options_.max_active_documents == 0) {
+    if (options_.render_workers == 0 || options_.inference_workers == 0 ||
+        options_.assembly_workers == 0 || options_.page_window == 0 ||
+        options_.max_active_documents == 0) {
       throw std::invalid_argument("Scheduler worker counts, page window, and document limit must be positive");
     }
-    coordinator_ = std::thread([this] { coordinate(); });
-    rescheduler_ = std::thread([this] { reschedule_requests(); });
-    for (size_t index = 0; index < options_.render_workers; ++index) {
-      render_workers_.emplace_back([this] { render_pages(); });
+    if (!source_factory_) {
+      const size_t parsers = options_.pdf_parsers > 0 ? options_.pdf_parsers : options_.render_workers;
+      source_factory_ = [parsers](std::shared_ptr<const std::string> bytes, bool pdf) {
+        return open_in_memory_document(std::move(bytes), pdf, parsers);
+      };
     }
-    for (size_t index = 0; index < options_.inference_workers; ++index) {
-      inference_workers_.emplace_back([this] { recognize_pages(); });
-    }
-    for (size_t index = 0; index < options_.assembly_workers; ++index) {
-      assembly_workers_.emplace_back([this] { assemble_pages(); });
+    // Any thread that fails to start must not leave the already-started ones
+    // joinable at destruction time.
+    try {
+      coordinator_ = std::thread([this] { coordinate(); });
+      rescheduler_ = std::thread([this] { reschedule_requests(); });
+      for (size_t index = 0; index < options_.render_workers; ++index) {
+        render_workers_.emplace_back([this] { render_pages(); });
+      }
+      for (size_t index = 0; index < options_.inference_workers; ++index) {
+        inference_workers_.emplace_back([this] { recognize_pages(); });
+      }
+      for (size_t index = 0; index < options_.assembly_workers; ++index) {
+        assembly_workers_.emplace_back([this] { assemble_pages(); });
+      }
+    } catch (...) {
+      stop();
+      throw;
     }
   }
 
-  ~Impl() {
-    documents_.close();
-    {
-      std::lock_guard<std::mutex> lock(reschedule_mutex_);
-      stopping_ = true;
-    }
-    reschedule_changed_.notify_all();
-    render_.close();
-    inference_.close();
-    assembly_.close();
-    if (coordinator_.joinable()) coordinator_.join();
-    if (rescheduler_.joinable()) rescheduler_.join();
-    for (auto& worker : render_workers_) worker.join();
-    for (auto& worker : inference_workers_) worker.join();
-    for (auto& worker : assembly_workers_) worker.join();
-  }
+  ~Impl() { stop(); }
 
   Ticket submit(std::shared_ptr<const std::string> bytes, bool pdf, Callbacks callbacks) {
     if (!bytes || bytes->empty()) throw InvalidDocument("Document bytes are empty");
@@ -208,7 +220,20 @@ class PageScheduler::Impl final {
     state->wake_scheduler = [this](std::shared_ptr<Ticket::State> request) {
       queue_reschedule(std::move(request));
     };
+    // The scheduler owns the request until it finishes.  Without this registry
+    // the only strong references were the in-flight page jobs, so a document
+    // whose whole page window was delivered but not yet credited could be
+    // destroyed underneath its own Ticket: release() then silently did nothing
+    // and the document never completed.
+    {
+      std::lock_guard<std::mutex> lock(active_mutex_);
+      active_requests_.insert(state);
+    }
     if (!documents_.try_push(DocumentJob{std::move(bytes), pdf, state})) {
+      {
+        std::lock_guard<std::mutex> lock(active_mutex_);
+        active_requests_.erase(state);
+      }
       active_documents_.fetch_sub(1);
       documents_rejected_.fetch_add(1);
       throw SchedulerSaturated("Document scheduler admission queue is full");
@@ -223,11 +248,54 @@ class PageScheduler::Impl final {
                    documents_.size(), render_.size(), inference_.size(), assembly_.size()};
   }
 
+  size_t page_window() const { return options_.page_window; }
+
  private:
+  void stop() {
+    documents_.close();
+    {
+      std::lock_guard<std::mutex> lock(reschedule_mutex_);
+      stopping_ = true;
+      pending_reschedules_.clear();
+    }
+    reschedule_changed_.notify_all();
+    render_.close();
+    inference_.close();
+    assembly_.close();
+    if (coordinator_.joinable()) coordinator_.join();
+    if (rescheduler_.joinable()) rescheduler_.join();
+    for (auto& worker : render_workers_) {
+      if (worker.joinable()) worker.join();
+    }
+    for (auto& worker : inference_workers_) {
+      if (worker.joinable()) worker.join();
+    }
+    for (auto& worker : assembly_workers_) {
+      if (worker.joinable()) worker.join();
+    }
+    // No workers remain: settle anything still in flight so a caller waiting on
+    // on_finish is not left hanging by a shutdown.
+    std::vector<std::shared_ptr<Ticket::State>> abandoned;
+    {
+      std::lock_guard<std::mutex> lock(active_mutex_);
+      abandoned.assign(active_requests_.begin(), active_requests_.end());
+    }
+    for (const auto& request : abandoned) {
+      request->fail(std::make_exception_ptr(SchedulerSaturated("Scheduler is shutting down")));
+      finish_request(request);
+    }
+  }
+
   void finish_request(const std::shared_ptr<Ticket::State>& request) {
     if (!request->finish_called.exchange(true)) {
+      // Hold a reference of our own: the registry may own the last one.
+      const std::shared_ptr<Ticket::State> owned = request;
+      {
+        std::lock_guard<std::mutex> lock(active_mutex_);
+        active_requests_.erase(owned);
+      }
       active_documents_.fetch_sub(1);
-      request->callbacks.on_finish(request->get_failure());
+      owned->callbacks.on_finish(owned->get_failure());
     }
   }
 
@@ -241,18 +309,8 @@ class PageScheduler::Impl final {
     reschedule_changed_.notify_one();
   }
 
-  void release_slots(const std::shared_ptr<Ticket::State>& request, size_t slots) {
-    if (slots == 0 || request->finish_called.load()) return;
-    {
-      std::lock_guard<std::mutex> lock(request->schedule_mutex);
-      request->available_slots = std::min(request->page_window, request->available_slots + slots);
-    }
-    queue_reschedule(request);
-  }
-
   void schedule_pages(const std::shared_ptr<Ticket::State>& request) {
     int cancelled_pages = 0;
-    bool retry = false;
     {
       std::lock_guard<std::mutex> lock(request->schedule_mutex);
       if (!request->source || request->total_pages <= 0) return;
@@ -268,8 +326,11 @@ class PageScheduler::Impl final {
           page->source = request->source;
           page->request = request;
           page->page_number = request->next_page_to_schedule;
-          if (!render_.try_push(page)) {
-            retry = true;
+          // A full render queue parks this document until a render worker
+          // dequeues.  The old code slept on the single scheduler thread, which
+          // stalled every other document behind one saturated one.
+          if (!render_.try_push(std::move(page),
+                                [this, request] { queue_reschedule(request); })) {
             break;
           }
           ++request->next_page_to_schedule;
@@ -283,11 +344,6 @@ class PageScheduler::Impl final {
         finish_request(request);
       }
     }
-    if (retry) {
-      // Wait for render capacity instead of spinning on a 1ms sleep.
-      render_.wait_for_space(std::chrono::milliseconds(50));
-      queue_reschedule(request);
-    }
   }
 
   void reschedule_requests() {
@@ -296,7 +352,7 @@ class PageScheduler::Impl final {
       {
         std::unique_lock<std::mutex> lock(reschedule_mutex_);
         reschedule_changed_.wait(lock, [this] { return stopping_ || !pending_reschedules_.empty(); });
-        if (stopping_ && pending_reschedules_.empty()) return;
+        if (stopping_) return;
         request = std::move(pending_reschedules_.front());
         pending_reschedules_.pop_front();
       }
@@ -305,21 +361,17 @@ class PageScheduler::Impl final {
     }
   }
 
-  void complete_page(const std::shared_ptr<PageJob>& page, PageJobState final_state) {
-    page->state.store(final_state);
-    if (final_state == PageJobState::kCancelled) pages_cancelled_.fetch_add(1);
+  void complete_page(const std::shared_ptr<PageJob>& page, PageOutcome outcome) {
+    if (outcome == PageOutcome::kCancelled) pages_cancelled_.fetch_add(1);
     if (page->request->cancelled.load()) queue_reschedule(page->request);
     if (page->request->remaining_pages.fetch_sub(1) == 1) finish_request(page->request);
   }
 
-  bool enqueue_assembly(const std::shared_ptr<PageJob>& page, std::shared_ptr<const OcrPage> result) {
-    page->state.store(PageJobState::kQueuedForAssembly);
+  void enqueue_assembly(const std::shared_ptr<PageJob>& page, std::shared_ptr<const OcrPage> result) {
     if (!assembly_.push(AssemblyJob{page, std::move(result)})) {
       page->request->fail(std::make_exception_ptr(std::runtime_error("Assembly queue closed")));
-      complete_page(page, PageJobState::kFailed);
-      return false;
+      complete_page(page, PageOutcome::kFailed);
     }
-    return true;
   }
 
   void coordinate() {
@@ -331,6 +383,7 @@ class PageScheduler::Impl final {
       }
       try {
         auto source = source_factory_(document.bytes, document.pdf);
+        if (!source) throw InvalidDocument("Document source could not be opened");
         const int pages = source->page_count();
         if (pages <= 0) throw InvalidDocument("Document does not contain a page");
         document.request->remaining_pages.store(pages);
@@ -350,6 +403,8 @@ class PageScheduler::Impl final {
           queue_reschedule(document.request);
         }
       }
+      // Release the request and its bytes before blocking on the next document.
+      document = DocumentJob{};
     }
   }
 
@@ -357,17 +412,17 @@ class PageScheduler::Impl final {
     std::shared_ptr<PageJob> page;
     while (render_.pop(&page)) {
       if (page->request->cancelled.load()) {
-        complete_page(page, PageJobState::kCancelled);
+        complete_page(page, PageOutcome::kCancelled);
+        page.reset();
         continue;
       }
       try {
-        page->state.store(PageJobState::kRendering);
         std::optional<OcrPage> digital = page->source->extract_digital_page(page->page_number);
         if (digital.has_value()) {
           pages_read_digitally_.fetch_add(1);
           if (digital->skip_ocr) {
-            auto result = std::make_shared<const OcrPage>(std::move(*digital));
-            enqueue_assembly(page, std::move(result));
+            enqueue_assembly(page, std::make_shared<const OcrPage>(std::move(*digital)));
+            page.reset();
             continue;
           }
         }
@@ -375,19 +430,20 @@ class PageScheduler::Impl final {
         cv::Mat image = page->source->render_page(page->page_number);
         pages_rendered_.fetch_add(1);
         if (page->request->cancelled.load()) {
-          complete_page(page, PageJobState::kCancelled);
+          complete_page(page, PageOutcome::kCancelled);
+          page.reset();
           continue;
         }
-        page->state.store(PageJobState::kQueuedForInference);
         InferenceJob job{page, std::move(image), std::move(digital)};
         if (!inference_.push(std::move(job))) {
           page->request->fail(std::make_exception_ptr(std::runtime_error("Inference queue closed")));
-          complete_page(page, PageJobState::kFailed);
+          complete_page(page, PageOutcome::kFailed);
         }
       } catch (...) {
         page->request->fail(std::current_exception());
-        complete_page(page, PageJobState::kFailed);
+        complete_page(page, PageOutcome::kFailed);
       }
+      page.reset();
     }
   }
 
@@ -395,12 +451,13 @@ class PageScheduler::Impl final {
     InferenceJob job;
     while (inference_.pop(&job)) {
       if (job.page->request->cancelled.load()) {
-        complete_page(job.page, PageJobState::kCancelled);
+        complete_page(job.page, PageOutcome::kCancelled);
+        job = InferenceJob{};
         continue;
       }
       try {
-        job.page->state.store(PageJobState::kInferencing);
         OcrPage ocr = recognizer_.extract_page(job.image);
+        // Drop the raster the moment the device stage is done with it (B5).
         job.image.release();
         pages_recognized_.fetch_add(1);
 
@@ -414,8 +471,9 @@ class PageScheduler::Impl final {
         enqueue_assembly(job.page, std::move(result));
       } catch (...) {
         job.page->request->fail(std::current_exception());
-        complete_page(job.page, PageJobState::kFailed);
+        complete_page(job.page, PageOutcome::kFailed);
       }
+      job = InferenceJob{};
     }
   }
 
@@ -423,27 +481,27 @@ class PageScheduler::Impl final {
     AssemblyJob job;
     while (assembly_.pop(&job)) {
       if (job.page->request->cancelled.load()) {
-        complete_page(job.page, PageJobState::kCancelled);
+        complete_page(job.page, PageOutcome::kCancelled);
+        job = AssemblyJob{};
         continue;
       }
       try {
-        job.page->state.store(PageJobState::kAssembling);
         const DeliveryResult delivery =
-            job.page->request->callbacks.on_page(job.page->page_number, job.result);
-        if (delivery == DeliveryResult::kAccepted ||
-            delivery == DeliveryResult::kAcceptedAndRelease) {
-          if (delivery == DeliveryResult::kAcceptedAndRelease) {
-            release_slots(job.page->request, 1);
-          }
-          complete_page(job.page, PageJobState::kCompleted);
-        } else {
+            job.page->request->callbacks.on_page(job.page->page_number, std::move(job.result));
+        if (delivery == DeliveryResult::kAcceptedAndRelease) {
+          Ticket::State::release_slots(job.page->request, 1);
+        }
+        if (delivery == DeliveryResult::kCancelled) {
           job.page->request->cancel();
-          complete_page(job.page, PageJobState::kCancelled);
+          complete_page(job.page, PageOutcome::kCancelled);
+        } else {
+          complete_page(job.page, PageOutcome::kCompleted);
         }
       } catch (...) {
         job.page->request->fail(std::current_exception());
-        complete_page(job.page, PageJobState::kFailed);
+        complete_page(job.page, PageOutcome::kFailed);
       }
+      job = AssemblyJob{};
     }
   }
 
@@ -463,6 +521,8 @@ class PageScheduler::Impl final {
   std::condition_variable reschedule_changed_;
   std::deque<std::shared_ptr<Ticket::State>> pending_reschedules_;
   bool stopping_ = false;
+  mutable std::mutex active_mutex_;
+  std::unordered_set<std::shared_ptr<Ticket::State>> active_requests_;
   std::atomic<size_t> active_documents_{0};
   std::atomic<uint64_t> documents_submitted_{0};
   std::atomic<uint64_t> documents_rejected_{0};
@@ -482,14 +542,7 @@ void PageScheduler::Ticket::cancel() const {
 }
 
 void PageScheduler::Ticket::release(size_t page_slots) const {
-  if (const auto state = state_.lock()) {
-    if (page_slots == 0 || state->finish_called.load()) return;
-    {
-      std::lock_guard<std::mutex> lock(state->schedule_mutex);
-      state->available_slots = std::min(state->page_window, state->available_slots + page_slots);
-    }
-    if (state->wake_scheduler) state->wake_scheduler(state);
-  }
+  if (const auto state = state_.lock()) State::release_slots(state, page_slots);
 }
 
 bool PageScheduler::Ticket::valid() const { return !state_.expired(); }
@@ -505,5 +558,7 @@ PageScheduler::Ticket PageScheduler::submit(std::shared_ptr<const std::string> b
 }
 
 PageScheduler::Metrics PageScheduler::metrics() const { return impl_->metrics(); }
+
+size_t PageScheduler::page_window() const { return impl_->page_window(); }
 
 }  // namespace grparse

@@ -1,0 +1,11 @@
+# LeakSanitizer suppressions for gRParse test binaries.
+#
+# Use with: LSAN_OPTIONS=suppressions=tests/lsan.supp
+#
+# Poppler's GlobalParams::findSystemFontFile asks fontconfig for a base-14
+# substitute the first time a page is rasterized. fontconfig caches its parsed
+# XML configuration in process-global state and never frees it, so LSan reports
+# it once per process. It is a fixed one-time allocation, not a per-page or
+# per-document leak, and it lives entirely in third-party code.
+leak:libfontconfig
+leak:libexpat

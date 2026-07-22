@@ -1,19 +1,30 @@
 #pragma once
 
 #include <filesystem>
-#include <condition_variable>
-#include <deque>
 #include <memory>
-#include <mutex>
-#include <string>
-#include <vector>
 
 #include "OcrLite.h"
 #include "grparse/ocr_types.h"
+#include "grparse/resource_pool.h"
 
 namespace grparse {
 
-class OcrEngine {
+// Detection knobs read once from the environment at process start.  They are
+// process-global on purpose: every engine in the pool must score identically.
+struct OcrDetectOptions {
+  int padding = 50;
+  int max_side_len = 2048;
+  float box_score_thresh = 0.6F;
+  float box_thresh = 0.3F;
+  float un_clip_ratio = 2.0F;
+  bool do_angle = true;
+  bool most_angle = true;
+};
+
+// Throws std::invalid_argument for a malformed GRPARSE_OCR_* value.
+const OcrDetectOptions& ocr_detect_options();
+
+class OcrEngine final {
  public:
   using Line = OcrLine;
   using Page = OcrPage;
@@ -33,41 +44,20 @@ class PageRecognizer {
   virtual OcrPage extract_page(const cv::Mat& image) = 0;
 };
 
+// One warm ORT session per worker.  Sessions are built eagerly so a missing
+// model or a dead execution provider fails the process at startup.
 class OcrEnginePool final : public PageRecognizer {
  public:
-  class Lease {
-   public:
-    Lease(const Lease&) = delete;
-    Lease& operator=(const Lease&) = delete;
-    Lease(Lease&& other) noexcept;
-    Lease& operator=(Lease&& other) noexcept;
-    ~Lease();
+  using Lease = ResourcePool<OcrEngine>::Lease;
 
-    OcrEngine& engine() const;
+  OcrEnginePool(const std::filesystem::path& model_directory, size_t worker_count, int gpu_index);
 
-   private:
-    friend class OcrEnginePool;
-    Lease(OcrEnginePool* pool, size_t index);
-    void release();
-
-    OcrEnginePool* pool_ = nullptr;
-    size_t index_ = 0;
-  };
-
-  OcrEnginePool(const std::filesystem::path& model_directory, size_t worker_count,
-                int gpu_index);
-
-  Lease acquire();
+  Lease acquire() { return engines_.acquire(); }
   OcrPage extract_page(const cv::Mat& image) override;
-  size_t size() const;
+  size_t size() const { return engines_.capacity(); }
 
  private:
-  void release(size_t index);
-
-  std::vector<std::unique_ptr<OcrEngine>> engines_;
-  std::deque<size_t> available_;
-  std::mutex mutex_;
-  std::condition_variable available_cv_;
+  ResourcePool<OcrEngine> engines_;
 };
 
 }  // namespace grparse

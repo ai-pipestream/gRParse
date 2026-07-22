@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -28,6 +29,10 @@ class PageSource {
 using PageSourceFactory =
     std::function<std::shared_ptr<PageSource>(std::shared_ptr<const std::string> bytes, bool pdf)>;
 
-std::shared_ptr<PageSource> open_in_memory_document(std::shared_ptr<const std::string> bytes, bool pdf);
+// pdf_parser_slots caps how many pages of one PDF may be parsed or rendered
+// concurrently; each slot owns an independent Poppler document over the same
+// request bytes.  Size it to the render worker count.
+std::shared_ptr<PageSource> open_in_memory_document(std::shared_ptr<const std::string> bytes, bool pdf,
+                                                    size_t pdf_parser_slots = 1);
 
 }  // namespace grparse

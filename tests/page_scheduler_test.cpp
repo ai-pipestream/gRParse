@@ -226,6 +226,65 @@ void verify_page_credits_bound_a_document() {
           "credit-driven scheduler did not finish all pages");
 }
 
+// A document that has delivered its whole page window and is waiting on credits
+// has no page jobs left in flight.  The scheduler must still own it: otherwise
+// its state dies, the caller's Ticket goes stale, release() silently no-ops and
+// the document never finishes.  Submitting a second document used to be enough
+// to trigger it, because the coordinator's local job was the only owner left.
+void verify_uncredited_document_survives_later_submissions() {
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(
+      recognizer, {4, 4, 2, 2, 2, 2, 1, 2, 4},
+      [](std::shared_ptr<const std::string>, bool) { return std::make_shared<FakeSource>(6); });
+
+  Result first;
+  auto first_callbacks = callbacks_for(&first);
+  first_callbacks.on_page = [&first](int page_number, std::shared_ptr<const grparse::OcrPage>) {
+    std::lock_guard<std::mutex> lock(first.mutex);
+    first.completed_pages.push_back(page_number);
+    first.changed.notify_all();
+    return grparse::PageScheduler::DeliveryResult::kAccepted;  // deliberately withhold credits
+  };
+  const auto first_ticket = scheduler.submit(std::make_shared<const std::string>("first"), false,
+                                             std::move(first_callbacks));
+  {
+    std::unique_lock<std::mutex> lock(first.mutex);
+    require(first.changed.wait_for(lock, 5s, [&] { return first.completed_pages.size() == 2; }),
+            "first document did not fill its page window");
+  }
+
+  // A second document runs to completion while the first is parked on credits.
+  Result second;
+  scheduler.submit(std::make_shared<const std::string>("second"), false, callbacks_for(&second));
+  wait_until_finished(&second);
+  require(!second.failure, "second document failed");
+
+  require(first_ticket.valid(), "an uncredited document must stay owned by the scheduler");
+  size_t released = 2;
+  first_ticket.release(2);
+  while (true) {
+    size_t completed = 0;
+    bool finished = false;
+    {
+      std::unique_lock<std::mutex> lock(first.mutex);
+      require(first.changed.wait_for(lock, 5s,
+                                     [&] {
+                                       return first.finished || first.completed_pages.size() > released;
+                                     }),
+              "parked document did not resume after credits were returned");
+      completed = first.completed_pages.size();
+      finished = first.finished;
+    }
+    if (completed > released) {
+      first_ticket.release(completed - released);
+      released = completed;
+    }
+    if (finished) break;
+  }
+  require(!first.failure && first.completed_pages.size() == 6,
+          "parked document did not deliver every page");
+}
+
 }  // namespace
 
 
@@ -317,6 +376,7 @@ int main() {
     verify_partial_digital_merges_with_ocr();
     verify_delivery_cancellation_drains_queued_work();
     verify_page_credits_bound_a_document();
+    verify_uncredited_document_survives_later_submissions();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
     std::cerr << "page-scheduler-test: " << error.what() << '\n';

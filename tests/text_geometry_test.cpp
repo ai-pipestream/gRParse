@@ -30,6 +30,35 @@ void verify_iou_and_overlap() {
   require(grparse::intersection_over_union(a, b) > 0.0F, "overlapping boxes have iou");
   require(grparse::boxes_overlap_significantly(a, b), "center/iou overlap");
   require(!grparse::boxes_overlap_significantly(a, c), "distant boxes");
+
+  const auto identical = grparse::intersection_over_union(a, a);
+  require(identical > 0.99F && identical <= 1.0F, "self overlap is total");
+  require(grparse::intersection_over_union(a, c) == 0.0F, "disjoint boxes have no overlap");
+}
+
+// OCR polygons are model output: a degenerate box must not wrap an int multiply
+// and turn a non-overlap into a spurious duplicate (or the reverse).
+void verify_extreme_coordinates_do_not_overflow() {
+  constexpr int kHuge = 1 << 30;
+  const grparse::AxisAlignedBox wide{0, 0, kHuge, kHuge};
+  const grparse::AxisAlignedBox inner{10, 10, 20, 20};
+  require(wide.area() > 0, "large box area must stay positive");
+
+  const float iou = grparse::intersection_over_union(wide, inner);
+  require(iou >= 0.0F && iou <= 1.0F, "iou must stay a ratio for large boxes");
+  require(iou < 0.01F, "a tiny box barely overlaps a huge one");
+  // The tiny box's centre is inside the huge one, so containment still wins.
+  require(grparse::boxes_overlap_significantly(wide, inner), "containment detects the overlap");
+
+  const grparse::AxisAlignedBox negative{-kHuge, -kHuge, -1, -1};
+  require(grparse::intersection_over_union(negative, inner) == 0.0F,
+          "boxes on opposite sides of the origin do not overlap");
+  require(!grparse::boxes_overlap_significantly(negative, inner),
+          "negative coordinates must not alias into an overlap");
+
+  const grparse::AxisAlignedBox empty{5, 5, 5, 5};
+  require(empty.area() == 0, "degenerate box has no area");
+  require(grparse::intersection_over_union(empty, inner) == 0.0F, "degenerate box has no overlap");
 }
 
 void verify_merge_dedupes_and_sorts() {
@@ -66,6 +95,7 @@ void verify_merge_dedupes_and_sorts() {
 int main() {
   try {
     verify_iou_and_overlap();
+    verify_extreme_coordinates_do_not_overflow();
     verify_merge_dedupes_and_sorts();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
