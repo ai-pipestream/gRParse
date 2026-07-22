@@ -191,6 +191,7 @@ add_library(grparse_core
   src/document_assembly.cpp
   src/in_memory_document.cpp
   src/ocr_engine.cpp
+  src/layout_engine.cpp
   src/page_scheduler.cpp
   src/text_geometry.cpp)
 target_include_directories(grparse_core PUBLIC include)
@@ -208,6 +209,7 @@ if(BUILD_TESTING)
   set(GRPARSE_TESTS
     base64-test
     document-assembly-test
+    layout-engine-test
     page-scheduler-test
     pdf-source-test
     resource-pool-test
@@ -224,6 +226,13 @@ if(BUILD_TESTING)
   # The label keeps `ctest -L grparse` clear of tests registered by fetched
   # dependencies (re2 registers ~20 of its own).
   set_tests_properties(${GRPARSE_TESTS} PROPERTIES TIMEOUT 120 LABELS grparse)
+  # The layout golden needs the real model file; without it the test skips
+  # (exit 77) so environments that never download models stay green while any
+  # environment with models proves the decode against the reference output.
+  set_tests_properties(layout-engine-test PROPERTIES
+    SKIP_RETURN_CODE 77
+    ENVIRONMENT
+      "GRPARSE_TEST_MODELS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/models;GRPARSE_TEST_DATA_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
 endif()
 
 install(TARGETS grparse-server grparse-stream-client RUNTIME DESTINATION bin)
