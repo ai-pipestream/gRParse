@@ -111,7 +111,15 @@ OcrEnginePool::OcrEnginePool(const std::filesystem::path& model_directory, size_
 
 OcrPage OcrEnginePool::extract_page(const cv::Mat& image) {
   auto lease = engines_.acquire();
-  return lease->extract_page(image);
+  try {
+    return lease->extract_page(image);
+  } catch (...) {
+    // A throwing inference may leave the ORT session wedged (device reset,
+    // OOM mid-run).  Destroy it so the next acquire builds a fresh session
+    // instead of feeding every later page to a poisoned one.
+    lease.discard();
+    throw;
+  }
 }
 
 }  // namespace grparse

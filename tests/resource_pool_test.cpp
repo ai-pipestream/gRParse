@@ -76,6 +76,50 @@ void verify_factory_failure_returns_the_slot() {
   require(lease->id == 7, "slot is reusable after a failed build");
 }
 
+void verify_discard_rebuilds_the_slot() {
+  std::atomic<int> built{0};
+  grparse::ResourcePool<Counted> pool(2, [&built] {
+    return std::make_unique<Counted>(built.fetch_add(1));
+  });
+
+  const int before = Counted::live.load();
+  {
+    auto lease = pool.acquire();
+    require(pool.live() == 1, "acquire built the resource");
+    lease.discard();
+    require(pool.live() == 0, "discard must destroy the pooled resource");
+    require(Counted::live.load() == before, "discard must run the destructor immediately");
+    require(!lease, "a discarded lease is empty");
+    lease.discard();  // idempotent: a second discard must be a no-op
+  }
+
+  // The slot must be free again and rebuild from the factory, not reuse.
+  auto rebuilt = pool.acquire();
+  require(pool.live() == 1, "the discarded slot rebuilds on next acquire");
+  require(built.load() == 2, "rebuild must come from the factory");
+
+  const auto stats = pool.stats();
+  require(stats.discards == 1, "discards must be counted");
+  require(stats.acquires == 2, "acquires must be counted");
+}
+
+void verify_wait_time_is_observed() {
+  grparse::ResourcePool<Counted> pool(1, [] { return std::make_unique<Counted>(0); });
+  require(pool.stats().wait_ns == 0, "an uncontended pool records no wait");
+
+  auto held = pool.acquire();
+  std::thread blocked([&pool] {
+    auto lease = pool.acquire();  // must block until `held` releases
+  });
+  // acquires increments under the pool lock before the empty-pool wait begins,
+  // so once it reads 2 the second thread is provably on the blocking path.
+  while (pool.stats().acquires < 2) std::this_thread::yield();
+  std::this_thread::sleep_for(1ms);
+  held = grparse::ResourcePool<Counted>::Lease{};
+  blocked.join();
+  require(pool.stats().wait_ns > 0, "a blocked acquire must record its wait");
+}
+
 void verify_capacity_bounds_concurrency() {
   constexpr size_t kCapacity = 3;
   grparse::ResourcePool<Counted> pool(kCapacity, [] { return std::make_unique<Counted>(0); });
@@ -123,6 +167,8 @@ int main() {
     verify_lazy_construction_and_reuse();
     verify_prime_builds_every_slot();
     verify_factory_failure_returns_the_slot();
+    verify_discard_rebuilds_the_slot();
+    verify_wait_time_is_observed();
     verify_capacity_bounds_concurrency();
     verify_capacity_must_be_positive();
     require(Counted::live.load() == 0, "every pooled resource must be destroyed with its pool");

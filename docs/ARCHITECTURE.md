@@ -53,10 +53,13 @@ initialization fails. OpenVINO and CPU provider selection remain Epic B6 work.
 4. CI/smoke: at least one NVIDIA CUDA path and one **Intel OpenVINO (B70 or CPU skylake-avx512 class)** path as they become available.
 5. Fail loud if the configured EP cannot init (same spirit as today’s CUDA fail-fast).
 
-Env knobs (illustrative — implement under Epic B / ops):
+Env knobs:
 
-- `GRPARSE_ORT_EP=cuda|openvino|cpu|auto`
-- `GRPARSE_OPENVINO_DEVICE=GPU|CPU|NPU|AUTO`
+- `GRPARSE_ORT_EP=cuda|cpu|auto` — implemented; `cuda` is the default and fails
+  loud, `cpu` is an explicit choice, `auto` tries CUDA and logs a CPU fallback.
+  `openvino` is recognized and rejected with a clear "not compiled in" error
+  until the OpenVINO EP ships (B6).
+- `GRPARSE_OPENVINO_DEVICE=GPU|CPU|NPU|AUTO` — reserved for the OpenVINO EP.
 - existing `GRPARSE_PAGE_WORKERS`, `GRPARSE_MODELS_DIR`
 
 
@@ -105,6 +108,43 @@ workers release the raster and enqueue an OCR result; they never wait on a
 client write. Each completed stream write returns one page credit to the
 scheduler. A slow reader therefore stops only its own document at the bounded
 page window instead of accumulating results or occupying an inference worker.
+
+## Coordinate space (normative)
+
+Every provenance box the service emits — digital PDF text and OCR alike — lives
+in one shared space:
+
+- **Origin top-left, y grows downward,** integer pixel units.
+- **Scale is the 200 DPI render raster:** PDF user-space points (72 DPI) are
+  multiplied by 200/72 and rounded to the nearest integer, so digital text
+  boxes land on the same pixels OCR measures on the rendered page.
+- **Page size is post-rotation.** A page's intrinsic `/Rotate` is applied
+  before anything is reported: the advertised width/height, the raster, and
+  every box already agree on the rotated orientation.
+- Each `PageItem` carries its page width/height in this same space; every
+  provenance `BoundingBox` is `l/t/r/b` with `r >= l`, `b >= t`, and carries
+  an explicit `coord_origin = COORD_ORIGIN_TOPLEFT` — consumers should assert
+  on it rather than assume.
+
+Raster image inputs (PNG/JPEG/TIFF) use their native pixel grid unscaled —
+one page whose size is the decoded image size.
+
+## Geometry bridge contract (for Java / UI)
+
+What a consumer of the page stream may rely on:
+
+1. `TextOffset.utf_start/utf_end` are **Unicode codepoint offsets** into the
+   assembled plain-text document, not byte offsets.
+2. Text items are joined with a single `\n` in assembly order; offsets are
+   **append-only across page events** — a later page never renumbers an
+   earlier one.
+3. `#/texts/N` refs are stable once emitted; `#/body` children reference them
+   in reading order (top-to-bottom, then left-to-right by box position).
+4. Every text unit carries page number + bbox in the coordinate space above,
+   its source (`DIGITAL_PDF` or `OCR`), and OCR confidence when the model
+   reports one; digital text has no confidence rather than a fake 1.0.
+5. Page events arrive in page-number order, followed by exactly one
+   `complete` event carrying the document origin and content hash.
 
 ## Offset contract (product differentiator)
 

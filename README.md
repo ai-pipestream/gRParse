@@ -74,7 +74,13 @@ queue memory with `GRPARSE_PAGE_WORKERS`, `GRPARSE_RENDER_WORKERS`,
 `GRPARSE_PDF_PARSERS` sets how many Poppler documents a single PDF request may
 open concurrently; it defaults to `GRPARSE_RENDER_WORKERS` and costs one parsed
 document structure per slot. Select the NVIDIA device with
-`GRPARSE_CUDA_DEVICE`. Optional RapidOCR detect knobs:
+`GRPARSE_CUDA_DEVICE`. `GRPARSE_ORT_EP` picks the ONNX Runtime execution
+provider: `cuda` (default, fails startup if CUDA cannot initialize), `cpu`
+(explicit CPU inference), or `auto` (tries CUDA, logs and falls back to CPU).
+`openvino` is reserved for the Intel Arc path and is rejected with a clear
+error until that provider ships. An OCR session that throws during inference
+is destroyed and rebuilt on next use instead of staying in the pool poisoned.
+Optional RapidOCR detect knobs:
 `GRPARSE_OCR_PADDING`, `GRPARSE_OCR_MAX_SIDE`, `GRPARSE_OCR_BOX_SCORE`,
 `GRPARSE_OCR_BOX_THRESH`, `GRPARSE_OCR_UNCLIP`. These are read and range-checked
 once at startup: a malformed or out-of-range value fails the server immediately
@@ -87,6 +93,14 @@ connected.
 The server registers standard gRPC health checking and reflection in addition
 to the Docling `Health` RPC. SIGINT and SIGTERM initiate a bounded graceful
 shutdown.
+
+Every `GRPARSE_METRICS_INTERVAL_SECONDS` (default 60, `0` disables) the server
+prints one pipeline metrics line to stdout: document and page counters, queue
+depths, per-stage busy percentages since the previous line, OCR session pool
+acquire/discard/wait totals, and a page-latency histogram from schedule to
+delivery. Render and inference busy percentages climbing together under load
+is the pipeline overlap working; one stage pegged while its neighbor idles
+identifies where to add workers.
 
 The image also includes `grparse-stream-client`, a bidirectional gRPC client
 that sends a PDF in chunks and prints each page event as it arrives:
