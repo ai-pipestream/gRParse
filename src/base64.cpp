@@ -58,4 +58,37 @@ std::string decode_base64(const std::string& value) {
   return decoded;
 }
 
+std::string encode_base64(const void* data, size_t size) {
+  static constexpr char kAlphabet[] =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const auto* bytes = static_cast<const unsigned char*>(data);
+  std::string encoded;
+  encoded.reserve((size + 2) / 3 * 4);
+  size_t offset = 0;
+  for (; offset + 3 <= size; offset += 3) {
+    const unsigned int chunk = (static_cast<unsigned int>(bytes[offset]) << 16) |
+                               (static_cast<unsigned int>(bytes[offset + 1]) << 8) |
+                               bytes[offset + 2];
+    encoded.push_back(kAlphabet[(chunk >> 18) & 0x3F]);
+    encoded.push_back(kAlphabet[(chunk >> 12) & 0x3F]);
+    encoded.push_back(kAlphabet[(chunk >> 6) & 0x3F]);
+    encoded.push_back(kAlphabet[chunk & 0x3F]);
+  }
+  const size_t remaining = size - offset;
+  if (remaining == 1) {
+    const unsigned int chunk = static_cast<unsigned int>(bytes[offset]) << 16;
+    encoded.push_back(kAlphabet[(chunk >> 18) & 0x3F]);
+    encoded.push_back(kAlphabet[(chunk >> 12) & 0x3F]);
+    encoded.append("==");
+  } else if (remaining == 2) {
+    const unsigned int chunk = (static_cast<unsigned int>(bytes[offset]) << 16) |
+                               (static_cast<unsigned int>(bytes[offset + 1]) << 8);
+    encoded.push_back(kAlphabet[(chunk >> 18) & 0x3F]);
+    encoded.push_back(kAlphabet[(chunk >> 12) & 0x3F]);
+    encoded.push_back(kAlphabet[(chunk >> 6) & 0x3F]);
+    encoded.push_back('=');
+  }
+  return encoded;
+}
+
 }  // namespace grparse

@@ -36,6 +36,9 @@ class PageScheduler final {
     // Concurrent Poppler parsers per PDF for the built-in page source.
     // 0 tracks render_workers, which is what keeps render fan-out real.
     size_t pdf_parsers = 0;
+    // PNG-encode figure crops onto their regions in the inference stage.
+    // Off by default: image bytes inflate every page event that has figures.
+    bool capture_picture_images = false;
   };
 
   enum class DeliveryResult { kAccepted, kAcceptedAndRelease, kCancelled };

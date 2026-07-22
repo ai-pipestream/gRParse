@@ -28,6 +28,10 @@ struct LayoutRegion {
   int top = 0;
   int right = 0;
   int bottom = 0;
+  // PNG-encoded crop of the region, captured in the inference stage while the
+  // raster is alive.  Filled only for figure regions when picture-image
+  // capture is enabled; empty otherwise.
+  std::vector<unsigned char> image_png = {};
 };
 
 struct OcrPage {

@@ -6,6 +6,7 @@
 #include <string>
 #include <utility>
 
+#include "grparse/base64.h"
 #include "grparse/reading_order.h"
 #include "grparse/region_geometry.h"
 #include "grparse/table_structure.h"
@@ -56,6 +57,25 @@ void set_region_bounding_box(const LayoutRegion& region, docling::core::v1::Boun
   output->set_r(region.right);
   output->set_b(region.bottom);
   output->set_coord_origin(docling::core::v1::COORD_ORIGIN_TOPLEFT);
+}
+
+// Big-endian 32-bit read for the PNG IHDR dimensions.
+uint32_t read_be32(const unsigned char* bytes) {
+  return (static_cast<uint32_t>(bytes[0]) << 24) | (static_cast<uint32_t>(bytes[1]) << 16) |
+         (static_cast<uint32_t>(bytes[2]) << 8) | bytes[3];
+}
+
+// Embed a captured crop as a data URI.  The pixel size comes from the PNG
+// IHDR itself, which is authoritative regardless of the page's coordinate
+// space (digital pages measure in PDF points, crops in raster pixels).
+void set_picture_image(const std::vector<unsigned char>& png, docling::core::v1::ImageRef* image) {
+  image->set_mimetype("image/png");
+  // IHDR starts at byte 8; width and height are its first two fields.
+  if (png.size() >= 24) {
+    image->mutable_size()->set_width(read_be32(png.data() + 16));
+    image->mutable_size()->set_height(read_be32(png.data() + 20));
+  }
+  image->set_uri("data:image/png;base64," + encode_base64(png.data(), png.size()));
 }
 
 // Geometry table structure (D2 v0): every grid position becomes a TableCell
@@ -166,6 +186,7 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
       auto* provenance = picture->add_prov();
       provenance->set_page_no(page_number);
       set_region_bounding_box(region, provenance->mutable_bbox());
+      if (!region.image_png.empty()) set_picture_image(region.image_png, picture->mutable_image());
     }
   }
 }

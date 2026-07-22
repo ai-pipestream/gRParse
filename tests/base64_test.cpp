@@ -33,6 +33,17 @@ int main() {
     expect_invalid("====");
     expect_invalid("a===");
     expect_invalid("ab=c");
+    require(grparse::encode_base64("memory", 6) == "bWVtb3J5", "basic encode");
+    require(grparse::encode_base64("a", 1) == "YQ==", "encode pads one char");
+    require(grparse::encode_base64("ab", 2) == "YWI=", "encode pads two chars");
+    require(grparse::encode_base64("abc", 3) == "YWJj", "encode without padding");
+    require(grparse::encode_base64("", 0).empty(), "encode empty input");
+    const unsigned char binary[] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+    require(grparse::encode_base64(binary, sizeof(binary)) == "iVBORw0KGgo=",
+            "encode binary bytes");
+    require(grparse::decode_base64(grparse::encode_base64(binary, sizeof(binary))) ==
+                std::string("\x89PNG\r\n\x1A\n", 8),
+            "encode and decode round-trip");
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
     std::cerr << "base64-test: " << error.what() << '\n';

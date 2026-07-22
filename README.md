@@ -114,6 +114,14 @@ table-structure model (Epic D3) will refine spans and headers on the same
 cells. Table interior text still streams as ordinary `TEXT` items too, so
 UTF offsets stay contiguous for clients that ignore tables.
 
+With `GRPARSE_PICTURE_IMAGES=on` (default off) each figure region's pixels
+are cropped from the page raster in the inference stage, PNG-encoded, and
+attached to its `PictureItem` as an `image/png` data URI with the pixel
+size. The crop happens after OCR and before the raster is released, so
+device work is never delayed and no raster outlives its page. Leave it off
+for figure-heavy corpora where embedded images would inflate every page
+event; picture bounding boxes are always present either way.
+
 The server registers standard gRPC health checking and reflection in addition
 to the Docling `Health` RPC. SIGINT and SIGTERM initiate a bounded graceful
 shutdown.
