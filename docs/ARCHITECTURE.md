@@ -57,6 +57,34 @@ guidance per device.
 4. CI/smoke: at least one NVIDIA CUDA path and one **Intel OpenVINO (B70 or CPU skylake-avx512 class)** path as they become available.
 5. Fail loud if the configured EP cannot init (same spirit as today’s CUDA fail-fast).
 
+**Pool sizing (measured, RapidOCR PP-OCRv3 at 200 DPI)**
+
+`GRPARSE_PAGE_WORKERS` sets both the inference worker count and the warm OCR
+session count; each session is a det/cls/rec model triple resident on the
+device. Reference numbers for one 12-page image-only PDF, 28 lines/page,
+default 2 workers, end to end over gRPC including upload and render:
+
+| Device | Wall time | Notes |
+|---|---|---|
+| NVIDIA RTX 4080 SUPER (CUDA) | 4.2 s | 2 GiB arena cap per session (hook default) |
+| Intel Arc B-series / Battlemage G31 (OpenVINO GPU) | 6.0 s | first inference pays a one-time GPU kernel JIT (~10 s); steady state shown |
+
+Scaling rule: raise `GRPARSE_PAGE_WORKERS` until the metrics line shows
+inference busy% saturating or `ocr_pool wait_ms` climbing (workers starved for
+sessions), and stop before device memory does — each added worker adds one
+full session triple on the device. The same rule applies to both vendors; only
+the memory budget differs.
+
+**ONNX opset portability**
+
+The PP-OCRv3 model set runs unmodified on both shipped runtimes (CUDA EP on
+ONNX Runtime 1.27.1; OpenVINO EP 2025.4.1 on ONNX Runtime 1.24.1). Future
+models (layout, tables, figures) must stay within opsets both EPs support and
+avoid EP-specific custom ops. Note ONNX Runtime silently places nodes the
+OpenVINO EP cannot handle onto CPU — after adding a model, check the metrics
+line for an unexplained inference busy% drop on Intel rather than assuming
+full-device execution.
+
 Env knobs:
 
 - `GRPARSE_ORT_EP=cuda|openvino|cpu|auto` — `cuda` is the default and fails
