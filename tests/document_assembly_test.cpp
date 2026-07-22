@@ -96,6 +96,7 @@ void verify_layout_regions_map_labels_and_emit_items() {
   require(data.pictures_size() == 1 && data.pictures(0).self_ref() == "#/pictures/0" &&
               data.pictures(0).label() == ai::docling::core::v1::DOC_ITEM_LABEL_PICTURE,
           "figure region must become a PictureItem");
+  require(!data.pictures(0).has_image(), "no captured bytes means no ImageRef");
 
   const auto& table_data = data.tables(0).data();
   require(table_data.num_rows() == 1 && table_data.num_cols() == 1,
@@ -133,6 +134,28 @@ void verify_layout_regions_map_labels_and_emit_items() {
   require(plain_text == "Heading\nbody text\ncell", "regions must not disturb the text stream");
 }
 
+// A figure region carrying captured PNG bytes becomes an ImageRef data URI
+// whose pixel size is read from the PNG header itself.
+void verify_captured_figure_bytes_become_image_refs() {
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1000, 1000, {line("body", 100)}};
+  // Minimal PNG prefix: 8-byte signature, IHDR length/tag, width 300, height 200.
+  page.regions = {{"figure", 0.7F, 0, 500, 1000, 800,
+                   {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D, 'I', 'H', 'D',
+                    'R', 0, 0, 0x01, 0x2C, 0, 0, 0, 0xC8}}};
+
+  ai::docling::serve::v1::PageData data;
+  grparse::append_page_data(page, 1, &cursor, &data);
+  require(data.pictures_size() == 1 && data.pictures(0).has_image(),
+          "captured bytes must attach an ImageRef");
+  const auto& image = data.pictures(0).image();
+  require(image.mimetype() == "image/png", "image mimetype");
+  require(image.size().width() == 300 && image.size().height() == 200,
+          "image size comes from the PNG header");
+  require(image.uri() == "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAASwAAADI",
+          "image URI must be the base64 PNG data URI");
+}
+
 }  // namespace
 
 int main() {
@@ -140,6 +163,7 @@ int main() {
     verify_contract_shape();
     verify_offsets_and_provenance();
     verify_layout_regions_map_labels_and_emit_items();
+    verify_captured_figure_bytes_become_image_refs();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
     std::cerr << "document-assembly-test: " << error.what() << '\n';

@@ -312,6 +312,20 @@ int main() {
     options.page_window = configured_size("GRPARSE_PAGE_WINDOW", 4, 64);
     options.max_active_documents = configured_size("GRPARSE_MAX_ACTIVE_DOCUMENTS", 32, 1024);
     options.pdf_parsers = configured_size("GRPARSE_PDF_PARSERS", render_workers, 256);
+    // GRPARSE_PICTURE_IMAGES=on embeds PNG crops of figure regions in picture
+    // items.  Off by default: crops inflate page events on figure-heavy docs.
+    const char* picture_images = std::getenv("GRPARSE_PICTURE_IMAGES");
+    const std::string picture_mode =
+        picture_images == nullptr || *picture_images == '\0' ? "off" : picture_images;
+    if (picture_mode != "on" && picture_mode != "off") {
+      throw std::invalid_argument("GRPARSE_PICTURE_IMAGES must be on or off");
+    }
+    options.capture_picture_images = picture_mode == "on" && layout != nullptr;
+    if (picture_mode == "on" && layout == nullptr) {
+      std::cout << "gRParse picture images: disabled (layout is disabled)" << std::endl;
+    } else if (options.capture_picture_images) {
+      std::cout << "gRParse picture images: enabled" << std::endl;
+    }
     grparse::PageScheduler scheduler(*engines, options, grparse::PageSourceFactory{},
                                      layout.get());
     grparse::DocumentParserService service(scheduler);

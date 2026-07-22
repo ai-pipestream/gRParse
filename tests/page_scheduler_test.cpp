@@ -183,8 +183,9 @@ class FakeDetector final : public grparse::RegionDetector {
  public:
   std::vector<grparse::LayoutRegion> detect_regions(const cv::Mat&) override {
     calls.fetch_add(1);
-    return {grparse::LayoutRegion{"title", 0.9F, 0, 0, 50, 10}};
+    return regions;
   }
+  std::vector<grparse::LayoutRegion> regions = {grparse::LayoutRegion{"title", 0.9F, 0, 0, 50, 10}};
   std::atomic<int> calls{0};
 };
 
@@ -230,6 +231,54 @@ void verify_layout_labels_digital_pages_without_ocr() {
   require(metrics.pages_rendered == 2, "layout requires the raster even for digital pages");
   require(metrics.pages_layout_labelled == 2, "layout metric must count labelled pages");
   require(metrics.pages_recognized == 0, "OCR remains selective under layout");
+}
+
+// With picture capture enabled, figure regions arrive carrying a PNG crop of
+// the raster while other regions stay byte-free.
+void verify_picture_capture_encodes_figure_crops() {
+  FakeRecognizer recognizer;
+  FakeDetector detector;
+  detector.regions = {
+      grparse::LayoutRegion{"figure", 0.8F, 0, 0, 3, 3},
+      grparse::LayoutRegion{"title", 0.9F, 0, 0, 50, 10},
+  };
+  grparse::PageScheduler::Options options{2, 2, 2, 2, 1, 1, 1};
+  options.capture_picture_images = true;
+  grparse::PageScheduler scheduler(
+      recognizer, options,
+      [](std::shared_ptr<const std::string>, bool) {
+        return std::make_shared<RenderableDigitalSource>();
+      },
+      &detector);
+  Result result;
+  std::mutex pages_mutex;
+  std::vector<std::shared_ptr<const grparse::OcrPage>> delivered;
+  auto callbacks = callbacks_for(&result);
+  callbacks.on_page = [&](int page_number, std::shared_ptr<const grparse::OcrPage> page) {
+    {
+      std::lock_guard<std::mutex> lock(pages_mutex);
+      delivered.push_back(std::move(page));
+    }
+    std::lock_guard<std::mutex> lock(result.mutex);
+    result.completed_pages.push_back(page_number);
+    return grparse::PageScheduler::DeliveryResult::kAcceptedAndRelease;
+  };
+  scheduler.submit(std::make_shared<const std::string>("memory"), true, std::move(callbacks));
+  wait_until_finished(&result);
+
+  require(!result.failure, "picture-capture document failed");
+  std::lock_guard<std::mutex> lock(pages_mutex);
+  require(delivered.size() == 2, "picture-capture delivery count");
+  for (const auto& page : delivered) {
+    require(page->regions.size() == 2, "both regions must survive capture");
+    const auto& figure = page->regions[0];
+    require(figure.label == "figure" && figure.image_png.size() > 8,
+            "figure region must carry an encoded crop");
+    require(figure.image_png[0] == 0x89 && figure.image_png[1] == 'P' &&
+                figure.image_png[2] == 'N' && figure.image_png[3] == 'G',
+            "figure crop must be PNG-encoded");
+    require(page->regions[1].image_png.empty(), "non-figure regions must stay byte-free");
+  }
 }
 
 void verify_delivery_cancellation_drains_queued_work() {
@@ -449,6 +498,7 @@ int main() {
     verify_cancellation_drains_bounded_work();
     verify_digital_pages_bypass_render_and_inference();
     verify_layout_labels_digital_pages_without_ocr();
+    verify_picture_capture_encodes_figure_crops();
     verify_partial_digital_merges_with_ocr();
     verify_delivery_cancellation_drains_queued_work();
     verify_page_credits_bound_a_document();
