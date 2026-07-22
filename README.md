@@ -96,7 +96,11 @@ When `models/layout_publaynet.onnx` is present (see
 detection on the configured execution provider: text lines inside title and
 list regions are labelled `TITLE`/`LIST_ITEM`, and table and figure regions
 are emitted as `TableItem`/`PictureItem` entries with provenance boxes so
-downstream table and picture extraction have crops to work from. Control it
+downstream table and picture extraction have crops to work from. Text streams
+in reading order: a recursive XY-cut over layout regions (or the lines
+themselves when no model is present) splits pages at the widest whitespace
+gap, so multi-column pages read column by column instead of interleaving
+rows, and UTF offsets follow that order. Control it
 with `GRPARSE_LAYOUT=auto|on|off` (`auto`, the default, enables layout when
 the model file exists and says so at startup; `on` fails startup if the model
 is missing). Full-digital pages are still rasterized when layout is active,
@@ -163,10 +167,13 @@ docker compose build
 ```
 
 The build compiles with `-DGRPARSE_WERROR=ON` and runs the full `grparse`-labelled
-CTest set: base64, document assembly, geometry merge (including overflow bounds),
-scheduler (page credits, backpressure, partial digital→OCR merge), PDF page source
-(Poppler text/raster geometry, `/Rotate`, concurrent access), resource pool, and
-streaming/unary contract tests. Third-party dependencies register their own CTest
+CTest set: base64, document assembly (offsets, layout label mapping, region
+items), geometry merge (including overflow bounds), layout engine (golden
+against the reference detector; skips without the model file), scheduler (page
+credits, backpressure, partial digital→OCR merge, layout labelling), PDF page
+source (Poppler text/raster geometry, `/Rotate`, concurrent access, two-column
+reading order), reading order (XY-cut multi-column, determinism), resource
+pool, and streaming/unary contract tests. Third-party dependencies register their own CTest
 suites, so the label filter is what keeps `ctest` scoped to this project:
 
 ```bash

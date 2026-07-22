@@ -193,6 +193,7 @@ add_library(grparse_core
   src/ocr_engine.cpp
   src/layout_engine.cpp
   src/page_scheduler.cpp
+  src/reading_order.cpp
   src/text_geometry.cpp)
 target_include_directories(grparse_core PUBLIC include)
 target_link_libraries(grparse_core
@@ -212,6 +213,7 @@ if(BUILD_TESTING)
     layout-engine-test
     page-scheduler-test
     pdf-source-test
+    reading-order-test
     resource-pool-test
     streaming-service-test
     text-geometry-test)
