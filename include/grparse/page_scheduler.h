@@ -11,6 +11,7 @@
 
 #include "grparse/in_memory_document.h"
 #include "grparse/layout_engine.h"
+#include "grparse/table_structure_engine.h"
 #include "grparse/ocr_engine.h"
 #include "grparse/ocr_types.h"
 
@@ -62,6 +63,8 @@ class PageScheduler final {
     uint64_t pages_recognized = 0;
     // Pages that went through layout region detection.
     uint64_t pages_layout_labelled = 0;
+    // Table regions that went through structure recognition.
+    uint64_t tables_structured = 0;
     uint64_t pages_cancelled = 0;
     size_t documents_queued = 0;
     size_t pages_waiting_for_render = 0;
@@ -96,10 +99,13 @@ class PageScheduler final {
   // An empty source_factory installs the in-memory PDF/image source sized from
   // Options.  A null region_detector disables layout labelling; when present,
   // every page (including full-digital ones) is rasterized so layout can see
-  // pixels, and OCR remains selective.
+  // pixels, and OCR remains selective.  A non-null table_structurer runs on
+  // crops of each detected table region (it never sees a full page) and needs
+  // the region detector to find those tables first.
   PageScheduler(PageRecognizer& recognizer, Options options,
                 PageSourceFactory source_factory = PageSourceFactory{},
-                RegionDetector* region_detector = nullptr);
+                RegionDetector* region_detector = nullptr,
+                TableStructurer* table_structurer = nullptr);
   PageScheduler(const PageScheduler&) = delete;
   PageScheduler& operator=(const PageScheduler&) = delete;
   ~PageScheduler();

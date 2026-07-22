@@ -15,7 +15,7 @@ RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.82.1-ort1.27.1-sessionep
       -DGRPARSE_WERROR=ON \
  && cmake --build /build --target grparse-server grparse-stream-client \
       base64-test document-assembly-test layout-engine-test page-scheduler-test pdf-source-test \
-      reading-order-test resource-pool-test streaming-service-test table-structure-test text-geometry-test --parallel 4 \
+      reading-order-test resource-pool-test streaming-service-test table-structure-engine-test table-structure-test text-geometry-test --parallel 4 \
  && ctest --test-dir /build --output-on-failure -L grparse \
  && mkdir -p /out \
  && cp /build/grparse-server /out/grparse-server \

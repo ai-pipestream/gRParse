@@ -40,3 +40,33 @@ The model set and dictionary naming are documented by [RapidOcrOnnx](https://git
   When this file is absent the server runs without layout labels; when present
   it is pooled per inference worker on the configured execution provider
   (CUDA, OpenVINO, or CPU), like the OCR sessions.
+
+## Table structure (optional; enables cell spans and header rows)
+
+- `slanet_plus.onnx` — SLANet-plus table structure recognition from
+  PaddleOCR's PP-StructureV3 line, ONNX export published by
+  [RapidTable](https://github.com/RapidAI/RapidTable) on ModelScope.
+
+  ```bash
+  curl -L -o slanet_plus.onnx \
+    https://www.modelscope.cn/models/RapidAI/RapidTable/resolve/v2.0.0/slanet-plus.onnx
+  ```
+
+  sha256: `d57a942af6a2f57d6a4a0372573c696a2379bf5857c45e2ac69993f3b334514b`
+
+  License: Apache-2.0 (PaddleOCR model, RapidTable packaging). The token
+  vocabulary (HTML structure tags plus colspan/rowspan attributes up to 20)
+  is embedded in the model metadata under `character`.
+
+  Preprocess: longest side to 488 preserving aspect (truncating), scale
+  1/255, normalize mean `[0.485, 0.456, 0.406]` / std `[0.229, 0.224, 0.225]`
+  in the image's loaded channel order, zero-pad to 488x488 top-left, NCHW.
+  The export runs its decode loop in-graph and emits per-step token
+  probabilities `[1, S, 50]` and cell corner boxes `[1, S, 8]`; postprocess is
+  argmax to `eos`, cell boxes on `<td` tokens rescaled by the original crop
+  size and the pad ratio. Constants mirror RapidTable's `PPTableStructurer`,
+  the reference `table-structure-engine-test` goldens were generated with.
+
+  Requires layout (that is what finds table regions); runs only on table
+  crops, never full pages. When absent, tables fall back to the geometry
+  word-to-cell grid.

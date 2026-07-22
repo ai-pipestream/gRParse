@@ -19,6 +19,22 @@ struct OcrLine {
   std::optional<TextOrigin> origin = std::nullopt;
 };
 
+// One table cell recognized by the structure model.  Grid coordinates are
+// zero-based; spans cover [row, row + row_span) x [col, col + col_span).
+// The box is axis-aligned in the same pixel space as the owning region.
+struct StructuredCell {
+  int row = 0;
+  int col = 0;
+  int row_span = 1;
+  int col_span = 1;
+  // True when the model placed the cell inside a <thead> section.
+  bool header = false;
+  int left = 0;
+  int top = 0;
+  int right = 0;
+  int bottom = 0;
+};
+
 // One detected layout region in page pixel coordinates (top-left origin,
 // the same space text boxes use).  Boxes are corners, edges inclusive.
 struct LayoutRegion {
@@ -32,6 +48,9 @@ struct LayoutRegion {
   // raster is alive.  Filled only for figure regions when picture-image
   // capture is enabled; empty otherwise.
   std::vector<unsigned char> image_png = {};
+  // Model-recognized cell grid, filled only for table regions when a table
+  // structure engine is active; empty means geometry fallback.
+  std::vector<StructuredCell> structured_cells = {};
 };
 
 struct OcrPage {

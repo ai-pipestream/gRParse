@@ -134,6 +134,43 @@ void verify_layout_regions_map_labels_and_emit_items() {
   require(plain_text == "Heading\nbody text\ncell", "regions must not disturb the text stream");
 }
 
+// Model-structured cells override the geometry grid: spans and header flags
+// come from the model, text binds by cell box, the row grid repeats spanning
+// cells across covered positions and blank-fills unclaimed ones.
+void verify_structured_cells_override_geometry() {
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1000, 1000, {line("Region", 300), line("North", 360)}};
+  grparse::LayoutRegion table{"table", 0.8F, 0, 250, 1000, 450};
+  table.structured_cells = {
+      {0, 0, 1, 2, true, 0, 290, 500, 340},
+      {1, 0, 1, 1, false, 0, 350, 200, 400},
+  };
+  page.regions = {table};
+
+  ai::docling::serve::v1::PageData data;
+  grparse::append_page_data(page, 1, &cursor, &data);
+  const auto& table_data = data.tables(0).data();
+  require(table_data.num_rows() == 2 && table_data.num_cols() == 2,
+          "grid extents come from spans, not cell count");
+  require(table_data.table_cells_size() == 2, "flat list holds each cell once");
+  const auto& header = table_data.table_cells(0);
+  require(header.text() == "Region" && header.col_span() == 2 && header.column_header() &&
+              header.start_col_offset_idx() == 0 && header.end_col_offset_idx() == 2,
+          "header cell keeps its span and thead flag");
+  require(header.bbox().t() == 290 && header.bbox().r() == 500,
+          "structured cell bbox is the model box");
+  require(table_data.table_cells(1).text() == "North" && !table_data.table_cells(1).column_header(),
+          "body cell binds its line and stays unflagged");
+  require(table_data.grid_size() == 2 && table_data.grid(0).cells_size() == 2,
+          "grid stays rectangular");
+  require(table_data.grid(0).cells(0).text() == "Region" &&
+              table_data.grid(0).cells(1).text() == "Region",
+          "spanning cells repeat across covered grid positions");
+  require(table_data.grid(1).cells(1).text().empty() &&
+              table_data.grid(1).cells(1).start_col_offset_idx() == 1,
+          "unclaimed positions blank-fill with their own offsets");
+}
+
 // A figure region carrying captured PNG bytes becomes an ImageRef data URI
 // whose pixel size is read from the PNG header itself.
 void verify_captured_figure_bytes_become_image_refs() {
@@ -163,6 +200,7 @@ int main() {
     verify_contract_shape();
     verify_offsets_and_provenance();
     verify_layout_regions_map_labels_and_emit_items();
+    verify_structured_cells_override_geometry();
     verify_captured_figure_bytes_become_image_refs();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {

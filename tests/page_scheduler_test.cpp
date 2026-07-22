@@ -233,6 +233,75 @@ void verify_layout_labels_digital_pages_without_ocr() {
   require(metrics.pages_recognized == 0, "OCR remains selective under layout");
 }
 
+class FakeStructurer final : public grparse::TableStructurer {
+ public:
+  grparse::TableStructure recognize(const cv::Mat& crop) override {
+    calls.fetch_add(1);
+    crop_width.store(crop.cols);
+    crop_height.store(crop.rows);
+    grparse::TableStructure structure;
+    structure.rows = 1;
+    structure.cols = 1;
+    structure.cells = {grparse::StructuredCell{0, 0, 1, 1, false, 0, 0, 2, 2}};
+    return structure;
+  }
+  std::atomic<int> calls{0};
+  std::atomic<int> crop_width{0};
+  std::atomic<int> crop_height{0};
+};
+
+// Structure runs once per table region on the clipped crop, and its cells
+// arrive shifted into page coordinates.
+void verify_table_structure_runs_on_crops() {
+  FakeRecognizer recognizer;
+  FakeDetector detector;
+  detector.regions = {
+      grparse::LayoutRegion{"table", 0.8F, 1, 1, 3, 3},
+      grparse::LayoutRegion{"title", 0.9F, 0, 0, 50, 10},
+  };
+  FakeStructurer structurer;
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 2, 2, 2, 1, 1, 1},
+      [](std::shared_ptr<const std::string>, bool) {
+        return std::make_shared<RenderableDigitalSource>();
+      },
+      &detector, &structurer);
+  Result result;
+  std::mutex pages_mutex;
+  std::vector<std::shared_ptr<const grparse::OcrPage>> delivered;
+  auto callbacks = callbacks_for(&result);
+  callbacks.on_page = [&](int page_number, std::shared_ptr<const grparse::OcrPage> page) {
+    {
+      std::lock_guard<std::mutex> lock(pages_mutex);
+      delivered.push_back(std::move(page));
+    }
+    std::lock_guard<std::mutex> lock(result.mutex);
+    result.completed_pages.push_back(page_number);
+    return grparse::PageScheduler::DeliveryResult::kAcceptedAndRelease;
+  };
+  scheduler.submit(std::make_shared<const std::string>("memory"), true, std::move(callbacks));
+  wait_until_finished(&result);
+
+  require(!result.failure, "table-structure document failed");
+  require(structurer.calls.load() == 2, "one structure call per table region per page");
+  require(structurer.crop_width.load() == 2 && structurer.crop_height.load() == 2,
+          "structure must see the clipped crop, not the full raster");
+  {
+    std::lock_guard<std::mutex> lock(pages_mutex);
+    for (const auto& page : delivered) {
+      const auto& table = page->regions[0];
+      require(table.label == "table" && table.structured_cells.size() == 1,
+              "structured cells must ride on the delivered table region");
+      const auto& cell = table.structured_cells[0];
+      require(cell.left == 1 && cell.top == 1 && cell.right == 3 && cell.bottom == 3,
+              "cells must shift from crop to page coordinates");
+      require(page->regions[1].structured_cells.empty(),
+              "non-table regions must stay unstructured");
+    }
+  }
+  require(scheduler.metrics().tables_structured == 2, "structure metric must count table crops");
+}
+
 // With picture capture enabled, figure regions arrive carrying a PNG crop of
 // the raster while other regions stay byte-free.
 void verify_picture_capture_encodes_figure_crops() {
@@ -498,6 +567,7 @@ int main() {
     verify_cancellation_drains_bounded_work();
     verify_digital_pages_bypass_render_and_inference();
     verify_layout_labels_digital_pages_without_ocr();
+    verify_table_structure_runs_on_crops();
     verify_picture_capture_encodes_figure_crops();
     verify_partial_digital_merges_with_ocr();
     verify_delivery_cancellation_drains_queued_work();

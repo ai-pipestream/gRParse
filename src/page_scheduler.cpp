@@ -197,9 +197,10 @@ class PageScheduler::Impl final {
   };
 
   Impl(PageRecognizer& recognizer, Options options, PageSourceFactory source_factory,
-       RegionDetector* region_detector)
+       RegionDetector* region_detector, TableStructurer* table_structurer)
       : recognizer_(recognizer),
         region_detector_(region_detector),
+        table_structurer_(table_structurer),
         options_(options),
         source_factory_(std::move(source_factory)),
         documents_(options.document_queue_capacity),
@@ -280,11 +281,11 @@ class PageScheduler::Impl final {
     Metrics snapshot{documents_submitted_.load(),    documents_rejected_.load(),
                      pages_rendered_.load(),         pages_read_digitally_.load(),
                      pages_recognized_.load(),       pages_layout_labelled_.load(),
-                     pages_cancelled_.load(),        documents_.size(),
-                     render_.size(),                 inference_.size(),
-                     assembly_.size(),               render_busy_ns_.load(),
-                     inference_busy_ns_.load(),      assembly_busy_ns_.load(),
-                     {}};
+                     tables_structured_.load(),      pages_cancelled_.load(),
+                     documents_.size(),              render_.size(),
+                     inference_.size(),              assembly_.size(),
+                     render_busy_ns_.load(),         inference_busy_ns_.load(),
+                     assembly_busy_ns_.load(),       {}};
     for (size_t bucket = 0; bucket < latency_buckets_.size(); ++bucket) {
       snapshot.page_latency[bucket] = latency_buckets_[bucket].load();
     }
@@ -528,6 +529,25 @@ class PageScheduler::Impl final {
             regions = region_detector_->detect_regions(job.image);
             pages_layout_labelled_.fetch_add(1);
           }
+          // Structure runs on table crops only, grouped with the other device
+          // calls while the raster is alive; cells shift into page coordinates
+          // so assembly and text binding share one space.
+          if (table_structurer_ != nullptr) {
+            for (auto& region : regions) {
+              if (region.label != "table") continue;
+              const cv::Rect roi = clip_region(region, job.image.cols, job.image.rows);
+              if (roi.empty()) continue;
+              TableStructure structure = table_structurer_->recognize(job.image(roi));
+              tables_structured_.fetch_add(1);
+              region.structured_cells = std::move(structure.cells);
+              for (auto& cell : region.structured_cells) {
+                cell.left += roi.x;
+                cell.right += roi.x;
+                cell.top += roi.y;
+                cell.bottom += roi.y;
+              }
+            }
+          }
 
           OcrPage assembled;
           if (job.run_ocr) {
@@ -600,6 +620,7 @@ class PageScheduler::Impl final {
 
   PageRecognizer& recognizer_;
   RegionDetector* region_detector_;
+  TableStructurer* table_structurer_;
   Options options_;
   PageSourceFactory source_factory_;
   BoundedQueue<DocumentJob> documents_;
@@ -624,6 +645,7 @@ class PageScheduler::Impl final {
   std::atomic<uint64_t> pages_read_digitally_{0};
   std::atomic<uint64_t> pages_recognized_{0};
   std::atomic<uint64_t> pages_layout_labelled_{0};
+  std::atomic<uint64_t> tables_structured_{0};
   std::atomic<uint64_t> pages_cancelled_{0};
   std::atomic<uint64_t> render_busy_ns_{0};
   std::atomic<uint64_t> inference_busy_ns_{0};
@@ -647,9 +669,10 @@ void PageScheduler::Ticket::release(size_t page_slots) const {
 bool PageScheduler::Ticket::valid() const { return !state_.expired(); }
 
 PageScheduler::PageScheduler(PageRecognizer& recognizer, Options options,
-                             PageSourceFactory source_factory, RegionDetector* region_detector)
+                             PageSourceFactory source_factory, RegionDetector* region_detector,
+                             TableStructurer* table_structurer)
     : impl_(std::make_unique<Impl>(recognizer, options, std::move(source_factory),
-                                   region_detector)) {}
+                                   region_detector, table_structurer)) {}
 
 PageScheduler::~PageScheduler() = default;
 
