@@ -191,6 +191,23 @@ void verify_captured_figure_bytes_become_image_refs() {
           "image size comes from the PNG header");
   require(image.uri() == "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAASwAAADI",
           "image URI must be the base64 PNG data URI");
+  require(data.pictures(0).annotations_size() == 0, "no classes means no annotations");
+
+  grparse::AssemblyCursor classified_cursor;
+  grparse::OcrPage classified{1000, 1000, {line("caption", 100)}};
+  grparse::LayoutRegion figure{"figure", 0.7F, 0, 500, 1000, 800};
+  figure.figure_classes = {{"bar_chart", 0.9F}, {"other", 0.1F}};
+  classified.regions = {figure};
+  ai::docling::serve::v1::PageData classified_data;
+  grparse::append_page_data(classified, 1, &classified_cursor, &classified_data);
+  const auto& annotation = classified_data.pictures(0).annotations(0).classification();
+  require(annotation.kind() == "classification" &&
+              annotation.provenance() == "DocumentFigureClassifier",
+          "classification annotation carries its provenance");
+  require(annotation.predicted_classes_size() == 2 &&
+              annotation.predicted_classes(0).class_name() == "bar_chart" &&
+              annotation.predicted_classes(0).confidence() > 0.89,
+          "predicted classes keep their order and confidence");
 }
 
 }  // namespace

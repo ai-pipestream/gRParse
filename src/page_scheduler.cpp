@@ -197,10 +197,12 @@ class PageScheduler::Impl final {
   };
 
   Impl(PageRecognizer& recognizer, Options options, PageSourceFactory source_factory,
-       RegionDetector* region_detector, TableStructurer* table_structurer)
+       RegionDetector* region_detector, TableStructurer* table_structurer,
+       FigureClassifierBase* figure_classifier)
       : recognizer_(recognizer),
         region_detector_(region_detector),
         table_structurer_(table_structurer),
+        figure_classifier_(figure_classifier),
         options_(options),
         source_factory_(std::move(source_factory)),
         documents_(options.document_queue_capacity),
@@ -281,11 +283,12 @@ class PageScheduler::Impl final {
     Metrics snapshot{documents_submitted_.load(),    documents_rejected_.load(),
                      pages_rendered_.load(),         pages_read_digitally_.load(),
                      pages_recognized_.load(),       pages_layout_labelled_.load(),
-                     tables_structured_.load(),      pages_cancelled_.load(),
-                     documents_.size(),              render_.size(),
-                     inference_.size(),              assembly_.size(),
-                     render_busy_ns_.load(),         inference_busy_ns_.load(),
-                     assembly_busy_ns_.load(),       {}};
+                     tables_structured_.load(),      figures_classified_.load(),
+                     pages_cancelled_.load(),        documents_.size(),
+                     render_.size(),                 inference_.size(),
+                     assembly_.size(),               render_busy_ns_.load(),
+                     inference_busy_ns_.load(),      assembly_busy_ns_.load(),
+                     {}};
     for (size_t bucket = 0; bucket < latency_buckets_.size(); ++bucket) {
       snapshot.page_latency[bucket] = latency_buckets_[bucket].load();
     }
@@ -548,6 +551,16 @@ class PageScheduler::Impl final {
               }
             }
           }
+          // Classification also runs on figure crops only, same grouping.
+          if (figure_classifier_ != nullptr) {
+            for (auto& region : regions) {
+              if (region.label != "figure") continue;
+              const cv::Mat crop = crop_region(job.image, region);
+              if (crop.empty()) continue;
+              region.figure_classes = figure_classifier_->classify(crop);
+              figures_classified_.fetch_add(1);
+            }
+          }
 
           OcrPage assembled;
           if (job.run_ocr) {
@@ -621,6 +634,7 @@ class PageScheduler::Impl final {
   PageRecognizer& recognizer_;
   RegionDetector* region_detector_;
   TableStructurer* table_structurer_;
+  FigureClassifierBase* figure_classifier_;
   Options options_;
   PageSourceFactory source_factory_;
   BoundedQueue<DocumentJob> documents_;
@@ -646,6 +660,7 @@ class PageScheduler::Impl final {
   std::atomic<uint64_t> pages_recognized_{0};
   std::atomic<uint64_t> pages_layout_labelled_{0};
   std::atomic<uint64_t> tables_structured_{0};
+  std::atomic<uint64_t> figures_classified_{0};
   std::atomic<uint64_t> pages_cancelled_{0};
   std::atomic<uint64_t> render_busy_ns_{0};
   std::atomic<uint64_t> inference_busy_ns_{0};
@@ -670,9 +685,10 @@ bool PageScheduler::Ticket::valid() const { return !state_.expired(); }
 
 PageScheduler::PageScheduler(PageRecognizer& recognizer, Options options,
                              PageSourceFactory source_factory, RegionDetector* region_detector,
-                             TableStructurer* table_structurer)
+                             TableStructurer* table_structurer,
+                             FigureClassifierBase* figure_classifier)
     : impl_(std::make_unique<Impl>(recognizer, options, std::move(source_factory),
-                                   region_detector, table_structurer)) {}
+                                   region_detector, table_structurer, figure_classifier)) {}
 
 PageScheduler::~PageScheduler() = default;
 

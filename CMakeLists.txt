@@ -188,6 +188,7 @@ target_link_libraries(docling_proto PUBLIC grpc++)
 add_library(grparse_core
   src/base64.cpp
   src/document_parser_service.cpp
+  src/figure_classifier.cpp
   src/document_assembly.cpp
   src/in_memory_document.cpp
   src/ocr_engine.cpp
@@ -213,6 +214,7 @@ if(BUILD_TESTING)
   set(GRPARSE_TESTS
     base64-test
     document-assembly-test
+    figure-classifier-test
     layout-engine-test
     page-scheduler-test
     pdf-source-test
@@ -236,7 +238,7 @@ if(BUILD_TESTING)
   # The layout golden needs the real model file; without it the test skips
   # (exit 77) so environments that never download models stay green while any
   # environment with models proves the decode against the reference output.
-  set_tests_properties(layout-engine-test table-structure-engine-test PROPERTIES
+  set_tests_properties(figure-classifier-test layout-engine-test table-structure-engine-test PROPERTIES
     SKIP_RETURN_CODE 77
     ENVIRONMENT
       "GRPARSE_TEST_MODELS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/models;GRPARSE_TEST_DATA_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/data")

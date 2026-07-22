@@ -21,6 +21,7 @@
 #include <grpcpp/health_check_service_interface.h>
 
 #include "grparse/document_parser_service.h"
+#include "grparse/figure_classifier.h"
 #include "grparse/layout_engine.h"
 #include "grparse/page_scheduler.h"
 #include "grparse/table_structure_engine.h"
@@ -246,6 +247,41 @@ std::unique_ptr<grparse::TableStructureEnginePool> build_table_structure_pool(
   return pool;
 }
 
+// GRPARSE_FIGURE_CLASSES follows the same auto/on/off contract; the
+// classifier only ever sees crops of layout-detected figure regions.
+std::unique_ptr<grparse::FigureClassifierPool> build_figure_classifier_pool(
+    const std::filesystem::path& models_dir, size_t worker_count, bool layout_active) {
+  const char* configured = std::getenv("GRPARSE_FIGURE_CLASSES");
+  const std::string mode = configured == nullptr || *configured == '\0' ? "auto" : configured;
+  if (mode != "auto" && mode != "on" && mode != "off") {
+    throw std::invalid_argument("GRPARSE_FIGURE_CLASSES must be auto, on, or off");
+  }
+  const std::filesystem::path model = models_dir / "figure_classifier.onnx";
+  if (mode == "off") {
+    std::cout << "gRParse figure classes: disabled (GRPARSE_FIGURE_CLASSES=off)" << std::endl;
+    return nullptr;
+  }
+  if (!layout_active) {
+    if (mode == "on") {
+      throw std::invalid_argument(
+          "GRPARSE_FIGURE_CLASSES=on needs layout enabled to find figure regions");
+    }
+    if (std::filesystem::exists(model)) {
+      std::cout << "gRParse figure classes: disabled (layout is disabled)" << std::endl;
+    }
+    return nullptr;
+  }
+  if (mode == "auto" && !std::filesystem::exists(model)) {
+    std::cout << "gRParse figure classes: disabled (no " << model.string()
+              << "; see models/README.md)" << std::endl;
+    return nullptr;
+  }
+  auto pool = std::make_unique<grparse::FigureClassifierPool>(model, worker_count);
+  std::cout << "gRParse figure classes: enabled (" << pool->size() << " sessions, "
+            << model.string() << ")" << std::endl;
+  return pool;
+}
+
 size_t page_worker_count() {
   const unsigned int hardware = std::thread::hardware_concurrency();
   return std::min<size_t>(2, hardware == 0 ? 1 : hardware);
@@ -274,6 +310,7 @@ std::string format_metrics(const grparse::PageScheduler::Metrics& current,
        << " pages{digital=" << current.pages_read_digitally
        << ",rendered=" << current.pages_rendered << ",ocr=" << current.pages_recognized << ",layout=" << current.pages_layout_labelled
        << ",tables=" << current.tables_structured
+       << ",figures=" << current.figures_classified
        << ",cancelled=" << current.pages_cancelled << "}"
        << " queues{render=" << current.pages_waiting_for_render
        << ",inference=" << current.pages_waiting_for_inference
@@ -339,6 +376,8 @@ int main() {
     const auto layout = build_layout_pool(models_dir, inference_workers);
     const auto table_structure =
         build_table_structure_pool(models_dir, inference_workers, layout != nullptr);
+    const auto figure_classes =
+        build_figure_classifier_pool(models_dir, inference_workers, layout != nullptr);
     // Named assignment on purpose: a positional brace list of nine same-typed
     // sizes is one reordering away from a silent misconfiguration.
     grparse::PageScheduler::Options options;
@@ -367,7 +406,8 @@ int main() {
       std::cout << "gRParse picture images: enabled" << std::endl;
     }
     grparse::PageScheduler scheduler(*engines, options, grparse::PageSourceFactory{},
-                                     layout.get(), table_structure.get());
+                                     layout.get(), table_structure.get(),
+                                     figure_classes.get());
     grparse::DocumentParserService service(scheduler);
     grparse::DocumentStreamingService streaming_service(scheduler);
     grpc::EnableDefaultHealthCheckService(true);
