@@ -91,6 +91,17 @@ and `GRPARSE_MAX_CONCURRENT_STREAMS`. RapidOCR currently produces text,
 so `tables` and `pictures` remain empty until dedicated extraction models are
 connected.
 
+When `models/layout_publaynet.onnx` is present (see
+[models/README.md](models/README.md)), every page also runs PicoDet layout
+detection on the configured execution provider: text lines inside title and
+list regions are labelled `TITLE`/`LIST_ITEM`, and table and figure regions
+are emitted as `TableItem`/`PictureItem` entries with provenance boxes so
+downstream table and picture extraction have crops to work from. Control it
+with `GRPARSE_LAYOUT=auto|on|off` (`auto`, the default, enables layout when
+the model file exists and says so at startup; `on` fails startup if the model
+is missing). Full-digital pages are still rasterized when layout is active,
+but continue to skip OCR.
+
 The server registers standard gRPC health checking and reflection in addition
 to the Docling `Health` RPC. SIGINT and SIGTERM initiate a bounded graceful
 shutdown.

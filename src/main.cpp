@@ -21,6 +21,7 @@
 #include <grpcpp/health_check_service_interface.h>
 
 #include "grparse/document_parser_service.h"
+#include "grparse/layout_engine.h"
 #include "grparse/page_scheduler.h"
 #include "grparse_session_ep.h"
 
@@ -180,6 +181,34 @@ std::unique_ptr<grparse::OcrEnginePool> build_engine_pool(const std::filesystem:
   throw std::invalid_argument("GRPARSE_ORT_EP must be cuda, openvino, cpu, or auto");
 }
 
+// GRPARSE_LAYOUT: auto (default) enables layout labelling when the model file
+// exists; on requires it and fails startup when absent; off disables it.
+// Nothing here degrades silently: auto logs which way it went.
+std::unique_ptr<grparse::LayoutEnginePool> build_layout_pool(
+    const std::filesystem::path& models_dir, size_t worker_count) {
+  const char* configured = std::getenv("GRPARSE_LAYOUT");
+  const std::string mode = configured == nullptr || *configured == '\0' ? "auto" : configured;
+  if (mode != "auto" && mode != "on" && mode != "off") {
+    throw std::invalid_argument("GRPARSE_LAYOUT must be auto, on, or off");
+  }
+  const std::filesystem::path model = models_dir / "layout_publaynet.onnx";
+  if (mode == "off") {
+    std::cout << "gRParse layout: disabled (GRPARSE_LAYOUT=off)" << std::endl;
+    return nullptr;
+  }
+  if (mode == "auto" && !std::filesystem::exists(model)) {
+    std::cout << "gRParse layout: disabled (no " << model.string()
+              << "; see models/README.md)" << std::endl;
+    return nullptr;
+  }
+  // "on" with a missing file reaches the pool constructor, which throws with
+  // the model path — the fail-loud startup the explicit setting asks for.
+  auto pool = std::make_unique<grparse::LayoutEnginePool>(model, worker_count);
+  std::cout << "gRParse layout: enabled (" << pool->size() << " sessions, "
+            << model.string() << ")" << std::endl;
+  return pool;
+}
+
 size_t page_worker_count() {
   const unsigned int hardware = std::thread::hardware_concurrency();
   return std::min<size_t>(2, hardware == 0 ? 1 : hardware);
@@ -206,7 +235,7 @@ std::string format_metrics(const grparse::PageScheduler::Metrics& current,
        << ",rejected=" << current.documents_rejected << ",queued=" << current.documents_queued
        << "}"
        << " pages{digital=" << current.pages_read_digitally
-       << ",rendered=" << current.pages_rendered << ",ocr=" << current.pages_recognized
+       << ",rendered=" << current.pages_rendered << ",ocr=" << current.pages_recognized << ",layout=" << current.pages_layout_labelled
        << ",cancelled=" << current.pages_cancelled << "}"
        << " queues{render=" << current.pages_waiting_for_render
        << ",inference=" << current.pages_waiting_for_inference
@@ -267,8 +296,9 @@ int main() {
     const size_t render_workers = configured_size(
         "GRPARSE_RENDER_WORKERS", std::min<size_t>(4, hardware == 0 ? 2 : hardware), 256);
     const int gpu_index = configured_index("GRPARSE_CUDA_DEVICE", 0);
-    const auto engines =
-        build_engine_pool(models == nullptr ? "/models" : models, inference_workers, gpu_index);
+    const std::filesystem::path models_dir = models == nullptr ? "/models" : models;
+    const auto engines = build_engine_pool(models_dir, inference_workers, gpu_index);
+    const auto layout = build_layout_pool(models_dir, inference_workers);
     // Named assignment on purpose: a positional brace list of nine same-typed
     // sizes is one reordering away from a silent misconfiguration.
     grparse::PageScheduler::Options options;
@@ -282,7 +312,8 @@ int main() {
     options.page_window = configured_size("GRPARSE_PAGE_WINDOW", 4, 64);
     options.max_active_documents = configured_size("GRPARSE_MAX_ACTIVE_DOCUMENTS", 32, 1024);
     options.pdf_parsers = configured_size("GRPARSE_PDF_PARSERS", render_workers, 256);
-    grparse::PageScheduler scheduler(*engines, options);
+    grparse::PageScheduler scheduler(*engines, options, grparse::PageSourceFactory{},
+                                     layout.get());
     grparse::DocumentParserService service(scheduler);
     grparse::DocumentStreamingService streaming_service(scheduler);
     grpc::EnableDefaultHealthCheckService(true);

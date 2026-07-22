@@ -19,6 +19,17 @@ struct OcrLine {
   std::optional<TextOrigin> origin = std::nullopt;
 };
 
+// One detected layout region in page pixel coordinates (top-left origin,
+// the same space text boxes use).  Boxes are corners, edges inclusive.
+struct LayoutRegion {
+  std::string label;  // text, title, list, table, figure
+  float confidence = 0.0F;
+  int left = 0;
+  int top = 0;
+  int right = 0;
+  int bottom = 0;
+};
+
 struct OcrPage {
   enum class Source { kOcr, kDigitalPdf, kMerged };
 
@@ -28,6 +39,8 @@ struct OcrPage {
   Source source = Source::kOcr;
   // When true, the scheduler may skip raster OCR (full digital coverage).
   bool skip_ocr = false;
+  // Layout detections for this page; empty when no layout model is active.
+  std::vector<LayoutRegion> regions = {};
 };
 
 // Merge OCR lines into a digital page without duplicating geometry-overlapping text.

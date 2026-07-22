@@ -7,17 +7,17 @@
 
 #include <opencv2/core.hpp>
 
+#include "grparse/ocr_types.h"
 #include "grparse/resource_pool.h"
-#include "grparse/text_geometry.h"
 
 namespace grparse {
 
-// One detected page region in input-image pixel coordinates (top-left origin,
-// the same space OCR lines and digital text boxes use).
-struct LayoutRegion {
-  std::string label;  // one of LayoutEngine::kLabels
-  float confidence = 0.0F;
-  AxisAlignedBox box;
+// Detects layout regions on a rendered page raster.  The scheduler talks to
+// this interface so tests can label pages without a model.
+class RegionDetector {
+ public:
+  virtual ~RegionDetector() = default;
+  virtual std::vector<LayoutRegion> detect_regions(const cv::Mat& image) = 0;
 };
 
 // PicoDet layout detector (PP-StructureV2 PubLayNet export) on ONNX Runtime.
@@ -47,15 +47,15 @@ class LayoutEngine final {
   std::unique_ptr<Impl> impl_;
 };
 
-// Warm exclusive-lease pool over LayoutEngine, one session triple per slot.
-class LayoutEnginePool final {
+// Warm exclusive-lease pool over LayoutEngine, one session per slot.
+class LayoutEnginePool final : public RegionDetector {
  public:
   using Stats = ResourcePool<LayoutEngine>::Stats;
 
   // Builds every session eagerly so a bad model or provider fails startup.
   LayoutEnginePool(const std::filesystem::path& model_path, size_t worker_count);
 
-  std::vector<LayoutRegion> detect_regions(const cv::Mat& image);
+  std::vector<LayoutRegion> detect_regions(const cv::Mat& image) override;
   size_t size() const { return engines_.capacity(); }
   Stats stats() const { return engines_.stats(); }
 

@@ -9,6 +9,8 @@ namespace grparse {
 
 struct AssemblyCursor {
   uint64_t text_index = 0;
+  uint64_t table_index = 0;
+  uint64_t picture_index = 0;
   uint64_t utf_offset = 0;
   bool has_text = false;
 };

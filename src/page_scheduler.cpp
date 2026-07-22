@@ -182,6 +182,9 @@ class PageScheduler::Impl final {
     std::shared_ptr<PageJob> page;
     cv::Mat image;
     std::optional<OcrPage> digital_seed;
+    // False when the digital layer is complete: layout still needs the raster
+    // but RapidOCR does not.
+    bool run_ocr = true;
   };
 
   struct AssemblyJob {
@@ -189,8 +192,10 @@ class PageScheduler::Impl final {
     std::shared_ptr<const OcrPage> result;
   };
 
-  Impl(PageRecognizer& recognizer, Options options, PageSourceFactory source_factory)
+  Impl(PageRecognizer& recognizer, Options options, PageSourceFactory source_factory,
+       RegionDetector* region_detector)
       : recognizer_(recognizer),
+        region_detector_(region_detector),
         options_(options),
         source_factory_(std::move(source_factory)),
         documents_(options.document_queue_capacity),
@@ -268,13 +273,14 @@ class PageScheduler::Impl final {
   }
 
   Metrics metrics() const {
-    Metrics snapshot{documents_submitted_.load(), documents_rejected_.load(),
-                     pages_rendered_.load(),      pages_read_digitally_.load(),
-                     pages_recognized_.load(),    pages_cancelled_.load(),
-                     documents_.size(),           render_.size(),
-                     inference_.size(),           assembly_.size(),
-                     render_busy_ns_.load(),      inference_busy_ns_.load(),
-                     assembly_busy_ns_.load(),    {}};
+    Metrics snapshot{documents_submitted_.load(),    documents_rejected_.load(),
+                     pages_rendered_.load(),         pages_read_digitally_.load(),
+                     pages_recognized_.load(),       pages_layout_labelled_.load(),
+                     pages_cancelled_.load(),        documents_.size(),
+                     render_.size(),                 inference_.size(),
+                     assembly_.size(),               render_busy_ns_.load(),
+                     inference_busy_ns_.load(),      assembly_busy_ns_.load(),
+                     {}};
     for (size_t bucket = 0; bucket < latency_buckets_.size(); ++bucket) {
       snapshot.page_latency[bucket] = latency_buckets_[bucket].load();
     }
@@ -469,12 +475,13 @@ class PageScheduler::Impl final {
         }
         if (digital.has_value()) {
           pages_read_digitally_.fetch_add(1);
-          if (digital->skip_ocr) {
+          if (digital->skip_ocr && region_detector_ == nullptr) {
             enqueue_assembly(page, std::make_shared<const OcrPage>(std::move(*digital)));
             page.reset();
             continue;
           }
         }
+        const bool run_ocr = !(digital.has_value() && digital->skip_ocr);
 
         cv::Mat image;
         {
@@ -487,7 +494,7 @@ class PageScheduler::Impl final {
           page.reset();
           continue;
         }
-        InferenceJob job{page, std::move(image), std::move(digital)};
+        InferenceJob job{page, std::move(image), std::move(digital), run_ocr};
         if (!inference_.push(std::move(job))) {
           page->request->fail(std::make_exception_ptr(std::runtime_error("Inference queue closed")));
           complete_page(page, PageOutcome::kFailed);
@@ -512,17 +519,29 @@ class PageScheduler::Impl final {
         std::shared_ptr<const OcrPage> result;
         {
           const BusyTimer timer(inference_busy_ns_);
-          OcrPage ocr = recognizer_.extract_page(job.image);
+          std::vector<LayoutRegion> regions;
+          if (region_detector_ != nullptr) {
+            regions = region_detector_->detect_regions(job.image);
+            pages_layout_labelled_.fetch_add(1);
+          }
+
+          OcrPage assembled;
+          if (job.run_ocr) {
+            OcrPage ocr = recognizer_.extract_page(job.image);
+            pages_recognized_.fetch_add(1);
+            if (job.digital_seed.has_value() && !job.digital_seed->lines.empty()) {
+              assembled = merge_digital_and_ocr(std::move(*job.digital_seed), std::move(ocr));
+            } else {
+              assembled = std::move(ocr);
+            }
+          } else {
+            // Full digital coverage: the raster existed only for layout.
+            assembled = std::move(*job.digital_seed);
+          }
           // Drop the raster the moment the device stage is done with it (B5).
           job.image.release();
-          pages_recognized_.fetch_add(1);
-
-          if (job.digital_seed.has_value() && !job.digital_seed->lines.empty()) {
-            result = std::make_shared<const OcrPage>(
-                merge_digital_and_ocr(std::move(*job.digital_seed), std::move(ocr)));
-          } else {
-            result = std::make_shared<const OcrPage>(std::move(ocr));
-          }
+          assembled.regions = std::move(regions);
+          result = std::make_shared<const OcrPage>(std::move(assembled));
         }
         enqueue_assembly(job.page, std::move(result));
       } catch (...) {
@@ -567,6 +586,7 @@ class PageScheduler::Impl final {
   }
 
   PageRecognizer& recognizer_;
+  RegionDetector* region_detector_;
   Options options_;
   PageSourceFactory source_factory_;
   BoundedQueue<DocumentJob> documents_;
@@ -590,6 +610,7 @@ class PageScheduler::Impl final {
   std::atomic<uint64_t> pages_rendered_{0};
   std::atomic<uint64_t> pages_read_digitally_{0};
   std::atomic<uint64_t> pages_recognized_{0};
+  std::atomic<uint64_t> pages_layout_labelled_{0};
   std::atomic<uint64_t> pages_cancelled_{0};
   std::atomic<uint64_t> render_busy_ns_{0};
   std::atomic<uint64_t> inference_busy_ns_{0};
@@ -612,8 +633,10 @@ void PageScheduler::Ticket::release(size_t page_slots) const {
 
 bool PageScheduler::Ticket::valid() const { return !state_.expired(); }
 
-PageScheduler::PageScheduler(PageRecognizer& recognizer, Options options, PageSourceFactory source_factory)
-    : impl_(std::make_unique<Impl>(recognizer, options, std::move(source_factory))) {}
+PageScheduler::PageScheduler(PageRecognizer& recognizer, Options options,
+                             PageSourceFactory source_factory, RegionDetector* region_detector)
+    : impl_(std::make_unique<Impl>(recognizer, options, std::move(source_factory),
+                                   region_detector)) {}
 
 PageScheduler::~PageScheduler() = default;
 

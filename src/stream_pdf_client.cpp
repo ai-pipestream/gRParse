@@ -72,8 +72,14 @@ int main(int argc, char** argv) {
         if (offset.source() == docling::serve::v1::TEXT_SOURCE_DIGITAL_PDF) ++digital_items;
         if (offset.source() == docling::serve::v1::TEXT_SOURCE_OCR) ++ocr_items;
       }
+      int labelled_items = 0;
+      for (const auto& text : event.page().texts()) {
+        if (text.text().base().label() != docling::core::v1::DOC_ITEM_LABEL_TEXT) ++labelled_items;
+      }
       std::cout << "page=" << event.page().page_number() << " text_items=" << event.page().texts_size()
-                << " digital_items=" << digital_items << " ocr_items=" << ocr_items << '\n';
+                << " digital_items=" << digital_items << " ocr_items=" << ocr_items
+                << " labelled=" << labelled_items << " tables=" << event.page().tables_size()
+                << " pictures=" << event.page().pictures_size() << '\n';
     } else if (event.has_complete()) {
       std::cout << "complete total_pages=" << event.total_pages() << '\n';
     }
