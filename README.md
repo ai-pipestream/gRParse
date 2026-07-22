@@ -104,15 +104,18 @@ the model file exists and says so at startup; `on` fails startup if the model
 is missing). Full-digital pages are still rasterized when layout is active,
 but continue to skip OCR.
 
-Every `TableItem` additionally carries geometry-derived structure in
-`data`: the text lines bound to the table region are clustered into row
-bands by vertical overlap and into columns by merging horizontal spans
-(a gap wider than about half the median line height counts as a column
-gutter), giving `num_rows`/`num_cols`, a rectangular `grid`, and per-cell
-text with bounding boxes. All spans are 1 and header flags stay false; a
-table-structure model (Epic D3) will refine spans and headers on the same
-cells. Table interior text still streams as ordinary `TEXT` items too, so
-UTF offsets stay contiguous for clients that ignore tables.
+Every `TableItem` additionally carries cell structure in `data`. When
+`models/slanet_plus.onnx` is present (`GRPARSE_TABLE_STRUCTURE=auto|on|off`,
+same contract as layout), SLANet-plus runs on each detected table crop and
+supplies the real grid: cell spans, `<thead>` rows as `column_header`, and
+model cell boxes, with text lines bound to cells by box center. Without the
+model, a geometry fallback clusters the table's text lines into row bands by
+vertical overlap and columns by merging horizontal spans (a gap wider than
+about half the median line height counts as a column gutter) with unit spans
+and no header flags. Both paths give `num_rows`/`num_cols`, a rectangular
+`grid`, and per-cell text with bounding boxes. Table interior text still
+streams as ordinary `TEXT` items too, so UTF offsets stay contiguous for
+clients that ignore tables.
 
 With `GRPARSE_PICTURE_IMAGES=on` (default off) each figure region's pixels
 are cropped from the page raster in the inference stage, PNG-encoded, and

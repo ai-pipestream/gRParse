@@ -78,11 +78,99 @@ void set_picture_image(const std::vector<unsigned char>& png, docling::core::v1:
   image->set_uri("data:image/png;base64," + encode_base64(png.data(), png.size()));
 }
 
+// Model table structure (D3): the recognized cells carry real spans and
+// header rows.  Lines bound to the table land in the first cell whose box
+// contains their center; the flat cell list holds each cell once while the
+// row grid repeats spanning cells across every position they cover, with
+// empty unit cells filling positions no recognized cell claims.
+void fill_structured_table_data(const OcrPage& page, const LayoutRegion& region,
+                                docling::core::v1::TableData* data) {
+  int rows = 0;
+  int cols = 0;
+  for (const auto& cell : region.structured_cells) {
+    rows = std::max(rows, cell.row + cell.row_span);
+    cols = std::max(cols, cell.col + cell.col_span);
+  }
+  data->set_num_rows(rows);
+  data->set_num_cols(cols);
+
+  struct MemberLine {
+    size_t index = 0;
+    AxisAlignedBox box;
+  };
+  std::vector<MemberLine> lines;
+  for (size_t index = 0; index < page.lines.size(); ++index) {
+    const auto& line = page.lines[index];
+    if (line.text.empty() || line.polygon.empty()) continue;
+    if (region_for_line(page, line) == &region) lines.push_back({index, bounding_box(line)});
+  }
+  std::sort(lines.begin(), lines.end(), [](const MemberLine& a, const MemberLine& b) {
+    if (a.box.top != b.box.top) return a.box.top < b.box.top;
+    return a.box.left < b.box.left;
+  });
+
+  std::vector<int> owner(static_cast<size_t>(rows) * static_cast<size_t>(cols), -1);
+  std::vector<docling::core::v1::TableCell> protos;
+  protos.reserve(region.structured_cells.size());
+  for (const auto& cell : region.structured_cells) {
+    docling::core::v1::TableCell proto_cell;
+    proto_cell.set_row_span(cell.row_span);
+    proto_cell.set_col_span(cell.col_span);
+    proto_cell.set_start_row_offset_idx(cell.row);
+    proto_cell.set_end_row_offset_idx(cell.row + cell.row_span);
+    proto_cell.set_start_col_offset_idx(cell.col);
+    proto_cell.set_end_col_offset_idx(cell.col + cell.col_span);
+    proto_cell.set_column_header(cell.header);
+    std::string text;
+    for (const auto& member : lines) {
+      const cv::Point center = member.box.center();
+      const bool contains = center.x >= cell.left && center.x <= cell.right &&
+                            center.y >= cell.top && center.y <= cell.bottom;
+      if (!contains) continue;
+      if (!text.empty()) text.push_back(' ');
+      text += page.lines[member.index].text;
+    }
+    proto_cell.set_text(std::move(text));
+    AxisAlignedBox box{cell.left, cell.top, cell.right, cell.bottom};
+    set_bounding_box(box, proto_cell.mutable_bbox());
+    const int cell_index = static_cast<int>(protos.size());
+    for (int row = cell.row; row < cell.row + cell.row_span && row < rows; ++row) {
+      for (int col = cell.col; col < cell.col + cell.col_span && col < cols; ++col) {
+        auto& slot = owner[static_cast<size_t>(row) * cols + col];
+        if (slot < 0) slot = cell_index;
+      }
+    }
+    *data->add_table_cells() = proto_cell;
+    protos.push_back(std::move(proto_cell));
+  }
+  for (int row = 0; row < rows; ++row) {
+    auto* grid_row = data->add_grid();
+    for (int col = 0; col < cols; ++col) {
+      const int cell_index = owner[static_cast<size_t>(row) * cols + col];
+      if (cell_index >= 0) {
+        *grid_row->add_cells() = protos[static_cast<size_t>(cell_index)];
+      } else {
+        auto* blank = grid_row->add_cells();
+        blank->set_row_span(1);
+        blank->set_col_span(1);
+        blank->set_start_row_offset_idx(row);
+        blank->set_end_row_offset_idx(row + 1);
+        blank->set_start_col_offset_idx(col);
+        blank->set_end_col_offset_idx(col + 1);
+      }
+    }
+  }
+}
+
 // Geometry table structure (D2 v0): every grid position becomes a TableCell
 // with unit spans, mirrored into both the flat cell list and the row grid.
 // Header flags stay false; geometry cannot tell a header from a body row.
 void fill_table_data(const OcrPage& page, const LayoutRegion& region,
                      docling::core::v1::TableData* data) {
+  if (!region.structured_cells.empty()) {
+    fill_structured_table_data(page, region, data);
+    return;
+  }
   const TableGrid grid = build_table_grid(page, region);
   data->set_num_rows(grid.rows);
   data->set_num_cols(grid.cols);

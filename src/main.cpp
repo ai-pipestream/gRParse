@@ -23,6 +23,7 @@
 #include "grparse/document_parser_service.h"
 #include "grparse/layout_engine.h"
 #include "grparse/page_scheduler.h"
+#include "grparse/table_structure_engine.h"
 #include "grparse_session_ep.h"
 
 namespace {
@@ -209,6 +210,42 @@ std::unique_ptr<grparse::LayoutEnginePool> build_layout_pool(
   return pool;
 }
 
+// GRPARSE_TABLE_STRUCTURE follows the same auto/on/off contract as layout.
+// Structure only ever sees crops of layout-detected table regions, so it
+// additionally requires layout to be active.
+std::unique_ptr<grparse::TableStructureEnginePool> build_table_structure_pool(
+    const std::filesystem::path& models_dir, size_t worker_count, bool layout_active) {
+  const char* configured = std::getenv("GRPARSE_TABLE_STRUCTURE");
+  const std::string mode = configured == nullptr || *configured == '\0' ? "auto" : configured;
+  if (mode != "auto" && mode != "on" && mode != "off") {
+    throw std::invalid_argument("GRPARSE_TABLE_STRUCTURE must be auto, on, or off");
+  }
+  const std::filesystem::path model = models_dir / "slanet_plus.onnx";
+  if (mode == "off") {
+    std::cout << "gRParse table structure: disabled (GRPARSE_TABLE_STRUCTURE=off)" << std::endl;
+    return nullptr;
+  }
+  if (!layout_active) {
+    if (mode == "on") {
+      throw std::invalid_argument(
+          "GRPARSE_TABLE_STRUCTURE=on needs layout enabled to find table regions");
+    }
+    if (std::filesystem::exists(model)) {
+      std::cout << "gRParse table structure: disabled (layout is disabled)" << std::endl;
+    }
+    return nullptr;
+  }
+  if (mode == "auto" && !std::filesystem::exists(model)) {
+    std::cout << "gRParse table structure: disabled (no " << model.string()
+              << "; see models/README.md)" << std::endl;
+    return nullptr;
+  }
+  auto pool = std::make_unique<grparse::TableStructureEnginePool>(model, worker_count);
+  std::cout << "gRParse table structure: enabled (" << pool->size() << " sessions, "
+            << model.string() << ")" << std::endl;
+  return pool;
+}
+
 size_t page_worker_count() {
   const unsigned int hardware = std::thread::hardware_concurrency();
   return std::min<size_t>(2, hardware == 0 ? 1 : hardware);
@@ -236,6 +273,7 @@ std::string format_metrics(const grparse::PageScheduler::Metrics& current,
        << "}"
        << " pages{digital=" << current.pages_read_digitally
        << ",rendered=" << current.pages_rendered << ",ocr=" << current.pages_recognized << ",layout=" << current.pages_layout_labelled
+       << ",tables=" << current.tables_structured
        << ",cancelled=" << current.pages_cancelled << "}"
        << " queues{render=" << current.pages_waiting_for_render
        << ",inference=" << current.pages_waiting_for_inference
@@ -299,6 +337,8 @@ int main() {
     const std::filesystem::path models_dir = models == nullptr ? "/models" : models;
     const auto engines = build_engine_pool(models_dir, inference_workers, gpu_index);
     const auto layout = build_layout_pool(models_dir, inference_workers);
+    const auto table_structure =
+        build_table_structure_pool(models_dir, inference_workers, layout != nullptr);
     // Named assignment on purpose: a positional brace list of nine same-typed
     // sizes is one reordering away from a silent misconfiguration.
     grparse::PageScheduler::Options options;
@@ -327,7 +367,7 @@ int main() {
       std::cout << "gRParse picture images: enabled" << std::endl;
     }
     grparse::PageScheduler scheduler(*engines, options, grparse::PageSourceFactory{},
-                                     layout.get());
+                                     layout.get(), table_structure.get());
     grparse::DocumentParserService service(scheduler);
     grparse::DocumentStreamingService streaming_service(scheduler);
     grpc::EnableDefaultHealthCheckService(true);

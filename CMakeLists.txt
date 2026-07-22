@@ -196,6 +196,7 @@ add_library(grparse_core
   src/reading_order.cpp
   src/region_geometry.cpp
   src/table_structure.cpp
+  src/table_structure_engine.cpp
   src/text_geometry.cpp)
 target_include_directories(grparse_core PUBLIC include)
 target_link_libraries(grparse_core
@@ -218,6 +219,7 @@ if(BUILD_TESTING)
     reading-order-test
     resource-pool-test
     streaming-service-test
+    table-structure-engine-test
     table-structure-test
     text-geometry-test)
   foreach(test_name IN LISTS GRPARSE_TESTS)
@@ -234,7 +236,7 @@ if(BUILD_TESTING)
   # The layout golden needs the real model file; without it the test skips
   # (exit 77) so environments that never download models stay green while any
   # environment with models proves the decode against the reference output.
-  set_tests_properties(layout-engine-test PROPERTIES
+  set_tests_properties(layout-engine-test table-structure-engine-test PROPERTIES
     SKIP_RETURN_CODE 77
     ENVIRONMENT
       "GRPARSE_TEST_MODELS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/models;GRPARSE_TEST_DATA_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
