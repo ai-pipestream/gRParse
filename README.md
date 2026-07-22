@@ -1,6 +1,6 @@
 # gRParse
 
-C++ gRPC document parse service: **diskless PDF/image to page-streamed protobuf** with boxes and stable offsets. RapidOCR runs through **ONNX Runtime CUDA** on NVIDIA GPUs. Intel Arc/OpenVINO, layout, tables, and figures are roadmap work, not current runtime capabilities.
+C++ gRPC document parse service: **diskless PDF/image to page-streamed protobuf** with boxes and stable offsets. RapidOCR and PicoDet layout run through **ONNX Runtime** on NVIDIA GPUs (CUDA) or Intel GPUs (OpenVINO). Layout labels, reading order, table items with geometry-derived cell grids, and picture items are live; model-based table spans and figure classification are roadmap work.
 
 - Architecture (runtime split, anti-seesaw pipeline, offset contract): [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - Epics & tasks (C++ vs Java ownership, milestones): [docs/EPICS.md](docs/EPICS.md)
@@ -22,7 +22,7 @@ The service listens on `localhost:50051` and implements `ai.docling.serve.v1.Doc
 
 Each PDF request opens a small pool of Poppler documents directly from the request bytes, so render and digital-text extraction for different pages of the same document proceed in parallel. Full native-text pages skip raster OCR. Weak/partial digital layers keep their native boxes and still run OCR; geometry merge drops overlapping OCR duplicates so headers and scan body can coexist. Image-only pages render at 200 DPI into RapidOCR. Raster inputs decode with OpenCV from request memory. Nothing is written to disk on the hot path.
 
-`ConvertSource` returns the contract's `ConvertDocumentResponse`, populated with a native `DoclingDocument`. Each OCR line becomes a `TextItem`, with its page and bounding box in `provenance`; pages and the `#/body` to `#/texts/N` reference graph are also populated. It deliberately leaves tables, pictures, semantic headings, chunking, asynchronous jobs, and remote sources unimplemented until appropriate layout or extraction models are added.
+`ConvertSource` returns the contract's `ConvertDocumentResponse`, populated with a native `DoclingDocument`. Each OCR line becomes a `TextItem`, with its page and bounding box in `provenance`; pages, `TableItem`/`PictureItem` entries from layout, and the `#/body` reference graph are also populated. It deliberately leaves semantic chunking, asynchronous jobs, and remote sources unimplemented.
 
 The `Health` RPC reports readiness. The server intentionally fails at startup if a model is absent or CUDA initialization fails, instead of silently running CPU OCR.
 
@@ -87,9 +87,7 @@ staying in the pool poisoned. Optional RapidOCR detect knobs:
 once at startup: a malformed or out-of-range value fails the server immediately
 rather than being silently ignored per page. gRPC memory, thread,
 and stream limits use `GRPARSE_GRPC_MEMORY_MIB`, `GRPARSE_GRPC_MAX_THREADS`,
-and `GRPARSE_MAX_CONCURRENT_STREAMS`. RapidOCR currently produces text,
-so `tables` and `pictures` remain empty until dedicated extraction models are
-connected.
+and `GRPARSE_MAX_CONCURRENT_STREAMS`.
 
 When `models/layout_publaynet.onnx` is present (see
 [models/README.md](models/README.md)), every page also runs PicoDet layout
@@ -105,6 +103,16 @@ with `GRPARSE_LAYOUT=auto|on|off` (`auto`, the default, enables layout when
 the model file exists and says so at startup; `on` fails startup if the model
 is missing). Full-digital pages are still rasterized when layout is active,
 but continue to skip OCR.
+
+Every `TableItem` additionally carries geometry-derived structure in
+`data`: the text lines bound to the table region are clustered into row
+bands by vertical overlap and into columns by merging horizontal spans
+(a gap wider than about half the median line height counts as a column
+gutter), giving `num_rows`/`num_cols`, a rectangular `grid`, and per-cell
+text with bounding boxes. All spans are 1 and header flags stay false; a
+table-structure model (Epic D3) will refine spans and headers on the same
+cells. Table interior text still streams as ordinary `TEXT` items too, so
+UTF offsets stay contiguous for clients that ignore tables.
 
 The server registers standard gRPC health checking and reflection in addition
 to the Docling `Health` RPC. SIGINT and SIGTERM initiate a bounded graceful
@@ -173,7 +181,8 @@ against the reference detector; skips without the model file), scheduler (page
 credits, backpressure, partial digital→OCR merge, layout labelling), PDF page
 source (Poppler text/raster geometry, `/Rotate`, concurrent access, two-column
 reading order), reading order (XY-cut multi-column, determinism), resource
-pool, and streaming/unary contract tests. Third-party dependencies register their own CTest
+pool, table structure (geometry grids, cell binding, region crops), and
+streaming/unary contract tests. Third-party dependencies register their own CTest
 suites, so the label filter is what keeps `ctest` scoped to this project:
 
 ```bash

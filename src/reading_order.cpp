@@ -4,6 +4,7 @@
 #include <optional>
 #include <utility>
 
+#include "grparse/region_geometry.h"
 #include "grparse/text_geometry.h"
 
 namespace grparse {
@@ -93,20 +94,10 @@ std::vector<size_t> reading_order(const OcrPage& page) {
     const auto& line = page.lines[line_index];
     if (line.text.empty() || line.polygon.empty()) continue;
     const AxisAlignedBox box = bounding_box(line);
-    const cv::Point center = box.center();
-    int best = -1;
-    float best_confidence = 0.0F;
-    for (size_t region_index = 0; region_index < page.regions.size(); ++region_index) {
-      const auto& region = page.regions[region_index];
-      const bool contains = center.x >= region.left && center.x <= region.right &&
-                            center.y >= region.top && center.y <= region.bottom;
-      if (contains && (best < 0 || region.confidence > best_confidence)) {
-        best = static_cast<int>(region_index);
-        best_confidence = region.confidence;
-      }
-    }
-    if (best >= 0) {
-      Unit& unit = units[static_cast<size_t>(region_unit[static_cast<size_t>(best)])];
+    const LayoutRegion* best = region_for_line(page, line);
+    if (best != nullptr) {
+      const auto region_index = static_cast<size_t>(best - page.regions.data());
+      Unit& unit = units[static_cast<size_t>(region_unit[region_index])];
       unit.line_indices.push_back(line_index);
       unit.box.left = std::min(unit.box.left, box.left);
       unit.box.top = std::min(unit.box.top, box.top);
