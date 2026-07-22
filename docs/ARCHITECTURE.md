@@ -231,12 +231,18 @@ gRParse stays **PDF/image only**. Do not embed LibreOffice here.
 | Stage | Shape | Priority |
 |---|---|---|
 | OCR | RapidOcrOnnx (have) | done |
-| Layout OD | RT-DETR / YOLO-doc class ONNX | P0 structure |
-| Table structure | SLANet/TATR-class ONNX; geometry word→cell v0 first | P1 |
+| Layout OD | PicoDet PubLayNet (have) | done |
+| Table structure | geometry word→cell v0 (have, no model); SLANet/TATR-class ONNX next | P1 |
 | Picture class | EfficientNet-class ONNX | P2 |
 | Barcode | ZXing/ZBar when class says barcode | optional |
 
 Layout is parent: table/picture crops come from layout regions.
+`crop_region` returns clipped zero-copy views of the page raster, so a
+structure or classifier net only ever sees its region, never the full page;
+crops must be consumed (or cloned) inside the inference stage, before the
+raster is released. The geometry word→cell pass needs no pixels at all: it
+runs on the already-extracted line boxes during assembly, on the CPU,
+overlapping the next page's device inference.
 
 ## C++ ownership (this repo)
 

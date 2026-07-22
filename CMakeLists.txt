@@ -194,6 +194,8 @@ add_library(grparse_core
   src/layout_engine.cpp
   src/page_scheduler.cpp
   src/reading_order.cpp
+  src/region_geometry.cpp
+  src/table_structure.cpp
   src/text_geometry.cpp)
 target_include_directories(grparse_core PUBLIC include)
 target_link_libraries(grparse_core
@@ -216,6 +218,7 @@ if(BUILD_TESTING)
     reading-order-test
     resource-pool-test
     streaming-service-test
+    table-structure-test
     text-geometry-test)
   foreach(test_name IN LISTS GRPARSE_TESTS)
     string(REPLACE "-" "_" test_source "${test_name}")

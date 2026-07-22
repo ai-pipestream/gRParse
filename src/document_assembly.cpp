@@ -7,6 +7,8 @@
 #include <utility>
 
 #include "grparse/reading_order.h"
+#include "grparse/region_geometry.h"
+#include "grparse/table_structure.h"
 #include "grparse/text_geometry.h"
 
 namespace docling = ai::docling;
@@ -48,28 +50,43 @@ docling::core::v1::DocItemLabel label_for_region(const std::string& label) {
   return docling::core::v1::DOC_ITEM_LABEL_TEXT;
 }
 
-// A line belongs to the highest-confidence region containing its box center.
-const LayoutRegion* region_for_line(const OcrPage& page, const OcrLine& line) {
-  if (page.regions.empty()) return nullptr;
-  const AxisAlignedBox box = bounding_box(line);
-  const cv::Point center = box.center();
-  const LayoutRegion* best = nullptr;
-  for (const auto& region : page.regions) {
-    const bool contains = center.x >= region.left && center.x <= region.right &&
-                          center.y >= region.top && center.y <= region.bottom;
-    if (contains && (best == nullptr || region.confidence > best->confidence)) {
-      best = &region;
-    }
-  }
-  return best;
-}
-
 void set_region_bounding_box(const LayoutRegion& region, docling::core::v1::BoundingBox* output) {
   output->set_l(region.left);
   output->set_t(region.top);
   output->set_r(region.right);
   output->set_b(region.bottom);
   output->set_coord_origin(docling::core::v1::COORD_ORIGIN_TOPLEFT);
+}
+
+// Geometry table structure (D2 v0): every grid position becomes a TableCell
+// with unit spans, mirrored into both the flat cell list and the row grid.
+// Header flags stay false; geometry cannot tell a header from a body row.
+void fill_table_data(const OcrPage& page, const LayoutRegion& region,
+                     docling::core::v1::TableData* data) {
+  const TableGrid grid = build_table_grid(page, region);
+  data->set_num_rows(grid.rows);
+  data->set_num_cols(grid.cols);
+  std::vector<docling::core::v1::TableRow*> rows;
+  rows.reserve(static_cast<size_t>(grid.rows));
+  for (int row = 0; row < grid.rows; ++row) rows.push_back(data->add_grid());
+  for (const auto& cell : grid.cells) {
+    docling::core::v1::TableCell proto_cell;
+    proto_cell.set_row_span(1);
+    proto_cell.set_col_span(1);
+    proto_cell.set_start_row_offset_idx(cell.row);
+    proto_cell.set_end_row_offset_idx(cell.row + 1);
+    proto_cell.set_start_col_offset_idx(cell.col);
+    proto_cell.set_end_col_offset_idx(cell.col + 1);
+    std::string text;
+    for (const size_t line_index : cell.line_indices) {
+      if (!text.empty()) text.push_back(' ');
+      text += page.lines[line_index].text;
+    }
+    proto_cell.set_text(std::move(text));
+    if (!cell.line_indices.empty()) set_bounding_box(cell.box, proto_cell.mutable_bbox());
+    *data->add_table_cells() = proto_cell;
+    *rows[static_cast<size_t>(cell.row)]->add_cells() = std::move(proto_cell);
+  }
 }
 
 }  // namespace
@@ -139,6 +156,7 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
       auto* provenance = table->add_prov();
       provenance->set_page_no(page_number);
       set_region_bounding_box(region, provenance->mutable_bbox());
+      fill_table_data(source, region, table->mutable_data());
     } else if (region.label == "figure") {
       auto* picture = output->add_pictures();
       picture->set_self_ref("#/pictures/" + std::to_string(cursor->picture_index++));

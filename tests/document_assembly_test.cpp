@@ -97,6 +97,25 @@ void verify_layout_regions_map_labels_and_emit_items() {
               data.pictures(0).label() == ai::docling::core::v1::DOC_ITEM_LABEL_PICTURE,
           "figure region must become a PictureItem");
 
+  const auto& table_data = data.tables(0).data();
+  require(table_data.num_rows() == 1 && table_data.num_cols() == 1,
+          "single line in a table region yields a 1x1 geometry grid");
+  require(table_data.table_cells_size() == 1 && table_data.table_cells(0).text() == "cell",
+          "cell text comes from the bound line");
+  require(table_data.grid_size() == 1 && table_data.grid(0).cells_size() == 1 &&
+              table_data.grid(0).cells(0).text() == "cell",
+          "row grid mirrors the flat cell list");
+  const auto& cell = table_data.table_cells(0);
+  require(cell.row_span() == 1 && cell.col_span() == 1 && cell.start_row_offset_idx() == 0 &&
+              cell.end_row_offset_idx() == 1 && cell.start_col_offset_idx() == 0 &&
+              cell.end_col_offset_idx() == 1,
+          "geometry cells carry unit spans and grid offsets");
+  require(cell.bbox().l() == 10 && cell.bbox().t() == 300 && cell.bbox().r() == 90 &&
+              cell.bbox().b() == 310,
+          "cell bbox is the bound line box");
+  require(!cell.column_header() && !cell.row_header(),
+          "geometry structure must not guess header roles");
+
   // The unary document path carries the same items and references them.
   grparse::AssemblyCursor document_cursor;
   ai::docling::core::v1::DoclingDocument document;
@@ -104,6 +123,9 @@ void verify_layout_regions_map_labels_and_emit_items() {
   grparse::append_page_to_document(page, 1, &document_cursor, &document, &plain_text);
   require(document.tables_size() == 1 && document.pictures_size() == 1,
           "document must own the region items");
+  require(document.tables(0).data().num_rows() == 1 &&
+              document.tables(0).data().table_cells(0).text() == "cell",
+          "unary path carries the same table cells as the stream");
   require(document.body().children_size() == 5, "body references texts, table, and picture");
   require(document.body().children(3).ref() == "#/tables/0" &&
               document.body().children(4).ref() == "#/pictures/0",

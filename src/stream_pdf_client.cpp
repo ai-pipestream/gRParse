@@ -76,10 +76,16 @@ int main(int argc, char** argv) {
       for (const auto& text : event.page().texts()) {
         if (text.text().base().label() != docling::core::v1::DOC_ITEM_LABEL_TEXT) ++labelled_items;
       }
+      int filled_cells = 0;
+      for (const auto& table : event.page().tables()) {
+        for (const auto& cell : table.data().table_cells()) {
+          if (!cell.text().empty()) ++filled_cells;
+        }
+      }
       std::cout << "page=" << event.page().page_number() << " text_items=" << event.page().texts_size()
                 << " digital_items=" << digital_items << " ocr_items=" << ocr_items
                 << " labelled=" << labelled_items << " tables=" << event.page().tables_size()
-                << " pictures=" << event.page().pictures_size() << '\n';
+                << " cells=" << filled_cells << " pictures=" << event.page().pictures_size() << '\n';
     } else if (event.has_complete()) {
       std::cout << "complete total_pages=" << event.total_pages() << '\n';
     }
