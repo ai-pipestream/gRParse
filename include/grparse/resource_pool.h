@@ -1,8 +1,10 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -23,6 +25,14 @@ template <typename T>
 class ResourcePool final {
  public:
   using Factory = std::function<std::unique_ptr<T>()>;
+
+  // Cumulative acquisition counters; wait_ns is the time acquirers spent
+  // blocked on a full pool, which is the direct measure of pool starvation.
+  struct Stats {
+    uint64_t acquires = 0;
+    uint64_t discards = 0;
+    uint64_t wait_ns = 0;
+  };
 
   class Lease final {
    public:
@@ -49,6 +59,17 @@ class ResourcePool final {
     }
 
     ~Lease() { release(); }
+
+    // Destroys the leased resource instead of returning it: after a device or
+    // session error the resource may be poisoned, and the next acquire of this
+    // slot must rebuild it from the factory rather than reuse it.
+    void discard() {
+      if (pool_ != nullptr) {
+        pool_->discard(slot_);
+        pool_ = nullptr;
+        value_ = nullptr;
+      }
+    }
 
     T& operator*() const { return *value_; }
     T* operator->() const { return value_; }
@@ -87,7 +108,14 @@ class ResourcePool final {
     size_t slot = 0;
     {
       std::unique_lock<std::mutex> lock(mutex_);
-      available_.wait(lock, [this] { return !free_slots_.empty(); });
+      acquires_.fetch_add(1);
+      if (free_slots_.empty()) {
+        const auto wait_started = std::chrono::steady_clock::now();
+        available_.wait(lock, [this] { return !free_slots_.empty(); });
+        wait_ns_.fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                     std::chrono::steady_clock::now() - wait_started)
+                                                     .count()));
+      }
       slot = free_slots_.back();
       free_slots_.pop_back();
     }
@@ -115,6 +143,8 @@ class ResourcePool final {
   size_t capacity() const { return slots_.size(); }
   size_t live() const { return live_.load(); }
 
+  Stats stats() const { return Stats{acquires_.load(), discards_.load(), wait_ns_.load()}; }
+
  private:
   void release(size_t slot) {
     {
@@ -122,6 +152,15 @@ class ResourcePool final {
       free_slots_.push_back(slot);
     }
     available_.notify_one();
+  }
+
+  // Called by Lease::discard while the caller still holds the slot
+  // exclusively, so destroying the element races with nobody.
+  void discard(size_t slot) {
+    slots_[slot].reset();
+    live_.fetch_sub(1);
+    discards_.fetch_add(1);
+    release(slot);
   }
 
   Factory factory_;
@@ -132,6 +171,9 @@ class ResourcePool final {
   mutable std::mutex mutex_;
   std::condition_variable available_;
   std::atomic<size_t> live_{0};
+  std::atomic<uint64_t> acquires_{0};
+  std::atomic<uint64_t> discards_{0};
+  std::atomic<uint64_t> wait_ns_{0};
 };
 
 }  // namespace grparse

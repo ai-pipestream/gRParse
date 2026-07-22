@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -44,6 +45,11 @@ class PageScheduler final {
     std::function<void(std::exception_ptr failure)> on_finish;
   };
 
+  // Upper bounds in milliseconds for Metrics::page_latency buckets; the last
+  // bucket counts everything slower than the final bound.
+  static constexpr std::array<uint64_t, 9> kPageLatencyBoundsMs = {25,   50,   100,  250, 500,
+                                                                   1000, 2500, 5000, 10000};
+
   struct Metrics {
     uint64_t documents_submitted = 0;
     uint64_t documents_rejected = 0;
@@ -55,6 +61,16 @@ class PageScheduler final {
     size_t pages_waiting_for_render = 0;
     size_t pages_waiting_for_inference = 0;
     size_t pages_waiting_for_assembly = 0;
+    // Cumulative nanoseconds each stage's workers spent doing page work (not
+    // blocked on queues).  Divide the delta between two samples by the sample
+    // interval times the stage's worker count for a busy fraction; render and
+    // inference both being busy is the anti-seesaw overlap made measurable.
+    uint64_t render_busy_ns = 0;
+    uint64_t inference_busy_ns = 0;
+    uint64_t assembly_busy_ns = 0;
+    // Completed pages by schedule-to-delivered latency, kPageLatencyBoundsMs
+    // bucket bounds plus one overflow bucket.
+    std::array<uint64_t, kPageLatencyBoundsMs.size() + 1> page_latency = {};
   };
 
   class Ticket {

@@ -117,6 +117,10 @@ void verify_pipeline_and_metrics() {
   require(metrics.documents_submitted == 1, "submitted metric");
   require(metrics.pages_rendered == 6, "rendered metric");
   require(metrics.pages_recognized == 6, "recognized metric");
+  require(metrics.inference_busy_ns > 0, "inference busy time must accumulate");
+  uint64_t delivered = 0;
+  for (const uint64_t bucket : metrics.page_latency) delivered += bucket;
+  require(delivered == 6, "every completed page must land in one latency bucket");
 }
 
 void verify_cancellation_drains_bounded_work() {

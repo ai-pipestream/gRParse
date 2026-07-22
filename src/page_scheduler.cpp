@@ -1,6 +1,7 @@
 #include "grparse/page_scheduler.h"
 
 #include <algorithm>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <functional>
@@ -92,6 +93,27 @@ class BoundedQueue final {
 // Terminal disposition of a page job; every page reaches exactly one of these.
 enum class PageOutcome { kCompleted, kCancelled, kFailed };
 
+// Accumulates wall time spent inside a stage's actual page work.  Queue pushes
+// stay outside these scopes: blocking on a full downstream queue is
+// backpressure, and counting it as busy would hide exactly the stall the
+// metric exists to expose.
+class BusyTimer final {
+ public:
+  explicit BusyTimer(std::atomic<uint64_t>& sink)
+      : sink_(sink), started_(std::chrono::steady_clock::now()) {}
+  BusyTimer(const BusyTimer&) = delete;
+  BusyTimer& operator=(const BusyTimer&) = delete;
+  ~BusyTimer() {
+    sink_.fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                              std::chrono::steady_clock::now() - started_)
+                                              .count()));
+  }
+
+ private:
+  std::atomic<uint64_t>& sink_;
+  std::chrono::steady_clock::time_point started_;
+};
+
 }  // namespace
 
 struct PageScheduler::Ticket::State {
@@ -151,6 +173,9 @@ class PageScheduler::Impl final {
     std::shared_ptr<PageSource> source;
     std::shared_ptr<Ticket::State> request;
     int page_number = 0;
+    // Set when the page enters the render queue; delivery latency is measured
+    // from here so it includes every queue wait, not just compute.
+    std::chrono::steady_clock::time_point scheduled_at{};
   };
 
   struct InferenceJob {
@@ -243,9 +268,17 @@ class PageScheduler::Impl final {
   }
 
   Metrics metrics() const {
-    return Metrics{documents_submitted_.load(), documents_rejected_.load(), pages_rendered_.load(),
-                   pages_read_digitally_.load(), pages_recognized_.load(), pages_cancelled_.load(),
-                   documents_.size(), render_.size(), inference_.size(), assembly_.size()};
+    Metrics snapshot{documents_submitted_.load(), documents_rejected_.load(),
+                     pages_rendered_.load(),      pages_read_digitally_.load(),
+                     pages_recognized_.load(),    pages_cancelled_.load(),
+                     documents_.size(),           render_.size(),
+                     inference_.size(),           assembly_.size(),
+                     render_busy_ns_.load(),      inference_busy_ns_.load(),
+                     assembly_busy_ns_.load(),    {}};
+    for (size_t bucket = 0; bucket < latency_buckets_.size(); ++bucket) {
+      snapshot.page_latency[bucket] = latency_buckets_[bucket].load();
+    }
+    return snapshot;
   }
 
   size_t page_window() const { return options_.page_window; }
@@ -326,6 +359,7 @@ class PageScheduler::Impl final {
           page->source = request->source;
           page->request = request;
           page->page_number = request->next_page_to_schedule;
+          page->scheduled_at = std::chrono::steady_clock::now();
           // A full render queue parks this document until a render worker
           // dequeues.  The old code slept on the single scheduler thread, which
           // stalled every other document behind one saturated one.
@@ -359,6 +393,17 @@ class PageScheduler::Impl final {
       request->reschedule_pending.store(false);
       schedule_pages(request);
     }
+  }
+
+  void record_page_latency(std::chrono::steady_clock::time_point scheduled_at) {
+    const auto elapsed_ms = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                      std::chrono::steady_clock::now() - scheduled_at)
+                                                      .count());
+    size_t bucket = 0;
+    while (bucket < kPageLatencyBoundsMs.size() && elapsed_ms > kPageLatencyBoundsMs[bucket]) {
+      ++bucket;
+    }
+    latency_buckets_[bucket].fetch_add(1);
   }
 
   void complete_page(const std::shared_ptr<PageJob>& page, PageOutcome outcome) {
@@ -417,7 +462,11 @@ class PageScheduler::Impl final {
         continue;
       }
       try {
-        std::optional<OcrPage> digital = page->source->extract_digital_page(page->page_number);
+        std::optional<OcrPage> digital;
+        {
+          const BusyTimer timer(render_busy_ns_);
+          digital = page->source->extract_digital_page(page->page_number);
+        }
         if (digital.has_value()) {
           pages_read_digitally_.fetch_add(1);
           if (digital->skip_ocr) {
@@ -427,7 +476,11 @@ class PageScheduler::Impl final {
           }
         }
 
-        cv::Mat image = page->source->render_page(page->page_number);
+        cv::Mat image;
+        {
+          const BusyTimer timer(render_busy_ns_);
+          image = page->source->render_page(page->page_number);
+        }
         pages_rendered_.fetch_add(1);
         if (page->request->cancelled.load()) {
           complete_page(page, PageOutcome::kCancelled);
@@ -456,17 +509,20 @@ class PageScheduler::Impl final {
         continue;
       }
       try {
-        OcrPage ocr = recognizer_.extract_page(job.image);
-        // Drop the raster the moment the device stage is done with it (B5).
-        job.image.release();
-        pages_recognized_.fetch_add(1);
-
         std::shared_ptr<const OcrPage> result;
-        if (job.digital_seed.has_value() && !job.digital_seed->lines.empty()) {
-          result = std::make_shared<const OcrPage>(
-              merge_digital_and_ocr(std::move(*job.digital_seed), std::move(ocr)));
-        } else {
-          result = std::make_shared<const OcrPage>(std::move(ocr));
+        {
+          const BusyTimer timer(inference_busy_ns_);
+          OcrPage ocr = recognizer_.extract_page(job.image);
+          // Drop the raster the moment the device stage is done with it (B5).
+          job.image.release();
+          pages_recognized_.fetch_add(1);
+
+          if (job.digital_seed.has_value() && !job.digital_seed->lines.empty()) {
+            result = std::make_shared<const OcrPage>(
+                merge_digital_and_ocr(std::move(*job.digital_seed), std::move(ocr)));
+          } else {
+            result = std::make_shared<const OcrPage>(std::move(ocr));
+          }
         }
         enqueue_assembly(job.page, std::move(result));
       } catch (...) {
@@ -486,8 +542,12 @@ class PageScheduler::Impl final {
         continue;
       }
       try {
-        const DeliveryResult delivery =
-            job.page->request->callbacks.on_page(job.page->page_number, std::move(job.result));
+        DeliveryResult delivery = DeliveryResult::kCancelled;
+        {
+          const BusyTimer timer(assembly_busy_ns_);
+          delivery =
+              job.page->request->callbacks.on_page(job.page->page_number, std::move(job.result));
+        }
         if (delivery == DeliveryResult::kAcceptedAndRelease) {
           Ticket::State::release_slots(job.page->request, 1);
         }
@@ -495,6 +555,7 @@ class PageScheduler::Impl final {
           job.page->request->cancel();
           complete_page(job.page, PageOutcome::kCancelled);
         } else {
+          record_page_latency(job.page->scheduled_at);
           complete_page(job.page, PageOutcome::kCompleted);
         }
       } catch (...) {
@@ -530,6 +591,10 @@ class PageScheduler::Impl final {
   std::atomic<uint64_t> pages_read_digitally_{0};
   std::atomic<uint64_t> pages_recognized_{0};
   std::atomic<uint64_t> pages_cancelled_{0};
+  std::atomic<uint64_t> render_busy_ns_{0};
+  std::atomic<uint64_t> inference_busy_ns_{0};
+  std::atomic<uint64_t> assembly_busy_ns_{0};
+  std::array<std::atomic<uint64_t>, kPageLatencyBoundsMs.size() + 1> latency_buckets_{};
 };
 
 PageScheduler::Ticket::Ticket(std::weak_ptr<State> state) : state_(std::move(state)) {}

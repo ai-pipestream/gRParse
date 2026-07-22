@@ -49,12 +49,16 @@ class PageRecognizer {
 class OcrEnginePool final : public PageRecognizer {
  public:
   using Lease = ResourcePool<OcrEngine>::Lease;
+  using Stats = ResourcePool<OcrEngine>::Stats;
 
   OcrEnginePool(const std::filesystem::path& model_directory, size_t worker_count, int gpu_index);
 
   Lease acquire() { return engines_.acquire(); }
   OcrPage extract_page(const cv::Mat& image) override;
   size_t size() const { return engines_.capacity(); }
+  // wait_ns rising faster than pages complete means inference workers outnumber
+  // warm sessions; discards count sessions rebuilt after a device error.
+  Stats stats() const { return engines_.stats(); }
 
  private:
   ResourcePool<OcrEngine> engines_;
