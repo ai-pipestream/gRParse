@@ -161,6 +161,77 @@ void verify_digital_pages_bypass_render_and_inference() {
           "digital pages must not enter render or inference queues");
 }
 
+// Full digital coverage but with a renderable raster, for layout labelling.
+class RenderableDigitalSource final : public grparse::PageSource {
+ public:
+  int page_count() const override { return 2; }
+
+  std::optional<grparse::OcrPage> extract_digital_page(int page_number) const override {
+    grparse::OcrPage page{100, 100,
+                          {{"digital-" + std::to_string(page_number),
+                            {{0, 0}, {40, 0}, {40, 8}, {0, 8}}, std::nullopt,
+                            grparse::TextOrigin::kDigitalPdf}}};
+    page.source = grparse::OcrPage::Source::kDigitalPdf;
+    page.skip_ocr = true;
+    return page;
+  }
+
+  cv::Mat render_page(int) const override { return cv::Mat(4, 4, CV_8UC3, cv::Scalar(255)); }
+};
+
+class FakeDetector final : public grparse::RegionDetector {
+ public:
+  std::vector<grparse::LayoutRegion> detect_regions(const cv::Mat&) override {
+    calls.fetch_add(1);
+    return {grparse::LayoutRegion{"title", 0.9F, 0, 0, 50, 10}};
+  }
+  std::atomic<int> calls{0};
+};
+
+void verify_layout_labels_digital_pages_without_ocr() {
+  FakeRecognizer recognizer;
+  FakeDetector detector;
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 2, 2, 2, 1, 1, 1},
+      [](std::shared_ptr<const std::string>, bool) {
+        return std::make_shared<RenderableDigitalSource>();
+      },
+      &detector);
+  Result result;
+  std::mutex pages_mutex;
+  std::vector<std::shared_ptr<const grparse::OcrPage>> delivered;
+  auto callbacks = callbacks_for(&result);
+  callbacks.on_page = [&](int page_number, std::shared_ptr<const grparse::OcrPage> page) {
+    {
+      std::lock_guard<std::mutex> lock(pages_mutex);
+      delivered.push_back(std::move(page));
+    }
+    std::lock_guard<std::mutex> lock(result.mutex);
+    result.completed_pages.push_back(page_number);
+    return grparse::PageScheduler::DeliveryResult::kAcceptedAndRelease;
+  };
+  scheduler.submit(std::make_shared<const std::string>("memory"), true, std::move(callbacks));
+  wait_until_finished(&result);
+
+  require(!result.failure, "layout-labelled digital document failed");
+  require(result.completed_pages.size() == 2, "layout digital completion count");
+  require(recognizer.calls.load() == 0, "full digital coverage must still bypass RapidOCR");
+  require(detector.calls.load() == 2, "every page must pass through layout detection");
+  {
+    std::lock_guard<std::mutex> lock(pages_mutex);
+    for (const auto& page : delivered) {
+      require(page->source == grparse::OcrPage::Source::kDigitalPdf,
+              "digital text must survive the layout pass");
+      require(page->regions.size() == 1 && page->regions.front().label == "title",
+              "layout regions must ride on the delivered page");
+    }
+  }
+  const auto metrics = scheduler.metrics();
+  require(metrics.pages_rendered == 2, "layout requires the raster even for digital pages");
+  require(metrics.pages_layout_labelled == 2, "layout metric must count labelled pages");
+  require(metrics.pages_recognized == 0, "OCR remains selective under layout");
+}
+
 void verify_delivery_cancellation_drains_queued_work() {
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(
@@ -377,6 +448,7 @@ int main() {
     verify_pipeline_and_metrics();
     verify_cancellation_drains_bounded_work();
     verify_digital_pages_bypass_render_and_inference();
+    verify_layout_labels_digital_pages_without_ocr();
     verify_partial_digital_merges_with_ocr();
     verify_delivery_cancellation_drains_queued_work();
     verify_page_credits_bound_a_document();

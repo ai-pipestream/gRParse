@@ -50,13 +50,14 @@ const ExpectedRegion kReportPageGolden[] = {
     {"figure", 0.573748F, 119.73F, 857.73F, 1121.28F, 1563.35F},
 };
 
-float iou(const grparse::AxisAlignedBox& box, const ExpectedRegion& expected) {
+float iou(const grparse::LayoutRegion& box, const ExpectedRegion& expected) {
   const float left = std::max(static_cast<float>(box.left), expected.left);
   const float top = std::max(static_cast<float>(box.top), expected.top);
   const float right = std::min(static_cast<float>(box.right), expected.right);
   const float bottom = std::min(static_cast<float>(box.bottom), expected.bottom);
   const float intersection = std::max(0.0F, right - left) * std::max(0.0F, bottom - top);
-  const float area_detected = static_cast<float>(box.width() * box.height());
+  const float area_detected = static_cast<float>(box.right - box.left) *
+                              static_cast<float>(box.bottom - box.top);
   const float area_expected =
       (expected.right - expected.left) * (expected.bottom - expected.top);
   return intersection / (area_detected + area_expected - intersection);
@@ -79,7 +80,7 @@ void verify_report_page_matches_reference(const fs::path& model, const fs::path&
   for (const auto& expected : kReportPageGolden) {
     bool matched = false;
     for (const auto& region : regions) {
-      if (region.label == expected.label && iou(region.box, expected) > 0.9F &&
+      if (region.label == expected.label && iou(region, expected) > 0.9F &&
           std::abs(region.confidence - expected.score) < 0.02F) {
         matched = true;
         break;

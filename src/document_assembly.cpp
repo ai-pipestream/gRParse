@@ -38,6 +38,39 @@ docling::serve::v1::TextSource text_source_for(const OcrPage& page, const OcrLin
   }
 }
 
+// PubLayNet region label -> Docling item label for the text lines inside it.
+// Lines inside table/figure regions keep TEXT: the region itself is emitted
+// as a TableItem/PictureItem, and cell/caption structure is Epic D/E work.
+docling::core::v1::DocItemLabel label_for_region(const std::string& label) {
+  if (label == "title") return docling::core::v1::DOC_ITEM_LABEL_TITLE;
+  if (label == "list") return docling::core::v1::DOC_ITEM_LABEL_LIST_ITEM;
+  return docling::core::v1::DOC_ITEM_LABEL_TEXT;
+}
+
+// A line belongs to the highest-confidence region containing its box center.
+const LayoutRegion* region_for_line(const OcrPage& page, const OcrLine& line) {
+  if (page.regions.empty()) return nullptr;
+  const AxisAlignedBox box = bounding_box(line);
+  const cv::Point center = box.center();
+  const LayoutRegion* best = nullptr;
+  for (const auto& region : page.regions) {
+    const bool contains = center.x >= region.left && center.x <= region.right &&
+                          center.y >= region.top && center.y <= region.bottom;
+    if (contains && (best == nullptr || region.confidence > best->confidence)) {
+      best = &region;
+    }
+  }
+  return best;
+}
+
+void set_region_bounding_box(const LayoutRegion& region, docling::core::v1::BoundingBox* output) {
+  output->set_l(region.left);
+  output->set_t(region.top);
+  output->set_r(region.right);
+  output->set_b(region.bottom);
+  output->set_coord_origin(docling::core::v1::COORD_ORIGIN_TOPLEFT);
+}
+
 }  // namespace
 
 uint64_t utf8_codepoint_count(const std::string& text) {
@@ -63,7 +96,9 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     base->set_self_ref(self_ref);
     base->mutable_parent()->set_ref("#/body");
     base->set_content_layer(docling::core::v1::CONTENT_LAYER_BODY);
-    base->set_label(docling::core::v1::DOC_ITEM_LABEL_TEXT);
+    const LayoutRegion* region = region_for_line(source, line);
+    base->set_label(region == nullptr ? docling::core::v1::DOC_ITEM_LABEL_TEXT
+                                      : label_for_region(region->label));
     base->set_orig(line.text);
     base->set_text(line.text);
 
@@ -86,6 +121,30 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     if (line.confidence.has_value()) offset->set_confidence(*line.confidence);
     offset->set_source(text_source_for(source, line));
     cursor->has_text = true;
+  }
+
+  // Table and figure regions become items in their own right so Epics D and E
+  // have crops to work from; their inner text already streamed above as TEXT.
+  for (const auto& region : source.regions) {
+    if (region.label == "table") {
+      auto* table = output->add_tables();
+      table->set_self_ref("#/tables/" + std::to_string(cursor->table_index++));
+      table->mutable_parent()->set_ref("#/body");
+      table->set_content_layer(docling::core::v1::CONTENT_LAYER_BODY);
+      table->set_label(docling::core::v1::DOC_ITEM_LABEL_TABLE);
+      auto* provenance = table->add_prov();
+      provenance->set_page_no(page_number);
+      set_region_bounding_box(region, provenance->mutable_bbox());
+    } else if (region.label == "figure") {
+      auto* picture = output->add_pictures();
+      picture->set_self_ref("#/pictures/" + std::to_string(cursor->picture_index++));
+      picture->mutable_parent()->set_ref("#/body");
+      picture->set_content_layer(docling::core::v1::CONTENT_LAYER_BODY);
+      picture->set_label(docling::core::v1::DOC_ITEM_LABEL_PICTURE);
+      auto* provenance = picture->add_prov();
+      provenance->set_page_no(page_number);
+      set_region_bounding_box(region, provenance->mutable_bbox());
+    }
   }
 }
 
@@ -110,6 +169,15 @@ void append_page_to_document(const OcrPage& source, int page_number, AssemblyCur
     plain_text->append(base.text());
     // Hand the item over instead of deep-copying every box and string again.
     *document->add_texts() = std::move(text);
+  }
+
+  for (auto& table : *page.mutable_tables()) {
+    document->mutable_body()->add_children()->set_ref(table.self_ref());
+    *document->add_tables() = std::move(table);
+  }
+  for (auto& picture : *page.mutable_pictures()) {
+    document->mutable_body()->add_children()->set_ref(picture.self_ref());
+    *document->add_pictures() = std::move(picture);
   }
 }
 

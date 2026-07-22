@@ -215,17 +215,17 @@ class LayoutEngine::Impl {
       LayoutRegion region;
       region.label = labels()[static_cast<size_t>(candidate.label)];
       region.confidence = candidate.score;
-      region.box.left = static_cast<int>(std::lround(candidate.left / scale_x));
-      region.box.top = static_cast<int>(std::lround(candidate.top / scale_y));
-      region.box.right = static_cast<int>(std::lround(candidate.right / scale_x));
-      region.box.bottom = static_cast<int>(std::lround(candidate.bottom / scale_y));
+      region.left = static_cast<int>(std::lround(candidate.left / scale_x));
+      region.top = static_cast<int>(std::lround(candidate.top / scale_y));
+      region.right = static_cast<int>(std::lround(candidate.right / scale_x));
+      region.bottom = static_cast<int>(std::lround(candidate.bottom / scale_y));
       regions.push_back(std::move(region));
     }
     // Deterministic order for downstream assembly: by confidence, then geometry.
     std::sort(regions.begin(), regions.end(), [](const LayoutRegion& a, const LayoutRegion& b) {
       if (a.confidence != b.confidence) return a.confidence > b.confidence;
-      if (a.box.top != b.box.top) return a.box.top < b.box.top;
-      return a.box.left < b.box.left;
+      if (a.top != b.top) return a.top < b.top;
+      return a.left < b.left;
     });
     return regions;
   }

@@ -68,12 +68,56 @@ void verify_offsets_and_provenance() {
           "cross-page running offset");
 }
 
+void verify_layout_regions_map_labels_and_emit_items() {
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1000, 1000,
+                        {line("Heading", 10), line("body text", 100), line("cell", 300)}};
+  page.regions = {
+      {"title", 0.9F, 0, 0, 1000, 40},
+      {"table", 0.8F, 0, 250, 1000, 400},
+      {"figure", 0.7F, 0, 500, 1000, 800},
+  };
+
+  ai::docling::serve::v1::PageData data;
+  grparse::append_page_data(page, 1, &cursor, &data);
+  require(data.texts_size() == 3, "layout page text count");
+  require(data.texts(0).text().base().label() == ai::docling::core::v1::DOC_ITEM_LABEL_TITLE,
+          "a line inside a title region becomes a TITLE item");
+  require(data.texts(1).text().base().label() == ai::docling::core::v1::DOC_ITEM_LABEL_TEXT,
+          "a line outside every region stays TEXT");
+  require(data.texts(2).text().base().label() == ai::docling::core::v1::DOC_ITEM_LABEL_TEXT,
+          "table cell text stays TEXT until Epic D structures it");
+  require(data.tables_size() == 1 && data.tables(0).self_ref() == "#/tables/0" &&
+              data.tables(0).label() == ai::docling::core::v1::DOC_ITEM_LABEL_TABLE,
+          "table region must become a TableItem");
+  require(data.tables(0).prov_size() == 1 && data.tables(0).prov(0).page_no() == 1 &&
+              data.tables(0).prov(0).bbox().t() == 250,
+          "table item carries region provenance");
+  require(data.pictures_size() == 1 && data.pictures(0).self_ref() == "#/pictures/0" &&
+              data.pictures(0).label() == ai::docling::core::v1::DOC_ITEM_LABEL_PICTURE,
+          "figure region must become a PictureItem");
+
+  // The unary document path carries the same items and references them.
+  grparse::AssemblyCursor document_cursor;
+  ai::docling::core::v1::DoclingDocument document;
+  std::string plain_text;
+  grparse::append_page_to_document(page, 1, &document_cursor, &document, &plain_text);
+  require(document.tables_size() == 1 && document.pictures_size() == 1,
+          "document must own the region items");
+  require(document.body().children_size() == 5, "body references texts, table, and picture");
+  require(document.body().children(3).ref() == "#/tables/0" &&
+              document.body().children(4).ref() == "#/pictures/0",
+          "region item refs must join the body graph");
+  require(plain_text == "Heading\nbody text\ncell", "regions must not disturb the text stream");
+}
+
 }  // namespace
 
 int main() {
   try {
     verify_contract_shape();
     verify_offsets_and_provenance();
+    verify_layout_regions_map_labels_and_emit_items();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
     std::cerr << "document-assembly-test: " << error.what() << '\n';
