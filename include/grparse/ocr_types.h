@@ -41,6 +41,13 @@ struct FigureClass {
   float confidence = 0.0F;
 };
 
+// One decoded barcode payload.  The format is ZXing's name for the symbology
+// (for example "QRCode" or "Code128"); the text is the decoded content.
+struct BarcodeResult {
+  std::string format;
+  std::string text;
+};
+
 // One detected layout region in page pixel coordinates (top-left origin,
 // the same space text boxes use).  Boxes are corners, edges inclusive.
 struct LayoutRegion {
@@ -60,6 +67,9 @@ struct LayoutRegion {
   // Classifier output sorted by confidence, filled only for figure regions
   // when the figure classifier is active.
   std::vector<FigureClass> figure_classes = {};
+  // Barcode payloads decoded from the region crop, filled only for figure
+  // regions when barcode decoding triggers (by class or by flag).
+  std::vector<BarcodeResult> barcodes = {};
 };
 
 struct OcrPage {

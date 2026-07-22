@@ -9,6 +9,8 @@
 #include <thread>
 #include <vector>
 
+#include <opencv2/imgcodecs.hpp>
+
 #include "grparse/page_scheduler.h"
 
 namespace {
@@ -307,8 +309,9 @@ class FakeClassifier final : public grparse::FigureClassifierBase {
   std::vector<grparse::FigureClass> classify(const cv::Mat& crop) override {
     calls.fetch_add(1);
     crop_width.store(crop.cols);
-    return {{"bar_chart", 0.9F}, {"other", 0.1F}};
+    return classes;
   }
+  std::vector<grparse::FigureClass> classes = {{"bar_chart", 0.9F}, {"other", 0.1F}};
   std::atomic<int> calls{0};
   std::atomic<int> crop_width{0};
 };
@@ -407,6 +410,141 @@ void verify_picture_capture_encodes_figure_crops() {
                 figure.image_png[2] == 'N' && figure.image_png[3] == 'G',
             "figure crop must be PNG-encoded");
     require(page->regions[1].image_png.empty(), "non-figure regions must stay byte-free");
+  }
+}
+
+// Full digital coverage rendering a page that holds the committed QR fixture,
+// so barcode decoding sees real pixels.
+class QrPageSource final : public grparse::PageSource {
+ public:
+  explicit QrPageSource(cv::Mat page) : page_(std::move(page)) {}
+  int page_count() const override { return 2; }
+
+  std::optional<grparse::OcrPage> extract_digital_page(int page_number) const override {
+    grparse::OcrPage page{page_.cols, page_.rows,
+                          {{"digital-" + std::to_string(page_number),
+                            {{0, 0}, {40, 0}, {40, 8}, {0, 8}}, std::nullopt,
+                            grparse::TextOrigin::kDigitalPdf}}};
+    page.source = grparse::OcrPage::Source::kDigitalPdf;
+    page.skip_ocr = true;
+    return page;
+  }
+
+  cv::Mat render_page(int) const override { return page_.clone(); }
+
+ private:
+  cv::Mat page_;
+};
+
+// Loads the committed QR fixture and pastes it into a white page at (20, 20).
+// Also reports the region box covering the pasted code, corners inclusive.
+cv::Mat qr_page(grparse::LayoutRegion* qr_region) {
+  const char* data_dir = std::getenv("GRPARSE_TEST_DATA_DIR");
+  const std::string path =
+      std::string(data_dir == nullptr ? "tests/data" : data_dir) + "/qr_code.png";
+  const cv::Mat fixture = cv::imread(path, cv::IMREAD_COLOR);
+  require(!fixture.empty(), "QR fixture must load: " + path);
+  cv::Mat page(fixture.rows + 40, fixture.cols + 40, CV_8UC3, cv::Scalar(255, 255, 255));
+  fixture.copyTo(page(cv::Rect(20, 20, fixture.cols, fixture.rows)));
+  *qr_region = grparse::LayoutRegion{"figure", 0.8F, 20, 20, 20 + fixture.cols - 1,
+                                     20 + fixture.rows - 1};
+  return page;
+}
+
+constexpr const char* kQrPayload = "https://github.com/krickert/gRParse/e3";
+
+void run_qr_document(grparse::PageScheduler& scheduler,
+                     std::vector<std::shared_ptr<const grparse::OcrPage>>* delivered) {
+  Result result;
+  std::mutex pages_mutex;
+  auto callbacks = callbacks_for(&result);
+  callbacks.on_page = [&](int page_number, std::shared_ptr<const grparse::OcrPage> page) {
+    {
+      std::lock_guard<std::mutex> lock(pages_mutex);
+      delivered->push_back(std::move(page));
+    }
+    std::lock_guard<std::mutex> lock(result.mutex);
+    result.completed_pages.push_back(page_number);
+    return grparse::PageScheduler::DeliveryResult::kAcceptedAndRelease;
+  };
+  scheduler.submit(std::make_shared<const std::string>("memory"), true, std::move(callbacks));
+  wait_until_finished(&result);
+  require(!result.failure, "barcode document failed");
+}
+
+// Class-triggered decoding runs only when the classifier's top call is a
+// barcode class, and the payload rides on the delivered region.
+void verify_barcode_decode_triggers_on_class() {
+  grparse::LayoutRegion qr_region;
+  const cv::Mat page = qr_page(&qr_region);
+  FakeRecognizer recognizer;
+  FakeDetector detector;
+  detector.regions = {qr_region, grparse::LayoutRegion{"title", 0.9F, 0, 0, 50, 10}};
+  FakeClassifier classifier;
+  classifier.classes = {{"qr_code", 0.95F}, {"other", 0.05F}};
+  grparse::PageScheduler::Options options{2, 2, 2, 2, 1, 1, 1};
+  options.barcode_mode = grparse::PageScheduler::BarcodeMode::kClassTriggered;
+  grparse::PageScheduler scheduler(
+      recognizer, options,
+      [&](std::shared_ptr<const std::string>, bool) { return std::make_shared<QrPageSource>(page); },
+      &detector, nullptr, &classifier);
+  std::vector<std::shared_ptr<const grparse::OcrPage>> delivered;
+  run_qr_document(scheduler, &delivered);
+
+  require(delivered.size() == 2, "barcode delivery count");
+  for (const auto& delivered_page : delivered) {
+    const auto& figure = delivered_page->regions[0];
+    require(figure.barcodes.size() == 1, "the QR figure must carry one payload");
+    require(figure.barcodes[0].format == "QRCode" && figure.barcodes[0].text == kQrPayload,
+            "decoded payload mismatch");
+    require(delivered_page->regions[1].barcodes.empty(), "non-figure regions must stay untouched");
+  }
+  require(scheduler.metrics().barcodes_decoded == 2, "barcode metric must count payloads");
+}
+
+// A non-barcode top class must skip decoding entirely, even with a code in
+// the pixels; kAll decodes without any classifier at all.
+void verify_barcode_gate_and_forced_mode() {
+  grparse::LayoutRegion qr_region;
+  const cv::Mat page = qr_page(&qr_region);
+  FakeRecognizer recognizer;
+  FakeDetector detector;
+  detector.regions = {qr_region};
+  {
+    FakeClassifier classifier;  // default top class is bar_chart
+    grparse::PageScheduler::Options options{2, 2, 2, 2, 1, 1, 1};
+    options.barcode_mode = grparse::PageScheduler::BarcodeMode::kClassTriggered;
+    grparse::PageScheduler scheduler(
+        recognizer, options,
+        [&](std::shared_ptr<const std::string>, bool) {
+          return std::make_shared<QrPageSource>(page);
+        },
+        &detector, nullptr, &classifier);
+    std::vector<std::shared_ptr<const grparse::OcrPage>> delivered;
+    run_qr_document(scheduler, &delivered);
+    for (const auto& delivered_page : delivered) {
+      require(delivered_page->regions[0].barcodes.empty(),
+              "a bar_chart top class must not trigger decoding");
+    }
+    require(scheduler.metrics().barcodes_decoded == 0, "gated decode must not count");
+  }
+  {
+    grparse::PageScheduler::Options options{2, 2, 2, 2, 1, 1, 1};
+    options.barcode_mode = grparse::PageScheduler::BarcodeMode::kAll;
+    grparse::PageScheduler scheduler(
+        recognizer, options,
+        [&](std::shared_ptr<const std::string>, bool) {
+          return std::make_shared<QrPageSource>(page);
+        },
+        &detector);
+    std::vector<std::shared_ptr<const grparse::OcrPage>> delivered;
+    run_qr_document(scheduler, &delivered);
+    for (const auto& delivered_page : delivered) {
+      require(delivered_page->regions[0].barcodes.size() == 1 &&
+                  delivered_page->regions[0].barcodes[0].text == kQrPayload,
+              "kAll must decode figure crops without a classifier");
+    }
+    require(scheduler.metrics().barcodes_decoded == 2, "kAll barcode metric");
   }
 }
 
@@ -630,6 +768,8 @@ int main() {
     verify_table_structure_runs_on_crops();
     verify_figure_classification_runs_on_crops();
     verify_picture_capture_encodes_figure_crops();
+    verify_barcode_decode_triggers_on_class();
+    verify_barcode_gate_and_forced_mode();
     verify_partial_digital_merges_with_ocr();
     verify_delivery_cancellation_drains_queued_work();
     verify_page_credits_bound_a_document();

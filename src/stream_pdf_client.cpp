@@ -83,14 +83,18 @@ int main(int argc, char** argv) {
         }
       }
       int picture_images = 0;
+      int barcodes = 0;
       for (const auto& picture : event.page().pictures()) {
         if (picture.has_image()) ++picture_images;
+        for (const auto& annotation : picture.annotations()) {
+          if (annotation.has_misc() && annotation.misc().kind() == "barcode") ++barcodes;
+        }
       }
       std::cout << "page=" << event.page().page_number() << " text_items=" << event.page().texts_size()
                 << " digital_items=" << digital_items << " ocr_items=" << ocr_items
                 << " labelled=" << labelled_items << " tables=" << event.page().tables_size()
                 << " cells=" << filled_cells << " pictures=" << event.page().pictures_size()
-                << " picture_images=" << picture_images << '\n';
+                << " picture_images=" << picture_images << " barcodes=" << barcodes << '\n';
     } else if (event.has_complete()) {
       std::cout << "complete total_pages=" << event.total_pages() << '\n';
     }

@@ -285,6 +285,16 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
           predicted->set_confidence(figure_class.confidence);
         }
       }
+      // Decoded payloads ride as misc annotations: docling has no dedicated
+      // barcode type, and the struct keeps format and value machine-readable.
+      for (const auto& barcode : region.barcodes) {
+        auto* misc = picture->add_annotations()->mutable_misc();
+        misc->set_kind("barcode");
+        auto& fields = *misc->mutable_content()->mutable_fields();
+        fields["format"].set_string_value(barcode.format);
+        fields["value"].set_string_value(barcode.text);
+        fields["provenance"].set_string_value("zxing-cpp");
+      }
     }
   }
 }

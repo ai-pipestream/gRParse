@@ -103,6 +103,19 @@ set_target_properties(onnxruntime PROPERTIES
   IMPORTED_LOCATION "${GRPARSE_ORT_LIBRARY}"
   INTERFACE_INCLUDE_DIRECTORIES "${onnxruntime_SOURCE_DIR}/include")
 
+# ZXing decodes barcode/QR payloads from figure crops (E3).  Readers only:
+# the server never generates barcodes.
+set(ZXING_READERS ON CACHE BOOL "" FORCE)
+set(ZXING_WRITERS OFF CACHE BOOL "" FORCE)
+set(ZXING_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(ZXING_BLACKBOX_TESTS OFF CACHE BOOL "" FORCE)
+set(ZXING_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(zxing
+  GIT_REPOSITORY https://github.com/zxing-cpp/zxing-cpp.git
+  GIT_TAG v2.3.0
+  GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(zxing)
+
 find_package(OpenCV 4.5 REQUIRED COMPONENTS core imgcodecs imgproc)
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
@@ -186,6 +199,7 @@ target_include_directories(docling_proto PUBLIC "${GENERATED_DIR}")
 target_link_libraries(docling_proto PUBLIC grpc++)
 
 add_library(grparse_core
+  src/barcode_decoder.cpp
   src/base64.cpp
   src/document_parser_service.cpp
   src/figure_classifier.cpp
@@ -202,7 +216,7 @@ add_library(grparse_core
 target_include_directories(grparse_core PUBLIC include)
 target_link_libraries(grparse_core
   PUBLIC docling_proto rapidocr PkgConfig::POPPLER_CPP Threads::Threads
-  PRIVATE grparse_flags)
+  PRIVATE ZXing::ZXing grparse_flags)
 
 add_executable(grparse-server src/main.cpp)
 target_link_libraries(grparse-server PRIVATE grparse_core grparse_flags grpc++_reflection)
@@ -212,6 +226,7 @@ target_link_libraries(grparse-stream-client PRIVATE docling_proto grparse_flags)
 
 if(BUILD_TESTING)
   set(GRPARSE_TESTS
+    barcode-decoder-test
     base64-test
     document-assembly-test
     figure-classifier-test
@@ -242,6 +257,11 @@ if(BUILD_TESTING)
     SKIP_RETURN_CODE 77
     ENVIRONMENT
       "GRPARSE_TEST_MODELS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/models;GRPARSE_TEST_DATA_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+  # ZXing is compiled in, so the barcode tests never skip; they only need the
+  # committed QR fixture.  The scheduler test loads the same fixture to prove
+  # the class-triggered decode end to end.
+  set_tests_properties(barcode-decoder-test page-scheduler-test PROPERTIES
+    ENVIRONMENT "GRPARSE_TEST_DATA_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
 endif()
 
 install(TARGETS grparse-server grparse-stream-client RUNTIME DESTINATION bin)
