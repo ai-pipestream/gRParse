@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
@@ -21,6 +22,7 @@
 
 #include "grparse/document_parser_service.h"
 #include "grparse/page_scheduler.h"
+#include "grparse_session_ep.h"
 
 namespace {
 
@@ -60,46 +62,122 @@ int configured_index(const char* name, int fallback, int maximum = 63) {
   return static_cast<int>(parsed);
 }
 
+bool provider_available(const char* name) {
+  const auto providers = Ort::GetAvailableProviders();
+  return std::find(providers.begin(), providers.end(), std::string(name)) != providers.end();
+}
+
+std::string available_providers() {
+  std::string joined;
+  for (const auto& provider : Ort::GetAvailableProviders()) {
+    if (!joined.empty()) joined += ", ";
+    joined += provider;
+  }
+  return joined;
+}
+
+std::string configured_openvino_device() {
+  const char* configured = std::getenv("GRPARSE_OPENVINO_DEVICE");
+  const std::string device =
+      configured == nullptr || *configured == '\0' ? "GPU" : configured;
+  // GPU, GPU.1, CPU, NPU, AUTO:GPU,CPU, HETERO:… — validate the alphabet and
+  // let OpenVINO reject unknown devices itself, loudly, at startup.
+  for (const char letter : device) {
+    if (std::isalnum(static_cast<unsigned char>(letter)) == 0 && letter != '.' &&
+        letter != ':' && letter != ',' && letter != '_' && letter != '-') {
+      throw std::invalid_argument("GRPARSE_OPENVINO_DEVICE contains unsupported characters");
+    }
+  }
+  return device;
+}
+
+// Builds the warm session pool with an explicit provider selection and proves
+// the RapidOcr hook actually ran — a dependency tree built without
+// patches/rapidocr-session-ep.patch would otherwise run CPU silently.
+std::unique_ptr<grparse::OcrEnginePool> build_pool_with(grparse::OrtEp ep,
+                                                        const std::filesystem::path& models,
+                                                        size_t worker_count, int gpu_index) {
+  grparse::OrtEpSelection selection;
+  selection.ep = ep;
+  selection.cuda_device = gpu_index;
+  selection.openvino_device = configured_openvino_device();
+  grparse::set_ort_ep_selection(selection);
+  auto pool = std::make_unique<grparse::OcrEnginePool>(models, worker_count, -1);
+  if (grparse::ep_hook_invocations() == 0) {
+    throw std::runtime_error(
+        "RapidOcr session hook never ran: the rapidocr dependency was built without "
+        "patches/rapidocr-session-ep.patch; rebuild with a fresh dependency cache");
+  }
+  return pool;
+}
+
 // GRPARSE_ORT_EP selects the ONNX Runtime execution provider (B6).  cuda is
-// the default and keeps today's fail-loud behaviour; cpu is a deliberate
-// choice, never a silent fallback; auto tries CUDA and falls back to CPU with
-// a logged reason.  openvino is named in the error so an Intel deployment
-// learns it is planned rather than misspelled.
+// the default and keeps the fail-loud behaviour; cpu is a deliberate choice,
+// never a silent fallback; openvino targets Intel GPUs/NPUs through the
+// OpenVINO build of ONNX Runtime; auto prefers CUDA, then OpenVINO, then CPU,
+// logging each fallback.  Requesting a provider this binary was not built
+// with fails with the list that is actually available.
 std::unique_ptr<grparse::OcrEnginePool> build_engine_pool(const std::filesystem::path& models,
                                                           size_t worker_count, int gpu_index) {
   const char* configured = std::getenv("GRPARSE_ORT_EP");
   const std::string ep = configured == nullptr || *configured == '\0' ? "cuda" : configured;
   if (ep == "cuda") {
-    auto pool = std::make_unique<grparse::OcrEnginePool>(models, worker_count, gpu_index);
+    if (!provider_available("CUDAExecutionProvider")) {
+      throw std::invalid_argument(
+          "GRPARSE_ORT_EP=cuda: this build's ONNX Runtime has no CUDA execution provider "
+          "(available: " + available_providers() + ")");
+    }
+    auto pool = build_pool_with(grparse::OrtEp::kCuda, models, worker_count, gpu_index);
     std::cout << "gRParse OCR execution provider: CUDA (device " << gpu_index << ")" << std::endl;
     return pool;
   }
+  if (ep == "openvino") {
+    if (!provider_available("OpenVINOExecutionProvider")) {
+      throw std::invalid_argument(
+          "GRPARSE_ORT_EP=openvino: this build's ONNX Runtime has no OpenVINO execution "
+          "provider (available: " + available_providers() + "); use the image built from "
+          "Dockerfile.openvino");
+    }
+    auto pool = build_pool_with(grparse::OrtEp::kOpenVino, models, worker_count, gpu_index);
+    std::cout << "gRParse OCR execution provider: OpenVINO ("
+              << configured_openvino_device() << ")" << std::endl;
+    return pool;
+  }
   if (ep == "cpu") {
-    auto pool = std::make_unique<grparse::OcrEnginePool>(models, worker_count, -1);
+    auto pool = build_pool_with(grparse::OrtEp::kCpu, models, worker_count, gpu_index);
     std::cout << "gRParse OCR execution provider: CPU (GRPARSE_ORT_EP=cpu)" << std::endl;
     return pool;
   }
   if (ep == "auto") {
-    try {
-      auto pool = std::make_unique<grparse::OcrEnginePool>(models, worker_count, gpu_index);
-      std::cout << "gRParse OCR execution provider: CUDA (device " << gpu_index
-                << ", selected by GRPARSE_ORT_EP=auto)" << std::endl;
-      return pool;
-    } catch (const std::exception& error) {
-      std::cerr << "GRPARSE_ORT_EP=auto: CUDA initialization failed (" << error.what()
-                << "); falling back to CPU" << std::endl;
-      auto pool = std::make_unique<grparse::OcrEnginePool>(models, worker_count, -1);
-      std::cout << "gRParse OCR execution provider: CPU (selected by GRPARSE_ORT_EP=auto)"
-                << std::endl;
-      return pool;
+    if (provider_available("CUDAExecutionProvider")) {
+      try {
+        auto pool = build_pool_with(grparse::OrtEp::kCuda, models, worker_count, gpu_index);
+        std::cout << "gRParse OCR execution provider: CUDA (device " << gpu_index
+                  << ", selected by GRPARSE_ORT_EP=auto)" << std::endl;
+        return pool;
+      } catch (const std::exception& error) {
+        std::cerr << "GRPARSE_ORT_EP=auto: CUDA initialization failed (" << error.what()
+                  << ")" << std::endl;
+      }
     }
+    if (provider_available("OpenVINOExecutionProvider")) {
+      try {
+        auto pool = build_pool_with(grparse::OrtEp::kOpenVino, models, worker_count, gpu_index);
+        std::cout << "gRParse OCR execution provider: OpenVINO ("
+                  << configured_openvino_device() << ", selected by GRPARSE_ORT_EP=auto)"
+                  << std::endl;
+        return pool;
+      } catch (const std::exception& error) {
+        std::cerr << "GRPARSE_ORT_EP=auto: OpenVINO initialization failed (" << error.what()
+                  << ")" << std::endl;
+      }
+    }
+    auto pool = build_pool_with(grparse::OrtEp::kCpu, models, worker_count, gpu_index);
+    std::cout << "gRParse OCR execution provider: CPU (selected by GRPARSE_ORT_EP=auto)"
+              << std::endl;
+    return pool;
   }
-  if (ep == "openvino") {
-    throw std::invalid_argument(
-        "GRPARSE_ORT_EP=openvino: the OpenVINO execution provider is not compiled into this "
-        "build yet (tracked as B6)");
-  }
-  throw std::invalid_argument("GRPARSE_ORT_EP must be cuda, cpu, or auto");
+  throw std::invalid_argument("GRPARSE_ORT_EP must be cuda, openvino, cpu, or auto");
 }
 
 size_t page_worker_count() {

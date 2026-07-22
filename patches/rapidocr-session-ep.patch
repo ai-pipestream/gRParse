@@ -1,0 +1,99 @@
+diff --git a/src/AngleNet.cpp b/src/AngleNet.cpp
+index 437fb86..1d69eb7 100644
+--- a/src/AngleNet.cpp
++++ b/src/AngleNet.cpp
+@@ -1,24 +1,12 @@
+ #include "AngleNet.h"
+ #include "OcrUtils.h"
++#include "grparse_session_ep.h"
+ #include <numeric>
+ 
+ void AngleNet::setGpuIndex(int gpuIndex) {
+-#ifdef __CUDA__
+-    if (gpuIndex >= 0) {
+-        OrtCUDAProviderOptions cuda_options;
+-        cuda_options.device_id = gpuIndex;
+-        cuda_options.arena_extend_strategy = 0;
+-        cuda_options.gpu_mem_limit = 2 * 1024 * 1024 * 1024;
+-        cuda_options.cudnn_conv_algo_search = OrtCudnnConvAlgoSearch::OrtCudnnConvAlgoSearchExhaustive;
+-        cuda_options.do_copy_in_default_stream = 1;
+-
+-        sessionOptions.AppendExecutionProvider_CUDA(cuda_options);
+-        printf("cls try to use GPU%d\n", gpuIndex);
+-    }
+-    else {
+-        printf("cls use CPU\n");
+-    }
+-#endif
++    // gRParse: execution-provider selection is centralized so CUDA, OpenVINO,
++    // and CPU builds share one decision point (see grparse_session_ep.h).
++    grparse::append_execution_provider(sessionOptions, gpuIndex);
+ }
+ 
+ AngleNet::~AngleNet() {
+diff --git a/src/CrnnNet.cpp b/src/CrnnNet.cpp
+index a3a5d3a..13e14f3 100644
+--- a/src/CrnnNet.cpp
++++ b/src/CrnnNet.cpp
+@@ -1,25 +1,13 @@
+ #include "CrnnNet.h"
+ #include "OcrUtils.h"
++#include "grparse_session_ep.h"
+ #include <fstream>
+ #include <numeric>
+ 
+ void CrnnNet::setGpuIndex(int gpuIndex) {
+-#ifdef __CUDA__
+-    if (gpuIndex >= 0) {
+-        OrtCUDAProviderOptions cuda_options;
+-        cuda_options.device_id = gpuIndex;
+-        cuda_options.arena_extend_strategy = 0;
+-        cuda_options.gpu_mem_limit = 2 * 1024 * 1024 * 1024;
+-        cuda_options.cudnn_conv_algo_search = OrtCudnnConvAlgoSearch::OrtCudnnConvAlgoSearchExhaustive;
+-        cuda_options.do_copy_in_default_stream = 1;
+-
+-        sessionOptions.AppendExecutionProvider_CUDA(cuda_options);
+-        printf("rec try to use GPU%d\n", gpuIndex);
+-}
+-    else {
+-        printf("rec use CPU\n");
+-    }
+-#endif
++    // gRParse: execution-provider selection is centralized so CUDA, OpenVINO,
++    // and CPU builds share one decision point (see grparse_session_ep.h).
++    grparse::append_execution_provider(sessionOptions, gpuIndex);
+ }
+ 
+ CrnnNet::~CrnnNet() {
+diff --git a/src/DbNet.cpp b/src/DbNet.cpp
+index 74b93aa..c00f4df 100644
+--- a/src/DbNet.cpp
++++ b/src/DbNet.cpp
+@@ -1,23 +1,11 @@
+ #include "DbNet.h"
+ #include "OcrUtils.h"
++#include "grparse_session_ep.h"
+ 
+ void DbNet::setGpuIndex(int gpuIndex) {
+-#ifdef __CUDA__
+-    if (gpuIndex >= 0) {
+-        OrtCUDAProviderOptions cuda_options;
+-        cuda_options.device_id = gpuIndex;
+-        cuda_options.arena_extend_strategy = 0;
+-        cuda_options.gpu_mem_limit = 2 * 1024 * 1024 * 1024;
+-        cuda_options.cudnn_conv_algo_search = OrtCudnnConvAlgoSearch::OrtCudnnConvAlgoSearchExhaustive;
+-        cuda_options.do_copy_in_default_stream = 1;
+-
+-        sessionOptions.AppendExecutionProvider_CUDA(cuda_options);
+-        printf("det try to use GPU%d\n", gpuIndex);
+-    }
+-    else {
+-        printf("det use CPU\n");
+-    }
+-#endif
++    // gRParse: execution-provider selection is centralized so CUDA, OpenVINO,
++    // and CPU builds share one decision point (see grparse_session_ep.h).
++    grparse::append_execution_provider(sessionOptions, gpuIndex);
+ }
+ 
+ DbNet::~DbNet() {

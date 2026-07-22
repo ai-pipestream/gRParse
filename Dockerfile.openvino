@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1.7
+# Intel build: ONNX Runtime with the OpenVINO execution provider, targeting
+# Intel Arc GPUs (Battlemage/Alchemist), integrated graphics, CPUs, and NPUs.
+# No CUDA toolchain anywhere in this image.
+#
+# Run with the render device exposed:
+#   docker run --rm --device /dev/dri -v /path/to/models:/models:ro \
+#     -p 50051:50051 grparse-openvino
+FROM ubuntu:26.04 AS build
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates cmake g++ git make ninja-build pkg-config libopencv-dev libpoppler-cpp-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY . .
+# Separate cache from the CUDA image: different ONNX Runtime package and ABI.
+RUN --mount=type=cache,id=grparse-openvino-ubuntu26-grpc1.82.1-ort1.24.1-sessionep1,target=/build \
+    cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
+      -DGRPARSE_WERROR=ON -DGRPARSE_ORT_PACKAGE=openvino \
+ && cmake --build /build --target grparse-server grparse-stream-client \
+      base64-test document-assembly-test page-scheduler-test pdf-source-test \
+      resource-pool-test streaming-service-test text-geometry-test --parallel 4 \
+ && ctest --test-dir /build --output-on-failure -L grparse \
+ && mkdir -p /out \
+ && cp /build/grparse-server /out/grparse-server \
+ && cp /build/grparse-stream-client /out/grparse-stream-client \
+ && cp -a /build/ort-openvino/onnxruntime/capi /out/ort-libs
+
+FROM ubuntu:26.04
+ENV GRPARSE_LISTEN_ADDRESS=0.0.0.0:50051 GRPARSE_MODELS_DIR=/models GRPARSE_PAGE_WORKERS=2 \
+    GRPARSE_ORT_EP=openvino GRPARSE_OPENVINO_DEVICE=GPU
+# intel-opencl-icd is the NEO compute runtime the OpenVINO GPU plugin drives.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpoppler-cpp3 libopencv-core-dev libopencv-imgcodecs-dev libopencv-imgproc-dev \
+    ocl-icd-libopencl1 intel-opencl-icd \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /out/grparse-server /usr/local/bin/grparse-server
+COPY --from=build /out/grparse-stream-client /usr/local/bin/grparse-stream-client
+COPY --from=build /out/ort-libs/ /usr/local/lib/
+# ldconfig materializes the SONAME links (libonnxruntime.so.1, libopenvino.so.2541).
+RUN ldconfig
+EXPOSE 50051
+ENTRYPOINT ["/usr/local/bin/grparse-server"]

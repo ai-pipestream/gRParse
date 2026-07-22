@@ -31,26 +31,87 @@ include(FetchContent)
 
 # RapidOcrOnnx 1.2.3 is the maintained C++ RapidOCR implementation.  Its
 # upstream CMake project expects locally bundled dependencies, so this project
-# builds the same sources against the pinned CUDA ONNX Runtime below.
+# builds the same sources against the pinned ONNX Runtime below.  The patch
+# reroutes each net's execution-provider setup through grparse_session_ep.h so
+# CUDA, OpenVINO, and CPU share one decision point; the server refuses to start
+# if the hook never ran (a stale unpatched dependency cache).
 FetchContent_Declare(rapidocr SOURCE_SUBDIR disabled
   GIT_REPOSITORY https://github.com/RapidAI/RapidOcrOnnx.git
-  GIT_TAG 9de89a6934cd962b80db6ab8ad5627e06a709764)
+  GIT_TAG 9de89a6934cd962b80db6ab8ad5627e06a709764
+  # checkout -- src first so the step is idempotent: FetchContent re-runs the
+  # patch step whenever the subbuild re-executes, including on cached trees
+  # that are already patched.
+  PATCH_COMMAND git checkout -- src
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-session-ep.patch")
 FetchContent_MakeAvailable(rapidocr)
+# FetchContent only patches when it populates, so a dependency tree cached
+# before the patch existed would build the upstream provider wiring and the
+# configured EP could silently degrade.  Fail the configure instead.
+foreach(patched_net DbNet AngleNet CrnnNet)
+  file(READ "${rapidocr_SOURCE_DIR}/src/${patched_net}.cpp" GRPARSE_NET_SOURCE)
+  string(FIND "${GRPARSE_NET_SOURCE}" "grparse::append_execution_provider" GRPARSE_HOOK_AT)
+  if(GRPARSE_HOOK_AT EQUAL -1)
+    message(FATAL_ERROR "${patched_net}.cpp is unpatched: the rapidocr source tree predates "
+      "patches/rapidocr-session-ep.patch. Delete _deps/rapidocr-* from the build directory "
+      "(or the docker build cache) and re-run CMake.")
+  endif()
+endforeach()
+unset(GRPARSE_NET_SOURCE)
 
-FetchContent_Declare(onnxruntime
-  URL https://github.com/microsoft/onnxruntime/releases/download/v1.27.1/onnxruntime-linux-x64-gpu_cuda13-1.27.1.tgz
-  DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
-FetchContent_MakeAvailable(onnxruntime)
+# Which ONNX Runtime binary package to link.  `cuda` is Microsoft's NVIDIA GPU
+# release.  `openvino` takes headers from the matching official release and
+# libraries from Intel's PyPI wheel — the only prebuilt Linux distribution of
+# the OpenVINO execution provider — which bundles OpenVINO 2025.4.1 and its
+# Intel GPU/CPU/NPU plugins.
+set(GRPARSE_ORT_PACKAGE "cuda" CACHE STRING
+  "ONNX Runtime package to link: cuda or openvino")
+if(GRPARSE_ORT_PACKAGE STREQUAL "cuda")
+  FetchContent_Declare(onnxruntime
+    URL https://github.com/microsoft/onnxruntime/releases/download/v1.27.1/onnxruntime-linux-x64-gpu_cuda13-1.27.1.tgz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+  FetchContent_MakeAvailable(onnxruntime)
+  set(GRPARSE_ORT_LIBRARY "${onnxruntime_SOURCE_DIR}/lib/libonnxruntime.so")
+elseif(GRPARSE_ORT_PACKAGE STREQUAL "openvino")
+  FetchContent_Declare(onnxruntime
+    URL https://github.com/microsoft/onnxruntime/releases/download/v1.24.1/onnxruntime-linux-x64-1.24.1.tgz
+    URL_HASH SHA256=9142552248b735920f9390027e4512a2cacf8946a1ffcbe9071a5c210531026f
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+  set(GRPARSE_ORTOV_WHEEL_NAME
+    "onnxruntime_openvino-1.24.1-cp312-cp312-manylinux_2_28_x86_64.whl")
+  FetchContent_Declare(onnxruntime_openvino_wheel
+    URL "https://files.pythonhosted.org/packages/50/cf/17ba72de2df0fcba349937d2788f154397bbc2d1a2d67772a97e26f6bc5f/${GRPARSE_ORTOV_WHEEL_NAME}"
+    URL_HASH SHA256=d617fac2f59a6ab5ea59a788c3e1592240a129642519aaeaa774761dfe35150e
+    DOWNLOAD_NO_EXTRACT TRUE)
+  FetchContent_MakeAvailable(onnxruntime onnxruntime_openvino_wheel)
+  set(GRPARSE_ORT_OPENVINO_LIB_DIR "${CMAKE_CURRENT_BINARY_DIR}/ort-openvino/onnxruntime/capi")
+  if(NOT EXISTS "${GRPARSE_ORT_OPENVINO_LIB_DIR}/libonnxruntime.so.1.24.1")
+    file(ARCHIVE_EXTRACT
+      INPUT "${onnxruntime_openvino_wheel_SOURCE_DIR}/${GRPARSE_ORTOV_WHEEL_NAME}"
+      DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/ort-openvino"
+      PATTERNS "onnxruntime/capi/lib*")
+  endif()
+  # The wheel ships only the fully versioned name; the SONAME is the .so.1.
+  file(CREATE_LINK "libonnxruntime.so.1.24.1"
+    "${GRPARSE_ORT_OPENVINO_LIB_DIR}/libonnxruntime.so.1" SYMBOLIC)
+  set(GRPARSE_ORT_LIBRARY "${GRPARSE_ORT_OPENVINO_LIB_DIR}/libonnxruntime.so.1")
+else()
+  message(FATAL_ERROR "GRPARSE_ORT_PACKAGE must be cuda or openvino")
+endif()
 
 add_library(onnxruntime SHARED IMPORTED GLOBAL)
 set_target_properties(onnxruntime PROPERTIES
-  IMPORTED_LOCATION "${onnxruntime_SOURCE_DIR}/lib/libonnxruntime.so"
+  IMPORTED_LOCATION "${GRPARSE_ORT_LIBRARY}"
   INTERFACE_INCLUDE_DIRECTORIES "${onnxruntime_SOURCE_DIR}/include")
 
 find_package(OpenCV 4.5 REQUIRED COMPONENTS core imgcodecs imgproc)
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
 pkg_check_modules(POPPLER_CPP REQUIRED IMPORTED_TARGET poppler-cpp)
+
+# The execution-provider hook the patched RapidOcrOnnx nets call into.
+add_library(grparse_ort_ep STATIC src/ort_session_ep.cpp)
+target_include_directories(grparse_ort_ep PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/compat")
+target_link_libraries(grparse_ort_ep PUBLIC onnxruntime PRIVATE grparse_flags)
 
 file(GLOB RAPIDOCR_SOURCES CONFIGURE_DEPENDS "${rapidocr_SOURCE_DIR}/src/*.cpp")
 list(REMOVE_ITEM RAPIDOCR_SOURCES "${rapidocr_SOURCE_DIR}/src/main.cpp")
@@ -60,7 +121,7 @@ target_include_directories(rapidocr
   PUBLIC
     "${rapidocr_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/compat")
-target_link_libraries(rapidocr PUBLIC onnxruntime ${OpenCV_LIBS})
+target_link_libraries(rapidocr PUBLIC onnxruntime ${OpenCV_LIBS} grparse_ort_ep)
 
 set(gRPC_INSTALL OFF CACHE BOOL "" FORCE)
 set(gRPC_BUILD_TESTS OFF CACHE BOOL "" FORCE)

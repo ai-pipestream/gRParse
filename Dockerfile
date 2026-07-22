@@ -8,8 +8,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /src
 COPY . .
 # The cache id includes ABI-sensitive dependency versions. Update it whenever
-# gRPC, ONNX Runtime, CUDA, or the base toolchain changes.
-RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.82.1-ort1.27.1,target=/build \
+# gRPC, ONNX Runtime, CUDA, the base toolchain, or a dependency patch under
+# patches/ changes — a stale cache would keep an unpatched dependency tree.
+RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.82.1-ort1.27.1-sessionep1,target=/build \
     cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
       -DGRPARSE_WERROR=ON \
  && cmake --build /build --target grparse-server grparse-stream-client \
