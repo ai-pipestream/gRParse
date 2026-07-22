@@ -34,9 +34,13 @@ No dual ORT stacks. No torch runtime in this service. No document CV nets in the
 The target architecture is **ORT-first**, not CUDA-only. Sessions will bind to
 the configured **Execution Provider** at process start.
 
-This table describes the target architecture. The checked-in runtime currently
-ships only the CUDA execution provider and fails startup if CUDA model
-initialization fails. OpenVINO and CPU provider selection remain Epic B6 work.
+Two image variants ship today: the CUDA image (`Dockerfile`, ONNX Runtime GPU)
+and the Intel image (`Dockerfile.openvino`, ONNX Runtime with the OpenVINO
+execution provider and its GPU/CPU/NPU plugins). `GRPARSE_ORT_EP` selects the
+provider at startup from what the linked runtime actually offers, and the
+server fails loudly when the requested provider is absent or cannot
+initialize. Remaining B6 work is hardware qualification and pool-sizing
+guidance per device.
 
 | Target | Typical EP | Notes |
 |---|---|---|
@@ -55,11 +59,13 @@ initialization fails. OpenVINO and CPU provider selection remain Epic B6 work.
 
 Env knobs:
 
-- `GRPARSE_ORT_EP=cuda|cpu|auto` — implemented; `cuda` is the default and fails
-  loud, `cpu` is an explicit choice, `auto` tries CUDA and logs a CPU fallback.
-  `openvino` is recognized and rejected with a clear "not compiled in" error
-  until the OpenVINO EP ships (B6).
-- `GRPARSE_OPENVINO_DEVICE=GPU|CPU|NPU|AUTO` — reserved for the OpenVINO EP.
+- `GRPARSE_ORT_EP=cuda|openvino|cpu|auto` — `cuda` is the default and fails
+  loud; `openvino` targets Intel devices through the OpenVINO build; `cpu` is
+  an explicit choice, never a silent fallback; `auto` prefers CUDA, then
+  OpenVINO, then CPU, logging each fallback. Requesting a provider the linked
+  ONNX Runtime does not offer fails with the list that is available.
+- `GRPARSE_OPENVINO_DEVICE=GPU|GPU.<n>|CPU|NPU|AUTO:…` — OpenVINO device
+  string, passed through and validated by OpenVINO itself at startup.
 - existing `GRPARSE_PAGE_WORKERS`, `GRPARSE_MODELS_DIR`
 
 
