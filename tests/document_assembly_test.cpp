@@ -210,6 +210,37 @@ void verify_captured_figure_bytes_become_image_refs() {
           "predicted classes keep their order and confidence");
 }
 
+// Decoded barcode payloads become misc annotations with a machine-readable
+// struct, one annotation per payload, alongside any classification.
+void verify_barcode_payloads_become_misc_annotations() {
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1000, 1000, {line("caption", 100)}};
+  grparse::LayoutRegion figure{"figure", 0.7F, 0, 500, 1000, 800};
+  figure.figure_classes = {{"qr_code", 0.95F}};
+  figure.barcodes = {{"QRCode", "https://example.com/a"}, {"Code128", "SKU-1234"}};
+  page.regions = {figure};
+
+  ai::docling::serve::v1::PageData data;
+  grparse::append_page_data(page, 1, &cursor, &data);
+  require(data.pictures_size() == 1, "figure region must emit a picture");
+  const auto& picture = data.pictures(0);
+  require(picture.annotations_size() == 3, "classification plus one misc per payload");
+  require(picture.annotations(0).has_classification(), "classification annotation stays first");
+  for (int index = 1; index < picture.annotations_size(); ++index) {
+    require(picture.annotations(index).has_misc(), "payload annotations use the misc shape");
+  }
+  const auto& first = picture.annotations(1).misc();
+  require(first.kind() == "barcode", "misc annotation kind");
+  const auto& fields = first.content().fields();
+  require(fields.at("format").string_value() == "QRCode" &&
+              fields.at("value").string_value() == "https://example.com/a" &&
+              fields.at("provenance").string_value() == "zxing-cpp",
+          "misc struct carries format, value, and provenance");
+  require(picture.annotations(2).misc().content().fields().at("value").string_value() ==
+              "SKU-1234",
+          "every payload gets its own annotation");
+}
+
 }  // namespace
 
 int main() {
@@ -219,6 +250,7 @@ int main() {
     verify_layout_regions_map_labels_and_emit_items();
     verify_structured_cells_override_geometry();
     verify_captured_figure_bytes_become_image_refs();
+    verify_barcode_payloads_become_misc_annotations();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
     std::cerr << "document-assembly-test: " << error.what() << '\n';

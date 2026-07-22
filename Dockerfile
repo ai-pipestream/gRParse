@@ -14,7 +14,7 @@ RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.82.1-ort1.27.1-sessionep
     cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
       -DGRPARSE_WERROR=ON \
  && cmake --build /build --target grparse-server grparse-stream-client \
-      base64-test document-assembly-test figure-classifier-test layout-engine-test page-scheduler-test pdf-source-test \
+      barcode-decoder-test base64-test document-assembly-test figure-classifier-test layout-engine-test page-scheduler-test pdf-source-test \
       reading-order-test resource-pool-test streaming-service-test table-structure-engine-test table-structure-test text-geometry-test --parallel 4 \
  && ctest --test-dir /build --output-on-failure -L grparse \
  && mkdir -p /out \

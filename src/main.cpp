@@ -282,6 +282,40 @@ std::unique_ptr<grparse::FigureClassifierPool> build_figure_classifier_pool(
   return pool;
 }
 
+// GRPARSE_BARCODES: auto (default) decodes figure crops whose top classifier
+// call is bar_code or qr_code, so it needs the classifier; on decodes every
+// figure crop (needs only layout); off disables decoding.  ZXing is compiled
+// in, so no model file gates this.
+grparse::PageScheduler::BarcodeMode configure_barcode_mode(bool layout_active,
+                                                           bool classifier_active) {
+  using BarcodeMode = grparse::PageScheduler::BarcodeMode;
+  const char* configured = std::getenv("GRPARSE_BARCODES");
+  const std::string mode = configured == nullptr || *configured == '\0' ? "auto" : configured;
+  if (mode != "auto" && mode != "on" && mode != "off") {
+    throw std::invalid_argument("GRPARSE_BARCODES must be auto, on, or off");
+  }
+  if (mode == "off") {
+    std::cout << "gRParse barcodes: disabled (GRPARSE_BARCODES=off)" << std::endl;
+    return BarcodeMode::kOff;
+  }
+  if (mode == "on") {
+    if (!layout_active) {
+      throw std::invalid_argument("GRPARSE_BARCODES=on needs layout enabled to find figure regions");
+    }
+    std::cout << "gRParse barcodes: enabled for all figure crops (GRPARSE_BARCODES=on)"
+              << std::endl;
+    return BarcodeMode::kAll;
+  }
+  if (!classifier_active) {
+    std::cout << "gRParse barcodes: disabled (figure classes are disabled; "
+                 "GRPARSE_BARCODES=on decodes without the classifier)"
+              << std::endl;
+    return BarcodeMode::kOff;
+  }
+  std::cout << "gRParse barcodes: enabled for bar_code/qr_code figure classes" << std::endl;
+  return BarcodeMode::kClassTriggered;
+}
+
 size_t page_worker_count() {
   const unsigned int hardware = std::thread::hardware_concurrency();
   return std::min<size_t>(2, hardware == 0 ? 1 : hardware);
@@ -311,6 +345,7 @@ std::string format_metrics(const grparse::PageScheduler::Metrics& current,
        << ",rendered=" << current.pages_rendered << ",ocr=" << current.pages_recognized << ",layout=" << current.pages_layout_labelled
        << ",tables=" << current.tables_structured
        << ",figures=" << current.figures_classified
+       << ",barcodes=" << current.barcodes_decoded
        << ",cancelled=" << current.pages_cancelled << "}"
        << " queues{render=" << current.pages_waiting_for_render
        << ",inference=" << current.pages_waiting_for_inference
@@ -405,6 +440,7 @@ int main() {
     } else if (options.capture_picture_images) {
       std::cout << "gRParse picture images: enabled" << std::endl;
     }
+    options.barcode_mode = configure_barcode_mode(layout != nullptr, figure_classes != nullptr);
     grparse::PageScheduler scheduler(*engines, options, grparse::PageSourceFactory{},
                                      layout.get(), table_structure.get(),
                                      figure_classes.get());

@@ -14,10 +14,19 @@
 
 #include <opencv2/imgcodecs.hpp>
 
+#include "grparse/barcode_decoder.h"
 #include "grparse/region_geometry.h"
 
 namespace grparse {
 namespace {
+
+// The class-triggered barcode gate: decode only when the classifier's top
+// call says the figure is a barcode.
+bool barcode_class(const LayoutRegion& region) {
+  if (region.figure_classes.empty()) return false;
+  const std::string& top = region.figure_classes.front().label;
+  return top == "bar_code" || top == "qr_code";
+}
 
 template <typename T>
 class BoundedQueue final {
@@ -284,11 +293,11 @@ class PageScheduler::Impl final {
                      pages_rendered_.load(),         pages_read_digitally_.load(),
                      pages_recognized_.load(),       pages_layout_labelled_.load(),
                      tables_structured_.load(),      figures_classified_.load(),
-                     pages_cancelled_.load(),        documents_.size(),
-                     render_.size(),                 inference_.size(),
-                     assembly_.size(),               render_busy_ns_.load(),
-                     inference_busy_ns_.load(),      assembly_busy_ns_.load(),
-                     {}};
+                     barcodes_decoded_.load(),       pages_cancelled_.load(),
+                     documents_.size(),              render_.size(),
+                     inference_.size(),              assembly_.size(),
+                     render_busy_ns_.load(),         inference_busy_ns_.load(),
+                     assembly_busy_ns_.load(),       {}};
     for (size_t bucket = 0; bucket < latency_buckets_.size(); ++bucket) {
       snapshot.page_latency[bucket] = latency_buckets_[bucket].load();
     }
@@ -584,6 +593,21 @@ class PageScheduler::Impl final {
               if (!crop.empty()) cv::imencode(".png", crop, region.image_png);
             }
           }
+          // Barcode decode is pure CPU (ZXing), so like the PNG capture it
+          // runs after the device calls but before the raster drops.
+          if (options_.barcode_mode != BarcodeMode::kOff && !job.image.empty()) {
+            for (auto& region : regions) {
+              if (region.label != "figure") continue;
+              if (options_.barcode_mode == BarcodeMode::kClassTriggered &&
+                  !barcode_class(region)) {
+                continue;
+              }
+              const cv::Mat crop = crop_region(job.image, region);
+              if (crop.empty()) continue;
+              region.barcodes = decode_barcodes(crop);
+              barcodes_decoded_.fetch_add(region.barcodes.size());
+            }
+          }
           // Drop the raster the moment the device stage is done with it (B5).
           job.image.release();
           assembled.regions = std::move(regions);
@@ -661,6 +685,7 @@ class PageScheduler::Impl final {
   std::atomic<uint64_t> pages_layout_labelled_{0};
   std::atomic<uint64_t> tables_structured_{0};
   std::atomic<uint64_t> figures_classified_{0};
+  std::atomic<uint64_t> barcodes_decoded_{0};
   std::atomic<uint64_t> pages_cancelled_{0};
   std::atomic<uint64_t> render_busy_ns_{0};
   std::atomic<uint64_t> inference_busy_ns_{0};

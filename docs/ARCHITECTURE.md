@@ -232,9 +232,9 @@ gRParse stays **PDF/image only**. Do not embed LibreOffice here.
 |---|---|---|
 | OCR | RapidOcrOnnx (have) | done |
 | Layout OD | PicoDet PubLayNet (have) | done |
-| Table structure | geometry word→cell v0 (have, no model); SLANet/TATR-class ONNX next | P1 |
-| Picture class | EfficientNet-class ONNX | P2 |
-| Barcode | ZXing/ZBar when class says barcode | optional |
+| Table structure | SLANet-plus (have); geometry word→cell v0 fallback | done |
+| Picture class | DocumentFigureClassifier EfficientNet-B0 (have) | done |
+| Barcode | ZXing, class-triggered or forced, no model | done |
 
 Layout is parent: table/picture crops come from layout regions.
 `crop_region` returns clipped zero-copy views of the page raster, so a

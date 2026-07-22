@@ -126,6 +126,16 @@ is what downstream policy hooks (signature routing, barcode triggers, icon
 filtering) key on. The stream never blocks on classification: it is one
 batch=1 device call per figure inside the inference stage.
 
+Barcode and QR payloads decode without any model: ZXing is compiled in.
+By default (`GRPARSE_BARCODES=auto`) a figure crop is decoded when the
+classifier's top class is `bar_code` or `qr_code`; `on` decodes every figure
+crop (needs only layout, no classifier); `off` disables it. Each decoded
+payload rides on the `PictureItem` as a `misc` annotation with
+`kind: "barcode"` and a struct holding `format` (the ZXing symbology name,
+for example `QRCode` or `Code128`), `value`, and `provenance`. Decoding is
+pure CPU inside the inference stage, after the device calls and before the
+raster is released.
+
 With `GRPARSE_PICTURE_IMAGES=on` (default off) each figure region's pixels
 are cropped from the page raster in the inference stage, PNG-encoded, and
 attached to its `PictureItem` as an `image/png` data URI with the pixel
@@ -195,7 +205,8 @@ docker compose build
 ```
 
 The build compiles with `-DGRPARSE_WERROR=ON` and runs the full `grparse`-labelled
-CTest set: base64, document assembly (offsets, layout label mapping, region
+CTest set: barcode decoder (QR fixture payload, stride-safe region views),
+base64, document assembly (offsets, layout label mapping, region
 items), geometry merge (including overflow bounds), layout engine (golden
 against the reference detector; skips without the model file), scheduler (page
 credits, backpressure, partial digital→OCR merge, layout labelling), PDF page

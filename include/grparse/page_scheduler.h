@@ -25,6 +25,11 @@ class SchedulerSaturated final : public std::runtime_error {
 
 class PageScheduler final {
  public:
+  // What sends a figure crop through barcode decoding.  kClassTriggered
+  // decodes only crops whose top figure class is bar_code or qr_code (so it
+  // needs the classifier); kAll decodes every figure crop regardless.
+  enum class BarcodeMode { kOff, kClassTriggered, kAll };
+
   struct Options {
     size_t document_queue_capacity = 8;
     size_t render_queue_capacity = 8;
@@ -41,6 +46,8 @@ class PageScheduler final {
     // PNG-encode figure crops onto their regions in the inference stage.
     // Off by default: image bytes inflate every page event that has figures.
     bool capture_picture_images = false;
+    // Decode barcode/QR payloads from figure crops in the inference stage.
+    BarcodeMode barcode_mode = BarcodeMode::kOff;
   };
 
   enum class DeliveryResult { kAccepted, kAcceptedAndRelease, kCancelled };
@@ -68,6 +75,8 @@ class PageScheduler final {
     uint64_t tables_structured = 0;
     // Figure regions that went through classification.
     uint64_t figures_classified = 0;
+    // Barcode payloads decoded from figure crops.
+    uint64_t barcodes_decoded = 0;
     uint64_t pages_cancelled = 0;
     size_t documents_queued = 0;
     size_t pages_waiting_for_render = 0;
