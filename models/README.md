@@ -1,6 +1,10 @@
-# OCR model files
+# Model files
 
-Place these RapidOcrOnnx-compatible files in this directory before starting the server:
+Place these files in this directory before starting the server.
+
+## OCR (required)
+
+RapidOcrOnnx-compatible files:
 
 - `ch_PP-OCRv3_det_infer.onnx`
 - `ch_ppocr_mobile_v2.0_cls_infer.onnx`
@@ -8,3 +12,31 @@ Place these RapidOcrOnnx-compatible files in this directory before starting the 
 - `ppocr_keys_v1.txt`
 
 The model set and dictionary naming are documented by [RapidOcrOnnx](https://github.com/RapidAI/RapidOcrOnnx#模型下载). The dictionary is included in that repository; download the three ONNX model files from the corresponding RapidOCR model release and keep them matched to this dictionary.
+
+## Layout (optional; enables region labels)
+
+- `layout_publaynet.onnx` — PicoDet layout detector from PaddleDetection's
+  PP-StructureV2, trained on PubLayNet; ONNX export published by
+  [RapidLayout](https://github.com/RapidAI/RapidLayout).
+
+  ```bash
+  curl -L -o layout_publaynet.onnx \
+    https://github.com/RapidAI/RapidLayout/releases/download/v0.0.0/layout_publaynet.onnx
+  ```
+
+  sha256: `958aa6dcef1cc1a542d0a513b5976a3d5edbcc37d76460ec1e9f126358e4d100`
+
+  License: Apache-2.0 (PaddleDetection model, RapidLayout packaging; PubLayNet
+  dataset is CDLA-Permissive). Label map, index = model class id:
+  `0=text, 1=title, 2=list, 3=table, 4=figure`.
+
+  Preprocess: resize to 608x800 (no aspect preservation), scale 1/255,
+  normalize mean `[0.485, 0.456, 0.406]` / std `[0.229, 0.224, 0.225]` applied
+  in the image's loaded channel order, NCHW. Postprocess: PicoDet DFL decode
+  (strides 8/16/32/64, 8 bins/side), per-class confidence 0.5, class-wise hard
+  NMS at IoU 0.5. Constants mirror RapidLayout's `pp` handler, which is the
+  reference `layout-engine-test` goldens were generated with.
+
+  When this file is absent the server runs without layout labels; when present
+  it is pooled per inference worker on the configured execution provider
+  (CUDA, OpenVINO, or CPU), like the OCR sessions.
