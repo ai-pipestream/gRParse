@@ -6,6 +6,7 @@
 #include <string>
 #include <utility>
 
+#include "grparse/reading_order.h"
 #include "grparse/text_geometry.h"
 
 namespace docling = ai::docling;
@@ -89,7 +90,10 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
   output->mutable_page_meta()->mutable_size()->set_width(source.width);
   output->mutable_page_meta()->mutable_size()->set_height(source.height);
 
-  for (const auto& line : source.lines) {
+  // Emission order defines text offsets, refs, and body order, so lines are
+  // walked in reading order (multi-column aware) rather than input order.
+  for (const size_t line_index : reading_order(source)) {
+    const auto& line = source.lines[line_index];
     if (line.text.empty() || line.polygon.empty()) continue;
     const std::string self_ref = "#/texts/" + std::to_string(cursor->text_index++);
     auto* base = output->add_texts()->mutable_text()->mutable_base();

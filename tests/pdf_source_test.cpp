@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "grparse/in_memory_document.h"
+#include "grparse/reading_order.h"
 #include "grparse/text_geometry.h"
 
 namespace {
@@ -29,6 +30,8 @@ int expected_pixels(double user_space_units) {
 
 // Assembles a single-page PDF with a base-14 font and explicit widths, so text
 // extraction never depends on system fonts being installed.
+std::string wrap_content_pdf(const std::string& content, int rotate);
+
 std::string build_pdf(const std::vector<std::string>& lines, int rotate) {
   std::string content;
   int baseline = kMediaHeight - 72;
@@ -36,7 +39,12 @@ std::string build_pdf(const std::vector<std::string>& lines, int rotate) {
     content += "BT /F1 24 Tf 72 " + std::to_string(baseline) + " Td (" + line + ") Tj ET\n";
     baseline -= 60;
   }
+  return wrap_content_pdf(content, rotate);
+}
 
+// Wraps a raw content stream in a complete single-page PDF with a widths-
+// complete Helvetica so Poppler reports exact text geometry.
+std::string wrap_content_pdf(const std::string& content, int rotate) {
   std::string widths = "[";
   for (int code = 32; code < 127; ++code) widths += "600 ";
   widths += "]";
@@ -251,6 +259,31 @@ void verify_raster_source() {
 
 }  // namespace
 
+// C5 fixture: a genuine two-column digital PDF through Poppler must stream in
+// column order, not the y-interleaved order pure top-sorting would produce.
+void verify_two_column_digital_pdf_reads_in_column_order() {
+  std::string content;
+  const std::vector<std::string> left = {"Lone", "Ltwo", "Lthree"};
+  const std::vector<std::string> right = {"Rone", "Rtwo", "Rthree"};
+  int baseline = kMediaHeight - 92;
+  for (size_t row = 0; row < left.size(); ++row) {
+    content += "BT /F1 18 Tf 60 " + std::to_string(baseline) + " Td (" + left[row] + ") Tj ET\n";
+    content += "BT /F1 18 Tf 340 " + std::to_string(baseline) + " Td (" + right[row] + ") Tj ET\n";
+    baseline -= 60;
+  }
+  const auto source =
+      grparse::open_in_memory_document(bytes_of(wrap_content_pdf(content, 0)), true);
+  const auto page = source->extract_digital_page(1);
+  require(page.has_value() && page->lines.size() == 6, "two-column digital extraction");
+
+  std::vector<std::string> texts;
+  for (const size_t index : grparse::reading_order(*page)) {
+    texts.push_back(page->lines[index].text);
+  }
+  const std::vector<std::string> expected = {"Lone", "Ltwo", "Lthree", "Rone", "Rtwo", "Rthree"};
+  require(texts == expected, "two-column PDF must read column-by-column");
+}
+
 int main() {
   try {
     verify_digital_text_and_geometry();
@@ -260,6 +293,7 @@ int main() {
     verify_invalid_input_is_rejected();
     verify_concurrent_page_access();
     verify_raster_source();
+    verify_two_column_digital_pdf_reads_in_column_order();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
     std::cerr << "pdf-source-test: " << error.what() << '\n';
