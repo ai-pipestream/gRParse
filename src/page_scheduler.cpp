@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <deque>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -44,6 +45,12 @@ class BoundedQueue final {
     queue_.pop_front();
     not_full_.notify_one();
     return true;
+  }
+
+  // Block until there is room, the queue closes, or the timeout elapses.
+  bool wait_for_space(std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return not_full_.wait_for(lock, timeout, [&] { return closed_ || queue_.size() < capacity_; });
   }
 
   void close() {
@@ -135,6 +142,7 @@ class PageScheduler::Impl final {
   struct InferenceJob {
     std::shared_ptr<PageJob> page;
     cv::Mat image;
+    std::optional<OcrPage> digital_seed;
   };
 
   struct AssemblyJob {
@@ -276,7 +284,8 @@ class PageScheduler::Impl final {
       }
     }
     if (retry) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      // Wait for render capacity instead of spinning on a 1ms sleep.
+      render_.wait_for_space(std::chrono::milliseconds(50));
       queue_reschedule(request);
     }
   }
@@ -301,6 +310,16 @@ class PageScheduler::Impl final {
     if (final_state == PageJobState::kCancelled) pages_cancelled_.fetch_add(1);
     if (page->request->cancelled.load()) queue_reschedule(page->request);
     if (page->request->remaining_pages.fetch_sub(1) == 1) finish_request(page->request);
+  }
+
+  bool enqueue_assembly(const std::shared_ptr<PageJob>& page, std::shared_ptr<const OcrPage> result) {
+    page->state.store(PageJobState::kQueuedForAssembly);
+    if (!assembly_.push(AssemblyJob{page, std::move(result)})) {
+      page->request->fail(std::make_exception_ptr(std::runtime_error("Assembly queue closed")));
+      complete_page(page, PageJobState::kFailed);
+      return false;
+    }
+    return true;
   }
 
   void coordinate() {
@@ -343,16 +362,16 @@ class PageScheduler::Impl final {
       }
       try {
         page->state.store(PageJobState::kRendering);
-        if (auto digital_page = page->source->extract_digital_page(page->page_number)) {
+        std::optional<OcrPage> digital = page->source->extract_digital_page(page->page_number);
+        if (digital.has_value()) {
           pages_read_digitally_.fetch_add(1);
-          page->state.store(PageJobState::kQueuedForAssembly);
-          auto result = std::make_shared<const OcrPage>(std::move(*digital_page));
-          if (!assembly_.push(AssemblyJob{page, std::move(result)})) {
-            page->request->fail(std::make_exception_ptr(std::runtime_error("Assembly queue closed")));
-            complete_page(page, PageJobState::kFailed);
+          if (digital->skip_ocr) {
+            auto result = std::make_shared<const OcrPage>(std::move(*digital));
+            enqueue_assembly(page, std::move(result));
+            continue;
           }
-          continue;
         }
+
         cv::Mat image = page->source->render_page(page->page_number);
         pages_rendered_.fetch_add(1);
         if (page->request->cancelled.load()) {
@@ -360,7 +379,8 @@ class PageScheduler::Impl final {
           continue;
         }
         page->state.store(PageJobState::kQueuedForInference);
-        if (!inference_.push(InferenceJob{page, std::move(image)})) {
+        InferenceJob job{page, std::move(image), std::move(digital)};
+        if (!inference_.push(std::move(job))) {
           page->request->fail(std::make_exception_ptr(std::runtime_error("Inference queue closed")));
           complete_page(page, PageJobState::kFailed);
         }
@@ -380,14 +400,18 @@ class PageScheduler::Impl final {
       }
       try {
         job.page->state.store(PageJobState::kInferencing);
-        auto result = std::make_shared<const OcrPage>(recognizer_.extract_page(job.image));
+        OcrPage ocr = recognizer_.extract_page(job.image);
         job.image.release();
         pages_recognized_.fetch_add(1);
-        job.page->state.store(PageJobState::kQueuedForAssembly);
-        if (!assembly_.push(AssemblyJob{job.page, std::move(result)})) {
-          job.page->request->fail(std::make_exception_ptr(std::runtime_error("Assembly queue closed")));
-          complete_page(job.page, PageJobState::kFailed);
+
+        std::shared_ptr<const OcrPage> result;
+        if (job.digital_seed.has_value() && !job.digital_seed->lines.empty()) {
+          result = std::make_shared<const OcrPage>(
+              merge_digital_and_ocr(std::move(*job.digital_seed), std::move(ocr)));
+        } else {
+          result = std::make_shared<const OcrPage>(std::move(ocr));
         }
+        enqueue_assembly(job.page, std::move(result));
       } catch (...) {
         job.page->request->fail(std::current_exception());
         complete_page(job.page, PageJobState::kFailed);

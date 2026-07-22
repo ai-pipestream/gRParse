@@ -1,10 +1,53 @@
 #include "grparse/ocr_engine.h"
 
+#include <cstdlib>
 #include <stdexcept>
+#include <string>
 
 #include <opencv2/imgcodecs.hpp>
 
 namespace grparse {
+namespace {
+
+struct OcrDetectOptions {
+  int padding = 50;
+  int max_side_len = 2048;
+  float box_score_thresh = 0.6F;
+  float box_thresh = 0.3F;
+  float un_clip_ratio = 2.0F;
+  bool do_angle = true;
+  bool most_angle = true;
+};
+
+int env_int(const char* name, int fallback) {
+  const char* configured = std::getenv(name);
+  if (configured == nullptr) return fallback;
+  char* end = nullptr;
+  const long parsed = std::strtol(configured, &end, 10);
+  if (end == configured || *end != '\0') return fallback;
+  return static_cast<int>(parsed);
+}
+
+float env_float(const char* name, float fallback) {
+  const char* configured = std::getenv(name);
+  if (configured == nullptr) return fallback;
+  char* end = nullptr;
+  const float parsed = std::strtof(configured, &end);
+  if (end == configured || *end != '\0') return fallback;
+  return parsed;
+}
+
+OcrDetectOptions detect_options_from_env() {
+  OcrDetectOptions options;
+  options.padding = env_int("GRPARSE_OCR_PADDING", options.padding);
+  options.max_side_len = env_int("GRPARSE_OCR_MAX_SIDE", options.max_side_len);
+  options.box_score_thresh = env_float("GRPARSE_OCR_BOX_SCORE", options.box_score_thresh);
+  options.box_thresh = env_float("GRPARSE_OCR_BOX_THRESH", options.box_thresh);
+  options.un_clip_ratio = env_float("GRPARSE_OCR_UNCLIP", options.un_clip_ratio);
+  return options;
+}
+
+}  // namespace
 
 OcrEngine::OcrEngine(const std::filesystem::path& model_directory, int gpu_index) {
   const auto det = model_directory / "ch_PP-OCRv3_det_infer.onnx";
@@ -29,8 +72,12 @@ OcrEngine::Page OcrEngine::extract_page(const cv::Mat& image) {
   if (image.empty()) {
     throw std::runtime_error("RapidOCR could not decode the in-memory image");
   }
-  const auto result = engine_->detect(image, 50, 2048, 0.6f, 0.3f, 2.0f, true, true);
+  const OcrDetectOptions options = detect_options_from_env();
+  const auto result =
+      engine_->detect(image, options.padding, options.max_side_len, options.box_score_thresh,
+                      options.box_thresh, options.un_clip_ratio, options.do_angle, options.most_angle);
   Page page{image.cols, image.rows, {}};
+  page.source = OcrPage::Source::kOcr;
   page.lines.reserve(result.textBlocks.size());
   for (const auto& block : result.textBlocks) {
     float confidence = block.boxScore;
@@ -39,7 +86,8 @@ OcrEngine::Page OcrEngine::extract_page(const cv::Mat& image) {
       for (const float score : block.charScores) confidence += score;
       confidence /= static_cast<float>(block.charScores.size());
     }
-    page.lines.push_back(Line{block.text, block.boxPoint, confidence});
+    page.lines.push_back(
+        Line{block.text, block.boxPoint, confidence, TextOrigin::kOcr});
   }
   return page;
 }

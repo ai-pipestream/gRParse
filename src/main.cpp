@@ -119,8 +119,8 @@ int main() {
       std::cerr << "Unable to listen on " << listen_address << '\n';
       return 1;
     }
-    std::cout << "DoclingServeService listening on " << listen_address
-              << " with the RapidOCR CUDA execution provider" << std::endl;
+    std::cout << "gRParse listening on " << listen_address
+              << " (RapidOCR / ONNX Runtime CUDA)" << std::endl;
     std::thread shutdown_thread([&] {
       unsigned char received_signal = 0;
       if (read(signal_pipe[0], &received_signal, sizeof(received_signal)) ==

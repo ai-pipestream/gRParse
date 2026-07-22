@@ -20,7 +20,7 @@ gRParse turns PDF pages and raster images into text with the maintained C++ [Rap
 
 The service listens on `localhost:50051` and implements `ai.docling.serve.v1.DoclingServeService` from the local `docling_serve.proto` contract. `ConvertSource` currently accepts one `FileSource` containing base64-encoded PDF, PNG, JPEG, or TIFF bytes. It accepts only TEXT output and returns `INVALID_ARGUMENT` for populated options it does not implement. It does not label plain text as Markdown.
 
-Each PDF request opens one Poppler document directly from the request bytes. Pages with sufficient extractable native PDF text bypass rasterization and RapidOCR. Image-only and low-coverage pages are rendered at 200 DPI and passed to RapidOCR. Raster inputs are decoded with OpenCV directly from request memory. No input document, page image, OCR intermediate, or result is written to disk.
+Each PDF request opens one Poppler document directly from the request bytes. Full native-text pages skip raster OCR. Weak/partial digital layers keep their native boxes and still run OCR; geometry merge drops overlapping OCR duplicates so headers and scan body can coexist. Image-only pages render at 200 DPI into RapidOCR. Raster inputs decode with OpenCV from request memory. Nothing is written to disk on the hot path.
 
 `ConvertSource` returns the contract's `ConvertDocumentResponse`, populated with a native `DoclingDocument`. Each OCR line becomes a `TextItem`, with its page and bounding box in `provenance`; pages and the `#/body` to `#/texts/N` reference graph are also populated. It deliberately leaves tables, pictures, semantic headings, chunking, asynchronous jobs, and remote sources unimplemented until appropriate layout or extraction models are added.
 
@@ -68,7 +68,9 @@ queue memory with `GRPARSE_PAGE_WORKERS`, `GRPARSE_RENDER_WORKERS`,
 `GRPARSE_ASSEMBLY_WORKERS`, `GRPARSE_DOCUMENT_QUEUE`, `GRPARSE_RENDER_QUEUE`,
 `GRPARSE_INFERENCE_QUEUE`, `GRPARSE_ASSEMBLY_QUEUE`, `GRPARSE_PAGE_WINDOW`, and
 `GRPARSE_MAX_ACTIVE_DOCUMENTS`. Select the NVIDIA device with
-`GRPARSE_CUDA_DEVICE`. gRPC memory, thread,
+`GRPARSE_CUDA_DEVICE`. Optional RapidOCR detect knobs:
+`GRPARSE_OCR_PADDING`, `GRPARSE_OCR_MAX_SIDE`, `GRPARSE_OCR_BOX_SCORE`,
+`GRPARSE_OCR_BOX_THRESH`, `GRPARSE_OCR_UNCLIP`. gRPC memory, thread,
 and stream limits use `GRPARSE_GRPC_MEMORY_MIB`, `GRPARSE_GRPC_MAX_THREADS`,
 and `GRPARSE_MAX_CONCURRENT_STREAMS`. RapidOCR currently produces text,
 so `tables` and `pictures` remain empty until dedicated extraction models are
@@ -103,6 +105,6 @@ provider to exist; a CPU-only runtime cannot activate the GPU.
 docker compose build
 ```
 
-The build runs contract, scheduler, cancellation, digital fast-path, unary,
-and callback-stream integration tests. Generated protobuf and gRPC sources stay
-inside the build directory and are not committed.
+The build runs assembly, geometry-merge, base64, scheduler (including partial
+digital→OCR merge), unary, and streaming contract tests. Generated protobuf and
+gRPC sources stay inside the build directory and are not committed.

@@ -105,11 +105,13 @@ target_include_directories(docling_proto PUBLIC "${GENERATED_DIR}")
 target_link_libraries(docling_proto PUBLIC grpc++)
 
 add_library(grparse_core
+  src/base64.cpp
   src/document_parser_service.cpp
   src/document_assembly.cpp
   src/in_memory_document.cpp
   src/ocr_engine.cpp
-  src/page_scheduler.cpp)
+  src/page_scheduler.cpp
+  src/text_geometry.cpp)
 target_include_directories(grparse_core PUBLIC include)
 target_link_libraries(grparse_core PUBLIC docling_proto rapidocr PkgConfig::POPPLER_CPP Threads::Threads)
 target_compile_options(grparse_core PRIVATE -Wall -Wextra -Wpedantic)
@@ -132,6 +134,14 @@ if(BUILD_TESTING)
   add_executable(streaming-service-test tests/streaming_service_test.cpp)
   target_link_libraries(streaming-service-test PRIVATE grparse_core)
   add_test(NAME streaming-service-test COMMAND streaming-service-test)
+
+  add_executable(text-geometry-test tests/text_geometry_test.cpp)
+  target_link_libraries(text-geometry-test PRIVATE grparse_core)
+  add_test(NAME text-geometry-test COMMAND text-geometry-test)
+
+  add_executable(base64-test tests/base64_test.cpp)
+  target_link_libraries(base64-test PRIVATE grparse_core)
+  add_test(NAME base64-test COMMAND base64-test)
 endif()
 
 install(TARGETS grparse-server grparse-stream-client RUNTIME DESTINATION bin)

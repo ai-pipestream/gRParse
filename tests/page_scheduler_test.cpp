@@ -51,8 +51,10 @@ class DigitalSource final : public grparse::PageSource {
   std::optional<grparse::OcrPage> extract_digital_page(int page_number) const override {
     grparse::OcrPage page{100, 100,
                           {{"digital-" + std::to_string(page_number),
-                            {{0, 0}, {1, 0}, {1, 1}, {0, 1}}}}};
+                            {{0, 0}, {1, 0}, {1, 1}, {0, 1}}, std::nullopt,
+                            grparse::TextOrigin::kDigitalPdf}}};
     page.source = grparse::OcrPage::Source::kDigitalPdf;
+    page.skip_ocr = true;
     return page;
   }
 
@@ -226,11 +228,93 @@ void verify_page_credits_bound_a_document() {
 
 }  // namespace
 
+
+class PartialDigitalSource final : public grparse::PageSource {
+ public:
+  int page_count() const override { return 1; }
+
+  std::optional<grparse::OcrPage> extract_digital_page(int) const override {
+    grparse::OcrPage page{100, 100,
+                          {{"header", {{0, 0}, {40, 0}, {40, 10}, {0, 10}}, std::nullopt,
+                            grparse::TextOrigin::kDigitalPdf}}};
+    page.source = grparse::OcrPage::Source::kDigitalPdf;
+    page.skip_ocr = false;  // weak coverage → must OCR + merge
+    return page;
+  }
+
+  cv::Mat render_page(int page_number) const override {
+    return cv::Mat(1, 1, CV_8UC1, cv::Scalar(page_number)).clone();
+  }
+};
+
+class BodyRecognizer final : public grparse::PageRecognizer {
+ public:
+  grparse::OcrPage extract_page(const cv::Mat&) override {
+    calls.fetch_add(1);
+    // Non-overlapping with the digital header box at y=0..10.
+    return grparse::OcrPage{
+        100, 100,
+        {{"body-ocr", {{0, 50}, {80, 50}, {80, 60}, {0, 60}}, 0.9F, grparse::TextOrigin::kOcr}}};
+  }
+  std::atomic<int> calls{0};
+};
+
+void verify_partial_digital_merges_with_ocr() {
+  BodyRecognizer recognizer;
+  grparse::PageScheduler scheduler(
+      recognizer, {1, 2, 1, 2, 1, 1, 1},
+      [](std::shared_ptr<const std::string>, bool) { return std::make_shared<PartialDigitalSource>(); });
+
+  struct Capture {
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::shared_ptr<const grparse::OcrPage> page;
+    bool finished = false;
+    std::exception_ptr failure;
+  } capture;
+
+  scheduler.submit(
+      std::make_shared<const std::string>("memory"), true,
+      grparse::PageScheduler::Callbacks{
+          [](int) {},
+          [&capture](int, std::shared_ptr<const grparse::OcrPage> page) {
+            std::lock_guard<std::mutex> lock(capture.mutex);
+            capture.page = std::move(page);
+            return grparse::PageScheduler::DeliveryResult::kAcceptedAndRelease;
+          },
+          [&capture](std::exception_ptr failure) {
+            std::lock_guard<std::mutex> lock(capture.mutex);
+            capture.failure = std::move(failure);
+            capture.finished = true;
+            capture.changed.notify_all();
+          }});
+
+  {
+    std::unique_lock<std::mutex> lock(capture.mutex);
+    require(capture.changed.wait_for(lock, 10s, [&] { return capture.finished; }),
+            "partial digital merge timed out");
+    require(!capture.failure, "partial digital merge failed");
+    require(capture.page != nullptr, "missing merged page");
+    require(capture.page->source == grparse::OcrPage::Source::kMerged, "expected merged source");
+    require(capture.page->lines.size() == 2, "expected digital header + OCR body");
+    require(capture.page->lines[0].text == "header", "digital line should sort first");
+    require(capture.page->lines[1].text == "body-ocr", "OCR line missing after merge");
+    require(capture.page->lines[0].origin == grparse::TextOrigin::kDigitalPdf, "digital origin");
+    require(capture.page->lines[1].origin == grparse::TextOrigin::kOcr, "ocr origin");
+  }
+  require(recognizer.calls.load() == 1, "partial digital must still run OCR");
+  const auto metrics = scheduler.metrics();
+  require(metrics.pages_read_digitally == 1, "digital metric");
+  require(metrics.pages_recognized == 1, "ocr metric");
+  require(metrics.pages_rendered == 1, "render metric");
+}
+
 int main() {
   try {
     verify_pipeline_and_metrics();
     verify_cancellation_drains_bounded_work();
     verify_digital_pages_bypass_render_and_inference();
+    verify_partial_digital_merges_with_ocr();
     verify_delivery_cancellation_drains_queued_work();
     verify_page_credits_bound_a_document();
     return EXIT_SUCCESS;

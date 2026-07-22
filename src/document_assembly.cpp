@@ -5,27 +5,36 @@
 #include <stdexcept>
 #include <string>
 
+#include "grparse/text_geometry.h"
+
 namespace docling = ai::docling;
 
 namespace grparse {
 namespace {
 
-void set_bounding_box(const OcrLine& line, docling::core::v1::BoundingBox* box) {
-  int left = std::numeric_limits<int>::max();
-  int top = std::numeric_limits<int>::max();
-  int right = std::numeric_limits<int>::min();
-  int bottom = std::numeric_limits<int>::min();
-  for (const auto& point : line.polygon) {
-    left = std::min(left, point.x);
-    top = std::min(top, point.y);
-    right = std::max(right, point.x);
-    bottom = std::max(bottom, point.y);
+void set_bounding_box(const AxisAlignedBox& box, docling::core::v1::BoundingBox* output) {
+  output->set_l(box.left);
+  output->set_t(box.top);
+  output->set_r(box.right);
+  output->set_b(box.bottom);
+  output->set_coord_origin(docling::core::v1::COORD_ORIGIN_TOPLEFT);
+}
+
+docling::serve::v1::TextSource text_source_for(const OcrPage& page, const OcrLine& line) {
+  if (line.origin.has_value()) {
+    return *line.origin == TextOrigin::kDigitalPdf ? docling::serve::v1::TEXT_SOURCE_DIGITAL_PDF
+                                                   : docling::serve::v1::TEXT_SOURCE_OCR;
   }
-  box->set_l(left);
-  box->set_t(top);
-  box->set_r(right);
-  box->set_b(bottom);
-  box->set_coord_origin(docling::core::v1::COORD_ORIGIN_TOPLEFT);
+  switch (page.source) {
+    case OcrPage::Source::kDigitalPdf:
+      return docling::serve::v1::TEXT_SOURCE_DIGITAL_PDF;
+    case OcrPage::Source::kMerged:
+      // Prefer OCR label only when origin is missing; merged pages should set per-line origin.
+      return docling::serve::v1::TEXT_SOURCE_OCR;
+    case OcrPage::Source::kOcr:
+    default:
+      return docling::serve::v1::TEXT_SOURCE_OCR;
+  }
 }
 
 }  // namespace
@@ -65,7 +74,7 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
       throw std::length_error("OCR line exceeds Docling charspan range");
     }
     provenance->mutable_charspan()->set_end(static_cast<int32_t>(length));
-    set_bounding_box(line, provenance->mutable_bbox());
+    set_bounding_box(bounding_box(line), provenance->mutable_bbox());
 
     if (cursor->has_text) ++cursor->utf_offset;
     auto* offset = output->add_text_offsets();
@@ -74,9 +83,7 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     cursor->utf_offset += length;
     offset->set_utf_end(cursor->utf_offset);
     if (line.confidence.has_value()) offset->set_confidence(*line.confidence);
-    offset->set_source(source.source == OcrPage::Source::kDigitalPdf
-                           ? docling::serve::v1::TEXT_SOURCE_DIGITAL_PDF
-                           : docling::serve::v1::TEXT_SOURCE_OCR);
+    offset->set_source(text_source_for(source, line));
     cursor->has_text = true;
   }
 }

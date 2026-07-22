@@ -17,6 +17,14 @@
 namespace grparse {
 namespace {
 
+// Born-digital coverage gate: skip OCR only when the native text layer looks real.
+constexpr size_t kMinDigitalNonWhitespace = 32;
+constexpr size_t kMinDigitalLines = 4;
+constexpr double kMinDigitalVerticalCoverage = 0.12;
+constexpr size_t kStrongDigitalNonWhitespace = 128;
+constexpr double kRenderDpi = 200.0;
+constexpr double kPdfUserSpaceDpi = 72.0;
+
 class PdfPageSource final : public PageSource {
  public:
   explicit PdfPageSource(std::shared_ptr<const std::string> bytes) : bytes_(std::move(bytes)), document_(load()) {
@@ -30,7 +38,7 @@ class PdfPageSource final : public PageSource {
     std::lock_guard<std::mutex> lock(document_mutex_);
     auto page = open_page(page_number);
     const poppler::rectf page_rect = page->page_rect();
-    constexpr double kScale = 200.0 / 72.0;
+    constexpr double kScale = kRenderDpi / kPdfUserSpaceDpi;
     OcrPage result{static_cast<int>(page_rect.width() * kScale),
                    static_cast<int>(page_rect.height() * kScale), {}};
     result.source = OcrPage::Source::kDigitalPdf;
@@ -51,16 +59,21 @@ class PdfPageSource final : public PageSource {
       const int top = static_cast<int>(box.top() * kScale);
       const int right = static_cast<int>(box.right() * kScale);
       const int bottom = static_cast<int>(box.bottom() * kScale);
-      result.lines.push_back(
-          OcrLine{std::move(text), {{left, top}, {right, top}, {right, bottom}, {left, bottom}},
-                  std::nullopt});
+      OcrLine line{std::move(text),
+                   {{left, top}, {right, top}, {right, bottom}, {left, bottom}},
+                   std::nullopt,
+                   TextOrigin::kDigitalPdf};
+      result.lines.push_back(std::move(line));
     }
     if (result.lines.empty()) return std::nullopt;
+
     const double vertical_coverage =
         page_rect.height() > 0.0 ? (text_bottom - text_top) / page_rect.height() : 0.0;
-    const bool sufficient_text = non_whitespace_bytes >= 32 && result.lines.size() >= 4 &&
-                                 (vertical_coverage >= 0.12 || non_whitespace_bytes >= 128);
-    if (!sufficient_text) return std::nullopt;
+    result.skip_ocr = non_whitespace_bytes >= kMinDigitalNonWhitespace &&
+                      result.lines.size() >= kMinDigitalLines &&
+                      (vertical_coverage >= kMinDigitalVerticalCoverage ||
+                       non_whitespace_bytes >= kStrongDigitalNonWhitespace);
+    // Always return native text when present so the scheduler can merge with OCR on weak pages.
     return result;
   }
 
@@ -70,8 +83,9 @@ class PdfPageSource final : public PageSource {
 
     poppler::page_renderer renderer;
     renderer.set_image_format(poppler::image::format_bgr24);
-    const poppler::image image = renderer.render_page(page.get(), 200.0, 200.0);
+    const poppler::image image = renderer.render_page(page.get(), kRenderDpi, kRenderDpi);
     if (!image.is_valid()) throw InvalidDocument("PDF page could not be rendered in memory");
+    // Poppler owns image.const_data() for this stack frame only — clone before return.
     return cv::Mat(image.height(), image.width(), CV_8UC3, const_cast<char*>(image.const_data()),
                    static_cast<size_t>(image.bytes_per_row()))
         .clone();
@@ -108,8 +122,9 @@ class RasterPageSource final : public PageSource {
 
   cv::Mat render_page(int page_number) const override {
     if (page_number != 1) throw InvalidDocument("Raster page number is out of range");
-    const auto* begin = reinterpret_cast<const unsigned char*>(bytes_->data());
-    const std::vector<unsigned char> encoded(begin, begin + bytes_->size());
+    // Decode from the existing buffer without an intermediate std::vector copy.
+    const cv::Mat encoded(1, static_cast<int>(bytes_->size()), CV_8UC1,
+                          const_cast<char*>(bytes_->data()));
     const cv::Mat image = cv::imdecode(encoded, cv::IMREAD_COLOR);
     if (image.empty()) throw InvalidDocument("Raster image could not be decoded from memory");
     return image;

@@ -1,12 +1,11 @@
 #include "grparse/document_parser_service.h"
 
 #include <algorithm>
-#include <array>
 #include <chrono>
-#include <cctype>
 #include <condition_variable>
 #include <deque>
 #include <exception>
+#include <filesystem>
 #include <google/protobuf/arena.h>
 #include <google/protobuf/descriptor.h>
 #include <iterator>
@@ -14,7 +13,10 @@
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
+#include "grparse/base64.h"
 #include "grparse/document_assembly.h"
 #include "grparse/in_memory_document.h"
 
@@ -23,53 +25,6 @@ namespace docling = ai::docling;
 
 namespace grparse {
 namespace {
-
-std::string decode_base64(const std::string& value) {
-  static constexpr unsigned char kInvalid = 255;
-  static const auto decode = [] {
-    std::array<unsigned char, 256> table{};
-    table.fill(kInvalid);
-    for (unsigned char index = 0; index < 26; ++index) {
-      table[static_cast<unsigned char>('A' + index)] = index;
-      table[static_cast<unsigned char>('a' + index)] = 26 + index;
-    }
-    for (unsigned char index = 0; index < 10; ++index) table[static_cast<unsigned char>('0' + index)] = 52 + index;
-    table[static_cast<unsigned char>('+')] = 62;
-    table[static_cast<unsigned char>('/')] = 63;
-    return table;
-  }();
-
-  std::string compact;
-  compact.reserve(value.size());
-  for (const char character : value) {
-    if (!std::isspace(static_cast<unsigned char>(character))) compact.push_back(character);
-  }
-  if (compact.empty() || compact.size() % 4 != 0) throw std::invalid_argument("file.base64_string is not valid base64");
-
-  std::string decoded;
-  decoded.reserve(compact.size() / 4 * 3);
-  for (size_t offset = 0; offset < compact.size(); offset += 4) {
-    const char first = compact[offset];
-    const char second = compact[offset + 1];
-    const char third = compact[offset + 2];
-    const char fourth = compact[offset + 3];
-    if (first == '=' || second == '=' || decode[static_cast<unsigned char>(first)] == kInvalid ||
-        decode[static_cast<unsigned char>(second)] == kInvalid ||
-        (third != '=' && decode[static_cast<unsigned char>(third)] == kInvalid) ||
-        (fourth != '=' && decode[static_cast<unsigned char>(fourth)] == kInvalid) ||
-        (third == '=' && fourth != '=') || ((third == '=' || fourth == '=') && offset + 4 != compact.size())) {
-      throw std::invalid_argument("file.base64_string is not valid base64");
-    }
-    const auto a = decode[static_cast<unsigned char>(first)];
-    const auto b = decode[static_cast<unsigned char>(second)];
-    const auto c = third == '=' ? 0 : decode[static_cast<unsigned char>(third)];
-    const auto d = fourth == '=' ? 0 : decode[static_cast<unsigned char>(fourth)];
-    decoded.push_back(static_cast<char>((a << 2) | (b >> 4)));
-    if (third != '=') decoded.push_back(static_cast<char>((b << 4) | (c >> 2)));
-    if (fourth != '=') decoded.push_back(static_cast<char>((c << 6) | d));
-  }
-  return decoded;
-}
 
 uint64_t content_hash(const std::string& document) {
   uint64_t hash = 14695981039346656037ULL;
@@ -354,6 +309,8 @@ class DocumentStreamReactor final
   }
 
   void OnDone() override {
+    // gRPC Callback API transfers ownership of the reactor; OnDone must delete it.
+    // CallbackGate + weak_ptr keep scheduler callbacks from touching a dead reactor.
     const auto gate = callback_gate_;
     {
       std::lock_guard<std::mutex> lock(gate->mutex);

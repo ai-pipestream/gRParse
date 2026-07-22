@@ -12,9 +12,10 @@ COPY . .
 RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.82.1-ort1.27.1,target=/build \
     cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
  && cmake --build /build --target grparse-server grparse-stream-client \
-      document-assembly-test page-scheduler-test streaming-service-test --parallel 4 \
+      document-assembly-test page-scheduler-test streaming-service-test \
+      text-geometry-test base64-test --parallel 4 \
  && ctest --test-dir /build --output-on-failure \
-      -R '^(document-assembly-test|page-scheduler-test|streaming-service-test)$' \
+      -R '^(document-assembly-test|page-scheduler-test|streaming-service-test|text-geometry-test|base64-test)$' \
  && mkdir -p /out \
  && cp /build/grparse-server /out/grparse-server \
  && cp /build/grparse-stream-client /out/grparse-stream-client \

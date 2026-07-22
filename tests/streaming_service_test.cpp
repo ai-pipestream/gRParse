@@ -32,8 +32,10 @@ class FakeSource final : public grparse::PageSource {
     if (!digital_) return std::nullopt;
     static const std::vector<std::string> text{"", "native-one", "native-two", "native-three"};
     grparse::OcrPage page{100, 200,
-                          {{text.at(page_number), {{1, 2}, {20, 2}, {20, 12}, {1, 12}}}}};
+                          {{text.at(page_number), {{1, 2}, {20, 2}, {20, 12}, {1, 12}}, std::nullopt,
+                            grparse::TextOrigin::kDigitalPdf}}};
     page.source = grparse::OcrPage::Source::kDigitalPdf;
+    page.skip_ocr = true;
     return page;
   }
   cv::Mat render_page(int page_number) const override {
