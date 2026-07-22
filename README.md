@@ -18,11 +18,11 @@ gRParse turns PDF pages and raster images into text with the maintained C++ [Rap
    docker compose up --build
    ```
 
-The service listens on `localhost:50051` and implements `ai.docling.serve.v1.DoclingServeService` from the local `docling_serve.proto` contract. `ConvertSource` currently accepts one `FileSource` containing base64-encoded PDF, PNG, JPEG, or TIFF bytes. It accepts only TEXT output and returns `INVALID_ARGUMENT` for populated options it does not implement. It does not label plain text as Markdown.
+The service listens on `localhost:50051` and implements `ai.pipestream.parse.v1.ParseService` from the local `parse.proto` contract. `ConvertSource` currently accepts one `FileSource` containing base64-encoded PDF, PNG, JPEG, or TIFF bytes. It accepts only TEXT output and returns `INVALID_ARGUMENT` for populated options it does not implement. It does not label plain text as Markdown.
 
 Each PDF request opens a small pool of Poppler documents directly from the request bytes, so render and digital-text extraction for different pages of the same document proceed in parallel. Full native-text pages skip raster OCR. Weak/partial digital layers keep their native boxes and still run OCR; geometry merge drops overlapping OCR duplicates so headers and scan body can coexist. Image-only pages render at 200 DPI into RapidOCR. Raster inputs decode with OpenCV from request memory. Nothing is written to disk on the hot path.
 
-`ConvertSource` returns the contract's `ConvertDocumentResponse`, populated with a native `DoclingDocument`. Each OCR line becomes a `TextItem`, with its page and bounding box in `provenance`; pages, `TableItem`/`PictureItem` entries from layout, and the `#/body` reference graph are also populated. It deliberately leaves semantic chunking, asynchronous jobs, and remote sources unimplemented.
+`ConvertSource` returns the contract's `ConvertDocumentResponse`, populated with a native `Document`. Each OCR line becomes a `TextItem`, with its page and bounding box in `provenance`; pages, `TableItem`/`PictureItem` entries from layout, and the `#/body` reference graph are also populated. It deliberately leaves semantic chunking, asynchronous jobs, and remote sources unimplemented.
 
 The `Health` RPC reports readiness. The server intentionally fails at startup if a model is absent or CUDA initialization fails, instead of silently running CPU OCR.
 
@@ -39,16 +39,16 @@ the document or create temporary files.
 
 ## Page-streaming OCR
 
-`ai.docling.serve.v1.DoclingStreamingService/StreamProcessDocument` accepts a
+`ai.pipestream.parse.v1.ParseStreamingService/StreamProcessDocument` accepts a
 stream of `DocumentChunk` messages. Send the same `document_id`, filename, and
 content type with the chunks, then set `complete = true` on the last one. The
 server accepts PDFs and single raster images, up to 50 MiB.
 
 It emits one `DocumentStreamEvent.page` per page in page-number order, followed by one
-`DocumentStreamEvent.complete`. A page event contains the supplied Docling
+`DocumentStreamEvent.complete`. A page event contains the supplied
 `PageItem` and the page's supplied `BaseTextItem` records. `TextOffset` carries
 append-only UTF offsets, source type, and OCR confidence when available. The original
-`DoclingDocument` shape is unchanged: this is only a transport envelope for
+`Document` shape is unchanged: this is only a transport envelope for
 incremental delivery.
 
 Each outbound event and its nested protobuf messages are allocated in a
@@ -145,7 +145,7 @@ for figure-heavy corpora where embedded images would inflate every page
 event; picture bounding boxes are always present either way.
 
 The server registers standard gRPC health checking and reflection in addition
-to the Docling `Health` RPC. SIGINT and SIGTERM initiate a bounded graceful
+to the contract's `Health` RPC. SIGINT and SIGTERM initiate a bounded graceful
 shutdown.
 
 Every `GRPARSE_METRICS_INTERVAL_SECONDS` (default 60, `0` disables) the server
@@ -233,4 +233,4 @@ UndefinedBehaviorSanitizer-clean. The suppression file covers fontconfig's
 one-time global config cache, which Poppler reaches when it substitutes a
 base-14 font; it is not a per-page allocation. Generated protobuf and
 gRPC sources stay inside the build directory and are not committed; the
-`docling_document` messages live in a single canonical `docling_document.proto`.
+document messages live in a single canonical `document.proto`.

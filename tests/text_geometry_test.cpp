@@ -7,7 +7,7 @@
 #include "grparse/text_geometry.h"
 #include "grparse/document_assembly.h"
 
-#include "ai/docling/serve/v1/docling_serve_stream.pb.h"
+#include "ai/pipestream/parse/v1/parse_stream.pb.h"
 
 namespace {
 
@@ -81,12 +81,12 @@ void verify_merge_dedupes_and_sorts() {
   require(merged.lines[3].text == "footer", "ocr footer");
 
   grparse::AssemblyCursor cursor;
-  ai::docling::serve::v1::PageData page;
+  ai::pipestream::parse::v1::PageData page;
   grparse::append_page_data(merged, 1, &cursor, &page);
   require(page.text_offsets_size() == 4, "offsets for merged lines");
-  require(page.text_offsets(0).source() == ai::docling::serve::v1::TEXT_SOURCE_DIGITAL_PDF,
+  require(page.text_offsets(0).source() == ai::pipestream::parse::v1::TEXT_SOURCE_DIGITAL_PDF,
           "per-line digital source");
-  require(page.text_offsets(2).source() == ai::docling::serve::v1::TEXT_SOURCE_OCR,
+  require(page.text_offsets(2).source() == ai::pipestream::parse::v1::TEXT_SOURCE_OCR,
           "per-line ocr source");
 }
 

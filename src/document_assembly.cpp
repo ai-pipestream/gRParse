@@ -12,51 +12,51 @@
 #include "grparse/table_structure.h"
 #include "grparse/text_geometry.h"
 
-namespace docling = ai::docling;
+namespace pipestream = ai::pipestream;
 
 namespace grparse {
 namespace {
 
-void set_bounding_box(const AxisAlignedBox& box, docling::core::v1::BoundingBox* output) {
+void set_bounding_box(const AxisAlignedBox& box, pipestream::document::v1::BoundingBox* output) {
   output->set_l(box.left);
   output->set_t(box.top);
   output->set_r(box.right);
   output->set_b(box.bottom);
-  output->set_coord_origin(docling::core::v1::COORD_ORIGIN_TOPLEFT);
+  output->set_coord_origin(pipestream::document::v1::COORD_ORIGIN_TOPLEFT);
 }
 
-docling::serve::v1::TextSource text_source_for(const OcrPage& page, const OcrLine& line) {
+pipestream::parse::v1::TextSource text_source_for(const OcrPage& page, const OcrLine& line) {
   if (line.origin.has_value()) {
-    return *line.origin == TextOrigin::kDigitalPdf ? docling::serve::v1::TEXT_SOURCE_DIGITAL_PDF
-                                                   : docling::serve::v1::TEXT_SOURCE_OCR;
+    return *line.origin == TextOrigin::kDigitalPdf ? pipestream::parse::v1::TEXT_SOURCE_DIGITAL_PDF
+                                                   : pipestream::parse::v1::TEXT_SOURCE_OCR;
   }
   switch (page.source) {
     case OcrPage::Source::kDigitalPdf:
-      return docling::serve::v1::TEXT_SOURCE_DIGITAL_PDF;
+      return pipestream::parse::v1::TEXT_SOURCE_DIGITAL_PDF;
     case OcrPage::Source::kMerged:
       // Prefer OCR label only when origin is missing; merged pages should set per-line origin.
-      return docling::serve::v1::TEXT_SOURCE_OCR;
+      return pipestream::parse::v1::TEXT_SOURCE_OCR;
     case OcrPage::Source::kOcr:
     default:
-      return docling::serve::v1::TEXT_SOURCE_OCR;
+      return pipestream::parse::v1::TEXT_SOURCE_OCR;
   }
 }
 
-// PubLayNet region label -> Docling item label for the text lines inside it.
+// PubLayNet region label -> document item label for the text lines inside it.
 // Lines inside table/figure regions keep TEXT: the region itself is emitted
 // as a TableItem/PictureItem, and cell/caption structure is Epic D/E work.
-docling::core::v1::DocItemLabel label_for_region(const std::string& label) {
-  if (label == "title") return docling::core::v1::DOC_ITEM_LABEL_TITLE;
-  if (label == "list") return docling::core::v1::DOC_ITEM_LABEL_LIST_ITEM;
-  return docling::core::v1::DOC_ITEM_LABEL_TEXT;
+pipestream::document::v1::DocItemLabel label_for_region(const std::string& label) {
+  if (label == "title") return pipestream::document::v1::DOC_ITEM_LABEL_TITLE;
+  if (label == "list") return pipestream::document::v1::DOC_ITEM_LABEL_LIST_ITEM;
+  return pipestream::document::v1::DOC_ITEM_LABEL_TEXT;
 }
 
-void set_region_bounding_box(const LayoutRegion& region, docling::core::v1::BoundingBox* output) {
+void set_region_bounding_box(const LayoutRegion& region, pipestream::document::v1::BoundingBox* output) {
   output->set_l(region.left);
   output->set_t(region.top);
   output->set_r(region.right);
   output->set_b(region.bottom);
-  output->set_coord_origin(docling::core::v1::COORD_ORIGIN_TOPLEFT);
+  output->set_coord_origin(pipestream::document::v1::COORD_ORIGIN_TOPLEFT);
 }
 
 // Big-endian 32-bit read for the PNG IHDR dimensions.
@@ -68,7 +68,7 @@ uint32_t read_be32(const unsigned char* bytes) {
 // Embed a captured crop as a data URI.  The pixel size comes from the PNG
 // IHDR itself, which is authoritative regardless of the page's coordinate
 // space (digital pages measure in PDF points, crops in raster pixels).
-void set_picture_image(const std::vector<unsigned char>& png, docling::core::v1::ImageRef* image) {
+void set_picture_image(const std::vector<unsigned char>& png, pipestream::document::v1::ImageRef* image) {
   image->set_mimetype("image/png");
   // IHDR starts at byte 8; width and height are its first two fields.
   if (png.size() >= 24) {
@@ -84,7 +84,7 @@ void set_picture_image(const std::vector<unsigned char>& png, docling::core::v1:
 // row grid repeats spanning cells across every position they cover, with
 // empty unit cells filling positions no recognized cell claims.
 void fill_structured_table_data(const OcrPage& page, const LayoutRegion& region,
-                                docling::core::v1::TableData* data) {
+                                pipestream::document::v1::TableData* data) {
   int rows = 0;
   int cols = 0;
   for (const auto& cell : region.structured_cells) {
@@ -110,10 +110,10 @@ void fill_structured_table_data(const OcrPage& page, const LayoutRegion& region,
   });
 
   std::vector<int> owner(static_cast<size_t>(rows) * static_cast<size_t>(cols), -1);
-  std::vector<docling::core::v1::TableCell> protos;
+  std::vector<pipestream::document::v1::TableCell> protos;
   protos.reserve(region.structured_cells.size());
   for (const auto& cell : region.structured_cells) {
-    docling::core::v1::TableCell proto_cell;
+    pipestream::document::v1::TableCell proto_cell;
     proto_cell.set_row_span(cell.row_span);
     proto_cell.set_col_span(cell.col_span);
     proto_cell.set_start_row_offset_idx(cell.row);
@@ -166,7 +166,7 @@ void fill_structured_table_data(const OcrPage& page, const LayoutRegion& region,
 // with unit spans, mirrored into both the flat cell list and the row grid.
 // Header flags stay false; geometry cannot tell a header from a body row.
 void fill_table_data(const OcrPage& page, const LayoutRegion& region,
-                     docling::core::v1::TableData* data) {
+                     pipestream::document::v1::TableData* data) {
   if (!region.structured_cells.empty()) {
     fill_structured_table_data(page, region, data);
     return;
@@ -174,11 +174,11 @@ void fill_table_data(const OcrPage& page, const LayoutRegion& region,
   const TableGrid grid = build_table_grid(page, region);
   data->set_num_rows(grid.rows);
   data->set_num_cols(grid.cols);
-  std::vector<docling::core::v1::TableRow*> rows;
+  std::vector<pipestream::document::v1::TableRow*> rows;
   rows.reserve(static_cast<size_t>(grid.rows));
   for (int row = 0; row < grid.rows; ++row) rows.push_back(data->add_grid());
   for (const auto& cell : grid.cells) {
-    docling::core::v1::TableCell proto_cell;
+    pipestream::document::v1::TableCell proto_cell;
     proto_cell.set_row_span(1);
     proto_cell.set_col_span(1);
     proto_cell.set_start_row_offset_idx(cell.row);
@@ -208,7 +208,7 @@ uint64_t utf8_codepoint_count(const std::string& text) {
 }
 
 void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cursor,
-                      docling::serve::v1::PageData* output) {
+                      pipestream::parse::v1::PageData* output) {
   if (cursor == nullptr || output == nullptr) throw std::invalid_argument("Page assembly output is required");
   output->set_page_number(page_number);
   output->mutable_page_meta()->set_page_no(page_number);
@@ -224,9 +224,9 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     auto* base = output->add_texts()->mutable_text()->mutable_base();
     base->set_self_ref(self_ref);
     base->mutable_parent()->set_ref("#/body");
-    base->set_content_layer(docling::core::v1::CONTENT_LAYER_BODY);
+    base->set_content_layer(pipestream::document::v1::CONTENT_LAYER_BODY);
     const LayoutRegion* region = region_for_line(source, line);
-    base->set_label(region == nullptr ? docling::core::v1::DOC_ITEM_LABEL_TEXT
+    base->set_label(region == nullptr ? pipestream::document::v1::DOC_ITEM_LABEL_TEXT
                                       : label_for_region(region->label));
     base->set_orig(line.text);
     base->set_text(line.text);
@@ -236,7 +236,7 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     provenance->set_page_no(page_number);
     provenance->mutable_charspan()->set_start(0);
     if (length > static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
-      throw std::length_error("OCR line exceeds Docling charspan range");
+      throw std::length_error("OCR line exceeds document charspan range");
     }
     provenance->mutable_charspan()->set_end(static_cast<int32_t>(length));
     set_bounding_box(bounding_box(line), provenance->mutable_bbox());
@@ -259,8 +259,8 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
       auto* table = output->add_tables();
       table->set_self_ref("#/tables/" + std::to_string(cursor->table_index++));
       table->mutable_parent()->set_ref("#/body");
-      table->set_content_layer(docling::core::v1::CONTENT_LAYER_BODY);
-      table->set_label(docling::core::v1::DOC_ITEM_LABEL_TABLE);
+      table->set_content_layer(pipestream::document::v1::CONTENT_LAYER_BODY);
+      table->set_label(pipestream::document::v1::DOC_ITEM_LABEL_TABLE);
       auto* provenance = table->add_prov();
       provenance->set_page_no(page_number);
       set_region_bounding_box(region, provenance->mutable_bbox());
@@ -269,8 +269,8 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
       auto* picture = output->add_pictures();
       picture->set_self_ref("#/pictures/" + std::to_string(cursor->picture_index++));
       picture->mutable_parent()->set_ref("#/body");
-      picture->set_content_layer(docling::core::v1::CONTENT_LAYER_BODY);
-      picture->set_label(docling::core::v1::DOC_ITEM_LABEL_PICTURE);
+      picture->set_content_layer(pipestream::document::v1::CONTENT_LAYER_BODY);
+      picture->set_label(pipestream::document::v1::DOC_ITEM_LABEL_PICTURE);
       auto* provenance = picture->add_prov();
       provenance->set_page_no(page_number);
       set_region_bounding_box(region, provenance->mutable_bbox());
@@ -285,7 +285,7 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
           predicted->set_confidence(figure_class.confidence);
         }
       }
-      // Decoded payloads ride as misc annotations: docling has no dedicated
+      // Decoded payloads ride as misc annotations: the upstream schema has no dedicated
       // barcode type, and the struct keeps format and value machine-readable.
       for (const auto& barcode : region.barcodes) {
         auto* misc = picture->add_annotations()->mutable_misc();
@@ -300,11 +300,11 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
 }
 
 void append_page_to_document(const OcrPage& source, int page_number, AssemblyCursor* cursor,
-                             docling::core::v1::DoclingDocument* document, std::string* plain_text) {
+                             pipestream::document::v1::Document* document, std::string* plain_text) {
   if (document == nullptr || plain_text == nullptr) {
     throw std::invalid_argument("Document assembly output is required");
   }
-  docling::serve::v1::PageData page;
+  pipestream::parse::v1::PageData page;
   append_page_data(source, page_number, cursor, &page);
   (*document->mutable_pages())[page_number] = std::move(*page.mutable_page_meta());
 

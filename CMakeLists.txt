@@ -150,53 +150,53 @@ FetchContent_MakeAvailable(grpc)
 
 set(GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set(STAGED_PROTO_DIR "${CMAKE_CURRENT_BINARY_DIR}/proto")
-file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/docling/core/v1")
-file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/docling/serve/v1")
-configure_file(docling_document.proto
-  "${STAGED_PROTO_DIR}/ai/docling/core/v1/docling_document.proto" COPYONLY)
-configure_file(docling_serve_types.proto
-  "${STAGED_PROTO_DIR}/ai/docling/serve/v1/docling_serve_types.proto" COPYONLY)
-configure_file(docling_serve.proto
-  "${STAGED_PROTO_DIR}/ai/docling/serve/v1/docling_serve.proto" COPYONLY)
-configure_file(docling_serve_stream.proto
-  "${STAGED_PROTO_DIR}/ai/docling/serve/v1/docling_serve_stream.proto" COPYONLY)
+file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/document/v1")
+file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/parse/v1")
+configure_file(document.proto
+  "${STAGED_PROTO_DIR}/ai/pipestream/document/v1/document.proto" COPYONLY)
+configure_file(parse_types.proto
+  "${STAGED_PROTO_DIR}/ai/pipestream/parse/v1/parse_types.proto" COPYONLY)
+configure_file(parse.proto
+  "${STAGED_PROTO_DIR}/ai/pipestream/parse/v1/parse.proto" COPYONLY)
+configure_file(parse_stream.proto
+  "${STAGED_PROTO_DIR}/ai/pipestream/parse/v1/parse_stream.proto" COPYONLY)
 
-set(DOCLING_DOCUMENT_PROTO "${STAGED_PROTO_DIR}/ai/docling/core/v1/docling_document.proto")
-set(DOCLING_TYPES_PROTO "${STAGED_PROTO_DIR}/ai/docling/serve/v1/docling_serve_types.proto")
-set(DOCLING_SERVICE_PROTO "${STAGED_PROTO_DIR}/ai/docling/serve/v1/docling_serve.proto")
-set(DOCLING_STREAM_PROTO "${STAGED_PROTO_DIR}/ai/docling/serve/v1/docling_serve_stream.proto")
+set(DOCUMENT_PROTO "${STAGED_PROTO_DIR}/ai/pipestream/document/v1/document.proto")
+set(PARSE_TYPES_PROTO "${STAGED_PROTO_DIR}/ai/pipestream/parse/v1/parse_types.proto")
+set(PARSE_SERVICE_PROTO "${STAGED_PROTO_DIR}/ai/pipestream/parse/v1/parse.proto")
+set(PARSE_STREAM_PROTO "${STAGED_PROTO_DIR}/ai/pipestream/parse/v1/parse_stream.proto")
 add_custom_command(
-  OUTPUT "${GENERATED_DIR}/ai/docling/core/v1/docling_document.pb.cc"
-         "${GENERATED_DIR}/ai/docling/core/v1/docling_document.pb.h"
-         "${GENERATED_DIR}/ai/docling/serve/v1/docling_serve_types.pb.cc"
-         "${GENERATED_DIR}/ai/docling/serve/v1/docling_serve_types.pb.h"
-         "${GENERATED_DIR}/ai/docling/serve/v1/docling_serve.pb.cc"
-         "${GENERATED_DIR}/ai/docling/serve/v1/docling_serve.pb.h"
-         "${GENERATED_DIR}/ai/docling/serve/v1/docling_serve.grpc.pb.cc"
-         "${GENERATED_DIR}/ai/docling/serve/v1/docling_serve.grpc.pb.h"
-         "${GENERATED_DIR}/ai/docling/serve/v1/docling_serve_stream.pb.cc"
-         "${GENERATED_DIR}/ai/docling/serve/v1/docling_serve_stream.pb.h"
-         "${GENERATED_DIR}/ai/docling/serve/v1/docling_serve_stream.grpc.pb.cc"
-         "${GENERATED_DIR}/ai/docling/serve/v1/docling_serve_stream.grpc.pb.h"
+  OUTPUT "${GENERATED_DIR}/ai/pipestream/document/v1/document.pb.cc"
+         "${GENERATED_DIR}/ai/pipestream/document/v1/document.pb.h"
+         "${GENERATED_DIR}/ai/pipestream/parse/v1/parse_types.pb.cc"
+         "${GENERATED_DIR}/ai/pipestream/parse/v1/parse_types.pb.h"
+         "${GENERATED_DIR}/ai/pipestream/parse/v1/parse.pb.cc"
+         "${GENERATED_DIR}/ai/pipestream/parse/v1/parse.pb.h"
+         "${GENERATED_DIR}/ai/pipestream/parse/v1/parse.grpc.pb.cc"
+         "${GENERATED_DIR}/ai/pipestream/parse/v1/parse.grpc.pb.h"
+         "${GENERATED_DIR}/ai/pipestream/parse/v1/parse_stream.pb.cc"
+         "${GENERATED_DIR}/ai/pipestream/parse/v1/parse_stream.pb.h"
+         "${GENERATED_DIR}/ai/pipestream/parse/v1/parse_stream.grpc.pb.cc"
+         "${GENERATED_DIR}/ai/pipestream/parse/v1/parse_stream.grpc.pb.h"
   COMMAND $<TARGET_FILE:protoc>
   ARGS --proto_path=${STAGED_PROTO_DIR}
        --proto_path=${protobuf_SOURCE_DIR}/src
        --cpp_out=${GENERATED_DIR}
        --grpc_out=${GENERATED_DIR}
        --plugin=protoc-gen-grpc=$<TARGET_FILE:grpc_cpp_plugin>
-       ${DOCLING_DOCUMENT_PROTO} ${DOCLING_TYPES_PROTO} ${DOCLING_SERVICE_PROTO} ${DOCLING_STREAM_PROTO}
-  DEPENDS docling_document.proto docling_serve_types.proto docling_serve.proto docling_serve_stream.proto
+       ${DOCUMENT_PROTO} ${PARSE_TYPES_PROTO} ${PARSE_SERVICE_PROTO} ${PARSE_STREAM_PROTO}
+  DEPENDS document.proto parse_types.proto parse.proto parse_stream.proto
           protoc grpc_cpp_plugin
   VERBATIM)
-add_library(docling_proto
-  "${GENERATED_DIR}/ai/docling/core/v1/docling_document.pb.cc"
-  "${GENERATED_DIR}/ai/docling/serve/v1/docling_serve_types.pb.cc"
-  "${GENERATED_DIR}/ai/docling/serve/v1/docling_serve.pb.cc"
-  "${GENERATED_DIR}/ai/docling/serve/v1/docling_serve.grpc.pb.cc"
-  "${GENERATED_DIR}/ai/docling/serve/v1/docling_serve_stream.pb.cc"
-  "${GENERATED_DIR}/ai/docling/serve/v1/docling_serve_stream.grpc.pb.cc")
-target_include_directories(docling_proto PUBLIC "${GENERATED_DIR}")
-target_link_libraries(docling_proto PUBLIC grpc++)
+add_library(grparse_proto
+  "${GENERATED_DIR}/ai/pipestream/document/v1/document.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/parse/v1/parse_types.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/parse/v1/parse.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/parse/v1/parse.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/parse/v1/parse_stream.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/parse/v1/parse_stream.grpc.pb.cc")
+target_include_directories(grparse_proto PUBLIC "${GENERATED_DIR}")
+target_link_libraries(grparse_proto PUBLIC grpc++)
 
 add_library(grparse_core
   src/barcode_decoder.cpp
@@ -215,14 +215,14 @@ add_library(grparse_core
   src/text_geometry.cpp)
 target_include_directories(grparse_core PUBLIC include)
 target_link_libraries(grparse_core
-  PUBLIC docling_proto rapidocr PkgConfig::POPPLER_CPP Threads::Threads
+  PUBLIC grparse_proto rapidocr PkgConfig::POPPLER_CPP Threads::Threads
   PRIVATE ZXing::ZXing grparse_flags)
 
 add_executable(grparse-server src/main.cpp)
 target_link_libraries(grparse-server PRIVATE grparse_core grparse_flags grpc++_reflection)
 
 add_executable(grparse-stream-client src/stream_pdf_client.cpp)
-target_link_libraries(grparse-stream-client PRIVATE docling_proto grparse_flags)
+target_link_libraries(grparse-stream-client PRIVATE grparse_proto grparse_flags)
 
 if(BUILD_TESTING)
   set(GRPARSE_TESTS

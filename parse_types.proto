@@ -1,19 +1,19 @@
 syntax = "proto3";
 
-package ai.docling.serve.v1;
+package ai.pipestream.parse.v1;
 
-import "ai/docling/core/v1/docling_document.proto";
+import "ai/pipestream/document/v1/document.proto";
 import "google/protobuf/struct.proto";
 
 option java_multiple_files = true;
-option java_outer_classname = "DoclingServeTypesProto";
-option java_package = "ai.docling.serve.v1";
+option java_outer_classname = "ParseTypesProto";
+option java_package = "ai.pipestream.parse.v1";
 
 // ============================================================================
 // Enumerations - 1:1 mapping of the REST API enum types
 // ============================================================================
 
-// Input document format types supported by Docling.
+// Input document format types supported by the converter.
 enum InputFormat {
   INPUT_FORMAT_UNSPECIFIED = 0;
   INPUT_FORMAT_ASCIIDOC = 1;
@@ -95,7 +95,7 @@ enum ImageRefMode {
 }
 
 // Preset VLM model types. Names mirror the upstream
-// docling.datamodel.pipeline_options.VlmModelType enum.
+// the upstream VlmModelType enum.
 enum VlmModelType {
   VLM_MODEL_TYPE_UNSPECIFIED = 0;
   VLM_MODEL_TYPE_SMOLDOCLING = 1;
@@ -135,7 +135,7 @@ enum InferenceFramework {
 }
 
 // Type of transformers auto-model to use. Names mirror the upstream
-// docling TransformersModelType enum.
+// the upstream TransformersModelType enum.
 enum TransformersModelType {
   TRANSFORMERS_MODEL_TYPE_UNSPECIFIED = 0;
   TRANSFORMERS_MODEL_TYPE_AUTOMODEL = 1;
@@ -379,7 +379,7 @@ message ConvertDocumentOptions {
 // Error types
 // ============================================================================
 
-// ConversionStatus mirrors docling's ConversionStatus enum.
+// ConversionStatus mirrors the upstream ConversionStatus enum.
 enum ConversionStatus {
   CONVERSION_STATUS_UNSPECIFIED = 0;
   CONVERSION_STATUS_PENDING = 1;
@@ -390,24 +390,24 @@ enum ConversionStatus {
   CONVERSION_STATUS_SKIPPED = 6;
 }
 
-// DoclingComponentType mirrors docling's DoclingComponentType enum.
-enum DoclingComponentType {
-  DOCLING_COMPONENT_TYPE_UNSPECIFIED = 0;
-  DOCLING_COMPONENT_TYPE_DOCUMENT_BACKEND = 1;
-  DOCLING_COMPONENT_TYPE_MODEL = 2;
-  DOCLING_COMPONENT_TYPE_DOC_ASSEMBLER = 3;
-  DOCLING_COMPONENT_TYPE_USER_INPUT = 4;
-  DOCLING_COMPONENT_TYPE_PIPELINE = 5;
+// ComponentType mirrors the upstream ComponentType enum.
+enum ComponentType {
+  COMPONENT_TYPE_UNSPECIFIED = 0;
+  COMPONENT_TYPE_DOCUMENT_BACKEND = 1;
+  COMPONENT_TYPE_MODEL = 2;
+  COMPONENT_TYPE_DOC_ASSEMBLER = 3;
+  COMPONENT_TYPE_USER_INPUT = 4;
+  COMPONENT_TYPE_PIPELINE = 5;
 }
 
 // ErrorItem represents a processing error from a specific component.
 message ErrorItem {
-  DoclingComponentType component_type = 1;
+  ComponentType component_type = 1;
   string error_message = 2;
   string module_name = 3;
   // Raw component type fallback for forward-compatibility with newer
-  // docling component vocabularies (populated when component_type is
-  // DOCLING_COMPONENT_TYPE_UNSPECIFIED but the source had a value).
+  // upstream component vocabularies (populated when component_type is
+  // COMPONENT_TYPE_UNSPECIFIED but the source had a value).
   optional string component_type_raw = 4;
 }
 
@@ -417,7 +417,7 @@ message ErrorItem {
 
 // DocumentExports contains optional serialized output formats.
 message DocumentExports {
-  // Canonical Docling JSON document (same serialization as REST).
+  // Canonical JSON form of the document (same serialization as upstream REST).
   optional string json = 1;
   optional string md = 2;
   optional string html = 3;
@@ -429,8 +429,8 @@ message DocumentExports {
 message DocumentResponse {
   // Filename of the source document
   string filename = 1;
-  // Native protobuf DoclingDocument (always present)
-  ai.docling.core.v1.DoclingDocument doc = 2;
+  // Native protobuf Document (always present)
+  ai.pipestream.document.v1.Document doc = 2;
   // Optional serialized outputs (markdown/html/text/doctags/json)
   optional DocumentExports exports = 3;
 }
@@ -438,7 +438,7 @@ message DocumentResponse {
 // ExportDocumentResponse is the document format used within chunk responses.
 message ExportDocumentResponse {
   string filename = 1;
-  ai.docling.core.v1.DoclingDocument doc = 2;
+  ai.pipestream.document.v1.Document doc = 2;
   optional DocumentExports exports = 3;
 }
 
@@ -448,7 +448,7 @@ message Document {
   ExportDocumentResponse content = 2;
   ConversionStatus status = 3;
   repeated ErrorItem errors = 4;
-  // Raw status fallback for forward-compatibility with newer docling
+  // Raw status fallback for forward-compatibility with newer upstream
   // conversion status vocabularies.
   optional string status_raw = 5;
 }
@@ -466,7 +466,7 @@ message TaskStatusMetadata {
 }
 
 // ============================================================================
-// Request / Response Domain Models (Moved from docling_serve.proto)
+// Request / Response Domain Models (moved from the service proto)
 // ============================================================================
 
 // ConvertDocumentRequest mirrors POST /v1/convert/source
@@ -483,7 +483,7 @@ message ConvertDocumentResponse {
   double processing_time = 3;
   ConversionStatus status = 4;
   map<string, double> timings = 5;
-  // Raw status fallback for forward-compatibility with newer docling
+  // Raw status fallback for forward-compatibility with newer upstream
   // conversion status vocabularies.
   optional string status_raw = 6;
 }

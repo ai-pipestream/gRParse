@@ -5,8 +5,8 @@
 
 #include <google/protobuf/arena.h>
 
-#include "ai/docling/core/v1/docling_document.pb.h"
-#include "ai/docling/serve/v1/docling_serve_stream.pb.h"
+#include "ai/pipestream/document/v1/document.pb.h"
+#include "ai/pipestream/parse/v1/parse_stream.pb.h"
 #include "grparse/document_assembly.h"
 
 namespace {
@@ -21,16 +21,16 @@ grparse::OcrLine line(std::string text, int top) {
 }
 
 void verify_contract_shape() {
-  const auto* document = ai::docling::core::v1::DoclingDocument::descriptor();
-  require(document->FindFieldByName("texts")->number() == 7, "DoclingDocument.texts field changed");
-  require(document->FindFieldByName("pictures")->number() == 8, "DoclingDocument.pictures field changed");
-  require(document->FindFieldByName("tables")->number() == 9, "DoclingDocument.tables field changed");
-  require(document->FindFieldByName("pages")->number() == 12, "DoclingDocument.pages field changed");
+  const auto* document = ai::pipestream::document::v1::Document::descriptor();
+  require(document->FindFieldByName("texts")->number() == 7, "Document.texts field changed");
+  require(document->FindFieldByName("pictures")->number() == 8, "Document.pictures field changed");
+  require(document->FindFieldByName("tables")->number() == 9, "Document.tables field changed");
+  require(document->FindFieldByName("pages")->number() == 12, "Document.pages field changed");
 
-  const auto* page = ai::docling::serve::v1::PageData::descriptor();
+  const auto* page = ai::pipestream::parse::v1::PageData::descriptor();
   require(page->FindFieldByName("texts")->number() == 3, "PageData.texts field changed");
   require(page->FindFieldByName("text_offsets")->number() == 6, "PageData.text_offsets field changed");
-  const auto* offset = ai::docling::serve::v1::TextOffset::descriptor();
+  const auto* offset = ai::pipestream::parse::v1::TextOffset::descriptor();
   require(offset->FindFieldByName("confidence")->number() == 4, "TextOffset.confidence field changed");
   require(offset->FindFieldByName("source")->number() == 5, "TextOffset.source field changed");
 }
@@ -41,7 +41,7 @@ void verify_offsets_and_provenance() {
   grparse::OcrPage second{100, 200, {line("x", 10)}};
 
   google::protobuf::Arena arena;
-  auto* first_page = google::protobuf::Arena::Create<ai::docling::serve::v1::PageData>(&arena);
+  auto* first_page = google::protobuf::Arena::Create<ai::pipestream::parse::v1::PageData>(&arena);
   grparse::append_page_data(first, 1, &cursor, first_page);
 
   require(first_page->texts_size() == 2, "first page text count");
@@ -58,10 +58,10 @@ void verify_offsets_and_provenance() {
   require(first_page->text_offsets(0).has_confidence() &&
               first_page->text_offsets(0).confidence() == 0.875F,
           "OCR confidence metadata");
-  require(first_page->text_offsets(0).source() == ai::docling::serve::v1::TEXT_SOURCE_OCR,
+  require(first_page->text_offsets(0).source() == ai::pipestream::parse::v1::TEXT_SOURCE_OCR,
           "OCR source metadata");
 
-  auto* second_page = google::protobuf::Arena::Create<ai::docling::serve::v1::PageData>(&arena);
+  auto* second_page = google::protobuf::Arena::Create<ai::pipestream::parse::v1::PageData>(&arena);
   grparse::append_page_data(second, 2, &cursor, second_page);
   require(second_page->texts(0).text().base().self_ref() == "#/texts/2", "cross-page stable reference");
   require(second_page->text_offsets(0).utf_start() == 6 && second_page->text_offsets(0).utf_end() == 7,
@@ -78,23 +78,23 @@ void verify_layout_regions_map_labels_and_emit_items() {
       {"figure", 0.7F, 0, 500, 1000, 800},
   };
 
-  ai::docling::serve::v1::PageData data;
+  ai::pipestream::parse::v1::PageData data;
   grparse::append_page_data(page, 1, &cursor, &data);
   require(data.texts_size() == 3, "layout page text count");
-  require(data.texts(0).text().base().label() == ai::docling::core::v1::DOC_ITEM_LABEL_TITLE,
+  require(data.texts(0).text().base().label() == ai::pipestream::document::v1::DOC_ITEM_LABEL_TITLE,
           "a line inside a title region becomes a TITLE item");
-  require(data.texts(1).text().base().label() == ai::docling::core::v1::DOC_ITEM_LABEL_TEXT,
+  require(data.texts(1).text().base().label() == ai::pipestream::document::v1::DOC_ITEM_LABEL_TEXT,
           "a line outside every region stays TEXT");
-  require(data.texts(2).text().base().label() == ai::docling::core::v1::DOC_ITEM_LABEL_TEXT,
+  require(data.texts(2).text().base().label() == ai::pipestream::document::v1::DOC_ITEM_LABEL_TEXT,
           "table cell text stays TEXT until Epic D structures it");
   require(data.tables_size() == 1 && data.tables(0).self_ref() == "#/tables/0" &&
-              data.tables(0).label() == ai::docling::core::v1::DOC_ITEM_LABEL_TABLE,
+              data.tables(0).label() == ai::pipestream::document::v1::DOC_ITEM_LABEL_TABLE,
           "table region must become a TableItem");
   require(data.tables(0).prov_size() == 1 && data.tables(0).prov(0).page_no() == 1 &&
               data.tables(0).prov(0).bbox().t() == 250,
           "table item carries region provenance");
   require(data.pictures_size() == 1 && data.pictures(0).self_ref() == "#/pictures/0" &&
-              data.pictures(0).label() == ai::docling::core::v1::DOC_ITEM_LABEL_PICTURE,
+              data.pictures(0).label() == ai::pipestream::document::v1::DOC_ITEM_LABEL_PICTURE,
           "figure region must become a PictureItem");
   require(!data.pictures(0).has_image(), "no captured bytes means no ImageRef");
 
@@ -119,7 +119,7 @@ void verify_layout_regions_map_labels_and_emit_items() {
 
   // The unary document path carries the same items and references them.
   grparse::AssemblyCursor document_cursor;
-  ai::docling::core::v1::DoclingDocument document;
+  ai::pipestream::document::v1::Document document;
   std::string plain_text;
   grparse::append_page_to_document(page, 1, &document_cursor, &document, &plain_text);
   require(document.tables_size() == 1 && document.pictures_size() == 1,
@@ -147,7 +147,7 @@ void verify_structured_cells_override_geometry() {
   };
   page.regions = {table};
 
-  ai::docling::serve::v1::PageData data;
+  ai::pipestream::parse::v1::PageData data;
   grparse::append_page_data(page, 1, &cursor, &data);
   const auto& table_data = data.tables(0).data();
   require(table_data.num_rows() == 2 && table_data.num_cols() == 2,
@@ -181,7 +181,7 @@ void verify_captured_figure_bytes_become_image_refs() {
                    {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D, 'I', 'H', 'D',
                     'R', 0, 0, 0x01, 0x2C, 0, 0, 0, 0xC8}}};
 
-  ai::docling::serve::v1::PageData data;
+  ai::pipestream::parse::v1::PageData data;
   grparse::append_page_data(page, 1, &cursor, &data);
   require(data.pictures_size() == 1 && data.pictures(0).has_image(),
           "captured bytes must attach an ImageRef");
@@ -198,7 +198,7 @@ void verify_captured_figure_bytes_become_image_refs() {
   grparse::LayoutRegion figure{"figure", 0.7F, 0, 500, 1000, 800};
   figure.figure_classes = {{"bar_chart", 0.9F}, {"other", 0.1F}};
   classified.regions = {figure};
-  ai::docling::serve::v1::PageData classified_data;
+  ai::pipestream::parse::v1::PageData classified_data;
   grparse::append_page_data(classified, 1, &classified_cursor, &classified_data);
   const auto& annotation = classified_data.pictures(0).annotations(0).classification();
   require(annotation.kind() == "classification" &&
@@ -220,7 +220,7 @@ void verify_barcode_payloads_become_misc_annotations() {
   figure.barcodes = {{"QRCode", "https://example.com/a"}, {"Code128", "SKU-1234"}};
   page.regions = {figure};
 
-  ai::docling::serve::v1::PageData data;
+  ai::pipestream::parse::v1::PageData data;
   grparse::append_page_data(page, 1, &cursor, &data);
   require(data.pictures_size() == 1, "figure region must emit a picture");
   const auto& picture = data.pictures(0);
