@@ -1,3 +1,4 @@
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -26,6 +27,7 @@ int main(int argc, char** argv) {
   auto channel = grpc::CreateChannel(endpoint, grpc::InsecureChannelCredentials());
   auto client = docling::serve::v1::DoclingStreamingService::NewStub(channel);
   grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + std::chrono::minutes(10));
   auto stream = client->StreamProcessDocument(&context);
   const std::string document_id = pdf.filename().string();
   std::string buffer(1024 * 1024, '\0');
@@ -50,7 +52,14 @@ int main(int argc, char** argv) {
   while (stream->Read(&event)) {
     if (event.has_page()) {
       ++page_events;
-      std::cout << "page=" << event.page().page_number() << " text_items=" << event.page().texts_size() << '\n';
+      int digital_items = 0;
+      int ocr_items = 0;
+      for (const auto& offset : event.page().text_offsets()) {
+        if (offset.source() == docling::serve::v1::TEXT_SOURCE_DIGITAL_PDF) ++digital_items;
+        if (offset.source() == docling::serve::v1::TEXT_SOURCE_OCR) ++ocr_items;
+      }
+      std::cout << "page=" << event.page().page_number() << " text_items=" << event.page().texts_size()
+                << " digital_items=" << digital_items << " ocr_items=" << ocr_items << '\n';
     } else if (event.has_complete()) {
       std::cout << "complete total_pages=" << event.total_pages() << '\n';
     }

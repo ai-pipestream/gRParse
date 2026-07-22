@@ -1,0 +1,17 @@
+name: C++ build and contract tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ubuntu-26-cuda-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build Ubuntu 26.04 image and run non-GPU tests
+        run: docker build --progress=plain --target build .

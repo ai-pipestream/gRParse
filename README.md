@@ -1,11 +1,11 @@
 # gRParse
 
-C++ gRPC document parse service: **diskless PDF/image → streamed page JSON** with boxes and stable offsets. All **ONNX** models run here on **ONNX Runtime** (NVIDIA CUDA and **Intel Arc / OpenVINO**, e.g. B70; OCR today; layout/tables/figures next). Java owns language decoration, office bridges, and UI-facing geometry.
+C++ gRPC document parse service: **diskless PDF/image to page-streamed protobuf** with boxes and stable offsets. RapidOCR runs through **ONNX Runtime CUDA** on NVIDIA GPUs. Intel Arc/OpenVINO, layout, tables, and figures are roadmap work, not current runtime capabilities.
 
 - Architecture (runtime split, anti-seesaw pipeline, offset contract): [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - Epics & tasks (C++ vs Java ownership, milestones): [docs/EPICS.md](docs/EPICS.md)
 
-**Speed thesis:** pipelined pages, warm ORT session pools, selective OCR, early stream emit — keep CPU and GPU busy (no stage seesaw).
+**Speed thesis:** pipelined pages, warm ORT session pools, selective OCR, and early page emission keep CPU and GPU busy.
 
 gRParse turns PDF pages and raster images into text with the maintained C++ [RapidOcrOnnx](https://github.com/RapidAI/RapidOcrOnnx) implementation. It targets NVIDIA CUDA through ONNX Runtime. The host was detected with an NVIDIA GeForce RTX 4080 SUPER; the included container exposes it with Compose's `gpus: all` setting.
 
@@ -18,15 +18,15 @@ gRParse turns PDF pages and raster images into text with the maintained C++ [Rap
    docker compose up --build
    ```
 
-The service listens on `localhost:50051` and implements `ai.docling.serve.v1.DoclingServeService` from the local `docling_serve.proto` contract. `ConvertSource` currently accepts one `FileSource` containing base64-encoded PDF, PNG, JPEG, or TIFF bytes. PDFs are rendered by Poppler's C++ API at 200 DPI and raster images are decoded with OpenCV, both directly from request memory. No input document or page image is written to disk.
+The service listens on `localhost:50051` and implements `ai.docling.serve.v1.DoclingServeService` from the local `docling_serve.proto` contract. `ConvertSource` currently accepts one `FileSource` containing base64-encoded PDF, PNG, JPEG, or TIFF bytes. It accepts only TEXT output and returns `INVALID_ARGUMENT` for populated options it does not implement. It does not label plain text as Markdown.
+
+Each PDF request opens one Poppler document directly from the request bytes. Pages with sufficient extractable native PDF text bypass rasterization and RapidOCR. Image-only and low-coverage pages are rendered at 200 DPI and passed to RapidOCR. Raster inputs are decoded with OpenCV directly from request memory. No input document, page image, OCR intermediate, or result is written to disk.
 
 `ConvertSource` returns the contract's `ConvertDocumentResponse`, populated with a native `DoclingDocument`. Each OCR line becomes a `TextItem`, with its page and bounding box in `provenance`; pages and the `#/body` to `#/texts/N` reference graph are also populated. It deliberately leaves tables, pictures, semantic headings, chunking, asynchronous jobs, and remote sources unimplemented until appropriate layout or extraction models are added.
 
 The `Health` RPC reports readiness. The server intentionally fails at startup if a model is absent or CUDA initialization fails, instead of silently running CPU OCR.
 
-To convert a PDF through the supplied unary Docling RPC, start the service and
-run the reusable `grpcurl` client. It emits the complete
-`ConvertSourceResponse` as JSON.
+To stream a PDF with the supplied client, start the service and run:
 
 ```bash
 docker compose up -d
@@ -44,23 +44,39 @@ stream of `DocumentChunk` messages. Send the same `document_id`, filename, and
 content type with the chunks, then set `complete = true` on the last one. The
 server accepts PDFs and single raster images, up to 50 MiB.
 
-It emits one `DocumentStreamEvent.page` per completed page, followed by one
-`DocumentStreamEvent.complete`. Page events may arrive out of page-number order;
-clients must use `PageData.page_number`. A page event contains the supplied Docling
-`PageItem` and the page's supplied `BaseTextItem` records. The original
+It emits one `DocumentStreamEvent.page` per page in page-number order, followed by one
+`DocumentStreamEvent.complete`. A page event contains the supplied Docling
+`PageItem` and the page's supplied `BaseTextItem` records. `TextOffset` carries
+append-only UTF offsets, source type, and OCR confidence when available. The original
 `DoclingDocument` shape is unchanged: this is only a transport envelope for
-incremental delivery. Each page event and its nested protobuf messages are
-allocated in a short-lived `google::protobuf::Arena`; the arena, page image,
-and event state are discarded after the synchronous gRPC write serializes the
-event. Protobuf Arena does not own Poppler, OpenCV, or ONNX Runtime buffers;
+incremental delivery.
+
+Each outbound event and its nested protobuf messages are allocated in a
+short-lived `google::protobuf::Arena`. The arena stays alive until the
+asynchronous gRPC write completes. Protobuf Arena does not own Poppler, OpenCV, or ONNX Runtime buffers;
 those libraries release their own in-memory buffers at the page boundary. The
 server never writes input documents, rendered pages, OCR intermediates, or
 results to disk. It only reads the installed binaries and OCR model files. The
-server has a bounded pool of CUDA RapidOCR
-sessions, with two page workers by default. Set `GRPARSE_PAGE_WORKERS` to tune
-the concurrency for the available GPU memory. RapidOCR currently produces text,
+server has globally bounded document, render, inference, and assembly queues.
+RapidOCR inference workers never perform gRPC writes. A stream that does not
+consume events stops returning page credits to the scheduler, so that document
+cannot advance beyond its configured page window. Other admitted documents can
+continue through the global queues.
+
+The server has two CUDA RapidOCR sessions by default. Tune concurrency and
+queue memory with `GRPARSE_PAGE_WORKERS`, `GRPARSE_RENDER_WORKERS`,
+`GRPARSE_ASSEMBLY_WORKERS`, `GRPARSE_DOCUMENT_QUEUE`, `GRPARSE_RENDER_QUEUE`,
+`GRPARSE_INFERENCE_QUEUE`, `GRPARSE_ASSEMBLY_QUEUE`, `GRPARSE_PAGE_WINDOW`, and
+`GRPARSE_MAX_ACTIVE_DOCUMENTS`. Select the NVIDIA device with
+`GRPARSE_CUDA_DEVICE`. gRPC memory, thread,
+and stream limits use `GRPARSE_GRPC_MEMORY_MIB`, `GRPARSE_GRPC_MAX_THREADS`,
+and `GRPARSE_MAX_CONCURRENT_STREAMS`. RapidOCR currently produces text,
 so `tables` and `pictures` remain empty until dedicated extraction models are
 connected.
+
+The server registers standard gRPC health checking and reflection in addition
+to the Docling `Health` RPC. SIGINT and SIGTERM initiate a bounded graceful
+shutdown.
 
 The image also includes `grparse-stream-client`, a bidirectional gRPC client
 that sends a PDF in chunks and prints each page event as it arrives:
@@ -74,7 +90,7 @@ docker run --rm --network host \
 
 ## Development
 
-The container is the supported build environment because it runs Ubuntu 26.04
+The container is the supported build environment. It runs Ubuntu 26.04
 with CUDA 13.3, cuDNN 9, ONNX Runtime GPU 1.27.1 for CUDA 13,
 RapidOcrOnnx 1.2.3 C++ sources, and gRPC 1.82.1. These are the newest applicable
 upstream versions as of 2026-07-21. RapidOCR 3.9.2 is the current Python package
@@ -86,3 +102,7 @@ provider to exist; a CPU-only runtime cannot activate the GPU.
 ```bash
 docker compose build
 ```
+
+The build runs contract, scheduler, cancellation, digital fast-path, unary,
+and callback-stream integration tests. Generated protobuf and gRPC sources stay
+inside the build directory and are not committed.

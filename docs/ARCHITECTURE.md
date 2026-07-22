@@ -31,7 +31,12 @@ No dual ORT stacks. No torch runtime in this service. No document CV nets in the
 
 ## Inference hardware (ONNX Runtime execution providers)
 
-gRParse is **ORT-first**, not CUDA-only. Sessions bind to the best available **Execution Provider** at process start.
+The target architecture is **ORT-first**, not CUDA-only. Sessions will bind to
+the configured **Execution Provider** at process start.
+
+This table describes the target architecture. The checked-in runtime currently
+ships only the CUDA execution provider and fails startup if CUDA model
+initialization fails. OpenVINO and CPU provider selection remain Epic B6 work.
 
 | Target | Typical EP | Notes |
 |---|---|---|
@@ -66,7 +71,7 @@ Do **not** serialize the machine: parse page → wait GPU → idle CPU → next 
 | **Bound by device memory / RAM** | `GRPARSE_PAGE_WORKERS` (+ per-model pool sizes); respect CUDA VRAM **or** Intel Arc memory — never unbounded fan-out |
 | **Diskless hot path** | Request bytes → memory → response; office LO spill only on tmpfs if needed |
 | **Selective OCR** | Digital PDF text wins; OCR only image-only / low-text pages |
-| **Early stream emit** | Page events leave as soon as a page is done; arena dropped after serialize |
+| **Early stream emit** | Completed pages are emitted in document order; each arena is dropped after its asynchronous write completes |
 | **Overlap Java** | Gateway annotates streamed pages while C++ still chews later pages |
 
 ```mermaid
@@ -93,7 +98,12 @@ graph LR
   end
 ```
 
-Stages share a **page work-queue**; CPU and GPU workers pull when free.
+Stages use separate globally bounded document, render, inference, and assembly
+queues. CPU and GPU workers pull from their stage queue when free. Inference
+workers release the raster and enqueue an OCR result; they never wait on a
+client write. Each completed stream write returns one page credit to the
+scheduler. A slow reader therefore stops only its own document at the bounded
+page window instead of accumulating results or occupying an inference worker.
 
 ## Offset contract (product differentiator)
 

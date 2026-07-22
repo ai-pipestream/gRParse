@@ -9,23 +9,16 @@
 #include <vector>
 
 #include "OcrLite.h"
+#include "grparse/ocr_types.h"
 
 namespace grparse {
 
 class OcrEngine {
  public:
-  struct Line {
-    std::string text;
-    std::vector<cv::Point> polygon;
-  };
+  using Line = OcrLine;
+  using Page = OcrPage;
 
-  struct Page {
-    int width;
-    int height;
-    std::vector<Line> lines;
-  };
-
-  explicit OcrEngine(const std::filesystem::path& model_directory);
+  OcrEngine(const std::filesystem::path& model_directory, int gpu_index);
 
   Page extract_page(const cv::Mat& image);
   static constexpr const char* execution_provider() { return "CUDA"; }
@@ -34,7 +27,13 @@ class OcrEngine {
   std::unique_ptr<OcrLite> engine_;
 };
 
-class OcrEnginePool {
+class PageRecognizer {
+ public:
+  virtual ~PageRecognizer() = default;
+  virtual OcrPage extract_page(const cv::Mat& image) = 0;
+};
+
+class OcrEnginePool final : public PageRecognizer {
  public:
   class Lease {
    public:
@@ -55,10 +54,11 @@ class OcrEnginePool {
     size_t index_ = 0;
   };
 
-  OcrEnginePool(const std::filesystem::path& model_directory, size_t worker_count);
+  OcrEnginePool(const std::filesystem::path& model_directory, size_t worker_count,
+                int gpu_index);
 
   Lease acquire();
-  OcrEngine::Page extract_page(const cv::Mat& image);
+  OcrPage extract_page(const cv::Mat& image) override;
   size_t size() const;
 
  private:

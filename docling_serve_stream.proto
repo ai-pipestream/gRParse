@@ -74,6 +74,26 @@ message PageData {
   repeated ai.docling.core.v1.BaseTextItem texts = 3;
   repeated ai.docling.core.v1.TableItem tables = 4;
   repeated ai.docling.core.v1.PictureItem pictures = 5;
+  // Append-only offsets into the document text stream. The core Docling item
+  // shape remains unchanged; this transport metadata lets downstream clients
+  // index pages without renumbering or overloading ProvenanceItem.charspan.
+  repeated TextOffset text_offsets = 6;
+}
+
+message TextOffset {
+  string self_ref = 1;
+  uint64 utf_start = 2;
+  uint64 utf_end = 3;
+  // Recognition confidence is populated for OCR text and absent for native
+  // PDF text. This remains transport metadata, not a core document field.
+  optional float confidence = 4;
+  TextSource source = 5;
+}
+
+enum TextSource {
+  TEXT_SOURCE_UNSPECIFIED = 0;
+  TEXT_SOURCE_OCR = 1;
+  TEXT_SOURCE_DIGITAL_PDF = 2;
 }
 
 // DocumentComplete contains document-wide metadata emitted after the last page.

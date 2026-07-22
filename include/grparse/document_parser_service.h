@@ -1,16 +1,14 @@
 #pragma once
 
-#include <filesystem>
-
 #include "ai/docling/serve/v1/docling_serve.grpc.pb.h"
 #include "ai/docling/serve/v1/docling_serve_stream.grpc.pb.h"
-#include "grparse/ocr_engine.h"
+#include "grparse/page_scheduler.h"
 
 namespace grparse {
 
 class DocumentParserService final : public ai::docling::serve::v1::DoclingServeService::Service {
  public:
-  explicit DocumentParserService(OcrEnginePool& engines);
+  explicit DocumentParserService(PageScheduler& scheduler);
 
   grpc::Status ConvertSource(
       grpc::ServerContext* context,
@@ -21,20 +19,19 @@ class DocumentParserService final : public ai::docling::serve::v1::DoclingServeS
                       ai::docling::serve::v1::HealthResponse* response) override;
 
  private:
-  OcrEnginePool& engines_;
+  PageScheduler& scheduler_;
 };
 
-class DocumentStreamingService final : public ai::docling::serve::v1::DoclingStreamingService::Service {
+class DocumentStreamingService final : public ai::docling::serve::v1::DoclingStreamingService::CallbackService {
  public:
-  explicit DocumentStreamingService(OcrEnginePool& engines);
+  explicit DocumentStreamingService(PageScheduler& scheduler);
 
-  grpc::Status StreamProcessDocument(
-      grpc::ServerContext* context,
-      grpc::ServerReaderWriter<ai::docling::serve::v1::DocumentStreamEvent,
-                               ai::docling::serve::v1::DocumentChunk>* stream) override;
+  grpc::ServerBidiReactor<ai::docling::serve::v1::DocumentChunk,
+                          ai::docling::serve::v1::DocumentStreamEvent>*
+  StreamProcessDocument(grpc::CallbackServerContext* context) override;
 
  private:
-  OcrEnginePool& engines_;
+  PageScheduler& scheduler_;
 };
 
 }  // namespace grparse

@@ -7,15 +7,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
-RUN cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release \
- && cmake --build /build --target grparse-server grparse-stream-client --parallel 4 \
+# The cache id includes ABI-sensitive dependency versions. Update it whenever
+# gRPC, ONNX Runtime, CUDA, or the base toolchain changes.
+RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.82.1-ort1.27.1,target=/build \
+    cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
+ && cmake --build /build --target grparse-server grparse-stream-client \
+      document-assembly-test page-scheduler-test streaming-service-test --parallel 4 \
+ && ctest --test-dir /build --output-on-failure \
+      -R '^(document-assembly-test|page-scheduler-test|streaming-service-test)$' \
  && mkdir -p /out \
  && cp /build/grparse-server /out/grparse-server \
  && cp /build/grparse-stream-client /out/grparse-stream-client \
  && cp -a /build/_deps/onnxruntime-src/lib /out/onnxruntime-lib
 
 FROM nvidia/cuda:13.3.0-runtime-ubuntu26.04
-ENV GRPARSE_LISTEN_ADDRESS=0.0.0.0:50051 GRPARSE_MODELS_DIR=/models GRPARSE_PAGE_WORKERS=2
+ENV GRPARSE_LISTEN_ADDRESS=0.0.0.0:50051 GRPARSE_MODELS_DIR=/models GRPARSE_PAGE_WORKERS=2 GRPARSE_CUDA_DEVICE=0
 RUN apt-get update && apt-get install -y --no-install-recommends libcudnn9-cuda-13 libpoppler-cpp3 libopencv-core-dev libopencv-imgcodecs-dev libopencv-imgproc-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/grparse-server /usr/local/bin/grparse-server

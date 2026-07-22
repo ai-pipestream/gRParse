@@ -6,7 +6,7 @@
 
 namespace grparse {
 
-OcrEngine::OcrEngine(const std::filesystem::path& model_directory) {
+OcrEngine::OcrEngine(const std::filesystem::path& model_directory, int gpu_index) {
   const auto det = model_directory / "ch_PP-OCRv3_det_infer.onnx";
   const auto cls = model_directory / "ch_ppocr_mobile_v2.0_cls_infer.onnx";
   const auto rec = model_directory / "ch_PP-OCRv3_rec_infer.onnx";
@@ -18,7 +18,7 @@ OcrEngine::OcrEngine(const std::filesystem::path& model_directory) {
   }
 
   engine_ = std::make_unique<OcrLite>();
-  engine_->setGpuIndex(0);
+  engine_->setGpuIndex(gpu_index);
   engine_->setNumThread(1);
   if (!engine_->initModels(det.string(), cls.string(), rec.string(), keys.string())) {
     throw std::runtime_error("RapidOCR failed to initialize its CUDA models");
@@ -33,7 +33,13 @@ OcrEngine::Page OcrEngine::extract_page(const cv::Mat& image) {
   Page page{image.cols, image.rows, {}};
   page.lines.reserve(result.textBlocks.size());
   for (const auto& block : result.textBlocks) {
-    page.lines.push_back(Line{block.text, block.boxPoint});
+    float confidence = block.boxScore;
+    if (!block.charScores.empty()) {
+      confidence = 0.0F;
+      for (const float score : block.charScores) confidence += score;
+      confidence /= static_cast<float>(block.charScores.size());
+    }
+    page.lines.push_back(Line{block.text, block.boxPoint, confidence});
   }
   return page;
 }
@@ -65,11 +71,12 @@ void OcrEnginePool::Lease::release() {
   }
 }
 
-OcrEnginePool::OcrEnginePool(const std::filesystem::path& model_directory, size_t worker_count) {
+OcrEnginePool::OcrEnginePool(const std::filesystem::path& model_directory, size_t worker_count,
+                             int gpu_index) {
   if (worker_count == 0) throw std::invalid_argument("OCR worker count must be positive");
   engines_.reserve(worker_count);
   for (size_t index = 0; index < worker_count; ++index) {
-    engines_.push_back(std::make_unique<OcrEngine>(model_directory));
+    engines_.push_back(std::make_unique<OcrEngine>(model_directory, gpu_index));
     available_.push_back(index);
   }
 }

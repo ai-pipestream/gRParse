@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(gRParse VERSION 0.1.0 LANGUAGES CXX)
 
+include(CTest)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -27,6 +29,7 @@ set_target_properties(onnxruntime PROPERTIES
 
 find_package(OpenCV 4.5 REQUIRED COMPONENTS core imgcodecs imgproc)
 find_package(PkgConfig REQUIRED)
+find_package(Threads REQUIRED)
 pkg_check_modules(POPPLER_CPP REQUIRED IMPORTED_TARGET poppler-cpp)
 
 file(GLOB RAPIDOCR_SOURCES CONFIGURE_DEPENDS "${rapidocr_SOURCE_DIR}/src/*.cpp")
@@ -101,14 +104,34 @@ add_library(docling_proto
 target_include_directories(docling_proto PUBLIC "${GENERATED_DIR}")
 target_link_libraries(docling_proto PUBLIC grpc++)
 
-add_executable(grparse-server
-  src/main.cpp
+add_library(grparse_core
   src/document_parser_service.cpp
-  src/ocr_engine.cpp)
-target_include_directories(grparse-server PRIVATE include)
-target_link_libraries(grparse-server PRIVATE docling_proto rapidocr PkgConfig::POPPLER_CPP)
+  src/document_assembly.cpp
+  src/in_memory_document.cpp
+  src/ocr_engine.cpp
+  src/page_scheduler.cpp)
+target_include_directories(grparse_core PUBLIC include)
+target_link_libraries(grparse_core PUBLIC docling_proto rapidocr PkgConfig::POPPLER_CPP Threads::Threads)
+target_compile_options(grparse_core PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(grparse-server src/main.cpp)
+target_link_libraries(grparse-server PRIVATE grparse_core grpc++_reflection)
 
 add_executable(grparse-stream-client src/stream_pdf_client.cpp)
 target_link_libraries(grparse-stream-client PRIVATE docling_proto)
+
+if(BUILD_TESTING)
+  add_executable(document-assembly-test tests/document_assembly_test.cpp)
+  target_link_libraries(document-assembly-test PRIVATE grparse_core)
+  add_test(NAME document-assembly-test COMMAND document-assembly-test)
+
+  add_executable(page-scheduler-test tests/page_scheduler_test.cpp)
+  target_link_libraries(page-scheduler-test PRIVATE grparse_core)
+  add_test(NAME page-scheduler-test COMMAND page-scheduler-test)
+
+  add_executable(streaming-service-test tests/streaming_service_test.cpp)
+  target_link_libraries(streaming-service-test PRIVATE grparse_core)
+  add_test(NAME streaming-service-test COMMAND streaming-service-test)
+endif()
 
 install(TARGETS grparse-server grparse-stream-client RUNTIME DESTINATION bin)
