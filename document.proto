@@ -1,24 +1,24 @@
 syntax = "proto3";
 
-package ai.docling.core.v1;
+package ai.pipestream.document.v1;
 
 import "google/protobuf/struct.proto";
 
 option java_multiple_files = true;
-option java_outer_classname = "DoclingDocumentProto";
-option java_package = "ai.docling.core.v1";
+option java_outer_classname = "DocumentProto";
+option java_package = "ai.pipestream.document.v1";
 
-// Docling Document Structure Protocol Buffers Definition
+// Pipestream document structure.
 //
-// This proto file defines the complete structure for documents processed by Docling,
-// providing a 1:1 mapping of the Docling JSON schema to protobuf. Docling is an
-// advanced document parsing system that extracts rich semantic structure from PDFs
-// and other document formats.
+// This proto defines the complete structure of a parsed document. The schema
+// tracks field-for-field parity with the docling-core v2 JSON schema so that
+// documents interoperate with that ecosystem; parity is maintained by review,
+// and "upstream" in comments below refers to that schema.
 //
 // Document Structure Overview:
 // ===========================
 //
-// A DoclingDocument contains:
+// A Document contains:
 // - Hierarchical structure (body, furniture, groups)
 // - Text content (titles, headers, paragraphs, lists, code, formulas)
 // - Visual elements (pictures with AI-generated descriptions and annotations)
@@ -27,12 +27,12 @@ option java_package = "ai.docling.core.v1";
 // - Page metadata (size, images)
 // - Provenance tracking (bounding boxes, page numbers)
 
-// DoclingDocument is the root message representing a complete parsed document.
-message DoclingDocument {
-  // Schema identifier for versioning (e.g., "docling_document_v2")
+// Document is the root message representing a complete parsed document.
+message Document {
+  // Schema identifier for versioning (e.g., "docling_document_v2", kept for upstream interop)
   optional string schema_name = 1;
 
-  // Version number of the Docling schema used
+  // Version number of the upstream schema used
   optional string version = 2;
 
   // Human-readable name or title of the document
@@ -164,7 +164,7 @@ message FineRef {
 // TrackSource identifies a cue in a media track (audio, video, subtitles).
 //
 // The Pydantic model carries a `kind: Literal["track"]` discriminator field.
-// On the wire, that role is played by the parent `SourceType` oneof tag —
+// On the wire, that role is played by the parent `SourceType` oneof tag:
 // selecting `track` already identifies the variant. We deliberately omit a
 // redundant `kind` string field here.
 message TrackSource {
@@ -631,8 +631,8 @@ message ListItem {
 // NOT use a `TextItemBase base = 1` wrapper. Reason: in Pydantic, CodeItem
 // inherits from both TextItem (whose `meta` is `Optional[BaseMeta]`) and
 // FloatingItem (which overrides `meta` to `Optional[FloatingMeta]`). Wrapping
-// TextItemBase here would surface two `meta` slots on the wire — `base.meta`
-// (BaseMeta) and the outer override (FloatingMeta) — with no schema-level
+// TextItemBase here would surface two `meta` slots on the wire: `base.meta`
+// (BaseMeta) and the outer override (FloatingMeta), with no schema-level
 // rule for which one a producer should populate. Inlining the base fields
 // keeps a single, unambiguous `meta = 5` field of type FloatingMeta.
 message CodeItem {

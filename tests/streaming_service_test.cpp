@@ -10,7 +10,7 @@
 
 #include <grpcpp/grpcpp.h>
 
-#include "ai/docling/serve/v1/docling_serve_stream.grpc.pb.h"
+#include "ai/pipestream/parse/v1/parse_stream.grpc.pb.h"
 #include "grparse/document_assembly.h"
 #include "grparse/document_parser_service.h"
 #include "grparse/page_scheduler.h"
@@ -18,7 +18,7 @@
 namespace {
 
 using namespace std::chrono_literals;
-namespace docling = ai::docling;
+namespace pipestream = ai::pipestream;
 
 void require(bool condition, const std::string& message) {
   if (!condition) throw std::runtime_error(message);
@@ -88,13 +88,13 @@ class TestServer final {
     server_->Wait();
   }
 
-  std::unique_ptr<docling::serve::v1::DoclingStreamingService::Stub> stub() const {
-    return docling::serve::v1::DoclingStreamingService::NewStub(
+  std::unique_ptr<pipestream::parse::v1::ParseStreamingService::Stub> stub() const {
+    return pipestream::parse::v1::ParseStreamingService::NewStub(
         grpc::CreateChannel("127.0.0.1:" + std::to_string(port_), grpc::InsecureChannelCredentials()));
   }
 
-  std::unique_ptr<docling::serve::v1::DoclingServeService::Stub> unary_stub() const {
-    return docling::serve::v1::DoclingServeService::NewStub(
+  std::unique_ptr<pipestream::parse::v1::ParseService::Stub> unary_stub() const {
+    return pipestream::parse::v1::ParseService::NewStub(
         grpc::CreateChannel("127.0.0.1:" + std::to_string(port_), grpc::InsecureChannelCredentials()));
   }
 
@@ -162,12 +162,12 @@ void verify_wide_page_window_streams_completely() {
   auto server = builder.BuildAndStart();
   require(server && port != 0, "wide-window test server failed to start");
 
-  auto client = docling::serve::v1::DoclingStreamingService::NewStub(
+  auto client = pipestream::parse::v1::ParseStreamingService::NewStub(
       grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
   grpc::ClientContext context;
   context.set_deadline(std::chrono::system_clock::now() + 20s);
   auto stream = client->StreamProcessDocument(&context);
-  docling::serve::v1::DocumentChunk source;
+  pipestream::parse::v1::DocumentChunk source;
   source.set_document_id("wide-window");
   source.set_filename("image.png");
   source.set_content_type("image/png");
@@ -177,7 +177,7 @@ void verify_wide_page_window_streams_completely() {
   stream->WritesDone();
 
   std::vector<int> page_numbers;
-  docling::serve::v1::DocumentStreamEvent event;
+  pipestream::parse::v1::DocumentStreamEvent event;
   while (stream->Read(&event)) {
     if (event.has_page()) page_numbers.push_back(event.page().page_number());
   }
@@ -192,8 +192,8 @@ void verify_wide_page_window_streams_completely() {
   }
 }
 
-docling::serve::v1::DocumentChunk chunk(bool complete) {
-  docling::serve::v1::DocumentChunk value;
+pipestream::parse::v1::DocumentChunk chunk(bool complete) {
+  pipestream::parse::v1::DocumentChunk value;
   value.set_document_id("contract-test");
   value.set_filename("image.png");
   value.set_content_type("image/png");
@@ -210,8 +210,8 @@ void verify_ordered_page_stream(TestServer* server) {
   require(stream->Write(chunk(true)), "client could not write source chunk");
   stream->WritesDone();
 
-  std::vector<docling::serve::v1::DocumentStreamEvent> events;
-  docling::serve::v1::DocumentStreamEvent event;
+  std::vector<pipestream::parse::v1::DocumentStreamEvent> events;
+  pipestream::parse::v1::DocumentStreamEvent event;
   while (stream->Read(&event)) events.push_back(event);
   const grpc::Status status = stream->Finish();
   require(status.ok(), "stream failed: " + status.error_message());
@@ -245,7 +245,7 @@ void verify_data_after_complete_is_rejected(TestServer* server) {
   require(stream->Write(chunk(true)), "client could not write complete chunk");
   stream->Write(chunk(false));
   stream->WritesDone();
-  docling::serve::v1::DocumentStreamEvent ignored;
+  pipestream::parse::v1::DocumentStreamEvent ignored;
   while (stream->Read(&ignored)) {
   }
   const grpc::Status status = stream->Finish();
@@ -261,7 +261,7 @@ void verify_deadline_cancels_scheduler_work() {
   auto stream = client->StreamProcessDocument(&context);
   require(stream->Write(chunk(true)), "deadline client could not write source chunk");
   stream->WritesDone();
-  docling::serve::v1::DocumentStreamEvent ignored;
+  pipestream::parse::v1::DocumentStreamEvent ignored;
   while (stream->Read(&ignored)) {
   }
   const grpc::Status status = stream->Finish();
@@ -274,12 +274,12 @@ void verify_deadline_cancels_scheduler_work() {
   require(server.metrics().pages_cancelled > 0, "deadline did not cancel queued page work");
 }
 
-docling::serve::v1::ConvertSourceRequest unary_request() {
-  docling::serve::v1::ConvertSourceRequest request;
+pipestream::parse::v1::ConvertSourceRequest unary_request() {
+  pipestream::parse::v1::ConvertSourceRequest request;
   auto* source = request.mutable_request()->add_sources()->mutable_file();
   source->set_filename("image.png");
   source->set_base64_string("bWVtb3J5");
-  request.mutable_request()->mutable_options()->add_to_formats(docling::serve::v1::OUTPUT_FORMAT_TEXT);
+  request.mutable_request()->mutable_options()->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_TEXT);
   return request;
 }
 
@@ -287,12 +287,12 @@ void verify_unary_uses_scheduler_and_shared_assembly(TestServer* server) {
   auto client = server->unary_stub();
   grpc::ClientContext context;
   context.set_deadline(std::chrono::system_clock::now() + 10s);
-  docling::serve::v1::ConvertSourceResponse response;
+  pipestream::parse::v1::ConvertSourceResponse response;
   const grpc::Status status = client->ConvertSource(&context, unary_request(), &response);
   require(status.ok(), "unary conversion failed: " + status.error_message());
 
   const auto& result = response.response().document();
-  require(response.response().status() == docling::serve::v1::CONVERSION_STATUS_SUCCESS,
+  require(response.response().status() == pipestream::parse::v1::CONVERSION_STATUS_SUCCESS,
           "unary conversion status");
   require(result.doc().pages_size() == 3 && result.doc().texts_size() == 3,
           "unary page and text counts");
@@ -307,7 +307,7 @@ void verify_unsupported_options_are_rejected(TestServer* server) {
   auto request = unary_request();
   request.mutable_request()->mutable_options()->set_do_ocr(true);
   grpc::ClientContext context;
-  docling::serve::v1::ConvertSourceResponse response;
+  pipestream::parse::v1::ConvertSourceResponse response;
   const grpc::Status status = client->ConvertSource(&context, request, &response);
   require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
           "unsupported conversion options must be rejected");
@@ -315,9 +315,9 @@ void verify_unsupported_options_are_rejected(TestServer* server) {
   request = unary_request();
   request.mutable_request()->mutable_options()->clear_to_formats();
   request.mutable_request()->mutable_options()->add_to_formats(
-      docling::serve::v1::OUTPUT_FORMAT_MARKDOWN);
+      pipestream::parse::v1::OUTPUT_FORMAT_MARKDOWN);
   grpc::ClientContext markdown_context;
-  docling::serve::v1::ConvertSourceResponse markdown_response;
+  pipestream::parse::v1::ConvertSourceResponse markdown_response;
   const grpc::Status markdown_status =
       client->ConvertSource(&markdown_context, request, &markdown_response);
   require(markdown_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
@@ -328,7 +328,7 @@ void verify_unary_digital_path_bypasses_ocr() {
   TestServer server(0ms, true);
   auto client = server.unary_stub();
   grpc::ClientContext context;
-  docling::serve::v1::ConvertSourceResponse response;
+  pipestream::parse::v1::ConvertSourceResponse response;
   const grpc::Status status = client->ConvertSource(&context, unary_request(), &response);
   require(status.ok(), "digital unary conversion failed: " + status.error_message());
   require(server.recognizer_calls() == 0, "unary conversion bypassed the scheduler digital path");
@@ -341,8 +341,8 @@ void verify_unary_digital_path_bypasses_ocr() {
   auto stream = stream_client->StreamProcessDocument(&stream_context);
   require(stream->Write(chunk(true)), "digital stream could not write source chunk");
   stream->WritesDone();
-  std::vector<docling::serve::v1::DocumentStreamEvent> events;
-  docling::serve::v1::DocumentStreamEvent event;
+  std::vector<pipestream::parse::v1::DocumentStreamEvent> events;
+  pipestream::parse::v1::DocumentStreamEvent event;
   while (stream->Read(&event)) events.push_back(event);
   const grpc::Status stream_status = stream->Finish();
   require(stream_status.ok(), "digital stream failed: " + stream_status.error_message());
@@ -361,7 +361,7 @@ void verify_unary_digital_path_bypasses_ocr() {
     const auto& offset = streamed_page.text_offsets(0);
     require(offset.utf_start() == expected_offset, "digital stream offset start");
     expected_offset = offset.utf_end() + (page_index == 2 ? 0 : 1);
-    require(offset.source() == docling::serve::v1::TEXT_SOURCE_DIGITAL_PDF,
+    require(offset.source() == pipestream::parse::v1::TEXT_SOURCE_DIGITAL_PDF,
             "digital stream source metadata");
   }
   require(expected_offset == grparse::utf8_codepoint_count(

@@ -21,7 +21,7 @@
 #include "grparse/in_memory_document.h"
 
 namespace fs = std::filesystem;
-namespace docling = ai::docling;
+namespace pipestream = ai::pipestream;
 
 namespace grparse {
 namespace {
@@ -48,13 +48,13 @@ bool is_pdf(const std::string& content, const fs::path& filename) {
          (content.size() >= 5 && content.compare(0, 5, "%PDF-") == 0);
 }
 
-bool requested(const docling::serve::v1::ConvertDocumentOptions& options,
-               docling::serve::v1::OutputFormat format) {
+bool requested(const pipestream::parse::v1::ConvertDocumentOptions& options,
+               pipestream::parse::v1::OutputFormat format) {
   return options.to_formats().empty() ||
          std::find(options.to_formats().begin(), options.to_formats().end(), format) != options.to_formats().end();
 }
 
-grpc::Status validate_options(const docling::serve::v1::ConvertDocumentOptions& options) {
+grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOptions& options) {
   std::vector<const google::protobuf::FieldDescriptor*> populated;
   options.GetReflection()->ListFields(options, &populated);
   for (const auto* field : populated) {
@@ -64,7 +64,7 @@ grpc::Status validate_options(const docling::serve::v1::ConvertDocumentOptions& 
     }
   }
   for (const auto format : options.to_formats()) {
-    if (format != docling::serve::v1::OUTPUT_FORMAT_TEXT) {
+    if (format != pipestream::parse::v1::OUTPUT_FORMAT_TEXT) {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                           "ConvertSource currently supports only TEXT output");
     }
@@ -79,8 +79,8 @@ grpc::Status status_from_exception(std::exception_ptr failure);
 DocumentParserService::DocumentParserService(PageScheduler& scheduler) : scheduler_(scheduler) {}
 
 grpc::Status DocumentParserService::ConvertSource(
-    grpc::ServerContext* context, const docling::serve::v1::ConvertSourceRequest* request,
-    docling::serve::v1::ConvertSourceResponse* response) {
+    grpc::ServerContext* context, const pipestream::parse::v1::ConvertSourceRequest* request,
+    pipestream::parse::v1::ConvertSourceResponse* response) {
   const auto started = std::chrono::steady_clock::now();
   const auto& sources = request->request().sources();
   if (sources.size() != 1 || !sources.Get(0).has_file()) {
@@ -107,7 +107,7 @@ grpc::Status DocumentParserService::ConvertSource(
     origin->set_mimetype(pdf ? "application/pdf" : mimetype_for(requested_name));
     origin->set_binary_hash(content_hash(*bytes));
     document->mutable_body()->set_self_ref("#/body");
-    document->mutable_body()->set_content_layer(docling::core::v1::CONTENT_LAYER_BODY);
+    document->mutable_body()->set_content_layer(pipestream::document::v1::CONTENT_LAYER_BODY);
 
     struct UnaryResult {
       std::mutex mutex;
@@ -164,10 +164,10 @@ grpc::Status DocumentParserService::ConvertSource(
       append_page_to_document(*page->second, page_number, &assembly_cursor, document, &plain_text);
     }
     lock.unlock();
-    if (requested(request->request().options(), docling::serve::v1::OUTPUT_FORMAT_TEXT)) {
+    if (requested(request->request().options(), pipestream::parse::v1::OUTPUT_FORMAT_TEXT)) {
       result->mutable_exports()->set_text(plain_text);
     }
-    converted->set_status(docling::serve::v1::CONVERSION_STATUS_SUCCESS);
+    converted->set_status(pipestream::parse::v1::CONVERSION_STATUS_SUCCESS);
     converted->set_processing_time(
         std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
     (*converted->mutable_timings())["total"] = converted->processing_time();
@@ -177,8 +177,8 @@ grpc::Status DocumentParserService::ConvertSource(
   }
 }
 
-grpc::Status DocumentParserService::Health(grpc::ServerContext*, const docling::serve::v1::HealthRequest*,
-                                            docling::serve::v1::HealthResponse* response) {
+grpc::Status DocumentParserService::Health(grpc::ServerContext*, const pipestream::parse::v1::HealthRequest*,
+                                            pipestream::parse::v1::HealthResponse* response) {
   response->set_status("ready");
   response->set_version("grparse-0.1.0-cuda");
   return grpc::Status::OK;
@@ -207,15 +207,15 @@ grpc::Status status_from_exception(std::exception_ptr failure) {
 
 class ArenaEvent final {
  public:
-  ArenaEvent() : message(google::protobuf::Arena::Create<docling::serve::v1::DocumentStreamEvent>(&arena)) {}
+  ArenaEvent() : message(google::protobuf::Arena::Create<pipestream::parse::v1::DocumentStreamEvent>(&arena)) {}
 
   google::protobuf::Arena arena;
-  docling::serve::v1::DocumentStreamEvent* message;
+  pipestream::parse::v1::DocumentStreamEvent* message;
 };
 
 class DocumentStreamReactor final
-    : public grpc::ServerBidiReactor<docling::serve::v1::DocumentChunk,
-                                     docling::serve::v1::DocumentStreamEvent> {
+    : public grpc::ServerBidiReactor<pipestream::parse::v1::DocumentChunk,
+                                     pipestream::parse::v1::DocumentStreamEvent> {
  public:
   DocumentStreamReactor(grpc::CallbackServerContext* context, PageScheduler& scheduler)
       : context_(context),
@@ -491,7 +491,7 @@ class DocumentStreamReactor final
   const size_t maximum_buffered_pages_;
   std::shared_ptr<CallbackGate> callback_gate_;
   std::mutex mutex_;
-  docling::serve::v1::DocumentChunk incoming_;
+  pipestream::parse::v1::DocumentChunk incoming_;
   std::string document_id_;
   fs::path filename_;
   std::string content_type_;
@@ -520,7 +520,7 @@ class DocumentStreamReactor final
 
 DocumentStreamingService::DocumentStreamingService(PageScheduler& scheduler) : scheduler_(scheduler) {}
 
-grpc::ServerBidiReactor<docling::serve::v1::DocumentChunk, docling::serve::v1::DocumentStreamEvent>*
+grpc::ServerBidiReactor<pipestream::parse::v1::DocumentChunk, pipestream::parse::v1::DocumentStreamEvent>*
 DocumentStreamingService::StreamProcessDocument(grpc::CallbackServerContext* context) {
   return new DocumentStreamReactor(context, scheduler_);
 }

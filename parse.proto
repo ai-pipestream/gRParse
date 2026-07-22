@@ -1,23 +1,24 @@
 syntax = "proto3";
 
-package ai.docling.serve.v1;
+package ai.pipestream.parse.v1;
 
-import "ai/docling/serve/v1/docling_serve_types.proto";
+import "ai/pipestream/parse/v1/parse_types.proto";
 
 option java_multiple_files = true;
-option java_outer_classname = "DoclingServeProto";
-option java_package = "ai.docling.serve.v1";
+option java_outer_classname = "ParseProto";
+option java_package = "ai.pipestream.parse.v1";
 
 // ============================================================================
 // Service Definition
 // ============================================================================
 
-// DoclingServeService is the gRPC service definition that provides a mapping
-// of the docling-serve REST API endpoints.
+// ParseService is the gRPC service definition that provides a mapping of the
+// upstream converter's REST API endpoints (docling-serve; the one parity
+// reference for this surface).
 //
 // Adheres to Buf linting and Google gRPC style guide by providing unique
 // request and response messages for every RPC.
-service DoclingServeService {
+service ParseService {
   // Health check - mirrors GET /health
   rpc Health(HealthRequest) returns (HealthResponse);
 
@@ -55,7 +56,7 @@ service DoclingServeService {
   rpc ClearResults(ClearResultsRequest) returns (ClearResultsResponse);
 
   // Streaming document conversion - currently yields a single response when complete.
-  // Deprecated in favor of DoclingStreamingService.StreamDocument (envelope oneof).
+  // Deprecated in favor of ParseStreamingService.StreamDocument (envelope oneof).
   // Kept for existing clients; new work should use StreamDocument.
   rpc ConvertSourceStream(ConvertSourceStreamRequest) returns (stream ConvertSourceStreamResponse);
 
@@ -84,7 +85,7 @@ message HealthRequest {}
 
 message HealthResponse {
   optional string status = 1;
-  optional string version = 2; // docling-serve version, e.g. "1.12.0"
+  optional string version = 2; // converter version, e.g. "1.12.0"
 }
 
 // --- Convert ---
