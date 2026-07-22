@@ -70,3 +70,30 @@ The model set and dictionary naming are documented by [RapidOcrOnnx](https://git
   Requires layout (that is what finds table regions); runs only on table
   crops, never full pages. When absent, tables fall back to the geometry
   word-to-cell grid.
+
+## Figure classifier (optional; enables picture class annotations)
+
+- `figure_classifier.onnx` — [ds4sd/DocumentFigureClassifier](https://huggingface.co/ds4sd/DocumentFigureClassifier)
+  (EfficientNet-B0, MIT license), 16 classes: bar_chart, bar_code,
+  chemistry_markush_structure, chemistry_molecular_structure, flow_chart,
+  icon, line_chart, logo, map, other, pie_chart, qr_code, remote_sensing,
+  screenshot, signature, stamp.
+
+  Upstream publishes safetensors only; generate the ONNX with the committed
+  script (the artifact used for the goldens has sha256
+  `cc4631086634a5e6bcd0bb591df728eb44e2a95207b0f6454d120c7c8b32a80c`; exact
+  bytes depend on the torch version, the goldens tolerate that):
+
+  ```bash
+  python scripts/export_figure_classifier.py figure_classifier.onnx
+  ```
+
+  Preprocess: RGB order (unlike the OCR-family models), resize 224x224,
+  scale 1/255, normalize mean `[0.485, 0.456, 0.406]` /
+  std `[0.47853944, 0.4732864, 0.47434163]`, NCHW, per
+  docling-ibm-models' DocumentFigureClassifierPredictor. Output is raw
+  logits; gRParse softmaxes and attaches every class sorted by confidence
+  as a `classification` annotation on the PictureItem.
+
+  Requires layout; runs only on figure crops. When absent, pictures keep
+  their bounding boxes and simply carry no class annotation.

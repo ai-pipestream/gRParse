@@ -117,6 +117,15 @@ and no header flags. Both paths give `num_rows`/`num_cols`, a rectangular
 streams as ordinary `TEXT` items too, so UTF offsets stay contiguous for
 clients that ignore tables.
 
+When `models/figure_classifier.onnx` is present (`GRPARSE_FIGURE_CLASSES`,
+same auto/on/off contract), each figure crop also runs the MIT-licensed
+DocumentFigureClassifier (EfficientNet-B0, 16 classes such as bar_chart,
+qr_code, signature, screenshot) and every `PictureItem` carries a
+`classification` annotation with the full sorted class distribution, which
+is what downstream policy hooks (signature routing, barcode triggers, icon
+filtering) key on. The stream never blocks on classification: it is one
+batch=1 device call per figure inside the inference stage.
+
 With `GRPARSE_PICTURE_IMAGES=on` (default off) each figure region's pixels
 are cropped from the page raster in the inference stage, PNG-encoded, and
 attached to its `PictureItem` as an `image/png` data URI with the pixel

@@ -10,6 +10,7 @@
 #include <stdexcept>
 
 #include "grparse/in_memory_document.h"
+#include "grparse/figure_classifier.h"
 #include "grparse/layout_engine.h"
 #include "grparse/table_structure_engine.h"
 #include "grparse/ocr_engine.h"
@@ -65,6 +66,8 @@ class PageScheduler final {
     uint64_t pages_layout_labelled = 0;
     // Table regions that went through structure recognition.
     uint64_t tables_structured = 0;
+    // Figure regions that went through classification.
+    uint64_t figures_classified = 0;
     uint64_t pages_cancelled = 0;
     size_t documents_queued = 0;
     size_t pages_waiting_for_render = 0;
@@ -105,7 +108,8 @@ class PageScheduler final {
   PageScheduler(PageRecognizer& recognizer, Options options,
                 PageSourceFactory source_factory = PageSourceFactory{},
                 RegionDetector* region_detector = nullptr,
-                TableStructurer* table_structurer = nullptr);
+                TableStructurer* table_structurer = nullptr,
+                FigureClassifierBase* figure_classifier = nullptr);
   PageScheduler(const PageScheduler&) = delete;
   PageScheduler& operator=(const PageScheduler&) = delete;
   ~PageScheduler();

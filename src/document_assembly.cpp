@@ -275,6 +275,16 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
       provenance->set_page_no(page_number);
       set_region_bounding_box(region, provenance->mutable_bbox());
       if (!region.image_png.empty()) set_picture_image(region.image_png, picture->mutable_image());
+      if (!region.figure_classes.empty()) {
+        auto* classification = picture->add_annotations()->mutable_classification();
+        classification->set_kind("classification");
+        classification->set_provenance("DocumentFigureClassifier");
+        for (const auto& figure_class : region.figure_classes) {
+          auto* predicted = classification->add_predicted_classes();
+          predicted->set_class_name(figure_class.label);
+          predicted->set_confidence(figure_class.confidence);
+        }
+      }
     }
   }
 }

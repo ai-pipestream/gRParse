@@ -35,6 +35,12 @@ struct StructuredCell {
   int bottom = 0;
 };
 
+// One predicted figure class with its softmax probability.
+struct FigureClass {
+  std::string label;
+  float confidence = 0.0F;
+};
+
 // One detected layout region in page pixel coordinates (top-left origin,
 // the same space text boxes use).  Boxes are corners, edges inclusive.
 struct LayoutRegion {
@@ -51,6 +57,9 @@ struct LayoutRegion {
   // Model-recognized cell grid, filled only for table regions when a table
   // structure engine is active; empty means geometry fallback.
   std::vector<StructuredCell> structured_cells = {};
+  // Classifier output sorted by confidence, filled only for figure regions
+  // when the figure classifier is active.
+  std::vector<FigureClass> figure_classes = {};
 };
 
 struct OcrPage {

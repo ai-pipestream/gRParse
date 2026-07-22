@@ -302,6 +302,66 @@ void verify_table_structure_runs_on_crops() {
   require(scheduler.metrics().tables_structured == 2, "structure metric must count table crops");
 }
 
+class FakeClassifier final : public grparse::FigureClassifierBase {
+ public:
+  std::vector<grparse::FigureClass> classify(const cv::Mat& crop) override {
+    calls.fetch_add(1);
+    crop_width.store(crop.cols);
+    return {{"bar_chart", 0.9F}, {"other", 0.1F}};
+  }
+  std::atomic<int> calls{0};
+  std::atomic<int> crop_width{0};
+};
+
+// Classification runs once per figure region on its clipped crop and the
+// sorted classes ride on the delivered region.
+void verify_figure_classification_runs_on_crops() {
+  FakeRecognizer recognizer;
+  FakeDetector detector;
+  detector.regions = {
+      grparse::LayoutRegion{"figure", 0.8F, 1, 1, 3, 3},
+      grparse::LayoutRegion{"title", 0.9F, 0, 0, 50, 10},
+  };
+  FakeClassifier classifier;
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 2, 2, 2, 1, 1, 1},
+      [](std::shared_ptr<const std::string>, bool) {
+        return std::make_shared<RenderableDigitalSource>();
+      },
+      &detector, nullptr, &classifier);
+  Result result;
+  std::mutex pages_mutex;
+  std::vector<std::shared_ptr<const grparse::OcrPage>> delivered;
+  auto callbacks = callbacks_for(&result);
+  callbacks.on_page = [&](int page_number, std::shared_ptr<const grparse::OcrPage> page) {
+    {
+      std::lock_guard<std::mutex> lock(pages_mutex);
+      delivered.push_back(std::move(page));
+    }
+    std::lock_guard<std::mutex> lock(result.mutex);
+    result.completed_pages.push_back(page_number);
+    return grparse::PageScheduler::DeliveryResult::kAcceptedAndRelease;
+  };
+  scheduler.submit(std::make_shared<const std::string>("memory"), true, std::move(callbacks));
+  wait_until_finished(&result);
+
+  require(!result.failure, "figure-classification document failed");
+  require(classifier.calls.load() == 2, "one classification per figure region per page");
+  require(classifier.crop_width.load() == 2, "classifier must see the clipped crop");
+  {
+    std::lock_guard<std::mutex> lock(pages_mutex);
+    for (const auto& page : delivered) {
+      require(page->regions[0].figure_classes.size() == 2 &&
+                  page->regions[0].figure_classes[0].label == "bar_chart",
+              "classes must ride on the delivered figure region");
+      require(page->regions[1].figure_classes.empty(),
+              "non-figure regions must stay unclassified");
+    }
+  }
+  require(scheduler.metrics().figures_classified == 2,
+          "classification metric must count figure crops");
+}
+
 // With picture capture enabled, figure regions arrive carrying a PNG crop of
 // the raster while other regions stay byte-free.
 void verify_picture_capture_encodes_figure_crops() {
@@ -568,6 +628,7 @@ int main() {
     verify_digital_pages_bypass_render_and_inference();
     verify_layout_labels_digital_pages_without_ocr();
     verify_table_structure_runs_on_crops();
+    verify_figure_classification_runs_on_crops();
     verify_picture_capture_encodes_figure_crops();
     verify_partial_digital_merges_with_ocr();
     verify_delivery_cancellation_drains_queued_work();
