@@ -68,6 +68,7 @@ Do **not** serialize the machine: parse page → wait GPU → idle CPU → next 
 |---|---|
 | **Page pipeline** | Device ORT on page *N* while CPU parses/renders/assembles *N+1*; Java may decorate *N-1* |
 | **Warm singleton sessions** | OCR, layout, table, figure ORT nets loaded once per EP; leased from pools |
+| **No per-document CPU serialization** | A document's Poppler parsers are pooled (`GRPARSE_PDF_PARSERS`), so render and digital extraction of different pages of the *same* file overlap; a single large PDF must still saturate the render workers |
 | **Bound by device memory / RAM** | `GRPARSE_PAGE_WORKERS` (+ per-model pool sizes); respect CUDA VRAM **or** Intel Arc memory — never unbounded fan-out |
 | **Diskless hot path** | Request bytes → memory → response; office LO spill only on tmpfs if needed |
 | **Selective OCR** | Digital PDF text wins; OCR only image-only / low-text pages |

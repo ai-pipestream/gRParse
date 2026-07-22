@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
@@ -90,15 +91,20 @@ int main() {
     const int gpu_index = configured_index("GRPARSE_CUDA_DEVICE", 0);
     grparse::OcrEnginePool engines(models == nullptr ? "/models" : models, inference_workers,
                                    gpu_index);
-    grparse::PageScheduler scheduler(
-        engines, grparse::PageScheduler::Options{
-                     configured_size("GRPARSE_DOCUMENT_QUEUE", 8),
-                     configured_size("GRPARSE_RENDER_QUEUE", 8),
-                     configured_size("GRPARSE_INFERENCE_QUEUE", 4),
-                     configured_size("GRPARSE_ASSEMBLY_QUEUE", 8), render_workers, inference_workers,
-                     configured_size("GRPARSE_ASSEMBLY_WORKERS", 2, 64),
-                     configured_size("GRPARSE_PAGE_WINDOW", 4, 64),
-                     configured_size("GRPARSE_MAX_ACTIVE_DOCUMENTS", 32, 1024)});
+    // Named assignment on purpose: a positional brace list of nine same-typed
+    // sizes is one reordering away from a silent misconfiguration.
+    grparse::PageScheduler::Options options;
+    options.document_queue_capacity = configured_size("GRPARSE_DOCUMENT_QUEUE", 8);
+    options.render_queue_capacity = configured_size("GRPARSE_RENDER_QUEUE", 8);
+    options.inference_queue_capacity = configured_size("GRPARSE_INFERENCE_QUEUE", 4);
+    options.assembly_queue_capacity = configured_size("GRPARSE_ASSEMBLY_QUEUE", 8);
+    options.render_workers = render_workers;
+    options.inference_workers = inference_workers;
+    options.assembly_workers = configured_size("GRPARSE_ASSEMBLY_WORKERS", 2, 64);
+    options.page_window = configured_size("GRPARSE_PAGE_WINDOW", 4, 64);
+    options.max_active_documents = configured_size("GRPARSE_MAX_ACTIVE_DOCUMENTS", 32, 1024);
+    options.pdf_parsers = configured_size("GRPARSE_PDF_PARSERS", render_workers, 256);
+    grparse::PageScheduler scheduler(engines, options);
     grparse::DocumentParserService service(scheduler);
     grparse::DocumentStreamingService streaming_service(scheduler);
     grpc::EnableDefaultHealthCheckService(true);
@@ -121,14 +127,23 @@ int main() {
     }
     std::cout << "gRParse listening on " << listen_address
               << " (RapidOCR / ONNX Runtime CUDA)" << std::endl;
+    std::atomic<bool> serving{true};
     std::thread shutdown_thread([&] {
       unsigned char received_signal = 0;
       if (read(signal_pipe[0], &received_signal, sizeof(received_signal)) ==
-          static_cast<ssize_t>(sizeof(received_signal))) {
+              static_cast<ssize_t>(sizeof(received_signal)) &&
+          serving.load()) {
         server->Shutdown(std::chrono::system_clock::now() + std::chrono::seconds(10));
       }
     });
     server->Wait();
+    // Wake the reader even when Wait() returned without a signal, so join()
+    // cannot hang on a blocking read that will never be satisfied.
+    serving.store(false);
+    const unsigned char wakeup = 0;
+    if (write(signal_pipe[1], &wakeup, sizeof(wakeup)) < 0) {
+      // The reader has already exited; nothing left to wake.
+    }
     shutdown_thread.join();
     shutdown_signal_fd = -1;
     close(signal_pipe[0]);

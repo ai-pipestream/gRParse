@@ -187,7 +187,6 @@ grpc::Status DocumentParserService::Health(grpc::ServerContext*, const docling::
 namespace {
 
 constexpr size_t kMaximumDocumentBytes = 50U * 1024U * 1024U;
-constexpr size_t kMaximumBufferedPages = 4;
 
 grpc::Status status_from_exception(std::exception_ptr failure) {
   try {
@@ -219,7 +218,14 @@ class DocumentStreamReactor final
                                      docling::serve::v1::DocumentStreamEvent> {
  public:
   DocumentStreamReactor(grpc::CallbackServerContext* context, PageScheduler& scheduler)
-      : context_(context), scheduler_(scheduler), callback_gate_(std::make_shared<CallbackGate>()) {
+      : context_(context),
+        scheduler_(scheduler),
+        // The scheduler will not deliver more than one page window ahead of the
+        // credits this reactor returns, so the window *is* the buffer bound.
+        // A constant here silently capped GRPARSE_PAGE_WINDOW and killed
+        // well-behaved clients with RESOURCE_EXHAUSTED once it was raised.
+        maximum_buffered_pages_(scheduler.page_window()),
+        callback_gate_(std::make_shared<CallbackGate>()) {
     callback_gate_->reactor = this;
     StartRead(&incoming_);
   }
@@ -309,8 +315,10 @@ class DocumentStreamReactor final
   }
 
   void OnDone() override {
-    // gRPC Callback API transfers ownership of the reactor; OnDone must delete it.
-    // CallbackGate + weak_ptr keep scheduler callbacks from touching a dead reactor.
+    // gRPC's callback API transfers ownership of the reactor; OnDone must delete
+    // it.  Scheduler threads are not gRPC reactions and hold no call reference,
+    // so the gate mutex — not just the null check — is what keeps this delete
+    // ordered after any in-progress on_page/on_scheduler_finish call.
     const auto gate = callback_gate_;
     {
       std::lock_guard<std::mutex> lock(gate->mutex);
@@ -331,9 +339,15 @@ class DocumentStreamReactor final
     {
       std::lock_guard<std::mutex> lock(mutex_);
       bytes = std::make_shared<const std::string>(std::move(bytes_));
-      document_bytes_ = bytes;
       pdf = content_type_ == "application/pdf" || is_pdf(*bytes, filename_);
       pdf_ = pdf;
+    }
+    // Hash the request once, here, rather than under the reactor lock at
+    // completion: it is a linear pass over up to 50 MiB.
+    const uint64_t hash = content_hash(*bytes);
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      document_bytes_hash_ = hash;
     }
 
     try {
@@ -380,7 +394,7 @@ class DocumentStreamReactor final
   PageScheduler::DeliveryResult on_page(int page_number, std::shared_ptr<const OcrPage> page) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (client_cancelled_) return PageScheduler::DeliveryResult::kCancelled;
-    if (buffered_pages_ >= kMaximumBufferedPages) {
+    if (buffered_pages_ >= maximum_buffered_pages_) {
       completed_pages_.clear();
       if (write_in_flight_ && !events_.empty()) {
         events_.erase(std::next(events_.begin()), events_.end());
@@ -433,7 +447,7 @@ class DocumentStreamReactor final
     auto* origin = event->message->mutable_complete()->mutable_origin();
     origin->set_filename(filename_.string());
     origin->set_mimetype(pdf_ ? "application/pdf" : mimetype_for(filename_));
-    origin->set_binary_hash(content_hash(*document_bytes_));
+    origin->set_binary_hash(document_bytes_hash_);
     events_.push_back(std::move(event));
     request_finish_locked(grpc::Status::OK);
   }
@@ -474,6 +488,7 @@ class DocumentStreamReactor final
 
   grpc::CallbackServerContext* context_;
   PageScheduler& scheduler_;
+  const size_t maximum_buffered_pages_;
   std::shared_ptr<CallbackGate> callback_gate_;
   std::mutex mutex_;
   docling::serve::v1::DocumentChunk incoming_;
@@ -481,7 +496,7 @@ class DocumentStreamReactor final
   fs::path filename_;
   std::string content_type_;
   std::string bytes_;
-  std::shared_ptr<const std::string> document_bytes_;
+  uint64_t document_bytes_hash_ = 0;
   PageScheduler::Ticket ticket_;
   std::map<int, std::shared_ptr<const OcrPage>> completed_pages_;
   std::deque<std::unique_ptr<ArenaEvent>> events_;

@@ -13,9 +13,10 @@ enum class TextOrigin { kOcr, kDigitalPdf };
 struct OcrLine {
   std::string text;
   std::vector<cv::Point> polygon;
-  std::optional<float> confidence;
+  // Absent when the producer reports no per-line score.
+  std::optional<float> confidence = std::nullopt;
   // When set, overrides OcrPage::source for assembly (digital+OCR merge).
-  std::optional<TextOrigin> origin;
+  std::optional<TextOrigin> origin = std::nullopt;
 };
 
 struct OcrPage {

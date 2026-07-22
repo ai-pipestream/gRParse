@@ -7,6 +7,26 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+option(GRPARSE_WERROR "Treat warnings in gRParse code as errors" OFF)
+set(GRPARSE_SANITIZE "" CACHE STRING
+  "Sanitizers for gRParse targets: address, thread, undefined (comma separated)")
+
+# Applied to first-party targets only; fetched dependencies keep their own flags.
+# gRPC pulls its own and abseil's headers in with -I rather than -isystem, so
+# any warning they trip is reported against our translation units.  -Wpedantic
+# (abseil's __int128), -Wshadow, and deprecation notices therefore stay off or
+# non-fatal; everything -Wall/-Wextra covers is an error under GRPARSE_WERROR.
+add_library(grparse_flags INTERFACE)
+target_compile_options(grparse_flags INTERFACE -Wall -Wextra -Wnon-virtual-dtor)
+if(GRPARSE_WERROR)
+  target_compile_options(grparse_flags INTERFACE -Werror -Wno-error=deprecated-declarations)
+endif()
+if(GRPARSE_SANITIZE)
+  target_compile_options(grparse_flags INTERFACE
+    -fsanitize=${GRPARSE_SANITIZE} -fno-omit-frame-pointer -g)
+  target_link_options(grparse_flags INTERFACE -fsanitize=${GRPARSE_SANITIZE})
+endif()
+
 include(FetchContent)
 
 # RapidOcrOnnx 1.2.3 is the maintained C++ RapidOCR implementation.  Its
@@ -58,7 +78,7 @@ set(GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set(STAGED_PROTO_DIR "${CMAKE_CURRENT_BINARY_DIR}/proto")
 file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/docling/core/v1")
 file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/docling/serve/v1")
-configure_file(docling.proto
+configure_file(docling_document.proto
   "${STAGED_PROTO_DIR}/ai/docling/core/v1/docling_document.proto" COPYONLY)
 configure_file(docling_serve_types.proto
   "${STAGED_PROTO_DIR}/ai/docling/serve/v1/docling_serve_types.proto" COPYONLY)
@@ -91,7 +111,7 @@ add_custom_command(
        --grpc_out=${GENERATED_DIR}
        --plugin=protoc-gen-grpc=$<TARGET_FILE:grpc_cpp_plugin>
        ${DOCLING_DOCUMENT_PROTO} ${DOCLING_TYPES_PROTO} ${DOCLING_SERVICE_PROTO} ${DOCLING_STREAM_PROTO}
-  DEPENDS docling.proto docling_serve_types.proto docling_serve.proto docling_serve_stream.proto
+  DEPENDS docling_document.proto docling_serve_types.proto docling_serve.proto docling_serve_stream.proto
           protoc grpc_cpp_plugin
   VERBATIM)
 add_library(docling_proto
@@ -113,35 +133,36 @@ add_library(grparse_core
   src/page_scheduler.cpp
   src/text_geometry.cpp)
 target_include_directories(grparse_core PUBLIC include)
-target_link_libraries(grparse_core PUBLIC docling_proto rapidocr PkgConfig::POPPLER_CPP Threads::Threads)
-target_compile_options(grparse_core PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(grparse_core
+  PUBLIC docling_proto rapidocr PkgConfig::POPPLER_CPP Threads::Threads
+  PRIVATE grparse_flags)
 
 add_executable(grparse-server src/main.cpp)
-target_link_libraries(grparse-server PRIVATE grparse_core grpc++_reflection)
+target_link_libraries(grparse-server PRIVATE grparse_core grparse_flags grpc++_reflection)
 
 add_executable(grparse-stream-client src/stream_pdf_client.cpp)
-target_link_libraries(grparse-stream-client PRIVATE docling_proto)
+target_link_libraries(grparse-stream-client PRIVATE docling_proto grparse_flags)
 
 if(BUILD_TESTING)
-  add_executable(document-assembly-test tests/document_assembly_test.cpp)
-  target_link_libraries(document-assembly-test PRIVATE grparse_core)
-  add_test(NAME document-assembly-test COMMAND document-assembly-test)
-
-  add_executable(page-scheduler-test tests/page_scheduler_test.cpp)
-  target_link_libraries(page-scheduler-test PRIVATE grparse_core)
-  add_test(NAME page-scheduler-test COMMAND page-scheduler-test)
-
-  add_executable(streaming-service-test tests/streaming_service_test.cpp)
-  target_link_libraries(streaming-service-test PRIVATE grparse_core)
-  add_test(NAME streaming-service-test COMMAND streaming-service-test)
-
-  add_executable(text-geometry-test tests/text_geometry_test.cpp)
-  target_link_libraries(text-geometry-test PRIVATE grparse_core)
-  add_test(NAME text-geometry-test COMMAND text-geometry-test)
-
-  add_executable(base64-test tests/base64_test.cpp)
-  target_link_libraries(base64-test PRIVATE grparse_core)
-  add_test(NAME base64-test COMMAND base64-test)
+  set(GRPARSE_TESTS
+    base64-test
+    document-assembly-test
+    page-scheduler-test
+    pdf-source-test
+    resource-pool-test
+    streaming-service-test
+    text-geometry-test)
+  foreach(test_name IN LISTS GRPARSE_TESTS)
+    string(REPLACE "-" "_" test_source "${test_name}")
+    add_executable(${test_name} "tests/${test_source}.cpp")
+    target_link_libraries(${test_name} PRIVATE grparse_core grparse_flags)
+    add_test(NAME ${test_name} COMMAND ${test_name})
+  endforeach()
+  # The scheduler and streaming tests exercise multi-worker paths; keep their
+  # ceiling well above the ~1s they need so a stall fails instead of hanging CI.
+  # The label keeps `ctest -L grparse` clear of tests registered by fetched
+  # dependencies (re2 registers ~20 of its own).
+  set_tests_properties(${GRPARSE_TESTS} PROPERTIES TIMEOUT 120 LABELS grparse)
 endif()
 
 install(TARGETS grparse-server grparse-stream-client RUNTIME DESTINATION bin)

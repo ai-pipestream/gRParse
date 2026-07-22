@@ -110,6 +110,88 @@ class TestServer final {
   int port_ = 0;
 };
 
+// Holds page one back so the pages behind it pile up undelivered, which is what
+// exercises the reactor's buffer bound rather than its steady-state path.
+class HeadOfLineRecognizer final : public grparse::PageRecognizer {
+ public:
+  grparse::OcrPage extract_page(const cv::Mat& image) override {
+    const int page = image.at<unsigned char>(0, 0);
+    if (page == 1) std::this_thread::sleep_for(400ms);
+    return {100, 200, {{"page-" + std::to_string(page), {{1, 2}, {20, 2}, {20, 12}, {1, 12}}}}};
+  }
+};
+
+class WideSource final : public grparse::PageSource {
+ public:
+  explicit WideSource(int pages) : pages_(pages) {}
+  int page_count() const override { return pages_; }
+  cv::Mat render_page(int page_number) const override {
+    return cv::Mat(1, 1, CV_8UC1, cv::Scalar(page_number)).clone();
+  }
+
+ private:
+  int pages_;
+};
+
+// A page window wider than the reactor's old hardcoded four-page buffer must
+// stream normally.  Before the buffer was derived from the scheduler, raising
+// GRPARSE_PAGE_WINDOW made the server kill well-behaved clients with
+// RESOURCE_EXHAUSTED as soon as a slow page held up the ones behind it.
+void verify_wide_page_window_streams_completely() {
+  constexpr int kPages = 8;
+  grparse::PageScheduler::Options options;
+  options.document_queue_capacity = 4;
+  options.render_queue_capacity = 16;
+  options.inference_queue_capacity = 16;
+  options.assembly_queue_capacity = 16;
+  options.render_workers = 4;
+  options.inference_workers = 4;
+  options.assembly_workers = 2;
+  options.page_window = kPages;
+
+  HeadOfLineRecognizer recognizer;
+  grparse::PageScheduler scheduler(recognizer, options,
+                                   [pages = kPages](std::shared_ptr<const std::string>, bool) {
+                                     return std::make_shared<WideSource>(pages);
+                                   });
+  grparse::DocumentStreamingService streaming_service(scheduler);
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&streaming_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "wide-window test server failed to start");
+
+  auto client = docling::serve::v1::DoclingStreamingService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 20s);
+  auto stream = client->StreamProcessDocument(&context);
+  docling::serve::v1::DocumentChunk source;
+  source.set_document_id("wide-window");
+  source.set_filename("image.png");
+  source.set_content_type("image/png");
+  source.set_data("in-memory-source");
+  source.set_complete(true);
+  require(stream->Write(source), "wide-window client could not write source chunk");
+  stream->WritesDone();
+
+  std::vector<int> page_numbers;
+  docling::serve::v1::DocumentStreamEvent event;
+  while (stream->Read(&event)) {
+    if (event.has_page()) page_numbers.push_back(event.page().page_number());
+  }
+  const grpc::Status status = stream->Finish();
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+
+  require(status.ok(), "wide page window stream failed: " + status.error_message());
+  require(page_numbers.size() == static_cast<size_t>(kPages), "wide window page count");
+  for (int index = 0; index < kPages; ++index) {
+    require(page_numbers.at(index) == index + 1, "wide window pages must stay in document order");
+  }
+}
+
 docling::serve::v1::DocumentChunk chunk(bool complete) {
   docling::serve::v1::DocumentChunk value;
   value.set_document_id("contract-test");
@@ -297,6 +379,7 @@ int main() {
     verify_unary_uses_scheduler_and_shared_assembly(&server);
     verify_unsupported_options_are_rejected(&server);
     verify_unary_digital_path_bypasses_ocr();
+    verify_wide_page_window_streams_completely();
     verify_deadline_cancels_scheduler_work();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
