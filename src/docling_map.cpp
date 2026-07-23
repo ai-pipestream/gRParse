@@ -157,6 +157,55 @@ void set_uniform_formatting(
   formatting->set_strikethrough(runs[0].strikethrough());
 }
 
+// Attaches the runs' hyperlinks to the item: the first link lands in the
+// docling hyperlink slot, and every link gets an entry in the "hyperlinks"
+// custom field with its item-local character span, merging the runs a link
+// was split into by other formatting boundaries.
+void apply_run_hyperlinks(
+    const google::protobuf::RepeatedPtrField<officev1::TextRun>& runs,
+    docv1::TextItemBase* base) {
+  google::protobuf::ListValue links;
+  long long local = 0;
+  std::string url;
+  std::string target;
+  std::string name;
+  long long start = 0;
+  auto flush = [&]() {
+    if (url.empty()) return;
+    google::protobuf::Struct* link =
+        links.add_values()->mutable_struct_value();
+    (*link->mutable_fields())["url"] = str_value(url);
+    if (!target.empty()) (*link->mutable_fields())["target"] = str_value(target);
+    if (!name.empty()) (*link->mutable_fields())["name"] = str_value(name);
+    (*link->mutable_fields())["char_start"] =
+        num_value(static_cast<double>(start));
+    (*link->mutable_fields())["char_end"] =
+        num_value(static_cast<double>(local));
+    url.clear();
+    target.clear();
+    name.clear();
+  };
+  for (const officev1::TextRun& run : runs) {
+    if (run.hyperlink_url() != url || run.hyperlink_target() != target ||
+        run.hyperlink_name() != name) {
+      flush();
+      url = run.hyperlink_url();
+      target = run.hyperlink_target();
+      name = run.hyperlink_name();
+      start = local;
+    }
+    local += run.char_length();
+  }
+  flush();
+  if (links.values_size() == 0) return;
+  base->set_hyperlink(
+      links.values(0).struct_value().fields().at("url").string_value());
+  google::protobuf::Value value;
+  *value.mutable_list_value() = std::move(links);
+  (*base->mutable_meta()->mutable_custom_fields())["hyperlinks"] =
+      std::move(value);
+}
+
 std::string column_name(int column) {
   std::string name;
   for (int c = column; c >= 0; c = c / 26 - 1) {
@@ -501,6 +550,14 @@ void DoclingMapper::consume(const officev1::StreamPagesResponse& event) {
       return on_sheet_chart(event.sheet_chart());
     case officev1::StreamPagesResponse::kSheetPivotTable:
       return on_sheet_pivot_table(event.sheet_pivot_table());
+    case officev1::StreamPagesResponse::kComment:
+      return on_comment(event.comment());
+    case officev1::StreamPagesResponse::kTrackedChange:
+      return on_tracked_change(event.tracked_change());
+    case officev1::StreamPagesResponse::kBookmark:
+      return on_bookmark(event.bookmark());
+    case officev1::StreamPagesResponse::kFormField:
+      return on_form_field(event.form_field());
     case officev1::StreamPagesResponse::EVENT_NOT_SET:
       return;
   }
@@ -656,6 +713,7 @@ void DoclingMapper::on_paragraph(const officev1::Paragraph& paragraph) {
   handle.base->set_text(text);
   handle.base->set_orig(text);
   set_uniform_formatting(paragraph.runs(), handle.base);
+  apply_run_hyperlinks(paragraph.runs(), handle.base);
   if (!paragraph.line_rects().empty()) {
     add_line_prov(handle.base->mutable_prov(), paragraph.line_rects(),
                   span_start, span_end);
@@ -716,6 +774,7 @@ void DoclingMapper::on_footnote(const officev1::Footnote& footnote) {
   auto* fields = handle.base->mutable_meta()->mutable_custom_fields();
   if (!footnote.label().empty()) (*fields)["label"] = str_value(footnote.label());
   (*fields)["endnote"] = bool_value(footnote.endnote());
+  apply_run_hyperlinks(footnote.runs(), handle.base);
   add_caret_prov(handle.base->mutable_prov(), footnote.page_index(),
                  footnote.anchor(), footnote.anchor(), 0,
                  runs_length(footnote.runs()));
@@ -732,6 +791,7 @@ void DoclingMapper::on_header_footer(const officev1::HeaderFooter& block) {
     handle.base->set_text(text);
     handle.base->set_orig(text);
     set_uniform_formatting(paragraph.runs(), handle.base);
+    apply_run_hyperlinks(paragraph.runs(), handle.base);
     (*handle.base->mutable_meta()->mutable_custom_fields())["page_style"] =
         str_value(block.page_style());
   }
@@ -766,6 +826,7 @@ void DoclingMapper::on_document_index(const officev1::DocumentIndex& index) {
   auto* fields = handle.base->mutable_meta()->mutable_custom_fields();
   (*fields)["index_type"] = str_value(index.type());
   if (!index.title().empty()) (*fields)["title"] = str_value(index.title());
+  apply_run_hyperlinks(index.runs(), handle.base);
   add_caret_prov(handle.base->mutable_prov(), index.page_index(),
                  index.anchor(), index.anchor(), 0, runs_length(index.runs()));
 }
@@ -796,6 +857,7 @@ void DoclingMapper::on_drawing_shape(const officev1::DrawingShape& shape) {
     handle.base->set_text(text);
     handle.base->set_orig(text);
     set_uniform_formatting(shape.runs(), handle.base);
+    apply_run_hyperlinks(shape.runs(), handle.base);
     (*handle.base->mutable_meta()->mutable_custom_fields())["shape_type"] =
         str_value(shape.shape_type());
     // Draw positions are page-local per part.
@@ -874,6 +936,7 @@ void DoclingMapper::on_slide_shape(const officev1::SlideShape& shape) {
       handle.base->set_text(text);
       handle.base->set_orig(text);
       set_uniform_formatting(paragraph.runs(), handle.base);
+      apply_run_hyperlinks(paragraph.runs(), handle.base);
       add_prov(handle.base->mutable_prov(), prov_page, true, l, t, r, b, 0,
                runs_length(paragraph.runs()));
     }
@@ -916,6 +979,7 @@ void DoclingMapper::on_text_frame(const officev1::TextFrame& frame) {
   handle.base->set_text(text);
   handle.base->set_orig(text);
   set_uniform_formatting(frame.runs(), handle.base);
+  apply_run_hyperlinks(frame.runs(), handle.base);
   if (frame.has_anchor()) {
     add_prov(handle.base->mutable_prov(), frame.page_index(), false,
              static_cast<double>(frame.anchor().x()),
@@ -974,6 +1038,7 @@ void DoclingMapper::on_shape(const officev1::Shape& shape) {
   handle.base->set_text(text);
   handle.base->set_orig(text);
   set_uniform_formatting(shape.runs(), handle.base);
+  apply_run_hyperlinks(shape.runs(), handle.base);
   if (shape.has_anchor()) {
     add_prov(handle.base->mutable_prov(), shape.page_index(), false,
              static_cast<double>(shape.anchor().x()),
@@ -1316,6 +1381,197 @@ void DoclingMapper::on_sheet_pivot_table(
   add_list("data_fields", pivot.data_fields());
   add_list("page_fields", pivot.page_fields());
   add_prov(table->mutable_prov(), pivot.sheet_index(), true, 0, 0, 0, 0, 0, 0);
+}
+
+void DoclingMapper::on_comment(const officev1::Comment& comment) {
+  if (comments_group_ref_.empty()) {
+    comments_group_ref_ =
+        add_group("#/furniture", docv1::GROUP_LABEL_COMMENT_SECTION,
+                  "comments", docv1::CONTENT_LAYER_FURNITURE)
+            ->self_ref();
+  }
+  TextHandle handle = add_text(TextKind::kText, docv1::DOC_ITEM_LABEL_TEXT,
+                               docv1::CONTENT_LAYER_FURNITURE,
+                               comments_group_ref_);
+  std::string text =
+      !comment.text().empty() ? comment.text() : concat_runs(comment.runs());
+  handle.base->set_text(text);
+  handle.base->set_orig(text);
+  auto* fields = handle.base->mutable_meta()->mutable_custom_fields();
+  if (!comment.name().empty()) (*fields)["name"] = str_value(comment.name());
+  if (!comment.author().empty()) {
+    (*fields)["author"] = str_value(comment.author());
+  }
+  if (!comment.initials().empty()) {
+    (*fields)["initials"] = str_value(comment.initials());
+  }
+  if (comment.epoch_ms() != 0) {
+    (*fields)["date_ms"] = num_value(static_cast<double>(comment.epoch_ms()));
+  }
+  if (comment.resolved()) (*fields)["resolved"] = bool_value(true);
+  if (!comment.parent_name().empty()) {
+    (*fields)["reply_to"] = str_value(comment.parent_name());
+  }
+  if (comment.char_start() >= 0) {
+    (*fields)["char_start"] =
+        num_value(static_cast<double>(comment.char_start()));
+    (*fields)["char_end"] = num_value(static_cast<double>(comment.char_end()));
+  }
+  if (!comment.anchored_text().empty()) {
+    (*fields)["anchored_text"] = str_value(comment.anchored_text());
+  }
+  add_caret_prov(handle.base->mutable_prov(), comment.page_index(),
+                 comment.anchor(), comment.anchor(), 0,
+                 runs_length(comment.runs()));
+}
+
+void DoclingMapper::on_tracked_change(const officev1::TrackedChange& change) {
+  // Tracked changes annotate spans of the body text rather than adding
+  // display text of their own, so they ride the body metadata; the changed
+  // text itself is already in the body items when the change is displayed.
+  google::protobuf::Value value;
+  google::protobuf::Struct* fields = value.mutable_struct_value();
+  (*fields->mutable_fields())["kind"] = str_value(
+      change.kind_name().empty() ? "Unspecified" : change.kind_name());
+  if (!change.author().empty()) {
+    (*fields->mutable_fields())["author"] = str_value(change.author());
+  }
+  if (change.epoch_ms() != 0) {
+    (*fields->mutable_fields())["date_ms"] =
+        num_value(static_cast<double>(change.epoch_ms()));
+  }
+  if (!change.comment().empty()) {
+    (*fields->mutable_fields())["comment"] = str_value(change.comment());
+  }
+  (*fields->mutable_fields())["char_start"] =
+      num_value(static_cast<double>(change.char_start()));
+  (*fields->mutable_fields())["char_end"] =
+      num_value(static_cast<double>(change.char_end()));
+  if (!change.changed_text().empty()) {
+    (*fields->mutable_fields())["text"] = str_value(change.changed_text());
+  }
+  if (change.has_successor()) {
+    google::protobuf::Struct* successor =
+        (*fields->mutable_fields())["supersedes"].mutable_struct_value();
+    (*successor->mutable_fields())["kind"] =
+        str_value(change.successor().kind_name());
+    if (!change.successor().author().empty()) {
+      (*successor->mutable_fields())["author"] =
+          str_value(change.successor().author());
+    }
+    if (change.successor().epoch_ms() != 0) {
+      (*successor->mutable_fields())["date_ms"] =
+          num_value(static_cast<double>(change.successor().epoch_ms()));
+    }
+  }
+  (*document_.mutable_body()->mutable_meta()->mutable_custom_fields())
+      ["tracked_change:" + std::to_string(change.index())] = std::move(value);
+}
+
+void DoclingMapper::on_bookmark(const officev1::Bookmark& bookmark) {
+  // Bookmarks name spans of the body text; like tracked changes they ride
+  // the body metadata instead of adding display text.
+  google::protobuf::Value value;
+  google::protobuf::Struct* fields = value.mutable_struct_value();
+  (*fields->mutable_fields())["char_start"] =
+      num_value(static_cast<double>(bookmark.char_start()));
+  (*fields->mutable_fields())["char_end"] =
+      num_value(static_cast<double>(bookmark.char_end()));
+  if (bookmark.page_index() >= 0) {
+    (*fields->mutable_fields())["page"] =
+        num_value(static_cast<double>(bookmark.page_index() + 1));
+  }
+  if (!bookmark.covered_text().empty()) {
+    (*fields->mutable_fields())["text"] = str_value(bookmark.covered_text());
+  }
+  (*document_.mutable_body()->mutable_meta()->mutable_custom_fields())
+      ["bookmark:" + bookmark.name()] = std::move(value);
+}
+
+void DoclingMapper::on_form_field(const officev1::FormField& field) {
+  if (form_fields_group_ref_.empty()) {
+    form_fields_group_ref_ =
+        add_group("#/body", docv1::GROUP_LABEL_FORM_AREA, "form_fields",
+                  docv1::CONTENT_LAYER_BODY)
+            ->self_ref();
+  }
+  docv1::DocItemLabel label = docv1::DOC_ITEM_LABEL_TEXT;
+  if (field.kind() == officev1::FORM_FIELD_KIND_CHECKBOX) {
+    label = field.checked() ? docv1::DOC_ITEM_LABEL_CHECKBOX_SELECTED
+                            : docv1::DOC_ITEM_LABEL_CHECKBOX_UNSELECTED;
+  }
+  TextHandle handle = add_text(TextKind::kText, label,
+                               docv1::CONTENT_LAYER_BODY,
+                               form_fields_group_ref_);
+  std::string text = !field.text().empty() ? field.text() : field.label();
+  handle.base->set_text(text);
+  handle.base->set_orig(text);
+  auto* fields = handle.base->mutable_meta()->mutable_custom_fields();
+  if (!field.field_type().empty()) {
+    (*fields)["field_type"] = str_value(field.field_type());
+  }
+  if (!field.name().empty()) (*fields)["name"] = str_value(field.name());
+  if (!field.label().empty()) (*fields)["label"] = str_value(field.label());
+  if (field.control()) (*fields)["control"] = bool_value(true);
+  if (field.kind() == officev1::FORM_FIELD_KIND_CHECKBOX) {
+    (*fields)["checked"] = bool_value(field.checked());
+  }
+  if (field.selected_index() >= 0) {
+    (*fields)["selected_index"] =
+        num_value(static_cast<double>(field.selected_index()));
+  }
+  if (!field.list_entries().empty()) {
+    google::protobuf::Value entries;
+    for (const std::string& entry : field.list_entries()) {
+      *entries.mutable_list_value()->add_values() = str_value(entry);
+    }
+    (*fields)["list_entries"] = entries;
+  }
+  if (field.char_start() >= 0) {
+    (*fields)["char_start"] =
+        num_value(static_cast<double>(field.char_start()));
+    (*fields)["char_end"] = num_value(static_cast<double>(field.char_end()));
+  }
+  for (const officev1::FormFieldParameter& parameter : field.parameters()) {
+    google::protobuf::Value parameter_value;
+    switch (parameter.value_case()) {
+      case officev1::FormFieldParameter::kBoolValue:
+        parameter_value = bool_value(parameter.bool_value());
+        break;
+      case officev1::FormFieldParameter::kIntValue:
+        parameter_value =
+            num_value(static_cast<double>(parameter.int_value()));
+        break;
+      case officev1::FormFieldParameter::kDoubleValue:
+        parameter_value = num_value(parameter.double_value());
+        break;
+      case officev1::FormFieldParameter::kStringValue:
+        parameter_value = str_value(parameter.string_value());
+        break;
+      case officev1::FormFieldParameter::VALUE_NOT_SET:
+        if (!parameter.string_list().empty()) {
+          for (const std::string& entry : parameter.string_list()) {
+            *parameter_value.mutable_list_value()->add_values() =
+                str_value(entry);
+          }
+        } else {
+          parameter_value.set_null_value(google::protobuf::NULL_VALUE);
+        }
+        break;
+    }
+    (*fields)["param:" + parameter.name()] = parameter_value;
+  }
+  if (field.control() && field.width_twips() > 0 && field.has_anchor()) {
+    add_prov(handle.base->mutable_prov(), field.page_index(), false,
+             static_cast<double>(field.anchor().x()),
+             static_cast<double>(field.anchor().y()),
+             static_cast<double>(field.anchor().x() + field.width_twips()),
+             static_cast<double>(field.anchor().y() + field.height_twips()),
+             0, 0);
+  } else {
+    add_caret_prov(handle.base->mutable_prov(), field.page_index(),
+                   field.anchor(), field.anchor(), 0, 0);
+  }
 }
 
 namespace {

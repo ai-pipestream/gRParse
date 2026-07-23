@@ -109,6 +109,16 @@ enum DocumentPart {
   // selection round-trip per cell with no size cap, so this part is emitted
   // only when listed explicitly, never implied by an empty parts list.
   DOCUMENT_PART_CELL_LINE_RECTS = 16;
+  // Comments and their anchors: Writer comments and presentation slide
+  // annotations (Comment). Spreadsheet cell comments ride
+  // DOCUMENT_PART_SHEETS as SheetCellComment.
+  DOCUMENT_PART_COMMENTS = 17;
+  // Tracked changes with their spans (TrackedChange).
+  DOCUMENT_PART_TRACKED_CHANGES = 18;
+  // Bookmarks with their spans (Bookmark).
+  DOCUMENT_PART_BOOKMARKS = 19;
+  // Form fields: in-text fieldmarks and draw-page form controls (FormField).
+  DOCUMENT_PART_FORM_FIELDS = 20;
 }
 
 // StreamOptions selects which document parts a StreamPages call emits. It
@@ -224,6 +234,16 @@ message StreamPagesResponse {
     // One data pilot (pivot) table's layout on a sheet. Emitted for
     // spreadsheet documents.
     SheetPivotTable sheet_pivot_table = 23;
+    // One comment: a Writer comment or a presentation slide annotation.
+    // Emitted for text and presentation documents.
+    Comment comment = 25;
+    // One tracked change with its span. Emitted for text documents.
+    TrackedChange tracked_change = 26;
+    // One bookmark with its span. Emitted for text documents.
+    Bookmark bookmark = 27;
+    // One form field: an in-text fieldmark or a draw-page form control.
+    // Emitted for text documents.
+    FormField form_field = 28;
   }
 }
 
@@ -431,6 +451,16 @@ message TextRun {
   int64 char_offset = 9;
   // The run's length in Unicode code points.
   int64 char_length = 10;
+  // Hyperlink URL covering this run, exactly as authored; empty when the
+  // run is not inside a hyperlink. Runs split at hyperlink boundaries, so
+  // char_offset and char_length give the link's exact span.
+  string hyperlink_url = 11;
+  // The hyperlink's target frame, for example "_blank"; empty when unset or
+  // when the run is not inside a hyperlink.
+  string hyperlink_target = 12;
+  // The hyperlink's name as authored; empty when unset or when the run is
+  // not inside a hyperlink.
+  string hyperlink_name = 13;
 }
 
 // Paragraph is one body paragraph of a text document, in reading order, with
@@ -491,6 +521,232 @@ message Footnote {
   TwipsPoint anchor = 5;
   // The note's content runs, in order, flattened across its paragraphs.
   repeated TextRun runs = 6;
+}
+
+// Comment is one document comment: a Writer comment anchored in the text
+// flow, or a presentation slide annotation. Character spans are in the
+// document's annotation text space (see TextRun.char_offset) and reflect
+// the loaded document's change-display mode.
+message Comment {
+  // Zero-based comment index in emission order.
+  int32 index = 1;
+  // The office core's comment name, unique in the document; the reply
+  // threading key. Empty for slide annotations, which carry no name.
+  string name = 2;
+  // The comment author's name.
+  string author = 3;
+  // The comment author's initials; empty when unset.
+  string initials = 4;
+  // Creation time as milliseconds since the Unix epoch, UTC; 0 when unset.
+  int64 epoch_ms = 5;
+  // The comment's plain text content.
+  string text = 6;
+  // The comment's rich content runs when the office core exposes them,
+  // flattened across its paragraphs with char_offset -1; empty otherwise
+  // (text always carries the content).
+  repeated TextRun runs = 7;
+  // True when the comment is marked resolved.
+  bool resolved = 8;
+  // Name of the comment this one replies to; empty for top-level comments.
+  string parent_name = 9;
+  // Start of the anchored range in the annotation text space; equals
+  // char_end for point comments. -1 when the anchor is outside the body
+  // flow (a table cell, header, or slide).
+  int64 char_start = 10;
+  // End (exclusive) of the anchored range in the annotation text space; -1
+  // under the same condition as char_start.
+  int64 char_end = 11;
+  // The body text the anchored range covers, as currently displayed; empty
+  // for point comments.
+  string anchored_text = 12;
+  // Zero-based page (slide for presentations) of the anchor; matches
+  // PageImage.index. -1 when unresolved.
+  int32 page_index = 13;
+  // Caret position of the anchor in the live layout; for slide annotations
+  // the annotation's position on the slide, page-local.
+  TwipsPoint anchor = 14;
+}
+
+// TrackedChangeKind classifies one tracked change.
+enum TrackedChangeKind {
+  // Unset or unrecognized; kind_name carries the office core's value.
+  TRACKED_CHANGE_KIND_UNSPECIFIED = 0;
+  // Inserted content.
+  TRACKED_CHANGE_KIND_INSERT = 1;
+  // Deleted content.
+  TRACKED_CHANGE_KIND_DELETE = 2;
+  // A character formatting change.
+  TRACKED_CHANGE_KIND_FORMAT = 3;
+  // A paragraph formatting change.
+  TRACKED_CHANGE_KIND_PARAGRAPH_FORMAT = 4;
+  // A table structure change.
+  TRACKED_CHANGE_KIND_TABLE_CHANGE = 5;
+  // A paragraph style assignment change.
+  TRACKED_CHANGE_KIND_STYLE = 6;
+}
+
+// TrackedChangeSuccessor is the superseded change when tracked changes
+// nest, for example a tracked deletion over earlier tracked-inserted text.
+message TrackedChangeSuccessor {
+  // The superseded change's kind.
+  TrackedChangeKind kind = 1;
+  // The office core's redline type verbatim, for example "Insert".
+  string kind_name = 2;
+  // The superseded change's author.
+  string author = 3;
+  // The superseded change's time as milliseconds since the Unix epoch,
+  // UTC; 0 when unset.
+  int64 epoch_ms = 4;
+  // The superseded change's comment; empty when unset.
+  string comment = 5;
+}
+
+// TrackedChange is one tracked change (redline) of a text document.
+// Character spans are in the annotation text space and reflect the loaded
+// document's change-display mode: when deletions are displayed, deleted
+// text is present in the body runs and the span brackets it.
+message TrackedChange {
+  // Zero-based change index in emission order.
+  int32 index = 1;
+  // The change's kind.
+  TrackedChangeKind kind = 2;
+  // The office core's redline type verbatim, for example "Insert" or
+  // "Delete".
+  string kind_name = 3;
+  // The change author's name.
+  string author = 4;
+  // The change time as milliseconds since the Unix epoch, UTC; 0 when
+  // unset.
+  int64 epoch_ms = 5;
+  // The change's comment; empty when unset.
+  string comment = 6;
+  // The office core's redline identifier pairing this change's start and
+  // end marks; empty when the office core does not report one.
+  string identifier = 7;
+  // Start of the changed range in the annotation text space; -1 when the
+  // change sits outside the body flow (a table cell or header).
+  int64 char_start = 8;
+  // End (exclusive) of the changed range in the annotation text space; -1
+  // under the same condition as char_start, and equal to char_start for
+  // changes with no displayed extent (a hidden deletion).
+  int64 char_end = 9;
+  // The body text inside the changed range as currently displayed; empty
+  // when the change has no displayed extent.
+  string changed_text = 10;
+  // Zero-based page of the change's start; matches PageImage.index. -1
+  // when unresolved.
+  int32 page_index = 11;
+  // Caret position of the change's start in the live layout.
+  TwipsPoint anchor = 12;
+  // The superseded change when changes nest; absent otherwise.
+  TrackedChangeSuccessor successor = 13;
+}
+
+// Bookmark is one bookmark of a text document, point or ranged.
+message Bookmark {
+  // Zero-based bookmark index in emission order.
+  int32 index = 1;
+  // The bookmark's name, unique in the document.
+  string name = 2;
+  // Start of the bookmarked range in the annotation text space; equals
+  // char_end for point bookmarks. -1 when the bookmark sits outside the
+  // body flow (a table cell or header).
+  int64 char_start = 3;
+  // End (exclusive) of the bookmarked range in the annotation text space;
+  // -1 under the same condition as char_start.
+  int64 char_end = 4;
+  // The body text the bookmarked range covers; empty for point bookmarks.
+  string covered_text = 5;
+  // Zero-based page of the bookmark's start; matches PageImage.index. -1
+  // when unresolved.
+  int32 page_index = 6;
+  // Caret position of the bookmark's start in the live layout.
+  TwipsPoint anchor = 7;
+}
+
+// FormFieldKind classifies one form field.
+enum FormFieldKind {
+  // Unset or unrecognized; field_type carries the office core's value.
+  FORM_FIELD_KIND_UNSPECIFIED = 0;
+  // A text input field.
+  FORM_FIELD_KIND_TEXT = 1;
+  // A checkbox.
+  FORM_FIELD_KIND_CHECKBOX = 2;
+  // A dropdown or list selection field.
+  FORM_FIELD_KIND_DROPDOWN = 3;
+}
+
+// FormFieldParameter is one named parameter of a form field, keeping the
+// type the office core stored.
+message FormFieldParameter {
+  // The parameter's name, for example "Checkbox_Checked".
+  string name = 1;
+  // The parameter's scalar value in its stored type.
+  oneof value {
+    // A boolean value.
+    bool bool_value = 2;
+    // An integer value.
+    int64 int_value = 3;
+    // A floating-point value.
+    double double_value = 4;
+    // A text value.
+    string string_value = 5;
+  }
+  // A list-of-text value, for example a dropdown's entries; set instead of
+  // the scalar value when the stored type is a string sequence.
+  repeated string string_list = 6;
+}
+
+// FormField is one form field of a text document: an in-text fieldmark
+// (the form fields of DOCX and ODT text forms) or a draw-page form
+// control. Fieldmarks carry character spans; controls carry geometry.
+message FormField {
+  // Zero-based form field index in emission order.
+  int32 index = 1;
+  // The field's kind.
+  FormFieldKind kind = 2;
+  // The office core's field type verbatim: the fieldmark type (for example
+  // "vnd.oasis.opendocument.field.FORMCHECKBOX") or the control model's
+  // service name (for example "com.sun.star.form.component.CheckBox").
+  string field_type = 3;
+  // The field's name; empty when unset.
+  string name = 4;
+  // True when the field is a draw-page form control rather than an in-text
+  // fieldmark.
+  bool control = 5;
+  // Start of the field's range in the annotation text space; equals
+  // char_end for point fieldmarks (a checkbox). -1 for controls and for
+  // fieldmarks outside the body flow.
+  int64 char_start = 6;
+  // End (exclusive) of the field's range in the annotation text space; -1
+  // under the same condition as char_start.
+  int64 char_end = 7;
+  // The field's current content: the text between a text fieldmark's
+  // marks, or a control's current text or selected entries, joined for
+  // multi-selection.
+  string text = 8;
+  // A control's label; empty for fieldmarks.
+  string label = 9;
+  // A checkbox's checked state; false for other kinds.
+  bool checked = 10;
+  // A dropdown's zero-based selected entry; -1 when nothing is selected or
+  // the field is not a dropdown.
+  int32 selected_index = 11;
+  // A dropdown's entries, in order.
+  repeated string list_entries = 12;
+  // Every parameter the office core stores on a fieldmark, verbatim; empty
+  // for controls.
+  repeated FormFieldParameter parameters = 13;
+  // Zero-based page of the field; matches PageImage.index. -1 when
+  // unresolved.
+  int32 page_index = 14;
+  // Caret position of a fieldmark's start in the live layout, or a
+  // control's position.
+  TwipsPoint anchor = 15;
+  // A control's width in twips; 0 for fieldmarks.
+  int64 width_twips = 16;
+  // A control's height in twips; 0 for fieldmarks.
+  int64 height_twips = 17;
 }
 
 // HeaderFooter is the content of one page style's header or footer. It
