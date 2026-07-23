@@ -174,10 +174,31 @@ message TrackSource {
   optional string voice = 4;
 }
 
+// CollectorSource attributes an item to the parser collector that produced
+// it. This is a pipestream extension over the upstream docling schema:
+// upstream SourceType carries only media-track cues, while the
+// scatter-gather pipeline needs every collector's output attributable so
+// additive merges never collide silently. Sources never overwrite each
+// other; choosing a winner among sources is a downstream concern.
+message CollectorSource {
+  // The collector that produced the item, for example "grparse",
+  // "libreoffice", "poi", "calamine".
+  string collector = 1;
+  // The engine or model inside the collector that produced the item, for
+  // example "rapidocr", "poppler-text", "slanet-plus", "picodet_layout".
+  optional string model = 2;
+  // The engine or model version when known.
+  optional string version = 3;
+  // The producer's confidence in this item, 0.0 to 1.0, when the engine
+  // reports one.
+  optional double confidence = 4;
+}
+
 // SourceType is a union of possible source descriptors.
 message SourceType {
   oneof source {
     TrackSource track = 1;
+    CollectorSource collector = 2;
   }
 }
 

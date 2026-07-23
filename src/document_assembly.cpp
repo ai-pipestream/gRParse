@@ -25,6 +25,17 @@ void set_bounding_box(const AxisAlignedBox& box, pipestream::document::v1::Bound
   output->set_coord_origin(pipestream::document::v1::COORD_ORIGIN_TOPLEFT);
 }
 
+// Every emitted item names the collector and the engine that produced it;
+// additive merges with other collectors' output rely on this attribution to
+// never collide silently.
+void add_collector_source(const std::string& model, std::optional<float> confidence,
+                          google::protobuf::RepeatedPtrField<pipestream::document::v1::SourceType>* source) {
+  auto* collector = source->Add()->mutable_collector();
+  collector->set_collector("grparse");
+  collector->set_model(model);
+  if (confidence.has_value()) collector->set_confidence(*confidence);
+}
+
 pipestream::parse::v1::TextSource text_source_for(const OcrPage& page, const OcrLine& line) {
   if (line.origin.has_value()) {
     return *line.origin == TextOrigin::kDigitalPdf ? pipestream::parse::v1::TEXT_SOURCE_DIGITAL_PDF
@@ -248,7 +259,12 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     cursor->utf_offset += length;
     offset->set_utf_end(cursor->utf_offset);
     if (line.confidence.has_value()) offset->set_confidence(*line.confidence);
-    offset->set_source(text_source_for(source, line));
+    const auto text_source = text_source_for(source, line);
+    offset->set_source(text_source);
+    add_collector_source(text_source == pipestream::parse::v1::TEXT_SOURCE_DIGITAL_PDF
+                             ? "poppler-text"
+                             : "rapidocr",
+                         line.confidence, base->mutable_source());
     cursor->has_text = true;
   }
 
@@ -265,6 +281,8 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
       provenance->set_page_no(page_number);
       set_region_bounding_box(region, provenance->mutable_bbox());
       fill_table_data(source, region, table->mutable_data());
+      add_collector_source(region.structured_cells.empty() ? "geometry" : "slanet-plus",
+                           region.confidence, table->mutable_source());
     } else if (region.label == "figure") {
       auto* picture = output->add_pictures();
       picture->set_self_ref("#/pictures/" + std::to_string(cursor->picture_index++));
@@ -274,6 +292,7 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
       auto* provenance = picture->add_prov();
       provenance->set_page_no(page_number);
       set_region_bounding_box(region, provenance->mutable_bbox());
+      add_collector_source("picodet-publaynet", region.confidence, picture->mutable_source());
       if (!region.image_png.empty()) set_picture_image(region.image_png, picture->mutable_image());
       if (!region.figure_classes.empty()) {
         auto* classification = picture->add_annotations()->mutable_classification();
