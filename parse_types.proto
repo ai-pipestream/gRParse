@@ -152,6 +152,26 @@ enum TaskStatus {
   TASK_STATUS_FAILURE = 4;
 }
 
+// Collector names one parser that can contribute output to a parse. The
+// scatter-gather coordinator fans the document bytes out to every selected
+// collector and merges their source-tagged output additively; sources never
+// overwrite each other.
+enum Collector {
+  COLLECTOR_UNSPECIFIED = 0;
+  // The in-process CV path: layout, OCR, table structure, and figure models
+  // over rendered pages. The default for PDF and raster inputs.
+  COLLECTOR_GRPARSE_CV = 1;
+  // The grpc-libreoffice typed-stream collector. The default for office
+  // formats; requires a configured collector endpoint.
+  COLLECTOR_LIBREOFFICE = 2;
+  // The poi-parse text, metadata, and native-table collector. Reserved
+  // until the collector is wired in.
+  COLLECTOR_POI = 3;
+  // The calamine spreadsheet collector. Reserved until the collector is
+  // wired in.
+  COLLECTOR_CALAMINE = 4;
+}
+
 // ============================================================================
 // Source Types - where documents come from
 // ============================================================================
@@ -373,6 +393,12 @@ message ConvertDocumentOptions {
   optional string picture_classification_preset = 42;
   // Custom picture classification configuration
   optional google.protobuf.Struct picture_classification_custom_config = 43;
+  // The collectors to run for this parse. Empty routes by format: PDF and
+  // raster inputs to COLLECTOR_GRPARSE_CV, office formats to
+  // COLLECTOR_LIBREOFFICE. Every selected collector's output is merged
+  // additively, source-tagged; a failed collector degrades to an error
+  // entry instead of failing the parse while any collector succeeds.
+  repeated Collector collectors = 44;
 }
 
 // ============================================================================

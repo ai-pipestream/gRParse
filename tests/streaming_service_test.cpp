@@ -73,8 +73,8 @@ class TestServer final {
         scheduler_(recognizer_, {2, 3, 2, 3, 2, 2, 2}, [digital](std::shared_ptr<const std::string>, bool) {
                  return std::make_shared<FakeSource>(digital);
                }),
-        parser_service_(scheduler_),
-        streaming_service_(scheduler_) {
+        parser_service_(scheduler_, std::make_shared<grparse::CollectorEndpoints>("")),
+        streaming_service_(scheduler_, std::make_shared<grparse::CollectorEndpoints>("")) {
     grpc::ServerBuilder builder;
     builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port_);
     builder.RegisterService(&parser_service_);
@@ -154,7 +154,8 @@ void verify_wide_page_window_streams_completely() {
                                    [pages = kPages](std::shared_ptr<const std::string>, bool) {
                                      return std::make_shared<WideSource>(pages);
                                    });
-  grparse::DocumentStreamingService streaming_service(scheduler);
+  grparse::DocumentStreamingService streaming_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(""));
   int port = 0;
   grpc::ServerBuilder builder;
   builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);

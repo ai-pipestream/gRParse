@@ -152,6 +152,7 @@ set(GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set(STAGED_PROTO_DIR "${CMAKE_CURRENT_BINARY_DIR}/proto")
 file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/document/v1")
 file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/parse/v1")
+file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/office/v1")
 configure_file(document.proto
   "${STAGED_PROTO_DIR}/ai/pipestream/document/v1/document.proto" COPYONLY)
 configure_file(parse_types.proto
@@ -160,11 +161,14 @@ configure_file(parse.proto
   "${STAGED_PROTO_DIR}/ai/pipestream/parse/v1/parse.proto" COPYONLY)
 configure_file(parse_stream.proto
   "${STAGED_PROTO_DIR}/ai/pipestream/parse/v1/parse_stream.proto" COPYONLY)
+configure_file(office_service.proto
+  "${STAGED_PROTO_DIR}/ai/pipestream/office/v1/office_service.proto" COPYONLY)
 
 set(DOCUMENT_PROTO "${STAGED_PROTO_DIR}/ai/pipestream/document/v1/document.proto")
 set(PARSE_TYPES_PROTO "${STAGED_PROTO_DIR}/ai/pipestream/parse/v1/parse_types.proto")
 set(PARSE_SERVICE_PROTO "${STAGED_PROTO_DIR}/ai/pipestream/parse/v1/parse.proto")
 set(PARSE_STREAM_PROTO "${STAGED_PROTO_DIR}/ai/pipestream/parse/v1/parse_stream.proto")
+set(OFFICE_PROTO "${STAGED_PROTO_DIR}/ai/pipestream/office/v1/office_service.proto")
 add_custom_command(
   OUTPUT "${GENERATED_DIR}/ai/pipestream/document/v1/document.pb.cc"
          "${GENERATED_DIR}/ai/pipestream/document/v1/document.pb.h"
@@ -178,6 +182,10 @@ add_custom_command(
          "${GENERATED_DIR}/ai/pipestream/parse/v1/parse_stream.pb.h"
          "${GENERATED_DIR}/ai/pipestream/parse/v1/parse_stream.grpc.pb.cc"
          "${GENERATED_DIR}/ai/pipestream/parse/v1/parse_stream.grpc.pb.h"
+         "${GENERATED_DIR}/ai/pipestream/office/v1/office_service.pb.cc"
+         "${GENERATED_DIR}/ai/pipestream/office/v1/office_service.pb.h"
+         "${GENERATED_DIR}/ai/pipestream/office/v1/office_service.grpc.pb.cc"
+         "${GENERATED_DIR}/ai/pipestream/office/v1/office_service.grpc.pb.h"
   COMMAND $<TARGET_FILE:protoc>
   ARGS --proto_path=${STAGED_PROTO_DIR}
        --proto_path=${protobuf_SOURCE_DIR}/src
@@ -185,7 +193,8 @@ add_custom_command(
        --grpc_out=${GENERATED_DIR}
        --plugin=protoc-gen-grpc=$<TARGET_FILE:grpc_cpp_plugin>
        ${DOCUMENT_PROTO} ${PARSE_TYPES_PROTO} ${PARSE_SERVICE_PROTO} ${PARSE_STREAM_PROTO}
-  DEPENDS document.proto parse_types.proto parse.proto parse_stream.proto
+       ${OFFICE_PROTO}
+  DEPENDS document.proto parse_types.proto parse.proto parse_stream.proto office_service.proto
           protoc grpc_cpp_plugin
   VERBATIM)
 add_library(grparse_proto
@@ -194,14 +203,20 @@ add_library(grparse_proto
   "${GENERATED_DIR}/ai/pipestream/parse/v1/parse.pb.cc"
   "${GENERATED_DIR}/ai/pipestream/parse/v1/parse.grpc.pb.cc"
   "${GENERATED_DIR}/ai/pipestream/parse/v1/parse_stream.pb.cc"
-  "${GENERATED_DIR}/ai/pipestream/parse/v1/parse_stream.grpc.pb.cc")
+  "${GENERATED_DIR}/ai/pipestream/parse/v1/parse_stream.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/office/v1/office_service.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/office/v1/office_service.grpc.pb.cc")
 target_include_directories(grparse_proto PUBLIC "${GENERATED_DIR}")
 target_link_libraries(grparse_proto PUBLIC grpc++)
 
 add_library(grparse_core
   src/barcode_decoder.cpp
   src/base64.cpp
+  src/collector_coordinator.cpp
+  src/docling_map.cpp
+  src/document_merge.cpp
   src/document_parser_service.cpp
+  src/office_collector.cpp
   src/figure_classifier.cpp
   src/document_assembly.cpp
   src/in_memory_document.cpp
@@ -228,9 +243,12 @@ if(BUILD_TESTING)
   set(GRPARSE_TESTS
     barcode-decoder-test
     base64-test
+    collector-coordinator-test
     document-assembly-test
+    document-merge-test
     figure-classifier-test
     layout-engine-test
+    office-collector-test
     page-scheduler-test
     pdf-source-test
     reading-order-test

@@ -444,8 +444,19 @@ int main() {
     grparse::PageScheduler scheduler(*engines, options, grparse::PageSourceFactory{},
                                      layout.get(), table_structure.get(),
                                      figure_classes.get());
-    grparse::DocumentParserService service(scheduler);
-    grparse::DocumentStreamingService streaming_service(scheduler);
+    // GRPARSE_LIBREOFFICE_TARGET names the grpc-libreoffice collector
+    // endpoint. Unset leaves the collector unconfigured: office-routed
+    // documents then fail that collector with a clear error instead of
+    // being converted through any PDF intermediate.
+    const char* libreoffice = std::getenv("GRPARSE_LIBREOFFICE_TARGET");
+    const auto endpoints = std::make_shared<grparse::CollectorEndpoints>(
+        libreoffice == nullptr ? std::string() : std::string(libreoffice));
+    std::cout << "gRParse libreoffice collector: "
+              << (endpoints->has_libreoffice() ? endpoints->libreoffice_target()
+                                               : "not configured")
+              << std::endl;
+    grparse::DocumentParserService service(scheduler, endpoints);
+    grparse::DocumentStreamingService streaming_service(scheduler, endpoints);
     grpc::EnableDefaultHealthCheckService(true);
     grpc::reflection::InitProtoReflectionServerBuilderPlugin();
     grpc::ServerBuilder builder;

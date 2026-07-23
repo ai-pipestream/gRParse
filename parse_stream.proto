@@ -50,6 +50,10 @@ message DocumentChunk {
   string content_type = 3;
   bytes data = 4;
   bool complete = 5;
+  // The collectors to run, resolved from the first chunk whose list is
+  // non-empty. Empty routes by format (see
+  // ConvertDocumentOptions.collectors).
+  repeated Collector collectors = 6;
 }
 
 // DocumentStreamEvent is the page-batched incremental conversion result.
@@ -64,7 +68,28 @@ message DocumentStreamEvent {
     PageData page = 3;
     // The terminal event carries source-wide metadata after the final page.
     DocumentComplete complete = 4;
+    // One out-of-process collector's complete projected Document, emitted
+    // the moment that collector finishes. Scatter-gather: collectors arrive
+    // independently, nothing waits for the slowest one, and the in-process
+    // page events above keep streaming while collectors run.
+    CollectorDocument collector_document = 5;
   }
+}
+
+// CollectorDocument is one collector's projected output, source-tagged by
+// the collector itself.
+message CollectorDocument {
+  Collector collector = 1;
+  ai.pipestream.document.v1.Document document = 2;
+  // The collector's own extraction warnings, verbatim.
+  repeated string warnings = 3;
+}
+
+// CollectorFailure records one collector that could not contribute. The
+// parse degrades instead of failing while any collector succeeds.
+message CollectorFailure {
+  Collector collector = 1;
+  string error = 2;
 }
 
 // PageData contains a page's complete extracted payload.
@@ -99,6 +124,9 @@ enum TextSource {
 // DocumentComplete contains document-wide metadata emitted after the last page.
 message DocumentComplete {
   ai.pipestream.document.v1.DocumentOrigin origin = 1;
+  // Collectors that failed during this parse; empty when every selected
+  // collector contributed.
+  repeated CollectorFailure collector_failures = 2;
 }
 
 message StreamDocumentRequest {
