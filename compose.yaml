@@ -9,3 +9,9 @@ services:
       CUDA_CACHE_DISABLE: "1"
     gpus: all
     read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

@@ -13,5 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Build Ubuntu 26.04 image and run non-GPU tests
-        run: docker build --progress=plain --target build .
+      - name: Build full image and run non-GPU tests
+        # The full build (not just the build stage) also assembles the
+        # runtime stage, so a runtime library missing from the staged
+        # closure fails here instead of at deploy time.
+        run: docker build --progress=plain .
