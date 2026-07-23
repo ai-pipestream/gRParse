@@ -241,6 +241,40 @@ void verify_barcode_payloads_become_misc_annotations() {
           "every payload gets its own annotation");
 }
 
+// Every emitted item is attributable: texts, tables, and pictures carry a
+// CollectorSource naming grparse and the engine that produced them, so
+// additive merges with other collectors never collide silently.
+void verify_items_carry_collector_sources() {
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1000, 1000, {line("ocr line", 100), line("digital line", 200)}};
+  page.lines[1].origin = grparse::TextOrigin::kDigitalPdf;
+  grparse::LayoutRegion geometry_table{"table", 0.8F, 0, 250, 1000, 400};
+  grparse::LayoutRegion structured_table{"table", 0.85F, 0, 420, 1000, 480};
+  structured_table.structured_cells = {{0, 0, 1, 1, false, 0, 420, 1000, 480}};
+  grparse::LayoutRegion figure{"figure", 0.7F, 0, 500, 1000, 800};
+  page.regions = {geometry_table, structured_table, figure};
+
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(page, 1, &cursor, &data);
+
+  const auto& ocr_source = data.texts(0).text().base().source(0).collector();
+  require(data.texts(0).text().base().source_size() == 1 &&
+              ocr_source.collector() == "grparse" && ocr_source.model() == "rapidocr" &&
+              ocr_source.has_confidence() && ocr_source.confidence() > 0.87,
+          "OCR text names rapidocr with its line confidence");
+  const auto& digital_source = data.texts(1).text().base().source(0).collector();
+  require(digital_source.model() == "poppler-text",
+          "digital text names the poppler extractor");
+  require(data.tables(0).source(0).collector().model() == "geometry" &&
+              data.tables(1).source(0).collector().model() == "slanet-plus",
+          "tables name geometry or the structure model by cell origin");
+  require(data.tables(1).source(0).collector().confidence() > 0.84,
+          "table source carries the region confidence");
+  require(data.pictures(0).source(0).collector().collector() == "grparse" &&
+              data.pictures(0).source(0).collector().model() == "picodet-publaynet",
+          "pictures name the layout detector");
+}
+
 }  // namespace
 
 int main() {
@@ -251,6 +285,7 @@ int main() {
     verify_structured_cells_override_geometry();
     verify_captured_figure_bytes_become_image_refs();
     verify_barcode_payloads_become_misc_annotations();
+    verify_items_carry_collector_sources();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
     std::cerr << "document-assembly-test: " << error.what() << '\n';
