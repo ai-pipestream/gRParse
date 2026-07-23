@@ -166,6 +166,11 @@ class DoclingMapper {
   void on_sheet_chart(const ai::pipestream::office::v1::SheetChart& chart);
   void on_sheet_pivot_table(
       const ai::pipestream::office::v1::SheetPivotTable& pivot);
+  void on_comment(const ai::pipestream::office::v1::Comment& comment);
+  void on_tracked_change(
+      const ai::pipestream::office::v1::TrackedChange& change);
+  void on_bookmark(const ai::pipestream::office::v1::Bookmark& bookmark);
+  void on_form_field(const ai::pipestream::office::v1::FormField& field);
 
   ai::pipestream::document::v1::Document document_;
   bool finished_ = false;
@@ -186,6 +191,10 @@ class DoclingMapper {
   // Writer draw-page group nesting: child group_path to the group's ref.
   // The text document has a single draw page, so the path alone keys it.
   std::map<std::string, std::string> writer_groups_;
+  // The lazily created document-level comment section (Writer comments and
+  // slide annotations) and form-field area group refs.
+  std::string comments_group_ref_;
+  std::string form_fields_group_ref_;
 };
 
 // Returns structural integrity problems of a mapped document: RefItem

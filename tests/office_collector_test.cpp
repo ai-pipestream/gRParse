@@ -69,6 +69,30 @@ class FakeOfficeService final : public officev1::OfficeRenderService::Service {
     run->set_text("hello office");
     run->set_char_offset(0);
     run->set_char_length(12);
+    run->set_hyperlink_url("https://example.test/office");
+    stream->Write(event);
+
+    event.Clear();
+    officev1::Comment* comment = event.mutable_comment();
+    comment->set_index(0);
+    comment->set_name("cmt1");
+    comment->set_author("Alice");
+    comment->set_text("collector comment");
+    comment->set_char_start(0);
+    comment->set_char_end(5);
+    comment->set_page_index(0);
+    stream->Write(event);
+
+    event.Clear();
+    officev1::FormField* field = event.mutable_form_field();
+    field->set_index(0);
+    field->set_kind(officev1::FORM_FIELD_KIND_CHECKBOX);
+    field->set_field_type("vnd.oasis.opendocument.field.FORMCHECKBOX");
+    field->set_name("check1");
+    field->set_checked(true);
+    field->set_char_start(6);
+    field->set_char_end(6);
+    field->set_selected_index(-1);
     stream->Write(event);
 
     event.Clear();
@@ -147,13 +171,47 @@ void verify_collects_and_folds_typed_stream() {
   require(outcome.warnings.size() == 1 && outcome.warnings[0] == "one office warning",
           "collector warnings surface verbatim");
   const auto& document = outcome.document;
-  require(document.texts_size() == 1 &&
-              document.texts(0).text().base().text() == "hello office",
+  require(document.texts_size() == 3,
+          "paragraph, comment, and form field fold into text items");
+  require(document.texts(0).text().base().text() == "hello office",
           "typed paragraph folds into a text item");
+  require(document.texts(0).text().base().hyperlink() ==
+              "https://example.test/office",
+          "the run's hyperlink lands on the folded item");
   require(document.texts(0).text().base().source_size() == 1 &&
               document.texts(0).text().base().source(0).collector().collector() ==
                   "libreoffice",
           "folded items carry the libreoffice collector source");
+  bool comment_ok = false;
+  bool checkbox_ok = false;
+  for (const auto& item : document.texts()) {
+    if (!item.has_text()) continue;
+    const auto& base = item.text().base();
+    if (base.text() == "collector comment") {
+      comment_ok = base.meta().custom_fields().count("author") == 1 &&
+                   base.meta().custom_fields().at("author").string_value() ==
+                       "Alice";
+    }
+    if (base.label() ==
+        ai::pipestream::document::v1::DOC_ITEM_LABEL_CHECKBOX_SELECTED) {
+      checkbox_ok = base.meta().custom_fields().at("checked").bool_value();
+    }
+  }
+  require(comment_ok, "the comment folds with its author");
+  require(checkbox_ok, "the checkbox form field folds with its state");
+  bool comment_group = false;
+  bool form_group = false;
+  for (const auto& group : document.groups()) {
+    if (group.label() ==
+        ai::pipestream::document::v1::GROUP_LABEL_COMMENT_SECTION) {
+      comment_group = group.parent().ref() == "#/furniture";
+    }
+    if (group.label() == ai::pipestream::document::v1::GROUP_LABEL_FORM_AREA) {
+      form_group = true;
+    }
+  }
+  require(comment_group && form_group,
+          "comments and form fields land in their sections");
   require(document.pages_size() == 1, "page rects become page items");
 }
 
