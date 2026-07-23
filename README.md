@@ -37,6 +37,24 @@ The helper invokes the compiled bidirectional-streaming client. It reads the
 source and sends fixed-size chunks directly to gRPC; it does not base64-encode
 the document or create temporary files.
 
+### Runtime image
+
+The runtime stage is minimal-base compatible: it runs no package manager and
+no ldconfig, ships its complete non-CUDA shared-library closure from the
+build stage (cuDNN included), runs as the numeric non-root user 65532, and
+asks the base only for glibc and the CUDA runtime libraries. The default base
+is `nvidia/cuda:13.3.0-runtime-ubuntu26.04`; a hardened base such as a Docker
+Hardened Images `nvidia-cuda` mirror drops in without a Dockerfile change:
+
+```bash
+docker build --build-arg GRPARSE_RUNTIME_IMAGE=docker.io/<org>/dhi-nvidia-cuda:<tag> .
+```
+
+The tag's CUDA major version must match the build stage (CUDA 13) and its
+glibc must be at least ubuntu26.04's. The compose file runs the container
+read-only with a tmpfs `/tmp`, all capabilities dropped, and privilege
+escalation disabled.
+
 ## Page-streaming OCR
 
 `ai.pipestream.parse.v1.ParseStreamingService/StreamProcessDocument` accepts a
