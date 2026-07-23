@@ -1,0 +1,1196 @@
+// The office render contract: office documents in, rendered pages or PDF out,
+// through per-document LibreOfficeKit worker processes.
+syntax = "proto3";
+
+package ai.pipestream.office.v1;
+
+option go_package = "github.com/ai-pipestream/grpc-libreoffice/gen/go/ai/pipestream/office/v1;officev1";
+option java_multiple_files = true;
+option java_outer_classname = "OfficeServiceProto";
+option java_package = "ai.pipestream.office.v1";
+
+// OfficeRenderService renders office documents through LibreOfficeKit,
+// entirely in memory-backed storage. Bytes stream in; rendered pages or a PDF
+// stream out. Every document is handled by its own short-lived worker
+// process, so a crash or hang in the office core costs one document, never
+// the server.
+//
+// Error model (gRPC status codes):
+//   INVALID_ARGUMENT   - no document bytes, the stream ended without a chunk
+//                        marked complete, the source format could not be
+//                        determined from the filename or content type, or the
+//                        office core could not load the document.
+//   RESOURCE_EXHAUSTED - the document exceeds the configured byte cap.
+//   DEADLINE_EXCEEDED  - the worker exceeded the per-document timeout and
+//                        was killed.
+//   INTERNAL           - the worker crashed or failed mid-render.
+service OfficeRenderService {
+  // StreamPages renders every page of the uploaded document as a PNG image.
+  // The client streams the document as chunks, marking the last one complete.
+  // The server responds with DocumentInfo, then one PageImage per page in
+  // page order, then one final RenderStatus. No intermediate PDF exists.
+  rpc StreamPages(stream StreamPagesRequest) returns (stream StreamPagesResponse);
+
+  // ConvertToPdf renders the uploaded document to a single PDF. The upload
+  // contract matches StreamPages; the server responds with DocumentInfo, the
+  // PDF as ordered PdfChunk events, then one final RenderStatus.
+  rpc ConvertToPdf(stream ConvertToPdfRequest) returns (stream ConvertToPdfResponse);
+
+  // GetServiceInfo reports versions, limits, and the source formats the
+  // render core accepts. Intended for orchestrators and tool facades doing
+  // capability discovery.
+  rpc GetServiceInfo(GetServiceInfoRequest) returns (GetServiceInfoResponse);
+}
+
+// DocumentChunk is one chunk of an uploaded document. The identity fields
+// (document_id, filename, content_type) may be sent on any chunk; the first
+// non-empty value of each wins. The filename extension is the primary
+// source-format hint, the content type the fallback.
+message DocumentChunk {
+  // Caller-chosen identifier, echoed back unchanged in DocumentInfo. May be
+  // empty.
+  string document_id = 1;
+  // Original filename; its extension is the primary source-format hint.
+  string filename = 2;
+  // Advisory MIME type; the fallback source-format hint.
+  string content_type = 3;
+  // The chunk's document bytes.
+  bytes data = 4;
+  // Set on the last chunk. A stream that ends without it is rejected with
+  // INVALID_ARGUMENT.
+  bool complete = 5;
+}
+
+// DocumentPart names one class of content the server can emit for a
+// StreamPages call. A request lists the parts it wants and the server emits
+// only those, skipping the extraction work behind unselected parts. An empty
+// list means every part except DOCUMENT_PART_CELL_LINE_RECTS, which is only
+// emitted when listed explicitly. The identity event DocumentInfo and the
+// terminal RenderStatus are always emitted and are not part of this
+// selection.
+enum DocumentPart {
+  // Unset; ignored if it appears in a parts list.
+  DOCUMENT_PART_UNSPECIFIED = 0;
+  // Rendered page images (PageImage).
+  DOCUMENT_PART_PAGES = 1;
+  // Stored document properties (DocumentMetadata).
+  DOCUMENT_PART_METADATA = 2;
+  // Body paragraphs of a text document (Paragraph).
+  DOCUMENT_PART_PARAGRAPHS = 3;
+  // Text-document tables (TableData).
+  DOCUMENT_PART_TABLES = 4;
+  // Embedded images with their bytes (EmbeddedImage).
+  DOCUMENT_PART_IMAGES = 5;
+  // Footnotes and endnotes (Footnote).
+  DOCUMENT_PART_FOOTNOTES = 6;
+  // Page-style headers and footers (HeaderFooter).
+  DOCUMENT_PART_HEADERS_FOOTERS = 7;
+  // In-use page-style geometry (PageStyleInfo).
+  DOCUMENT_PART_PAGE_STYLES = 8;
+  // Generated indexes and tables of contents (DocumentIndex).
+  DOCUMENT_PART_INDEXES = 9;
+  // Spreadsheet sheets and their sheet-scoped features.
+  DOCUMENT_PART_SHEETS = 10;
+  // Presentation slides and their shapes.
+  DOCUMENT_PART_SLIDES = 11;
+  // Drawing-page shapes (DrawingShape).
+  DOCUMENT_PART_SHAPES = 12;
+  // Writer text frames.
+  DOCUMENT_PART_TEXT_FRAMES = 13;
+  // Embedded OLE objects, charts, spreadsheets, and formulas.
+  DOCUMENT_PART_EMBEDDED_OBJECTS = 14;
+  // Per-line bounding rectangles on events already selected by their own
+  // part. A modifier: it only adds geometry to selected events, and the
+  // per-line measurement is skipped when this part is not requested.
+  DOCUMENT_PART_LINE_RECTS = 15;
+  // Per-cell line rectangles on TableCellData for tables already selected
+  // by DOCUMENT_PART_TABLES. A modifier like DOCUMENT_PART_LINE_RECTS, with
+  // one exception to the empty-list rule: per-cell measurement costs one
+  // selection round-trip per cell with no size cap, so this part is emitted
+  // only when listed explicitly, never implied by an empty parts list.
+  DOCUMENT_PART_CELL_LINE_RECTS = 16;
+}
+
+// StreamOptions selects which document parts a StreamPages call emits. It
+// may be sent on any request in the upload stream; the first request whose
+// parts list is non-empty wins, matching how the chunk identity fields
+// (document_id, filename, content_type) are resolved. When no request
+// carries a non-empty list, every part is emitted.
+message StreamOptions {
+  // The parts to emit. Empty means every part except
+  // DOCUMENT_PART_CELL_LINE_RECTS, which must be listed explicitly.
+  // DOCUMENT_PART_UNSPECIFIED entries are ignored; order and duplicates do
+  // not matter.
+  repeated DocumentPart parts = 1;
+}
+
+// StreamPagesRequest carries one upload chunk of a StreamPages call.
+message StreamPagesRequest {
+  // The upload chunk.
+  DocumentChunk chunk = 1;
+  // Optional selection of which parts to emit. Resolved across the upload
+  // stream like the chunk identity fields (first non-empty parts list wins),
+  // so callers should send it on the first chunk. Absent or empty means
+  // every part.
+  StreamOptions options = 2;
+}
+
+// StreamPagesResponse is one event of a StreamPages response stream. Order:
+// DocumentInfo first, then one PageImage per page in page order, then
+// DocumentMetadata and typed content events in reading order, then
+// RenderStatus. For text documents the typed content events are Paragraph,
+// TableData, EmbeddedImage, Footnote, HeaderFooter, PageStyleInfo,
+// DocumentIndex, TextFrame, and Shape. For drawing documents they are
+// DrawingShape events in page-then-paint order, plus EmbeddedImage events
+// for image shapes. For
+// presentation documents they are one Slide header per slide followed by its
+// SlideShape events in paint order. For spreadsheet documents they are one
+// Sheet header per sheet followed by its SheetRow events and sheet features
+// (SheetCellComment, SheetChart, SheetPivotTable), with SheetNamedRange and
+// SheetDatabaseRange events once per workbook. Every
+// event between DocumentInfo and RenderStatus is subject to the request's
+// StreamOptions part selection. Every event is emitted the moment it exists:
+// pages stream while later pages are still painting, and the caller can
+// process page images while typed content is still being extracted from the
+// same loaded document.
+message StreamPagesResponse {
+  // Exactly one event per response message.
+  oneof event {
+    // The resolved document identity; always the first event.
+    DocumentInfo document_info = 1;
+    // One rendered page, in page order.
+    PageImage page_image = 2;
+    // The final event of a successful stream.
+    RenderStatus status = 3;
+    // The document's stored properties.
+    DocumentMetadata metadata = 4;
+    // One paragraph with styled runs and layout anchors. Currently emitted
+    // for text documents.
+    Paragraph paragraph = 5;
+    // One table with its cell grid. Currently emitted for text documents.
+    TableData table = 6;
+    // One embedded image with its bytes. Currently emitted for text
+    // documents.
+    EmbeddedImage embedded_image = 7;
+    // One footnote or endnote. Currently emitted for text documents.
+    Footnote footnote = 8;
+    // One page style's header or footer content. Currently emitted for text
+    // documents.
+    HeaderFooter header_footer = 9;
+    // Page geometry of one in-use page style. Currently emitted for text
+    // documents.
+    PageStyleInfo page_style = 10;
+    // One generated index, table of contents included. Currently emitted
+    // for text documents.
+    DocumentIndex document_index = 11;
+    // One drawing shape from a Draw page, in paint order. Currently emitted
+    // for drawing documents.
+    DrawingShape drawing_shape = 12;
+    // One presentation slide header. Emitted for presentation documents,
+    // one per slide in slide order, before that slide's shapes.
+    Slide slide = 13;
+    // One shape on a slide or its notes page. Emitted for presentation
+    // documents in paint order after the slide it belongs to.
+    SlideShape slide_shape = 14;
+    // One text frame with its styled runs, layout anchor, and chain names.
+    // Currently emitted for text documents.
+    TextFrame text_frame = 15;
+    // One text-bearing draw-page shape (custom shape, text shape, or an
+    // imported textbox) with its styled runs. Currently emitted for text
+    // documents.
+    Shape shape = 16;
+    // One embedded OLE object, chart, spreadsheet, or formula, with its
+    // classified inner content and replacement graphic. Emitted for every
+    // document class.
+    EmbeddedObject embedded_object = 17;
+    // One sheet header for a spreadsheet: identity, visibility, and the
+    // used bounds. Emitted for spreadsheet documents, before the sheet's
+    // rows.
+    Sheet sheet = 18;
+    // One used row of a sheet with its non-empty typed cells. Emitted for
+    // spreadsheet documents.
+    SheetRow sheet_row = 19;
+    // One workbook-scoped defined name. Emitted for spreadsheet documents.
+    SheetNamedRange sheet_named_range = 20;
+    // One database range defined on the workbook. Emitted for spreadsheet
+    // documents.
+    SheetDatabaseRange sheet_database_range = 24;
+    // One cell annotation (comment) on a sheet. Emitted for spreadsheet
+    // documents.
+    SheetCellComment sheet_cell_comment = 21;
+    // One chart anchored on a sheet and its source data ranges. Emitted for
+    // spreadsheet documents.
+    SheetChart sheet_chart = 22;
+    // One data pilot (pivot) table's layout on a sheet. Emitted for
+    // spreadsheet documents.
+    SheetPivotTable sheet_pivot_table = 23;
+  }
+}
+
+// ConvertToPdfRequest carries one upload chunk of a ConvertToPdf call.
+message ConvertToPdfRequest {
+  // The upload chunk.
+  DocumentChunk chunk = 1;
+}
+
+// ConvertToPdfResponse is one event of a ConvertToPdf response stream:
+// DocumentInfo first, then ordered PdfChunk events, then RenderStatus.
+message ConvertToPdfResponse {
+  // Exactly one event per response message.
+  oneof event {
+    // The resolved document identity; always the first event.
+    DocumentInfo document_info = 1;
+    // One chunk of the produced PDF, in order.
+    PdfChunk pdf_chunk = 2;
+    // The final event of a successful stream.
+    RenderStatus status = 3;
+  }
+}
+
+// PageRect is the layout rectangle of one page in the document-absolute
+// twips space of TwipsPoint and LineBox. Subtracting a page's origin from a
+// document-absolute coordinate yields page-local coordinates. For document
+// classes whose typed positions are already page-local (spreadsheets,
+// presentations, drawings) the origin is 0,0 per part.
+message PageRect {
+  // Left edge of the page in document-absolute twips.
+  int64 x_twips = 1;
+  // Top edge of the page in document-absolute twips.
+  int64 y_twips = 2;
+  // Page width in twips.
+  int64 width_twips = 3;
+  // Page height in twips.
+  int64 height_twips = 4;
+}
+
+// DocumentInfo describes the document the render core loaded; always the
+// first response event.
+message DocumentInfo {
+  // Echo of the caller's document_id, unchanged.
+  string document_id = 1;
+  // The source format extension the server resolved (for example "docx").
+  string source_format = 2;
+  // Pages that will be emitted (StreamPages) or rendered into the PDF. For
+  // spreadsheets this counts sheets, for presentations slides.
+  int32 page_count = 3;
+  // The office core's document class: "text", "spreadsheet", "presentation",
+  // "drawing", or "other".
+  string document_type = 4;
+  // The layout rectangle of every page, in page order, from the same layout
+  // every typed position was measured in. One entry per page_count; a
+  // consumer maps any document-absolute position to its page-local
+  // equivalent by subtracting the containing page's origin.
+  repeated PageRect page_rects = 5;
+}
+
+// PageImage is one rendered page. Pages arrive in page order, one event per
+// page.
+message PageImage {
+  // Zero-based page index (sheet index for spreadsheets, slide index for
+  // presentations).
+  int32 index = 1;
+  // Rendered width in pixels.
+  int32 width_px = 2;
+  // Rendered height in pixels.
+  int32 height_px = 3;
+  // The DPI the page was rendered at. May be lower than the requested DPI
+  // when a page would otherwise exceed the configured pixel bound.
+  int32 dpi = 4;
+  // The page encoded as a PNG.
+  bytes png = 5;
+}
+
+// TwipsPoint is a point in twips (1/1440 inch), document-absolute: the
+// origin is the first page's top-left corner, so subtract the containing
+// page's origin for page-local coordinates. Multiply by dpi/1440 to get
+// pixels at a PageImage's dpi; divide by 20 to get typographic points.
+message TwipsPoint {
+  // Horizontal offset from the page's left edge.
+  int64 x = 1;
+  // Vertical offset from the page's top edge.
+  int64 y = 2;
+}
+
+// LineBox is the bounding rectangle of one laid-out line of a text range,
+// measured from the same layout the page images were painted from. A range
+// that wraps or straddles a page break yields one LineBox per line, in
+// reading order, except that the office core's region compression merges
+// vertically adjacent equal-width lines into one taller box. Coordinates
+// are twips in the same document-absolute space as TwipsPoint; subtract the
+// containing page's origin for page-local coordinates.
+message LineBox {
+  // Zero-based page the line sits on; matches PageImage.index. -1 when the
+  // page could not be resolved.
+  int32 page_index = 1;
+  // Left edge in twips.
+  int64 x_twips = 2;
+  // Top edge in twips.
+  int64 y_twips = 3;
+  // Width in twips.
+  int64 width_twips = 4;
+  // Height in twips.
+  int64 height_twips = 5;
+  // Code-point offset of the box's first character in the containing
+  // item's plain text, zero-based and item-local; -1 when line boundaries
+  // were not measured. Currently measured for body paragraphs, where the
+  // plain text equals the concatenated run space for paragraphs of plain
+  // text portions. A box that covers several merged visual lines spans all
+  // their characters, and a soft wrap consumes the break's whitespace, so
+  // the next box's char_start may exceed this box's char_end.
+  int64 char_start = 6;
+  // Code-point offset one past the box's last character in the same space;
+  // -1 when line boundaries were not measured.
+  int64 char_end = 7;
+}
+
+// DocumentMetadata carries the document's stored properties. Emitted once,
+// directly after DocumentInfo, for every document type.
+message DocumentMetadata {
+  // Document title; empty when unset.
+  string title = 1;
+  // Document author; empty when unset.
+  string author = 2;
+  // Document subject; empty when unset.
+  string subject = 3;
+  // Document keywords; empty when unset.
+  repeated string keywords = 4;
+  // Creation time as milliseconds since the Unix epoch, UTC; 0 when unset.
+  int64 created_epoch_ms = 5;
+  // Last-modification time as milliseconds since the Unix epoch, UTC; 0 when
+  // unset.
+  int64 modified_epoch_ms = 6;
+  // Name of the author of the last save; empty when unset.
+  string modified_by = 7;
+  // The application that produced the document, as stored in it.
+  string generator = 8;
+  // Number of editing sessions the document has been through.
+  int32 editing_cycles = 9;
+  // Total editing time in seconds, as tracked by the producing application.
+  int64 editing_duration_seconds = 10;
+  // Last print time as milliseconds since the Unix epoch, UTC; 0 when never
+  // printed.
+  int64 printed_epoch_ms = 11;
+  // Name of the last printer of the document; empty when never printed.
+  string printed_by = 12;
+  // The document's default language as a BCP 47 style tag, for example
+  // "en-US"; empty when unset.
+  string language = 13;
+  // Name of the template the document was created from; empty when none.
+  string template_name = 14;
+  // The producing application's document statistics, numeric by name, for
+  // example WordCount, CharacterCount, ParagraphCount, PageCount.
+  map<string, int64> statistics = 15;
+  // Custom properties stored in the document, with their original types.
+  repeated UserProperty user_properties = 16;
+}
+
+// UserProperty is one custom document property, keeping the type the
+// producing application stored.
+message UserProperty {
+  // The property's name.
+  string name = 1;
+  // The property's value in its stored type.
+  oneof value {
+    // A text value.
+    string text = 2;
+    // A numeric value.
+    double number = 3;
+    // A boolean value.
+    bool flag = 4;
+    // A date or datetime value as milliseconds since the Unix epoch, UTC.
+    int64 epoch_ms = 5;
+  }
+}
+
+// TextRun is a stretch of text with uniform character formatting inside a
+// paragraph. Concatenating a paragraph's run texts yields its full text.
+message TextRun {
+  // The run's text.
+  string text = 1;
+  // Font family as the office core reports it, for example
+  // "Liberation Sans;Arial".
+  string font = 2;
+  // Font size in typographic points.
+  float size_pt = 3;
+  // Character weight on the office core's percentage scale: 100 is normal,
+  // 150 is bold.
+  float weight = 4;
+  // True when the run is italic.
+  bool italic = 5;
+  // True when the run is underlined.
+  bool underline = 6;
+  // True when the run is struck through.
+  bool strikethrough = 7;
+  // Text color as 0xRRGGBB. Automatic color is reported as 0.
+  uint32 color_rgb = 8;
+  // Offset of this run's first character in the document's annotation text
+  // space, counted in Unicode code points. The annotation text space is the
+  // concatenation of every body run's text in emission order with one
+  // newline after each body paragraph. -1 for runs outside the body flow
+  // (headers, footers, footnotes, indexes).
+  int64 char_offset = 9;
+  // The run's length in Unicode code points.
+  int64 char_length = 10;
+}
+
+// Paragraph is one body paragraph of a text document, in reading order, with
+// its styled runs and its exact layout anchors. The anchors are caret
+// positions from the live layout the page images were painted from: start is
+// the caret at the paragraph's first character, end at its last. A
+// paragraph's bottom edge is the next paragraph's start.y when both are on
+// the same page.
+message Paragraph {
+  // Zero-based paragraph index in reading order, counting body paragraphs.
+  int32 index = 1;
+  // Zero-based page the paragraph starts on; matches PageImage.index.
+  int32 page_index = 2;
+  // Paragraph style name, for example "Heading 1"; empty when unresolved.
+  string style = 3;
+  // Caret position at the paragraph's first character.
+  TwipsPoint start = 4;
+  // Caret position at the paragraph's last character.
+  TwipsPoint end = 5;
+  // The paragraph's runs, in order.
+  repeated TextRun runs = 6;
+  // Outline depth: 0 for body text, 1 through 10 for heading levels.
+  int32 outline_level = 7;
+  // Zero-based list nesting level when the paragraph is a list item; -1
+  // otherwise.
+  int32 list_level = 8;
+  // Name of the text section containing the paragraph; empty when the
+  // paragraph is not inside a section.
+  string section = 9;
+  // The page number this paragraph restarts numbering at, when it does; -1
+  // when the paragraph does not restart page numbering. Together with
+  // page_index this recovers printed page numbers.
+  int32 page_number_offset = 10;
+  // Offset of the paragraph's first character in the document's annotation
+  // text space (see TextRun.char_offset); -1 outside the body flow.
+  int64 char_offset = 11;
+  // Per-line bounding rectangles of the paragraph from the live layout, in
+  // reading order; empty when line rectangles were not requested or could
+  // not be measured. start and end give text-flow anchors; line_rects give
+  // the true bounding boxes.
+  repeated LineBox line_rects = 12;
+}
+
+// Footnote is one footnote or endnote, with its citation label, its content
+// runs, and the layout anchor of its citation mark.
+message Footnote {
+  // Zero-based index within footnotes (or within endnotes when endnote is
+  // true), in document order.
+  int32 index = 1;
+  // True for an endnote, false for a footnote.
+  bool endnote = 2;
+  // The citation label as rendered, for example "1" or "*".
+  string label = 3;
+  // Zero-based page the citation mark sits on; matches PageImage.index. -1
+  // when unresolved.
+  int32 page_index = 4;
+  // Caret position of the citation mark in the live layout.
+  TwipsPoint anchor = 5;
+  // The note's content runs, in order, flattened across its paragraphs.
+  repeated TextRun runs = 6;
+}
+
+// HeaderFooter is the content of one page style's header or footer. It
+// repeats on every page using that style, so it carries no page position.
+message HeaderFooter {
+  // Name of the page style, for example "Standard".
+  string page_style = 1;
+  // True for the footer, false for the header.
+  bool footer = 2;
+  // The header or footer paragraphs. Their layout anchors are unset because
+  // the content repeats per page.
+  repeated Paragraph paragraphs = 3;
+}
+
+// PageStyleInfo is the page geometry of one page style that is in use:
+// physical size, margins, and column count, all numeric.
+message PageStyleInfo {
+  // Name of the page style, for example "Standard".
+  string name = 1;
+  // Page width in twips.
+  int64 width_twips = 2;
+  // Page height in twips.
+  int64 height_twips = 3;
+  // Left margin in twips.
+  int64 margin_left_twips = 4;
+  // Right margin in twips.
+  int64 margin_right_twips = 5;
+  // Top margin in twips.
+  int64 margin_top_twips = 6;
+  // Bottom margin in twips.
+  int64 margin_bottom_twips = 7;
+  // Number of text columns on pages using this style; 1 when not columnar.
+  int32 columns = 8;
+}
+
+// DocumentIndex is one generated index of a text document: a table of
+// contents, an alphabetical index, an index of illustrations or tables.
+message DocumentIndex {
+  // Zero-based index in document order.
+  int32 index = 1;
+  // The index's title as shown in the document.
+  string title = 2;
+  // The office core's service name for the index kind, for example
+  // "com.sun.star.text.ContentIndex" for a table of contents.
+  string type = 3;
+  // Zero-based page the index starts on; matches PageImage.index. -1 when
+  // unresolved.
+  int32 page_index = 4;
+  // Caret position of the index's start in the live layout.
+  TwipsPoint anchor = 5;
+  // The generated index text runs, flattened across its paragraphs.
+  repeated TextRun runs = 6;
+}
+
+// TableCellData is one cell of a table.
+message TableCellData {
+  // Zero-based row in the base grid; -1 when the office cell name does not
+  // map to the base grid (split or merged cells).
+  int32 row = 1;
+  // Zero-based column in the base grid; -1 under the same condition as row.
+  int32 column = 2;
+  // The office core's cell name, for example "A1"; preserved so split and
+  // merged cells stay addressable.
+  string name = 3;
+  // The cell's plain text.
+  string text = 4;
+  // Per-line bounding rectangles of this cell's text from the live layout,
+  // in reading order. Emitted only when DOCUMENT_PART_CELL_LINE_RECTS is
+  // listed explicitly, since per-cell measurement costs one selection
+  // round-trip per cell; empty otherwise or when the layout could not be
+  // measured.
+  repeated LineBox line_rects = 5;
+}
+
+// TableData is one table of a text document, in reading order, with its cell
+// grid and layout anchors from the live layout.
+message TableData {
+  // Zero-based table index in reading order.
+  int32 index = 1;
+  // Zero-based page the table starts on; matches PageImage.index.
+  int32 page_index = 2;
+  // Row count of the base grid.
+  int32 rows = 3;
+  // Column count of the base grid.
+  int32 columns = 4;
+  // Caret position at the first cell's first character.
+  TwipsPoint start = 5;
+  // Caret position at the last cell's last character.
+  TwipsPoint end = 6;
+  // The cells, in the office core's cell-name order.
+  repeated TableCellData cells = 7;
+  // Per-line bounding rectangles of the table's cells from the live layout,
+  // collected cell by cell in cell-name order, because the office core
+  // cannot select across cell boundaries. Bounded to tables of at most 64
+  // cells; empty for larger tables or when line rectangles were not
+  // requested. DOCUMENT_PART_CELL_LINE_RECTS attributes the same
+  // measurements to their cells (TableCellData.line_rects) without the size
+  // cap.
+  repeated LineBox line_rects = 8;
+}
+
+// EmbeddedImage is one image object embedded in the document, with its bytes
+// re-encoded through the office core's graphic provider.
+message EmbeddedImage {
+  // Zero-based image index in discovery order.
+  int32 index = 1;
+  // Zero-based page the image is anchored on; matches PageImage.index. -1
+  // when the page could not be resolved.
+  int32 page_index = 2;
+  // The image object's name from the document; may be empty.
+  string name = 3;
+  // MIME type of data. The original embedded format when the graphic
+  // provider can round-trip it, otherwise "image/png".
+  string mime_type = 4;
+  // The image bytes.
+  bytes data = 5;
+  // Caret position of the image's text anchor in the live layout. Unset for
+  // images on drawing pages, whose geometry arrives on the matching
+  // DrawingShape event instead.
+  TwipsPoint anchor = 6;
+  // Laid-out width in twips.
+  int64 width_twips = 7;
+  // Laid-out height in twips.
+  int64 height_twips = 8;
+  // Per-line bounding rectangles of the image's anchor text from the live
+  // layout; best effort. For an as-char (inline) anchor this is the anchor
+  // line's box; for a floating anchor it does not describe the frame, so
+  // width_twips, height_twips, and anchor remain the authoritative
+  // geometry. Empty when line rectangles were not requested or could not
+  // be measured.
+  repeated LineBox line_rects = 9;
+  // Slash-joined chain of ancestor group indices when the image sits inside
+  // a draw-page group of a text document; empty at the top level. The same
+  // scheme as Shape.group_path.
+  string group_path = 10;
+}
+
+// EmbeddedObjectKind classifies an embedded object's inner content.
+enum EmbeddedObjectKind {
+  // Unset; never emitted.
+  EMBEDDED_OBJECT_KIND_UNSPECIFIED = 0;
+  // An embedded chart.
+  EMBEDDED_OBJECT_KIND_CHART = 1;
+  // An embedded spreadsheet.
+  EMBEDDED_OBJECT_KIND_SPREADSHEET = 2;
+  // An embedded Math formula.
+  EMBEDDED_OBJECT_KIND_FORMULA = 3;
+  // Any other OLE payload, carrying only a replacement graphic.
+  EMBEDDED_OBJECT_KIND_OLE_OTHER = 4;
+}
+
+// EmbeddedChartKind is the coarse chart family, mapped from the raw chart
+// type service name.
+enum EmbeddedChartKind {
+  // Unset or unrecognized service name; read chart_type_service and use
+  // EmbeddedChart.tabular.
+  EMBEDDED_CHART_KIND_UNSPECIFIED = 0;
+  // Horizontal bar chart.
+  EMBEDDED_CHART_KIND_BAR = 1;
+  // Vertical column chart.
+  EMBEDDED_CHART_KIND_COLUMN = 2;
+  // Line chart.
+  EMBEDDED_CHART_KIND_LINE = 3;
+  // Area chart.
+  EMBEDDED_CHART_KIND_AREA = 4;
+  // Pie chart.
+  EMBEDDED_CHART_KIND_PIE = 5;
+  // Scatter (XY) chart.
+  EMBEDDED_CHART_KIND_SCATTER = 6;
+  // Bubble chart.
+  EMBEDDED_CHART_KIND_BUBBLE = 7;
+  // Net (radar) chart.
+  EMBEDDED_CHART_KIND_NET = 8;
+  // Candlestick (stock) chart.
+  EMBEDDED_CHART_KIND_CANDLESTICK = 9;
+  // Any other chart family; read chart_type_service.
+  EMBEDDED_CHART_KIND_OTHER = 10;
+}
+
+// EmbeddedChartSeries is one data series of an embedded chart, with numbers
+// kept numeric.
+message EmbeddedChartSeries {
+  // The series label; empty when unset.
+  string label = 1;
+  // The y values, in category order.
+  repeated double values_y = 2;
+  // The x values, for scatter and bubble charts; empty otherwise.
+  repeated double values_x = 3;
+  // The bubble sizes, for bubble charts; empty otherwise.
+  repeated double sizes = 4;
+}
+
+// EmbeddedChart is the data extracted from an embedded chart's live model:
+// its type, titles, category axis, and one or more numeric series, plus a
+// tabular projection that is always populated.
+message EmbeddedChart {
+  // The classified chart kind, mapped from chart_type_service.
+  EmbeddedChartKind kind = 1;
+  // The raw chart type service name, for example
+  // "com.sun.star.chart2.BarChartType"; captured verbatim so a consumer can
+  // recover detail this contract does not model.
+  string chart_type_service = 2;
+  // The chart title; empty when unset.
+  string title = 3;
+  // The primary x or category axis title; empty when unset.
+  string x_axis_title = 4;
+  // The primary y axis title; empty when unset.
+  string y_axis_title = 5;
+  // Category labels from the category axis, in order; empty for charts
+  // without a category axis, such as scatter.
+  repeated string categories = 6;
+  // The chart's data series, in order.
+  repeated EmbeddedChartSeries series = 7;
+  // A projection of the chart as a cell grid: categories down the first
+  // column, one series per further column, with a label row on top. Always
+  // populated so any chart can be represented, including kinds this
+  // contract does not model. Reuses TableData; its caret start and end
+  // points are left unset.
+  TableData tabular = 8;
+}
+
+// EmbeddedObject is one embedded object discovered in the loaded document:
+// an OLE2 object, an embedded chart, an embedded spreadsheet, a Math
+// formula, or another OLE payload carrying only a replacement graphic.
+// Emitted for every document class, in discovery order.
+message EmbeddedObject {
+  // Zero-based index in discovery order, counted separately from
+  // EmbeddedImage.
+  int32 index = 1;
+  // The classified kind of the inner content.
+  EmbeddedObjectKind kind = 2;
+  // Zero-based page the object sits on; matches PageImage.index. -1 when
+  // the page could not be resolved.
+  int32 page_index = 3;
+  // The object's name from the document; may be empty.
+  string name = 4;
+  // The object's class id (CLSID) as stored; may be empty.
+  string clsid = 5;
+  // Caret position of the object's text anchor in the live layout. Set only
+  // for Writer text-anchored objects; unset for draw-page shapes.
+  TwipsPoint anchor = 6;
+  // Top-left position on the page in twips. Set for draw-page shapes;
+  // unset for Writer text-anchored objects.
+  TwipsPoint position = 7;
+  // Laid-out width in twips; 0 when unknown.
+  int64 width_twips = 8;
+  // Laid-out height in twips; 0 when unknown.
+  int64 height_twips = 9;
+  // MIME type of replacement_image. The object's stored replacement format
+  // when the graphic provider can round-trip it, otherwise "image/png".
+  string replacement_mime_type = 10;
+  // The replacement graphic bytes, re-encoded through the graphic provider;
+  // empty when no replacement graphic was available.
+  bytes replacement_image = 11;
+  // The extracted chart; set only when kind is EMBEDDED_OBJECT_KIND_CHART.
+  EmbeddedChart chart = 12;
+  // The embedded spreadsheet's used range as a cell grid; set only when
+  // kind is EMBEDDED_OBJECT_KIND_SPREADSHEET. Reuses TableData; its caret
+  // start and end points are left unset.
+  TableData inner_table = 13;
+  // The StarMath command string; set only when kind is
+  // EMBEDDED_OBJECT_KIND_FORMULA.
+  string formula = 14;
+}
+
+// SheetCellType is the office core's cell content classification, mirroring
+// com.sun.star.table.CellContentType.
+enum SheetCellType {
+  // Unset; never emitted.
+  SHEET_CELL_TYPE_UNSPECIFIED = 0;
+  // The cell holds no content.
+  SHEET_CELL_TYPE_EMPTY = 1;
+  // The cell holds a numeric value.
+  SHEET_CELL_TYPE_VALUE = 2;
+  // The cell holds text.
+  SHEET_CELL_TYPE_TEXT = 3;
+  // The cell holds a formula.
+  SHEET_CELL_TYPE_FORMULA = 4;
+}
+
+// SheetRangeRef is a rectangular cell range on one sheet, in absolute
+// zero-based row and column indices.
+message SheetRangeRef {
+  // Zero-based first row of the range.
+  int32 start_row = 1;
+  // Zero-based first column of the range.
+  int32 start_column = 2;
+  // Zero-based last row of the range, inclusive.
+  int32 end_row = 3;
+  // Zero-based last column of the range, inclusive.
+  int32 end_column = 4;
+}
+
+// Sheet is the header event for one spreadsheet sheet, emitted before its
+// rows.
+message Sheet {
+  // Zero-based sheet ordinal; matches PageImage.index for the painted
+  // sheet.
+  int32 index = 1;
+  // The sheet's tab name.
+  string name = 2;
+  // True when the sheet is shown; false when hidden.
+  bool visible = 3;
+  // Tab color as 0xRRGGBB; -1 when the sheet has no explicit tab color.
+  int32 tab_color_rgb = 4;
+  // Zero-based first used row; the smallest rectangle covering all content.
+  int32 used_start_row = 5;
+  // Zero-based first used column.
+  int32 used_start_column = 6;
+  // Zero-based last used row, inclusive.
+  int32 used_end_row = 7;
+  // Zero-based last used column, inclusive.
+  int32 used_end_column = 8;
+  // Defined print areas; empty when the whole used area prints.
+  repeated SheetRangeRef print_areas = 9;
+}
+
+// SheetCell is one non-empty cell of a used row.
+message SheetCell {
+  // Zero-based absolute column on the sheet.
+  int32 column = 1;
+  // The office core's content classification for this cell.
+  SheetCellType type = 2;
+  // The formula expression in the document's stored grammar and locale;
+  // empty when the cell is not a formula.
+  string formula = 3;
+  // The numeric value; meaningful for value cells and numeric formula
+  // cells, and the serial number for date and time cells.
+  double number = 4;
+  // The formatted display string the cell renders.
+  string display = 5;
+  // The office number-format key; 0 is General.
+  int32 number_format = 6;
+  // The number-format code for number_format; empty for General.
+  string number_format_string = 7;
+  // Column span of a merged region anchored at this cell; 1 when not
+  // merged.
+  int32 merged_columns = 8;
+  // Row span of a merged region anchored at this cell; 1 when not merged.
+  int32 merged_rows = 9;
+}
+
+// SheetRow is one used row of a sheet, streamed the moment it is parsed.
+message SheetRow {
+  // Zero-based sheet ordinal; matches Sheet.index and PageImage.index.
+  int32 sheet_index = 1;
+  // Zero-based absolute row on the sheet.
+  int32 row = 2;
+  // The non-empty cells of this row, in ascending column order.
+  repeated SheetCell cells = 3;
+}
+
+// SheetNamedRange is one workbook-scoped defined name.
+message SheetNamedRange {
+  // The defined name.
+  string name = 1;
+  // The range or formula expression the name refers to.
+  string content = 2;
+  // NamedRangeFlag bits from the office core.
+  int32 type_flags = 3;
+}
+
+// SheetDatabaseRange is one database range defined on the workbook: a named
+// cell range that also stores the workbook's filtering, sorting, subtotal,
+// and import settings for that data area.
+message SheetDatabaseRange {
+  // The database range's name.
+  string name = 1;
+  // Zero-based sheet ordinal of the data area; matches Sheet.index.
+  int32 sheet_index = 2;
+  // The data area the range covers.
+  SheetRangeRef range = 3;
+  // True when the first row of the area is treated as column headers.
+  bool contains_header = 4;
+  // True when the last row of the area is a totals row.
+  bool totals_row = 5;
+  // True when the range keeps an auto filter on its header row.
+  bool auto_filter = 6;
+}
+
+// SheetCellComment is one cell annotation on a sheet.
+message SheetCellComment {
+  // Zero-based sheet ordinal; matches Sheet.index.
+  int32 sheet_index = 1;
+  // Zero-based absolute row of the annotated cell.
+  int32 row = 2;
+  // Zero-based absolute column of the annotated cell.
+  int32 column = 3;
+  // The comment author.
+  string author = 4;
+  // The office core's pre-formatted locale date string for the comment.
+  string date = 5;
+  // The comment text.
+  string text = 6;
+  // True when the comment is shown on the sheet, not only on hover.
+  bool visible = 7;
+}
+
+// SheetChart is one chart anchored on a sheet and its source data ranges.
+message SheetChart {
+  // Zero-based sheet ordinal; matches Sheet.index.
+  int32 sheet_index = 1;
+  // The chart's object name on the sheet.
+  string name = 2;
+  // The source data ranges feeding the chart.
+  repeated SheetRangeRef ranges = 3;
+  // True when the first row of the source is treated as column headers.
+  bool has_column_headers = 4;
+  // True when the first column of the source is treated as row headers.
+  bool has_row_headers = 5;
+}
+
+// SheetPivotTable is one data pilot table's layout on a sheet.
+message SheetPivotTable {
+  // Zero-based sheet ordinal; matches Sheet.index.
+  int32 sheet_index = 1;
+  // The pivot table's name.
+  string name = 2;
+  // The source data range the pivot reads from.
+  SheetRangeRef source_range = 3;
+  // The output range where the pivot result is rendered on the sheet.
+  SheetRangeRef output_range = 4;
+  // Field names placed on the row axis, in order.
+  repeated string row_fields = 5;
+  // Field names placed on the column axis, in order.
+  repeated string column_fields = 6;
+  // Field names placed in the data area, in order.
+  repeated string data_fields = 7;
+  // Field names placed on the page axis, in order.
+  repeated string page_fields = 8;
+}
+
+// TextFrame is one Writer text frame, in discovery order, with its styled
+// runs, the layout anchor of its anchor point, its laid-out geometry, and
+// its text-chain neighbours. A frame's text is out of the body flow, so
+// every run carries char_offset -1. Linked frames form one logical reading
+// text; the chain names recover that order.
+message TextFrame {
+  // Zero-based frame index in discovery order.
+  int32 index = 1;
+  // The frame's name from the document, for example "Frame1".
+  string name = 2;
+  // Zero-based page the frame's anchor sits on; matches PageImage.index. -1
+  // when unresolved, for example a page-anchored frame.
+  int32 page_index = 3;
+  // Caret position of the frame's text anchor in the live layout. Unset
+  // when the anchor could not be located.
+  TwipsPoint anchor = 4;
+  // Laid-out frame width in twips.
+  int64 width_twips = 5;
+  // Laid-out frame height in twips.
+  int64 height_twips = 6;
+  // The frame's content runs, in order, flattened across its paragraphs.
+  // Each run's char_offset is -1 because frame text is outside the body
+  // flow.
+  repeated TextRun runs = 7;
+  // Name of the next frame in the text chain that this frame's text flows
+  // into; empty when this frame is not chained forward.
+  string chain_next = 8;
+  // Name of the previous frame in the text chain that flows into this
+  // frame; empty when this frame is not chained backward.
+  string chain_prev = 9;
+}
+
+// Shape is one draw-page shape of a text document: a custom shape, a text
+// shape, an imported textbox, or a group container. It carries the shape's
+// styled runs, its layout anchor, and its geometry. Graphic objects and OLE
+// objects are reported as EmbeddedImage instead, and Writer text frames as
+// TextFrame; this event is for the remaining text-capable shapes and for
+// groups. A group container is emitted as its own event with is_group true,
+// directly before the events for its child shapes; each child names its
+// ancestor chain through group_path, exactly like DrawingShape. Group
+// children are not text contents, so they carry position instead of a
+// caret anchor. Runs carry char_offset -1.
+message Shape {
+  // Zero-based shape index in discovery order among emitted shapes.
+  int32 index = 1;
+  // The shape's name from the document; may be empty.
+  string name = 2;
+  // The office core's shape-type service name, for example
+  // "com.sun.star.drawing.CustomShape".
+  string shape_type = 3;
+  // Zero-based page the shape's anchor sits on; matches PageImage.index. -1
+  // when unresolved.
+  int32 page_index = 4;
+  // Caret position of the shape's text anchor in the live layout. Unset
+  // when the anchor could not be located.
+  TwipsPoint anchor = 5;
+  // Shape width in twips.
+  int64 width_twips = 6;
+  // Shape height in twips.
+  int64 height_twips = 7;
+  // The shape's content runs, in order, flattened across its paragraphs.
+  // Each run's char_offset is -1 because shape text is outside the body
+  // flow.
+  repeated TextRun runs = 8;
+  // Name of the next textbox in the chain this shape flows into; empty when
+  // the shape is not a linked textbox.
+  string chain_next = 9;
+  // Name of the previous textbox in the chain that flows into this shape;
+  // empty when the shape is not a linked textbox.
+  string chain_prev = 10;
+  // Paint order of the shape within its immediate container, zero-based:
+  // the office core's index order inside the draw page or the containing
+  // group. Scoped to the container, so a group's children restart at 0.
+  // Counts every container slot, unlike index, which numbers emitted Shape
+  // events.
+  int32 z_order = 11;
+  // Slash-joined chain of ancestor group indices, empty at the top level;
+  // the same scheme as DrawingShape.group_path. For example "2" for a shape
+  // inside the top-level group at container index 2.
+  string group_path = 12;
+  // True when this event is a group container node. Its children follow as
+  // separate events whose group_path names this group.
+  bool is_group = 13;
+  // Top-left corner of the shape's bounding box from the shape model, in
+  // document-absolute twips like TwipsPoint. The geometry anchor for group
+  // children, which have no caret anchor; also set alongside anchor when
+  // the model reports it.
+  TwipsPoint position = 14;
+}
+
+// PlaceholderRole is the presentation role of a slide shape, derived from
+// the office core's shape type. Non-placeholder shapes report
+// PLACEHOLDER_ROLE_NONE. New roles (header, footer, slide number, date and
+// time) may be added later without renumbering.
+enum PlaceholderRole {
+  // Unset; never emitted by the server.
+  PLACEHOLDER_ROLE_UNSPECIFIED = 0;
+  // The shape is not a presentation placeholder.
+  PLACEHOLDER_ROLE_NONE = 1;
+  // The slide's title placeholder (shape type TitleTextShape).
+  PLACEHOLDER_ROLE_TITLE = 2;
+  // The slide's outline or body placeholder (shape type OutlinerShape).
+  PLACEHOLDER_ROLE_OUTLINE = 3;
+  // The slide's subtitle placeholder (shape type SubtitleShape).
+  PLACEHOLDER_ROLE_SUBTITLE = 4;
+  // The notes-page speaker-notes placeholder (shape type NotesShape).
+  PLACEHOLDER_ROLE_NOTES = 5;
+}
+
+// Slide is one presentation slide, emitted before its shapes. index matches
+// PageImage.index for the same slide.
+message Slide {
+  // Zero-based slide index in slide order; matches PageImage.index.
+  int32 index = 1;
+  // The slide's name from the document, for example "Slide 1".
+  string name = 2;
+  // The presentation autolayout id of the slide; 0 when the slide uses no
+  // autolayout. Numeric as the office core reports it.
+  int32 layout = 3;
+  // Name of the master page the slide is based on; empty when unresolved.
+  string master_page_name = 4;
+}
+
+// SlideTextParagraph is one paragraph of a slide shape's text, keeping its
+// outline depth so the consumer can rebuild the outline hierarchy.
+message SlideTextParagraph {
+  // Zero-based outline depth of the paragraph; 0 for a top-level line.
+  int32 outline_depth = 1;
+  // The paragraph's styled runs, in order. Each run's char_offset is -1
+  // because slide text sits outside the body annotation text space.
+  repeated TextRun runs = 2;
+}
+
+// SlideShape is one shape on a slide or its notes page, in paint order.
+// shape_type keeps the office core's raw type string so shapes whose content
+// is extracted by a later feature stay addressable. A group container is
+// emitted as its own event directly before the events for its child shapes.
+message SlideShape {
+  // Zero-based index of the slide the shape belongs to; matches Slide.index
+  // and PageImage.index.
+  int32 slide_index = 1;
+  // Paint order of the shape within its immediate container, zero-based; a
+  // group's children restart at 0.
+  int32 z_order = 2;
+  // The office core's shape type, for example
+  // "com.sun.star.presentation.TitleTextShape" or
+  // "com.sun.star.drawing.GraphicObjectShape".
+  string shape_type = 3;
+  // The shape's presentation placeholder role, derived from shape_type.
+  PlaceholderRole placeholder_role = 4;
+  // True when the shape is a presentation placeholder object.
+  bool is_placeholder = 5;
+  // True when the shape is an unfilled (empty) placeholder object.
+  bool is_empty_placeholder = 6;
+  // Shape top-left corner on its page, in twips. In slide-page space for
+  // slide shapes; in notes-page space when notes is true.
+  TwipsPoint position = 7;
+  // Shape width in twips.
+  int64 width_twips = 8;
+  // Shape height in twips.
+  int64 height_twips = 9;
+  // The shape's text paragraphs, in order; empty for shapes with no text.
+  repeated SlideTextParagraph paragraphs = 10;
+  // True when the shape is on the slide's notes page rather than the
+  // painted slide; its geometry is in notes-page space and has no
+  // PageImage.
+  bool notes = 11;
+}
+
+// DrawingShape is one shape from a drawing page, in paint order. A group
+// container is emitted as its own event with is_group true, directly before
+// the events for its child shapes; each child names its ancestor chain
+// through group_path.
+message DrawingShape {
+  // Zero-based index of the page the shape sits on; matches PageImage.index.
+  int32 page_index = 1;
+  // Paint order of the shape within its immediate container, zero-based.
+  // This is the office core's index order inside that container, which is
+  // the z order there. Scoped to the container, so a group's children
+  // restart at 0.
+  int32 z_order = 2;
+  // Slash-joined chain of ancestor group indices, empty at the top level.
+  // For example "2" for a shape inside the top-level group at index 2, and
+  // "2/0" for a shape inside the first nested group of that group.
+  string group_path = 3;
+  // The office core's programmatic shape type, emitted verbatim, for example
+  // "com.sun.star.drawing.RectangleShape".
+  string shape_type = 4;
+  // Shape name from the document; empty when the shape is unnamed.
+  string name = 5;
+  // Top-left corner of the shape's bounding box in twips.
+  TwipsPoint position = 6;
+  // Bounding-box width in twips.
+  int64 width_twips = 7;
+  // Bounding-box height in twips.
+  int64 height_twips = 8;
+  // Rotation in the office core's hundredths of a degree, counter-clockwise
+  // around the bounding-box center. 0 when the shape carries no rotation or
+  // does not expose one (embedded objects, form controls). The underlying
+  // office property is deprecated there, so treat this as advisory rather
+  // than an exact transform.
+  int32 rotation = 9;
+  // True when this event is a group container node. Its children follow as
+  // separate events whose group_path names this group.
+  bool is_group = 10;
+  // True when the shape carries non-empty text.
+  bool has_text = 11;
+  // Styled text runs of the shape's text, in reading order. Each run's
+  // char_offset is -1 because drawing shapes sit outside the body annotation
+  // text space.
+  repeated TextRun runs = 12;
+}
+
+// PdfChunk is one chunk of a produced PDF, in order. Concatenating every
+// data field yields the complete PDF.
+message PdfChunk {
+  // The chunk's PDF bytes.
+  bytes data = 1;
+}
+
+// RenderStatus is the final event of a successful response stream, carrying
+// outcome counters. Failures arrive as gRPC status codes instead.
+message RenderStatus {
+  // State is the terminal outcome of the render.
+  enum State {
+    // Unset; never emitted by the server.
+    STATE_UNSPECIFIED = 0;
+    // The render completed and every event was emitted.
+    STATE_OK = 1;
+  }
+  // The terminal outcome.
+  State state = 1;
+  // Human-readable non-fatal findings, for example substituted fonts.
+  repeated string warnings = 2;
+  // Total uploaded document bytes.
+  int64 input_bytes = 3;
+  // Total bytes emitted: PNG bytes for StreamPages, PDF bytes for
+  // ConvertToPdf.
+  int64 output_bytes = 4;
+  // Wall-clock render time in milliseconds, measured in the worker.
+  int64 render_millis = 5;
+}
+
+// GetServiceInfoRequest asks for the service's capabilities.
+message GetServiceInfoRequest {}
+
+// GetServiceInfoResponse reports the service's capabilities and limits.
+message GetServiceInfoResponse {
+  // Semantic version of this server.
+  string service_version = 1;
+  // LibreOffice core version string, when known.
+  string libreoffice_version = 2;
+  // Version of the wire contract, currently "v1".
+  string api_version = 3;
+  // Canonical extensions of the source formats the render core accepts.
+  repeated string supported_formats = 4;
+  // Per-document byte cap; uploads above it are rejected with
+  // RESOURCE_EXHAUSTED.
+  int64 max_document_bytes = 5;
+  // Historical pool fields from the process-pool era of this contract.
+  reserved 6, 7;
+  // Documents rendered concurrently, each in its own worker process.
+  int32 max_concurrent_documents = 8;
+  // Requested render DPI for StreamPages.
+  int32 render_dpi = 9;
+  // True when StreamPages emits typed content events (DocumentMetadata,
+  // Paragraph, TableData, EmbeddedImage, DrawingShape, Slide, SlideShape,
+  // TextFrame, Shape, EmbeddedObject, and the Sheet family) alongside page
+  // images, selectable per request through StreamOptions.
+  bool typed_content = 10;
+}

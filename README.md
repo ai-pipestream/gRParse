@@ -144,6 +144,29 @@ device work is never delayed and no raster outlives its page. Leave it off
 for figure-heavy corpora where embedded images would inflate every page
 event; picture bounding boxes are always present either way.
 
+## Collector scatter-gather
+
+gRParse is the coordinator of a set of parser collectors. The in-process CV
+path above is one collector (`COLLECTOR_GRPARSE_CV`); the grpc-libreoffice
+typed-stream parser is another (`COLLECTOR_LIBREOFFICE`), configured with
+`GRPARSE_LIBREOFFICE_TARGET=<host:port>` and left unconfigured otherwise.
+A request selects collectors explicitly (`ConvertDocumentOptions.collectors`,
+or `DocumentChunk.collectors` on the streaming RPC); an empty selection
+routes by format, PDF and raster inputs to the CV path and office formats to
+the libreoffice collector. No code path converts office bytes to PDF in
+order to parse them.
+
+Every collector's output is a docling `Document` whose items carry a
+`CollectorSource` tag, and the coordinator merges them additively: item
+references renumber, sources never overwrite each other, and choosing a
+winner among sources is a downstream concern. On the streaming RPC each
+out-of-process collector's document is emitted as a `CollectorDocument`
+event the moment that collector finishes, while CV page events keep
+streaming; the terminal event lists any `collector_failures`. A failed
+collector degrades to an error entry (unary) or a failure entry (stream)
+instead of failing the parse while any collector succeeds; the parse fails
+only when every selected collector fails.
+
 The server registers standard gRPC health checking and reflection in addition
 to the contract's `Health` RPC. SIGINT and SIGTERM initiate a bounded graceful
 shutdown.
