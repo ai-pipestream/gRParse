@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.25
 # Intel build: ONNX Runtime with the OpenVINO execution provider, targeting
 # Intel Arc GPUs (Battlemage/Alchemist), integrated graphics, CPUs, and NPUs.
 # No CUDA toolchain anywhere in this image.
