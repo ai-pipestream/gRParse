@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.25
 
 # The runtime base is swappable so a hardened mirror can slot in without a
 # Dockerfile change, for example:
