@@ -6,9 +6,9 @@
 # The runtime stage asks nothing of the base beyond glibc (matching or newer
 # than the build stage's ubuntu26.04) and the CUDA runtime libraries on the
 # loader path: no shell, no package manager, and no ldconfig run.
-ARG GRPARSE_RUNTIME_IMAGE=nvidia/cuda:13.3.0-runtime-ubuntu26.04
+ARG GRPARSE_RUNTIME_IMAGE=nvidia/cuda:13.3.1-runtime-ubuntu26.04
 
-FROM nvidia/cuda:13.3.0-devel-ubuntu26.04 AS build
+FROM nvidia/cuda:13.3.1-devel-ubuntu26.04 AS build
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
