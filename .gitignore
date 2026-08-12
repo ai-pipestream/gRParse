@@ -68,6 +68,14 @@ vcpkg_installed/
 Testing/
 .cache/
 
+# libFuzzer working corpora and findings (see fuzz/README.md)
+corpus-*/
+crash-*
+leak-*
+oom-*
+timeout-*
+slow-unit-*
+
 # Downloaded OCR models are provided at deployment time.
 models/*.onnx
 models/ppocr_keys_v1.txt

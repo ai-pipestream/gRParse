@@ -208,6 +208,17 @@ delivery. Render and inference busy percentages climbing together under load
 is the pipeline overlap working; one stage pegged while its neighbor idles
 identifies where to add workers.
 
+The same counters are available in Prometheus text format: set
+`GRPARSE_METRICS_PORT` (default `0`, off) and scrape
+`http://<host>:<port>/metrics`. Counters and gauges map one to one with the
+stdout line; the latency buckets become a `grparse_page_latency_seconds`
+histogram, and per-stage busy time is exported as
+`grparse_stage_busy_seconds_total` next to `grparse_stage_workers`, so
+`rate(grparse_stage_busy_seconds_total[1m]) / grparse_stage_workers` is the
+same busy fraction the stdout line prints. The listener is a minimal
+in-process HTTP endpoint (no framework); a configured port that cannot be
+bound fails startup loudly. The compose file wires it to `9464`.
+
 ## Intel GPUs (OpenVINO)
 
 `Dockerfile.openvino` builds an Intel variant with no CUDA anywhere: ONNX
@@ -263,6 +274,15 @@ workflow runs the same gate before pushing any tag. With models present
 locally, `scripts/smoke-test.sh <image> --full` additionally boots the server
 on the CPU provider and streams a fixture through the bundled client.
 
+Every push and PR also runs a short libFuzzer window over the two ingest
+doors (Poppler PDF open/extract and OpenCV raster decode) — see
+[fuzz/README.md](fuzz/README.md) for the standalone fuzz project and longer
+campaigns. A weekly `sanitize.yml` workflow (also manually dispatchable)
+builds the whole test battery with `-DGRPARSE_SANITIZE=address,undefined` on
+the runner host — not inside `docker build`, whose seccomp profile breaks
+LeakSanitizer — and runs it leak-checked under the `tests/lsan.supp`
+suppressions.
+
 The build compiles with `-DGRPARSE_WERROR=ON` and runs the full `grparse`-labelled
 CTest set: barcode decoder (QR fixture payload, stride-safe region views),
 base64, document assembly (offsets, layout label mapping, region
@@ -270,7 +290,9 @@ items), geometry merge (including overflow bounds), layout engine (golden
 against the reference detector; skips without the model file), scheduler (page
 credits, backpressure, partial digital→OCR merge, layout labelling), PDF page
 source (Poppler text/raster geometry, `/Rotate`, concurrent access, two-column
-reading order), raster page source (in-memory PNG/JPEG decode, BGR
+reading order), Prometheus exporter (exact text rendering, cumulative
+histogram, live loopback scrapes with the 404/405/500 doors), raster page
+source (in-memory PNG/JPEG decode, BGR
 normalization, decode-failure surfacing), reading order (XY-cut multi-column,
 determinism), region geometry (center-containment binding, raster clipping,
 zero-copy crops), resource pool, table structure (geometry grids, cell

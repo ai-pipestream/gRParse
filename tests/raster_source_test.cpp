@@ -77,14 +77,36 @@ void verify_invalid_bytes() {
   } catch (const grparse::InvalidDocument&) {
   }
 
-  // Construction only wraps the bytes; the decode failure surfaces at render,
-  // inside the pipeline's per-page error handling.
-  const auto source = grparse::open_in_memory_document(
-      std::make_shared<const std::string>("not an image"), /*pdf=*/false);
+  // Bytes whose container magic is not one of the advertised raster formats
+  // are rejected at admission, before any decoder (and its temp-file/GDAL
+  // paths) can run.
   try {
-    source->render_page(1);
-    require(false, "undecodable bytes must throw at render");
+    grparse::open_in_memory_document(std::make_shared<const std::string>("not an image"),
+                                     /*pdf=*/false);
+    require(false, "unsupported-format bytes must throw at open");
   } catch (const grparse::InvalidDocument&) {
+  }
+}
+
+// The raster door admits only PNG, JPEG, and TIFF; every other container that
+// cv::imdecode would otherwise sniff (WebP, BMP, GIF, and GDAL-backed formats)
+// is rejected before a decoder runs.
+void verify_only_advertised_formats_are_admitted() {
+  const cv::Mat image(8, 8, CV_8UC3, cv::Scalar(0, 0, 0));
+  for (const char* extension : {".png", ".jpg", ".tif"}) {
+    const auto source = grparse::open_in_memory_document(encode(image, extension), /*pdf=*/false);
+    require(!source->render_page(1).empty(), std::string("advertised format decodes: ") + extension);
+  }
+
+  for (const char* extension : {".webp", ".bmp"}) {
+    std::vector<unsigned char> buffer;
+    if (!cv::imencode(extension, image, buffer)) continue;  // codec not built here
+    try {
+      grparse::open_in_memory_document(
+          std::make_shared<const std::string>(buffer.begin(), buffer.end()), /*pdf=*/false);
+      require(false, std::string("unadvertised format must be rejected: ") + extension);
+    } catch (const grparse::InvalidDocument&) {
+    }
   }
 }
 
@@ -97,6 +119,7 @@ int main() {
     verify_jpeg_decodes();
     verify_page_range();
     verify_invalid_bytes();
+    verify_only_advertised_formats_are_admitted();
   } catch (const std::exception& error) {
     std::cerr << "raster_source_test failed: " << error.what() << '\n';
     return EXIT_FAILURE;

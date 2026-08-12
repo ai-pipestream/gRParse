@@ -3,10 +3,12 @@ services:
     build: .
     ports:
       - "50051:50051"
+      - "9464:9464"   # Prometheus /metrics
     volumes:
       - ./models:/models:ro
     environment:
       CUDA_CACHE_DISABLE: "1"
+      GRPARSE_METRICS_PORT: "9464"
     gpus: all
     read_only: true
     tmpfs:

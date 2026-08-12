@@ -1,0 +1,48 @@
+# Runs the full C++ test battery under AddressSanitizer + UBSan + LeakSanitizer.
+#
+# Deliberately build-then-run on the runner host, NOT inside `docker build`:
+# LeakSanitizer needs ptrace, which BuildKit's default seccomp profile denies,
+# so leak detection inside an image build either aborts or silently reports
+# nothing.  Weekly + manual because the gRPC source build makes this a long
+# job and the shared runners have capacity 1; it is not a PR gate.
+#
+# ThreadSanitizer is intentionally absent: TSan is only sound when every
+# object in the process is instrumented, and the fetched gRPC/protobuf/
+# rapidocr trees are built without GRPARSE_SANITIZE, so a first-party-only
+# TSan run would drown real races in false positives.
+name: Sanitizer battery
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  asan-ubsan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake g++ git make ninja-build pkg-config libopencv-dev libpoppler-cpp-dev
+      - name: Configure with AddressSanitizer and UBSan
+        run: |
+          cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DBUILD_TESTING=ON -DGRPARSE_SANITIZE=address,undefined
+      - name: Build the test battery
+        run: cmake --build build-asan --target grparse-tests --parallel 4
+      - name: Run the suite under sanitizers
+        env:
+          # detect_container_overflow is off because instrumented first-party
+          # code exchanges std::string/std::vector with the uninstrumented
+          # fetched dependencies, which is the documented false-positive case.
+          ASAN_OPTIONS: detect_leaks=1:detect_stack_use_after_return=1:detect_container_overflow=0
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+          LSAN_OPTIONS: suppressions=${{ github.workspace }}/tests/lsan.supp
+        run: ctest --test-dir build-asan --output-on-failure -L grparse

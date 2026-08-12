@@ -24,6 +24,7 @@
 #include "grparse/figure_classifier.h"
 #include "grparse/layout_engine.h"
 #include "grparse/page_scheduler.h"
+#include "grparse/prometheus_metrics.h"
 #include "grparse/table_structure_engine.h"
 #include "grparse_session_ep.h"
 
@@ -477,6 +478,20 @@ int main() {
     }
     std::cout << "gRParse listening on " << listen_address
               << " (RapidOCR / ONNX Runtime)" << std::endl;
+    // GRPARSE_METRICS_PORT exposes the same counters in Prometheus text
+    // format at /metrics.  0 (the default) keeps the listener off; a
+    // configured port that cannot be bound fails startup loudly.
+    const int metrics_port = configured_index("GRPARSE_METRICS_PORT", 0, 65535);
+    std::unique_ptr<grparse::MetricsHttpServer> metrics_exporter;
+    if (metrics_port > 0) {
+      metrics_exporter = std::make_unique<grparse::MetricsHttpServer>(
+          static_cast<uint16_t>(metrics_port), [&scheduler, &engines, &options] {
+            return grparse::render_prometheus_metrics(scheduler.metrics(), engines->stats(),
+                                                      options);
+          });
+      std::cout << "gRParse metrics exporter: http://0.0.0.0:" << metrics_exporter->port()
+                << "/metrics" << std::endl;
+    }
     // Pipeline visibility (B4): one metrics line per interval on stdout, where
     // container logging already looks.  0 disables.
     const int metrics_interval = configured_index("GRPARSE_METRICS_INTERVAL_SECONDS", 60, 86400);

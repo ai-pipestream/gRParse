@@ -236,6 +236,7 @@ add_library(grparse_core STATIC
   src/ocr_engine.cpp
   src/layout_engine.cpp
   src/page_scheduler.cpp
+  src/prometheus_metrics.cpp
   src/reading_order.cpp
   src/region_geometry.cpp
   src/table_structure.cpp
@@ -264,6 +265,7 @@ if(BUILD_TESTING)
     office-collector-test
     page-scheduler-test
     pdf-source-test
+    prometheus-metrics-test
     raster-source-test
     reading-order-test
     region-geometry-test

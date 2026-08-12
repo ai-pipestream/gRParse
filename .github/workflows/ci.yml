@@ -32,3 +32,36 @@ jobs:
         run: docker build --progress=plain -f Dockerfile.openvino -t grparse-ci-openvino .
       - name: Boot-proof the runtime image
         run: ./scripts/smoke-test.sh grparse-ci-openvino
+
+  # Short fuzz window on the two ingest doors (the only code that touches
+  # attacker-controlled bytes before a model runs).  The fuzz project builds
+  # standalone in seconds - no gRPC or ONNX Runtime fetch - so this fits in a
+  # PR gate.  Long campaigns run manually; see fuzz/README.md.
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Clang and the ingest-door dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang libclang-rt-dev ninja-build cmake pkg-config \
+            libopencv-dev libpoppler-cpp-dev
+      - name: Build the fuzzers
+        run: |
+          cmake -S fuzz -B build-fuzz -G Ninja -DCMAKE_CXX_COMPILER=clang++
+          cmake --build build-fuzz
+      - name: Fuzz the PDF ingest door
+        env:
+          LSAN_OPTIONS: suppressions=tests/lsan.supp
+        run: |
+          mkdir -p corpus-pdf
+          ./build-fuzz/pdf-source-fuzzer corpus-pdf fuzz/seeds/pdf \
+            -max_total_time=90 -max_len=1048576 -rss_limit_mb=4096 -print_final_stats=1
+      - name: Fuzz the raster ingest door
+        env:
+          LSAN_OPTIONS: suppressions=tests/lsan.supp
+        run: |
+          mkdir -p corpus-raster
+          ./build-fuzz/raster-source-fuzzer corpus-raster tests/data \
+            -max_total_time=90 -max_len=1048576 -rss_limit_mb=4096 -print_final_stats=1

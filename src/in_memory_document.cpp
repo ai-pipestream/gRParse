@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <string>
@@ -143,11 +144,35 @@ class PdfPageSource final : public PageSource {
   int pages_ = 0;
 };
 
+// The service advertises PNG, JPEG, and TIFF raster input.  cv::imdecode,
+// left to sniff on its own, accepts far more - WebP, BMP, and, where the
+// build links GDAL, JPEG2000/NITF/GeoTIFF, some of which spill the buffer to
+// a temp file (breaking the diskless guarantee) and can leak descriptors on
+// malformed input.  Gate on the container magic before imdecode ever runs so
+// only the three advertised formats reach a decoder.
+bool is_supported_raster(const std::string& bytes) {
+  auto starts_with = [&bytes](std::initializer_list<unsigned char> magic) {
+    if (bytes.size() < magic.size()) return false;
+    size_t index = 0;
+    for (const unsigned char expected : magic) {
+      if (static_cast<unsigned char>(bytes[index++]) != expected) return false;
+    }
+    return true;
+  };
+  return starts_with({0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}) ||  // PNG
+         starts_with({0xFF, 0xD8, 0xFF}) ||                                // JPEG
+         starts_with({0x49, 0x49, 0x2A, 0x00}) ||                          // TIFF little-endian
+         starts_with({0x4D, 0x4D, 0x00, 0x2A});                            // TIFF big-endian
+}
+
 class RasterPageSource final : public PageSource {
  public:
   explicit RasterPageSource(std::shared_ptr<const std::string> bytes) : bytes_(std::move(bytes)) {
     if (bytes_->size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
       throw InvalidDocument("Raster image exceeds the in-memory decode limit");
+    }
+    if (!is_supported_raster(*bytes_)) {
+      throw InvalidDocument("Raster image is not a supported format (PNG, JPEG, or TIFF)");
     }
   }
 
