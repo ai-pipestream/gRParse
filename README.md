@@ -37,6 +37,17 @@ The helper invokes the compiled bidirectional-streaming client. It reads the
 source and sends fixed-size chunks directly to gRPC; it does not base64-encode
 the document or create temporary files.
 
+### Examples: browser demo and other-language clients
+
+[`examples/`](examples/README.md) holds working consumers of the streaming
+contract: a browser demo that paints each page event live (boxes, reading-order
+text, tables, picture classes, barcodes) plus terminal clients in Python and
+Go. The demo runs with the service in one command:
+
+```bash
+docker compose --profile demo up --build   # service on :50051, demo on :8080
+```
+
 ### Runtime image
 
 The runtime stage is minimal-base compatible: it runs no package manager and
@@ -252,9 +263,11 @@ items), geometry merge (including overflow bounds), layout engine (golden
 against the reference detector; skips without the model file), scheduler (page
 credits, backpressure, partial digital→OCR merge, layout labelling), PDF page
 source (Poppler text/raster geometry, `/Rotate`, concurrent access, two-column
-reading order), reading order (XY-cut multi-column, determinism), resource
-pool, table structure (geometry grids, cell binding, region crops), and
-streaming/unary contract tests. Third-party dependencies register their own CTest
+reading order), raster page source (in-memory PNG/JPEG decode, BGR
+normalization, decode-failure surfacing), reading order (XY-cut multi-column,
+determinism), region geometry (center-containment binding, raster clipping,
+zero-copy crops), resource pool, table structure (geometry grids, cell
+binding, region crops), and streaming/unary contract tests. Third-party dependencies register their own CTest
 suites, so the label filter is what keeps `ctest` scoped to this project:
 
 ```bash
