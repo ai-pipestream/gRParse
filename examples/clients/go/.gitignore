@@ -1,3 +1,4 @@
 .staged-protos/
 gen/
 go.sum
+go
