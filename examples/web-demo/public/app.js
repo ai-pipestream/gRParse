@@ -4,6 +4,8 @@
 
 const dropzone = document.getElementById("dropzone");
 const fileInput = document.getElementById("file-input");
+const sampleButton = document.getElementById("sample-button");
+const downloadButton = document.getElementById("download-json");
 const results = document.getElementById("results");
 const statsBar = document.getElementById("stats");
 const legend = document.getElementById("legend");
@@ -20,18 +22,22 @@ const BOX_COLORS = {
 const totals = { pages: 0, texts: 0, digital: 0, ocr: 0, tables: 0, pictures: 0, barcodes: 0 };
 let startedAt = 0;
 let clock = null;
+// Everything the stream delivered for the current run, downloadable as JSON.
+let run = null;
 
 function setStat(id, value) {
   document.getElementById(id).textContent = value;
 }
 
-function resetRun() {
+function resetRun(filename) {
   results.innerHTML = "";
   Object.keys(totals).forEach((key) => { totals[key] = 0; });
   ["stat-pages", "stat-texts", "stat-digital", "stat-ocr", "stat-tables", "stat-pictures", "stat-barcodes"]
     .forEach((id) => setStat(id, "0"));
   statsBar.hidden = false;
   legend.hidden = false;
+  run = { filename, startedAt: new Date().toISOString(), pages: [], complete: null };
+  downloadButton.disabled = true;
   startedAt = performance.now();
   clock = setInterval(() => {
     setStat("stat-elapsed", `${((performance.now() - startedAt) / 1000).toFixed(1)}s`);
@@ -67,6 +73,13 @@ function renderPage(event) {
   const heading = document.createElement("h2");
   heading.textContent = `Page ${event.pageNumber}` +
     (event.totalPages ? ` of ${event.totalPages}` : "");
+  // When this page event actually arrived, relative to upload start — the
+  // visible proof that pages stream instead of waiting for the whole document.
+  const arrival = (performance.now() - startedAt) / 1000;
+  const badge = document.createElement("span");
+  badge.className = "arrival";
+  badge.textContent = `arrived at ${arrival.toFixed(1)}s`;
+  heading.appendChild(badge);
   card.appendChild(heading);
 
   // Canvas scaled to the advertised page size (top-left origin, pixel units).
@@ -97,15 +110,29 @@ function renderPage(event) {
     drawBox(ctx, scale, picture.bbox, BOX_COLORS.picture, false);
   }
 
-  // Reading-order text, styled by label.
+  // Reading-order text, styled by label. Digital extraction can be
+  // word-granular, so consecutive items whose boxes overlap vertically are
+  // joined into one visual line instead of one div per item.
   const textPane = document.createElement("div");
   textPane.className = "page-text";
+  let currentLine = null;
+  let previousBox = null;
+  const sameVisualLine = (a, b) => {
+    if (!a || !b) return false;
+    const overlap = Math.min(a.b, b.b) - Math.max(a.t, b.t);
+    return overlap > 0.5 * Math.min(a.b - a.t, b.b - b.t);
+  };
   for (const text of event.texts) {
-    const line = document.createElement("div");
-    if (text.label === "title" || text.label === "section_header") line.className = "t-title";
-    else if (text.label === "list_item") line.className = "t-list";
-    line.textContent = text.text;
-    textPane.appendChild(line);
+    if (!currentLine || !sameVisualLine(previousBox, text.bbox)) {
+      currentLine = document.createElement("div");
+      if (text.label === "title" || text.label === "section_header") currentLine.className = "t-title";
+      else if (text.label === "list_item") currentLine.className = "t-list";
+      textPane.appendChild(currentLine);
+      currentLine.textContent = text.text;
+    } else {
+      currentLine.textContent += ` ${text.text}`;
+    }
+    previousBox = text.bbox;
   }
   card.appendChild(textPane);
 
@@ -154,8 +181,14 @@ function banner(kind, message) {
 }
 
 function handleEvent(event) {
-  if (event.type === "page") renderPage(event);
-  else if (event.type === "complete") {
+  if (event.type === "page") {
+    renderPage(event);
+    if (run) run.pages.push({ ...event, arrivalSeconds: (performance.now() - startedAt) / 1000 });
+  } else if (event.type === "complete") {
+    if (run) {
+      run.complete = { totalPages: event.totalPages, elapsedSeconds: (performance.now() - startedAt) / 1000 };
+      downloadButton.disabled = false;
+    }
     const failures = event.collectorFailures || [];
     banner("done", failures.length === 0
       ? `Complete: ${event.totalPages} page(s).`
@@ -168,7 +201,7 @@ function handleEvent(event) {
 }
 
 async function parseFile(file) {
-  resetRun();
+  resetRun(file.name);
   dropzone.classList.add("busy");
   const query = new URLSearchParams({ filename: file.name, contentType: contentTypeFor(file.name) });
   try {
@@ -199,6 +232,25 @@ async function parseFile(file) {
 }
 
 dropzone.addEventListener("click", () => fileInput.click());
+sampleButton.addEventListener("click", async (event) => {
+  event.stopPropagation(); // the surrounding dropzone opens the file picker on click
+  const response = await fetch("/sample.pdf");
+  if (!response.ok) {
+    banner("error", `Could not fetch the bundled sample: HTTP ${response.status}`);
+    return;
+  }
+  const bytes = await response.blob();
+  parseFile(new File([bytes], "sample.pdf", { type: "application/pdf" }));
+});
+downloadButton.addEventListener("click", () => {
+  if (!run) return;
+  const blob = new Blob([JSON.stringify(run, null, 2)], { type: "application/json" });
+  const anchor = document.createElement("a");
+  anchor.href = URL.createObjectURL(blob);
+  anchor.download = `${run.filename.replace(/\.[^.]+$/, "")}.grparse.json`;
+  anchor.click();
+  URL.revokeObjectURL(anchor.href);
+});
 fileInput.addEventListener("change", () => {
   if (fileInput.files.length > 0) parseFile(fileInput.files[0]);
   fileInput.value = "";

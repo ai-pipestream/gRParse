@@ -4,12 +4,31 @@ A small Node bridge plus a static page that shows the streaming parse live:
 drop a PDF or image on the page and every `DocumentStreamEvent.page` is
 painted the moment the server emits it — provenance boxes on a page-scaled
 canvas (dashed for OCR text, solid for digital), reading-order text, table
-grids, picture classifications, and decoded barcodes.
+grids, picture classifications, and decoded barcodes. Each page card carries
+its arrival time relative to upload start (the visible proof pages stream
+instead of waiting for the whole document), and once the stream completes the
+full mapped result downloads as JSON.
+
+![The web demo after parsing the bundled sample](../../docs/images/web-demo.png)
 
 The browser speaks NDJSON to the bridge; the bridge speaks the real
 `ParseStreamingService/StreamProcessDocument` bidi stream to gRParse, chunking
 the upload exactly like `grparse-stream-client` does. No gRPC-web, no build
 step, no framework.
+
+## Bundled sample
+
+The "parse the bundled sample" button streams [`public/sample.pdf`](public/):
+page 1 is digital text with a ruled table (native extraction, no OCR), page 2
+is a raster page with no text layer, a bar-chart figure, and a QR code — so
+OCR, layout, table structure, figure classification, and ZXing barcode
+decoding all fire on one click. Regenerate it after changing the fixtures
+with [`tools/make_sample.py`](tools/make_sample.py) (needs Pillow,
+Ghostscript, and the DejaVu fonts):
+
+```bash
+python3 examples/web-demo/tools/make_sample.py
+```
 
 ## Run with compose (service + demo together)
 

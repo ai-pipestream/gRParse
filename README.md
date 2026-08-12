@@ -48,6 +48,13 @@ Go. The demo runs with the service in one command:
 docker compose --profile demo up --build   # service on :50051, demo on :8080
 ```
 
+The page ships a bundled two-page sample (digital text + table on page 1, a
+scanned-style OCR page with a classified figure and a decodable QR code on
+page 2), so one click exercises every feature with no document at hand, and
+the full parse result downloads as JSON when the stream completes:
+
+![The web demo after parsing the bundled sample: streaming stats, provenance boxes, table grid, figure classes, and the decoded QR payload](docs/images/web-demo.png)
+
 ### Runtime image
 
 The runtime stage is minimal-base compatible: it runs no package manager and

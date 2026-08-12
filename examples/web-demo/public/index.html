@@ -19,6 +19,7 @@
     <input id="file-input" type="file" accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff" hidden />
     <p><strong>Drop a PDF or image here</strong> or click to choose one.</p>
     <p class="hint">Pages render below the moment the server finishes each one — no waiting for the whole document.</p>
+    <button id="sample-button" class="sample-button" type="button">No document handy? Parse the bundled sample</button>
   </section>
 
   <section id="stats" class="stats" hidden>
@@ -30,6 +31,7 @@
     <div class="stat"><span id="stat-pictures">0</span><label>pictures</label></div>
     <div class="stat"><span id="stat-barcodes">0</span><label>barcodes</label></div>
     <div class="stat"><span id="stat-elapsed">0.0s</span><label>elapsed</label></div>
+    <button id="download-json" class="download-json" type="button" disabled>Download JSON</button>
   </section>
 
   <section class="legend" hidden id="legend">

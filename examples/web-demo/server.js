@@ -112,10 +112,16 @@ function mapTable(table) {
 
 function mapPicture(picture) {
   const prov = Array.isArray(picture.prov) && picture.prov.length > 0 ? picture.prov[0] : null;
-  const predictions =
-    picture.meta && picture.meta.classification ? picture.meta.classification.predictions || [] : [];
+  // The classifier's distribution rides an annotation (see document_assembly.cpp),
+  // sorted most-confident first.
+  const predictions = [];
   const barcodes = [];
   for (const annotation of picture.annotations || []) {
+    if (annotation.classification) {
+      for (const predicted of annotation.classification.predictedClasses || []) {
+        predictions.push(predicted);
+      }
+    }
     if (annotation.misc && annotation.misc.kind === "barcode") {
       const content = structToObject(annotation.misc.content);
       barcodes.push({ format: content.format, value: content.value });
