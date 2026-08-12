@@ -6,6 +6,11 @@ include(CTest)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+# Everything links statically into the two binaries; the only shared libraries
+# the runtime image stages are ONNX Runtime's (imported below).  Pinned OFF
+# because gRPC 1.83.0's CMake flips the default when it is left unset, which
+# produced a green build whose server could not load its own libraries.
+set(BUILD_SHARED_LIBS OFF)
 
 option(GRPARSE_WERROR "Treat warnings in gRParse code as errors" OFF)
 set(GRPARSE_SANITIZE "" CACHE STRING
@@ -199,7 +204,8 @@ add_custom_command(
   DEPENDS document.proto parse_types.proto parse.proto parse_stream.proto office_service.proto
           protoc grpc_cpp_plugin
   VERBATIM)
-add_library(grparse_proto
+# STATIC explicitly, same reason as grparse_core below.
+add_library(grparse_proto STATIC
   "${GENERATED_DIR}/ai/pipestream/document/v1/document.pb.cc"
   "${GENERATED_DIR}/ai/pipestream/parse/v1/parse_types.pb.cc"
   "${GENERATED_DIR}/ai/pipestream/parse/v1/parse.pb.cc"
@@ -211,7 +217,12 @@ add_library(grparse_proto
 target_include_directories(grparse_proto PUBLIC "${GENERATED_DIR}")
 target_link_libraries(grparse_proto PUBLIC grpc++)
 
-add_library(grparse_core
+# STATIC explicitly: a dependency's CMake can flip the ambient
+# BUILD_SHARED_LIBS default, and a shared grparse_core would be invisible to
+# the Dockerfile's runtime-closure staging (its ldd pass runs without the
+# build tree mounted).  gRPC 1.83.0 did exactly that: green build, image
+# whose server could not load libgrparse_core.so.
+add_library(grparse_core STATIC
   src/barcode_decoder.cpp
   src/base64.cpp
   src/collector_coordinator.cpp
@@ -253,7 +264,9 @@ if(BUILD_TESTING)
     office-collector-test
     page-scheduler-test
     pdf-source-test
+    raster-source-test
     reading-order-test
+    region-geometry-test
     resource-pool-test
     streaming-service-test
     table-structure-engine-test
@@ -265,6 +278,10 @@ if(BUILD_TESTING)
     target_link_libraries(${test_name} PRIVATE grparse_core grparse_flags)
     add_test(NAME ${test_name} COMMAND ${test_name})
   endforeach()
+  # The umbrella target is what image builds compile.  Building it (instead of
+  # naming test binaries in each Dockerfile) means a test added here can never
+  # be silently absent from an image's ctest run ("Not Run" failures).
+  add_custom_target(grparse-tests DEPENDS ${GRPARSE_TESTS})
   # The scheduler and streaming tests exercise multi-worker paths; keep their
   # ceiling well above the ~1s they need so a stall fails instead of hanging CI.
   # The label keeps `ctest -L grparse` clear of tests registered by fetched
