@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  ubuntu-26-cuda-build:
+  cuda-image:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -17,4 +17,18 @@ jobs:
         # The full build (not just the build stage) also assembles the
         # runtime stage, so a runtime library missing from the staged
         # closure fails here instead of at deploy time.
-        run: docker build --progress=plain .
+        run: docker build --progress=plain -t grparse-ci-cuda .
+      - name: Boot-proof the runtime image
+        # Library closure + boot-to-main.  A green build with an unbootable
+        # binary has shipped before (ZXing flipping BUILD_SHARED_LIBS); this
+        # gate makes that impossible to miss.
+        run: ./scripts/smoke-test.sh grparse-ci-cuda
+
+  openvino-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build Intel/OpenVINO image and run non-GPU tests
+        run: docker build --progress=plain -f Dockerfile.openvino -t grparse-ci-openvino .
+      - name: Boot-proof the runtime image
+        run: ./scripts/smoke-test.sh grparse-ci-openvino

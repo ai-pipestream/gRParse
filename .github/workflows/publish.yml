@@ -1,11 +1,11 @@
 name: Publish Image
 
-# Builds the full image (the build stage runs the test suite, so the push is
-# gated on green) and pushes it to docker.io/pipestreamai and our Forgejo
-# container registry. Dispatch this from Forgejo (git.rokkon.com), where the
-# DOCKER_USER/DOCKER_TOKEN and CICD_TOKEN org secrets live; on the GitHub
-# mirror the secrets are absent and a stray dispatch fails at login, pushing
-# nothing.
+# Builds the full image (the build stage runs the test suite), boot-proofs the
+# runtime stage with scripts/smoke-test.sh, and only then pushes it to
+# docker.io/pipestreamai and our Forgejo container registry. Dispatch this
+# from Forgejo (git.rokkon.com), where the DOCKER_USER/DOCKER_TOKEN and
+# CICD_TOKEN org secrets live; on the GitHub mirror the secrets are absent and
+# a stray dispatch fails at login, pushing nothing.
 #
 # amd64 only: the image is CUDA-specific and the arm64 fleet has no NVIDIA
 # GPUs to serve it.
@@ -36,12 +36,12 @@ jobs:
           registry: git.rokkon.com
           username: ${{ github.actor }}
           password: ${{ secrets.CICD_TOKEN }}
-      - name: Build and push
+      - name: Build image (runs the test suite in the build stage)
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64
-          push: true
+          load: true
           provenance: false
           sbom: false
           tags: |
@@ -49,3 +49,16 @@ jobs:
             docker.io/pipestreamai/grparse:latest
             git.rokkon.com/ai-pipestream/grparse:${{ inputs.version }}
             git.rokkon.com/ai-pipestream/grparse:latest
+      - name: Boot-proof the image before any push
+        # A build is not done until the artifact has started up for real:
+        # library closure plus boot-to-main, no GPU or models needed.
+        run: ./scripts/smoke-test.sh docker.io/pipestreamai/grparse:${{ inputs.version }}
+      - name: Push all tags
+        run: |
+          for tag in \
+            docker.io/pipestreamai/grparse:${{ inputs.version }} \
+            docker.io/pipestreamai/grparse:latest \
+            git.rokkon.com/ai-pipestream/grparse:${{ inputs.version }} \
+            git.rokkon.com/ai-pipestream/grparse:latest; do
+            docker push "$tag"
+          done

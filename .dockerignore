@@ -1,0 +1,10 @@
+# Keep the service build context lean.  models/ stays IN the context on
+# purpose: when the files are present locally, the in-build ctest run executes
+# the layout/table/figure goldens instead of skipping them (CI checkouts have
+# no models, so those tests skip there either way).
+.git/
+examples/**/node_modules/
+examples/**/.venv/
+examples/**/gen/
+examples/**/.staged-protos/
+examples/clients/go/go

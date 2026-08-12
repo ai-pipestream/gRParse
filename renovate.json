@@ -1,0 +1,66 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Base images are covered by the stock Dockerfile manager. The custom managers below cover the CMake FetchContent pins and the version-bearing build-cache ids, so toolchain bumps get PRs too. The OpenVINO-path ONNX Runtime (1.24.x in CMakeLists and Dockerfile.openvino) is deliberately unmanaged: it must match Intel's newest onnxruntime-openvino wheel, not Microsoft's newest release.",
+  "extends": ["config:recommended"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "ONNX Runtime CUDA tarball in CMakeLists (version appears in the path and the filename)",
+      "managerFilePatterns": ["/^CMakeLists\\.txt$/"],
+      "matchStrings": [
+        "releases/download/v(?<currentValue>\\d+\\.\\d+\\.\\d+)/onnxruntime-linux-x64-gpu_cuda13",
+        "onnxruntime-linux-x64-gpu_cuda13-(?<currentValue>\\d+\\.\\d+\\.\\d+)\\.tgz"
+      ],
+      "depNameTemplate": "microsoft/onnxruntime",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    },
+    {
+      "customType": "regex",
+      "description": "gRPC FetchContent tag in CMakeLists",
+      "managerFilePatterns": ["/^CMakeLists\\.txt$/"],
+      "matchStrings": [
+        "github\\.com/grpc/grpc\\.git[\\s\\S]{0,200}?GIT_TAG v(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "grpc/grpc",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    },
+    {
+      "customType": "regex",
+      "description": "zxing-cpp FetchContent tag in CMakeLists",
+      "managerFilePatterns": ["/^CMakeLists\\.txt$/"],
+      "matchStrings": [
+        "github\\.com/zxing-cpp/zxing-cpp\\.git[\\s\\S]{0,300}?GIT_TAG v(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "zxing-cpp/zxing-cpp",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    },
+    {
+      "customType": "regex",
+      "description": "gRPC version embedded in both Dockerfiles' build-cache ids (must move with the CMake pin so stale trees never mix)",
+      "managerFilePatterns": ["/^Dockerfile$/", "/^Dockerfile\\.openvino$/"],
+      "matchStrings": ["-grpc(?<currentValue>\\d+\\.\\d+\\.\\d+)-ort"],
+      "depNameTemplate": "grpc/grpc",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    },
+    {
+      "customType": "regex",
+      "description": "CUDA-path ONNX Runtime version embedded in the Dockerfile's build-cache id",
+      "managerFilePatterns": ["/^Dockerfile$/"],
+      "matchStrings": ["cuda13-grpc\\d+\\.\\d+\\.\\d+-ort(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "microsoft/onnxruntime",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "zxing-cpp 3.x requires C++20 in its public headers; this project is C++17",
+      "matchDepNames": ["zxing-cpp/zxing-cpp"],
+      "allowedVersions": "<3.0.0"
+    }
+  ]
+}

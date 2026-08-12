@@ -256,6 +256,13 @@ provider to exist; a CPU-only runtime cannot activate the GPU.
 docker compose build
 ```
 
+CI builds both images (CUDA and OpenVINO) and then boot-proofs each runtime
+stage with `scripts/smoke-test.sh`: library closure of the shipped binaries
+plus a boot-to-main check that needs no GPU and no models. The publish
+workflow runs the same gate before pushing any tag. With models present
+locally, `scripts/smoke-test.sh <image> --full` additionally boots the server
+on the CPU provider and streams a fixture through the bundled client.
+
 The build compiles with `-DGRPARSE_WERROR=ON` and runs the full `grparse`-labelled
 CTest set: barcode decoder (QR fixture payload, stride-safe region views),
 base64, document assembly (offsets, layout label mapping, region
