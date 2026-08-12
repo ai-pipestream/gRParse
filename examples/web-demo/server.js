@@ -144,6 +144,11 @@ function mapEvent(event) {
       pageNumber: page.pageNumber,
       totalPages: event.totalPages,
       size: page.pageMeta && page.pageMeta.size ? page.pageMeta.size : null,
+      // Present when the server runs with GRPARSE_PAGE_IMAGES=on: a data URI
+      // preview of the page raster the boxes were measured on.
+      image: page.pageMeta && page.pageMeta.image && page.pageMeta.image.uri
+        ? page.pageMeta.image.uri
+        : null,
       texts: (page.texts || []).map(mapText).filter(Boolean),
       offsets: (page.textOffsets || []).map((offset) => ({
         ref: offset.selfRef,

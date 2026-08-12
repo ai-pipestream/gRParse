@@ -180,6 +180,16 @@ device work is never delayed and no raster outlives its page. Leave it off
 for figure-heavy corpora where embedded images would inflate every page
 event; picture bounding boxes are always present either way.
 
+With `GRPARSE_PAGE_IMAGES=on` (default off) every page event additionally
+carries a downscaled PNG preview of the page raster on its `PageItem`, so
+clients can paint provenance boxes over the real page (the web demo does
+exactly this). The preview encodes in the inference stage under the same
+rule as figure crops — after the device calls, before the raster drops —
+and full-digital pages are rasterized for it even when layout is off. The
+preview's pixel size rides its `ImageRef`; the page size stays in the
+page's own coordinate space (PDF points for digital pages), same aspect
+ratio.
+
 ## Collector scatter-gather
 
 gRParse is the coordinator of a set of parser collectors. The in-process CV
@@ -191,6 +201,18 @@ or `DocumentChunk.collectors` on the streaming RPC); an empty selection
 routes by format, PDF and raster inputs to the CV path and office formats to
 the libreoffice collector. No code path converts office bytes to PDF in
 order to parse them.
+
+The libreoffice leg is a hybrid: office text, tables, and typed content are
+exact from the office core, so gRParse does not OCR office documents — but
+the collector's page renders (the `PageImage` PNGs it streams anyway) run
+through the same layout, figure-classification, and barcode engines the CV
+path uses, sharing its session pools. Detected figures land as additional
+source-tagged `PictureItem` entries with their class distributions and
+decoded barcode payloads, boxes converted into the document's own
+coordinate space — so a chart or QR code inside a DOCX is spotted and
+decoded even though the office core cannot see it. The enrichment follows
+the same knobs as the CV path: it needs the layout model, and barcode
+decoding honors `GRPARSE_BARCODES`.
 
 Every collector's output is a docling `Document` whose items carry a
 `CollectorSource` tag, and the coordinator merges them additively: item
@@ -294,8 +316,11 @@ The build compiles with `-DGRPARSE_WERROR=ON` and runs the full `grparse`-labell
 CTest set: barcode decoder (QR fixture payload, stride-safe region views),
 base64, document assembly (offsets, layout label mapping, region
 items), geometry merge (including overflow bounds), layout engine (golden
-against the reference detector; skips without the model file), scheduler (page
-credits, backpressure, partial digital→OCR merge, layout labelling), PDF page
+against the reference detector; skips without the model file), office CV
+enrichment (figure boxes scaled into twips, class-gated barcode decode over
+mapped page renders), scheduler (page
+credits, backpressure, partial digital→OCR merge, layout labelling, page
+previews), PDF page
 source (Poppler text/raster geometry, `/Rotate`, concurrent access, two-column
 reading order), Prometheus exporter (exact text rendering, cumulative
 histogram, live loopback scrapes with the 404/405/500 doors), raster page

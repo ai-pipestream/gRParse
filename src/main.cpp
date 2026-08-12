@@ -441,6 +441,21 @@ int main() {
     } else if (options.capture_picture_images) {
       std::cout << "gRParse picture images: enabled" << std::endl;
     }
+    // GRPARSE_PAGE_IMAGES=on embeds a downscaled PNG preview of every page
+    // raster in the page event, so clients can paint boxes over the real
+    // page.  Off by default: previews add bytes to every page event.  Unlike
+    // picture images this needs no layout model; it forces rasterization of
+    // full-digital pages instead.
+    const char* page_images = std::getenv("GRPARSE_PAGE_IMAGES");
+    const std::string page_image_mode =
+        page_images == nullptr || *page_images == '\0' ? "off" : page_images;
+    if (page_image_mode != "on" && page_image_mode != "off") {
+      throw std::invalid_argument("GRPARSE_PAGE_IMAGES must be on or off");
+    }
+    options.capture_page_images = page_image_mode == "on";
+    if (options.capture_page_images) {
+      std::cout << "gRParse page images: enabled" << std::endl;
+    }
     options.barcode_mode = configure_barcode_mode(layout != nullptr, figure_classes != nullptr);
     grparse::PageScheduler scheduler(*engines, options, grparse::PageSourceFactory{},
                                      layout.get(), table_structure.get(),
@@ -450,12 +465,28 @@ int main() {
     // documents then fail that collector with a clear error instead of
     // being converted through any PDF intermediate.
     const char* libreoffice = std::getenv("GRPARSE_LIBREOFFICE_TARGET");
+    // The hybrid leg: office documents' page renders run through the same
+    // layout/classifier/barcode engines the CV path uses, sharing its pools.
+    grparse::OfficeCvEnrichment office_cv;
+    office_cv.detector = layout.get();
+    office_cv.classifier = figure_classes.get();
+    office_cv.barcode_mode = options.barcode_mode;
     const auto endpoints = std::make_shared<grparse::CollectorEndpoints>(
-        libreoffice == nullptr ? std::string() : std::string(libreoffice));
+        libreoffice == nullptr ? std::string() : std::string(libreoffice), office_cv);
     std::cout << "gRParse libreoffice collector: "
               << (endpoints->has_libreoffice() ? endpoints->libreoffice_target()
                                                : "not configured")
               << std::endl;
+    if (endpoints->has_libreoffice()) {
+      std::cout << "gRParse office CV enrichment: "
+                << (layout != nullptr ? "enabled (layout"
+                                        + std::string(figure_classes != nullptr
+                                                          ? " + figure classes"
+                                                          : "")
+                                        + ")"
+                                      : "disabled (layout is disabled)")
+                << std::endl;
+    }
     grparse::DocumentParserService service(scheduler, endpoints);
     grparse::DocumentStreamingService streaming_service(scheduler, endpoints);
     grpc::EnableDefaultHealthCheckService(true);

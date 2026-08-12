@@ -230,6 +230,7 @@ add_library(grparse_core STATIC
   src/document_merge.cpp
   src/document_parser_service.cpp
   src/office_collector.cpp
+  src/office_cv_enrichment.cpp
   src/figure_classifier.cpp
   src/document_assembly.cpp
   src/in_memory_document.cpp
@@ -263,6 +264,7 @@ if(BUILD_TESTING)
     figure-classifier-test
     layout-engine-test
     office-collector-test
+    office-cv-enrichment-test
     page-scheduler-test
     pdf-source-test
     prometheus-metrics-test
@@ -298,8 +300,9 @@ if(BUILD_TESTING)
       "GRPARSE_TEST_MODELS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/models;GRPARSE_TEST_DATA_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
   # ZXing is compiled in, so the barcode tests never skip; they only need the
   # committed QR fixture.  The scheduler test loads the same fixture to prove
-  # the class-triggered decode end to end.
-  set_tests_properties(barcode-decoder-test page-scheduler-test PROPERTIES
+  # the class-triggered decode end to end, and the office enrichment test
+  # runs it through a fake detector to prove the hybrid leg without models.
+  set_tests_properties(barcode-decoder-test page-scheduler-test office-cv-enrichment-test PROPERTIES
     ENVIRONMENT "GRPARSE_TEST_DATA_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
 endif()
 

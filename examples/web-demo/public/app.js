@@ -83,17 +83,27 @@ function renderPage(event) {
   card.appendChild(heading);
 
   // Canvas scaled to the advertised page size (top-left origin, pixel units).
+  // When the server sends a page preview (GRPARSE_PAGE_IMAGES=on) it sits
+  // under the transparent canvas, so the boxes mask the real page; the white
+  // wrapper stands in when there is no preview or it is toggled off.
   const width = event.size ? event.size.width : 850;
   const height = event.size ? event.size.height : 1100;
+  const wrapper = document.createElement("div");
+  wrapper.className = "page-canvas";
+  if (event.image) {
+    const pageImage = document.createElement("img");
+    pageImage.src = event.image;
+    pageImage.alt = `Page ${event.pageNumber} render`;
+    wrapper.appendChild(pageImage);
+  }
   const canvas = document.createElement("canvas");
   const scale = Math.min(1, 920 / width);
   canvas.width = Math.round(width * scale);
   canvas.height = Math.round(height * scale);
-  card.appendChild(canvas);
+  wrapper.appendChild(canvas);
+  card.appendChild(wrapper);
 
   const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   const sourceByRef = new Map(event.offsets.map((offset) => [offset.ref, offset.source]));
 
@@ -183,7 +193,12 @@ function banner(kind, message) {
 function handleEvent(event) {
   if (event.type === "page") {
     renderPage(event);
-    if (run) run.pages.push({ ...event, arrivalSeconds: (performance.now() - startedAt) / 1000 });
+    // The preview data URI stays out of the JSON export: it is a rendering
+    // aid, not parse data, and it would dwarf everything else in the file.
+    if (run) {
+      const { image, ...data } = event;
+      run.pages.push({ ...data, arrivalSeconds: (performance.now() - startedAt) / 1000 });
+    }
   } else if (event.type === "complete") {
     if (run) {
       run.complete = { totalPages: event.totalPages, elapsedSeconds: (performance.now() - startedAt) / 1000 };
@@ -230,6 +245,10 @@ async function parseFile(file) {
     finishRun();
   }
 }
+
+document.getElementById("toggle-image").addEventListener("change", (event) => {
+  results.classList.toggle("hide-page-images", !event.target.checked);
+});
 
 dropzone.addEventListener("click", () => fileInput.click());
 sampleButton.addEventListener("click", async (event) => {

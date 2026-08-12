@@ -36,8 +36,15 @@ RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.83.0-ort1.28.0-sessionep
 # the CUDA runtime math libraries (cublas, cufft, curand), which are the
 # reason the base is a CUDA image at all. cuDNN is installed here only to be
 # copied out; ONNX Runtime dlopens it, so ldd alone would never surface it.
+# The Liberation fonts are poppler's base-14 substitutes: a PDF that uses
+# Helvetica/Times/Courier without embedding them renders blank text without
+# a metric-compatible substitute, which starves layout detection and page
+# previews of pixels. fc-cache prebuilds the fontconfig cache so the
+# read-only runtime never tries to write one.
 RUN apt-get update && apt-get install -y --no-install-recommends libcudnn9-cuda-13 \
+    fonts-liberation fontconfig \
     && rm -rf /var/lib/apt/lists/* \
+    && fc-cache -f \
     && mkdir -p /out/runtime-libs \
     && cp -a /usr/lib/x86_64-linux-gnu/libcudnn* /out/runtime-libs/ \
     && for f in /out/grparse-server /out/grparse-stream-client \
@@ -58,10 +65,13 @@ ENV GRPARSE_LISTEN_ADDRESS=0.0.0.0:50051 GRPARSE_MODELS_DIR=/models GRPARSE_PAGE
     LD_LIBRARY_PATH=/usr/local/lib
 COPY --from=build /out/runtime-libs/ /usr/local/lib/
 COPY --from=build /out/onnxruntime-lib/ /usr/local/lib/
-# Fontconfig's default configuration, so poppler's font machinery starts
-# quietly; the image intentionally ships no fonts (PDF text renders from
-# embedded fonts, and the CV path reads pixels, not glyphs).
+# Fontconfig's configuration, the Liberation base-14 substitutes, and the
+# prebuilt font cache: PDFs with embedded fonts never needed any of this,
+# but non-embedded Helvetica/Times/Courier text would otherwise rasterize
+# blank — invisible to layout detection and page previews.
 COPY --from=build /etc/fonts /etc/fonts
+COPY --from=build /usr/share/fonts /usr/share/fonts
+COPY --from=build /var/cache/fontconfig /var/cache/fontconfig
 COPY --from=build /out/grparse-server /usr/local/bin/grparse-server
 COPY --from=build /out/grparse-stream-client /usr/local/bin/grparse-stream-client
 USER 65532:65532

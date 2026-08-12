@@ -29,10 +29,13 @@ FROM ubuntu:26.04
 ENV GRPARSE_LISTEN_ADDRESS=0.0.0.0:50051 GRPARSE_MODELS_DIR=/models GRPARSE_PAGE_WORKERS=2 \
     GRPARSE_ORT_EP=openvino GRPARSE_OPENVINO_DEVICE=GPU
 # intel-opencl-icd is the NEO compute runtime the OpenVINO GPU plugin drives.
+# fonts-liberation gives poppler metric-compatible base-14 substitutes so
+# non-embedded Helvetica/Times/Courier text rasterizes instead of rendering
+# blank (layout detection and page previews read those pixels).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpoppler-cpp3 libopencv-core-dev libopencv-imgcodecs-dev libopencv-imgproc-dev \
-    ocl-icd-libopencl1 intel-opencl-icd \
-    && rm -rf /var/lib/apt/lists/*
+    ocl-icd-libopencl1 intel-opencl-icd fonts-liberation fontconfig \
+    && rm -rf /var/lib/apt/lists/* && fc-cache -f
 COPY --from=build /out/grparse-server /usr/local/bin/grparse-server
 COPY --from=build /out/grparse-stream-client /usr/local/bin/grparse-stream-client
 COPY --from=build /out/ort-libs/ /usr/local/lib/

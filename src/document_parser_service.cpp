@@ -288,7 +288,7 @@ grpc::Status DocumentParserService::ConvertSource(
       }
       return collect_office_document(endpoints->libreoffice_channel(),
                                      requested_name.string(), requested_name.string(),
-                                     std::string(), *bytes);
+                                     std::string(), *bytes, endpoints->cv_enrichment());
     };
 
     std::vector<PlannedCollector> plan;
@@ -640,7 +640,8 @@ class DocumentStreamReactor final
         outcome.code = grpc::StatusCode::FAILED_PRECONDITION;
       } else {
         outcome = collect_office_document(endpoints->libreoffice_channel(), document_id,
-                                          filename, content_type, *bytes);
+                                          filename, content_type, *bytes,
+                                          endpoints->cv_enrichment());
       }
       if (const auto gate = weak_gate.lock()) {
         std::lock_guard<std::mutex> lock(gate->mutex);

@@ -210,6 +210,34 @@ void verify_captured_figure_bytes_become_image_refs() {
           "predicted classes keep their order and confidence");
 }
 
+// A captured page preview becomes the page's own ImageRef; its pixel size
+// comes from the PNG header while the page size keeps its coordinate space.
+void verify_page_preview_becomes_page_image() {
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{612, 792, {line("body", 100)}};
+  // Minimal PNG prefix: 8-byte signature, IHDR length/tag, width 300, height 200.
+  page.preview_png = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D,
+                      'I',  'H', 'D', 'R', 0,    0,    0x01, 0x2C, 0, 0, 0, 0xC8};
+
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(page, 1, &cursor, &data);
+  require(data.page_meta().has_image(), "the preview must attach to the page");
+  const auto& image = data.page_meta().image();
+  require(image.mimetype() == "image/png", "preview mimetype");
+  require(image.size().width() == 300 && image.size().height() == 200,
+          "preview pixel size comes from the PNG header");
+  require(image.uri().rfind("data:image/png;base64,", 0) == 0,
+          "preview URI must be a base64 PNG data URI");
+  require(data.page_meta().size().width() == 612 && data.page_meta().size().height() == 792,
+          "the page size keeps the page's own coordinate space");
+
+  grparse::AssemblyCursor bare_cursor;
+  grparse::OcrPage bare{612, 792, {line("body", 100)}};
+  ai::pipestream::parse::v1::PageData bare_data;
+  grparse::append_page_data(bare, 1, &bare_cursor, &bare_data);
+  require(!bare_data.page_meta().has_image(), "no preview, no page image");
+}
+
 // Decoded barcode payloads become misc annotations with a machine-readable
 // struct, one annotation per payload, alongside any classification.
 void verify_barcode_payloads_become_misc_annotations() {
@@ -284,6 +312,7 @@ int main() {
     verify_layout_regions_map_labels_and_emit_items();
     verify_structured_cells_override_geometry();
     verify_captured_figure_bytes_become_image_refs();
+    verify_page_preview_becomes_page_image();
     verify_barcode_payloads_become_misc_annotations();
     verify_items_carry_collector_sources();
     return EXIT_SUCCESS;

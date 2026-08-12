@@ -6,6 +6,7 @@
 #include <grpcpp/grpcpp.h>
 
 #include "grparse/collector_coordinator.h"
+#include "grparse/office_cv_enrichment.h"
 
 namespace grparse {
 
@@ -13,9 +14,13 @@ namespace grparse {
 // its typed event stream into a source-tagged docling Document. Never
 // throws: transport, load, and mapping failures land in the outcome so the
 // coordinator can degrade instead of failing the parse.
+//
+// When an enrichment with a detector is supplied, the mapped document's page
+// renders additionally run through the CV engines (layout, figure classes,
+// barcodes) before the outcome returns; see office_cv_enrichment.h.
 CollectorOutcome collect_office_document(
     const std::shared_ptr<grpc::Channel>& channel, const std::string& document_id,
     const std::string& filename, const std::string& content_type,
-    const std::string& bytes);
+    const std::string& bytes, const OfficeCvEnrichment& enrichment = {});
 
 }  // namespace grparse

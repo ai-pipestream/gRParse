@@ -413,6 +413,48 @@ void verify_picture_capture_encodes_figure_crops() {
   }
 }
 
+// With page capture enabled, every delivered page carries a PNG preview of
+// its raster — including full-digital pages, which are rasterized for the
+// preview even with no layout detector to force it.
+void verify_page_capture_encodes_previews() {
+  FakeRecognizer recognizer;
+  grparse::PageScheduler::Options options{2, 2, 2, 2, 1, 1, 1};
+  options.capture_page_images = true;
+  grparse::PageScheduler scheduler(
+      recognizer, options,
+      [](std::shared_ptr<const std::string>, bool) {
+        return std::make_shared<RenderableDigitalSource>();
+      });
+  Result result;
+  std::mutex pages_mutex;
+  std::vector<std::shared_ptr<const grparse::OcrPage>> delivered;
+  auto callbacks = callbacks_for(&result);
+  callbacks.on_page = [&](int page_number, std::shared_ptr<const grparse::OcrPage> page) {
+    {
+      std::lock_guard<std::mutex> lock(pages_mutex);
+      delivered.push_back(std::move(page));
+    }
+    std::lock_guard<std::mutex> lock(result.mutex);
+    result.completed_pages.push_back(page_number);
+    return grparse::PageScheduler::DeliveryResult::kAcceptedAndRelease;
+  };
+  scheduler.submit(std::make_shared<const std::string>("memory"), true, std::move(callbacks));
+  wait_until_finished(&result);
+
+  require(!result.failure, "page-capture document failed");
+  require(scheduler.metrics().pages_rendered == 2,
+          "full-digital pages must rasterize when previews are on");
+  std::lock_guard<std::mutex> lock(pages_mutex);
+  require(delivered.size() == 2, "page-capture delivery count");
+  for (const auto& page : delivered) {
+    require(page->skip_ocr, "the digital layer must survive the raster detour");
+    require(page->preview_png.size() > 8, "every page must carry a preview");
+    require(page->preview_png[0] == 0x89 && page->preview_png[1] == 'P' &&
+                page->preview_png[2] == 'N' && page->preview_png[3] == 'G',
+            "the preview must be PNG-encoded");
+  }
+}
+
 // Full digital coverage rendering a page that holds the committed QR fixture,
 // so barcode decoding sees real pixels.
 class QrPageSource final : public grparse::PageSource {
@@ -768,6 +810,7 @@ int main() {
     verify_table_structure_runs_on_crops();
     verify_figure_classification_runs_on_crops();
     verify_picture_capture_encodes_figure_crops();
+    verify_page_capture_encodes_previews();
     verify_barcode_decode_triggers_on_class();
     verify_barcode_gate_and_forced_mode();
     verify_partial_digital_merges_with_ocr();

@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include "grparse/barcode_decoder.h"
 #include "grparse/region_geometry.h"
@@ -26,6 +27,22 @@ bool barcode_class(const LayoutRegion& region) {
   if (region.figure_classes.empty()) return false;
   const std::string& top = region.figure_classes.front().label;
   return top == "bar_code" || top == "qr_code";
+}
+
+// Longest side of a captured page preview.  Rasters render at 200 DPI
+// (a letter page is ~1700x2200); previews exist to be painted under boxes,
+// not re-OCRed, so half that keeps events an order of magnitude smaller.
+constexpr int kPagePreviewMaxSide = 1100;
+
+// Downscaled copy of the raster for the page preview; the raster itself when
+// it is already within bounds.  Never aliases past the encode that follows.
+cv::Mat preview_of(const cv::Mat& raster) {
+  const int longest = std::max(raster.cols, raster.rows);
+  if (longest <= kPagePreviewMaxSide) return raster;
+  const double scale = static_cast<double>(kPagePreviewMaxSide) / longest;
+  cv::Mat scaled;
+  cv::resize(raster, scaled, cv::Size(), scale, scale, cv::INTER_AREA);
+  return scaled;
 }
 
 template <typename T>
@@ -492,7 +509,10 @@ class PageScheduler::Impl final {
         }
         if (digital.has_value()) {
           pages_read_digitally_.fetch_add(1);
-          if (digital->skip_ocr && region_detector_ == nullptr) {
+          // A full-digital page needs no raster for OCR, but layout and page
+          // previews both need pixels; either keeps the page on the raster path.
+          if (digital->skip_ocr && region_detector_ == nullptr &&
+              !options_.capture_page_images) {
             enqueue_assembly(page, std::make_shared<const OcrPage>(std::move(*digital)));
             page.reset();
             continue;
@@ -607,6 +627,11 @@ class PageScheduler::Impl final {
               region.barcodes = decode_barcodes(crop);
               barcodes_decoded_.fetch_add(region.barcodes.size());
             }
+          }
+          // The page preview encodes last, like the crops: after every device
+          // call, before the raster drops.
+          if (options_.capture_page_images && !job.image.empty()) {
+            cv::imencode(".png", preview_of(job.image), assembled.preview_png);
           }
           // Drop the raster the moment the device stage is done with it (B5).
           job.image.release();

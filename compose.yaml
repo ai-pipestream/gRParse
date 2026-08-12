@@ -9,6 +9,7 @@ services:
     environment:
       CUDA_CACHE_DISABLE: "1"
       GRPARSE_METRICS_PORT: "9464"
+      GRPARSE_PAGE_IMAGES: "on"   # page previews for the demo's box overlay
     gpus: all
     read_only: true
     tmpfs:

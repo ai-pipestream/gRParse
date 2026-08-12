@@ -38,7 +38,7 @@ grpc::StatusCode map_code(grpc::StatusCode code) {
 CollectorOutcome collect_office_document(
     const std::shared_ptr<grpc::Channel>& channel, const std::string& document_id,
     const std::string& filename, const std::string& content_type,
-    const std::string& bytes) {
+    const std::string& bytes, const OfficeCvEnrichment& enrichment) {
   CollectorOutcome outcome;
   auto stub = officev1::OfficeRenderService::NewStub(channel);
   grpc::ClientContext context;
@@ -87,6 +87,10 @@ CollectorOutcome collect_office_document(
   }
   outcome.warnings = mapper.warnings();
   outcome.document = mapper.take();
+  // The hybrid leg: native office text and tables are exact, so the CV
+  // engines add only what the office core cannot see on its own renders —
+  // figure regions, their classes, and barcode payloads.
+  enrich_office_document(enrichment, &outcome.document);
   outcome.success = true;
   return outcome;
 }

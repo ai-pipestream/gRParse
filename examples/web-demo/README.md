@@ -4,10 +4,14 @@ A small Node bridge plus a static page that shows the streaming parse live:
 drop a PDF or image on the page and every `DocumentStreamEvent.page` is
 painted the moment the server emits it — provenance boxes on a page-scaled
 canvas (dashed for OCR text, solid for digital), reading-order text, table
-grids, picture classifications, and decoded barcodes. Each page card carries
+grids, picture classifications, and decoded barcodes. When the service runs
+with `GRPARSE_PAGE_IMAGES=on` (the compose file does), the boxes draw over
+the real page render — the legend's "page image" checkbox flips between the
+overlay and boxes-only views. Each page card carries
 its arrival time relative to upload start (the visible proof pages stream
 instead of waiting for the whole document), and once the stream completes the
-full mapped result downloads as JSON.
+full mapped result downloads as JSON (previews excluded; they are a rendering
+aid, not parse data).
 
 ![The web demo after parsing the bundled sample](../../docs/images/web-demo.png)
 

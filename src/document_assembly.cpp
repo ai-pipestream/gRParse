@@ -225,6 +225,12 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
   output->mutable_page_meta()->set_page_no(page_number);
   output->mutable_page_meta()->mutable_size()->set_width(source.width);
   output->mutable_page_meta()->mutable_size()->set_height(source.height);
+  // The preview's pixel size comes from its own PNG header; the page size
+  // above stays in the page's coordinate space (PDF points for digital
+  // pages).  Same aspect ratio, so clients can scale boxes onto the image.
+  if (!source.preview_png.empty()) {
+    set_picture_image(source.preview_png, output->mutable_page_meta()->mutable_image());
+  }
 
   // Emission order defines text offsets, refs, and body order, so lines are
   // walked in reading order (multi-column aware) rather than input order.

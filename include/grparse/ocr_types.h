@@ -83,6 +83,11 @@ struct OcrPage {
   bool skip_ocr = false;
   // Layout detections for this page; empty when no layout model is active.
   std::vector<LayoutRegion> regions = {};
+  // PNG-encoded downscaled preview of the page raster, captured in the
+  // inference stage while the raster is alive.  Filled only when page-image
+  // capture is enabled; empty otherwise.  Its pixel size may differ from
+  // width/height (which can be PDF points); the aspect ratio matches.
+  std::vector<unsigned char> preview_png = {};
 };
 
 // Merge OCR lines into a digital page without duplicating geometry-overlapping text.

@@ -8,6 +8,7 @@
 
 #include "ai/pipestream/parse/v1/parse.grpc.pb.h"
 #include "ai/pipestream/parse/v1/parse_stream.grpc.pb.h"
+#include "grparse/office_cv_enrichment.h"
 #include "grparse/page_scheduler.h"
 
 namespace grparse {
@@ -18,11 +19,17 @@ namespace grparse {
 // collector, not the parse.
 class CollectorEndpoints {
  public:
-  explicit CollectorEndpoints(std::string libreoffice_target)
-      : libreoffice_target_(std::move(libreoffice_target)) {}
+  explicit CollectorEndpoints(std::string libreoffice_target,
+                              OfficeCvEnrichment cv_enrichment = {})
+      : libreoffice_target_(std::move(libreoffice_target)),
+        cv_enrichment_(cv_enrichment) {}
 
   bool has_libreoffice() const { return !libreoffice_target_.empty(); }
   const std::string& libreoffice_target() const { return libreoffice_target_; }
+
+  // The CV engines the office collector runs over LibreOffice page renders;
+  // an all-null enrichment disables the hybrid leg.
+  const OfficeCvEnrichment& cv_enrichment() const { return cv_enrichment_; }
 
   // The lazily created channel to the libreoffice collector; one channel
   // serves every parse.
@@ -30,6 +37,7 @@ class CollectorEndpoints {
 
  private:
   std::string libreoffice_target_;
+  OfficeCvEnrichment cv_enrichment_;
   std::mutex mutex_;
   std::shared_ptr<grpc::Channel> channel_;
 };

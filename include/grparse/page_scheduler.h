@@ -46,6 +46,11 @@ class PageScheduler final {
     // PNG-encode figure crops onto their regions in the inference stage.
     // Off by default: image bytes inflate every page event that has figures.
     bool capture_picture_images = false;
+    // PNG-encode a downscaled preview of every page raster onto the page in
+    // the inference stage, so clients can paint boxes over the real page.
+    // Forces rasterization of full-digital pages (like layout does).  Off by
+    // default: previews add bytes to every page event.
+    bool capture_page_images = false;
     // Decode barcode/QR payloads from figure crops in the inference stage.
     BarcodeMode barcode_mode = BarcodeMode::kOff;
   };
