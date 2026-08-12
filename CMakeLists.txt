@@ -67,7 +67,7 @@ set(GRPARSE_ORT_PACKAGE "cuda" CACHE STRING
   "ONNX Runtime package to link: cuda or openvino")
 if(GRPARSE_ORT_PACKAGE STREQUAL "cuda")
   FetchContent_Declare(onnxruntime
-    URL https://github.com/microsoft/onnxruntime/releases/download/v1.27.1/onnxruntime-linux-x64-gpu_cuda13-1.27.1.tgz
+    URL https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-x64-gpu_cuda13-1.28.0.tgz
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
   FetchContent_MakeAvailable(onnxruntime)
   set(GRPARSE_ORT_LIBRARY "${onnxruntime_SOURCE_DIR}/lib/libonnxruntime.so")
@@ -112,6 +112,8 @@ set(ZXING_BLACKBOX_TESTS OFF CACHE BOOL "" FORCE)
 set(ZXING_UNIT_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(zxing
   GIT_REPOSITORY https://github.com/zxing-cpp/zxing-cpp.git
+  # v3.x needs C++20 in its public headers; stay on the 2.x line until the
+  # project moves off C++17.
   GIT_TAG v2.3.0
   GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(zxing)
@@ -143,7 +145,7 @@ set(protobuf_INSTALL OFF CACHE BOOL "" FORCE)
 set(ABSL_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(grpc
   GIT_REPOSITORY https://github.com/grpc/grpc.git
-  GIT_TAG v1.82.1
+  GIT_TAG v1.83.0
   GIT_SHALLOW TRUE
   GIT_SUBMODULES_RECURSE TRUE)
 FetchContent_MakeAvailable(grpc)

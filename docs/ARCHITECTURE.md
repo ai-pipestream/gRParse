@@ -78,7 +78,7 @@ the memory budget differs.
 **ONNX opset portability**
 
 The PP-OCRv3 model set runs unmodified on both shipped runtimes (CUDA EP on
-ONNX Runtime 1.27.1; OpenVINO EP 2025.4.1 on ONNX Runtime 1.24.1). Future
+ONNX Runtime 1.28.0; OpenVINO EP 2025.4.1 on ONNX Runtime 1.24.1). Future
 models (layout, tables, figures) must stay within opsets both EPs support and
 avoid EP-specific custom ops. Note ONNX Runtime silently places nodes the
 OpenVINO EP cannot handle onto CPU — after adding a model, check the metrics

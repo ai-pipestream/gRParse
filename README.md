@@ -233,9 +233,9 @@ docker run --rm --network host \
 ## Development
 
 The container is the supported build environment. It runs Ubuntu 26.04
-with CUDA 13.3, cuDNN 9, ONNX Runtime GPU 1.27.1 for CUDA 13,
-RapidOcrOnnx 1.2.3 C++ sources, and gRPC 1.82.1. These are the newest applicable
-upstream versions as of 2026-07-21. RapidOCR 3.9.2 is the current Python package
+with CUDA 13.3, cuDNN 9, ONNX Runtime GPU 1.28.0 for CUDA 13,
+RapidOcrOnnx 1.2.3 C++ sources, and gRPC 1.83.0. These are the newest applicable
+upstream versions as of 2026-08-11. RapidOCR 3.9.2 is the current Python package
 release; its C++ entry point still directs users to RapidOcrOnnx, whose newest
 C++ tag is 1.2.3. The container needs an NVIDIA Container Toolkit-enabled
 Docker installation. A CUDA-capable ONNX Runtime build is required for the
