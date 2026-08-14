@@ -46,16 +46,55 @@ void verify_routing() {
                                  "application/vnd.oasis.opendocument.text"),
           "content type routes when the extension does not");
 
-  auto plan = grparse::resolve_collectors({}, false);
+  require(grparse::route_collector("report.docx", "") == parsev1::COLLECTOR_LIBREOFFICE,
+          "office formats route to libreoffice");
+  require(grparse::route_collector("scan.pdf", "") == parsev1::COLLECTOR_GRPARSE_CV,
+          "pdf routes to the CV path");
+  require(grparse::route_collector("page.png", "") == parsev1::COLLECTOR_GRPARSE_CV,
+          "raster routes to the CV path");
+  require(grparse::route_collector("book.epub", "") == parsev1::COLLECTOR_EPUB,
+          "epub routes to the epub collector");
+  require(grparse::route_collector("upload.bin", "application/epub+zip") ==
+              parsev1::COLLECTOR_EPUB,
+          "epub content type routes without the extension");
+  require(grparse::route_collector("thread.EML", "") == parsev1::COLLECTOR_EMAIL,
+          "eml routes to the email collector, case-insensitively");
+  require(grparse::route_collector("note.msg", "") == parsev1::COLLECTOR_EMAIL,
+          "msg routes to the email collector");
+  require(grparse::route_collector("upload.bin", "message/rfc822") ==
+              parsev1::COLLECTOR_EMAIL,
+          "rfc822 content type routes to the email collector");
+  require(grparse::route_collector("article.xml", "") == parsev1::COLLECTOR_XML,
+          "xml routes to the xml collector");
+  require(grparse::route_collector("paper.nxml", "") == parsev1::COLLECTOR_XML,
+          "nxml routes to the xml collector");
+  require(grparse::route_collector("upload.bin", "text/xml") == parsev1::COLLECTOR_XML,
+          "xml content type routes to the xml collector");
+  require(grparse::route_collector("page.xhtml", "") == parsev1::COLLECTOR_GRPARSE_CV,
+          "the +xml suffix family does not route to the xml collector");
+  require(grparse::route_collector("talk.mp3", "") == parsev1::COLLECTOR_ASR,
+          "audio routes to the asr collector");
+  require(grparse::route_collector("clip.mkv", "") == parsev1::COLLECTOR_ASR,
+          "video routes to the asr collector");
+  require(grparse::route_collector("upload.bin", "audio/flac") == parsev1::COLLECTOR_ASR,
+          "audio content type routes to the asr collector");
+  require(grparse::route_collector("upload.bin", "video/webm") == parsev1::COLLECTOR_ASR,
+          "video content type routes to the asr collector");
+  require(grparse::route_collector("EXTRACT.DAT", "") == parsev1::COLLECTOR_GRPARSE_CV,
+          "ebcdic never routes by format; only an explicit selection reaches it");
+  require(grparse::route_collector("data.csv", "") == parsev1::COLLECTOR_LIBREOFFICE,
+          "csv stays an office format even though it is text");
+
+  auto plan = grparse::resolve_collectors({}, parsev1::COLLECTOR_GRPARSE_CV);
   require(plan.size() == 1 && plan[0] == parsev1::COLLECTOR_GRPARSE_CV,
-          "empty selection routes non-office to CV");
-  plan = grparse::resolve_collectors({}, true);
-  require(plan.size() == 1 && plan[0] == parsev1::COLLECTOR_LIBREOFFICE,
-          "empty selection routes office to libreoffice");
+          "empty selection becomes the routed default");
+  plan = grparse::resolve_collectors({}, parsev1::COLLECTOR_ASR);
+  require(plan.size() == 1 && plan[0] == parsev1::COLLECTOR_ASR,
+          "empty selection follows whatever the router chose");
   plan = grparse::resolve_collectors(
       {parsev1::COLLECTOR_UNSPECIFIED, parsev1::COLLECTOR_LIBREOFFICE,
        parsev1::COLLECTOR_GRPARSE_CV, parsev1::COLLECTOR_LIBREOFFICE},
-      false);
+      parsev1::COLLECTOR_GRPARSE_CV);
   require(plan.size() == 2 && plan[0] == parsev1::COLLECTOR_LIBREOFFICE &&
               plan[1] == parsev1::COLLECTOR_GRPARSE_CV,
           "explicit selection wins verbatim, deduplicated, order kept");

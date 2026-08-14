@@ -21,6 +21,7 @@
 #include "grparse/base64.h"
 #include "grparse/collector_coordinator.h"
 #include "grparse/document_assembly.h"
+#include "grparse/document_collectors.h"
 #include "grparse/document_merge.h"
 #include "grparse/in_memory_document.h"
 #include "grparse/office_collector.h"
@@ -62,6 +63,23 @@ std::string mimetype_for(const fs::path& path) {
   if (extension == ".ppt") return "application/vnd.ms-powerpoint";
   if (extension == ".csv") return "text/csv";
   if (extension == ".rtf") return "application/rtf";
+  if (extension == ".epub") return "application/epub+zip";
+  if (extension == ".eml") return "message/rfc822";
+  if (extension == ".msg") return "application/vnd.ms-outlook";
+  if (extension == ".xml" || extension == ".nxml" || extension == ".xbrl") {
+    return "application/xml";
+  }
+  if (extension == ".mp3") return "audio/mpeg";
+  if (extension == ".wav") return "audio/wav";
+  if (extension == ".m4a") return "audio/mp4";
+  if (extension == ".flac") return "audio/flac";
+  if (extension == ".ogg" || extension == ".oga" || extension == ".opus") {
+    return "audio/ogg";
+  }
+  if (extension == ".mp4" || extension == ".m4v") return "video/mp4";
+  if (extension == ".mkv") return "video/x-matroska";
+  if (extension == ".webm") return "video/webm";
+  if (extension == ".mov") return "video/quicktime";
   return "image/png";
 }
 
@@ -76,8 +94,82 @@ const char* collector_name(pipestream::parse::v1::Collector collector) {
     case pipestream::parse::v1::COLLECTOR_LIBREOFFICE: return "libreoffice";
     case pipestream::parse::v1::COLLECTOR_POI: return "poi";
     case pipestream::parse::v1::COLLECTOR_CALAMINE: return "calamine";
+    case pipestream::parse::v1::COLLECTOR_ASR: return "asr";
+    case pipestream::parse::v1::COLLECTOR_EMAIL: return "email";
+    case pipestream::parse::v1::COLLECTOR_XML: return "xml";
+    case pipestream::parse::v1::COLLECTOR_EBCDIC: return "ebcdic";
+    case pipestream::parse::v1::COLLECTOR_EPUB: return "epub";
     default: return "unspecified";
   }
+}
+
+const char* collector_target_env(pipestream::parse::v1::Collector collector) {
+  switch (collector) {
+    case pipestream::parse::v1::COLLECTOR_LIBREOFFICE: return "GRPARSE_LIBREOFFICE_TARGET";
+    case pipestream::parse::v1::COLLECTOR_ASR: return "GRPARSE_ASR_TARGET";
+    case pipestream::parse::v1::COLLECTOR_EMAIL: return "GRPARSE_EMAIL_TARGET";
+    case pipestream::parse::v1::COLLECTOR_XML: return "GRPARSE_XML_TARGET";
+    case pipestream::parse::v1::COLLECTOR_EBCDIC: return "GRPARSE_EBCDIC_TARGET";
+    case pipestream::parse::v1::COLLECTOR_EPUB: return "GRPARSE_EPUB_TARGET";
+    default: return "";
+  }
+}
+
+// Dials one Document-emitting remote collector and returns its outcome.
+// Configuration failures are outcomes too, so the parse degrades collector
+// by collector no matter where the failure sits. The office collector keeps
+// its own path: it streams typed events for gRParse to fold and enrich.
+CollectorOutcome run_remote_collector(
+    pipestream::parse::v1::Collector id,
+    const std::shared_ptr<CollectorEndpoints>& endpoints,
+    const std::string& document_id, const std::string& filename,
+    const std::string& content_type, const std::string& bytes,
+    const std::string& ebcdic_layout_json) {
+  CollectorOutcome outcome;
+  if (*collector_target_env(id) == '\0') {
+    outcome.error = std::string("collector '") + collector_name(id) +
+                    "' is not wired in yet";
+    outcome.code = grpc::StatusCode::UNIMPLEMENTED;
+    return outcome;
+  }
+  if (endpoints == nullptr || !endpoints->has(id)) {
+    outcome.error = std::string(collector_name(id)) +
+                    " collector is not configured (" + collector_target_env(id) + ")";
+    outcome.code = grpc::StatusCode::FAILED_PRECONDITION;
+    return outcome;
+  }
+  switch (id) {
+    case pipestream::parse::v1::COLLECTOR_LIBREOFFICE:
+      return collect_office_document(endpoints->libreoffice_channel(), document_id,
+                                     filename, content_type, bytes,
+                                     endpoints->cv_enrichment());
+    case pipestream::parse::v1::COLLECTOR_ASR:
+      if (endpoints->asr_model().empty()) {
+        outcome.error = "asr collector has no model configured (GRPARSE_ASR_MODEL)";
+        outcome.code = grpc::StatusCode::FAILED_PRECONDITION;
+        return outcome;
+      }
+      return collect_asr_document(endpoints->channel(id), endpoints->asr_model(), bytes);
+    case pipestream::parse::v1::COLLECTOR_EMAIL:
+      return collect_email_document(endpoints->channel(id), document_id, filename,
+                                    content_type, bytes);
+    case pipestream::parse::v1::COLLECTOR_XML:
+      return collect_xml_document(endpoints->channel(id), bytes);
+    case pipestream::parse::v1::COLLECTOR_EBCDIC:
+      return collect_ebcdic_document(endpoints->channel(id), ebcdic_layout_json, bytes);
+    case pipestream::parse::v1::COLLECTOR_EPUB:
+      return collect_epub_document(endpoints->channel(id), bytes);
+    default:
+      outcome.error = std::string("collector '") + collector_name(id) +
+                      "' is not wired in yet";
+      outcome.code = grpc::StatusCode::UNIMPLEMENTED;
+      return outcome;
+  }
+}
+
+// True for every collector run_remote_collector can dial.
+bool remote_collector(pipestream::parse::v1::Collector id) {
+  return *collector_target_env(id) != '\0';
 }
 
 std::vector<pipestream::parse::v1::Collector> requested_collectors(
@@ -136,7 +228,8 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
   std::vector<const google::protobuf::FieldDescriptor*> populated;
   options.GetReflection()->ListFields(options, &populated);
   for (const auto* field : populated) {
-    if (field->name() != "to_formats" && field->name() != "collectors") {
+    if (field->name() != "to_formats" && field->name() != "collectors" &&
+        field->name() != "ebcdic_layout_json") {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                           "ConvertSource does not implement option '" + std::string(field->name()) + "'");
     }
@@ -154,12 +247,30 @@ grpc::Status status_from_exception(std::exception_ptr failure);
 
 }  // namespace
 
-std::shared_ptr<grpc::Channel> CollectorEndpoints::libreoffice_channel() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (channel_ == nullptr && !libreoffice_target_.empty()) {
-    channel_ = grpc::CreateChannel(libreoffice_target_, grpc::InsecureChannelCredentials());
+const std::string& CollectorEndpoints::target(
+    pipestream::parse::v1::Collector id) const {
+  static const std::string kNone;
+  switch (id) {
+    case pipestream::parse::v1::COLLECTOR_LIBREOFFICE: return targets_.libreoffice;
+    case pipestream::parse::v1::COLLECTOR_ASR: return targets_.asr;
+    case pipestream::parse::v1::COLLECTOR_EMAIL: return targets_.email;
+    case pipestream::parse::v1::COLLECTOR_XML: return targets_.xml;
+    case pipestream::parse::v1::COLLECTOR_EBCDIC: return targets_.ebcdic;
+    case pipestream::parse::v1::COLLECTOR_EPUB: return targets_.epub;
+    default: return kNone;
   }
-  return channel_;
+}
+
+std::shared_ptr<grpc::Channel> CollectorEndpoints::channel(
+    pipestream::parse::v1::Collector id) {
+  const std::string& where = target(id);
+  if (where.empty()) return nullptr;
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto& channel = channels_[id];
+  if (channel == nullptr) {
+    channel = grpc::CreateChannel(where, grpc::InsecureChannelCredentials());
+  }
+  return channel;
 }
 
 DocumentParserService::DocumentParserService(PageScheduler& scheduler,
@@ -182,7 +293,6 @@ grpc::Status DocumentParserService::ConvertSource(
     auto bytes = std::make_shared<const std::string>(decode_base64(source.base64_string()));
     const fs::path requested_name = source.filename().empty() ? "document.pdf" : fs::path(source.filename()).filename();
     const bool pdf = is_pdf(*bytes, requested_name);
-    const bool office = office_format(requested_name.string(), "");
 
     // The base document carries identity; every collector's output merges
     // into it additively, in plan order.
@@ -278,40 +388,23 @@ grpc::Status DocumentParserService::ConvertSource(
     };
 
     auto endpoints = endpoints_;
-    auto run_libreoffice = [endpoints, bytes, requested_name]() -> CollectorOutcome {
-      if (endpoints == nullptr || !endpoints->has_libreoffice()) {
-        CollectorOutcome outcome;
-        outcome.error =
-            "libreoffice collector is not configured (GRPARSE_LIBREOFFICE_TARGET)";
-        outcome.code = grpc::StatusCode::FAILED_PRECONDITION;
-        return outcome;
-      }
-      return collect_office_document(endpoints->libreoffice_channel(),
-                                     requested_name.string(), requested_name.string(),
-                                     std::string(), *bytes, endpoints->cv_enrichment());
-    };
+    const auto ebcdic_layout_json =
+        std::make_shared<const std::string>(request->request().options().ebcdic_layout_json());
 
     std::vector<PlannedCollector> plan;
     for (const auto id : resolve_collectors(
-             requested_collectors(request->request().options().collectors()), office)) {
+             requested_collectors(request->request().options().collectors()),
+             route_collector(requested_name.string(), std::string()))) {
       PlannedCollector collector;
       collector.id = id;
-      switch (id) {
-        case pipestream::parse::v1::COLLECTOR_GRPARSE_CV:
-          collector.run = run_cv;
-          break;
-        case pipestream::parse::v1::COLLECTOR_LIBREOFFICE:
-          collector.run = run_libreoffice;
-          break;
-        default:
-          collector.run = [id]() {
-            CollectorOutcome outcome;
-            outcome.error = std::string("collector '") + collector_name(id) +
-                            "' is not wired in yet";
-            outcome.code = grpc::StatusCode::UNIMPLEMENTED;
-            return outcome;
-          };
-          break;
+      if (id == pipestream::parse::v1::COLLECTOR_GRPARSE_CV) {
+        collector.run = run_cv;
+      } else {
+        collector.run = [id, endpoints, bytes, requested_name, ebcdic_layout_json]() {
+          return run_remote_collector(id, endpoints, requested_name.string(),
+                                      requested_name.string(), std::string(), *bytes,
+                                      *ebcdic_layout_json);
+        };
       }
       plan.push_back(std::move(collector));
     }
@@ -534,7 +627,7 @@ class DocumentStreamReactor final
     std::shared_ptr<const std::string> bytes;
     bool pdf = false;
     bool want_cv = false;
-    bool want_libreoffice = false;
+    std::vector<pipestream::parse::v1::Collector> remotes;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       bytes = std::make_shared<const std::string>(std::move(bytes_));
@@ -546,13 +639,13 @@ class DocumentStreamReactor final
       // the stream. The parse degrades collector by collector instead of
       // failing while any part succeeds.
       const auto plan = resolve_collectors(
-          requested_collectors_, office_format(filename_.string(), content_type_));
+          requested_collectors_, route_collector(filename_.string(), content_type_));
       for (const auto id : plan) {
         if (id == pipestream::parse::v1::COLLECTOR_GRPARSE_CV) {
           want_cv = true;
           ++pending_parts_;
-        } else if (id == pipestream::parse::v1::COLLECTOR_LIBREOFFICE) {
-          want_libreoffice = true;
+        } else if (remote_collector(id)) {
+          remotes.push_back(id);
           ++pending_parts_;
         } else {
           record_part_failure_locked(
@@ -574,7 +667,7 @@ class DocumentStreamReactor final
       document_bytes_hash_ = hash;
     }
 
-    if (want_libreoffice) spawn_office_collector(bytes);
+    for (const auto id : remotes) spawn_remote_collector(id, bytes);
     if (!want_cv) return;
 
     try {
@@ -615,12 +708,14 @@ class DocumentStreamReactor final
     }
   }
 
-  // The libreoffice collector runs on its own thread: it is a blocking
-  // client stream, not a gRPC reaction. The gate keeps its completion safe
-  // against reactor teardown exactly like the scheduler callbacks. A client
-  // cancel abandons the result; the collector's own deadline bounds the
-  // orphaned call.
-  void spawn_office_collector(std::shared_ptr<const std::string> bytes) {
+  // A remote collector runs on its own thread: it is a blocking client
+  // stream, not a gRPC reaction. The gate keeps its completion safe against
+  // reactor teardown exactly like the scheduler callbacks. A client cancel
+  // abandons the result; the collector's own deadline bounds the orphaned
+  // call. The streaming wire carries no ebcdic layout, so an ebcdic
+  // selection here degrades to that collector's own INVALID_ARGUMENT.
+  void spawn_remote_collector(pipestream::parse::v1::Collector id,
+                              std::shared_ptr<const std::string> bytes) {
     std::string document_id;
     std::string filename;
     std::string content_type;
@@ -632,22 +727,13 @@ class DocumentStreamReactor final
     }
     const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
     auto endpoints = endpoints_;
-    std::thread([weak_gate, endpoints, bytes, document_id, filename, content_type]() {
-      CollectorOutcome outcome;
-      if (endpoints == nullptr || !endpoints->has_libreoffice()) {
-        outcome.error =
-            "libreoffice collector is not configured (GRPARSE_LIBREOFFICE_TARGET)";
-        outcome.code = grpc::StatusCode::FAILED_PRECONDITION;
-      } else {
-        outcome = collect_office_document(endpoints->libreoffice_channel(), document_id,
-                                          filename, content_type, *bytes,
-                                          endpoints->cv_enrichment());
-      }
+    std::thread([weak_gate, endpoints, id, bytes, document_id, filename, content_type]() {
+      CollectorOutcome outcome = run_remote_collector(
+          id, endpoints, document_id, filename, content_type, *bytes, std::string());
       if (const auto gate = weak_gate.lock()) {
         std::lock_guard<std::mutex> lock(gate->mutex);
         if (gate->reactor != nullptr) {
-          gate->reactor->on_collector_done(pipestream::parse::v1::COLLECTOR_LIBREOFFICE,
-                                           std::move(outcome));
+          gate->reactor->on_collector_done(id, std::move(outcome));
         }
       }
     }).detach();

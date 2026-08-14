@@ -460,23 +460,47 @@ int main() {
     grparse::PageScheduler scheduler(*engines, options, grparse::PageSourceFactory{},
                                      layout.get(), table_structure.get(),
                                      figure_classes.get());
-    // GRPARSE_LIBREOFFICE_TARGET names the grpc-libreoffice collector
-    // endpoint. Unset leaves the collector unconfigured: office-routed
-    // documents then fail that collector with a clear error instead of
-    // being converted through any PDF intermediate.
-    const char* libreoffice = std::getenv("GRPARSE_LIBREOFFICE_TARGET");
+    // GRPARSE_<COLLECTOR>_TARGET names each remote collector's endpoint.
+    // Unset leaves that collector unconfigured: documents routed to it then
+    // fail that collector with a clear error instead of being converted
+    // through any intermediate. GRPARSE_ASR_MODEL names the whisper model
+    // grpc-asr must serve; the asr wire requires one.
+    const auto collector_env = [](const char* name) {
+      const char* configured = std::getenv(name);
+      return configured == nullptr ? std::string() : std::string(configured);
+    };
+    grparse::CollectorTargets targets;
+    targets.libreoffice = collector_env("GRPARSE_LIBREOFFICE_TARGET");
+    targets.asr = collector_env("GRPARSE_ASR_TARGET");
+    targets.asr_model = collector_env("GRPARSE_ASR_MODEL");
+    targets.email = collector_env("GRPARSE_EMAIL_TARGET");
+    targets.xml = collector_env("GRPARSE_XML_TARGET");
+    targets.ebcdic = collector_env("GRPARSE_EBCDIC_TARGET");
+    targets.epub = collector_env("GRPARSE_EPUB_TARGET");
     // The hybrid leg: office documents' page renders run through the same
     // layout/classifier/barcode engines the CV path uses, sharing its pools.
     grparse::OfficeCvEnrichment office_cv;
     office_cv.detector = layout.get();
     office_cv.classifier = figure_classes.get();
     office_cv.barcode_mode = options.barcode_mode;
-    const auto endpoints = std::make_shared<grparse::CollectorEndpoints>(
-        libreoffice == nullptr ? std::string() : std::string(libreoffice), office_cv);
-    std::cout << "gRParse libreoffice collector: "
-              << (endpoints->has_libreoffice() ? endpoints->libreoffice_target()
-                                               : "not configured")
-              << std::endl;
+    const auto endpoints =
+        std::make_shared<grparse::CollectorEndpoints>(targets, office_cv);
+    const auto report_collector = [](const char* name, const std::string& target) {
+      std::cout << "gRParse " << name << " collector: "
+                << (target.empty() ? "not configured" : target) << std::endl;
+    };
+    report_collector("libreoffice", targets.libreoffice);
+    report_collector("asr", targets.asr);
+    if (!targets.asr.empty()) {
+      std::cout << "gRParse asr model: "
+                << (targets.asr_model.empty() ? "NOT CONFIGURED (GRPARSE_ASR_MODEL)"
+                                              : targets.asr_model)
+                << std::endl;
+    }
+    report_collector("email", targets.email);
+    report_collector("xml", targets.xml);
+    report_collector("ebcdic", targets.ebcdic);
+    report_collector("epub", targets.epub);
     if (endpoints->has_libreoffice()) {
       std::cout << "gRParse office CV enrichment: "
                 << (layout != nullptr ? "enabled (layout"

@@ -160,6 +160,11 @@ set(STAGED_PROTO_DIR "${CMAKE_CURRENT_BINARY_DIR}/proto")
 file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/document/v1")
 file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/parse/v1")
 file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/office/v1")
+file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/asr/v1")
+file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/email/v1")
+file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/xml/v1")
+file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/ebcdic/v1")
+file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/epub/v1")
 configure_file(document.proto
   "${STAGED_PROTO_DIR}/ai/pipestream/document/v1/document.proto" COPYONLY)
 configure_file(parse_types.proto
@@ -170,12 +175,72 @@ configure_file(parse_stream.proto
   "${STAGED_PROTO_DIR}/ai/pipestream/parse/v1/parse_stream.proto" COPYONLY)
 configure_file(office_service.proto
   "${STAGED_PROTO_DIR}/ai/pipestream/office/v1/office_service.proto" COPYONLY)
+# The collector wire contracts, vendored byte-identical from their repos
+# (collectors/README.md). epub_types.proto stages under its import path name.
+configure_file(collectors/asr_service.proto
+  "${STAGED_PROTO_DIR}/ai/pipestream/asr/v1/asr_service.proto" COPYONLY)
+configure_file(collectors/email_service.proto
+  "${STAGED_PROTO_DIR}/ai/pipestream/email/v1/email_service.proto" COPYONLY)
+configure_file(collectors/xml.proto
+  "${STAGED_PROTO_DIR}/ai/pipestream/xml/v1/xml.proto" COPYONLY)
+configure_file(collectors/xml_service.proto
+  "${STAGED_PROTO_DIR}/ai/pipestream/xml/v1/xml_service.proto" COPYONLY)
+configure_file(collectors/ebcdic.proto
+  "${STAGED_PROTO_DIR}/ai/pipestream/ebcdic/v1/ebcdic.proto" COPYONLY)
+configure_file(collectors/ebcdic_service.proto
+  "${STAGED_PROTO_DIR}/ai/pipestream/ebcdic/v1/ebcdic_service.proto" COPYONLY)
+configure_file(collectors/epub_types.proto
+  "${STAGED_PROTO_DIR}/ai/pipestream/epub/v1/types.proto" COPYONLY)
+configure_file(collectors/epub_service.proto
+  "${STAGED_PROTO_DIR}/ai/pipestream/epub/v1/epub_service.proto" COPYONLY)
 
 set(DOCUMENT_PROTO "${STAGED_PROTO_DIR}/ai/pipestream/document/v1/document.proto")
 set(PARSE_TYPES_PROTO "${STAGED_PROTO_DIR}/ai/pipestream/parse/v1/parse_types.proto")
 set(PARSE_SERVICE_PROTO "${STAGED_PROTO_DIR}/ai/pipestream/parse/v1/parse.proto")
 set(PARSE_STREAM_PROTO "${STAGED_PROTO_DIR}/ai/pipestream/parse/v1/parse_stream.proto")
 set(OFFICE_PROTO "${STAGED_PROTO_DIR}/ai/pipestream/office/v1/office_service.proto")
+set(COLLECTOR_PROTOS
+  "${STAGED_PROTO_DIR}/ai/pipestream/asr/v1/asr_service.proto"
+  "${STAGED_PROTO_DIR}/ai/pipestream/email/v1/email_service.proto"
+  "${STAGED_PROTO_DIR}/ai/pipestream/xml/v1/xml.proto"
+  "${STAGED_PROTO_DIR}/ai/pipestream/xml/v1/xml_service.proto"
+  "${STAGED_PROTO_DIR}/ai/pipestream/ebcdic/v1/ebcdic.proto"
+  "${STAGED_PROTO_DIR}/ai/pipestream/ebcdic/v1/ebcdic_service.proto"
+  "${STAGED_PROTO_DIR}/ai/pipestream/epub/v1/types.proto"
+  "${STAGED_PROTO_DIR}/ai/pipestream/epub/v1/epub_service.proto")
+set(COLLECTOR_GENERATED
+  "${GENERATED_DIR}/ai/pipestream/asr/v1/asr_service.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/asr/v1/asr_service.pb.h"
+  "${GENERATED_DIR}/ai/pipestream/asr/v1/asr_service.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/asr/v1/asr_service.grpc.pb.h"
+  "${GENERATED_DIR}/ai/pipestream/email/v1/email_service.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/email/v1/email_service.pb.h"
+  "${GENERATED_DIR}/ai/pipestream/email/v1/email_service.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/email/v1/email_service.grpc.pb.h"
+  "${GENERATED_DIR}/ai/pipestream/xml/v1/xml.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/xml/v1/xml.pb.h"
+  "${GENERATED_DIR}/ai/pipestream/xml/v1/xml.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/xml/v1/xml.grpc.pb.h"
+  "${GENERATED_DIR}/ai/pipestream/xml/v1/xml_service.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/xml/v1/xml_service.pb.h"
+  "${GENERATED_DIR}/ai/pipestream/xml/v1/xml_service.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/xml/v1/xml_service.grpc.pb.h"
+  "${GENERATED_DIR}/ai/pipestream/ebcdic/v1/ebcdic.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/ebcdic/v1/ebcdic.pb.h"
+  "${GENERATED_DIR}/ai/pipestream/ebcdic/v1/ebcdic.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/ebcdic/v1/ebcdic.grpc.pb.h"
+  "${GENERATED_DIR}/ai/pipestream/ebcdic/v1/ebcdic_service.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/ebcdic/v1/ebcdic_service.pb.h"
+  "${GENERATED_DIR}/ai/pipestream/ebcdic/v1/ebcdic_service.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/ebcdic/v1/ebcdic_service.grpc.pb.h"
+  "${GENERATED_DIR}/ai/pipestream/epub/v1/types.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/epub/v1/types.pb.h"
+  "${GENERATED_DIR}/ai/pipestream/epub/v1/types.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/epub/v1/types.grpc.pb.h"
+  "${GENERATED_DIR}/ai/pipestream/epub/v1/epub_service.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/epub/v1/epub_service.pb.h"
+  "${GENERATED_DIR}/ai/pipestream/epub/v1/epub_service.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/epub/v1/epub_service.grpc.pb.h")
 add_custom_command(
   OUTPUT "${GENERATED_DIR}/ai/pipestream/document/v1/document.pb.cc"
          "${GENERATED_DIR}/ai/pipestream/document/v1/document.pb.h"
@@ -193,6 +258,7 @@ add_custom_command(
          "${GENERATED_DIR}/ai/pipestream/office/v1/office_service.pb.h"
          "${GENERATED_DIR}/ai/pipestream/office/v1/office_service.grpc.pb.cc"
          "${GENERATED_DIR}/ai/pipestream/office/v1/office_service.grpc.pb.h"
+         ${COLLECTOR_GENERATED}
   COMMAND $<TARGET_FILE:protoc>
   ARGS --proto_path=${STAGED_PROTO_DIR}
        --proto_path=${protobuf_SOURCE_DIR}/src
@@ -200,8 +266,12 @@ add_custom_command(
        --grpc_out=${GENERATED_DIR}
        --plugin=protoc-gen-grpc=$<TARGET_FILE:grpc_cpp_plugin>
        ${DOCUMENT_PROTO} ${PARSE_TYPES_PROTO} ${PARSE_SERVICE_PROTO} ${PARSE_STREAM_PROTO}
-       ${OFFICE_PROTO}
+       ${OFFICE_PROTO} ${COLLECTOR_PROTOS}
   DEPENDS document.proto parse_types.proto parse.proto parse_stream.proto office_service.proto
+          collectors/asr_service.proto collectors/email_service.proto
+          collectors/xml.proto collectors/xml_service.proto
+          collectors/ebcdic.proto collectors/ebcdic_service.proto
+          collectors/epub_types.proto collectors/epub_service.proto
           protoc grpc_cpp_plugin
   VERBATIM)
 # STATIC explicitly, same reason as grparse_core below.
@@ -213,7 +283,23 @@ add_library(grparse_proto STATIC
   "${GENERATED_DIR}/ai/pipestream/parse/v1/parse_stream.pb.cc"
   "${GENERATED_DIR}/ai/pipestream/parse/v1/parse_stream.grpc.pb.cc"
   "${GENERATED_DIR}/ai/pipestream/office/v1/office_service.pb.cc"
-  "${GENERATED_DIR}/ai/pipestream/office/v1/office_service.grpc.pb.cc")
+  "${GENERATED_DIR}/ai/pipestream/office/v1/office_service.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/asr/v1/asr_service.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/asr/v1/asr_service.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/email/v1/email_service.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/email/v1/email_service.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/xml/v1/xml.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/xml/v1/xml.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/xml/v1/xml_service.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/xml/v1/xml_service.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/ebcdic/v1/ebcdic.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/ebcdic/v1/ebcdic.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/ebcdic/v1/ebcdic_service.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/ebcdic/v1/ebcdic_service.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/epub/v1/types.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/epub/v1/types.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/epub/v1/epub_service.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/epub/v1/epub_service.grpc.pb.cc")
 target_include_directories(grparse_proto PUBLIC "${GENERATED_DIR}")
 target_link_libraries(grparse_proto PUBLIC grpc++)
 
@@ -228,6 +314,7 @@ add_library(grparse_core STATIC
   src/collector_coordinator.cpp
   src/docling_map.cpp
   src/document_merge.cpp
+  src/document_collectors.cpp
   src/document_parser_service.cpp
   src/office_collector.cpp
   src/office_cv_enrichment.cpp
@@ -260,6 +347,7 @@ if(BUILD_TESTING)
     base64-test
     collector-coordinator-test
     document-assembly-test
+    document-collectors-test
     document-merge-test
     figure-classifier-test
     layout-engine-test

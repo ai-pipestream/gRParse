@@ -193,14 +193,31 @@ ratio.
 ## Collector scatter-gather
 
 gRParse is the coordinator of a set of parser collectors. The in-process CV
-path above is one collector (`COLLECTOR_GRPARSE_CV`); the grpc-libreoffice
-typed-stream parser is another (`COLLECTOR_LIBREOFFICE`), configured with
-`GRPARSE_LIBREOFFICE_TARGET=<host:port>` and left unconfigured otherwise.
+path above is one collector (`COLLECTOR_GRPARSE_CV`); the rest are remote
+services, each configured with a `GRPARSE_<NAME>_TARGET=<host:port>`
+environment variable and left unconfigured otherwise:
+
+| Collector | Target env | Routed by default for |
+|---|---|---|
+| `COLLECTOR_LIBREOFFICE` | `GRPARSE_LIBREOFFICE_TARGET` | office formats (doc/x, xls/x, ppt/x, odf, rtf, csv, ...) |
+| `COLLECTOR_ASR` | `GRPARSE_ASR_TARGET` (+ `GRPARSE_ASR_MODEL`, the whisper model name, required) | audio and video |
+| `COLLECTOR_EMAIL` | `GRPARSE_EMAIL_TARGET` | `.eml`, `.msg`, `message/rfc822` |
+| `COLLECTOR_XML` | `GRPARSE_XML_TARGET` | `.xml`, `.nxml`, `.xbrl`, `application/xml`, `text/xml` (never the `+xml` suffix family) |
+| `COLLECTOR_EBCDIC` | `GRPARSE_EBCDIC_TARGET` | never routed; explicit selection with `ConvertDocumentOptions.ebcdic_layout_json` only |
+| `COLLECTOR_EPUB` | `GRPARSE_EPUB_TARGET` | `.epub` |
+
 A request selects collectors explicitly (`ConvertDocumentOptions.collectors`,
 or `DocumentChunk.collectors` on the streaming RPC); an empty selection
-routes by format, PDF and raster inputs to the CV path and office formats to
-the libreoffice collector. No code path converts office bytes to PDF in
-order to parse them.
+routes by format as above, with PDF and raster inputs staying on the CV
+path. No code path converts office bytes to PDF in order to parse them.
+
+The libreoffice collector streams typed events that gRParse folds into a
+`Document` itself; every other remote collector projects its own typed
+stream into a source-tagged `Document` server-side (their `emit_document`
+option), so gRParse asks for the Document event, drains the typed events,
+and merges what the collector itself attributed. The vendored wire
+contracts live in `collectors/` (see its README); each collector repo owns
+its contract.
 
 The libreoffice leg is a hybrid: office text, tables, and typed content are
 exact from the office core, so gRParse does not OCR office documents — but

@@ -170,6 +170,22 @@ enum Collector {
   // The calamine spreadsheet collector. Reserved until the collector is
   // wired in.
   COLLECTOR_CALAMINE = 4;
+  // The grpc-asr transcription collector. The default for audio and video
+  // inputs; requires a configured endpoint and a configured model name.
+  COLLECTOR_ASR = 5;
+  // The grpc-email collector. The default for .eml/.msg inputs; requires a
+  // configured endpoint.
+  COLLECTOR_EMAIL = 6;
+  // The grpc-xml dialect collector. The default for XML inputs; requires a
+  // configured endpoint. The dialect is sniffed by the collector itself.
+  COLLECTOR_XML = 7;
+  // The grpc-ebcdic collector. Never routed by format: raw EBCDIC has no
+  // extension or magic worth trusting, and a parse needs a layout. Select
+  // it explicitly and supply ebcdic_layout_json.
+  COLLECTOR_EBCDIC = 8;
+  // The grpc-epub collector. The default for .epub inputs; requires a
+  // configured endpoint.
+  COLLECTOR_EPUB = 9;
 }
 
 // ============================================================================
@@ -393,12 +409,20 @@ message ConvertDocumentOptions {
   optional string picture_classification_preset = 42;
   // Custom picture classification configuration
   optional google.protobuf.Struct picture_classification_custom_config = 43;
-  // The collectors to run for this parse. Empty routes by format: PDF and
-  // raster inputs to COLLECTOR_GRPARSE_CV, office formats to
-  // COLLECTOR_LIBREOFFICE. Every selected collector's output is merged
-  // additively, source-tagged; a failed collector degrades to an error
-  // entry instead of failing the parse while any collector succeeds.
+  // The collectors to run for this parse. Empty routes by format: office
+  // formats to COLLECTOR_LIBREOFFICE, audio and video to COLLECTOR_ASR,
+  // .eml/.msg to COLLECTOR_EMAIL, XML to COLLECTOR_XML, .epub to
+  // COLLECTOR_EPUB, and PDF and raster inputs to COLLECTOR_GRPARSE_CV.
+  // Every selected collector's output is merged additively, source-tagged;
+  // a failed collector degrades to an error entry instead of failing the
+  // parse while any collector succeeds.
   repeated Collector collectors = 44;
+  // Parsing rules for COLLECTOR_EBCDIC, as the JSON serialization of
+  // Docling's EbcdicLayout pydantic model, forwarded verbatim to the
+  // collector's ParseOptions.layout_json. Required when COLLECTOR_EBCDIC is
+  // selected: that collector cannot decode a byte without a layout, and
+  // raw EBCDIC is never routed by format.
+  optional bytes ebcdic_layout_json = 45;
 }
 
 // ============================================================================

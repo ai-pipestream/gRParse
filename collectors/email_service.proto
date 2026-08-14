@@ -1,0 +1,330 @@
+// grpc-email wire contract: a diskless collector that turns RFC 822 (.eml)
+// and Outlook (.msg) bytes into typed email events, which gRParse maps into
+// the Document data plane with a CollectorSource of "email".
+syntax = "proto3";
+
+package ai.pipestream.email.v1;
+
+import "ai/pipestream/document/v1/document.proto";
+import "google/protobuf/timestamp.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "EmailServiceProto";
+option java_package = "ai.pipestream.email.v1";
+
+// Email collector for RFC 822 and Outlook MAPI messages.
+//
+// The product is the live event stream. Headers are emitted the moment the
+// header block has arrived -- for a chunked .eml upload that happens before
+// the client has finished sending -- then each body part, then each
+// attachment, each as its own message. ParseStatus is a trailer carrying
+// counts and warnings, never the payload.
+//
+// The server is diskless by doctrine: message bytes live only in memory for
+// the duration of the RPC, nothing is written to disk, and no external
+// process is executed.
+service EmailParseService {
+  // Parses one email message.
+  //
+  // The client sends exactly one ParseEmailOptions as the first message,
+  // then the raw message bytes as EmailChunk messages with complete=true on
+  // the last one, then half-closes. The server replies with EmailInfo, then
+  // BodyPart events, then Attachment events, then exactly one ParseStatus as
+  // the final event of a successful parse.
+  //
+  // Errors: no bytes, a truncated message, or a stream that ended without a
+  // chunk marked complete is INVALID_ARGUMENT; bytes that are not an email
+  // this server understands are UNIMPLEMENTED; input above the byte cap is
+  // RESOURCE_EXHAUSTED; an unexpected parser fault is INTERNAL. A stream may
+  // carry events before it fails; the status is the authority on success.
+  rpc ParseEmail(stream ParseEmailRequest) returns (stream ParseEmailResponse);
+
+  // Reports server identity, the formats it parses, and its operational
+  // limits. Intended for capability discovery by orchestrators and tool
+  // facades. Does not validate input and completes with OK.
+  rpc GetServiceInfo(GetServiceInfoRequest) returns (GetServiceInfoResponse);
+}
+
+// One client-to-server message on the ParseEmail stream.
+message ParseEmailRequest {
+  // Exactly one payload kind per message.
+  oneof payload {
+    // Must be the first message on the stream and must not repeat.
+    ParseEmailOptions options = 1;
+    // A slice of the message file, in file order.
+    EmailChunk chunk = 2;
+  }
+}
+
+// Per-stream parse options, sent once as the first message.
+message ParseEmailOptions {
+  // Caller-chosen identifier, echoed back in EmailInfo. May be empty.
+  string document_id = 1;
+
+  // Advisory source filename. Recorded, never used for format detection.
+  string filename = 2;
+
+  // Advisory content type from the caller. Recorded, never trusted: the
+  // format is detected from the bytes.
+  string content_type = 3;
+
+  // When true, every attachment the message carries is emitted as its own
+  // Attachment event (filename, content type, size, content id). Matches
+  // Docling's EmailBackendOptions.list_attachments. When false, attachments
+  // are still counted in ParseStatus but no Attachment event is emitted
+  // unless include_attachment_bytes asks for one.
+  bool list_attachments = 4;
+
+  // When true, Attachment events carry the attachment payload in
+  // Attachment.data so the coordinator can fan the bytes out to another
+  // collector. Implies the Attachment events of list_attachments. Payloads
+  // above the server's per-attachment cap are omitted with a warning rather
+  // than failing the parse.
+  bool include_attachment_bytes = 5;
+
+  // Caller-requested byte cap in mebibytes for this message. Zero means the
+  // server default. The effective cap is the smaller of this value and the
+  // server's configured cap; a client can lower the ceiling but never raise
+  // it. Input above the effective cap fails with RESOURCE_EXHAUSTED.
+  uint32 max_document_mib = 6;
+
+  // When true, the server folds its own typed event stream into one
+  // ai.pipestream.document.v1.Document and emits it as the document event,
+  // immediately before the ParseStatus trailer. The typed events remain the
+  // lossless wire; the Document is the lossy structural projection every
+  // collector in the fleet shares, so a client that already consumes the
+  // Document plane does not have to reimplement the mapping. When false the
+  // fold never runs and nothing about the stream changes.
+  bool emit_document = 7;
+}
+
+// One slice of the message upload, in file order.
+message EmailChunk {
+  // Raw bytes of the .eml or .msg file, in order.
+  bytes data = 1;
+
+  // True on the final chunk. A stream that half-closes without a chunk
+  // marked complete is INVALID_ARGUMENT: a truncated upload must not be
+  // mistaken for a short message.
+  bool complete = 2;
+}
+
+// One server-to-client event on the ParseEmail stream.
+message ParseEmailResponse {
+  // Exactly one event kind per message.
+  oneof event {
+    // First event: detected format, subject, addresses, dates, and the raw
+    // header list. For a chunked .eml this is emitted as soon as the header
+    // block has arrived, before the upload finishes.
+    EmailInfo email_info = 1;
+    // One decoded body part, in MIME walk order.
+    BodyPart body_part = 2;
+    // One attachment descriptor, optionally with its bytes.
+    Attachment attachment = 3;
+    // Trailer: counts and warnings for the finished parse.
+    ParseStatus status = 4;
+    // The whole message as one Document, emitted once, immediately before
+    // status, only when emit_document was set. It is a projection of the
+    // events above and never carries anything they did not: attachment
+    // payloads stay on the typed stream, and an inline image is referenced
+    // by a "part:<part_id>" URI rather than embedded.
+    ai.pipestream.document.v1.Document document = 5;
+  }
+}
+
+// The email container formats this API models.
+enum EmailFormat {
+  // Never set by the server.
+  EMAIL_FORMAT_UNSPECIFIED = 0;
+  // RFC 822 / RFC 5322 MIME message, the .eml on-disk form.
+  EMAIL_FORMAT_EML = 1;
+  // Outlook MAPI message in an OLE2 compound file, the .msg on-disk form.
+  EMAIL_FORMAT_MSG = 2;
+}
+
+// The role an address plays on the message.
+enum AddressRole {
+  // Never set by the server.
+  ADDRESS_ROLE_UNSPECIFIED = 0;
+  // RFC 822 From, or the MAPI sender.
+  ADDRESS_ROLE_FROM = 1;
+  // Primary recipient; MAPI PidTagRecipientType 1.
+  ADDRESS_ROLE_TO = 2;
+  // Carbon copy recipient; MAPI PidTagRecipientType 2.
+  ADDRESS_ROLE_CC = 3;
+  // Blind carbon copy recipient; MAPI PidTagRecipientType 3.
+  ADDRESS_ROLE_BCC = 4;
+  // RFC 822 Reply-To.
+  ADDRESS_ROLE_REPLY_TO = 5;
+  // RFC 822 Sender, when it differs from From.
+  ADDRESS_ROLE_SENDER = 6;
+}
+
+// One mailbox on the message, kept as structured parts rather than a
+// display string so a consumer never has to re-parse RFC 822 grammar.
+message Address {
+  // What this address is to the message.
+  AddressRole role = 1;
+  // Display name, already MIME-word decoded. Empty when the message carried
+  // only a bare address.
+  string name = 2;
+  // The addr-spec, for example "clerk@example.gov". Empty when the message
+  // carried a group or a malformed mailbox that only had a display name.
+  string address = 3;
+}
+
+// One raw header line, in the order the message declared it, with
+// duplicates preserved. This is the lossless tail behind the typed fields of
+// EmailInfo; nothing here is guessed or normalized beyond MIME-word decoding
+// of the value.
+message Header {
+  // Field name as written, for example "Received" or "X-Spam-Status".
+  string name = 1;
+  // Unfolded field value, MIME-word decoded to UTF-8.
+  string value = 2;
+}
+
+// First event of every parse: what the server detected in the bytes and the
+// message's envelope. For .eml this is derived from the header block alone,
+// so it can be emitted before the body has been uploaded.
+message EmailInfo {
+  // Echo of ParseEmailOptions.document_id.
+  string document_id = 1;
+  // Container format detected from the bytes, never from content_type.
+  EmailFormat format = 2;
+  // Subject, MIME-word decoded. Empty when the message had none.
+  string subject = 3;
+  // Every mailbox on the message, role-tagged, in header order.
+  repeated Address addresses = 4;
+  // Origination date from the Date header or the MAPI client submit time.
+  // Unset when the message declared none or the value was unparseable.
+  google.protobuf.Timestamp date = 5;
+  // Delivery time from the MAPI message delivery time or the last Received
+  // header. Unset when unknown.
+  google.protobuf.Timestamp received_date = 6;
+  // Message-ID with angle brackets stripped. Empty when absent.
+  string message_id = 7;
+  // In-Reply-To with angle brackets stripped. Empty when absent.
+  string in_reply_to = 8;
+  // References chain, oldest first, angle brackets stripped.
+  repeated string references = 9;
+  // Content-Type of the root part as declared, for example
+  // "multipart/mixed; boundary=...". Empty when the message declared none.
+  string content_type = 10;
+  // Every header the message carried, in order, duplicates preserved. For
+  // .msg this is the transport header block when the message kept one, and
+  // is otherwise empty: MAPI properties are not invented as headers.
+  repeated Header headers = 11;
+}
+
+// The body media types this collector emits. HTML is passed through opaque
+// for the HTML collector; it is not parsed here.
+enum BodyMediaType {
+  // The part is neither plain text nor HTML; read content_type_raw.
+  BODY_MEDIA_TYPE_UNSPECIFIED = 0;
+  // text/plain.
+  BODY_MEDIA_TYPE_PLAIN = 1;
+  // text/html, emitted verbatim for the HTML collector to parse.
+  BODY_MEDIA_TYPE_HTML = 2;
+}
+
+// One decoded body part of the message, emitted as the MIME walk reaches it.
+message BodyPart {
+  // Dotted MIME path of this part within the message, for example "1.2".
+  // The root part of a non-multipart message is "1".
+  string part_id = 1;
+  // Which of the two body kinds this is.
+  BodyMediaType media_type = 2;
+  // The media type exactly as the part declared it, without parameters, for
+  // example "text/plain". The open-vocabulary companion to media_type.
+  string content_type_raw = 3;
+  // Part content transcoded to UTF-8. HTML is the source markup, untouched.
+  string text = 4;
+  // Charset the part declared, for example "iso-8859-1". Empty when the
+  // part declared none and US-ASCII was assumed.
+  string charset = 5;
+  // For .msg, the MAPI property this body came from ("PidTagBody",
+  // "PidTagHtml", "PidTagRtfCompressed"). Empty for .eml.
+  string source_property = 6;
+}
+
+// One attachment the message carries. Emitted when list_attachments or
+// include_attachment_bytes is set. Payload bytes ride along only when
+// include_attachment_bytes is set and the payload fits the server's
+// per-attachment cap.
+message Attachment {
+  // Zero-based index in message order.
+  uint32 index = 1;
+  // Filename as the message declared it, MIME-word decoded. Empty when the
+  // part was unnamed; ParseStatus carries a warning in that case.
+  string filename = 2;
+  // Declared media type without parameters, for example "application/pdf".
+  // Empty when the message declared none.
+  string content_type = 3;
+  // Decoded payload size in bytes, whether or not data is populated.
+  uint64 size_bytes = 4;
+  // Content-ID with angle brackets stripped, for inline parts referenced by
+  // an HTML body. Empty when absent.
+  string content_id = 5;
+  // True when the part's disposition is inline rather than attachment.
+  bool inline = 6;
+  // Decoded payload. Populated only when include_attachment_bytes was set
+  // and the payload fit the per-attachment cap.
+  bytes data = 7;
+  // Dotted MIME path of the part, matching BodyPart.part_id numbering. For
+  // .msg this is the MAPI attachment storage index, for example "attach:0".
+  string part_id = 8;
+}
+
+// Trailer summarizing a finished parse. Its presence is what makes a stream
+// a success; a stream that ends without it ended in an error status.
+message ParseStatus {
+  // How completely the message was read.
+  enum State {
+    // Never set by the server.
+    STATE_UNSPECIFIED = 0;
+    // Everything the parser understood was emitted.
+    STATE_OK = 1;
+    // The message parsed but some content was degraded or skipped; see
+    // warnings.
+    STATE_PARTIAL = 2;
+  }
+
+  // Outcome of the parse.
+  State state = 1;
+  // Human-readable notes about degraded or skipped content, for example an
+  // unnamed attachment part or an RTF-only body.
+  repeated string warnings = 2;
+  // Number of BodyPart events emitted.
+  uint32 body_parts = 3;
+  // Number of attachments found, whether or not they were emitted.
+  uint32 attachments = 4;
+  // Sum of Attachment.size_bytes over every attachment found.
+  uint64 attachment_bytes = 5;
+  // Total bytes of the uploaded message.
+  uint64 message_bytes = 6;
+}
+
+// Request for GetServiceInfo. Empty by design.
+message GetServiceInfoRequest {}
+
+// Server identity, capabilities, and limits.
+message GetServiceInfoResponse {
+  // Semantic version of this server build.
+  string service_version = 1;
+  // Wire API version, "v1".
+  string api_version = 2;
+  // Jakarta Mail version behind the .eml path, from the jar manifest.
+  string mail_version = 3;
+  // Apache POI version used for the .msg (HSMF) path.
+  string poi_version = 4;
+  // Container formats this build parses.
+  repeated EmailFormat supported_formats = 5;
+  // Default per-message byte cap; input above it is RESOURCE_EXHAUSTED.
+  uint64 max_document_bytes = 6;
+  // Per-attachment payload cap for include_attachment_bytes. Larger
+  // attachments are still described, just without their bytes.
+  uint64 max_attachment_bytes = 7;
+  // Messages parsed concurrently before further parses queue.
+  uint32 max_concurrent_parses = 8;
+}

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -13,33 +14,67 @@
 
 namespace grparse {
 
+// The dial targets of the out-of-process collectors, one per wire-capable
+// Collector value. An empty target means that collector is not configured;
+// selecting it fails that collector, not the parse.
+struct CollectorTargets {
+  std::string libreoffice;
+  std::string asr;
+  // The whisper model grpc-asr must transcribe with; the asr wire requires
+  // one and this coordinator never guesses.
+  std::string asr_model;
+  std::string email;
+  std::string xml;
+  std::string ebcdic;
+  std::string epub;
+};
+
 // Shared handle to the out-of-process collectors the coordinator can fan
-// out to. Today that is the grpc-libreoffice collector; an empty target
-// means the collector is not configured and selecting it fails that
-// collector, not the parse.
+// out to: the targets plus one lazily created channel per collector, shared
+// by every parse.
 class CollectorEndpoints {
  public:
+  explicit CollectorEndpoints(CollectorTargets targets,
+                              OfficeCvEnrichment cv_enrichment = {})
+      : targets_(std::move(targets)), cv_enrichment_(cv_enrichment) {}
+
+  // The libreoffice-only shape, kept for callers and tests that predate the
+  // wider fleet.
   explicit CollectorEndpoints(std::string libreoffice_target,
                               OfficeCvEnrichment cv_enrichment = {})
-      : libreoffice_target_(std::move(libreoffice_target)),
-        cv_enrichment_(cv_enrichment) {}
+      : CollectorEndpoints(CollectorTargets{std::move(libreoffice_target), "", "",
+                                            "", "", "", ""},
+                           cv_enrichment) {}
 
-  bool has_libreoffice() const { return !libreoffice_target_.empty(); }
-  const std::string& libreoffice_target() const { return libreoffice_target_; }
+  bool has_libreoffice() const { return !targets_.libreoffice.empty(); }
+  const std::string& libreoffice_target() const { return targets_.libreoffice; }
+  std::shared_ptr<grpc::Channel> libreoffice_channel() {
+    return channel(ai::pipestream::parse::v1::COLLECTOR_LIBREOFFICE);
+  }
+
+  // True when `id` names a remote collector with a configured target.
+  bool has(ai::pipestream::parse::v1::Collector id) const {
+    return !target(id).empty();
+  }
+  // The configured dial target for `id`; empty when unconfigured or when
+  // `id` is not a remote collector.
+  const std::string& target(ai::pipestream::parse::v1::Collector id) const;
+  // The lazily created channel for `id`; one channel per collector serves
+  // every parse. Null when the target is unconfigured.
+  std::shared_ptr<grpc::Channel> channel(ai::pipestream::parse::v1::Collector id);
+
+  const std::string& asr_model() const { return targets_.asr_model; }
 
   // The CV engines the office collector runs over LibreOffice page renders;
   // an all-null enrichment disables the hybrid leg.
   const OfficeCvEnrichment& cv_enrichment() const { return cv_enrichment_; }
 
-  // The lazily created channel to the libreoffice collector; one channel
-  // serves every parse.
-  std::shared_ptr<grpc::Channel> libreoffice_channel();
-
  private:
-  std::string libreoffice_target_;
+  CollectorTargets targets_;
   OfficeCvEnrichment cv_enrichment_;
   std::mutex mutex_;
-  std::shared_ptr<grpc::Channel> channel_;
+  std::map<ai::pipestream::parse::v1::Collector, std::shared_ptr<grpc::Channel>>
+      channels_;
 };
 
 class DocumentParserService final : public ai::pipestream::parse::v1::ParseService::Service {

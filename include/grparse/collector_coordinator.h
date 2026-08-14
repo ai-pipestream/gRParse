@@ -64,12 +64,20 @@ CoordinatorResult run_collectors(
 // format the libreoffice collector owns.
 bool office_format(const std::string& filename, const std::string& content_type);
 
+// The collector a document routes to when the caller selects none: office
+// formats to libreoffice, audio and video to asr, .eml/.msg to email, XML
+// to xml, .epub to epub, everything else (PDF, raster) to the in-process CV
+// path. EBCDIC never routes by format: raw records have no extension or
+// magic worth trusting, and a parse needs a layout only an explicit caller
+// can supply.
+ai::pipestream::parse::v1::Collector route_collector(const std::string& filename,
+                                                     const std::string& content_type);
+
 // Resolves the collector plan for a document: an explicit selection wins
 // verbatim (unspecified entries and duplicates dropped, order kept); an
-// empty selection routes by format, office documents to the libreoffice
-// collector and everything else to the in-process CV path.
+// empty selection becomes the routed default.
 std::vector<ai::pipestream::parse::v1::Collector> resolve_collectors(
     const std::vector<ai::pipestream::parse::v1::Collector>& requested,
-    bool office);
+    ai::pipestream::parse::v1::Collector routed);
 
 }  // namespace grparse
