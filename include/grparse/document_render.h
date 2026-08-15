@@ -37,6 +37,49 @@ std::string render_html(const ai::pipestream::document::v1::Document& document);
 // Throws std::runtime_error if protobuf reports a conversion failure.
 std::string render_json(const ai::pipestream::document::v1::Document& document);
 
+// Renders docling's DocTags serialization: a "<doctag>" wrapper holding one
+// line per body item, label-named tags ("<title>", "<section_header_level_N>",
+// "<text>"...), "<unordered_list>"/"<ordered_list>" with "<list_item>"
+// children, tables as "<otsl>" OTSL cell token streams
+// (fcel/ecel/ched/rhed/srow/lcel/ucel/xcel/nl) with the caption nested inside,
+// code with a "<_Language_>" token, and pictures carrying classification,
+// SMILES, chart-table, and caption payloads. "<loc_N>" location tokens are
+// emitted only for items whose provenance names a page with a known size;
+// documents without provenance carry none, matching docling. Text is emitted
+// raw (DocTags does not escape).
+std::string render_doctags(const ai::pipestream::document::v1::Document& document);
+
+// Renders the DocLang XML export: a `<doclang>` root in grpc-xml's
+// NS_DOCLANG namespace whose element vocabulary is the one that service's
+// dialect fold reads back (title, section-header with level, paragraph,
+// list/list-item, caption, code, formula, footnote, reference, picture with
+// a uri attribute, table/tr/th/td with rowspan and colspan). Content is
+// XML-escaped; provenance is not emitted (the reader skips it anyway).
+std::string render_doclang(const ai::pipestream::document::v1::Document& document);
+
+// Renders the WebVTT export of track-timed text: a "WEBVTT" header (with the
+// document title item's text when present), then one cue per body text item
+// whose source list carries a TrackSource, in document order, as
+// "HH:MM:SS.mmm --> HH:MM:SS.mmm" timings with the cue's identifier line and
+// a "<v Voice>" span when the track names them. Consecutive items with the
+// same identifier and timing merge into one multi-line cue. A document with
+// no timed items renders the bare "WEBVTT" header, matching docling.
+std::string render_vtt(const ai::pipestream::document::v1::Document& document);
+
+// Renders docling's split-page HTML layout: the same skeleton and element
+// vocabulary as render_html, but body content grouped per page inside a
+// two-column table where each row holds the page image (or docling's
+// "no page-image found" figure) beside a `<div class='page'>` of that page's
+// elements. Items map to the page of their first provenance entry; items
+// without provenance stay with the page in effect where they appear, and a
+// document with no page provenance at all renders as one page.
+std::string render_html_split_page(const ai::pipestream::document::v1::Document& document);
+
+// Renders the document as block-style YAML with exactly the structure of
+// render_json (proto field names preserved), by re-emitting that JSON
+// through yaml-cpp. Throws std::runtime_error on emitter failure.
+std::string render_yaml(const ai::pipestream::document::v1::Document& document);
+
 }  // namespace grparse
 
 #endif

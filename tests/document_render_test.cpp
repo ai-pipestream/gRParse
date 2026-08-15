@@ -392,6 +392,301 @@ void verify_captions_render_once() {
           "html caption must render exactly once:\n" + html);
 }
 
+// Appends one provenance entry to the most recently added text item.
+void add_prov_to_last_text(docv1::Document* document, int page_no, double l,
+                           double t, double r, double b) {
+  auto* item = document->mutable_texts(document->texts_size() - 1);
+  docv1::TextItemBase* base = nullptr;
+  switch (item->item_case()) {
+    case docv1::BaseTextItem::kTitle: base = item->mutable_title()->mutable_base(); break;
+    case docv1::BaseTextItem::kSectionHeader:
+      base = item->mutable_section_header()->mutable_base();
+      break;
+    case docv1::BaseTextItem::kListItem:
+      base = item->mutable_list_item()->mutable_base();
+      break;
+    case docv1::BaseTextItem::kFormula: base = item->mutable_formula()->mutable_base(); break;
+    default: base = item->mutable_text()->mutable_base(); break;
+  }
+  auto* prov = base->add_prov();
+  prov->set_page_no(page_no);
+  auto* bbox = prov->mutable_bbox();
+  bbox->set_l(l);
+  bbox->set_t(t);
+  bbox->set_r(r);
+  bbox->set_b(b);
+  bbox->set_coord_origin(docv1::COORD_ORIGIN_TOPLEFT);
+}
+
+void verify_doctags_renders_every_item_type() {
+  const std::string doctags = grparse::render_doctags(rich_document());
+  const std::string expected =
+      "<doctag><title>Quarterly Report</title>\n"
+      "<section_header_level_1>Overview</section_header_level_1>\n"
+      "<text>Plain body text.</text>\n"
+      "<unordered_list><list_item>alpha</list_item>\n"
+      "<list_item>beta</list_item>\n"
+      "<list_item><ordered_list><list_item>one</list_item>\n"
+      "<list_item>two</list_item>\n"
+      "</ordered_list></list_item>\n"
+      "</unordered_list>\n"
+      "<otsl><ched>Fuel<ched>Rate|Unit<nl><fcel>Diesel<fcel>0.9<nl>"
+      "<caption>Fuel table</caption></otsl>\n"
+      "<code><_Python_>print('hi')</code>\n"
+      "<formula>E = mc^2</formula>\n"
+      "<formula></formula>\n"
+      "<picture><caption>A chart</caption></picture>\n"
+      "<checkbox_selected>Done</checkbox_selected>\n"
+      "<key_value_region></key_value_region>\n"
+      "</doctag>";
+  require(doctags == expected,
+          "doctags export differs from the docling-parity expectation:\n" + doctags);
+}
+
+void verify_doctags_otsl_spans_and_locations() {
+  docv1::Document document = base_document("spans.pdf");
+  auto& page = (*document.mutable_pages())[1];
+  page.set_page_no(1);
+  page.mutable_size()->set_width(200.0);
+  page.mutable_size()->set_height(100.0);
+
+  add_text(&document, "#/body", docv1::BaseTextItem::kText,
+           docv1::DOC_ITEM_LABEL_TEXT, "hello");
+  add_prov_to_last_text(&document, 1, 20.0, 10.0, 100.0, 30.0);
+
+  // A 2x3 grid via flat cells: "A" spans two rows, "B" spans two columns.
+  // Continuations must emit <ucel> under the vertical span and <lcel> after
+  // the horizontal one.
+  auto* table = add_table(&document, "#/body");
+  auto* data = table->mutable_data();
+  data->set_num_rows(2);
+  data->set_num_cols(3);
+  const auto cell = [&data](const std::string& text, int row, int row_span, int col,
+                            int col_span) {
+    auto* added = data->add_table_cells();
+    added->set_text(text);
+    added->set_row_span(row_span);
+    added->set_col_span(col_span);
+    added->set_start_row_offset_idx(row);
+    added->set_end_row_offset_idx(row + row_span);
+    added->set_start_col_offset_idx(col);
+    added->set_end_col_offset_idx(col + col_span);
+  };
+  cell("A", 0, 2, 0, 1);
+  cell("B", 0, 1, 1, 2);
+  cell("C", 1, 1, 1, 1);
+  cell("D", 1, 1, 2, 1);
+
+  // A 2x2 grid fully covered by one spanning cell: every continuation of a
+  // two-dimensional span is <xcel>.
+  auto* cross = add_table(&document, "#/body");
+  auto* cross_data = cross->mutable_data();
+  cross_data->set_num_rows(2);
+  cross_data->set_num_cols(2);
+  auto* wide = cross_data->add_table_cells();
+  wide->set_text("E");
+  wide->set_row_span(2);
+  wide->set_col_span(2);
+  wide->set_end_row_offset_idx(2);
+  wide->set_end_col_offset_idx(2);
+
+  const std::string doctags = grparse::render_doctags(document);
+  const std::string expected =
+      "<doctag><text><loc_50><loc_50><loc_250><loc_150>hello</text>\n"
+      "<otsl><fcel>A<fcel>B<lcel><nl><ucel><fcel>C<fcel>D<nl></otsl>\n"
+      "<otsl><fcel>E<xcel><nl><xcel><xcel><nl></otsl>\n"
+      "</doctag>";
+  require(doctags == expected,
+          "doctags OTSL spans or locations differ:\n" + doctags);
+}
+
+void verify_doclang_renders_grpc_xml_vocabulary() {
+  const std::string doclang = grparse::render_doclang(rich_document());
+  const std::string expected =
+      "<doclang xmlns=\"http://docling-project.org/ns/doclang/v1\">\n"
+      "  <title>Quarterly Report</title>\n"
+      "  <section-header level=\"1\">Overview</section-header>\n"
+      "  <paragraph>Plain body text.</paragraph>\n"
+      "  <list ordered=\"false\">\n"
+      "    <list-item>alpha</list-item>\n"
+      "    <list-item>beta</list-item>\n"
+      "    <list ordered=\"true\">\n"
+      "      <list-item ordinal=\"1\">one</list-item>\n"
+      "      <list-item ordinal=\"2\">two</list-item>\n"
+      "    </list>\n"
+      "  </list>\n"
+      "  <caption>Fuel table</caption>\n"
+      "  <table>\n"
+      "    <tr>\n"
+      "      <th>Fuel</th>\n"
+      "      <th>Rate|Unit</th>\n"
+      "    </tr>\n"
+      "    <tr>\n"
+      "      <td>Diesel</td>\n"
+      "      <td>0.9</td>\n"
+      "    </tr>\n"
+      "  </table>\n"
+      "  <code language=\"python\">print('hi')</code>\n"
+      "  <formula>E = mc^2</formula>\n"
+      "  <formula></formula>\n"
+      "  <caption>A chart</caption>\n"
+      "  <picture uri=\"figure1.png\"/>\n"
+      "  <picture/>\n"
+      "  <paragraph>Done</paragraph>\n"
+      "  <!-- key-value item omitted -->\n"
+      "</doclang>";
+  require(doclang == expected,
+          "doclang export differs from the round-trip vocabulary:\n" + doclang);
+  // The structural bar: the root element grpc-xml's sniffer keys on.
+  require(doclang.find("<doclang xmlns=\"http://docling-project.org/ns/doclang/v1\">") == 0,
+          "doclang export must declare the NS_DOCLANG root");
+}
+
+void verify_doclang_escapes_xml_content() {
+  docv1::Document document = base_document("escape.pdf");
+  add_text(&document, "#/body", docv1::BaseTextItem::kText,
+           docv1::DOC_ITEM_LABEL_TEXT, "A & B < C > D");
+  auto* figure = add_picture(&document, "#/body", "figs/a&b.png");
+  figure->add_captions()->set_ref(add_caption(&document, figure->self_ref(), "Q \"quoted\""));
+  const std::string doclang = grparse::render_doclang(document);
+  require(doclang.find("<paragraph>A &amp; B &lt; C &gt; D</paragraph>") != std::string::npos,
+          "doclang text content must be XML-escaped:\n" + doclang);
+  require(doclang.find("<picture uri=\"figs/a&amp;b.png\"/>") != std::string::npos,
+          "doclang attributes must be XML-escaped:\n" + doclang);
+  require(doclang.find("<caption>Q \"quoted\"</caption>") != std::string::npos,
+          "quotes in element text need no escaping:\n" + doclang);
+}
+
+// Appends one track-timed text item; extra_collector_source prepends a
+// CollectorSource entry to prove the renderer scans past attribution.
+void add_timed_text(docv1::Document* document, const std::string& text,
+                    double start, double end, const std::string& voice,
+                    const std::string& identifier, bool extra_collector_source = false) {
+  add_text(document, "#/body", docv1::BaseTextItem::kText,
+           docv1::DOC_ITEM_LABEL_TEXT, text);
+  auto* base = document->mutable_texts(document->texts_size() - 1)
+                   ->mutable_text()
+                   ->mutable_base();
+  if (extra_collector_source) {
+    base->add_source()->mutable_collector()->set_collector("asr");
+  }
+  auto* track = base->add_source()->mutable_track();
+  track->set_start_time(start);
+  track->set_end_time(end);
+  if (!voice.empty()) track->set_voice(voice);
+  if (!identifier.empty()) track->set_identifier(identifier);
+}
+
+void verify_vtt_renders_timed_cues() {
+  docv1::Document document = base_document("meeting.wav");
+  add_text(&document, "#/body", docv1::BaseTextItem::kTitle,
+           docv1::DOC_ITEM_LABEL_TITLE, "Meeting");
+  add_timed_text(&document, "Hello there", 1.5, 3.25, "Alice", "", true);
+  // An untimed text item produces no cue.
+  add_text(&document, "#/body", docv1::BaseTextItem::kText,
+           docv1::DOC_ITEM_LABEL_TEXT, "no timing");
+  add_timed_text(&document, "line one", 10.0, 12.0, "", "cue-3");
+  add_timed_text(&document, "line two", 10.0, 12.0, "", "cue-3");
+  // Past one hour, with a fractional end that must round into the seconds
+  // field instead of printing a four-digit millisecond count.
+  add_timed_text(&document, "Later cue", 3725.5, 3727.0, "", "");
+  add_timed_text(&document, "Rounded", 7199.999, 7199.9996, "", "");
+
+  const std::string vtt = grparse::render_vtt(document);
+  const std::string expected =
+      "WEBVTT Meeting\n"
+      "\n"
+      "00:00:01.500 --> 00:00:03.250\n"
+      "<v Alice>Hello there</v>\n"
+      "\n"
+      "cue-3\n"
+      "00:00:10.000 --> 00:00:12.000\n"
+      "line one\n"
+      "line two\n"
+      "\n"
+      "01:02:05.500 --> 01:02:07.000\n"
+      "Later cue\n"
+      "\n"
+      "01:59:59.999 --> 02:00:00.000\n"
+      "Rounded";
+  require(vtt == expected, "vtt export differs:\n" + vtt);
+
+  require(grparse::render_vtt(base_document("silence.wav")) == "WEBVTT",
+          "a document with no timed items renders the bare WEBVTT header");
+}
+
+void verify_split_page_assigns_by_provenance() {
+  docv1::Document document = base_document("split.pdf");
+  auto& first_page = (*document.mutable_pages())[1];
+  first_page.set_page_no(1);
+  first_page.mutable_size()->set_width(100.0);
+  first_page.mutable_size()->set_height(100.0);
+  first_page.mutable_image()->set_uri("page1.png");
+  auto& second_page = (*document.mutable_pages())[2];
+  second_page.set_page_no(2);
+  second_page.mutable_size()->set_width(100.0);
+  second_page.mutable_size()->set_height(100.0);
+
+  // A leading un-provenanced item joins the first provenanced page; a
+  // trailing one stays with the page in effect.
+  add_text(&document, "#/body", docv1::BaseTextItem::kText,
+           docv1::DOC_ITEM_LABEL_TEXT, "T0");
+  add_text(&document, "#/body", docv1::BaseTextItem::kText,
+           docv1::DOC_ITEM_LABEL_TEXT, "A");
+  add_prov_to_last_text(&document, 1, 0, 0, 10, 10);
+  add_text(&document, "#/body", docv1::BaseTextItem::kText,
+           docv1::DOC_ITEM_LABEL_TEXT, "B");
+  add_text(&document, "#/body", docv1::BaseTextItem::kText,
+           docv1::DOC_ITEM_LABEL_TEXT, "C");
+  add_prov_to_last_text(&document, 2, 0, 0, 10, 10);
+
+  const std::string html = grparse::render_html_split_page(document);
+  const std::string expected =
+      "<!DOCTYPE html>\n<html>\n<head><meta charset=\"UTF-8\"/>"
+      "<title>split.pdf</title></head>\n<body>\n"
+      "<table>\n<tbody>\n"
+      "<tr>\n<td>\n"
+      "<figure><img src=\"page1.png\"></figure>\n"
+      "</td>\n<td>\n<div class='page'>\n"
+      "<p>T0</p>\n<p>A</p>\n<p>B</p>\n"
+      "</div>\n</td>\n</tr>\n"
+      "<tr>\n<td>\n"
+      "<figure>no page-image found</figure>\n"
+      "</td>\n<td>\n<div class='page'>\n"
+      "<p>C</p>\n"
+      "</div>\n</td>\n</tr>\n"
+      "</tbody>\n</table>\n</body>\n</html>";
+  require(html == expected, "split-page assignment differs:\n" + html);
+}
+
+void verify_split_page_without_provenance_is_one_page() {
+  docv1::Document document = base_document("flat.pdf");
+  add_text(&document, "#/body", docv1::BaseTextItem::kTitle,
+           docv1::DOC_ITEM_LABEL_TITLE, "Only");
+  add_text(&document, "#/body", docv1::BaseTextItem::kText,
+           docv1::DOC_ITEM_LABEL_TEXT, "content");
+  const std::string html = grparse::render_html_split_page(document);
+  require(html.find("<div class='page'>") != std::string::npos &&
+              html.find("<div class='page'>") == html.rfind("<div class='page'>"),
+          "a document with no provenance renders exactly one page:\n" + html);
+  require(html.find("<figure>no page-image found</figure>") != std::string::npos,
+          "a page without an image renders docling's placeholder");
+  require(html.find("<h1>Only</h1>") != std::string::npos &&
+              html.find("<p>content</p>") != std::string::npos,
+          "the lone page holds the whole body");
+}
+
+void verify_yaml_matches_json_structure() {
+  const std::string yaml = grparse::render_yaml(rich_document());
+  require_contains(yaml, "name: report.pdf", "yaml keeps the document name");
+  require_contains(yaml, "texts:", "yaml keeps the text arena");
+  require_contains(yaml, "#/body", "yaml keeps reference strings");
+  require_contains(yaml, "self_ref:", "yaml preserves proto field names");
+  require(yaml.find("selfRef") == std::string::npos,
+          "yaml must not use camelCase field names");
+  require(yaml.find('{') != 0, "yaml renders block style, not flow JSON");
+}
+
 void verify_empty_document_renders() {
   const docv1::Document document = base_document("empty.pdf");
   require(grparse::render_markdown(document).empty(),
@@ -405,6 +700,14 @@ void verify_empty_document_renders() {
   require(google::protobuf::util::JsonStringToMessage(json, &parsed).ok(),
           "empty-document json parses back");
   require(parsed.name() == "empty.pdf", "empty-document json keeps the name");
+  require(grparse::render_doctags(document) == "<doctag>\n</doctag>",
+          "an empty body renders the bare doctag wrapper");
+  require(grparse::render_doclang(document) ==
+              "<doclang xmlns=\"http://docling-project.org/ns/doclang/v1\">\n</doclang>",
+          "an empty body renders the bare doclang root");
+  require(grparse::render_vtt(document) == "WEBVTT",
+          "an empty body renders the bare WEBVTT header");
+  require(!grparse::render_yaml(document).empty(), "an empty body still renders yaml");
 }
 
 void verify_json_preserves_field_names_and_round_trips() {
@@ -434,6 +737,14 @@ int main() {
     verify_markdown_multiline_cells_stay_single_line();
     verify_html_renders_structure_and_escapes();
     verify_captions_render_once();
+    verify_doctags_renders_every_item_type();
+    verify_doctags_otsl_spans_and_locations();
+    verify_doclang_renders_grpc_xml_vocabulary();
+    verify_doclang_escapes_xml_content();
+    verify_vtt_renders_timed_cues();
+    verify_split_page_assigns_by_provenance();
+    verify_split_page_without_provenance_is_one_page();
+    verify_yaml_matches_json_structure();
     verify_empty_document_renders();
     verify_json_preserves_field_names_and_round_trips();
     return EXIT_SUCCESS;

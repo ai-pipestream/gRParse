@@ -316,16 +316,17 @@ void verify_unsupported_options_are_rejected(TestServer* server) {
   request = unary_request();
   request.mutable_request()->mutable_options()->clear_to_formats();
   request.mutable_request()->mutable_options()->add_to_formats(
-      pipestream::parse::v1::OUTPUT_FORMAT_YAML);
-  grpc::ClientContext yaml_context;
-  pipestream::parse::v1::ConvertSourceResponse yaml_response;
-  const grpc::Status yaml_status =
-      client->ConvertSource(&yaml_context, request, &yaml_response);
-  require(yaml_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
-          "an unimplemented output format must be rejected");
-  require(yaml_status.error_message().find("OUTPUT_FORMAT_YAML") != std::string::npos,
-          "the rejection must name the unimplemented format: " +
-              yaml_status.error_message());
+      pipestream::parse::v1::OUTPUT_FORMAT_UNSPECIFIED);
+  grpc::ClientContext unspecified_context;
+  pipestream::parse::v1::ConvertSourceResponse unspecified_response;
+  const grpc::Status unspecified_status =
+      client->ConvertSource(&unspecified_context, request, &unspecified_response);
+  require(unspecified_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
+          "an unrenderable output format must be rejected");
+  require(unspecified_status.error_message().find("OUTPUT_FORMAT_UNSPECIFIED") !=
+              std::string::npos,
+          "the rejection must name the unrenderable format: " +
+              unspecified_status.error_message());
 }
 
 // Every requested output format renders in one response; leaving to_formats
@@ -337,6 +338,11 @@ void verify_unary_multi_format_exports(TestServer* server) {
   options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_MARKDOWN);
   options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_HTML);
   options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_JSON);
+  options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_DOCTAGS);
+  options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_DOCLANG);
+  options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_VTT);
+  options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_HTML_SPLIT_PAGE);
+  options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_YAML);
   grpc::ClientContext context;
   context.set_deadline(std::chrono::system_clock::now() + 10s);
   pipestream::parse::v1::ConvertSourceResponse response;
@@ -355,6 +361,22 @@ void verify_unary_multi_format_exports(TestServer* server) {
               exports.json().find("\"texts\"") != std::string::npos &&
               exports.json().find("\"self_ref\"") != std::string::npos,
           "multi-format json export");
+  // The CV pages carry provenance, so the doctags text items may carry loc
+  // tokens between the tag and the content.
+  require(exports.has_doctags() && exports.doctags().find("<doctag>") == 0 &&
+              exports.doctags().find("one</text>") != std::string::npos,
+          "multi-format doctags export: " + exports.doctags());
+  require(exports.has_doclang() &&
+              exports.doclang().find(
+                  "<doclang xmlns=\"http://docling-project.org/ns/doclang/v1\">") == 0,
+          "multi-format doclang export: " + exports.doclang());
+  require(exports.has_vtt() && exports.vtt() == "WEBVTT",
+          "an untimed document's vtt export is the bare header: " + exports.vtt());
+  require(exports.has_html_split_page() &&
+              exports.html_split_page().find("<div class='page'>") != std::string::npos,
+          "multi-format split-page export");
+  require(exports.has_yaml() && exports.yaml().find("texts:") != std::string::npos,
+          "multi-format yaml export: " + exports.yaml().substr(0, 200));
 
   auto default_request = unary_request();
   default_request.mutable_request()->mutable_options()->clear_to_formats();
@@ -367,7 +389,10 @@ void verify_unary_multi_format_exports(TestServer* server) {
           "default-format conversion failed: " + default_status.error_message());
   const auto& default_exports = default_response.response().document().exports();
   require(default_exports.has_text() && !default_exports.has_md() &&
-              !default_exports.has_html() && !default_exports.has_json(),
+              !default_exports.has_html() && !default_exports.has_json() &&
+              !default_exports.has_doctags() && !default_exports.has_doclang() &&
+              !default_exports.has_vtt() && !default_exports.has_html_split_page() &&
+              !default_exports.has_yaml(),
           "empty to_formats must keep the plain-text default alone");
 }
 

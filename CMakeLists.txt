@@ -123,6 +123,28 @@ FetchContent_Declare(zxing
   GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(zxing)
 
+# yaml-cpp backs the YAML document export: the document's canonical JSON
+# re-emitted in block style. Nothing parses YAML at runtime, and none of the
+# optional tooling is built.
+set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(yaml-cpp
+  GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
+  GIT_TAG 0.8.0
+  GIT_SHALLOW TRUE
+  # checkout -- src first so the step is idempotent on cached trees, same as
+  # the rapidocr patch above. The patch backports the <cstdint> include the
+  # 0.8.0 release is missing under GCC 13+.
+  PATCH_COMMAND git checkout -- src
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/yaml-cpp-cstdint.patch")
+# 0.8.0 declares cmake_minimum_required(3.4), which CMake 4 refuses to
+# configure without an explicit compatibility floor.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+FetchContent_MakeAvailable(yaml-cpp)
+unset(CMAKE_POLICY_VERSION_MINIMUM)
+
 find_package(OpenCV 4.5 REQUIRED COMPONENTS core imgcodecs imgproc)
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
@@ -334,7 +356,7 @@ add_library(grparse_core STATIC
 target_include_directories(grparse_core PUBLIC include)
 target_link_libraries(grparse_core
   PUBLIC grparse_proto rapidocr PkgConfig::POPPLER_CPP Threads::Threads
-  PRIVATE ZXing::ZXing grparse_flags)
+  PRIVATE ZXing::ZXing yaml-cpp::yaml-cpp grparse_flags)
 
 add_executable(grparse-server src/main.cpp)
 target_link_libraries(grparse-server PRIVATE grparse_core grparse_flags grpc++_reflection)

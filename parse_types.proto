@@ -473,6 +473,14 @@ message DocumentExports {
   optional string html = 3;
   optional string text = 4;
   optional string doctags = 5;
+  // DocLang XML form (the dialect grpc-xml reads back).
+  optional string doclang = 6;
+  // WebVTT cues from track-timed text items.
+  optional string vtt = 7;
+  // Per-page HTML (docling's split-page layout).
+  optional string html_split_page = 8;
+  // YAML rendering of the same structure as `json`.
+  optional string yaml = 9;
 }
 
 // DocumentResponse contains the converted document and optional exports.

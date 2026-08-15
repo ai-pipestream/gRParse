@@ -233,15 +233,20 @@ bool requested(const pipestream::parse::v1::ConvertDocumentOptions& options,
          options.to_formats().end();
 }
 
-// True for the output formats ConvertSource renders. The remaining wire
-// formats (DOCTAGS, HTML_SPLIT_PAGE, YAML, VTT, DOCLANG) are rejected up
-// front by validate_options, each by name.
+// True for the output formats ConvertSource renders: every named value of
+// the wire's OutputFormat enum. UNSPECIFIED and values outside the enum are
+// rejected up front by validate_options, each by name.
 bool renderable(pipestream::parse::v1::OutputFormat format) {
   switch (format) {
     case pipestream::parse::v1::OUTPUT_FORMAT_TEXT:
     case pipestream::parse::v1::OUTPUT_FORMAT_MARKDOWN:
     case pipestream::parse::v1::OUTPUT_FORMAT_HTML:
+    case pipestream::parse::v1::OUTPUT_FORMAT_HTML_SPLIT_PAGE:
     case pipestream::parse::v1::OUTPUT_FORMAT_JSON:
+    case pipestream::parse::v1::OUTPUT_FORMAT_DOCTAGS:
+    case pipestream::parse::v1::OUTPUT_FORMAT_DOCLANG:
+    case pipestream::parse::v1::OUTPUT_FORMAT_VTT:
+    case pipestream::parse::v1::OUTPUT_FORMAT_YAML:
       return true;
     default:
       return false;
@@ -486,6 +491,22 @@ grpc::Status DocumentParserService::ConvertSource(
     }
     if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_JSON)) {
       document_response->mutable_exports()->set_json(render_json(*document));
+    }
+    if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_DOCTAGS)) {
+      document_response->mutable_exports()->set_doctags(render_doctags(*document));
+    }
+    if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_DOCLANG)) {
+      document_response->mutable_exports()->set_doclang(render_doclang(*document));
+    }
+    if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_VTT)) {
+      document_response->mutable_exports()->set_vtt(render_vtt(*document));
+    }
+    if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_HTML_SPLIT_PAGE)) {
+      document_response->mutable_exports()->set_html_split_page(
+          render_html_split_page(*document));
+    }
+    if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_YAML)) {
+      document_response->mutable_exports()->set_yaml(render_yaml(*document));
     }
     converted->set_status(result.failures.empty()
                               ? pipestream::parse::v1::CONVERSION_STATUS_SUCCESS
