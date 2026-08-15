@@ -23,6 +23,7 @@
 #include "grparse/document_assembly.h"
 #include "grparse/document_collectors.h"
 #include "grparse/document_merge.h"
+#include "grparse/document_render.h"
 #include "grparse/in_memory_document.h"
 #include "grparse/office_collector.h"
 
@@ -220,10 +221,31 @@ std::string document_plain_text(const pipestream::document::v1::Document& docume
   return text;
 }
 
+// True when the response must carry this output format. An empty to_formats
+// keeps the historical default of the plain-text export alone; every other
+// format is opt-in by explicit request.
 bool requested(const pipestream::parse::v1::ConvertDocumentOptions& options,
                pipestream::parse::v1::OutputFormat format) {
-  return options.to_formats().empty() ||
-         std::find(options.to_formats().begin(), options.to_formats().end(), format) != options.to_formats().end();
+  if (options.to_formats().empty()) {
+    return format == pipestream::parse::v1::OUTPUT_FORMAT_TEXT;
+  }
+  return std::find(options.to_formats().begin(), options.to_formats().end(), format) !=
+         options.to_formats().end();
+}
+
+// True for the output formats ConvertSource renders. The remaining wire
+// formats (DOCTAGS, HTML_SPLIT_PAGE, YAML, VTT, DOCLANG) are rejected up
+// front by validate_options, each by name.
+bool renderable(pipestream::parse::v1::OutputFormat format) {
+  switch (format) {
+    case pipestream::parse::v1::OUTPUT_FORMAT_TEXT:
+    case pipestream::parse::v1::OUTPUT_FORMAT_MARKDOWN:
+    case pipestream::parse::v1::OUTPUT_FORMAT_HTML:
+    case pipestream::parse::v1::OUTPUT_FORMAT_JSON:
+      return true;
+    default:
+      return false;
+  }
 }
 
 grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOptions& options) {
@@ -236,10 +258,15 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
                           "ConvertSource does not implement option '" + std::string(field->name()) + "'");
     }
   }
-  for (const auto format : options.to_formats()) {
-    if (format != pipestream::parse::v1::OUTPUT_FORMAT_TEXT) {
+  for (const auto raw : options.to_formats()) {
+    const auto format = static_cast<pipestream::parse::v1::OutputFormat>(raw);
+    if (!renderable(format)) {
+      // A value outside the enum has no name; the rejection still identifies
+      // it by number.
+      std::string name = pipestream::parse::v1::OutputFormat_Name(format);
+      if (name.empty()) name = std::to_string(raw);
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                          "ConvertSource currently supports only TEXT output");
+                          "ConvertSource does not implement output format '" + name + "'");
     }
   }
   return grpc::Status::OK;
@@ -445,8 +472,20 @@ grpc::Status DocumentParserService::ConvertSource(
       error->set_module_name(std::string("collector:") + collector_name(failure.id));
       error->set_error_message(failure.error);
     }
-    if (requested(request->request().options(), pipestream::parse::v1::OUTPUT_FORMAT_TEXT)) {
+    // Every requested output format renders from the same merged document;
+    // TEXT keeps its arena-order line export, the rest fold the body tree.
+    const auto& options = request->request().options();
+    if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_TEXT)) {
       document_response->mutable_exports()->set_text(document_plain_text(*document));
+    }
+    if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_MARKDOWN)) {
+      document_response->mutable_exports()->set_md(render_markdown(*document));
+    }
+    if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_HTML)) {
+      document_response->mutable_exports()->set_html(render_html(*document));
+    }
+    if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_JSON)) {
+      document_response->mutable_exports()->set_json(render_json(*document));
     }
     converted->set_status(result.failures.empty()
                               ? pipestream::parse::v1::CONVERSION_STATUS_SUCCESS

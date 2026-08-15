@@ -314,6 +314,7 @@ add_library(grparse_core STATIC
   src/collector_coordinator.cpp
   src/docling_map.cpp
   src/document_merge.cpp
+  src/document_render.cpp
   src/document_collectors.cpp
   src/document_parser_service.cpp
   src/office_collector.cpp
@@ -349,6 +350,7 @@ if(BUILD_TESTING)
     document-assembly-test
     document-collectors-test
     document-merge-test
+    document-render-test
     figure-classifier-test
     layout-engine-test
     office-collector-test

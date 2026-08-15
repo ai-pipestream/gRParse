@@ -316,13 +316,59 @@ void verify_unsupported_options_are_rejected(TestServer* server) {
   request = unary_request();
   request.mutable_request()->mutable_options()->clear_to_formats();
   request.mutable_request()->mutable_options()->add_to_formats(
-      pipestream::parse::v1::OUTPUT_FORMAT_MARKDOWN);
-  grpc::ClientContext markdown_context;
-  pipestream::parse::v1::ConvertSourceResponse markdown_response;
-  const grpc::Status markdown_status =
-      client->ConvertSource(&markdown_context, request, &markdown_response);
-  require(markdown_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
-          "plain text must not be presented as Markdown");
+      pipestream::parse::v1::OUTPUT_FORMAT_YAML);
+  grpc::ClientContext yaml_context;
+  pipestream::parse::v1::ConvertSourceResponse yaml_response;
+  const grpc::Status yaml_status =
+      client->ConvertSource(&yaml_context, request, &yaml_response);
+  require(yaml_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
+          "an unimplemented output format must be rejected");
+  require(yaml_status.error_message().find("OUTPUT_FORMAT_YAML") != std::string::npos,
+          "the rejection must name the unimplemented format: " +
+              yaml_status.error_message());
+}
+
+// Every requested output format renders in one response; leaving to_formats
+// empty keeps the plain-text default alone.
+void verify_unary_multi_format_exports(TestServer* server) {
+  auto client = server->unary_stub();
+  auto request = unary_request();
+  auto* options = request.mutable_request()->mutable_options();
+  options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_MARKDOWN);
+  options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_HTML);
+  options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_JSON);
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  pipestream::parse::v1::ConvertSourceResponse response;
+  const grpc::Status status = client->ConvertSource(&context, request, &response);
+  require(status.ok(), "multi-format conversion failed: " + status.error_message());
+
+  const auto& exports = response.response().document().exports();
+  require(exports.text() == "one\ntwo\nthree", "multi-format text export");
+  require(exports.has_md() && exports.md() == "one\n\ntwo\n\nthree",
+          "multi-format markdown export: " + exports.md());
+  require(exports.has_html() &&
+              exports.html().find("<p>one</p>") != std::string::npos &&
+              exports.html().find("<!DOCTYPE html>") == 0,
+          "multi-format html export: " + exports.html());
+  require(exports.has_json() &&
+              exports.json().find("\"texts\"") != std::string::npos &&
+              exports.json().find("\"self_ref\"") != std::string::npos,
+          "multi-format json export");
+
+  auto default_request = unary_request();
+  default_request.mutable_request()->mutable_options()->clear_to_formats();
+  grpc::ClientContext default_context;
+  default_context.set_deadline(std::chrono::system_clock::now() + 10s);
+  pipestream::parse::v1::ConvertSourceResponse default_response;
+  const grpc::Status default_status =
+      client->ConvertSource(&default_context, default_request, &default_response);
+  require(default_status.ok(),
+          "default-format conversion failed: " + default_status.error_message());
+  const auto& default_exports = default_response.response().document().exports();
+  require(default_exports.has_text() && !default_exports.has_md() &&
+              !default_exports.has_html() && !default_exports.has_json(),
+          "empty to_formats must keep the plain-text default alone");
 }
 
 void verify_unary_digital_path_bypasses_ocr() {
@@ -379,6 +425,7 @@ int main() {
     verify_data_after_complete_is_rejected(&server);
     verify_unary_uses_scheduler_and_shared_assembly(&server);
     verify_unsupported_options_are_rejected(&server);
+    verify_unary_multi_format_exports(&server);
     verify_unary_digital_path_bypasses_ocr();
     verify_wide_page_window_streams_completely();
     verify_deadline_cancels_scheduler_work();
