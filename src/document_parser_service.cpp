@@ -100,6 +100,7 @@ const char* collector_name(pipestream::parse::v1::Collector collector) {
     case pipestream::parse::v1::COLLECTOR_XML: return "xml";
     case pipestream::parse::v1::COLLECTOR_EBCDIC: return "ebcdic";
     case pipestream::parse::v1::COLLECTOR_EPUB: return "epub";
+    case pipestream::parse::v1::COLLECTOR_MARKUP: return "markup";
     default: return "unspecified";
   }
 }
@@ -112,6 +113,7 @@ const char* collector_target_env(pipestream::parse::v1::Collector collector) {
     case pipestream::parse::v1::COLLECTOR_XML: return "GRPARSE_XML_TARGET";
     case pipestream::parse::v1::COLLECTOR_EBCDIC: return "GRPARSE_EBCDIC_TARGET";
     case pipestream::parse::v1::COLLECTOR_EPUB: return "GRPARSE_EPUB_TARGET";
+    case pipestream::parse::v1::COLLECTOR_MARKUP: return "GRPARSE_MARKUP_TARGET";
     default: return "";
   }
 }
@@ -165,6 +167,9 @@ CollectorOutcome run_remote_collector(
       return collect_ebcdic_document(endpoints->channel(id), ebcdic_layout_json, bytes);
     case pipestream::parse::v1::COLLECTOR_EPUB:
       return collect_epub_document(endpoints->channel(id), bytes);
+    case pipestream::parse::v1::COLLECTOR_MARKUP:
+      return collect_markup_document(endpoints->channel(id), filename,
+                                     content_type, bytes);
     default:
       // Unreachable: the remote_collector guard admits only the ids the
       // switch handles.
@@ -291,6 +296,7 @@ const std::string& CollectorEndpoints::target(
     case pipestream::parse::v1::COLLECTOR_XML: return targets_.xml;
     case pipestream::parse::v1::COLLECTOR_EBCDIC: return targets_.ebcdic;
     case pipestream::parse::v1::COLLECTOR_EPUB: return targets_.epub;
+    case pipestream::parse::v1::COLLECTOR_MARKUP: return targets_.markup;
     default: return kNone;
   }
 }

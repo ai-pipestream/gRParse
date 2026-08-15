@@ -26,6 +26,13 @@ bool extension_in(const std::string& extension,
                      [&extension](const char* candidate) { return extension == candidate; });
 }
 
+// True when `value` ends with `suffix`. Used for the double extensions
+// (.tar.gz) that std::filesystem's single-extension accessor cannot see.
+bool ends_with(const std::string& value, const std::string& suffix) {
+  return value.size() >= suffix.size() &&
+         value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
 }  // namespace
 
 CoordinatorResult run_collectors(std::vector<PlannedCollector> collectors,
@@ -92,10 +99,19 @@ pipestream::parse::v1::Collector route_collector(const std::string& filename,
   }
   // Deliberately narrow: only names that say "XML document", never the
   // "+xml" suffix family (xhtml, svg, ...), whose members belong to other
-  // collectors or to none.
-  if (extension_in(extension, {".xml", ".nxml", ".xbrl"}) ||
-      type == "application/xml" || type == "text/xml") {
+  // collectors or to none. The archive forms are the xml collector's too:
+  // a .dclx is a zip wrapping a doclang document, and a .tar.gz is routed
+  // for the Google Books METS export it may be; the collector rejects a
+  // tarball that is not one, and that failure degrades per-collector.
+  if (extension_in(extension, {".xml", ".nxml", ".xbrl", ".dclx"}) ||
+      ends_with(lowercase(filename), ".tar.gz") ||
+      type == "application/xml" || type == "text/xml" ||
+      type == "application/mets+xml") {
     return pipestream::parse::v1::COLLECTOR_XML;
+  }
+  if (markup_format_for(filename, content_type) !=
+      pipestream::markup::v1::MARKUP_FORMAT_UNSPECIFIED) {
+    return pipestream::parse::v1::COLLECTOR_MARKUP;
   }
   if (extension_in(extension,
                    {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".oga",
@@ -105,6 +121,43 @@ pipestream::parse::v1::Collector route_collector(const std::string& filename,
     return pipestream::parse::v1::COLLECTOR_ASR;
   }
   return pipestream::parse::v1::COLLECTOR_GRPARSE_CV;
+}
+
+pipestream::markup::v1::MarkupFormat markup_format_for(
+    const std::string& filename, const std::string& content_type) {
+  const std::string extension =
+      lowercase(std::filesystem::path(filename).extension().string());
+  const std::string type = lowercase(content_type);
+  if (extension_in(extension, {".md", ".markdown", ".mdown"}) ||
+      type == "text/markdown" || type == "text/x-markdown") {
+    return pipestream::markup::v1::MARKUP_FORMAT_MARKDOWN;
+  }
+  if (extension_in(extension, {".html", ".htm", ".xhtml"}) ||
+      type == "text/html" || type == "application/xhtml+xml") {
+    return pipestream::markup::v1::MARKUP_FORMAT_HTML;
+  }
+  if (extension_in(extension, {".adoc", ".asciidoc"}) ||
+      type == "text/asciidoc" || type == "text/x-asciidoc") {
+    return pipestream::markup::v1::MARKUP_FORMAT_ASCIIDOC;
+  }
+  if (extension_in(extension, {".tex", ".latex"}) || type == "text/x-tex" ||
+      type == "application/x-tex" || type == "text/x-latex") {
+    return pipestream::markup::v1::MARKUP_FORMAT_LATEX;
+  }
+  if (extension == ".vtt" || type == "text/vtt") {
+    return pipestream::markup::v1::MARKUP_FORMAT_VTT;
+  }
+  if (extension == ".boxnote") {
+    return pipestream::markup::v1::MARKUP_FORMAT_BOXNOTE;
+  }
+  // Bare JSON is routed the way docling routes it: to the Docling JSON
+  // reader, which validates and rejects a payload that is not a serialized
+  // DoclingDocument. That rejection degrades per-collector rather than
+  // being guessed around here.
+  if (extension == ".json" || type == "application/json") {
+    return pipestream::markup::v1::MARKUP_FORMAT_DOCLING_JSON;
+  }
+  return pipestream::markup::v1::MARKUP_FORMAT_UNSPECIFIED;
 }
 
 std::vector<pipestream::parse::v1::Collector> resolve_collectors(

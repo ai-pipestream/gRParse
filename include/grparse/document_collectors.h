@@ -46,4 +46,12 @@ CollectorOutcome collect_ebcdic_document(const std::shared_ptr<grpc::Channel>& c
 CollectorOutcome collect_epub_document(const std::shared_ptr<grpc::Channel>& channel,
                                        const std::string& bytes);
 
+// grpc-markup (Markdown, HTML, AsciiDoc, LaTeX, WebVTT, BoxNote, Docling
+// JSON). The format is hinted from the filename and content type via
+// markup_format_for; an unresolved hint asks the collector to sniff.
+CollectorOutcome collect_markup_document(const std::shared_ptr<grpc::Channel>& channel,
+                                         const std::string& filename,
+                                         const std::string& content_type,
+                                         const std::string& bytes);
+
 }  // namespace grparse

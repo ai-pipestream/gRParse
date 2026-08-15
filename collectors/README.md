@@ -11,6 +11,7 @@ re-copy the file and rebuild.
 | `xml.proto`, `xml_service.proto` | grpc-xml `proto/ai/pipestream/xml/v1/` |
 | `ebcdic.proto`, `ebcdic_service.proto` | grpc-ebcdic `proto/ai/pipestream/ebcdic/v1/` |
 | `epub_types.proto`, `epub_service.proto` | grpc-epub `proto/ai/pipestream/epub/v1/` (`types.proto` is renamed here to stay unambiguous; it stages back to `ai/pipestream/epub/v1/types.proto`) |
+| `markup.proto`, `markup_service.proto` | grpc-markup `proto/ai/pipestream/markup/v1/` |
 
 Every one of these imports `ai/pipestream/document/v1/document.proto`, which
 resolves to this repository's own `document.proto` — the fleet-wide source of

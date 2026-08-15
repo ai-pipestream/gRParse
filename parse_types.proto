@@ -186,6 +186,11 @@ enum Collector {
   // The grpc-epub collector. The default for .epub inputs; requires a
   // configured endpoint.
   COLLECTOR_EPUB = 9;
+  // The grpc-markup collector: Markdown, HTML, AsciiDoc, LaTeX, WebVTT,
+  // BoxNote and serialized Docling JSON. The default for those inputs;
+  // requires a configured endpoint. The format is hinted from the filename
+  // and content type; the collector sniffs when no hint resolves.
+  COLLECTOR_MARKUP = 10;
 }
 
 // ============================================================================

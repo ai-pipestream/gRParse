@@ -7,6 +7,7 @@
 #include <grpcpp/support/status.h>
 
 #include "ai/pipestream/document/v1/document.pb.h"
+#include "ai/pipestream/markup/v1/markup.pb.h"
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
 
 namespace grparse {
@@ -66,12 +67,20 @@ bool office_format(const std::string& filename, const std::string& content_type)
 
 // The collector a document routes to when the caller selects none: office
 // formats to libreoffice, audio and video to asr, .eml/.msg to email, XML
-// to xml, .epub to epub, everything else (PDF, raster) to the in-process CV
+// and its archive forms (.dclx, .tar.gz METS exports) to xml, .epub to
+// epub, text markup (Markdown, HTML, AsciiDoc, LaTeX, WebVTT, BoxNote,
+// JSON) to markup, everything else (PDF, raster) to the in-process CV
 // path. EBCDIC never routes by format: raw records have no extension or
 // magic worth trusting, and a parse needs a layout only an explicit caller
 // can supply.
 ai::pipestream::parse::v1::Collector route_collector(const std::string& filename,
                                                      const std::string& content_type);
+
+// The format hint the markup collector is dialed with, from the filename
+// extension and content type. `MARKUP_FORMAT_UNSPECIFIED` when neither
+// resolves one, which asks the collector to sniff the bytes itself.
+ai::pipestream::markup::v1::MarkupFormat markup_format_for(
+    const std::string& filename, const std::string& content_type);
 
 // Resolves the collector plan for a document: an explicit selection wins
 // verbatim (unspecified entries and duplicates dropped, order kept); an

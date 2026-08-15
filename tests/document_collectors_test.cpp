@@ -15,6 +15,7 @@
 #include "ai/pipestream/ebcdic/v1/ebcdic_service.grpc.pb.h"
 #include "ai/pipestream/email/v1/email_service.grpc.pb.h"
 #include "ai/pipestream/epub/v1/epub_service.grpc.pb.h"
+#include "ai/pipestream/markup/v1/markup_service.grpc.pb.h"
 #include "ai/pipestream/xml/v1/xml_service.grpc.pb.h"
 #include "grparse/document_collectors.h"
 
@@ -23,6 +24,7 @@ namespace docv1 = ai::pipestream::document::v1;
 namespace ebcdicv1 = ai::pipestream::ebcdic::v1;
 namespace emailv1 = ai::pipestream::email::v1;
 namespace epubv1 = ai::pipestream::epub::v1;
+namespace markupv1 = ai::pipestream::markup::v1;
 namespace xmlv1 = ai::pipestream::xml::v1;
 
 namespace {
@@ -434,6 +436,61 @@ void verify_missing_document_event_fails() {
           "the failure explains the collector predates emit_document");
 }
 
+// ---- markup ----------------------------------------------------------------
+
+// Succeeds only when the client forwarded emit_document, the format hint the
+// caller's filename resolves to, and the payload bytes.
+class FakeMarkupService final : public markupv1::MarkupParseService::Service {
+ public:
+  grpc::Status ParseMarkup(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<markupv1::ParseMarkupResponse,
+                               markupv1::ParseMarkupRequest>* stream) override {
+    markupv1::ParseMarkupRequest request;
+    markupv1::MarkupFormat format = markupv1::MARKUP_FORMAT_UNSPECIFIED;
+    bool emit_document = false;
+    std::string bytes;
+    while (stream->Read(&request)) {
+      if (request.has_options()) {
+        format = request.options().format();
+        emit_document = request.options().emit_document();
+      } else {
+        bytes += request.chunk();
+      }
+    }
+    if (format != markupv1::MARKUP_FORMAT_MARKDOWN || !emit_document ||
+        bytes.empty()) {
+      return grpc::Status(
+          grpc::StatusCode::INVALID_ARGUMENT,
+          "fake markup expects the markdown hint, emit_document, and bytes");
+    }
+    markupv1::ParseMarkupResponse event;
+    *event.mutable_document() = canned_document("markup");
+    stream->Write(event);
+    event.Clear();
+    auto* warning = event.mutable_status()->add_warnings();
+    warning->set_code(markupv1::WARNING_CODE_EMBEDDED_HTML_FLATTENED);
+    warning->set_message("raw <div> flattened");
+    warning->set_count(3);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+};
+
+void verify_markup_forwards_hint_and_collects() {
+  FakeMarkupService service;
+  ServerFixture server(&service);
+  const auto outcome = grparse::collect_markup_document(
+      server.channel(), "notes.md", "", "# Title\n\nBody.\n");
+  require(outcome.success, "markup collection succeeds: " + outcome.error);
+  require(outcome.document.texts(0).text().base().text() == "from markup",
+          "the markup Document arrives unchanged");
+  require(outcome.warnings.size() == 1 &&
+              outcome.warnings[0] ==
+                  "WARNING_CODE_EMBEDDED_HTML_FLATTENED: raw <div> flattened (x3)",
+          "markup warnings flatten with code and count");
+}
+
 }  // namespace
 
 int main() {
@@ -448,6 +505,7 @@ int main() {
     verify_ebcdic_without_layout_never_dials();
     verify_epub_collects_document();
     verify_missing_document_event_fails();
+    verify_markup_forwards_hint_and_collects();
   } catch (const std::exception& failure) {
     std::cerr << "FAILED: " << failure.what() << std::endl;
     return 1;

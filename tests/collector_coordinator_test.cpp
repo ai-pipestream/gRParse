@@ -70,8 +70,32 @@ void verify_routing() {
           "nxml routes to the xml collector");
   require(grparse::route_collector("upload.bin", "text/xml") == parsev1::COLLECTOR_XML,
           "xml content type routes to the xml collector");
-  require(grparse::route_collector("page.xhtml", "") == parsev1::COLLECTOR_GRPARSE_CV,
-          "the +xml suffix family does not route to the xml collector");
+  require(grparse::route_collector("page.xhtml", "") == parsev1::COLLECTOR_MARKUP,
+          "the +xml suffix family belongs to the markup collector, not xml");
+  require(grparse::route_collector("archive.dclx", "") == parsev1::COLLECTOR_XML,
+          "the doclang archive routes to the xml collector");
+  require(grparse::route_collector("BOOK.TAR.GZ", "") == parsev1::COLLECTOR_XML,
+          "a tar.gz routes to the xml collector for its METS export sniff");
+  require(grparse::route_collector("upload.bin", "application/mets+xml") ==
+              parsev1::COLLECTOR_XML,
+          "the METS content type routes to the xml collector");
+  require(grparse::route_collector("notes.md", "") == parsev1::COLLECTOR_MARKUP,
+          "markdown routes to the markup collector");
+  require(grparse::route_collector("index.html", "") == parsev1::COLLECTOR_MARKUP,
+          "html routes to the markup collector");
+  require(grparse::route_collector("upload.bin", "text/html") ==
+              parsev1::COLLECTOR_MARKUP,
+          "html content type routes without the extension");
+  require(grparse::route_collector("guide.adoc", "") == parsev1::COLLECTOR_MARKUP,
+          "asciidoc routes to the markup collector");
+  require(grparse::route_collector("paper.tex", "") == parsev1::COLLECTOR_MARKUP,
+          "latex routes to the markup collector");
+  require(grparse::route_collector("captions.vtt", "") == parsev1::COLLECTOR_MARKUP,
+          "webvtt routes to the markup collector");
+  require(grparse::route_collector("plan.boxnote", "") == parsev1::COLLECTOR_MARKUP,
+          "boxnote routes to the markup collector");
+  require(grparse::route_collector("export.json", "") == parsev1::COLLECTOR_MARKUP,
+          "json routes to the markup collector's docling reader");
   require(grparse::route_collector("talk.mp3", "") == parsev1::COLLECTOR_ASR,
           "audio routes to the asr collector");
   require(grparse::route_collector("clip.mkv", "") == parsev1::COLLECTOR_ASR,
@@ -84,6 +108,35 @@ void verify_routing() {
           "ebcdic never routes by format; only an explicit selection reaches it");
   require(grparse::route_collector("data.csv", "") == parsev1::COLLECTOR_LIBREOFFICE,
           "csv stays an office format even though it is text");
+
+  namespace markupv1 = ai::pipestream::markup::v1;
+  require(grparse::markup_format_for("notes.md", "") ==
+              markupv1::MARKUP_FORMAT_MARKDOWN,
+          "md resolves the markdown hint");
+  require(grparse::markup_format_for("upload.bin", "text/markdown") ==
+              markupv1::MARKUP_FORMAT_MARKDOWN,
+          "the markdown content type resolves the hint without the extension");
+  require(grparse::markup_format_for("INDEX.HTM", "") ==
+              markupv1::MARKUP_FORMAT_HTML,
+          "the html hint is case-insensitive");
+  require(grparse::markup_format_for("guide.asciidoc", "") ==
+              markupv1::MARKUP_FORMAT_ASCIIDOC,
+          "asciidoc resolves its hint");
+  require(grparse::markup_format_for("paper.latex", "") ==
+              markupv1::MARKUP_FORMAT_LATEX,
+          "latex resolves its hint");
+  require(grparse::markup_format_for("captions.vtt", "") ==
+              markupv1::MARKUP_FORMAT_VTT,
+          "vtt resolves its hint");
+  require(grparse::markup_format_for("plan.boxnote", "") ==
+              markupv1::MARKUP_FORMAT_BOXNOTE,
+          "boxnote resolves its hint");
+  require(grparse::markup_format_for("export.json", "application/json") ==
+              markupv1::MARKUP_FORMAT_DOCLING_JSON,
+          "json resolves the docling reader hint");
+  require(grparse::markup_format_for("upload.bin", "") ==
+              markupv1::MARKUP_FORMAT_UNSPECIFIED,
+          "an unrecognized name leaves the collector to sniff");
 
   auto plan = grparse::resolve_collectors({}, parsev1::COLLECTOR_GRPARSE_CV);
   require(plan.size() == 1 && plan[0] == parsev1::COLLECTOR_GRPARSE_CV,

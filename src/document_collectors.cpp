@@ -9,12 +9,14 @@
 #include "ai/pipestream/ebcdic/v1/ebcdic_service.grpc.pb.h"
 #include "ai/pipestream/email/v1/email_service.grpc.pb.h"
 #include "ai/pipestream/epub/v1/epub_service.grpc.pb.h"
+#include "ai/pipestream/markup/v1/markup_service.grpc.pb.h"
 #include "ai/pipestream/xml/v1/xml_service.grpc.pb.h"
 
 namespace asrv1 = ai::pipestream::asr::v1;
 namespace ebcdicv1 = ai::pipestream::ebcdic::v1;
 namespace emailv1 = ai::pipestream::email::v1;
 namespace epubv1 = ai::pipestream::epub::v1;
+namespace markupv1 = ai::pipestream::markup::v1;
 namespace xmlv1 = ai::pipestream::xml::v1;
 
 namespace grparse {
@@ -245,6 +247,44 @@ CollectorOutcome collect_ebcdic_document(const std::shared_ptr<grpc::Channel>& c
         for (const auto& warning : event.status().warnings()) {
           warnings.push_back(ebcdicv1::WarningCode_Name(warning.code()) + ": " +
                              warning.message());
+        }
+        return true;
+      });
+}
+
+CollectorOutcome collect_markup_document(const std::shared_ptr<grpc::Channel>& channel,
+                                         const std::string& filename,
+                                         const std::string& content_type,
+                                         const std::string& bytes) {
+  auto stub = markupv1::MarkupParseService::NewStub(channel);
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + kDeadline);
+  auto stream = stub->ParseMarkup(&context);
+
+  markupv1::ParseMarkupRequest request;
+  // The hint spares the collector a sniff and resolves what a sniff cannot:
+  // Markdown and AsciiDoc have no reliable signature, but the filename
+  // does. An unresolved hint stays MARKUP_FORMAT_UNSPECIFIED, which is the
+  // wire's "sniff it".
+  request.mutable_options()->set_format(markup_format_for(filename, content_type));
+  request.mutable_options()->set_emit_document(true);
+  upload_stream(*stream, request, bytes, /*always_send_chunk=*/false,
+                [&bytes](markupv1::ParseMarkupRequest& frame, size_t offset,
+                         size_t length, bool /*last*/) {
+                  frame.set_chunk(bytes.data() + offset, length);
+                });
+  return drain_stream<markupv1::ParseMarkupResponse>(
+      "markup", *stream,
+      [](const markupv1::ParseMarkupResponse& event,
+         std::vector<std::string>& warnings) {
+        if (!event.has_status()) return false;
+        for (const auto& warning : event.status().warnings()) {
+          std::string text =
+              markupv1::WarningCode_Name(warning.code()) + ": " + warning.message();
+          if (warning.count() > 1) {
+            text += " (x" + std::to_string(warning.count()) + ")";
+          }
+          warnings.push_back(std::move(text));
         }
         return true;
       });
