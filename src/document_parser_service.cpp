@@ -101,6 +101,7 @@ const char* collector_name(pipestream::parse::v1::Collector collector) {
     case pipestream::parse::v1::COLLECTOR_EBCDIC: return "ebcdic";
     case pipestream::parse::v1::COLLECTOR_EPUB: return "epub";
     case pipestream::parse::v1::COLLECTOR_MARKUP: return "markup";
+    case pipestream::parse::v1::COLLECTOR_LOL_HTML: return "lol-html";
     default: return "unspecified";
   }
 }
@@ -114,6 +115,7 @@ const char* collector_target_env(pipestream::parse::v1::Collector collector) {
     case pipestream::parse::v1::COLLECTOR_EBCDIC: return "GRPARSE_EBCDIC_TARGET";
     case pipestream::parse::v1::COLLECTOR_EPUB: return "GRPARSE_EPUB_TARGET";
     case pipestream::parse::v1::COLLECTOR_MARKUP: return "GRPARSE_MARKUP_TARGET";
+    case pipestream::parse::v1::COLLECTOR_LOL_HTML: return "GRPARSE_LOL_HTML_TARGET";
     default: return "";
   }
 }
@@ -132,7 +134,8 @@ CollectorOutcome run_remote_collector(
     const std::shared_ptr<CollectorEndpoints>& endpoints,
     const std::string& document_id, const std::string& filename,
     const std::string& content_type, const std::string& bytes,
-    const std::string& ebcdic_layout_json) {
+    const std::string& ebcdic_layout_json,
+    const std::string& lol_html_options_json) {
   CollectorOutcome outcome;
   if (!remote_collector(id)) {
     outcome.error = std::string("collector '") + collector_name(id) +
@@ -170,6 +173,9 @@ CollectorOutcome run_remote_collector(
     case pipestream::parse::v1::COLLECTOR_MARKUP:
       return collect_markup_document(endpoints->channel(id), filename,
                                      content_type, bytes);
+    case pipestream::parse::v1::COLLECTOR_LOL_HTML:
+      return collect_lol_html_document(endpoints->channel(id),
+                                       lol_html_options_json, bytes);
     default:
       // Unreachable: the remote_collector guard admits only the ids the
       // switch handles.
@@ -263,7 +269,8 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
   options.GetReflection()->ListFields(options, &populated);
   for (const auto* field : populated) {
     if (field->name() != "to_formats" && field->name() != "collectors" &&
-        field->name() != "ebcdic_layout_json") {
+        field->name() != "ebcdic_layout_json" &&
+        field->name() != "lol_html_options_json") {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                           "ConvertSource does not implement option '" + std::string(field->name()) + "'");
     }
@@ -297,6 +304,7 @@ const std::string& CollectorEndpoints::target(
     case pipestream::parse::v1::COLLECTOR_EBCDIC: return targets_.ebcdic;
     case pipestream::parse::v1::COLLECTOR_EPUB: return targets_.epub;
     case pipestream::parse::v1::COLLECTOR_MARKUP: return targets_.markup;
+    case pipestream::parse::v1::COLLECTOR_LOL_HTML: return targets_.lol_html;
     default: return kNone;
   }
 }
@@ -430,6 +438,8 @@ grpc::Status DocumentParserService::ConvertSource(
     auto endpoints = endpoints_;
     const auto ebcdic_layout_json =
         std::make_shared<const std::string>(request->request().options().ebcdic_layout_json());
+    const auto lol_html_options_json = std::make_shared<const std::string>(
+        request->request().options().lol_html_options_json());
 
     std::vector<PlannedCollector> plan;
     for (const auto id : resolve_collectors(
@@ -440,10 +450,11 @@ grpc::Status DocumentParserService::ConvertSource(
       if (id == pipestream::parse::v1::COLLECTOR_GRPARSE_CV) {
         collector.run = run_cv;
       } else {
-        collector.run = [id, endpoints, bytes, requested_name, ebcdic_layout_json]() {
+        collector.run = [id, endpoints, bytes, requested_name, ebcdic_layout_json,
+                         lol_html_options_json]() {
           return run_remote_collector(id, endpoints, requested_name.string(),
                                       requested_name.string(), std::string(), *bytes,
-                                      *ebcdic_layout_json);
+                                      *ebcdic_layout_json, *lol_html_options_json);
         };
       }
       plan.push_back(std::move(collector));
@@ -776,8 +787,9 @@ class DocumentStreamReactor final
   // stream, not a gRPC reaction. The gate keeps its completion safe against
   // reactor teardown exactly like the scheduler callbacks. A client cancel
   // abandons the result; the collector's own deadline bounds the orphaned
-  // call. The streaming wire carries no ebcdic layout, so an ebcdic
-  // selection here degrades to that collector's own INVALID_ARGUMENT.
+  // call. The streaming wire carries no ebcdic layout and no lol-html
+  // rules, so selecting either collector here degrades to that collector's
+  // own INVALID_ARGUMENT.
   void spawn_remote_collector(pipestream::parse::v1::Collector id,
                               std::shared_ptr<const std::string> bytes) {
     std::string document_id;
@@ -793,7 +805,8 @@ class DocumentStreamReactor final
     auto endpoints = endpoints_;
     std::thread([weak_gate, endpoints, id, bytes, document_id, filename, content_type]() {
       CollectorOutcome outcome = run_remote_collector(
-          id, endpoints, document_id, filename, content_type, *bytes, std::string());
+          id, endpoints, document_id, filename, content_type, *bytes,
+          std::string(), std::string());
       if (const auto gate = weak_gate.lock()) {
         std::lock_guard<std::mutex> lock(gate->mutex);
         if (gate->reactor != nullptr) {

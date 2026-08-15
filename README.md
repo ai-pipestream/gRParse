@@ -206,6 +206,7 @@ environment variable and left unconfigured otherwise:
 | `COLLECTOR_EBCDIC` | `GRPARSE_EBCDIC_TARGET` | never routed; explicit selection with `ConvertDocumentOptions.ebcdic_layout_json` only |
 | `COLLECTOR_EPUB` | `GRPARSE_EPUB_TARGET` | `.epub` |
 | `COLLECTOR_MARKUP` | `GRPARSE_MARKUP_TARGET` | text markup: `.md`, `.html`/`.htm`/`.xhtml`, `.adoc`, `.tex`, `.vtt`, `.boxnote`, and `.json` (Docling JSON re-ingest); the dial carries a format hint from the filename, and the collector sniffs when none resolves |
+| `COLLECTOR_LOL_HTML` | `GRPARSE_LOL_HTML_TARGET` | never routed; explicit selection with `ConvertDocumentOptions.lol_html_options_json` (the protobuf JSON of `lolhtml.v1.ExtractOptions`) only. Targeted CSS-selector extraction from HTML, not whole-document conversion: matches fold into a group per rule. HTML with no selection routes to `COLLECTOR_MARKUP` |
 
 A request selects collectors explicitly (`ConvertDocumentOptions.collectors`,
 or `DocumentChunk.collectors` on the streaming RPC); an empty selection
@@ -213,10 +214,12 @@ routes by format as above, with PDF and raster inputs staying on the CV
 path. No code path converts office bytes to PDF in order to parse them.
 
 The libreoffice collector streams typed events that gRParse folds into a
-`Document` itself; every other remote collector projects its own typed
-stream into a source-tagged `Document` server-side (their `emit_document`
-option), so gRParse asks for the Document event, drains the typed events,
-and merges what the collector itself attributed. The vendored wire
+`Document` itself, and the lol-html collector's match stream is likewise
+folded client-side (its forward-only wire deliberately has no document
+event); every other remote collector projects its own typed stream into a
+source-tagged `Document` server-side (their `emit_document` option), so
+gRParse asks for the Document event, drains the typed events, and merges
+what the collector itself attributed. The vendored wire
 contracts live in `collectors/` (see its README); each collector repo owns
 its contract.
 

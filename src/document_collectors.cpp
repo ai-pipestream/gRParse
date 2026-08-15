@@ -2,8 +2,11 @@
 
 #include <algorithm>
 #include <chrono>
+#include <map>
 #include <utility>
 #include <vector>
+
+#include <google/protobuf/util/json_util.h>
 
 #include "ai/pipestream/asr/v1/asr_service.grpc.pb.h"
 #include "ai/pipestream/ebcdic/v1/ebcdic_service.grpc.pb.h"
@@ -11,11 +14,14 @@
 #include "ai/pipestream/epub/v1/epub_service.grpc.pb.h"
 #include "ai/pipestream/markup/v1/markup_service.grpc.pb.h"
 #include "ai/pipestream/xml/v1/xml_service.grpc.pb.h"
+#include "lolhtml/v1/lolhtml_service.grpc.pb.h"
 
 namespace asrv1 = ai::pipestream::asr::v1;
+namespace docv1 = ai::pipestream::document::v1;
 namespace ebcdicv1 = ai::pipestream::ebcdic::v1;
 namespace emailv1 = ai::pipestream::email::v1;
 namespace epubv1 = ai::pipestream::epub::v1;
+namespace lolv1 = lolhtml::v1;
 namespace markupv1 = ai::pipestream::markup::v1;
 namespace xmlv1 = ai::pipestream::xml::v1;
 
@@ -316,6 +322,165 @@ CollectorOutcome collect_epub_document(const std::shared_ptr<grpc::Channel>& cha
         }
         return true;
       });
+}
+
+CollectorOutcome collect_lol_html_document(const std::shared_ptr<grpc::Channel>& channel,
+                                           const std::string& options_json,
+                                           const std::string& bytes) {
+  CollectorOutcome outcome;
+  if (options_json.empty()) {
+    // Nothing to dial: the collector extracts what its selector rules name,
+    // and this client never invents rules.
+    outcome.error = "lol-html collector: a parse requires lol_html_options_json";
+    outcome.code = grpc::StatusCode::INVALID_ARGUMENT;
+    return outcome;
+  }
+  lolv1::ExtractOptions options;
+  const auto parsed =
+      google::protobuf::util::JsonStringToMessage(options_json, &options);
+  if (!parsed.ok()) {
+    outcome.error =
+        "lol-html collector: lol_html_options_json does not parse as "
+        "lolhtml.v1.ExtractOptions: " +
+        std::string(parsed.message());
+    outcome.code = grpc::StatusCode::INVALID_ARGUMENT;
+    return outcome;
+  }
+
+  auto stub = lolv1::LolHtmlService::NewStub(channel);
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + kDeadline);
+  auto stream = stub->Extract(&context);
+
+  lolv1::ExtractRequest request;
+  *request.mutable_options() = std::move(options);
+  upload_stream(*stream, request, bytes, /*always_send_chunk=*/false,
+                [&bytes](lolv1::ExtractRequest& frame, size_t offset,
+                         size_t length, bool /*last*/) {
+                  frame.set_chunk(bytes.data() + offset, length);
+                });
+
+  // The one collector wire with no document event: the match stream IS the
+  // product, so the fold happens here. One group per rule, its matches and
+  // text as source-tagged text items in arrival order. Instance nesting is
+  // not reconstructed: matches are a transcript, not a tree; a caller who
+  // wants document structure runs the markup collector instead.
+  docv1::Document& document = outcome.document;
+  document.mutable_body()->set_self_ref("#/body");
+  document.mutable_body()->set_content_layer(docv1::CONTENT_LAYER_BODY);
+  document.mutable_furniture()->set_self_ref("#/furniture");
+  document.mutable_furniture()->set_content_layer(docv1::CONTENT_LAYER_FURNITURE);
+
+  std::map<std::string, int> groups_by_rule;
+  const auto group_ref = [&document, &groups_by_rule](const std::string& rule) {
+    auto found = groups_by_rule.find(rule);
+    if (found == groups_by_rule.end()) {
+      const int index = document.groups_size();
+      docv1::GroupItem* group = document.add_groups();
+      group->set_self_ref("#/groups/" + std::to_string(index));
+      group->mutable_parent()->set_ref("#/body");
+      group->set_content_layer(docv1::CONTENT_LAYER_BODY);
+      group->set_name(rule);
+      group->set_label(docv1::GROUP_LABEL_SECTION);
+      document.mutable_body()->add_children()->set_ref(group->self_ref());
+      found = groups_by_rule.emplace(rule, index).first;
+    }
+    return found->second;
+  };
+  const auto add_text = [&document, &group_ref](const std::string& rule,
+                                                std::string text) {
+    const int group = group_ref(rule);
+    auto* base = document.add_texts()->mutable_text()->mutable_base();
+    base->set_self_ref("#/texts/" + std::to_string(document.texts_size() - 1));
+    base->mutable_parent()->set_ref("#/groups/" + std::to_string(group));
+    base->set_content_layer(docv1::CONTENT_LAYER_BODY);
+    base->set_label(docv1::DOC_ITEM_LABEL_TEXT);
+    base->set_orig(text);
+    base->set_text(std::move(text));
+    base->add_source()->mutable_collector()->set_collector("lol-html");
+    document.mutable_groups(group)->add_children()->set_ref(base->self_ref());
+  };
+
+  bool finished_seen = false;
+  bool error_seen = false;
+  lolv1::ExtractResponse event;
+  while (stream->Read(&event)) {
+    switch (event.event_case()) {
+      case lolv1::ExtractResponse::kElement: {
+        const auto& element = event.element();
+        std::string tag = element.tag_name().empty() ? element.tag_name_raw()
+                                                     : element.tag_name();
+        std::string text = "<" + (tag.empty() ? "match" : tag);
+        for (const auto& attribute : element.attributes()) {
+          text += " " + attribute.name() + "=\"" + attribute.value() + "\"";
+        }
+        text += ">";
+        add_text(element.rule_id(), std::move(text));
+        break;
+      }
+      case lolv1::ExtractResponse::kText:
+        add_text(event.text().rule_id(), event.text().text());
+        break;
+      case lolv1::ExtractResponse::kComment:
+        add_text(event.comment().rule_id(), "<!--" + event.comment().text() + "-->");
+        break;
+      case lolv1::ExtractResponse::kDoctype: {
+        std::string text = "<!DOCTYPE";
+        if (event.doctype().has_name()) text += " " + event.doctype().name();
+        text += ">";
+        add_text(event.doctype().rule_id(), std::move(text));
+        break;
+      }
+      case lolv1::ExtractResponse::kFinished: {
+        finished_seen = true;
+        const auto& finished = event.finished();
+        if (finished.bailed_out()) {
+          outcome.warnings.push_back(
+              "bailed out before the end of the document: " +
+              finished.bail_out_reason());
+        }
+        // A rule that matched nothing is worth saying out loud: an empty
+        // group and a mistyped selector look identical otherwise.
+        for (const auto& [rule, count] : finished.matches_by_rule()) {
+          if (count == 0) {
+            outcome.warnings.push_back("rule '" + rule + "' matched nothing");
+          }
+        }
+        break;
+      }
+      case lolv1::ExtractResponse::kError:
+        // Terminal and in-band by contract; the RPC itself still ends OK.
+        error_seen = true;
+        outcome.error = "lol-html collector: " +
+                        lolv1::ParseErrorCode_Name(event.error().code()) + ": " +
+                        event.error().message();
+        outcome.code =
+            event.error().code() == lolv1::PARSE_ERROR_CODE_MEMORY_LIMIT_EXCEEDED
+                ? grpc::StatusCode::RESOURCE_EXHAUSTED
+                : grpc::StatusCode::INVALID_ARGUMENT;
+        break;
+      case lolv1::ExtractResponse::kStarted:
+      case lolv1::ExtractResponse::kEndTag:
+      default:
+        break;
+    }
+    event.Clear();
+  }
+
+  const grpc::Status status = stream->Finish();
+  if (!status.ok()) {
+    outcome.error = std::string("lol-html collector: ") + status.error_message();
+    outcome.code = map_code(status.error_code());
+    return outcome;
+  }
+  if (error_seen) return outcome;
+  if (!finished_seen) {
+    outcome.error = "lol-html collector: stream ended without a terminal event";
+    outcome.code = grpc::StatusCode::UNAVAILABLE;
+    return outcome;
+  }
+  outcome.success = true;
+  return outcome;
 }
 
 }  // namespace grparse

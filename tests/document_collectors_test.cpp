@@ -18,12 +18,14 @@
 #include "ai/pipestream/markup/v1/markup_service.grpc.pb.h"
 #include "ai/pipestream/xml/v1/xml_service.grpc.pb.h"
 #include "grparse/document_collectors.h"
+#include "lolhtml/v1/lolhtml_service.grpc.pb.h"
 
 namespace asrv1 = ai::pipestream::asr::v1;
 namespace docv1 = ai::pipestream::document::v1;
 namespace ebcdicv1 = ai::pipestream::ebcdic::v1;
 namespace emailv1 = ai::pipestream::email::v1;
 namespace epubv1 = ai::pipestream::epub::v1;
+namespace lolv1 = lolhtml::v1;
 namespace markupv1 = ai::pipestream::markup::v1;
 namespace xmlv1 = ai::pipestream::xml::v1;
 
@@ -491,6 +493,130 @@ void verify_markup_forwards_hint_and_collects() {
           "markup warnings flatten with code and count");
 }
 
+// ---- lol-html --------------------------------------------------------------
+
+// The lol-html wire carries no document event, so unlike every other fake
+// this one serves raw match events and the assertions land on the client's
+// own fold.
+class FakeLolHtmlService final : public lolv1::LolHtmlService::Service {
+ public:
+  explicit FakeLolHtmlService(bool fail) : fail_(fail) {}
+
+  grpc::Status Extract(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<lolv1::ExtractResponse, lolv1::ExtractRequest>*
+          stream) override {
+    lolv1::ExtractRequest request;
+    lolv1::ExtractOptions options;
+    bool options_seen = false;
+    std::string bytes;
+    while (stream->Read(&request)) {
+      if (request.has_options()) {
+        options = request.options();
+        options_seen = true;
+      } else {
+        bytes += request.chunk();
+      }
+    }
+    if (!options_seen || options.rules_size() != 2 ||
+        options.rules(0).id() != "links" ||
+        options.rules(0).selector() != "a[href]" ||
+        options.rules(0).captures_size() != 3 || bytes.empty()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          "fake lol-html expects the JSON-decoded rules and bytes");
+    }
+    lolv1::ExtractResponse event;
+    event.mutable_started()->set_rule_count(2);
+    stream->Write(event);
+    event.Clear();
+    if (fail_) {
+      auto* error = event.mutable_error();
+      error->set_code(lolv1::PARSE_ERROR_CODE_PARSING_AMBIGUITY);
+      error->set_message("refused to guess");
+      stream->Write(event);
+      return grpc::Status::OK;
+    }
+    auto* element = event.mutable_element();
+    element->set_rule_id("links");
+    element->set_tag_name("a");
+    auto* attribute = element->add_attributes();
+    attribute->set_name("href");
+    attribute->set_value("/about");
+    stream->Write(event);
+    event.Clear();
+    auto* text = event.mutable_text();
+    text->set_rule_id("links");
+    text->set_text("About us");
+    text->set_text_type(lolv1::TEXT_TYPE_DATA);
+    stream->Write(event);
+    event.Clear();
+    auto* finished = event.mutable_finished();
+    finished->set_bytes_parsed(bytes.size());
+    (*finished->mutable_matches_by_rule())["links"] = 1;
+    (*finished->mutable_matches_by_rule())["headings"] = 0;
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+
+ private:
+  bool fail_;
+};
+
+constexpr const char* kLolHtmlOptionsJson =
+    R"({"rules":[{"id":"links","selector":"a[href]",)"
+    R"("captures":["CAPTURE_TAG_NAME","CAPTURE_ATTRIBUTES","CAPTURE_TEXT"]},)"
+    R"({"id":"headings","selector":"h2","captures":["CAPTURE_TEXT"]}]})";
+
+void verify_lol_html_forwards_rules_and_folds() {
+  FakeLolHtmlService service(/*fail=*/false);
+  ServerFixture server(&service);
+  const auto outcome = grparse::collect_lol_html_document(
+      server.channel(), kLolHtmlOptionsJson,
+      "<a href=\"/about\">About us</a>");
+  require(outcome.success, "lol-html collection succeeds: " + outcome.error);
+  require(outcome.document.groups_size() == 1 &&
+              outcome.document.groups(0).name() == "links" &&
+              outcome.document.groups(0).parent().ref() == "#/body",
+          "matches fold into one group per rule, parented to the body");
+  require(outcome.document.texts_size() == 2 &&
+              outcome.document.texts(0).text().base().text() ==
+                  "<a href=\"/about\">" &&
+              outcome.document.texts(1).text().base().text() == "About us",
+          "the element match and its text fold in arrival order");
+  require(outcome.document.texts(0).text().base().parent().ref() == "#/groups/0" &&
+              outcome.document.groups(0).children_size() == 2,
+          "folded items parent onto their rule's group reciprocally");
+  require(outcome.document.texts(0).text().base().source(0).collector().collector() ==
+              "lol-html",
+          "folded items carry the lol-html collector source");
+  require(outcome.warnings.size() == 1 &&
+              outcome.warnings[0] == "rule 'headings' matched nothing",
+          "a zero-match rule surfaces as a warning");
+}
+
+void verify_lol_html_without_rules_never_dials() {
+  const auto outcome =
+      grparse::collect_lol_html_document(nullptr, "", "<p>hi</p>");
+  require(!outcome.success && outcome.code == grpc::StatusCode::INVALID_ARGUMENT,
+          "missing lol_html_options_json degrades before dialing");
+  const auto garbled =
+      grparse::collect_lol_html_document(nullptr, "not json", "<p>hi</p>");
+  require(!garbled.success && garbled.code == grpc::StatusCode::INVALID_ARGUMENT &&
+              garbled.error.find("ExtractOptions") != std::string::npos,
+          "unparseable options degrade before dialing, naming the type");
+}
+
+void verify_lol_html_in_band_error_is_terminal() {
+  FakeLolHtmlService service(/*fail=*/true);
+  ServerFixture server(&service);
+  const auto outcome = grparse::collect_lol_html_document(
+      server.channel(), kLolHtmlOptionsJson, "<select><xmp><script>");
+  require(!outcome.success && outcome.code == grpc::StatusCode::INVALID_ARGUMENT &&
+              outcome.error.find("PARSE_ERROR_CODE_PARSING_AMBIGUITY") !=
+                  std::string::npos,
+          "the in-band terminal error fails the outcome with its typed code");
+}
+
 }  // namespace
 
 int main() {
@@ -506,6 +632,9 @@ int main() {
     verify_epub_collects_document();
     verify_missing_document_event_fails();
     verify_markup_forwards_hint_and_collects();
+    verify_lol_html_forwards_rules_and_folds();
+    verify_lol_html_without_rules_never_dials();
+    verify_lol_html_in_band_error_is_terminal();
   } catch (const std::exception& failure) {
     std::cerr << "FAILED: " << failure.what() << std::endl;
     return 1;

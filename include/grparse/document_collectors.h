@@ -54,4 +54,15 @@ CollectorOutcome collect_markup_document(const std::shared_ptr<grpc::Channel>& c
                                          const std::string& content_type,
                                          const std::string& bytes);
 
+// grpc-lol-html, the one collector whose stream carries no document event:
+// it reports CSS selector matches as they happen, so this client folds the
+// match events into a Document here — a group per rule, its matches and
+// text as source-tagged text items in arrival order. `options_json` is the
+// protobuf JSON serialization of lolhtml.v1.ExtractOptions; empty is a
+// caller error surfaced as an INVALID_ARGUMENT outcome before anything is
+// dialed, because this client never invents selector rules.
+CollectorOutcome collect_lol_html_document(const std::shared_ptr<grpc::Channel>& channel,
+                                           const std::string& options_json,
+                                           const std::string& bytes);
+
 }  // namespace grparse

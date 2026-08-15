@@ -28,6 +28,7 @@ struct CollectorTargets {
   std::string ebcdic;
   std::string epub;
   std::string markup;
+  std::string lol_html;
 };
 
 // Shared handle to the out-of-process collectors the coordinator can fan

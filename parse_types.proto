@@ -191,6 +191,12 @@ enum Collector {
   // requires a configured endpoint. The format is hinted from the filename
   // and content type; the collector sniffs when no hint resolves.
   COLLECTOR_MARKUP = 10;
+  // The grpc-lol-html selector-extraction collector. Never routed by
+  // format: it reports what its CSS selector rules match and nothing else,
+  // so a parse needs rules. Select it explicitly and supply
+  // lol_html_options_json; HTML with no selection routes to
+  // COLLECTOR_MARKUP for whole-document conversion instead.
+  COLLECTOR_LOL_HTML = 11;
 }
 
 // ============================================================================
@@ -428,6 +434,12 @@ message ConvertDocumentOptions {
   // selected: that collector cannot decode a byte without a layout, and
   // raw EBCDIC is never routed by format.
   optional bytes ebcdic_layout_json = 45;
+  // Extraction rules for COLLECTOR_LOL_HTML, as the protobuf JSON
+  // serialization of that collector's lolhtml.v1.ExtractOptions message
+  // (rules, document_rule, encoding, limits, and so on). Required when
+  // COLLECTOR_LOL_HTML is selected: that collector extracts what its CSS
+  // selector rules name, and this client never invents rules.
+  optional bytes lol_html_options_json = 46;
 }
 
 // ============================================================================
