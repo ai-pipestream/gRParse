@@ -115,6 +115,11 @@ const char* collector_target_env(pipestream::parse::v1::Collector collector) {
   }
 }
 
+// True for every collector run_remote_collector can dial.
+bool remote_collector(pipestream::parse::v1::Collector id) {
+  return *collector_target_env(id) != '\0';
+}
+
 // Dials one Document-emitting remote collector and returns its outcome.
 // Configuration failures are outcomes too, so the parse degrades collector
 // by collector no matter where the failure sits. The office collector keeps
@@ -126,7 +131,7 @@ CollectorOutcome run_remote_collector(
     const std::string& content_type, const std::string& bytes,
     const std::string& ebcdic_layout_json) {
   CollectorOutcome outcome;
-  if (*collector_target_env(id) == '\0') {
+  if (!remote_collector(id)) {
     outcome.error = std::string("collector '") + collector_name(id) +
                     "' is not wired in yet";
     outcome.code = grpc::StatusCode::UNIMPLEMENTED;
@@ -140,7 +145,7 @@ CollectorOutcome run_remote_collector(
   }
   switch (id) {
     case pipestream::parse::v1::COLLECTOR_LIBREOFFICE:
-      return collect_office_document(endpoints->libreoffice_channel(), document_id,
+      return collect_office_document(endpoints->channel(id), document_id,
                                      filename, content_type, bytes,
                                      endpoints->cv_enrichment());
     case pipestream::parse::v1::COLLECTOR_ASR:
@@ -160,16 +165,13 @@ CollectorOutcome run_remote_collector(
     case pipestream::parse::v1::COLLECTOR_EPUB:
       return collect_epub_document(endpoints->channel(id), bytes);
     default:
+      // Unreachable: the remote_collector guard admits only the ids the
+      // switch handles.
       outcome.error = std::string("collector '") + collector_name(id) +
                       "' is not wired in yet";
       outcome.code = grpc::StatusCode::UNIMPLEMENTED;
       return outcome;
   }
-}
-
-// True for every collector run_remote_collector can dial.
-bool remote_collector(pipestream::parse::v1::Collector id) {
-  return *collector_target_env(id) != '\0';
 }
 
 std::vector<pipestream::parse::v1::Collector> requested_collectors(
@@ -503,10 +505,10 @@ class DocumentStreamReactor final
       : context_(context),
         scheduler_(scheduler),
         endpoints_(std::move(endpoints)),
-        // The scheduler will not deliver more than one page window ahead of the
-        // credits this reactor returns, so the window *is* the buffer bound.
-        // A constant here silently capped GRPARSE_PAGE_WINDOW and killed
-        // well-behaved clients with RESOURCE_EXHAUSTED once it was raised.
+        // The scheduler never delivers more than one page window ahead of
+        // the credits this reactor returns, so the configured window is the
+        // exact buffer bound; any smaller cap would fail well-behaved
+        // clients with RESOURCE_EXHAUSTED under a raised GRPARSE_PAGE_WINDOW.
         maximum_buffered_pages_(scheduler.page_window()),
         callback_gate_(std::make_shared<CallbackGate>()) {
     callback_gate_->reactor = this;
@@ -515,10 +517,8 @@ class DocumentStreamReactor final
 
   void OnReadDone(bool ok) override {
     if (!ok) {
-      bool should_begin = false;
       {
         std::lock_guard<std::mutex> lock(mutex_);
-        reads_done_ = true;
         if (client_cancelled_) {
           request_finish_locked(grpc::Status(grpc::StatusCode::CANCELLED, "request cancelled"));
           return;
@@ -528,10 +528,8 @@ class DocumentStreamReactor final
                                              "stream must end with a non-empty complete chunk"));
           return;
         }
-        should_begin = true;
-        document_started_ = true;
       }
-      if (should_begin) begin_processing();
+      begin_processing();
       return;
     }
 
@@ -918,8 +916,6 @@ class DocumentStreamReactor final
   size_t buffered_pages_ = 0;
   bool pdf_ = false;
   bool complete_seen_ = false;
-  bool reads_done_ = false;
-  bool document_started_ = false;
   bool write_in_flight_ = false;
   bool client_cancelled_ = false;
   bool ticket_cancelled_ = false;

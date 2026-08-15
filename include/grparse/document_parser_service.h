@@ -38,20 +38,6 @@ class CollectorEndpoints {
                               OfficeCvEnrichment cv_enrichment = {})
       : targets_(std::move(targets)), cv_enrichment_(cv_enrichment) {}
 
-  // The libreoffice-only shape, kept for callers and tests that predate the
-  // wider fleet.
-  explicit CollectorEndpoints(std::string libreoffice_target,
-                              OfficeCvEnrichment cv_enrichment = {})
-      : CollectorEndpoints(CollectorTargets{std::move(libreoffice_target), "", "",
-                                            "", "", "", ""},
-                           cv_enrichment) {}
-
-  bool has_libreoffice() const { return !targets_.libreoffice.empty(); }
-  const std::string& libreoffice_target() const { return targets_.libreoffice; }
-  std::shared_ptr<grpc::Channel> libreoffice_channel() {
-    return channel(ai::pipestream::parse::v1::COLLECTOR_LIBREOFFICE);
-  }
-
   // True when `id` names a remote collector with a configured target.
   bool has(ai::pipestream::parse::v1::Collector id) const {
     return !target(id).empty();

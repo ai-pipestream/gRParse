@@ -3,8 +3,8 @@
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
-#include <initializer_list>
 #include <future>
+#include <initializer_list>
 #include <utility>
 
 #include "grparse/document_merge.h"
@@ -59,11 +59,12 @@ CoordinatorResult run_collectors(std::vector<PlannedCollector> collectors,
 bool office_format(const std::string& filename, const std::string& content_type) {
   const std::string extension =
       lowercase(std::filesystem::path(filename).extension().string());
-  for (const char* known :
-       {".doc", ".docx", ".docm", ".dot", ".dotx", ".odt", ".ott", ".fodt",
-        ".rtf", ".xls", ".xlsx", ".xlsm", ".xlsb", ".ods", ".ots", ".fods",
-        ".csv", ".ppt", ".pptx", ".pptm", ".odp", ".otp", ".fodp"}) {
-    if (extension == known) return true;
+  if (extension_in(extension,
+                   {".doc", ".docx", ".docm", ".dot", ".dotx", ".odt", ".ott",
+                    ".fodt", ".rtf", ".xls", ".xlsx", ".xlsm", ".xlsb", ".ods",
+                    ".ots", ".fods", ".csv", ".ppt", ".pptx", ".pptm", ".odp",
+                    ".otp", ".fodp"})) {
+    return true;
   }
   const std::string type = lowercase(content_type);
   return type.find("officedocument") != std::string::npos ||

@@ -73,8 +73,8 @@ class TestServer final {
         scheduler_(recognizer_, {2, 3, 2, 3, 2, 2, 2}, [digital](std::shared_ptr<const std::string>, bool) {
                  return std::make_shared<FakeSource>(digital);
                }),
-        parser_service_(scheduler_, std::make_shared<grparse::CollectorEndpoints>("")),
-        streaming_service_(scheduler_, std::make_shared<grparse::CollectorEndpoints>("")) {
+        parser_service_(scheduler_, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{})),
+        streaming_service_(scheduler_, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{})) {
     grpc::ServerBuilder builder;
     builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port_);
     builder.RegisterService(&parser_service_);
@@ -133,10 +133,10 @@ class WideSource final : public grparse::PageSource {
   int pages_;
 };
 
-// A page window wider than the reactor's old hardcoded four-page buffer must
-// stream normally.  Before the buffer was derived from the scheduler, raising
-// GRPARSE_PAGE_WINDOW made the server kill well-behaved clients with
-// RESOURCE_EXHAUSTED as soon as a slow page held up the ones behind it.
+// The reactor's stream buffer bound must track the configured page window:
+// with a wide window, a slow head-of-line page piling up the pages behind it
+// is well-behaved backpressure the stream absorbs, never a
+// RESOURCE_EXHAUSTED offense.
 void verify_wide_page_window_streams_completely() {
   constexpr int kPages = 8;
   grparse::PageScheduler::Options options;
@@ -155,7 +155,7 @@ void verify_wide_page_window_streams_completely() {
                                      return std::make_shared<WideSource>(pages);
                                    });
   grparse::DocumentStreamingService streaming_service(
-      scheduler, std::make_shared<grparse::CollectorEndpoints>(""));
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{}));
   int port = 0;
   grpc::ServerBuilder builder;
   builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);

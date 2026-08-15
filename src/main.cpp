@@ -501,7 +501,7 @@ int main() {
     report_collector("xml", targets.xml);
     report_collector("ebcdic", targets.ebcdic);
     report_collector("epub", targets.epub);
-    if (endpoints->has_libreoffice()) {
+    if (!targets.libreoffice.empty()) {
       std::cout << "gRParse office CV enrichment: "
                 << (layout != nullptr ? "enabled (layout"
                                         + std::string(figure_classes != nullptr
