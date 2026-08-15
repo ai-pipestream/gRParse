@@ -26,13 +26,21 @@ class PageSource {
   virtual cv::Mat render_page(int page_number) const = 0;
 };
 
-using PageSourceFactory =
-    std::function<std::shared_ptr<PageSource>(std::shared_ptr<const std::string> bytes, bool pdf)>;
+// The rasterization DPI a source uses when no per-document value arrives.
+inline constexpr double kDefaultRenderDpi = 200.0;
+
+// render_dpi is the per-document rasterization DPI; every page of the source
+// renders at it and all digital-line geometry scales to match, so downstream
+// coordinates stay self-consistent.  Raster sources are already pixels and
+// ignore it.
+using PageSourceFactory = std::function<std::shared_ptr<PageSource>(
+    std::shared_ptr<const std::string> bytes, bool pdf, double render_dpi)>;
 
 // pdf_parser_slots caps how many pages of one PDF may be parsed or rendered
 // concurrently; each slot owns an independent Poppler document over the same
 // request bytes.  Size it to the render worker count.
 std::shared_ptr<PageSource> open_in_memory_document(std::shared_ptr<const std::string> bytes, bool pdf,
-                                                    size_t pdf_parser_slots = 1);
+                                                    size_t pdf_parser_slots = 1,
+                                                    double render_dpi = kDefaultRenderDpi);
 
 }  // namespace grparse

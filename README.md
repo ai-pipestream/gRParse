@@ -20,7 +20,7 @@ gRParse turns PDF pages and raster images into text with the maintained C++ [Rap
 
 The service listens on `localhost:50051` and implements `ai.pipestream.parse.v1.ParseService` from the local `parse.proto` contract. `ConvertSource` currently accepts one `FileSource` containing base64-encoded PDF, PNG, JPEG, or TIFF bytes. It renders every `OutputFormat` the wire declares from the merged document: TEXT, MARKDOWN, HTML, HTML_SPLIT_PAGE, JSON, YAML, DOCTAGS, DOCLANG, and VTT (an empty `to_formats` keeps the plain-text default alone), and returns `INVALID_ARGUMENT`, naming the offender, for populated options it does not implement and for unrenderable format values.
 
-Each PDF request opens a small pool of Poppler documents directly from the request bytes, so render and digital-text extraction for different pages of the same document proceed in parallel. Full native-text pages skip raster OCR. Weak/partial digital layers keep their native boxes and still run OCR; geometry merge drops overlapping OCR duplicates so headers and scan body can coexist. Image-only pages render at 200 DPI into RapidOCR. Raster inputs decode with OpenCV from request memory. Nothing is written to disk on the hot path.
+Each PDF request opens a small pool of Poppler documents directly from the request bytes, so render and digital-text extraction for different pages of the same document proceed in parallel. Recognition is selective by default: full native-text pages skip raster OCR, while weak/partial digital layers keep their native boxes and still run OCR, and geometry merge drops overlapping OCR duplicates so headers and scan body can coexist. Two `ConvertDocumentOptions` fields override the default per request: `do_ocr = false` disables recognition entirely, so only the embedded text layer is read and a page with no text layer yields no text; `force_ocr = true` recognizes every page at full-page scope and the recognized text replaces the embedded layer. `do_ocr = false` with `force_ocr = true` is contradictory and rejected by name. Pages rasterize at 200 DPI by default; `render_scale` sets a per-request scale in multiples of 72 DPI (accepted range [1.0, 8.0], rejected outside it by name), and all digital-line geometry scales with it so downstream boxes stay consistent. Raster inputs decode with OpenCV from request memory and are already pixels, so they ignore `render_scale`. Nothing is written to disk on the hot path.
 
 `ConvertSource` returns the contract's `ConvertDocumentResponse`, populated with a native `Document`. Each OCR line becomes a `TextItem`, with its page and bounding box in `provenance`; pages, `TableItem`/`PictureItem` entries from layout, and the `#/body` reference graph are also populated. It deliberately leaves semantic chunking, asynchronous jobs, and remote sources unimplemented.
 
@@ -78,7 +78,11 @@ escalation disabled.
 `ai.pipestream.parse.v1.ParseStreamingService/StreamProcessDocument` accepts a
 stream of `DocumentChunk` messages. Send the same `document_id`, filename, and
 content type with the chunks, then set `complete = true` on the last one. The
-server accepts PDFs and single raster images, up to 50 MiB.
+server accepts PDFs and single raster images, up to 50 MiB. The chunk fields
+`do_ocr`, `force_ocr`, and `render_scale` carry the same recognition mode and
+rasterization scale as the unary options, each resolved from the first chunk
+that sets it (the same doctrine as `collectors`); an invalid value fails the
+stream with `INVALID_ARGUMENT` naming the offender.
 
 It emits one `DocumentStreamEvent.page` per page in page-number order, followed by one
 `DocumentStreamEvent.complete`. A page event contains the supplied

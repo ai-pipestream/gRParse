@@ -54,6 +54,14 @@ message DocumentChunk {
   // non-empty. Empty routes by format (see
   // ConvertDocumentOptions.collectors).
   repeated Collector collectors = 6;
+  // Recognition mode and rasterization scale for the CV path, each resolved
+  // from the first chunk that sets it (the same doctrine as collectors).
+  // Semantics and validation match the ConvertDocumentOptions fields of the
+  // same names; an invalid value fails the stream with INVALID_ARGUMENT
+  // naming the offender.
+  optional bool do_ocr = 7;
+  optional bool force_ocr = 8;
+  optional double render_scale = 9;
 }
 
 // DocumentStreamEvent is the page-batched incremental conversion result.

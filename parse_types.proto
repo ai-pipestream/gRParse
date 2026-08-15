@@ -340,9 +340,16 @@ message ConvertDocumentOptions {
   repeated OutputFormat to_formats = 2;
   // Image export mode
   optional ImageRefMode image_export_mode = 3;
-  // Enable OCR processing
+  // Text recognition over rendered pages. Unset or true runs selective
+  // recognition: a page whose embedded text layer is complete skips it,
+  // every other page is recognized and merged with the embedded text it
+  // has. False disables recognition entirely, so only the embedded text
+  // layer is read and a page with no text layer yields no text. False
+  // combined with force_ocr true is contradictory and rejected.
   optional bool do_ocr = 4;
-  // Replace text with OCR output
+  // Recognize every page at full-page scope and let the recognized text
+  // replace the embedded text layer. Unset or false keeps the selective
+  // default. True combined with do_ocr false is contradictory and rejected.
   optional bool force_ocr = 5;
   // OCR engine selection
   optional OcrEngine ocr_engine = 6;
@@ -440,6 +447,11 @@ message ConvertDocumentOptions {
   // COLLECTOR_LOL_HTML is selected: that collector extracts what its CSS
   // selector rules name, and this client never invents rules.
   optional bytes lol_html_options_json = 46;
+  // The CV path's rasterization scale, in multiples of 72 DPI (1.0 renders
+  // pages at 72 DPI). Unset keeps the server default of 200 DPI (about
+  // 2.78). The accepted range is [1.0, 8.0]; values outside it are rejected
+  // by name. Raster image inputs are already pixels and ignore it.
+  optional double render_scale = 47;
 }
 
 // ============================================================================

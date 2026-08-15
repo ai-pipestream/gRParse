@@ -70,9 +70,11 @@ class TestServer final {
  public:
   explicit TestServer(std::chrono::milliseconds inference_delay = 0ms, bool digital = false)
       : recognizer_(inference_delay),
-        scheduler_(recognizer_, {2, 3, 2, 3, 2, 2, 2}, [digital](std::shared_ptr<const std::string>, bool) {
-                 return std::make_shared<FakeSource>(digital);
-               }),
+        scheduler_(recognizer_, {2, 3, 2, 3, 2, 2, 2},
+                   [this, digital](std::shared_ptr<const std::string>, bool, double render_dpi) {
+                     last_render_dpi_.store(render_dpi);
+                     return std::make_shared<FakeSource>(digital);
+                   }),
         parser_service_(scheduler_, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{})),
         streaming_service_(scheduler_, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{})) {
     grpc::ServerBuilder builder;
@@ -100,8 +102,10 @@ class TestServer final {
 
   grparse::PageScheduler::Metrics metrics() const { return scheduler_.metrics(); }
   int recognizer_calls() const { return recognizer_.calls.load(); }
+  double last_render_dpi() const { return last_render_dpi_.load(); }
 
  private:
+  std::atomic<double> last_render_dpi_{0.0};
   FakeRecognizer recognizer_;
   grparse::PageScheduler scheduler_;
   grparse::DocumentParserService parser_service_;
@@ -151,7 +155,7 @@ void verify_wide_page_window_streams_completely() {
 
   HeadOfLineRecognizer recognizer;
   grparse::PageScheduler scheduler(recognizer, options,
-                                   [pages = kPages](std::shared_ptr<const std::string>, bool) {
+                                   [pages = kPages](std::shared_ptr<const std::string>, bool, double) {
                                      return std::make_shared<WideSource>(pages);
                                    });
   grparse::DocumentStreamingService streaming_service(
@@ -306,12 +310,14 @@ void verify_unary_uses_scheduler_and_shared_assembly(TestServer* server) {
 void verify_unsupported_options_are_rejected(TestServer* server) {
   auto client = server->unary_stub();
   auto request = unary_request();
-  request.mutable_request()->mutable_options()->set_do_ocr(true);
+  request.mutable_request()->mutable_options()->set_images_scale(2.0);
   grpc::ClientContext context;
   pipestream::parse::v1::ConvertSourceResponse response;
   const grpc::Status status = client->ConvertSource(&context, request, &response);
   require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
           "unsupported conversion options must be rejected");
+  require(status.error_message().find("images_scale") != std::string::npos,
+          "the rejection must name the unimplemented option: " + status.error_message());
 
   request = unary_request();
   request.mutable_request()->mutable_options()->clear_to_formats();
@@ -327,6 +333,100 @@ void verify_unsupported_options_are_rejected(TestServer* server) {
               std::string::npos,
           "the rejection must name the unrenderable format: " +
               unspecified_status.error_message());
+}
+
+// The recognition options are accepted, validated by name, and steer the CV
+// leg: do_ocr false yields no text from pages without an embedded layer, and
+// render_scale resolves to the DPI the source factory sees.
+void verify_recognition_options_steer_the_cv_leg(TestServer* server) {
+  auto client = server->unary_stub();
+
+  // do_ocr true and force_ocr true are the recognizing modes; on a source
+  // with no embedded layer both convert every page through the recognizer.
+  for (const bool force : {false, true}) {
+    auto request = unary_request();
+    if (force) {
+      request.mutable_request()->mutable_options()->set_force_ocr(true);
+    } else {
+      request.mutable_request()->mutable_options()->set_do_ocr(true);
+    }
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ConvertSourceResponse response;
+    const grpc::Status status = client->ConvertSource(&context, request, &response);
+    require(status.ok(), "a recognizing mode must be accepted: " + status.error_message());
+    require(response.response().document().exports().text() == "one\ntwo\nthree",
+            "a recognizing mode must deliver recognized text");
+  }
+
+  // do_ocr false reads only the embedded layer; these pages have none, so
+  // the parse succeeds with pages and no text.
+  {
+    const int calls_before = server->recognizer_calls();
+    auto request = unary_request();
+    request.mutable_request()->mutable_options()->set_do_ocr(false);
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ConvertSourceResponse response;
+    const grpc::Status status = client->ConvertSource(&context, request, &response);
+    require(status.ok(), "do_ocr false must be accepted: " + status.error_message());
+    require(server->recognizer_calls() == calls_before,
+            "do_ocr false must not invoke the recognizer");
+    const auto& document = response.response().document().doc();
+    require(document.pages_size() == 3 && document.texts_size() == 0,
+            "pages without an embedded layer must yield no text under do_ocr false");
+    require(response.response().document().exports().text().empty(),
+            "the do_ocr false text export must be empty");
+  }
+
+  // render_scale is multiples of 72 DPI; 2.0 reaches the source factory as
+  // 144, unset keeps the 200 DPI default.
+  {
+    auto request = unary_request();
+    request.mutable_request()->mutable_options()->set_render_scale(2.0);
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ConvertSourceResponse response;
+    const grpc::Status status = client->ConvertSource(&context, request, &response);
+    require(status.ok(), "render_scale 2.0 must be accepted: " + status.error_message());
+    require(server->last_render_dpi() == 144.0,
+            "render_scale must resolve to multiples of 72 DPI");
+
+    grpc::ClientContext default_context;
+    default_context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ConvertSourceResponse default_response;
+    const grpc::Status default_status =
+        client->ConvertSource(&default_context, unary_request(), &default_response);
+    require(default_status.ok(), "default-scale conversion failed");
+    require(server->last_render_dpi() == 200.0,
+            "an unset render_scale must keep the 200 DPI default");
+  }
+
+  // Out-of-range scales and the contradictory mode pair are rejected by name.
+  for (const double scale : {0.5, 9.0}) {
+    auto request = unary_request();
+    request.mutable_request()->mutable_options()->set_render_scale(scale);
+    grpc::ClientContext context;
+    pipestream::parse::v1::ConvertSourceResponse response;
+    const grpc::Status status = client->ConvertSource(&context, request, &response);
+    require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
+            "render_scale outside [1.0, 8.0] must be rejected");
+    require(status.error_message().find("render_scale") != std::string::npos,
+            "the rejection must name render_scale: " + status.error_message());
+  }
+  {
+    auto request = unary_request();
+    request.mutable_request()->mutable_options()->set_do_ocr(false);
+    request.mutable_request()->mutable_options()->set_force_ocr(true);
+    grpc::ClientContext context;
+    pipestream::parse::v1::ConvertSourceResponse response;
+    const grpc::Status status = client->ConvertSource(&context, request, &response);
+    require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
+            "do_ocr false with force_ocr true must be rejected");
+    require(status.error_message().find("do_ocr") != std::string::npos &&
+                status.error_message().find("force_ocr") != std::string::npos,
+            "the rejection must name both options: " + status.error_message());
+  }
 }
 
 // Every requested output format renders in one response; leaving to_formats
@@ -441,6 +541,159 @@ void verify_unary_digital_path_bypasses_ocr() {
           "stream offsets do not cover the unary text export");
 }
 
+// A weak embedded layer over a renderable page: selective recognition would
+// merge, recognition off keeps the native line alone, and forced recognition
+// replaces it with the recognizer's text.
+class WeakDigitalSource final : public grparse::PageSource {
+ public:
+  int page_count() const override { return 3; }
+
+  std::optional<grparse::OcrPage> extract_digital_page(int page_number) const override {
+    static const std::vector<std::string> text{"", "native-one", "native-two", "native-three"};
+    grparse::OcrPage page{100, 200,
+                          {{text.at(page_number), {{1, 30}, {20, 30}, {20, 40}, {1, 40}},
+                            std::nullopt, grparse::TextOrigin::kDigitalPdf}}};
+    page.source = grparse::OcrPage::Source::kDigitalPdf;
+    page.skip_ocr = false;
+    return page;
+  }
+
+  cv::Mat render_page(int page_number) const override {
+    return cv::Mat(1, 1, CV_8UC1, cv::Scalar(page_number)).clone();
+  }
+};
+
+pipestream::parse::v1::DocumentChunk recognition_chunk(const std::string& data, bool complete) {
+  pipestream::parse::v1::DocumentChunk value;
+  value.set_document_id("recognition-stream");
+  value.set_filename("image.png");
+  value.set_content_type("image/png");
+  value.set_data(data);
+  value.set_complete(complete);
+  return value;
+}
+
+struct StreamRun {
+  std::vector<pipestream::parse::v1::DocumentStreamEvent> events;
+  grpc::Status status;
+};
+
+StreamRun run_chunks(pipestream::parse::v1::ParseStreamingService::Stub* client,
+                     std::vector<pipestream::parse::v1::DocumentChunk> chunks) {
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  auto stream = client->StreamProcessDocument(&context);
+  for (auto& value : chunks) {
+    require(stream->Write(value), "recognition stream could not write a chunk");
+  }
+  stream->WritesDone();
+  StreamRun run;
+  pipestream::parse::v1::DocumentStreamEvent event;
+  while (stream->Read(&event)) run.events.push_back(event);
+  run.status = stream->Finish();
+  return run;
+}
+
+// The streaming chunk fields do_ocr, force_ocr, and render_scale resolve from
+// the first chunk that sets each one, steer the CV leg exactly like the unary
+// options, and fail the stream by name when invalid.
+void verify_stream_resolves_recognition_options() {
+  FakeRecognizer recognizer;
+  std::atomic<double> factory_dpi{0.0};
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 3, 2, 3, 2, 2, 2},
+      [&factory_dpi](std::shared_ptr<const std::string>, bool, double render_dpi) {
+        factory_dpi.store(render_dpi);
+        return std::make_shared<WeakDigitalSource>();
+      });
+  grparse::DocumentStreamingService streaming_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{}));
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&streaming_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "recognition test server failed to start");
+  auto client = pipestream::parse::v1::ParseStreamingService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+
+  // force_ocr on the first chunk: every page is recognized and the native
+  // lines are gone from the delivered text.
+  {
+    auto first = recognition_chunk("in-memory", false);
+    first.set_force_ocr(true);
+    const StreamRun run =
+        run_chunks(client.get(), {first, recognition_chunk("-source", true)});
+    require(run.status.ok(), "forced stream failed: " + run.status.error_message());
+    require(run.events.size() == 4 && run.events.back().has_complete(),
+            "forced stream event count");
+    require(recognizer.calls.load() == 3, "forced stream must recognize every page");
+    for (int index = 0; index < 3; ++index) {
+      const auto& page = run.events.at(index).page();
+      require(page.texts_size() == 1 &&
+                  page.texts(0).text().base().text().rfind("native-", 0) != 0,
+              "forced stream text must come from recognition, not the embedded layer");
+    }
+  }
+
+  // do_ocr false, set on a later chunk: the first chunk that sets a field
+  // wins wherever it sits, and only the embedded layer is delivered.
+  {
+    const int calls_before = recognizer.calls.load();
+    auto last = recognition_chunk("-source", true);
+    last.set_do_ocr(false);
+    const StreamRun run =
+        run_chunks(client.get(), {recognition_chunk("in-memory", false), last});
+    require(run.status.ok(), "recognition-off stream failed: " + run.status.error_message());
+    require(recognizer.calls.load() == calls_before,
+            "recognition-off stream must not invoke the recognizer");
+    static const std::vector<std::string> native{"native-one", "native-two", "native-three"};
+    for (int index = 0; index < 3; ++index) {
+      const auto& page = run.events.at(index).page();
+      require(page.texts_size() == 1 &&
+                  page.texts(0).text().base().text() == native.at(index),
+              "recognition-off stream must deliver the embedded layer alone");
+    }
+  }
+
+  // render_scale resolves to multiples of 72 DPI at the source factory.
+  {
+    auto first = recognition_chunk("in-memory-source", true);
+    first.set_render_scale(3.0);
+    const StreamRun run = run_chunks(client.get(), {first});
+    require(run.status.ok(), "scaled stream failed: " + run.status.error_message());
+    require(factory_dpi.load() == 216.0,
+            "the streamed render_scale must reach the source factory as DPI");
+  }
+
+  // Invalid values fail the stream by name, the contradiction even when its
+  // halves arrive on different chunks.
+  {
+    auto first = recognition_chunk("in-memory-source", true);
+    first.set_render_scale(9.0);
+    const StreamRun run = run_chunks(client.get(), {first});
+    require(run.status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+                run.status.error_message().find("render_scale") != std::string::npos,
+            "an out-of-range streamed render_scale must be rejected by name: " +
+                run.status.error_message());
+  }
+  {
+    auto first = recognition_chunk("in-memory", false);
+    first.set_do_ocr(false);
+    auto last = recognition_chunk("-source", true);
+    last.set_force_ocr(true);
+    const StreamRun run = run_chunks(client.get(), {first, last});
+    require(run.status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+                run.status.error_message().find("do_ocr") != std::string::npos &&
+                run.status.error_message().find("force_ocr") != std::string::npos,
+            "a cross-chunk mode contradiction must be rejected by name: " +
+                run.status.error_message());
+  }
+
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+}
+
 }  // namespace
 
 int main() {
@@ -450,7 +703,9 @@ int main() {
     verify_data_after_complete_is_rejected(&server);
     verify_unary_uses_scheduler_and_shared_assembly(&server);
     verify_unsupported_options_are_rejected(&server);
+    verify_recognition_options_steer_the_cv_leg(&server);
     verify_unary_multi_format_exports(&server);
+    verify_stream_resolves_recognition_options();
     verify_unary_digital_path_bypasses_ocr();
     verify_wide_page_window_streams_completely();
     verify_deadline_cancels_scheduler_work();

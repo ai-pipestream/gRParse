@@ -26,13 +26,7 @@ constexpr size_t kMinDigitalNonWhitespace = 32;
 constexpr size_t kMinDigitalLines = 4;
 constexpr double kMinDigitalVerticalCoverage = 0.12;
 constexpr size_t kStrongDigitalNonWhitespace = 128;
-constexpr double kRenderDpi = 200.0;
 constexpr double kPdfUserSpaceDpi = 72.0;
-constexpr double kRenderScale = kRenderDpi / kPdfUserSpaceDpi;
-
-int scaled(double user_space_units) {
-  return static_cast<int>(std::lround(user_space_units * kRenderScale));
-}
 
 // Poppler applies the page's intrinsic /Rotate to both the raster and the text
 // list, but page_rect() still reports unrotated media geometry.  Without this
@@ -45,8 +39,10 @@ bool is_quarter_turn(const poppler::page& page) {
 
 class PdfPageSource final : public PageSource {
  public:
-  PdfPageSource(std::shared_ptr<const std::string> bytes, size_t parser_slots)
+  PdfPageSource(std::shared_ptr<const std::string> bytes, size_t parser_slots, double render_dpi)
       : bytes_(std::move(bytes)),
+        render_dpi_(render_dpi),
+        render_scale_(render_dpi / kPdfUserSpaceDpi),
         parsers_(std::max<size_t>(parser_slots, 1), [bytes = bytes_] { return load(*bytes); }) {
     // Parse once now so an unreadable document fails before any page is queued.
     auto parser = parsers_.acquire();
@@ -110,7 +106,7 @@ class PdfPageSource final : public PageSource {
 
     poppler::page_renderer renderer;
     renderer.set_image_format(poppler::image::format_bgr24);
-    const poppler::image image = renderer.render_page(page.get(), kRenderDpi, kRenderDpi);
+    const poppler::image image = renderer.render_page(page.get(), render_dpi_, render_dpi_);
     if (!image.is_valid()) throw InvalidDocument("PDF page could not be rendered in memory");
     // Poppler owns image.const_data() for this stack frame only — clone before return.
     return cv::Mat(image.height(), image.width(), CV_8UC3, const_cast<char*>(image.const_data()),
@@ -119,6 +115,12 @@ class PdfPageSource final : public PageSource {
   }
 
  private:
+  // Digital-line geometry scales from PDF user space into the same pixel
+  // space render_page produces, so a per-document DPI stays self-consistent.
+  int scaled(double user_space_units) const {
+    return static_cast<int>(std::lround(user_space_units * render_scale_));
+  }
+
   // Each pooled parser is an independent poppler::document over the shared,
   // immutable request buffer, so render workers no longer serialise on one
   // document lock.  load_from_raw_data does not copy: the captured shared_ptr
@@ -140,6 +142,8 @@ class PdfPageSource final : public PageSource {
   }
 
   std::shared_ptr<const std::string> bytes_;
+  const double render_dpi_;
+  const double render_scale_;
   mutable ResourcePool<poppler::document> parsers_;
   int pages_ = 0;
 };
@@ -197,9 +201,10 @@ class RasterPageSource final : public PageSource {
 std::optional<OcrPage> PageSource::extract_digital_page(int) const { return std::nullopt; }
 
 std::shared_ptr<PageSource> open_in_memory_document(std::shared_ptr<const std::string> bytes, bool pdf,
-                                                    size_t pdf_parser_slots) {
+                                                    size_t pdf_parser_slots, double render_dpi) {
   if (!bytes || bytes->empty()) throw InvalidDocument("Document bytes are empty");
-  if (pdf) return std::make_shared<PdfPageSource>(std::move(bytes), pdf_parser_slots);
+  if (!(render_dpi > 0.0)) throw std::invalid_argument("Render DPI must be positive");
+  if (pdf) return std::make_shared<PdfPageSource>(std::move(bytes), pdf_parser_slots, render_dpi);
   return std::make_shared<RasterPageSource>(std::move(bytes));
 }
 

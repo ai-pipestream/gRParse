@@ -176,6 +176,7 @@ struct PageScheduler::Ticket::State {
   }
 
   Callbacks callbacks;
+  OcrTuning tuning;
   std::atomic<bool> cancelled{false};
   std::atomic<int> remaining_pages{0};
   std::atomic<bool> finish_called{false};
@@ -242,8 +243,9 @@ class PageScheduler::Impl final {
     }
     if (!source_factory_) {
       const size_t parsers = options_.pdf_parsers > 0 ? options_.pdf_parsers : options_.render_workers;
-      source_factory_ = [parsers](std::shared_ptr<const std::string> bytes, bool pdf) {
-        return open_in_memory_document(std::move(bytes), pdf, parsers);
+      source_factory_ = [parsers](std::shared_ptr<const std::string> bytes, bool pdf,
+                                  double render_dpi) {
+        return open_in_memory_document(std::move(bytes), pdf, parsers, render_dpi);
       };
     }
     // Any thread that fails to start must not leave the already-started ones
@@ -268,7 +270,8 @@ class PageScheduler::Impl final {
 
   ~Impl() { stop(); }
 
-  Ticket submit(std::shared_ptr<const std::string> bytes, bool pdf, Callbacks callbacks) {
+  Ticket submit(std::shared_ptr<const std::string> bytes, bool pdf, OcrTuning tuning,
+                Callbacks callbacks) {
     if (!bytes || bytes->empty()) throw InvalidDocument("Document bytes are empty");
     if (!callbacks.on_document || !callbacks.on_page || !callbacks.on_finish) {
       throw std::invalid_argument("All scheduler callbacks are required");
@@ -279,6 +282,7 @@ class PageScheduler::Impl final {
       throw SchedulerSaturated("Active document limit reached");
     }
     auto state = std::make_shared<Ticket::State>(std::move(callbacks));
+    state->tuning = tuning;
     state->page_window = options_.page_window;
     state->wake_scheduler = [this](std::shared_ptr<Ticket::State> request) {
       queue_reschedule(std::move(request));
@@ -467,7 +471,12 @@ class PageScheduler::Impl final {
         continue;
       }
       try {
-        auto source = source_factory_(document.bytes, document.pdf);
+        // The per-document tuning resolves here: 0 means the scheduler
+        // default, anything else reaches the source untouched.
+        const double render_dpi = document.request->tuning.render_dpi > 0.0
+                                      ? document.request->tuning.render_dpi
+                                      : kDefaultRenderDpi;
+        auto source = source_factory_(document.bytes, document.pdf, render_dpi);
         if (!source) throw InvalidDocument("Document source could not be opened");
         const int pages = source->page_count();
         if (pages <= 0) throw InvalidDocument("Document does not contain a page");
@@ -501,24 +510,33 @@ class PageScheduler::Impl final {
         page.reset();
         continue;
       }
+      const OcrTuning::Mode mode = page->request->tuning.mode;
       try {
         std::optional<OcrPage> digital;
-        {
+        // Forced recognition never reads the embedded layer: dropping the
+        // seed here is what makes the recognized text replace it instead of
+        // merging with it.
+        if (mode != OcrTuning::Mode::kForce) {
           const BusyTimer timer(render_busy_ns_);
           digital = page->source->extract_digital_page(page->page_number);
         }
         if (digital.has_value()) {
           pages_read_digitally_.fetch_add(1);
-          // A full-digital page needs no raster for OCR, but layout and page
-          // previews both need pixels; either keeps the page on the raster path.
-          if (digital->skip_ocr && region_detector_ == nullptr &&
+          // A page the embedded layer settles needs no raster for OCR, but
+          // layout and page previews both need pixels; either keeps the page
+          // on the raster path.  kOff settles for the embedded layer whether
+          // or not it is complete; kSelective settles only on full coverage.
+          const bool embedded_settles = mode == OcrTuning::Mode::kOff || digital->skip_ocr;
+          if (embedded_settles && region_detector_ == nullptr &&
               !options_.capture_page_images) {
             enqueue_assembly(page, std::make_shared<const OcrPage>(std::move(*digital)));
             page.reset();
             continue;
           }
         }
-        const bool run_ocr = !(digital.has_value() && digital->skip_ocr);
+        const bool run_ocr =
+            mode == OcrTuning::Mode::kForce ||
+            (mode == OcrTuning::Mode::kSelective && !(digital.has_value() && digital->skip_ocr));
 
         cv::Mat image;
         {
@@ -600,9 +618,16 @@ class PageScheduler::Impl final {
             } else {
               assembled = std::move(ocr);
             }
-          } else {
-            // Full digital coverage: the raster existed only for layout.
+          } else if (job.digital_seed.has_value()) {
+            // The embedded layer settles the page: the raster existed only
+            // for layout or the preview.
             assembled = std::move(*job.digital_seed);
+          } else {
+            // Recognition is off and the page has no embedded layer: it
+            // assembles empty at raster size, so layout regions still land
+            // in a real coordinate space.
+            assembled.width = job.image.cols;
+            assembled.height = job.image.rows;
           }
           // Crops encode after OCR so the device work is never delayed, but
           // before the raster drops; the crop is a view, the PNG is owned.
@@ -744,7 +769,12 @@ PageScheduler::~PageScheduler() = default;
 
 PageScheduler::Ticket PageScheduler::submit(std::shared_ptr<const std::string> bytes, bool pdf,
                                             Callbacks callbacks) {
-  return impl_->submit(std::move(bytes), pdf, std::move(callbacks));
+  return impl_->submit(std::move(bytes), pdf, OcrTuning{}, std::move(callbacks));
+}
+
+PageScheduler::Ticket PageScheduler::submit(std::shared_ptr<const std::string> bytes, bool pdf,
+                                            OcrTuning tuning, Callbacks callbacks) {
+  return impl_->submit(std::move(bytes), pdf, tuning, std::move(callbacks));
 }
 
 PageScheduler::Metrics PageScheduler::metrics() const { return impl_->metrics(); }

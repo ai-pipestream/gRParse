@@ -12,6 +12,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -264,17 +265,52 @@ bool renderable(pipestream::parse::v1::OutputFormat format) {
   }
 }
 
+// Validation both surfaces share: the unary options message and the
+// streaming chunk carry the same recognition fields with the same rules.
+grpc::Status validate_ocr_tuning(bool has_do_ocr, bool do_ocr, bool force_ocr,
+                                 bool has_render_scale, double render_scale) {
+  if (has_render_scale && (render_scale < 1.0 || render_scale > 8.0)) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        "option 'render_scale' must be within [1.0, 8.0]");
+  }
+  if (has_do_ocr && !do_ocr && force_ocr) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        "option 'do_ocr' false contradicts option 'force_ocr' true");
+  }
+  return grpc::Status::OK;
+}
+
+// The scheduler tuning the validated recognition fields resolve to. The
+// options steer only the in-process CV collector; remote collectors read
+// their own inputs and never see them.
+PageScheduler::OcrTuning ocr_tuning(bool has_do_ocr, bool do_ocr, bool force_ocr,
+                                    bool has_render_scale, double render_scale) {
+  PageScheduler::OcrTuning tuning;
+  if (force_ocr) {
+    tuning.mode = PageScheduler::OcrTuning::Mode::kForce;
+  } else if (has_do_ocr && !do_ocr) {
+    tuning.mode = PageScheduler::OcrTuning::Mode::kOff;
+  }
+  if (has_render_scale) tuning.render_dpi = render_scale * 72.0;
+  return tuning;
+}
+
 grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOptions& options) {
   std::vector<const google::protobuf::FieldDescriptor*> populated;
   options.GetReflection()->ListFields(options, &populated);
   for (const auto* field : populated) {
     if (field->name() != "to_formats" && field->name() != "collectors" &&
         field->name() != "ebcdic_layout_json" &&
-        field->name() != "lol_html_options_json") {
+        field->name() != "lol_html_options_json" && field->name() != "do_ocr" &&
+        field->name() != "force_ocr" && field->name() != "render_scale") {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                           "ConvertSource does not implement option '" + std::string(field->name()) + "'");
     }
   }
+  const grpc::Status tuning_status =
+      validate_ocr_tuning(options.has_do_ocr(), options.do_ocr(), options.force_ocr(),
+                          options.has_render_scale(), options.render_scale());
+  if (!tuning_status.ok()) return tuning_status;
   for (const auto raw : options.to_formats()) {
     const auto format = static_cast<pipestream::parse::v1::OutputFormat>(raw);
     if (!renderable(format)) {
@@ -361,6 +397,10 @@ grpc::Status DocumentParserService::ConvertSource(
     // The in-process CV collector: the page scheduler's layout, OCR, and
     // model pipeline over rendered pages, assembled into a document
     // fragment. Never throws; failures become the outcome.
+    const auto& request_options = request->request().options();
+    const PageScheduler::OcrTuning tuning = ocr_tuning(
+        request_options.has_do_ocr(), request_options.do_ocr(), request_options.force_ocr(),
+        request_options.has_render_scale(), request_options.render_scale());
     auto run_cv = [&]() -> CollectorOutcome {
       CollectorOutcome outcome;
       try {
@@ -374,7 +414,7 @@ grpc::Status DocumentParserService::ConvertSource(
         } state;
 
         const auto ticket = scheduler_.submit(
-            bytes, pdf,
+            bytes, pdf, tuning,
             PageScheduler::Callbacks{
                 [&state](int total_pages) {
                   std::lock_guard<std::mutex> lock(state.mutex);
@@ -640,6 +680,16 @@ class DocumentStreamReactor final
           requested_collectors_.push_back(static_cast<pipestream::parse::v1::Collector>(value));
         }
       }
+      // Recognition tuning resolves under the same doctrine: the first
+      // chunk that sets a field wins. Validation waits for the complete
+      // stream so a contradiction split across chunks is still caught.
+      if (!do_ocr_.has_value() && incoming_.has_do_ocr()) do_ocr_ = incoming_.do_ocr();
+      if (!force_ocr_.has_value() && incoming_.has_force_ocr()) {
+        force_ocr_ = incoming_.force_ocr();
+      }
+      if (!render_scale_.has_value() && incoming_.has_render_scale()) {
+        render_scale_ = incoming_.render_scale();
+      }
       if (incoming_.data().size() > kMaximumDocumentBytes - bytes_.size()) {
         request_finish_locked(grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
                                            "document exceeds 50 MiB streaming limit"));
@@ -702,9 +752,22 @@ class DocumentStreamReactor final
     std::shared_ptr<const std::string> bytes;
     bool pdf = false;
     bool want_cv = false;
+    PageScheduler::OcrTuning tuning;
     std::vector<pipestream::parse::v1::Collector> remotes;
     {
       std::lock_guard<std::mutex> lock(mutex_);
+      // The resolved recognition fields validate exactly like the unary
+      // options; an invalid value fails the stream naming the offender.
+      const grpc::Status tuning_status = validate_ocr_tuning(
+          do_ocr_.has_value(), do_ocr_.value_or(true), force_ocr_.value_or(false),
+          render_scale_.has_value(), render_scale_.value_or(0.0));
+      if (!tuning_status.ok()) {
+        request_finish_locked(tuning_status);
+        return;
+      }
+      tuning = ocr_tuning(do_ocr_.has_value(), do_ocr_.value_or(true),
+                          force_ocr_.value_or(false), render_scale_.has_value(),
+                          render_scale_.value_or(0.0));
       bytes = std::make_shared<const std::string>(std::move(bytes_));
       pdf = content_type_ == "application/pdf" || is_pdf(*bytes, filename_);
       pdf_ = pdf;
@@ -748,7 +811,7 @@ class DocumentStreamReactor final
     try {
       const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
       auto ticket = scheduler_.submit(
-          bytes, pdf,
+          bytes, pdf, tuning,
           PageScheduler::Callbacks{
               [weak_gate](int total_pages) {
                 if (const auto gate = weak_gate.lock()) {
@@ -985,6 +1048,11 @@ class DocumentStreamReactor final
   AssemblyCursor assembly_cursor_;
   grpc::Status finish_status_;
   std::vector<pipestream::parse::v1::Collector> requested_collectors_;
+  // Recognition fields resolved from the first chunk that set each one;
+  // empty means the chunk stream never set it.
+  std::optional<bool> do_ocr_;
+  std::optional<bool> force_ocr_;
+  std::optional<double> render_scale_;
   google::protobuf::RepeatedPtrField<pipestream::parse::v1::CollectorFailure>
       collector_failures_;
   grpc::Status first_failure_status_ = grpc::Status::OK;

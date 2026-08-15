@@ -104,7 +104,7 @@ void verify_pipeline_and_metrics() {
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(
       recognizer, {2, 3, 2, 3, 2, 2, 2},
-      [](std::shared_ptr<const std::string>, bool) { return std::make_shared<FakeSource>(6); });
+      [](std::shared_ptr<const std::string>, bool, double) { return std::make_shared<FakeSource>(6); });
   Result result;
   const auto ticket = scheduler.submit(std::make_shared<const std::string>("memory"), false,
                                        callbacks_for(&result));
@@ -129,7 +129,7 @@ void verify_cancellation_drains_bounded_work() {
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(
       recognizer, {1, 2, 1, 2, 1, 1, 1},
-      [](std::shared_ptr<const std::string>, bool) { return std::make_shared<FakeSource>(20); });
+      [](std::shared_ptr<const std::string>, bool, double) { return std::make_shared<FakeSource>(20); });
   Result result;
   const auto ticket = scheduler.submit(std::make_shared<const std::string>("memory"), false,
                                        callbacks_for(&result));
@@ -149,7 +149,7 @@ void verify_digital_pages_bypass_render_and_inference() {
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(
       recognizer, {1, 2, 1, 2, 1, 1, 1},
-      [](std::shared_ptr<const std::string>, bool) { return std::make_shared<DigitalSource>(); });
+      [](std::shared_ptr<const std::string>, bool, double) { return std::make_shared<DigitalSource>(); });
   Result result;
   scheduler.submit(std::make_shared<const std::string>("memory"), true, callbacks_for(&result));
   wait_until_finished(&result);
@@ -196,7 +196,7 @@ void verify_layout_labels_digital_pages_without_ocr() {
   FakeDetector detector;
   grparse::PageScheduler scheduler(
       recognizer, {2, 2, 2, 2, 1, 1, 1},
-      [](std::shared_ptr<const std::string>, bool) {
+      [](std::shared_ptr<const std::string>, bool, double) {
         return std::make_shared<RenderableDigitalSource>();
       },
       &detector);
@@ -264,7 +264,7 @@ void verify_table_structure_runs_on_crops() {
   FakeStructurer structurer;
   grparse::PageScheduler scheduler(
       recognizer, {2, 2, 2, 2, 1, 1, 1},
-      [](std::shared_ptr<const std::string>, bool) {
+      [](std::shared_ptr<const std::string>, bool, double) {
         return std::make_shared<RenderableDigitalSource>();
       },
       &detector, &structurer);
@@ -328,7 +328,7 @@ void verify_figure_classification_runs_on_crops() {
   FakeClassifier classifier;
   grparse::PageScheduler scheduler(
       recognizer, {2, 2, 2, 2, 1, 1, 1},
-      [](std::shared_ptr<const std::string>, bool) {
+      [](std::shared_ptr<const std::string>, bool, double) {
         return std::make_shared<RenderableDigitalSource>();
       },
       &detector, nullptr, &classifier);
@@ -378,7 +378,7 @@ void verify_picture_capture_encodes_figure_crops() {
   options.capture_picture_images = true;
   grparse::PageScheduler scheduler(
       recognizer, options,
-      [](std::shared_ptr<const std::string>, bool) {
+      [](std::shared_ptr<const std::string>, bool, double) {
         return std::make_shared<RenderableDigitalSource>();
       },
       &detector);
@@ -422,7 +422,7 @@ void verify_page_capture_encodes_previews() {
   options.capture_page_images = true;
   grparse::PageScheduler scheduler(
       recognizer, options,
-      [](std::shared_ptr<const std::string>, bool) {
+      [](std::shared_ptr<const std::string>, bool, double) {
         return std::make_shared<RenderableDigitalSource>();
       });
   Result result;
@@ -528,7 +528,7 @@ void verify_barcode_decode_triggers_on_class() {
   options.barcode_mode = grparse::PageScheduler::BarcodeMode::kClassTriggered;
   grparse::PageScheduler scheduler(
       recognizer, options,
-      [&](std::shared_ptr<const std::string>, bool) { return std::make_shared<QrPageSource>(page); },
+      [&](std::shared_ptr<const std::string>, bool, double) { return std::make_shared<QrPageSource>(page); },
       &detector, nullptr, &classifier);
   std::vector<std::shared_ptr<const grparse::OcrPage>> delivered;
   run_qr_document(scheduler, &delivered);
@@ -558,7 +558,7 @@ void verify_barcode_gate_and_forced_mode() {
     options.barcode_mode = grparse::PageScheduler::BarcodeMode::kClassTriggered;
     grparse::PageScheduler scheduler(
         recognizer, options,
-        [&](std::shared_ptr<const std::string>, bool) {
+        [&](std::shared_ptr<const std::string>, bool, double) {
           return std::make_shared<QrPageSource>(page);
         },
         &detector, nullptr, &classifier);
@@ -575,7 +575,7 @@ void verify_barcode_gate_and_forced_mode() {
     options.barcode_mode = grparse::PageScheduler::BarcodeMode::kAll;
     grparse::PageScheduler scheduler(
         recognizer, options,
-        [&](std::shared_ptr<const std::string>, bool) {
+        [&](std::shared_ptr<const std::string>, bool, double) {
           return std::make_shared<QrPageSource>(page);
         },
         &detector);
@@ -594,7 +594,7 @@ void verify_delivery_cancellation_drains_queued_work() {
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(
       recognizer, {1, 4, 2, 2, 2, 2, 1},
-      [](std::shared_ptr<const std::string>, bool) { return std::make_shared<FakeSource>(20); });
+      [](std::shared_ptr<const std::string>, bool, double) { return std::make_shared<FakeSource>(20); });
   Result result;
   auto callbacks = callbacks_for(&result);
   callbacks.on_page = [](int, std::shared_ptr<const grparse::OcrPage>) {
@@ -613,7 +613,7 @@ void verify_page_credits_bound_a_document() {
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(
       recognizer, {1, 4, 2, 2, 2, 2, 1, 2, 4},
-      [](std::shared_ptr<const std::string>, bool) { return std::make_shared<FakeSource>(8); });
+      [](std::shared_ptr<const std::string>, bool, double) { return std::make_shared<FakeSource>(8); });
   Result result;
   auto callbacks = callbacks_for(&result);
   callbacks.on_page = [&result](int page_number, std::shared_ptr<const grparse::OcrPage>) {
@@ -668,7 +668,7 @@ void verify_uncredited_document_survives_later_submissions() {
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(
       recognizer, {4, 4, 2, 2, 2, 2, 1, 2, 4},
-      [](std::shared_ptr<const std::string>, bool) { return std::make_shared<FakeSource>(6); });
+      [](std::shared_ptr<const std::string>, bool, double) { return std::make_shared<FakeSource>(6); });
 
   Result first;
   auto first_callbacks = callbacks_for(&first);
@@ -755,7 +755,7 @@ void verify_partial_digital_merges_with_ocr() {
   BodyRecognizer recognizer;
   grparse::PageScheduler scheduler(
       recognizer, {1, 2, 1, 2, 1, 1, 1},
-      [](std::shared_ptr<const std::string>, bool) { return std::make_shared<PartialDigitalSource>(); });
+      [](std::shared_ptr<const std::string>, bool, double) { return std::make_shared<PartialDigitalSource>(); });
 
   struct Capture {
     std::mutex mutex;
@@ -801,6 +801,184 @@ void verify_partial_digital_merges_with_ocr() {
   require(metrics.pages_rendered == 1, "render metric");
 }
 
+// Collects each delivered page alongside the shared Result bookkeeping.
+grparse::PageScheduler::Callbacks capturing_callbacks_for(
+    Result* result, std::mutex* pages_mutex,
+    std::vector<std::shared_ptr<const grparse::OcrPage>>* delivered) {
+  auto callbacks = callbacks_for(result);
+  callbacks.on_page = [result, pages_mutex, delivered](
+                          int page_number, std::shared_ptr<const grparse::OcrPage> page) {
+    {
+      std::lock_guard<std::mutex> lock(*pages_mutex);
+      delivered->push_back(std::move(page));
+    }
+    std::lock_guard<std::mutex> lock(result->mutex);
+    result->completed_pages.push_back(page_number);
+    return grparse::PageScheduler::DeliveryResult::kAcceptedAndRelease;
+  };
+  return callbacks;
+}
+
+// kOff reads only the embedded layer: a weak layer that would normally merge
+// with recognition is delivered as-is without touching the recognizer or the
+// raster, and a page with no embedded layer at all assembles empty at raster
+// size.
+void verify_ocr_off_reads_only_the_embedded_layer() {
+  {
+    BodyRecognizer recognizer;
+    grparse::PageScheduler scheduler(
+        recognizer, {1, 2, 1, 2, 1, 1, 1},
+        [](std::shared_ptr<const std::string>, bool, double) {
+          return std::make_shared<PartialDigitalSource>();
+        });
+    grparse::PageScheduler::OcrTuning tuning;
+    tuning.mode = grparse::PageScheduler::OcrTuning::Mode::kOff;
+    Result result;
+    std::mutex pages_mutex;
+    std::vector<std::shared_ptr<const grparse::OcrPage>> delivered;
+    scheduler.submit(std::make_shared<const std::string>("memory"), true, tuning,
+                     capturing_callbacks_for(&result, &pages_mutex, &delivered));
+    wait_until_finished(&result);
+
+    require(!result.failure, "recognition-off weak-layer document failed");
+    require(recognizer.calls.load() == 0, "recognition off must never invoke the recognizer");
+    std::lock_guard<std::mutex> lock(pages_mutex);
+    require(delivered.size() == 1, "recognition-off delivery count");
+    require(delivered[0]->lines.size() == 1 && delivered[0]->lines[0].text == "header",
+            "recognition off must deliver the embedded layer as-is");
+    require(delivered[0]->source == grparse::OcrPage::Source::kDigitalPdf,
+            "recognition off must keep the embedded source");
+    require(scheduler.metrics().pages_rendered == 0,
+            "an embedded-settled page needs no raster without layout or previews");
+  }
+  {
+    BodyRecognizer recognizer;
+    grparse::PageScheduler scheduler(
+        recognizer, {1, 2, 1, 2, 1, 1, 1},
+        [](std::shared_ptr<const std::string>, bool, double) {
+          return std::make_shared<FakeSource>(1);
+        });
+    grparse::PageScheduler::OcrTuning tuning;
+    tuning.mode = grparse::PageScheduler::OcrTuning::Mode::kOff;
+    Result result;
+    std::mutex pages_mutex;
+    std::vector<std::shared_ptr<const grparse::OcrPage>> delivered;
+    scheduler.submit(std::make_shared<const std::string>("memory"), false, tuning,
+                     capturing_callbacks_for(&result, &pages_mutex, &delivered));
+    wait_until_finished(&result);
+
+    require(!result.failure, "recognition-off empty-layer document failed");
+    require(recognizer.calls.load() == 0,
+            "recognition off must not recognize a page without an embedded layer");
+    std::lock_guard<std::mutex> lock(pages_mutex);
+    require(delivered.size() == 1 && delivered[0]->lines.empty(),
+            "a page with no embedded layer must assemble empty under recognition off");
+    require(delivered[0]->width == 1 && delivered[0]->height == 1,
+            "the empty page must keep the raster dimensions");
+  }
+}
+
+// kOff with a region detector: layout still sees pixels and its regions ride
+// on the delivered page, while the text stays the embedded layer alone.
+void verify_ocr_off_still_runs_layout() {
+  BodyRecognizer recognizer;
+  FakeDetector detector;
+  grparse::PageScheduler scheduler(
+      recognizer, {1, 2, 1, 2, 1, 1, 1},
+      [](std::shared_ptr<const std::string>, bool, double) {
+        return std::make_shared<PartialDigitalSource>();
+      },
+      &detector);
+  grparse::PageScheduler::OcrTuning tuning;
+  tuning.mode = grparse::PageScheduler::OcrTuning::Mode::kOff;
+  Result result;
+  std::mutex pages_mutex;
+  std::vector<std::shared_ptr<const grparse::OcrPage>> delivered;
+  scheduler.submit(std::make_shared<const std::string>("memory"), true, tuning,
+                   capturing_callbacks_for(&result, &pages_mutex, &delivered));
+  wait_until_finished(&result);
+
+  require(!result.failure, "recognition-off layout document failed");
+  require(recognizer.calls.load() == 0, "layout under recognition off must not recognize");
+  require(detector.calls.load() == 1, "layout must still see the raster under recognition off");
+  std::lock_guard<std::mutex> lock(pages_mutex);
+  require(delivered.size() == 1, "recognition-off layout delivery count");
+  require(delivered[0]->lines.size() == 1 && delivered[0]->lines[0].text == "header",
+          "layout under recognition off must keep the embedded text alone");
+  require(delivered[0]->regions.size() == 1 && delivered[0]->regions[0].label == "title",
+          "layout regions must ride on the recognition-off page");
+  require(scheduler.metrics().pages_rendered == 1,
+          "layout keeps the recognition-off page on the raster path");
+}
+
+// kForce recognizes every page, full-digital ones included, and the
+// recognized text replaces the embedded layer instead of merging with it.
+void verify_force_ocr_replaces_the_embedded_layer() {
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 2, 2, 2, 1, 1, 1},
+      [](std::shared_ptr<const std::string>, bool, double) {
+        return std::make_shared<RenderableDigitalSource>();
+      });
+  grparse::PageScheduler::OcrTuning tuning;
+  tuning.mode = grparse::PageScheduler::OcrTuning::Mode::kForce;
+  Result result;
+  std::mutex pages_mutex;
+  std::vector<std::shared_ptr<const grparse::OcrPage>> delivered;
+  scheduler.submit(std::make_shared<const std::string>("memory"), true, tuning,
+                   capturing_callbacks_for(&result, &pages_mutex, &delivered));
+  wait_until_finished(&result);
+
+  require(!result.failure, "forced-recognition document failed");
+  require(recognizer.calls.load() == 2,
+          "forced recognition must run on every page, full-digital ones included");
+  {
+    std::lock_guard<std::mutex> lock(pages_mutex);
+    require(delivered.size() == 2, "forced-recognition delivery count");
+    for (const auto& page : delivered) {
+      require(page->lines.size() == 1 && page->lines[0].text.rfind("page-", 0) == 0,
+              "forced recognition must deliver the recognized text");
+      require(page->source == grparse::OcrPage::Source::kOcr,
+              "recognized text must replace the embedded layer, not merge with it");
+    }
+  }
+  const auto metrics = scheduler.metrics();
+  require(metrics.pages_recognized == 2 && metrics.pages_rendered == 2,
+          "forced recognition must rasterize and recognize every page");
+  require(metrics.pages_read_digitally == 0,
+          "forced recognition must not read the embedded layer");
+}
+
+// The per-document render DPI reaches the source factory: unset resolves to
+// the scheduler default, a tuned value passes through untouched.
+void verify_render_dpi_reaches_source_factory() {
+  FakeRecognizer recognizer;
+  std::atomic<double> factory_dpi{0.0};
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 3, 2, 3, 2, 2, 2},
+      [&factory_dpi](std::shared_ptr<const std::string>, bool, double render_dpi) {
+        factory_dpi.store(render_dpi);
+        return std::make_shared<FakeSource>(1);
+      });
+
+  Result defaulted;
+  scheduler.submit(std::make_shared<const std::string>("memory"), false,
+                   callbacks_for(&defaulted));
+  wait_until_finished(&defaulted);
+  require(!defaulted.failure, "default-DPI document failed");
+  require(factory_dpi.load() == grparse::kDefaultRenderDpi,
+          "an unset render DPI must resolve to the scheduler default");
+
+  grparse::PageScheduler::OcrTuning tuning;
+  tuning.render_dpi = 300.0;
+  Result tuned;
+  scheduler.submit(std::make_shared<const std::string>("memory"), false, tuning,
+                   callbacks_for(&tuned));
+  wait_until_finished(&tuned);
+  require(!tuned.failure, "tuned-DPI document failed");
+  require(factory_dpi.load() == 300.0, "a tuned render DPI must reach the source factory");
+}
+
 int main() {
   try {
     verify_pipeline_and_metrics();
@@ -814,6 +992,10 @@ int main() {
     verify_barcode_decode_triggers_on_class();
     verify_barcode_gate_and_forced_mode();
     verify_partial_digital_merges_with_ocr();
+    verify_ocr_off_reads_only_the_embedded_layer();
+    verify_ocr_off_still_runs_layout();
+    verify_force_ocr_replaces_the_embedded_layer();
+    verify_render_dpi_reaches_source_factory();
     verify_delivery_cancellation_drains_queued_work();
     verify_page_credits_bound_a_document();
     verify_uncredited_document_survives_later_submissions();

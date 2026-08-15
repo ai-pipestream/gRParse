@@ -20,7 +20,7 @@ void require(bool condition, const std::string& message) {
   if (!condition) throw std::runtime_error(message);
 }
 
-constexpr double kRenderScale = 200.0 / 72.0;  // must track kRenderDpi in the source
+constexpr double kRenderScale = grparse::kDefaultRenderDpi / 72.0;
 constexpr int kMediaWidth = 612;
 constexpr int kMediaHeight = 792;
 
@@ -166,6 +166,33 @@ void verify_render_matches_page_size() {
           "raster size must match the advertised page size");
 }
 
+// A per-document render DPI scales the raster and the digital-line geometry
+// together, so provenance boxes fit the advertised page size at any scale.
+void verify_per_document_render_dpi() {
+  constexpr double kDpi = 100.0;
+  const auto source = grparse::open_in_memory_document(
+      bytes_of(build_pdf({"Hello gRParse"}, 0)), true, 1, kDpi);
+  const auto scaled = [](double user_space_units) {
+    return static_cast<int>(user_space_units * kDpi / 72.0 + 0.5);
+  };
+
+  const cv::Mat raster = source->render_page(1);
+  require(std::abs(raster.cols - scaled(kMediaWidth)) <= 1 &&
+              std::abs(raster.rows - scaled(kMediaHeight)) <= 1,
+          "raster size must follow the per-document DPI");
+
+  const auto page = source->extract_digital_page(1);
+  require(page.has_value(), "digital text must extract at any DPI");
+  require(page->width == scaled(kMediaWidth) && page->height == scaled(kMediaHeight),
+          "advertised page size must follow the per-document DPI");
+  for (const auto& line : page->lines) {
+    const auto box = grparse::bounding_box(line);
+    require(box.left >= 0 && box.top >= 0 && box.right <= page->width &&
+                box.bottom <= page->height,
+            "provenance boxes must fit the rescaled page");
+  }
+}
+
 void verify_invalid_input_is_rejected() {
   bool threw = false;
   try {
@@ -290,6 +317,7 @@ int main() {
     verify_dense_text_layer_skips_ocr();
     verify_rotated_page_geometry();
     verify_render_matches_page_size();
+    verify_per_document_render_dpi();
     verify_invalid_input_is_rejected();
     verify_concurrent_page_access();
     verify_raster_source();

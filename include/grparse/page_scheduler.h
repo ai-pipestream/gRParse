@@ -55,6 +55,21 @@ class PageScheduler final {
     BarcodeMode barcode_mode = BarcodeMode::kOff;
   };
 
+  // Per-document recognition tuning, resolved by the caller from request
+  // options.  kSelective is the default: a page whose embedded text layer is
+  // complete skips recognition.  kOff never recognizes, so only the embedded
+  // layer is read and a page without one assembles empty.  kForce recognizes
+  // every page at full-page scope and the recognized text replaces the
+  // embedded layer.
+  struct OcrTuning {
+    enum class Mode { kSelective, kForce, kOff };
+    Mode mode = Mode::kSelective;
+    // Rasterization DPI for this document's source; 0 keeps the scheduler
+    // default (kDefaultRenderDpi).  Raster inputs are already pixels and
+    // ignore it.
+    double render_dpi = 0.0;
+  };
+
   enum class DeliveryResult { kAccepted, kAcceptedAndRelease, kCancelled };
 
   struct Callbacks {
@@ -114,7 +129,8 @@ class PageScheduler final {
   };
 
   // An empty source_factory installs the in-memory PDF/image source sized from
-  // Options.  A null region_detector disables layout labelling; when present,
+  // Options; either way the factory receives each document's resolved render
+  // DPI.  A null region_detector disables layout labelling; when present,
   // every page (including full-digital ones) is rasterized so layout can see
   // pixels, and OCR remains selective.  A non-null table_structurer runs on
   // crops of each detected table region (it never sees a full page) and needs
@@ -128,7 +144,11 @@ class PageScheduler final {
   PageScheduler& operator=(const PageScheduler&) = delete;
   ~PageScheduler();
 
+  // The tuning-free overload keeps the defaults: selective recognition at
+  // the scheduler's render DPI.
   Ticket submit(std::shared_ptr<const std::string> bytes, bool pdf, Callbacks callbacks);
+  Ticket submit(std::shared_ptr<const std::string> bytes, bool pdf, OcrTuning tuning,
+                Callbacks callbacks);
   Metrics metrics() const;
   // Pages a single document may hold undelivered before it needs credits back.
   // Stream reactors must size their own buffers from this, not from a constant.
