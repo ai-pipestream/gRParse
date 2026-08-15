@@ -12,9 +12,8 @@ option java_package = "ai.pipestream.parse.v1";
 // Service Definition
 // ============================================================================
 
-// ParseService is the gRPC service definition that provides a mapping of the
-// upstream converter's REST API endpoints (docling-serve; the one parity
-// reference for this surface).
+// ParseService is the gRPC service definition for document conversion. The
+// RPC set maps one-to-one onto the REST endpoints noted per RPC below.
 //
 // Adheres to Buf linting and Google gRPC style guide by providing unique
 // request and response messages for every RPC.

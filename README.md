@@ -235,7 +235,7 @@ decoded even though the office core cannot see it. The enrichment follows
 the same knobs as the CV path: it needs the layout model, and barcode
 decoding honors `GRPARSE_BARCODES`.
 
-Every collector's output is a docling `Document` whose items carry a
+Every collector's output is an `ai.pipestream.document.v1.Document` whose items carry a
 `CollectorSource` tag, and the coordinator merges them additively: item
 references renumber, sources never overwrite each other, and choosing a
 winner among sources is a downstream concern. On the streaming RPC each

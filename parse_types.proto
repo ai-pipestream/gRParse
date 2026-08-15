@@ -429,7 +429,7 @@ message ConvertDocumentOptions {
   // parse while any collector succeeds.
   repeated Collector collectors = 44;
   // Parsing rules for COLLECTOR_EBCDIC, as the JSON serialization of
-  // Docling's EbcdicLayout pydantic model, forwarded verbatim to the
+  // that collector's EbcdicLayout model, forwarded verbatim to the
   // collector's ParseOptions.layout_json. Required when COLLECTOR_EBCDIC is
   // selected: that collector cannot decode a byte without a layout, and
   // raw EBCDIC is never routed by format.
@@ -494,7 +494,7 @@ message DocumentExports {
   optional string doclang = 6;
   // WebVTT cues from track-timed text items.
   optional string vtt = 7;
-  // Per-page HTML (docling's split-page layout).
+  // Per-page HTML (split-page layout).
   optional string html_split_page = 8;
   // YAML rendering of the same structure as `json`.
   optional string yaml = 9;

@@ -90,8 +90,8 @@ The model set and dictionary naming are documented by [RapidOcrOnnx](https://git
 
   Preprocess: RGB order (unlike the OCR-family models), resize 224x224,
   scale 1/255, normalize mean `[0.485, 0.456, 0.406]` /
-  std `[0.47853944, 0.4732864, 0.47434163]`, NCHW, per
-  docling-ibm-models' DocumentFigureClassifierPredictor. Output is raw
+  std `[0.47853944, 0.4732864, 0.47434163]`, NCHW, per the upstream
+  DocumentFigureClassifierPredictor contract. Output is raw
   logits; gRParse softmaxes and attaches every class sorted by confidence
   as a `classification` annotation on the PictureItem.
 
