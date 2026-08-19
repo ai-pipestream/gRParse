@@ -61,6 +61,61 @@ Environment:
 | `PORT` | `8080` | HTTP port for the page |
 | `GRPARSE_PROTO_DIR` | repo root | Directory holding the four contract `.proto` files |
 | `UI_BASE` | *(empty)* | Mount prefix the whole page is served under, e.g. `/ui/grparse` |
+| `DEMO_UIS` | *(empty)* | Shell registry, `name=grpc_addr@ui_addr` comma-separated (see below) |
+| `DEMO_PROTO_DIR` | *(empty)* | Override directory with one `<name>.proto` per registry entry |
+
+## Demo shell mode (`DEMO_UIS`)
+
+With `DEMO_UIS` set (and `UI_BASE` unset) the same process doubles as the
+demo shell for the whole grpc-services family: the header grows a tab bar.
+The first tab is this page's own gRParse demo; every other tab is a
+registered service whose web frontend renders in an iframe below, proxied
+same-origin under `/ui/<name>/` so no CSS or JS leaks between tabs. Each tab
+carries a status dot: green when the service's gRPC info RPC answers, red
+when it does not.
+
+```bash
+DEMO_UIS="lol-html=127.0.0.1:50057@127.0.0.1:8083,libreoffice=127.0.0.1:50053@127.0.0.1:8084" \
+  GRPARSE_TARGET=localhost:50051 npm start
+```
+
+Registry syntax: comma-separated `name=grpc_addr@ui_addr` entries, where
+`grpc_addr` is where the service's info RPC is called and `ui_addr` is the
+HTTP frontend to proxy to (a full `http://` URL also works). `name` becomes
+the shell path `/ui/<name>`; names match `[A-Za-z0-9][A-Za-z0-9_-]*`.
+
+Three pieces make a tab work:
+
+- `GET /api/uis` returns one `{name, title, path, description, reachable}`
+  object per entry. `title`, `path`, and `description` come from a live call
+  to the service's info RPC (the `UiInfo` block every ai-pipestream service
+  advertises) with a 1.5s deadline; results are cached for 5 seconds so a
+  refreshing tab bar doesn't hammer the services. If the call fails, or the
+  service's proto can't be loaded, the entry comes back `reachable: false`
+  with the registry name as a static fallback title.
+- `/ui/<name>/*` is reverse-proxied to `http://<ui_addr>/ui/<name>/*`, path
+  preserved — the frontends are started with `UI_BASE=/ui/<name>` and serve
+  everything under that prefix. Proxying is raw `http` piping with no body
+  buffering, so POST uploads and SSE/NDJSON streams flow through unchanged.
+- Proto resolution: a per-name map in `server.js` points each known service
+  at its sibling repo (`<repo>/proto/...`); the workspace keeps the repos
+  side by side, and the resolver probes both the plain checkout depth and
+  the one-level-deeper git worktree depth. Set `DEMO_PROTO_DIR` to a
+  directory holding one `<name>.proto` per entry to override the map
+  entirely — imports in those files resolve against the same directory. The
+  compose demo service instead bind-mounts the sibling proto dirs at
+  `/<repo>/proto`, which is where the resolver's probe lands in the image.
+
+With `DEMO_UIS` empty there are no tabs and the served page is
+byte-identical to the standalone demo. Shell mode and `UI_BASE` are
+mutually exclusive: with `UI_BASE` set this app is a plain frontend serving
+under its prefix, ready to be one tab inside another shell.
+
+A new service gets a tab by (1) advertising a `UiInfo` block
+(`title`/`path`/`description`) from its info RPC, (2) serving its web
+frontend under a `UI_BASE` prefix, and (3) adding one `name=grpc@ui` entry
+to `DEMO_UIS` — plus a proto map entry in `server.js` if it isn't one of
+the known services.
 
 ## Serving under a base path (`UI_BASE`)
 

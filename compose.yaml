@@ -10,6 +10,12 @@ services:
       CUDA_CACHE_DISABLE: "1"
       GRPARSE_METRICS_PORT: "9464"
       GRPARSE_PAGE_IMAGES: "on"   # page previews for the demo's box overlay
+      # Collectors run as their own services on the host; the demo shell
+      # gives them tabs, and parsing a matching document fans out to them.
+      GRPARSE_LOL_HTML_TARGET: "host.docker.internal:50057"
+      GRPARSE_LIBREOFFICE_TARGET: "host.docker.internal:50053"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     gpus: all
     read_only: true
     tmpfs:
@@ -21,6 +27,9 @@ services:
 
   # Browser demo for the streaming parse; started only with
   # `docker compose --profile demo up --build`. See examples/web-demo/README.md.
+  # DEMO_UIS turns it into the demo shell: one tab per registered service,
+  # each reverse-proxied to that service's own frontend on the host (start
+  # those with UI_BASE=/ui/<name>, e.g. PORT=8083 UI_BASE=/ui/lol-html).
   demo:
     profiles: ["demo"]
     build:
@@ -30,6 +39,15 @@ services:
       - "8080:8080"
     environment:
       GRPARSE_TARGET: grparse:50051
+      DEMO_UIS: "lol-html=host.docker.internal:50057@host.docker.internal:8083,libreoffice=host.docker.internal:50053@host.docker.internal:8084"
+    # The shell reads each service's info RPC through its proto contract; in
+    # this image the sibling checkouts do not exist, so bind-mount their
+    # proto dirs at the layout the resolver probes ("/<repo>/proto/...").
+    volumes:
+      - ../grpc-lol-html/proto:/grpc-lol-html/proto:ro
+      - ../grpc-libreoffice/proto:/grpc-libreoffice/proto:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - grparse
     read_only: true
