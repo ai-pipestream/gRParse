@@ -13,6 +13,13 @@ const protoLoader = require("@grpc/proto-loader");
 
 const TARGET = process.env.GRPARSE_TARGET || "localhost:50051";
 const PORT = Number(process.env.PORT || 8080);
+// Optional mount prefix (e.g. "/ui/grparse") for running behind a reverse
+// proxy that forwards each service under its own path. Empty keeps the
+// historical behavior of serving everything from the root.
+const uiBaseRaw = process.env.UI_BASE || "";
+const UI_BASE = uiBaseRaw === "" || uiBaseRaw === "/"
+  ? ""
+  : `/${uiBaseRaw.replace(/^\/+|\/+$/g, "")}`;
 // The repo keeps the contract files at its root; their imports use the
 // ai/pipestream/... layout, so stage copies into that shape before loading.
 const PROTO_ROOT = process.env.GRPARSE_PROTO_DIR || path.resolve(__dirname, "..", "..");
@@ -190,9 +197,35 @@ function mapEvent(event) {
 // ---------------------------------------------------------------------------
 
 const app = express();
-app.use(express.static(path.join(__dirname, "public")));
+// Everything the page talks to lives on one router, mounted at UI_BASE when
+// set so the whole surface (assets, API, sample) moves under the prefix.
+const surface = express.Router();
 
-app.get("/api/health", (_request, response) => {
+if (UI_BASE) {
+  // Inject the base into the entry page so app.js can prefix its fetches;
+  // static would otherwise ship index.html verbatim.
+  const indexHtml = fs.readFileSync(path.join(__dirname, "public", "index.html"), "utf8");
+  const injected = indexHtml.replace(
+    '<meta name="viewport" content="width=device-width, initial-scale=1" />',
+    `<meta name="viewport" content="width=device-width, initial-scale=1" />\n  <meta name="ui-base" content="${UI_BASE}" />`,
+  );
+  surface.get("/", (_request, response) => response.type("html").send(injected));
+  surface.get("/index.html", (_request, response) => response.type("html").send(injected));
+  // Relative asset URLs only resolve under the base with a trailing slash.
+  // Express matches this route loosely, so guard on the exact path to keep
+  // "$UI_BASE/" itself from redirecting to itself.
+  app.get(UI_BASE, (request, response, next) => {
+    if (request.path !== UI_BASE) {
+      next();
+      return;
+    }
+    response.redirect(`${UI_BASE}/`);
+  });
+}
+
+surface.use(express.static(path.join(__dirname, "public")));
+
+surface.get("/api/health", (_request, response) => {
   parseClient.Health({}, { deadline: Date.now() + 5000 }, (error, health) => {
     if (error) {
       response.status(502).json({ ok: false, target: TARGET, error: error.message });
@@ -202,7 +235,7 @@ app.get("/api/health", (_request, response) => {
   });
 });
 
-app.post(
+surface.post(
   "/api/parse",
   express.raw({ type: () => true, limit: MAX_UPLOAD }),
   (request, response) => {
@@ -236,6 +269,9 @@ app.post(
   },
 );
 
+app.use(UI_BASE || "/", surface);
+
 app.listen(PORT, () => {
-  console.log(`gRParse web demo on http://localhost:${PORT} -> ${TARGET}`);
+  const base = UI_BASE ? `${UI_BASE}/` : "/";
+  console.log(`gRParse web demo on http://localhost:${PORT}${base} -> ${TARGET}`);
 });

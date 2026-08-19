@@ -60,6 +60,23 @@ Environment:
 | `GRPARSE_TARGET` | `localhost:50051` | gRParse gRPC endpoint |
 | `PORT` | `8080` | HTTP port for the page |
 | `GRPARSE_PROTO_DIR` | repo root | Directory holding the four contract `.proto` files |
+| `UI_BASE` | *(empty)* | Mount prefix the whole page is served under, e.g. `/ui/grparse` |
+
+## Serving under a base path (`UI_BASE`)
+
+When the demo sits behind a reverse proxy that forwards a path prefix (the
+ai-pipestream shell app proxies `/ui/grparse/*` here), set `UI_BASE` to that
+prefix:
+
+```bash
+UI_BASE=/ui/grparse GRPARSE_TARGET=localhost:50051 npm start
+```
+
+The page, its assets, `/api/health`, `/api/parse`, and the bundled
+`sample.pdf` are then all served under `/ui/grparse/`, and the bridge injects
+a `<meta name="ui-base">` tag into the entry page so the client-side code
+prefixes its fetches to match. With `UI_BASE` unset the behavior is exactly
+as before: everything lives at the server root.
 
 The bridge loads the contract protos directly from the repository at startup,
 so it never drifts from the service's actual schema.

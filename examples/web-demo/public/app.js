@@ -20,6 +20,10 @@ const BOX_COLORS = {
 };
 
 const totals = { pages: 0, texts: 0, digital: 0, ocr: 0, tables: 0, pictures: 0, barcodes: 0 };
+
+// Base path the bridge serves under (injected as a meta tag when the server
+// runs with UI_BASE set); empty means root, so fetches stay unchanged.
+const UI_BASE = (document.querySelector('meta[name="ui-base"]') || {}).content || "";
 let startedAt = 0;
 let clock = null;
 // Everything the stream delivered for the current run, downloadable as JSON.
@@ -220,7 +224,7 @@ async function parseFile(file) {
   dropzone.classList.add("busy");
   const query = new URLSearchParams({ filename: file.name, contentType: contentTypeFor(file.name) });
   try {
-    const response = await fetch(`/api/parse?${query}`, { method: "POST", body: file });
+    const response = await fetch(`${UI_BASE}/api/parse?${query}`, { method: "POST", body: file });
     if (!response.ok || !response.body) {
       banner("error", `Upload failed: HTTP ${response.status}`);
       return;
@@ -253,7 +257,7 @@ document.getElementById("toggle-image").addEventListener("change", (event) => {
 dropzone.addEventListener("click", () => fileInput.click());
 sampleButton.addEventListener("click", async (event) => {
   event.stopPropagation(); // the surrounding dropzone opens the file picker on click
-  const response = await fetch("/sample.pdf");
+  const response = await fetch(`${UI_BASE}/sample.pdf`);
   if (!response.ok) {
     banner("error", `Could not fetch the bundled sample: HTTP ${response.status}`);
     return;
@@ -285,7 +289,7 @@ dropzone.addEventListener("drop", (event) => {
   if (event.dataTransfer.files.length > 0) parseFile(event.dataTransfer.files[0]);
 });
 
-fetch("/api/health")
+fetch(`${UI_BASE}/api/health`)
   .then((response) => response.json())
   .then((health) => {
     const chip = document.getElementById("health");
