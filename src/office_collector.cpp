@@ -13,7 +13,7 @@ namespace grparse {
 namespace {
 
 // Upload chunk size. Small enough to interleave with response reads, large
-// enough that a 50 MiB document stays under a few hundred frames.
+// enough that a 500 MiB document stays under a few thousand frames.
 constexpr size_t kChunkBytes = 256U * 1024U;
 
 // A hung collector must not pin the parse forever; the office worker has

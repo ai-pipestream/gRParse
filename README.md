@@ -78,7 +78,7 @@ escalation disabled.
 `ai.pipestream.parse.v1.ParseStreamingService/StreamProcessDocument` accepts a
 stream of `DocumentChunk` messages. Send the same `document_id`, filename, and
 content type with the chunks, then set `complete = true` on the last one. The
-server accepts PDFs and single raster images, up to 50 MiB. The chunk fields
+server accepts PDFs and single raster images, up to 500 MiB. The chunk fields
 `do_ocr`, `force_ocr`, and `render_scale` carry the same recognition mode and
 rasterization scale as the unary options, each resolved from the first chunk
 that sets it (the same doctrine as `collectors`); an invalid value fails the

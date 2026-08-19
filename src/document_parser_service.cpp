@@ -586,7 +586,7 @@ grpc::Status DocumentParserService::Health(grpc::ServerContext*, const pipestrea
 
 namespace {
 
-constexpr size_t kMaximumDocumentBytes = 50U * 1024U * 1024U;
+constexpr size_t kMaximumDocumentBytes = 500U * 1024U * 1024U;
 
 grpc::Status status_from_exception(std::exception_ptr failure) {
   try {
@@ -692,7 +692,7 @@ class DocumentStreamReactor final
       }
       if (incoming_.data().size() > kMaximumDocumentBytes - bytes_.size()) {
         request_finish_locked(grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
-                                           "document exceeds 50 MiB streaming limit"));
+                                           "document exceeds 500 MiB streaming limit"));
         return;
       }
       bytes_.append(incoming_.data());
@@ -798,7 +798,7 @@ class DocumentStreamReactor final
       }
     }
     // Hash the request once, here, rather than under the reactor lock at
-    // completion: it is a linear pass over up to 50 MiB.
+    // completion: it is a linear pass over up to 500 MiB.
     const uint64_t hash = content_hash(*bytes);
     {
       std::lock_guard<std::mutex> lock(mutex_);

@@ -17,7 +17,7 @@ const PORT = Number(process.env.PORT || 8080);
 // ai/pipestream/... layout, so stage copies into that shape before loading.
 const PROTO_ROOT = process.env.GRPARSE_PROTO_DIR || path.resolve(__dirname, "..", "..");
 const CHUNK_BYTES = 1024 * 1024;
-const MAX_UPLOAD = "50mb"; // matches the server's stream limit
+const MAX_UPLOAD = "500mb"; // matches the server's stream limit
 
 function stageProtos() {
   const staged = fs.mkdtempSync(path.join(os.tmpdir(), "grparse-protos-"));

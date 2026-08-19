@@ -521,9 +521,9 @@ int main() {
     grpc::reflection::InitProtoReflectionServerBuilderPlugin();
     grpc::ServerBuilder builder;
     builder.AddListeningPort(listen_address, grpc::InsecureServerCredentials());
-    builder.SetMaxReceiveMessageSize(70 * 1024 * 1024);
+    builder.SetMaxReceiveMessageSize(520 * 1024 * 1024);
     grpc::ResourceQuota quota;
-    quota.Resize(configured_size("GRPARSE_GRPC_MEMORY_MIB", 256, 16384) * 1024U * 1024U);
+    quota.Resize(configured_size("GRPARSE_GRPC_MEMORY_MIB", 640, 16384) * 1024U * 1024U);
     quota.SetMaxThreads(static_cast<int>(configured_size("GRPARSE_GRPC_MAX_THREADS", 64, 1024)));
     builder.SetResourceQuota(quota);
     builder.AddChannelArgument(GRPC_ARG_MAX_CONCURRENT_STREAMS,
