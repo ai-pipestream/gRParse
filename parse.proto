@@ -21,6 +21,10 @@ service ParseService {
   // Health check - mirrors GET /health
   rpc Health(HealthRequest) returns (HealthResponse);
 
+  // Service metadata for the shared demo shell: name, version, and the UI
+  // advertisement the shell reads to build its tab bar.
+  rpc GetServiceInfo(GetServiceInfoRequest) returns (GetServiceInfoResponse);
+
   // Synchronous document conversion - mirrors POST /v1/convert/source
   rpc ConvertSource(ConvertSourceRequest) returns (ConvertSourceResponse);
 
@@ -85,6 +89,24 @@ message HealthRequest {}
 message HealthResponse {
   optional string status = 1;
   optional string version = 2; // converter version, e.g. "1.12.0"
+}
+
+// --- Service info ---
+
+// Frontend advertisement. Same shape in every ai-pipestream grpc service:
+// the demo shell reads it to build its tab bar.
+message UiInfo {
+  string title = 1;        // tab title, e.g. "EPUB"
+  string path = 2;         // shell mount path, e.g. "/ui/epub"
+  string description = 3;  // one line, used as the tab tooltip
+}
+
+message GetServiceInfoRequest {}
+
+message GetServiceInfoResponse {
+  string name = 1;     // repo name, e.g. "gRParse"
+  string version = 2;  // build version
+  UiInfo ui = 3;
 }
 
 // --- Convert ---

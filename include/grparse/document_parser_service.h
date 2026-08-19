@@ -77,6 +77,9 @@ class DocumentParserService final : public ai::pipestream::parse::v1::ParseServi
   grpc::Status Health(grpc::ServerContext* context,
                       const ai::pipestream::parse::v1::HealthRequest* request,
                       ai::pipestream::parse::v1::HealthResponse* response) override;
+  grpc::Status GetServiceInfo(grpc::ServerContext* context,
+                              const ai::pipestream::parse::v1::GetServiceInfoRequest* request,
+                              ai::pipestream::parse::v1::GetServiceInfoResponse* response) override;
 
  private:
   PageScheduler& scheduler_;

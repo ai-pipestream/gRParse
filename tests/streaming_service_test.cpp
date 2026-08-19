@@ -694,6 +694,21 @@ void verify_stream_resolves_recognition_options() {
   server->Wait();
 }
 
+void verify_get_service_info(TestServer* server) {
+  auto client = server->unary_stub();
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  pipestream::parse::v1::GetServiceInfoResponse response;
+  const grpc::Status status =
+      client->GetServiceInfo(&context, pipestream::parse::v1::GetServiceInfoRequest{}, &response);
+  require(status.ok(), "GetServiceInfo failed: " + status.error_message());
+  require(response.name() == "gRParse" && !response.version().empty(),
+          "GetServiceInfo name/version");
+  require(response.ui().title() == "gRParse" && response.ui().path() == "/ui/grparse" &&
+              !response.ui().description().empty(),
+          "GetServiceInfo ui advertisement");
+}
+
 }  // namespace
 
 int main() {
@@ -709,6 +724,7 @@ int main() {
     verify_unary_digital_path_bypasses_ocr();
     verify_wide_page_window_streams_completely();
     verify_deadline_cancels_scheduler_work();
+    verify_get_service_info(&server);
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
     std::cerr << "streaming-service-test: " << error.what() << '\n';

@@ -584,6 +584,18 @@ grpc::Status DocumentParserService::Health(grpc::ServerContext*, const pipestrea
   return grpc::Status::OK;
 }
 
+grpc::Status DocumentParserService::GetServiceInfo(grpc::ServerContext*,
+                                                   const pipestream::parse::v1::GetServiceInfoRequest*,
+                                                   pipestream::parse::v1::GetServiceInfoResponse* response) {
+  response->set_name("gRParse");
+  response->set_version("grparse-0.1.0-cuda");
+  auto* ui = response->mutable_ui();
+  ui->set_title("gRParse");
+  ui->set_path("/ui/grparse");
+  ui->set_description("Diskless PDF/image to page-streamed protobuf with OCR and layout");
+  return grpc::Status::OK;
+}
+
 namespace {
 
 constexpr size_t kMaximumDocumentBytes = 500U * 1024U * 1024U;
