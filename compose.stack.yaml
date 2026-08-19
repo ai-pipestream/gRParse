@@ -1,0 +1,153 @@
+# Full demo stack on one compose network: the gRParse parser, the lol-html
+# and libreoffice collectors, their web UIs, and the demo shell that ties
+# them together. The calamine server and viewer ride along under the
+# `calamine` profile, decoupled from the shell by default.
+#
+#   docker compose -f compose.stack.yaml up --build
+#   docker compose -f compose.stack.yaml --profile calamine up --build
+#
+# Unlike compose.yaml nothing here touches the host: services reach each
+# other by compose service name, and only the shell publishes a port
+# (http://localhost:8080). The project name differs from compose.yaml's, so
+# both files can be up at once without colliding.
+#
+# Every build carries a pipestreamai/<service> image tag so pushing the whole
+# stack later is just `docker compose -f compose.stack.yaml push`.
+name: parse-stack
+
+services:
+  grparse:
+    image: pipestreamai/grparse:latest
+    build: .
+    expose:
+      - "50051"
+      - "9464"   # Prometheus /metrics
+    volumes:
+      - ./models:/models:ro
+    environment:
+      CUDA_CACHE_DISABLE: "1"
+      GRPARSE_METRICS_PORT: "9464"
+      GRPARSE_PAGE_IMAGES: "on"   # page previews for the demo's box overlay
+      # Collectors by service name on this network; the shell gives them tabs.
+      GRPARSE_LOL_HTML_TARGET: "lol-html:50057"
+      GRPARSE_LIBREOFFICE_TARGET: "libreoffice:50053"
+    gpus: all
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  lol-html:
+    image: pipestreamai/grpc-lol-html:latest
+    build: ../grpc-lol-html
+    expose:
+      - "50057"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  libreoffice:
+    image: pipestreamai/grpc-libreoffice:latest
+    build: ../grpc-libreoffice
+    expose:
+      - "50053"
+    # The server insists on a tmpfs at /tmp (uploads stay in RAM) and refuses
+    # to boot without one; see grpc-libreoffice/Dockerfile.
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  calamine:
+    profiles: ["calamine"]
+    image: pipestreamai/grpc-calamine:latest
+    build: ../grpc-calamine
+    expose:
+      - "50062"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  lol-html-ui:
+    image: pipestreamai/grpc-lol-html-ui:latest
+    build:
+      context: ../grpc-lol-html
+      dockerfile: demos/node-client/Dockerfile
+    environment:
+      LOL_HTML_ADDR: "lol-html:50057"
+      UI_BASE: "/ui/lol-html"
+    expose:
+      - "8080"
+    depends_on:
+      - lol-html
+
+  libreoffice-ui:
+    image: pipestreamai/grpc-libreoffice-ui:latest
+    build:
+      context: ../grpc-libreoffice
+      dockerfile: frontend/Dockerfile
+    environment:
+      GRLIBRE_ADDR: "libreoffice:50053"
+      UI_BASE: "/ui/libreoffice"
+    expose:
+      - "8080"
+    depends_on:
+      - libreoffice
+
+  calamine-ui:
+    profiles: ["calamine"]
+    image: pipestreamai/grpc-calamine-ui:latest
+    build:
+      context: ../grpc-calamine
+      dockerfile: demos/node-client/Dockerfile
+    environment:
+      CALAMINE_ADDR: "calamine:50062"
+      UI_BASE: "/ui/calamine"
+    expose:
+      - "8080"
+    depends_on:
+      - calamine
+
+  # Demo shell: the gRParse parse UI plus one tab per DEMO_UIS entry, each
+  # reverse-proxied to that service's own frontend. See
+  # examples/web-demo/README.md. Calamine is deliberately not in DEMO_UIS;
+  # adding its tab is one entry away
+  # (`,calamine=calamine:50062@calamine-ui:8080`, profile `calamine`).
+  shell:
+    image: pipestreamai/grparse-demo-shell:latest
+    build:
+      context: .
+      dockerfile: examples/web-demo/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      GRPARSE_TARGET: "grparse:50051"
+      DEMO_UIS: "lol-html=lol-html:50057@lol-html-ui:8080,libreoffice=libreoffice:50053@libreoffice-ui:8080"
+    # The shell reads each service's info RPC through its proto contract; in
+    # this image the sibling checkouts do not exist, so bind-mount their
+    # proto dirs at the layout the resolver probes ("/<repo>/proto/...").
+    volumes:
+      - ../grpc-lol-html/proto:/grpc-lol-html/proto:ro
+      - ../grpc-libreoffice/proto:/grpc-libreoffice/proto:ro
+      - ../grpc-calamine/proto:/grpc-calamine/proto:ro
+    depends_on:
+      - grparse
+      - lol-html-ui
+      - libreoffice-ui
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m   # the bridge stages the contract protos here at boot
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
