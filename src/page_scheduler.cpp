@@ -511,6 +511,12 @@ class PageScheduler::Impl final {
         continue;
       }
       const OcrTuning::Mode mode = page->request->tuning.mode;
+      // The pdf inspector's page set, when the document was routed by
+      // classification: in kSelective mode it replaces the embedded-layer
+      // coverage heuristic with the inspector's answer.
+      const std::unordered_set<int>& ocr_pages = page->request->tuning.ocr_pages;
+      const bool inspector_routed =
+          mode == OcrTuning::Mode::kSelective && !ocr_pages.empty();
       try {
         std::optional<OcrPage> digital;
         // Forced recognition never reads the embedded layer: dropping the
@@ -526,7 +532,12 @@ class PageScheduler::Impl final {
           // layout and page previews both need pixels; either keeps the page
           // on the raster path.  kOff settles for the embedded layer whether
           // or not it is complete; kSelective settles only on full coverage.
-          const bool embedded_settles = mode == OcrTuning::Mode::kOff || digital->skip_ocr;
+          // An inspector-routed document settles every page the inspector
+          // did not name, whatever the coverage heuristic would have said.
+          const bool embedded_settles =
+              inspector_routed
+                  ? ocr_pages.count(page->page_number) == 0
+                  : mode == OcrTuning::Mode::kOff || digital->skip_ocr;
           if (embedded_settles && region_detector_ == nullptr &&
               !options_.capture_page_images) {
             enqueue_assembly(page, std::make_shared<const OcrPage>(std::move(*digital)));
@@ -534,9 +545,16 @@ class PageScheduler::Impl final {
             continue;
           }
         }
+        // Inspector-routed pages recognize exactly the named set; a page the
+        // inspector called text-bearing but Poppler reads as layerless still
+        // recognizes, because an empty page is a worse answer than the two
+        // extractors disagreeing.  Otherwise the mode decides as always.
         const bool run_ocr =
-            mode == OcrTuning::Mode::kForce ||
-            (mode == OcrTuning::Mode::kSelective && !(digital.has_value() && digital->skip_ocr));
+            inspector_routed
+                ? ocr_pages.count(page->page_number) != 0 || !digital.has_value()
+                : mode == OcrTuning::Mode::kForce ||
+                      (mode == OcrTuning::Mode::kSelective &&
+                       !(digital.has_value() && digital->skip_ocr));
 
         cv::Mat image;
         {

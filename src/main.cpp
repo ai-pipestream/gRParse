@@ -480,6 +480,7 @@ int main() {
     targets.markup = collector_env("GRPARSE_MARKUP_TARGET");
     targets.lol_html = collector_env("GRPARSE_LOL_HTML_TARGET");
     targets.fastwarc = collector_env("GRPARSE_FASTWARC_TARGET");
+    targets.pdf = collector_env("GRPARSE_PDF_TARGET");
     // The hybrid leg: office documents' page renders run through the same
     // layout/classifier/barcode engines the CV path uses, sharing its pools.
     grparse::OfficeCvEnrichment office_cv;
@@ -507,6 +508,7 @@ int main() {
     report_collector("markup", targets.markup);
     report_collector("lol-html", targets.lol_html);
     report_collector("fastwarc", targets.fastwarc);
+    report_collector("pdf", targets.pdf);
     if (!targets.libreoffice.empty()) {
       std::cout << "gRParse office CV enrichment: "
                 << (layout != nullptr ? "enabled (layout"

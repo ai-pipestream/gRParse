@@ -3,6 +3,7 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <iostream>
+#include <map>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -949,6 +950,123 @@ void verify_force_ocr_replaces_the_embedded_layer() {
           "forced recognition must not read the embedded layer");
 }
 
+// A three-page source whose embedded layers are all weak (skip_ocr false),
+// so the unrouted kSelective heuristic would recognize every page; page 3
+// has no embedded layer at all.
+class WeakDigitalSource final : public grparse::PageSource {
+ public:
+  int page_count() const override { return 3; }
+
+  std::optional<grparse::OcrPage> extract_digital_page(int page_number) const override {
+    if (page_number == 3) return std::nullopt;
+    grparse::OcrPage page{100, 100,
+                          {{"digital-" + std::to_string(page_number),
+                            {{0, 50}, {40, 50}, {40, 58}, {0, 58}}, std::nullopt,
+                            grparse::TextOrigin::kDigitalPdf}}};
+    page.source = grparse::OcrPage::Source::kDigitalPdf;
+    page.skip_ocr = false;  // weak coverage: unrouted selective OCRs it
+    return page;
+  }
+
+  cv::Mat render_page(int page_number) const override {
+    return cv::Mat(1, 1, CV_8UC1, cv::Scalar(page_number)).clone();
+  }
+};
+
+// The pdf inspector's page set replaces the embedded-layer heuristic in
+// kSelective mode: exactly the named pages recognize, every other page
+// trusts its embedded layer even when that layer is weak, and a page the
+// inspector cleared but Poppler reads as layerless still recognizes (an
+// empty page is a worse answer than the two extractors disagreeing).
+void verify_inspector_page_set_restricts_ocr() {
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 3, 2, 3, 1, 1, 1},
+      [](std::shared_ptr<const std::string>, bool, double) {
+        return std::make_shared<WeakDigitalSource>();
+      });
+  grparse::PageScheduler::OcrTuning tuning;
+  tuning.ocr_pages.insert(2);  // the inspector's 1-indexed answer, verbatim
+  Result result;
+  std::mutex pages_mutex;
+  std::map<int, std::shared_ptr<const grparse::OcrPage>> delivered;
+  auto callbacks = callbacks_for(&result);
+  callbacks.on_page = [&result, &pages_mutex, &delivered](
+                          int page_number, std::shared_ptr<const grparse::OcrPage> page) {
+    {
+      std::lock_guard<std::mutex> lock(pages_mutex);
+      delivered.emplace(page_number, std::move(page));
+    }
+    std::lock_guard<std::mutex> lock(result.mutex);
+    result.completed_pages.push_back(page_number);
+    return grparse::PageScheduler::DeliveryResult::kAcceptedAndRelease;
+  };
+  scheduler.submit(std::make_shared<const std::string>("memory"), true, tuning,
+                   std::move(callbacks));
+  wait_until_finished(&result);
+
+  require(!result.failure, "inspector-routed document failed");
+  require(recognizer.calls.load() == 2,
+          "only the named page and the genuinely layerless page recognize");
+  {
+    std::lock_guard<std::mutex> lock(pages_mutex);
+    require(delivered.size() == 3, "every page still delivers");
+    require(delivered.at(1)->lines.size() == 1 &&
+                delivered.at(1)->lines[0].text == "digital-1" &&
+                delivered.at(1)->source == grparse::OcrPage::Source::kDigitalPdf,
+            "page 1 settles on its weak embedded layer without OCR");
+    require(delivered.at(2)->source == grparse::OcrPage::Source::kMerged &&
+                delivered.at(2)->lines.size() == 2,
+            "page 2 merges its embedded layer with the recognized text");
+    require(delivered.at(3)->source == grparse::OcrPage::Source::kOcr,
+            "page 3 has no embedded layer, so recognition settles it alone");
+  }
+  const auto metrics = scheduler.metrics();
+  require(metrics.pages_recognized == 2 && metrics.pages_rendered == 2,
+          "only the recognized pages rasterize");
+  require(metrics.pages_read_digitally == 2,
+          "the embedded layers are still read for every page that has one");
+}
+
+// kForce and kOff are explicit caller overrides: they outrank the
+// classification, so the page set is ignored in both.
+void verify_recognition_modes_outrank_the_page_set() {
+  {
+    FakeRecognizer recognizer;
+    grparse::PageScheduler scheduler(
+        recognizer, {2, 2, 2, 2, 1, 1, 1},
+        [](std::shared_ptr<const std::string>, bool, double) {
+          return std::make_shared<RenderableDigitalSource>();
+        });
+    grparse::PageScheduler::OcrTuning tuning;
+    tuning.mode = grparse::PageScheduler::OcrTuning::Mode::kForce;
+    tuning.ocr_pages.insert(1);
+    Result result;
+    scheduler.submit(std::make_shared<const std::string>("memory"), true, tuning,
+                     callbacks_for(&result));
+    wait_until_finished(&result);
+    require(!result.failure, "forced document with a page set failed");
+    require(recognizer.calls.load() == 2, "kForce recognizes every page, page set or not");
+  }
+  {
+    FakeRecognizer recognizer;
+    grparse::PageScheduler scheduler(
+        recognizer, {2, 2, 2, 2, 1, 1, 1},
+        [](std::shared_ptr<const std::string>, bool, double) {
+          return std::make_shared<RenderableDigitalSource>();
+        });
+    grparse::PageScheduler::OcrTuning tuning;
+    tuning.mode = grparse::PageScheduler::OcrTuning::Mode::kOff;
+    tuning.ocr_pages.insert(1);
+    Result result;
+    scheduler.submit(std::make_shared<const std::string>("memory"), true, tuning,
+                     callbacks_for(&result));
+    wait_until_finished(&result);
+    require(!result.failure, "recognition-off document with a page set failed");
+    require(recognizer.calls.load() == 0, "kOff recognizes nothing, page set or not");
+  }
+}
+
 // The per-document render DPI reaches the source factory: unset resolves to
 // the scheduler default, a tuned value passes through untouched.
 void verify_render_dpi_reaches_source_factory() {
@@ -992,6 +1110,8 @@ int main() {
     verify_barcode_decode_triggers_on_class();
     verify_barcode_gate_and_forced_mode();
     verify_partial_digital_merges_with_ocr();
+    verify_inspector_page_set_restricts_ocr();
+    verify_recognition_modes_outrank_the_page_set();
     verify_ocr_off_reads_only_the_embedded_layer();
     verify_ocr_off_still_runs_layout();
     verify_force_ocr_replaces_the_embedded_layer();

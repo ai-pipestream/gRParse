@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <grpcpp/grpcpp.h>
 
@@ -74,5 +75,51 @@ CollectorOutcome collect_lol_html_document(const std::shared_ptr<grpc::Channel>&
 // success, not a failure.
 CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>& channel,
                                            const std::string& bytes);
+
+// grpc-pdf-inspector's classification of one document, mapped off the wire
+// enum so the routing decision stays proto-free and unit-testable.
+// kUnknown also covers "the stream carried no info event at all".
+enum class PdfClass { kUnknown, kTextBased, kScanned, kImageBased, kMixed };
+
+struct PdfClassification {
+  PdfClass pdf_class = PdfClass::kUnknown;
+  // 1-indexed pages the inspector reported as needing OCR — the same
+  // indexing the wire and the page scheduler both use, so the numbers pass
+  // straight through.
+  std::vector<int> pages_needing_ocr;
+};
+
+// The routing answer for one classified PDF. The fast path takes the
+// collector's own Document as the parse result and skips the in-process CV
+// pipeline entirely; otherwise the CV path runs with recognition restricted
+// to ocr_pages. An empty ocr_pages means the classification carried no
+// usable hint (or none was seen), and the CV path's own embedded-layer
+// heuristic decides, exactly as it does without the collector.
+struct PdfRouteDecision {
+  bool fast_path = false;
+  std::vector<int> ocr_pages;
+};
+
+PdfRouteDecision route_pdf_by_classification(const PdfClassification& classification);
+
+// The pdf client's full return: the collector outcome (its Document, which
+// the server folds whenever emit_document is set) plus the classification
+// the stream opened with.
+struct PdfParseResult {
+  CollectorOutcome outcome;
+  PdfClassification classification;
+};
+
+// grpc-pdf-inspector, dialed for routing: FULL mode with emit_document, so
+// a text-based document's own Document is the fast-path result while every
+// classification reports its OCR page set in the info event.
+PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
+                           const std::string& bytes);
+
+// The plain collector leg for a selection the pdf collector shares with
+// other collectors: the collector's Document is the contribution, whatever
+// the classification was.
+CollectorOutcome collect_pdf_document(const std::shared_ptr<grpc::Channel>& channel,
+                                      const std::string& bytes);
 
 }  // namespace grparse

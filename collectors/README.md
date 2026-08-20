@@ -14,6 +14,7 @@ re-copy the file and rebuild.
 | `markup.proto`, `markup_service.proto` | grpc-markup `proto/ai/pipestream/markup/v1/` |
 | `lolhtml_types.proto`, `lolhtml_service.proto` | grpc-lol-html `proto/lolhtml/v1/` (`types.proto` is renamed here to stay unambiguous; it stages back to `lolhtml/v1/types.proto`) |
 | `warc.proto`, `warc_service.proto` | chatnoir-resiliparse fastwarc-grpc `proto/fastwarc/v1/` (stages back to `fastwarc/v1/`) |
+| `pdf_types.proto`, `pdf_service.proto` | grpc-pdf-inspector `proto/ai/pipestream/pdf/v1/` (`types.proto` is renamed here to stay unambiguous; it stages back to `ai/pipestream/pdf/v1/types.proto`) |
 
 Every one of these except the lol-html and fastwarc pairs imports
 `ai/pipestream/document/v1/document.proto`, which

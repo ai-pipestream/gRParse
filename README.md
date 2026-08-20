@@ -213,6 +213,7 @@ environment variable and left unconfigured otherwise:
 | `COLLECTOR_MARKUP` | `GRPARSE_MARKUP_TARGET` | text markup: `.md`, `.html`/`.htm`/`.xhtml`, `.adoc`, `.tex`, `.vtt`, `.boxnote`, and `.json` (Docling JSON re-ingest); the dial carries a format hint from the filename, and the collector sniffs when none resolves |
 | `COLLECTOR_LOL_HTML` | `GRPARSE_LOL_HTML_TARGET` | never routed; explicit selection with `ConvertDocumentOptions.lol_html_options_json` (the protobuf JSON of `lolhtml.v1.ExtractOptions`) only. Targeted CSS-selector extraction from HTML, not whole-document conversion: matches fold into a group per rule. HTML with no selection routes to `COLLECTOR_MARKUP` |
 | `COLLECTOR_FASTWARC` | `GRPARSE_FASTWARC_TARGET` | `.warc`, `.warc.gz`, `.warc.zst`, `.warc.lz4`, `application/warc`. WARC archive parsing via fastwarc-grpc: records fold client-side into a group per record (metadata plus the payload when it reads as text, capped at 64 KiB); recoverable record errors become warnings and a framing error keeps the records already parsed |
+| `COLLECTOR_PDF` | `GRPARSE_PDF_TARGET` | PDF, when configured (the CV path stays the default otherwise). The routing oracle for PDF: its classification decides the parse, see below |
 
 A request selects collectors explicitly (`ConvertDocumentOptions.collectors`,
 or `DocumentChunk.collectors` on the streaming RPC); an empty selection
@@ -240,6 +241,25 @@ coordinate space — so a chart or QR code inside a DOCX is spotted and
 decoded even though the office core cannot see it. The enrichment follows
 the same knobs as the CV path: it needs the layout model, and barcode
 decoding honors `GRPARSE_BARCODES`.
+
+The pdf collector is a routing oracle rather than another source of pages.
+When `GRPARSE_PDF_TARGET` is configured, a PDF that no request explicitly
+routes becomes the inspector's call: gRParse streams the bytes to
+grpc-pdf-inspector and reads the classification that opens its stream. A
+text-based document takes the fast path — the collector's own folded
+`Document` is the parse result and the in-process CV/ONNX pipeline is
+skipped entirely. A scanned, image-based, or mixed document falls through
+to the CV pipeline with recognition restricted to the inspector's
+`pages_needing_ocr` (1-indexed, the same numbering the page scheduler
+uses, so the set passes through verbatim): exactly those pages hit the OCR
+engines, and every other page trusts its embedded text layer instead of
+the per-page coverage heuristic deciding. Explicit `do_ocr`/`force_ocr`
+request options still outrank the classification. If the inspector is
+unreachable or errors, the parse degrades to the unrouted CV path with the
+failure noted, never to a failed parse; unconfigured, nothing changes at
+all. When a request names `COLLECTOR_PDF` alongside other collectors, the
+routing step does not apply and the inspector is a plain Document-emitting
+leg like the rest.
 
 Every collector's output is an `ai.pipestream.document.v1.Document` whose items carry a
 `CollectorSource` tag, and the coordinator merges them additively: item

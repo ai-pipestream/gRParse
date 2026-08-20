@@ -30,6 +30,7 @@ struct CollectorTargets {
   std::string markup;
   std::string lol_html;
   std::string fastwarc;
+  std::string pdf;
 };
 
 // Shared handle to the out-of-process collectors the coordinator can fan

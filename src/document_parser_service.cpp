@@ -104,6 +104,7 @@ const char* collector_name(pipestream::parse::v1::Collector collector) {
     case pipestream::parse::v1::COLLECTOR_MARKUP: return "markup";
     case pipestream::parse::v1::COLLECTOR_LOL_HTML: return "lol-html";
     case pipestream::parse::v1::COLLECTOR_FASTWARC: return "fastwarc";
+    case pipestream::parse::v1::COLLECTOR_PDF: return "pdf";
     default: return "unspecified";
   }
 }
@@ -119,6 +120,7 @@ const char* collector_target_env(pipestream::parse::v1::Collector collector) {
     case pipestream::parse::v1::COLLECTOR_MARKUP: return "GRPARSE_MARKUP_TARGET";
     case pipestream::parse::v1::COLLECTOR_LOL_HTML: return "GRPARSE_LOL_HTML_TARGET";
     case pipestream::parse::v1::COLLECTOR_FASTWARC: return "GRPARSE_FASTWARC_TARGET";
+    case pipestream::parse::v1::COLLECTOR_PDF: return "GRPARSE_PDF_TARGET";
     default: return "";
   }
 }
@@ -126,6 +128,16 @@ const char* collector_target_env(pipestream::parse::v1::Collector collector) {
 // True for every collector run_remote_collector can dial.
 bool remote_collector(pipestream::parse::v1::Collector id) {
   return *collector_target_env(id) != '\0';
+}
+
+const char* pdf_class_name(PdfClass pdf_class) {
+  switch (pdf_class) {
+    case PdfClass::kTextBased: return "text-based";
+    case PdfClass::kScanned: return "scanned";
+    case PdfClass::kImageBased: return "image-based";
+    case PdfClass::kMixed: return "mixed";
+    default: return "unknown";
+  }
 }
 
 // Dials one Document-emitting remote collector and returns its outcome.
@@ -181,6 +193,11 @@ CollectorOutcome run_remote_collector(
                                        lol_html_options_json, bytes);
     case pipestream::parse::v1::COLLECTOR_FASTWARC:
       return collect_fastwarc_document(endpoints->channel(id), bytes);
+    case pipestream::parse::v1::COLLECTOR_PDF:
+      // The plain leg, reached when the pdf collector shares a selection
+      // with other collectors: its Document is the contribution. The
+      // classification-driven routing lives with the plan, not here.
+      return collect_pdf_document(endpoints->channel(id), bytes);
     default:
       // Unreachable: the remote_collector guard admits only the ids the
       // switch handles.
@@ -346,6 +363,7 @@ const std::string& CollectorEndpoints::target(
     case pipestream::parse::v1::COLLECTOR_MARKUP: return targets_.markup;
     case pipestream::parse::v1::COLLECTOR_LOL_HTML: return targets_.lol_html;
     case pipestream::parse::v1::COLLECTOR_FASTWARC: return targets_.fastwarc;
+    case pipestream::parse::v1::COLLECTOR_PDF: return targets_.pdf;
     default: return kNone;
   }
 }
@@ -401,12 +419,14 @@ grpc::Status DocumentParserService::ConvertSource(
 
     // The in-process CV collector: the page scheduler's layout, OCR, and
     // model pipeline over rendered pages, assembled into a document
-    // fragment. Never throws; failures become the outcome.
+    // fragment. Never throws; failures become the outcome. The tuning rides
+    // as a parameter because the pdf routing leg re-enters this path with
+    // the inspector's OCR page set applied.
     const auto& request_options = request->request().options();
     const PageScheduler::OcrTuning tuning = ocr_tuning(
         request_options.has_do_ocr(), request_options.do_ocr(), request_options.force_ocr(),
         request_options.has_render_scale(), request_options.render_scale());
-    auto run_cv = [&]() -> CollectorOutcome {
+    auto run_cv = [&](const PageScheduler::OcrTuning& cv_tuning) -> CollectorOutcome {
       CollectorOutcome outcome;
       try {
         struct UnaryResult {
@@ -419,7 +439,7 @@ grpc::Status DocumentParserService::ConvertSource(
         } state;
 
         const auto ticket = scheduler_.submit(
-            bytes, pdf, tuning,
+            bytes, pdf, cv_tuning,
             PageScheduler::Callbacks{
                 [&state](int total_pages) {
                   std::lock_guard<std::mutex> lock(state.mutex);
@@ -486,14 +506,61 @@ grpc::Status DocumentParserService::ConvertSource(
     const auto lol_html_options_json = std::make_shared<const std::string>(
         request->request().options().lol_html_options_json());
 
+    // The default PDF route becomes the pdf inspector when one is
+    // configured: its classification decides between the collector's own
+    // fast-path Document and a CV run restricted to the pages needing OCR.
+    // Unconfigured, PDF stays on the CV path exactly as before.
+    const auto selected_collectors =
+        requested_collectors(request->request().options().collectors());
+    auto routed = route_collector(requested_name.string(), std::string());
+    if (selected_collectors.empty() && pdf &&
+        routed == pipestream::parse::v1::COLLECTOR_GRPARSE_CV &&
+        endpoints != nullptr && endpoints->has(pipestream::parse::v1::COLLECTOR_PDF)) {
+      routed = pipestream::parse::v1::COLLECTOR_PDF;
+    }
+    const auto plan_ids = resolve_collectors(selected_collectors, routed);
+    // Classification routing applies when the pdf collector is the whole
+    // plan — by the swap above or by explicit sole selection. Shared with
+    // other collectors it is a plain Document-emitting leg.
+    const bool pdf_routing =
+        pdf && plan_ids.size() == 1 && plan_ids[0] == pipestream::parse::v1::COLLECTOR_PDF &&
+        endpoints != nullptr && endpoints->has(pipestream::parse::v1::COLLECTOR_PDF);
+
     std::vector<PlannedCollector> plan;
-    for (const auto id : resolve_collectors(
-             requested_collectors(request->request().options().collectors()),
-             route_collector(requested_name.string(), std::string()))) {
+    for (const auto id : plan_ids) {
       PlannedCollector collector;
       collector.id = id;
       if (id == pipestream::parse::v1::COLLECTOR_GRPARSE_CV) {
-        collector.run = run_cv;
+        collector.run = [run_cv, tuning] { return run_cv(tuning); };
+      } else if (pdf_routing) {
+        collector.run = [run_cv, tuning, endpoints, bytes]() {
+          const PdfParseResult parsed =
+              collect_pdf(endpoints->channel(pipestream::parse::v1::COLLECTOR_PDF), *bytes);
+          const PdfRouteDecision route = route_pdf_by_classification(parsed.classification);
+          if (parsed.outcome.success && route.fast_path) {
+            return parsed.outcome;
+          }
+          CollectorOutcome outcome;
+          if (!parsed.outcome.success) {
+            // Degrade, don't sink: an unreachable inspector leaves the parse
+            // on exactly the path it would have taken without the collector.
+            outcome = run_cv(tuning);
+            outcome.warnings.push_back("pdf collector failed (" + parsed.outcome.error +
+                                       "); fell back to the in-process CV path");
+            return outcome;
+          }
+          PageScheduler::OcrTuning routed_tuning = tuning;
+          routed_tuning.ocr_pages.insert(route.ocr_pages.begin(), route.ocr_pages.end());
+          outcome = run_cv(routed_tuning);
+          outcome.warnings.push_back(
+              "pdf inspector classified the document as " +
+              std::string(pdf_class_name(parsed.classification.pdf_class)) +
+              (route.ocr_pages.empty()
+                   ? "; the CV path's own per-page heuristic decided recognition"
+                   : "; recognition restricted to the " +
+                         std::to_string(route.ocr_pages.size()) + " page(s) needing OCR"));
+          return outcome;
+        };
       } else {
         collector.run = [id, endpoints, bytes, requested_name, ebcdic_layout_json,
                          lol_html_options_json]() {
@@ -769,6 +836,7 @@ class DocumentStreamReactor final
     std::shared_ptr<const std::string> bytes;
     bool pdf = false;
     bool want_cv = false;
+    bool pdf_routing = false;
     PageScheduler::OcrTuning tuning;
     std::vector<pipestream::parse::v1::Collector> remotes;
     {
@@ -792,9 +860,20 @@ class DocumentStreamReactor final
       // collector selection or the document's format, unwired collectors
       // fail immediately, and each wired collector is one pending part of
       // the stream. The parse degrades collector by collector instead of
-      // failing while any part succeeds.
-      const auto plan = resolve_collectors(
-          requested_collectors_, route_collector(filename_.string(), content_type_));
+      // failing while any part succeeds. The default PDF route becomes the
+      // pdf inspector when one is configured, exactly like the unary path.
+      auto routed = route_collector(filename_.string(), content_type_);
+      if (requested_collectors_.empty() && pdf &&
+          routed == pipestream::parse::v1::COLLECTOR_GRPARSE_CV && endpoints_ != nullptr &&
+          endpoints_->has(pipestream::parse::v1::COLLECTOR_PDF)) {
+        routed = pipestream::parse::v1::COLLECTOR_PDF;
+      }
+      const auto plan = resolve_collectors(requested_collectors_, routed);
+      // The routing leg applies when the pdf collector is the whole plan;
+      // shared with other collectors it runs as a plain Document leg.
+      pdf_routing = pdf && plan.size() == 1 &&
+                    plan[0] == pipestream::parse::v1::COLLECTOR_PDF && endpoints_ != nullptr &&
+                    endpoints_->has(pipestream::parse::v1::COLLECTOR_PDF);
       for (const auto id : plan) {
         if (id == pipestream::parse::v1::COLLECTOR_GRPARSE_CV) {
           want_cv = true;
@@ -822,13 +901,27 @@ class DocumentStreamReactor final
       document_bytes_hash_ = hash;
     }
 
-    for (const auto id : remotes) spawn_remote_collector(id, bytes);
+    for (const auto id : remotes) {
+      if (id == pipestream::parse::v1::COLLECTOR_PDF && pdf_routing) {
+        spawn_pdf_router(bytes, pdf, tuning);
+      } else {
+        spawn_remote_collector(id, bytes);
+      }
+    }
     if (!want_cv) return;
+    submit_cv(bytes, pdf, tuning);
+  }
 
+  // Submits the document to the in-process CV pipeline and wires its
+  // callbacks through the gate. Shared by the plain CV plan leg and by the
+  // pdf routing leg once the inspector's classification has named the pages
+  // needing OCR; a submission failure degrades like any CV failure.
+  void submit_cv(std::shared_ptr<const std::string> bytes, bool pdf,
+                 PageScheduler::OcrTuning tuning) {
     try {
       const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
       auto ticket = scheduler_.submit(
-          bytes, pdf, tuning,
+          std::move(bytes), pdf, tuning,
           PageScheduler::Callbacks{
               [weak_gate](int total_pages) {
                 if (const auto gate = weak_gate.lock()) {
@@ -861,6 +954,60 @@ class DocumentStreamReactor final
       part_done_locked();
       pump_locked();
     }
+  }
+
+  // The pdf routing leg: the inspector's classification decides whether the
+  // parse is the collector's own fast-path Document (text-based) or the
+  // in-process CV pipeline restricted to the pages the inspector named as
+  // needing OCR. A failed classification degrades to the unrouted CV path,
+  // never to a failed parse. Runs on its own thread for the same reason
+  // spawn_remote_collector does: the collector call is a blocking client.
+  void spawn_pdf_router(std::shared_ptr<const std::string> bytes, bool pdf,
+                        PageScheduler::OcrTuning tuning) {
+    const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
+    auto endpoints = endpoints_;
+    std::thread([weak_gate, endpoints, bytes = std::move(bytes), pdf,
+                 tuning = std::move(tuning)]() mutable {
+      const PdfParseResult parsed = collect_pdf(
+          endpoints == nullptr
+              ? nullptr
+              : endpoints->channel(pipestream::parse::v1::COLLECTOR_PDF),
+          *bytes);
+      const PdfRouteDecision route = route_pdf_by_classification(parsed.classification);
+      if (parsed.outcome.success && route.fast_path) {
+        if (const auto gate = weak_gate.lock()) {
+          std::lock_guard<std::mutex> lock(gate->mutex);
+          if (gate->reactor != nullptr) {
+            gate->reactor->on_collector_done(pipestream::parse::v1::COLLECTOR_PDF,
+                                             std::move(parsed.outcome));
+          }
+        }
+        return;
+      }
+      if (parsed.outcome.success) {
+        tuning.ocr_pages.insert(route.ocr_pages.begin(), route.ocr_pages.end());
+      } else if (const auto gate = weak_gate.lock()) {
+        // The degradation stays visible: the pdf collector's failure rides
+        // the complete event as a failure entry while the in-process CV path
+        // parses the document, same as any collector failing beside a
+        // surviving one. The pending part itself is settled by the CV run.
+        std::lock_guard<std::mutex> lock(gate->mutex);
+        if (gate->reactor != nullptr) gate->reactor->note_pdf_fallback(parsed.outcome);
+      }
+      if (const auto gate = weak_gate.lock()) {
+        std::lock_guard<std::mutex> lock(gate->mutex);
+        if (gate->reactor != nullptr) {
+          gate->reactor->submit_cv(std::move(bytes), pdf, std::move(tuning));
+        }
+      }
+    }).detach();
+  }
+
+  void note_pdf_fallback(const CollectorOutcome& outcome) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    record_part_failure_locked(
+        pipestream::parse::v1::COLLECTOR_PDF,
+        grpc::Status(outcome.code, outcome.error + "; fell back to the in-process CV path"));
   }
 
   // A remote collector runs on its own thread: it is a blocking client

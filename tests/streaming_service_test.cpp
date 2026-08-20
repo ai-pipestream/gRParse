@@ -11,6 +11,8 @@
 #include <grpcpp/grpcpp.h>
 
 #include "ai/pipestream/parse/v1/parse_stream.grpc.pb.h"
+#include "ai/pipestream/pdf/v1/pdf_service.grpc.pb.h"
+#include "grparse/base64.h"
 #include "grparse/document_assembly.h"
 #include "grparse/document_parser_service.h"
 #include "grparse/page_scheduler.h"
@@ -18,6 +20,8 @@
 namespace {
 
 using namespace std::chrono_literals;
+namespace docv1 = ai::pipestream::document::v1;
+namespace pdfv1 = ai::pipestream::pdf::v1;
 namespace pipestream = ai::pipestream;
 
 void require(bool condition, const std::string& message) {
@@ -711,6 +715,279 @@ void verify_get_service_info(TestServer* server) {
 
 }  // namespace
 
+// ---- pdf inspector routing ---------------------------------------------------
+
+namespace {
+
+// A routable PDF source: full-coverage digital layers on every page, but
+// renderable — the inspector's page set can send a page through OCR that
+// the coverage heuristic alone would have settled.
+class RoutableDigitalSource final : public grparse::PageSource {
+ public:
+  int page_count() const override { return 3; }
+  std::optional<grparse::OcrPage> extract_digital_page(int page_number) const override {
+    static const std::vector<std::string> text{"", "native-one", "native-two", "native-three"};
+    grparse::OcrPage page{100, 200,
+                          {{text.at(page_number), {{1, 2}, {20, 2}, {20, 12}, {1, 12}},
+                            std::nullopt, grparse::TextOrigin::kDigitalPdf}}};
+    page.source = grparse::OcrPage::Source::kDigitalPdf;
+    page.skip_ocr = true;
+    return page;
+  }
+  cv::Mat render_page(int page_number) const override {
+    return cv::Mat(1, 1, CV_8UC1, cv::Scalar(page_number)).clone();
+  }
+};
+
+// Serves the inspector's routing contract: the classification first, then
+// one folded document, then the status trailer.
+class FakePdfInspector final : public pdfv1::PdfParseService::Service {
+ public:
+  FakePdfInspector(pdfv1::PdfType type, std::vector<uint32_t> pages_needing_ocr)
+      : type_(type), pages_needing_ocr_(std::move(pages_needing_ocr)) {}
+
+  grpc::Status ParsePdf(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<pdfv1::ParsePdfResponse, pdfv1::ParsePdfRequest>* stream)
+      override {
+    pdfv1::ParsePdfRequest request;
+    bool emit_document = false;
+    std::string bytes;
+    while (stream->Read(&request)) {
+      if (request.has_options()) {
+        emit_document = request.options().emit_document();
+      } else {
+        bytes += request.chunk();
+      }
+    }
+    if (!emit_document || bytes.empty()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          "fake pdf inspector expects emit_document and bytes");
+    }
+    pdfv1::ParsePdfResponse event;
+    auto* info = event.mutable_info();
+    info->set_pdf_type(type_);
+    info->set_page_count(3);
+    for (const uint32_t page : pages_needing_ocr_) info->add_pages_needing_ocr(page);
+    stream->Write(event);
+    event.Clear();
+    docv1::Document document;
+    document.mutable_body()->set_self_ref("#/body");
+    document.mutable_furniture()->set_self_ref("#/furniture");
+    auto* base = document.add_texts()->mutable_text()->mutable_base();
+    base->set_self_ref("#/texts/0");
+    base->mutable_parent()->set_ref("#/body");
+    base->set_label(docv1::DOC_ITEM_LABEL_TEXT);
+    base->set_text("from pdf inspector");
+    base->add_source()->mutable_collector()->set_collector("pdf");
+    document.mutable_body()->add_children()->set_ref("#/texts/0");
+    *event.mutable_document() = std::move(document);
+    stream->Write(event);
+    event.Clear();
+    event.mutable_status()->set_pages_extracted(0);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+
+ private:
+  pdfv1::PdfType type_;
+  std::vector<uint32_t> pages_needing_ocr_;
+};
+
+class FailingPdfInspector final : public pdfv1::PdfParseService::Service {
+ public:
+  grpc::Status ParsePdf(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<pdfv1::ParsePdfResponse, pdfv1::ParsePdfRequest>* stream)
+      override {
+    pdfv1::ParsePdfRequest request;
+    while (stream->Read(&request)) {
+    }
+    return grpc::Status(grpc::StatusCode::INTERNAL, "inspector down");
+  }
+};
+
+class PdfInspectorServer {
+ public:
+  explicit PdfInspectorServer(pdfv1::PdfParseService::Service* service) {
+    grpc::ServerBuilder builder;
+    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port_);
+    builder.RegisterService(service);
+    server_ = builder.BuildAndStart();
+    if (!server_ || port_ == 0) throw std::runtime_error("fake pdf inspector failed to start");
+  }
+  ~PdfInspectorServer() {
+    if (server_) server_->Shutdown();
+  }
+  std::string target() const { return "127.0.0.1:" + std::to_string(port_); }
+
+ private:
+  int port_ = 0;
+  std::unique_ptr<grpc::Server> server_;
+};
+
+struct UnaryPdfRun {
+  grpc::Status status;
+  pipestream::parse::v1::ConvertSourceResponse response;
+  int recognizer_calls = 0;
+};
+
+// One unary ConvertSource for a .pdf against a gRParse whose only
+// configured collector is the given pdf inspector target.
+UnaryPdfRun run_unary_pdf(const std::string& pdf_target) {
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 3, 2, 3, 2, 2, 2},
+      [](std::shared_ptr<const std::string>, bool, double) {
+        return std::make_shared<RoutableDigitalSource>();
+      });
+  grparse::CollectorTargets targets;
+  targets.pdf = pdf_target;
+  grparse::DocumentParserService parser_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(targets));
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&parser_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "pdf routing test server failed to start");
+  auto client = pipestream::parse::v1::ParseService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  pipestream::parse::v1::ConvertSourceRequest request;
+  auto* source = request.mutable_request()->add_sources()->mutable_file();
+  source->set_filename("routing.pdf");
+  const std::string bytes = "%PDF-in-memory";
+  source->set_base64_string(grparse::encode_base64(bytes.data(), bytes.size()));
+  UnaryPdfRun run;
+  run.status = client->ConvertSource(&context, request, &run.response);
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+  run.recognizer_calls = recognizer.calls.load();
+  return run;
+}
+
+struct StreamPdfRun {
+  grpc::Status status;
+  std::vector<pipestream::parse::v1::DocumentStreamEvent> events;
+  int recognizer_calls = 0;
+};
+
+StreamPdfRun run_stream_pdf(const std::string& pdf_target) {
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 3, 2, 3, 2, 2, 2},
+      [](std::shared_ptr<const std::string>, bool, double) {
+        return std::make_shared<RoutableDigitalSource>();
+      });
+  grparse::CollectorTargets targets;
+  targets.pdf = pdf_target;
+  grparse::DocumentStreamingService streaming_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(targets));
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&streaming_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "pdf routing stream server failed to start");
+  auto client = pipestream::parse::v1::ParseStreamingService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  auto stream = client->StreamProcessDocument(&context);
+  pipestream::parse::v1::DocumentChunk chunk;
+  chunk.set_document_id("pdf-routing");
+  chunk.set_filename("routing.pdf");
+  chunk.set_content_type("application/pdf");
+  chunk.set_data("%PDF-in-memory");
+  chunk.set_complete(true);
+  require(stream->Write(chunk), "pdf routing client could not write the source chunk");
+  stream->WritesDone();
+  StreamPdfRun run;
+  pipestream::parse::v1::DocumentStreamEvent event;
+  while (stream->Read(&event)) run.events.push_back(event);
+  run.status = stream->Finish();
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+  run.recognizer_calls = recognizer.calls.load();
+  return run;
+}
+
+void verify_pdf_fast_path_skips_the_cv_pipeline() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {});
+  PdfInspectorServer inspector_server(&inspector);
+  const UnaryPdfRun run = run_unary_pdf(inspector_server.target());
+  require(run.status.ok(), "fast-path parse failed: " + run.status.error_message());
+  require(run.recognizer_calls == 0, "the fast path must not touch the recognizer");
+  const auto& document = run.response.response().document().doc();
+  require(document.texts_size() == 1 &&
+              document.texts(0).text().base().text() == "from pdf inspector",
+          "the collector's folded document is the parse result");
+  require(document.texts(0).text().base().source(0).collector().collector() == "pdf",
+          "the fast-path document keeps the collector's source tag");
+}
+
+void verify_pdf_classification_restricts_recognition() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_MIXED, {2});
+  PdfInspectorServer inspector_server(&inspector);
+  const UnaryPdfRun run = run_unary_pdf(inspector_server.target());
+  require(run.status.ok(), "routed parse failed: " + run.status.error_message());
+  require(run.recognizer_calls == 1,
+          "only the inspector's page hits the recognizer, not the coverage heuristic's set");
+  require(run.response.response().document().exports().text().find("native-one") !=
+              std::string::npos,
+          "the cleared pages settle on their embedded layers");
+}
+
+void verify_pdf_collector_failure_degrades_to_the_cv_path() {
+  FailingPdfInspector inspector;
+  PdfInspectorServer inspector_server(&inspector);
+  const UnaryPdfRun run = run_unary_pdf(inspector_server.target());
+  require(run.status.ok(), "a down inspector must not fail the parse: " +
+                               run.status.error_message());
+  require(run.recognizer_calls == 0,
+          "the fallback CV run parses digitally, exactly as without the collector");
+  const auto& fields = run.response.response().document().doc().body().meta().custom_fields();
+  require(fields.count("collector_warnings:pdf") == 1 &&
+              fields.at("collector_warnings:pdf").list_value().values(0).string_value().find(
+                  "fell back to the in-process CV path") != std::string::npos,
+          "the degradation is recorded as a collector warning");
+}
+
+void verify_streaming_pdf_fast_path_emits_the_collector_document() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {});
+  PdfInspectorServer inspector_server(&inspector);
+  const StreamPdfRun run = run_stream_pdf(inspector_server.target());
+  require(run.status.ok(), "fast-path stream failed: " + run.status.error_message());
+  require(run.recognizer_calls == 0, "the streamed fast path must not touch the recognizer");
+  require(run.events.size() == 2, "one collector document event, then the complete event");
+  require(run.events.at(0).has_collector_document() &&
+              run.events.at(0).collector_document().collector() ==
+                  pipestream::parse::v1::COLLECTOR_PDF &&
+              run.events.at(0).collector_document().document().texts(0).text().base().text() ==
+                  "from pdf inspector",
+          "the collector document event carries the inspector's fold");
+  require(run.events.at(1).has_complete(), "the stream closes with the complete event");
+}
+
+void verify_streaming_pdf_classification_restricts_recognition() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_SCANNED, {1, 2, 3});
+  PdfInspectorServer inspector_server(&inspector);
+  const StreamPdfRun run = run_stream_pdf(inspector_server.target());
+  require(run.status.ok(), "routed stream failed: " + run.status.error_message());
+  require(run.recognizer_calls == 3, "a scanned document recognizes every named page");
+  require(run.events.size() == 4 && run.events.back().has_complete(),
+          "the CV path's page events stream, then the complete event");
+  for (int index = 0; index < 3; ++index) {
+    require(run.events.at(index).has_page() &&
+                run.events.at(index).page().page_number() == index + 1,
+            "routed CV pages stream in document order");
+  }
+}
+
+}  // namespace
+
 int main() {
   try {
     TestServer server;
@@ -725,6 +1002,11 @@ int main() {
     verify_wide_page_window_streams_completely();
     verify_deadline_cancels_scheduler_work();
     verify_get_service_info(&server);
+    verify_pdf_fast_path_skips_the_cv_pipeline();
+    verify_pdf_classification_restricts_recognition();
+    verify_pdf_collector_failure_degrades_to_the_cv_path();
+    verify_streaming_pdf_fast_path_emits_the_collector_document();
+    verify_streaming_pdf_classification_restricts_recognition();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
     std::cerr << "streaming-service-test: " << error.what() << '\n';

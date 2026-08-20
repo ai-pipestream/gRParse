@@ -16,9 +16,11 @@
 #include "ai/pipestream/email/v1/email_service.grpc.pb.h"
 #include "ai/pipestream/epub/v1/epub_service.grpc.pb.h"
 #include "ai/pipestream/markup/v1/markup_service.grpc.pb.h"
+#include "ai/pipestream/pdf/v1/pdf_service.grpc.pb.h"
 #include "ai/pipestream/xml/v1/xml_service.grpc.pb.h"
 #include "fastwarc/v1/warc_service.grpc.pb.h"
 #include "grparse/document_collectors.h"
+#include "grparse/document_parser_service.h"
 #include "lolhtml/v1/lolhtml_service.grpc.pb.h"
 
 namespace asrv1 = ai::pipestream::asr::v1;
@@ -28,6 +30,8 @@ namespace emailv1 = ai::pipestream::email::v1;
 namespace epubv1 = ai::pipestream::epub::v1;
 namespace lolv1 = lolhtml::v1;
 namespace markupv1 = ai::pipestream::markup::v1;
+namespace parsev1 = ai::pipestream::parse::v1;
+namespace pdfv1 = ai::pipestream::pdf::v1;
 namespace warcv1 = fastwarc::v1;
 namespace xmlv1 = ai::pipestream::xml::v1;
 
@@ -819,6 +823,183 @@ void verify_fastwarc_truncates_payload_text() {
 
 }  // namespace
 
+// ---- pdf --------------------------------------------------------------------
+
+namespace {
+
+// Serves the routing contract: an info event with a configurable
+// classification, one page event for text-bearing documents, the folded
+// document (emit_document is asserted on), and the status trailer.
+class FakePdfService final : public pdfv1::PdfParseService::Service {
+ public:
+  FakePdfService(pdfv1::PdfType type, std::vector<uint32_t> pages_needing_ocr)
+      : type_(type), pages_needing_ocr_(std::move(pages_needing_ocr)) {}
+
+  grpc::Status ParsePdf(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<pdfv1::ParsePdfResponse, pdfv1::ParsePdfRequest>* stream)
+      override {
+    pdfv1::ParsePdfRequest request;
+    bool emit_document = false;
+    std::string bytes;
+    while (stream->Read(&request)) {
+      if (request.has_options()) {
+        emit_document = request.options().emit_document();
+      } else {
+        bytes += request.chunk();
+      }
+    }
+    if (!emit_document || bytes.empty()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          "fake pdf expects emit_document and bytes");
+    }
+    pdfv1::ParsePdfResponse event;
+    auto* info = event.mutable_info();
+    info->set_pdf_type(type_);
+    info->set_confidence(0.95F);
+    info->set_page_count(3);
+    for (const uint32_t page : pages_needing_ocr_) info->add_pages_needing_ocr(page);
+    stream->Write(event);
+    event.Clear();
+    if (type_ == pdfv1::PDF_TYPE_TEXT_BASED || type_ == pdfv1::PDF_TYPE_MIXED) {
+      auto* page = event.mutable_page();
+      page->set_page_no(1);
+      page->set_markdown("# page one");
+      stream->Write(event);
+      event.Clear();
+    }
+    *event.mutable_document() = canned_document("pdf");
+    stream->Write(event);
+    event.Clear();
+    auto* status = event.mutable_status();
+    status->set_pages_extracted(1);
+    auto* warning = status->add_warnings();
+    warning->set_code(pdfv1::PARSE_WARNING_CODE_PASSWORD_FALLBACK);
+    warning->set_message("extracted whole-document");
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+
+ private:
+  pdfv1::PdfType type_;
+  std::vector<uint32_t> pages_needing_ocr_;
+};
+
+class FailingPdfService final : public pdfv1::PdfParseService::Service {
+ public:
+  grpc::Status ParsePdf(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<pdfv1::ParsePdfResponse, pdfv1::ParsePdfRequest>* stream)
+      override {
+    pdfv1::ParsePdfRequest request;
+    while (stream->Read(&request)) {
+    }
+    return grpc::Status(grpc::StatusCode::INTERNAL, "lopdf panicked");
+  }
+};
+
+void verify_pdf_collects_document_classification_and_warnings() {
+  FakePdfService service(pdfv1::PDF_TYPE_TEXT_BASED, {});
+  ServerFixture server(&service);
+  const auto result = grparse::collect_pdf(server.channel(), std::string(300U * 1024U, 'p'));
+  require(result.outcome.success, "pdf collection succeeds: " + result.outcome.error);
+  require(result.outcome.document.texts(0).text().base().text() == "from pdf",
+          "the pdf Document arrives unchanged");
+  require(result.classification.pdf_class == grparse::PdfClass::kTextBased,
+          "the info event's classification is captured");
+  require(result.classification.pages_needing_ocr.empty(),
+          "a text-based document names no OCR pages");
+  require(result.outcome.warnings.size() == 1 &&
+              result.outcome.warnings[0] ==
+                  "PARSE_WARNING_CODE_PASSWORD_FALLBACK: extracted whole-document",
+          "trailer warnings flatten with their code");
+  require(grparse::route_pdf_by_classification(result.classification).fast_path,
+          "a fully text-based classification routes to the fast path");
+}
+
+void verify_pdf_scanned_reports_the_ocr_page_set() {
+  FakePdfService service(pdfv1::PDF_TYPE_SCANNED, {1, 2, 3});
+  ServerFixture server(&service);
+  const auto result = grparse::collect_pdf(server.channel(), "%PDF-fake");
+  require(result.outcome.success, "scanned pdf collection succeeds: " + result.outcome.error);
+  require(result.classification.pdf_class == grparse::PdfClass::kScanned,
+          "the scanned classification is captured");
+  require(result.classification.pages_needing_ocr ==
+              std::vector<int>({1, 2, 3}),
+          "the OCR page set passes through 1-indexed, as on the wire");
+  const auto decision = grparse::route_pdf_by_classification(result.classification);
+  require(!decision.fast_path && decision.ocr_pages == std::vector<int>({1, 2, 3}),
+          "a scanned document routes its page set to the CV path");
+}
+
+void verify_pdf_routing_decision_logic() {
+  grparse::PdfClassification unseen;
+  const auto no_answer = grparse::route_pdf_by_classification(unseen);
+  require(!no_answer.fast_path && no_answer.ocr_pages.empty(),
+          "no classification leaves the CV heuristic in charge");
+
+  grparse::PdfClassification text_based;
+  text_based.pdf_class = grparse::PdfClass::kTextBased;
+  require(grparse::route_pdf_by_classification(text_based).fast_path,
+          "text-based with no OCR pages is the fast path");
+
+  grparse::PdfClassification garbled_text = text_based;
+  garbled_text.pages_needing_ocr = {4};
+  const auto not_fast = grparse::route_pdf_by_classification(garbled_text);
+  require(!not_fast.fast_path && not_fast.ocr_pages == std::vector<int>({4}),
+          "a text-based document with an OCR page is not the fast path");
+
+  grparse::PdfClassification mixed;
+  mixed.pdf_class = grparse::PdfClass::kMixed;
+  mixed.pages_needing_ocr = {2, 5};
+  const auto mixed_decision = grparse::route_pdf_by_classification(mixed);
+  require(!mixed_decision.fast_path &&
+              mixed_decision.ocr_pages == std::vector<int>({2, 5}),
+          "a mixed document routes exactly the named pages");
+
+  grparse::PdfClassification incoherent;
+  incoherent.pdf_class = grparse::PdfClass::kImageBased;
+  const auto fallback = grparse::route_pdf_by_classification(incoherent);
+  require(!fallback.fast_path && fallback.ocr_pages.empty(),
+          "an OCR-needing classification with no page set falls back to the heuristic");
+}
+
+void verify_pdf_collector_failure_is_an_outcome() {
+  FailingPdfService service;
+  ServerFixture server(&service);
+  const auto result = grparse::collect_pdf(server.channel(), "%PDF-fake");
+  require(!result.outcome.success && result.outcome.code == grpc::StatusCode::UNAVAILABLE,
+          "a collector panic surfaces as a failed, unavailable outcome");
+  require(result.outcome.error.find("lopdf panicked") != std::string::npos,
+          "the collector's own message survives");
+  require(result.classification.pdf_class == grparse::PdfClass::kUnknown,
+          "a failed stream carries no classification");
+}
+
+void verify_pdf_endpoint_configuration() {
+  grparse::CollectorTargets targets;
+  grparse::CollectorEndpoints unconfigured(targets);
+  require(!unconfigured.has(parsev1::COLLECTOR_PDF),
+          "an unset GRPARSE_PDF_TARGET leaves the collector unconfigured");
+  targets.pdf = "pdf-inspector:50067";
+  grparse::CollectorEndpoints configured(targets);
+  require(configured.has(parsev1::COLLECTOR_PDF) &&
+              configured.target(parsev1::COLLECTOR_PDF) == "pdf-inspector:50067",
+          "the configured target resolves for the pdf collector");
+  require(configured.channel(parsev1::COLLECTOR_PDF) != nullptr,
+          "a configured target yields a channel");
+}
+
+void verify_pdf_plain_leg_returns_the_document() {
+  FakePdfService service(pdfv1::PDF_TYPE_MIXED, {2});
+  ServerFixture server(&service);
+  const auto outcome = grparse::collect_pdf_document(server.channel(), "%PDF-fake");
+  require(outcome.success && outcome.document.texts(0).text().base().text() == "from pdf",
+          "the plain leg returns the collector's document whatever the class");
+}
+
+}  // namespace
+
 int main() {
   try {
     verify_asr_collects_document();
@@ -839,6 +1020,12 @@ int main() {
     verify_fastwarc_framing_error_keeps_records();
     verify_fastwarc_transport_failure_without_records();
     verify_fastwarc_truncates_payload_text();
+    verify_pdf_collects_document_classification_and_warnings();
+    verify_pdf_scanned_reports_the_ocr_page_set();
+    verify_pdf_routing_decision_logic();
+    verify_pdf_collector_failure_is_an_outcome();
+    verify_pdf_endpoint_configuration();
+    verify_pdf_plain_leg_returns_the_document();
   } catch (const std::exception& failure) {
     std::cerr << "FAILED: " << failure.what() << std::endl;
     return 1;

@@ -202,6 +202,16 @@ enum Collector {
   // endpoint. The collector's record stream is folded into a Document
   // client-side, one group per archive record.
   COLLECTOR_FASTWARC = 12;
+  // The grpc-pdf-inspector collector: the PDF routing oracle. The default
+  // for PDF inputs when an endpoint is configured (the in-process CV path
+  // stays the default otherwise). Its classification drives the parse: a
+  // text-based document comes back as the collector's own Document with the
+  // CV pipeline skipped entirely; a scanned, image-based, or mixed document
+  // falls through to the CV path with recognition restricted to the pages
+  // the inspector named as needing OCR. When it shares an explicit
+  // selection with other collectors it is a plain Document-emitting
+  // collector instead, like the others.
+  COLLECTOR_PDF = 13;
 }
 
 // ============================================================================
@@ -436,7 +446,10 @@ message ConvertDocumentOptions {
   // formats to COLLECTOR_LIBREOFFICE, WARC archives to COLLECTOR_FASTWARC,
   // audio and video to COLLECTOR_ASR,
   // .eml/.msg to COLLECTOR_EMAIL, XML to COLLECTOR_XML, .epub to
-  // COLLECTOR_EPUB, and PDF and raster inputs to COLLECTOR_GRPARSE_CV.
+  // COLLECTOR_EPUB, and PDF and raster inputs to COLLECTOR_GRPARSE_CV —
+  // except that a configured COLLECTOR_PDF endpoint makes the pdf
+  // inspector the default PDF route, its classification deciding between
+  // the collector's own fast-path Document and an OCR-restricted CV run.
   // Every selected collector's output is merged additively, source-tagged;
   // a failed collector degrades to an error entry instead of failing the
   // parse while any collector succeeds.

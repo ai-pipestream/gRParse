@@ -20,7 +20,11 @@ request arrives, the caller either names the collectors explicitly or leaves
 the selection empty, in which case gRParse routes by filename and content
 type: office formats to libreoffice, WARC to fastwarc, audio/video to asr,
 `.eml`/`.msg` to email, XML and its archive forms to xml, `.epub` to epub,
-text markup to markup, and PDF/raster to the in-process CV path. Two
+text markup to markup, and PDF/raster to the in-process CV path — with one
+twist: a PDF routes to the pdf inspector instead when one is configured,
+and its classification then decides between the collector's own fast-path
+Document (text-based) and a CV run whose OCR is restricted to the pages
+the inspector named. Two
 collectors are never routed to — EBCDIC, because raw records carry no
 trustworthy format signal and a parse needs a caller-supplied layout, and
 lol-html, because it does targeted CSS-selector extraction rather than

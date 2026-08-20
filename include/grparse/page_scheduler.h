@@ -8,6 +8,7 @@
 #include <functional>
 #include <memory>
 #include <stdexcept>
+#include <unordered_set>
 
 #include "grparse/in_memory_document.h"
 #include "grparse/figure_classifier.h"
@@ -68,6 +69,14 @@ class PageScheduler final {
     // default (kDefaultRenderDpi).  Raster inputs are already pixels and
     // ignore it.
     double render_dpi = 0.0;
+    // The pdf inspector's OCR page set: 1-indexed page numbers, matching the
+    // scheduler's own page numbering, so the wire values pass straight
+    // through.  Consulted in kSelective mode only: when non-empty it
+    // replaces the embedded-layer coverage heuristic — exactly the listed
+    // pages run recognition, and every other page trusts its embedded text
+    // layer.  kForce and kOff ignore it: an explicit recognition override
+    // outranks the classification.
+    std::unordered_set<int> ocr_pages;
   };
 
   enum class DeliveryResult { kAccepted, kAcceptedAndRelease, kCancelled };
