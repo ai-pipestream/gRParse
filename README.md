@@ -3,6 +3,7 @@
 C++ gRPC document parse service: **diskless PDF/image to page-streamed protobuf** with boxes and stable offsets. RapidOCR and PicoDet layout run through **ONNX Runtime** on NVIDIA GPUs (CUDA) or Intel GPUs (OpenVINO). Layout labels, reading order, table items with geometry-derived cell grids, and picture items are live; model-based table spans and figure classification are roadmap work.
 
 - Architecture (runtime split, anti-seesaw pipeline, offset contract): [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- Collector strategy (gRPC-first fleet, coordination, stream joining): [docs/COLLECTORS.md](docs/COLLECTORS.md)
 - Epics & tasks (C++ vs Java ownership, milestones): [docs/EPICS.md](docs/EPICS.md)
 
 **Speed thesis:** pipelined pages, warm ORT session pools, selective OCR, and early page emission keep CPU and GPU busy.
