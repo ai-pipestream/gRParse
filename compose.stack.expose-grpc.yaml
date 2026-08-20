@@ -1,0 +1,29 @@
+# Optional overlay: publish every service's gRPC port on the host, for
+# running clients outside the compose network (grpcurl, the benchmark
+# binaries, other-language stubs).
+#
+#   docker compose -f compose.stack.yaml -f compose.stack.expose-grpc.yaml up -d --build
+#
+# Plaintext HTTP/2 on the host interface — fine on a trusted LAN. For
+# TLS-terminated gRPC, put per-service `grpc_pass` listeners in nginx
+# instead; see compose/README.md.
+#
+# As new parser services join compose.stack.yaml, add one entry each here.
+
+services:
+  grparse:
+    ports:
+      - "50051:50051"
+      - "9464:9464"   # Prometheus /metrics
+
+  lol-html:
+    ports:
+      - "50057:50057"
+
+  libreoffice:
+    ports:
+      - "50053:50053"
+
+  calamine:
+    ports:
+      - "50062:50062"

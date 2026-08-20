@@ -7,9 +7,12 @@
 #   docker compose -f compose.stack.yaml --profile calamine up --build
 #
 # Unlike compose.yaml nothing here touches the host: services reach each
-# other by compose service name, and only the shell publishes a port
-# (http://localhost:8080). The project name differs from compose.yaml's, so
-# both files can be up at once without colliding.
+# other by compose service name, and only the nginx proxy publishes a port
+# (http://localhost:8080, TLS variant documented in compose/README.md).
+# To publish the gRPC ports as well, layer the overlay:
+#   docker compose -f compose.stack.yaml -f compose.stack.expose-grpc.yaml up --build
+# The project name differs from compose.yaml's, so both files can be up at
+# once without colliding.
 #
 # Every build carries a pipestreamai/<service> image tag so pushing the whole
 # stack later is just `docker compose -f compose.stack.yaml push`.
@@ -123,13 +126,14 @@ services:
   # examples/web-demo/README.md. Calamine is deliberately not in DEMO_UIS;
   # adding its tab is one entry away
   # (`,calamine=calamine:50062@calamine-ui:8080`, profile `calamine`).
+  # Not published on the host; the nginx proxy in front of it is.
   shell:
     image: pipestreamai/grparse-demo-shell:latest
     build:
       context: .
       dockerfile: examples/web-demo/Dockerfile
-    ports:
-      - "8080:8080"
+    expose:
+      - "8080"
     environment:
       GRPARSE_TARGET: "grparse:50051"
       DEMO_UIS: "lol-html=lol-html:50057@lol-html-ui:8080,libreoffice=libreoffice:50053@libreoffice-ui:8080"
@@ -149,5 +153,34 @@ services:
       - /tmp:size=16m   # the bridge stages the contract protos here at boot
     cap_drop:
       - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  # Front door: the only published port. Proxies the shell (which itself
+  # proxies every tab UI); TLS variant and gRPC exposure are documented in
+  # compose/README.md. Lazy DNS resolution lets it boot before the parsers.
+  proxy:
+    image: nginx:1.27-alpine
+    ports:
+      - "8080:8080"
+      # - "8443:8443"   # TLS, once compose/certs/ holds a cert and key
+    volumes:
+      - ./compose/nginx.conf:/etc/nginx/nginx.conf:ro
+      # - ./compose/certs:/etc/nginx/certs:ro
+    depends_on:
+      - shell
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:size=16m
+      - /var/run:size=8m
+    cap_drop:
+      - ALL
+    cap_add:
+      # The nginx master chowns its temp dirs and setuids its workers even
+      # with everything under tmpfs; these are its minimum capabilities.
+      - CHOWN
+      - SETUID
+      - SETGID
+      - NET_BIND_SERVICE
     security_opt:
       - no-new-privileges:true
