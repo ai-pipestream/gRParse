@@ -160,7 +160,7 @@ services:
   # proxies every tab UI); TLS variant and gRPC exposure are documented in
   # compose/README.md. Lazy DNS resolution lets it boot before the parsers.
   proxy:
-    image: nginx:1.27-alpine
+    image: nginx:1.31-alpine
     ports:
       - "8080:8080"
       # - "8443:8443"   # TLS, once compose/certs/ holds a cert and key
