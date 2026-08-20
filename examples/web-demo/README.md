@@ -63,6 +63,7 @@ Environment:
 | `UI_BASE` | *(empty)* | Mount prefix the whole page is served under, e.g. `/ui/grparse` |
 | `DEMO_UIS` | *(empty)* | Shell registry, `name=grpc_addr@ui_addr` comma-separated (see below) |
 | `DEMO_PROTO_DIR` | *(empty)* | Override directory with one `<name>.proto` per registry entry |
+| `FASTWARC_TARGET` | `127.0.0.1:50061` | fastwarc-grpc endpoint backing the native FastWARC tab (see below) |
 
 ## Demo shell mode (`DEMO_UIS`)
 
@@ -116,6 +117,28 @@ A new service gets a tab by (1) advertising a `UiInfo` block
 frontend under a `UI_BASE` prefix, and (3) adding one `name=grpc@ui` entry
 to `DEMO_UIS` — plus a proto map entry in `server.js` if it isn't one of
 the known services.
+
+## Native FastWARC tab
+
+The chatnoir fastwarc-grpc server (`fastwarc.v1.WarcService`, default port
+50061) has no web frontend and no info RPC, so it cannot be a `DEMO_UIS`
+proxy tab. Instead the shell carries it as a **native tab**: in shell mode
+the tab bar always shows "FastWARC" next to the registry tabs, pointing at
+the bridge's own `/fastwarc.html`, whether or not the server is reachable
+(its status dot and the page's badge follow `GET /api/fastwarc/status`, a
+`grpc.health.v1.Health/Check` probe with the same 1.5s deadline and 5s cache
+as the `/api/uis` probes). The page is also served standalone at
+`/fastwarc.html` when shell mode is off.
+
+The page posts archive bytes to `POST /api/fastwarc/parse` (same 500 MiB cap
+as `/api/parse`; `parse_http`/`verify_digests`/`include_payload` as query
+flags), the bridge opens the bidirectional `ParseWarc` stream, uploads the
+body in 256 KiB chunks, and relays the response stream as NDJSON: one
+`start` line per record, a `preview` line with the first 4 KiB of payload
+when it reads as text, an `end` line, `error` lines for record failures, and
+a final `done` summary. The vendored `collectors/warc*.proto` contracts are
+staged into their `fastwarc/v1/` import layout under a temp dir at first
+use, mirroring the boot-time staging of the gRParse contract protos.
 
 ## Serving under a base path (`UI_BASE`)
 

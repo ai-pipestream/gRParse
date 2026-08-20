@@ -256,3 +256,63 @@ h1 { margin: 0; font-size: 26px; letter-spacing: 0.5px; }
   border-radius: 12px;
   background: var(--panel);
 }
+
+/* FastWARC tab: record table, payload previews, inline recoverable errors. */
+.warc-options {
+  display: flex;
+  gap: 18px;
+  justify-content: center;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.warc-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.warc-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  font-size: 13px;
+}
+.warc-table th {
+  text-align: left;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  font-size: 11px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.warc-table td {
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.warc-table tbody tr:last-child td { border-bottom: none; }
+.warc-table tr.has-preview { cursor: pointer; }
+.warc-table tr.has-preview:hover td { color: var(--accent); }
+.warc-table .preview-row pre {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--fg);
+  background: #0d1117;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.warc-table .warn-row td {
+  color: #e3b341;
+  background: rgba(227, 179, 65, 0.06);
+}

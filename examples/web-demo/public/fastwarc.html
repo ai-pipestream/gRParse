@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FastWARC — streaming WARC parse demo</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>FastWARC</h1>
+      <span class="subtitle">streaming WARC archive parsing</span>
+    </div>
+    <div id="health" class="health pending">checking service…</div>
+  </header>
+
+  <section id="dropzone" class="dropzone">
+    <input id="file-input" type="file" accept=".warc,.warc.gz,.warc.zst,.warc.lz4" hidden />
+    <p><strong>Drop a WARC archive here</strong> or click to choose one.</p>
+    <p class="hint">.warc, .warc.gz, .warc.zst, .warc.lz4 — compression is detected from magic bytes; records stream in below as they parse.</p>
+    <div class="warc-options" id="warc-options">
+      <label><input type="checkbox" id="opt-parse-http" checked /> parse HTTP</label>
+      <label><input type="checkbox" id="opt-verify-digests" /> verify digests</label>
+      <label><input type="checkbox" id="opt-include-payload" checked /> include payload</label>
+    </div>
+  </section>
+
+  <section id="stats" class="stats" hidden>
+    <div class="stat"><span id="stat-records">0</span><label>records</label></div>
+    <div class="stat"><span id="stat-payload">0</span><label>payload</label></div>
+    <div class="stat"><span id="stat-rate">0</span><label>MiB/s</label></div>
+    <div class="stat"><span id="stat-elapsed">0.0s</span><label>elapsed</label></div>
+  </section>
+
+  <main id="results" class="results"></main>
+
+  <script src="fastwarc.js"></script>
+</body>
+</html>

@@ -60,6 +60,34 @@ if (shellMeta && shellMeta.content === "on") {
   tabs.push(ownTab);
   tabStrip.appendChild(ownTab.button);
 
+  // The FastWARC tab is native: the chatnoir fastwarc-grpc server has no
+  // web UI of its own, so the bridge serves the page itself at
+  // /fastwarc.html and this pane points at it same-origin. It shows up
+  // whether or not the server is reachable; the page carries its own
+  // status badge, and the dot follows /api/fastwarc/status.
+  const fastwarcTab = makeTab({
+    name: "fastwarc",
+    title: "FastWARC",
+    path: "/fastwarc.html",
+    description: "streaming WARC archive parsing via fastwarc-grpc",
+    reachable: false,
+  });
+  fastwarcTab.native = true;
+  tabs.push(fastwarcTab);
+  tabStrip.appendChild(fastwarcTab.button);
+
+  function refreshFastwarc() {
+    return fetch("/api/fastwarc/status")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((status) => {
+        if (!status) return;
+        fastwarcTab.info.reachable = Boolean(status.reachable);
+        fastwarcTab.dot.className = `tab-dot ${status.reachable ? "ok" : "bad"}`;
+        fastwarcTab.dot.title = status.reachable ? "service reachable" : "service unreachable";
+      })
+      .catch(() => {});
+  }
+
   function select(tab) {
     for (const other of tabs) other.button.classList.toggle("active", other === tab);
     if (tab === ownTab) {
@@ -74,7 +102,11 @@ if (shellMeta && shellMeta.content === "on") {
       // alive afterwards so a running job in another tab is not lost.
       pane = document.createElement("iframe");
       pane.className = "tab-pane";
-      pane.src = tab.info.path.endsWith("/") ? tab.info.path : `${tab.info.path}/`;
+      // Native pages carry a full file path; proxied frontends mount under
+      // their /ui/<name>/ directory and need the trailing slash.
+      pane.src = tab.info.path.endsWith("/") || tab.info.path.endsWith(".html")
+        ? tab.info.path
+        : `${tab.info.path}/`;
       pane.title = tab.info.title || tab.info.name;
       panes.set(tab.info.name, pane);
       paneHost.appendChild(pane);
@@ -92,6 +124,8 @@ if (shellMeta && shellMeta.content === "on") {
         tabStrip.appendChild(tab.button);
         continue;
       }
+      // A native tab of the same name wins over a proxy registry entry.
+      if (tab.native) continue;
       // Refresh in place: reachability, title, tooltip follow the service.
       Object.assign(tab.info, info);
       tab.dot.className = `tab-dot ${info.reachable ? "ok" : "bad"}`;
@@ -102,6 +136,7 @@ if (shellMeta && shellMeta.content === "on") {
   }
 
   function refresh() {
+    refreshFastwarc();
     return fetch("/api/uis")
       .then((response) => (response.ok ? response.json() : null))
       .then((data) => { if (data) applyUis(data.uis); })
@@ -109,6 +144,7 @@ if (shellMeta && shellMeta.content === "on") {
   }
 
   ownTab.button.addEventListener("click", () => select(ownTab));
+  fastwarcTab.button.addEventListener("click", () => select(fastwarcTab));
   refresh().finally(() => select(ownTab));
   // Status dots track the services without disturbing the open pane.
   setInterval(refresh, 5000);

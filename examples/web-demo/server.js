@@ -19,6 +19,9 @@ const grpc = require("@grpc/grpc-js");
 const protoLoader = require("@grpc/proto-loader");
 
 const TARGET = process.env.GRPARSE_TARGET || "localhost:50051";
+// The chatnoir fastwarc-grpc server (fastwarc.v1.WarcService) backing the
+// native FastWARC tab; see the bridge section below.
+const FASTWARC_TARGET = process.env.FASTWARC_TARGET || "127.0.0.1:50061";
 const PORT = Number(process.env.PORT || 8080);
 // Optional mount prefix (e.g. "/ui/grparse") for running behind a reverse
 // proxy that forwards each service under its own path. Empty keeps the
@@ -457,6 +460,124 @@ function mapEvent(event) {
 }
 
 // ---------------------------------------------------------------------------
+// FastWARC bridge: the chatnoir fastwarc-grpc server (fastwarc.v1.WarcService)
+// has no web UI of its own, so the shell carries it as a native tab
+// (public/fastwarc.html) backed by the two /api/fastwarc endpoints below: a
+// health probe for the status badge and an NDJSON relay of the bidirectional
+// ParseWarc stream.
+// ---------------------------------------------------------------------------
+
+const FASTWARC_CHUNK_BYTES = 256 * 1024;
+// Only the first few KiB of a text payload are relayed for the preview.
+const PREVIEW_BYTES = 4 * 1024;
+
+// The server speaks grpc.health.v1 but the repo does not vendor the proto;
+// it is small enough to carry inline and stage next to the WARC contract.
+const HEALTH_PROTO = `syntax = "proto3";
+package grpc.health.v1;
+service Health {
+  rpc Check(HealthCheckRequest) returns (HealthCheckResponse);
+}
+message HealthCheckRequest {
+  string service = 1;
+}
+message HealthCheckResponse {
+  enum ServingStatus {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+    SERVICE_UNKNOWN = 3;
+  }
+  ServingStatus status = 1;
+}
+`;
+
+// Staged like stageProtos() above: the vendored collectors/*.proto import
+// each other under their upstream fastwarc/v1/ layout, so copy them into
+// that shape before loading. Lazy (first /api/fastwarc call) so a missing
+// contract never stops the demo from booting.
+let fastwarcClientsCache = null;
+
+function fastwarcClients() {
+  if (fastwarcClientsCache) return fastwarcClientsCache;
+  try {
+    const staged = fs.mkdtempSync(path.join(os.tmpdir(), "fastwarc-protos-"));
+    for (const file of ["warc.proto", "warc_service.proto"]) {
+      const target = path.join(staged, "fastwarc", "v1", file);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.copyFileSync(path.join(PROTO_ROOT, "collectors", file), target);
+    }
+    const healthTarget = path.join(staged, "grpc", "health", "v1", "health.proto");
+    fs.mkdirSync(path.dirname(healthTarget), { recursive: true });
+    fs.writeFileSync(healthTarget, HEALTH_PROTO);
+    const loaded = protoLoader.loadSync(
+      [
+        path.join(staged, "fastwarc", "v1", "warc_service.proto"),
+        healthTarget,
+      ],
+      { includeDirs: [staged], enums: String, longs: Number, defaults: true, oneofs: true },
+    );
+    const definition = grpc.loadPackageDefinition(loaded);
+    fastwarcClientsCache = {
+      warc: new definition.fastwarc.v1.WarcService(FASTWARC_TARGET, credentials, channelOptions),
+      health: new definition.grpc.health.v1.Health(FASTWARC_TARGET, credentials, channelOptions),
+    };
+  } catch (error) {
+    console.warn(`fastwarc: proto unavailable (${error.message})`);
+    fastwarcClientsCache = { error };
+  }
+  return fastwarcClientsCache;
+}
+
+// One live health call behind a short cache, mirroring the /api/uis probes:
+// 1.5s deadline so a dead server costs the badge that long at most, and
+// failure reports unreachable instead of breaking the page.
+let fastwarcStatusCache = null;
+const FASTWARC_STATUS_CACHE_MS = 5000;
+
+function probeFastwarc() {
+  const fallback = { reachable: false };
+  const clients = fastwarcClients();
+  if (clients.error) return Promise.resolve(fallback);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
+    try {
+      clients.health.Check({ service: "fastwarc.v1.WarcService" }, { deadline: Date.now() + 1500 }, (error, health) => {
+        if (error) { finish(fallback); return; }
+        finish({ reachable: health.status === "SERVING" });
+      });
+    } catch (_error) {
+      finish(fallback);
+    }
+    setTimeout(() => finish(fallback), 2000).unref();
+  });
+}
+
+async function fastwarcStatus() {
+  if (fastwarcStatusCache && fastwarcStatusCache.expires > Date.now()) return fastwarcStatusCache.payload;
+  const payload = await probeFastwarc();
+  fastwarcStatusCache = { expires: Date.now() + FASTWARC_STATUS_CACHE_MS, payload };
+  return payload;
+}
+
+function recordTypeLabel(value) {
+  return typeof value === "string" ? value.replace("WARC_RECORD_TYPE_", "").toLowerCase() : "unknown";
+}
+
+// A payload is previewed only when it reads as text: an HTTP content type of
+// text/* or anything json/xml/html, or no HTTP metadata to judge by at all.
+function previewable(metadata) {
+  if (!metadata.isHttp) return true;
+  const contentType = (metadata.httpContentType || "").toLowerCase();
+  if (!contentType) return true;
+  return contentType.startsWith("text/")
+    || contentType.includes("json")
+    || contentType.includes("xml")
+    || contentType.includes("html");
+}
+
+// ---------------------------------------------------------------------------
 // HTTP surface
 // ---------------------------------------------------------------------------
 
@@ -573,6 +694,136 @@ surface.post(
       call.write({ ...meta, data: body.subarray(offset, offset + CHUNK_BYTES) });
     }
     call.write({ ...meta, complete: true });
+    call.end();
+  },
+);
+
+// Status badge for the native FastWARC tab; cached like the /api/uis probes
+// so a refreshing page never hammers the server.
+surface.get("/api/fastwarc/status", (_request, response) => {
+  fastwarcStatus().then(
+    (status) => response.json(status),
+    () => response.json({ reachable: false }),
+  );
+});
+
+// Raw archive bytes in (same 500 MiB cap as /api/parse; body-parser answers
+// 413 past the limit), one NDJSON line per record event out. The page sends
+// the parse flags as query params.
+surface.post(
+  "/api/fastwarc/parse",
+  express.raw({ type: () => true, limit: MAX_UPLOAD }),
+  (request, response) => {
+    const body = request.body;
+    if (!Buffer.isBuffer(body) || body.length === 0) {
+      response.status(400).json({ error: "empty upload" });
+      return;
+    }
+    const clients = fastwarcClients();
+    if (clients.error) {
+      response.status(502).json({ error: `fastwarc proto unavailable: ${clients.error.message}` });
+      return;
+    }
+    const flag = (name, fallback) => (request.query[name] === undefined ? fallback : request.query[name] !== "false");
+
+    response.setHeader("Content-Type", "application/x-ndjson");
+    response.setHeader("Cache-Control", "no-store");
+
+    const startedAt = Date.now();
+    let records = 0;
+    let payloadBytes = 0;
+    // Per-record preview assembly: reset by record_start, fed by
+    // payload_chunk, flushed by record_end.
+    let preview = null;
+    const send = (value) => response.write(`${JSON.stringify(value)}\n`);
+    const finish = () => {
+      send({ type: "done", records, payloadBytes, elapsedMs: Date.now() - startedAt });
+      response.end();
+    };
+
+    const deadline = Date.now() + 10 * 60 * 1000;
+    const call = clients.warc.ParseWarc({ deadline });
+
+    const handleEvent = (event) => {
+      if (event.recordStart) {
+        const metadata = event.recordStart.metadata || {};
+        records += 1;
+        preview = { wanted: previewable(metadata), chunks: [], bytes: 0 };
+        send({
+          type: "start",
+          recordType: recordTypeLabel(metadata.recordType),
+          streamPos: metadata.streamPos,
+          contentLength: metadata.contentLength,
+          recordId: metadata.recordId || undefined,
+          recordDate: metadata.recordDate
+            ? new Date(Number(metadata.recordDate.seconds) * 1000).toISOString()
+            : undefined,
+          isHttp: Boolean(metadata.isHttp),
+          httpContentType: metadata.httpContentType || undefined,
+        });
+        return;
+      }
+      if (event.payloadChunk) {
+        const data = event.payloadChunk.data || Buffer.alloc(0);
+        if (preview && preview.wanted && preview.bytes < PREVIEW_BYTES) {
+          const slice = data.subarray(0, PREVIEW_BYTES - preview.bytes);
+          preview.chunks.push(slice);
+          preview.bytes += slice.length;
+        }
+        return;
+      }
+      if (event.recordEnd) {
+        if (preview && preview.chunks.length > 0) {
+          send({ type: "preview", text: Buffer.concat(preview.chunks).toString("utf8") });
+        }
+        preview = null;
+        // The server's count is authoritative: it also covers runs with
+        // include_payload off, where no chunks stream at all.
+        payloadBytes += Number(event.recordEnd.payloadLength) || 0;
+        send({ type: "end", payloadLength: event.recordEnd.payloadLength });
+        return;
+      }
+      if (event.recordError) {
+        const failure = event.recordError;
+        send({
+          type: "error",
+          streamPos: failure.streamPos,
+          recoverable: Boolean(failure.recoverable),
+          message: failure.message,
+        });
+      }
+    };
+
+    // The server packs events into `batch` messages (response_batch_size);
+    // flatten them so the relay sees one event at a time.
+    call.on("data", (message) => {
+      if (message.batch) {
+        for (const item of message.batch.items || []) handleEvent(item);
+      } else {
+        handleEvent(message);
+      }
+    });
+    // A non-recoverable record_error already ended the upstream stream; the
+    // done line reports whatever arrived before it.
+    call.on("end", finish);
+    call.on("error", (error) => {
+      send({ type: "error", recoverable: false, message: error.message });
+      finish();
+    });
+    response.on("close", () => call.cancel());
+
+    call.write({
+      config: {
+        parseHttp: flag("parse_http", true),
+        verifyDigests: flag("verify_digests", false),
+        includePayload: flag("include_payload", true),
+        includeHeaders: true,
+        responseBatchSize: 64,
+      },
+    });
+    for (let offset = 0; offset < body.length; offset += FASTWARC_CHUNK_BYTES) {
+      call.write({ chunk: body.subarray(offset, offset + FASTWARC_CHUNK_BYTES) });
+    }
     call.end();
   },
 );
