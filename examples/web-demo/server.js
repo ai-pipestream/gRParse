@@ -178,6 +178,13 @@ const KNOWN_UIS = {
     service: "fastwarc.v1.WarcService",
     method: "GetServiceInfo",
   },
+  pdf: {
+    repo: "grpc-pdf-inspector",
+    proto: "proto/ai/pipestream/pdf/v1/pdf_service.proto",
+    include: "proto",
+    service: "ai.pipestream.pdf.v1.PdfParseService",
+    method: "GetServiceInfo",
+  },
 };
 
 function parseRegistry(raw) {

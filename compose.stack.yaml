@@ -1,7 +1,8 @@
 # Full demo stack on one compose network: the gRParse parser, the lol-html
-# and libreoffice collectors, their web UIs, and the demo shell that ties
-# them together. The calamine server and viewer ride along under the
-# `calamine` profile, decoupled from the shell by default.
+# and libreoffice collectors, the pdf inspector as gRParse's PDF routing
+# oracle, their web UIs, and the demo shell that ties them together. The
+# calamine server and viewer ride along under the `calamine` profile,
+# decoupled from the shell by default.
 #
 #   docker compose -f compose.stack.yaml up --build
 #   docker compose -f compose.stack.yaml --profile calamine up --build
@@ -34,6 +35,10 @@ services:
       # Collectors by service name on this network; the shell gives them tabs.
       GRPARSE_LOL_HTML_TARGET: "lol-html:50057"
       GRPARSE_LIBREOFFICE_TARGET: "libreoffice:50053"
+      # The PDF routing oracle: text-based PDFs take the inspector's fast
+      # path and the in-process CV/ONNX pipeline is skipped; scanned pages
+      # fall through with OCR restricted to the pages the inspector names.
+      GRPARSE_PDF_TARGET: "pdf-inspector:50067"
     gpus: all
     read_only: true
     tmpfs:
@@ -81,6 +86,17 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  pdf-inspector:
+    image: pipestreamai/grpc-pdf-inspector:latest
+    build: ../grpc-pdf-inspector
+    expose:
+      - "50067"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
   lol-html-ui:
     image: pipestreamai/grpc-lol-html-ui:latest
     build:
@@ -121,6 +137,21 @@ services:
     depends_on:
       - calamine
 
+  # The demo client lives on grpc-pdf-inspector's demo-client branch until
+  # that merges; the build context is the repo checkout either way.
+  pdf-inspector-ui:
+    image: pipestreamai/grpc-pdf-inspector-ui:latest
+    build:
+      context: ../grpc-pdf-inspector
+      dockerfile: demos/node-client/Dockerfile
+    environment:
+      PDF_ADDR: "pdf-inspector:50067"
+      UI_BASE: "/ui/pdf"
+    expose:
+      - "8080"
+    depends_on:
+      - pdf-inspector
+
   # Demo shell: the gRParse parse UI plus one tab per DEMO_UIS entry, each
   # reverse-proxied to that service's own frontend. See
   # examples/web-demo/README.md. Calamine is deliberately not in DEMO_UIS;
@@ -136,7 +167,7 @@ services:
       - "8080"
     environment:
       GRPARSE_TARGET: "grparse:50051"
-      DEMO_UIS: "lol-html=lol-html:50057@lol-html-ui:8080,libreoffice=libreoffice:50053@libreoffice-ui:8080"
+      DEMO_UIS: "lol-html=lol-html:50057@lol-html-ui:8080,libreoffice=libreoffice:50053@libreoffice-ui:8080,pdf=pdf-inspector:50067@pdf-inspector-ui:8080"
     # The shell reads each service's info RPC through its proto contract; in
     # this image the sibling checkouts do not exist, so bind-mount their
     # proto dirs at the layout the resolver probes ("/<repo>/proto/...").
@@ -144,10 +175,12 @@ services:
       - ../grpc-lol-html/proto:/grpc-lol-html/proto:ro
       - ../grpc-libreoffice/proto:/grpc-libreoffice/proto:ro
       - ../grpc-calamine/proto:/grpc-calamine/proto:ro
+      - ../grpc-pdf-inspector/proto:/grpc-pdf-inspector/proto:ro
     depends_on:
       - grparse
       - lol-html-ui
       - libreoffice-ui
+      - pdf-inspector-ui
     read_only: true
     tmpfs:
       - /tmp:size=16m   # the bridge stages the contract protos here at boot

@@ -27,3 +27,7 @@ services:
   calamine:
     ports:
       - "50062:50062"
+
+  pdf-inspector:
+    ports:
+      - "50067:50067"
