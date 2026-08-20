@@ -22,6 +22,9 @@ const TARGET = process.env.GRPARSE_TARGET || "localhost:50051";
 // The chatnoir fastwarc-grpc server (fastwarc.v1.WarcService) backing the
 // native FastWARC tab; see the bridge section below.
 const FASTWARC_TARGET = process.env.FASTWARC_TARGET || "127.0.0.1:50061";
+// The grPOIc server (ai.pipestream.poi.v1.PoiParseService, Apache POI office
+// parsing) backing the native POI tab; see the bridge section below.
+const POIC_TARGET = process.env.POIC_TARGET || "127.0.0.1:50052";
 const PORT = Number(process.env.PORT || 8080);
 // Optional mount prefix (e.g. "/ui/grparse") for running behind a reverse
 // proxy that forwards each service under its own path. Empty keeps the
@@ -578,6 +581,157 @@ function previewable(metadata) {
 }
 
 // ---------------------------------------------------------------------------
+// POI bridge: grPOIc (ai.pipestream.poi.v1.PoiParseService) wraps Apache POI
+// for office documents. The shell carries it as a native tab
+// (public/poic.html) backed by the two /api/poic endpoints below: a
+// reachability probe (GetServiceInfo) for the status badge and an NDJSON
+// relay of the ParseDocument stream.
+// ---------------------------------------------------------------------------
+
+const POIC_CHUNK_BYTES = 1024 * 1024;
+// Element text previews are capped so the page never receives a whole
+// chapter in a single NDJSON line.
+const POIC_PREVIEW_CHARS = 512;
+
+// The contract lives in the sibling grPOIc checkout; resolveServiceProto
+// (against the KNOWN_UIS "poic" entry) covers both the workspace layout and
+// the demo image's bind-mounted proto dirs.
+let poicClientsCache = null;
+
+function poicClients() {
+  if (poicClientsCache) return poicClientsCache;
+  try {
+    const resolved = resolveServiceProto(KNOWN_UIS.poic);
+    const loaded = protoLoader.loadSync(resolved.file, {
+      includeDirs: resolved.includeDirs, enums: String, longs: Number, defaults: true, oneofs: true,
+    });
+    const definition = grpc.loadPackageDefinition(loaded);
+    poicClientsCache = {
+      poi: new definition.ai.pipestream.poi.v1.PoiParseService(POIC_TARGET, credentials, channelOptions),
+    };
+  } catch (error) {
+    console.warn(`poic: proto unavailable (${error.message})`);
+    poicClientsCache = { error };
+  }
+  return poicClientsCache;
+}
+
+// One live info call behind a short cache, mirroring the fastwarc probe:
+// 1.5s deadline so a dead server costs the badge that long at most, and
+// failure reports unreachable instead of breaking the page. GetServiceInfo
+// doubles as the health check (grPOIc's grpc.health.v1 only registers the
+// empty service name) and carries the versions for the page badge.
+let poicStatusCache = null;
+const POIC_STATUS_CACHE_MS = 5000;
+
+function probePoic() {
+  const fallback = { reachable: false };
+  const clients = poicClients();
+  if (clients.error) return Promise.resolve(fallback);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
+    try {
+      clients.poi.GetServiceInfo({}, { deadline: Date.now() + 1500 }, (error, info) => {
+        if (error) { finish(fallback); return; }
+        finish({
+          reachable: true,
+          serviceVersion: info.serviceVersion,
+          poiVersion: info.poiVersion,
+          supportedFormats: (info.supportedFormats || []).map(documentFormatLabel),
+          maxDocumentBytes: info.maxDocumentBytes,
+        });
+      });
+    } catch (_error) {
+      finish(fallback);
+    }
+    setTimeout(() => finish(fallback), 2000).unref();
+  });
+}
+
+async function poicStatus() {
+  if (poicStatusCache && poicStatusCache.expires > Date.now()) return poicStatusCache.payload;
+  const payload = await probePoic();
+  poicStatusCache = { expires: Date.now() + POIC_STATUS_CACHE_MS, payload };
+  return payload;
+}
+
+function documentFormatLabel(value) {
+  return typeof value === "string" ? value.replace("DOCUMENT_FORMAT_", "").toLowerCase() : "unknown";
+}
+
+function statusStateLabel(value) {
+  return typeof value === "string" ? value.replace("STATE_", "").toLowerCase() : "unspecified";
+}
+
+function capPreview(text) {
+  const value = String(text || "");
+  return value.length > POIC_PREVIEW_CHARS ? `${value.slice(0, POIC_PREVIEW_CHARS)}…` : value;
+}
+
+function mapPoicTimestamp(value) {
+  return value && Number(value.seconds) > 0 ? new Date(Number(value.seconds) * 1000).toISOString() : undefined;
+}
+
+// Reduce one streamed content element to a compact preview line. Full text
+// stays on the server side; the page gets the shape and the first few
+// hundred characters.
+function mapPoicElement(event) {
+  if (event.paragraph) {
+    const paragraph = event.paragraph;
+    return {
+      kind: "paragraph",
+      style: paragraph.style || undefined,
+      text: capPreview(paragraph.text),
+      length: (paragraph.text || "").length,
+    };
+  }
+  if (event.table) {
+    const rows = event.table.rows || [];
+    const firstRow = rows.length > 0 ? (rows[0].cells || []).map((cell) => cell.text).join(" | ") : "";
+    return {
+      kind: "table",
+      rows: rows.length,
+      cols: rows.reduce((widest, row) => Math.max(widest, (row.cells || []).length), 0),
+      text: capPreview(firstRow),
+    };
+  }
+  if (event.sheet) {
+    const sheet = event.sheet;
+    const rows = sheet.rows || [];
+    const firstRow = rows.length > 0 ? (rows[0].cells || []).map((cell) => cell.formatted).join(" | ") : "";
+    return {
+      kind: "sheet",
+      index: sheet.index,
+      name: sheet.name,
+      rows: rows.length,
+      text: capPreview(firstRow),
+    };
+  }
+  if (event.slide) {
+    const slide = event.slide;
+    return {
+      kind: "slide",
+      index: slide.index,
+      title: slide.title || undefined,
+      notes: (slide.notes || []).length,
+      text: capPreview((slide.texts || []).join("\n")),
+    };
+  }
+  if (event.embeddedObject) {
+    const object = event.embeddedObject;
+    return {
+      kind: "embedded",
+      id: object.id,
+      filename: object.filename || undefined,
+      contentType: object.contentType || undefined,
+      sizeBytes: object.sizeBytes,
+    };
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // HTTP surface
 // ---------------------------------------------------------------------------
 
@@ -823,6 +977,111 @@ surface.post(
     });
     for (let offset = 0; offset < body.length; offset += FASTWARC_CHUNK_BYTES) {
       call.write({ chunk: body.subarray(offset, offset + FASTWARC_CHUNK_BYTES) });
+    }
+    call.end();
+  },
+);
+
+// Status badge for the native POI tab; cached like the fastwarc probe.
+surface.get("/api/poic/status", (_request, response) => {
+  poicStatus().then(
+    (status) => response.json(status),
+    () => response.json({ reachable: false }),
+  );
+});
+
+// Raw office bytes in (same 500 MiB cap as /api/parse; body-parser answers
+// 413 past the limit), one NDJSON line per parse event out: a start line
+// from DocumentInfo, one preview line per content element, an end line from
+// ParseStatus, grpc-error on failure, done last. The page sends the
+// filename and content type as query params.
+surface.post(
+  "/api/poic/parse",
+  express.raw({ type: () => true, limit: MAX_UPLOAD }),
+  (request, response) => {
+    const body = request.body;
+    if (!Buffer.isBuffer(body) || body.length === 0) {
+      response.status(400).json({ error: "empty upload" });
+      return;
+    }
+    const clients = poicClients();
+    if (clients.error) {
+      response.status(502).json({ error: `poic proto unavailable: ${clients.error.message}` });
+      return;
+    }
+    const filename = String(request.query.filename || "document");
+    const contentType = String(request.query.contentType || "");
+
+    response.setHeader("Content-Type", "application/x-ndjson");
+    response.setHeader("Cache-Control", "no-store");
+
+    const startedAt = Date.now();
+    let elements = 0;
+    let finished = false;
+    const send = (value) => response.write(`${JSON.stringify(value)}\n`);
+    // grpc-js can emit end after error; the done line goes out exactly once.
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      send({ type: "done", elements, elapsedMs: Date.now() - startedAt });
+      response.end();
+    };
+
+    const deadline = Date.now() + 10 * 60 * 1000;
+    const call = clients.poi.ParseDocument({ deadline });
+
+    call.on("data", (event) => {
+      if (event.documentInfo) {
+        const metadata = event.documentInfo.metadata || {};
+        send({
+          type: "start",
+          documentId: event.documentInfo.documentId || undefined,
+          format: documentFormatLabel(event.documentInfo.format),
+          title: metadata.title || undefined,
+          author: metadata.author || undefined,
+          lastModifiedBy: metadata.lastModifiedBy || undefined,
+          created: mapPoicTimestamp(metadata.created),
+          modified: mapPoicTimestamp(metadata.modified),
+          extraMetadata: (metadata.tail || []).length,
+        });
+        return;
+      }
+      if (event.status) {
+        send({
+          type: "end",
+          state: statusStateLabel(event.status.state),
+          warnings: event.status.warnings || [],
+          paragraphs: event.status.paragraphs,
+          tables: event.status.tables,
+          sheets: event.status.sheets,
+          slides: event.status.slides,
+          embeddedObjects: event.status.embeddedObjects,
+        });
+        return;
+      }
+      const element = mapPoicElement(event);
+      if (element) {
+        elements += 1;
+        send({ type: "preview", ...element });
+      }
+    });
+    call.on("end", finish);
+    call.on("error", (error) => {
+      send({ type: "grpc-error", code: error.code, message: error.message });
+      finish();
+    });
+    response.on("close", () => call.cancel());
+
+    // Identity fields ride the first chunk only; the last chunk is marked
+    // complete (a single-chunk upload is the common case).
+    const totalChunks = Math.ceil(body.length / POIC_CHUNK_BYTES);
+    for (let index = 0; index < totalChunks; index += 1) {
+      const first = index === 0;
+      call.write({
+        ...(first ? { documentId: filename, filename, contentType } : {}),
+        data: body.subarray(index * POIC_CHUNK_BYTES, (index + 1) * POIC_CHUNK_BYTES),
+        complete: index === totalChunks - 1,
+      });
     }
     call.end();
   },

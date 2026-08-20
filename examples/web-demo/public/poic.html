@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>POI — office document parse demo</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>POI</h1>
+      <span class="subtitle">office document parsing via Apache POI</span>
+    </div>
+    <div id="health" class="health pending">checking service…</div>
+  </header>
+
+  <section id="dropzone" class="dropzone">
+    <input id="file-input" type="file" accept=".docx,.xlsx,.pptx,.doc,.xls,.ppt" hidden />
+    <p><strong>Drop an office document here</strong> or click to choose one.</p>
+    <p class="hint">.docx, .xlsx, .pptx and the legacy .doc, .xls, .ppt — the format is detected from the bytes; elements stream in below as they parse.</p>
+  </section>
+
+  <section id="stats" class="stats" hidden>
+    <div class="stat"><span id="stat-elements">0</span><label>elements</label></div>
+    <div class="stat"><span id="stat-format">—</span><label>format</label></div>
+    <div class="stat"><span id="stat-elapsed">0.0s</span><label>elapsed</label></div>
+  </section>
+
+  <main id="results" class="results"></main>
+
+  <script src="poic.js"></script>
+</body>
+</html>

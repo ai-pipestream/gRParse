@@ -76,6 +76,33 @@ if (shellMeta && shellMeta.content === "on") {
   tabs.push(fastwarcTab);
   tabStrip.appendChild(fastwarcTab.button);
 
+  // The POI tab is native too: it renders the bridge's own /poic.html,
+  // talking to grPOIc (ai.pipestream.poi.v1.PoiParseService) through the
+  // /api/poic endpoints. It shows up whether or not the server is
+  // reachable; the dot follows /api/poic/status.
+  const poicTab = makeTab({
+    name: "poic",
+    title: "POI",
+    path: "/poic.html",
+    description: "office document parsing via grPOIc (Apache POI)",
+    reachable: false,
+  });
+  poicTab.native = true;
+  tabs.push(poicTab);
+  tabStrip.appendChild(poicTab.button);
+
+  function refreshPoic() {
+    return fetch("/api/poic/status")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((status) => {
+        if (!status) return;
+        poicTab.info.reachable = Boolean(status.reachable);
+        poicTab.dot.className = `tab-dot ${status.reachable ? "ok" : "bad"}`;
+        poicTab.dot.title = status.reachable ? "service reachable" : "service unreachable";
+      })
+      .catch(() => {});
+  }
+
   function refreshFastwarc() {
     return fetch("/api/fastwarc/status")
       .then((response) => (response.ok ? response.json() : null))
@@ -137,6 +164,7 @@ if (shellMeta && shellMeta.content === "on") {
 
   function refresh() {
     refreshFastwarc();
+    refreshPoic();
     return fetch("/api/uis")
       .then((response) => (response.ok ? response.json() : null))
       .then((data) => { if (data) applyUis(data.uis); })
@@ -145,6 +173,7 @@ if (shellMeta && shellMeta.content === "on") {
 
   ownTab.button.addEventListener("click", () => select(ownTab));
   fastwarcTab.button.addEventListener("click", () => select(fastwarcTab));
+  poicTab.button.addEventListener("click", () => select(poicTab));
   refresh().finally(() => select(ownTab));
   // Status dots track the services without disturbing the open pane.
   setInterval(refresh, 5000);

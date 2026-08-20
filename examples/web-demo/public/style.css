@@ -316,3 +316,6 @@ h1 { margin: 0; font-size: 26px; letter-spacing: 0.5px; }
   color: #e3b341;
   background: rgba(227, 179, 65, 0.06);
 }
+
+/* POI tab: partial-parse status and per-warning banners. */
+.banner.warn { border-color: #9e6a03; color: #e3b341; }

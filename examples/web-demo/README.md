@@ -64,6 +64,7 @@ Environment:
 | `DEMO_UIS` | *(empty)* | Shell registry, `name=grpc_addr@ui_addr` comma-separated (see below) |
 | `DEMO_PROTO_DIR` | *(empty)* | Override directory with one `<name>.proto` per registry entry |
 | `FASTWARC_TARGET` | `127.0.0.1:50061` | fastwarc-grpc endpoint backing the native FastWARC tab (see below) |
+| `POIC_TARGET` | `127.0.0.1:50052` | grPOIc endpoint backing the native POI tab (see below) |
 
 ## Demo shell mode (`DEMO_UIS`)
 
@@ -139,6 +140,32 @@ when it reads as text, an `end` line, `error` lines for record failures, and
 a final `done` summary. The vendored `collectors/warc*.proto` contracts are
 staged into their `fastwarc/v1/` import layout under a temp dir at first
 use, mirroring the boot-time staging of the gRParse contract protos.
+
+## Native POI tab
+
+grPOIc (`ai.pipestream.poi.v1.PoiParseService`, default port 50052) wraps
+Apache POI: office document bytes in, typed structure events out. The shell
+carries it as a **native tab** like FastWARC: in shell mode the tab bar
+always shows "POI", pointing at the bridge's own `/poic.html`, whether or
+not the server is reachable (its status dot and the page's badge follow
+`GET /api/poic/status`, a `GetServiceInfo` probe with the same 1.5s deadline
+and 5s cache as the other probes; the response also carries the service and
+POI versions and the supported formats). The page is also served
+standalone at `/poic.html` when shell mode is off.
+
+The page posts document bytes (.docx/.xlsx/.pptx and the legacy OLE2 trio)
+to `POST /api/poic/parse` (same 500 MiB cap as `/api/parse`; `filename` and
+`contentType` as query params), the bridge opens the bidirectional
+`ParseDocument` stream, uploads the body in 1 MiB chunks (identity fields on
+the first, `complete` on the last), and relays the response stream as
+NDJSON: a `start` line from `DocumentInfo` (detected format plus the
+well-known metadata fields), one `preview` line per content element
+(paragraph/table/sheet/slide/embedded object, text capped at 512
+characters), an `end` line from the final `ParseStatus`, a `grpc-error`
+line on stream failure, and a final `done` summary. The contract is
+resolved from the sibling grPOIc checkout through the same
+`KNOWN_UIS`/`resolveServiceProto` map the `/api/uis` probes use, so it works
+in the plain workspace, a worktree, and the demo image's bind mounts.
 
 ## Serving under a base path (`UI_BASE`)
 
