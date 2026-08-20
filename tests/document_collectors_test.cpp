@@ -17,6 +17,7 @@
 #include "ai/pipestream/epub/v1/epub_service.grpc.pb.h"
 #include "ai/pipestream/markup/v1/markup_service.grpc.pb.h"
 #include "ai/pipestream/xml/v1/xml_service.grpc.pb.h"
+#include "fastwarc/v1/warc_service.grpc.pb.h"
 #include "grparse/document_collectors.h"
 #include "lolhtml/v1/lolhtml_service.grpc.pb.h"
 
@@ -27,6 +28,7 @@ namespace emailv1 = ai::pipestream::email::v1;
 namespace epubv1 = ai::pipestream::epub::v1;
 namespace lolv1 = lolhtml::v1;
 namespace markupv1 = ai::pipestream::markup::v1;
+namespace warcv1 = fastwarc::v1;
 namespace xmlv1 = ai::pipestream::xml::v1;
 
 namespace {
@@ -617,6 +619,204 @@ void verify_lol_html_in_band_error_is_terminal() {
           "the in-band terminal error fails the outcome with its typed code");
 }
 
+// ---- fastwarc --------------------------------------------------------------
+
+// The fastwarc wire, like lol-html's, carries no document event and no
+// terminal status: the fake serves canned record events (some batched, some
+// not) and the assertions land on the client's own fold.
+class FakeWarcService final : public warcv1::WarcService::Service {
+ public:
+  enum class Mode { kOk, kFramingError, kTransportError, kTruncated };
+  explicit FakeWarcService(Mode mode) : mode_(mode) {}
+
+  grpc::Status ParseWarc(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<warcv1::ParseWarcResponse, warcv1::ParseWarcRequest>*
+          stream) override {
+    warcv1::ParseWarcRequest request;
+    warcv1::ParseWarcConfig config;
+    std::string bytes;
+    while (stream->Read(&request)) {
+      if (request.has_config()) {
+        config = request.config();
+      } else {
+        bytes += request.chunk();
+      }
+    }
+    if (!config.parse_http() || !config.include_payload() ||
+        !config.include_headers() || config.response_batch_size() != 64 ||
+        bytes.empty()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          "fake fastwarc expects http parsing, payload and headers "
+                          "included, response batching, and archive bytes");
+    }
+    if (mode_ == Mode::kTransportError) {
+      return grpc::Status(grpc::StatusCode::INTERNAL, "socket went away");
+    }
+    warcv1::ParseWarcResponse event;
+    if (mode_ == Mode::kTruncated) {
+      // One textual record past the 64 KiB fold cap, in two chunks.
+      auto* start = event.mutable_record_start()->mutable_metadata();
+      start->set_record_type(warcv1::WARC_RECORD_TYPE_RESPONSE);
+      start->set_stream_pos(0);
+      start->set_content_length(71680);
+      start->set_is_http(true);
+      start->set_http_content_type("text/plain");
+      stream->Write(event);
+      event.Clear();
+      auto* chunk = event.mutable_payload_chunk();
+      chunk->set_offset(0);
+      chunk->set_data(std::string(65536, 'a'));
+      stream->Write(event);
+      event.Clear();
+      chunk = event.mutable_payload_chunk();
+      chunk->set_offset(65536);
+      chunk->set_data(std::string(6144, 'b'));
+      stream->Write(event);
+      event.Clear();
+      event.mutable_record_end()->set_payload_length(71680);
+      stream->Write(event);
+      return grpc::Status::OK;
+    }
+    // First record, start and first chunk packed in one batch: the client
+    // opted into batching, so the flatten is its side of the contract.
+    auto* batch = event.mutable_batch();
+    auto* start = batch->add_items()->mutable_record_start()->mutable_metadata();
+    start->set_record_type(warcv1::WARC_RECORD_TYPE_RESPONSE);
+    start->set_stream_pos(0);
+    start->set_content_length(23);
+    start->set_is_http(true);
+    start->set_http_content_type("text/html");
+    start->set_record_id("<urn:uuid:test-1>");
+    start->mutable_record_date()->set_seconds(1704164645);  // 2024-01-02T03:04:05Z
+    auto* chunk = batch->add_items()->mutable_payload_chunk();
+    chunk->set_offset(0);
+    chunk->set_data("<html>hello");
+    stream->Write(event);
+    event.Clear();
+    chunk = event.mutable_payload_chunk();
+    chunk->set_offset(11);
+    chunk->set_data(" warc</html>");
+    stream->Write(event);
+    event.Clear();
+    event.mutable_record_end()->set_payload_length(23);
+    stream->Write(event);
+    event.Clear();
+    auto* skipped = event.mutable_record_error();
+    skipped->set_stream_pos(64);
+    skipped->set_recoverable(true);
+    skipped->set_message("bad http headers");
+    stream->Write(event);
+    event.Clear();
+    if (mode_ == Mode::kFramingError) {
+      // Terminal by contract: the server sends this last and ends OK.
+      auto* fatal = event.mutable_record_error();
+      fatal->set_stream_pos(128);
+      fatal->set_recoverable(false);
+      fatal->set_message("warc framing lost");
+      stream->Write(event);
+      return grpc::Status::OK;
+    }
+    // Second record: a warcinfo with no HTTP metadata, served unbatched.
+    auto* meta = event.mutable_record_start()->mutable_metadata();
+    meta->set_record_type(warcv1::WARC_RECORD_TYPE_WARCINFO);
+    meta->set_stream_pos(100);
+    meta->set_content_length(14);
+    stream->Write(event);
+    event.Clear();
+    chunk = event.mutable_payload_chunk();
+    chunk->set_offset(0);
+    chunk->set_data("software: fake");
+    stream->Write(event);
+    event.Clear();
+    event.mutable_record_end()->set_payload_length(14);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+
+ private:
+  Mode mode_;
+};
+
+void verify_fastwarc_folds_records_and_warnings() {
+  FakeWarcService service(FakeWarcService::Mode::kOk);
+  ServerFixture server(&service);
+  const auto outcome =
+      grparse::collect_fastwarc_document(server.channel(), "WARC/1.0 fake bytes");
+  require(outcome.success, "fastwarc collection succeeds: " + outcome.error);
+  require(outcome.document.groups_size() == 2 &&
+              outcome.document.groups(0).name() == "response @ 0" &&
+              outcome.document.groups(0).parent().ref() == "#/body" &&
+              outcome.document.groups(1).name() == "warcinfo @ 100",
+          "records fold into one group per record, in stream order");
+  const auto& texts = outcome.document.texts();
+  require(texts.size() == 13, "every folded metadata and payload item lands");
+  require(texts[0].text().base().text() == "warc-type: response" &&
+              texts[0].text().base().parent().ref() == "#/groups/0" &&
+              texts[0].text().base().source(0).collector().collector() == "fastwarc",
+          "metadata items are source-tagged and parented to their record group");
+  require(texts[2].text().base().text() == "record-id: <urn:uuid:test-1>",
+          "the record id folds when declared");
+  require(texts[3].text().base().text() == "record-date: 2024-01-02T03:04:05Z",
+          "the record date folds as RFC 3339");
+  require(texts[4].text().base().text() == "http-content-type: text/html",
+          "the embedded HTTP content type folds");
+  require(texts[5].text().base().text() == "content-length: 23" &&
+              texts[6].text().base().text() == "payload-length: 23",
+          "declared and streamed lengths fold");
+  require(texts[7].text().base().text() == "<html>hello warc</html>",
+          "payload chunks reassemble across a batch boundary, in order");
+  require(outcome.document.groups(0).children_size() == 8,
+          "the response group holds its items reciprocally");
+  require(texts[8].text().base().text() == "warc-type: warcinfo" &&
+              texts[12].text().base().text() == "software: fake",
+          "a record with no HTTP metadata still folds its payload as text");
+  require(outcome.warnings.size() == 1 &&
+              outcome.warnings[0] ==
+                  "record at stream offset 64 skipped: bad http headers",
+          "a recoverable record error becomes a warning");
+}
+
+void verify_fastwarc_framing_error_keeps_records() {
+  FakeWarcService service(FakeWarcService::Mode::kFramingError);
+  ServerFixture server(&service);
+  const auto outcome =
+      grparse::collect_fastwarc_document(server.channel(), "WARC/1.0 fake bytes");
+  require(outcome.success && outcome.document.groups_size() == 1,
+          "a non-recoverable framing error keeps the records already folded");
+  require(outcome.warnings.size() == 2 &&
+              outcome.warnings[1].find("framing error at stream offset 128") !=
+                  std::string::npos,
+          "the framing error surfaces as a warning, not a failure");
+}
+
+void verify_fastwarc_transport_failure_without_records() {
+  FakeWarcService service(FakeWarcService::Mode::kTransportError);
+  ServerFixture server(&service);
+  const auto outcome =
+      grparse::collect_fastwarc_document(server.channel(), "WARC/1.0 fake bytes");
+  require(!outcome.success && outcome.code == grpc::StatusCode::UNAVAILABLE,
+          "a transport failure before any record is a failed outcome");
+  require(outcome.error.find("socket went away") != std::string::npos,
+          "the transport message survives");
+}
+
+void verify_fastwarc_truncates_payload_text() {
+  FakeWarcService service(FakeWarcService::Mode::kTruncated);
+  ServerFixture server(&service);
+  const auto outcome =
+      grparse::collect_fastwarc_document(server.channel(), "WARC/1.0 fake bytes");
+  require(outcome.success && outcome.document.groups_size() == 1,
+          "the oversized record still folds");
+  const std::string suffix =
+      "\n[fastwarc: payload truncated to the first 65536 of 71680 bytes]";
+  const std::string& payload = outcome.document.texts(5).text().base().text();
+  require(payload.size() == 65536 + suffix.size() &&
+              payload.compare(0, 16, std::string(16, 'a')) == 0 &&
+              payload.compare(65536, suffix.size(), suffix) == 0,
+          "the payload folds to the 64 KiB cap with the truncation noted");
+}
+
 }  // namespace
 
 int main() {
@@ -635,6 +835,10 @@ int main() {
     verify_lol_html_forwards_rules_and_folds();
     verify_lol_html_without_rules_never_dials();
     verify_lol_html_in_band_error_is_terminal();
+    verify_fastwarc_folds_records_and_warnings();
+    verify_fastwarc_framing_error_keeps_records();
+    verify_fastwarc_transport_failure_without_records();
+    verify_fastwarc_truncates_payload_text();
   } catch (const std::exception& failure) {
     std::cerr << "FAILED: " << failure.what() << std::endl;
     return 1;

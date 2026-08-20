@@ -13,8 +13,9 @@ re-copy the file and rebuild.
 | `epub_types.proto`, `epub_service.proto` | grpc-epub `proto/ai/pipestream/epub/v1/` (`types.proto` is renamed here to stay unambiguous; it stages back to `ai/pipestream/epub/v1/types.proto`) |
 | `markup.proto`, `markup_service.proto` | grpc-markup `proto/ai/pipestream/markup/v1/` |
 | `lolhtml_types.proto`, `lolhtml_service.proto` | grpc-lol-html `proto/lolhtml/v1/` (`types.proto` is renamed here to stay unambiguous; it stages back to `lolhtml/v1/types.proto`) |
+| `warc.proto`, `warc_service.proto` | chatnoir-resiliparse fastwarc-grpc `proto/fastwarc/v1/` (stages back to `fastwarc/v1/`) |
 
-Every one of these except the lol-html pair imports
+Every one of these except the lol-html and fastwarc pairs imports
 `ai/pipestream/document/v1/document.proto`, which
 resolves to this repository's own `document.proto` — the fleet-wide source of
 truth the collectors vendored in the first place. If a copy stops compiling

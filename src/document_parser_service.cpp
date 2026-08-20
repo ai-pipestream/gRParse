@@ -103,6 +103,7 @@ const char* collector_name(pipestream::parse::v1::Collector collector) {
     case pipestream::parse::v1::COLLECTOR_EPUB: return "epub";
     case pipestream::parse::v1::COLLECTOR_MARKUP: return "markup";
     case pipestream::parse::v1::COLLECTOR_LOL_HTML: return "lol-html";
+    case pipestream::parse::v1::COLLECTOR_FASTWARC: return "fastwarc";
     default: return "unspecified";
   }
 }
@@ -117,6 +118,7 @@ const char* collector_target_env(pipestream::parse::v1::Collector collector) {
     case pipestream::parse::v1::COLLECTOR_EPUB: return "GRPARSE_EPUB_TARGET";
     case pipestream::parse::v1::COLLECTOR_MARKUP: return "GRPARSE_MARKUP_TARGET";
     case pipestream::parse::v1::COLLECTOR_LOL_HTML: return "GRPARSE_LOL_HTML_TARGET";
+    case pipestream::parse::v1::COLLECTOR_FASTWARC: return "GRPARSE_FASTWARC_TARGET";
     default: return "";
   }
 }
@@ -177,6 +179,8 @@ CollectorOutcome run_remote_collector(
     case pipestream::parse::v1::COLLECTOR_LOL_HTML:
       return collect_lol_html_document(endpoints->channel(id),
                                        lol_html_options_json, bytes);
+    case pipestream::parse::v1::COLLECTOR_FASTWARC:
+      return collect_fastwarc_document(endpoints->channel(id), bytes);
     default:
       // Unreachable: the remote_collector guard admits only the ids the
       // switch handles.
@@ -341,6 +345,7 @@ const std::string& CollectorEndpoints::target(
     case pipestream::parse::v1::COLLECTOR_EPUB: return targets_.epub;
     case pipestream::parse::v1::COLLECTOR_MARKUP: return targets_.markup;
     case pipestream::parse::v1::COLLECTOR_LOL_HTML: return targets_.lol_html;
+    case pipestream::parse::v1::COLLECTOR_FASTWARC: return targets_.fastwarc;
     default: return kNone;
   }
 }

@@ -65,4 +65,14 @@ CollectorOutcome collect_lol_html_document(const std::shared_ptr<grpc::Channel>&
                                            const std::string& options_json,
                                            const std::string& bytes);
 
+// fastwarc-grpc, the second collector whose stream carries no document
+// event: it reports WARC records as they parse, so this client folds the
+// record stream into a Document here — one group per record in stream
+// order, the record's metadata and (when it reads as text) its payload as
+// source-tagged text items. A non-recoverable framing error ends the fold
+// but keeps the records already collected: a clipped archive is a partial
+// success, not a failure.
+CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>& channel,
+                                           const std::string& bytes);
+
 }  // namespace grparse

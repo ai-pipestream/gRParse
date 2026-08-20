@@ -90,6 +90,14 @@ pipestream::parse::v1::Collector route_collector(const std::string& filename,
   const std::string extension =
       lowercase(std::filesystem::path(filename).extension().string());
   const std::string type = lowercase(content_type);
+  // WARC before everything content-sniffable: the archive wraps HTTP
+  // responses whose bodies are html/xml/json, and routing on the wrapper's
+  // own name keeps the container with the collector that unpacks it.
+  if (extension == ".warc" || ends_with(lowercase(filename), ".warc.gz") ||
+      ends_with(lowercase(filename), ".warc.zst") ||
+      ends_with(lowercase(filename), ".warc.lz4") || type == "application/warc") {
+    return pipestream::parse::v1::COLLECTOR_FASTWARC;
+  }
   if (extension == ".epub" || type == "application/epub+zip") {
     return pipestream::parse::v1::COLLECTOR_EPUB;
   }

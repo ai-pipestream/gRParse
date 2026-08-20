@@ -1,12 +1,14 @@
 #include "grparse/document_collectors.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <map>
 #include <utility>
 #include <vector>
 
 #include <google/protobuf/util/json_util.h>
+#include <google/protobuf/util/time_util.h>
 
 #include "ai/pipestream/asr/v1/asr_service.grpc.pb.h"
 #include "ai/pipestream/ebcdic/v1/ebcdic_service.grpc.pb.h"
@@ -14,6 +16,7 @@
 #include "ai/pipestream/epub/v1/epub_service.grpc.pb.h"
 #include "ai/pipestream/markup/v1/markup_service.grpc.pb.h"
 #include "ai/pipestream/xml/v1/xml_service.grpc.pb.h"
+#include "fastwarc/v1/warc_service.grpc.pb.h"
 #include "lolhtml/v1/lolhtml_service.grpc.pb.h"
 
 namespace asrv1 = ai::pipestream::asr::v1;
@@ -23,6 +26,7 @@ namespace emailv1 = ai::pipestream::email::v1;
 namespace epubv1 = ai::pipestream::epub::v1;
 namespace lolv1 = lolhtml::v1;
 namespace markupv1 = ai::pipestream::markup::v1;
+namespace warcv1 = fastwarc::v1;
 namespace xmlv1 = ai::pipestream::xml::v1;
 
 namespace grparse {
@@ -478,6 +482,206 @@ CollectorOutcome collect_lol_html_document(const std::shared_ptr<grpc::Channel>&
     outcome.error = "lol-html collector: stream ended without a terminal event";
     outcome.code = grpc::StatusCode::UNAVAILABLE;
     return outcome;
+  }
+  outcome.success = true;
+  return outcome;
+}
+
+CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>& channel,
+                                           const std::string& bytes) {
+  auto stub = warcv1::WarcService::NewStub(channel);
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + kDeadline);
+  auto stream = stub->ParseWarc(&context);
+
+  warcv1::ParseWarcRequest request;
+  warcv1::ParseWarcConfig* config = request.mutable_config();
+  // Everything the fold needs is opt-in-able but defaults on; set it anyway
+  // so the client does not silently change shape if a server default moves.
+  // Compression detection stays unset, which enables magic-byte sniffing of
+  // gzip/zstd/lz4 streams. Batching cuts the per-record message count on
+  // record-dense archives; batches flush as they fill, so latency is kept.
+  config->set_parse_http(true);
+  config->set_include_payload(true);
+  config->set_include_headers(true);
+  config->set_response_batch_size(64);
+  upload_stream(*stream, request, bytes, /*always_send_chunk=*/false,
+                [&bytes](warcv1::ParseWarcRequest& frame, size_t offset,
+                         size_t length, bool /*last*/) {
+                  frame.set_chunk(bytes.data() + offset, length);
+                });
+
+  // Like lol-html, this wire carries no document event and no terminal
+  // status: the record stream IS the product, so the fold happens here. One
+  // group per record in stream order, the record's salient metadata as
+  // source-tagged text items, plus the payload itself when it reads as text.
+  CollectorOutcome outcome;
+  docv1::Document& document = outcome.document;
+  document.mutable_body()->set_self_ref("#/body");
+  document.mutable_body()->set_content_layer(docv1::CONTENT_LAYER_BODY);
+  document.mutable_furniture()->set_self_ref("#/furniture");
+  document.mutable_furniture()->set_content_layer(docv1::CONTENT_LAYER_FURNITURE);
+
+  // Payload text is capped: a WARC payload can be a whole video, and the
+  // Document model is a text plane, not an archive. The cap matches the
+  // server's default payload chunk, and record_end.payload_length still
+  // reports the full size for the truncation note.
+  constexpr size_t kPayloadTextBytes = 64U * 1024U;
+
+  const auto add_text = [&document](int group, std::string text) {
+    auto* base = document.add_texts()->mutable_text()->mutable_base();
+    base->set_self_ref("#/texts/" + std::to_string(document.texts_size() - 1));
+    base->mutable_parent()->set_ref("#/groups/" + std::to_string(group));
+    base->set_content_layer(docv1::CONTENT_LAYER_BODY);
+    base->set_label(docv1::DOC_ITEM_LABEL_TEXT);
+    base->set_orig(text);
+    base->set_text(std::move(text));
+    base->add_source()->mutable_collector()->set_collector("fastwarc");
+    document.mutable_groups(group)->add_children()->set_ref(base->self_ref());
+  };
+
+  // A record reads as text when its embedded HTTP Content-Type says so, or
+  // when the record was not an HTTP message at all (warcinfo, metadata, and
+  // DNS records are text by convention). Binary HTTP payloads stay out; the
+  // group's length items still record them.
+  const auto looks_textual = [](const warcv1::RecordMetadata& metadata) {
+    if (!metadata.has_http_content_type()) return true;
+    const std::string& type = metadata.http_content_type();
+    return type.rfind("text/", 0) == 0 || type.find("json") != std::string::npos ||
+           type.find("xml") != std::string::npos || type.find("html") != std::string::npos;
+  };
+
+  const auto fold_record = [&document, &add_text, &looks_textual](
+                               const warcv1::RecordMetadata& metadata,
+                               const std::string& payload, uint64_t payload_length) {
+    const int index = document.groups_size();
+    docv1::GroupItem* group = document.add_groups();
+    group->set_self_ref("#/groups/" + std::to_string(index));
+    group->mutable_parent()->set_ref("#/body");
+    group->set_content_layer(docv1::CONTENT_LAYER_BODY);
+    std::string type_name = warcv1::WarcRecordType_Name(metadata.record_type());
+    const std::string prefix = "WARC_RECORD_TYPE_";
+    if (type_name.rfind(prefix, 0) == 0) type_name.erase(0, prefix.size());
+    if (type_name.empty()) type_name = std::to_string(metadata.record_type());
+    std::transform(type_name.begin(), type_name.end(), type_name.begin(),
+                   [](unsigned char letter) { return std::tolower(letter); });
+    group->set_name(type_name + " @ " + std::to_string(metadata.stream_pos()));
+    group->set_label(docv1::GROUP_LABEL_SECTION);
+    document.mutable_body()->add_children()->set_ref(group->self_ref());
+
+    add_text(index, "warc-type: " + type_name);
+    add_text(index, "stream-pos: " + std::to_string(metadata.stream_pos()));
+    if (metadata.has_record_id()) {
+      add_text(index, "record-id: " + metadata.record_id());
+    }
+    if (metadata.has_record_date()) {
+      add_text(index, "record-date: " +
+                          google::protobuf::util::TimeUtil::ToString(metadata.record_date()));
+    }
+    if (metadata.has_http_content_type()) {
+      add_text(index, "http-content-type: " + metadata.http_content_type());
+    }
+    add_text(index, "content-length: " + std::to_string(metadata.content_length()));
+    add_text(index, "payload-length: " + std::to_string(payload_length));
+    if (looks_textual(metadata) && payload_length > 0) {
+      std::string text = payload;
+      if (payload_length > payload.size()) {
+        text += "\n[fastwarc: payload truncated to the first " +
+                std::to_string(kPayloadTextBytes) + " of " +
+                std::to_string(payload_length) + " bytes]";
+      }
+      add_text(index, std::move(text));
+    }
+  };
+
+  // The fold's open-record state: a record_start opens it, payload chunks
+  // accumulate (capped), record_end closes and folds it. Chunks arriving
+  // outside a record are a server bug and dropped.
+  warcv1::RecordMetadata current;
+  bool record_open = false;
+  std::string payload;
+  const auto handle_event = [&](const warcv1::ParseWarcResponse& event) {
+    switch (event.kind_case()) {
+      case warcv1::ParseWarcResponse::kRecordStart:
+        if (record_open) {
+          // A start while a record is open means a record_end was lost;
+          // fold what arrived rather than dropping it.
+          fold_record(current, payload, current.content_length());
+          outcome.warnings.push_back("record at stream offset " +
+                                     std::to_string(current.stream_pos()) +
+                                     " closed without a record_end");
+        }
+        current = event.record_start().metadata();
+        record_open = true;
+        payload.clear();
+        break;
+      case warcv1::ParseWarcResponse::kPayloadChunk:
+        if (!record_open) break;
+        if (payload.size() < kPayloadTextBytes) {
+          const std::string& data = event.payload_chunk().data();
+          payload.append(data, 0, std::min(data.size(), kPayloadTextBytes - payload.size()));
+        }
+        break;
+      case warcv1::ParseWarcResponse::kRecordEnd:
+        if (!record_open) break;
+        fold_record(current, payload, event.record_end().payload_length());
+        record_open = false;
+        break;
+      case warcv1::ParseWarcResponse::kRecordError: {
+        const auto& error = event.record_error();
+        if (error.recoverable()) {
+          // A record whose HTTP headers did not parse: the stream carries
+          // on, so the fold does too, with the failure noted.
+          outcome.warnings.push_back("record at stream offset " +
+                                     std::to_string(error.stream_pos()) +
+                                     " skipped: " + error.message());
+        } else {
+          // Framing is lost; the server ends the stream after this. What
+          // was already parsed is kept: a clipped archive is a partial
+          // success, matching how the demo treats truncated captures.
+          outcome.warnings.push_back("archive truncated by a framing error at stream offset " +
+                                     std::to_string(error.stream_pos()) + ": " +
+                                     error.message());
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  };
+
+  warcv1::ParseWarcResponse event;
+  while (stream->Read(&event)) {
+    if (event.has_batch()) {
+      // The client opted into batching, so it owes the wire a flatten.
+      // Items are stream-ordered and never nest, by contract.
+      for (const auto& item : event.batch().items()) handle_event(item);
+    } else {
+      handle_event(event);
+    }
+    event.Clear();
+  }
+  if (record_open) {
+    // The stream closed inside a record sequence; fold the partial record
+    // instead of discarding it.
+    fold_record(current, payload, current.content_length());
+    outcome.warnings.push_back("stream ended inside the record at stream offset " +
+                               std::to_string(current.stream_pos()));
+  }
+
+  const grpc::Status status = stream->Finish();
+  if (!status.ok()) {
+    if (document.groups_size() == 0) {
+      // Nothing parsed at all: the transport failure is the outcome.
+      outcome.error = std::string("fastwarc collector: ") + status.error_message();
+      outcome.code = map_code(status.error_code());
+      return outcome;
+    }
+    // Records already folded survive a mid-stream transport failure, the
+    // same partial-success reading the framing error above gets.
+    outcome.warnings.push_back(std::string("stream failed after ") +
+                               std::to_string(document.groups_size()) +
+                               " records: " + status.error_message());
   }
   outcome.success = true;
   return outcome;

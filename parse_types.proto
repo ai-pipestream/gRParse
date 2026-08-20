@@ -197,6 +197,11 @@ enum Collector {
   // lol_html_options_json; HTML with no selection routes to
   // COLLECTOR_MARKUP for whole-document conversion instead.
   COLLECTOR_LOL_HTML = 11;
+  // The fastwarc-grpc WARC archive collector. The default for .warc and its
+  // compressed forms (.warc.gz, .warc.zst, .warc.lz4); requires a configured
+  // endpoint. The collector's record stream is folded into a Document
+  // client-side, one group per archive record.
+  COLLECTOR_FASTWARC = 12;
 }
 
 // ============================================================================
@@ -428,7 +433,8 @@ message ConvertDocumentOptions {
   // Custom picture classification configuration
   optional google.protobuf.Struct picture_classification_custom_config = 43;
   // The collectors to run for this parse. Empty routes by format: office
-  // formats to COLLECTOR_LIBREOFFICE, audio and video to COLLECTOR_ASR,
+  // formats to COLLECTOR_LIBREOFFICE, WARC archives to COLLECTOR_FASTWARC,
+  // audio and video to COLLECTOR_ASR,
   // .eml/.msg to COLLECTOR_EMAIL, XML to COLLECTOR_XML, .epub to
   // COLLECTOR_EPUB, and PDF and raster inputs to COLLECTOR_GRPARSE_CV.
   // Every selected collector's output is merged additively, source-tagged;

@@ -108,6 +108,21 @@ void verify_routing() {
           "ebcdic never routes by format; only an explicit selection reaches it");
   require(grparse::route_collector("data.csv", "") == parsev1::COLLECTOR_LIBREOFFICE,
           "csv stays an office format even though it is text");
+  require(grparse::route_collector("crawl.warc", "") == parsev1::COLLECTOR_FASTWARC,
+          "warc routes to the fastwarc collector");
+  require(grparse::route_collector("crawl.warc.gz", "") == parsev1::COLLECTOR_FASTWARC,
+          "gzipped warc routes to the fastwarc collector");
+  require(grparse::route_collector("CRAWL.WARC.ZST", "") == parsev1::COLLECTOR_FASTWARC,
+          "zstd warc routes to the fastwarc collector, case-insensitively");
+  require(grparse::route_collector("crawl.warc.lz4", "") == parsev1::COLLECTOR_FASTWARC,
+          "lz4 warc routes to the fastwarc collector");
+  require(grparse::route_collector("upload.bin", "application/warc") ==
+              parsev1::COLLECTOR_FASTWARC,
+          "the warc content type routes without the extension");
+  require(grparse::route_collector("data.gz", "") == parsev1::COLLECTOR_GRPARSE_CV,
+          "a bare .gz is not a warc archive");
+  require(grparse::route_collector("archive.tar.gz", "") == parsev1::COLLECTOR_XML,
+          "a tar.gz still routes to the xml collector, not fastwarc");
 
   namespace markupv1 = ai::pipestream::markup::v1;
   require(grparse::markup_format_for("notes.md", "") ==

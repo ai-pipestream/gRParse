@@ -189,6 +189,7 @@ file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/ebcdic/v1")
 file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/epub/v1")
 file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/markup/v1")
 file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/lolhtml/v1")
+file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/fastwarc/v1")
 configure_file(document.proto
   "${STAGED_PROTO_DIR}/ai/pipestream/document/v1/document.proto" COPYONLY)
 configure_file(parse_types.proto
@@ -225,6 +226,10 @@ configure_file(collectors/lolhtml_types.proto
   "${STAGED_PROTO_DIR}/lolhtml/v1/types.proto" COPYONLY)
 configure_file(collectors/lolhtml_service.proto
   "${STAGED_PROTO_DIR}/lolhtml/v1/lolhtml_service.proto" COPYONLY)
+configure_file(collectors/warc.proto
+  "${STAGED_PROTO_DIR}/fastwarc/v1/warc.proto" COPYONLY)
+configure_file(collectors/warc_service.proto
+  "${STAGED_PROTO_DIR}/fastwarc/v1/warc_service.proto" COPYONLY)
 
 set(DOCUMENT_PROTO "${STAGED_PROTO_DIR}/ai/pipestream/document/v1/document.proto")
 set(PARSE_TYPES_PROTO "${STAGED_PROTO_DIR}/ai/pipestream/parse/v1/parse_types.proto")
@@ -243,7 +248,9 @@ set(COLLECTOR_PROTOS
   "${STAGED_PROTO_DIR}/ai/pipestream/markup/v1/markup.proto"
   "${STAGED_PROTO_DIR}/ai/pipestream/markup/v1/markup_service.proto"
   "${STAGED_PROTO_DIR}/lolhtml/v1/types.proto"
-  "${STAGED_PROTO_DIR}/lolhtml/v1/lolhtml_service.proto")
+  "${STAGED_PROTO_DIR}/lolhtml/v1/lolhtml_service.proto"
+  "${STAGED_PROTO_DIR}/fastwarc/v1/warc.proto"
+  "${STAGED_PROTO_DIR}/fastwarc/v1/warc_service.proto")
 set(COLLECTOR_GENERATED
   "${GENERATED_DIR}/ai/pipestream/asr/v1/asr_service.pb.cc"
   "${GENERATED_DIR}/ai/pipestream/asr/v1/asr_service.pb.h"
@@ -292,7 +299,15 @@ set(COLLECTOR_GENERATED
   "${GENERATED_DIR}/lolhtml/v1/lolhtml_service.pb.cc"
   "${GENERATED_DIR}/lolhtml/v1/lolhtml_service.pb.h"
   "${GENERATED_DIR}/lolhtml/v1/lolhtml_service.grpc.pb.cc"
-  "${GENERATED_DIR}/lolhtml/v1/lolhtml_service.grpc.pb.h")
+  "${GENERATED_DIR}/lolhtml/v1/lolhtml_service.grpc.pb.h"
+  "${GENERATED_DIR}/fastwarc/v1/warc.pb.cc"
+  "${GENERATED_DIR}/fastwarc/v1/warc.pb.h"
+  "${GENERATED_DIR}/fastwarc/v1/warc.grpc.pb.cc"
+  "${GENERATED_DIR}/fastwarc/v1/warc.grpc.pb.h"
+  "${GENERATED_DIR}/fastwarc/v1/warc_service.pb.cc"
+  "${GENERATED_DIR}/fastwarc/v1/warc_service.pb.h"
+  "${GENERATED_DIR}/fastwarc/v1/warc_service.grpc.pb.cc"
+  "${GENERATED_DIR}/fastwarc/v1/warc_service.grpc.pb.h")
 add_custom_command(
   OUTPUT "${GENERATED_DIR}/ai/pipestream/document/v1/document.pb.cc"
          "${GENERATED_DIR}/ai/pipestream/document/v1/document.pb.h"
@@ -326,6 +341,7 @@ add_custom_command(
           collectors/epub_types.proto collectors/epub_service.proto
           collectors/markup.proto collectors/markup_service.proto
           collectors/lolhtml_types.proto collectors/lolhtml_service.proto
+          collectors/warc.proto collectors/warc_service.proto
           protoc grpc_cpp_plugin
   VERBATIM)
 # STATIC explicitly, same reason as grparse_core below.
@@ -361,7 +377,11 @@ add_library(grparse_proto STATIC
   "${GENERATED_DIR}/lolhtml/v1/types.pb.cc"
   "${GENERATED_DIR}/lolhtml/v1/types.grpc.pb.cc"
   "${GENERATED_DIR}/lolhtml/v1/lolhtml_service.pb.cc"
-  "${GENERATED_DIR}/lolhtml/v1/lolhtml_service.grpc.pb.cc")
+  "${GENERATED_DIR}/lolhtml/v1/lolhtml_service.grpc.pb.cc"
+  "${GENERATED_DIR}/fastwarc/v1/warc.pb.cc"
+  "${GENERATED_DIR}/fastwarc/v1/warc.grpc.pb.cc"
+  "${GENERATED_DIR}/fastwarc/v1/warc_service.pb.cc"
+  "${GENERATED_DIR}/fastwarc/v1/warc_service.grpc.pb.cc")
 target_include_directories(grparse_proto PUBLIC "${GENERATED_DIR}")
 target_link_libraries(grparse_proto PUBLIC grpc++)
 
