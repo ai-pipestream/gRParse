@@ -309,6 +309,19 @@ docker run --rm --device /dev/dri -v /path/to/models:/models:ro \
   -p 50051:50051 grparse-openvino
 ```
 
+The built image is published as `pipestreamai/grparse:latest-openvino`.
+If the container user cannot open the render node, pass the host's render
+GID explicitly (for example `--group-add 990`; a named `render` group does
+not exist inside the image).
+
+Verified on an Arc B70 (Battlemage): detection/recognition/classification,
+layout, and figure classification all compile and run on the GPU plugin.
+One model does not: `slanet_plus.onnx` uses a dynamic-rank `While`/`Loop`
+the OpenVINO GPU plugin rejects, so a default `GPU` device fails loudly at
+startup. Set `GRPARSE_TABLE_STRUCTURE=off` on this hardware (raster table
+cells still come through geometry) until the model is rebuilt with static
+ranks.
+
 The image defaults to `GRPARSE_ORT_EP=openvino` with
 `GRPARSE_OPENVINO_DEVICE=GPU`; set the device to `GPU.<n>`, `CPU`, `NPU`, or
 an `AUTO:`/`HETERO:` list. Startup fails loudly if the device cannot
