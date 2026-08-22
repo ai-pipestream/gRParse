@@ -10,6 +10,44 @@ C++ gRPC document parse service: **diskless PDF/image to page-streamed protobuf*
 
 gRParse turns PDF pages and raster images into text with the maintained C++ [RapidOcrOnnx](https://github.com/RapidAI/RapidOcrOnnx) implementation. It targets NVIDIA CUDA through ONNX Runtime. The host was detected with an NVIDIA GeForce RTX 4080 SUPER; the included container exposes it with Compose's `gpus: all` setting.
 
+## Architecture
+
+The parse pipeline: document bytes stream in over gRPC (nothing touches
+disk), route by format — with grpc-pdf-inspector as an optional routing
+oracle for PDFs — into one or more collectors, and every collector's output
+merges additively into one page-streamed `Document`:
+
+```mermaid
+flowchart LR
+    in["document bytes<br/>(gRPC stream, diskless)"] --> route["format routing<br/>+ optional PDF inspector oracle"]
+    route --> cv["CV collector (in-process)<br/>Poppler render / OpenCV decode<br/>RapidOCR + PicoDet layout<br/>SLANet tables, figure classes, ZXing barcodes"]
+    cv --- ort["ONNX Runtime<br/>CUDA or OpenVINO"]
+    route --> lo["libreoffice collector<br/>(office formats; typed events<br/>folded client-side, renders re-enter CV)"]
+    route --> lol["lol-html collector<br/>(explicit CSS-selector extraction,<br/>folded client-side)"]
+    route --> fw["fastwarc collector<br/>(WARC archives,<br/>folded client-side)"]
+    route --> rest["email / xml / epub / markup /<br/>ebcdic / asr / pdf collectors<br/>(each emits its own source-tagged Document)"]
+    cv --> merge["additive merge<br/>(CollectorSource-tagged items,<br/>references renumber, no overwrites)"]
+    lo --> merge
+    lol --> merge
+    fw --> merge
+    rest --> merge
+    merge --> out["page-streamed<br/>ai.pipestream.document.v1.Document<br/>(page / collector / complete events)"]
+```
+
+The demo shell (`examples/web-demo`) fronts the whole grpc-services family:
+registered frontends proxy under `/ui/<name>/`, and headless services get
+native tabs bridged in the shell's own server:
+
+```mermaid
+flowchart LR
+    browser["browser<br/>(tab bar + iframes, NDJSON)"] --> shell["demo shell<br/>examples/web-demo server.js"]
+    shell -- "/api/parse relay" --> grparse["gRParse :50051"]
+    shell -- "/ui/&lt;name&gt;/ reverse proxy" --> proxied["proxied frontends<br/>lol-html, libreoffice, calamine, ..."]
+    proxied --> theirs["their gRPC services"]
+    shell -- "native bridges<br/>/api/fastwarc /api/poic /api/asr<br/>/api/enrich /api/vlm-convert" --> native["fastwarc-grpc :50061, grPOIc :50052,<br/>grpc-asr :50055, grpc-enrich :50056,<br/>grpc-vlm-convert :50058"]
+    shell -. "/api/uis GetServiceInfo probes" .-> theirs
+```
+
 ## Run
 
 1. Download the four model files listed in [models/README.md](models/README.md).
