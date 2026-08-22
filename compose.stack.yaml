@@ -305,6 +305,7 @@ services:
     environment:
       PDF_ADDR: "pdf-inspector:50067"
       UI_BASE: "/ui/pdf"
+      PORT: "8080"   # the viewer's own default is 8093; the shell proxies :8080
     expose:
       - "8080"
     depends_on:
