@@ -19,9 +19,9 @@ const grpc = require("@grpc/grpc-js");
 const protoLoader = require("@grpc/proto-loader");
 
 const TARGET = process.env.GRPARSE_TARGET || "localhost:50051";
-// The chatnoir fastwarc-grpc server (fastwarc.v1.WarcService) backing the
+// The standalone fastwarc-grpc server (fastwarc.v1.WarcService) backing the
 // native FastWARC tab; see the bridge section below.
-const FASTWARC_TARGET = process.env.FASTWARC_TARGET || "127.0.0.1:50061";
+const FASTWARC_TARGET = process.env.FASTWARC_TARGET || "127.0.0.1:50060";
 // The grPOIc server (ai.pipestream.poi.v1.PoiParseService, Apache POI office
 // parsing) backing the native POI tab; see the bridge section below.
 const POIC_TARGET = process.env.POIC_TARGET || "127.0.0.1:50052";
@@ -480,11 +480,15 @@ function mapEvent(event) {
 }
 
 // ---------------------------------------------------------------------------
-// FastWARC bridge: the chatnoir fastwarc-grpc server (fastwarc.v1.WarcService)
+// FastWARC bridge: the standalone fastwarc-grpc server (fastwarc.v1.WarcService)
 // has no web UI of its own, so the shell carries it as a native tab
 // (public/fastwarc.html) backed by the two /api/fastwarc endpoints below: a
-// health probe for the status badge and an NDJSON relay of the bidirectional
-// ParseWarc stream.
+// GetServiceInfo probe for the status badge (grpc.health.v1 as fallback) and
+// an NDJSON relay of the bidirectional ParseWarc stream. The contract loads
+// from the sibling fastwarc-grpc checkout through KNOWN_UIS/resolveServiceProto
+// like the other native tabs; the vendored collectors/*.proto copies speak the
+// legacy chatnoir dialect (same package, incompatible wire) and stay reserved
+// for the C++ collector's own client.
 // ---------------------------------------------------------------------------
 
 const FASTWARC_CHUNK_BYTES = 256 * 1024;
@@ -492,7 +496,7 @@ const FASTWARC_CHUNK_BYTES = 256 * 1024;
 const PREVIEW_BYTES = 4 * 1024;
 
 // The server speaks grpc.health.v1 but the repo does not vendor the proto;
-// it is small enough to carry inline and stage next to the WARC contract.
+// it is small enough to carry inline and stage into a temp dir at first use.
 const HEALTH_PROTO = `syntax = "proto3";
 package grpc.health.v1;
 service Health {
@@ -512,30 +516,24 @@ message HealthCheckResponse {
 }
 `;
 
-// Staged like stageProtos() above: the vendored collectors/*.proto import
-// each other under their upstream fastwarc/v1/ layout, so copy them into
-// that shape before loading. Lazy (first /api/fastwarc call) so a missing
-// contract never stops the demo from booting.
+// The contract resolves from the sibling fastwarc-grpc checkout (or the
+// compose image's bind-mounted /fastwarc-grpc/proto) through the KNOWN_UIS
+// "fastwarc" entry; the grpc.health.v1 fallback probe is staged from the
+// inline copy above. Lazy (first /api/fastwarc call) so a missing contract
+// never stops the demo from booting.
 let fastwarcClientsCache = null;
 
 function fastwarcClients() {
   if (fastwarcClientsCache) return fastwarcClientsCache;
   try {
-    const staged = fs.mkdtempSync(path.join(os.tmpdir(), "fastwarc-protos-"));
-    for (const file of ["warc.proto", "warc_service.proto"]) {
-      const target = path.join(staged, "fastwarc", "v1", file);
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.copyFileSync(path.join(PROTO_ROOT, "collectors", file), target);
-    }
+    const resolved = resolveServiceProto(KNOWN_UIS.fastwarc);
+    const staged = fs.mkdtempSync(path.join(os.tmpdir(), "fastwarc-health-"));
     const healthTarget = path.join(staged, "grpc", "health", "v1", "health.proto");
     fs.mkdirSync(path.dirname(healthTarget), { recursive: true });
     fs.writeFileSync(healthTarget, HEALTH_PROTO);
     const loaded = protoLoader.loadSync(
-      [
-        path.join(staged, "fastwarc", "v1", "warc_service.proto"),
-        healthTarget,
-      ],
-      { includeDirs: [staged], enums: String, longs: Number, defaults: true, oneofs: true },
+      [resolved.file, healthTarget],
+      { includeDirs: [...resolved.includeDirs, staged], enums: String, longs: Number, defaults: true, oneofs: true },
     );
     const definition = grpc.loadPackageDefinition(loaded);
     fastwarcClientsCache = {
@@ -549,9 +547,11 @@ function fastwarcClients() {
   return fastwarcClientsCache;
 }
 
-// One live health call behind a short cache, mirroring the /api/uis probes:
-// 1.5s deadline so a dead server costs the badge that long at most, and
-// failure reports unreachable instead of breaking the page.
+// One live info call behind a short cache, mirroring the other native tabs:
+// GetServiceInfo carries the name/version/UiInfo for the badge; when it
+// fails (an older server without the RPC) the standard health check decides
+// plain reachability. 1.5s deadline so a dead server costs the badge that
+// long at most, and failure reports unreachable instead of breaking the page.
 let fastwarcStatusCache = null;
 const FASTWARC_STATUS_CACHE_MS = 5000;
 
@@ -562,13 +562,27 @@ function probeFastwarc() {
   return new Promise((resolve) => {
     let settled = false;
     const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
+    const healthCheck = () => {
+      try {
+        clients.health.Check({ service: "" }, { deadline: Date.now() + 1500 }, (error, health) => {
+          if (error) { finish(fallback); return; }
+          finish({ reachable: health.status === "SERVING" });
+        });
+      } catch (_error) {
+        finish(fallback);
+      }
+    };
     try {
-      clients.health.Check({ service: "fastwarc.v1.WarcService" }, { deadline: Date.now() + 1500 }, (error, health) => {
-        if (error) { finish(fallback); return; }
-        finish({ reachable: health.status === "SERVING" });
+      clients.warc.GetServiceInfo({}, { deadline: Date.now() + 1500 }, (error, info) => {
+        if (error) { healthCheck(); return; }
+        finish({
+          reachable: true,
+          name: info.name || undefined,
+          version: info.version || undefined,
+        });
       });
     } catch (_error) {
-      finish(fallback);
+      healthCheck();
     }
     setTimeout(() => finish(fallback), 2000).unref();
   });
@@ -583,6 +597,13 @@ async function fastwarcStatus() {
 
 function recordTypeLabel(value) {
   return typeof value === "string" ? value.replace("WARC_RECORD_TYPE_", "").toLowerCase() : "unknown";
+}
+
+// Digest verification outcome for the page's digests column; unspecified
+// (verification not requested) stays off the wire entirely.
+function digestStatusLabel(value) {
+  if (typeof value !== "string" || value === "DIGEST_STATUS_UNSPECIFIED") return undefined;
+  return value.replace("DIGEST_STATUS_", "").toLowerCase();
 }
 
 // A payload is previewed only when it reads as text: an HTTP content type of
@@ -1095,13 +1116,16 @@ surface.post(
     const deadline = Date.now() + 10 * 60 * 1000;
     const call = clients.warc.ParseWarc({ deadline });
 
-    const handleEvent = (event) => {
+    // Responses arrive one protocol event per message, ordered per record:
+    // record_start, payload chunks, record_end; record_error for failures.
+    call.on("data", (event) => {
       if (event.recordStart) {
         const metadata = event.recordStart.metadata || {};
         records += 1;
         preview = { wanted: previewable(metadata), chunks: [], bytes: 0 };
         send({
           type: "start",
+          recordIndex: Number(metadata.recordIndex) || 0,
           recordType: recordTypeLabel(metadata.recordType),
           streamPos: metadata.streamPos,
           contentLength: metadata.contentLength,
@@ -1128,10 +1152,16 @@ surface.post(
           send({ type: "preview", text: Buffer.concat(preview.chunks).toString("utf8") });
         }
         preview = null;
-        // The server's count is authoritative: it also covers runs with
-        // include_payload off, where no chunks stream at all.
+        // The server's count is authoritative even if a preview truncated.
         payloadBytes += Number(event.recordEnd.payloadLength) || 0;
-        send({ type: "end", payloadLength: event.recordEnd.payloadLength });
+        send({
+          type: "end",
+          recordIndex: Number(event.recordEnd.recordIndex) || 0,
+          payloadLength: event.recordEnd.payloadLength,
+          blockDigest: digestStatusLabel(event.recordEnd.blockDigestStatus),
+          payloadDigest: digestStatusLabel(event.recordEnd.payloadDigestStatus),
+          digestDetail: event.recordEnd.digestDetail || undefined,
+        });
         return;
       }
       if (event.recordError) {
@@ -1142,16 +1172,6 @@ surface.post(
           recoverable: Boolean(failure.recoverable),
           message: failure.message,
         });
-      }
-    };
-
-    // The server packs events into `batch` messages (response_batch_size);
-    // flatten them so the relay sees one event at a time.
-    call.on("data", (message) => {
-      if (message.batch) {
-        for (const item of message.batch.items || []) handleEvent(item);
-      } else {
-        handleEvent(message);
       }
     });
     // A non-recoverable record_error already ended the upstream stream; the
@@ -1167,9 +1187,6 @@ surface.post(
       config: {
         parseHttp: flag("parse_http", true),
         verifyDigests: flag("verify_digests", false),
-        includePayload: flag("include_payload", true),
-        includeHeaders: true,
-        responseBatchSize: 64,
       },
     });
     for (let offset = 0; offset < body.length; offset += FASTWARC_CHUNK_BYTES) {

@@ -8,10 +8,9 @@ RUN npm install --omit=dev
 COPY examples/web-demo/server.js ./
 COPY examples/web-demo/public ./public
 COPY document.proto parse_types.proto parse.proto parse_stream.proto /protos/
-# The FastWARC bridge stages the vendored collector contract from
-# $GRPARSE_PROTO_DIR/collectors; without it the fastwarc tab is dead in
-# the containerized shell while working fine from a source checkout.
-COPY collectors/warc.proto collectors/warc_service.proto /protos/collectors/
+# The FastWARC bridge resolves the fastwarc-grpc contract like the other
+# native tabs: from the sibling checkout in dev, or the compose stack's
+# bind mount at /fastwarc-grpc/proto in this image.
 ENV GRPARSE_PROTO_DIR=/protos GRPARSE_TARGET=grparse:50051 PORT=8080
 EXPOSE 8080
 USER node

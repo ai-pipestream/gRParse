@@ -63,7 +63,7 @@ Environment:
 | `UI_BASE` | *(empty)* | Mount prefix the whole page is served under, e.g. `/ui/grparse` |
 | `DEMO_UIS` | *(empty)* | Shell registry, `name=grpc_addr@ui_addr` comma-separated (see below) |
 | `DEMO_PROTO_DIR` | *(empty)* | Override directory with one `<name>.proto` per registry entry |
-| `FASTWARC_TARGET` | `127.0.0.1:50061` | fastwarc-grpc endpoint backing the native FastWARC tab (see below) |
+| `FASTWARC_TARGET` | `127.0.0.1:50060` | fastwarc-grpc endpoint backing the native FastWARC tab (see below) |
 | `POIC_TARGET` | `127.0.0.1:50052` | grPOIc endpoint backing the native POI tab (see below) |
 | `ASR_TARGET` | `127.0.0.1:50055` | grpc-asr endpoint backing the native ASR tab (see below) |
 | `ENRICH_TARGET` | `127.0.0.1:50056` | grpc-enrich endpoint backing the native Enrich tab (see below) |
@@ -124,25 +124,28 @@ the known services.
 
 ## Native FastWARC tab
 
-The chatnoir fastwarc-grpc server (`fastwarc.v1.WarcService`, default port
-50061) has no web frontend and no info RPC, so it cannot be a `DEMO_UIS`
-proxy tab. Instead the shell carries it as a **native tab**: in shell mode
-the tab bar always shows "FastWARC" next to the registry tabs, pointing at
-the bridge's own `/fastwarc.html`, whether or not the server is reachable
-(its status dot and the page's badge follow `GET /api/fastwarc/status`, a
-`grpc.health.v1.Health/Check` probe with the same 1.5s deadline and 5s cache
-as the `/api/uis` probes). The page is also served standalone at
+The standalone fastwarc-grpc server (`fastwarc.v1.WarcService`, default port
+50060) has no web frontend of its own, so the shell carries it as a
+**native tab**: in shell mode the tab bar always shows "FastWARC" next to
+the registry tabs, pointing at the bridge's own `/fastwarc.html`, whether or
+not the server is reachable (its status dot and the page's badge follow
+`GET /api/fastwarc/status`, a `GetServiceInfo` probe with a
+`grpc.health.v1.Health/Check` fallback, at the same 1.5s deadline and 5s
+cache as the `/api/uis` probes). The page is also served standalone at
 `/fastwarc.html` when shell mode is off.
 
 The page posts archive bytes to `POST /api/fastwarc/parse` (same 500 MiB cap
-as `/api/parse`; `parse_http`/`verify_digests`/`include_payload` as query
-flags), the bridge opens the bidirectional `ParseWarc` stream, uploads the
-body in 256 KiB chunks, and relays the response stream as NDJSON: one
-`start` line per record, a `preview` line with the first 4 KiB of payload
-when it reads as text, an `end` line, `error` lines for record failures, and
-a final `done` summary. The vendored `collectors/warc*.proto` contracts are
-staged into their `fastwarc/v1/` import layout under a temp dir at first
-use, mirroring the boot-time staging of the gRParse contract protos.
+as `/api/parse`; `parse_http`/`verify_digests` as query flags), the bridge
+opens the bidirectional `ParseWarc` stream, uploads the body in 256 KiB
+chunks, and relays the response stream as NDJSON: one `start` line per
+record, a `preview` line with the first 4 KiB of payload when it reads as
+text, an `end` line (with digest verification results when requested),
+`error` lines for record failures, and a final `done` summary. The contract
+resolves from the sibling `fastwarc-grpc` checkout through the same
+`KNOWN_UIS` proto map as the other native tabs (the compose stack
+bind-mounts it at `/fastwarc-grpc/proto`); the vendored
+`collectors/warc*.proto` files speak the legacy chatnoir dialect and are
+used only by the C++ collector's own client, never by this bridge.
 
 ## Native POI tab
 
