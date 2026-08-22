@@ -60,57 +60,78 @@ if (shellMeta && shellMeta.content === "on") {
   tabs.push(ownTab);
   tabStrip.appendChild(ownTab.button);
 
-  // The FastWARC tab is native: the chatnoir fastwarc-grpc server has no
-  // web UI of its own, so the bridge serves the page itself at
-  // /fastwarc.html and this pane points at it same-origin. It shows up
-  // whether or not the server is reachable; the page carries its own
-  // status badge, and the dot follows /api/fastwarc/status.
-  const fastwarcTab = makeTab({
-    name: "fastwarc",
-    title: "FastWARC",
-    path: "/fastwarc.html",
-    description: "streaming WARC archive parsing via fastwarc-grpc",
-    reachable: false,
-  });
-  fastwarcTab.native = true;
-  tabs.push(fastwarcTab);
-  tabStrip.appendChild(fastwarcTab.button);
+  // Native tabs: services with no web UI of their own, carried by the
+  // bridge itself. Each renders a page the bridge serves (/<name>.html)
+  // talking to the service through /api/<name> endpoints. They show up
+  // whether or not the server is reachable; each page carries its own
+  // status badge, and the dot follows /api/<name>/status. A status payload
+  // with vlmConfigured === false marks the tab amber: the service is up
+  // but depends on an external VLM endpoint nobody configured.
+  const NATIVE_TABS = [
+    {
+      name: "fastwarc",
+      title: "FastWARC",
+      path: "/fastwarc.html",
+      description: "streaming WARC archive parsing via fastwarc-grpc",
+      statusUrl: "/api/fastwarc/status",
+    },
+    {
+      name: "poic",
+      title: "POI",
+      path: "/poic.html",
+      description: "office document parsing via grPOIc (Apache POI)",
+      statusUrl: "/api/poic/status",
+    },
+    {
+      name: "asr",
+      title: "ASR",
+      path: "/asr.html",
+      description: "streaming speech-to-text via grpc-asr (whisper.cpp)",
+      statusUrl: "/api/asr/status",
+    },
+    {
+      name: "enrich",
+      title: "Enrich",
+      path: "/enrich.html",
+      description: "VLM annotations on parsed document items via grpc-enrich",
+      statusUrl: "/api/enrich/status",
+    },
+    {
+      name: "vlm-convert",
+      title: "VLM Convert",
+      path: "/vlm-convert.html",
+      description: "vision-language-model page parsing via grpc-vlm-convert",
+      statusUrl: "/api/vlm-convert/status",
+    },
+  ];
 
-  // The POI tab is native too: it renders the bridge's own /poic.html,
-  // talking to grPOIc (ai.pipestream.poi.v1.PoiParseService) through the
-  // /api/poic endpoints. It shows up whether or not the server is
-  // reachable; the dot follows /api/poic/status.
-  const poicTab = makeTab({
-    name: "poic",
-    title: "POI",
-    path: "/poic.html",
-    description: "office document parsing via grPOIc (Apache POI)",
-    reachable: false,
+  const nativeTabs = NATIVE_TABS.map((spec) => {
+    const tab = makeTab({
+      name: spec.name,
+      title: spec.title,
+      path: spec.path,
+      description: spec.description,
+      reachable: false,
+    });
+    tab.native = true;
+    tab.statusUrl = spec.statusUrl;
+    tabs.push(tab);
+    tabStrip.appendChild(tab.button);
+    return tab;
   });
-  poicTab.native = true;
-  tabs.push(poicTab);
-  tabStrip.appendChild(poicTab.button);
 
-  function refreshPoic() {
-    return fetch("/api/poic/status")
+  function refreshNativeTab(tab) {
+    return fetch(tab.statusUrl)
       .then((response) => (response.ok ? response.json() : null))
       .then((status) => {
         if (!status) return;
-        poicTab.info.reachable = Boolean(status.reachable);
-        poicTab.dot.className = `tab-dot ${status.reachable ? "ok" : "bad"}`;
-        poicTab.dot.title = status.reachable ? "service reachable" : "service unreachable";
-      })
-      .catch(() => {});
-  }
-
-  function refreshFastwarc() {
-    return fetch("/api/fastwarc/status")
-      .then((response) => (response.ok ? response.json() : null))
-      .then((status) => {
-        if (!status) return;
-        fastwarcTab.info.reachable = Boolean(status.reachable);
-        fastwarcTab.dot.className = `tab-dot ${status.reachable ? "ok" : "bad"}`;
-        fastwarcTab.dot.title = status.reachable ? "service reachable" : "service unreachable";
+        tab.info.reachable = Boolean(status.reachable);
+        const degraded = status.reachable && status.vlmConfigured === false;
+        const state = status.reachable ? (degraded ? "warn" : "ok") : "bad";
+        tab.dot.className = `tab-dot ${state}`;
+        tab.dot.title = status.reachable
+          ? (degraded ? "service reachable, no VLM endpoint configured" : "service reachable")
+          : "service unreachable";
       })
       .catch(() => {});
   }
@@ -163,8 +184,7 @@ if (shellMeta && shellMeta.content === "on") {
   }
 
   function refresh() {
-    refreshFastwarc();
-    refreshPoic();
+    for (const tab of nativeTabs) refreshNativeTab(tab);
     return fetch("/api/uis")
       .then((response) => (response.ok ? response.json() : null))
       .then((data) => { if (data) applyUis(data.uis); })
@@ -172,8 +192,7 @@ if (shellMeta && shellMeta.content === "on") {
   }
 
   ownTab.button.addEventListener("click", () => select(ownTab));
-  fastwarcTab.button.addEventListener("click", () => select(fastwarcTab));
-  poicTab.button.addEventListener("click", () => select(poicTab));
+  for (const tab of nativeTabs) tab.button.addEventListener("click", () => select(tab));
   refresh().finally(() => select(ownTab));
   // Status dots track the services without disturbing the open pane.
   setInterval(refresh, 5000);

@@ -319,3 +319,75 @@ h1 { margin: 0; font-size: 26px; letter-spacing: 0.5px; }
 
 /* POI tab: partial-parse status and per-warning banners. */
 .banner.warn { border-color: #9e6a03; color: #e3b341; }
+
+/* Headless-service tabs (ASR / Enrich / VLM Convert). */
+/* Amber: the service answers but its external VLM endpoint is missing. */
+.health.warn { color: #e3b341; border-color: #9e6a03; }
+.tab-dot.warn { background: #e3b341; }
+
+/* ASR: a segment the decoder may still revise; its final replaces it. */
+.warc-table tr.partial-row td { color: var(--muted); font-style: italic; }
+
+/* Enrich: one header row per annotation kind groups the item rows. */
+.warc-table tr.group-row td {
+  color: var(--accent);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 12px;
+  letter-spacing: 0.4px;
+  background: rgba(88, 166, 255, 0.06);
+}
+
+.enrich-form {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  padding: 16px 20px;
+  margin-bottom: 16px;
+}
+.enrich-form .hint { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+.enrich-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.enrich-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.enrich-field textarea {
+  resize: vertical;
+  background: #0d1117;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* VLM Convert: one card per page, filled when that page's call returns. */
+.vlm-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  padding: 14px 18px;
+}
+.vlm-card h2 { margin: 0 0 4px; font-size: 16px; }
+.vlm-card.failed { border-color: #da3633; }
+.vlm-card .vlm-raw {
+  margin: 10px 0 0;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--fg);
+  background: #0d1117;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
