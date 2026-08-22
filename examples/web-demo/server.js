@@ -25,6 +25,16 @@ const FASTWARC_TARGET = process.env.FASTWARC_TARGET || "127.0.0.1:50061";
 // The grPOIc server (ai.pipestream.poi.v1.PoiParseService, Apache POI office
 // parsing) backing the native POI tab; see the bridge section below.
 const POIC_TARGET = process.env.POIC_TARGET || "127.0.0.1:50052";
+// The grpc-asr server (ai.pipestream.asr.v1.AsrService, whisper.cpp
+// speech-to-text) backing the native ASR tab; see the bridge section below.
+const ASR_TARGET = process.env.ASR_TARGET || "127.0.0.1:50055";
+// The grpc-enrich server (ai.pipestream.enrich.v1.EnrichService, VLM item
+// annotations) backing the native Enrich tab; see the bridge section below.
+const ENRICH_TARGET = process.env.ENRICH_TARGET || "127.0.0.1:50056";
+// The grpc-vlm-convert server (ai.pipestream.vlm.v1.VlmConvertService, VLM
+// page parse) backing the native VLM Convert tab; see the bridge section
+// below.
+const VLM_CONVERT_TARGET = process.env.VLM_CONVERT_TARGET || "127.0.0.1:50058";
 const PORT = Number(process.env.PORT || 8080);
 // Optional mount prefix (e.g. "/ui/grparse") for running behind a reverse
 // proxy that forwards each service under its own path. Empty keeps the
@@ -739,6 +749,186 @@ function mapPoicElement(event) {
 }
 
 // ---------------------------------------------------------------------------
+// Headless-service bridges: grpc-asr (ai.pipestream.asr.v1.AsrService),
+// grpc-enrich (ai.pipestream.enrich.v1.EnrichService), and grpc-vlm-convert
+// (ai.pipestream.vlm.v1.VlmConvertService) are pipeline services with no
+// web UI of their own, so the shell carries each as a native tab
+// (public/asr.html, public/enrich.html, public/vlm-convert.html) backed by
+// the /api/<name> endpoints below. The pattern mirrors the POI bridge:
+// contracts resolve from the sibling repos through the same
+// KNOWN_UIS/resolveServiceProto map, GetServiceInfo doubles as the health
+// probe (1.5s deadline, 5s cache), and each conversion call relays the
+// service's live event stream as NDJSON.
+// ---------------------------------------------------------------------------
+
+// Lazy client plus cached GetServiceInfo probe for one headless service.
+// mapInfo reduces the info response to the status payload the page renders;
+// probe failure reports unreachable instead of breaking the page.
+function nativeBridge(name, target, mapInfo) {
+  const state = { clients: null, status: null };
+  const clients = () => {
+    if (state.clients) return state.clients;
+    try {
+      const known = KNOWN_UIS[name];
+      const resolved = resolveServiceProto(known);
+      const loaded = protoLoader.loadSync(resolved.file, {
+        includeDirs: resolved.includeDirs, enums: String, longs: Number, defaults: true, oneofs: true,
+      });
+      const definition = grpc.loadPackageDefinition(loaded);
+      const ctor = known.service.split(".").reduce((node, part) => node && node[part], definition);
+      if (typeof ctor !== "function") throw new Error(`${known.service} not found in ${resolved.file}`);
+      state.clients = { rpc: new ctor(target, credentials, channelOptions) };
+    } catch (error) {
+      console.warn(`${name}: proto unavailable (${error.message})`);
+      state.clients = { error };
+    }
+    return state.clients;
+  };
+  const probe = () => {
+    const fallback = { reachable: false };
+    const loaded = clients();
+    if (loaded.error) return Promise.resolve(fallback);
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
+      try {
+        loaded.rpc.GetServiceInfo({}, { deadline: Date.now() + 1500 }, (error, info) => {
+          if (error) { finish(fallback); return; }
+          finish({ reachable: true, ...mapInfo(info) });
+        });
+      } catch (_error) {
+        finish(fallback);
+      }
+      setTimeout(() => finish(fallback), 2000).unref();
+    });
+  };
+  const status = async () => {
+    if (state.status && state.status.expires > Date.now()) return state.status.payload;
+    const payload = await probe();
+    state.status = { expires: Date.now() + 5000, payload };
+    return payload;
+  };
+  return { clients, status };
+}
+
+// Generic enum-prefix stripper for the page-facing labels.
+function stripEnum(value, prefix) {
+  return typeof value === "string" ? value.replace(prefix, "").toLowerCase() : "unknown";
+}
+
+// Generic text cap so no single NDJSON line carries a whole transcript or
+// model response.
+const NATIVE_PREVIEW_CHARS = 512;
+function capChars(text, limit) {
+  const value = String(text || "");
+  return value.length > limit ? `${value.slice(0, limit)}…` : value;
+}
+
+const ASR_CHUNK_BYTES = 1024 * 1024;
+
+const asrBridge = nativeBridge("asr", ASR_TARGET, (info) => ({
+  version: info.version,
+  whisperVersion: info.whisperVersion,
+  backend: info.backend,
+  models: info.models || [],
+  maxMediaBytes: info.maxMediaBytes,
+  maxDurationMs: info.maxDurationMs,
+}));
+
+// grpc-enrich and grpc-vlm-convert both depend on an external VLM server.
+// Their status payloads carry vlmConfigured so the page and the shell tab
+// can surface "reachable but no VLM endpoint configured" distinctly:
+// without an endpoint every enrichment skips (SKIP_REASON_VLM_ERROR) and
+// every conversion fails FAILED_PRECONDITION unless the request overrides.
+const enrichBridge = nativeBridge("enrich", ENRICH_TARGET, (info) => ({
+  serviceVersion: info.serviceVersion,
+  apiVersion: info.apiVersion,
+  defaultVlmEndpoint: info.defaultVlmEndpoint || "",
+  vlmConfigured: Boolean(info.defaultVlmEndpoint),
+  maxDocumentBytes: info.maxDocumentBytes,
+  maxConcurrentVlmCalls: info.maxConcurrentVlmCalls,
+}));
+
+const vlmConvertBridge = nativeBridge("vlm-convert", VLM_CONVERT_TARGET, (info) => ({
+  version: info.version,
+  endpoint: info.endpoint || "",
+  vlmConfigured: Boolean(info.endpoint),
+  presets: (info.presets || []).map((value) => stripEnum(value, "VLM_PRESET_")),
+  rawPresets: info.rawPresets || [],
+  concurrency: info.concurrency,
+  maxPageBytes: info.maxPageBytes,
+  maxPages: info.maxPages,
+}));
+
+// One transcript segment reduced to the line the ASR page renders.
+function mapAsrSegment(segment) {
+  return {
+    index: segment.index,
+    startMs: Number(segment.startMs) || 0,
+    endMs: Number(segment.endMs) || 0,
+    text: segment.text,
+    avgLogprob: segment.avgLogprob,
+    words: (segment.words || []).length,
+  };
+}
+
+// One enrichment annotation reduced to the line the Enrich page renders,
+// keyed by the item's self_ref. The annotation oneof identifies the job.
+function mapEnrichAnnotation(annotation) {
+  const base = { type: "annotation", selfRef: annotation.selfRef, model: annotation.model || undefined };
+  const kind = annotation.annotation;
+  if (kind === "description") {
+    const description = annotation.description;
+    return { ...base, kind: "description", text: description.text, confidence: description.confidence };
+  }
+  if (kind === "chartTable") {
+    const chart = annotation.chartTable;
+    const data = chart.table || {};
+    return {
+      ...base,
+      kind: "chart",
+      title: chart.title || undefined,
+      rows: data.numRows || 0,
+      cols: data.numCols || 0,
+      csv: capChars(chart.csv, 2048),
+    };
+  }
+  if (kind === "code") {
+    const code = annotation.code;
+    return {
+      ...base,
+      kind: "code",
+      text: capChars(code.text, 2048),
+      language: stripEnum(code.language, "CODE_LANGUAGE_LABEL_"),
+      languageRaw: code.languageRaw || undefined,
+    };
+  }
+  if (kind === "formula") {
+    return { ...base, kind: "formula", text: capChars(annotation.formula.text, 2048) };
+  }
+  return { ...base, kind: "other" };
+}
+
+// A converted page's Document fragment reduced to the summary the VLM
+// Convert page renders: item counts plus a capped per-item preview. mapText
+// above reads the same canonical document shape, so it is reused here.
+function mapVlmPageDocument(pageDocument) {
+  const doc = pageDocument.document || {};
+  const texts = (doc.texts || []).map(mapText).filter(Boolean);
+  return {
+    type: "page",
+    pageNo: pageDocument.pageNo,
+    texts: texts.length,
+    tables: (doc.tables || []).length,
+    pictures: (doc.pictures || []).length,
+    items: texts.slice(0, 200).map((item) => ({
+      label: item.label,
+      text: capChars(item.text, NATIVE_PREVIEW_CHARS),
+    })),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // HTTP surface
 // ---------------------------------------------------------------------------
 
@@ -1088,6 +1278,359 @@ surface.post(
         ...(first ? { documentId: filename, filename, contentType } : {}),
         data: body.subarray(index * POIC_CHUNK_BYTES, (index + 1) * POIC_CHUNK_BYTES),
         complete: index === totalChunks - 1,
+      });
+    }
+    call.end();
+  },
+);
+
+// Status badge for the native ASR tab; cached like the other probes.
+surface.get("/api/asr/status", (_request, response) => {
+  asrBridge.status().then(
+    (status) => response.json(status),
+    () => response.json({ reachable: false }),
+  );
+});
+
+// Raw media bytes in (same 500 MiB cap as /api/parse), one NDJSON line per
+// transcription event out: a media line from MediaInfo, partial/final lines
+// as the decoder commits segments (finals replace partials by index), a
+// complete line from the trailer, grpc-error on failure, done last. The
+// page sends the model/language/task options as query params.
+surface.post(
+  "/api/asr/transcribe",
+  express.raw({ type: () => true, limit: MAX_UPLOAD }),
+  (request, response) => {
+    const body = request.body;
+    if (!Buffer.isBuffer(body) || body.length === 0) {
+      response.status(400).json({ error: "empty upload" });
+      return;
+    }
+    const clients = asrBridge.clients();
+    if (clients.error) {
+      response.status(502).json({ error: `asr proto unavailable: ${clients.error.message}` });
+      return;
+    }
+
+    response.setHeader("Content-Type", "application/x-ndjson");
+    response.setHeader("Cache-Control", "no-store");
+
+    const startedAt = Date.now();
+    let finals = 0;
+    let finished = false;
+    const send = (value) => response.write(`${JSON.stringify(value)}\n`);
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      send({ type: "done", segments: finals, elapsedMs: Date.now() - startedAt });
+      response.end();
+    };
+
+    const deadline = Date.now() + 10 * 60 * 1000;
+    const call = clients.rpc.Transcribe({ deadline });
+
+    call.on("data", (event) => {
+      if (event.mediaInfo) {
+        const media = event.mediaInfo;
+        send({
+          type: "media",
+          durationMs: Number(media.durationMs) || 0,
+          audioCodec: media.audioCodec,
+          sampleRateHz: media.sampleRateHz,
+          channels: media.channels,
+          hasVideo: Boolean(media.hasVideo),
+          videoCodec: media.videoCodec || undefined,
+        });
+      } else if (event.partialSegment) {
+        send({ type: "partial", ...mapAsrSegment(event.partialSegment) });
+      } else if (event.finalSegment) {
+        finals += 1;
+        send({ type: "final", ...mapAsrSegment(event.finalSegment) });
+      } else if (event.keyframe) {
+        // Keyframes are not requested by the page; report them compactly if
+        // a future option turns them on, never the PNG bytes.
+        send({ type: "keyframe", timestampMs: Number(event.keyframe.timestampMs) || 0 });
+      } else if (event.complete) {
+        const complete = event.complete;
+        send({
+          type: "complete",
+          language: complete.language,
+          durationMs: Number(complete.durationMs) || 0,
+          segmentCount: complete.segmentCount,
+          tokenCount: Number(complete.tokenCount) || 0,
+          keyframeCount: complete.keyframeCount,
+        });
+      }
+    });
+    call.on("end", finish);
+    call.on("error", (error) => {
+      send({ type: "grpc-error", code: error.code, message: error.message });
+      finish();
+    });
+    response.on("close", () => call.cancel());
+
+    // Options ride the first message alone, then the encoded media in file
+    // order, then half-close.
+    call.write({
+      options: {
+        model: String(request.query.model || ""),
+        language: String(request.query.language || ""),
+        task: request.query.task === "translate" ? "TASK_TRANSLATE" : "TASK_TRANSCRIBE",
+        wordTimestamps: request.query.word_timestamps === "true",
+      },
+    });
+    for (let offset = 0; offset < body.length; offset += ASR_CHUNK_BYTES) {
+      call.write({ chunk: { data: body.subarray(offset, offset + ASR_CHUNK_BYTES) } });
+    }
+    call.end();
+  },
+);
+
+// Status badge for the native Enrich tab; cached like the other probes.
+surface.get("/api/enrich/status", (_request, response) => {
+  enrichBridge.status().then(
+    (status) => response.json(status),
+    () => response.json({ reachable: false }),
+  );
+});
+
+// JSON in ({ code, formula, image: {base64, mime}, describe, chart,
+// vlmEndpoint }), one NDJSON line per enrichment event out. The bridge maps
+// the form fields into a minimal ai.pipestream.document.v1.Document —
+// pasted code as a CodeItem, a pasted formula as a FormulaItem, an uploaded
+// image as a PictureItem with an inline data-URI ImageRef (labelled CHART
+// when chart extraction is requested, which is how the service selects
+// pictures for that job) — and streams EnrichDocument with the document
+// inline in the options message.
+surface.post(
+  "/api/enrich/annotate",
+  express.json({ limit: MAX_UPLOAD }),
+  (request, response) => {
+    const clients = enrichBridge.clients();
+    if (clients.error) {
+      response.status(502).json({ error: `enrich proto unavailable: ${clients.error.message}` });
+      return;
+    }
+    const body = request.body || {};
+    const code = typeof body.code === "string" ? body.code.trim() : "";
+    const formula = typeof body.formula === "string" ? body.formula.trim() : "";
+    const image = body.image && typeof body.image.base64 === "string" && body.image.base64
+      ? { base64: body.image.base64, mime: String(body.image.mime || "image/png") }
+      : null;
+    const describe = Boolean(body.describe) && Boolean(image);
+    const chart = Boolean(body.chart) && Boolean(image);
+    if (!code && !formula && !describe && !chart) {
+      response.status(400).json({ error: "nothing to enrich: paste code or a formula, or upload an image" });
+      return;
+    }
+
+    const document = { name: "web-demo" };
+    const texts = [];
+    if (code) {
+      texts.push({
+        code: {
+          selfRef: `#/texts/${texts.length}`,
+          label: "DOC_ITEM_LABEL_CODE",
+          orig: code,
+          text: code,
+        },
+      });
+    }
+    if (formula) {
+      texts.push({
+        formula: {
+          base: {
+            selfRef: `#/texts/${texts.length}`,
+            label: "DOC_ITEM_LABEL_FORMULA",
+            orig: formula,
+            text: formula,
+          },
+        },
+      });
+    }
+    if (texts.length > 0) document.texts = texts;
+    if (image) {
+      document.pictures = [{
+        selfRef: "#/pictures/0",
+        label: chart ? "DOC_ITEM_LABEL_CHART" : "DOC_ITEM_LABEL_PICTURE",
+        image: {
+          mimetype: image.mime,
+          uri: `data:${image.mime};base64,${image.base64}`,
+        },
+      }];
+    }
+
+    response.setHeader("Content-Type", "application/x-ndjson");
+    response.setHeader("Cache-Control", "no-store");
+
+    const startedAt = Date.now();
+    let annotations = 0;
+    let finished = false;
+    const send = (value) => response.write(`${JSON.stringify(value)}\n`);
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      send({ type: "done", annotations, elapsedMs: Date.now() - startedAt });
+      response.end();
+    };
+
+    const deadline = Date.now() + 10 * 60 * 1000;
+    const call = clients.rpc.EnrichDocument({ deadline });
+
+    call.on("data", (event) => {
+      if (event.started) {
+        const started = event.started;
+        send({
+          type: "started",
+          pictureDescriptions: started.pictureDescriptions,
+          chartExtractions: started.chartExtractions,
+          codeEnrichments: started.codeEnrichments,
+          formulaEnrichments: started.formulaEnrichments,
+        });
+      } else if (event.annotation) {
+        annotations += 1;
+        send(mapEnrichAnnotation(event.annotation));
+      } else if (event.skipped) {
+        const skipped = event.skipped;
+        send({
+          type: "skipped",
+          selfRef: skipped.selfRef,
+          reason: stripEnum(skipped.reason, "SKIP_REASON_"),
+          detail: skipped.detail || undefined,
+        });
+      } else if (event.complete) {
+        const complete = event.complete;
+        send({
+          type: "complete",
+          succeeded: complete.succeeded,
+          skipped: complete.skipped,
+          failed: complete.failed,
+        });
+      }
+    });
+    call.on("end", finish);
+    call.on("error", (error) => {
+      send({ type: "grpc-error", code: error.code, message: error.message });
+      finish();
+    });
+    response.on("close", () => call.cancel());
+
+    call.write({
+      options: {
+        doPictureDescription: describe,
+        doChartExtraction: chart,
+        doCodeEnrichment: Boolean(code),
+        doFormulaEnrichment: Boolean(formula),
+        vlmEndpoint: String(body.vlmEndpoint || ""),
+        document,
+      },
+    });
+    call.end();
+  },
+);
+
+// Status badge for the native VLM Convert tab; cached like the other
+// probes. The payload's vlmConfigured/endpoint fields let the page say
+// "reachable but no VLM endpoint configured" instead of a generic failure.
+surface.get("/api/vlm-convert/status", (_request, response) => {
+  vlmConvertBridge.status().then(
+    (status) => response.json(status),
+    () => response.json({ reachable: false }),
+  );
+});
+
+// JSON in ({ preset, presetRaw, responseFormat, prompt, endpoint, pages:
+// [{ pageNo, png: base64, width, height }] }), one NDJSON line per
+// conversion event out: started lines as pages enter the model queue, a
+// page line per converted Document fragment (in completion order, keyed by
+// pageNo), raw lines for mapping failures or endpoint errors, a complete
+// line from the trailer, grpc-error on failure, done last. A missing VLM
+// endpoint surfaces as the service's FAILED_PRECONDITION grpc-error.
+surface.post(
+  "/api/vlm-convert/convert",
+  express.json({ limit: MAX_UPLOAD }),
+  (request, response) => {
+    const clients = vlmConvertBridge.clients();
+    if (clients.error) {
+      response.status(502).json({ error: `vlm-convert proto unavailable: ${clients.error.message}` });
+      return;
+    }
+    const body = request.body || {};
+    const pages = Array.isArray(body.pages) ? body.pages : [];
+    if (pages.length === 0 || pages.some((page) => typeof page.png !== "string" || !page.png)) {
+      response.status(400).json({ error: "pages must be a non-empty array of { pageNo, png (base64) }" });
+      return;
+    }
+
+    response.setHeader("Content-Type", "application/x-ndjson");
+    response.setHeader("Cache-Control", "no-store");
+
+    const startedAt = Date.now();
+    let pagesOut = 0;
+    let finished = false;
+    const send = (value) => response.write(`${JSON.stringify(value)}\n`);
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      send({ type: "done", pages: pagesOut, elapsedMs: Date.now() - startedAt });
+      response.end();
+    };
+
+    const deadline = Date.now() + 10 * 60 * 1000;
+    const call = clients.rpc.ConvertPages({ deadline });
+
+    call.on("data", (event) => {
+      if (event.pageStarted) {
+        send({ type: "started", pageNo: event.pageStarted.pageNo });
+      } else if (event.pageDocument) {
+        pagesOut += 1;
+        send(mapVlmPageDocument(event.pageDocument));
+      } else if (event.pageRaw) {
+        const raw = event.pageRaw;
+        send({
+          type: "raw",
+          pageNo: raw.pageNo,
+          text: capChars(raw.text, 2048) || undefined,
+          error: raw.error || undefined,
+        });
+      } else if (event.complete) {
+        const complete = event.complete;
+        send({
+          type: "complete",
+          pagesStarted: complete.pagesStarted,
+          pagesOk: complete.pagesOk,
+          pagesFailed: complete.pagesFailed,
+        });
+      }
+    });
+    call.on("end", finish);
+    call.on("error", (error) => {
+      send({ type: "grpc-error", code: error.code, message: error.message });
+      finish();
+    });
+    response.on("close", () => call.cancel());
+
+    // Enum names pass through only when well-formed; anything else falls
+    // back to the preset's default (UNSPECIFIED).
+    const enumOrDefault = (value, prefix, fallback) =>
+      (typeof value === "string" && value.startsWith(prefix) && /^[A-Z0-9_]+$/.test(value) ? value : fallback);
+    call.write({
+      options: {
+        preset: enumOrDefault(body.preset, "VLM_PRESET_", "VLM_PRESET_UNSPECIFIED"),
+        presetRaw: String(body.presetRaw || ""),
+        responseFormat: enumOrDefault(body.responseFormat, "RESPONSE_FORMAT_", "RESPONSE_FORMAT_UNSPECIFIED"),
+        prompt: String(body.prompt || ""),
+        endpoint: String(body.endpoint || ""),
+      },
+    });
+    for (const page of pages) {
+      call.write({
+        pageImage: {
+          png: Buffer.from(page.png, "base64"),
+          pageNo: Number(page.pageNo) || 0,
+          width: Number(page.width) || 0,
+          height: Number(page.height) || 0,
+        },
       });
     }
     call.end();

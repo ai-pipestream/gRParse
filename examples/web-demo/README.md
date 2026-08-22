@@ -65,6 +65,9 @@ Environment:
 | `DEMO_PROTO_DIR` | *(empty)* | Override directory with one `<name>.proto` per registry entry |
 | `FASTWARC_TARGET` | `127.0.0.1:50061` | fastwarc-grpc endpoint backing the native FastWARC tab (see below) |
 | `POIC_TARGET` | `127.0.0.1:50052` | grPOIc endpoint backing the native POI tab (see below) |
+| `ASR_TARGET` | `127.0.0.1:50055` | grpc-asr endpoint backing the native ASR tab (see below) |
+| `ENRICH_TARGET` | `127.0.0.1:50056` | grpc-enrich endpoint backing the native Enrich tab (see below) |
+| `VLM_CONVERT_TARGET` | `127.0.0.1:50058` | grpc-vlm-convert endpoint backing the native VLM Convert tab (see below) |
 
 ## Demo shell mode (`DEMO_UIS`)
 
@@ -166,6 +169,56 @@ line on stream failure, and a final `done` summary. The contract is
 resolved from the sibling grPOIc checkout through the same
 `KNOWN_UIS`/`resolveServiceProto` map the `/api/uis` probes use, so it works
 in the plain workspace, a worktree, and the demo image's bind mounts.
+
+## Native ASR, Enrich, and VLM Convert tabs
+
+grpc-asr (`ai.pipestream.asr.v1.AsrService`, default port 50055), grpc-enrich
+(`ai.pipestream.enrich.v1.EnrichService`, default port 50056), and
+grpc-vlm-convert (`ai.pipestream.vlm.v1.VlmConvertService`, default port
+50058) are headless pipeline services, so the shell carries each as a
+**native tab** like FastWARC and POI: pages at `/asr.html`, `/enrich.html`,
+and `/vlm-convert.html`, status dots and page badges following
+`GET /api/<name>/status` (a `GetServiceInfo` probe with the same 1.5s
+deadline and 5s cache as the other probes), contracts resolved from the
+sibling repos through the same `KNOWN_UIS`/`resolveServiceProto` map. Each
+page degrades to a "service unreachable" badge when its server is down.
+
+- **ASR** posts audio/video bytes to `POST /api/asr/transcribe` (500 MiB
+  cap; `model`/`language`/`task`/`word_timestamps` as query params — the
+  model select is filled from the models `GetServiceInfo` reports, since
+  `TranscribeOptions.model` is required and must be loaded). The bridge
+  opens the bidirectional `Transcribe` stream (options first, then 1 MiB
+  chunks) and relays NDJSON: a `media` line from `MediaInfo`, `partial` and
+  `final` lines as the decoder commits segments (the page updates rows in
+  place — finals replace partials by index), a `complete` trailer line,
+  `grpc-error` on failure, `done` last.
+- **Enrich** posts a JSON form to `POST /api/enrich/annotate`: pasted code
+  and formula text plus an optional image, which the bridge folds into a
+  minimal `ai.pipestream.document.v1.Document` (a `CodeItem`, a
+  `FormulaItem`, a `PictureItem` with an inline data-URI `ImageRef`,
+  labelled `CHART` when chart extraction is requested — that label is how
+  the service selects pictures for the chart job). It then streams
+  `EnrichDocument` with the document inline in the options message and
+  relays NDJSON: `started` counts, one `annotation` or `skipped` line per
+  item as its VLM call returns (the page groups rows by annotation kind),
+  the `complete` trailer, `done` last.
+- **VLM Convert** posts JSON (`preset`/`presetRaw`/`responseFormat`/
+  `endpoint` plus base64 PNG pages with their pixel sizes, read
+  client-side, one page per file ordered by filename) to
+  `POST /api/vlm-convert/convert`. The bridge streams `ConvertPages` and
+  relays NDJSON: `started` as pages enter the model queue, one `page` line
+  per converted Document fragment in completion order (pages finish out of
+  order, keyed by `pageNo`; the page renders one card per page), `raw`
+  lines for mapping failures or endpoint errors, the `complete` trailer,
+  `done` last.
+
+Enrich and VLM Convert are clients of an **external VLM server**
+(`ENRICH_VLM_URL` / `GRPC_VLM_ENDPOINT` on the service side). Their status
+payloads carry `vlmConfigured`, and a reachable service with no configured
+endpoint shows an **amber** dot and badge instead of green: enrichments
+would all skip with `vlm-error` and conversions fail `FAILED_PRECONDITION`
+until an endpoint is configured or the per-request override field on the
+page is set.
 
 ## Serving under a base path (`UI_BASE`)
 

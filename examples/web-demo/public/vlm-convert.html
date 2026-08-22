@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VLM Convert — VLM page parse demo</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>VLM Convert</h1>
+      <span class="subtitle">vision-language-model page parsing</span>
+    </div>
+    <div id="health" class="health pending">checking service…</div>
+  </header>
+
+  <section id="dropzone" class="dropzone">
+    <input id="file-input" type="file" accept="image/png,.png" multiple hidden />
+    <p><strong>Drop page images here (PNG)</strong> or click to choose them.</p>
+    <p class="hint">One PNG per page, ordered by filename. Each page's Document fragment lands below the moment its VLM call returns — pages finish out of order. The VLM itself is a separate server this service calls.</p>
+    <div class="warc-options" id="vlm-options">
+      <label>preset
+        <select id="opt-preset">
+          <option value="VLM_PRESET_UNSPECIFIED">(default: granite-docling)</option>
+          <option value="VLM_PRESET_SMOLDOCLING">smoldocling</option>
+          <option value="VLM_PRESET_GRANITE_DOCLING">granite-docling</option>
+          <option value="VLM_PRESET_GOT_OCR_2">got-ocr-2</option>
+          <option value="VLM_PRESET_GRANITE_VISION">granite-vision</option>
+          <option value="VLM_PRESET_DEEPSEEK_OCR">deepseek-ocr</option>
+          <option value="VLM_PRESET_NANONETS_OCR2">nanonets-ocr2</option>
+          <option value="VLM_PRESET_GLM_OCR">glm-ocr</option>
+          <option value="VLM_PRESET_LIGHTON_OCR">lighton-ocr</option>
+          <option value="VLM_PRESET_RAW">raw (name below)</option>
+        </select>
+      </label>
+      <label>raw model <input type="text" id="opt-preset-raw" size="16" placeholder="(for raw preset)" /></label>
+      <label>format
+        <select id="opt-format">
+          <option value="RESPONSE_FORMAT_UNSPECIFIED">(preset default)</option>
+          <option value="RESPONSE_FORMAT_DOCTAGS">doctags</option>
+          <option value="RESPONSE_FORMAT_MARKDOWN">markdown</option>
+          <option value="RESPONSE_FORMAT_HTML">html</option>
+          <option value="RESPONSE_FORMAT_OTSL">otsl</option>
+          <option value="RESPONSE_FORMAT_PLAINTEXT">plaintext</option>
+        </select>
+      </label>
+      <label>endpoint override <input type="text" id="opt-endpoint" size="24" placeholder="(server default)" /></label>
+    </div>
+  </section>
+
+  <section id="stats" class="stats" hidden>
+    <div class="stat"><span id="stat-pages">0</span><label>pages done</label></div>
+    <div class="stat"><span id="stat-failed">0</span><label>failed</label></div>
+    <div class="stat"><span id="stat-items">0</span><label>items</label></div>
+    <div class="stat"><span id="stat-elapsed">0.0s</span><label>elapsed</label></div>
+  </section>
+
+  <main id="results" class="results"></main>
+
+  <script src="vlm-convert.js"></script>
+</body>
+</html>

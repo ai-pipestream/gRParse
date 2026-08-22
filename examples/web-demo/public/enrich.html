@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Enrich — VLM item annotation demo</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>Enrich</h1>
+      <span class="subtitle">VLM annotations on parsed document items</span>
+    </div>
+    <div id="health" class="health pending">checking service…</div>
+  </header>
+
+  <section class="enrich-form">
+    <p class="hint">The bridge folds these inputs into a minimal
+      <code>ai.pipestream.document.v1.Document</code> — pasted code as a CodeItem, a formula
+      as a FormulaItem, an uploaded image as a PictureItem — and streams
+      <code>EnrichDocument</code>. Annotations land below as each item's VLM call returns.</p>
+    <div class="enrich-grid">
+      <label class="enrich-field">code (CodeItem)
+        <textarea id="in-code" rows="5" spellcheck="false" placeholder="def add(a, b):&#10;    return a + b"></textarea>
+      </label>
+      <label class="enrich-field">formula (FormulaItem)
+        <textarea id="in-formula" rows="5" spellcheck="false" placeholder="E = mc^2"></textarea>
+      </label>
+    </div>
+    <div class="warc-options" id="enrich-options">
+      <label class="file-label">image (PictureItem) <input type="file" id="in-image" accept="image/png,image/jpeg" /></label>
+      <label><input type="checkbox" id="opt-describe" checked /> picture description</label>
+      <label><input type="checkbox" id="opt-chart" /> chart extraction (labels the image CHART)</label>
+      <label>VLM endpoint override <input type="text" id="opt-endpoint" size="28" placeholder="(server default)" /></label>
+      <button id="run-button" class="sample-button" type="button">Enrich</button>
+    </div>
+  </section>
+
+  <section id="stats" class="stats" hidden>
+    <div class="stat"><span id="stat-annotations">0</span><label>annotations</label></div>
+    <div class="stat"><span id="stat-skipped">0</span><label>skipped</label></div>
+    <div class="stat"><span id="stat-elapsed">0.0s</span><label>elapsed</label></div>
+  </section>
+
+  <main id="results" class="results"></main>
+
+  <script src="enrich.js"></script>
+</body>
+</html>
