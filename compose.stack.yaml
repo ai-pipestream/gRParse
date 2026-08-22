@@ -4,8 +4,20 @@
 # calamine server and viewer ride along under the `calamine` profile,
 # decoupled from the shell by default.
 #
+# Profiles beyond the default core:
+#   parsers  - the remaining parser services and their viewer UIs: epub,
+#              xml, markup, ebcdic, email (proxied tabs), plus poic and
+#              fastwarc (native shell tabs, no UI container of their own).
+#   heavy    - asr (CPU whisper image; mount ggml weights into ./models of
+#              grpc-asr or point ASR models elsewhere), enrich, and
+#              vlm-convert (both need an external VLM endpoint via
+#              ENRICH_VLM_URL / VLM_ENDPOINT to do real work; their tabs
+#              show an amber "no VLM endpoint" state otherwise).
+#   calamine - existing opt-in, unchanged.
+#
 #   docker compose -f compose.stack.yaml up --build
-#   docker compose -f compose.stack.yaml --profile calamine up --build
+#   docker compose -f compose.stack.yaml --profile parsers up --build
+#   docker compose -f compose.stack.yaml --profile parsers --profile heavy --profile calamine up --build
 #
 # Unlike compose.yaml nothing here touches the host: services reach each
 # other by compose service name, and only the nginx proxy publishes a port
@@ -97,6 +109,152 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  epub:
+    profiles: ["parsers"]
+    image: pipestreamai/grpc-epub:latest
+    build: ../grpc-epub
+    expose:
+      - "50064"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  xml:
+    profiles: ["parsers"]
+    image: pipestreamai/grpc-xml:latest
+    build: ../grpc-xml
+    expose:
+      - "50066"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  markup:
+    profiles: ["parsers"]
+    image: pipestreamai/grpc-markup:latest
+    build: ../grpc-markup
+    expose:
+      - "50065"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  ebcdic:
+    profiles: ["parsers"]
+    image: pipestreamai/grpc-ebcdic:latest
+    build: ../grpc-ebcdic
+    expose:
+      - "50063"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  email:
+    profiles: ["parsers"]
+    image: pipestreamai/grpc-email:latest
+    build: ../grpc-email
+    expose:
+      - "50054"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m   # JVM scratch (hsperfdata, temp attachments)
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  poic:
+    profiles: ["parsers"]
+    image: pipestreamai/grpoic:latest
+    build: ../grPOIc
+    expose:
+      - "50052"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m   # JVM scratch; POI spools large office files here
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  fastwarc:
+    profiles: ["parsers"]
+    image: pipestreamai/fastwarc-grpc:latest
+    build: ../fastwarc-grpc
+    expose:
+      - "50060"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  asr:
+    profiles: ["heavy"]
+    image: pipestreamai/grpc-asr:latest-cpu
+    build:
+      context: ../grpc-asr
+      dockerfile: Dockerfile.cpu
+    expose:
+      - "50055"
+    # ggml weights; drop whisper models into grpc-asr/models (see that
+    # repo's README for download pointers). The CUDA image is a manual
+    # swap: image pipestreamai/grpc-asr:latest plus a gpus: all stanza.
+    volumes:
+      - ../grpc-asr/models:/models:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m   # ffmpeg memfd spill for large media
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  enrich:
+    profiles: ["heavy"]
+    image: pipestreamai/grpc-enrich:latest
+    build: ../grpc-enrich
+    expose:
+      - "50056"   # gRPC; the HTTP shim on 50068 stays network-internal too
+    environment:
+      # Without a VLM URL the description/chart jobs answer with skip
+      # events; the shell tab shows the amber "no VLM endpoint" state.
+      ENRICH_VLM_URL: "${ENRICH_VLM_URL:-}"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  vlm-convert:
+    profiles: ["heavy"]
+    image: pipestreamai/grpc-vlm-convert:latest
+    build: ../grpc-vlm-convert
+    expose:
+      - "50058"   # gRPC
+      - "50059"   # HTTP/JSON front end
+    environment:
+      # External VLM server; conversion fails cleanly (and the shell tab
+      # warns) until this points somewhere real.
+      GRPC_VLM_ENDPOINT: "${VLM_ENDPOINT:-}"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
   lol-html-ui:
     image: pipestreamai/grpc-lol-html-ui:latest
     build:
@@ -152,6 +310,81 @@ services:
     depends_on:
       - pdf-inspector
 
+  epub-ui:
+    profiles: ["parsers"]
+    image: pipestreamai/grpc-epub-ui:latest
+    build:
+      context: ../grpc-epub
+      dockerfile: demos/node-client/Dockerfile
+    environment:
+      EPUB_ADDR: "epub:50064"
+      UI_BASE: "/ui/epub"
+      PORT: "8080"
+    expose:
+      - "8080"
+    depends_on:
+      - epub
+
+  xml-ui:
+    profiles: ["parsers"]
+    image: pipestreamai/grpc-xml-ui:latest
+    build:
+      context: ../grpc-xml
+      dockerfile: demos/node-client/Dockerfile
+    environment:
+      XML_SERVER_ADDR: "xml:50066"
+      UI_BASE: "/ui/xml"
+      PORT: "8080"
+    expose:
+      - "8080"
+    depends_on:
+      - xml
+
+  markup-ui:
+    profiles: ["parsers"]
+    image: pipestreamai/grpc-markup-ui:latest
+    build:
+      context: ../grpc-markup
+      dockerfile: demos/node-client/Dockerfile
+    environment:
+      MARKUP_ADDR: "markup:50065"
+      UI_BASE: "/ui/markup"
+      PORT: "8080"
+    expose:
+      - "8080"
+    depends_on:
+      - markup
+
+  ebcdic-ui:
+    profiles: ["parsers"]
+    image: pipestreamai/grpc-ebcdic-ui:latest
+    build:
+      context: ../grpc-ebcdic
+      dockerfile: demos/node-client/Dockerfile
+    environment:
+      EBCDIC_ADDR: "ebcdic:50063"
+      UI_BASE: "/ui/ebcdic"
+      PORT: "8080"
+    expose:
+      - "8080"
+    depends_on:
+      - ebcdic
+
+  email-ui:
+    profiles: ["parsers"]
+    image: pipestreamai/grpc-email-ui:latest
+    build:
+      context: ../grpc-email
+      dockerfile: demos/node-client/Dockerfile
+    environment:
+      GRPC_EMAIL_ADDR: "email:50054"
+      UI_BASE: "/ui/email"
+      PORT: "8080"
+    expose:
+      - "8080"
+    depends_on:
+      - email
+
   # Demo shell: the gRParse parse UI plus one tab per DEMO_UIS entry, each
   # reverse-proxied to that service's own frontend. See
   # examples/web-demo/README.md. Calamine is deliberately not in DEMO_UIS;
@@ -167,7 +400,17 @@ services:
       - "8080"
     environment:
       GRPARSE_TARGET: "grparse:50051"
-      DEMO_UIS: "lol-html=lol-html:50057@lol-html-ui:8080,libreoffice=libreoffice:50053@libreoffice-ui:8080,pdf=pdf-inspector:50067@pdf-inspector-ui:8080"
+      # Proxied tabs. The epub/xml/markup/ebcdic/email entries point into
+      # the `parsers` profile; with the profile down those tabs simply
+      # report unreachable, so the core stack stays bootable alone.
+      DEMO_UIS: "lol-html=lol-html:50057@lol-html-ui:8080,libreoffice=libreoffice:50053@libreoffice-ui:8080,pdf=pdf-inspector:50067@pdf-inspector-ui:8080,epub=epub:50064@epub-ui:8080,xml=xml:50066@xml-ui:8080,markup=markup:50065@markup-ui:8080,ebcdic=ebcdic:50063@ebcdic-ui:8080,email=email:50054@email-ui:8080"
+      # Native tabs (bridge endpoints in the shell itself, no UI container):
+      # poic/fastwarc live in the `parsers` profile, the rest in `heavy`.
+      POIC_TARGET: "poic:50052"
+      FASTWARC_TARGET: "fastwarc:50060"
+      ASR_TARGET: "asr:50055"
+      ENRICH_TARGET: "enrich:50056"
+      VLM_CONVERT_TARGET: "vlm-convert:50058"
     # The shell reads each service's info RPC through its proto contract; in
     # this image the sibling checkouts do not exist, so bind-mount their
     # proto dirs at the layout the resolver probes ("/<repo>/proto/...").
@@ -176,6 +419,16 @@ services:
       - ../grpc-libreoffice/proto:/grpc-libreoffice/proto:ro
       - ../grpc-calamine/proto:/grpc-calamine/proto:ro
       - ../grpc-pdf-inspector/proto:/grpc-pdf-inspector/proto:ro
+      - ../grpc-epub/proto:/grpc-epub/proto:ro
+      - ../grpc-xml/proto:/grpc-xml/proto:ro
+      - ../grpc-markup/proto:/grpc-markup/proto:ro
+      - ../grpc-ebcdic/proto:/grpc-ebcdic/proto:ro
+      - ../grpc-email/proto:/grpc-email/proto:ro
+      - ../grpc-enrich/proto:/grpc-enrich/proto:ro
+      - ../grpc-asr/proto:/grpc-asr/proto:ro
+      - ../grpc-vlm-convert/proto:/grpc-vlm-convert/proto:ro
+      - ../fastwarc-grpc/proto:/fastwarc-grpc/proto:ro
+      - ../grPOIc/grpoic-api/src/main/proto:/grPOIc/grpoic-api/src/main/proto:ro
     depends_on:
       - grparse
       - lol-html-ui
