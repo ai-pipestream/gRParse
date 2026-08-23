@@ -163,6 +163,7 @@ void verify_line_prov_is_page_local_with_charspans() {
   mapper.consume(document_info_event());
   officev1::StreamPagesResponse event;
   officev1::Paragraph* paragraph = event.mutable_paragraph();
+  paragraph->set_list_level(-1);  // wire contract: -1 means not a list item
   paragraph->set_char_offset(100);
   *paragraph->add_runs() = make_run("hello world", 100);
   // A measured line on page two: absolute y minus the 20000 page origin.
@@ -204,6 +205,7 @@ void verify_caret_prov_fallback_and_unresolved_page() {
   grparse::DoclingMapper mapper;
   officev1::StreamPagesResponse event;
   officev1::Paragraph* paragraph = event.mutable_paragraph();
+  paragraph->set_list_level(-1);  // wire contract: -1 means not a list item
   paragraph->set_page_index(0);
   paragraph->mutable_start()->set_x(900);
   paragraph->mutable_start()->set_y(400);
@@ -219,6 +221,7 @@ void verify_caret_prov_fallback_and_unresolved_page() {
 
   officev1::StreamPagesResponse unresolved;
   officev1::Paragraph* off_page = unresolved.mutable_paragraph();
+  off_page->set_list_level(-1);  // wire contract: -1 means not a list item
   off_page->set_page_index(-1);
   *off_page->add_runs() = make_run("nowhere");
   mapper.consume(unresolved);
@@ -232,6 +235,7 @@ void verify_uniform_formatting_and_hyperlinks() {
   // boundary change back to plain, both bold: formatting stays uniform.
   officev1::StreamPagesResponse event;
   officev1::Paragraph* paragraph = event.mutable_paragraph();
+  paragraph->set_list_level(-1);  // wire contract: -1 means not a list item
   officev1::TextRun bold_link = make_run("click", 0);
   bold_link.set_weight(150.0f);
   bold_link.set_hyperlink_url("https://example.test/a");
@@ -263,6 +267,7 @@ void verify_uniform_formatting_and_hyperlinks() {
   grparse::DoclingMapper mixed;
   officev1::StreamPagesResponse mixed_event;
   officev1::Paragraph* mixed_paragraph = mixed_event.mutable_paragraph();
+  mixed_paragraph->set_list_level(-1);  // wire contract: -1 means not a list item
   officev1::TextRun italic = make_run("a");
   italic.set_italic(true);
   *mixed_paragraph->add_runs() = italic;
