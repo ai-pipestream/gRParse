@@ -696,10 +696,16 @@ PdfRouteDecision route_pdf_by_classification(const PdfClassification& classifica
     case PdfClass::kTextBased:
       // The whole text layer is usable: the collector's own Document is the
       // parse result and the CV pipeline never runs for this document. A
-      // text-based document that still names OCR pages (garbled encodings)
-      // is not the fast path; its named pages route to recognition like any
-      // other classification's.
-      decision.fast_path = classification.pages_needing_ocr.empty();
+      // text-based document that still names OCR pages is not the fast
+      // path; its named pages route to recognition like any other
+      // classification's. Neither is one whose trailer flagged encoding
+      // issues: the wire contract says that text layer is untrustworthy
+      // however confident the classification, and when no pages are named
+      // the CV path's own heuristic decides recognition (custom-encoded
+      // vector fonts routinely classify TEXT_BASED at full confidence while
+      // extracting mojibake or nothing).
+      decision.fast_path =
+          classification.pages_needing_ocr.empty() && !classification.encoding_issues;
       decision.ocr_pages = classification.pages_needing_ocr;
       break;
     case PdfClass::kScanned:
@@ -779,6 +785,9 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
       if (event.status().has_encoding_issues()) {
         // The text layer decoded to mojibake somewhere; whatever the
         // classification said, the folded text is not fully trustworthy.
+        // The flag rides the classification too so the routing can refuse
+        // the fast path for it.
+        result.classification.encoding_issues = true;
         result.outcome.warnings.push_back(
             "encoding issues detected in the text layer; extracted text may be untrustworthy");
       }

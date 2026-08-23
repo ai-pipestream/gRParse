@@ -555,6 +555,9 @@ grpc::Status DocumentParserService::ConvertSource(
           outcome.warnings.push_back(
               "pdf inspector classified the document as " +
               std::string(pdf_class_name(parsed.classification.pdf_class)) +
+              (parsed.classification.encoding_issues
+                   ? " with encoding issues in the text layer, so its extraction was not taken"
+                   : "") +
               (route.ocr_pages.empty()
                    ? "; the CV path's own per-page heuristic decided recognition"
                    : "; recognition restricted to the " +

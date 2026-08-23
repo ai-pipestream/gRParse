@@ -87,6 +87,12 @@ struct PdfClassification {
   // indexing the wire and the page scheduler both use, so the numbers pass
   // straight through.
   std::vector<int> pages_needing_ocr;
+  // The status trailer's has_encoding_issues flag: broken font encodings in
+  // the text layer, whose extraction the wire contract says not to trust.
+  // A classification can carry this with an empty OCR page set (the
+  // inspector knows the layer is garbled without knowing which pages), so
+  // the routing consults it independently.
+  bool encoding_issues = false;
 };
 
 // The routing answer for one classified PDF. The fast path takes the

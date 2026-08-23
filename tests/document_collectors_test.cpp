@@ -832,8 +832,11 @@ namespace {
 // document (emit_document is asserted on), and the status trailer.
 class FakePdfService final : public pdfv1::PdfParseService::Service {
  public:
-  FakePdfService(pdfv1::PdfType type, std::vector<uint32_t> pages_needing_ocr)
-      : type_(type), pages_needing_ocr_(std::move(pages_needing_ocr)) {}
+  FakePdfService(pdfv1::PdfType type, std::vector<uint32_t> pages_needing_ocr,
+                 bool encoding_issues = false)
+      : type_(type),
+        pages_needing_ocr_(std::move(pages_needing_ocr)),
+        encoding_issues_(encoding_issues) {}
 
   grpc::Status ParsePdf(
       grpc::ServerContext*,
@@ -873,6 +876,7 @@ class FakePdfService final : public pdfv1::PdfParseService::Service {
     event.Clear();
     auto* status = event.mutable_status();
     status->set_pages_extracted(1);
+    status->set_has_encoding_issues(encoding_issues_);
     auto* warning = status->add_warnings();
     warning->set_code(pdfv1::PARSE_WARNING_CODE_PASSWORD_FALLBACK);
     warning->set_message("extracted whole-document");
@@ -883,6 +887,7 @@ class FakePdfService final : public pdfv1::PdfParseService::Service {
  private:
   pdfv1::PdfType type_;
   std::vector<uint32_t> pages_needing_ocr_;
+  bool encoding_issues_;
 };
 
 class FailingPdfService final : public pdfv1::PdfParseService::Service {
@@ -962,6 +967,34 @@ void verify_pdf_routing_decision_logic() {
   const auto fallback = grparse::route_pdf_by_classification(incoherent);
   require(!fallback.fast_path && fallback.ocr_pages.empty(),
           "an OCR-needing classification with no page set falls back to the heuristic");
+
+  // The PF2-character-sheet shape: TEXT_BASED at full confidence, no pages
+  // named, but the trailer flagged the text layer as untrustworthy. The
+  // extraction must not become the parse result.
+  grparse::PdfClassification garbled_encoding = text_based;
+  garbled_encoding.encoding_issues = true;
+  const auto declined = grparse::route_pdf_by_classification(garbled_encoding);
+  require(!declined.fast_path && declined.ocr_pages.empty(),
+          "text-based with encoding issues is not the fast path; the CV "
+          "heuristic decides recognition");
+}
+
+void verify_pdf_encoding_issues_defeat_the_fast_path() {
+  FakePdfService service(pdfv1::PDF_TYPE_TEXT_BASED, {}, /*encoding_issues=*/true);
+  ServerFixture server(&service);
+  const auto result = grparse::collect_pdf(server.channel(), "%PDF-fake");
+  require(result.outcome.success, "pdf collection succeeds: " + result.outcome.error);
+  require(result.classification.pdf_class == grparse::PdfClass::kTextBased,
+          "the classification itself is still text-based");
+  require(result.classification.encoding_issues,
+          "the trailer's has_encoding_issues rides the classification");
+  bool warned = false;
+  for (const auto& warning : result.outcome.warnings) {
+    if (warning.find("encoding issues") != std::string::npos) warned = true;
+  }
+  require(warned, "the untrustworthy text layer is warned about");
+  require(!grparse::route_pdf_by_classification(result.classification).fast_path,
+          "a text-based classification with encoding issues does not fast-path");
 }
 
 void verify_pdf_collector_failure_is_an_outcome() {
@@ -1023,6 +1056,7 @@ int main() {
     verify_pdf_collects_document_classification_and_warnings();
     verify_pdf_scanned_reports_the_ocr_page_set();
     verify_pdf_routing_decision_logic();
+    verify_pdf_encoding_issues_defeat_the_fast_path();
     verify_pdf_collector_failure_is_an_outcome();
     verify_pdf_endpoint_configuration();
     verify_pdf_plain_leg_returns_the_document();
