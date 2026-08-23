@@ -974,9 +974,17 @@ void verify_pdf_routing_decision_logic() {
   grparse::PdfClassification garbled_encoding = text_based;
   garbled_encoding.encoding_issues = true;
   const auto declined = grparse::route_pdf_by_classification(garbled_encoding);
-  require(!declined.fast_path && declined.ocr_pages.empty(),
-          "text-based with encoding issues is not the fast path; the CV "
-          "heuristic decides recognition");
+  require(!declined.fast_path && declined.ocr_pages.empty() && declined.force_ocr,
+          "text-based with encoding issues is not the fast path and forces "
+          "recognition in place of the untrustworthy layer");
+  require(!grparse::route_pdf_by_classification(text_based).force_ocr &&
+              !mixed_decision.force_ocr,
+          "without encoding issues nothing escalates to forced recognition");
+
+  grparse::PdfClassification garbled_mixed = mixed;
+  garbled_mixed.encoding_issues = true;
+  require(grparse::route_pdf_by_classification(garbled_mixed).force_ocr,
+          "encoding issues force recognition for every classification");
 }
 
 void verify_pdf_encoding_issues_defeat_the_fast_path() {
@@ -993,8 +1001,12 @@ void verify_pdf_encoding_issues_defeat_the_fast_path() {
     if (warning.find("encoding issues") != std::string::npos) warned = true;
   }
   require(warned, "the untrustworthy text layer is warned about");
-  require(!grparse::route_pdf_by_classification(result.classification).fast_path,
+  const auto route = grparse::route_pdf_by_classification(result.classification);
+  require(!route.fast_path,
           "a text-based classification with encoding issues does not fast-path");
+  require(route.force_ocr,
+          "the declined fast path escalates to forced recognition, skipping "
+          "the digital extraction of the flagged layer");
 }
 
 void verify_pdf_collector_failure_is_an_outcome() {

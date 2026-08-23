@@ -104,6 +104,13 @@ struct PdfClassification {
 struct PdfRouteDecision {
   bool fast_path = false;
   std::vector<int> ocr_pages;
+  // True when the classification carried encoding issues: the embedded text
+  // layer is untrustworthy document-wide, so the CV path should recognize
+  // every page and let the recognized text replace that layer (kForce)
+  // instead of reading it — reading a layer the contract says to distrust
+  // at best folds mojibake into the result. An explicit kOff request still
+  // outranks this, as it outranks every classification hint.
+  bool force_ocr = false;
 };
 
 PdfRouteDecision route_pdf_by_classification(const PdfClassification& classification);

@@ -692,6 +692,9 @@ CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>&
 
 PdfRouteDecision route_pdf_by_classification(const PdfClassification& classification) {
   PdfRouteDecision decision;
+  // Document-wide encoding issues make the embedded layer untrustworthy for
+  // every class, so the CV run recognizes all pages rather than reading it.
+  decision.force_ocr = classification.encoding_issues;
   switch (classification.pdf_class) {
     case PdfClass::kTextBased:
       // The whole text layer is usable: the collector's own Document is the

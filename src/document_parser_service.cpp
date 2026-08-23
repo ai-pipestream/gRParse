@@ -551,6 +551,10 @@ grpc::Status DocumentParserService::ConvertSource(
           }
           PageScheduler::OcrTuning routed_tuning = tuning;
           routed_tuning.ocr_pages.insert(route.ocr_pages.begin(), route.ocr_pages.end());
+          const bool forced =
+              route.force_ocr &&
+              routed_tuning.mode == PageScheduler::OcrTuning::Mode::kSelective;
+          if (forced) routed_tuning.mode = PageScheduler::OcrTuning::Mode::kForce;
           outcome = run_cv(routed_tuning);
           outcome.warnings.push_back(
               "pdf inspector classified the document as " +
@@ -558,7 +562,10 @@ grpc::Status DocumentParserService::ConvertSource(
               (parsed.classification.encoding_issues
                    ? " with encoding issues in the text layer, so its extraction was not taken"
                    : "") +
-              (route.ocr_pages.empty()
+              (forced
+                   ? "; recognition was forced on every page in place of the "
+                     "untrustworthy embedded layer"
+               : route.ocr_pages.empty()
                    ? "; the CV path's own per-page heuristic decided recognition"
                    : "; recognition restricted to the " +
                          std::to_string(route.ocr_pages.size()) + " page(s) needing OCR"));
@@ -989,6 +996,9 @@ class DocumentStreamReactor final
       }
       if (parsed.outcome.success) {
         tuning.ocr_pages.insert(route.ocr_pages.begin(), route.ocr_pages.end());
+        if (route.force_ocr && tuning.mode == PageScheduler::OcrTuning::Mode::kSelective) {
+          tuning.mode = PageScheduler::OcrTuning::Mode::kForce;
+        }
       } else if (const auto gate = weak_gate.lock()) {
         // The degradation stays visible: the pdf collector's failure rides
         // the complete event as a failure entry while the in-process CV path
