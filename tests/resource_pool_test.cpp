@@ -1,7 +1,8 @@
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
-#include <iostream>
+#include <print>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -174,7 +175,7 @@ int main() {
     require(Counted::live.load() == 0, "every pooled resource must be destroyed with its pool");
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
-    std::cerr << "resource-pool-test: " << error.what() << '\n';
+    std::println(stderr, "resource-pool-test: {}", error.what());
     return EXIT_FAILURE;
   }
 }

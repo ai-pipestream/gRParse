@@ -239,7 +239,7 @@ docv1::GroupItem* DoclingMapper::group_by_ref(const std::string& ref) {
   if (ref == "#/body") return document_.mutable_body();
   if (ref == "#/furniture") return document_.mutable_furniture();
   const std::string prefix = "#/groups/";
-  if (ref.compare(0, prefix.size(), prefix) == 0) {
+  if (ref.starts_with(prefix)) {
     int index = std::atoi(ref.c_str() + prefix.size());
     if (index >= 0 && index < document_.groups_size()) {
       return document_.mutable_groups(index);
@@ -637,9 +637,9 @@ void DoclingMapper::on_metadata(const officev1::DocumentMetadata& meta) {
   }
   if (!meta.statistics().empty()) {
     google::protobuf::Value stats;
-    for (const auto& entry : meta.statistics()) {
-      (*stats.mutable_struct_value()->mutable_fields())[entry.first] =
-          num_value(static_cast<double>(entry.second));
+    for (const auto& [name, count] : meta.statistics()) {
+      (*stats.mutable_struct_value()->mutable_fields())[name] =
+          num_value(static_cast<double>(count));
     }
     (*fields)["statistics"] = stats;
   }
@@ -671,8 +671,8 @@ void DoclingMapper::on_metadata(const officev1::DocumentMetadata& meta) {
     docv1::LanguageMetaField* language = body_meta->mutable_language();
     language->set_code_raw(meta.language());
     std::string subtag = meta.language().substr(0, meta.language().find('-'));
-    std::transform(subtag.begin(), subtag.end(), subtag.begin(),
-                   [](unsigned char c) { return std::toupper(c); });
+    std::ranges::transform(subtag, subtag.begin(),
+                           [](unsigned char c) { return std::toupper(c); });
     docv1::HumanLanguageLabel code;
     if (docv1::HumanLanguageLabel_Parse("HUMAN_LANGUAGE_LABEL_" + subtag,
                                         &code)) {
@@ -737,8 +737,8 @@ void DoclingMapper::on_table(const officev1::TableData& table) {
 
 void DoclingMapper::on_embedded_image(const officev1::EmbeddedImage& image) {
   std::string parent = "#/body";
-  auto container = writer_groups_.find(image.group_path());
-  if (container != writer_groups_.end()) parent = container->second;
+  if (auto container = writer_groups_.find(image.group_path());
+      container != writer_groups_.end()) parent = container->second;
   docv1::PictureItem* picture = add_picture(
       docv1::DOC_ITEM_LABEL_PICTURE, docv1::CONTENT_LAYER_BODY, parent,
       nullptr);
@@ -833,8 +833,8 @@ void DoclingMapper::on_document_index(const officev1::DocumentIndex& index) {
 
 void DoclingMapper::on_drawing_shape(const officev1::DrawingShape& shape) {
   std::string parent = "#/body";
-  auto container = draw_groups_.find({shape.page_index(), shape.group_path()});
-  if (container != draw_groups_.end()) parent = container->second;
+  if (auto container = draw_groups_.find({shape.page_index(), shape.group_path()});
+      container != draw_groups_.end()) parent = container->second;
   double l = static_cast<double>(shape.position().x());
   double t = static_cast<double>(shape.position().y());
   double r = l + static_cast<double>(shape.width_twips());
@@ -888,8 +888,8 @@ void DoclingMapper::on_slide(const officev1::Slide& slide) {
 void DoclingMapper::on_slide_shape(const officev1::SlideShape& shape) {
   if (shape.is_empty_placeholder()) return;
   std::string parent = "#/body";
-  auto group = slide_group_.find(shape.slide_index());
-  if (group != slide_group_.end()) parent = group->second;
+  if (auto group = slide_group_.find(shape.slide_index());
+      group != slide_group_.end()) parent = group->second;
   docv1::ContentLayer layer = shape.notes() ? docv1::CONTENT_LAYER_NOTES
                                             : docv1::CONTENT_LAYER_BODY;
   // Notes shapes carry no slide-page provenance: their geometry is in
@@ -1005,8 +1005,8 @@ int DoclingMapper::page_for_point(double x, double y) const {
 
 void DoclingMapper::on_shape(const officev1::Shape& shape) {
   std::string parent = "#/body";
-  auto container = writer_groups_.find(shape.group_path());
-  if (container != writer_groups_.end()) parent = container->second;
+  if (auto container = writer_groups_.find(shape.group_path());
+      container != writer_groups_.end()) parent = container->second;
 
   if (shape.is_group()) {
     docv1::GroupItem* group = add_group(parent,
@@ -1296,11 +1296,11 @@ void DoclingMapper::on_sheet_database_range(
 void DoclingMapper::on_sheet_cell_comment(
     const officev1::SheetCellComment& comment) {
   std::string sheet_ref = "#/body";
-  auto group = sheet_group_.find(comment.sheet_index());
-  if (group != sheet_group_.end()) sheet_ref = group->second;
+  if (auto group = sheet_group_.find(comment.sheet_index());
+      group != sheet_group_.end()) sheet_ref = group->second;
   docv1::ContentLayer layer = docv1::CONTENT_LAYER_BODY;
-  auto sheet_layer = sheet_layer_.find(comment.sheet_index());
-  if (sheet_layer != sheet_layer_.end()) layer = sheet_layer->second;
+  if (auto sheet_layer = sheet_layer_.find(comment.sheet_index());
+      sheet_layer != sheet_layer_.end()) layer = sheet_layer->second;
   auto comments = sheet_comments_.find(comment.sheet_index());
   if (comments == sheet_comments_.end()) {
     docv1::GroupItem* section = add_group(
@@ -1353,11 +1353,11 @@ void DoclingMapper::on_sheet_chart(const officev1::SheetChart& chart) {
 void DoclingMapper::on_sheet_pivot_table(
     const officev1::SheetPivotTable& pivot) {
   std::string sheet_ref = "#/body";
-  auto group = sheet_group_.find(pivot.sheet_index());
-  if (group != sheet_group_.end()) sheet_ref = group->second;
+  if (auto group = sheet_group_.find(pivot.sheet_index());
+      group != sheet_group_.end()) sheet_ref = group->second;
   docv1::ContentLayer layer = docv1::CONTENT_LAYER_BODY;
-  auto sheet_layer = sheet_layer_.find(pivot.sheet_index());
-  if (sheet_layer != sheet_layer_.end()) layer = sheet_layer->second;
+  if (auto sheet_layer = sheet_layer_.find(pivot.sheet_index());
+      sheet_layer != sheet_layer_.end()) layer = sheet_layer->second;
   docv1::TableItem* table = add_table(layer, sheet_ref, nullptr);
   const officev1::SheetRangeRef& output = pivot.output_range();
   table->mutable_data()->set_num_rows(output.end_row() - output.start_row()
@@ -1650,25 +1650,25 @@ std::vector<std::string> docling_integrity_errors(
             table.parent().ref());
   }
 
-  for (const auto& entry : children) {
-    for (const std::string& child : entry.second) {
+  for (const auto& [owner, child_refs] : children) {
+    for (const std::string& child : child_refs) {
       if (refs.find(child) == refs.end()) {
-        errors.push_back("child " + child + " of " + entry.first
+        errors.push_back("child " + child + " of " + owner
                          + " does not resolve");
       }
     }
   }
-  for (const auto& parent : parents) {
-    if (refs.find(parent.second) == refs.end()) {
-      errors.push_back("parent " + parent.second + " of " + parent.first
+  for (const auto& [child_ref, parent_ref] : parents) {
+    if (refs.find(parent_ref) == refs.end()) {
+      errors.push_back("parent " + parent_ref + " of " + child_ref
                        + " does not resolve");
       continue;
     }
-    auto listed = children.find(parent.second);
-    if (listed == children.end()
-        || listed->second.find(parent.first) == listed->second.end()) {
-      errors.push_back("parent " + parent.second + " does not list "
-                       + parent.first + " as a child");
+    if (auto listed = children.find(parent_ref);
+        listed == children.end()
+        || listed->second.find(child_ref) == listed->second.end()) {
+      errors.push_back("parent " + parent_ref + " does not list "
+                       + child_ref + " as a child");
     }
   }
   for (const docv1::TableItem& table : document.tables()) {

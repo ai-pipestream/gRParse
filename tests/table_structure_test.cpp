@@ -1,5 +1,6 @@
+#include <cstdio>
 #include <cstdlib>
-#include <iostream>
+#include <print>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -180,7 +181,7 @@ int main() {
     verify_determinism();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
-    std::cerr << "table-structure-test: " << error.what() << '\n';
+    std::println(stderr, "table-structure-test: {}", error.what());
     return EXIT_FAILURE;
   }
 }

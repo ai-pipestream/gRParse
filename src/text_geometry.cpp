@@ -79,7 +79,7 @@ OcrPage merge_digital_and_ocr(OcrPage digital, OcrPage ocr) {
     entries.push_back(Entry{std::move(line), box});
   }
 
-  std::stable_sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) {
+  std::ranges::stable_sort(entries, [](const Entry& a, const Entry& b) {
     if (a.box.top != b.box.top) return a.box.top < b.box.top;
     return a.box.left < b.box.left;
   });

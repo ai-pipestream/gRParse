@@ -1,10 +1,11 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstdlib>
-#include <iostream>
 #include <map>
 #include <mutex>
+#include <print>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -937,7 +938,7 @@ void verify_force_ocr_replaces_the_embedded_layer() {
     std::lock_guard<std::mutex> lock(pages_mutex);
     require(delivered.size() == 2, "forced-recognition delivery count");
     for (const auto& page : delivered) {
-      require(page->lines.size() == 1 && page->lines[0].text.rfind("page-", 0) == 0,
+      require(page->lines.size() == 1 && page->lines[0].text.starts_with("page-"),
               "forced recognition must deliver the recognized text");
       require(page->source == grparse::OcrPage::Source::kOcr,
               "recognized text must replace the embedded layer, not merge with it");
@@ -1121,7 +1122,7 @@ int main() {
     verify_uncredited_document_survives_later_submissions();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
-    std::cerr << "page-scheduler-test: " << error.what() << '\n';
+    std::println(stderr, "page-scheduler-test: {}", error.what());
     return EXIT_FAILURE;
   }
 }

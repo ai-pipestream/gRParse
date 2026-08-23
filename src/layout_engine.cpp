@@ -54,8 +54,8 @@ float boxes_iou(const Candidate& a, const Candidate& b) {
 // Reference hard_nms: per class, consider the highest-scoring candidates and
 // greedily keep boxes that overlap kept ones by at most kNmsIou.
 void append_class_nms(std::vector<Candidate>& picked, std::vector<Candidate> candidates) {
-  std::sort(candidates.begin(), candidates.end(),
-            [](const Candidate& a, const Candidate& b) { return a.score > b.score; });
+  std::ranges::sort(candidates,
+                    [](const Candidate& a, const Candidate& b) { return a.score > b.score; });
   if (candidates.size() > static_cast<size_t>(kNmsCandidates)) candidates.resize(kNmsCandidates);
   size_t kept = 0;
   for (size_t index = 0; index < candidates.size() && kept < static_cast<size_t>(kKeepTopK);
@@ -222,7 +222,7 @@ class LayoutEngine::Impl {
       regions.push_back(std::move(region));
     }
     // Deterministic order for downstream assembly: by confidence, then geometry.
-    std::sort(regions.begin(), regions.end(), [](const LayoutRegion& a, const LayoutRegion& b) {
+    std::ranges::sort(regions, [](const LayoutRegion& a, const LayoutRegion& b) {
       if (a.confidence != b.confidence) return a.confidence > b.confidence;
       if (a.top != b.top) return a.top < b.top;
       return a.left < b.left;

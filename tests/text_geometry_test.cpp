@@ -1,5 +1,6 @@
+#include <cstdio>
 #include <cstdlib>
-#include <iostream>
+#include <print>
 #include <stdexcept>
 #include <string>
 
@@ -99,7 +100,7 @@ int main() {
     verify_merge_dedupes_and_sorts();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
-    std::cerr << "text-geometry-test: " << error.what() << '\n';
+    std::println(stderr, "text-geometry-test: {}", error.what());
     return EXIT_FAILURE;
   }
 }

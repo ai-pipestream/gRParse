@@ -2,9 +2,10 @@
 // the digital-text path, provenance geometry, and parser fan-out are covered
 // without checking binary fixtures into the repository.
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
-#include <iostream>
 #include <memory>
+#include <print>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -101,7 +102,7 @@ void verify_digital_text_and_geometry() {
   const auto page = source->extract_digital_page(1);
   require(page.has_value(), "born-digital text must be extracted");
   require(page->source == grparse::OcrPage::Source::kDigitalPdf, "digital page source tag");
-  require(page_text(*page).find("Hello") != std::string::npos, "extracted digital text");
+  require(page_text(*page).contains("Hello"), "extracted digital text");
   require(page->width == expected_pixels(kMediaWidth), "page width in render pixels");
   require(page->height == expected_pixels(kMediaHeight), "page height in render pixels");
 
@@ -324,7 +325,7 @@ int main() {
     verify_two_column_digital_pdf_reads_in_column_order();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
-    std::cerr << "pdf-source-test: " << error.what() << '\n';
+    std::println(stderr, "pdf-source-test: {}", error.what());
     return EXIT_FAILURE;
   }
 }

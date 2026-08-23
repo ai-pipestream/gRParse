@@ -1,5 +1,6 @@
+#include <cstdio>
 #include <cstdlib>
-#include <iostream>
+#include <print>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -119,7 +120,7 @@ int main() {
     verify_degenerate_inputs();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
-    std::cerr << "reading-order-test: " << error.what() << '\n';
+    std::println(stderr, "reading-order-test: {}", error.what());
     return EXIT_FAILURE;
   }
 }

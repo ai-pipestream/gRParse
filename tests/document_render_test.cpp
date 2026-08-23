@@ -1,5 +1,6 @@
+#include <cstdio>
 #include <cstdlib>
-#include <iostream>
+#include <print>
 #include <stdexcept>
 #include <string>
 
@@ -18,7 +19,7 @@ void require(bool condition, const std::string& message) {
 
 void require_contains(const std::string& haystack, const std::string& needle,
                       const std::string& message) {
-  if (haystack.find(needle) == std::string::npos) {
+  if (!haystack.contains(needle)) {
     throw std::runtime_error(message + " (missing: " + needle + ")\nrendered:\n" +
                              haystack);
   }
@@ -42,7 +43,7 @@ void attach(docv1::Document* document, const std::string& parent,
     return;
   }
   const std::string prefix = "#/groups/";
-  require(parent.compare(0, prefix.size(), prefix) == 0,
+  require(parent.starts_with(prefix),
           "test fixture parent must be #/body or a group");
   document->mutable_groups(std::stoi(parent.substr(prefix.size())))
       ->add_children()
@@ -538,7 +539,7 @@ void verify_doclang_renders_grpc_xml_vocabulary() {
   require(doclang == expected,
           "doclang export differs from the round-trip vocabulary:\n" + doclang);
   // The structural bar: the root element grpc-xml's sniffer keys on.
-  require(doclang.find("<doclang xmlns=\"http://docling-project.org/ns/doclang/v1\">") == 0,
+  require(doclang.starts_with("<doclang xmlns=\"http://docling-project.org/ns/doclang/v1\">"),
           "doclang export must declare the NS_DOCLANG root");
 }
 
@@ -549,11 +550,11 @@ void verify_doclang_escapes_xml_content() {
   auto* figure = add_picture(&document, "#/body", "figs/a&b.png");
   figure->add_captions()->set_ref(add_caption(&document, figure->self_ref(), "Q \"quoted\""));
   const std::string doclang = grparse::render_doclang(document);
-  require(doclang.find("<paragraph>A &amp; B &lt; C &gt; D</paragraph>") != std::string::npos,
+  require(doclang.contains("<paragraph>A &amp; B &lt; C &gt; D</paragraph>"),
           "doclang text content must be XML-escaped:\n" + doclang);
-  require(doclang.find("<picture uri=\"figs/a&amp;b.png\"/>") != std::string::npos,
+  require(doclang.contains("<picture uri=\"figs/a&amp;b.png\"/>"),
           "doclang attributes must be XML-escaped:\n" + doclang);
-  require(doclang.find("<caption>Q \"quoted\"</caption>") != std::string::npos,
+  require(doclang.contains("<caption>Q \"quoted\"</caption>"),
           "quotes in element text need no escaping:\n" + doclang);
 }
 
@@ -666,13 +667,13 @@ void verify_split_page_without_provenance_is_one_page() {
   add_text(&document, "#/body", docv1::BaseTextItem::kText,
            docv1::DOC_ITEM_LABEL_TEXT, "content");
   const std::string html = grparse::render_html_split_page(document);
-  require(html.find("<div class='page'>") != std::string::npos &&
+  require(html.contains("<div class='page'>") &&
               html.find("<div class='page'>") == html.rfind("<div class='page'>"),
           "a document with no provenance renders exactly one page:\n" + html);
-  require(html.find("<figure>no page-image found</figure>") != std::string::npos,
+  require(html.contains("<figure>no page-image found</figure>"),
           "a page without an image renders docling's placeholder");
-  require(html.find("<h1>Only</h1>") != std::string::npos &&
-              html.find("<p>content</p>") != std::string::npos,
+  require(html.contains("<h1>Only</h1>") &&
+              html.contains("<p>content</p>"),
           "the lone page holds the whole body");
 }
 
@@ -682,9 +683,9 @@ void verify_yaml_matches_json_structure() {
   require_contains(yaml, "texts:", "yaml keeps the text arena");
   require_contains(yaml, "#/body", "yaml keeps reference strings");
   require_contains(yaml, "self_ref:", "yaml preserves proto field names");
-  require(yaml.find("selfRef") == std::string::npos,
+  require(!yaml.contains("selfRef"),
           "yaml must not use camelCase field names");
-  require(yaml.find('{') != 0, "yaml renders block style, not flow JSON");
+  require(!yaml.starts_with('{'), "yaml renders block style, not flow JSON");
 }
 
 void verify_empty_document_renders() {
@@ -714,7 +715,7 @@ void verify_json_preserves_field_names_and_round_trips() {
   const docv1::Document document = rich_document();
   const std::string json = grparse::render_json(document);
   require_contains(json, "\"self_ref\"", "json keeps proto field names");
-  require(json.find("\"selfRef\"") == std::string::npos,
+  require(!json.contains("\"selfRef\""),
           "json must not use camelCase field names:\n" + json.substr(0, 200));
   docv1::Document parsed;
   require(google::protobuf::util::JsonStringToMessage(json, &parsed).ok(),
@@ -749,7 +750,7 @@ int main() {
     verify_json_preserves_field_names_and_round_trips();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
-    std::cerr << "document-render-test: " << error.what() << '\n';
+    std::println(stderr, "document-render-test: {}", error.what());
     return EXIT_FAILURE;
   }
 }

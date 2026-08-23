@@ -6,9 +6,10 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <iostream>
+#include <print>
 #include <stdexcept>
 #include <string>
 
@@ -22,7 +23,7 @@ void require(bool condition, const std::string& message) {
 
 void require_contains(const std::string& haystack, const std::string& needle,
                       const std::string& message) {
-  require(haystack.find(needle) != std::string::npos, message + " (missing: " + needle + ")");
+  require(haystack.contains(needle), message + " (missing: " + needle + ")");
 }
 
 std::string http_exchange(uint16_t port, const std::string& request) {
@@ -76,10 +77,11 @@ void verify_render_counters_and_gauges() {
   ocr.discards = 1;
   ocr.wait_ns = 2000000000;  // 2 s
 
-  grparse::PageScheduler::Options options;
-  options.render_workers = 4;
-  options.inference_workers = 2;
-  options.assembly_workers = 1;
+  grparse::PageScheduler::Options options{
+      .render_workers = 4,
+      .inference_workers = 2,
+      .assembly_workers = 1,
+  };
 
   const std::string text = grparse::render_prometheus_metrics(metrics, ocr, options);
   require_contains(text, "grparse_documents_submitted_total 7\n", "submitted counter");
@@ -173,7 +175,7 @@ int main() {
     verify_renderer_exception_becomes_500();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
-    std::cerr << "prometheus-metrics-test: " << error.what() << '\n';
+    std::println(stderr, "prometheus-metrics-test: {}", error.what());
     return EXIT_FAILURE;
   }
 }

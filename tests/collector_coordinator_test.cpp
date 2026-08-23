@@ -1,5 +1,6 @@
+#include <cstdio>
 #include <cstdlib>
-#include <iostream>
+#include <print>
 #include <stdexcept>
 #include <string>
 
@@ -223,7 +224,7 @@ int main() {
     verify_failure_isolation();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
-    std::cerr << "collector-coordinator-test: " << error.what() << '\n';
+    std::println(stderr, "collector-coordinator-test: {}", error.what());
     return EXIT_FAILURE;
   }
 }

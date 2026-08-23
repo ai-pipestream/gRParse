@@ -180,7 +180,7 @@ void MetricsHttpServer::serve() {
 
     std::string request;
     char buffer[1024];
-    while (request.size() < 8192 && request.find("\r\n\r\n") == std::string::npos) {
+    while (request.size() < 8192 && !request.contains("\r\n\r\n")) {
       const ssize_t received = ::recv(client, buffer, sizeof(buffer), 0);
       if (received <= 0) break;
       request.append(buffer, static_cast<size_t>(received));
@@ -188,11 +188,11 @@ void MetricsHttpServer::serve() {
 
     const size_t line_end = request.find("\r\n");
     const std::string request_line = request.substr(0, line_end);
-    if (request_line.rfind("GET ", 0) != 0) {
+    if (!request_line.starts_with("GET ")) {
       write_all(client, http_response("405 Method Not Allowed", "text/plain",
                                       "only GET is supported\n"));
-    } else if (request_line.rfind("GET /metrics ", 0) == 0 ||
-               request_line.rfind("GET /metrics?", 0) == 0) {
+    } else if (request_line.starts_with("GET /metrics ") ||
+               request_line.starts_with("GET /metrics?")) {
       try {
         write_all(client, http_response("200 OK", kContentType, render_()));
       } catch (const std::exception& error) {

@@ -22,7 +22,7 @@ constexpr const char kPngDataUriPrefix[] = "data:image/png;base64,";
 cv::Mat decode_page_image(const docv1::PageItem& page) {
   const std::string& uri = page.image().uri();
   const size_t prefix = sizeof(kPngDataUriPrefix) - 1;
-  if (uri.compare(0, prefix, kPngDataUriPrefix) != 0) return {};
+  if (!uri.starts_with(kPngDataUriPrefix)) return {};
   std::string bytes;
   try {
     bytes = decode_base64(uri.substr(prefix));

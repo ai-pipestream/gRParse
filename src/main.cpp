@@ -4,12 +4,13 @@
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
+#include <cstdio>
 #include <cstdlib>
 #include <fcntl.h>
 #include <filesystem>
-#include <iostream>
 #include <memory>
 #include <mutex>
+#include <print>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -68,7 +69,7 @@ int configured_index(const char* name, int fallback, int maximum = 63) {
 
 bool provider_available(const char* name) {
   const auto providers = Ort::GetAvailableProviders();
-  return std::find(providers.begin(), providers.end(), std::string(name)) != providers.end();
+  return std::ranges::find(providers, std::string(name)) != providers.end();
 }
 
 std::string available_providers() {
@@ -101,10 +102,11 @@ std::string configured_openvino_device() {
 std::unique_ptr<grparse::OcrEnginePool> build_pool_with(grparse::OrtEp ep,
                                                         const std::filesystem::path& models,
                                                         size_t worker_count, int gpu_index) {
-  grparse::OrtEpSelection selection;
-  selection.ep = ep;
-  selection.cuda_device = gpu_index;
-  selection.openvino_device = configured_openvino_device();
+  grparse::OrtEpSelection selection{
+      .ep = ep,
+      .cuda_device = gpu_index,
+      .openvino_device = configured_openvino_device(),
+  };
   grparse::set_ort_ep_selection(selection);
   auto pool = std::make_unique<grparse::OcrEnginePool>(models, worker_count, -1);
   if (grparse::ep_hook_invocations() == 0) {
@@ -132,7 +134,7 @@ std::unique_ptr<grparse::OcrEnginePool> build_engine_pool(const std::filesystem:
           "(available: " + available_providers() + ")");
     }
     auto pool = build_pool_with(grparse::OrtEp::kCuda, models, worker_count, gpu_index);
-    std::cout << "gRParse OCR execution provider: CUDA (device " << gpu_index << ")" << std::endl;
+    std::println("gRParse OCR execution provider: CUDA (device {})", gpu_index);
     return pool;
   }
   if (ep == "openvino") {
@@ -143,42 +145,38 @@ std::unique_ptr<grparse::OcrEnginePool> build_engine_pool(const std::filesystem:
           "Dockerfile.openvino");
     }
     auto pool = build_pool_with(grparse::OrtEp::kOpenVino, models, worker_count, gpu_index);
-    std::cout << "gRParse OCR execution provider: OpenVINO ("
-              << configured_openvino_device() << ")" << std::endl;
+    std::println("gRParse OCR execution provider: OpenVINO ({})", configured_openvino_device());
     return pool;
   }
   if (ep == "cpu") {
     auto pool = build_pool_with(grparse::OrtEp::kCpu, models, worker_count, gpu_index);
-    std::cout << "gRParse OCR execution provider: CPU (GRPARSE_ORT_EP=cpu)" << std::endl;
+    std::println("gRParse OCR execution provider: CPU (GRPARSE_ORT_EP=cpu)");
     return pool;
   }
   if (ep == "auto") {
     if (provider_available("CUDAExecutionProvider")) {
       try {
         auto pool = build_pool_with(grparse::OrtEp::kCuda, models, worker_count, gpu_index);
-        std::cout << "gRParse OCR execution provider: CUDA (device " << gpu_index
-                  << ", selected by GRPARSE_ORT_EP=auto)" << std::endl;
+        std::println("gRParse OCR execution provider: CUDA (device {}, selected by GRPARSE_ORT_EP=auto)",
+                     gpu_index);
         return pool;
       } catch (const std::exception& error) {
-        std::cerr << "GRPARSE_ORT_EP=auto: CUDA initialization failed (" << error.what()
-                  << ")" << std::endl;
+        std::println(stderr, "GRPARSE_ORT_EP=auto: CUDA initialization failed ({})", error.what());
       }
     }
     if (provider_available("OpenVINOExecutionProvider")) {
       try {
         auto pool = build_pool_with(grparse::OrtEp::kOpenVino, models, worker_count, gpu_index);
-        std::cout << "gRParse OCR execution provider: OpenVINO ("
-                  << configured_openvino_device() << ", selected by GRPARSE_ORT_EP=auto)"
-                  << std::endl;
+        std::println("gRParse OCR execution provider: OpenVINO ({}, selected by GRPARSE_ORT_EP=auto)",
+                     configured_openvino_device());
         return pool;
       } catch (const std::exception& error) {
-        std::cerr << "GRPARSE_ORT_EP=auto: OpenVINO initialization failed (" << error.what()
-                  << ")" << std::endl;
+        std::println(stderr, "GRPARSE_ORT_EP=auto: OpenVINO initialization failed ({})",
+                     error.what());
       }
     }
     auto pool = build_pool_with(grparse::OrtEp::kCpu, models, worker_count, gpu_index);
-    std::cout << "gRParse OCR execution provider: CPU (selected by GRPARSE_ORT_EP=auto)"
-              << std::endl;
+    std::println("gRParse OCR execution provider: CPU (selected by GRPARSE_ORT_EP=auto)");
     return pool;
   }
   throw std::invalid_argument("GRPARSE_ORT_EP must be cuda, openvino, cpu, or auto");
@@ -196,19 +194,17 @@ std::unique_ptr<grparse::LayoutEnginePool> build_layout_pool(
   }
   const std::filesystem::path model = models_dir / "layout_publaynet.onnx";
   if (mode == "off") {
-    std::cout << "gRParse layout: disabled (GRPARSE_LAYOUT=off)" << std::endl;
+    std::println("gRParse layout: disabled (GRPARSE_LAYOUT=off)");
     return nullptr;
   }
   if (mode == "auto" && !std::filesystem::exists(model)) {
-    std::cout << "gRParse layout: disabled (no " << model.string()
-              << "; see models/README.md)" << std::endl;
+    std::println("gRParse layout: disabled (no {}; see models/README.md)", model.string());
     return nullptr;
   }
   // "on" with a missing file reaches the pool constructor, which throws with
   // the model path — the fail-loud startup the explicit setting asks for.
   auto pool = std::make_unique<grparse::LayoutEnginePool>(model, worker_count);
-  std::cout << "gRParse layout: enabled (" << pool->size() << " sessions, "
-            << model.string() << ")" << std::endl;
+  std::println("gRParse layout: enabled ({} sessions, {})", pool->size(), model.string());
   return pool;
 }
 
@@ -224,7 +220,7 @@ std::unique_ptr<grparse::TableStructureEnginePool> build_table_structure_pool(
   }
   const std::filesystem::path model = models_dir / "slanet_plus.onnx";
   if (mode == "off") {
-    std::cout << "gRParse table structure: disabled (GRPARSE_TABLE_STRUCTURE=off)" << std::endl;
+    std::println("gRParse table structure: disabled (GRPARSE_TABLE_STRUCTURE=off)");
     return nullptr;
   }
   if (!layout_active) {
@@ -233,18 +229,18 @@ std::unique_ptr<grparse::TableStructureEnginePool> build_table_structure_pool(
           "GRPARSE_TABLE_STRUCTURE=on needs layout enabled to find table regions");
     }
     if (std::filesystem::exists(model)) {
-      std::cout << "gRParse table structure: disabled (layout is disabled)" << std::endl;
+      std::println("gRParse table structure: disabled (layout is disabled)");
     }
     return nullptr;
   }
   if (mode == "auto" && !std::filesystem::exists(model)) {
-    std::cout << "gRParse table structure: disabled (no " << model.string()
-              << "; see models/README.md)" << std::endl;
+    std::println("gRParse table structure: disabled (no {}; see models/README.md)",
+                 model.string());
     return nullptr;
   }
   auto pool = std::make_unique<grparse::TableStructureEnginePool>(model, worker_count);
-  std::cout << "gRParse table structure: enabled (" << pool->size() << " sessions, "
-            << model.string() << ")" << std::endl;
+  std::println("gRParse table structure: enabled ({} sessions, {})", pool->size(),
+               model.string());
   return pool;
 }
 
@@ -259,7 +255,7 @@ std::unique_ptr<grparse::FigureClassifierPool> build_figure_classifier_pool(
   }
   const std::filesystem::path model = models_dir / "figure_classifier.onnx";
   if (mode == "off") {
-    std::cout << "gRParse figure classes: disabled (GRPARSE_FIGURE_CLASSES=off)" << std::endl;
+    std::println("gRParse figure classes: disabled (GRPARSE_FIGURE_CLASSES=off)");
     return nullptr;
   }
   if (!layout_active) {
@@ -268,18 +264,18 @@ std::unique_ptr<grparse::FigureClassifierPool> build_figure_classifier_pool(
           "GRPARSE_FIGURE_CLASSES=on needs layout enabled to find figure regions");
     }
     if (std::filesystem::exists(model)) {
-      std::cout << "gRParse figure classes: disabled (layout is disabled)" << std::endl;
+      std::println("gRParse figure classes: disabled (layout is disabled)");
     }
     return nullptr;
   }
   if (mode == "auto" && !std::filesystem::exists(model)) {
-    std::cout << "gRParse figure classes: disabled (no " << model.string()
-              << "; see models/README.md)" << std::endl;
+    std::println("gRParse figure classes: disabled (no {}; see models/README.md)",
+                 model.string());
     return nullptr;
   }
   auto pool = std::make_unique<grparse::FigureClassifierPool>(model, worker_count);
-  std::cout << "gRParse figure classes: enabled (" << pool->size() << " sessions, "
-            << model.string() << ")" << std::endl;
+  std::println("gRParse figure classes: enabled ({} sessions, {})", pool->size(),
+               model.string());
   return pool;
 }
 
@@ -296,24 +292,22 @@ grparse::PageScheduler::BarcodeMode configure_barcode_mode(bool layout_active,
     throw std::invalid_argument("GRPARSE_BARCODES must be auto, on, or off");
   }
   if (mode == "off") {
-    std::cout << "gRParse barcodes: disabled (GRPARSE_BARCODES=off)" << std::endl;
+    std::println("gRParse barcodes: disabled (GRPARSE_BARCODES=off)");
     return BarcodeMode::kOff;
   }
   if (mode == "on") {
     if (!layout_active) {
       throw std::invalid_argument("GRPARSE_BARCODES=on needs layout enabled to find figure regions");
     }
-    std::cout << "gRParse barcodes: enabled for all figure crops (GRPARSE_BARCODES=on)"
-              << std::endl;
+    std::println("gRParse barcodes: enabled for all figure crops (GRPARSE_BARCODES=on)");
     return BarcodeMode::kAll;
   }
   if (!classifier_active) {
-    std::cout << "gRParse barcodes: disabled (figure classes are disabled; "
-                 "GRPARSE_BARCODES=on decodes without the classifier)"
-              << std::endl;
+    std::println("gRParse barcodes: disabled (figure classes are disabled; "
+                 "GRPARSE_BARCODES=on decodes without the classifier)");
     return BarcodeMode::kOff;
   }
-  std::cout << "gRParse barcodes: enabled for bar_code/qr_code figure classes" << std::endl;
+  std::println("gRParse barcodes: enabled for bar_code/qr_code figure classes");
   return BarcodeMode::kClassTriggered;
 }
 
@@ -396,6 +390,9 @@ void install_shutdown_signal_pipe(int* signal_pipe) {
 }  // namespace
 
 int main() {
+  // Container stdout is a pipe (fully buffered); line-buffer it explicitly so
+  // the old endl-flushing behaviour survives println, which does not flush.
+  std::setvbuf(stdout, nullptr, _IOLBF, 0);
   const char* models = std::getenv("GRPARSE_MODELS_DIR");
   const char* address = std::getenv("GRPARSE_LISTEN_ADDRESS");
   const std::string listen_address = address == nullptr ? "0.0.0.0:50051" : address;
@@ -437,9 +434,9 @@ int main() {
     }
     options.capture_picture_images = picture_mode == "on" && layout != nullptr;
     if (picture_mode == "on" && layout == nullptr) {
-      std::cout << "gRParse picture images: disabled (layout is disabled)" << std::endl;
+      std::println("gRParse picture images: disabled (layout is disabled)");
     } else if (options.capture_picture_images) {
-      std::cout << "gRParse picture images: enabled" << std::endl;
+      std::println("gRParse picture images: enabled");
     }
     // GRPARSE_PAGE_IMAGES=on embeds a downscaled PNG preview of every page
     // raster in the page event, so clients can paint boxes over the real
@@ -454,7 +451,7 @@ int main() {
     }
     options.capture_page_images = page_image_mode == "on";
     if (options.capture_page_images) {
-      std::cout << "gRParse page images: enabled" << std::endl;
+      std::println("gRParse page images: enabled");
     }
     options.barcode_mode = configure_barcode_mode(layout != nullptr, figure_classes != nullptr);
     grparse::PageScheduler scheduler(*engines, options, grparse::PageSourceFactory{},
@@ -469,37 +466,38 @@ int main() {
       const char* configured = std::getenv(name);
       return configured == nullptr ? std::string() : std::string(configured);
     };
-    grparse::CollectorTargets targets;
-    targets.libreoffice = collector_env("GRPARSE_LIBREOFFICE_TARGET");
-    targets.asr = collector_env("GRPARSE_ASR_TARGET");
-    targets.asr_model = collector_env("GRPARSE_ASR_MODEL");
-    targets.email = collector_env("GRPARSE_EMAIL_TARGET");
-    targets.xml = collector_env("GRPARSE_XML_TARGET");
-    targets.ebcdic = collector_env("GRPARSE_EBCDIC_TARGET");
-    targets.epub = collector_env("GRPARSE_EPUB_TARGET");
-    targets.markup = collector_env("GRPARSE_MARKUP_TARGET");
-    targets.lol_html = collector_env("GRPARSE_LOL_HTML_TARGET");
-    targets.fastwarc = collector_env("GRPARSE_FASTWARC_TARGET");
-    targets.pdf = collector_env("GRPARSE_PDF_TARGET");
+    grparse::CollectorTargets targets{
+        .libreoffice = collector_env("GRPARSE_LIBREOFFICE_TARGET"),
+        .asr = collector_env("GRPARSE_ASR_TARGET"),
+        .asr_model = collector_env("GRPARSE_ASR_MODEL"),
+        .email = collector_env("GRPARSE_EMAIL_TARGET"),
+        .xml = collector_env("GRPARSE_XML_TARGET"),
+        .ebcdic = collector_env("GRPARSE_EBCDIC_TARGET"),
+        .epub = collector_env("GRPARSE_EPUB_TARGET"),
+        .markup = collector_env("GRPARSE_MARKUP_TARGET"),
+        .lol_html = collector_env("GRPARSE_LOL_HTML_TARGET"),
+        .fastwarc = collector_env("GRPARSE_FASTWARC_TARGET"),
+        .pdf = collector_env("GRPARSE_PDF_TARGET"),
+    };
     // The hybrid leg: office documents' page renders run through the same
     // layout/classifier/barcode engines the CV path uses, sharing its pools.
-    grparse::OfficeCvEnrichment office_cv;
-    office_cv.detector = layout.get();
-    office_cv.classifier = figure_classes.get();
-    office_cv.barcode_mode = options.barcode_mode;
+    grparse::OfficeCvEnrichment office_cv{
+        .detector = layout.get(),
+        .classifier = figure_classes.get(),
+        .barcode_mode = options.barcode_mode,
+    };
     const auto endpoints =
         std::make_shared<grparse::CollectorEndpoints>(targets, office_cv);
     const auto report_collector = [](const char* name, const std::string& target) {
-      std::cout << "gRParse " << name << " collector: "
-                << (target.empty() ? "not configured" : target) << std::endl;
+      std::println("gRParse {} collector: {}", name,
+                   target.empty() ? "not configured" : target);
     };
     report_collector("libreoffice", targets.libreoffice);
     report_collector("asr", targets.asr);
     if (!targets.asr.empty()) {
-      std::cout << "gRParse asr model: "
-                << (targets.asr_model.empty() ? "NOT CONFIGURED (GRPARSE_ASR_MODEL)"
-                                              : targets.asr_model)
-                << std::endl;
+      std::println("gRParse asr model: {}",
+                   targets.asr_model.empty() ? "NOT CONFIGURED (GRPARSE_ASR_MODEL)"
+                                             : targets.asr_model);
     }
     report_collector("email", targets.email);
     report_collector("xml", targets.xml);
@@ -510,14 +508,13 @@ int main() {
     report_collector("fastwarc", targets.fastwarc);
     report_collector("pdf", targets.pdf);
     if (!targets.libreoffice.empty()) {
-      std::cout << "gRParse office CV enrichment: "
-                << (layout != nullptr ? "enabled (layout"
-                                        + std::string(figure_classes != nullptr
-                                                          ? " + figure classes"
-                                                          : "")
-                                        + ")"
-                                      : "disabled (layout is disabled)")
-                << std::endl;
+      std::println("gRParse office CV enrichment: {}",
+                   layout != nullptr ? "enabled (layout"
+                                       + std::string(figure_classes != nullptr
+                                                         ? " + figure classes"
+                                                         : "")
+                                       + ")"
+                                     : "disabled (layout is disabled)");
     }
     grparse::DocumentParserService service(scheduler, endpoints);
     grparse::DocumentStreamingService streaming_service(scheduler, endpoints);
@@ -536,11 +533,10 @@ int main() {
     builder.RegisterService(&streaming_service);
     const auto server = builder.BuildAndStart();
     if (!server) {
-      std::cerr << "Unable to listen on " << listen_address << '\n';
+      std::println(stderr, "Unable to listen on {}", listen_address);
       return 1;
     }
-    std::cout << "gRParse listening on " << listen_address
-              << " (RapidOCR / ONNX Runtime)" << std::endl;
+    std::println("gRParse listening on {} (RapidOCR / ONNX Runtime)", listen_address);
     // GRPARSE_METRICS_PORT exposes the same counters in Prometheus text
     // format at /metrics.  0 (the default) keeps the listener off; a
     // configured port that cannot be bound fails startup loudly.
@@ -552,8 +548,8 @@ int main() {
             return grparse::render_prometheus_metrics(scheduler.metrics(), engines->stats(),
                                                       options);
           });
-      std::cout << "gRParse metrics exporter: http://0.0.0.0:" << metrics_exporter->port()
-                << "/metrics" << std::endl;
+      std::println("gRParse metrics exporter: http://0.0.0.0:{}/metrics",
+                   metrics_exporter->port());
     }
     // Pipeline visibility (B4): one metrics line per interval on stdout, where
     // container logging already looks.  0 disables.
@@ -573,8 +569,7 @@ int main() {
           const auto current = scheduler.metrics();
           const auto now = std::chrono::steady_clock::now();
           const double elapsed = std::chrono::duration<double>(now - previous_time).count();
-          std::cout << format_metrics(current, previous, engines->stats(), elapsed, options)
-                    << std::endl;
+          std::println("{}", format_metrics(current, previous, engines->stats(), elapsed, options));
           previous = current;
           previous_time = now;
           lock.lock();
@@ -611,7 +606,7 @@ int main() {
     close(signal_pipe[0]);
     close(signal_pipe[1]);
   } catch (const std::exception& error) {
-    std::cerr << "Startup failed: " << error.what() << '\n';
+    std::println(stderr, "Startup failed: {}", error.what());
     return 1;
   }
 }

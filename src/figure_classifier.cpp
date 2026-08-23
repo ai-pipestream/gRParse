@@ -103,7 +103,7 @@ class FigureClassifierEngine::Impl {
       classes.push_back({class_labels[index], weight});
     }
     for (auto& entry : classes) entry.confidence /= total;
-    std::sort(classes.begin(), classes.end(), [](const FigureClass& a, const FigureClass& b) {
+    std::ranges::sort(classes, [](const FigureClass& a, const FigureClass& b) {
       if (a.confidence != b.confidence) return a.confidence > b.confidence;
       return a.label < b.label;
     });

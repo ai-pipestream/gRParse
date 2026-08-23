@@ -550,8 +550,8 @@ CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>&
   const auto looks_textual = [](const warcv1::RecordMetadata& metadata) {
     if (!metadata.has_http_content_type()) return true;
     const std::string& type = metadata.http_content_type();
-    return type.rfind("text/", 0) == 0 || type.find("json") != std::string::npos ||
-           type.find("xml") != std::string::npos || type.find("html") != std::string::npos;
+    return type.starts_with("text/") || type.contains("json") ||
+           type.contains("xml") || type.contains("html");
   };
 
   const auto fold_record = [&document, &add_text, &looks_textual](
@@ -564,10 +564,10 @@ CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>&
     group->set_content_layer(docv1::CONTENT_LAYER_BODY);
     std::string type_name = warcv1::WarcRecordType_Name(metadata.record_type());
     const std::string prefix = "WARC_RECORD_TYPE_";
-    if (type_name.rfind(prefix, 0) == 0) type_name.erase(0, prefix.size());
+    if (type_name.starts_with(prefix)) type_name.erase(0, prefix.size());
     if (type_name.empty()) type_name = std::to_string(metadata.record_type());
-    std::transform(type_name.begin(), type_name.end(), type_name.begin(),
-                   [](unsigned char letter) { return std::tolower(letter); });
+    std::ranges::transform(type_name, type_name.begin(),
+                           [](unsigned char letter) { return std::tolower(letter); });
     group->set_name(type_name + " @ " + std::to_string(metadata.stream_pos()));
     group->set_label(docv1::GROUP_LABEL_SECTION);
     document.mutable_body()->add_children()->set_ref(group->self_ref());

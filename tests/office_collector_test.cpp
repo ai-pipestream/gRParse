@@ -2,9 +2,10 @@
 // OfficeRenderService serving canned typed events, so the transport, the
 // mapper folding, and the failure paths are proven without LibreOffice.
 
+#include <cstdio>
 #include <cstdlib>
-#include <iostream>
 #include <memory>
+#include <print>
 #include <stdexcept>
 #include <string>
 
@@ -223,7 +224,7 @@ void verify_load_failure_degrades_to_outcome() {
   require(!outcome.success, "load failure must not report success");
   require(outcome.code == grpc::StatusCode::INVALID_ARGUMENT,
           "the collector's own status class survives");
-  require(outcome.error.find("cannot load document") != std::string::npos,
+  require(outcome.error.contains("cannot load document"),
           "the collector's error text survives");
 }
 
@@ -232,7 +233,7 @@ void verify_truncated_stream_is_a_failure() {
   ServerFixture server(&service);
   const auto outcome = grparse::collect_office_document(
       server.channel(), "doc-3", "cut.odt", "", "bytes");
-  require(!outcome.success && outcome.error.find("terminal status") != std::string::npos,
+  require(!outcome.success && outcome.error.contains("terminal status"),
           "a stream without RenderStatus is a failure, not an empty success");
 }
 
@@ -255,7 +256,7 @@ int main() {
     verify_unreachable_endpoint_is_a_failure();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
-    std::cerr << "office-collector-test: " << error.what() << '\n';
+    std::println(stderr, "office-collector-test: {}", error.what());
     return EXIT_FAILURE;
   }
 }

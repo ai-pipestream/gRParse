@@ -15,22 +15,21 @@ namespace grparse {
 namespace {
 
 std::string lowercase(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](unsigned char letter) { return std::tolower(letter); });
+  std::ranges::transform(value, value.begin(),
+                         [](unsigned char letter) { return std::tolower(letter); });
   return value;
 }
 
 bool extension_in(const std::string& extension,
                   std::initializer_list<const char*> known) {
-  return std::any_of(known.begin(), known.end(),
-                     [&extension](const char* candidate) { return extension == candidate; });
+  return std::ranges::any_of(
+      known, [&extension](const char* candidate) { return extension == candidate; });
 }
 
 // True when `value` ends with `suffix`. Used for the double extensions
 // (.tar.gz) that std::filesystem's single-extension accessor cannot see.
 bool ends_with(const std::string& value, const std::string& suffix) {
-  return value.size() >= suffix.size() &&
-         value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+  return value.ends_with(suffix);
 }
 
 }  // namespace
@@ -74,11 +73,9 @@ bool office_format(const std::string& filename, const std::string& content_type)
     return true;
   }
   const std::string type = lowercase(content_type);
-  return type.find("officedocument") != std::string::npos ||
-         type.find("msword") != std::string::npos ||
-         type.find("ms-excel") != std::string::npos ||
-         type.find("ms-powerpoint") != std::string::npos ||
-         type.find("opendocument") != std::string::npos ||
+  return type.contains("officedocument") || type.contains("msword") ||
+         type.contains("ms-excel") || type.contains("ms-powerpoint") ||
+         type.contains("opendocument") ||
          type == "text/csv" || type == "application/rtf";
 }
 
@@ -125,7 +122,7 @@ pipestream::parse::v1::Collector route_collector(const std::string& filename,
                    {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".oga",
                     ".opus", ".wma", ".amr", ".mp4", ".m4v", ".mkv", ".webm",
                     ".mov", ".avi", ".mpg", ".mpeg", ".wmv"}) ||
-      type.rfind("audio/", 0) == 0 || type.rfind("video/", 0) == 0) {
+      type.starts_with("audio/") || type.starts_with("video/")) {
     return pipestream::parse::v1::COLLECTOR_ASR;
   }
   return pipestream::parse::v1::COLLECTOR_GRPARSE_CV;
@@ -174,7 +171,7 @@ std::vector<pipestream::parse::v1::Collector> resolve_collectors(
   std::vector<pipestream::parse::v1::Collector> plan;
   for (const auto collector : requested) {
     if (collector == pipestream::parse::v1::COLLECTOR_UNSPECIFIED) continue;
-    if (std::find(plan.begin(), plan.end(), collector) == plan.end()) {
+    if (std::ranges::find(plan, collector) == plan.end()) {
       plan.push_back(collector);
     }
   }

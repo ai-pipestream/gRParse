@@ -30,8 +30,8 @@ void rewrite_refs(const RefMap& mapping, google::protobuf::Message* message) {
         !field->is_repeated() &&
         (field->name() == "ref" || field->name() == "self_ref")) {
       if (field->has_presence() && !reflection->HasField(*message, field)) continue;
-      const auto mapped = mapping.find(reflection->GetString(*message, field));
-      if (mapped != mapping.end()) {
+      if (const auto mapped = mapping.find(reflection->GetString(*message, field));
+          mapped != mapping.end()) {
         reflection->SetString(message, field, mapped->second);
       }
       continue;
@@ -95,9 +95,9 @@ void merge_root_group(docv1::GroupItem&& source, docv1::GroupItem* target) {
   }
   if (source.has_meta()) {
     auto& fields = *target->mutable_meta()->mutable_custom_fields();
-    for (auto& entry : *source.mutable_meta()->mutable_custom_fields()) {
+    for (auto& [key, value] : *source.mutable_meta()->mutable_custom_fields()) {
       // Additive: an existing key wins, a new key lands.
-      fields.emplace(entry.first, std::move(entry.second));
+      fields.emplace(key, std::move(value));
     }
   }
 }
@@ -137,8 +137,8 @@ void merge_documents(docv1::Document&& source, docv1::Document* target) {
   merge_root_group(std::move(*source.mutable_body()), target->mutable_body());
   merge_root_group(std::move(*source.mutable_furniture()), target->mutable_furniture());
 
-  for (auto& page : *source.mutable_pages()) {
-    target->mutable_pages()->emplace(page.first, std::move(page.second));
+  for (auto& [number, page] : *source.mutable_pages()) {
+    target->mutable_pages()->emplace(number, std::move(page));
   }
   if (!target->has_origin() && source.has_origin()) {
     *target->mutable_origin() = std::move(*source.mutable_origin());

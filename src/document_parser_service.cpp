@@ -86,8 +86,7 @@ std::string mimetype_for(const fs::path& path) {
 }
 
 bool is_pdf(const std::string& content, const fs::path& filename) {
-  return filename.extension() == ".pdf" ||
-         (content.size() >= 5 && content.compare(0, 5, "%PDF-") == 0);
+  return filename.extension() == ".pdf" || content.starts_with("%PDF-");
 }
 
 const char* collector_name(pipestream::parse::v1::Collector collector) {
@@ -262,7 +261,7 @@ bool requested(const pipestream::parse::v1::ConvertDocumentOptions& options,
   if (options.to_formats().empty()) {
     return format == pipestream::parse::v1::OUTPUT_FORMAT_TEXT;
   }
-  return std::find(options.to_formats().begin(), options.to_formats().end(), format) !=
+  return std::ranges::find(options.to_formats(), format) !=
          options.to_formats().end();
 }
 
@@ -603,12 +602,12 @@ grpc::Status DocumentParserService::ConvertSource(
     *document = std::move(result.document);
     // Collector warnings are not failures; they stay on the document, keyed
     // by collector, so nothing the collectors reported is dropped.
-    for (const auto& warning : result.warnings) {
+    for (const auto& [collector, text] : result.warnings) {
       auto& fields = *document->mutable_body()->mutable_meta()->mutable_custom_fields();
-      *fields[std::string("collector_warnings:") + collector_name(warning.first)]
+      *fields[std::string("collector_warnings:") + collector_name(collector)]
            .mutable_list_value()
            ->add_values()
-           ->mutable_string_value() = warning.second;
+           ->mutable_string_value() = text;
     }
     for (const auto& failure : result.failures) {
       auto* error = converted->add_errors();

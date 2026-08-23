@@ -21,7 +21,7 @@ struct Entry {
 // OCR boxes in adjacent table rows are separated by the row leading, so the
 // center test keeps tight rows apart while tolerating ragged box edges.
 std::vector<std::vector<Entry>> cluster_rows(std::vector<Entry> entries) {
-  std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) {
+  std::ranges::sort(entries, [](const Entry& a, const Entry& b) {
     if (a.box.top != b.box.top) return a.box.top < b.box.top;
     return a.box.left < b.box.left;
   });
@@ -48,7 +48,7 @@ std::vector<std::pair<int, int>> column_spans(const std::vector<Entry>& entries,
   std::vector<std::pair<int, int>> spans;
   spans.reserve(entries.size());
   for (const Entry& entry : entries) spans.emplace_back(entry.box.left, entry.box.right);
-  std::sort(spans.begin(), spans.end());
+  std::ranges::sort(spans);
   std::vector<std::pair<int, int>> merged;
   for (const auto& [left, right] : spans) {
     if (!merged.empty() && left <= merged.back().second + gutter_threshold) {
@@ -84,7 +84,7 @@ int median_height(const std::vector<Entry>& entries) {
   std::vector<int64_t> heights;
   heights.reserve(entries.size());
   for (const Entry& entry : entries) heights.push_back(entry.box.height());
-  std::nth_element(heights.begin(), heights.begin() + heights.size() / 2, heights.end());
+  std::ranges::nth_element(heights, heights.begin() + heights.size() / 2);
   return static_cast<int>(heights[heights.size() / 2]);
 }
 

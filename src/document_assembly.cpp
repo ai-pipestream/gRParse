@@ -115,7 +115,7 @@ void fill_structured_table_data(const OcrPage& page, const LayoutRegion& region,
     if (line.text.empty() || line.polygon.empty()) continue;
     if (region_for_line(page, line) == &region) lines.push_back({index, bounding_box(line)});
   }
-  std::sort(lines.begin(), lines.end(), [](const MemberLine& a, const MemberLine& b) {
+  std::ranges::sort(lines, [](const MemberLine& a, const MemberLine& b) {
     if (a.box.top != b.box.top) return a.box.top < b.box.top;
     return a.box.left < b.box.left;
   });

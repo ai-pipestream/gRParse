@@ -1,6 +1,7 @@
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
-#include <iostream>
+#include <print>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -175,7 +176,7 @@ int main() {
     verify_pages_without_usable_images_are_skipped();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
-    std::cerr << "office-cv-enrichment-test: " << error.what() << '\n';
+    std::println(stderr, "office-cv-enrichment-test: {}", error.what());
     return EXIT_FAILURE;
   }
 }

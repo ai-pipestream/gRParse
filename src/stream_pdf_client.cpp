@@ -1,8 +1,9 @@
+#include <cctype>
 #include <chrono>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
-#include <cctype>
+#include <print>
 #include <string>
 
 #include <grpcpp/grpcpp.h>
@@ -26,13 +27,13 @@ std::string content_type_for(const fs::path& document) {
 
 int main(int argc, char** argv) {
   if (argc != 2 && argc != 3) {
-    std::cerr << "Usage: grparse-stream-client DOCUMENT_PATH [HOST:PORT]\n";
+    std::println(stderr, "Usage: grparse-stream-client DOCUMENT_PATH [HOST:PORT]");
     return 64;
   }
   const fs::path pdf = argv[1];
   std::ifstream input(pdf, std::ios::binary);
   if (!input) {
-    std::cerr << "Could not open document: " << pdf << '\n';
+    std::println(stderr, "Could not open document: {:?}", pdf.string());
     return 66;
   }
 
@@ -90,18 +91,18 @@ int main(int argc, char** argv) {
           if (annotation.has_misc() && annotation.misc().kind() == "barcode") ++barcodes;
         }
       }
-      std::cout << "page=" << event.page().page_number() << " text_items=" << event.page().texts_size()
-                << " digital_items=" << digital_items << " ocr_items=" << ocr_items
-                << " labelled=" << labelled_items << " tables=" << event.page().tables_size()
-                << " cells=" << filled_cells << " pictures=" << event.page().pictures_size()
-                << " picture_images=" << picture_images << " barcodes=" << barcodes << '\n';
+      std::println("page={} text_items={} digital_items={} ocr_items={} labelled={} tables={} "
+                   "cells={} pictures={} picture_images={} barcodes={}",
+                   event.page().page_number(), event.page().texts_size(), digital_items,
+                   ocr_items, labelled_items, event.page().tables_size(), filled_cells,
+                   event.page().pictures_size(), picture_images, barcodes);
     } else if (event.has_complete()) {
-      std::cout << "complete total_pages=" << event.total_pages() << '\n';
+      std::println("complete total_pages={}", event.total_pages());
     }
   }
   const grpc::Status status = stream->Finish();
   if (!status.ok()) {
-    std::cerr << "StreamProcessDocument failed: " << status.error_message() << '\n';
+    std::println(stderr, "StreamProcessDocument failed: {}", status.error_message());
     return 1;
   }
   return page_events == 0 ? 1 : 0;

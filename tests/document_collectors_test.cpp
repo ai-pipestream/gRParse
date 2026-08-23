@@ -4,8 +4,9 @@
 // warning surfacing, and the failure paths are proven without any collector
 // binary.
 
-#include <iostream>
+#include <cstdio>
 #include <memory>
+#include <print>
 #include <stdexcept>
 #include <string>
 
@@ -154,7 +155,7 @@ void verify_transport_class_collapses_to_unavailable() {
   require(!outcome.success, "an INTERNAL collector failure is an outcome");
   require(outcome.code == grpc::StatusCode::UNAVAILABLE,
           "non-caller status classes collapse to UNAVAILABLE");
-  require(outcome.error.find("decoder blew up") != std::string::npos,
+  require(outcome.error.contains("decoder blew up"),
           "the collector's own message survives");
 }
 
@@ -233,7 +234,7 @@ void verify_missing_trailer_fails() {
       grparse::collect_email_document(server.channel(), "d", "f.eml", "", "abc");
   require(!outcome.success && outcome.code == grpc::StatusCode::UNAVAILABLE,
           "a stream without a terminal status fails the collector");
-  require(outcome.error.find("terminal status") != std::string::npos,
+  require(outcome.error.contains("terminal status"),
           "the truncation names itself");
 }
 
@@ -304,7 +305,7 @@ void verify_caller_status_classes_survive() {
   const auto outcome = grparse::collect_xml_document(server.channel(), "<a/>");
   require(!outcome.success && outcome.code == grpc::StatusCode::INVALID_ARGUMENT,
           "INVALID_ARGUMENT survives the mapping");
-  require(outcome.error.find("sniff found nothing") != std::string::npos,
+  require(outcome.error.contains("sniff found nothing"),
           "the collector's own message survives");
 }
 
@@ -364,7 +365,7 @@ void verify_ebcdic_without_layout_never_dials() {
   const auto outcome = grparse::collect_ebcdic_document(channel, "", "\xC1");
   require(!outcome.success && outcome.code == grpc::StatusCode::INVALID_ARGUMENT,
           "a missing layout is the caller's error, reported before dialing");
-  require(outcome.error.find("ebcdic_layout_json") != std::string::npos,
+  require(outcome.error.contains("ebcdic_layout_json"),
           "the error names the option that was missing");
 }
 
@@ -440,7 +441,7 @@ void verify_missing_document_event_fails() {
   const auto outcome = grparse::collect_epub_document(server.channel(), "PK\x03\x04zip");
   require(!outcome.success && outcome.code == grpc::StatusCode::UNAVAILABLE,
           "a trailer without a document event fails the collector");
-  require(outcome.error.find("emit_document") != std::string::npos,
+  require(outcome.error.contains("emit_document"),
           "the failure explains the collector predates emit_document");
 }
 
@@ -608,7 +609,7 @@ void verify_lol_html_without_rules_never_dials() {
   const auto garbled =
       grparse::collect_lol_html_document(nullptr, "not json", "<p>hi</p>");
   require(!garbled.success && garbled.code == grpc::StatusCode::INVALID_ARGUMENT &&
-              garbled.error.find("ExtractOptions") != std::string::npos,
+              garbled.error.contains("ExtractOptions"),
           "unparseable options degrade before dialing, naming the type");
 }
 
@@ -618,8 +619,7 @@ void verify_lol_html_in_band_error_is_terminal() {
   const auto outcome = grparse::collect_lol_html_document(
       server.channel(), kLolHtmlOptionsJson, "<select><xmp><script>");
   require(!outcome.success && outcome.code == grpc::StatusCode::INVALID_ARGUMENT &&
-              outcome.error.find("PARSE_ERROR_CODE_PARSING_AMBIGUITY") !=
-                  std::string::npos,
+              outcome.error.contains("PARSE_ERROR_CODE_PARSING_AMBIGUITY"),
           "the in-band terminal error fails the outcome with its typed code");
 }
 
@@ -789,8 +789,7 @@ void verify_fastwarc_framing_error_keeps_records() {
   require(outcome.success && outcome.document.groups_size() == 1,
           "a non-recoverable framing error keeps the records already folded");
   require(outcome.warnings.size() == 2 &&
-              outcome.warnings[1].find("framing error at stream offset 128") !=
-                  std::string::npos,
+              outcome.warnings[1].contains("framing error at stream offset 128"),
           "the framing error surfaces as a warning, not a failure");
 }
 
@@ -801,7 +800,7 @@ void verify_fastwarc_transport_failure_without_records() {
       grparse::collect_fastwarc_document(server.channel(), "WARC/1.0 fake bytes");
   require(!outcome.success && outcome.code == grpc::StatusCode::UNAVAILABLE,
           "a transport failure before any record is a failed outcome");
-  require(outcome.error.find("socket went away") != std::string::npos,
+  require(outcome.error.contains("socket went away"),
           "the transport message survives");
 }
 
@@ -816,8 +815,8 @@ void verify_fastwarc_truncates_payload_text() {
       "\n[fastwarc: payload truncated to the first 65536 of 71680 bytes]";
   const std::string& payload = outcome.document.texts(5).text().base().text();
   require(payload.size() == 65536 + suffix.size() &&
-              payload.compare(0, 16, std::string(16, 'a')) == 0 &&
-              payload.compare(65536, suffix.size(), suffix) == 0,
+              payload.starts_with(std::string(16, 'a')) &&
+              payload.ends_with(suffix),
           "the payload folds to the 64 KiB cap with the truncation noted");
 }
 
@@ -998,7 +997,7 @@ void verify_pdf_encoding_issues_defeat_the_fast_path() {
           "the trailer's has_encoding_issues rides the classification");
   bool warned = false;
   for (const auto& warning : result.outcome.warnings) {
-    if (warning.find("encoding issues") != std::string::npos) warned = true;
+    if (warning.contains("encoding issues")) warned = true;
   }
   require(warned, "the untrustworthy text layer is warned about");
   const auto route = grparse::route_pdf_by_classification(result.classification);
@@ -1015,7 +1014,7 @@ void verify_pdf_collector_failure_is_an_outcome() {
   const auto result = grparse::collect_pdf(server.channel(), "%PDF-fake");
   require(!result.outcome.success && result.outcome.code == grpc::StatusCode::UNAVAILABLE,
           "a collector panic surfaces as a failed, unavailable outcome");
-  require(result.outcome.error.find("lopdf panicked") != std::string::npos,
+  require(result.outcome.error.contains("lopdf panicked"),
           "the collector's own message survives");
   require(result.classification.pdf_class == grparse::PdfClass::kUnknown,
           "a failed stream carries no classification");
@@ -1073,9 +1072,9 @@ int main() {
     verify_pdf_endpoint_configuration();
     verify_pdf_plain_leg_returns_the_document();
   } catch (const std::exception& failure) {
-    std::cerr << "FAILED: " << failure.what() << std::endl;
+    std::println(stderr, "FAILED: {}", failure.what());
     return 1;
   }
-  std::cout << "document collectors test passed" << std::endl;
+  std::println("document collectors test passed");
   return 0;
 }

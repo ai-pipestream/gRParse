@@ -1,9 +1,10 @@
 // Exercises the raster branch of open_in_memory_document: the OpenCV decode
 // of PNG/JPEG request bytes that backs image (non-PDF) ingest.  Images are
 // encoded in memory, so no binary fixture is needed.
+#include <cstdio>
 #include <cstdlib>
-#include <iostream>
 #include <memory>
+#include <print>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -121,9 +122,9 @@ int main() {
     verify_invalid_bytes();
     verify_only_advertised_formats_are_admitted();
   } catch (const std::exception& error) {
-    std::cerr << "raster_source_test failed: " << error.what() << '\n';
+    std::println(stderr, "raster_source_test failed: {}", error.what());
     return EXIT_FAILURE;
   }
-  std::cout << "raster_source_test passed\n";
+  std::println("raster_source_test passed");
   return EXIT_SUCCESS;
 }

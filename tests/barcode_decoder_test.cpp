@@ -1,6 +1,7 @@
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
-#include <iostream>
+#include <print>
 #include <stdexcept>
 #include <string>
 
@@ -92,7 +93,7 @@ int main() {
     verify_determinism(fixture);
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
-    std::cerr << "barcode-decoder-test: " << error.what() << '\n';
+    std::println(stderr, "barcode-decoder-test: {}", error.what());
     return EXIT_FAILURE;
   }
 }

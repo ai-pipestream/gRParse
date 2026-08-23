@@ -1,8 +1,9 @@
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
-#include <iostream>
 #include <memory>
+#include <print>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -147,15 +148,16 @@ class WideSource final : public grparse::PageSource {
 // RESOURCE_EXHAUSTED offense.
 void verify_wide_page_window_streams_completely() {
   constexpr int kPages = 8;
-  grparse::PageScheduler::Options options;
-  options.document_queue_capacity = 4;
-  options.render_queue_capacity = 16;
-  options.inference_queue_capacity = 16;
-  options.assembly_queue_capacity = 16;
-  options.render_workers = 4;
-  options.inference_workers = 4;
-  options.assembly_workers = 2;
-  options.page_window = kPages;
+  grparse::PageScheduler::Options options{
+      .document_queue_capacity = 4,
+      .render_queue_capacity = 16,
+      .inference_queue_capacity = 16,
+      .assembly_queue_capacity = 16,
+      .render_workers = 4,
+      .inference_workers = 4,
+      .assembly_workers = 2,
+      .page_window = kPages,
+  };
 
   HeadOfLineRecognizer recognizer;
   grparse::PageScheduler scheduler(recognizer, options,
@@ -320,7 +322,7 @@ void verify_unsupported_options_are_rejected(TestServer* server) {
   const grpc::Status status = client->ConvertSource(&context, request, &response);
   require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
           "unsupported conversion options must be rejected");
-  require(status.error_message().find("images_scale") != std::string::npos,
+  require(status.error_message().contains("images_scale"),
           "the rejection must name the unimplemented option: " + status.error_message());
 
   request = unary_request();
@@ -333,8 +335,7 @@ void verify_unsupported_options_are_rejected(TestServer* server) {
       client->ConvertSource(&unspecified_context, request, &unspecified_response);
   require(unspecified_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
           "an unrenderable output format must be rejected");
-  require(unspecified_status.error_message().find("OUTPUT_FORMAT_UNSPECIFIED") !=
-              std::string::npos,
+  require(unspecified_status.error_message().contains("OUTPUT_FORMAT_UNSPECIFIED"),
           "the rejection must name the unrenderable format: " +
               unspecified_status.error_message());
 }
@@ -415,7 +416,7 @@ void verify_recognition_options_steer_the_cv_leg(TestServer* server) {
     const grpc::Status status = client->ConvertSource(&context, request, &response);
     require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
             "render_scale outside [1.0, 8.0] must be rejected");
-    require(status.error_message().find("render_scale") != std::string::npos,
+    require(status.error_message().contains("render_scale"),
             "the rejection must name render_scale: " + status.error_message());
   }
   {
@@ -427,8 +428,8 @@ void verify_recognition_options_steer_the_cv_leg(TestServer* server) {
     const grpc::Status status = client->ConvertSource(&context, request, &response);
     require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
             "do_ocr false with force_ocr true must be rejected");
-    require(status.error_message().find("do_ocr") != std::string::npos &&
-                status.error_message().find("force_ocr") != std::string::npos,
+    require(status.error_message().contains("do_ocr") &&
+                status.error_message().contains("force_ocr"),
             "the rejection must name both options: " + status.error_message());
   }
 }
@@ -458,28 +459,28 @@ void verify_unary_multi_format_exports(TestServer* server) {
   require(exports.has_md() && exports.md() == "one\n\ntwo\n\nthree",
           "multi-format markdown export: " + exports.md());
   require(exports.has_html() &&
-              exports.html().find("<p>one</p>") != std::string::npos &&
-              exports.html().find("<!DOCTYPE html>") == 0,
+              exports.html().contains("<p>one</p>") &&
+              exports.html().starts_with("<!DOCTYPE html>"),
           "multi-format html export: " + exports.html());
   require(exports.has_json() &&
-              exports.json().find("\"texts\"") != std::string::npos &&
-              exports.json().find("\"self_ref\"") != std::string::npos,
+              exports.json().contains("\"texts\"") &&
+              exports.json().contains("\"self_ref\""),
           "multi-format json export");
   // The CV pages carry provenance, so the doctags text items may carry loc
   // tokens between the tag and the content.
-  require(exports.has_doctags() && exports.doctags().find("<doctag>") == 0 &&
-              exports.doctags().find("one</text>") != std::string::npos,
+  require(exports.has_doctags() && exports.doctags().starts_with("<doctag>") &&
+              exports.doctags().contains("one</text>"),
           "multi-format doctags export: " + exports.doctags());
   require(exports.has_doclang() &&
-              exports.doclang().find(
-                  "<doclang xmlns=\"http://docling-project.org/ns/doclang/v1\">") == 0,
+              exports.doclang().starts_with(
+                  "<doclang xmlns=\"http://docling-project.org/ns/doclang/v1\">"),
           "multi-format doclang export: " + exports.doclang());
   require(exports.has_vtt() && exports.vtt() == "WEBVTT",
           "an untimed document's vtt export is the bare header: " + exports.vtt());
   require(exports.has_html_split_page() &&
-              exports.html_split_page().find("<div class='page'>") != std::string::npos,
+              exports.html_split_page().contains("<div class='page'>"),
           "multi-format split-page export");
-  require(exports.has_yaml() && exports.yaml().find("texts:") != std::string::npos,
+  require(exports.has_yaml() && exports.yaml().contains("texts:"),
           "multi-format yaml export: " + exports.yaml().substr(0, 200));
 
   auto default_request = unary_request();
@@ -635,7 +636,7 @@ void verify_stream_resolves_recognition_options() {
     for (int index = 0; index < 3; ++index) {
       const auto& page = run.events.at(index).page();
       require(page.texts_size() == 1 &&
-                  page.texts(0).text().base().text().rfind("native-", 0) != 0,
+                  !page.texts(0).text().base().text().starts_with("native-"),
               "forced stream text must come from recognition, not the embedded layer");
     }
   }
@@ -677,7 +678,7 @@ void verify_stream_resolves_recognition_options() {
     first.set_render_scale(9.0);
     const StreamRun run = run_chunks(client.get(), {first});
     require(run.status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
-                run.status.error_message().find("render_scale") != std::string::npos,
+                run.status.error_message().contains("render_scale"),
             "an out-of-range streamed render_scale must be rejected by name: " +
                 run.status.error_message());
   }
@@ -688,8 +689,8 @@ void verify_stream_resolves_recognition_options() {
     last.set_force_ocr(true);
     const StreamRun run = run_chunks(client.get(), {first, last});
     require(run.status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
-                run.status.error_message().find("do_ocr") != std::string::npos &&
-                run.status.error_message().find("force_ocr") != std::string::npos,
+                run.status.error_message().contains("do_ocr") &&
+                run.status.error_message().contains("force_ocr"),
             "a cross-chunk mode contradiction must be rejected by name: " +
                 run.status.error_message());
   }
@@ -935,8 +936,7 @@ void verify_pdf_classification_restricts_recognition() {
   require(run.status.ok(), "routed parse failed: " + run.status.error_message());
   require(run.recognizer_calls == 1,
           "only the inspector's page hits the recognizer, not the coverage heuristic's set");
-  require(run.response.response().document().exports().text().find("native-one") !=
-              std::string::npos,
+  require(run.response.response().document().exports().text().contains("native-one"),
           "the cleared pages settle on their embedded layers");
 }
 
@@ -950,8 +950,8 @@ void verify_pdf_collector_failure_degrades_to_the_cv_path() {
           "the fallback CV run parses digitally, exactly as without the collector");
   const auto& fields = run.response.response().document().doc().body().meta().custom_fields();
   require(fields.count("collector_warnings:pdf") == 1 &&
-              fields.at("collector_warnings:pdf").list_value().values(0).string_value().find(
-                  "fell back to the in-process CV path") != std::string::npos,
+              fields.at("collector_warnings:pdf").list_value().values(0).string_value().contains(
+                  "fell back to the in-process CV path"),
           "the degradation is recorded as a collector warning");
 }
 
@@ -1009,7 +1009,7 @@ int main() {
     verify_streaming_pdf_classification_restricts_recognition();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
-    std::cerr << "streaming-service-test: " << error.what() << '\n';
+    std::println(stderr, "streaming-service-test: {}", error.what());
     return EXIT_FAILURE;
   }
 }

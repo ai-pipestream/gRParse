@@ -30,7 +30,7 @@ std::optional<Gap> widest_gap(const std::vector<const Unit*>& units, bool horizo
     spans.emplace_back(horizontal ? unit->box.top : unit->box.left,
                        horizontal ? unit->box.bottom : unit->box.right);
   }
-  std::sort(spans.begin(), spans.end());
+  std::ranges::sort(spans);
   std::optional<Gap> best;
   int64_t band_end = spans.front().second;
   for (const auto& [start, finish] : spans) {
@@ -68,7 +68,7 @@ void order_units(const std::vector<const Unit*>& units, std::vector<const Unit*>
   }
   // No whitespace separates anything: stable geometric order.
   std::vector<const Unit*> sorted = units;
-  std::stable_sort(sorted.begin(), sorted.end(), [](const Unit* a, const Unit* b) {
+  std::ranges::stable_sort(sorted, [](const Unit* a, const Unit* b) {
     if (a->box.top != b->box.top) return a->box.top < b->box.top;
     return a->box.left < b->box.left;
   });
@@ -124,7 +124,7 @@ std::vector<size_t> reading_order(const OcrPage& page) {
   result.reserve(page.lines.size());
   for (const Unit* unit : ordered) {
     std::vector<size_t> lines = unit->line_indices;
-    std::stable_sort(lines.begin(), lines.end(), [&page](size_t a, size_t b) {
+    std::ranges::stable_sort(lines, [&page](size_t a, size_t b) {
       const AxisAlignedBox box_a = bounding_box(page.lines[a]);
       const AxisAlignedBox box_b = bounding_box(page.lines[b]);
       if (box_a.top != box_b.top) return box_a.top < box_b.top;

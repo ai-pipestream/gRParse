@@ -1,8 +1,9 @@
 // Exercises the single region-binding rule (highest-confidence region
 // containing the line's box center) and the raster clipping/cropping helpers
 // that table structure, figure classification, and barcode decode all rely on.
+#include <cstdio>
 #include <cstdlib>
-#include <iostream>
+#include <print>
 #include <stdexcept>
 #include <string>
 
@@ -118,9 +119,9 @@ int main() {
     verify_clip_region();
     verify_crop_region();
   } catch (const std::exception& error) {
-    std::cerr << "region_geometry_test failed: " << error.what() << '\n';
+    std::println(stderr, "region_geometry_test failed: {}", error.what());
     return EXIT_FAILURE;
   }
-  std::cout << "region_geometry_test passed\n";
+  std::println("region_geometry_test passed");
   return EXIT_SUCCESS;
 }

@@ -1,6 +1,7 @@
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
-#include <iostream>
+#include <print>
 #include <stdexcept>
 #include <string>
 
@@ -77,7 +78,7 @@ int main() {
     const fs::path image =
         fs::path(data_dir == nullptr ? "tests/data" : data_dir) / "bar_chart.png";
     if (!fs::exists(model)) {
-      std::cerr << "figure-classifier-test: skipped, model not present: " << model << '\n';
+      std::println(stderr, "figure-classifier-test: skipped, model not present: {:?}", model.string());
       return kSkipExitCode;
     }
     require(fs::exists(image), "test image missing: " + image.string());
@@ -86,7 +87,7 @@ int main() {
     verify_bar_chart_matches_reference(model, image);
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
-    std::cerr << "figure-classifier-test: " << error.what() << '\n';
+    std::println(stderr, "figure-classifier-test: {}", error.what());
     return EXIT_FAILURE;
   }
 }

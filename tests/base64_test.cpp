@@ -1,5 +1,6 @@
+#include <cstdio>
 #include <cstdlib>
-#include <iostream>
+#include <print>
 #include <stdexcept>
 #include <string>
 
@@ -46,7 +47,7 @@ int main() {
             "encode and decode round-trip");
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
-    std::cerr << "base64-test: " << error.what() << '\n';
+    std::println(stderr, "base64-test: {}", error.what());
     return EXIT_FAILURE;
   }
 }

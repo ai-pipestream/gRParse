@@ -11,9 +11,9 @@
 // upstream crash). The PDF is assembled in memory; no binary fixture.
 #include <cstdio>
 #include <exception>
-#include <iostream>
 #include <map>
 #include <memory>
+#include <print>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -147,9 +147,9 @@ int main() {
     verify_shared_source_survives_concurrency();
     verify_independent_sources_survive_concurrency();
   } catch (const std::exception& error) {
-    std::cerr << "FAILED: " << error.what() << "\n";
+    std::println(stderr, "FAILED: {}", error.what());
     return EXIT_FAILURE;
   }
-  std::cout << "pdf source concurrency test passed\n";
+  std::println("pdf source concurrency test passed");
   return EXIT_SUCCESS;
 }

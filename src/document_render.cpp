@@ -49,9 +49,9 @@ ArenaRef parse_ref(const std::string& ref) {
       {"#/field_regions/", ArenaRef::kFieldRegion},
       {"#/field_items/", ArenaRef::kFieldItem},
   };
-  for (const auto& arena : kArenas) {
-    if (ref.compare(0, arena.first.size(), arena.first) != 0) continue;
-    const std::string digits = ref.substr(arena.first.size());
+  for (const auto& [prefix, kind] : kArenas) {
+    if (!ref.starts_with(prefix)) continue;
+    const std::string digits = ref.substr(prefix.size());
     // Nine digits keeps the index inside int range; anything longer cannot
     // name a real arena entry and resolves to kUnknown like other malformed
     // references.
@@ -59,7 +59,7 @@ ArenaRef parse_ref(const std::string& ref) {
         digits.find_first_not_of("0123456789") != std::string::npos) {
       return {};
     }
-    return {arena.second, std::stoi(digits)};
+    return {kind, std::stoi(digits)};
   }
   return {};
 }
@@ -93,9 +93,9 @@ int heading_rank(int level) {
 std::string label_short_name(docv1::DocItemLabel label) {
   std::string name = docv1::DocItemLabel_Name(label);
   static const std::string kPrefix = "DOC_ITEM_LABEL_";
-  if (name.compare(0, kPrefix.size(), kPrefix) == 0) name = name.substr(kPrefix.size());
-  std::transform(name.begin(), name.end(), name.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  if (name.starts_with(kPrefix)) name = name.substr(kPrefix.size());
+  std::ranges::transform(name, name.begin(),
+                         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   return name;
 }
 
@@ -122,9 +122,9 @@ std::string code_fence_language(const docv1::CodeItem& code) {
   }
   std::string name = docv1::CodeLanguageLabel_Name(code.code_language());
   static const std::string kPrefix = "CODE_LANGUAGE_LABEL_";
-  if (name.compare(0, kPrefix.size(), kPrefix) == 0) name = name.substr(kPrefix.size());
-  std::transform(name.begin(), name.end(), name.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  if (name.starts_with(kPrefix)) name = name.substr(kPrefix.size());
+  std::ranges::transform(name, name.begin(),
+                         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   return name;
 }
 
@@ -526,7 +526,7 @@ class HtmlRenderer : RendererBase {
 
     std::vector<int> page_order;
     for (const int page : element_pages_) {
-      if (std::find(page_order.begin(), page_order.end(), page) == page_order.end()) {
+      if (std::ranges::find(page_order, page) == page_order.end()) {
         page_order.push_back(page);
       }
     }
@@ -890,9 +890,9 @@ std::string doctags_code_language(const docv1::CodeItem& code) {
   // "Ada", "Rust"), which the enum suffix reproduces.
   std::string name = docv1::CodeLanguageLabel_Name(code.code_language());
   static const std::string kPrefix = "CODE_LANGUAGE_LABEL_";
-  if (name.compare(0, kPrefix.size(), kPrefix) == 0) name = name.substr(kPrefix.size());
-  std::transform(name.begin(), name.end(), name.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  if (name.starts_with(kPrefix)) name = name.substr(kPrefix.size());
+  std::ranges::transform(name, name.begin(),
+                         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   if (!name.empty()) name[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(name[0])));
   return name;
 }
@@ -1249,9 +1249,9 @@ class DocTagsRenderer : RendererBase {
       }
       std::string label = docv1::GraphCellLabel_Name(cell.label());
       static const std::string kPrefix = "GRAPH_CELL_LABEL_";
-      if (label.compare(0, kPrefix.size(), kPrefix) == 0) label = label.substr(kPrefix.size());
-      std::transform(label.begin(), label.end(), label.begin(),
-                     [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+      if (label.starts_with(kPrefix)) label = label.substr(kPrefix.size());
+      std::ranges::transform(label, label.begin(),
+                             [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
       body.append(wrap(label + "_" + std::to_string(cell.cell_id()), cell_text));
     }
     body.append(caption_block(item.captions()));

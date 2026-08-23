@@ -1,5 +1,6 @@
+#include <cstdio>
 #include <cstdlib>
-#include <iostream>
+#include <print>
 #include <stdexcept>
 #include <string>
 
@@ -226,7 +227,7 @@ void verify_page_preview_becomes_page_image() {
   require(image.mimetype() == "image/png", "preview mimetype");
   require(image.size().width() == 300 && image.size().height() == 200,
           "preview pixel size comes from the PNG header");
-  require(image.uri().rfind("data:image/png;base64,", 0) == 0,
+  require(image.uri().starts_with("data:image/png;base64,"),
           "preview URI must be a base64 PNG data URI");
   require(data.page_meta().size().width() == 612 && data.page_meta().size().height() == 792,
           "the page size keeps the page's own coordinate space");
@@ -317,7 +318,7 @@ int main() {
     verify_items_carry_collector_sources();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
-    std::cerr << "document-assembly-test: " << error.what() << '\n';
+    std::println(stderr, "document-assembly-test: {}", error.what());
     return EXIT_FAILURE;
   }
 }

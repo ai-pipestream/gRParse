@@ -1,5 +1,6 @@
+#include <cstdio>
 #include <cstdlib>
-#include <iostream>
+#include <print>
 #include <stdexcept>
 #include <string>
 
@@ -107,7 +108,7 @@ void verify_merge_renumbers_and_rewrites() {
   require(target.body().meta().custom_fields().count("named_range:R") == 1,
           "body metadata merges additively");
   const auto errors = grparse::docling_integrity_errors(target);
-  for (const auto& error : errors) std::cerr << "integrity: " << error << '\n';
+  for (const auto& error : errors) std::println(stderr, "integrity: {}", error);
   require(errors.empty(), "merged document ref tree stays well formed");
 }
 
@@ -134,7 +135,7 @@ int main() {
     verify_merge_is_additive_on_replay();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
-    std::cerr << "document-merge-test: " << error.what() << '\n';
+    std::println(stderr, "document-merge-test: {}", error.what());
     return EXIT_FAILURE;
   }
 }

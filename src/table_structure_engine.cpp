@@ -26,7 +26,7 @@ constexpr std::array<float, 3> kMean = {0.485F, 0.456F, 0.406F};
 constexpr std::array<float, 3> kStd = {0.229F, 0.224F, 0.225F};
 
 bool starts_with(const std::string& value, const char* prefix) {
-  return value.rfind(prefix, 0) == 0;
+  return value.starts_with(prefix);
 }
 
 int parse_span(const std::string& token) {
@@ -166,10 +166,10 @@ class TableStructureEngine::Impl {
       if (!line.empty()) vocab_.push_back(line);
     }
     // Reference merge_no_span_structure: plain cells become one token.
-    if (std::find(vocab_.begin(), vocab_.end(), "<td></td>") == vocab_.end()) {
+    if (std::ranges::find(vocab_, "<td></td>") == vocab_.end()) {
       vocab_.push_back("<td></td>");
     }
-    vocab_.erase(std::remove(vocab_.begin(), vocab_.end(), "<td>"), vocab_.end());
+    std::erase(vocab_, "<td>");
     vocab_.insert(vocab_.begin(), "sos");
     vocab_.push_back("eos");
   }

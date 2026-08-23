@@ -1,9 +1,10 @@
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
-#include <iostream>
 #include <iterator>
+#include <print>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -161,7 +162,7 @@ int main() {
     const fs::path image =
         fs::path(data_dir == nullptr ? "tests/data" : data_dir) / "span_table.png";
     if (!fs::exists(model)) {
-      std::cerr << "table-structure-engine-test: skipped, model not present: " << model << '\n';
+      std::println(stderr, "table-structure-engine-test: skipped, model not present: {:?}", model.string());
       return kSkipExitCode;
     }
     require(fs::exists(image), "test image missing: " + image.string());
@@ -170,7 +171,7 @@ int main() {
     verify_span_table_matches_reference(model, image);
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
-    std::cerr << "table-structure-engine-test: " << error.what() << '\n';
+    std::println(stderr, "table-structure-engine-test: {}", error.what());
     return EXIT_FAILURE;
   }
 }
