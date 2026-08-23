@@ -50,8 +50,22 @@ services:
       GRPARSE_METRICS_PORT: "9464"
       GRPARSE_PAGE_IMAGES: "on"   # page previews for the demo's box overlay
       # Collectors by service name on this network; the shell gives them tabs.
+      # Targets pointing into the `parsers`/`heavy` profiles are wired even
+      # though those services may be down: an unreachable collector fails a
+      # matching upload loudly (UNAVAILABLE), where an unconfigured one fails
+      # it just as loudly (FAILED_PRECONDITION) - but with the profile up the
+      # routing works with no config change. GRPARSE_FASTWARC_TARGET is
+      # deliberately absent: the vendored chatnoir fastwarc.v1 dialect the
+      # collector client speaks is not wire-compatible with the fastwarc
+      # service in this stack (same proto package, different field numbers).
       GRPARSE_LOL_HTML_TARGET: "lol-html:50057"
       GRPARSE_LIBREOFFICE_TARGET: "libreoffice:50053"
+      GRPARSE_MARKUP_TARGET: "markup:50065"
+      GRPARSE_EPUB_TARGET: "epub:50064"
+      GRPARSE_XML_TARGET: "xml:50066"
+      GRPARSE_EBCDIC_TARGET: "ebcdic:50063"
+      GRPARSE_EMAIL_TARGET: "email:50054"
+      GRPARSE_ASR_TARGET: "asr:50055"
       # The PDF routing oracle: text-based PDFs take the inspector's fast
       # path and the in-process CV/ONNX pipeline is skipped; scanned pages
       # fall through with OCR restricted to the pages the inspector names.
