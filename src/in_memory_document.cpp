@@ -42,18 +42,21 @@ bool is_quarter_turn(const poppler::page& page) {
   return orientation == poppler::page::landscape || orientation == poppler::page::seascape;
 }
 
-// Poppler's documented threading contract (one document per thread) was not
+// Poppler's documented threading contract (one document per thread) is not
 // enough on arm64: concurrent work on a PDF whose broken fonts hammer the
-// substitute-font fallback corrupted shared state even across fully
+// substitute-font fallback corrupts shared state even across fully
 // independent documents (std::system_error or SIGSEGV out of XRef::fetch
 // from two threads at once - AcroForm sheets with /DA fonts missing from
-// /DR are the trigger). Poppler 26.06 fixed use-after-free races in annots
-// loading (upstream 4aca25d6, 2f10803d) and the images vendor 26.08, but
-// the crash was only ever reproduced on arm64 - x86-64's stronger memory
-// ordering hides it (dense synthetic repros never fail there) - so the
-// serialisation is kept exactly where it was observed and costs the primary
-// x86-64 targets nothing. Drop the guard once the vendored poppler survives
-// the two-thread repro on arm64 hardware.
+// /DR are the trigger). VERIFIED STILL BROKEN IN POPPLER 26.08: two-thread
+// hammer runs on real arm64 hardware crash both 26.01 and 26.08 at a
+// roughly 5-12% rate per run (SIGSEGV on Cortex-A76, SIGABRT on
+// Cortex-A78), so the 26.06 annots use-after-free fixes (4aca25d6,
+// 2f10803d) are adjacent but not this bug. x86-64 has never reproduced it
+// under the same hammering - its stronger memory ordering hides whatever
+// the race is - so the serialisation stays exactly where the crash exists
+// and costs the primary x86-64 targets nothing. This gate is load-bearing
+// on arm64: do not remove it on a poppler version bump without re-running
+// the two-thread repro on real arm64 silicon first.
 #if defined(__aarch64__)
 class PopplerGate {
  public:
