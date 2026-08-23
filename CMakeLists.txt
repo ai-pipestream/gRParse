@@ -483,6 +483,7 @@ if(BUILD_TESTING)
     page-scheduler-test
     pdf-source-test
     prometheus-metrics-test
+    pdf-source-concurrency-test
     raster-source-test
     reading-order-test
     region-geometry-test
