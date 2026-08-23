@@ -15,6 +15,29 @@ opening more of the stack to the outside.
   bodies and SSE progress streams pass through unbuffered, so multi-hundred
   MiB documents work through the proxy exactly as they do direct.
 
+## Running without an NVIDIA GPU (macOS, plain Linux)
+
+Every published image in the stack is multi-arch (amd64 + arm64) except
+`pipestreamai/grparse` itself, whose ONNX Runtime packages only exist as
+x86_64 builds. The CPU overlay makes the stack run anywhere Docker does:
+
+```sh
+./compose/clone-siblings.sh   # fresh machine: fetch the sibling checkouts
+                              # the shell's proto bind mounts expect
+docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml up
+docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml --profile parsers up
+```
+
+The overlay drops the `gpus: all` reservation, sets `GRPARSE_ORT_EP=cpu`
+(a deliberate provider choice; the server never falls back silently), and
+pins gRParse to `linux/amd64`. On Apple Silicon Docker Desktop runs that
+one container under Rosetta; everything else is native arm64. Inference is
+slower on CPU, slower again emulated, but the whole demo works.
+
+gRParse's four ONNX models still need to exist in `models/` first (see
+`models/README.md`), and whisper weights go in `../grpc-asr/models` if the
+`heavy` profile's asr tab should do real work.
+
 ## TLS for the web frontend
 
 `nginx.conf` ships a commented-out TLS server block on 8443. To enable it:

@@ -1,0 +1,24 @@
+# CPU overlay for hosts without an NVIDIA GPU: macOS (Apple Silicon or
+# Intel) and plain Linux boxes alike.
+#
+#   docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml up
+#
+# What it changes, and why:
+#   - drops `gpus: all` from grparse (Docker Desktop on macOS has no NVIDIA
+#     runtime and errors out on the reservation),
+#   - sets GRPARSE_ORT_EP=cpu so the server deliberately picks the CPU
+#     execution provider instead of failing loudly about CUDA,
+#   - pins grparse to linux/amd64: the published image exists only for
+#     amd64 (its ONNX Runtime packages are x86_64 builds). On Apple Silicon
+#     Docker Desktop runs it under Rosetta; every other image in the stack
+#     is native multi-arch (amd64 + arm64), so nothing else is emulated.
+#
+# OCR and layout inference run slower on CPU (and slower again under
+# emulation), but the whole demo works. The asr service in the `heavy`
+# profile already uses the CPU whisper image in the base file.
+services:
+  grparse:
+    gpus: !reset null
+    platform: linux/amd64
+    environment:
+      GRPARSE_ORT_EP: cpu

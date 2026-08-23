@@ -24,6 +24,11 @@
 # (http://localhost:8080, TLS variant documented in compose/README.md).
 # To publish the gRPC ports as well, layer the overlay:
 #   docker compose -f compose.stack.yaml -f compose.stack.expose-grpc.yaml up --build
+# On a host without an NVIDIA GPU (macOS included), layer the CPU overlay,
+# which drops the GPU reservation and runs gRParse on the CPU provider:
+#   docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml up
+# Fresh machine? compose/clone-siblings.sh fetches the sibling checkouts
+# the shell's proto bind mounts below expect.
 # The project name differs from compose.yaml's, so both files can be up at
 # once without colliding.
 #
