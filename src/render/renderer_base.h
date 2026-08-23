@@ -1,0 +1,95 @@
+// Internal seams shared by the export renderers (src/render/*.cpp): the
+// arena-reference parser, the text-variant accessor, the table grid
+// materializer, escape/trim helpers, and the RendererBase walk state. Not
+// part of the public API; include/grparse/document_render.h stays the only
+// public surface.
+#ifndef GRPARSE_RENDER_RENDERER_BASE_H
+#define GRPARSE_RENDER_RENDERER_BASE_H
+
+#include <set>
+#include <string>
+#include <vector>
+
+#include "ai/pipestream/document/v1/document.pb.h"
+
+namespace grparse::render {
+
+// A parsed "#/<arena>/<index>" reference. The body and furniture roots and
+// anything unparseable resolve to kUnknown; renderers skip those rather than
+// guess.
+struct ArenaRef {
+  enum Kind {
+    kText,
+    kTable,
+    kPicture,
+    kGroup,
+    kKeyValue,
+    kForm,
+    kFieldRegion,
+    kFieldItem,
+    kUnknown,
+  };
+  Kind kind = kUnknown;
+  int index = -1;
+};
+
+ArenaRef parse_ref(const std::string& ref);
+
+// The shared base fields of any text variant that carries a nested base;
+// nullptr for CodeItem (inline fields) and unset variants.
+const ai::pipestream::document::v1::TextItemBase* text_base(
+    const ai::pipestream::document::v1::BaseTextItem& item);
+
+// Heading depth for a section header: docling maps level L to "##"×(L+1) in
+// Markdown and <h(L+1)> in HTML, clamped to h6. An unset proto level (0)
+// counts as level 1.
+int heading_rank(int level);
+
+// Whitespace-trimmed copy, mirroring docling's str.strip() on item text.
+std::string trimmed(const std::string& text);
+
+// The fence info string for a code block, preferring the collector's raw
+// language string over the enum. Enum names lower-case cleanly except the
+// spelled-out punctuation ones.
+std::string code_fence_language(const ai::pipestream::document::v1::CodeItem& code);
+
+// The table's cell layout as a row-major pointer grid. The grid field wins
+// when populated; otherwise the flat cell list is placed by its offsets.
+// A spanned cell appears at every position it covers; nullptr marks a
+// position no cell reaches.
+std::vector<std::vector<const ai::pipestream::document::v1::TableCell*>> table_grid(
+    const ai::pipestream::document::v1::TableData& data);
+
+std::string escape_html_text(const std::string& text);
+
+std::string escape_html_attribute(const std::string& text);
+
+// Both renderers walk the body tree the same way: resolve each child
+// reference, render the item, and record caption items when a table or
+// figure claims them so a caption linked into the tree twice never renders
+// twice. Furniture-layer items are excluded, matching docling's default of
+// exporting the body content layer only.
+class RendererBase {
+ protected:
+  explicit RendererBase(const ai::pipestream::document::v1::Document& document)
+      : document_(document) {}
+
+  const ai::pipestream::document::v1::Document& document_;
+  std::set<std::string> consumed_;
+
+  bool consume(const std::string& ref) { return consumed_.insert(ref).second; }
+
+  bool furniture(ai::pipestream::document::v1::ContentLayer layer) const {
+    return layer == ai::pipestream::document::v1::CONTENT_LAYER_FURNITURE;
+  }
+
+  // The caption texts a table or figure references, in reference order.
+  // Each resolved caption is consumed so the tree walk skips it later.
+  std::vector<std::string> caption_texts(
+      const google::protobuf::RepeatedPtrField<ai::pipestream::document::v1::RefItem>&
+          captions);
+};
+
+}  // namespace grparse::render
+
+#endif

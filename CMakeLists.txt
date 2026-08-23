@@ -439,6 +439,12 @@ add_library(grparse_core STATIC
   src/docling_map.cpp
   src/document_merge.cpp
   src/document_render.cpp
+  src/render/renderer_base.cpp
+  src/render/markdown_renderer.cpp
+  src/render/html_renderer.cpp
+  src/render/doctags_renderer.cpp
+  src/render/doclang_renderer.cpp
+  src/render/vtt_renderer.cpp
   src/document_collectors.cpp
   src/document_parser_service.cpp
   src/office_collector.cpp
