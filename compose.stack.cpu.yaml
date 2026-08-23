@@ -4,21 +4,24 @@
 #   docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml up
 #
 # What it changes, and why:
-#   - drops `gpus: all` from grparse (Docker Desktop on macOS has no NVIDIA
-#     runtime and errors out on the reservation),
-#   - sets GRPARSE_ORT_EP=cpu so the server deliberately picks the CPU
-#     execution provider instead of failing loudly about CUDA,
-#   - pins grparse to linux/amd64: the published image exists only for
-#     amd64 (its ONNX Runtime packages are x86_64 builds). On Apple Silicon
-#     Docker Desktop runs it under Rosetta; every other image in the stack
-#     is native multi-arch (amd64 + arm64), so nothing else is emulated.
+#   - swaps gRParse to the multi-arch CPU image (pipestreamai/grparse:
+#     latest-cpu, built from Dockerfile.cpu), which links ONNX Runtime's
+#     plain CPU package and runs natively on amd64 and arm64 - no
+#     emulation anywhere in the stack,
+#   - drops `gpus: all` (Docker Desktop on macOS has no NVIDIA runtime and
+#     errors out on the reservation),
+#   - sets GRPARSE_ORT_EP=cpu, matching the image's own default, so the
+#     provider choice is explicit in the compose config too.
 #
-# OCR and layout inference run slower on CPU (and slower again under
-# emulation), but the whole demo works. The asr service in the `heavy`
-# profile already uses the CPU whisper image in the base file.
+# OCR and layout inference run slower on CPU, but the whole demo works.
+# The asr service in the `heavy` profile already uses the CPU whisper
+# image in the base file.
 services:
   grparse:
+    image: pipestreamai/grparse:latest-cpu
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
     gpus: !reset null
-    platform: linux/amd64
     environment:
       GRPARSE_ORT_EP: cpu

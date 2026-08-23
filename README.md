@@ -333,6 +333,22 @@ same busy fraction the stdout line prints. The listener is a minimal
 in-process HTTP endpoint (no framework); a configured port that cannot be
 bound fails startup loudly. The compose file wires it to `9464`.
 
+## CPU-only hosts (multi-arch)
+
+`Dockerfile.cpu` builds against ONNX Runtime's plain CPU package, the only
+one Microsoft publishes for both x86_64 and aarch64. It is the image for
+machines with no NVIDIA or Intel accelerator, and the only gRParse image
+that runs natively on arm64 (Apple Silicon under Docker Desktop included):
+
+```bash
+docker build -f Dockerfile.cpu -t grparse-cpu .
+docker run --rm -v /path/to/models:/models:ro -p 50051:50051 grparse-cpu
+```
+
+The built image is published as `pipestreamai/grparse:latest-cpu` for
+linux/amd64 and linux/arm64. It defaults to `GRPARSE_ORT_EP=cpu`; the
+`compose.stack.cpu.yaml` overlay swaps the demo stack onto it.
+
 ## Intel GPUs (OpenVINO)
 
 `Dockerfile.openvino` builds an Intel variant with no CUDA anywhere: ONNX

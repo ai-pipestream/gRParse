@@ -67,9 +67,11 @@ unset(GRPARSE_NET_SOURCE)
 # release.  `openvino` takes headers from the matching official release and
 # libraries from Intel's PyPI wheel — the only prebuilt Linux distribution of
 # the OpenVINO execution provider — which bundles OpenVINO 2025.4.1 and its
-# Intel GPU/CPU/NPU plugins.
+# Intel GPU/CPU/NPU plugins.  `cpu` is Microsoft's plain CPU release, the only
+# package published for both x86_64 and aarch64, and what the multi-arch
+# Dockerfile.cpu image links.
 set(GRPARSE_ORT_PACKAGE "cuda" CACHE STRING
-  "ONNX Runtime package to link: cuda or openvino")
+  "ONNX Runtime package to link: cuda, openvino, or cpu")
 if(GRPARSE_ORT_PACKAGE STREQUAL "cuda")
   FetchContent_Declare(onnxruntime
     URL https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-x64-gpu_cuda13-1.28.0.tgz
@@ -99,8 +101,27 @@ elseif(GRPARSE_ORT_PACKAGE STREQUAL "openvino")
   file(CREATE_LINK "libonnxruntime.so.1.24.1"
     "${GRPARSE_ORT_OPENVINO_LIB_DIR}/libonnxruntime.so.1" SYMBOLIC)
   set(GRPARSE_ORT_LIBRARY "${GRPARSE_ORT_OPENVINO_LIB_DIR}/libonnxruntime.so.1")
+elseif(GRPARSE_ORT_PACKAGE STREQUAL "cpu")
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+    set(GRPARSE_ORT_CPU_ARCH "aarch64")
+    set(GRPARSE_ORT_CPU_SHA256
+      "e15ff8b5d85afe6c144d97c6fd432254bf76a219daaf17658087d6ecb3e8f0bb")
+  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
+    set(GRPARSE_ORT_CPU_ARCH "x64")
+    set(GRPARSE_ORT_CPU_SHA256
+      "a3e1b79d7bb1bf09696ce675f49e4064e6c81f6202b8225624fff0e93f8d6407")
+  else()
+    message(FATAL_ERROR "GRPARSE_ORT_PACKAGE=cpu: no ONNX Runtime CPU release "
+      "for ${CMAKE_SYSTEM_PROCESSOR} (x86_64 and aarch64 only)")
+  endif()
+  FetchContent_Declare(onnxruntime
+    URL https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-${GRPARSE_ORT_CPU_ARCH}-1.28.0.tgz
+    URL_HASH SHA256=${GRPARSE_ORT_CPU_SHA256}
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+  FetchContent_MakeAvailable(onnxruntime)
+  set(GRPARSE_ORT_LIBRARY "${onnxruntime_SOURCE_DIR}/lib/libonnxruntime.so")
 else()
-  message(FATAL_ERROR "GRPARSE_ORT_PACKAGE must be cuda or openvino")
+  message(FATAL_ERROR "GRPARSE_ORT_PACKAGE must be cuda, openvino, or cpu")
 endif()
 
 add_library(onnxruntime SHARED IMPORTED GLOBAL)
@@ -483,8 +504,13 @@ if(BUILD_TESTING)
   # The scheduler and streaming tests exercise multi-worker paths; keep their
   # ceiling well above the ~1s they need so a stall fails instead of hanging CI.
   # The label keeps `ctest -L grparse` clear of tests registered by fetched
-  # dependencies (re2 registers ~20 of its own).
-  set_tests_properties(${GRPARSE_TESTS} PROPERTIES TIMEOUT 120 LABELS grparse)
+  # dependencies (re2 registers ~20 of its own).  The ceiling is a cache
+  # variable because emulated multi-arch image builds (arm64 under QEMU) run
+  # the same suite one to two orders of magnitude slower than native.
+  set(GRPARSE_TEST_TIMEOUT 120 CACHE STRING
+    "Per-test ctest timeout in seconds for the grparse suite")
+  set_tests_properties(${GRPARSE_TESTS} PROPERTIES
+    TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
   # The layout golden needs the real model file; without it the test skips
   # (exit 77) so environments that never download models stay green while any
   # environment with models proves the decode against the reference output.
