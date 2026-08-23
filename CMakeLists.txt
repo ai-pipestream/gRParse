@@ -3,7 +3,9 @@ project(gRParse VERSION 0.1.0 LANGUAGES CXX)
 
 include(CTest)
 
-set(CMAKE_CXX_STANDARD 17)
+# C++23: the newest published standard with complete GCC 15 support.
+# zxing-cpp 3.x requires at least C++20 in its public headers.
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # Everything links statically into the two binaries; the only shared libraries
@@ -42,6 +44,10 @@ include(FetchContent)
 # if the hook never ran (a stale unpatched dependency cache).
 FetchContent_Declare(rapidocr SOURCE_SUBDIR disabled
   GIT_REPOSITORY https://github.com/RapidAI/RapidOcrOnnx.git
+  # Deliberately pinned behind upstream head: the commits since add only
+  # DirectML/GPU/C-API features this build does not use, and the session-ep
+  # patch below is written against these sources (it does not apply at
+  # head). Re-pin only together with a patch rebase.
   GIT_TAG 9de89a6934cd962b80db6ab8ad5627e06a709764
   # checkout -- src first so the step is idempotent: FetchContent re-runs the
   # patch step whenever the subbuild re-executes, including on cached trees
@@ -74,7 +80,8 @@ set(GRPARSE_ORT_PACKAGE "cuda" CACHE STRING
   "ONNX Runtime package to link: cuda, openvino, or cpu")
 if(GRPARSE_ORT_PACKAGE STREQUAL "cuda")
   FetchContent_Declare(onnxruntime
-    URL https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-x64-gpu_cuda13-1.28.0.tgz
+    URL https://github.com/microsoft/onnxruntime/releases/download/v1.29.0/onnxruntime-linux-x64-gpu_cuda13-1.29.0.tgz
+    URL_HASH SHA256=844c64acfc43ab9423215c26493055ea229268e28283146cc644ecef0bdae048
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
   FetchContent_MakeAvailable(onnxruntime)
   set(GRPARSE_ORT_LIBRARY "${onnxruntime_SOURCE_DIR}/lib/libonnxruntime.so")
@@ -105,17 +112,17 @@ elseif(GRPARSE_ORT_PACKAGE STREQUAL "cpu")
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
     set(GRPARSE_ORT_CPU_ARCH "aarch64")
     set(GRPARSE_ORT_CPU_SHA256
-      "e15ff8b5d85afe6c144d97c6fd432254bf76a219daaf17658087d6ecb3e8f0bb")
+      "e1799098ebc054b370f6176a450f158720f297818c613e5dc99b92e2ec82346f")
   elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
     set(GRPARSE_ORT_CPU_ARCH "x64")
     set(GRPARSE_ORT_CPU_SHA256
-      "a3e1b79d7bb1bf09696ce675f49e4064e6c81f6202b8225624fff0e93f8d6407")
+      "c3fddc4f139a045b0c4902c57410f0694f1c2fdf9b6939fbe38b1aeae7cd14ba")
   else()
     message(FATAL_ERROR "GRPARSE_ORT_PACKAGE=cpu: no ONNX Runtime CPU release "
       "for ${CMAKE_SYSTEM_PROCESSOR} (x86_64 and aarch64 only)")
   endif()
   FetchContent_Declare(onnxruntime
-    URL https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-${GRPARSE_ORT_CPU_ARCH}-1.28.0.tgz
+    URL https://github.com/microsoft/onnxruntime/releases/download/v1.29.0/onnxruntime-linux-${GRPARSE_ORT_CPU_ARCH}-1.29.0.tgz
     URL_HASH SHA256=${GRPARSE_ORT_CPU_SHA256}
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
   FetchContent_MakeAvailable(onnxruntime)
@@ -138,9 +145,8 @@ set(ZXING_BLACKBOX_TESTS OFF CACHE BOOL "" FORCE)
 set(ZXING_UNIT_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(zxing
   GIT_REPOSITORY https://github.com/zxing-cpp/zxing-cpp.git
-  # v3.x needs C++20 in its public headers; stay on the 2.x line until the
-  # project moves off C++17.
-  GIT_TAG v2.3.0
+  # 3.x needs C++20 in its public headers, which the project now builds as.
+  GIT_TAG v3.1.1
   GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(zxing)
 
@@ -153,18 +159,11 @@ set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(YAML_CPP_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(yaml-cpp
   GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
-  GIT_TAG 0.8.0
-  GIT_SHALLOW TRUE
-  # checkout -- src first so the step is idempotent on cached trees, same as
-  # the rapidocr patch above. The patch backports the <cstdint> include the
-  # 0.8.0 release is missing under GCC 13+.
-  PATCH_COMMAND git checkout -- src
-        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/yaml-cpp-cstdint.patch")
-# 0.8.0 declares cmake_minimum_required(3.4), which CMake 4 refuses to
-# configure without an explicit compatibility floor.
-set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+  GIT_TAG yaml-cpp-0.9.0
+  GIT_SHALLOW TRUE)
+# 0.9.0 needs neither the 0.8.0-era <cstdint> backport patch (fixed
+# upstream) nor the CMake 4 policy floor (it declares 3.5...3.30).
 FetchContent_MakeAvailable(yaml-cpp)
-unset(CMAKE_POLICY_VERSION_MINIMUM)
 
 find_package(OpenCV 4.5 REQUIRED COMPONENTS core imgcodecs imgproc)
 find_package(PkgConfig REQUIRED)

@@ -30,7 +30,13 @@ std::vector<BarcodeResult> decode_barcodes(const cv::Mat& image) {
   std::vector<BarcodeResult> results;
   for (const auto& barcode : ZXing::ReadBarcodes(view, options)) {
     if (!barcode.isValid()) continue;
-    results.push_back({ZXing::ToString(barcode.format()), barcode.text()});
+    // ZXing 3.x renamed its format display names with spaces ("QR Code",
+    // "Data Matrix"). The format string is a consumer-visible identifier on
+    // the wire, so the 2.x spellings stay the contract - and they are
+    // exactly the space-free forms of the new names.
+    std::string format_name = ZXing::ToString(barcode.format());
+    std::erase(format_name, ' ');
+    results.push_back({std::move(format_name), barcode.text()});
   }
   return results;
 }

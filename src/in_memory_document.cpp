@@ -12,10 +12,14 @@
 #include <vector>
 
 #include <opencv2/imgcodecs.hpp>
-#include <poppler/cpp/poppler-document.h>
-#include <poppler/cpp/poppler-image.h>
-#include <poppler/cpp/poppler-page.h>
-#include <poppler/cpp/poppler-page-renderer.h>
+// Resolved via pkg-config's poppler-cpp Cflags (includedir ends in
+// poppler/cpp), which is what lets the vendored /opt/poppler prefix win over
+// any distro headers; the old <poppler/cpp/...> spelling bypassed the .pc
+// contract and only worked off the default /usr/include path.
+#include <poppler-document.h>
+#include <poppler-image.h>
+#include <poppler-page.h>
+#include <poppler-page-renderer.h>
 
 #include "grparse/resource_pool.h"
 
@@ -38,21 +42,33 @@ bool is_quarter_turn(const poppler::page& page) {
   return orientation == poppler::page::landscape || orientation == poppler::page::seascape;
 }
 
-// Poppler's documented threading contract (one document per thread) is not
-// enough: its substitute-font machinery (GlobalParams/fontconfig, the path a
-// broken embedded font falls back to) has genuinely shared state that
-// concurrent lookups corrupt even across fully independent documents. The
-// observed failure is a clobbered XRef mutex - std::system_error or SIGSEGV
-// out of XRef::fetch from two threads at once - on any PDF whose fonts force
-// the fallback on every text op (AcroForm sheets with /DA fonts missing from
-// /DR, for example). Until that is fixed upstream, every poppler entry point
-// in this process serialises on one mutex. The parser pool stays: it is the
-// right shape for poppler's intended contract and costs nothing under the
-// lock.
-std::mutex& poppler_mutex() {
-  static std::mutex mutex;
-  return mutex;
-}
+// Poppler's documented threading contract (one document per thread) was not
+// enough on arm64: concurrent work on a PDF whose broken fonts hammer the
+// substitute-font fallback corrupted shared state even across fully
+// independent documents (std::system_error or SIGSEGV out of XRef::fetch
+// from two threads at once - AcroForm sheets with /DA fonts missing from
+// /DR are the trigger). Poppler 26.06 fixed use-after-free races in annots
+// loading (upstream 4aca25d6, 2f10803d) and the images vendor 26.08, but
+// the crash was only ever reproduced on arm64 - x86-64's stronger memory
+// ordering hides it (dense synthetic repros never fail there) - so the
+// serialisation is kept exactly where it was observed and costs the primary
+// x86-64 targets nothing. Drop the guard once the vendored poppler survives
+// the two-thread repro on arm64 hardware.
+#if defined(__aarch64__)
+class PopplerGate {
+ public:
+  PopplerGate() : lock_(mutex()) {}
+
+ private:
+  static std::mutex& mutex() {
+    static std::mutex mutex;
+    return mutex;
+  }
+  const std::lock_guard<std::mutex> lock_;
+};
+#else
+class PopplerGate {};
+#endif
 
 class PdfPageSource final : public PageSource {
  public:
@@ -62,7 +78,7 @@ class PdfPageSource final : public PageSource {
         render_scale_(render_dpi / kPdfUserSpaceDpi),
         parsers_(std::max<size_t>(parser_slots, 1), [bytes = bytes_] { return load(*bytes); }) {
     // Parse once now so an unreadable document fails before any page is queued.
-    const std::lock_guard<std::mutex> poppler_lock(poppler_mutex());
+    [[maybe_unused]] const PopplerGate poppler_gate;
     auto parser = parsers_.acquire();
     pages_ = parser->pages();
     if (pages_ <= 0) throw InvalidDocument("PDF does not contain a renderable page");
@@ -73,12 +89,12 @@ class PdfPageSource final : public PageSource {
   std::optional<OcrPage> extract_digital_page(int page_number) const override {
     // The poppler section ends when this scope does - the boxes own their
     // strings and rects, so the fold below runs unserialised. The page is
-    // destroyed inside the scope, before the lock releases.
+    // destroyed inside the scope, before any gate releases.
     poppler::rectf page_rect;
     bool quarter_turn = false;
     std::vector<poppler::text_box> text_boxes;
     {
-      const std::lock_guard<std::mutex> poppler_lock(poppler_mutex());
+      [[maybe_unused]] const PopplerGate poppler_gate;
       auto parser = parsers_.acquire();
       const std::unique_ptr<poppler::page> page = open_page(*parser, page_number);
       page_rect = page->page_rect();
@@ -128,9 +144,9 @@ class PdfPageSource final : public PageSource {
   }
 
   cv::Mat render_page(int page_number) const override {
-    // Serialised end to end: rendering drives the same font machinery, and
-    // the clone must happen while poppler still owns the image buffer.
-    const std::lock_guard<std::mutex> poppler_lock(poppler_mutex());
+    // Gated end to end: rendering drives the same font machinery, and the
+    // clone must happen while poppler still owns the image buffer.
+    [[maybe_unused]] const PopplerGate poppler_gate;
     auto parser = parsers_.acquire();
     const std::unique_ptr<poppler::page> page = open_page(*parser, page_number);
 

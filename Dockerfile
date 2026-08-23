@@ -12,18 +12,41 @@ FROM nvidia/cuda:13.3.1-devel-ubuntu26.04 AS build
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates cmake g++ git make ninja-build pkg-config libopencv-dev libpoppler-cpp-dev \
+    ca-certificates cmake curl g++ git make ninja-build pkg-config xz-utils \
+    libopencv-dev libfreetype-dev libfontconfig-dev libjpeg-dev libopenjp2-7-dev \
+    liblcms2-dev libboost-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Poppler is vendored from source instead of taken from the distro: ubuntu
+# 26.04 ships 26.01.0, which predates the 26.06 thread-safety fixes in annots
+# loading (upstream 4aca25d6, 2f10803d) that bit this server on arm64. Only
+# the cpp frontend and the splash renderer are built.
+ARG POPPLER_VERSION=26.08.0
+ARG POPPLER_SHA256=dc906e68cea698109706ac6aa3d2c9d4512fcfcac42d90b8afcda486d1b9abd0
+RUN curl -fsSL -o /tmp/poppler.tar.xz "https://poppler.freedesktop.org/poppler-${POPPLER_VERSION}.tar.xz" \
+ && echo "${POPPLER_SHA256}  /tmp/poppler.tar.xz" | sha256sum -c - \
+ && tar -xJf /tmp/poppler.tar.xz -C /tmp \
+ && cmake -S "/tmp/poppler-${POPPLER_VERSION}" -B /tmp/poppler-build -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/poppler -DCMAKE_INSTALL_LIBDIR=lib \
+      -DENABLE_CPP=ON -DENABLE_QT5=OFF -DENABLE_QT6=OFF -DENABLE_GLIB=OFF -DENABLE_UTILS=OFF \
+      -DENABLE_BOOST=ON -DENABLE_NSS3=OFF -DENABLE_GPGME=OFF -DENABLE_LIBCURL=OFF \
+      -DENABLE_LIBTIFF=OFF -DENABLE_LIBOPENJPEG=openjpeg2 -DBUILD_CPP_TESTS=OFF \
+      -DBUILD_GTK_TESTS=OFF -DBUILD_QT5_TESTS=OFF -DBUILD_QT6_TESTS=OFF -DBUILD_MANUAL_TESTS=OFF \
+ && cmake --build /tmp/poppler-build --parallel 4 \
+ && cmake --install /tmp/poppler-build \
+ && rm -rf /tmp/poppler.tar.xz "/tmp/poppler-${POPPLER_VERSION}" /tmp/poppler-build
+
 WORKDIR /src
 COPY . .
 # The cache id includes ABI-sensitive dependency versions. Update it whenever
 # gRPC, ONNX Runtime, CUDA, the base toolchain, or a dependency patch under
 # patches/ changes — a stale cache would keep an unpatched dependency tree.
-RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.83.0-ort1.28.0-sessionep1-static1,target=/build \
-    cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
+RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.83.0-ort1.29.0-poppler26.08-cxx23-sessionep1-static1,target=/build \
+    export PKG_CONFIG_PATH=/opt/poppler/lib/pkgconfig \
+ && cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
       -DGRPARSE_WERROR=ON \
  && cmake --build /build --target grparse-server grparse-stream-client grparse-tests --parallel 4 \
- && ctest --test-dir /build --output-on-failure -L grparse \
+ && LD_LIBRARY_PATH=/opt/poppler/lib ctest --test-dir /build --output-on-failure -L grparse \
  && mkdir -p /out \
  && cp /build/grparse-server /out/grparse-server \
  && cp /build/grparse-stream-client /out/grparse-stream-client \
@@ -49,7 +72,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends libcudnn9-cuda-
     && cp -a /usr/lib/x86_64-linux-gnu/libcudnn* /out/runtime-libs/ \
     && for f in /out/grparse-server /out/grparse-stream-client \
                 /out/onnxruntime-lib/*.so* /usr/lib/x86_64-linux-gnu/libcudnn*.so*; do \
-         LD_LIBRARY_PATH=/out/onnxruntime-lib ldd "$f" 2>/dev/null; \
+         LD_LIBRARY_PATH=/out/onnxruntime-lib:/opt/poppler/lib ldd "$f" 2>/dev/null; \
        done \
        | awk '/=> \// {print $3}' | sort -u \
        | grep -v '^/usr/local/cuda' \
