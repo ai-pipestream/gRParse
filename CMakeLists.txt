@@ -471,6 +471,7 @@ if(BUILD_TESTING)
     barcode-decoder-test
     base64-test
     collector-coordinator-test
+    docling-map-test
     document-assembly-test
     document-collectors-test
     document-merge-test
@@ -479,6 +480,7 @@ if(BUILD_TESTING)
     layout-engine-test
     office-collector-test
     office-cv-enrichment-test
+    ort-session-ep-test
     page-scheduler-test
     pdf-source-test
     prometheus-metrics-test
