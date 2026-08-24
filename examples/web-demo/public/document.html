@@ -18,7 +18,7 @@
   <section id="dropzone" class="dropzone">
     <input id="file-input" type="file" hidden />
     <p><strong>Drop a document here</strong> or click to choose one.</p>
-    <p class="hint">The full merged document renders below once the parse finishes: page images with item boxes on the left, the content in reading order on the right. Hover either side to see the match.</p>
+    <p class="hint">The full merged document renders below once the parse finishes: page images with item boxes on the left, the content in reading order on the right. Hover either side to see the match. A document JSON file opens straight in the viewer without a parse.</p>
     <button id="sample-button" class="sample-button" type="button">No document handy? View the bundled sample</button>
   </section>
 
@@ -46,6 +46,7 @@
       <button id="search-next" class="dv-search-nav" type="button" title="next match">&#8250;</button>
       <span id="search-count" class="dv-search-count"></span>
     </span>
+    <button id="download-json" class="dv-download" type="button">Download JSON</button>
   </section>
 
   <section id="doc-legend" class="dv-legend" hidden>

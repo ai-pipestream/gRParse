@@ -29,6 +29,7 @@ const searchInput = document.getElementById("search-input");
 const searchCount = document.getElementById("search-count");
 const searchPrev = document.getElementById("search-prev");
 const searchNext = document.getElementById("search-next");
+const downloadButton = document.getElementById("download-json");
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -1274,6 +1275,7 @@ function renderInfo(doc) {
   name.textContent = doc.name || (doc.origin && doc.origin.filename) || "document";
   infoBar.appendChild(name);
   if (doc.origin && doc.origin.mimetype) infoBar.appendChild(badge(doc.origin.mimetype, "dv-mime-badge"));
+  if (loadedDialect) infoBar.appendChild(badge(`dialect: ${loadedDialect}`, "dv-dialect-badge"));
   const pageCount = Object.keys(doc.pages || {}).length;
   infoBar.appendChild(infoChip(pageCount === 1 ? "page" : "pages", String(pageCount)));
   const counts = [
@@ -1729,17 +1731,285 @@ searchInput.addEventListener("keydown", (event) => {
   const forward = event.key === "Enter" ? !event.shiftKey : event.key === "ArrowDown";
   if (event.key !== "Enter" && event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
   event.preventDefault();
-  // Typing then hitting enter straight away should not lose the last keystroke.
+  // Typing then hitting enter straight away should not lose the last
+  // keystroke, and neither should pasting a term and hitting enter.
   if (searchTimer) {
     clearTimeout(searchTimer);
     searchTimer = null;
-    setSearchQuery(searchInput.value);
   }
+  if (searchInput.value.trim().toLowerCase() !== searchQuery) setSearchQuery(searchInput.value);
   stepSearch(forward ? 1 : -1);
 });
 
 searchPrev.addEventListener("click", () => stepSearch(-1));
 searchNext.addEventListener("click", () => stepSearch(1));
+
+// ---------------------------------------------------------------------------
+// JSON dialects.
+//
+// The viewer reads the wire shape the bridge relays: camelCase fields, enum
+// value names as strings, text items wrapped in their oneof variant. The
+// other JSON shape in circulation spells its fields in snake_case, writes
+// references as {"$ref": ...}, charspans as two-element arrays and enums as
+// bare lowercase names. Files in that dialect are converted here, in the
+// browser, before the walker sees them.
+// ---------------------------------------------------------------------------
+
+const CANONICAL_SCHEMA_NAME = "DoclingDocument";
+const DIALECT_LABELS = { canonical: "canonical json", native: "protobuf-json" };
+
+let loadedDialect = null;
+
+// Every field the walker reads that is spelled differently in the other
+// dialect. Anything not listed keeps its name.
+const CANONICAL_KEYS = {
+  self_ref: "selfRef",
+  content_layer: "contentLayer",
+  page_no: "pageNo",
+  coord_origin: "coordOrigin",
+  code_language: "codeLanguageRaw",
+  key_value_items: "keyValueItems",
+  form_items: "formItems",
+  field_regions: "fieldRegions",
+  field_items: "fieldItems",
+  table_cells: "tableCells",
+  num_rows: "numRows",
+  num_cols: "numCols",
+  row_span: "rowSpan",
+  col_span: "colSpan",
+  start_row_offset_idx: "startRowOffsetIdx",
+  end_row_offset_idx: "endRowOffsetIdx",
+  start_col_offset_idx: "startColOffsetIdx",
+  end_col_offset_idx: "endColOffsetIdx",
+  column_header: "columnHeader",
+  row_header: "rowHeader",
+  row_section: "rowSection",
+  predicted_classes: "predictedClasses",
+  class_name: "className",
+  cell_id: "cellId",
+  source_cell_id: "sourceCellId",
+  target_cell_id: "targetCellId",
+  custom_fields: "customFields",
+};
+
+const CANONICAL_TEXT_VARIANTS = {
+  title: "title",
+  section_header: "sectionHeader",
+  list_item: "listItem",
+  code: "code",
+  formula: "formula",
+};
+
+// Fields that belong to the variant wrapper rather than to the base item.
+const VARIANT_FIELDS = ["level", "enumerated", "marker", "kind"];
+
+function enumName(prefix, value) {
+  return typeof value === "string" && value ? `${prefix}${value.toUpperCase()}` : undefined;
+}
+
+function looksCanonical(parsed) {
+  if (parsed.schema_name === CANONICAL_SCHEMA_NAME) return true;
+  const roots = [parsed.body, parsed.furniture];
+  for (const root of roots) {
+    const children = root && Array.isArray(root.children) ? root.children : [];
+    for (const child of children) {
+      if (child && typeof child === "object" && typeof child.$ref === "string") return true;
+    }
+    if (root && typeof root === "object" && typeof root.self_ref === "string") return true;
+  }
+  for (const arena of ["texts", "tables", "pictures", "groups"]) {
+    const first = Array.isArray(parsed[arena]) ? parsed[arena][0] : null;
+    if (first && typeof first === "object" && typeof first.self_ref === "string") return true;
+  }
+  return false;
+}
+
+function detectDialect(parsed) {
+  return looksCanonical(parsed) ? "canonical" : "native";
+}
+
+// Key renames and {"$ref": x} -> {ref: x}, applied throughout.
+function convertKeys(value) {
+  if (Array.isArray(value)) return value.map(convertKeys);
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [key, entry] of Object.entries(value)) {
+      out[key === "$ref" ? "ref" : (CANONICAL_KEYS[key] || key)] = convertKeys(entry);
+    }
+    return out;
+  }
+  return value;
+}
+
+function adaptProv(base) {
+  if (!Array.isArray(base.prov)) return;
+  base.prov = base.prov.map((prov) => {
+    if (!prov || typeof prov !== "object") return prov;
+    const out = { ...prov };
+    if (Array.isArray(prov.charspan)) {
+      out.charspan = { start: Number(prov.charspan[0]) || 0, end: Number(prov.charspan[1]) || 0 };
+    }
+    if (out.bbox && typeof out.bbox === "object") {
+      const origin = enumName("COORD_ORIGIN_", out.bbox.coordOrigin);
+      out.bbox = origin ? { ...out.bbox, coordOrigin: origin } : { ...out.bbox };
+    }
+    return out;
+  });
+}
+
+function adaptBase(base, labelPrefix) {
+  const label = enumName(labelPrefix, base.label);
+  if (label) base.label = label;
+  const layer = enumName("CONTENT_LAYER_", base.contentLayer);
+  if (layer) base.contentLayer = layer;
+  adaptProv(base);
+}
+
+// Text items arrive flat, carrying their semantics in the label. The walker
+// reads them through the oneof wrapper, so the label picks the variant and
+// the variant-only fields move onto the wrapper.
+function adaptTextItem(item) {
+  const name = typeof item.label === "string" ? item.label.toLowerCase() : "text";
+  const variant = CANONICAL_TEXT_VARIANTS[name] || "text";
+  adaptBase(item, "DOC_ITEM_LABEL_");
+  if (variant === "code") return { item: variant, code: item };
+  const node = {};
+  const base = {};
+  for (const [key, value] of Object.entries(item)) {
+    if (VARIANT_FIELDS.includes(key)) node[key] = value;
+    else base[key] = value;
+  }
+  node.base = base;
+  return { item: variant, [variant]: node };
+}
+
+function adaptTable(table) {
+  adaptBase(table, "DOC_ITEM_LABEL_");
+  const data = table.data;
+  if (!data || typeof data !== "object") return table;
+  for (const cell of data.tableCells || []) {
+    if (cell && cell.bbox && typeof cell.bbox === "object") {
+      const origin = enumName("COORD_ORIGIN_", cell.bbox.coordOrigin);
+      if (origin) cell.bbox.coordOrigin = origin;
+    }
+  }
+  // Rows arrive as plain arrays of cells; the walker reads {cells: [...]}.
+  if (Array.isArray(data.grid)) {
+    data.grid = data.grid.map((row) => (Array.isArray(row) ? { cells: row } : row));
+    for (const row of data.grid) {
+      for (const cell of (row && row.cells) || []) {
+        if (cell && cell.bbox && typeof cell.bbox === "object") {
+          const origin = enumName("COORD_ORIGIN_", cell.bbox.coordOrigin);
+          if (origin) cell.bbox.coordOrigin = origin;
+        }
+      }
+    }
+  }
+  return table;
+}
+
+// Annotations are a flat list tagged by kind; the walker reads them as a
+// oneof, so the two kinds it renders are re-nested.
+function adaptAnnotations(item) {
+  if (!Array.isArray(item.annotations)) return;
+  item.annotations = item.annotations.map((annotation) => {
+    if (!annotation || typeof annotation !== "object" || annotation.kind === undefined) return annotation;
+    if (Array.isArray(annotation.predictedClasses)) {
+      return { classification: { predictedClasses: annotation.predictedClasses } };
+    }
+    if (annotation.kind === "description" && typeof annotation.text === "string") {
+      return { description: { text: annotation.text } };
+    }
+    return annotation;
+  });
+}
+
+function adaptGraph(item) {
+  adaptBase(item, "DOC_ITEM_LABEL_");
+  const graph = item.graph;
+  if (!graph || typeof graph !== "object") return item;
+  for (const cell of graph.cells || []) {
+    const label = cell && enumName("GRAPH_CELL_LABEL_", cell.label);
+    if (label) cell.label = label;
+  }
+  for (const link of graph.links || []) {
+    const label = link && enumName("GRAPH_LINK_LABEL_", link.label);
+    if (label) link.label = label;
+  }
+  return item;
+}
+
+function adaptCanonicalDocument(raw) {
+  const doc = convertKeys(raw);
+  doc.texts = (Array.isArray(doc.texts) ? doc.texts : []).map(adaptTextItem);
+  doc.tables = (Array.isArray(doc.tables) ? doc.tables : []).map(adaptTable);
+  doc.pictures = (Array.isArray(doc.pictures) ? doc.pictures : []).map((picture) => {
+    adaptBase(picture, "DOC_ITEM_LABEL_");
+    adaptAnnotations(picture);
+    return picture;
+  });
+  doc.groups = (Array.isArray(doc.groups) ? doc.groups : []).map((group) => {
+    adaptBase(group, "GROUP_LABEL_");
+    return group;
+  });
+  doc.keyValueItems = (Array.isArray(doc.keyValueItems) ? doc.keyValueItems : []).map(adaptGraph);
+  doc.formItems = (Array.isArray(doc.formItems) ? doc.formItems : []).map(adaptGraph);
+  // The canonical schema name describes the file we came from, not the shape
+  // the viewer now holds.
+  delete doc.schema_name;
+  return doc;
+}
+
+// Parses one uploaded JSON file. Anything unreadable reports itself instead
+// of leaving an empty viewer behind.
+function loadDocumentJson(text) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    banner("error", `That file is not valid JSON: ${error.message}`);
+    return false;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    banner("error", "That JSON file does not hold a document object.");
+    return false;
+  }
+  const dialect = detectDialect(parsed);
+  try {
+    const document_ = dialect === "canonical" ? adaptCanonicalDocument(parsed) : parsed;
+    loadedDialect = DIALECT_LABELS[dialect];
+    buildViewer(document_);
+  } catch (error) {
+    loadedDialect = null;
+    results.textContent = "";
+    banner("error", `That JSON file could not be read as a document: ${error.message}`);
+    return false;
+  }
+  return true;
+}
+
+function downloadFileName(doc) {
+  const name = (doc && typeof doc.name === "string" && doc.name) || "document";
+  const stem = name.replace(/\.[^.]*$/, "").replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "");
+  return `${stem || "document"}.json`;
+}
+
+// Saves what the viewer currently holds, in the dialect it reads.
+function downloadDocument() {
+  if (!model) return null;
+  const blob = new Blob([JSON.stringify(model.doc)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = el("a");
+  anchor.href = url;
+  anchor.download = downloadFileName(model.doc);
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+  return blob;
+}
+
+downloadButton.addEventListener("click", () => downloadDocument());
 
 // ---------------------------------------------------------------------------
 // Upload plumbing: NDJSON relay from /api/document/parse.
@@ -1758,6 +2028,7 @@ function contentTypeFor(name) {
 
 function resetRun() {
   clearSearch();
+  loadedDialect = null;
   results.textContent = "";
   results.classList.remove("dv-root");
   infoBar.hidden = true;
@@ -1797,6 +2068,7 @@ function handleEvent(event) {
     // Long documents: only the most recent arrivals stay visible.
     while (progressPages.childNodes.length > 14) progressPages.removeChild(progressPages.firstChild);
   } else if (event.type === "document") {
+    loadedDialect = DIALECT_LABELS.native;
     if (event.document && typeof event.document === "object") buildViewer(event.document);
     else banner("error", "The stream's document line carried no document.");
   } else if (event.type === "error") {
@@ -1804,7 +2076,25 @@ function handleEvent(event) {
   }
 }
 
+function isJsonUpload(file) {
+  return /\.json$/i.test(file.name || "") || file.type === "application/json";
+}
+
+// JSON files never reach the service: they are already documents.
+async function loadJsonFile(file) {
+  resetRun();
+  dropzone.classList.add("busy");
+  try {
+    loadDocumentJson(await file.text());
+  } catch (error) {
+    banner("error", `Could not read that file: ${error.message}`);
+  } finally {
+    finishRun();
+  }
+}
+
 async function parseFile(file) {
+  if (isJsonUpload(file)) return loadJsonFile(file);
   resetRun();
   dropzone.classList.add("busy");
   const query = new URLSearchParams({
