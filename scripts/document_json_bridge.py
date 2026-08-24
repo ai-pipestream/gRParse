@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Convert a Document produced by this service into upstream-canonical JSON.
 
+This script is the validation oracle for the native canonical JSON renderer
+(``render_canonical_json``); ``scripts/validate_canonical_json.py`` diffs
+the two paths.
+
 Input is a serialized ``ai.pipestream.document.v1.Document`` message, either
 as binary protobuf (default) or as protobuf-JSON (``--json``), e.g. the
 ``response.document.doc`` payload of a ConvertSource call. The service wire
