@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Document — merged document viewer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>Document</h1>
+      <span class="subtitle">page-faithful viewer for the complete merged document</span>
+    </div>
+    <div id="health" class="health pending">checking service…</div>
+  </header>
+
+  <section id="dropzone" class="dropzone">
+    <input id="file-input" type="file" hidden />
+    <p><strong>Drop a document here</strong> or click to choose one.</p>
+    <p class="hint">The full merged document renders below once the parse finishes: page images with item boxes on the left, the content in reading order on the right. Hover either side to see the match.</p>
+    <button id="sample-button" class="sample-button" type="button">No document handy? View the bundled sample</button>
+  </section>
+
+  <section id="progress" class="dv-progress" hidden>
+    <span class="dv-progress-label">parsing…</span>
+    <span id="progress-pages"></span>
+    <span id="progress-elapsed" class="dv-progress-elapsed">0.0s</span>
+  </section>
+
+  <section id="doc-info" class="dv-info" hidden></section>
+
+  <section id="doc-legend" class="dv-legend" hidden>
+    <span class="dv-legend-title">boxes</span>
+    <span id="legend-entries" class="dv-legend-entries"></span>
+    <label class="dv-legend-toggle"><input type="checkbox" id="toggle-furniture" />show furniture / notes</label>
+  </section>
+
+  <main id="results" class="results"></main>
+
+  <script src="document.js"></script>
+</body>
+</html>

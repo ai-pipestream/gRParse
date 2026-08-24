@@ -69,6 +69,13 @@ if (shellMeta && shellMeta.content === "on") {
   // but depends on an external VLM endpoint nobody configured.
   const NATIVE_TABS = [
     {
+      name: "document",
+      title: "Document",
+      path: "/document.html",
+      description: "page-faithful viewer for the complete merged document",
+      statusUrl: "/api/document/status",
+    },
+    {
       name: "fastwarc",
       title: "FastWARC",
       path: "/fastwarc.html",

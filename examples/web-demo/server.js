@@ -480,6 +480,46 @@ function mapEvent(event) {
 }
 
 // ---------------------------------------------------------------------------
+// Document viewer bridge: the native Document tab (public/document.html)
+// renders the complete merged document instead of the flattened page events
+// above. /api/document/parse runs the unary ConvertSource RPC on the same
+// channel /api/parse uses and relays the response's native document as one
+// protobuf-JSON NDJSON line; while that conversion runs, a parallel
+// StreamProcessDocument call over the same bytes supplies live page-progress
+// lines (page number and elapsed time only, no payloads). The progress leg
+// is advisory: its failures stay silent and only the conversion decides the
+// outcome. /api/document/status probes the service's Health RPC for the
+// shell tab dot, cached like the other native-tab probes.
+// ---------------------------------------------------------------------------
+
+let documentStatusCache = null;
+const DOCUMENT_STATUS_CACHE_MS = 5000;
+
+function probeDocumentService() {
+  const fallback = { reachable: false };
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
+    try {
+      parseClient.Health({}, { deadline: Date.now() + 1500 }, (error, health) => {
+        if (error) { finish(fallback); return; }
+        finish({ reachable: true, status: health.status, version: health.version });
+      });
+    } catch (_error) {
+      finish(fallback);
+    }
+    setTimeout(() => finish(fallback), 2000).unref();
+  });
+}
+
+async function documentTabStatus() {
+  if (documentStatusCache && documentStatusCache.expires > Date.now()) return documentStatusCache.payload;
+  const payload = await probeDocumentService();
+  documentStatusCache = { expires: Date.now() + DOCUMENT_STATUS_CACHE_MS, payload };
+  return payload;
+}
+
+// ---------------------------------------------------------------------------
 // FastWARC bridge: the standalone fastwarc-grpc server (fastwarc.v1.WarcService)
 // has no web UI of its own, so the shell carries it as a native tab
 // (public/fastwarc.html) backed by the two /api/fastwarc endpoints below: a
@@ -1067,6 +1107,121 @@ surface.post(
     }
     call.write({ ...meta, complete: true });
     call.end();
+  },
+);
+
+// Status badge for the native Document tab; cached like the other probes.
+surface.get("/api/document/status", (_request, response) => {
+  documentTabStatus().then(
+    (status) => response.json(status),
+    () => response.json({ reachable: false }),
+  );
+});
+
+// Raw document bytes in (same 500 MiB cap as /api/parse; body-parser answers
+// 413 past the limit), NDJSON out: page-progress lines while the parse runs
+// ({ type: "page", pageNumber, totalPages, elapsedMs }), then exactly one
+// { type: "document", elapsedMs, document } line carrying the complete
+// merged document as protobuf-JSON (lowerCamelCase field names, enum value
+// names as strings), or { type: "error" } on failure. The page sends the
+// filename and content type as query params, like /api/parse.
+surface.post(
+  "/api/document/parse",
+  express.raw({ type: () => true, limit: MAX_UPLOAD }),
+  (request, response) => {
+    const filename = String(request.query.filename || "document");
+    const contentType = String(request.query.contentType || "");
+    const body = request.body;
+    if (!Buffer.isBuffer(body) || body.length === 0) {
+      response.status(400).json({ error: "empty upload" });
+      return;
+    }
+
+    response.setHeader("Content-Type", "application/x-ndjson");
+    response.setHeader("Cache-Control", "no-store");
+
+    const startedAt = Date.now();
+    let finished = false;
+    const send = (value) => { if (!finished) response.write(`${JSON.stringify(value)}\n`); };
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      response.end();
+    };
+
+    const deadline = Date.now() + 10 * 60 * 1000;
+
+    // Progress leg: a second streaming parse of the same bytes, mapped down
+    // to page number and elapsed time per finished page. It exists purely so
+    // the page can show live progress while the unary conversion below runs;
+    // the double parse is the accepted cost of that (the two calls run
+    // concurrently against the same server). Errors here are swallowed: the
+    // conversion alone decides success.
+    let progress = null;
+    try {
+      progress = streamClient.StreamProcessDocument({ deadline });
+      progress.on("data", (event) => {
+        if (event.page) {
+          send({
+            type: "page",
+            pageNumber: event.page.pageNumber,
+            totalPages: event.totalPages,
+            elapsedMs: Date.now() - startedAt,
+          });
+        }
+      });
+      progress.on("error", () => {});
+      progress.on("end", () => {});
+      const meta = { documentId: filename, filename, contentType };
+      for (let offset = 0; offset < body.length; offset += CHUNK_BYTES) {
+        progress.write({ ...meta, data: body.subarray(offset, offset + CHUNK_BYTES) });
+      }
+      progress.write({ ...meta, complete: true });
+      progress.end();
+    } catch (_error) {
+      progress = null;
+    }
+    const cancelProgress = () => {
+      if (!progress) return;
+      try { progress.cancel(); } catch (_error) { /* already closed */ }
+      progress = null;
+    };
+
+    // The conversion leg: the response's document.doc is the complete merged
+    // document as a native message, which proto-loader has already decoded
+    // into the protobuf-JSON shape the page renders (camelCase fields, enum
+    // names). No export formats are requested; a rendered export would only
+    // duplicate the same document as a string.
+    const call = parseClient.ConvertSource(
+      {
+        request: {
+          sources: [{ file: { base64String: body.toString("base64"), filename } }],
+        },
+      },
+      { deadline },
+      (error, converted) => {
+        cancelProgress();
+        if (error) {
+          send({ type: "error", code: error.code, message: error.message });
+          finish();
+          return;
+        }
+        const documentResponse = converted && converted.response && converted.response.document;
+        const doc = documentResponse ? documentResponse.doc : null;
+        if (!doc) {
+          send({ type: "error", message: "conversion returned no document" });
+          finish();
+          return;
+        }
+        send({ type: "document", elapsedMs: Date.now() - startedAt, document: doc });
+        finish();
+      },
+    );
+    response.on("close", () => {
+      finished = true;
+      cancelProgress();
+      try { call.cancel(); } catch (_error) { /* already settled */ }
+    });
   },
 );
 

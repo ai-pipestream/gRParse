@@ -122,6 +122,39 @@ frontend under a `UI_BASE` prefix, and (3) adding one `name=grpc@ui` entry
 to `DEMO_UIS` — plus a proto map entry in `server.js` if it isn't one of
 the known services.
 
+## Native Document tab
+
+The Document tab (`/document.html`, first native tab in the shell bar) is a
+page-faithful viewer for the **complete merged document** — where the main
+gRParse tab shows the live page stream, this one shows the final assembled
+result. The page posts document bytes to `POST /api/document/parse` (same
+500 MiB cap; `filename` and `contentType` as query params). The bridge runs
+the unary `ConvertSource` RPC and relays NDJSON: `page` progress lines
+(`pageNumber`, `totalPages`, `elapsedMs` — fed by a parallel
+`StreamProcessDocument` call over the same bytes, purely so progress is
+live; that leg's failures stay silent), then one `document` line carrying
+the whole merged document as protobuf-JSON (camelCase field names, enum
+value names as strings), or an `error` line. The tab dot follows
+`GET /api/document/status`, a `Health` probe on the same channel
+`/api/parse` uses, with the usual 1.5s deadline and 5s cache.
+
+The viewer resolves the body tree against the item arenas
+(`texts`/`tables`/`pictures`/`groups`/`key_value_items`/...) and renders one
+card per page: the page image with an absolutely-positioned provenance box
+per item on the left (colored by item label; the legend shows per-label
+counts with checkboxes to hide labels), and the content in reading order on
+the right — headings by level, nested lists from list groups, tables with
+row/column spans and header cells, figures with their inline images,
+captions, code with language badges, formulas. Hovering a box highlights
+the matching content element and vice versa; clicking either scrolls its
+counterpart into view. Items without page provenance (contributed by
+out-of-process collectors) render in a trailing "unpaged content" section
+grouped by collector, with confidence badges where the producer reported
+one. Non-body layers (furniture, notes) stay hidden behind a toggle that
+reveals them dimmed. Each item's metadata is available in a collapsible
+drawer, and page cards build lazily as they scroll into view since page
+images are large data URIs.
+
 ## Native FastWARC tab
 
 The standalone fastwarc-grpc server (`fastwarc.v1.WarcService`, default port
