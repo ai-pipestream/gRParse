@@ -437,6 +437,22 @@ h1 { margin: 0; font-size: 26px; letter-spacing: 0.5px; }
   cursor: pointer;
 }
 .dv-toolbar-toggle input { margin: 0; }
+.dv-conf-legend { display: inline-flex; align-items: center; gap: 8px; font-size: 11px; }
+.dv-conf-legend[hidden] { display: none; }
+.dv-conf-ramp { position: relative; display: inline-block; width: 130px; height: 24px; }
+.dv-conf-scale {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 10px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: linear-gradient(90deg, rgb(248, 81, 73) 0%, rgb(233, 196, 72) 70%, rgb(63, 185, 80) 100%);
+}
+.dv-conf-ticks span { position: absolute; top: 13px; font-variant-numeric: tabular-nums; }
+.dv-conf-ticks span:nth-child(1) { left: 0; }
+.dv-conf-ticks span:nth-child(2) { left: 70%; transform: translateX(-50%); }
+.dv-conf-ticks span:nth-child(3) { right: 0; }
+.dv-conf-note { font-style: italic; }
 
 .dv-legend {
   display: flex;
@@ -499,6 +515,16 @@ h1 { margin: 0; font-size: 26px; letter-spacing: 0.5px; }
   transition: box-shadow 0.1s;
 }
 .dv-box.label-off { display: none; }
+/* The label colours are inline styles, so the heatmap has to outrank them. */
+.dv-root.show-confidence .dv-box {
+  border-color: var(--dv-conf-border) !important;
+  background: var(--dv-conf-fill) !important;
+}
+.dv-root.show-confidence .dv-box.dv-conf-none {
+  border-color: #6e7681 !important;
+  background: rgba(110, 118, 129, 0.12) !important;
+  border-style: dashed;
+}
 .dv-box.dv-hl { box-shadow: 0 0 0 2px var(--accent); z-index: 5; }
 .dv-box.dv-hl-self { box-shadow: 0 0 0 3px var(--accent); z-index: 7; }
 .dv-charmark {

@@ -22,6 +22,8 @@ const legendBar = document.getElementById("doc-legend");
 const legendEntries = document.getElementById("legend-entries");
 const furnitureToggle = document.getElementById("toggle-furniture");
 const readingOrderToggle = document.getElementById("toggle-reading-order");
+const confidenceToggle = document.getElementById("toggle-confidence");
+const confidenceLegend = document.getElementById("conf-legend");
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -49,6 +51,31 @@ const DEFAULT_COLOR = { border: "#6e7681", fill: "rgba(110, 118, 129, 0.2)" };
 
 function colorFor(label) {
   return PALETTE[label] || DEFAULT_COLOR;
+}
+
+// Heatmap ramp for collector confidence: red at 0, yellow at 0.7, green at 1.
+const CONFIDENCE_STOPS = [
+  [0, [248, 81, 73]],
+  [0.7, [233, 196, 72]],
+  [1, [63, 185, 80]],
+];
+
+function confidenceColor(value) {
+  const level = Math.min(1, Math.max(0, value));
+  let lower = CONFIDENCE_STOPS[0];
+  let upper = CONFIDENCE_STOPS[CONFIDENCE_STOPS.length - 1];
+  for (let index = 1; index < CONFIDENCE_STOPS.length; index += 1) {
+    if (level <= CONFIDENCE_STOPS[index][0]) {
+      lower = CONFIDENCE_STOPS[index - 1];
+      upper = CONFIDENCE_STOPS[index];
+      break;
+    }
+  }
+  const span = upper[0] - lower[0];
+  const t = span > 0 ? (level - lower[0]) / span : 0;
+  const channel = (index) => Math.round(lower[1][index] + (upper[1][index] - lower[1][index]) * t);
+  const [r, g, b] = [channel(0), channel(1), channel(2)];
+  return { border: `rgb(${r}, ${g}, ${b})`, fill: `rgba(${r}, ${g}, ${b}, 0.28)` };
 }
 
 // ---------------------------------------------------------------------------
@@ -313,9 +340,11 @@ function indexDocument(doc) {
         prov,
         text,
         spans: kind === "group" ? null : computeSpans(base, text),
+        confidence: null,
         page: prov.length > 0 ? prov[0].pageNo : null,
         layer: layerOf(base.contentLayer),
       };
+      record.confidence = collectorConfidence(record);
       built.items.push(record);
       built.byRef.set(record.ref, record);
       if (typeof base.selfRef === "string" && base.selfRef && base.selfRef !== record.ref) {
@@ -852,6 +881,15 @@ function buildBoxLayer(pageNo, size) {
     const color = colorFor(record.label);
     box.style.borderColor = color.border;
     box.style.background = color.fill;
+    // The heatmap colours are stamped on once here; switching the view on
+    // only flips a class on the root, it never repaints the boxes.
+    if (record.confidence === null) {
+      box.classList.add("dv-conf-none");
+    } else {
+      const heat = confidenceColor(record.confidence);
+      box.style.setProperty("--dv-conf-border", heat.border);
+      box.style.setProperty("--dv-conf-fill", heat.fill);
+    }
     box.dataset.ref = record.ref;
     box.dataset.label = record.label;
     box.dataset.prov = String(prov.index);
@@ -1013,6 +1051,8 @@ function buildViewer(doc) {
   results.classList.add("dv-root");
   results.classList.toggle("show-furniture", furnitureToggle.checked);
   results.classList.toggle("show-reading-order", readingOrderToggle.checked);
+  results.classList.toggle("show-confidence", confidenceToggle.checked);
+  confidenceLegend.hidden = !confidenceToggle.checked;
   toolbar.hidden = false;
   if (lazyObserver) lazyObserver.disconnect();
   model = indexDocument(doc);
@@ -1155,6 +1195,11 @@ furnitureToggle.addEventListener("change", () => {
 // built with the page card and never recomputed.
 readingOrderToggle.addEventListener("change", () => {
   results.classList.toggle("show-reading-order", readingOrderToggle.checked);
+});
+
+confidenceToggle.addEventListener("change", () => {
+  results.classList.toggle("show-confidence", confidenceToggle.checked);
+  confidenceLegend.hidden = !confidenceToggle.checked;
 });
 
 // ---------------------------------------------------------------------------
