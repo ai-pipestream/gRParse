@@ -1373,6 +1373,47 @@ const MARK_SKIP = ".dv-meta, .dv-badge, .dv-conf, .dv-code-lang, .dv-kind-badge,
 // Wraps [start, end) of an element's own text in <mark>, splitting across
 // text nodes when the range spans several. Returns the marks it created so
 // the caller can take them out again; nothing else about the DOM changes.
+
+// Charspans on the wire count Unicode code points (the schema contract);
+// DOM ranges and JS string indices count UTF-16 units. These convert at the
+// boundary, with a fast path when the text has no surrogate pairs.
+function cpToUtf16(text, cp) {
+  if (!/[\uD800-\uDFFF]/.test(text)) return Math.min(cp, text.length);
+  let units = 0;
+  let points = 0;
+  for (const ch of text) {
+    if (points >= cp) break;
+    points += 1;
+    units += ch.length;
+  }
+  return units;
+}
+
+function utf16ToCp(text, units) {
+  if (!/[\uD800-\uDFFF]/.test(text)) return Math.min(units, text.length);
+  let cp = 0;
+  let at = 0;
+  for (const ch of text) {
+    if (at >= units) break;
+    at += ch.length;
+    cp += 1;
+  }
+  return cp;
+}
+
+// The text markRange and textOffsetOf walk: every text node under root,
+// skipping the same chrome both of them skip.
+function walkedText(root) {
+  let text = "";
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const parent = node.parentElement;
+    if (!parent || (parent !== root && parent.closest(MARK_SKIP))) continue;
+    text += node.nodeValue;
+  }
+  return text;
+}
+
 function markRange(root, start, end, className) {
   const targets = [];
   let offset = 0;
@@ -1424,8 +1465,12 @@ function applyCharMarks(ref, provIndex) {
   if (!span) return;
   const entry = model.view.get(ref);
   if (!entry) return;
+  const itemText = record.text || "";
+  const from = cpToUtf16(itemText, span.start);
+  const to = cpToUtf16(itemText, span.end);
+  if (to <= from) return;
   for (const element of entry.contents) {
-    charMarks.push(...markRange(element, span.start, span.end, "dv-charmark"));
+    charMarks.push(...markRange(element, from, to, "dv-charmark"));
   }
 }
 
@@ -1647,8 +1692,8 @@ function applyAnchorFromHash() {
   if (entry.contents[0]) scrollElementIntoView(entry.contents[0]);
   if (anchor.cs) {
     const text = record.text || "";
-    const start = Math.min(Math.max(anchor.cs.start, 0), text.length);
-    const end = Math.min(Math.max(anchor.cs.end, 0), text.length);
+    const start = cpToUtf16(text, Math.max(anchor.cs.start, 0));
+    const end = cpToUtf16(text, Math.max(anchor.cs.end, 0));
     if (end > start) {
       for (const element of entry.contents) {
         anchorMarks.push(...markRange(element, start, end, "dv-anchormark"));
@@ -1775,8 +1820,12 @@ function selectionSpanWithin(container) {
     if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
     const range = selection.getRangeAt(0);
     if (!container.contains(range.startContainer) || !container.contains(range.endContainer)) return null;
-    const start = textOffsetOf(container, range.startContainer, range.startOffset);
-    const end = textOffsetOf(container, range.endContainer, range.endOffset);
+    const startUnits = textOffsetOf(container, range.startContainer, range.startOffset);
+    const endUnits = textOffsetOf(container, range.endContainer, range.endOffset);
+    if (endUnits <= startUnits) return null;
+    const text = walkedText(container);
+    const start = utf16ToCp(text, startUnits);
+    const end = utf16ToCp(text, endUnits);
     return end > start ? { start, end } : null;
   } catch (error) {
     return null;
