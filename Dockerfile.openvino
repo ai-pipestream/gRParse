@@ -37,7 +37,7 @@ RUN curl -fsSL -o /tmp/poppler.tar.xz "https://poppler.freedesktop.org/poppler-$
 WORKDIR /src
 COPY . .
 # Separate cache from the CUDA image: different ONNX Runtime package and ABI.
-RUN --mount=type=cache,id=grparse-openvino-ubuntu26-grpc1.83.0-ort1.24.1-poppler26.08-cxx23-sessionep1-static1,target=/build \
+RUN --mount=type=cache,id=grparse-openvino-ubuntu26-grpc1.83.0-ort1.24.1-poppler26.08-cxx23-sessionep1-static1-simdutf9,target=/build \
     export PKG_CONFIG_PATH=/opt/poppler/lib/pkgconfig \
  && cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
       -DGRPARSE_WERROR=ON -DGRPARSE_ORT_PACKAGE=openvino \

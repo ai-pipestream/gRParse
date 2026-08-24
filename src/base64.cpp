@@ -4,9 +4,15 @@
 #include <cctype>
 #include <stdexcept>
 
+#include <simdutf.h>
+
+#include "base64_scalar.h"
+
 namespace grparse {
 
-std::string decode_base64(const std::string& value) {
+namespace detail {
+
+std::string scalar_decode_base64(const std::string& value) {
   static constexpr unsigned char kInvalid = 255;
   static const auto table = [] {
     std::array<unsigned char, 256> decode{};
@@ -58,7 +64,7 @@ std::string decode_base64(const std::string& value) {
   return decoded;
 }
 
-std::string encode_base64(const void* data, size_t size) {
+std::string scalar_encode_base64(const void* data, std::size_t size) {
   static constexpr char kAlphabet[] =
       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   const auto* bytes = static_cast<const unsigned char*>(data);
@@ -88,6 +94,48 @@ std::string encode_base64(const void* data, size_t size) {
     encoded.push_back(kAlphabet[(chunk >> 6) & 0x3F]);
     encoded.push_back('=');
   }
+  return encoded;
+}
+
+}  // namespace detail
+
+std::string decode_base64(const std::string& value) {
+  // Vectorized fast path with the scalar decoder as the contract oracle:
+  // the kernel is stricter than or equal to the contract on everything the
+  // fuzz harness can find, so a fast-path success is a contract success,
+  // and every fast-path failure re-runs the scalar decoder so the
+  // accept/reject decision and the thrown exception stay the reference
+  // ones. The one structural rule the kernel does not share, the padded
+  // multiple-of-four length after whitespace stripping, is enforced first.
+  if (value.empty()) {
+    throw std::invalid_argument("file.base64_string is not valid base64");
+  }
+  std::string decoded;
+  decoded.resize(simdutf::maximal_binary_length_from_base64(value.data(), value.size()));
+  const simdutf::result outcome = simdutf::base64_to_binary(
+      value.data(), value.size(), decoded.data(), simdutf::base64_default,
+      simdutf::last_chunk_handling_options::strict);
+  if (outcome.error != simdutf::error_code::SUCCESS) {
+    return detail::scalar_decode_base64(value);
+  }
+  // The kernel accepts an unpadded final quad and stray padded lengths the
+  // contract rejects; the cheap structural recount catches those without
+  // rescanning payload bytes.
+  std::size_t significant = 0;
+  for (const unsigned char character : value) {
+    if (!std::isspace(character)) ++significant;
+  }
+  if (significant % 4 != 0) {
+    return detail::scalar_decode_base64(value);  // throws the contract error
+  }
+  decoded.resize(outcome.count);
+  return decoded;
+}
+
+std::string encode_base64(const void* data, size_t size) {
+  std::string encoded;
+  encoded.resize(simdutf::base64_length_from_binary(size));
+  simdutf::binary_to_base64(static_cast<const char*>(data), size, encoded.data());
   return encoded;
 }
 

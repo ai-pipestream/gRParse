@@ -165,6 +165,20 @@ FetchContent_Declare(yaml-cpp
 # upstream) nor the CMake 4 policy floor (it declares 3.5...3.30).
 FetchContent_MakeAvailable(yaml-cpp)
 
+# simdutf provides runtime-dispatched vector kernels (AVX-512/AVX2/SSE on
+# x86-64, NEON on aarch64) for the base64 hot paths: every uploaded document
+# decodes and every page image and picture crop encodes through them. The
+# scalar implementations stay as the accept/reject contract oracle.
+set(SIMDUTF_TESTS OFF CACHE BOOL "" FORCE)
+set(SIMDUTF_TOOLS OFF CACHE BOOL "" FORCE)
+set(SIMDUTF_BENCHMARKS OFF CACHE BOOL "" FORCE)
+set(SIMDUTF_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(simdutf
+  GIT_REPOSITORY https://github.com/simdutf/simdutf.git
+  GIT_TAG v9.1.0
+  GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(simdutf)
+
 find_package(OpenCV 4.5 REQUIRED COMPONENTS core imgcodecs imgproc)
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
@@ -466,7 +480,7 @@ add_library(grparse_core STATIC
 target_include_directories(grparse_core PUBLIC include)
 target_link_libraries(grparse_core
   PUBLIC grparse_proto rapidocr PkgConfig::POPPLER_CPP Threads::Threads
-  PRIVATE ZXing::ZXing yaml-cpp::yaml-cpp grparse_flags)
+  PRIVATE ZXing::ZXing yaml-cpp::yaml-cpp simdutf::simdutf grparse_flags)
 
 add_executable(grparse-server src/main.cpp)
 target_link_libraries(grparse-server PRIVATE grparse_core grparse_flags grpc++_reflection)
