@@ -496,8 +496,13 @@ void DoclingMapper::fold_table(const officev1::TableData& table,
       }
     }
     for (const docv1::TableCell& cell : data->table_cells()) {
-      docv1::TableCell* slot = data->mutable_grid(cell.start_row_offset_idx())
-          ->mutable_cells(cell.start_col_offset_idx());
+      // Merged or irregular office tables can report cells beyond the
+      // declared grid; those stay in table_cells but have no grid slot.
+      if (cell.start_row_offset_idx() >= data->grid_size()) continue;
+      docv1::TableRow* out_row = data->mutable_grid(cell.start_row_offset_idx());
+      if (cell.start_col_offset_idx() >= out_row->cells_size()) continue;
+      docv1::TableCell* slot =
+          out_row->mutable_cells(cell.start_col_offset_idx());
       slot->set_text(cell.text());
       if (cell.has_bbox()) *slot->mutable_bbox() = cell.bbox();
     }

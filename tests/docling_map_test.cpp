@@ -324,6 +324,36 @@ void verify_table_fold_grid_and_off_grid_cells() {
           "table mapping stays well formed");
 }
 
+void verify_out_of_grid_cell_offsets_do_not_write_the_grid() {
+  grparse::DoclingMapper mapper;
+  officev1::StreamPagesResponse event;
+  officev1::TableData* table = event.mutable_table();
+  // The declared grid is smaller than the reported cell offsets: an
+  // irregular office table can place a cell beyond rows x columns.
+  table->set_rows(1);
+  table->set_columns(1);
+  officev1::TableCellData* inside = table->add_cells();
+  inside->set_row(0);
+  inside->set_column(0);
+  inside->set_text("in");
+  officev1::TableCellData* beyond_rows = table->add_cells();
+  beyond_rows->set_row(2);
+  beyond_rows->set_column(0);
+  beyond_rows->set_text("row overflow");
+  officev1::TableCellData* beyond_columns = table->add_cells();
+  beyond_columns->set_row(0);
+  beyond_columns->set_column(3);
+  beyond_columns->set_text("column overflow");
+  mapper.consume(event);
+  const docv1::TableData& data = mapper.document().tables(0).data();
+  require(data.table_cells_size() == 3,
+          "overflowing cells stay addressable in table_cells");
+  require(data.grid_size() == 1 && data.grid(0).cells_size() == 1,
+          "the materialized grid keeps its declared dimensions");
+  require(data.grid(0).cells(0).text() == "in",
+          "only in-bounds cells land in the grid");
+}
+
 void verify_huge_grid_keeps_cells_only() {
   grparse::DoclingMapper mapper;
   officev1::StreamPagesResponse event;
@@ -531,6 +561,7 @@ int main() {
     verify_caret_prov_fallback_and_unresolved_page();
     verify_uniform_formatting_and_hyperlinks();
     verify_table_fold_grid_and_off_grid_cells();
+    verify_out_of_grid_cell_offsets_do_not_write_the_grid();
     verify_huge_grid_keeps_cells_only();
     verify_sheet_rows_fold_into_the_sheet_table();
     verify_row_for_unknown_sheet_is_dropped();
