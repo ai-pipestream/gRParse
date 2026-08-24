@@ -11,7 +11,7 @@
 
 const dropzone = document.getElementById("dropzone");
 const fileInput = document.getElementById("file-input");
-const sampleButton = document.getElementById("sample-button");
+const sampleButtons = document.querySelectorAll(".dv-sample-btn");
 const results = document.getElementById("results");
 const progressBar = document.getElementById("progress");
 const progressPages = document.getElementById("progress-pages");
@@ -2129,15 +2129,21 @@ async function parseFile(file) {
 }
 
 dropzone.addEventListener("click", () => fileInput.click());
-sampleButton.addEventListener("click", async (event) => {
-  event.stopPropagation(); // the surrounding dropzone opens the file picker on click
-  const response = await fetch("sample.pdf");
-  if (!response.ok) {
-    banner("error", `Could not fetch the bundled sample: HTTP ${response.status}`);
-    return;
-  }
-  const bytes = await response.blob();
-  parseFile(new File([bytes], "sample.pdf", { type: "application/pdf" }));
+// Every sample button fetches its own bundled file and feeds it through the
+// same upload path a picked or dropped file takes; no parsing logic here.
+sampleButtons.forEach((button) => {
+  button.addEventListener("click", async (event) => {
+    event.stopPropagation(); // the surrounding dropzone opens the file picker on click
+    const name = button.dataset.sampleFile;
+    const contentType = button.dataset.sampleContentType;
+    const response = await fetch(name);
+    if (!response.ok) {
+      banner("error", `Could not fetch the bundled sample: HTTP ${response.status}`);
+      return;
+    }
+    const bytes = await response.blob();
+    parseFile(new File([bytes], name, { type: contentType }));
+  });
 });
 fileInput.addEventListener("change", () => {
   if (fileInput.files.length > 0) parseFile(fileInput.files[0]);

@@ -19,7 +19,37 @@
     <input id="file-input" type="file" hidden />
     <p><strong>Drop a document here</strong> or click to choose one.</p>
     <p class="hint">The full merged document renders below once the parse finishes: page images with item boxes on the left, the content in reading order on the right. Hover either side to see the match. A document JSON file opens straight in the viewer without a parse.</p>
-    <button id="sample-button" class="sample-button" type="button">No document handy? View the bundled sample</button>
+    <div id="dv-samples" class="dv-samples">
+      <span class="dv-samples-label">No document handy? Try a sample:</span>
+      <button
+        id="sample-button"
+        class="dv-sample-btn"
+        type="button"
+        data-sample-file="sample.pdf"
+        data-sample-content-type="application/pdf"
+      >PDF</button>
+      <button
+        id="sample-docx-button"
+        class="dv-sample-btn"
+        type="button"
+        data-sample-file="sample.docx"
+        data-sample-content-type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      >Office (DOCX)</button>
+      <button
+        id="sample-html-button"
+        class="dv-sample-btn"
+        type="button"
+        data-sample-file="sample.html"
+        data-sample-content-type="text/html"
+      >HTML</button>
+      <button
+        id="sample-warc-button"
+        class="dv-sample-btn"
+        type="button"
+        data-sample-file="sample.warc.gz"
+        data-sample-content-type="application/warc"
+      >Web archive (WARC)</button>
+    </div>
   </section>
 
   <section id="progress" class="dv-progress" hidden>
