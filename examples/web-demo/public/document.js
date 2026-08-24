@@ -206,12 +206,47 @@ let model = null;
 
 function normalizeProv(base) {
   const entries = [];
-  for (const prov of base.prov || []) {
-    if (!prov) continue;
+  (base.prov || []).forEach((prov, index) => {
+    if (!prov) return;
     const pageNo = Number(prov.pageNo) || 0;
-    if (pageNo > 0) entries.push({ pageNo, bbox: prov.bbox || null });
-  }
+    // `index` is the position in the item's own prov array, which is the key
+    // the charspan table below is built against.
+    if (pageNo > 0) entries.push({ pageNo, bbox: prov.bbox || null, index });
+  });
   return entries;
+}
+
+// Per-provenance character ranges, relative to the item's own text.
+//
+// Producers disagree on the charspan base: some count from the start of the
+// item, others from the start of the document. Every prov entry of one item
+// shares the same base, so the smallest start in the item is that base and
+// subtracting it lands both conventions on item-relative offsets. Ranges that
+// clamp to nothing, or that cover the whole item (nothing to narrow to), are
+// dropped here so hovering never has to decide.
+function computeSpans(base, text) {
+  const provs = base.prov || [];
+  let origin = null;
+  for (const prov of provs) {
+    const start = prov && prov.charspan ? Number(prov.charspan.start) : NaN;
+    if (!Number.isFinite(start)) continue;
+    origin = origin === null ? start : Math.min(origin, start);
+  }
+  if (origin === null || text.length === 0) return null;
+  const spans = new Map();
+  provs.forEach((prov, index) => {
+    if (!prov || !prov.charspan) return;
+    let start = Number(prov.charspan.start) - origin;
+    let end = Number(prov.charspan.end) - origin;
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return;
+    if (end < start) [start, end] = [end, start];
+    start = Math.min(Math.max(start, 0), text.length);
+    end = Math.min(Math.max(end, 0), text.length);
+    if (end <= start) return;
+    if (start === 0 && end >= text.length) return;
+    spans.set(index, { start, end });
+  });
+  return spans.size > 0 ? spans : null;
 }
 
 // Depth-first order of the body tree, which is the document's reading order.
@@ -247,6 +282,9 @@ function indexDocument(doc) {
     unpagedCollectors: [],
     walkOrder: [],
     pageSequences: new Map(),
+    // ref -> rendered elements, filled in as cards build. Hover and click
+    // sync read this map instead of scanning the DOM.
+    view: new Map(),
   };
   for (const [segment, docKey, kind] of ARENAS) {
     const arena = Array.isArray(doc[docKey]) ? doc[docKey] : [];
@@ -264,6 +302,7 @@ function indexDocument(doc) {
         ? "group"
         : shortLabel(base.label, variant ? VARIANT_FALLBACK_LABEL[variant] : KIND_FALLBACK_LABEL[kind]);
       const prov = kind === "group" ? [] : normalizeProv(base);
+      const text = base.text || base.orig || "";
       const record = {
         ref: `#/${segment}/${index}`,
         kind,
@@ -272,6 +311,8 @@ function indexDocument(doc) {
         base,
         label,
         prov,
+        text,
+        spans: kind === "group" ? null : computeSpans(base, text),
         page: prov.length > 0 ? prov[0].pageNo : null,
         layer: layerOf(base.contentLayer),
       };
@@ -371,11 +412,21 @@ function banner(kind, message) {
 // Content rendering (right pane + unpaged section).
 // ---------------------------------------------------------------------------
 
+function viewEntryFor(ref) {
+  let entry = model.view.get(ref);
+  if (!entry) {
+    entry = { boxes: [], contents: [] };
+    model.view.set(ref, entry);
+  }
+  return entry;
+}
+
 function decorate(element, record) {
   element.classList.add("dv-item");
   element.dataset.ref = record.ref;
   element.dataset.label = record.label;
   if (!inBodyLayer(record)) element.classList.add("dv-furn");
+  viewEntryFor(record.ref).contents.push(element);
 }
 
 function metaDrawer(record) {
@@ -787,12 +838,12 @@ function buildBoxLayer(pageNo, size) {
   for (const record of model.items) {
     for (const prov of record.prov) {
       if (prov.pageNo !== pageNo || !prov.bbox) continue;
-      boxes.push({ record, geometry: boxGeometry(prov.bbox, size) });
+      boxes.push({ record, prov, geometry: boxGeometry(prov.bbox, size) });
     }
   }
   // Large boxes first so small ones stay hoverable on top of them.
   boxes.sort((a, b) => (b.geometry.width * b.geometry.height) - (a.geometry.width * a.geometry.height));
-  for (const { record, geometry } of boxes) {
+  for (const { record, prov, geometry } of boxes) {
     const box = el("div", "dv-box");
     box.style.left = `${geometry.left}%`;
     box.style.top = `${geometry.top}%`;
@@ -803,9 +854,11 @@ function buildBoxLayer(pageNo, size) {
     box.style.background = color.fill;
     box.dataset.ref = record.ref;
     box.dataset.label = record.label;
+    box.dataset.prov = String(prov.index);
     box.title = record.label;
     if (!inBodyLayer(record)) box.classList.add("dv-furn");
     if (hiddenLabels.has(record.label)) box.classList.add("label-off");
+    viewEntryFor(record.ref).boxes.push({ el: box, provIndex: prov.index });
     layer.appendChild(box);
   }
   return layer;
@@ -963,6 +1016,9 @@ function buildViewer(doc) {
   toolbar.hidden = false;
   if (lazyObserver) lazyObserver.disconnect();
   model = indexDocument(doc);
+  hoveredRef = null;
+  hoveredProv = null;
+  charMarks = [];
   hiddenLabels.clear();
   renderInfo(doc);
   renderLegend();
@@ -1106,38 +1162,115 @@ readingOrderToggle.addEventListener("change", () => {
 // ---------------------------------------------------------------------------
 
 let hoveredRef = null;
+let hoveredProv = null;
+let charMarks = [];
 
-function setHighlight(ref, on) {
-  if (!ref) return;
-  for (const element of results.querySelectorAll(".dv-item, .dv-box")) {
-    if (element.dataset.ref === ref) element.classList.toggle("dv-hl", on);
+// Text that belongs to the viewer's own chrome rather than to the item.
+const MARK_SKIP = ".dv-meta, .dv-badge, .dv-conf, .dv-code-lang, .dv-kind-badge, .dv-figure-badges, .dv-figcaption";
+
+// Wraps [start, end) of an element's own text in <mark>, splitting across
+// text nodes when the range spans several. Returns the marks it created so
+// the caller can take them out again; nothing else about the DOM changes.
+function markRange(root, start, end, className) {
+  const targets = [];
+  let offset = 0;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const parent = node.parentElement;
+    if (!parent || (parent !== root && parent.closest(MARK_SKIP))) continue;
+    const length = node.nodeValue.length;
+    const from = Math.max(start, offset);
+    const to = Math.min(end, offset + length);
+    if (from < to) targets.push([node, from - offset, to - offset]);
+    offset += length;
+    if (offset >= end) break;
   }
+  const marks = [];
+  for (const [node, from, to] of targets) {
+    const range = document.createRange();
+    range.setStart(node, from);
+    range.setEnd(node, to);
+    const mark = el("mark", className);
+    range.surroundContents(mark);
+    marks.push(mark);
+  }
+  return marks;
+}
+
+function unmark(marks) {
+  for (const mark of marks) {
+    const parent = mark.parentNode;
+    if (!parent) continue;
+    while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
+    parent.removeChild(mark);
+    parent.normalize();
+  }
+}
+
+function clearCharMarks() {
+  if (charMarks.length === 0) return;
+  unmark(charMarks);
+  charMarks = [];
+}
+
+// Hovering one box narrows the highlight to the slice of text that box
+// covers, when the producer said which slice that is.
+function applyCharMarks(ref, provIndex) {
+  const record = model && model.byRef.get(ref);
+  if (!record || !record.spans || provIndex === null) return;
+  const span = record.spans.get(provIndex);
+  if (!span) return;
+  const entry = model.view.get(ref);
+  if (!entry) return;
+  for (const element of entry.contents) {
+    charMarks.push(...markRange(element, span.start, span.end, "dv-charmark"));
+  }
+}
+
+// Every box the item owns lights up, so an item broken into per-line
+// provenance shows all of its lines at once; the box actually under the
+// pointer, if any, gets the stronger outline.
+function setHighlight(ref, on, provIndex) {
+  const entry = ref && model ? model.view.get(ref) : null;
+  if (!entry) return;
+  for (const box of entry.boxes) {
+    box.el.classList.toggle("dv-hl", on);
+    box.el.classList.toggle("dv-hl-self", on && provIndex !== null && provIndex !== undefined && box.provIndex === provIndex);
+  }
+  for (const element of entry.contents) element.classList.toggle("dv-hl", on);
 }
 
 results.addEventListener("mouseover", (event) => {
   const target = event.target.closest("[data-ref]");
   const ref = target ? target.dataset.ref : null;
-  if (ref === hoveredRef) return;
-  setHighlight(hoveredRef, false);
+  const provAttr = target && target.dataset.prov;
+  const provIndex = provAttr === undefined || provAttr === null || provAttr === "" ? null : Number(provAttr);
+  if (ref === hoveredRef && provIndex === hoveredProv) return;
+  setHighlight(hoveredRef, false, hoveredProv);
+  clearCharMarks();
   hoveredRef = ref;
-  setHighlight(hoveredRef, true);
+  hoveredProv = provIndex;
+  setHighlight(hoveredRef, true, provIndex);
+  if (hoveredRef && hoveredProv !== null) applyCharMarks(hoveredRef, hoveredProv);
 });
 
 results.addEventListener("mouseleave", () => {
-  setHighlight(hoveredRef, false);
+  setHighlight(hoveredRef, false, hoveredProv);
+  clearCharMarks();
   hoveredRef = null;
+  hoveredProv = null;
 });
 
 results.addEventListener("click", (event) => {
   if (event.target.closest("a, summary, input")) return;
   const target = event.target.closest("[data-ref]");
   if (!target) return;
-  const ref = target.dataset.ref;
+  const entry = model && model.view.get(target.dataset.ref);
+  if (!entry) return;
   const wantBox = !target.classList.contains("dv-box");
-  let counterpart = null;
-  for (const element of results.querySelectorAll(wantBox ? ".dv-box" : ".dv-item")) {
-    if (element.dataset.ref === ref) { counterpart = element; break; }
-  }
+  const counterpart = wantBox
+    ? (entry.boxes.length > 0 ? entry.boxes[0].el : null)
+    : (entry.contents.length > 0 ? entry.contents[0] : null);
   if (!counterpart) return;
   counterpart.scrollIntoView({ behavior: "smooth", block: "center" });
   counterpart.classList.add("dv-flash");
@@ -1173,6 +1306,8 @@ function resetRun() {
   }
   model = null;
   hoveredRef = null;
+  hoveredProv = null;
+  charMarks = [];
   startedAt = performance.now();
   clock = setInterval(() => {
     progressElapsed.textContent = `${((performance.now() - startedAt) / 1000).toFixed(1)}s`;

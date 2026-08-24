@@ -500,6 +500,12 @@ h1 { margin: 0; font-size: 26px; letter-spacing: 0.5px; }
 }
 .dv-box.label-off { display: none; }
 .dv-box.dv-hl { box-shadow: 0 0 0 2px var(--accent); z-index: 5; }
+.dv-box.dv-hl-self { box-shadow: 0 0 0 3px var(--accent); z-index: 7; }
+.dv-charmark {
+  background: rgba(88, 166, 255, 0.35);
+  color: inherit;
+  border-radius: 2px;
+}
 
 .dv-arrow-layer {
   position: absolute;
