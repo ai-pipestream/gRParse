@@ -279,6 +279,7 @@ bool renderable(pipestream::parse::v1::OutputFormat format) {
     case pipestream::parse::v1::OUTPUT_FORMAT_DOCLANG:
     case pipestream::parse::v1::OUTPUT_FORMAT_VTT:
     case pipestream::parse::v1::OUTPUT_FORMAT_YAML:
+    case pipestream::parse::v1::OUTPUT_FORMAT_CANONICAL_JSON:
       return true;
     default:
       return false;

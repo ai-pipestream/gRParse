@@ -451,6 +451,7 @@ void verify_unary_multi_format_exports(TestServer* server) {
   options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_VTT);
   options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_HTML_SPLIT_PAGE);
   options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_YAML);
+  options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_CANONICAL_JSON);
   grpc::ClientContext context;
   context.set_deadline(std::chrono::system_clock::now() + 10s);
   pipestream::parse::v1::ConvertSourceResponse response;
@@ -485,6 +486,11 @@ void verify_unary_multi_format_exports(TestServer* server) {
           "multi-format split-page export");
   require(exports.has_yaml() && exports.yaml().contains("texts:"),
           "multi-format yaml export: " + exports.yaml().substr(0, 200));
+  require(exports.has_canonical_json() &&
+              exports.canonical_json().contains("\"DoclingDocument\"") &&
+              exports.canonical_json().contains("\"$ref\""),
+          "multi-format canonical export: " +
+              exports.canonical_json().substr(0, 200));
 
   auto default_request = unary_request();
   default_request.mutable_request()->mutable_options()->clear_to_formats();
