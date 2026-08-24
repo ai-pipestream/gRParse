@@ -454,6 +454,29 @@ h1 { margin: 0; font-size: 26px; letter-spacing: 0.5px; }
 .dv-conf-ticks span:nth-child(3) { right: 0; }
 .dv-conf-note { font-style: italic; }
 
+.dv-search { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.dv-search-input {
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font: inherit;
+  min-width: 180px;
+}
+.dv-search-input:focus { outline: none; border-color: var(--accent); }
+.dv-search-nav {
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 8px;
+  cursor: pointer;
+  line-height: 1.2;
+}
+.dv-search-nav:hover { border-color: var(--accent); }
+.dv-search-count { font-variant-numeric: tabular-nums; min-width: 92px; }
+
 .dv-legend {
   display: flex;
   align-items: baseline;
@@ -540,6 +563,16 @@ h1 { margin: 0; font-size: 26px; letter-spacing: 0.5px; }
 }
 .dv-box.dv-hl { box-shadow: 0 0 0 2px var(--accent); z-index: 5; }
 .dv-box.dv-hl-self { box-shadow: 0 0 0 3px var(--accent); z-index: 7; }
+.dv-box.dv-search-box { box-shadow: 0 0 0 3px #ffab70; z-index: 9; }
+.dv-searchmark {
+  background: rgba(255, 171, 112, 0.28);
+  color: inherit;
+  border-radius: 2px;
+}
+.dv-searchmark.dv-searchmark-current {
+  background: rgba(255, 171, 112, 0.55);
+  outline: 1px solid #ffab70;
+}
 .dv-charmark {
   background: rgba(88, 166, 255, 0.35);
   color: inherit;

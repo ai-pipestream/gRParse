@@ -25,6 +25,10 @@ const furnitureToggle = document.getElementById("toggle-furniture");
 const readingOrderToggle = document.getElementById("toggle-reading-order");
 const confidenceToggle = document.getElementById("toggle-confidence");
 const confidenceLegend = document.getElementById("conf-legend");
+const searchInput = document.getElementById("search-input");
+const searchCount = document.getElementById("search-count");
+const searchPrev = document.getElementById("search-prev");
+const searchNext = document.getElementById("search-next");
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -323,6 +327,27 @@ function tableCellBoxes(data) {
   return boxes;
 }
 
+// Cell texts of a table, keyed the same way as the cell rectangles, so a
+// search hit inside a table knows which cell it landed in.
+function tableCellTexts(data) {
+  if (!data || typeof data !== "object") return [];
+  const cells = [];
+  const seen = new Set();
+  const push = (cell) => {
+    if (!cell || !cell.text) return;
+    const pos = `${Number(cell.startRowOffsetIdx) || 0}:${Number(cell.startColOffsetIdx) || 0}`;
+    if (seen.has(pos)) return;
+    seen.add(pos);
+    cells.push({ pos, text: cell.text });
+  };
+  for (const cell of data.tableCells || []) push(cell);
+  for (const row of data.grid || []) {
+    const rowCells = row && Array.isArray(row.cells) ? row.cells : (Array.isArray(row) ? row : []);
+    for (const cell of rowCells) push(cell);
+  }
+  return cells;
+}
+
 function indexDocument(doc) {
   const built = {
     doc,
@@ -333,6 +358,8 @@ function indexDocument(doc) {
     unpagedCollectors: [],
     walkOrder: [],
     pageSequences: new Map(),
+    // Lowercased once here; search never touches the document again.
+    searchEntries: [],
     // ref -> rendered elements, filled in as cards build. Hover and click
     // sync read this map instead of scanning the DOM.
     view: new Map(),
@@ -375,6 +402,12 @@ function indexDocument(doc) {
       record.collector = kind === "group" ? null : (collectorOf(record) || "base");
       if (record.collector) {
         built.collectorCounts.set(record.collector, (built.collectorCounts.get(record.collector) || 0) + 1);
+      }
+      if (text) built.searchEntries.push({ ref: record.ref, pos: null, lower: text.toLowerCase() });
+      if (kind === "table") {
+        for (const cell of tableCellTexts(node.data)) {
+          built.searchEntries.push({ ref: record.ref, pos: cell.pos, lower: cell.text.toLowerCase() });
+        }
       }
       built.items.push(record);
       built.byRef.set(record.ref, record);
@@ -921,6 +954,8 @@ function applyFilters() {
   for (const bucket of results.querySelectorAll(".dv-collector-bucket")) {
     bucket.classList.toggle("dv-bucket-off", !bucket.querySelector(".dv-item:not(.label-off):not(.collector-off)"));
   }
+  // Hidden items drop out of the match list rather than being navigated to.
+  if (searchQuery) runSearch();
 }
 
 function boxGeometry(bbox, size) {
@@ -1151,6 +1186,7 @@ function buildViewer(doc) {
   charMarks = [];
   hiddenLabels.clear();
   hiddenCollectors.clear();
+  clearSearch();
   renderInfo(doc);
   renderLegend();
 
@@ -1161,6 +1197,8 @@ function buildViewer(doc) {
       const card = entry.target;
       lazyObserver.unobserve(card);
       buildPageCardContent(card, Number(card.dataset.page));
+      // The card's content is new, so any active search has to mark it too.
+      if (searchQuery) paintSearchMarks();
     }
   }, { root: null, rootMargin: "900px 0px" });
 
@@ -1521,6 +1559,189 @@ results.addEventListener("click", (event) => {
 });
 
 // ---------------------------------------------------------------------------
+// Search over the prebuilt text index.
+// ---------------------------------------------------------------------------
+
+// Enough to navigate a long document without marking up thousands of nodes.
+const MAX_MATCHES = 1000;
+const SEARCH_DEBOUNCE_MS = 150;
+
+let searchQuery = "";
+let searchMatches = [];
+let searchCurrent = -1;
+let searchMarks = [];
+let searchTimer = null;
+let searchBoxes = [];
+
+function scrollElementIntoView(element) {
+  if (element && typeof element.scrollIntoView === "function") {
+    element.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+}
+
+function pageCard(pageNo) {
+  return results.querySelector(`.dv-page-card[data-page="${pageNo}"]`);
+}
+
+// Navigation can land on a page that has not rendered yet, so build it now
+// rather than waiting for the observer to catch up.
+function ensurePageBuilt(pageNo) {
+  const card = pageCard(pageNo);
+  if (!card || card.querySelector(".dv-page-visual")) return card;
+  if (lazyObserver) lazyObserver.unobserve(card);
+  buildPageCardContent(card, pageNo);
+  return card;
+}
+
+function contentElementsFor(match) {
+  const entry = model ? model.view.get(match.ref) : null;
+  if (!entry) return [];
+  if (match.pos === null) return entry.contents;
+  const cells = [];
+  for (const element of entry.contents) {
+    const cell = element.querySelector(`td[data-cellpos="${match.pos}"], th[data-cellpos="${match.pos}"]`);
+    if (cell) cells.push(cell);
+  }
+  return cells;
+}
+
+function clearSearchMarks() {
+  if (searchMarks.length > 0) unmark(searchMarks);
+  searchMarks = [];
+  for (const match of searchMatches) match.marks = [];
+}
+
+function paintSearchMarks() {
+  clearSearchMarks();
+  for (const match of searchMatches) {
+    for (const element of contentElementsFor(match)) {
+      match.marks.push(...markRange(element, match.start, match.end, "dv-searchmark"));
+    }
+    searchMarks.push(...match.marks);
+  }
+  highlightCurrent();
+}
+
+function highlightCurrent() {
+  for (const mark of searchMarks) mark.classList.remove("dv-searchmark-current");
+  for (const box of searchBoxes) box.classList.remove("dv-search-box");
+  searchBoxes = [];
+  const match = searchMatches[searchCurrent];
+  if (!match) return;
+  for (const mark of match.marks) mark.classList.add("dv-searchmark-current");
+  const entry = model.view.get(match.ref);
+  for (const box of (entry ? entry.boxes : [])) {
+    box.el.classList.add("dv-search-box");
+    searchBoxes.push(box.el);
+  }
+}
+
+function renderSearchCount() {
+  if (!searchQuery) {
+    searchCount.textContent = "";
+    return;
+  }
+  const total = searchMatches.length;
+  const noun = total === 1 ? "match" : "matches";
+  searchCount.textContent = searchCurrent >= 0
+    ? `${searchCurrent + 1}/${total} ${noun}`
+    : `${total} ${noun}`;
+}
+
+// Substring scan over the lowercased index. Filtered-out items never enter
+// the result list, so navigation cannot land on something invisible.
+function runSearch() {
+  searchCurrent = -1;
+  searchMatches = [];
+  if (model && searchQuery) {
+    for (const entry of model.searchEntries) {
+      const record = model.byRef.get(entry.ref);
+      if (!record || labelHidden(record) || collectorHidden(record)) continue;
+      const order = typeof record.walkIndex === "number" ? record.walkIndex : Number.MAX_SAFE_INTEGER;
+      let from = 0;
+      for (;;) {
+        const at = entry.lower.indexOf(searchQuery, from);
+        if (at < 0) break;
+        searchMatches.push({
+          ref: entry.ref,
+          pos: entry.pos,
+          start: at,
+          end: at + searchQuery.length,
+          order,
+          page: record.page,
+          marks: [],
+        });
+        from = at + searchQuery.length;
+        if (searchMatches.length >= MAX_MATCHES) break;
+      }
+      if (searchMatches.length >= MAX_MATCHES) break;
+    }
+    // Document order: body walk position first, then position within the item.
+    searchMatches.sort((a, b) => a.order - b.order || a.start - b.start);
+  }
+  paintSearchMarks();
+  renderSearchCount();
+}
+
+function stepSearch(delta) {
+  if (searchMatches.length === 0) return;
+  const next = searchCurrent < 0
+    ? (delta > 0 ? 0 : searchMatches.length - 1)
+    : (searchCurrent + delta + searchMatches.length) % searchMatches.length;
+  searchCurrent = next;
+  const match = searchMatches[next];
+  if (match.page) {
+    const card = ensurePageBuilt(match.page);
+    // A freshly built card carries none of the marks, so repaint them all.
+    if (card && match.marks.length === 0) paintSearchMarks();
+    scrollElementIntoView(card);
+  }
+  highlightCurrent();
+  const element = contentElementsFor(match)[0];
+  scrollElementIntoView(element);
+  renderSearchCount();
+}
+
+function setSearchQuery(value) {
+  searchQuery = value.trim().toLowerCase();
+  runSearch();
+}
+
+function clearSearch() {
+  searchInput.value = "";
+  setSearchQuery("");
+}
+
+searchInput.addEventListener("input", () => {
+  if (searchTimer) clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    searchTimer = null;
+    setSearchQuery(searchInput.value);
+  }, SEARCH_DEBOUNCE_MS);
+});
+
+searchInput.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    clearSearch();
+    return;
+  }
+  const forward = event.key === "Enter" ? !event.shiftKey : event.key === "ArrowDown";
+  if (event.key !== "Enter" && event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+  event.preventDefault();
+  // Typing then hitting enter straight away should not lose the last keystroke.
+  if (searchTimer) {
+    clearTimeout(searchTimer);
+    searchTimer = null;
+    setSearchQuery(searchInput.value);
+  }
+  stepSearch(forward ? 1 : -1);
+});
+
+searchPrev.addEventListener("click", () => stepSearch(-1));
+searchNext.addEventListener("click", () => stepSearch(1));
+
+// ---------------------------------------------------------------------------
 // Upload plumbing: NDJSON relay from /api/document/parse.
 // ---------------------------------------------------------------------------
 
@@ -1536,6 +1757,7 @@ function contentTypeFor(name) {
 }
 
 function resetRun() {
+  clearSearch();
   results.textContent = "";
   results.classList.remove("dv-root");
   infoBar.hidden = true;
