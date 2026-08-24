@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -84,6 +85,53 @@ def _drop_unset_source_entries(msg) -> int:
         else:
             dropped += _drop_unset_source_entries(value)
     return dropped
+
+
+def _conforming_custom_name(key: str) -> bool:
+    """True when the key already satisfies the namespace__field_name rule."""
+    parts = key.split("__", 1)
+    return len(parts) == 2 and bool(parts[0]) and bool(parts[1])
+
+
+def _normalize_custom_field_names(msg) -> int:
+    """Rekey custom meta fields into the namespace__field_name format.
+
+    Fleet producers use free-form names ("collector_warnings:pdf",
+    "epub.version", "bookmark:intro"); the upstream dialect requires a
+    namespace prefix separated by a double underscore, so non-conforming
+    keys move under the "pipestream" namespace with every character outside
+    [A-Za-z0-9_] folded to an underscore. Returns the number of renames.
+    """
+    renamed = 0
+    for field, value in msg.ListFields():
+        if field.type != field.TYPE_MESSAGE:
+            continue
+        repeated = getattr(field, "is_repeated", None)
+        if repeated is None:
+            repeated = field.label == field.LABEL_REPEATED
+        if repeated and field.message_type.GetOptions().map_entry:
+            value_field = field.message_type.fields_by_name["value"]
+            if field.name == "custom_fields":
+                for key in [k for k in value if not _conforming_custom_name(k)]:
+                    base = "pipestream__" + re.sub(r"[^A-Za-z0-9_]", "_", key)
+                    new_key = base
+                    suffix = 2
+                    while new_key in value:
+                        new_key = f"{base}_{suffix}"
+                        suffix += 1
+                    value[new_key].CopyFrom(value[key])
+                    del value[key]
+                    renamed += 1
+            elif value_field.type == value_field.TYPE_MESSAGE:
+                for entry in value.values():
+                    renamed += _normalize_custom_field_names(entry)
+            continue
+        if repeated:
+            for entry in value:
+                renamed += _normalize_custom_field_names(entry)
+        else:
+            renamed += _normalize_custom_field_names(value)
+    return renamed
 
 
 def _parse_input(data: bytes, as_json: bool) -> pb2.DoclingDocument:
@@ -149,6 +197,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         msg = _parse_input(data, as_json=args.json)
         dropped = _drop_unset_source_entries(msg)
+        renamed = _normalize_custom_field_names(msg)
 
         # Identity rewrite: the service wire header carries a
         # service-internal schema_name; the canonical output declares the
@@ -171,6 +220,12 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"note: dropped {dropped} source entr"
             f"{'y' if dropped == 1 else 'ies'} with no representable arm",
+            file=sys.stderr,
+        )
+    if renamed:
+        print(
+            f"note: renamed {renamed} custom meta field"
+            f"{'' if renamed == 1 else 's'} into the pipestream namespace",
             file=sys.stderr,
         )
 
