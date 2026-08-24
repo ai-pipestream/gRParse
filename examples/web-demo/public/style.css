@@ -525,6 +525,19 @@ h1 { margin: 0; font-size: 26px; letter-spacing: 0.5px; }
   background: rgba(110, 118, 129, 0.12) !important;
   border-style: dashed;
 }
+.dv-cell-layer { position: absolute; inset: 0; display: none; pointer-events: none; }
+.dv-box.dv-cells-on { z-index: 8; }
+.dv-box.dv-cells-on .dv-cell-layer { display: block; }
+.dv-cell {
+  position: absolute;
+  border: 1px dashed rgba(240, 136, 62, 0.75);
+  border-radius: 1px;
+}
+.dv-cell.dv-cell-hot {
+  border-style: solid;
+  border-color: var(--accent);
+  background: rgba(88, 166, 255, 0.22);
+}
 .dv-box.dv-hl { box-shadow: 0 0 0 2px var(--accent); z-index: 5; }
 .dv-box.dv-hl-self { box-shadow: 0 0 0 3px var(--accent); z-index: 7; }
 .dv-charmark {

@@ -301,6 +301,28 @@ function computeWalkOrder(doc, built) {
   return order;
 }
 
+// Cell rectangles for a table, keyed by the anchor position the rendered
+// cell carries, so a hovered td can find its own box. Cells without a bbox
+// (the producer never located them) simply have no entry.
+function tableCellBoxes(data) {
+  if (!data || typeof data !== "object") return [];
+  const boxes = [];
+  const seen = new Set();
+  const push = (cell) => {
+    if (!cell || !cell.bbox) return;
+    const pos = `${Number(cell.startRowOffsetIdx) || 0}:${Number(cell.startColOffsetIdx) || 0}`;
+    if (seen.has(pos)) return;
+    seen.add(pos);
+    boxes.push({ pos, bbox: cell.bbox });
+  };
+  for (const cell of data.tableCells || []) push(cell);
+  for (const row of data.grid || []) {
+    const cells = row && Array.isArray(row.cells) ? row.cells : (Array.isArray(row) ? row : []);
+    for (const cell of cells) push(cell);
+  }
+  return boxes;
+}
+
 function indexDocument(doc) {
   const built = {
     doc,
@@ -343,6 +365,7 @@ function indexDocument(doc) {
         text,
         spans: kind === "group" ? null : computeSpans(base, text),
         confidence: null,
+        cellBoxes: kind === "table" ? tableCellBoxes(node.data) : null,
         page: prov.length > 0 ? prov[0].pageNo : null,
         layer: layerOf(base.contentLayer),
       };
@@ -632,6 +655,8 @@ function buildTable(record, ctx) {
       if (rowSpan > 1) td.rowSpan = rowSpan;
       if (colSpan > 1) td.colSpan = colSpan;
       if (cell.rowSection) td.classList.add("dv-row-section");
+      // The anchor position pairs this cell with its rectangle on the page.
+      td.dataset.cellpos = `${startRow}:${startCol}`;
       td.textContent = cell.text || "";
       tr.appendChild(td);
       emitted += 1;
@@ -647,6 +672,7 @@ function buildTable(record, ctx) {
       for (const cell of row) {
         if (!cell) continue;
         const td = el(cell.columnHeader || cell.rowHeader ? "th" : "td");
+        td.dataset.cellpos = `${Number(cell.startRowOffsetIdx) || 0}:${Number(cell.startColOffsetIdx) || 0}`;
         td.textContent = cell.text || "";
         tr.appendChild(td);
       }
@@ -958,7 +984,7 @@ function buildBoxLayer(pageNo, size) {
     if (!inBodyLayer(record)) box.classList.add("dv-furn");
     if (labelHidden(record)) box.classList.add("label-off");
     if (collectorHidden(record)) box.classList.add("collector-off");
-    viewEntryFor(record.ref).boxes.push({ el: box, provIndex: prov.index });
+    viewEntryFor(record.ref).boxes.push({ el: box, provIndex: prov.index, geometry, size });
     layer.appendChild(box);
   }
   return layer;
@@ -1120,6 +1146,8 @@ function buildViewer(doc) {
   model = indexDocument(doc);
   hoveredRef = null;
   hoveredProv = null;
+  hoveredTableRef = null;
+  hotCell = null;
   charMarks = [];
   hiddenLabels.clear();
   hiddenCollectors.clear();
@@ -1361,6 +1389,86 @@ function applyCharMarks(ref, provIndex) {
 // Every box the item owns lights up, so an item broken into per-line
 // provenance shows all of its lines at once; the box actually under the
 // pointer, if any, gets the stronger outline.
+// ---------------------------------------------------------------------------
+// Table cell rectangles, drawn inside the table's own box on first hover.
+// ---------------------------------------------------------------------------
+
+let hoveredTableRef = null;
+let hotCell = null;
+
+function buildCellLayer(record, boxInfo) {
+  const layer = el("div", "dv-cell-layer");
+  const outer = boxInfo.geometry;
+  if (outer.width > 0 && outer.height > 0) {
+    for (const cell of record.cellBoxes) {
+      const inner = boxGeometry(cell.bbox, boxInfo.size);
+      const left = ((inner.left - outer.left) / outer.width) * 100;
+      const top = ((inner.top - outer.top) / outer.height) * 100;
+      const width = (inner.width / outer.width) * 100;
+      const height = (inner.height / outer.height) * 100;
+      if (width <= 0 || height <= 0) continue;
+      const sub = el("div", "dv-cell");
+      sub.style.left = `${left}%`;
+      sub.style.top = `${top}%`;
+      sub.style.width = `${width}%`;
+      sub.style.height = `${height}%`;
+      sub.dataset.cellpos = cell.pos;
+      layer.appendChild(sub);
+    }
+  }
+  boxInfo.el.appendChild(layer);
+  return layer;
+}
+
+// Built once per table box and kept; later hovers only flip classes.
+function showTableCells(ref) {
+  const record = model && model.byRef.get(ref);
+  const entry = record && model.view.get(ref);
+  if (!record || !entry || !record.cellBoxes || record.cellBoxes.length === 0) return;
+  for (const boxInfo of entry.boxes) {
+    if (!boxInfo.cellLayer) boxInfo.cellLayer = buildCellLayer(record, boxInfo);
+    boxInfo.el.classList.add("dv-cells-on");
+  }
+}
+
+function hideTableCells(ref) {
+  const entry = ref && model ? model.view.get(ref) : null;
+  if (!entry) return;
+  for (const boxInfo of entry.boxes) boxInfo.el.classList.remove("dv-cells-on");
+}
+
+function setHotCell(ref, pos) {
+  if (hotCell) {
+    hotCell.classList.remove("dv-cell-hot");
+    hotCell = null;
+  }
+  const entry = ref && pos && model ? model.view.get(ref) : null;
+  if (!entry) return;
+  for (const boxInfo of entry.boxes) {
+    const sub = boxInfo.cellLayer && boxInfo.cellLayer.querySelector(`[data-cellpos="${pos}"]`);
+    if (sub) {
+      sub.classList.add("dv-cell-hot");
+      hotCell = sub;
+      return;
+    }
+  }
+}
+
+function syncTableCells(target) {
+  const wrap = target ? target.closest(".dv-table-wrap[data-ref]") : null;
+  const ref = wrap ? wrap.dataset.ref : null;
+  if (ref !== hoveredTableRef) {
+    hideTableCells(hoveredTableRef);
+    setHotCell(null, null);
+    hoveredTableRef = ref;
+    if (ref) showTableCells(ref);
+  }
+  if (!ref) return;
+  const cell = target.closest("td[data-cellpos], th[data-cellpos]");
+  const pos = cell ? cell.dataset.cellpos : null;
+  if (!hotCell || !cell || hotCell.dataset.cellpos !== pos) setHotCell(ref, pos);
+}
+
 function setHighlight(ref, on, provIndex) {
   const entry = ref && model ? model.view.get(ref) : null;
   if (!entry) return;
@@ -1372,6 +1480,7 @@ function setHighlight(ref, on, provIndex) {
 }
 
 results.addEventListener("mouseover", (event) => {
+  syncTableCells(event.target);
   const target = event.target.closest("[data-ref]");
   const ref = target ? target.dataset.ref : null;
   const provAttr = target && target.dataset.prov;
@@ -1388,6 +1497,9 @@ results.addEventListener("mouseover", (event) => {
 results.addEventListener("mouseleave", () => {
   setHighlight(hoveredRef, false, hoveredProv);
   clearCharMarks();
+  hideTableCells(hoveredTableRef);
+  setHotCell(null, null);
+  hoveredTableRef = null;
   hoveredRef = null;
   hoveredProv = null;
 });
@@ -1438,6 +1550,8 @@ function resetRun() {
   model = null;
   hoveredRef = null;
   hoveredProv = null;
+  hoveredTableRef = null;
+  hotCell = null;
   charMarks = [];
   startedAt = performance.now();
   clock = setInterval(() => {
