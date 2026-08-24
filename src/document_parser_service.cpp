@@ -632,6 +632,10 @@ grpc::Status DocumentParserService::ConvertSource(
     if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_JSON)) {
       document_response->mutable_exports()->set_json(render_json(*document));
     }
+    if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_CANONICAL_JSON)) {
+      document_response->mutable_exports()->set_canonical_json(
+          render_canonical_json(*document));
+    }
     if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_DOCTAGS)) {
       document_response->mutable_exports()->set_doctags(render_doctags(*document));
     }

@@ -47,6 +47,10 @@ enum OutputFormat {
   OUTPUT_FORMAT_YAML = 7;
   OUTPUT_FORMAT_VTT = 8;
   OUTPUT_FORMAT_DOCLANG = 9;
+  // The upstream-canonical JSON dialect of the document (flat
+  // label-discriminated items, "$ref" references, canonical enum strings),
+  // as opposed to OUTPUT_FORMAT_JSON's protobuf-JSON of the wire schema.
+  OUTPUT_FORMAT_CANONICAL_JSON = 10;
 }
 
 // OCR engine selection.
@@ -529,6 +533,8 @@ message DocumentExports {
   optional string html_split_page = 8;
   // YAML rendering of the same structure as `json`.
   optional string yaml = 9;
+  // The upstream-canonical JSON dialect (see OUTPUT_FORMAT_CANONICAL_JSON).
+  optional string canonical_json = 10;
 }
 
 // DocumentResponse contains the converted document and optional exports.

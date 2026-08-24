@@ -440,6 +440,8 @@ add_library(grparse_core STATIC
   src/document_merge.cpp
   src/document_render.cpp
   src/render/renderer_base.cpp
+  src/render/canonical_json_writer.cpp
+  src/render/canonical_json_renderer.cpp
   src/render/markdown_renderer.cpp
   src/render/html_renderer.cpp
   src/render/doctags_renderer.cpp
@@ -476,6 +478,7 @@ if(BUILD_TESTING)
   set(GRPARSE_TESTS
     barcode-decoder-test
     base64-test
+    canonical-json-test
     collector-coordinator-test
     docling-map-test
     document-assembly-test
@@ -505,6 +508,11 @@ if(BUILD_TESTING)
     target_link_libraries(${test_name} PRIVATE grparse_core grparse_flags)
     add_test(NAME ${test_name} COMMAND ${test_name})
   endforeach()
+  # Development utility for the canonical JSON validation harness
+  # (scripts/validate_canonical_json.py): Document in, canonical JSON out.
+  # Built with the tests, never installed or staged into images.
+  add_executable(grparse-canonical-json-tool tests/canonical_json_tool.cpp)
+  target_link_libraries(grparse-canonical-json-tool PRIVATE grparse_core grparse_flags)
   # The umbrella target is what image builds compile.  Building it (instead of
   # naming test binaries in each Dockerfile) means a test added here can never
   # be silently absent from an image's ctest run ("Not Run" failures).

@@ -37,6 +37,22 @@ std::string render_html(const ai::pipestream::document::v1::Document& document);
 // Throws std::runtime_error if protobuf reports a conversion failure.
 std::string render_json(const ai::pipestream::document::v1::Document& document);
 
+// Renders the upstream-canonical JSON dialect of the document: the proto is
+// walked directly into the flat, label-discriminated object model that
+// dialect's own serializer produces (model-declaration key order, {"$ref"}
+// references, [start, end] charspans, enum tags as canonical strings,
+// exclude-none and empty-list suppression semantics, two-space indent,
+// ASCII-escaped strings). The identity header always declares the dialect's
+// schema name and version; collector attribution sources are omitted, and
+// non-conforming custom meta field names move under the "pipestream"
+// namespace. The dialect's load-time normalizations are applied first on a
+// private copy: provenance boxes clamp to their page, and list items not
+// parented to a list group move into a synthesized one (re-appended at the
+// end of the text arena with every reference renumbered). Throws
+// std::runtime_error on a texts entry whose variant is unset (dropping it
+// would corrupt arena references).
+std::string render_canonical_json(const ai::pipestream::document::v1::Document& document);
+
 // Renders docling's DocTags serialization: a "<doctag>" wrapper holding one
 // line per body item, label-named tags ("<title>", "<section_header_level_N>",
 // "<text>"...), "<unordered_list>"/"<ordered_list>" with "<list_item>"
