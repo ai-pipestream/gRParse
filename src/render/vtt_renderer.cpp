@@ -95,7 +95,7 @@ class VttRenderer : RendererBase {
 
   void handle_text(const docv1::BaseTextItem& item) {
     const auto* base = text_base(item);
-    if (base == nullptr || furniture(base->content_layer())) return;
+    if (base == nullptr || excluded_layer(base->content_layer())) return;
     if (item.item_case() == docv1::BaseTextItem::kTitle ||
         base->label() == docv1::DOC_ITEM_LABEL_TITLE) {
       if (!base->text().empty()) title_ = trimmed(base->text());

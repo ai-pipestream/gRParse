@@ -203,13 +203,13 @@ class HtmlRenderer : RendererBase {
   void render_text(const docv1::BaseTextItem& item) {
     if (item.item_case() == docv1::BaseTextItem::kCode) {
       const auto& code = item.code();
-      if (furniture(code.content_layer())) return;
+      if (excluded_layer(code.content_layer())) return;
       note_page(code.prov());
       add_element("<pre><code>" + escape_html_text(code.text()) + "</code></pre>");
       return;
     }
     const auto* base = text_base(item);
-    if (base == nullptr || furniture(base->content_layer())) return;
+    if (base == nullptr || excluded_layer(base->content_layer())) return;
     note_page(base->prov());
     switch (item.item_case()) {
       case docv1::BaseTextItem::kTitle:
@@ -245,7 +245,7 @@ class HtmlRenderer : RendererBase {
   }
 
   void render_group(const docv1::GroupItem& group) {
-    if (furniture(group.content_layer())) return;
+    if (excluded_layer(group.content_layer())) return;
     if (group.label() == docv1::GROUP_LABEL_LIST ||
         group.label() == docv1::GROUP_LABEL_ORDERED_LIST) {
       note_group_page(group);
@@ -298,7 +298,7 @@ class HtmlRenderer : RendererBase {
       if (ref.kind != ArenaRef::kText || ref.index >= document_.texts_size()) continue;
       if (!consume(child.ref())) continue;
       const auto* base = text_base(document_.texts(ref.index));
-      if (base == nullptr || furniture(base->content_layer())) continue;
+      if (base == nullptr || excluded_layer(base->content_layer())) continue;
       out.append("<li>" + paragraph_text(base->text()) + "</li>");
     }
     out.append("</" + tag + ">");
@@ -306,7 +306,7 @@ class HtmlRenderer : RendererBase {
   }
 
   void render_table(const docv1::TableItem& table) {
-    if (furniture(table.content_layer())) return;
+    if (excluded_layer(table.content_layer())) return;
     note_page(table.prov());
     const std::vector<std::string> captions = caption_texts(table.captions());
     const auto grid = table_grid(table.data());
@@ -360,7 +360,7 @@ class HtmlRenderer : RendererBase {
   }
 
   void render_picture(const docv1::PictureItem& picture) {
-    if (furniture(picture.content_layer())) return;
+    if (excluded_layer(picture.content_layer())) return;
     note_page(picture.prov());
     const std::vector<std::string> captions = caption_texts(picture.captions());
     const std::string& uri = picture.has_image() ? picture.image().uri() : std::string();

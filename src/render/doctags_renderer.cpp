@@ -171,13 +171,13 @@ class DocTagsRenderer : RendererBase {
   std::string render_text(const docv1::BaseTextItem& item) {
     if (item.item_case() == docv1::BaseTextItem::kCode) {
       const auto& code = item.code();
-      if (furniture(code.content_layer())) return std::string();
+      if (excluded_layer(code.content_layer())) return std::string();
       // Code keeps its whitespace; the language token follows the location.
       return wrap("code", location_tokens(code.prov()) + "<_" +
                               doctags_code_language(code) + "_>" + code.text());
     }
     const auto* base = text_base(item);
-    if (base == nullptr || furniture(base->content_layer())) return std::string();
+    if (base == nullptr || excluded_layer(base->content_layer())) return std::string();
     const std::string body = location_tokens(base->prov()) + trimmed(base->text());
     switch (item.item_case()) {
       case docv1::BaseTextItem::kTitle: return wrap("title", body);
@@ -203,7 +203,7 @@ class DocTagsRenderer : RendererBase {
   }
 
   std::string render_group(const docv1::GroupItem& group) {
-    if (furniture(group.content_layer())) return std::string();
+    if (excluded_layer(group.content_layer())) return std::string();
     if (group.label() == docv1::GROUP_LABEL_LIST ||
         group.label() == docv1::GROUP_LABEL_ORDERED_LIST) {
       return render_list(group);
@@ -243,7 +243,7 @@ class DocTagsRenderer : RendererBase {
         const auto& item = document_.texts(ref.index);
         if (item.item_case() == docv1::BaseTextItem::kListItem) {
           const auto* base = text_base(item);
-          if (base == nullptr || furniture(base->content_layer())) continue;
+          if (base == nullptr || excluded_layer(base->content_layer())) continue;
           body = location_tokens(base->prov()) + trimmed(base->text());
         } else {
           body = render_text(item);
@@ -348,7 +348,7 @@ class DocTagsRenderer : RendererBase {
   }
 
   std::string render_table(const docv1::TableItem& table) {
-    if (furniture(table.content_layer())) return std::string();
+    if (excluded_layer(table.content_layer())) return std::string();
     const std::string body =
         location_tokens(table.prov()) + otsl_cells(table.data()) +
         caption_block(table.captions());
@@ -356,7 +356,7 @@ class DocTagsRenderer : RendererBase {
   }
 
   std::string render_picture(const docv1::PictureItem& picture) {
-    if (furniture(picture.content_layer())) return std::string();
+    if (excluded_layer(picture.content_layer())) return std::string();
     std::string body = location_tokens(picture.prov());
 
     // Classification: the meta field wins, legacy annotations fall back.
@@ -417,7 +417,7 @@ class DocTagsRenderer : RendererBase {
   }
 
   std::string render_key_value(const docv1::KeyValueItem& item) {
-    if (furniture(item.content_layer())) return std::string();
+    if (excluded_layer(item.content_layer())) return std::string();
     std::string body = location_tokens(item.prov());
     for (const auto& cell : item.graph().cells()) {
       std::string cell_text = trimmed(cell.text());

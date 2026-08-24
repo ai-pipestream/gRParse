@@ -67,8 +67,10 @@ std::string escape_html_attribute(const std::string& text);
 // Both renderers walk the body tree the same way: resolve each child
 // reference, render the item, and record caption items when a table or
 // figure claims them so a caption linked into the tree twice never renders
-// twice. Furniture-layer items are excluded, matching docling's default of
-// exporting the body content layer only.
+// twice. Only body-layer items render: an unspecified layer is the producer
+// default and counts as body, while every other layer (furniture, notes,
+// invisible, ...) is one the producer chose deliberately and is excluded
+// from the exports.
 class RendererBase {
  protected:
   explicit RendererBase(const ai::pipestream::document::v1::Document& document)
@@ -79,8 +81,11 @@ class RendererBase {
 
   bool consume(const std::string& ref) { return consumed_.insert(ref).second; }
 
-  bool furniture(ai::pipestream::document::v1::ContentLayer layer) const {
-    return layer == ai::pipestream::document::v1::CONTENT_LAYER_FURNITURE;
+  // True for any content layer the exports leave out: everything except the
+  // body layer and the unspecified default.
+  bool excluded_layer(ai::pipestream::document::v1::ContentLayer layer) const {
+    return layer != ai::pipestream::document::v1::CONTENT_LAYER_BODY &&
+           layer != ai::pipestream::document::v1::CONTENT_LAYER_UNSPECIFIED;
   }
 
   // The caption texts a table or figure references, in reference order.

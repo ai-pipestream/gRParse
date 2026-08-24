@@ -104,12 +104,12 @@ class MarkdownRenderer : RendererBase {
   void render_text(const docv1::BaseTextItem& item) {
     if (item.item_case() == docv1::BaseTextItem::kCode) {
       const auto& code = item.code();
-      if (furniture(code.content_layer())) return;
+      if (excluded_layer(code.content_layer())) return;
       add_block("```" + code_fence_language(code) + "\n" + code.text() + "\n```");
       return;
     }
     const auto* base = text_base(item);
-    if (base == nullptr || furniture(base->content_layer())) return;
+    if (base == nullptr || excluded_layer(base->content_layer())) return;
     switch (item.item_case()) {
       case docv1::BaseTextItem::kTitle:
         add_block("# " + base->text());
@@ -147,7 +147,7 @@ class MarkdownRenderer : RendererBase {
   }
 
   void render_group(const docv1::GroupItem& group) {
-    if (furniture(group.content_layer())) return;
+    if (excluded_layer(group.content_layer())) return;
     if (group.label() == docv1::GROUP_LABEL_LIST ||
         group.label() == docv1::GROUP_LABEL_ORDERED_LIST) {
       std::string list;
@@ -207,7 +207,7 @@ class MarkdownRenderer : RendererBase {
       if (ref.kind != ArenaRef::kText || ref.index >= document_.texts_size()) continue;
       if (!consume(child.ref())) continue;
       const auto* base = text_base(document_.texts(ref.index));
-      if (base == nullptr || furniture(base->content_layer())) continue;
+      if (base == nullptr || excluded_layer(base->content_layer())) continue;
       ++position;
       if (!out->empty()) out->push_back('\n');
       out->append(indent);
@@ -217,7 +217,7 @@ class MarkdownRenderer : RendererBase {
   }
 
   void render_table(const docv1::TableItem& table) {
-    if (furniture(table.content_layer())) return;
+    if (excluded_layer(table.content_layer())) return;
     for (const auto& caption : caption_texts(table.captions())) {
       add_block("*" + caption + "*");
     }
@@ -247,7 +247,7 @@ class MarkdownRenderer : RendererBase {
   }
 
   void render_picture(const docv1::PictureItem& picture) {
-    if (furniture(picture.content_layer())) return;
+    if (excluded_layer(picture.content_layer())) return;
     const std::vector<std::string> captions = caption_texts(picture.captions());
     for (const auto& caption : captions) add_block("*" + caption + "*");
     const std::string& uri = picture.has_image() ? picture.image().uri() : std::string();

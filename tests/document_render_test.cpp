@@ -371,6 +371,61 @@ void verify_html_renders_structure_and_escapes() {
   require_contains(html, "<div class=\"formula\">x &lt; y</div>", "escaped formula block");
 }
 
+// Only the body layer (and the unspecified default) may render: notes and
+// invisible items are deliberate non-default layers and must stay out of
+// every export.
+void verify_non_body_layers_are_excluded() {
+  docv1::Document document = base_document("layers.pdf");
+  add_text(&document, "#/body", docv1::BaseTextItem::kText,
+           docv1::DOC_ITEM_LABEL_TEXT, "visible body");
+
+  // A speaker-notes text item on the notes layer.
+  add_text(&document, "#/body", docv1::BaseTextItem::kText,
+           docv1::DOC_ITEM_LABEL_TEXT, "speaker notes");
+  document.mutable_texts(document.texts_size() - 1)
+      ->mutable_text()
+      ->mutable_base()
+      ->set_content_layer(docv1::CONTENT_LAYER_NOTES);
+
+  // A hidden-sheet group on the invisible layer, holding a text child.
+  const std::string sheet =
+      add_group(&document, "#/body", docv1::GROUP_LABEL_SHEET);
+  document.mutable_groups(document.groups_size() - 1)
+      ->set_content_layer(docv1::CONTENT_LAYER_INVISIBLE);
+  add_text(&document, sheet, docv1::BaseTextItem::kText,
+           docv1::DOC_ITEM_LABEL_TEXT, "hidden cell");
+  document.mutable_texts(document.texts_size() - 1)
+      ->mutable_text()
+      ->mutable_base()
+      ->set_content_layer(docv1::CONTENT_LAYER_INVISIBLE);
+
+  // An item left on the unspecified layer renders like body content.
+  add_text(&document, "#/body", docv1::BaseTextItem::kText,
+           docv1::DOC_ITEM_LABEL_TEXT, "default layer");
+  document.mutable_texts(document.texts_size() - 1)
+      ->mutable_text()
+      ->mutable_base()
+      ->set_content_layer(docv1::CONTENT_LAYER_UNSPECIFIED);
+
+  const std::string markdown = grparse::render_markdown(document);
+  const std::string html = grparse::render_html(document);
+  const std::string doctags = grparse::render_doctags(document);
+  const std::string doclang = grparse::render_doclang(document);
+  for (const auto& [name, rendered] :
+       {std::pair<std::string, const std::string&>{"markdown", markdown},
+        {"html", html},
+        {"doctags", doctags},
+        {"doclang", doclang}}) {
+    require_contains(rendered, "visible body", name + " keeps body items");
+    require_contains(rendered, "default layer",
+                     name + " treats the unspecified layer as body");
+    require(!rendered.contains("speaker notes"),
+            name + " must exclude notes-layer items:\n" + rendered);
+    require(!rendered.contains("hidden cell"),
+            name + " must exclude invisible-layer items:\n" + rendered);
+  }
+}
+
 void verify_captions_render_once() {
   // A caption that is both claimed by its table and linked under the body
   // must render with the table only, never as a second paragraph.
@@ -737,6 +792,7 @@ int main() {
     verify_markdown_reconstructs_grid_from_flat_cells();
     verify_markdown_multiline_cells_stay_single_line();
     verify_html_renders_structure_and_escapes();
+    verify_non_body_layers_are_excluded();
     verify_captions_render_once();
     verify_doctags_renders_every_item_type();
     verify_doctags_otsl_spans_and_locations();

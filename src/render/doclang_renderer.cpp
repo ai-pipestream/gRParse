@@ -93,7 +93,7 @@ class DoclangRenderer : RendererBase {
   void render_text(const docv1::BaseTextItem& item, int depth) {
     if (item.item_case() == docv1::BaseTextItem::kCode) {
       const auto& code = item.code();
-      if (furniture(code.content_layer())) return;
+      if (excluded_layer(code.content_layer())) return;
       const std::string language = code_fence_language(code);
       const std::string attributes =
           language.empty() ? std::string()
@@ -102,7 +102,7 @@ class DoclangRenderer : RendererBase {
       return;
     }
     const auto* base = text_base(item);
-    if (base == nullptr || furniture(base->content_layer())) return;
+    if (base == nullptr || excluded_layer(base->content_layer())) return;
     switch (item.item_case()) {
       case docv1::BaseTextItem::kTitle:
         line(depth, element("title", "", base->text()));
@@ -139,7 +139,7 @@ class DoclangRenderer : RendererBase {
   }
 
   void render_group(const docv1::GroupItem& group, int depth) {
-    if (furniture(group.content_layer())) return;
+    if (excluded_layer(group.content_layer())) return;
     if (group.label() == docv1::GROUP_LABEL_LIST ||
         group.label() == docv1::GROUP_LABEL_ORDERED_LIST) {
       render_list(group, depth);
@@ -166,7 +166,7 @@ class DoclangRenderer : RendererBase {
       if (ref.kind != ArenaRef::kText || ref.index >= document_.texts_size()) continue;
       if (!consume(child.ref())) continue;
       const auto* base = text_base(document_.texts(ref.index));
-      if (base == nullptr || furniture(base->content_layer())) continue;
+      if (base == nullptr || excluded_layer(base->content_layer())) continue;
       ++ordinal;
       const std::string attributes =
           ordered ? " ordinal=\"" + std::to_string(ordinal) + "\"" : std::string();
@@ -195,7 +195,7 @@ class DoclangRenderer : RendererBase {
   }
 
   void render_table(const docv1::TableItem& table, int depth) {
-    if (furniture(table.content_layer())) return;
+    if (excluded_layer(table.content_layer())) return;
     render_captions(table.captions(), depth);
     const auto grid = table_grid(table.data());
     if (grid.empty()) return;
@@ -232,7 +232,7 @@ class DoclangRenderer : RendererBase {
   }
 
   void render_picture(const docv1::PictureItem& picture, int depth) {
-    if (furniture(picture.content_layer())) return;
+    if (excluded_layer(picture.content_layer())) return;
     render_captions(picture.captions(), depth);
     const std::string& uri = picture.has_image() ? picture.image().uri() : std::string();
     if (uri.empty()) {
