@@ -463,6 +463,19 @@ NodeFields group_fields(docv1::GroupItem* group) {
   return out;
 }
 
+const docv1::TextItemBase* const_text_base(const docv1::BaseTextItem& text) {
+  switch (text.item_case()) {
+    case docv1::BaseTextItem::kTitle: return &text.title().base();
+    case docv1::BaseTextItem::kSectionHeader: return &text.section_header().base();
+    case docv1::BaseTextItem::kFieldHeading: return &text.field_heading().base();
+    case docv1::BaseTextItem::kFieldValue: return &text.field_value().base();
+    case docv1::BaseTextItem::kListItem: return &text.list_item().base();
+    case docv1::BaseTextItem::kFormula: return &text.formula().base();
+    case docv1::BaseTextItem::kText: return &text.text().base();
+    default: return nullptr;  // kCode inlines its base; unset has none
+  }
+}
+
 docv1::TextItemBase* mutable_text_base(docv1::BaseTextItem* text) {
   switch (text->item_case()) {
     case docv1::BaseTextItem::kTitle: return text->mutable_title()->mutable_base();
@@ -545,12 +558,117 @@ bool is_list_item_entry(const docv1::BaseTextItem& text) {
          text.text().base().label() == docv1::DOC_ITEM_LABEL_LIST_ITEM;
 }
 
-bool is_list_group_ref(docv1::Document* doc, std::string_view ref) {
+bool is_list_group_ref(const docv1::Document* doc, std::string_view ref) {
   if (ref == "#/body") return doc->body().label() == docv1::GROUP_LABEL_LIST;
   if (ref == "#/furniture") return doc->furniture().label() == docv1::GROUP_LABEL_LIST;
   const RefParts parts = parse_ref_parts(ref);
   return parts.arena == "groups" && parts.index < doc->groups_size() &&
          doc->groups(parts.index).label() == docv1::GROUP_LABEL_LIST;
+}
+
+// ---------------------------------------------------------------------------
+// Normalization detection. The render path copies the document only when one
+// of the two load-time normalizations would actually change it; these
+// predicates mirror clamp_document and the run collector CONSERVATIVELY. A
+// false positive only costs the defensive copy; a false negative would skip
+// a required normalization, so every approximation errs toward true. All
+// reads are const, which keeps the zero-copy path safe for concurrent
+// renders of one shared document (the emitter itself never mutates).
+// ---------------------------------------------------------------------------
+
+bool bbox_out_of_bounds(const docv1::BoundingBox& bbox, const docv1::Size& page) {
+  return bbox.l() != clamp_coordinate(bbox.l(), page.width()) ||
+         bbox.r() != clamp_coordinate(bbox.r(), page.width()) ||
+         bbox.t() != clamp_coordinate(bbox.t(), page.height()) ||
+         bbox.b() != clamp_coordinate(bbox.b(), page.height());
+}
+
+bool prov_list_needs_clamping(
+    const docv1::Document& doc,
+    const google::protobuf::RepeatedPtrField<docv1::ProvenanceItem>& provs) {
+  for (const auto& prov : provs) {
+    const auto page = doc.pages().find(prov.page_no());
+    if (page != doc.pages().end() &&
+        bbox_out_of_bounds(prov.bbox(), page->second.size())) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool needs_clamping(const docv1::Document& doc) {
+  for (const auto& text : doc.texts()) {
+    const google::protobuf::RepeatedPtrField<docv1::ProvenanceItem>* provs = nullptr;
+    if (text.item_case() == docv1::BaseTextItem::kCode) {
+      provs = &text.code().prov();
+    } else if (const auto* base = const_text_base(text)) {
+      provs = &base->prov();
+    }
+    if (provs != nullptr && prov_list_needs_clamping(doc, *provs)) return true;
+  }
+  for (const auto& picture : doc.pictures()) {
+    if (prov_list_needs_clamping(doc, picture.prov())) return true;
+  }
+  for (const auto& table : doc.tables()) {
+    if (prov_list_needs_clamping(doc, table.prov())) return true;
+    std::optional<std::int32_t> page_no;
+    bool single_page = !table.prov().empty();
+    for (const auto& prov : table.prov()) {
+      if (page_no && *page_no != prov.page_no()) single_page = false;
+      page_no = prov.page_no();
+    }
+    if (!single_page || !page_no) continue;
+    const auto page = doc.pages().find(*page_no);
+    if (page == doc.pages().end()) continue;
+    for (const auto& cell : table.data().table_cells()) {
+      if (cell.has_bbox() && bbox_out_of_bounds(cell.bbox(), page->second.size())) {
+        return true;
+      }
+    }
+  }
+  const auto graph_needs = [&doc](const auto& item) {
+    if (prov_list_needs_clamping(doc, item.prov())) return true;
+    for (const auto& cell : item.graph().cells()) {
+      if (!cell.has_prov()) continue;
+      const auto page = doc.pages().find(cell.prov().page_no());
+      if (page != doc.pages().end() &&
+          bbox_out_of_bounds(cell.prov().bbox(), page->second.size())) {
+        return true;
+      }
+    }
+    return false;
+  };
+  for (const auto& item : doc.key_value_items()) {
+    if (graph_needs(item)) return true;
+  }
+  for (const auto& item : doc.form_items()) {
+    if (graph_needs(item)) return true;
+  }
+  for (const auto& item : doc.field_regions()) {
+    if (prov_list_needs_clamping(doc, item.prov())) return true;
+  }
+  for (const auto& item : doc.field_items()) {
+    if (prov_list_needs_clamping(doc, item.prov())) return true;
+  }
+  return false;
+}
+
+// A linear over-approximation of the run collector: any list item whose
+// parent is not a list group forces the migration pass. Items unreachable
+// from the body would not actually migrate; treating them as if they would
+// only costs the copy.
+bool has_misplaced_list_items(const docv1::Document& doc) {
+  for (const auto& text : doc.texts()) {
+    if (!is_list_item_entry(text)) continue;
+    const docv1::TextItemBase& base =
+        text.item_case() == docv1::BaseTextItem::kListItem
+            ? text.list_item().base()
+            : text.text().base();
+    if (base.has_parent() && !is_list_group_ref(&doc, base.parent().ref())) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // Applies the delete renumbering to one node and recurses over its children
@@ -828,6 +946,11 @@ void migrate_misplaced_list_items(docv1::Document* doc) {
 class CanonicalJsonRenderer {
  public:
   std::string render(const docv1::Document& document) {
+    // The JSON is a constant factor larger than the wire form (field names
+    // and indentation on top of 1:1 payloads); reserving up front keeps the
+    // multi-megabyte page-image URIs from forcing repeated buffer growth.
+    const std::size_t wire_bytes = document.ByteSizeLong();
+    writer_.reserve(wire_bytes + wire_bytes / 4 + 4096);
     emit_document(document);
     return writer_.take();
   }
@@ -1774,8 +1897,14 @@ class CanonicalJsonRenderer {
 }  // namespace
 
 std::string render_canonical_json(const ai::pipestream::document::v1::Document& document) {
-  // Normalize a private copy the way the reference model normalizes a
-  // loaded document before dumping it.
+  // The reference model normalizes a loaded document before dumping it.
+  // Copying the whole document for that is expensive (page images and
+  // picture crops dominate), so the copy happens only when a normalization
+  // would actually change something; otherwise the emitter reads the
+  // caller's document directly.
+  if (!needs_clamping(document) && !has_misplaced_list_items(document)) {
+    return CanonicalJsonRenderer().render(document);
+  }
   ai::pipestream::document::v1::Document normalized = document;
   clamp_document(&normalized);
   migrate_misplaced_list_items(&normalized);

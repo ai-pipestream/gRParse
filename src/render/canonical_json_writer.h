@@ -32,6 +32,11 @@ std::string canonical_integral_decimal(double value);
 // malformed UTF-8 bytes degrade to U+FFFD.
 std::string escape_json_ascii(std::string_view text);
 
+// Appends the same escape to an existing buffer, with a bulk-copy fast path
+// for runs that need no escaping (the overwhelmingly common case: data URIs
+// and plain text). escape_json_ascii is a thin wrapper over this.
+void escape_json_ascii_into(std::string& out, std::string_view text);
+
 // Streaming JSON writer with the exact layout of a two-space indented
 // pretty printer: every element on its own line, ": " after keys, empty
 // containers collapsed to [] and {}. Keys and values are emitted strictly
@@ -72,6 +77,10 @@ class JsonWriter {
     key(name);
     value_double(value);
   }
+
+  // Pre-sizes the output buffer; callers with a size estimate (e.g. the
+  // source message's byte size) avoid repeated growth of large documents.
+  void reserve(std::size_t bytes) { out_.reserve(bytes); }
 
   // The finished document. Valid once every container has been closed.
   const std::string& str() const { return out_; }

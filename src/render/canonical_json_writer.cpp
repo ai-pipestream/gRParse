@@ -152,25 +152,35 @@ std::string canonical_integral_decimal(double value) {
   return out;
 }
 
-std::string escape_json_ascii(std::string_view text) {
-  std::string out;
-  out.reserve(text.size());
+void escape_json_ascii_into(std::string& out, std::string_view text) {
+  static constexpr char kHex[] = "0123456789abcdef";
   const auto append_u16 = [&out](unsigned code) {
-    char buf[8];
-    std::snprintf(buf, sizeof buf, "\\u%04x", code);
+    char buf[6] = {'\\', 'u', kHex[(code >> 12) & 0xf], kHex[(code >> 8) & 0xf],
+                   kHex[(code >> 4) & 0xf], kHex[code & 0xf]};
     out.append(buf, 6);
+  };
+  const auto plain = [](unsigned char byte) {
+    return byte >= 0x20 && byte <= 0x7e && byte != '"' && byte != '\\';
   };
   std::size_t i = 0;
   while (i < text.size()) {
+    // Bulk-copy the maximal run of bytes that pass through unescaped.
+    std::size_t run = i;
+    while (run < text.size() &&
+           plain(static_cast<unsigned char>(text[run]))) {
+      ++run;
+    }
+    if (run != i) {
+      out.append(text, i, run - i);
+      i = run;
+      if (i >= text.size()) break;
+    }
     const unsigned char byte = static_cast<unsigned char>(text[i]);
     if (byte == '"') {
       out.append("\\\"");
       ++i;
     } else if (byte == '\\') {
       out.append("\\\\");
-      ++i;
-    } else if (byte >= 0x20 && byte <= 0x7e) {
-      out.push_back(static_cast<char>(byte));
       ++i;
     } else if (byte < 0x80) {
       switch (byte) {
@@ -221,6 +231,12 @@ std::string escape_json_ascii(std::string_view text) {
       i += length;
     }
   }
+}
+
+std::string escape_json_ascii(std::string_view text) {
+  std::string out;
+  out.reserve(text.size());
+  escape_json_ascii_into(out, text);
   return out;
 }
 
@@ -259,7 +275,7 @@ void JsonWriter::position_value() {
 void JsonWriter::key(std::string_view name) {
   next_element();
   out_.push_back('"');
-  out_.append(escape_json_ascii(name));
+  escape_json_ascii_into(out_, name);
   out_.append("\": ");
   pending_value_ = true;
 }
@@ -267,7 +283,7 @@ void JsonWriter::key(std::string_view name) {
 void JsonWriter::value_string(std::string_view text) {
   position_value();
   out_.push_back('"');
-  out_.append(escape_json_ascii(text));
+  escape_json_ascii_into(out_, text);
   out_.push_back('"');
 }
 

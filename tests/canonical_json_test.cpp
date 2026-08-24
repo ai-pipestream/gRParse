@@ -1,7 +1,12 @@
+#include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <print>
+#include <random>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include "../src/render/canonical_json_writer.h"
 #include "ai/pipestream/document/v1/document.pb.h"
@@ -823,6 +828,124 @@ void verify_misplaced_list_items_migrate_into_a_group() {
   require_absent(rendered, "\"l\": 5.0", "later provenances are dropped");
 }
 
+// A document that needs neither normalization takes the zero-copy path;
+// its output must be byte-stable across renders and show no synthesized
+// group and no altered coordinates.
+void verify_clean_documents_render_unnormalized() {
+  docv1::Document document = base_document("clean");
+  auto& page = (*document.mutable_pages())[1];
+  page.set_page_no(1);
+  page.mutable_size()->set_width(200);
+  page.mutable_size()->set_height(200);
+  auto* base = text_base(&document, docv1::BaseTextItem::kText,
+                         docv1::DOC_ITEM_LABEL_TEXT, "in bounds");
+  auto* prov = base->add_prov();
+  prov->set_page_no(1);
+  prov->mutable_bbox()->set_l(10);
+  prov->mutable_bbox()->set_t(20);
+  prov->mutable_bbox()->set_r(30);
+  prov->mutable_bbox()->set_b(40);
+
+  // A list item already parented under a list group must not migrate.
+  auto* item_base = text_base(&document, docv1::BaseTextItem::kListItem,
+                              docv1::DOC_ITEM_LABEL_LIST_ITEM, "grouped");
+  const std::string item_ref = item_base->self_ref();
+  auto* body_children = document.mutable_body()->mutable_children();
+  body_children->RemoveLast();  // the helper linked the item under the body
+  const std::string group_ref = "#/groups/" + std::to_string(document.groups_size());
+  auto* group = document.add_groups();
+  group->set_self_ref(group_ref);
+  group->mutable_parent()->set_ref("#/body");
+  group->set_content_layer(docv1::CONTENT_LAYER_BODY);
+  group->set_name("list");
+  group->set_label(docv1::GROUP_LABEL_LIST);
+  group->add_children()->set_ref(item_ref);
+  body_children->Add()->set_ref(group_ref);
+  item_base->mutable_parent()->set_ref(group_ref);
+
+  const std::string rendered = grparse::render_canonical_json(document);
+  require_contains(rendered, "\"l\": 10.0", "in-bounds coordinates pass through");
+  require_contains(rendered, "\"name\": \"list\"", "the caller's group survives");
+  require_absent(rendered, "\"name\": \"group\"",
+                 "no group is synthesized for a well-homed list item");
+  require(rendered == grparse::render_canonical_json(document),
+          "repeated renders are byte-stable");
+}
+
+// The emitter never mutates its input, so many threads may render one
+// shared document concurrently on both the zero-copy and the normalizing
+// path; every thread must produce the reference bytes.
+void verify_concurrent_renders_share_one_document() {
+  docv1::Document clean = base_document("shared-clean");
+  text_base(&clean, docv1::BaseTextItem::kText, docv1::DOC_ITEM_LABEL_TEXT,
+            "alpha");
+  docv1::Document migrating = base_document("shared-migrate");
+  text_base(&migrating, docv1::BaseTextItem::kListItem,
+            docv1::DOC_ITEM_LABEL_LIST_ITEM, "beta");
+
+  for (const docv1::Document* document : {&clean, &migrating}) {
+    const std::string reference = grparse::render_canonical_json(*document);
+    std::vector<std::string> results(8);
+    {
+      std::vector<std::jthread> pool;
+      for (auto& slot : results) {
+        pool.emplace_back(
+            [&slot, document] { slot = grparse::render_canonical_json(*document); });
+      }
+    }
+    for (const auto& result : results) {
+      require(result == reference, "concurrent renders agree with the reference");
+    }
+  }
+}
+
+// Property check on the number formatter: every finite double, fed through
+// its canonical text, parses back to the identical bit pattern.
+void verify_double_formatting_round_trips() {
+  std::mt19937_64 rng(0x5eed5eed);
+  int checked = 0;
+  while (checked < 5000) {
+    const std::uint64_t bits = rng();
+    double value;
+    std::memcpy(&value, &bits, sizeof value);
+    if (!std::isfinite(value)) continue;
+    const std::string text = grparse::render::canonical_double(value);
+    const double parsed = std::strtod(text.c_str(), nullptr);
+    require(parsed == value, "canonical text round-trips: " + text);
+    ++checked;
+  }
+}
+
+// The bulk fast path in the escaper must agree with a naive
+// character-at-a-time reference on mixed content.
+void verify_escape_fast_path_equivalence() {
+  const std::string clean_run(4096, 'a');
+  const std::vector<std::string> cases = {
+      clean_run,
+      clean_run + "\"" + clean_run,
+      "tab\tquote\"back\\slash" + clean_run + "\xc3\xa9 end",
+      std::string("\x01\x02") + clean_run + "\x7f",
+      "\xf0\x9f\x8e\xb8" + clean_run,  // astral pair splits into surrogates
+  };
+  for (const auto& text : cases) {
+    std::string reference;
+    for (const char c : text) {
+      grparse::render::escape_json_ascii_into(reference, std::string_view(&c, 1));
+    }
+    // Byte-at-a-time destroys multibyte sequences, so the reference for
+    // non-ASCII cases is instead the whole-string escape recomputed through
+    // the wrapper; the fast path and wrapper must agree exactly.
+    const std::string whole = grparse::render::escape_json_ascii(text);
+    std::string appended;
+    grparse::render::escape_json_ascii_into(appended, text);
+    require(appended == whole, "append and wrapper escapes agree");
+    if (text.find('\xc3') == std::string::npos &&
+        text.find('\xf0') == std::string::npos) {
+      require(whole == reference, "fast path matches the naive reference");
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -847,6 +970,10 @@ int main() {
     verify_origin_and_raw_label_states();
     verify_bboxes_clamp_to_their_page();
     verify_misplaced_list_items_migrate_into_a_group();
+    verify_clean_documents_render_unnormalized();
+    verify_concurrent_renders_share_one_document();
+    verify_double_formatting_round_trips();
+    verify_escape_fast_path_equivalence();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
     std::println(stderr, "canonical-json-test: {}", error.what());
