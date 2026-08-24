@@ -196,10 +196,10 @@ void verify_line_prov_is_page_local_with_charspans() {
           "document-absolute line boxes become page-local");
   require(first.bbox().coord_origin() == docv1::COORD_ORIGIN_TOPLEFT,
           "provenance boxes are top-left origin");
-  require(first.charspan().start() == 100 && first.charspan().end() == 105,
-          "measured lines narrow their charspan offset from the item span");
-  require(base.prov(1).charspan().start() == 100 &&
-              base.prov(1).charspan().end() == 111,
+  require(first.charspan().start() == 0 && first.charspan().end() == 5,
+          "measured lines narrow their item-relative charspan");
+  require(base.prov(1).charspan().start() == 0 &&
+              base.prov(1).charspan().end() == 11,
           "unmeasured lines keep the full item span");
 }
 

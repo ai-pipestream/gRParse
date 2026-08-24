@@ -700,9 +700,10 @@ void DoclingMapper::on_status(const officev1::RenderStatus& status) {
 void DoclingMapper::on_paragraph(const officev1::Paragraph& paragraph) {
   std::string text = concat_runs(paragraph.runs());
   long long length = runs_length(paragraph.runs());
-  long long span_start =
-      paragraph.char_offset() >= 0 ? paragraph.char_offset() : 0;
-  long long span_end = span_start + length;
+  // Provenance charspans are 0-indexed within the item's own text; the
+  // document-absolute paragraph offset stays on the office wire only.
+  const long long span_start = 0;
+  const long long span_end = length;
   TextHandle handle;
   if (paragraph.style() == "Title") {
     handle = add_text(TextKind::kTitle, docv1::DOC_ITEM_LABEL_TITLE,
