@@ -1185,6 +1185,8 @@ function buildViewer(doc) {
   hoveredTableRef = null;
   hotCell = null;
   charMarks = [];
+  anchoredRef = null;
+  anchorMarks = [];
   hiddenLabels.clear();
   hiddenCollectors.clear();
   clearSearch();
@@ -1217,6 +1219,7 @@ function buildViewer(doc) {
   if (pages.length === 0 && !results.querySelector(".dv-unpaged")) {
     banner("warn", "The document has no pages and no items to render.");
   }
+  applyAnchorFromHash();
 }
 
 // ---------------------------------------------------------------------------
@@ -1525,6 +1528,7 @@ results.addEventListener("mouseover", (event) => {
   const ref = target ? target.dataset.ref : null;
   const provAttr = target && target.dataset.prov;
   const provIndex = provAttr === undefined || provAttr === null || provAttr === "" ? null : Number(provAttr);
+  syncCopyButton(target);
   if (ref === hoveredRef && provIndex === hoveredProv) return;
   setHighlight(hoveredRef, false, hoveredProv);
   clearCharMarks();
@@ -1542,6 +1546,7 @@ results.addEventListener("mouseleave", () => {
   hoveredTableRef = null;
   hoveredRef = null;
   hoveredProv = null;
+  scheduleHideCopyButton();
 });
 
 results.addEventListener("click", (event) => {
@@ -1558,6 +1563,265 @@ results.addEventListener("click", (event) => {
   counterpart.scrollIntoView({ behavior: "smooth", block: "center" });
   counterpart.classList.add("dv-flash");
   setTimeout(() => counterpart.classList.remove("dv-flash"), 1600);
+});
+
+// ---------------------------------------------------------------------------
+// Deep links: #item=<ref>[&cs=<start>-<end>] scrolls both panes to one item
+// and outlines it persistently (distinct from the transient hover outline)
+// until another anchor lands or the viewer is told to forget it. Parsed
+// once the document finishes rendering and again on every hashchange, so a
+// link works while the document stays loaded; neither path re-walks the
+// document, both just read the ref -> elements map hover already built.
+// ---------------------------------------------------------------------------
+
+let anchoredRef = null;
+let anchorMarks = [];
+let anchorNoticeTimer = null;
+
+const anchorNotice = el("div", "dv-anchor-notice");
+anchorNotice.hidden = true;
+document.body.appendChild(anchorNotice);
+
+function showAnchorNotice(message) {
+  anchorNotice.textContent = message;
+  anchorNotice.hidden = false;
+  if (anchorNoticeTimer) clearTimeout(anchorNoticeTimer);
+  anchorNoticeTimer = setTimeout(() => {
+    anchorNotice.hidden = true;
+    anchorNoticeTimer = null;
+  }, 3200);
+}
+
+// Removes whatever anchor is currently applied, if any. Safe to call with
+// no anchor active.
+function clearAnchor() {
+  if (anchoredRef && model) {
+    const entry = model.view.get(anchoredRef);
+    if (entry) {
+      for (const box of entry.boxes) box.el.classList.remove("dv-anchored");
+      for (const element of entry.contents) element.classList.remove("dv-anchored");
+    }
+  }
+  if (anchorMarks.length > 0) unmark(anchorMarks);
+  anchorMarks = [];
+  anchoredRef = null;
+}
+
+// "12-34" -> {start, end}; anything else (missing, malformed, empty range)
+// is treated as no charspan rather than an error.
+function parseCharspan(raw) {
+  const match = typeof raw === "string" ? /^(\d+)-(\d+)$/.exec(raw.trim()) : null;
+  if (!match) return null;
+  const start = Number(match[1]);
+  const end = Number(match[2]);
+  return end > start ? { start, end } : null;
+}
+
+function parseAnchorHash() {
+  const raw = location.hash.startsWith("#") ? location.hash.slice(1) : location.hash;
+  if (!raw) return null;
+  const params = new URLSearchParams(raw);
+  const ref = params.get("item");
+  if (!ref) return null;
+  return { ref, cs: parseCharspan(params.get("cs")) };
+}
+
+// Applies (or reapplies) the current #item=/&cs= fragment against whatever
+// document is loaded right now. Never throws: a ref the document does not
+// have just leaves a notice, and a missing document is a silent no-op.
+function applyAnchorFromHash() {
+  const anchor = parseAnchorHash();
+  clearAnchor();
+  if (!anchor || !model) return;
+  const record = model.byRef.get(anchor.ref);
+  if (record && record.page) ensurePageBuilt(record.page);
+  const entry = record ? model.view.get(record.ref) : null;
+  if (!record || !entry || (entry.boxes.length === 0 && entry.contents.length === 0)) {
+    showAnchorNotice(`No item matches "${anchor.ref}" in this document.`);
+    return;
+  }
+  anchoredRef = record.ref;
+  for (const box of entry.boxes) box.el.classList.add("dv-anchored");
+  for (const element of entry.contents) element.classList.add("dv-anchored");
+  if (entry.boxes[0]) scrollElementIntoView(entry.boxes[0].el);
+  if (entry.contents[0]) scrollElementIntoView(entry.contents[0]);
+  if (anchor.cs) {
+    const text = record.text || "";
+    const start = Math.min(Math.max(anchor.cs.start, 0), text.length);
+    const end = Math.min(Math.max(anchor.cs.end, 0), text.length);
+    if (end > start) {
+      for (const element of entry.contents) {
+        anchorMarks.push(...markRange(element, start, end, "dv-anchormark"));
+      }
+    }
+  }
+}
+
+window.addEventListener("hashchange", applyAnchorFromHash);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && anchoredRef) clearAnchor();
+});
+
+// ---------------------------------------------------------------------------
+// Copy-anchor affordance: one floating button, shown next to whichever
+// content element is hovered (never one button per item), that writes a
+// deep link to that item to the clipboard.
+// ---------------------------------------------------------------------------
+
+function buildCopyIcon() {
+  const svg = svgEl("svg", "dv-copy-icon");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("width", "12");
+  svg.setAttribute("height", "12");
+  svg.setAttribute("aria-hidden", "true");
+  const path = svgEl("path");
+  path.setAttribute("fill", "currentColor");
+  path.setAttribute(
+    "d",
+    "M6.5 9.5a1 1 0 0 1 0-1.4l3-3a3 3 0 1 1 4.24 4.24l-1.5 1.5a1 1 0 1 1-1.42-1.42l1.5-1.5a1 1 0 1 0-1.4-1.4l-3 3a1 1 0 0 1-1.42 0zm3-3a1 1 0 0 1 0 1.4l-3 3a3 3 0 1 1-4.24-4.24l1.5-1.5A1 1 0 1 1 5.18 6.6l-1.5 1.5a1 1 0 1 0 1.4 1.4l3-3a1 1 0 0 1 1.42 0z",
+  );
+  svg.appendChild(path);
+  return svg;
+}
+
+const copyButton = el("button", "dv-copy-btn");
+copyButton.type = "button";
+copyButton.hidden = true;
+copyButton.setAttribute("aria-label", "copy link to this item");
+copyButton.appendChild(buildCopyIcon());
+document.body.appendChild(copyButton);
+
+let copyHoverTarget = null;
+let copyHideTimer = null;
+
+function cancelHideCopyButton() {
+  if (copyHideTimer) {
+    clearTimeout(copyHideTimer);
+    copyHideTimer = null;
+  }
+}
+
+function hideCopyButtonNow() {
+  copyButton.hidden = true;
+  delete copyButton.dataset.ref;
+  copyHoverTarget = null;
+}
+
+// A short delay (rather than hiding immediately) lets the pointer travel
+// from the hovered item onto the button itself without it disappearing
+// first; entering the button, or a still-valid item, cancels the hide.
+function scheduleHideCopyButton() {
+  cancelHideCopyButton();
+  copyHideTimer = setTimeout(() => {
+    hideCopyButtonNow();
+    copyHideTimer = null;
+  }, 150);
+}
+
+function positionCopyButton(target) {
+  const rect = target.getBoundingClientRect();
+  const size = 22;
+  copyButton.style.top = `${Math.max(4, rect.top + 4)}px`;
+  copyButton.style.left = `${Math.max(4, rect.right - size - 4)}px`;
+}
+
+// Called from the results mouseover delegate with whatever [data-ref]
+// element the pointer is currently over (a box, a content element, or
+// none); only content elements get the affordance.
+function syncCopyButton(target) {
+  if (!target || !target.classList.contains("dv-item")) {
+    scheduleHideCopyButton();
+    return;
+  }
+  cancelHideCopyButton();
+  copyHoverTarget = target;
+  copyButton.dataset.ref = target.dataset.ref;
+  copyButton.hidden = false;
+  positionCopyButton(target);
+}
+
+copyButton.addEventListener("mouseenter", cancelHideCopyButton);
+copyButton.addEventListener("mouseleave", scheduleHideCopyButton);
+
+// Boundary offset (in markRange's own coordinate space) of a selection
+// endpoint inside `root`, so a copied charspan lands on the exact text the
+// user selected.
+function textOffsetOf(root, node, nodeOffset) {
+  if (node.nodeType === 3) {
+    let offset = 0;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+    for (let cur = walker.nextNode(); cur; cur = walker.nextNode()) {
+      const parent = cur.parentElement;
+      if (!parent || (parent !== root && parent.closest(MARK_SKIP))) continue;
+      if (cur === node) return offset + nodeOffset;
+      offset += cur.nodeValue.length;
+    }
+    return offset;
+  }
+  // The boundary sits between child nodes (e.g. a triple-click selection):
+  // measure everything up to that child.
+  const probe = document.createRange();
+  probe.selectNodeContents(root);
+  probe.setEnd(node, Math.min(nodeOffset, node.childNodes.length));
+  return probe.toString().length;
+}
+
+// The active selection's charspan, in item-relative text offsets, but only
+// when the whole selection lies inside `container`; otherwise null, which
+// tells the caller to omit &cs= entirely.
+function selectionSpanWithin(container) {
+  try {
+    const selection = typeof window.getSelection === "function" ? window.getSelection() : null;
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
+    const range = selection.getRangeAt(0);
+    if (!container.contains(range.startContainer) || !container.contains(range.endContainer)) return null;
+    const start = textOffsetOf(container, range.startContainer, range.startOffset);
+    const end = textOffsetOf(container, range.endContainer, range.endOffset);
+    return end > start ? { start, end } : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function anchorUrl(ref, cs) {
+  const params = new URLSearchParams();
+  params.set("item", ref);
+  if (cs) params.set("cs", `${cs.start}-${cs.end}`);
+  const base = location.href.split("#")[0];
+  return `${base}#${params.toString()}`;
+}
+
+function flashCopied() {
+  copyButton.classList.add("dv-copied");
+  copyButton.setAttribute("aria-label", "copied");
+  setTimeout(() => {
+    copyButton.classList.remove("dv-copied");
+    copyButton.setAttribute("aria-label", "copy link to this item");
+  }, 1200);
+}
+
+async function performCopyAnchor() {
+  const ref = copyButton.dataset.ref;
+  if (!ref || !model) return;
+  const record = model.byRef.get(ref);
+  if (!record) return;
+  const cs = copyHoverTarget ? selectionSpanWithin(copyHoverTarget) : null;
+  const url = anchorUrl(ref, cs);
+  try {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      await navigator.clipboard.writeText(url);
+    }
+    flashCopied();
+  } catch (error) {
+    // Clipboard access denied or unavailable: nothing to recover from here,
+    // and nothing worth interrupting the user over.
+  }
+}
+
+copyButton.addEventListener("click", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  performCopyAnchor();
 });
 
 // ---------------------------------------------------------------------------

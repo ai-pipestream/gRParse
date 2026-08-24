@@ -11,6 +11,7 @@
   --table-box: #3fb950;
   --picture-box: #d2a8ff;
   --reading-order: #f778ba;
+  --anchor: #e3b341;
 }
 
 * { box-sizing: border-box; }
@@ -598,6 +599,9 @@ h1 { margin: 0; font-size: 26px; letter-spacing: 0.5px; }
 .dv-box.dv-hl { box-shadow: 0 0 0 2px var(--accent); z-index: 5; }
 .dv-box.dv-hl-self { box-shadow: 0 0 0 3px var(--accent); z-index: 7; }
 .dv-box.dv-search-box { box-shadow: 0 0 0 3px #ffab70; z-index: 9; }
+/* Deep-link target: persists across hovers, so it outranks every other
+   overlay outline until another anchor lands or the viewer forgets it. */
+.dv-box.dv-anchored { box-shadow: 0 0 0 3px var(--anchor), 0 0 14px rgba(227, 179, 65, 0.55); z-index: 10; }
 .dv-searchmark {
   background: rgba(255, 171, 112, 0.28);
   color: inherit;
@@ -611,6 +615,12 @@ h1 { margin: 0; font-size: 26px; letter-spacing: 0.5px; }
   background: rgba(88, 166, 255, 0.35);
   color: inherit;
   border-radius: 2px;
+}
+.dv-anchormark {
+  background: rgba(227, 179, 65, 0.45);
+  color: inherit;
+  border-radius: 2px;
+  outline: 1px solid var(--anchor);
 }
 
 .dv-arrow-layer {
@@ -638,6 +648,7 @@ h1 { margin: 0; font-size: 26px; letter-spacing: 0.5px; }
 .dv-page-content .dv-item { scroll-margin: 60px; }
 .dv-item { border-radius: 4px; }
 .dv-item.dv-hl { background: rgba(88, 166, 255, 0.14); outline: 1px solid var(--accent); }
+.dv-item.dv-anchored { background: rgba(227, 179, 65, 0.14); outline: 2px solid var(--anchor); outline-offset: 2px; }
 .dv-flash { animation: dv-flash-frames 1.6s ease-out; }
 @keyframes dv-flash-frames {
   0% { box-shadow: 0 0 0 3px var(--accent); }
@@ -806,6 +817,42 @@ h1 { margin: 0; font-size: 26px; letter-spacing: 0.5px; }
 .dv-item.label-off, .dv-item.collector-off,
 .dv-item-block.label-off, .dv-item-block.collector-off,
 .dv-collector-bucket.dv-bucket-off { display: none; }
+
+/* Deep-link affordances: one floating copy button (never per-item), plus a
+   small toast for a #item= ref the loaded document does not have. */
+.dv-copy-btn {
+  position: fixed;
+  z-index: 100;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+}
+.dv-copy-btn[hidden] { display: none; }
+.dv-copy-btn:hover, .dv-copy-btn:focus-visible { border-color: var(--accent); color: var(--accent); }
+.dv-copy-btn.dv-copied { border-color: var(--anchor); color: var(--anchor); }
+.dv-anchor-notice {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 100;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+.dv-anchor-notice[hidden] { display: none; }
 
 /* VLM Convert: one card per page, filled when that page's call returns. */
 .vlm-card {

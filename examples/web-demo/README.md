@@ -155,6 +155,14 @@ reveals them dimmed. Each item's metadata is available in a collapsible
 drawer, and page cards build lazily as they scroll into view since page
 images are large data URIs.
 
+Items are deep-linkable: a URL fragment of `#item=<self_ref>` (optionally
+`&cs=<start>-<end>` for a character range within that item's text) scrolls
+both panes to the item and outlines it persistently until another anchor
+lands or Escape is pressed; an unresolvable ref shows a small notice instead
+of failing. Hovering a content element reveals a small copy-link button that
+writes that fragment to the clipboard, including the current text
+selection's range when the selection falls inside the hovered item.
+
 ## Native FastWARC tab
 
 The standalone fastwarc-grpc server (`fastwarc.v1.WarcService`, default port
