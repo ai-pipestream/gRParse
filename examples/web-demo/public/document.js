@@ -17,9 +17,13 @@ const progressBar = document.getElementById("progress");
 const progressPages = document.getElementById("progress-pages");
 const progressElapsed = document.getElementById("progress-elapsed");
 const infoBar = document.getElementById("doc-info");
+const toolbar = document.getElementById("doc-toolbar");
 const legendBar = document.getElementById("doc-legend");
 const legendEntries = document.getElementById("legend-entries");
 const furnitureToggle = document.getElementById("toggle-furniture");
+const readingOrderToggle = document.getElementById("toggle-reading-order");
+
+const SVG_NS = "http://www.w3.org/2000/svg";
 
 // ---------------------------------------------------------------------------
 // Fixed label palette for the provenance boxes (border solid, fill ~25%).
@@ -210,8 +214,40 @@ function normalizeProv(base) {
   return entries;
 }
 
+// Depth-first order of the body tree, which is the document's reading order.
+// Every rendered item gets its position stamped on it once so later passes
+// (reading-order arrows, navigation) never have to walk the tree again.
+function computeWalkOrder(doc, built) {
+  const order = [];
+  const seen = new Set();
+  const visit = (refs) => {
+    for (const refItem of refs || []) {
+      const ref = refString(refItem);
+      if (!ref || seen.has(ref) || ref === "#/body" || ref === "#/furniture") continue;
+      seen.add(ref);
+      const record = built.byRef.get(ref);
+      if (!record) continue;
+      if (record.kind !== "group") {
+        record.walkIndex = order.length;
+        order.push(record);
+      }
+      visit(record.base.children);
+    }
+  };
+  visit(rootChildren(doc));
+  return order;
+}
+
 function indexDocument(doc) {
-  const built = { doc, items: [], byRef: new Map(), labelCounts: new Map(), unpagedCollectors: [] };
+  const built = {
+    doc,
+    items: [],
+    byRef: new Map(),
+    labelCounts: new Map(),
+    unpagedCollectors: [],
+    walkOrder: [],
+    pageSequences: new Map(),
+  };
   for (const [segment, docKey, kind] of ARENAS) {
     const arena = Array.isArray(doc[docKey]) ? doc[docKey] : [];
     arena.forEach((raw, index) => {
@@ -249,6 +285,7 @@ function indexDocument(doc) {
       }
     });
   }
+  built.walkOrder = computeWalkOrder(doc, built);
   // Collector names of unpaged items, in arena order, for the trailing
   // section's bucket order.
   const seenCollectors = new Set();
@@ -775,6 +812,107 @@ function buildBoxLayer(pageNo, size) {
 }
 
 // ---------------------------------------------------------------------------
+// Reading-order overlay: one SVG layer per page, computed with the page card.
+// ---------------------------------------------------------------------------
+
+// The page's items in body-walk order, each with the first box it owns on
+// this page. Items without provenance drop out; the ones around them keep
+// their relative order, so the numbering reads as the document does.
+function pageSequence(pageNo, size) {
+  const cached = model.pageSequences.get(pageNo);
+  if (cached) return cached;
+  const sequence = [];
+  for (const record of model.walkOrder) {
+    const prov = record.prov.find((entry) => entry.pageNo === pageNo && entry.bbox);
+    if (!prov) continue;
+    sequence.push({ record, geometry: boxGeometry(prov.bbox, size) });
+  }
+  model.pageSequences.set(pageNo, sequence);
+  return sequence;
+}
+
+function svgEl(tag, className) {
+  const node = document.createElementNS(SVG_NS, tag);
+  if (className) node.setAttribute("class", className);
+  return node;
+}
+
+function buildArrowLayer(pageNo, size) {
+  const sequence = pageSequence(pageNo, size);
+  const layer = svgEl("svg", "dv-arrow-layer");
+  // Same coordinate space as the percentage-positioned boxes: the viewport
+  // is the page visual, so page units map straight onto it.
+  layer.setAttribute("viewBox", `0 0 ${size.width} ${size.height}`);
+  layer.setAttribute("preserveAspectRatio", "none");
+  if (sequence.length === 0) return layer;
+
+  const stroke = Math.max(1, size.width / 500);
+  const headId = `dv-arrow-head-${pageNo}`;
+  const defs = svgEl("defs");
+  const marker = svgEl("marker");
+  marker.setAttribute("id", headId);
+  marker.setAttribute("viewBox", "0 0 10 10");
+  marker.setAttribute("refX", "9");
+  marker.setAttribute("refY", "5");
+  marker.setAttribute("markerWidth", "5");
+  marker.setAttribute("markerHeight", "5");
+  marker.setAttribute("orient", "auto-start-reverse");
+  const head = svgEl("path");
+  head.setAttribute("d", "M0,0 L10,5 L0,10 z");
+  head.setAttribute("fill", "currentColor");
+  marker.appendChild(head);
+  defs.appendChild(marker);
+  layer.appendChild(defs);
+
+  const centers = sequence.map(({ geometry }) => ({
+    x: ((geometry.left + geometry.width / 2) / 100) * size.width,
+    y: ((geometry.top + geometry.height / 2) / 100) * size.height,
+  }));
+  for (let index = 1; index < centers.length; index += 1) {
+    const from = centers[index - 1];
+    const to = centers[index];
+    const line = svgEl("line", "dv-arrow");
+    line.setAttribute("x1", String(from.x));
+    line.setAttribute("y1", String(from.y));
+    line.setAttribute("x2", String(to.x));
+    line.setAttribute("y2", String(to.y));
+    line.setAttribute("stroke", "currentColor");
+    line.setAttribute("stroke-width", String(stroke));
+    line.setAttribute("marker-end", `url(#${headId})`);
+    layer.appendChild(line);
+  }
+
+  const fontSize = Math.max(8, size.width / 55);
+  const chipHeight = fontSize * 1.35;
+  for (let index = 0; index < sequence.length; index += 1) {
+    const { geometry, record } = sequence[index];
+    const number = String(index + 1);
+    const chipWidth = Math.max(chipHeight, fontSize * (0.55 * number.length + 0.7));
+    const x = Math.min(size.width - chipWidth, Math.max(0, (geometry.left / 100) * size.width));
+    const y = Math.min(size.height - chipHeight, Math.max(0, (geometry.top / 100) * size.height));
+    const chip = svgEl("g", "dv-order-chip");
+    chip.setAttribute("data-order-ref", record.ref);
+    const plate = svgEl("rect");
+    plate.setAttribute("x", String(x));
+    plate.setAttribute("y", String(y));
+    plate.setAttribute("width", String(chipWidth));
+    plate.setAttribute("height", String(chipHeight));
+    plate.setAttribute("rx", String(chipHeight * 0.25));
+    plate.setAttribute("fill", "currentColor");
+    const text = svgEl("text", "dv-order-chip-text");
+    text.setAttribute("x", String(x + chipWidth / 2));
+    text.setAttribute("y", String(y + chipHeight / 2));
+    text.setAttribute("font-size", String(fontSize));
+    text.setAttribute("text-anchor", "middle");
+    text.setAttribute("dominant-baseline", "central");
+    text.textContent = number;
+    chip.append(plate, text);
+    layer.appendChild(chip);
+  }
+  return layer;
+}
+
+// ---------------------------------------------------------------------------
 // Page cards (built lazily: page images are large data URIs).
 // ---------------------------------------------------------------------------
 
@@ -793,6 +931,7 @@ function buildPageCardContent(card, pageNo) {
     visual.appendChild(img);
   }
   visual.appendChild(buildBoxLayer(pageNo, size));
+  visual.appendChild(buildArrowLayer(pageNo, size));
 
   const content = el("div", "dv-page-content");
   const consumed = new Set();
@@ -820,6 +959,8 @@ function buildViewer(doc) {
   results.textContent = "";
   results.classList.add("dv-root");
   results.classList.toggle("show-furniture", furnitureToggle.checked);
+  results.classList.toggle("show-reading-order", readingOrderToggle.checked);
+  toolbar.hidden = false;
   if (lazyObserver) lazyObserver.disconnect();
   model = indexDocument(doc);
   hiddenLabels.clear();
@@ -954,6 +1095,12 @@ furnitureToggle.addEventListener("change", () => {
   results.classList.toggle("show-furniture", furnitureToggle.checked);
 });
 
+// Feature toggles only flip a class on the root; the layers they reveal are
+// built with the page card and never recomputed.
+readingOrderToggle.addEventListener("change", () => {
+  results.classList.toggle("show-reading-order", readingOrderToggle.checked);
+});
+
 // ---------------------------------------------------------------------------
 // Hover / click sync between boxes and content, by shared data-ref.
 // ---------------------------------------------------------------------------
@@ -1016,6 +1163,7 @@ function resetRun() {
   results.textContent = "";
   results.classList.remove("dv-root");
   infoBar.hidden = true;
+  toolbar.hidden = true;
   legendBar.hidden = true;
   progressPages.textContent = "";
   progressBar.hidden = false;
