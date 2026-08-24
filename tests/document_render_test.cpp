@@ -448,6 +448,78 @@ void verify_captions_render_once() {
           "html caption must render exactly once:\n" + html);
 }
 
+// A picture description must surface in the human-readable exports whether
+// it rides the meta field or the annotation list, and the meta field wins
+// when both are present.
+void verify_picture_descriptions_surface_in_exports() {
+  // Meta only.
+  docv1::Document meta_only = base_document("meta.pdf");
+  auto* meta_picture = add_picture(&meta_only, "#/body", "fig.png");
+  meta_picture->mutable_meta()->mutable_description()->set_text(
+      "A bar chart of quarterly sales");
+  const std::string meta_markdown = grparse::render_markdown(meta_only);
+  require_contains(meta_markdown,
+                   "![Image](fig.png)\n\n*A bar chart of quarterly sales*",
+                   "markdown surfaces the meta description under the image");
+  require_contains(grparse::render_html(meta_only),
+                   "<figure><img src=\"fig.png\" alt=\"Image\"/>"
+                   "<p>A bar chart of quarterly sales</p></figure>",
+                   "html surfaces the meta description inside the figure");
+  require_contains(grparse::render_doclang(meta_only),
+                   "<picture uri=\"fig.png\">\n"
+                   "    <description>A bar chart of quarterly sales</description>\n"
+                   "  </picture>",
+                   "doclang nests the meta description in the picture");
+
+  // Annotations only.
+  docv1::Document annotation_only = base_document("annotation.pdf");
+  auto* annotated = add_picture(&annotation_only, "#/body", "fig.png");
+  auto* annotation = annotated->add_annotations()->mutable_description();
+  annotation->set_kind("description");
+  annotation->set_text("An annotated diagram");
+  require_contains(grparse::render_markdown(annotation_only),
+                   "![Image](fig.png)\n\n*An annotated diagram*",
+                   "markdown falls back to the annotation description");
+  require_contains(grparse::render_html(annotation_only),
+                   "<p>An annotated diagram</p>",
+                   "html falls back to the annotation description");
+  require_contains(grparse::render_doclang(annotation_only),
+                   "<description>An annotated diagram</description>",
+                   "doclang falls back to the annotation description");
+
+  // Both: the meta field wins.
+  docv1::Document both = base_document("both.pdf");
+  auto* both_picture = add_picture(&both, "#/body", "fig.png");
+  both_picture->mutable_meta()->mutable_description()->set_text("meta text");
+  both_picture->add_annotations()->mutable_description()->set_text(
+      "annotation text");
+  const std::string both_markdown = grparse::render_markdown(both);
+  require_contains(both_markdown, "*meta text*",
+                   "markdown prefers the meta description");
+  require(!both_markdown.contains("annotation text"),
+          "markdown must not also render the annotation description:\n" +
+              both_markdown);
+
+  // A caption keeps its figcaption and the description joins it as a
+  // paragraph; a description on a picture with no image still renders.
+  docv1::Document captioned = base_document("captioned.pdf");
+  auto* figure = add_picture(&captioned, "#/body", "fig.png");
+  figure->add_captions()->set_ref(
+      add_caption(&captioned, figure->self_ref(), "Figure 1"));
+  figure->mutable_meta()->mutable_description()->set_text("described");
+  require_contains(grparse::render_html(captioned),
+                   "<figcaption>Figure 1<p>described</p></figcaption>",
+                   "html appends the description inside the figcaption");
+  docv1::Document imageless = base_document("imageless.pdf");
+  add_picture(&imageless, "#/body", "")
+      ->mutable_meta()
+      ->mutable_description()
+      ->set_text("no image here");
+  require_contains(grparse::render_markdown(imageless),
+                   "<!-- image -->\n\n*no image here*",
+                   "markdown keeps the description under the placeholder");
+}
+
 // Appends one provenance entry to the most recently added text item.
 void add_prov_to_last_text(docv1::Document* document, int page_no, double l,
                            double t, double r, double b) {
@@ -794,6 +866,7 @@ int main() {
     verify_html_renders_structure_and_escapes();
     verify_non_body_layers_are_excluded();
     verify_captions_render_once();
+    verify_picture_descriptions_surface_in_exports();
     verify_doctags_renders_every_item_type();
     verify_doctags_otsl_spans_and_locations();
     verify_doclang_renders_grpc_xml_vocabulary();

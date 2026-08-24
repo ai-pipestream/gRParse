@@ -235,10 +235,17 @@ class DoclangRenderer : RendererBase {
     if (excluded_layer(picture.content_layer())) return;
     render_captions(picture.captions(), depth);
     const std::string& uri = picture.has_image() ? picture.image().uri() : std::string();
-    if (uri.empty()) {
-      line(depth, "<picture/>");
+    const std::string open =
+        uri.empty() ? std::string("<picture")
+                    : "<picture uri=\"" + escape_html_attribute(uri) + "\"";
+    // A picture description rides as a nested description element.
+    const std::string description = trimmed(picture_description(picture));
+    if (description.empty()) {
+      line(depth, open + "/>");
     } else {
-      line(depth, "<picture uri=\"" + escape_html_attribute(uri) + "\"/>");
+      line(depth, open + ">");
+      line(depth + 1, element("description", "", description));
+      line(depth, "</picture>");
     }
   }
 };

@@ -372,8 +372,18 @@ class HtmlRenderer : RendererBase {
       out.append("<img src=\"" + escape_html_attribute(uri) + "\" alt=\"" +
                  escape_html_attribute(alt) + "\"/>");
     }
-    for (const auto& caption : captions) {
-      out.append("<figcaption>" + paragraph_text(caption) + "</figcaption>");
+    // A picture description rides as a paragraph inside the figure's
+    // caption; a figure without a caption carries it after the image.
+    const std::string description = trimmed(picture_description(picture));
+    for (size_t index = 0; index < captions.size(); ++index) {
+      out.append("<figcaption>" + paragraph_text(captions[index]));
+      if (index + 1 == captions.size() && !description.empty()) {
+        out.append("<p>" + paragraph_text(description) + "</p>");
+      }
+      out.append("</figcaption>");
+    }
+    if (captions.empty() && !description.empty()) {
+      out.append("<p>" + paragraph_text(description) + "</p>");
     }
     out.append("</figure>");
     add_element(std::move(out));

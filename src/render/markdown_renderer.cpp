@@ -254,10 +254,13 @@ class MarkdownRenderer : RendererBase {
     if (uri.empty()) {
       // docling's exact placeholder for a picture with nothing to reference.
       add_block("<!-- image -->");
-      return;
+    } else {
+      const std::string alt = captions.empty() ? std::string("Image") : captions.front();
+      add_block("![" + alt + "](" + uri + ")");
     }
-    const std::string alt = captions.empty() ? std::string("Image") : captions.front();
-    add_block("![" + alt + "](" + uri + ")");
+    // A picture description surfaces as an italic line under the image.
+    const std::string description = trimmed(picture_description(picture));
+    if (!description.empty()) add_block("*" + description + "*");
   }
 };
 

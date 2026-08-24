@@ -64,6 +64,18 @@ std::string escape_html_text(const std::string& text);
 
 std::string escape_html_attribute(const std::string& text);
 
+// The picture's description text. The meta field wins; the annotation list
+// is the fallback for producers that still write description annotations.
+// Empty when the picture carries no description.
+std::string picture_description(
+    const ai::pipestream::document::v1::PictureItem& picture);
+
+// The picture's top classification class name: the highest-confidence meta
+// prediction wins, the first annotation classification falls back. Empty
+// when the picture carries no classification.
+std::string picture_classification_class(
+    const ai::pipestream::document::v1::PictureItem& picture);
+
 // Both renderers walk the body tree the same way: resolve each child
 // reference, render the item, and record caption items when a table or
 // figure claims them so a caption linked into the tree twice never renders

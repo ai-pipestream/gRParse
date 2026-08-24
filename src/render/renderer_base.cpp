@@ -142,6 +142,39 @@ std::string escape_html_attribute(const std::string& text) {
   return safe;
 }
 
+std::string picture_description(const docv1::PictureItem& picture) {
+  if (picture.has_meta() && picture.meta().has_description()) {
+    return picture.meta().description().text();
+  }
+  for (const auto& annotation : picture.annotations()) {
+    if (annotation.has_description()) return annotation.description().text();
+  }
+  return std::string();
+}
+
+std::string picture_classification_class(const docv1::PictureItem& picture) {
+  if (picture.has_meta() && picture.meta().has_classification()) {
+    std::string predicted_class;
+    double best = -1.0;
+    for (const auto& prediction : picture.meta().classification().predictions()) {
+      const double confidence =
+          prediction.has_confidence() ? prediction.confidence() : 0.0;
+      if (confidence > best) {
+        best = confidence;
+        predicted_class = prediction.class_name();
+      }
+    }
+    return predicted_class;
+  }
+  for (const auto& annotation : picture.annotations()) {
+    if (annotation.has_classification() &&
+        !annotation.classification().predicted_classes().empty()) {
+      return annotation.classification().predicted_classes(0).class_name();
+    }
+  }
+  return std::string();
+}
+
 std::vector<std::string> RendererBase::caption_texts(
     const google::protobuf::RepeatedPtrField<docv1::RefItem>& captions) {
   std::vector<std::string> texts;

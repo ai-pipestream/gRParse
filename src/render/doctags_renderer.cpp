@@ -360,27 +360,7 @@ class DocTagsRenderer : RendererBase {
     std::string body = location_tokens(picture.prov());
 
     // Classification: the meta field wins, legacy annotations fall back.
-    std::string predicted_class;
-    if (picture.has_meta() && picture.meta().has_classification()) {
-      double best = -1.0;
-      for (const auto& prediction : picture.meta().classification().predictions()) {
-        const double confidence =
-            prediction.has_confidence() ? prediction.confidence() : 0.0;
-        if (confidence > best) {
-          best = confidence;
-          predicted_class = prediction.class_name();
-        }
-      }
-    } else {
-      for (const auto& annotation : picture.annotations()) {
-        if (annotation.has_classification() &&
-            !annotation.classification().predicted_classes().empty()) {
-          predicted_class =
-              annotation.classification().predicted_classes(0).class_name();
-          break;
-        }
-      }
-    }
+    const std::string predicted_class = picture_classification_class(picture);
     if (!predicted_class.empty()) body.append("<" + predicted_class + ">");
 
     std::string smiles;
