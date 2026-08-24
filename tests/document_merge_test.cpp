@@ -67,11 +67,17 @@ docv1::Document collector_document() {
   (*source.mutable_pages())[2].set_page_no(2);
   (*source.mutable_body()->mutable_meta()->mutable_custom_fields())["named_range:R"]
       .set_string_value("A1:B2");
+  source.set_schema_name("docling_document_v2");
+  source.set_version("1.10.0");
   return source;
 }
 
 void verify_merge_renumbers_and_rewrites() {
   docv1::Document target = base_document();
+  // The base document's identity is authoritative; a collector document
+  // carrying its own identity must never overwrite it.
+  target.set_schema_name("docling_document_v2");
+  target.set_version("1.10.0");
   add_text(&target, "#/body", "existing text");
   auto* existing_table = target.add_tables();
   existing_table->set_self_ref("#/tables/0");
@@ -82,6 +88,9 @@ void verify_merge_renumbers_and_rewrites() {
 
   grparse::merge_documents(collector_document(), &target);
 
+  require(target.schema_name() == "docling_document_v2" &&
+              target.version() == "1.10.0",
+          "the merged document keeps the base identity");
   require(target.texts_size() == 2 && target.tables_size() == 2 &&
               target.groups_size() == 1,
           "merge appends every arena");

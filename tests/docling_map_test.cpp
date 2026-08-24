@@ -66,6 +66,8 @@ void verify_fresh_mapper_builds_valid_skeleton() {
   const docv1::Document& document = mapper.document();
   require(document.schema_name() == "docling_document_v2",
           "fresh document carries the docling v2 schema name");
+  require(document.version() == "1.10.0",
+          "fresh document carries the mirrored schema version");
   require(document.body().self_ref() == "#/body" &&
               document.furniture().self_ref() == "#/furniture",
           "fresh document has body and furniture roots");

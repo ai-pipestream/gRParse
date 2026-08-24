@@ -305,6 +305,9 @@ void verify_unary_uses_scheduler_and_shared_assembly(TestServer* server) {
   const auto& result = response.response().document();
   require(response.response().status() == pipestream::parse::v1::CONVERSION_STATUS_SUCCESS,
           "unary conversion status");
+  require(result.doc().schema_name() == "docling_document_v2" &&
+              result.doc().version() == "1.10.0",
+          "the merged document carries the fleet-wide schema identity");
   require(result.doc().pages_size() == 3 && result.doc().texts_size() == 3,
           "unary page and text counts");
   require(result.doc().texts(0).text().base().self_ref() == "#/texts/0" &&

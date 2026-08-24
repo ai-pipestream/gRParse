@@ -17,8 +17,11 @@ namespace officev1 = ai::pipestream::office::v1;
 
 namespace {
 
-// The schema identity docling-core v2 interop expects on the root.
+// The schema identity carried on the document root: the wire schema name
+// and the schema minor this repo currently mirrors. Every producer in the
+// fleet stamps the same pair.
 constexpr const char* kSchemaName = "docling_document_v2";
+constexpr const char* kSchemaVersion = "1.10.0";
 
 // Grids above this cell count keep table_cells only; a fully materialized
 // grid over a sparse used range would dwarf the data it carries.
@@ -227,6 +230,7 @@ std::string range_a1(const officev1::SheetRangeRef& range) {
 
 DoclingMapper::DoclingMapper() {
   document_.set_schema_name(kSchemaName);
+  document_.set_version(kSchemaVersion);
   docv1::GroupItem* body = document_.mutable_body();
   body->set_self_ref("#/body");
   body->set_content_layer(docv1::CONTENT_LAYER_BODY);

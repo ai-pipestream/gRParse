@@ -401,10 +401,12 @@ grpc::Status DocumentParserService::ConvertSource(
     const bool pdf = is_pdf(*bytes, requested_name);
 
     // The base document carries identity; every collector's output merges
-    // into it additively, in plan order.
+    // into it additively, in plan order. The schema name and version name
+    // the wire schema minor this repo currently mirrors, and must match
+    // what every other producer stamps on its documents.
     pipestream::document::v1::Document base;
-    base.set_schema_name("docling_document");
-    base.set_version("1.0.0");
+    base.set_schema_name("docling_document_v2");
+    base.set_version("1.10.0");
     base.set_name(requested_name.filename().string());
     auto* origin = base.mutable_origin();
     origin->set_filename(requested_name.filename().string());
