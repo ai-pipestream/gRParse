@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstddef>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -111,6 +112,61 @@ std::vector<std::vector<const docv1::TableCell*>> table_grid(
     }
   }
   return grid;
+}
+
+namespace {
+
+bool is_special_scheme(std::string_view scheme) {
+  return scheme == "http" || scheme == "https" || scheme == "ws" ||
+         scheme == "wss" || scheme == "ftp" || scheme == "file";
+}
+
+}  // namespace
+
+std::string normalized_uri(const std::string& uri) {
+  // Scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":"
+  std::size_t colon = std::string::npos;
+  if (!uri.empty() && std::isalpha(static_cast<unsigned char>(uri[0]))) {
+    for (std::size_t i = 1; i < uri.size(); ++i) {
+      const char c = uri[i];
+      if (c == ':') {
+        colon = i;
+        break;
+      }
+      if (!std::isalnum(static_cast<unsigned char>(c)) && c != '+' && c != '-' &&
+          c != '.') {
+        break;
+      }
+    }
+  }
+  if (colon == std::string::npos) return uri;
+
+  std::string scheme = uri.substr(0, colon);
+  std::transform(scheme.begin(), scheme.end(), scheme.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  std::string rest = uri.substr(colon + 1);
+  if (!is_special_scheme(scheme) || !rest.starts_with("//")) {
+    return scheme + ":" + rest;
+  }
+
+  const std::size_t authority_start = 2;
+  std::size_t authority_end = rest.find_first_of("/?#", authority_start);
+  if (authority_end == std::string::npos) authority_end = rest.size();
+  std::string authority =
+      rest.substr(authority_start, authority_end - authority_start);
+  // Lowercase the host: the part after any userinfo and before any port.
+  const std::size_t host_start =
+      authority.rfind('@') == std::string::npos ? 0 : authority.rfind('@') + 1;
+  std::size_t host_end = authority.find(':', host_start);
+  if (host_end == std::string::npos) host_end = authority.size();
+  std::transform(authority.begin() + static_cast<std::ptrdiff_t>(host_start),
+                 authority.begin() + static_cast<std::ptrdiff_t>(host_end),
+                 authority.begin() + static_cast<std::ptrdiff_t>(host_start),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+  std::string tail = rest.substr(authority_end);
+  if (tail.empty() || tail[0] == '?' || tail[0] == '#') tail.insert(0, "/");
+  return scheme + "://" + authority + tail;
 }
 
 std::string escape_html_text(const std::string& text) {

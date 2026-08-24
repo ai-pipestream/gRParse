@@ -454,6 +454,8 @@ add_library(grparse_core STATIC
   src/document_merge.cpp
   src/document_render.cpp
   src/render/renderer_base.cpp
+  src/render/load_normalization.cpp
+  src/render/display_width.cpp
   src/render/canonical_json_writer.cpp
   src/render/canonical_json_renderer.cpp
   src/render/markdown_renderer.cpp
@@ -527,6 +529,11 @@ if(BUILD_TESTING)
   # Built with the tests, never installed or staged into images.
   add_executable(grparse-canonical-json-tool tests/canonical_json_tool.cpp)
   target_link_libraries(grparse-canonical-json-tool PRIVATE grparse_core grparse_flags)
+  # Development utility for the Markdown validation harness
+  # (scripts/validate_markdown.py): Document in, Markdown out.  Built with the
+  # tests, never installed or staged into images.
+  add_executable(grparse-markdown-tool tests/markdown_tool.cpp)
+  target_link_libraries(grparse-markdown-tool PRIVATE grparse_core grparse_flags)
   # The umbrella target is what image builds compile.  Building it (instead of
   # naming test binaries in each Dockerfile) means a test added here can never
   # be silently absent from an image's ctest run ("Not Run" failures).

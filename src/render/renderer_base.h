@@ -60,6 +60,15 @@ std::string code_fence_language(const ai::pipestream::document::v1::CodeItem& co
 std::vector<std::vector<const ai::pipestream::document::v1::TableCell*>> table_grid(
     const ai::pipestream::document::v1::TableData& data);
 
+// The model layer parses hyperlink/uri strings through a URL type whose
+// serializer normalizes them; the states this service and its collectors
+// produce are covered here: scheme lowercasing and, for the special schemes,
+// host lowercasing plus an explicit "/" path when the path is empty. Strings
+// without a scheme pass through untouched (path semantics). Exotic
+// normalizations (percent-encoding, IDNA) are out of scope and would surface
+// in the validation oracles if a producer ever hit them.
+std::string normalized_uri(const std::string& uri);
+
 std::string escape_html_text(const std::string& text);
 
 std::string escape_html_attribute(const std::string& text);
