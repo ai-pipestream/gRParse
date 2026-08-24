@@ -20,6 +20,7 @@ const infoBar = document.getElementById("doc-info");
 const toolbar = document.getElementById("doc-toolbar");
 const legendBar = document.getElementById("doc-legend");
 const legendEntries = document.getElementById("legend-entries");
+const legendCollectors = document.getElementById("legend-collectors");
 const furnitureToggle = document.getElementById("toggle-furniture");
 const readingOrderToggle = document.getElementById("toggle-reading-order");
 const confidenceToggle = document.getElementById("toggle-confidence");
@@ -306,6 +307,7 @@ function indexDocument(doc) {
     items: [],
     byRef: new Map(),
     labelCounts: new Map(),
+    collectorCounts: new Map(),
     unpagedCollectors: [],
     walkOrder: [],
     pageSequences: new Map(),
@@ -345,6 +347,12 @@ function indexDocument(doc) {
         layer: layerOf(base.contentLayer),
       };
       record.confidence = collectorConfidence(record);
+      // Items merged in without a collector source belong to the base
+      // document; the filter lists them under that name.
+      record.collector = kind === "group" ? null : (collectorOf(record) || "base");
+      if (record.collector) {
+        built.collectorCounts.set(record.collector, (built.collectorCounts.get(record.collector) || 0) + 1);
+      }
       built.items.push(record);
       built.byRef.set(record.ref, record);
       if (typeof base.selfRef === "string" && base.selfRef && base.selfRef !== record.ref) {
@@ -454,7 +462,12 @@ function decorate(element, record) {
   element.classList.add("dv-item");
   element.dataset.ref = record.ref;
   element.dataset.label = record.label;
+  if (record.collector) element.dataset.collector = record.collector;
   if (!inBodyLayer(record)) element.classList.add("dv-furn");
+  // Cards build lazily, so an item arriving after a filter change starts out
+  // in the state that filter left it in.
+  if (labelHidden(record)) element.classList.add("label-off");
+  if (collectorHidden(record)) element.classList.add("collector-off");
   viewEntryFor(record.ref).contents.push(element);
 }
 
@@ -498,6 +511,8 @@ function attach(container, main, record, ctx) {
   }
   const wrap = el("div", "dv-item-block");
   if (main.classList.contains("dv-furn")) wrap.classList.add("dv-furn");
+  if (main.classList.contains("label-off")) wrap.classList.add("label-off");
+  if (main.classList.contains("collector-off")) wrap.classList.add("collector-off");
   wrap.append(main, drawer);
   container.appendChild(wrap);
 }
@@ -836,6 +851,51 @@ function makeContext(include, options) {
 // ---------------------------------------------------------------------------
 
 const hiddenLabels = new Set();
+const hiddenCollectors = new Set();
+
+// Label and collector filters are independent classes, so an item is only
+// visible when both of its filters are on.
+function labelHidden(record) {
+  return hiddenLabels.has(record.label);
+}
+
+function collectorHidden(record) {
+  return record.collector !== null && hiddenCollectors.has(record.collector);
+}
+
+// A wrapped item hides with its metadata drawer, not on its own.
+function hideTargetOf(element) {
+  const parent = element.parentElement;
+  return parent && parent.classList.contains("dv-item-block") ? parent : element;
+}
+
+// One pass over the model per filter change. Hover and render paths never
+// look at the filter sets, so this is the only place visibility is decided.
+function applyFilters() {
+  if (!model) return;
+  for (const record of model.items) {
+    if (record.kind === "group") continue;
+    const entry = model.view.get(record.ref);
+    if (!entry) continue;
+    const byLabel = labelHidden(record);
+    const byCollector = collectorHidden(record);
+    for (const box of entry.boxes) {
+      box.el.classList.toggle("label-off", byLabel);
+      box.el.classList.toggle("collector-off", byCollector);
+    }
+    for (const element of entry.contents) {
+      const target = hideTargetOf(element);
+      element.classList.toggle("label-off", byLabel);
+      element.classList.toggle("collector-off", byCollector);
+      target.classList.toggle("label-off", byLabel);
+      target.classList.toggle("collector-off", byCollector);
+    }
+  }
+  // A collector bucket with nothing left to show goes away with its items.
+  for (const bucket of results.querySelectorAll(".dv-collector-bucket")) {
+    bucket.classList.toggle("dv-bucket-off", !bucket.querySelector(".dv-item:not(.label-off):not(.collector-off)"));
+  }
+}
 
 function boxGeometry(bbox, size) {
   const width = size.width || 1;
@@ -894,8 +954,10 @@ function buildBoxLayer(pageNo, size) {
     box.dataset.label = record.label;
     box.dataset.prov = String(prov.index);
     box.title = record.label;
+    if (record.collector) box.dataset.collector = record.collector;
     if (!inBodyLayer(record)) box.classList.add("dv-furn");
-    if (hiddenLabels.has(record.label)) box.classList.add("label-off");
+    if (labelHidden(record)) box.classList.add("label-off");
+    if (collectorHidden(record)) box.classList.add("collector-off");
     viewEntryFor(record.ref).boxes.push({ el: box, provIndex: prov.index });
     layer.appendChild(box);
   }
@@ -1060,6 +1122,7 @@ function buildViewer(doc) {
   hoveredProv = null;
   charMarks = [];
   hiddenLabels.clear();
+  hiddenCollectors.clear();
   renderInfo(doc);
   renderLegend();
 
@@ -1172,9 +1235,7 @@ function renderLegend() {
     checkbox.addEventListener("change", () => {
       if (checkbox.checked) hiddenLabels.delete(label);
       else hiddenLabels.add(label);
-      for (const box of results.querySelectorAll(".dv-box")) {
-        if (box.dataset.label === label) box.classList.toggle("label-off", !checkbox.checked);
-      }
+      applyFilters();
     });
     const swatch = el("i", "dv-swatch");
     const color = colorFor(label);
@@ -1184,6 +1245,31 @@ function renderLegend() {
     text.textContent = `${label.replace(/_/g, " ")} ×${count}`;
     entry.append(checkbox, swatch, text);
     legendEntries.appendChild(entry);
+  }
+  renderCollectorLegend();
+}
+
+// Every collector that contributed items, most prolific first. Filtering by
+// collector combines with the label filters above: an item shows only when
+// both of its filters are on.
+function renderCollectorLegend() {
+  legendCollectors.textContent = "";
+  const entries = [...model.collectorCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  for (const [name, count] of entries) {
+    const entry = el("label", "dv-legend-item dv-collector-item");
+    const checkbox = el("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = !hiddenCollectors.has(name);
+    checkbox.dataset.collector = name;
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) hiddenCollectors.delete(name);
+      else hiddenCollectors.add(name);
+      applyFilters();
+    });
+    const text = el("span");
+    text.textContent = `${name} ×${count}`;
+    entry.append(checkbox, text);
+    legendCollectors.appendChild(entry);
   }
 }
 

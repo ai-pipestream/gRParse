@@ -514,7 +514,7 @@ h1 { margin: 0; font-size: 26px; letter-spacing: 0.5px; }
   cursor: pointer;
   transition: box-shadow 0.1s;
 }
-.dv-box.label-off { display: none; }
+.dv-box.label-off, .dv-box.collector-off { display: none; }
 /* The label colours are inline styles, so the heatmap has to outrank them. */
 .dv-root.show-confidence .dv-box {
   border-color: var(--dv-conf-border) !important;
@@ -719,6 +719,13 @@ h1 { margin: 0; font-size: 26px; letter-spacing: 0.5px; }
   vertical-align: 1px;
 }
 .dv-empty-note { color: var(--muted); font-size: 12.5px; font-style: italic; }
+
+/* Filter state. Last in the sheet so it outranks the per-element display
+   rules above (inline captions, list items, table wrappers). */
+.dv-collector-item { color: var(--fg); }
+.dv-item.label-off, .dv-item.collector-off,
+.dv-item-block.label-off, .dv-item-block.collector-off,
+.dv-collector-bucket.dv-bucket-off { display: none; }
 
 /* VLM Convert: one card per page, filled when that page's call returns. */
 .vlm-card {
