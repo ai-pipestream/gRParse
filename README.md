@@ -413,10 +413,11 @@ not exist inside the image).
 Verified on an Arc B70 (Battlemage): detection/recognition/classification,
 layout, and figure classification all compile and run on the GPU plugin.
 One model does not: `slanet_plus.onnx` uses a dynamic-rank `While`/`Loop`
-the OpenVINO GPU plugin rejects, so a default `GPU` device fails loudly at
-startup. Set `GRPARSE_TABLE_STRUCTURE=off` on this hardware (raster table
-cells still come through geometry) until the model is rebuilt with static
-ranks.
+the OpenVINO plugin rejects on every device. That no longer stops the
+server - the table session is rebuilt on CPU with the plugin's own error
+logged, and everything else stays on OpenVINO - so no setting is needed;
+`GRPARSE_TABLE_STRUCTURE=off` remains available for anyone who would rather
+not pay for it on CPU at all.
 
 The image defaults to `GRPARSE_ORT_EP=openvino` with
 `GRPARSE_OPENVINO_DEVICE=GPU`; set the device to `GPU.<n>`, `CPU`, `NPU`, or
