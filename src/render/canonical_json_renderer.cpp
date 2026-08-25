@@ -29,7 +29,10 @@ namespace docv1 = ai::pipestream::document::v1;
 using render::JsonWriter;
 using render::canonical_double;
 using render::canonical_integral_decimal;
+using render::code_language_string;
+using render::human_language_string;
 using render::normalized_uri;
+using render::ordered_custom_fields;
 
 // The canonical dialect identity. The wire schema_name/version are
 // service-internal and deliberately not echoed: the export always declares
@@ -151,88 +154,6 @@ std::string_view graph_link_label_string(docv1::GraphLinkLabel label) {
   }
 }
 
-std::optional<std::string_view> code_language_string(docv1::CodeLanguageLabel tag) {
-  switch (tag) {
-    case docv1::CODE_LANGUAGE_LABEL_ADA: return "Ada";
-    case docv1::CODE_LANGUAGE_LABEL_AWK: return "Awk";
-    case docv1::CODE_LANGUAGE_LABEL_BASH: return "Bash";
-    case docv1::CODE_LANGUAGE_LABEL_BC: return "bc";
-    case docv1::CODE_LANGUAGE_LABEL_C: return "C";
-    case docv1::CODE_LANGUAGE_LABEL_C_SHARP: return "C#";
-    case docv1::CODE_LANGUAGE_LABEL_C_PLUS_PLUS: return "C++";
-    case docv1::CODE_LANGUAGE_LABEL_CMAKE: return "CMake";
-    case docv1::CODE_LANGUAGE_LABEL_COBOL: return "COBOL";
-    case docv1::CODE_LANGUAGE_LABEL_CSS: return "CSS";
-    case docv1::CODE_LANGUAGE_LABEL_CEYLON: return "Ceylon";
-    case docv1::CODE_LANGUAGE_LABEL_CLOJURE: return "Clojure";
-    case docv1::CODE_LANGUAGE_LABEL_CRYSTAL: return "Crystal";
-    case docv1::CODE_LANGUAGE_LABEL_CUDA: return "Cuda";
-    case docv1::CODE_LANGUAGE_LABEL_CYTHON: return "Cython";
-    case docv1::CODE_LANGUAGE_LABEL_D: return "D";
-    case docv1::CODE_LANGUAGE_LABEL_DART: return "Dart";
-    case docv1::CODE_LANGUAGE_LABEL_DC: return "dc";
-    case docv1::CODE_LANGUAGE_LABEL_DOCKERFILE: return "Dockerfile";
-    case docv1::CODE_LANGUAGE_LABEL_ELIXIR: return "Elixir";
-    case docv1::CODE_LANGUAGE_LABEL_ERLANG: return "Erlang";
-    case docv1::CODE_LANGUAGE_LABEL_FORTRAN: return "FORTRAN";
-    case docv1::CODE_LANGUAGE_LABEL_FORTH: return "Forth";
-    case docv1::CODE_LANGUAGE_LABEL_GO: return "Go";
-    case docv1::CODE_LANGUAGE_LABEL_HTML: return "HTML";
-    case docv1::CODE_LANGUAGE_LABEL_HASKELL: return "Haskell";
-    case docv1::CODE_LANGUAGE_LABEL_HAXE: return "Haxe";
-    case docv1::CODE_LANGUAGE_LABEL_JAVA: return "Java";
-    case docv1::CODE_LANGUAGE_LABEL_JAVASCRIPT: return "JavaScript";
-    case docv1::CODE_LANGUAGE_LABEL_JSON: return "JSON";
-    case docv1::CODE_LANGUAGE_LABEL_JULIA: return "Julia";
-    case docv1::CODE_LANGUAGE_LABEL_KOTLIN: return "Kotlin";
-    case docv1::CODE_LANGUAGE_LABEL_LISP: return "Lisp";
-    case docv1::CODE_LANGUAGE_LABEL_LUA: return "Lua";
-    case docv1::CODE_LANGUAGE_LABEL_MATLAB: return "Matlab";
-    case docv1::CODE_LANGUAGE_LABEL_MOONSCRIPT: return "MoonScript";
-    case docv1::CODE_LANGUAGE_LABEL_NIM: return "Nim";
-    case docv1::CODE_LANGUAGE_LABEL_OCAML: return "OCaml";
-    case docv1::CODE_LANGUAGE_LABEL_OBJECTIVEC: return "ObjectiveC";
-    case docv1::CODE_LANGUAGE_LABEL_OCTAVE: return "Octave";
-    case docv1::CODE_LANGUAGE_LABEL_PHP: return "PHP";
-    case docv1::CODE_LANGUAGE_LABEL_PASCAL: return "Pascal";
-    case docv1::CODE_LANGUAGE_LABEL_PERL: return "Perl";
-    case docv1::CODE_LANGUAGE_LABEL_PROLOG: return "Prolog";
-    case docv1::CODE_LANGUAGE_LABEL_PYTHON: return "Python";
-    case docv1::CODE_LANGUAGE_LABEL_RACKET: return "Racket";
-    case docv1::CODE_LANGUAGE_LABEL_RUBY: return "Ruby";
-    case docv1::CODE_LANGUAGE_LABEL_RUST: return "Rust";
-    case docv1::CODE_LANGUAGE_LABEL_SML: return "SML";
-    case docv1::CODE_LANGUAGE_LABEL_SQL: return "SQL";
-    case docv1::CODE_LANGUAGE_LABEL_SCALA: return "Scala";
-    case docv1::CODE_LANGUAGE_LABEL_SCHEME: return "Scheme";
-    case docv1::CODE_LANGUAGE_LABEL_SWIFT: return "Swift";
-    case docv1::CODE_LANGUAGE_LABEL_TYPESCRIPT: return "TypeScript";
-    case docv1::CODE_LANGUAGE_LABEL_UNKNOWN: return "unknown";
-    case docv1::CODE_LANGUAGE_LABEL_VISUALBASIC: return "VisualBasic";
-    case docv1::CODE_LANGUAGE_LABEL_XML: return "XML";
-    case docv1::CODE_LANGUAGE_LABEL_YAML: return "YAML";
-    case docv1::CODE_LANGUAGE_LABEL_LATEX: return "Latex";
-    case docv1::CODE_LANGUAGE_LABEL_TIKZ: return "Tikz";
-    case docv1::CODE_LANGUAGE_LABEL_DOCLANG: return "DocLang";
-    default: return std::nullopt;
-  }
-}
-
-// The BCP-47 code is the lowercase suffix of the proto enum name.
-std::optional<std::string> human_language_string(docv1::HumanLanguageLabel tag) {
-  if (tag == docv1::HUMAN_LANGUAGE_LABEL_UNSPECIFIED ||
-      !docv1::HumanLanguageLabel_IsValid(tag)) {
-    return std::nullopt;
-  }
-  constexpr std::string_view prefix = "HUMAN_LANGUAGE_LABEL_";
-  std::string name = docv1::HumanLanguageLabel_Name(tag);
-  if (!name.starts_with(prefix)) return std::nullopt;
-  std::string code = name.substr(prefix.size());
-  std::transform(code.begin(), code.end(), code.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return code;
-}
-
 // The exported code language: a recognized tag maps directly; anything else
 // (unset, unspecified, an unknown tag, or a raw-only fallback) collapses to
 // the vocabulary's catch-all "unknown", which is also the model default.
@@ -311,58 +232,11 @@ class CanonicalJsonRenderer {
     writer_.end_object();
   }
 
-  // True when the key already satisfies the namespace__field_name rule.
-  static bool conforming_custom_name(std::string_view key) {
-    const std::size_t pos = key.find("__");
-    return pos != std::string_view::npos && pos > 0 && pos + 2 < key.size();
-  }
-
-  // Emits the map's entries as trailing members of the current object,
-  // mirroring the bridge: non-conforming names move under the "pipestream"
-  // namespace (every character outside [A-Za-z0-9_] folded to "_", collision
-  // suffixes _2, _3, ...) and entries whose payload is null are dropped.
-  // The wire map is unordered, so entries are emitted in byte order of the
-  // final keys for a deterministic export.
+  // Emits the map's entries as trailing members of the current object, in the
+  // shared export order (renderer_base.h: pipestream-namespaced renaming of
+  // non-conforming names, null payloads dropped, final names in byte order).
   void emit_custom_fields(const ValueMap& fields) {
-    if (fields.empty()) return;
-    std::vector<std::pair<std::string, const google::protobuf::Value*>> entries;
-    entries.reserve(fields.size());
-    for (const auto& [key, value] : fields) entries.emplace_back(key, &value);
-    std::sort(entries.begin(), entries.end(),
-              [](const auto& a, const auto& b) { return a.first < b.first; });
-
-    std::vector<std::string> taken;
-    taken.reserve(entries.size());
-    for (const auto& entry : entries) taken.push_back(entry.first);
-    for (auto& [key, value] : entries) {
-      if (conforming_custom_name(key)) continue;
-      std::string base = "pipestream__";
-      for (const char c : key) {
-        const auto byte = static_cast<unsigned char>(c);
-        // One replacement per character: UTF-8 continuation bytes fold into
-        // their lead byte's underscore.
-        if ((byte & 0xc0) == 0x80) continue;
-        const bool word = (byte < 0x80 && std::isalnum(byte)) || c == '_';
-        base.push_back(word ? c : '_');
-      }
-      std::string candidate = base;
-      int suffix = 2;
-      while (std::find(taken.begin(), taken.end(), candidate) != taken.end()) {
-        candidate = base + "_" + std::to_string(suffix++);
-      }
-      *std::find(taken.begin(), taken.end(), key) = candidate;
-      key = std::move(candidate);
-    }
-
-    std::sort(entries.begin(), entries.end(),
-              [](const auto& a, const auto& b) { return a.first < b.first; });
-    for (const auto& [key, value] : entries) {
-      // A null payload at custom-field level vanishes under the dump's
-      // exclude-none rule; nulls nested inside values survive.
-      if (value->kind_case() == google::protobuf::Value::kNullValue ||
-          value->kind_case() == google::protobuf::Value::KIND_NOT_SET) {
-        continue;
-      }
+    for (const auto& [key, value] : ordered_custom_fields(fields)) {
       writer_.key(key);
       emit_value(*value);
     }

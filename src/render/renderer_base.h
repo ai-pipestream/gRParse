@@ -6,9 +6,13 @@
 #ifndef GRPARSE_RENDER_RENDERER_BASE_H
 #define GRPARSE_RENDER_RENDERER_BASE_H
 
+#include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
+
+#include <google/protobuf/struct.pb.h>
 
 #include "ai/pipestream/document/v1/document.pb.h"
 
@@ -68,6 +72,28 @@ std::vector<std::vector<const ai::pipestream::document::v1::TableCell*>> table_g
 // normalizations (percent-encoding, IDNA) are out of scope and would surface
 // in the validation oracles if a producer ever hit them.
 std::string normalized_uri(const std::string& uri);
+
+// The canonical spelling of a code language tag ("C++", "Python"), or empty
+// for an unset, unspecified, or unknown tag.
+std::optional<std::string_view> code_language_string(
+    ai::pipestream::document::v1::CodeLanguageLabel tag);
+
+// The BCP-47 code of a human language tag ("en"), or empty for an unset,
+// unspecified, or unknown tag.
+std::optional<std::string> human_language_string(
+    ai::pipestream::document::v1::HumanLanguageLabel tag);
+
+// The custom meta fields of one node, in the order the exports emit them.
+// The model layer requires a "namespace__field_name" key, so a name without
+// one moves under the "pipestream" namespace with every character outside
+// [A-Za-z0-9_] folded to an underscore and a _2, _3, ... suffix breaking a
+// collision; renaming considers the names in byte order so the suffix always
+// lands on the same entry. The result is ordered by the final name, which
+// makes an unordered wire map export deterministically. Entries with a null
+// payload are dropped: the model's dump excludes them.
+std::vector<std::pair<std::string, const google::protobuf::Value*>>
+ordered_custom_fields(
+    const google::protobuf::Map<std::string, google::protobuf::Value>& fields);
 
 std::string escape_html_text(const std::string& text);
 
