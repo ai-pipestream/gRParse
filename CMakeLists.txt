@@ -464,6 +464,9 @@ add_library(grparse_core STATIC
   src/render/doctags_renderer.cpp
   src/render/doclang_renderer.cpp
   src/render/vtt_renderer.cpp
+  src/chunking/token_counter.cpp
+  src/chunking/sentence_rules.cpp
+  src/chunking/chunker.cpp
   src/document_collectors.cpp
   src/document_parser_service.cpp
   src/office_collector.cpp
