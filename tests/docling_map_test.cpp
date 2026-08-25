@@ -3,6 +3,7 @@
 #include <print>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "ai/pipestream/office/v1/office_service.pb.h"
@@ -201,6 +202,55 @@ void verify_line_prov_is_page_local_with_charspans() {
   require(base.prov(1).charspan().start() == 0 &&
               base.prov(1).charspan().end() == 11,
           "unmeasured lines keep the full item span");
+}
+
+// A document-absolute box on a page whose rectangle never arrived cannot be
+// reduced to page-local, and the emitted box says page-local regardless. The
+// fold says so instead of leaving the consumer to trust it, and says it once
+// per page rather than once per box.
+void verify_unknown_page_rect_warns_instead_of_stamping_silently() {
+  grparse::DoclingMapper mapper;
+  // No DocumentInfo, so no page rectangle is known for any page.
+  officev1::StreamPagesResponse event;
+  officev1::Paragraph* paragraph = event.mutable_paragraph();
+  paragraph->set_list_level(-1);  // wire contract: -1 means not a list item
+  paragraph->set_char_offset(0);
+  *paragraph->add_runs() = make_run("unplaced");
+  for (int line = 0; line < 2; ++line) {
+    officev1::LineBox* box = paragraph->add_line_rects();
+    box->set_page_index(2);
+    box->set_x_twips(1000);
+    box->set_y_twips(21000 + line * 200);
+    box->set_width_twips(500);
+    box->set_height_twips(200);
+    box->set_char_start(-1);
+    box->set_char_end(-1);
+  }
+  mapper.consume(event);
+
+  const auto& base = mapper.document().texts(0).text().base();
+  require(base.prov_size() == 2, "the item keeps its provenance, page number included");
+  require(base.prov(0).bbox().t() == 21000.0,
+          "with no page rectangle the box is left exactly as it came");
+  require(mapper.warnings().size() == 1,
+          "one warning per unresolved page, not one per box");
+  require(mapper.warnings()[0].contains("page 3") &&
+              mapper.warnings()[0].contains("document-absolute"),
+          "the warning names the page and the coordinate space: " + mapper.warnings()[0]);
+
+  // A second page with no rectangle is its own warning.
+  officev1::StreamPagesResponse other;
+  officev1::Paragraph* elsewhere = other.mutable_paragraph();
+  elsewhere->set_list_level(-1);
+  elsewhere->set_page_index(4);
+  elsewhere->mutable_start()->set_x(10);
+  elsewhere->mutable_start()->set_y(20);
+  elsewhere->mutable_end()->set_x(30);
+  elsewhere->mutable_end()->set_y(40);
+  *elsewhere->add_runs() = make_run("also unplaced");
+  mapper.consume(other);
+  require(mapper.warnings().size() == 2 && mapper.warnings()[1].contains("page 5"),
+          "each unresolved page warns once");
 }
 
 void verify_caret_prov_fallback_and_unresolved_page() {
@@ -547,6 +597,104 @@ void verify_integrity_errors_flag_broken_references() {
           "an item with an empty self_ref is reported");
 }
 
+// True when some error mentions every fragment given.
+bool reported(const std::vector<std::string>& errors,
+              const std::vector<std::string>& fragments) {
+  for (const std::string& error : errors) {
+    bool all = true;
+    for (const std::string& fragment : fragments) {
+      if (!error.contains(fragment)) {
+        all = false;
+        break;
+      }
+    }
+    if (all) return true;
+  }
+  return false;
+}
+
+// The four form arenas link like every other arena, so they are held to the
+// same contract: self_ref shape, parent resolution, children resolution, and
+// the item_refs their graph cells point at.
+void verify_integrity_errors_cover_the_form_arenas() {
+  docv1::Document document;
+  document.mutable_body()->set_self_ref("#/body");
+  document.mutable_furniture()->set_self_ref("#/furniture");
+
+  // A key-value item under a parent that does not exist, with a graph cell
+  // pointing at an absent text item.
+  auto* key_value = document.add_key_value_items();
+  key_value->set_self_ref("#/key_value_items/0");
+  key_value->mutable_parent()->set_ref("#/groups/7");
+  auto* cell = key_value->mutable_graph()->add_cells();
+  cell->set_cell_id(1);
+  cell->mutable_item_ref()->set_ref("#/texts/4");
+
+  // A form item whose child does not exist.
+  auto* form = document.add_form_items();
+  form->set_self_ref("#/form_items/0");
+  form->mutable_parent()->set_ref("#/body");
+  form->add_children()->set_ref("#/field_items/9");
+  document.mutable_body()->add_children()->set_ref("#/form_items/0");
+
+  // A field region with no self_ref at all.
+  document.add_field_regions()->mutable_parent()->set_ref("#/body");
+
+  // A field item duplicating a self_ref already taken.
+  auto* field = document.add_field_items();
+  field->set_self_ref("#/form_items/0");
+  field->add_prov()->set_page_no(0);
+
+  const auto errors = grparse::docling_integrity_errors(document);
+  require(reported(errors, {"#/groups/7", "#/key_value_items/0", "does not resolve"}),
+          "an unresolvable key-value parent is reported");
+  require(reported(errors, {"graph cell item_ref", "#/texts/4", "does not resolve"}),
+          "an unresolvable graph-cell item_ref is reported");
+  require(reported(errors, {"#/field_items/9", "#/form_items/0", "does not resolve"}),
+          "an unresolvable form child is reported");
+  require(reported(errors, {"empty self_ref"}),
+          "a field region with no self_ref is reported");
+  require(reported(errors, {"duplicate self_ref", "#/form_items/0"}),
+          "a field item reusing a taken self_ref is reported");
+  require(reported(errors, {"page_no 0", "1-based"}),
+          "provenance on the proto3 default page is reported");
+
+  // The same shapes, wired correctly, are clean.
+  docv1::Document sound;
+  sound.mutable_body()->set_self_ref("#/body");
+  sound.mutable_furniture()->set_self_ref("#/furniture");
+  auto* text = sound.add_texts()->mutable_text()->mutable_base();
+  text->set_self_ref("#/texts/0");
+  text->mutable_parent()->set_ref("#/form_items/0");
+  text->add_prov()->set_page_no(1);
+  auto* sound_form = sound.add_form_items();
+  sound_form->set_self_ref("#/form_items/0");
+  sound_form->mutable_parent()->set_ref("#/body");
+  sound_form->add_children()->set_ref("#/texts/0");
+  sound_form->add_prov()->set_page_no(1);
+  auto* sound_cell = sound_form->mutable_graph()->add_cells();
+  sound_cell->set_cell_id(1);
+  sound_cell->mutable_item_ref()->set_ref("#/texts/0");
+  sound_cell->mutable_prov()->set_page_no(1);
+  auto* region = sound.add_field_regions();
+  region->set_self_ref("#/field_regions/0");
+  region->mutable_parent()->set_ref("#/body");
+  auto* sound_field = sound.add_field_items();
+  sound_field->set_self_ref("#/field_items/0");
+  sound_field->mutable_parent()->set_ref("#/body");
+  auto* pair = sound.add_key_value_items();
+  pair->set_self_ref("#/key_value_items/0");
+  pair->mutable_parent()->set_ref("#/body");
+  sound.mutable_body()->add_children()->set_ref("#/form_items/0");
+  sound.mutable_body()->add_children()->set_ref("#/field_regions/0");
+  sound.mutable_body()->add_children()->set_ref("#/field_items/0");
+  sound.mutable_body()->add_children()->set_ref("#/key_value_items/0");
+  const auto clean = grparse::docling_integrity_errors(sound);
+  require(clean.empty(),
+          "a sound form arena reports nothing: " +
+              (clean.empty() ? std::string() : clean.front()));
+}
+
 }  // namespace
 
 int main() {
@@ -558,6 +706,7 @@ int main() {
     verify_unset_event_is_ignored();
     verify_paragraph_classification();
     verify_line_prov_is_page_local_with_charspans();
+    verify_unknown_page_rect_warns_instead_of_stamping_silently();
     verify_caret_prov_fallback_and_unresolved_page();
     verify_uniform_formatting_and_hyperlinks();
     verify_table_fold_grid_and_off_grid_cells();
@@ -570,6 +719,7 @@ int main() {
     verify_header_footer_lands_in_furniture();
     verify_take_moves_the_document_out();
     verify_integrity_errors_flag_broken_references();
+    verify_integrity_errors_cover_the_form_arenas();
     std::println("docling-map-test: all checks passed");
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {

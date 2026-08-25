@@ -350,12 +350,24 @@ void DoclingMapper::add_prov(
     int page_index, bool page_local, double l, double t, double r, double b,
     long long span_start, long long span_end) {
   if (page_index < 0) return;
-  if (!page_local && page_index < static_cast<int>(page_rects_.size())) {
-    const officev1::PageRect& page = page_rects_[page_index];
-    l -= static_cast<double>(page.x_twips());
-    r -= static_cast<double>(page.x_twips());
-    t -= static_cast<double>(page.y_twips());
-    b -= static_cast<double>(page.y_twips());
+  if (!page_local) {
+    if (page_index < static_cast<int>(page_rects_.size())) {
+      const officev1::PageRect& page = page_rects_[page_index];
+      l -= static_cast<double>(page.x_twips());
+      r -= static_cast<double>(page.x_twips());
+      t -= static_cast<double>(page.y_twips());
+      b -= static_cast<double>(page.y_twips());
+    } else if (unresolved_prov_pages_.insert(page_index).second) {
+      // No page rectangle to subtract, so the box stays document-absolute
+      // while every emitted box claims to be page-local. The item keeps its
+      // provenance (dropping it loses the page number too), but the fold
+      // says so once per page rather than letting the consumer trust a
+      // coordinate space that does not hold.
+      warnings_.push_back(
+          "page " + std::to_string(page_index + 1)
+          + " has no known rectangle, so its provenance boxes stay "
+            "document-absolute despite the page-local coordinate origin");
+    }
   }
   docv1::ProvenanceItem* item = prov->Add();
   item->set_page_no(page_index + 1);
@@ -1634,6 +1646,40 @@ std::vector<std::string> docling_integrity_errors(
     if (has_parent) parents.emplace_back(self_ref, parent_ref);
   };
 
+  // Provenance page numbers are 1-based in this dialect, so the proto3
+  // default of 0 is never a page: an item carrying it points nowhere. The
+  // box itself is not checked; zero-area placeholders are legitimate for
+  // whole-sheet and whole-chart items that have no measured rectangle.
+  auto check_prov = [&](const std::string& owner,
+                        const google::protobuf::RepeatedPtrField<
+                            docv1::ProvenanceItem>& prov) {
+    for (const docv1::ProvenanceItem& item : prov) {
+      if (item.page_no() < 1) {
+        errors.push_back("provenance of " + owner + " has page_no "
+                         + std::to_string(item.page_no())
+                         + ", which is not a 1-based page");
+      }
+    }
+  };
+
+  // The key-value and form arenas link into the item arenas through their
+  // graph cells as well as through children, so a cell's item_ref is a
+  // reference like any other and is resolved after the walk.
+  std::vector<std::pair<std::string, std::string>> graph_item_refs;
+  auto collect_graph = [&](const std::string& owner,
+                           const docv1::GraphData& graph) {
+    for (const docv1::GraphCell& cell : graph.cells()) {
+      if (cell.has_prov() && cell.prov().page_no() < 1) {
+        errors.push_back("provenance of graph cell "
+                         + std::to_string(cell.cell_id()) + " of " + owner
+                         + " has page_no " + std::to_string(cell.prov().page_no())
+                         + ", which is not a 1-based page");
+      }
+      if (!cell.has_item_ref()) continue;
+      graph_item_refs.emplace_back(owner, cell.item_ref().ref());
+    }
+  };
+
   for (const docv1::RefItem& child : document.body().children()) {
     children["#/body"].insert(child.ref());
   }
@@ -1652,6 +1698,7 @@ std::vector<std::string> docling_integrity_errors(
       const docv1::CodeItem& code = item.code();
       collect(code.self_ref(), code.children(), code.has_parent(),
               code.parent().ref());
+      check_prov(code.self_ref(), code.prov());
       continue;
     }
     const docv1::TextItemBase* base = text_base(item);
@@ -1661,14 +1708,42 @@ std::vector<std::string> docling_integrity_errors(
     }
     collect(base->self_ref(), base->children(), base->has_parent(),
             base->parent().ref());
+    check_prov(base->self_ref(), base->prov());
   }
   for (const docv1::PictureItem& picture : document.pictures()) {
     collect(picture.self_ref(), picture.children(), picture.has_parent(),
             picture.parent().ref());
+    check_prov(picture.self_ref(), picture.prov());
   }
   for (const docv1::TableItem& table : document.tables()) {
     collect(table.self_ref(), table.children(), table.has_parent(),
             table.parent().ref());
+    check_prov(table.self_ref(), table.prov());
+  }
+  // The four form arenas carry the same reference shape as the item arenas
+  // above; merge and the renderers follow their links, so they are held to
+  // the same contract.
+  for (const docv1::KeyValueItem& item : document.key_value_items()) {
+    collect(item.self_ref(), item.children(), item.has_parent(),
+            item.parent().ref());
+    check_prov(item.self_ref(), item.prov());
+    collect_graph(item.self_ref(), item.graph());
+  }
+  for (const docv1::FormItem& item : document.form_items()) {
+    collect(item.self_ref(), item.children(), item.has_parent(),
+            item.parent().ref());
+    check_prov(item.self_ref(), item.prov());
+    collect_graph(item.self_ref(), item.graph());
+  }
+  for (const docv1::FieldRegionItem& item : document.field_regions()) {
+    collect(item.self_ref(), item.children(), item.has_parent(),
+            item.parent().ref());
+    check_prov(item.self_ref(), item.prov());
+  }
+  for (const docv1::FieldItem& item : document.field_items()) {
+    collect(item.self_ref(), item.children(), item.has_parent(),
+            item.parent().ref());
+    check_prov(item.self_ref(), item.prov());
   }
 
   for (const auto& [owner, child_refs] : children) {
@@ -1698,6 +1773,12 @@ std::vector<std::string> docling_integrity_errors(
         errors.push_back("comment ref " + comment.ref() + " of "
                          + table.self_ref() + " does not resolve");
       }
+    }
+  }
+  for (const auto& [owner, item_ref] : graph_item_refs) {
+    if (refs.find(item_ref) == refs.end()) {
+      errors.push_back("graph cell item_ref " + item_ref + " of " + owner
+                       + " does not resolve");
     }
   }
   return errors;

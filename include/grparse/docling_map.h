@@ -4,6 +4,7 @@
 #define GRPARSE_DOCLING_MAP_H
 
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -28,9 +29,10 @@ namespace grparse {
 // Coordinates: office positions are twips. Writer anchors and LineBox
 // rectangles are document-absolute; the mapper subtracts the containing
 // page's origin (from DocumentInfo.page_rects) so every BoundingBox is
-// page-local with COORD_ORIGIN_TOPLEFT. Draw, Impress, and Calc positions
-// are already page-local per part. All emitted doubles stay in twips; unit
-// policy beyond that is the consumer's.
+// page-local with COORD_ORIGIN_TOPLEFT; a page whose rectangle never
+// arrived cannot be reduced that way, and warnings() names it. Draw,
+// Impress, and Calc positions are already page-local per part. All emitted
+// doubles stay in twips; unit policy beyond that is the consumer's.
 //
 // A partial event stream (StreamOptions part selection) builds a valid
 // Document from any subset; only DocumentInfo and RenderStatus are assumed.
@@ -44,7 +46,9 @@ class DoclingMapper {
   // True once the terminal RenderStatus has been consumed.
   bool finished() const { return finished_; }
 
-  // The warnings carried by the terminal RenderStatus.
+  // The warnings the terminal RenderStatus carried, plus the fold's own:
+  // anything the mapper had to approximate rather than map, in the order it
+  // happened.
   const std::vector<std::string>& warnings() const { return warnings_; }
 
   // The accumulated document. Structurally valid at any point in the
@@ -95,7 +99,9 @@ class DoclingMapper {
   // Appends one page-local ProvenanceItem. page_index is the wire's
   // zero-based index; -1 appends nothing. page_local says whether l/t/r/b
   // are already page-local; document-absolute boxes have the page origin
-  // subtracted when DocumentInfo carried the page rectangle.
+  // subtracted when DocumentInfo carried the page rectangle. When it did
+  // not, the box is kept as it came and a warning names the page, so a
+  // consumer is told the coordinate space rather than left to trust it.
   void add_prov(
       google::protobuf::RepeatedPtrField<
           ai::pipestream::document::v1::ProvenanceItem>* prov,
@@ -177,6 +183,10 @@ class DoclingMapper {
   std::vector<std::string> warnings_;
   std::string document_type_;
   std::vector<ai::pipestream::office::v1::PageRect> page_rects_;
+  // Pages a document-absolute box was stamped against without a rectangle
+  // to subtract, so the warning that its coordinates stay document-absolute
+  // is emitted once per page instead of once per box.
+  std::set<int> unresolved_prov_pages_;
   // Per-sheet arena bookkeeping: the sheet's group ref, its folded table's
   // arena index, its lazily created comment-section group ref, and its
   // content layer (hidden sheets map to the invisible layer).
@@ -198,8 +208,11 @@ class DoclingMapper {
 };
 
 // Returns structural integrity problems of a mapped document: RefItem
-// references that do not resolve to an arena item, and parent links whose
-// group does not list the item among its children. Empty means well formed.
+// references that do not resolve to an arena item, parent links whose group
+// does not list the item among its children, graph-cell item_refs pointing
+// at nothing, and provenance on a page number the 1-based dialect has no
+// page for. Every linked arena is walked, the four form arenas included.
+// Empty means well formed.
 std::vector<std::string> docling_integrity_errors(
     const ai::pipestream::document::v1::Document& document);
 
