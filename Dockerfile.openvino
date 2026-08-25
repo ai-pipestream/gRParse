@@ -52,6 +52,17 @@ FROM ubuntu:26.04
 ENV GRPARSE_LISTEN_ADDRESS=0.0.0.0:50051 GRPARSE_MODELS_DIR=/models GRPARSE_PAGE_WORKERS=2 \
     GRPARSE_ORT_EP=openvino GRPARSE_OPENVINO_DEVICE=GPU
 # intel-opencl-icd is the NEO compute runtime the OpenVINO GPU plugin drives.
+#
+# KNOWN WART: libopencv-imgcodecs pulls libgdal, which pulls the distro
+# poppler, so this image ends up with two poppler majors loaded at once - the
+# vendored libpoppler.so.163 that libpoppler-cpp binds to, and the distro
+# libpoppler.so.156 alongside it. They export the same C++ symbols, so the
+# dynamic linker resolves some of them across versions, and this image
+# extracts a page's text layer and rasterizes it measurably differently from
+# the CUDA image, which stages only its binaries' own library closure and
+# therefore has exactly one poppler. Layout inference is unaffected and
+# identical across both; the input it is given is not. Fixing this means
+# staging the library closure here too instead of apt-installing OpenCV.
 # fonts-liberation gives poppler metric-compatible base-14 substitutes so
 # non-embedded Helvetica/Times/Courier text rasterizes instead of rendering
 # blank (layout detection and page previews read those pixels).
