@@ -450,6 +450,7 @@ add_library(grparse_core STATIC
   src/barcode_decoder.cpp
   src/base64.cpp
   src/collector_coordinator.cpp
+  src/confluence_storage.cpp
   src/docling_map.cpp
   src/document_merge.cpp
   src/document_render.cpp
@@ -496,6 +497,7 @@ if(BUILD_TESTING)
     base64-test
     canonical-json-test
     collector-coordinator-test
+    confluence-storage-test
     docling-map-test
     document-assembly-test
     document-collectors-test
