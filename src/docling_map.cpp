@@ -1643,6 +1643,15 @@ std::vector<std::string> docling_integrity_errors(
             group.parent().ref());
   }
   for (const docv1::BaseTextItem& item : document.texts()) {
+    if (item.item_case() == docv1::BaseTextItem::kCode) {
+      // CodeItem carries the reference fields inline instead of in a nested
+      // base, so it has no TextItemBase to read; it is still a linked arena
+      // item and its references are checked like every other one.
+      const docv1::CodeItem& code = item.code();
+      collect(code.self_ref(), code.children(), code.has_parent(),
+              code.parent().ref());
+      continue;
+    }
     const docv1::TextItemBase* base = text_base(item);
     if (base == nullptr) {
       errors.push_back("text item with unset variant");
