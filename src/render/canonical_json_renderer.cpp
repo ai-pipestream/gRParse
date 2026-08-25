@@ -1068,11 +1068,15 @@ std::string render_canonical_json(const ai::pipestream::document::v1::Document& 
   // picture crops dominate), so the copy happens only when a normalization
   // would actually change something; otherwise the emitter reads the
   // caller's document directly.
-  if (!render::needs_clamping(document) && !render::has_misplaced_list_items(document)) {
+  if (!render::needs_clamping(document) && !render::has_misplaced_list_items(document) &&
+      !render::has_ordered_list_groups(document)) {
     return CanonicalJsonRenderer().render(document);
   }
   ai::pipestream::document::v1::Document normalized = document;
   render::clamp_document(&normalized);
+  // Ordered-list groups relabel to plain list groups first, exactly like the
+  // reference load; only then can the migration see them as list parents.
+  render::relabel_ordered_list_groups(&normalized);
   render::migrate_misplaced_list_items(&normalized);
   return CanonicalJsonRenderer().render(normalized);
 }

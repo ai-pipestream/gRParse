@@ -238,11 +238,12 @@ void verify_markdown_renders_every_item_type() {
       "- alpha\n"
       "- beta\n"
       // The nested group carries the ordered-list label, which the load
-      // normalization does not count as a list group: its items migrate into
-      // a synthesized one, so they sit a second level deep and take the
-      // default marker.
-      "        - one\n"
-      "        - two\n"
+      // normalization rewrites to a plain list group exactly like the
+      // reference load does: its items stay one level deep. The unset proto
+      // marker means the model-default dash, so enumeration does not number
+      // them (numbering requires an explicitly empty marker).
+      "    - one\n"
+      "    - two\n"
       "\n"
       "Fuel table\n"
       "\n"

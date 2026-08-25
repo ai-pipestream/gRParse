@@ -680,4 +680,27 @@ void migrate_misplaced_list_items(docv1::Document* doc) {
   load_norm::migrate_misplaced_list_items(doc);
 }
 
+bool has_ordered_list_groups(const docv1::Document& doc) {
+  if (doc.body().label() == docv1::GROUP_LABEL_ORDERED_LIST) return true;
+  if (doc.furniture().label() == docv1::GROUP_LABEL_ORDERED_LIST) return true;
+  for (const auto& group : doc.groups()) {
+    if (group.label() == docv1::GROUP_LABEL_ORDERED_LIST) return true;
+  }
+  return false;
+}
+
+void relabel_ordered_list_groups(docv1::Document* doc) {
+  if (doc->body().label() == docv1::GROUP_LABEL_ORDERED_LIST) {
+    doc->mutable_body()->set_label(docv1::GROUP_LABEL_LIST);
+  }
+  if (doc->furniture().label() == docv1::GROUP_LABEL_ORDERED_LIST) {
+    doc->mutable_furniture()->set_label(docv1::GROUP_LABEL_LIST);
+  }
+  for (auto& group : *doc->mutable_groups()) {
+    if (group.label() == docv1::GROUP_LABEL_ORDERED_LIST) {
+      group.set_label(docv1::GROUP_LABEL_LIST);
+    }
+  }
+}
+
 }  // namespace grparse::render

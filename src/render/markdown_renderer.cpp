@@ -1732,10 +1732,14 @@ std::string render_markdown(const docv1::Document& document) {
   // Only the list-item migration can change the Markdown; the box clamping
   // the model also applies on load is invisible here, so the defensive copy
   // is taken only when a list item actually needs re-homing.
-  if (!render::has_misplaced_list_items(document)) {
+  if (!render::has_misplaced_list_items(document) &&
+      !render::has_ordered_list_groups(document)) {
     return MarkdownRenderer(document).render();
   }
   docv1::Document normalized = document;
+  // Ordered-list groups relabel to plain list groups first, exactly like the
+  // reference load; only then can the migration see them as list parents.
+  render::relabel_ordered_list_groups(&normalized);
   render::migrate_misplaced_list_items(&normalized);
   return MarkdownRenderer(normalized).render();
 }

@@ -35,6 +35,16 @@ void clamp_document(ai::pipestream::document::v1::Document* doc);
 // the originals and renumbering every reference, exactly like the model.
 void migrate_misplaced_list_items(ai::pipestream::document::v1::Document* doc);
 
+// True when any group still carries the ordered-list label, which the
+// reference model rewrites to the plain list label at load.
+bool has_ordered_list_groups(const ai::pipestream::document::v1::Document& doc);
+
+// Rewrites every ordered-list group label to the plain list label, exactly
+// like the model does at load; item numbering lives on the list items
+// themselves. Must run before the misplaced-list migration so ordered-list
+// groups are recognized as legitimate list parents.
+void relabel_ordered_list_groups(ai::pipestream::document::v1::Document* doc);
+
 }  // namespace grparse::render
 
 #endif
