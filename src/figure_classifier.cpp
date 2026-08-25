@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
+#include <string>
 
 #include <opencv2/imgproc.hpp>
 
@@ -13,8 +14,8 @@
 namespace grparse {
 namespace {
 
-// Preprocessing mirrors docling-ibm-models' DocumentFigureClassifierPredictor,
-// which this export is verified against: RGB order (unlike the OCR-family
+// Preprocessing mirrors the reference pipeline's figure classifier predictor,
+// which this model is verified against: RGB order (unlike the OCR-family
 // models, which keep loaded BGR), 224x224 resize, 1/255 scale, and the
 // model's own normalization constants.
 constexpr int kInputSize = 224;
@@ -24,14 +25,17 @@ constexpr std::array<float, 3> kStd = {0.47853944F, 0.4732864F, 0.47434163F};
 }  // namespace
 
 const std::vector<std::string>& FigureClassifierEngine::labels() {
-  // id2label order from ds4sd/DocumentFigureClassifier config.json.
+  // id2label order of the model's own config; index == output index.
   static const std::vector<std::string> kLabels = {
-      "bar_chart", "bar_code",       "chemistry_markush_structure",
-      "chemistry_molecular_structure", "flow_chart", "icon",
-      "line_chart", "logo",          "map",
-      "other",     "pie_chart",      "qr_code",
-      "remote_sensing", "screenshot", "signature",
-      "stamp"};
+      "logo",           "photograph",     "icon",
+      "engineering_drawing", "line_chart", "bar_chart",
+      "other",          "table",          "flow_chart",
+      "screenshot_from_computer", "signature", "screenshot_from_manual",
+      "geographical_map", "pie_chart",    "page_thumbnail",
+      "stamp",          "music",          "calendar",
+      "qr_code",        "bar_code",       "full_page_image",
+      "scatter_plot",   "chemistry_structure", "topographical_map",
+      "crossword_puzzle", "box_plot"};
   return kLabels;
 }
 
@@ -50,6 +54,18 @@ class FigureClassifierEngine::Impl {
     Ort::AllocatorWithDefaultOptions allocator;
     input_name_ = session_.GetInputNameAllocated(0, allocator).get();
     output_name_ = session_.GetOutputNameAllocated(0, allocator).get();
+
+    // The class count is static in the graph, so a model file that predates
+    // the current label set fails startup here rather than on the first
+    // figure of the first document.
+    const auto shape =
+        session_.GetOutputTypeInfo(0).GetTensorTypeAndShapeInfo().GetShape();
+    if (shape.empty() || shape.back() != static_cast<int64_t>(labels().size())) {
+      throw std::runtime_error("Figure classifier " + model_path.string() + " predicts " +
+                               std::to_string(shape.empty() ? 0 : shape.back()) +
+                               " classes; this build expects " +
+                               std::to_string(labels().size()) + " (see models/README.md)");
+    }
   }
 
   std::vector<FigureClass> classify(const cv::Mat& crop) {

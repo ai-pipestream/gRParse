@@ -21,9 +21,10 @@ class FigureClassifierBase {
   virtual std::vector<FigureClass> classify(const cv::Mat& crop) = 0;
 };
 
-// ds4sd/DocumentFigureClassifier (EfficientNet-B0, 16 classes) on ONNX
-// Runtime, exported by scripts/export_figure_classifier.py.  Sessions bind
-// the process-wide execution provider selection, pooled like OCR sessions.
+// Document figure classifier (EfficientNet-B0, 26 classes) on ONNX Runtime.
+// Sessions bind the process-wide execution provider selection and are pooled
+// like OCR sessions; the weights are small enough that a session per worker
+// costs little next to the layout detector's.
 //
 // Anti-seesaw contract: classify is a batch=1 device call on a figure crop
 // of the raster the inference stage already holds; it neither retains the

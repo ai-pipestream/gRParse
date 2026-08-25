@@ -29,21 +29,23 @@ void verify_missing_model_fails_loudly() {
   require(threw, "a missing classifier model must throw at construction");
 }
 
-// Reference: the torch DocumentFigureClassifier scores the committed bar
-// chart fixture as bar_chart at 0.9997 (see scripts/export_figure_classifier.py).
-// OpenCV resizing differs slightly from PIL, so the assertion is the decisive
-// call, not the exact probability.
+// The committed bar chart fixture is unambiguous: the reference classifier
+// calls it bar_chart with near-certainty.  OpenCV resizing differs slightly
+// from the reference's, so the assertion is the decisive call and the shape of
+// the distribution, not an exact probability.
 void verify_bar_chart_matches_reference(const fs::path& model, const fs::path& image_path) {
   grparse::FigureClassifierPool pool(model, 2);
   const cv::Mat image = cv::imread(image_path.string(), cv::IMREAD_COLOR);
   require(!image.empty(), "test image must load: " + image_path.string());
 
   const auto classes = pool.classify(image);
+  require(grparse::FigureClassifierEngine::labels().size() == 26,
+          "the classifier predicts 26 classes");
   require(classes.size() == grparse::FigureClassifierEngine::labels().size(),
           "every class must be scored");
   require(classes.front().label == "bar_chart",
           "bar chart fixture must classify as bar_chart (got " + classes.front().label + ")");
-  require(classes.front().confidence > 0.9F, "reference confidence is 0.9997");
+  require(classes.front().confidence > 0.9F, "the reference call is near-certain");
   float total = 0.0F;
   for (const auto& entry : classes) total += entry.confidence;
   require(total > 0.99F && total < 1.01F, "confidences must be a probability distribution");
