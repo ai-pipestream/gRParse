@@ -64,6 +64,17 @@ std::string code_fence_language(const ai::pipestream::document::v1::CodeItem& co
 std::vector<std::vector<const ai::pipestream::document::v1::TableCell*>> table_grid(
     const ai::pipestream::document::v1::TableData& data);
 
+// The cell layout the model derives for its computed grid field: a
+// num_rows x num_cols rectangle of empty positions that every declared cell
+// overwrites wherever it reaches. The wire grid is a redundant projection and
+// is not read. An offset past the last row or column is capped, and a
+// negative one counts back from the end, as the host language's indexing
+// does; an offset so negative that it falls off the front reaches no position
+// at all (the model raises there, which an export must not). nullptr marks a
+// position no cell covers.
+std::vector<std::vector<const ai::pipestream::document::v1::TableCell*>>
+derived_table_grid(const ai::pipestream::document::v1::TableData& data);
+
 // The model layer parses hyperlink/uri strings through a URL type whose
 // serializer normalizes them; the states this service and its collectors
 // produce are covered here: scheme lowercasing and, for the special schemes,

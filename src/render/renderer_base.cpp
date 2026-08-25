@@ -115,6 +115,32 @@ std::vector<std::vector<const docv1::TableCell*>> table_grid(
   return grid;
 }
 
+std::vector<std::vector<const docv1::TableCell*>> derived_table_grid(
+    const docv1::TableData& data) {
+  const int rows = std::max(data.num_rows(), 0);
+  const int cols = std::max(data.num_cols(), 0);
+  std::vector<std::vector<const docv1::TableCell*>> grid(
+      static_cast<std::size_t>(rows),
+      std::vector<const docv1::TableCell*>(static_cast<std::size_t>(cols), nullptr));
+  const auto wrapped = [](int index, int size) {
+    return index < 0 ? index + size : index;
+  };
+  for (const auto& cell : data.table_cells()) {
+    const int row_end = std::min(cell.end_row_offset_idx(), rows);
+    const int col_end = std::min(cell.end_col_offset_idx(), cols);
+    for (int row = std::min(cell.start_row_offset_idx(), rows); row < row_end; ++row) {
+      const int row_at = wrapped(row, rows);
+      if (row_at < 0) continue;
+      for (int col = std::min(cell.start_col_offset_idx(), cols); col < col_end; ++col) {
+        const int col_at = wrapped(col, cols);
+        if (col_at < 0) continue;
+        grid[static_cast<std::size_t>(row_at)][static_cast<std::size_t>(col_at)] = &cell;
+      }
+    }
+  }
+  return grid;
+}
+
 namespace {
 
 bool is_special_scheme(std::string_view scheme) {

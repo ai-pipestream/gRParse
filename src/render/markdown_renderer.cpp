@@ -1403,26 +1403,10 @@ class MarkdownRenderer : RendererBase {
     return join(parts, "\n\n");
   }
 
-  // The cell grid the model derives from the flat cell list: a rectangle of
-  // empty cells that every declared cell overwrites at each position it
-  // covers.
+  // The cell text of the model's computed grid, with the two characters a
+  // Markdown row cannot carry rewritten.
   std::vector<std::vector<std::string>> table_rows(const docv1::TableData& data) {
-    const int rows = std::max(data.num_rows(), 0);
-    const int cols = std::max(data.num_cols(), 0);
-    std::vector<std::vector<const docv1::TableCell*>> grid(
-        static_cast<std::size_t>(rows),
-        std::vector<const docv1::TableCell*>(static_cast<std::size_t>(cols), nullptr));
-    for (const auto& cell : data.table_cells()) {
-      const int row_begin = std::clamp(cell.start_row_offset_idx(), 0, rows);
-      const int row_end = std::clamp(cell.end_row_offset_idx(), 0, rows);
-      const int col_begin = std::clamp(cell.start_col_offset_idx(), 0, cols);
-      const int col_end = std::clamp(cell.end_col_offset_idx(), 0, cols);
-      for (int row = row_begin; row < row_end; ++row) {
-        for (int col = col_begin; col < col_end; ++col) {
-          grid[static_cast<std::size_t>(row)][static_cast<std::size_t>(col)] = &cell;
-        }
-      }
-    }
+    const auto grid = derived_table_grid(data);
     std::vector<std::vector<std::string>> out;
     out.reserve(grid.size());
     for (const auto& row : grid) {

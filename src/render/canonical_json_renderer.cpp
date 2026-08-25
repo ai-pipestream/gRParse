@@ -30,6 +30,7 @@ using render::JsonWriter;
 using render::canonical_double;
 using render::canonical_integral_decimal;
 using render::code_language_string;
+using render::derived_table_grid;
 using render::human_language_string;
 using render::normalized_uri;
 using render::ordered_custom_fields;
@@ -428,7 +429,12 @@ class CanonicalJsonRenderer {
     writer_.begin_object();
     writer_.key("values");
     writer_.begin_array();
-    for (const auto& value : meta.values()) writer_.value_string(value);
+    // The model's list type is a unique list: a repeat drops on load, keeping
+    // the first occurrence.
+    std::set<std::string_view> seen;
+    for (const auto& value : meta.values()) {
+      if (seen.insert(value).second) writer_.value_string(value);
+    }
     writer_.end_array();
     emit_custom_fields(meta.custom_fields());
     writer_.end_object();
@@ -594,36 +600,20 @@ class CanonicalJsonRenderer {
     writer_.member_string("orientation", orientation_string(data.orientation()));
 
     // The grid is computed from the flat cell list and the declared
-    // dimensions; the wire grid is a redundant projection and is ignored.
-    // Spanned cells repeat at every position they cover, and grid entries
-    // render as plain cells (no ref, matching the computed field's type).
-    const int num_rows = data.num_rows();
-    const int num_cols = data.num_cols();
-    std::vector<const docv1::TableCell*> grid(
-        static_cast<std::size_t>(std::max(num_rows, 0)) *
-            static_cast<std::size_t>(std::max(num_cols, 0)),
-        nullptr);
-    for (const auto& cell : data.table_cells()) {
-      const int row_begin = std::clamp(cell.start_row_offset_idx(), 0, num_rows);
-      const int row_end = std::clamp(cell.end_row_offset_idx(), 0, num_rows);
-      const int col_begin = std::clamp(cell.start_col_offset_idx(), 0, num_cols);
-      const int col_end = std::clamp(cell.end_col_offset_idx(), 0, num_cols);
-      for (int row = row_begin; row < row_end; ++row) {
-        for (int column = col_begin; column < col_end; ++column) {
-          grid[static_cast<std::size_t>(row) * num_cols + column] = &cell;
-        }
-      }
-    }
+    // dimensions (renderer_base.h); the wire grid is a redundant projection
+    // and is ignored. Spanned cells repeat at every position they cover, and
+    // grid entries render as plain cells (no ref, matching the computed
+    // field's type).
+    const auto grid = derived_table_grid(data);
     writer_.key("grid");
     writer_.begin_array();
-    for (int row = 0; row < num_rows; ++row) {
+    for (std::size_t row = 0; row < grid.size(); ++row) {
       writer_.begin_array();
-      for (int column = 0; column < num_cols; ++column) {
-        const auto* cell = grid[static_cast<std::size_t>(row) * num_cols + column];
-        if (cell != nullptr) {
+      for (std::size_t column = 0; column < grid[row].size(); ++column) {
+        if (const auto* cell = grid[row][column]) {
           emit_table_cell(*cell, false);
         } else {
-          emit_grid_filler_cell(row, column);
+          emit_grid_filler_cell(static_cast<int>(row), static_cast<int>(column));
         }
       }
       writer_.end_array();
