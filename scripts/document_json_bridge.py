@@ -116,7 +116,10 @@ def _normalize_custom_field_names(msg) -> int:
         if repeated and field.message_type.GetOptions().map_entry:
             value_field = field.message_type.fields_by_name["value"]
             if field.name == "custom_fields":
-                for key in [k for k in value if not _conforming_custom_name(k)]:
+                # Sorted so collision suffixes are assigned deterministically
+                # (protobuf map iteration order is not); the native renderer
+                # assigns them in the same sorted-original-key order.
+                for key in sorted(k for k in value if not _conforming_custom_name(k)):
                     base = "pipestream__" + re.sub(r"[^A-Za-z0-9_]", "_", key)
                     new_key = base
                     suffix = 2
