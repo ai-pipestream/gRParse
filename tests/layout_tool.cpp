@@ -135,6 +135,11 @@ int main(int argc, char** argv) {
                                : openvino_device,
     };
     grparse::set_ort_ep_selection(selection);
+    // The pooled sessions divide the machine exactly as the server's do, so a
+    // measurement here is a measurement of the server.
+    const unsigned hardware = std::max(1U, std::thread::hardware_concurrency());
+    grparse::set_ort_intra_op_threads(
+        static_cast<int>(std::max<size_t>(1, hardware / threads)));
 
     const grparse::LayoutModel model = grparse::configured_layout_model();
     const fs::path layout_path = models_dir / grparse::layout_model_file(model);
@@ -156,10 +161,11 @@ int main(int argc, char** argv) {
     }
 
     std::println("provider={} openvino_device={} cuda_device={} layout_model={} labels={} "
-                 "load_ms={:.1f} sessions={} rss_peak_kb={}",
+                 "load_ms={:.1f} sessions={} rss_peak_kb={} cores={} pooled_intra_op={} "
+                 "layout_intra_op=all",
                  provider_name(ep), selection.openvino_device, selection.cuda_device,
                  grparse::layout_model_name(model), layout.labels().size(), layout_load_ms,
-                 sessions, peak_rss_kb());
+                 sessions, peak_rss_kb(), hardware, grparse::ort_intra_op_threads());
 
     const std::string bytes = read_file(document);
     const bool pdf = document.extension() == ".pdf" || document.extension() == ".PDF";
