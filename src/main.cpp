@@ -419,6 +419,18 @@ int main() {
         "GRPARSE_RENDER_WORKERS", std::min<size_t>(4, hardware == 0 ? 2 : hardware), 256);
     const int gpu_index = configured_index("GRPARSE_CUDA_DEVICE", 0);
     const std::filesystem::path models_dir = models == nullptr ? "/models" : models;
+    // Pooled sessions split the machine instead of each claiming all of it.
+    // ONNX Runtime's default is every core per session, so a pool of them is
+    // oversubscribed by exactly the worker count - which on small machines
+    // costs more than the extra worker earns.  The single shared layout
+    // session is exempt and asks for all cores itself.
+    const size_t cores = hardware == 0 ? 1 : hardware;
+    const int intra_op_threads = configured_index(
+        "GRPARSE_INTRA_OP_THREADS",
+        static_cast<int>(std::max<size_t>(1, cores / inference_workers)), 1024);
+    grparse::set_ort_intra_op_threads(intra_op_threads);
+    std::println("gRParse inference threads: {} per pooled session, {} workers, {} cores",
+                 intra_op_threads, inference_workers, cores);
     const auto engines = build_engine_pool(models_dir, inference_workers, gpu_index);
     const auto layout = build_layout_engine(models_dir);
     const auto table_structure =

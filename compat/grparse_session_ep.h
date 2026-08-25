@@ -41,6 +41,21 @@ struct OrtEpSelection {
 // Human-readable name of a provider, for logs.
 std::string_view ort_ep_name(OrtEp ep);
 
+// How many threads one session may use inside a single operator.
+//
+// ONNX Runtime's default is every core, which is right for one session and
+// wrong for a pool of them: N pooled sessions each claiming every core is N
+// times oversubscribed, and on small machines that is measurably slower than
+// a single worker.  The process-wide value is set once from the worker count;
+// a session that is not pooled asks for kIntraOpAllCores instead.
+inline constexpr int kIntraOpProcessDefault = -1;
+inline constexpr int kIntraOpAllCores = 0;
+
+// Sets the value pooled sessions take when they ask for the process default.
+// Call before building any engine; 0 leaves ONNX Runtime's own default alone.
+void set_ort_intra_op_threads(int threads);
+int ort_intra_op_threads();
+
 // Must be called before any OCR engine is constructed.  Later sessions use
 // the newest selection; sessions already built keep the provider they bound.
 void set_ort_ep_selection(OrtEpSelection selection);
@@ -56,7 +71,8 @@ uint64_t ep_hook_invocations();
 // made, legacy_gpu_index keeps upstream semantics: >= 0 appends CUDA for that
 // device, negative appends nothing (CPU).
 void append_execution_provider(Ort::SessionOptions& options, int legacy_gpu_index,
-                               OrtPrecision precision = OrtPrecision::kProviderDefault);
+                               OrtPrecision precision = OrtPrecision::kProviderDefault,
+                               int intra_op_threads = kIntraOpProcessDefault);
 
 // Builds one session for a model file on the configured provider.
 //
@@ -67,6 +83,7 @@ void append_execution_provider(Ort::SessionOptions& options, int legacy_gpu_inde
 // A model file that does not parse at all still throws, on both attempts.
 Ort::Session make_session(Ort::Env& env, const std::filesystem::path& model_path,
                           std::string_view what,
-                          OrtPrecision precision = OrtPrecision::kProviderDefault);
+                          OrtPrecision precision = OrtPrecision::kProviderDefault,
+                          int intra_op_threads = kIntraOpProcessDefault);
 
 }  // namespace grparse

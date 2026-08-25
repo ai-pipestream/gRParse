@@ -3,6 +3,7 @@
 #include <atomic>
 #include <mutex>
 #include <print>
+#include <string>
 #include <unordered_map>
 #include <utility>
 
@@ -13,6 +14,7 @@ std::mutex selection_mutex;
 OrtEpSelection current_selection;
 bool explicitly_selected = false;
 std::atomic<uint64_t> hook_invocations{0};
+std::atomic<int> intra_op_threads{0};
 
 void append_cuda(Ort::SessionOptions& options, int device) {
   // Same options upstream RapidOcrOnnx used, with the 2 GiB arena limit
@@ -26,12 +28,20 @@ void append_cuda(Ort::SessionOptions& options, int device) {
   options.AppendExecutionProvider_CUDA(cuda_options);
 }
 
+// Resolves what a session actually asks for: its own explicit count, or the
+// process-wide one, or nothing at all (ONNX Runtime's every-core default).
+int resolved_intra_op_threads(int requested) {
+  if (requested == kIntraOpAllCores) return 0;
+  if (requested > 0) return requested;
+  return intra_op_threads.load();
+}
+
 // Every session this process builds asks for the same optimization level; the
 // engines differ in their models, not in how ORT should compile them.
-Ort::SessionOptions session_options(OrtPrecision precision) {
+Ort::SessionOptions session_options(OrtPrecision precision, int threads) {
   Ort::SessionOptions options;
   options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
-  append_execution_provider(options, -1, precision);
+  append_execution_provider(options, -1, precision, threads);
   return options;
 }
 
@@ -59,9 +69,15 @@ OrtEpSelection ort_ep_selection() {
 
 uint64_t ep_hook_invocations() { return hook_invocations.load(); }
 
+void set_ort_intra_op_threads(int threads) { intra_op_threads.store(threads > 0 ? threads : 0); }
+
+int ort_intra_op_threads() { return intra_op_threads.load(); }
+
 void append_execution_provider(Ort::SessionOptions& options, int legacy_gpu_index,
-                               OrtPrecision precision) {
+                               OrtPrecision precision, int requested_intra_op_threads) {
   hook_invocations.fetch_add(1);
+  const int threads = resolved_intra_op_threads(requested_intra_op_threads);
+  if (threads > 0) options.SetIntraOpNumThreads(threads);
   OrtEpSelection selection;
   bool selected = false;
   {
@@ -89,6 +105,10 @@ void append_execution_provider(Ort::SessionOptions& options, int legacy_gpu_inde
       if (!selection.openvino_cache_dir.empty()) {
         openvino_options["cache_dir"] = selection.openvino_cache_dir;
       }
+      // The OpenVINO plugin runs its own subgraphs on its own pool, so the
+      // ONNX Runtime intra-op setting above never reaches them; this is the
+      // knob that does.
+      if (threads > 0) openvino_options["num_of_threads"] = std::to_string(threads);
       options.AppendExecutionProvider_OpenVINO_V2(openvino_options);
       return;
     }
@@ -98,10 +118,11 @@ void append_execution_provider(Ort::SessionOptions& options, int legacy_gpu_inde
 }
 
 Ort::Session make_session(Ort::Env& env, const std::filesystem::path& model_path,
-                          std::string_view what, OrtPrecision precision) {
+                          std::string_view what, OrtPrecision precision,
+                          int intra_op_threads) {
   const OrtEp ep = ort_ep_selection().ep;
   try {
-    Ort::SessionOptions options = session_options(precision);
+    Ort::SessionOptions options = session_options(precision, intra_op_threads);
     return Ort::Session(env, model_path.c_str(), options);
   } catch (const std::exception& error) {
     if (ep == OrtEp::kCpu) throw;
@@ -112,6 +133,8 @@ Ort::Session make_session(Ort::Env& env, const std::filesystem::path& model_path
   }
   Ort::SessionOptions cpu_options;
   cpu_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
+  const int threads = resolved_intra_op_threads(intra_op_threads);
+  if (threads > 0) cpu_options.SetIntraOpNumThreads(threads);
   return Ort::Session(env, model_path.c_str(), cpu_options);
 }
 

@@ -169,7 +169,13 @@ queue memory with `GRPARSE_PAGE_WORKERS`, `GRPARSE_RENDER_WORKERS`,
 `GRPARSE_PDF_PARSERS`, and `GRPARSE_MAX_ACTIVE_DOCUMENTS`.
 `GRPARSE_PDF_PARSERS` sets how many Poppler documents a single PDF request may
 open concurrently; it defaults to `GRPARSE_RENDER_WORKERS` and costs one parsed
-document structure per slot. Select the NVIDIA device with
+document structure per slot. `GRPARSE_INTRA_OP_THREADS` caps how many threads
+one pooled ONNX Runtime session uses inside a single operator; it defaults to
+cores divided by `GRPARSE_PAGE_WORKERS`, because ONNX Runtime's own default is
+every core per session and a pool of those is oversubscribed by exactly the
+worker count - on a small machine that costs more than the extra worker earns.
+The shared layout session is exempt and takes all cores, since there is only
+one of it. Select the NVIDIA device with
 `GRPARSE_CUDA_DEVICE`. `GRPARSE_ORT_EP` picks the ONNX Runtime execution
 provider: `cuda` (default, fails startup if CUDA cannot initialize),
 `openvino` (Intel GPU/CPU/NPU through the OpenVINO build — see below), `cpu`

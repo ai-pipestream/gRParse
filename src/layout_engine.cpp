@@ -350,7 +350,10 @@ class LayoutEngine::Impl {
     // Same provider decision point as the OCR sessions, and the one session
     // in this process that pins single precision: the detector's boxes and
     // its marginal detections do not survive half precision.
-    session_ = make_session(env_, model_path, "layout", OrtPrecision::kFloat32);
+    // One session serves every worker, so it is the one that may have all the
+    // cores; the pooled sessions divide them.
+    session_ = make_session(env_, model_path, "layout", OrtPrecision::kFloat32,
+                            kIntraOpAllCores);
     strategy_->bind(session_);
   }
 
