@@ -499,15 +499,11 @@ CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>&
 
   warcv1::ParseWarcRequest request;
   warcv1::ParseWarcConfig* config = request.mutable_config();
-  // Everything the fold needs is opt-in-able but defaults on; set it anyway
-  // so the client does not silently change shape if a server default moves.
-  // Compression detection stays unset, which enables magic-byte sniffing of
-  // gzip/zstd/lz4 streams. Batching cuts the per-record message count on
-  // record-dense archives; batches flush as they fill, so latency is kept.
+  // The server's proto3 default for parse_http is false, unlike the Python
+  // and Rust iterators it mirrors, and the fold reads the embedded HTTP
+  // message; ask for it explicitly. Compression detection stays unset, which
+  // enables magic-byte sniffing of gzip/zstd/lz4 streams.
   config->set_parse_http(true);
-  config->set_include_payload(true);
-  config->set_include_headers(true);
-  config->set_response_batch_size(64);
   upload_stream(*stream, request, bytes, /*always_send_chunk=*/false,
                 [&bytes](warcv1::ParseWarcRequest& frame, size_t offset,
                          size_t length, bool /*last*/) {
@@ -655,13 +651,7 @@ CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>&
 
   warcv1::ParseWarcResponse event;
   while (stream->Read(&event)) {
-    if (event.has_batch()) {
-      // The client opted into batching, so it owes the wire a flatten.
-      // Items are stream-ordered and never nest, by contract.
-      for (const auto& item : event.batch().items()) handle_event(item);
-    } else {
-      handle_event(event);
-    }
+    handle_event(event);
     event.Clear();
   }
   if (record_open) {

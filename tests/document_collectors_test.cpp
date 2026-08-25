@@ -626,8 +626,8 @@ void verify_lol_html_in_band_error_is_terminal() {
 // ---- fastwarc --------------------------------------------------------------
 
 // The fastwarc wire, like lol-html's, carries no document event and no
-// terminal status: the fake serves canned record events (some batched, some
-// not) and the assertions land on the client's own fold.
+// terminal status: the fake serves canned record events and the assertions
+// land on the client's own fold.
 class FakeWarcService final : public warcv1::WarcService::Service {
  public:
   enum class Mode { kOk, kFramingError, kTransportError, kTruncated };
@@ -647,12 +647,9 @@ class FakeWarcService final : public warcv1::WarcService::Service {
         bytes += request.chunk();
       }
     }
-    if (!config.parse_http() || !config.include_payload() ||
-        !config.include_headers() || config.response_batch_size() != 64 ||
-        bytes.empty()) {
+    if (!config.parse_http() || bytes.empty()) {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                          "fake fastwarc expects http parsing, payload and headers "
-                          "included, response batching, and archive bytes");
+                          "fake fastwarc expects http parsing and archive bytes");
     }
     if (mode_ == Mode::kTransportError) {
       return grpc::Status(grpc::StatusCode::INTERNAL, "socket went away");
@@ -682,10 +679,10 @@ class FakeWarcService final : public warcv1::WarcService::Service {
       stream->Write(event);
       return grpc::Status::OK;
     }
-    // First record, start and first chunk packed in one batch: the client
-    // opted into batching, so the flatten is its side of the contract.
-    auto* batch = event.mutable_batch();
-    auto* start = batch->add_items()->mutable_record_start()->mutable_metadata();
+    // The first record: a response, its metadata and payload in the order
+    // the shipping server writes them.
+    auto* start = event.mutable_record_start()->mutable_metadata();
+    start->set_record_index(0);
     start->set_record_type(warcv1::WARC_RECORD_TYPE_RESPONSE);
     start->set_stream_pos(0);
     start->set_content_length(23);
@@ -693,7 +690,9 @@ class FakeWarcService final : public warcv1::WarcService::Service {
     start->set_http_content_type("text/html");
     start->set_record_id("<urn:uuid:test-1>");
     start->mutable_record_date()->set_seconds(1704164645);  // 2024-01-02T03:04:05Z
-    auto* chunk = batch->add_items()->mutable_payload_chunk();
+    stream->Write(event);
+    event.Clear();
+    auto* chunk = event.mutable_payload_chunk();
     chunk->set_offset(0);
     chunk->set_data("<html>hello");
     stream->Write(event);
@@ -721,8 +720,9 @@ class FakeWarcService final : public warcv1::WarcService::Service {
       stream->Write(event);
       return grpc::Status::OK;
     }
-    // Second record: a warcinfo with no HTTP metadata, served unbatched.
+    // Second record: a warcinfo with no HTTP metadata.
     auto* meta = event.mutable_record_start()->mutable_metadata();
+    meta->set_record_index(1);
     meta->set_record_type(warcv1::WARC_RECORD_TYPE_WARCINFO);
     meta->set_stream_pos(100);
     meta->set_content_length(14);
@@ -769,7 +769,7 @@ void verify_fastwarc_folds_records_and_warnings() {
               texts[6].text().base().text() == "payload-length: 23",
           "declared and streamed lengths fold");
   require(texts[7].text().base().text() == "<html>hello warc</html>",
-          "payload chunks reassemble across a batch boundary, in order");
+          "payload chunks reassemble in offset order");
   require(outcome.document.groups(0).children_size() == 8,
           "the response group holds its items reciprocally");
   require(texts[8].text().base().text() == "warc-type: warcinfo" &&

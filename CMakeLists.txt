@@ -570,7 +570,8 @@ if(BUILD_TESTING)
     table-structure-engine-test
     table-structure-test
     targets-test
-    text-geometry-test)
+    text-geometry-test
+    warc-stub-wire-test)
   foreach(test_name IN LISTS GRPARSE_TESTS)
     string(REPLACE "-" "_" test_source "${test_name}")
     add_executable(${test_name} "tests/${test_source}.cpp")
