@@ -1,8 +1,11 @@
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <mutex>
 #include <print>
 #include <stdexcept>
 #include <string>
@@ -803,6 +806,160 @@ void verify_get_service_info(TestServer* server) {
           "GetServiceInfo ui advertisement");
 }
 
+class SinglePageSource final : public grparse::PageSource {
+ public:
+  int page_count() const override { return 1; }
+  cv::Mat render_page(int) const override {
+    return cv::Mat(1, 1, CV_8UC1, cv::Scalar(1)).clone();
+  }
+};
+
+// Holds every recognition until `expected` of them are in flight, and records
+// the peak overlap. One page per document means the overlap it measures is the
+// number of unary calls being parsed at once, not pipeline depth inside one
+// document. The wait is bounded so a server that serializes conversions fails
+// on the peak instead of hanging the suite.
+class RendezvousRecognizer final : public grparse::PageRecognizer {
+ public:
+  explicit RendezvousRecognizer(int expected) : expected_(expected) {}
+
+  grparse::OcrPage extract_page(const cv::Mat&) override {
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      ++in_flight_;
+      peak_ = std::max(peak_, in_flight_);
+      if (in_flight_ >= expected_) opened_ = true;
+      arrived_.notify_all();
+      // A latch, not a barrier: once open it stays open, so the threads that
+      // leave first cannot push the others back below the threshold.
+      arrived_.wait_for(lock, 10s, [this] { return opened_; });
+      --in_flight_;
+    }
+    return {100, 200, {{"page", {{1, 2}, {20, 2}, {20, 12}, {1, 12}}}}};
+  }
+
+  int peak() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return peak_;
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  std::condition_variable arrived_;
+  const int expected_;
+  int in_flight_ = 0;
+  int peak_ = 0;
+  bool opened_ = false;
+};
+
+// The unary surfaces run on gRPC's callback API, so a parse blocks a
+// CallExecutor worker and never the thread that reacted to the call. Four
+// conversions issued at once must therefore be parsed at once: under the old
+// sync handlers the same proof would need four free sync-server threads, and
+// under an inline callback handler it could not hold at all.
+void verify_unary_callback_path_admits_concurrent_conversions() {
+  constexpr int kCalls = 4;
+  grparse::PageScheduler::Options options{
+      .document_queue_capacity = 8,
+      .render_queue_capacity = 8,
+      .inference_queue_capacity = 8,
+      .assembly_queue_capacity = 8,
+      .render_workers = kCalls,
+      .inference_workers = kCalls,
+      .assembly_workers = 2,
+      .page_window = 4,
+  };
+  RendezvousRecognizer recognizer(kCalls);
+  grparse::PageScheduler scheduler(recognizer, options,
+                                   [](std::shared_ptr<const std::string>, bool, double) {
+                                     return std::make_shared<SinglePageSource>();
+                                   });
+  grparse::DocumentParserService service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{}),
+      {.workers = kCalls, .queue_capacity = 8});
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "concurrency test server failed to start");
+
+  const auto channel = grpc::CreateChannel("127.0.0.1:" + std::to_string(port),
+                                           grpc::InsecureChannelCredentials());
+  std::vector<std::thread> callers;
+  std::vector<grpc::Status> results(kCalls);
+  std::vector<std::string> texts(kCalls);
+  callers.reserve(kCalls);
+  for (int call = 0; call < kCalls; ++call) {
+    callers.emplace_back([&, call] {
+      auto client = pipestream::parse::v1::ParseService::NewStub(channel);
+      grpc::ClientContext context;
+      context.set_deadline(std::chrono::system_clock::now() + 30s);
+      pipestream::parse::v1::ConvertSourceResponse response;
+      results.at(call) = client->ConvertSource(&context, unary_request(), &response);
+      texts.at(call) = response.response().document().exports().text();
+    });
+  }
+  for (auto& caller : callers) caller.join();
+  for (int call = 0; call < kCalls; ++call) {
+    require(results.at(call).ok(),
+            "concurrent conversion failed: " + results.at(call).error_message());
+    require(texts.at(call) == "page", "concurrent conversion text export");
+  }
+  require(recognizer.peak() >= kCalls,
+          "the callback path must parse conversions concurrently; peak overlap was " +
+              std::to_string(recognizer.peak()));
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+}
+
+// A deadline and a client cancel each end their call cleanly, cancel the
+// scheduler work behind it, and leave the service serving: the reactor still
+// finishes exactly once, so nothing is left holding the call or the worker.
+void verify_unary_cancellation_finishes_without_wedging() {
+  TestServer server(400ms);
+  auto client = server.unary_stub();
+
+  grpc::ClientContext deadline_context;
+  deadline_context.set_deadline(std::chrono::system_clock::now() + 80ms);
+  pipestream::parse::v1::ConvertSourceResponse deadline_response;
+  const grpc::Status deadline_status =
+      client->ConvertSource(&deadline_context, unary_request(), &deadline_response);
+  require(deadline_status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED ||
+              deadline_status.error_code() == grpc::StatusCode::CANCELLED,
+          "an exceeded deadline must end the unary call");
+
+  grpc::ClientContext cancel_context;
+  cancel_context.set_deadline(std::chrono::system_clock::now() + 30s);
+  std::thread canceller([&cancel_context] {
+    std::this_thread::sleep_for(60ms);
+    cancel_context.TryCancel();
+  });
+  pipestream::parse::v1::ConvertSourceResponse cancelled_response;
+  const grpc::Status cancelled_status =
+      client->ConvertSource(&cancel_context, unary_request(), &cancelled_response);
+  canceller.join();
+  require(cancelled_status.error_code() == grpc::StatusCode::CANCELLED,
+          "a client cancel must end the unary call as CANCELLED");
+
+  for (int attempt = 0; attempt < 200 && server.metrics().pages_cancelled == 0; ++attempt) {
+    std::this_thread::sleep_for(10ms);
+  }
+  require(server.metrics().pages_cancelled > 0,
+          "an abandoned unary call must cancel its queued page work");
+
+  grpc::ClientContext survivor_context;
+  survivor_context.set_deadline(std::chrono::system_clock::now() + 30s);
+  pipestream::parse::v1::ConvertSourceResponse survivor_response;
+  const grpc::Status survivor_status =
+      client->ConvertSource(&survivor_context, unary_request(), &survivor_response);
+  require(survivor_status.ok(),
+          "the service must keep serving after a cancelled call: " +
+              survivor_status.error_message());
+  require(survivor_response.response().document().exports().text() == "one\ntwo\nthree",
+          "the call after a cancellation must convert normally");
+}
+
 }  // namespace
 
 // ---- pdf inspector routing ---------------------------------------------------
@@ -1186,6 +1343,8 @@ int main() {
     verify_unary_storage_suffix_routes_in_process(&server);
     verify_stream_storage_content_type_routes_in_process(&server);
     verify_get_service_info(&server);
+    verify_unary_callback_path_admits_concurrent_conversions();
+    verify_unary_cancellation_finishes_without_wedging();
     verify_pdf_fast_path_skips_the_cv_pipeline();
     verify_pdf_classification_restricts_recognition();
     verify_pdf_collector_failure_degrades_to_the_cv_path();

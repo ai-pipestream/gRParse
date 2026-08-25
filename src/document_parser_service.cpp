@@ -6,6 +6,7 @@
 #include <deque>
 #include <exception>
 #include <filesystem>
+#include <functional>
 #include <google/protobuf/arena.h>
 #include <google/protobuf/descriptor.h>
 #include <iterator>
@@ -416,8 +417,11 @@ std::shared_ptr<grpc::Channel> CollectorEndpoints::channel(
 }
 
 DocumentParserService::DocumentParserService(PageScheduler& scheduler,
-                                             std::shared_ptr<CollectorEndpoints> endpoints)
-    : scheduler_(scheduler), endpoints_(std::move(endpoints)) {}
+                                             std::shared_ptr<CollectorEndpoints> endpoints,
+                                             CallExecutor::Options executor_options)
+    : scheduler_(scheduler),
+      endpoints_(std::move(endpoints)),
+      executor_(executor_options) {}
 
 namespace {
 
@@ -429,10 +433,12 @@ struct SourceParse {
   chunking::OffsetTable offsets;
 };
 
-// The parse every synchronous surface shares: decode the single FileSource,
-// plan the collectors, run them, and merge. The response shaping (exports,
-// chunks) belongs to the caller.
-grpc::Status parse_source(grpc::ServerContext* context,
+// The parse every unary surface shares: decode the single FileSource, plan
+// the collectors, run them, and merge. The response shaping (exports, chunks)
+// belongs to the caller. Blocking throughout, so it runs on a CallExecutor
+// worker and never on the thread that reacted to the call; `context` outlives
+// that worker because the reactor finishes the call from it.
+grpc::Status parse_source(grpc::CallbackServerContext* context,
                           const pipestream::parse::v1::ConvertDocumentRequest& request,
                           PageScheduler& scheduler,
                           const std::shared_ptr<CollectorEndpoints>& collectors,
@@ -732,17 +738,58 @@ void render_exports(const pipestream::parse::v1::ConvertDocumentOptions& options
   }
 }
 
+// The reactor the blocking unary surfaces finish through. Construction hands
+// `work` to the executor and returns immediately, so the event-manager thread
+// that reacted to the call is free the moment the handler returns; the worker
+// finishes the call. gRPC queues operations requested before the reactor is
+// bound, so finishing from either thread is safe whichever wins the race.
+// Cancellation needs no OnCancel here: the work polls the context, which is
+// where it can act on the answer.
+class ParseUnaryReactor final : public grpc::ServerUnaryReactor {
+ public:
+  ParseUnaryReactor(CallExecutor& executor, std::function<grpc::Status()> work) {
+    const bool queued = executor.submit([this, work = std::move(work)] {
+      grpc::Status status;
+      try {
+        status = work();
+      } catch (...) {
+        status = status_from_exception(std::current_exception());
+      }
+      // Last statement on purpose: OnDone can delete this reactor from
+      // another thread the instant the call completes.
+      Finish(std::move(status));
+    });
+    if (queued) return;
+    // The reactor holds the call and is the only thing that can answer it, so
+    // a refused submission is a status, not a dropped RPC.
+    Finish(grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
+                        "conversion executor is saturated"));
+  }
+
+  void OnDone() override { delete this; }
+};
+
+// The trivial surfaces answer on the reaction thread through the context's own
+// reactor, which allocates nothing.
+grpc::ServerUnaryReactor* finish_inline(grpc::CallbackServerContext* context,
+                                        grpc::Status status) {
+  auto* reactor = context->DefaultReactor();
+  reactor->Finish(std::move(status));
+  return reactor;
+}
+
 }  // namespace
 
-grpc::Status DocumentParserService::ConvertSource(
-    grpc::ServerContext* context, const pipestream::parse::v1::ConvertSourceRequest* request,
+grpc::ServerUnaryReactor* DocumentParserService::ConvertSource(
+    grpc::CallbackServerContext* context,
+    const pipestream::parse::v1::ConvertSourceRequest* request,
     pipestream::parse::v1::ConvertSourceResponse* response) {
-  const auto started = std::chrono::steady_clock::now();
-  SourceParse parsed;
-  const grpc::Status parse_status = parse_source(context, request->request(), scheduler_,
-                                                 endpoints_, "ConvertSource", &parsed);
-  if (!parse_status.ok()) return parse_status;
-  try {
+  return new ParseUnaryReactor(executor_, [this, context, request, response] {
+    const auto started = std::chrono::steady_clock::now();
+    SourceParse parsed;
+    const grpc::Status parse_status = parse_source(context, request->request(), scheduler_,
+                                                   endpoints_, "ConvertSource", &parsed);
+    if (!parse_status.ok()) return parse_status;
     auto& result = parsed.result;
     auto* converted = response->mutable_response();
     auto* document_response = converted->mutable_document();
@@ -761,9 +808,7 @@ grpc::Status DocumentParserService::ConvertSource(
         std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
     (*converted->mutable_timings())["total"] = converted->processing_time();
     return grpc::Status::OK;
-  } catch (...) {
-    return status_from_exception(std::current_exception());
-  }
+  });
 }
 
 namespace {
@@ -787,20 +832,20 @@ void attach_converted_document(const pipestream::parse::v1::ConvertDocumentOptio
 
 }  // namespace
 
-grpc::Status DocumentParserService::ChunkHierarchicalSource(
-    grpc::ServerContext* context,
+grpc::ServerUnaryReactor* DocumentParserService::ChunkHierarchicalSource(
+    grpc::CallbackServerContext* context,
     const pipestream::parse::v1::ChunkHierarchicalSourceRequest* request,
     pipestream::parse::v1::ChunkHierarchicalSourceResponse* response) {
-  const auto started = std::chrono::steady_clock::now();
-  const auto& chunk_request = request->request();
-  SourceParse parsed;
-  pipestream::parse::v1::ConvertDocumentRequest convert;
-  *convert.mutable_sources() = chunk_request.sources();
-  *convert.mutable_options() = chunk_request.convert_options();
-  const grpc::Status parse_status =
-      parse_source(context, convert, scheduler_, endpoints_, "ChunkHierarchicalSource", &parsed);
-  if (!parse_status.ok()) return parse_status;
-  try {
+  return new ParseUnaryReactor(executor_, [this, context, request, response] {
+    const auto started = std::chrono::steady_clock::now();
+    const auto& chunk_request = request->request();
+    SourceParse parsed;
+    pipestream::parse::v1::ConvertDocumentRequest convert;
+    *convert.mutable_sources() = chunk_request.sources();
+    *convert.mutable_options() = chunk_request.convert_options();
+    const grpc::Status parse_status =
+        parse_source(context, convert, scheduler_, endpoints_, "ChunkHierarchicalSource", &parsed);
+    if (!parse_status.ok()) return parse_status;
     auto* chunked = response->mutable_response();
     const chunking::ChunkOptions options{chunk_request.chunking_options().use_markdown_tables(),
                                          chunk_request.chunking_options().include_raw_text()};
@@ -815,30 +860,28 @@ grpc::Status DocumentParserService::ChunkHierarchicalSource(
     chunked->set_processing_time(
         std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
     return grpc::Status::OK;
-  } catch (...) {
-    return status_from_exception(std::current_exception());
-  }
+  });
 }
 
-grpc::Status DocumentParserService::ChunkHybridSource(
-    grpc::ServerContext* context,
+grpc::ServerUnaryReactor* DocumentParserService::ChunkHybridSource(
+    grpc::CallbackServerContext* context,
     const pipestream::parse::v1::ChunkHybridSourceRequest* request,
     pipestream::parse::v1::ChunkHybridSourceResponse* response) {
-  const auto started = std::chrono::steady_clock::now();
-  const auto& chunk_request = request->request();
-  // The budget decides every boundary, so it is validated before any work
-  // starts rather than defaulted to a number nobody asked for.
-  const grpc::Status option_status =
-      chunking::validate_hybrid_options(chunk_request.chunking_options());
-  if (!option_status.ok()) return option_status;
-  SourceParse parsed;
-  pipestream::parse::v1::ConvertDocumentRequest convert;
-  *convert.mutable_sources() = chunk_request.sources();
-  *convert.mutable_options() = chunk_request.convert_options();
-  const grpc::Status parse_status =
-      parse_source(context, convert, scheduler_, endpoints_, "ChunkHybridSource", &parsed);
-  if (!parse_status.ok()) return parse_status;
-  try {
+  return new ParseUnaryReactor(executor_, [this, context, request, response] {
+    const auto started = std::chrono::steady_clock::now();
+    const auto& chunk_request = request->request();
+    // The budget decides every boundary, so it is validated before any work
+    // starts rather than defaulted to a number nobody asked for.
+    const grpc::Status option_status =
+        chunking::validate_hybrid_options(chunk_request.chunking_options());
+    if (!option_status.ok()) return option_status;
+    SourceParse parsed;
+    pipestream::parse::v1::ConvertDocumentRequest convert;
+    *convert.mutable_sources() = chunk_request.sources();
+    *convert.mutable_options() = chunk_request.convert_options();
+    const grpc::Status parse_status =
+        parse_source(context, convert, scheduler_, endpoints_, "ChunkHybridSource", &parsed);
+    if (!parse_status.ok()) return parse_status;
     auto* chunked = response->mutable_response();
     for (auto& chunk :
          chunking::chunk_hybrid(parsed.result.document, parsed.offsets,
@@ -852,28 +895,28 @@ grpc::Status DocumentParserService::ChunkHybridSource(
     chunked->set_processing_time(
         std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
     return grpc::Status::OK;
-  } catch (...) {
-    return status_from_exception(std::current_exception());
-  }
+  });
 }
 
-grpc::Status DocumentParserService::Health(grpc::ServerContext*, const pipestream::parse::v1::HealthRequest*,
-                                            pipestream::parse::v1::HealthResponse* response) {
+grpc::ServerUnaryReactor* DocumentParserService::Health(
+    grpc::CallbackServerContext* context, const pipestream::parse::v1::HealthRequest*,
+    pipestream::parse::v1::HealthResponse* response) {
   response->set_status("ready");
   response->set_version("grparse-0.1.0-cuda");
-  return grpc::Status::OK;
+  return finish_inline(context, grpc::Status::OK);
 }
 
-grpc::Status DocumentParserService::GetServiceInfo(grpc::ServerContext*,
-                                                   const pipestream::parse::v1::GetServiceInfoRequest*,
-                                                   pipestream::parse::v1::GetServiceInfoResponse* response) {
+grpc::ServerUnaryReactor* DocumentParserService::GetServiceInfo(
+    grpc::CallbackServerContext* context,
+    const pipestream::parse::v1::GetServiceInfoRequest*,
+    pipestream::parse::v1::GetServiceInfoResponse* response) {
   response->set_name("gRParse");
   response->set_version("grparse-0.1.0-cuda");
   auto* ui = response->mutable_ui();
   ui->set_title("gRParse");
   ui->set_path("/ui/grparse");
   ui->set_description("Diskless PDF/image to page-streamed protobuf with OCR and layout");
-  return grpc::Status::OK;
+  return finish_inline(context, grpc::Status::OK);
 }
 
 namespace {

@@ -191,6 +191,16 @@ rather than being silently ignored per page. gRPC memory, thread,
 and stream limits use `GRPARSE_GRPC_MEMORY_MIB`, `GRPARSE_GRPC_MAX_THREADS`,
 and `GRPARSE_MAX_CONCURRENT_STREAMS`.
 
+Every RPC is served on gRPC's callback API. A unary conversion blocks for as
+long as the document takes, so it never runs on the thread that reacted to the
+call: it is handed to a pool sized by `GRPARSE_UNARY_WORKERS` (default 16) and
+finished from there, which is what keeps a slow parse from pinning an
+event-manager thread. `GRPARSE_UNARY_QUEUE` (default 64) bounds the conversions
+waiting for a free worker; past it a conversion is refused with
+`RESOURCE_EXHAUSTED` rather than queued behind its own deadline. A worker
+spends nearly all its life waiting on the page scheduler or on a collector, so
+both numbers bound concurrent conversions rather than CPU use.
+
 When the layout model is present (see
 [models/README.md](models/README.md)), every page also runs layout detection
 on the configured execution provider. `GRPARSE_LAYOUT_MODEL=heron|picodet`

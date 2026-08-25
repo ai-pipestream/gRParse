@@ -9,6 +9,7 @@
 
 #include "ai/pipestream/parse/v1/parse.grpc.pb.h"
 #include "ai/pipestream/parse/v1/parse_stream.grpc.pb.h"
+#include "grparse/call_executor.h"
 #include "grparse/office_cv_enrichment.h"
 #include "grparse/page_scheduler.h"
 
@@ -67,36 +68,49 @@ class CollectorEndpoints {
       channels_;
 };
 
-class DocumentParserService final : public ai::pipestream::parse::v1::ParseService::Service {
+// Every unary surface runs on gRPC's callback API. The parsing surfaces block
+// for as long as the document takes, so they never run on the reaction thread:
+// each hands its work to the executor and finishes the call from there, which
+// is what keeps a slow parse from pinning an event-manager thread. The trivial
+// surfaces (Health, GetServiceInfo) finish inline because they do no work.
+class DocumentParserService final
+    : public ai::pipestream::parse::v1::ParseService::CallbackService {
  public:
   DocumentParserService(PageScheduler& scheduler,
-                        std::shared_ptr<CollectorEndpoints> endpoints);
+                        std::shared_ptr<CollectorEndpoints> endpoints,
+                        CallExecutor::Options executor_options = {});
 
-  grpc::Status ConvertSource(
-      grpc::ServerContext* context,
+  grpc::ServerUnaryReactor* ConvertSource(
+      grpc::CallbackServerContext* context,
       const ai::pipestream::parse::v1::ConvertSourceRequest* request,
       ai::pipestream::parse::v1::ConvertSourceResponse* response) override;
   // The two synchronous chunkers parse the source exactly the way
   // ConvertSource does and chunk the document that comes out of it. Their
   // async and watch variants stay unimplemented.
-  grpc::Status ChunkHierarchicalSource(
-      grpc::ServerContext* context,
+  grpc::ServerUnaryReactor* ChunkHierarchicalSource(
+      grpc::CallbackServerContext* context,
       const ai::pipestream::parse::v1::ChunkHierarchicalSourceRequest* request,
       ai::pipestream::parse::v1::ChunkHierarchicalSourceResponse* response) override;
-  grpc::Status ChunkHybridSource(
-      grpc::ServerContext* context,
+  grpc::ServerUnaryReactor* ChunkHybridSource(
+      grpc::CallbackServerContext* context,
       const ai::pipestream::parse::v1::ChunkHybridSourceRequest* request,
       ai::pipestream::parse::v1::ChunkHybridSourceResponse* response) override;
-  grpc::Status Health(grpc::ServerContext* context,
-                      const ai::pipestream::parse::v1::HealthRequest* request,
-                      ai::pipestream::parse::v1::HealthResponse* response) override;
-  grpc::Status GetServiceInfo(grpc::ServerContext* context,
-                              const ai::pipestream::parse::v1::GetServiceInfoRequest* request,
-                              ai::pipestream::parse::v1::GetServiceInfoResponse* response) override;
+  grpc::ServerUnaryReactor* Health(
+      grpc::CallbackServerContext* context,
+      const ai::pipestream::parse::v1::HealthRequest* request,
+      ai::pipestream::parse::v1::HealthResponse* response) override;
+  grpc::ServerUnaryReactor* GetServiceInfo(
+      grpc::CallbackServerContext* context,
+      const ai::pipestream::parse::v1::GetServiceInfoRequest* request,
+      ai::pipestream::parse::v1::GetServiceInfoResponse* response) override;
 
  private:
   PageScheduler& scheduler_;
   std::shared_ptr<CollectorEndpoints> endpoints_;
+  // Declared last so it is torn down first: joining the workers before the
+  // endpoints and the scheduler reference go away is what keeps an in-flight
+  // parse from outliving what it reads.
+  CallExecutor executor_;
 };
 
 class DocumentStreamingService final : public ai::pipestream::parse::v1::ParseStreamingService::CallbackService {

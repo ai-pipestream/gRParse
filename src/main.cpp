@@ -542,7 +542,18 @@ int main() {
                                        + ")"
                                      : "disabled (layout is disabled)");
     }
-    grparse::DocumentParserService service(scheduler, endpoints);
+    // The unary surfaces run on gRPC's callback API, so their parsing blocks
+    // on this pool instead of on an event-manager thread. A worker spends
+    // nearly all its life waiting on the scheduler or on a collector, so the
+    // count bounds concurrent conversions rather than CPU use; past the queue
+    // a conversion is refused with RESOURCE_EXHAUSTED instead of queued behind
+    // its own deadline.
+    grparse::CallExecutor::Options executor_options;
+    executor_options.workers = configured_size("GRPARSE_UNARY_WORKERS", 16, 512);
+    executor_options.queue_capacity = configured_size("GRPARSE_UNARY_QUEUE", 64, 4096);
+    std::println("gRParse unary executor: {} workers, queue {}", executor_options.workers,
+                 executor_options.queue_capacity);
+    grparse::DocumentParserService service(scheduler, endpoints, executor_options);
     grparse::DocumentStreamingService streaming_service(scheduler, endpoints);
     grpc::EnableDefaultHealthCheckService(true);
     grpc::reflection::InitProtoReflectionServerBuilderPlugin();
