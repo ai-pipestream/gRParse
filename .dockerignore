@@ -8,5 +8,6 @@ examples/**/.venv/
 examples/**/gen/
 examples/**/.staged-protos/
 examples/clients/go/go
+build/
 build-*/
 corpus-*/
