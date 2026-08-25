@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "chunking/chunker.h"
 #include "grparse/base64.h"
 #include "grparse/collector_coordinator.h"
 #include "grparse/confluence_storage.h"
@@ -347,7 +348,10 @@ PageScheduler::OcrTuning ocr_tuning(bool has_do_ocr, bool do_ocr, bool force_ocr
   return tuning;
 }
 
-grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOptions& options) {
+// `surface` names the RPC in the rejections so a caller learns which of the
+// conversion surfaces turned its request down.
+grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOptions& options,
+                              const std::string& surface = "ConvertSource") {
   std::vector<const google::protobuf::FieldDescriptor*> populated;
   options.GetReflection()->ListFields(options, &populated);
   for (const auto* field : populated) {
@@ -356,7 +360,7 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
         field->name() != "lol_html_options_json" && field->name() != "do_ocr" &&
         field->name() != "force_ocr" && field->name() != "render_scale") {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                          "ConvertSource does not implement option '" + std::string(field->name()) + "'");
+                          surface + " does not implement option '" + std::string(field->name()) + "'");
     }
   }
   const grpc::Status tuning_status =
@@ -371,7 +375,7 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
       std::string name = pipestream::parse::v1::OutputFormat_Name(format);
       if (name.empty()) name = std::to_string(raw);
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                          "ConvertSource does not implement output format '" + name + "'");
+                          surface + " does not implement output format '" + name + "'");
     }
   }
   return grpc::Status::OK;
@@ -415,16 +419,30 @@ DocumentParserService::DocumentParserService(PageScheduler& scheduler,
                                              std::shared_ptr<CollectorEndpoints> endpoints)
     : scheduler_(scheduler), endpoints_(std::move(endpoints)) {}
 
-grpc::Status DocumentParserService::ConvertSource(
-    grpc::ServerContext* context, const pipestream::parse::v1::ConvertSourceRequest* request,
-    pipestream::parse::v1::ConvertSourceResponse* response) {
-  const auto started = std::chrono::steady_clock::now();
-  const auto& sources = request->request().sources();
+namespace {
+
+// One parsed source: the merged document every conversion surface starts
+// from, plus the offset side table when this parse produced a usable one.
+struct SourceParse {
+  fs::path filename;
+  CoordinatorResult result;
+  chunking::OffsetTable offsets;
+};
+
+// The parse every synchronous surface shares: decode the single FileSource,
+// plan the collectors, run them, and merge. The response shaping (exports,
+// chunks) belongs to the caller.
+grpc::Status parse_source(grpc::ServerContext* context,
+                          const pipestream::parse::v1::ConvertDocumentRequest& request,
+                          PageScheduler& scheduler,
+                          const std::shared_ptr<CollectorEndpoints>& collectors,
+                          const std::string& surface, SourceParse* parsed) {
+  const auto& sources = request.sources();
   if (sources.size() != 1 || !sources.Get(0).has_file()) {
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                        "ConvertSource currently accepts exactly one FileSource containing base64_string");
+                        surface + " currently accepts exactly one FileSource containing base64_string");
   }
-  const grpc::Status option_status = validate_options(request->request().options());
+  const grpc::Status option_status = validate_options(request.options(), surface);
   if (!option_status.ok()) return option_status;
   try {
     const auto& source = sources.Get(0).file();
@@ -455,10 +473,15 @@ grpc::Status DocumentParserService::ConvertSource(
     // fragment. Never throws; failures become the outcome. The tuning rides
     // as a parameter because the pdf routing leg re-enters this path with
     // the inspector's OCR page set applied.
-    const auto& request_options = request->request().options();
+    const auto& request_options = request.options();
     const PageScheduler::OcrTuning tuning = ocr_tuning(
         request_options.has_do_ocr(), request_options.do_ocr(), request_options.force_ocr(),
         request_options.has_render_scale(), request_options.render_scale());
+    // The CV path is the only collector that knows where its text lands in
+    // the document's text stream. Its offset rows are kept here and only
+    // published when that collector turns out to be the whole document.
+    auto cv_offsets = std::make_shared<
+        google::protobuf::RepeatedPtrField<pipestream::parse::v1::TextOffset>>();
     auto run_cv = [&](const PageScheduler::OcrTuning& cv_tuning) -> CollectorOutcome {
       CollectorOutcome outcome;
       try {
@@ -471,7 +494,7 @@ grpc::Status DocumentParserService::ConvertSource(
           bool finished = false;
         } state;
 
-        const auto ticket = scheduler_.submit(
+        const auto ticket = scheduler.submit(
             bytes, pdf, cv_tuning,
             PageScheduler::Callbacks{
                 [&state](int total_pages) {
@@ -514,6 +537,7 @@ grpc::Status DocumentParserService::ConvertSource(
         }
         std::string plain_text;
         AssemblyCursor assembly_cursor;
+        google::protobuf::RepeatedPtrField<pipestream::parse::v1::TextOffset> offsets;
         for (int page_number = 1; page_number <= state.total_pages; ++page_number) {
           const auto page = state.pages.find(page_number);
           if (page == state.pages.end()) {
@@ -521,8 +545,9 @@ grpc::Status DocumentParserService::ConvertSource(
             return outcome;
           }
           append_page_to_document(*page->second, page_number, &assembly_cursor,
-                                  &outcome.document, &plain_text);
+                                  &outcome.document, &plain_text, &offsets);
         }
+        *cv_offsets = std::move(offsets);
         outcome.success = true;
         return outcome;
       } catch (...) {
@@ -533,18 +558,18 @@ grpc::Status DocumentParserService::ConvertSource(
       }
     };
 
-    auto endpoints = endpoints_;
+    auto endpoints = collectors;
     const auto ebcdic_layout_json =
-        std::make_shared<const std::string>(request->request().options().ebcdic_layout_json());
+        std::make_shared<const std::string>(request.options().ebcdic_layout_json());
     const auto lol_html_options_json = std::make_shared<const std::string>(
-        request->request().options().lol_html_options_json());
+        request.options().lol_html_options_json());
 
     // The default PDF route becomes the pdf inspector when one is
     // configured: its classification decides between the collector's own
     // fast-path Document and a CV run restricted to the pages needing OCR.
     // Unconfigured, PDF stays on the CV path exactly as before.
     const auto selected_collectors =
-        requested_collectors(request->request().options().collectors());
+        requested_collectors(request.options().collectors());
     auto routed = route_collector(requested_name.string(), std::string());
     if (selected_collectors.empty() && pdf &&
         routed == pipestream::parse::v1::COLLECTOR_GRPARSE_CV &&
@@ -631,67 +656,198 @@ grpc::Status DocumentParserService::ConvertSource(
       return grpc::Status(first.code, message);
     }
 
-    auto* converted = response->mutable_response();
-    auto* document_response = converted->mutable_document();
-    document_response->set_filename(requested_name.string());
-    auto* document = document_response->mutable_doc();
-    *document = std::move(result.document);
+    // The offset table describes the CV collector's own text stream. It is
+    // published only when that collector is the entire document: a merge
+    // renumbers arena references, and a table that no longer names the items
+    // it describes is worse than no table at all.
+    if (result.succeeded == 1 && !cv_offsets->empty()) {
+      chunking::add_offsets(*cv_offsets, &parsed->offsets);
+    }
     // Collector warnings are not failures; they stay on the document, keyed
     // by collector, so nothing the collectors reported is dropped.
     for (const auto& [collector, text] : result.warnings) {
-      auto& fields = *document->mutable_body()->mutable_meta()->mutable_custom_fields();
+      auto& fields =
+          *result.document.mutable_body()->mutable_meta()->mutable_custom_fields();
       *fields[std::string("collector_warnings:") + collector_name(collector)]
            .mutable_list_value()
            ->add_values()
            ->mutable_string_value() = text;
     }
-    for (const auto& failure : result.failures) {
-      auto* error = converted->add_errors();
-      error->set_component_type(pipestream::parse::v1::COMPONENT_TYPE_PIPELINE);
-      error->set_module_name(std::string("collector:") + collector_name(failure.id));
-      error->set_error_message(failure.error);
-    }
+    parsed->filename = requested_name;
+    parsed->result = std::move(result);
+    return grpc::Status::OK;
+  } catch (...) {
+    return status_from_exception(std::current_exception());
+  }
+}
+
+// The collector failures of a parse, as the error list every conversion
+// surface reports them under.
+void report_failures(const std::vector<CollectorFailureInfo>& failures,
+                     google::protobuf::RepeatedPtrField<pipestream::parse::v1::ErrorItem>* errors) {
+  for (const auto& failure : failures) {
+    auto* error = errors->Add();
+    error->set_component_type(pipestream::parse::v1::COMPONENT_TYPE_PIPELINE);
+    error->set_module_name(std::string("collector:") + collector_name(failure.id));
+    error->set_error_message(failure.error);
+  }
+}
+
+// Renders every output format the options asked for onto the response.
+void render_exports(const pipestream::parse::v1::ConvertDocumentOptions& options,
+                    const pipestream::document::v1::Document& document,
+                    pipestream::parse::v1::DocumentExports* exports) {
+  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_TEXT)) {
+    exports->set_text(document_plain_text(document));
+  }
+  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_MARKDOWN)) {
+    exports->set_md(render_markdown(document));
+  }
+  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_HTML)) {
+    exports->set_html(render_html(document));
+  }
+  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_JSON)) {
+    exports->set_json(render_json(document));
+  }
+  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_CANONICAL_JSON)) {
+    exports->set_canonical_json(render_canonical_json(document));
+  }
+  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_DOCTAGS)) {
+    exports->set_doctags(render_doctags(document));
+  }
+  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_DOCLANG)) {
+    exports->set_doclang(render_doclang(document));
+  }
+  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_VTT)) {
+    exports->set_vtt(render_vtt(document));
+  }
+  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_HTML_SPLIT_PAGE)) {
+    exports->set_html_split_page(render_html_split_page(document));
+  }
+  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_YAML)) {
+    exports->set_yaml(render_yaml(document));
+  }
+}
+
+}  // namespace
+
+grpc::Status DocumentParserService::ConvertSource(
+    grpc::ServerContext* context, const pipestream::parse::v1::ConvertSourceRequest* request,
+    pipestream::parse::v1::ConvertSourceResponse* response) {
+  const auto started = std::chrono::steady_clock::now();
+  SourceParse parsed;
+  const grpc::Status parse_status = parse_source(context, request->request(), scheduler_,
+                                                 endpoints_, "ConvertSource", &parsed);
+  if (!parse_status.ok()) return parse_status;
+  try {
+    auto& result = parsed.result;
+    auto* converted = response->mutable_response();
+    auto* document_response = converted->mutable_document();
+    document_response->set_filename(parsed.filename.string());
+    auto* document = document_response->mutable_doc();
+    *document = std::move(result.document);
+    report_failures(result.failures, converted->mutable_errors());
     // Every requested output format renders from the same merged document;
     // TEXT keeps its arena-order line export, the rest fold the body tree.
     const auto& options = request->request().options();
-    if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_TEXT)) {
-      document_response->mutable_exports()->set_text(document_plain_text(*document));
-    }
-    if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_MARKDOWN)) {
-      document_response->mutable_exports()->set_md(render_markdown(*document));
-    }
-    if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_HTML)) {
-      document_response->mutable_exports()->set_html(render_html(*document));
-    }
-    if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_JSON)) {
-      document_response->mutable_exports()->set_json(render_json(*document));
-    }
-    if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_CANONICAL_JSON)) {
-      document_response->mutable_exports()->set_canonical_json(
-          render_canonical_json(*document));
-    }
-    if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_DOCTAGS)) {
-      document_response->mutable_exports()->set_doctags(render_doctags(*document));
-    }
-    if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_DOCLANG)) {
-      document_response->mutable_exports()->set_doclang(render_doclang(*document));
-    }
-    if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_VTT)) {
-      document_response->mutable_exports()->set_vtt(render_vtt(*document));
-    }
-    if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_HTML_SPLIT_PAGE)) {
-      document_response->mutable_exports()->set_html_split_page(
-          render_html_split_page(*document));
-    }
-    if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_YAML)) {
-      document_response->mutable_exports()->set_yaml(render_yaml(*document));
-    }
+    render_exports(options, *document, document_response->mutable_exports());
     converted->set_status(result.failures.empty()
                               ? pipestream::parse::v1::CONVERSION_STATUS_SUCCESS
                               : pipestream::parse::v1::CONVERSION_STATUS_PARTIAL_SUCCESS);
     converted->set_processing_time(
         std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
     (*converted->mutable_timings())["total"] = converted->processing_time();
+    return grpc::Status::OK;
+  } catch (...) {
+    return status_from_exception(std::current_exception());
+  }
+}
+
+namespace {
+
+// The converted document a chunk response carries when the caller asked for
+// it. The chunks themselves never depend on it.
+void attach_converted_document(const pipestream::parse::v1::ConvertDocumentOptions& options,
+                               const fs::path& filename, CoordinatorResult* result,
+                               pipestream::parse::v1::ChunkDocumentResponse* response) {
+  auto* entry = response->add_documents();
+  entry->set_kind("document");
+  auto* content = entry->mutable_content();
+  content->set_filename(filename.string());
+  *content->mutable_doc() = std::move(result->document);
+  render_exports(options, content->doc(), content->mutable_exports());
+  entry->set_status(result->failures.empty()
+                        ? pipestream::parse::v1::CONVERSION_STATUS_SUCCESS
+                        : pipestream::parse::v1::CONVERSION_STATUS_PARTIAL_SUCCESS);
+  report_failures(result->failures, entry->mutable_errors());
+}
+
+}  // namespace
+
+grpc::Status DocumentParserService::ChunkHierarchicalSource(
+    grpc::ServerContext* context,
+    const pipestream::parse::v1::ChunkHierarchicalSourceRequest* request,
+    pipestream::parse::v1::ChunkHierarchicalSourceResponse* response) {
+  const auto started = std::chrono::steady_clock::now();
+  const auto& chunk_request = request->request();
+  SourceParse parsed;
+  pipestream::parse::v1::ConvertDocumentRequest convert;
+  *convert.mutable_sources() = chunk_request.sources();
+  *convert.mutable_options() = chunk_request.convert_options();
+  const grpc::Status parse_status =
+      parse_source(context, convert, scheduler_, endpoints_, "ChunkHierarchicalSource", &parsed);
+  if (!parse_status.ok()) return parse_status;
+  try {
+    auto* chunked = response->mutable_response();
+    const chunking::ChunkOptions options{chunk_request.chunking_options().use_markdown_tables(),
+                                         chunk_request.chunking_options().include_raw_text()};
+    for (auto& chunk : chunking::chunk_hierarchical(parsed.result.document, parsed.offsets,
+                                                    options, parsed.filename.string())) {
+      *chunked->add_chunks() = std::move(chunk);
+    }
+    if (chunk_request.include_converted_doc()) {
+      attach_converted_document(chunk_request.convert_options(), parsed.filename,
+                                &parsed.result, chunked);
+    }
+    chunked->set_processing_time(
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
+    return grpc::Status::OK;
+  } catch (...) {
+    return status_from_exception(std::current_exception());
+  }
+}
+
+grpc::Status DocumentParserService::ChunkHybridSource(
+    grpc::ServerContext* context,
+    const pipestream::parse::v1::ChunkHybridSourceRequest* request,
+    pipestream::parse::v1::ChunkHybridSourceResponse* response) {
+  const auto started = std::chrono::steady_clock::now();
+  const auto& chunk_request = request->request();
+  // The budget decides every boundary, so it is validated before any work
+  // starts rather than defaulted to a number nobody asked for.
+  const grpc::Status option_status =
+      chunking::validate_hybrid_options(chunk_request.chunking_options());
+  if (!option_status.ok()) return option_status;
+  SourceParse parsed;
+  pipestream::parse::v1::ConvertDocumentRequest convert;
+  *convert.mutable_sources() = chunk_request.sources();
+  *convert.mutable_options() = chunk_request.convert_options();
+  const grpc::Status parse_status =
+      parse_source(context, convert, scheduler_, endpoints_, "ChunkHybridSource", &parsed);
+  if (!parse_status.ok()) return parse_status;
+  try {
+    auto* chunked = response->mutable_response();
+    for (auto& chunk :
+         chunking::chunk_hybrid(parsed.result.document, parsed.offsets,
+                                chunk_request.chunking_options(), parsed.filename.string())) {
+      *chunked->add_chunks() = std::move(chunk);
+    }
+    if (chunk_request.include_converted_doc()) {
+      attach_converted_document(chunk_request.convert_options(), parsed.filename,
+                                &parsed.result, chunked);
+    }
+    chunked->set_processing_time(
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
     return grpc::Status::OK;
   } catch (...) {
     return status_from_exception(std::current_exception());

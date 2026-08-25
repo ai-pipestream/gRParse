@@ -324,13 +324,20 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
   }
 }
 
-void append_page_to_document(const OcrPage& source, int page_number, AssemblyCursor* cursor,
-                             pipestream::document::v1::Document* document, std::string* plain_text) {
+void append_page_to_document(
+    const OcrPage& source, int page_number, AssemblyCursor* cursor,
+    pipestream::document::v1::Document* document, std::string* plain_text,
+    google::protobuf::RepeatedPtrField<pipestream::parse::v1::TextOffset>* text_offsets) {
   if (document == nullptr || plain_text == nullptr) {
     throw std::invalid_argument("Document assembly output is required");
   }
   pipestream::parse::v1::PageData page;
   append_page_data(source, page_number, cursor, &page);
+  if (text_offsets != nullptr) {
+    for (auto& offset : *page.mutable_text_offsets()) {
+      *text_offsets->Add() = std::move(offset);
+    }
+  }
   (*document->mutable_pages())[page_number] = std::move(*page.mutable_page_meta());
 
   auto* texts = page.mutable_texts();

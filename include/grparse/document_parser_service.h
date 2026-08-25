@@ -76,6 +76,17 @@ class DocumentParserService final : public ai::pipestream::parse::v1::ParseServi
       grpc::ServerContext* context,
       const ai::pipestream::parse::v1::ConvertSourceRequest* request,
       ai::pipestream::parse::v1::ConvertSourceResponse* response) override;
+  // The two synchronous chunkers parse the source exactly the way
+  // ConvertSource does and chunk the document that comes out of it. Their
+  // async and watch variants stay unimplemented.
+  grpc::Status ChunkHierarchicalSource(
+      grpc::ServerContext* context,
+      const ai::pipestream::parse::v1::ChunkHierarchicalSourceRequest* request,
+      ai::pipestream::parse::v1::ChunkHierarchicalSourceResponse* response) override;
+  grpc::Status ChunkHybridSource(
+      grpc::ServerContext* context,
+      const ai::pipestream::parse::v1::ChunkHybridSourceRequest* request,
+      ai::pipestream::parse::v1::ChunkHybridSourceResponse* response) override;
   grpc::Status Health(grpc::ServerContext* context,
                       const ai::pipestream::parse::v1::HealthRequest* request,
                       ai::pipestream::parse::v1::HealthResponse* response) override;
