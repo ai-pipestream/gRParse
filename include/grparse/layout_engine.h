@@ -39,6 +39,11 @@ class RegionDetector {
 // Anti-seesaw contract: detect_regions is a batch=1 device call on the same
 // raster the OCR stage already holds; it neither retains the image nor blocks
 // on anything but its own inference.
+//
+// Failure policy differs from the pooled OCR sessions for the same reason: an
+// inference that throws propagates and fails that page, and the next page
+// retries on the same session.  There is no sibling to fall back to, and
+// tearing down the session other workers are inside is worse than the throw.
 class LayoutEngine final : public RegionDetector {
  public:
   // Label set of a model, index == model class id.
