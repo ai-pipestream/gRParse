@@ -150,19 +150,78 @@ void merge_documents(docv1::Document&& source, docv1::Document* target) {
   for (auto& [number, page] : *source.mutable_pages()) {
     target->mutable_pages()->emplace(number, std::move(page));
   }
-  if (!target->has_origin() && source.has_origin()) {
-    *target->mutable_origin() = std::move(*source.mutable_origin());
+  // The origin merges field by field rather than whole. The service stamps
+  // the archive's own filename, mimetype, and hash before any collector
+  // runs, so a wholesale move would only ever land when nothing had been
+  // stamped, and the web provenance a collector discovers inside the payload
+  // (the crawled URL, the page's canonical URI) would be dropped every time.
+  // The scatter-gather rule still holds: a field the target already carries
+  // is never overwritten, so the archive leg and the HTML leg both survive.
+  if (source.has_origin()) {
+    docv1::DocumentOrigin* origin = target->mutable_origin();
+    const docv1::DocumentOrigin& incoming = source.origin();
+    if (origin->mimetype().empty()) origin->set_mimetype(incoming.mimetype());
+    if (origin->filename().empty()) origin->set_filename(incoming.filename());
+    if (origin->binary_hash() == 0) origin->set_binary_hash(incoming.binary_hash());
+    if (!origin->has_uri() && incoming.has_uri()) origin->set_uri(incoming.uri());
+    if (incoming.has_web()) {
+      docv1::WebMeta* web = origin->mutable_web();
+      const docv1::WebMeta& source_web = incoming.web();
+      if (!web->has_target_uri() && source_web.has_target_uri()) {
+        web->set_target_uri(source_web.target_uri());
+      }
+      if (!web->has_canonical_uri() && source_web.has_canonical_uri()) {
+        web->set_canonical_uri(source_web.canonical_uri());
+      }
+      if (!web->has_crawl_time() && source_web.has_crawl_time()) {
+        web->set_crawl_time(source_web.crawl_time());
+      }
+      if (!web->has_http_status() && source_web.has_http_status()) {
+        web->set_http_status(source_web.http_status());
+      }
+      if (!web->has_content_language() && source_web.has_content_language()) {
+        web->set_content_language(source_web.content_language());
+      }
+      // emplace leaves a name the target already answered alone.
+      for (const auto& [name, value] : source_web.headers()) {
+        web->mutable_headers()->emplace(name, value);
+      }
+    }
   }
-  // Model-extension carriers: list-shaped ones append, singular ones keep
-  // the first collector's claim exactly like origin above.
+  // Source-declared metadata merges the same way; the page-level pairs
+  // append, because two collectors reading the same page report different
+  // tags rather than competing answers to one.
+  if (source.has_source_meta()) {
+    docv1::DocumentMeta* meta = target->mutable_source_meta();
+    const docv1::DocumentMeta& incoming = source.source_meta();
+    if (!meta->has_title() && incoming.has_title()) meta->set_title(incoming.title());
+    if (!meta->has_created() && incoming.has_created()) {
+      meta->set_created(incoming.created());
+    }
+    if (!meta->has_modified() && incoming.has_modified()) {
+      meta->set_modified(incoming.modified());
+    }
+    if (!meta->has_language() && incoming.has_language()) {
+      meta->set_language(incoming.language());
+    }
+    if (!meta->has_generator() && incoming.has_generator()) {
+      meta->set_generator(incoming.generator());
+    }
+    for (const auto& author : incoming.authors()) meta->add_authors(author);
+    for (const auto& keyword : incoming.keywords()) meta->add_keywords(keyword);
+    for (const auto& [name, value] : incoming.extra()) {
+      meta->mutable_extra()->emplace(name, value);
+    }
+  }
+  // The remaining model-extension carriers: list-shaped ones append,
+  // singular ones keep the first collector's claim exactly like origin.
+  for (auto& tag : *source.mutable_meta_tags()) {
+    *target->add_meta_tags() = std::move(tag);
+  }
   for (auto& item : *source.mutable_attachments()) *target->add_attachments() = std::move(item);
   for (auto& item : *source.mutable_outline()) *target->add_outline() = std::move(item);
-  for (auto& item : *source.mutable_meta_tags()) *target->add_meta_tags() = std::move(item);
   for (auto& item : *source.mutable_structured_data()) {
     *target->add_structured_data() = std::move(item);
-  }
-  if (!target->has_source_meta() && source.has_source_meta()) {
-    *target->mutable_source_meta() = std::move(*source.mutable_source_meta());
   }
   if (!target->has_media() && source.has_media()) {
     *target->mutable_media() = std::move(*source.mutable_media());

@@ -9,6 +9,8 @@
 #include <print>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <grpcpp/grpcpp.h>
 
@@ -507,7 +509,8 @@ void verify_markup_forwards_hint_and_collects() {
 // own fold.
 class FakeLolHtmlService final : public lolv1::LolHtmlService::Service {
  public:
-  explicit FakeLolHtmlService(bool fail) : fail_(fail) {}
+  enum class Mode { kOk, kError, kPageIdentity };
+  explicit FakeLolHtmlService(Mode mode) : mode_(mode) {}
 
   grpc::Status Extract(
       grpc::ServerContext*,
@@ -536,10 +539,35 @@ class FakeLolHtmlService final : public lolv1::LolHtmlService::Service {
     event.mutable_started()->set_rule_count(2);
     stream->Write(event);
     event.Clear();
-    if (fail_) {
+    if (mode_ == Mode::kError) {
       auto* error = event.mutable_error();
       error->set_code(lolv1::PARSE_ERROR_CODE_PARSING_AMBIGUITY);
       error->set_message("refused to guess");
+      stream->Write(event);
+      return grpc::Status::OK;
+    }
+    if (mode_ == Mode::kPageIdentity) {
+      // The page's own identity, exactly as the wire types it: the html
+      // language, the canonical link, two meta pairs in their two spellings,
+      // the title element and its text, and an anchor whose href sits behind
+      // a non-ASCII attribute value.
+      write_element(stream, "page", "html", {{"lang", "en-GB"}});
+      write_element(stream, "page", "link",
+                    {{"rel", "alternate canonical"},
+                     {"href", "https://example.com/canonical"}});
+      write_element(stream, "page", "meta",
+                    {{"name", "description"}, {"content", "A na\xC3\xAFve page"}});
+      write_element(stream, "page", "meta",
+                    {{"property", "og:title"}, {"content", "Na\xC3\xAFve"}});
+      write_element(stream, "page", "title", {});
+      write_text(stream, "page", "Na\xC3\xAFve Example", lolv1::TEXT_TYPE_RCDATA);
+      write_element(stream, "links", "a",
+                    {{"title", "na\xC3\xAFve \xE2\x98\x83"}, {"href", "/na\xC3\xAFve"}});
+      write_text(stream, "links", "About us", lolv1::TEXT_TYPE_DATA);
+      auto* done = event.mutable_finished();
+      done->set_bytes_parsed(bytes.size());
+      (*done->mutable_matches_by_rule())["links"] = 1;
+      (*done->mutable_matches_by_rule())["page"] = 5;
       stream->Write(event);
       return grpc::Status::OK;
     }
@@ -566,7 +594,36 @@ class FakeLolHtmlService final : public lolv1::LolHtmlService::Service {
   }
 
  private:
-  bool fail_;
+  using Writer = grpc::ServerReaderWriter<lolv1::ExtractResponse, lolv1::ExtractRequest>;
+
+  static void write_element(
+      Writer* stream, const std::string& rule, const std::string& tag,
+      const std::vector<std::pair<std::string, std::string>>& attributes) {
+    lolv1::ExtractResponse event;
+    auto* element = event.mutable_element();
+    element->set_rule_id(rule);
+    element->set_tag_name(tag);
+    for (const auto& [name, value] : attributes) {
+      auto* attribute = element->add_attributes();
+      attribute->set_name(name);
+      attribute->set_name_raw(name);
+      attribute->set_value(value);
+    }
+    stream->Write(event);
+  }
+
+  static void write_text(Writer* stream, const std::string& rule,
+                         const std::string& text, lolv1::TextType type) {
+    lolv1::ExtractResponse event;
+    auto* node = event.mutable_text();
+    node->set_rule_id(rule);
+    node->set_text(text);
+    node->set_text_type(type);
+    node->set_last_in_node(true);
+    stream->Write(event);
+  }
+
+  Mode mode_;
 };
 
 constexpr const char* kLolHtmlOptionsJson =
@@ -575,7 +632,7 @@ constexpr const char* kLolHtmlOptionsJson =
     R"({"id":"headings","selector":"h2","captures":["CAPTURE_TEXT"]}]})";
 
 void verify_lol_html_forwards_rules_and_folds() {
-  FakeLolHtmlService service(/*fail=*/false);
+  FakeLolHtmlService service(FakeLolHtmlService::Mode::kOk);
   ServerFixture server(&service);
   const auto outcome = grparse::collect_lol_html_document(
       server.channel(), kLolHtmlOptionsJson,
@@ -596,9 +653,53 @@ void verify_lol_html_forwards_rules_and_folds() {
   require(outcome.document.texts(0).text().base().source(0).collector().collector() ==
               "lol-html",
           "folded items carry the lol-html collector source");
+  const auto& anchor = outcome.document.texts(0).text().base();
+  require(anchor.spans_size() == 1 && anchor.spans(0).hyperlink() == "/about" &&
+              anchor.spans(0).range().start() == 9 &&
+              anchor.spans(0).range().end() == 15,
+          "the typed href becomes a hyperlink run over its own characters");
+  require(anchor.hyperlink() == "/about",
+          "the first link also fills the item's primary hyperlink slot");
   require(outcome.warnings.size() == 1 &&
               outcome.warnings[0] == "rule 'headings' matched nothing",
           "a zero-match rule surfaces as a warning");
+}
+
+void verify_lol_html_captures_page_identity() {
+  FakeLolHtmlService service(FakeLolHtmlService::Mode::kPageIdentity);
+  ServerFixture server(&service);
+  const auto outcome = grparse::collect_lol_html_document(
+      server.channel(), kLolHtmlOptionsJson, "<html lang=\"en-GB\">");
+  require(outcome.success, "lol-html collection succeeds: " + outcome.error);
+  require(outcome.document.origin().web().canonical_uri() ==
+              "https://example.com/canonical",
+          "a rel=canonical link reaches the web provenance, tokens beside it "
+          "notwithstanding");
+  require(outcome.document.source_meta().language() == "en-GB",
+          "the html lang attribute becomes the document's declared language");
+  require(outcome.document.source_meta().title() == "Na\xC3\xAFve Example" &&
+              outcome.document.name() == "Na\xC3\xAFve Example",
+          "the title element's text names the document");
+  require(outcome.document.meta_tags_size() == 3 &&
+              outcome.document.meta_tags(0).name() == "description" &&
+              outcome.document.meta_tags(0).content() == "A na\xC3\xAFve page" &&
+              outcome.document.meta_tags(1).name() == "og:title" &&
+              outcome.document.meta_tags(2).name() == "title" &&
+              outcome.document.meta_tags(2).content() == "Na\xC3\xAFve Example",
+          "meta pairs land under whichever key spelling the page wrote, and "
+          "the title lands beside them");
+
+  // The anchor's pseudo-tag: `<a title="naïve ☃" href="/naïve">`. The href
+  // value spans code points 25 to 31; a byte count would say 28 to 35.
+  const auto& anchor = outcome.document.texts(6).text().base();
+  require(anchor.text() ==
+              "<a title=\"na\xC3\xAFve \xE2\x98\x83\" href=\"/na\xC3\xAFve\">",
+          "the anchor folds as its verbatim pseudo-tag");
+  require(anchor.spans_size() == 1 && anchor.spans(0).hyperlink() == "/na\xC3\xAFve" &&
+              anchor.spans(0).range().start() == 25 &&
+              anchor.spans(0).range().end() == 31,
+          "hyperlink runs are code-point ranges, unshifted by a multi-byte "
+          "attribute value before them");
 }
 
 void verify_lol_html_without_rules_never_dials() {
@@ -614,7 +715,7 @@ void verify_lol_html_without_rules_never_dials() {
 }
 
 void verify_lol_html_in_band_error_is_terminal() {
-  FakeLolHtmlService service(/*fail=*/true);
+  FakeLolHtmlService service(FakeLolHtmlService::Mode::kError);
   ServerFixture server(&service);
   const auto outcome = grparse::collect_lol_html_document(
       server.channel(), kLolHtmlOptionsJson, "<select><xmp><script>");
@@ -630,7 +731,13 @@ void verify_lol_html_in_band_error_is_terminal() {
 // land on the client's own fold.
 class FakeWarcService final : public warcv1::WarcService::Service {
  public:
-  enum class Mode { kOk, kFramingError, kTransportError, kTruncated };
+  enum class Mode {
+    kOk,
+    kFramingError,
+    kTransportError,
+    kTruncated,
+    kRequestBeforeResponse
+  };
   explicit FakeWarcService(Mode mode) : mode_(mode) {}
 
   grpc::Status ParseWarc(
@@ -679,17 +786,47 @@ class FakeWarcService final : public warcv1::WarcService::Service {
       stream->Write(event);
       return grpc::Status::OK;
     }
-    // The first record: a response, its metadata and payload in the order
-    // the shipping server writes them.
+    if (mode_ == Mode::kRequestBeforeResponse) {
+      // The request record precedes its response and declares the same
+      // target: the fold must let the response supersede it.
+      auto* asked = event.mutable_record_start()->mutable_metadata();
+      asked->set_record_index(0);
+      asked->set_record_type(warcv1::WARC_RECORD_TYPE_REQUEST);
+      asked->set_stream_pos(0);
+      add_header(asked->mutable_warc_headers(), "WARC-Target-URI",
+                 "https://example.com/page");
+      stream->Write(event);
+      event.Clear();
+      event.mutable_record_end()->set_record_index(0);
+      stream->Write(event);
+      event.Clear();
+    }
+    // The response record, with both lossless header blocks the server
+    // transmits.
     auto* start = event.mutable_record_start()->mutable_metadata();
-    start->set_record_index(0);
+    start->set_record_index(mode_ == Mode::kRequestBeforeResponse ? 1 : 0);
     start->set_record_type(warcv1::WARC_RECORD_TYPE_RESPONSE);
     start->set_stream_pos(0);
     start->set_content_length(23);
     start->set_is_http(true);
+    start->set_http_parsed(true);
     start->set_http_content_type("text/html");
     start->set_record_id("<urn:uuid:test-1>");
     start->mutable_record_date()->set_seconds(1704164645);  // 2024-01-02T03:04:05Z
+    auto* warc_headers = start->mutable_warc_headers();
+    warc_headers->set_encoding(warcv1::HEADER_ENCODING_UNICODE);
+    add_header(warc_headers, "WARC-Type", "response");
+    add_header(warc_headers, "WARC-Target-URI", "https://example.com/page");
+    add_header(warc_headers, "WARC-Payload-Digest", "sha1:PAYLOAD");
+    add_header(warc_headers, "WARC-Block-Digest", "sha1:BLOCK");
+    auto* http_headers = start->mutable_http_headers();
+    http_headers->set_encoding(warcv1::HEADER_ENCODING_LATIN1);
+    http_headers->set_status_line("HTTP/1.1 200 OK");
+    add_header(http_headers, "Content-Type", "text/html; charset=utf-8");
+    add_header(http_headers, "Last-Modified", "Tue, 02 Jan 2024 03:00:00 GMT");
+    add_header(http_headers, "Content-Language", "en-GB");
+    add_header(http_headers, "ETag", "\"deadbeef\"");
+    add_header(http_headers, "Server", "fake/1.0");
     stream->Write(event);
     event.Clear();
     auto* chunk = event.mutable_payload_chunk();
@@ -705,6 +842,7 @@ class FakeWarcService final : public warcv1::WarcService::Service {
     event.mutable_record_end()->set_payload_length(23);
     stream->Write(event);
     event.Clear();
+    if (mode_ == Mode::kRequestBeforeResponse) return grpc::Status::OK;
     auto* skipped = event.mutable_record_error();
     skipped->set_stream_pos(64);
     skipped->set_recoverable(true);
@@ -720,7 +858,8 @@ class FakeWarcService final : public warcv1::WarcService::Service {
       stream->Write(event);
       return grpc::Status::OK;
     }
-    // Second record: a warcinfo with no HTTP metadata.
+    // Second record: a warcinfo with no HTTP metadata and no target URI, so
+    // it must not disturb the web provenance the response established.
     auto* meta = event.mutable_record_start()->mutable_metadata();
     meta->set_record_index(1);
     meta->set_record_type(warcv1::WARC_RECORD_TYPE_WARCINFO);
@@ -739,6 +878,13 @@ class FakeWarcService final : public warcv1::WarcService::Service {
   }
 
  private:
+  static void add_header(warcv1::HeaderBlock* block, const std::string& name,
+                         const std::string& value) {
+    auto* field = block->add_fields();
+    field->set_name(name);
+    field->set_value(value);
+  }
+
   Mode mode_;
 };
 
@@ -779,6 +925,48 @@ void verify_fastwarc_folds_records_and_warnings() {
               outcome.warnings[0] ==
                   "record at stream offset 64 skipped: bad http headers",
           "a recoverable record error becomes a warning");
+}
+
+void verify_fastwarc_captures_web_provenance() {
+  FakeWarcService service(FakeWarcService::Mode::kOk);
+  ServerFixture server(&service);
+  const auto outcome =
+      grparse::collect_fastwarc_document(server.channel(), "WARC/1.0 fake bytes");
+  require(outcome.success, "fastwarc collection succeeds: " + outcome.error);
+  const auto& web = outcome.document.origin().web();
+  require(web.target_uri() == "https://example.com/page",
+          "WARC-Target-URI reaches the document's web provenance");
+  require(web.crawl_time() == "2024-01-02T03:04:05Z",
+          "the parsed WARC-Date lands as an ISO 8601 crawl time, not prose");
+  require(web.http_status() == 200,
+          "the status code parses out of the raw HTTP status line");
+  require(web.content_language() == "en-GB",
+          "the declared response language lands in its own field");
+  const auto& headers = web.headers();
+  require(headers.size() == 6, "only the selected response headers are kept");
+  require(headers.at("content-type") == "text/html; charset=utf-8" &&
+              headers.at("last-modified") == "Tue, 02 Jan 2024 03:00:00 GMT" &&
+              headers.at("content-language") == "en-GB" &&
+              headers.at("etag") == "\"deadbeef\"",
+          "the selected response headers keep their values under lower-cased names");
+  require(!headers.contains("server"),
+          "a header nothing reads is not invented into the capture");
+  require(headers.at("warc-payload-digest") == "sha1:PAYLOAD" &&
+              headers.at("warc-block-digest") == "sha1:BLOCK",
+          "the declared digests ride the header map under their WARC names");
+}
+
+void verify_fastwarc_response_supersedes_the_request_record() {
+  FakeWarcService service(FakeWarcService::Mode::kRequestBeforeResponse);
+  ServerFixture server(&service);
+  const auto outcome =
+      grparse::collect_fastwarc_document(server.channel(), "WARC/1.0 fake bytes");
+  require(outcome.success, "fastwarc collection succeeds: " + outcome.error);
+  const auto& web = outcome.document.origin().web();
+  require(web.target_uri() == "https://example.com/page",
+          "the request record's target holds until the response arrives");
+  require(web.http_status() == 200 && web.headers().contains("etag"),
+          "the response record supersedes the request record's provenance");
 }
 
 void verify_fastwarc_framing_error_keeps_records() {
@@ -1060,7 +1248,10 @@ int main() {
     verify_lol_html_forwards_rules_and_folds();
     verify_lol_html_without_rules_never_dials();
     verify_lol_html_in_band_error_is_terminal();
+    verify_lol_html_captures_page_identity();
     verify_fastwarc_folds_records_and_warnings();
+    verify_fastwarc_captures_web_provenance();
+    verify_fastwarc_response_supersedes_the_request_record();
     verify_fastwarc_framing_error_keeps_records();
     verify_fastwarc_transport_failure_without_records();
     verify_fastwarc_truncates_payload_text();

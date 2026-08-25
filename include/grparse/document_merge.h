@@ -8,8 +8,10 @@ namespace grparse {
 // with renumbered self_refs so references stay unique, every reference
 // inside the moved items is rewritten to match, body and furniture children
 // and metadata append, and pages merge by page number with target winning a
-// collision. Nothing already in target is modified, which is the
-// scatter-gather rule: sources never overwrite each other.
+// collision. Origin, source metadata, and web provenance merge field by
+// field, and the page-level meta pairs append. Nothing already in target is
+// modified, which is the scatter-gather rule: sources never overwrite each
+// other.
 void merge_documents(ai::pipestream::document::v1::Document&& source,
                      ai::pipestream::document::v1::Document* target);
 

@@ -3,8 +3,11 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdint>
 #include <limits>
 #include <map>
+#include <optional>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -19,6 +22,7 @@
 #include "ai/pipestream/pdf/v1/pdf_service.grpc.pb.h"
 #include "ai/pipestream/xml/v1/xml_service.grpc.pb.h"
 #include "fastwarc/v1/warc_service.grpc.pb.h"
+#include "grparse/document_assembly.h"
 #include "lolhtml/v1/lolhtml_service.grpc.pb.h"
 
 namespace asrv1 = ai::pipestream::asr::v1;
@@ -406,7 +410,65 @@ CollectorOutcome collect_lol_html_document(const std::shared_ptr<grpc::Channel>&
     base->set_text(std::move(text));
     base->add_source()->mutable_collector()->set_collector("lol-html");
     document.mutable_groups(group)->add_children()->set_ref(base->self_ref());
+    return base;
   };
+
+  // Attribute lookup on a match, by the normalized (lower-cased) name the
+  // wire guarantees; absent means the element did not carry it.
+  const auto attribute_value =
+      [](const lolv1::ElementMatched& element,
+         std::string_view name) -> std::optional<std::string> {
+    for (const auto& attribute : element.attributes()) {
+      if (attribute.name() == name) return attribute.value();
+    }
+    return std::nullopt;
+  };
+
+  // Page-level identity the fold recognizes on sight. The wire types every
+  // attribute, so these land in their typed slots instead of being smeared
+  // into the pseudo-tag string with everything else; the string still
+  // carries them, because it is the verbatim transcript.
+  const auto capture_page_identity = [&document, &attribute_value](
+                                         const std::string& tag,
+                                         const lolv1::ElementMatched& element) {
+    if (tag == "link") {
+      const auto rel = attribute_value(element, "rel");
+      const auto href = attribute_value(element, "href");
+      // rel is a space-separated token list; canonical may sit beside others.
+      if (rel && href && !href->empty() && rel->contains("canonical") &&
+          !document.origin().web().has_canonical_uri()) {
+        document.mutable_origin()->mutable_web()->set_canonical_uri(*href);
+      }
+      return;
+    }
+    if (tag == "html") {
+      if (const auto lang = attribute_value(element, "lang")) {
+        if (!lang->empty() && !document.source_meta().has_language()) {
+          document.mutable_source_meta()->set_language(*lang);
+        }
+      }
+      return;
+    }
+    if (tag != "meta") return;
+    // A <meta> is a name/content pair whichever of the three key spellings
+    // it uses; MetaTag.name keeps the spelling the page wrote.
+    const auto content = attribute_value(element, "content");
+    if (!content) return;
+    for (const std::string_view key : {"name", "property", "http-equiv"}) {
+      const auto name = attribute_value(element, key);
+      if (!name || name->empty()) continue;
+      docv1::MetaTag* tag_pair = document.add_meta_tags();
+      tag_pair->set_name(*name);
+      tag_pair->set_content(*content);
+      return;
+    }
+  };
+
+  // A text node names only the rule that produced it, so the title has to be
+  // recognized from the element event that preceded it on the same rule.
+  // Without CAPTURE_TAG_NAME there is nothing to recognize and the title
+  // stays an ordinary text item, which is the honest outcome.
+  std::map<std::string, std::string> tag_by_rule;
 
   bool finished_seen = false;
   bool error_seen = false;
@@ -417,17 +479,65 @@ CollectorOutcome collect_lol_html_document(const std::shared_ptr<grpc::Channel>&
         const auto& element = event.element();
         std::string tag = element.tag_name().empty() ? element.tag_name_raw()
                                                      : element.tag_name();
+        tag_by_rule[element.rule_id()] = tag;
+        capture_page_identity(tag, element);
         std::string text = "<" + (tag.empty() ? "match" : tag);
+        // href arrives typed, so it stays typed: each one becomes an
+        // InlineSpan hyperlink run over the characters its value occupies in
+        // the pseudo-tag. Ranges are code points into the item text, as
+        // InlineSpan declares, so a non-ASCII attribute earlier in the tag
+        // does not shift them.
+        constexpr auto kSpanLimit =
+            static_cast<uint64_t>(std::numeric_limits<int32_t>::max());
+        std::vector<std::pair<std::pair<uint64_t, uint64_t>, std::string>> links;
+        uint64_t points = utf8_codepoint_count(text);
         for (const auto& attribute : element.attributes()) {
-          text += " " + attribute.name() + "=\"" + attribute.value() + "\"";
+          const std::string opening = " " + attribute.name() + "=\"";
+          text += opening;
+          points += utf8_codepoint_count(opening);
+          const uint64_t value_start = points;
+          text += attribute.value();
+          points += utf8_codepoint_count(attribute.value());
+          text += "\"";
+          const uint64_t value_end = points;
+          points += 1;
+          // A range wider than the span type can hold is left off rather
+          // than truncated into a lie about where the link sits.
+          if (attribute.name() == "href" && !attribute.value().empty() &&
+              value_end <= kSpanLimit) {
+            links.emplace_back(std::pair{value_start, value_end}, attribute.value());
+          }
         }
         text += ">";
-        add_text(element.rule_id(), std::move(text));
+        auto* base = add_text(element.rule_id(), std::move(text));
+        for (const auto& [range, href] : links) {
+          docv1::InlineSpan* span = base->add_spans();
+          span->mutable_range()->set_start(static_cast<int32_t>(range.first));
+          span->mutable_range()->set_end(static_cast<int32_t>(range.second));
+          span->set_hyperlink(href);
+        }
+        // The house convention keeps the first link in the item's scalar
+        // slot as the primary one; the spans carry every link with its
+        // position.
+        if (!links.empty()) base->set_hyperlink(links.front().second);
         break;
       }
-      case lolv1::ExtractResponse::kText:
-        add_text(event.text().rule_id(), event.text().text());
+      case lolv1::ExtractResponse::kText: {
+        const auto& node = event.text();
+        add_text(node.rule_id(), node.text());
+        const auto matched = tag_by_rule.find(node.rule_id());
+        if (matched != tag_by_rule.end() && matched->second == "title" &&
+            !node.text().empty() && !document.source_meta().has_title()) {
+          // The page's own title: the document's name, its declared title,
+          // and a page-level pair beside the <meta> ones.
+          document.set_name(node.text());
+          document.mutable_source_meta()->set_title(node.text());
+          docv1::MetaTag* tag_pair = document.add_meta_tags();
+          tag_pair->set_name("title");
+          tag_pair->set_content(node.text());
+        }
         break;
+      }
       case lolv1::ExtractResponse::kComment:
         add_text(event.comment().rule_id(), "<!--" + event.comment().text() + "-->");
         break;
@@ -550,9 +660,103 @@ CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>&
            type.contains("xml") || type.contains("html");
   };
 
-  const auto fold_record = [&document, &add_text, &looks_textual](
+  // Header blocks arrive lossless: ordered name/value byte pairs, original
+  // case preserved, duplicates kept. Both WARC and HTTP define names
+  // case-insensitively, so the lookup does too, and returns the first match.
+  const auto header_value = [](const warcv1::HeaderBlock& block,
+                               std::string_view name) -> std::optional<std::string> {
+    const auto same_name = [&name](const std::string& candidate) {
+      if (candidate.size() != name.size()) return false;
+      for (size_t index = 0; index < name.size(); ++index) {
+        if (std::tolower(static_cast<unsigned char>(candidate[index])) !=
+            std::tolower(static_cast<unsigned char>(name[index]))) {
+          return false;
+        }
+      }
+      return true;
+    };
+    for (const auto& field : block.fields()) {
+      if (same_name(field.name())) return field.value();
+    }
+    return std::nullopt;
+  };
+
+  // The status line arrives as raw bytes ("HTTP/1.1 200 OK"); the code is its
+  // second token. Anything that does not read as three digits leaves the
+  // status unset rather than guessed at.
+  const auto status_code = [](const std::string& status_line) -> std::optional<int> {
+    const size_t version_end = status_line.find(' ');
+    if (version_end == std::string::npos) return std::nullopt;
+    const size_t begin = status_line.find_first_not_of(' ', version_end);
+    if (begin == std::string::npos) return std::nullopt;
+    size_t end = begin;
+    while (end < status_line.size() &&
+           std::isdigit(static_cast<unsigned char>(status_line[end])) != 0) {
+      ++end;
+    }
+    if (end - begin != 3) return std::nullopt;
+    return std::stoi(status_line.substr(begin, 3));
+  };
+
+  // Document.origin is per-document while an archive holds many records, so
+  // the document's web provenance comes from exactly one of them: the first
+  // `response` that declares a WARC-Target-URI, or the first record declaring
+  // one at all until a response arrives and supersedes it. Every field is set
+  // only when the record actually carries it; nothing is invented from a
+  // default.
+  bool web_captured = false;
+  bool web_from_response = false;
+  const auto capture_web = [&](const warcv1::RecordMetadata& metadata) {
+    const bool is_response =
+        metadata.record_type() == warcv1::WARC_RECORD_TYPE_RESPONSE;
+    if (web_captured && (web_from_response || !is_response)) return;
+    const auto target = header_value(metadata.warc_headers(), "WARC-Target-URI");
+    if (!target) return;
+    docv1::WebMeta* web = document.mutable_origin()->mutable_web();
+    web->Clear();
+    web->set_target_uri(*target);
+    if (metadata.has_record_date()) {
+      // WARC-Date parsed by the server; ToString renders RFC 3339, which is
+      // the ISO 8601 profile WebMeta.crawl_time asks for.
+      web->set_crawl_time(
+          google::protobuf::util::TimeUtil::ToString(metadata.record_date()));
+    }
+    if (metadata.has_http_headers()) {
+      const warcv1::HeaderBlock& http = metadata.http_headers();
+      if (http.has_status_line()) {
+        if (const auto status = status_code(http.status_line())) {
+          web->set_http_status(*status);
+        }
+      }
+      // The response headers a retrieval pipeline reads: the type it fetched,
+      // the freshness pair, and the language it declared. Names are
+      // lower-cased because WebMeta.headers says they are.
+      for (const std::string_view name :
+           {"content-type", "last-modified", "content-language", "etag"}) {
+        if (const auto value = header_value(http, name)) {
+          (*web->mutable_headers())[std::string(name)] = *value;
+        }
+      }
+      if (const auto language = header_value(http, "content-language")) {
+        web->set_content_language(*language);
+      }
+    }
+    // The declared digests are the crawl corpus's content-identity keys and
+    // have no typed slot of their own; they ride the header map beside the
+    // response headers, under their WARC names.
+    for (const std::string_view name : {"warc-payload-digest", "warc-block-digest"}) {
+      if (const auto digest = header_value(metadata.warc_headers(), name)) {
+        (*web->mutable_headers())[std::string(name)] = *digest;
+      }
+    }
+    web_captured = true;
+    web_from_response = is_response;
+  };
+
+  const auto fold_record = [&document, &add_text, &looks_textual, &capture_web](
                                const warcv1::RecordMetadata& metadata,
                                const std::string& payload, uint64_t payload_length) {
+    capture_web(metadata);
     const int index = document.groups_size();
     docv1::GroupItem* group = document.add_groups();
     group->set_self_ref("#/groups/" + std::to_string(index));

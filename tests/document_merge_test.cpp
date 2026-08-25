@@ -175,6 +175,55 @@ void verify_merge_carries_field_arenas_and_extensions() {
           "first source metadata claim sticks");
 }
 
+// The service stamps the archive's own identity into the origin before any
+// collector runs, so a collector's web provenance only survives if the
+// origin merges field by field.
+void verify_metadata_merges_beside_a_stamped_origin() {
+  docv1::Document target = base_document();
+  auto* stamped = target.mutable_origin();
+  stamped->set_filename("capture.warc.gz");
+  stamped->set_mimetype("application/warc");
+  stamped->set_binary_hash(4096);
+
+  docv1::Document crawl = collector_document();
+  auto* web = crawl.mutable_origin()->mutable_web();
+  web->set_target_uri("https://example.com/page");
+  web->set_crawl_time("2024-01-02T03:04:05Z");
+  web->set_http_status(200);
+  (*web->mutable_headers())["etag"] = "\"deadbeef\"";
+  grparse::merge_documents(std::move(crawl), &target);
+
+  docv1::Document page = collector_document();
+  page.mutable_origin()->mutable_web()->set_canonical_uri(
+      "https://example.com/canonical");
+  (*page.mutable_origin()->mutable_web()->mutable_headers())["etag"] = "\"other\"";
+  page.mutable_source_meta()->set_title("Example");
+  page.mutable_source_meta()->set_language("en-GB");
+  auto* tag = page.add_meta_tags();
+  tag->set_name("description");
+  tag->set_content("A page");
+  grparse::merge_documents(std::move(page), &target);
+
+  require(target.origin().filename() == "capture.warc.gz" &&
+              target.origin().mimetype() == "application/warc" &&
+              target.origin().binary_hash() == 4096,
+          "the stamped archive identity is never overwritten");
+  require(target.origin().web().target_uri() == "https://example.com/page" &&
+              target.origin().web().crawl_time() == "2024-01-02T03:04:05Z" &&
+              target.origin().web().http_status() == 200,
+          "the archive leg's web provenance survives the stamped origin");
+  require(target.origin().web().canonical_uri() == "https://example.com/canonical",
+          "a second leg fills the field the first left unset");
+  require(target.origin().web().headers().at("etag") == "\"deadbeef\"",
+          "a header the first leg answered is not overwritten by the second");
+  require(target.source_meta().title() == "Example" &&
+              target.source_meta().language() == "en-GB",
+          "source-declared metadata reaches the merged document");
+  require(target.meta_tags_size() == 1 &&
+              target.meta_tags(0).name() == "description",
+          "page-level meta pairs append");
+}
+
 }  // namespace
 
 int main() {
@@ -182,6 +231,7 @@ int main() {
     verify_merge_renumbers_and_rewrites();
     verify_merge_is_additive_on_replay();
     verify_merge_carries_field_arenas_and_extensions();
+    verify_metadata_merges_beside_a_stamped_origin();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
     std::println(stderr, "document-merge-test: {}", error.what());
