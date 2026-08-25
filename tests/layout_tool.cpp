@@ -20,6 +20,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -91,6 +92,22 @@ long peak_rss_kb() {
     status.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
   }
   return 0;
+}
+
+// Fingerprint of the bytes the detector actually sees.  Two runs that agree
+// here and disagree on detections differ in inference; two runs that disagree
+// here were never given the same page, and the detector is not the variable.
+// FNV-1a, not a cryptographic digest - the question is only same-or-different.
+uint64_t fingerprint(const cv::Mat& image) {
+  uint64_t hash = 1469598103934665603ULL;
+  for (int row = 0; row < image.rows; ++row) {
+    const uint8_t* pixels = image.ptr<uint8_t>(row);
+    const size_t width = static_cast<size_t>(image.cols) * image.elemSize();
+    for (size_t index = 0; index < width; ++index) {
+      hash = (hash ^ pixels[index]) * 1099511628211ULL;
+    }
+  }
+  return hash;
 }
 
 struct PageResult {
@@ -179,6 +196,10 @@ int main(int argc, char** argv) {
     std::vector<cv::Mat> rasters;
     rasters.reserve(static_cast<size_t>(pages));
     for (int page = 1; page <= pages; ++page) rasters.push_back(source->render_page(page));
+    for (size_t index = 0; index < rasters.size(); ++index) {
+      std::println("page {} raster {}x{} fnv1a64={:016x}", index + 1, rasters[index].cols,
+                   rasters[index].rows, fingerprint(rasters[index]));
+    }
 
     std::vector<PageResult> results(static_cast<size_t>(pages) * repeats);
     std::atomic<size_t> next{0};

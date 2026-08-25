@@ -1,6 +1,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -25,6 +26,15 @@ std::string content_type_for(const fs::path& document) {
   if (extension == ".jpg" || extension == ".jpeg") return "image/jpeg";
   if (extension == ".tif" || extension == ".tiff") return "image/tiff";
   return "";
+}
+
+// Fingerprint of the page preview bytes, so two servers can be asked whether
+// they rendered the same pixels before their detections are compared at all.
+// FNV-1a, not a cryptographic digest - the question is only same-or-different.
+uint64_t fingerprint(std::string_view bytes) {
+  uint64_t hash = 1469598103934665603ULL;
+  for (const unsigned char byte : bytes) hash = (hash ^ byte) * 1099511628211ULL;
+  return hash;
 }
 
 // GRPARSE_STREAM_CLIENT_ITEMS=1 prints one line per emitted item: its label,
@@ -134,7 +144,14 @@ int main(int argc, char** argv) {
                    event.page().page_number(), event.page().texts_size(), digital_items,
                    ocr_items, labelled_items, event.page().tables_size(), filled_cells,
                    event.page().pictures_size(), picture_images, barcodes);
-      if (dump_items) dump_page_items(event.page());
+      if (dump_items) {
+        const auto& image = event.page().page_meta().image();
+        if (!image.uri().empty()) {
+          std::println("  raster {}x{} preview_fnv1a64={:016x}", image.size().width(),
+                       image.size().height(), fingerprint(image.uri()));
+        }
+        dump_page_items(event.page());
+      }
     } else if (event.has_complete()) {
       std::println("complete total_pages={}", event.total_pages());
     }

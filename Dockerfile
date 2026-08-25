@@ -64,8 +64,14 @@ RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.83.0-ort1.29.0-poppler26
 # a metric-compatible substitute, which starves layout detection and page
 # previews of pixels. fc-cache prebuilds the fontconfig cache so the
 # read-only runtime never tries to write one.
+# The font set is pinned rather than inherited: fontconfig substitutes
+# whatever it happens to find, so an image that carries a different set
+# rasterizes non-embedded text to different pixels than its siblings, and a
+# page the images disagree about cannot be compared between them. The CUDA
+# image used to inherit DejaVu from its base while the others had Liberation
+# alone; all three now ask for the same fonts explicitly.
 RUN apt-get update && apt-get install -y --no-install-recommends libcudnn9-cuda-13 \
-    fonts-liberation fontconfig \
+    fonts-liberation fonts-dejavu-core fontconfig \
     && rm -rf /var/lib/apt/lists/* \
     && fc-cache -f \
     && mkdir -p /out/runtime-libs \

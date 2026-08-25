@@ -60,10 +60,16 @@ ENV GRPARSE_LISTEN_ADDRESS=0.0.0.0:50051 GRPARSE_MODELS_DIR=/models GRPARSE_PAGE
 # blank (layout detection and page previews read those pixels). The
 # poppler runtime deps mirror the vendored build above; the distro
 # libpoppler is deliberately absent.
+# The font set is pinned rather than inherited: fontconfig substitutes
+# whatever it happens to find, so an image that carries a different set
+# rasterizes non-embedded text to different pixels than its siblings, and a
+# page the images disagree about cannot be compared between them. The CUDA
+# image used to inherit DejaVu from its base while the others had Liberation
+# alone; all three now ask for the same fonts explicitly.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libopencv-core-dev libopencv-imgcodecs-dev libopencv-imgproc-dev \
     libfreetype6 libfontconfig1 libjpeg8 libopenjp2-7 liblcms2-2 \
-    fonts-liberation fontconfig \
+    fonts-liberation fonts-dejavu-core fontconfig \
     && rm -rf /var/lib/apt/lists/* && fc-cache -f
 COPY --from=build /out/grparse-server /usr/local/bin/grparse-server
 COPY --from=build /out/grparse-stream-client /usr/local/bin/grparse-stream-client
