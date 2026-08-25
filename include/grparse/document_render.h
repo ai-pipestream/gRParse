@@ -11,15 +11,17 @@
 
 namespace grparse {
 
-// Renders the document as Markdown with docling-core's export_to_markdown
-// semantics mapped onto this proto's item vocabulary: "#" headings by level,
-// paragraph blocks separated by blank lines, "-"/"1." lists with four-space
-// nesting, GitHub pipe tables with a header and alignment row (pipes inside
-// cells escaped), fenced code blocks, "$$...$$" formula blocks, captions as
-// emphasized lines adjacent to their table or figure, and images as
-// "![alt](ref)" or docling's "<!-- image -->" placeholder when the picture
-// carries no reference. Items with no Markdown counterpart degrade to
-// docling's comment placeholders instead of inventing syntax.
+// Renders the document as Markdown, byte for byte as the reference Markdown
+// serializer does with its export defaults: "#" headings by level, paragraph
+// blocks separated by blank lines, lists with four-space nesting and the
+// reference's marker rules, pipe tables with a header rule and columns padded
+// to a common width (a pipe inside a cell becomes a character reference),
+// fenced code blocks with no info string, "$$...$$" formula blocks, captions
+// and item metadata as plain paragraphs beside their item, and every picture
+// as the "<!-- image -->" placeholder, whatever image it carries. Items with
+// no Markdown counterpart degrade to the reference's comment placeholders
+// instead of inventing syntax. Underscores and the HTML specials are escaped
+// in item text; a link target is not.
 std::string render_markdown(const ai::pipestream::document::v1::Document& document);
 
 // Renders the document as structural HTML mirroring docling-core's HTML
