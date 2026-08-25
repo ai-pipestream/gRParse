@@ -780,6 +780,32 @@ void verify_bboxes_clamp_to_their_page() {
   require_contains(rendered, "\"l\": -7.0", "unknown pages never clamp");
 }
 
+// Typed barcode annotations never echo as annotations, but they project
+// into the dialect as one namespaced meta custom field, derived at export
+// so the wire itself stays typed.
+void verify_typed_barcodes_project_into_meta() {
+  docv1::Document document = base_document("codes");
+  auto* picture = document.add_pictures();
+  picture->set_self_ref("#/pictures/0");
+  picture->mutable_parent()->set_ref("#/body");
+  picture->set_content_layer(docv1::CONTENT_LAYER_BODY);
+  picture->set_label(docv1::DOC_ITEM_LABEL_PICTURE);
+  document.mutable_body()->add_children()->set_ref("#/pictures/0");
+  auto* barcode = picture->add_annotations()->mutable_barcode();
+  barcode->set_format("QRCode");
+  barcode->set_value("https://example.com");
+  barcode->set_provenance("zxing-cpp");
+
+  const std::string rendered = grparse::render_canonical_json(document);
+  require_contains(rendered, "\"pipestream__barcodes\"",
+                   "the projection lands as the namespaced custom field");
+  require_contains(rendered,
+                   "\"format\": \"QRCode\"",
+                   "the payload's fields survive the projection");
+  require_contains(rendered, "\"annotations\": []",
+                   "the typed arm never echoes on the annotation surface");
+}
+
 // An ordered-list group relabels to a plain list group at load, exactly like
 // the reference model, and its items stay put: no migration, no synthesized
 // group, and the ordered label never reaches the canonical output.
@@ -998,6 +1024,7 @@ int main() {
     verify_pages_dump_in_numeric_order();
     verify_origin_and_raw_label_states();
     verify_bboxes_clamp_to_their_page();
+    verify_typed_barcodes_project_into_meta();
     verify_ordered_list_groups_relabel_to_list();
     verify_misplaced_list_items_migrate_into_a_group();
     verify_clean_documents_render_unnormalized();

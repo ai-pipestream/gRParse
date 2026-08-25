@@ -471,30 +471,21 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
         prediction->set_class_name(figure_class.label);
       }
     }
-    // Decoded payloads ride on the typed barcode arm, once more as the
-    // legacy misc-annotation struct so existing consumers keep working for
-    // one release, and as a namespaced meta custom field because meta is
-    // what the canonical dialect exports.
-    if (!region.barcodes.empty()) {
-      auto* exported = (*picture->mutable_meta()->mutable_custom_fields())
-                           ["pipestream__barcodes"]
-                               .mutable_list_value();
-      for (const auto& barcode : region.barcodes) {
-        auto* typed = picture->add_annotations()->mutable_barcode();
-        typed->set_format(barcode.format);
-        typed->set_value(barcode.text);
-        typed->set_provenance("zxing-cpp");
-        auto* misc = picture->add_annotations()->mutable_misc();
-        misc->set_kind("barcode");
-        auto& fields = *misc->mutable_content()->mutable_fields();
-        fields["format"].set_string_value(barcode.format);
-        fields["value"].set_string_value(barcode.text);
-        fields["provenance"].set_string_value("zxing-cpp");
-        auto& entry = *exported->add_values()->mutable_struct_value()->mutable_fields();
-        entry["format"].set_string_value(barcode.format);
-        entry["value"].set_string_value(barcode.text);
-        entry["provenance"].set_string_value("zxing-cpp");
-      }
+    // Decoded payloads ride on the typed barcode arm, the wire's only home,
+    // plus the legacy misc-annotation struct for one release. The dialect
+    // exporters derive their pipestream__barcodes projection from the typed
+    // arm themselves; the producer never writes an untyped copy.
+    for (const auto& barcode : region.barcodes) {
+      auto* typed = picture->add_annotations()->mutable_barcode();
+      typed->set_format(barcode.format);
+      typed->set_value(barcode.text);
+      typed->set_provenance("zxing-cpp");
+      auto* misc = picture->add_annotations()->mutable_misc();
+      misc->set_kind("barcode");
+      auto& fields = *misc->mutable_content()->mutable_fields();
+      fields["format"].set_string_value(barcode.format);
+      fields["value"].set_string_value(barcode.text);
+      fields["provenance"].set_string_value("zxing-cpp");
     }
     floats.push_back({&region, self_ref, picture->mutable_captions()});
     body_order.push_back(self_ref);

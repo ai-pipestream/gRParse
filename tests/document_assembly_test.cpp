@@ -295,13 +295,10 @@ void verify_barcode_payloads_become_misc_annotations() {
               picture.annotations(4).misc().content().fields().at("value").string_value() ==
                   "SKU-1234",
           "every payload gets both shapes");
-  require(picture.meta().custom_fields().count("pipestream__barcodes") == 1 &&
-              picture.meta()
-                      .custom_fields()
-                      .at("pipestream__barcodes")
-                      .list_value()
-                      .values_size() == 2,
-          "meta carries the payloads the canonical dialect exports");
+  require(!picture.has_meta() ||
+              picture.meta().custom_fields().count("pipestream__barcodes") == 0,
+          "the wire carries barcodes typed only; exporters derive the "
+          "dialect projection themselves");
   const auto& classified_meta = picture.meta().classification();
   require(classified_meta.predictions_size() == 1 &&
               classified_meta.predictions(0).class_name() == "qr_code" &&

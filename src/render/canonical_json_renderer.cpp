@@ -487,7 +487,32 @@ class CanonicalJsonRenderer {
     writer_.end_object();
   }
 
-  void emit_picture_meta(const docv1::PictureMeta& meta) {
+  // The typed barcode annotations project into the dialect as one
+  // namespaced custom field; the wire itself never carries the untyped
+  // copy. The reference-side importer synthesizes the identical entry, so
+  // both exporters stay byte-equal.
+  static ValueMap picture_custom_fields(const docv1::PictureItem& picture) {
+    ValueMap merged;
+    if (picture.has_meta()) merged = picture.meta().custom_fields();
+    google::protobuf::ListValue payloads;
+    for (const auto& annotation : picture.annotations()) {
+      if (!annotation.has_barcode()) continue;
+      auto& entry = *payloads.add_values()->mutable_struct_value()->mutable_fields();
+      entry["format"].set_string_value(annotation.barcode().format());
+      entry["provenance"].set_string_value(annotation.barcode().provenance());
+      entry["value"].set_string_value(annotation.barcode().value());
+    }
+    if (payloads.values_size() > 0 && merged.count("pipestream__barcodes") == 0) {
+      *merged["pipestream__barcodes"].mutable_list_value() = std::move(payloads);
+    }
+    return merged;
+  }
+
+  void emit_picture_meta(const docv1::PictureItem& picture) {
+    const ValueMap custom = picture_custom_fields(picture);
+    if (!picture.has_meta() && custom.empty()) return;
+    static const docv1::PictureMeta kEmptyMeta;
+    const docv1::PictureMeta& meta = picture.has_meta() ? picture.meta() : kEmptyMeta;
     writer_.key("meta");
     writer_.begin_object();
     emit_inherited_meta_members(meta);
@@ -543,7 +568,7 @@ class CanonicalJsonRenderer {
       emit_custom_fields(code.custom_fields());
       writer_.end_object();
     }
-    emit_custom_fields(meta.custom_fields());
+    emit_custom_fields(custom);
     writer_.end_object();
   }
 
@@ -853,7 +878,7 @@ class CanonicalJsonRenderer {
   void emit_picture(const docv1::PictureItem& picture) {
     writer_.begin_object();
     emit_node_prefix(picture);
-    if (picture.has_meta()) emit_picture_meta(picture.meta());
+    emit_picture_meta(picture);
     emit_label(picture.label(), {"picture", "chart"}, "picture");
     emit_prov_list(picture.prov());
     emit_source_list(picture.source());
