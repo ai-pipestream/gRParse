@@ -102,7 +102,9 @@ class PdfPageSource final : public PageSource {
       const std::unique_ptr<poppler::page> page = open_page(*parser, page_number);
       page_rect = page->page_rect();
       quarter_turn = is_quarter_turn(*page);
-      text_boxes = page->text_list();
+      // Font info is one flag away and is the only heading-depth signal a
+      // born-digital page has that survives without rasterizing.
+      text_boxes = page->text_list(poppler::page::text_list_include_font);
     }
 
     OcrPage result;
@@ -129,10 +131,22 @@ class PdfPageSource final : public PageSource {
       const int top = scaled(box.top());
       const int right = scaled(box.right());
       const int bottom = scaled(box.bottom());
-      result.lines.push_back(OcrLine{std::move(text),
-                                     {{left, top}, {right, top}, {right, bottom}, {left, bottom}},
-                                     std::nullopt,
-                                     TextOrigin::kDigitalPdf});
+      OcrLine line{std::move(text),
+                   {{left, top}, {right, top}, {right, bottom}, {left, bottom}},
+                   std::nullopt,
+                   TextOrigin::kDigitalPdf};
+      if (text_box.has_font_info()) {
+        std::string font = text_box.get_font_name();
+        // Embedded subsets carry a random six-letter prefix (ABCDEF+Real).
+        if (const auto plus = font.find('+');
+            plus != std::string::npos && plus + 1 < font.size()) {
+          font.erase(0, plus + 1);
+        }
+        if (!font.empty()) line.font_name = std::move(font);
+        const double size = text_box.get_font_size();
+        if (size > 0) line.font_size_pt = size;
+      }
+      result.lines.push_back(std::move(line));
     }
     if (result.lines.empty()) return std::nullopt;
 

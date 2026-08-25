@@ -592,6 +592,34 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
       }
     }
 
+    // Digital text declares its fonts; consecutive members sharing one font
+    // fold into a single run so the span list stays proportional to the
+    // formatting, not the line count. Bold and italic read off the face
+    // name, the only place a text layer states them.
+    for (size_t begin = 0; begin < spans.size();) {
+      const auto& first = source.lines[spans[begin].line];
+      size_t end = begin + 1;
+      while (end < spans.size()) {
+        const auto& next = source.lines[spans[end].line];
+        if (next.font_name != first.font_name || next.font_size_pt != first.font_size_pt) break;
+        ++end;
+      }
+      if (first.font_name.has_value() || first.font_size_pt.has_value()) {
+        auto* run = base->add_spans();
+        run->mutable_range()->set_start(static_cast<int32_t>(spans[begin].start));
+        run->mutable_range()->set_end(static_cast<int32_t>(spans[end - 1].end));
+        if (first.font_name.has_value()) {
+          run->set_font_family(*first.font_name);
+          if (first.font_name->contains("Bold")) run->mutable_formatting()->set_bold(true);
+          if (first.font_name->contains("Italic") || first.font_name->contains("Oblique")) {
+            run->mutable_formatting()->set_italic(true);
+          }
+        }
+        if (first.font_size_pt.has_value()) run->set_font_size_pt(*first.font_size_pt);
+      }
+      begin = end;
+    }
+
     if (cursor->has_text) ++cursor->utf_offset;
     auto* offset = output->add_text_offsets();
     offset->set_self_ref(self_ref);
@@ -768,6 +796,13 @@ void append_page_to_document(
 
 namespace {
 
+double median_of(std::vector<double> values) {
+  if (values.empty()) return 0;
+  const auto middle = values.begin() + static_cast<std::ptrdiff_t>(values.size() / 2);
+  std::nth_element(values.begin(), middle, values.end());
+  return *middle;
+}
+
 // The median prov box height of one heading; one clipped or merged line
 // must not drag a heading into another cluster. Zero means unusable.
 double median_header_height(const pipestream::document::v1::SectionHeaderItem& header) {
@@ -777,16 +812,33 @@ double median_header_height(const pipestream::document::v1::SectionHeaderItem& h
     const double height = std::abs(box.b() - box.t());
     if (height > 0) heights.push_back(height);
   }
-  if (heights.empty()) return 0;
-  const auto middle = heights.begin() + static_cast<std::ptrdiff_t>(heights.size() / 2);
-  std::nth_element(heights.begin(), middle, heights.end());
-  return *middle;
+  return median_of(std::move(heights));
+}
+
+// The median declared font size of a heading's runs, in points; zero when
+// the text layer declared none.
+double median_header_font(const pipestream::document::v1::SectionHeaderItem& header) {
+  std::vector<double> sizes;
+  for (const auto& run : header.base().spans()) {
+    if (run.has_font_size_pt() && run.font_size_pt() > 0) sizes.push_back(run.font_size_pt());
+  }
+  return median_of(std::move(sizes));
 }
 
 }  // namespace
 
 std::map<std::string, int32_t> section_header_levels(std::vector<HeaderHeight> headers) {
   std::map<std::string, int32_t> levels;
+  // Declared font sizes beat raster heights, but only when every heading
+  // has one: the two are different units, and mixing them would cluster
+  // points against pixels.
+  const bool by_font = !headers.empty() &&
+                       std::ranges::all_of(headers, [](const HeaderHeight& header) {
+                         return header.font_size > 0;
+                       });
+  if (by_font) {
+    for (auto& header : headers) header.height = header.font_size;
+  }
   // Tallest first; a heading founds a deeper level when it is visibly
   // smaller (below 85%) than the current level's founding height. Depth
   // saturates at 6, the deepest level exports render.
@@ -816,7 +868,8 @@ void collect_header_heights(const pipestream::parse::v1::PageData& page,
     if (text.item_case() != pipestream::document::v1::BaseTextItem::kSectionHeader) continue;
     const auto& header = text.section_header();
     if (header.level() > 0) continue;  // the producer already chose
-    into->push_back({header.base().self_ref(), median_header_height(header)});
+    into->push_back({header.base().self_ref(), median_header_height(header),
+                     median_header_font(header)});
   }
 }
 
@@ -827,7 +880,8 @@ void assign_section_header_levels(pipestream::document::v1::Document* document) 
     if (text.item_case() != pipestream::document::v1::BaseTextItem::kSectionHeader) continue;
     const auto& header = text.section_header();
     if (header.level() > 0) continue;  // the producer already chose
-    pending.push_back({header.base().self_ref(), median_header_height(header)});
+    pending.push_back({header.base().self_ref(), median_header_height(header),
+                       median_header_font(header)});
   }
   if (pending.empty()) return;
   const auto levels = section_header_levels(std::move(pending));

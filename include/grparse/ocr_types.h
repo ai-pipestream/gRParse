@@ -17,6 +17,12 @@ struct OcrLine {
   std::optional<float> confidence = std::nullopt;
   // When set, overrides OcrPage::source for assembly (digital+OCR merge).
   std::optional<TextOrigin> origin = std::nullopt;
+  // The dominant font of the line, when the text layer declares one
+  // (digital PDF text; raster OCR never knows). Size is in points,
+  // independent of the page's raster scale; the name has any embedded
+  // subset prefix stripped.
+  std::optional<std::string> font_name = std::nullopt;
+  std::optional<double> font_size_pt = std::nullopt;
 };
 
 // One table cell recognized by the structure model.  Grid coordinates are

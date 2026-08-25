@@ -32,11 +32,13 @@ void append_page_to_document(
     google::protobuf::RepeatedPtrField<ai::pipestream::parse::v1::TextOffset>* text_offsets =
         nullptr);
 
-// One section header awaiting a depth: its reference and its median line
-// height in page pixels.
+// One section header awaiting a depth: its reference, its median line
+// height in page pixels, and its median declared font size in points when
+// the text layer states one (zero otherwise).
 struct HeaderHeight {
   std::string self_ref;
   double height = 0;
+  double font_size = 0;
 };
 
 // Clusters heading heights into depths: the tallest cluster is level 1,
