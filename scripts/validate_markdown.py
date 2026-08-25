@@ -19,6 +19,16 @@ model's load-time normalizations (provenance clamping, migration of
 misplaced list items into synthesized list groups); the native renderer
 applies the same normalizations, so the two legs stay comparable.
 
+One normalization happens on the reference leg only. The wire's custom-field
+and Struct payloads are unordered maps, and the bridge emits them in its
+runtime's hash order, which is randomized per process: rendering the same
+Document twice can order two custom meta fields differently. The native
+renderer instead emits them in sorted key order, the order its canonical JSON
+export also uses. To make the comparison deterministic this harness sorts the
+keys of every object in the bridge's JSON before the model loads it, which
+leaves declared fields untouched (their order carries no meaning) and puts the
+custom part in the same order the native renderer produces.
+
 Run from the checkout providing the model bindings so both this script and
 the bridge resolve their imports:
 
@@ -34,9 +44,11 @@ difference or conversion failure, 2 on argument errors.
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 _BRIDGE = _SCRIPTS_DIR / "document_json_bridge.py"
@@ -56,6 +68,15 @@ def _first_difference(a: str, b: str) -> str:
     )
 
 
+def _key_sorted(node: Any) -> Any:
+    """Recursively reorder every object's keys, leaving arrays as they are."""
+    if isinstance(node, dict):
+        return {key: _key_sorted(node[key]) for key in sorted(node)}
+    if isinstance(node, list):
+        return [_key_sorted(entry) for entry in node]
+    return node
+
+
 def _reference_markdown(input_path: Path, as_json: bool) -> str:
     """Render *input_path* the reference way: bridge, model load, export."""
     from docling_core.types.doc.document import DoclingDocument
@@ -64,13 +85,14 @@ def _reference_markdown(input_path: Path, as_json: bool) -> str:
     bridge_run = subprocess.run(
         [sys.executable, str(_BRIDGE), *mode, str(input_path)],
         capture_output=True,
-        text=True,
     )
     if bridge_run.returncode != 0:
         raise RuntimeError(
-            f"bridge exited {bridge_run.returncode}: {bridge_run.stderr.strip()}"
+            f"bridge exited {bridge_run.returncode}: "
+            f"{bridge_run.stderr.decode(errors='replace').strip()}"
         )
-    doc = DoclingDocument.model_validate_json(bridge_run.stdout)
+    canonical = json.dumps(_key_sorted(json.loads(bridge_run.stdout.decode())))
+    doc = DoclingDocument.model_validate_json(canonical)
     return doc.export_to_markdown()
 
 
@@ -117,24 +139,27 @@ def main(argv: list[str] | None = None) -> int:
             continue
 
         mode = ["--json"] if args.json else []
+        # Bytes, not text: universal-newline decoding would rewrite a carriage
+        # return the renderer emitted verbatim and fake a difference.
         native_run = subprocess.run(
             [str(args.tool), *mode, str(input_path)],
             capture_output=True,
-            text=True,
         )
         if native_run.returncode != 0:
             print(
                 f"FAIL {input_path}: native tool exited {native_run.returncode}: "
-                f"{native_run.stderr.strip()}"
+                f"{native_run.stderr.decode(errors='replace').strip()}"
             )
             failed = True
             continue
-        native_text = native_run.stdout
+        native_text = native_run.stdout.decode()
 
         if args.write_dir is not None:
             stem = input_path.stem
-            (args.write_dir / f"{stem}.reference.md").write_text(reference_text)
-            (args.write_dir / f"{stem}.native.md").write_text(native_text)
+            (args.write_dir / f"{stem}.reference.md").write_text(
+                reference_text, newline=""
+            )
+            (args.write_dir / f"{stem}.native.md").write_text(native_text, newline="")
 
         if reference_text == native_text:
             byte_equal += 1
