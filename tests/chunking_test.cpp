@@ -411,6 +411,54 @@ void verify_picture_chunks_carry_captions_only() {
           "an uncaptioned picture emits no placeholder chunk");
 }
 
+// A caption reference two tables both name belongs to the first of them.
+// Absorbing it twice would repeat the text and the reference and widen both
+// spans into an overlap, which is exactly what the contiguity property
+// forbids.
+void verify_a_shared_caption_is_claimed_once() {
+  docv1::Document document = new_document();
+  const std::string caption = add_paragraph(&document, "Table 1. Shared caption.", 1);
+  add_table(&document, {{{"Name", true, false}, {"Note", true, false}},
+                        {{"Crow", false, true}, {"loud", false, false}}},
+            {caption}, 1);
+  add_table(&document, {{{"Name", true, false}, {"Note", true, false}},
+                        {{"Wren", false, true}, {"small", false, false}}},
+            {caption}, 2);
+  add_paragraph(&document, "After the tables.", 2);
+  const OffsetTable offsets = offsets_for(document);
+  const auto chunks = chunk_hierarchical(document, offsets, {}, "shared.pdf");
+  require_eq(static_cast<int>(chunks.size()), 3, "two tables and a paragraph chunk");
+
+  const auto& first = chunks[0];
+  require(first.text().starts_with("Table 1. Shared caption.\n"),
+          "the first table folds the caption into its text");
+  require_eq(static_cast<int>(first.captions().size()), 1, "the first table reports it");
+  require_eq(static_cast<int>(first.doc_items().size()), 2,
+             "the first table consumes the table and the caption");
+
+  const auto& second = chunks[1];
+  require(!second.text().contains("Shared caption"),
+          "the second table does not repeat a caption it did not claim");
+  require(second.captions().empty(), "the second table reports no caption");
+  for (const auto& item : second.doc_items()) {
+    require(item != caption, "the caption reference belongs to one chunk only");
+  }
+  require(!second.has_start_offset(),
+          "the second table has no text item of its own, so it has no span");
+
+  bool seen = false;
+  std::int64_t previous_end = 0;
+  for (const auto& chunk : chunks) {
+    if (!chunk.has_start_offset()) continue;
+    if (seen) {
+      require(chunk.start_offset() >= previous_end,
+              "a shared caption must not widen two chunks into an overlap");
+    }
+    previous_end = chunk.end_offset();
+    seen = true;
+  }
+}
+
 void verify_pages_items_and_offsets_propagate() {
   const docv1::Document document = field_guide();
   const OffsetTable offsets = offsets_for(document);
@@ -748,6 +796,7 @@ const Case kCases[] = {
     {"list group consumption", verify_list_group_consumes_its_items},
     {"table serialization", verify_table_serialization_and_its_degradations},
     {"picture captions", verify_picture_chunks_carry_captions_only},
+    {"shared caption claiming", verify_a_shared_caption_is_claimed_once},
     {"pages, items and offsets", verify_pages_items_and_offsets_propagate},
     {"text source metadata", verify_mixed_text_source_is_reported},
     {"content layers", verify_non_body_layers_are_skipped},

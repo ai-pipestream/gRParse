@@ -241,6 +241,9 @@ class Chunker {
   const ChunkOptions& options_;
   std::set<std::string> visited_;
   std::set<std::string> caption_refs_;
+  // Caption references already taken by a floating item, so a reference two
+  // of them name is serialized once.
+  std::set<std::string> claimed_;
   // The heading trail in force, outermost first, each with the level that
   // recorded it.
   std::vector<std::pair<int, std::string>> trail_;
@@ -399,6 +402,11 @@ class Chunker {
     for (const auto& ref : captions) {
       const auto* text = text_at(ref.ref());
       if (text == nullptr) continue;
+      // One caption, one chunk: a reference two floating items both name is
+      // claimed by the first of them, the way the export renderers render it
+      // once. Absorbing it twice would repeat the text, repeat the reference,
+      // and widen both chunks' spans into an overlap.
+      if (!claimed_.insert(ref.ref()).second) continue;
       absorb(chunk, ref.ref());
       const std::string body = text_of(*text);
       if (!trimmed(body).empty()) texts.push_back(body);
