@@ -8,10 +8,13 @@
 // none of the gRPC, OCR, or assembly work in the measurement.
 //
 //   grparse-layout-tool <document> [--models DIR] [--threads N] [--repeat N]
+//                       [--sessions N]
 //
 // --threads drives the shared layout session from N workers at once, which is
 // what the pipeline does; --repeat runs the whole document that many times so
-// warm-up is separable from steady state.
+// warm-up is separable from steady state.  --sessions holds N layout sessions
+// open instead of the one the server uses, which is how the memory a
+// session-per-worker pool would cost gets measured rather than guessed.
 
 #include <algorithm>
 #include <atomic>
@@ -21,6 +24,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <memory>
 #include <numeric>
@@ -73,6 +77,22 @@ std::string provider_name(grparse::OrtEp ep) {
   return "cpu";
 }
 
+// Peak resident set size of this process, in kilobytes; the kernel's own
+// high-water mark, so a transient spike during model load still shows.
+long peak_rss_kb() {
+  std::ifstream status("/proc/self/status");
+  std::string key;
+  while (status >> key) {
+    if (key == "VmHWM:") {
+      long value = 0;
+      status >> value;
+      return value;
+    }
+    status.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+  }
+  return 0;
+}
+
 struct PageResult {
   int page_number = 0;
   double layout_ms = 0.0;
@@ -86,19 +106,21 @@ int main(int argc, char** argv) {
     if (argc < 2) {
       std::println(stderr,
                    "usage: grparse-layout-tool <document> [--models DIR] [--threads N] "
-                   "[--repeat N]");
+                   "[--repeat N] [--sessions N]");
       return EXIT_FAILURE;
     }
     const fs::path document = argv[1];
     fs::path models_dir = "models";
     size_t threads = 1;
     size_t repeats = 1;
+    size_t sessions = 1;
     for (int index = 2; index + 1 < argc; index += 2) {
       const std::string flag = argv[index];
       const std::string value = argv[index + 1];
       if (flag == "--models") models_dir = value;
       else if (flag == "--threads") threads = std::max<size_t>(1, std::stoul(value));
       else if (flag == "--repeat") repeats = std::max<size_t>(1, std::stoul(value));
+      else if (flag == "--sessions") sessions = std::max<size_t>(1, std::stoul(value));
       else throw std::invalid_argument("unknown flag " + flag);
     }
 
@@ -119,15 +141,23 @@ int main(int argc, char** argv) {
     grparse::LayoutEngine layout(layout_path, model);
     const double layout_load_ms = milliseconds_since(load_started);
 
+    // Extra sessions exist only to be paid for: holding them open is how the
+    // memory a session-per-worker pool would have cost gets measured.
+    std::vector<std::unique_ptr<grparse::LayoutEngine>> extra_sessions;
+    for (size_t index = 1; index < sessions; ++index) {
+      extra_sessions.push_back(std::make_unique<grparse::LayoutEngine>(layout_path, model));
+    }
+
     const fs::path classifier_path = models_dir / "figure_classifier.onnx";
     std::unique_ptr<grparse::FigureClassifierPool> classifier;
     if (fs::exists(classifier_path)) {
       classifier = std::make_unique<grparse::FigureClassifierPool>(classifier_path, threads);
     }
 
-    std::println("provider={} openvino_device={} layout_model={} labels={} load_ms={:.1f}",
+    std::println("provider={} openvino_device={} layout_model={} labels={} load_ms={:.1f} "
+                 "sessions={} rss_peak_kb={}",
                  provider_name(ep), selection.openvino_device, grparse::layout_model_name(model),
-                 layout.labels().size(), layout_load_ms);
+                 layout.labels().size(), layout_load_ms, sessions, peak_rss_kb());
 
     const std::string bytes = read_file(document);
     const bool pdf = document.extension() == ".pdf" || document.extension() == ".PDF";
@@ -218,6 +248,7 @@ int main(int argc, char** argv) {
     } else {
       std::println("figure classifier: absent at {}", classifier_path.string());
     }
+    std::println("rss_peak_kb={} sessions={}", peak_rss_kb(), sessions);
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
     std::println(stderr, "grparse-layout-tool: {}", error.what());

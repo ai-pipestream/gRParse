@@ -233,7 +233,7 @@ gRParse stays **PDF/image only**. Do not embed LibreOffice here.
 | OCR | RapidOcrOnnx (have) | done |
 | Layout OD | 17-label detector (default), 5-label legacy | done |
 | Table structure | SLANet-plus (have); geometry word→cell v0 fallback | done |
-| Picture class | DocumentFigureClassifier EfficientNet-B0 (have) | done |
+| Picture class | 26-class EfficientNet-B0 classifier (have) | done |
 | Barcode | ZXing, class-triggered or forced, no model | done |
 
 Layout is parent: table/picture crops come from layout regions.

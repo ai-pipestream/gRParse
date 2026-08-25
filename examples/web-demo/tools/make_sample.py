@@ -106,7 +106,7 @@ def build_page2(workdir: pathlib.Path) -> pathlib.Path:
     draw.text((120, 240), "the demo through RapidOCR, so its boxes render dashed.", font=body, fill="black")
 
     # Both figures sit alone in their own whitespace band with a caption below,
-    # the shape PubLayNet layout detection expects of a figure region.
+    # the shape layout detection expects of a picture region.
     chart = Image.open(REPO / "tests" / "data" / "bar_chart.png").resize((640, 480))
     page.paste(chart, ((page.width - chart.width) // 2, 340))
     draw.text((280, 850), "Figure 1: quarterly volume, classified by the figure model.", font=body, fill="black")
