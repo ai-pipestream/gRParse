@@ -270,6 +270,86 @@ void verify_barcode_payloads_become_misc_annotations() {
           "every payload gets its own annotation");
 }
 
+// The detector's full vocabulary has to survive assembly: every structural
+// label reaches the Document as its own DocItemLabel instead of collapsing
+// into plain text.
+void verify_every_region_label_reaches_the_document() {
+  namespace docv1 = ai::pipestream::document::v1;
+  const struct {
+    const char* region;
+    docv1::DocItemLabel label;
+  } kExpected[] = {
+      {"caption", docv1::DOC_ITEM_LABEL_CAPTION},
+      {"footnote", docv1::DOC_ITEM_LABEL_FOOTNOTE},
+      {"formula", docv1::DOC_ITEM_LABEL_FORMULA},
+      {"list_item", docv1::DOC_ITEM_LABEL_LIST_ITEM},
+      {"page_footer", docv1::DOC_ITEM_LABEL_PAGE_FOOTER},
+      {"page_header", docv1::DOC_ITEM_LABEL_PAGE_HEADER},
+      {"section_header", docv1::DOC_ITEM_LABEL_SECTION_HEADER},
+      {"text", docv1::DOC_ITEM_LABEL_TEXT},
+      {"title", docv1::DOC_ITEM_LABEL_TITLE},
+      {"document_index", docv1::DOC_ITEM_LABEL_DOCUMENT_INDEX},
+      {"code", docv1::DOC_ITEM_LABEL_CODE},
+      {"checkbox_selected", docv1::DOC_ITEM_LABEL_CHECKBOX_SELECTED},
+      {"checkbox_unselected", docv1::DOC_ITEM_LABEL_CHECKBOX_UNSELECTED},
+      {"form", docv1::DOC_ITEM_LABEL_FORM},
+      {"key_value_region", docv1::DOC_ITEM_LABEL_KEY_VALUE_REGION},
+      {"list", docv1::DOC_ITEM_LABEL_LIST_ITEM},
+  };
+  for (const auto& expected : kExpected) {
+    grparse::AssemblyCursor cursor;
+    grparse::OcrPage page{1000, 1000, {line("labelled line", 100)}};
+    page.regions = {{expected.region, 0.9F, 0, 90, 1000, 130}};
+    ai::pipestream::parse::v1::PageData data;
+    grparse::append_page_data(page, 1, &cursor, &data);
+    require(data.texts_size() == 1, std::string("one item for a ") + expected.region + " region");
+    require(data.texts(0).text().base().label() == expected.label,
+            std::string("a line inside a ") + expected.region + " region takes that label");
+  }
+}
+
+// Running headers and footers are furniture: they carry the furniture layer,
+// parent the furniture group, and link there rather than into the body, so a
+// renderer walking the body never picks up a page number.
+void verify_headers_and_footers_are_furniture() {
+  namespace docv1 = ai::pipestream::document::v1;
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1000, 1000,
+                        {line("running header", 10), line("body text", 500),
+                         line("page 3", 950)}};
+  page.regions = {
+      {"page_header", 0.9F, 0, 0, 1000, 40},
+      {"text", 0.9F, 0, 480, 1000, 540},
+      {"page_footer", 0.9F, 0, 930, 1000, 1000},
+  };
+
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(page, 1, &cursor, &data);
+  require(data.texts_size() == 3, "every line still becomes an item");
+  const auto& header = data.texts(0).text().base();
+  const auto& body = data.texts(1).text().base();
+  const auto& footer = data.texts(2).text().base();
+  require(header.content_layer() == docv1::CONTENT_LAYER_FURNITURE &&
+              footer.content_layer() == docv1::CONTENT_LAYER_FURNITURE,
+          "headers and footers land on the furniture layer");
+  require(header.parent().ref() == "#/furniture" && footer.parent().ref() == "#/furniture",
+          "furniture items parent the furniture group");
+  require(body.content_layer() == docv1::CONTENT_LAYER_BODY && body.parent().ref() == "#/body",
+          "body prose is untouched");
+
+  docv1::Document document;
+  grparse::AssemblyCursor document_cursor;
+  std::string plain_text;
+  grparse::append_page_to_document(page, 1, &document_cursor, &document, &plain_text);
+  require(document.body().children_size() == 1 &&
+              document.body().children(0).ref() == "#/texts/1",
+          "only the body item links into the body");
+  require(document.furniture().children_size() == 2 &&
+              document.furniture().children(0).ref() == "#/texts/0" &&
+              document.furniture().children(1).ref() == "#/texts/2",
+          "both furniture items link into the furniture group");
+}
+
 // Every emitted item is attributable: texts, tables, and pictures carry a
 // CollectorSource naming grparse and the engine that produced them, so
 // additive merges with other collectors never collide silently.
@@ -312,6 +392,8 @@ int main() {
     verify_contract_shape();
     verify_offsets_and_provenance();
     verify_layout_regions_map_labels_and_emit_items();
+    verify_every_region_label_reaches_the_document();
+    verify_headers_and_footers_are_furniture();
     verify_structured_cells_override_geometry();
     verify_captured_figure_bytes_become_image_refs();
     verify_page_preview_becomes_page_image();
