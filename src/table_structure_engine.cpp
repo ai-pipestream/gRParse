@@ -137,10 +137,8 @@ class TableStructureEngine::Impl {
     if (!std::filesystem::exists(model_path)) {
       throw std::runtime_error("Table structure model is missing: " + model_path.string());
     }
-    options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
     // Same provider decision point as the OCR and layout sessions.
-    append_execution_provider(options_, -1);
-    session_ = Ort::Session(env_, model_path.c_str(), options_);
+    session_ = make_session(env_, model_path, "table structure");
 
     Ort::AllocatorWithDefaultOptions allocator;
     input_name_ = session_.GetInputNameAllocated(0, allocator).get();
@@ -287,7 +285,6 @@ class TableStructureEngine::Impl {
 
  private:
   Ort::Env env_;
-  Ort::SessionOptions options_;
   Ort::Session session_{nullptr};
   std::string input_name_;
   std::vector<std::string> output_names_;

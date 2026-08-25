@@ -56,6 +56,13 @@ the server disables layout under `GRPARSE_LAYOUT=auto` and fails startup under
   and R-tree overlap resolution are not ported, so co-located duplicates (a
   caption and a text over the same box, say) can both survive.
 
+  On the OpenVINO execution provider this session is pinned to single
+  precision. The GPU plugin otherwise runs it at half precision, which costs
+  real detections (on a measured page a section header at 0.815 and a title at
+  0.511 disappear) and drifts boxes by up to 37 pixels; at single precision
+  the GPU output matches CPU exactly. Random-input checks do not surface this,
+  only real page renders do.
+
   This is the model the `layout-engine-test` heron golden was generated with.
 
 - `layout_publaynet.onnx` — PicoDet layout detector from PaddleDetection's
@@ -124,13 +131,31 @@ the server disables layout under `GRPARSE_LAYOUT=auto` and fails startup under
   MIT license), published as ONNX at
   [docling-project/DocumentFigureClassifier-v2.5](https://huggingface.co/docling-project/DocumentFigureClassifier-v2.5).
 
+  The published export needs one correction before it can be used, so it is
+  downloaded under its own name and patched into place:
+
   ```bash
-  curl -L -o figure_classifier.onnx \
+  curl -L -o figure_classifier_upstream.onnx \
     https://huggingface.co/docling-project/DocumentFigureClassifier-v2.5/resolve/main/model.onnx
+  python ../scripts/patch_figure_classifier.py \
+    figure_classifier_upstream.onnx figure_classifier.onnx
   ```
 
-  sha256: `27ffc48c27ae4e12c99b6f6de0dd730005245e47b70dd0c1339e62cbac3ec4c0`
-  (16,940,439 bytes)
+  The download has sha256
+  `27ffc48c27ae4e12c99b6f6de0dd730005245e47b70dd0c1339e62cbac3ec4c0`
+  (16,940,439 bytes); the corrected file this server loads has sha256
+  `8f24abc627f0451aae9a4320af887fba4b6c0a82af0142f4c32c7b40cba27fbc`
+  (16,938,738 bytes). Only `figure_classifier.onnx` has to stay on disk.
+
+  **What the patch corrects.** The export's final pooling node is an
+  `AveragePool` whose `kernel_shape` is the channel count (`[1280, 1280]`)
+  instead of its input's spatial extent (`[7, 7]`). ONNX Runtime's CPU
+  provider clamps that and produces the right answer; the OpenVINO execution
+  provider rejects the graph and the session never builds. An `AveragePool`
+  over the whole spatial extent is exactly `GlobalAveragePool`, so the script
+  swaps the node for one and touches nothing else. It then scores both graphs
+  on the same input and refuses the result unless the maximum absolute
+  difference is 0, which it is.
 
   26 classes, index = model output index: `0=logo, 1=photograph, 2=icon,
   3=engineering_drawing, 4=line_chart, 5=bar_chart, 6=other, 7=table,

@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <mutex>
+#include <print>
 #include <unordered_map>
 #include <utility>
 
@@ -25,7 +26,25 @@ void append_cuda(Ort::SessionOptions& options, int device) {
   options.AppendExecutionProvider_CUDA(cuda_options);
 }
 
+// Every session this process builds asks for the same optimization level; the
+// engines differ in their models, not in how ORT should compile them.
+Ort::SessionOptions session_options(OrtPrecision precision) {
+  Ort::SessionOptions options;
+  options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
+  append_execution_provider(options, -1, precision);
+  return options;
+}
+
 }  // namespace
+
+std::string_view ort_ep_name(OrtEp ep) {
+  switch (ep) {
+    case OrtEp::kCuda: return "CUDA";
+    case OrtEp::kOpenVino: return "OpenVINO";
+    case OrtEp::kCpu: break;
+  }
+  return "CPU";
+}
 
 void set_ort_ep_selection(OrtEpSelection selection) {
   std::lock_guard<std::mutex> lock(selection_mutex);
@@ -40,7 +59,8 @@ OrtEpSelection ort_ep_selection() {
 
 uint64_t ep_hook_invocations() { return hook_invocations.load(); }
 
-void append_execution_provider(Ort::SessionOptions& options, int legacy_gpu_index) {
+void append_execution_provider(Ort::SessionOptions& options, int legacy_gpu_index,
+                               OrtPrecision precision) {
   hook_invocations.fetch_add(1);
   OrtEpSelection selection;
   bool selected = false;
@@ -58,15 +78,41 @@ void append_execution_provider(Ort::SessionOptions& options, int legacy_gpu_inde
     case OrtEp::kCuda:
       append_cuda(options, selection.cuda_device);
       return;
-    case OrtEp::kOpenVino:
+    case OrtEp::kOpenVino: {
       // Throws if this ONNX Runtime build lacks the OpenVINO provider or the
-      // device cannot initialize — the fail-loud startup the server wants.
-      options.AppendExecutionProvider_OpenVINO_V2(
-          std::unordered_map<std::string, std::string>{{"device_type", selection.openvino_device}});
+      // device cannot initialize; make_session decides what that costs.
+      std::unordered_map<std::string, std::string> openvino_options{
+          {"device_type", selection.openvino_device}};
+      // The GPU plugin picks half precision on its own.  A session that says
+      // it needs single precision gets it, on every device.
+      if (precision == OrtPrecision::kFloat32) openvino_options["precision"] = "FP32";
+      if (!selection.openvino_cache_dir.empty()) {
+        openvino_options["cache_dir"] = selection.openvino_cache_dir;
+      }
+      options.AppendExecutionProvider_OpenVINO_V2(openvino_options);
       return;
+    }
     case OrtEp::kCpu:
       return;
   }
+}
+
+Ort::Session make_session(Ort::Env& env, const std::filesystem::path& model_path,
+                          std::string_view what, OrtPrecision precision) {
+  const OrtEp ep = ort_ep_selection().ep;
+  try {
+    Ort::SessionOptions options = session_options(precision);
+    return Ort::Session(env, model_path.c_str(), options);
+  } catch (const std::exception& error) {
+    if (ep == OrtEp::kCpu) throw;
+    std::println(stderr,
+                 "gRParse {}: the {} execution provider would not build {} ({}); this model "
+                 "runs on CPU",
+                 what, ort_ep_name(ep), model_path.string(), error.what());
+  }
+  Ort::SessionOptions cpu_options;
+  cpu_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
+  return Ort::Session(env, model_path.c_str(), cpu_options);
 }
 
 }  // namespace grparse

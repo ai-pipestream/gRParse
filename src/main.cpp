@@ -96,6 +96,14 @@ std::string configured_openvino_device() {
   return device;
 }
 
+// GRPARSE_OPENVINO_CACHE_DIR: where the OpenVINO plugin may keep compiled
+// blobs, so a restart reuses the previous compile instead of repeating it.
+// Unset means no cache, which is the safe default for a read-only container.
+std::string configured_openvino_cache_dir() {
+  const char* configured = std::getenv("GRPARSE_OPENVINO_CACHE_DIR");
+  return configured == nullptr ? std::string() : std::string(configured);
+}
+
 // Builds the warm session pool with an explicit provider selection and proves
 // the RapidOcr hook actually ran — a dependency tree built without
 // patches/rapidocr-session-ep.patch would otherwise run CPU silently.
@@ -106,6 +114,7 @@ std::unique_ptr<grparse::OcrEnginePool> build_pool_with(grparse::OrtEp ep,
       .ep = ep,
       .cuda_device = gpu_index,
       .openvino_device = configured_openvino_device(),
+      .openvino_cache_dir = configured_openvino_cache_dir(),
   };
   grparse::set_ort_ep_selection(selection);
   auto pool = std::make_unique<grparse::OcrEnginePool>(models, worker_count, -1);

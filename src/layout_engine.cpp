@@ -347,10 +347,10 @@ class LayoutEngine::Impl {
                                " is missing: " + model_path.string() +
                                " (see models/README.md)");
     }
-    options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
-    // Same provider decision point as the OCR sessions.
-    append_execution_provider(options_, -1);
-    session_ = Ort::Session(env_, model_path.c_str(), options_);
+    // Same provider decision point as the OCR sessions, and the one session
+    // in this process that pins single precision: the detector's boxes and
+    // its marginal detections do not survive half precision.
+    session_ = make_session(env_, model_path, "layout", OrtPrecision::kFloat32);
     strategy_->bind(session_);
   }
 
@@ -377,7 +377,6 @@ class LayoutEngine::Impl {
 
  private:
   Ort::Env env_;
-  Ort::SessionOptions options_;
   Ort::Session session_{nullptr};
   std::unique_ptr<LayoutStrategy> strategy_;
   std::atomic<uint64_t> in_flight_{0};

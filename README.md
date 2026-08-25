@@ -80,7 +80,7 @@ Determinism is the point: the same input bytes produce the same chunk bytes on e
 
 A chunk reports `start_offset` and `end_offset` as UTF-8 code point positions in the document's concatenated body text whenever the parse supplied an offset table for every text item the chunk consumed; otherwise both stay unset rather than being guessed.
 
-The `Health` RPC reports readiness. The server intentionally fails at startup if a model is absent or CUDA initialization fails, instead of silently running CPU OCR. The `GetServiceInfo` RPC reports the service name, build version, and the shared-shell UI advertisement (`UiInfo`: tab title, mount path, tooltip).
+The `Health` RPC reports readiness. The server intentionally fails at startup if a required model is absent or the OCR sessions cannot initialize on the configured provider, instead of silently running CPU OCR. The optional layout, table, and figure models are the one exception: a provider that will not build one of those graphs costs that model its acceleration, not the whole server, and the session is rebuilt on CPU with the provider's own error logged. The `GetServiceInfo` RPC reports the service name, build version, and the shared-shell UI advertisement (`UiInfo`: tab title, mount path, tooltip).
 
 To stream a PDF with the supplied client, start the service and run:
 
@@ -414,12 +414,17 @@ ranks.
 
 The image defaults to `GRPARSE_ORT_EP=openvino` with
 `GRPARSE_OPENVINO_DEVICE=GPU`; set the device to `GPU.<n>`, `CPU`, `NPU`, or
-an `AUTO:`/`HETERO:` list. Startup fails loudly if the device cannot
-initialize — the host needs `/dev/dri` passed through and a kernel new enough
+an `AUTO:`/`HETERO:` list. `GRPARSE_OPENVINO_CACHE_DIR` points the plugin at a
+writable directory to keep compiled blobs in, which skips the recompile on
+every session create (unset by default: the container runs read-only). The
+layout session asks for single precision explicitly; the GPU plugin's default
+half precision loses that detector real detections and drifts its boxes, while
+the OCR, table, and classifier nets keep the plugin's own choice. OCR startup
+fails loudly if the device cannot initialize — the host needs `/dev/dri` passed through and a kernel new enough
 for the card. Provider selection is centralized in a small patch to the
 RapidOcrOnnx session setup (`patches/rapidocr-session-ep.patch`); the server
 refuses to start if a stale dependency cache produced an unpatched build, so
-the configured provider can never silently degrade to CPU.
+OCR can never silently degrade to CPU.
 
 The image also includes `grparse-stream-client`, a bidirectional gRPC client
 that sends a PDF in chunks and prints each page event as it arrives:
