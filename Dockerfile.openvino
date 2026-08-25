@@ -11,9 +11,33 @@ FROM ubuntu:26.04 AS build
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates cmake curl g++ git make ninja-build pkg-config xz-utils \
-    libopencv-dev libfreetype-dev libfontconfig-dev libjpeg-dev libopenjp2-7-dev \
+    libfreetype-dev libfontconfig-dev libjpeg-dev libopenjp2-7-dev \
     liblcms2-dev libboost-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# OpenCV is vendored from source instead of taken from the distro: the distro
+# imgcodecs links GDAL, and GDAL links the distro poppler, so one process ends
+# up loading two poppler majors whose identical C++ symbols interpose across
+# versions and shift how pages rasterize. This build carries only the three
+# modules the server uses, with no GDAL and the image codecs linked in
+# statically, so the binary's library closure holds exactly one poppler.
+ARG OPENCV_VERSION=4.12.0
+ARG OPENCV_SHA256=44c106d5bb47efec04e531fd93008b3fcd1d27138985c5baf4eafac0e1ec9e9d
+RUN curl -fsSL -o /tmp/opencv.tar.gz "https://github.com/opencv/opencv/archive/refs/tags/${OPENCV_VERSION}.tar.gz" \
+ && echo "${OPENCV_SHA256}  /tmp/opencv.tar.gz" | sha256sum -c - \
+ && tar -xzf /tmp/opencv.tar.gz -C /tmp \
+ && cmake -S "/tmp/opencv-${OPENCV_VERSION}" -B /tmp/opencv-build -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/opencv \
+      -DBUILD_LIST=core,imgproc,imgcodecs -DBUILD_SHARED_LIBS=ON \
+      -DWITH_GDAL=OFF -DWITH_GTK=OFF -DWITH_QT=OFF -DWITH_FFMPEG=OFF -DWITH_GSTREAMER=OFF \
+      -DWITH_V4L=OFF -DWITH_OPENEXR=OFF -DWITH_OPENCL=OFF -DWITH_IPP=OFF \
+      -DWITH_JPEG=ON -DWITH_PNG=ON -DWITH_TIFF=ON -DWITH_OPENJPEG=ON \
+      -DWITH_WEBP=OFF -DWITH_JASPER=OFF -DWITH_AVIF=OFF \
+      -DBUILD_JPEG=ON -DBUILD_PNG=ON -DBUILD_TIFF=ON -DBUILD_OPENJPEG=ON -DBUILD_ZLIB=ON \
+      -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_opencv_apps=OFF \
+ && cmake --build /tmp/opencv-build --parallel 4 \
+ && cmake --install /tmp/opencv-build \
+ && rm -rf /tmp/opencv.tar.gz "/tmp/opencv-${OPENCV_VERSION}" /tmp/opencv-build
 
 # Poppler is vendored from source instead of taken from the distro: ubuntu
 # 26.04 ships 26.01.0, which predates the 26.06 thread-safety fixes in annots
@@ -41,7 +65,7 @@ COPY . .
 # COPY-ed proto as newer than a cached generated header, so a content stamp
 # decides: any proto change discards the staged and generated trees, which
 # forces regeneration; everything else stays warm.
-RUN --mount=type=cache,id=grparse-openvino-ubuntu26-grpc1.83.0-ort1.24.1-poppler26.08-cxx23-sessionep2-static1-simdutf9,sharing=locked,target=/build \
+RUN --mount=type=cache,id=grparse-openvino-ubuntu26-grpc1.83.0-ort1.24.1-poppler26.08-cxx23-sessionep2-static1-simdutf9-ocv412,sharing=locked,target=/build \
     export PKG_CONFIG_PATH=/opt/poppler/lib/pkgconfig \
  && PROTO_SUM=$(cat *.proto collectors/*.proto | sha256sum | cut -d' ' -f1) \
  && if [ "$(cat /build/.proto-sum 2>/dev/null)" != "$PROTO_SUM" ]; then \
@@ -49,8 +73,9 @@ RUN --mount=type=cache,id=grparse-openvino-ubuntu26-grpc1.83.0-ort1.24.1-poppler
     fi \
  && cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
       -DGRPARSE_WERROR=ON -DGRPARSE_ORT_PACKAGE=openvino \
+      -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv4 \
  && cmake --build /build --target grparse-server grparse-stream-client grparse-tests --parallel 4 \
- && LD_LIBRARY_PATH=/opt/poppler/lib ctest --test-dir /build --output-on-failure -L grparse \
+ && LD_LIBRARY_PATH=/opt/poppler/lib:/opt/opencv/lib ctest --test-dir /build --output-on-failure -L grparse \
  && mkdir -p /out \
  && cp /build/grparse-server /out/grparse-server \
  && cp /build/grparse-stream-client /out/grparse-stream-client \
@@ -60,17 +85,8 @@ FROM ubuntu:26.04
 ENV GRPARSE_LISTEN_ADDRESS=0.0.0.0:50051 GRPARSE_MODELS_DIR=/models GRPARSE_PAGE_WORKERS=2 \
     GRPARSE_ORT_EP=openvino GRPARSE_OPENVINO_DEVICE=GPU
 # intel-opencl-icd is the NEO compute runtime the OpenVINO GPU plugin drives.
-#
-# KNOWN WART: libopencv-imgcodecs pulls libgdal, which pulls the distro
-# poppler, so this image ends up with two poppler majors loaded at once - the
-# vendored libpoppler.so.163 that libpoppler-cpp binds to, and the distro
-# libpoppler.so.156 alongside it. They export the same C++ symbols, so the
-# dynamic linker resolves some of them across versions, and this image
-# extracts a page's text layer and rasterizes it measurably differently from
-# the CUDA image, which stages only its binaries' own library closure and
-# therefore has exactly one poppler. Layout inference is unaffected and
-# identical across both; the input it is given is not. Fixing this means
-# staging the library closure here too instead of apt-installing OpenCV.
+# OpenCV ships from the build stage's vendored install (no distro OpenCV, so
+# no GDAL and no second poppler; see the build stage note).
 # fonts-liberation gives poppler metric-compatible base-14 substitutes so
 # non-embedded Helvetica/Times/Courier text rasterizes instead of rendering
 # blank (layout detection and page previews read those pixels).
@@ -81,7 +97,6 @@ ENV GRPARSE_LISTEN_ADDRESS=0.0.0.0:50051 GRPARSE_MODELS_DIR=/models GRPARSE_PAGE
 # image used to inherit DejaVu from its base while the others had Liberation
 # alone; all three now ask for the same fonts explicitly.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libopencv-core-dev libopencv-imgcodecs-dev libopencv-imgproc-dev \
     libfreetype6 libfontconfig1 libjpeg8 libopenjp2-7 liblcms2-2 \
     ocl-icd-libopencl1 intel-opencl-icd fonts-liberation fonts-dejavu-core fontconfig \
     && rm -rf /var/lib/apt/lists/* && fc-cache -f
@@ -89,7 +104,12 @@ COPY --from=build /out/grparse-server /usr/local/bin/grparse-server
 COPY --from=build /out/grparse-stream-client /usr/local/bin/grparse-stream-client
 COPY --from=build /out/ort-libs/ /usr/local/lib/
 COPY --from=build /opt/poppler/lib/ /usr/local/lib/
-# ldconfig materializes the SONAME links (libonnxruntime, libopenvino, libpoppler*).
-RUN ldconfig
+COPY --from=build /opt/opencv/lib/ /usr/local/lib/
+# ldconfig materializes the SONAME links (libonnxruntime, libopenvino,
+# libopencv*, libpoppler*). The gate then holds this image to the invariant
+# the vendored OpenCV exists for: the server's load set contains exactly one
+# libpoppler major.
+RUN ldconfig \
+ && test "$(ldd /usr/local/bin/grparse-server | grep -c 'libpoppler\.so\.')" = 1
 EXPOSE 50051
 ENTRYPOINT ["/usr/local/bin/grparse-server"]

@@ -13,7 +13,7 @@ FROM nvidia/cuda:13.3.1-devel-ubuntu26.04 AS build
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates cmake curl g++ git make ninja-build pkg-config xz-utils \
-    libopencv-dev libfreetype-dev libfontconfig-dev libjpeg-dev libopenjp2-7-dev \
+    libfreetype-dev libfontconfig-dev libjpeg-dev libopenjp2-7-dev \
     liblcms2-dev libboost-dev \
     && rm -rf /var/lib/apt/lists/*
 
@@ -36,6 +36,30 @@ RUN curl -fsSL -o /tmp/poppler.tar.xz "https://poppler.freedesktop.org/poppler-$
  && cmake --install /tmp/poppler-build \
  && rm -rf /tmp/poppler.tar.xz "/tmp/poppler-${POPPLER_VERSION}" /tmp/poppler-build
 
+# OpenCV is vendored from source instead of taken from the distro: the distro
+# imgcodecs links GDAL, and GDAL links the distro poppler, so one process ends
+# up loading two poppler majors whose identical C++ symbols interpose across
+# versions and shift how pages rasterize. This build carries only the three
+# modules the server uses, with no GDAL and the image codecs linked in
+# statically, so the binary's library closure holds exactly one poppler.
+ARG OPENCV_VERSION=4.12.0
+ARG OPENCV_SHA256=44c106d5bb47efec04e531fd93008b3fcd1d27138985c5baf4eafac0e1ec9e9d
+RUN curl -fsSL -o /tmp/opencv.tar.gz "https://github.com/opencv/opencv/archive/refs/tags/${OPENCV_VERSION}.tar.gz" \
+ && echo "${OPENCV_SHA256}  /tmp/opencv.tar.gz" | sha256sum -c - \
+ && tar -xzf /tmp/opencv.tar.gz -C /tmp \
+ && cmake -S "/tmp/opencv-${OPENCV_VERSION}" -B /tmp/opencv-build -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/opencv \
+      -DBUILD_LIST=core,imgproc,imgcodecs -DBUILD_SHARED_LIBS=ON \
+      -DWITH_GDAL=OFF -DWITH_GTK=OFF -DWITH_QT=OFF -DWITH_FFMPEG=OFF -DWITH_GSTREAMER=OFF \
+      -DWITH_V4L=OFF -DWITH_OPENEXR=OFF -DWITH_OPENCL=OFF -DWITH_IPP=OFF \
+      -DWITH_JPEG=ON -DWITH_PNG=ON -DWITH_TIFF=ON -DWITH_OPENJPEG=ON \
+      -DWITH_WEBP=OFF -DWITH_JASPER=OFF -DWITH_AVIF=OFF \
+      -DBUILD_JPEG=ON -DBUILD_PNG=ON -DBUILD_TIFF=ON -DBUILD_OPENJPEG=ON -DBUILD_ZLIB=ON \
+      -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_opencv_apps=OFF \
+ && cmake --build /tmp/opencv-build --parallel 4 \
+ && cmake --install /tmp/opencv-build \
+ && rm -rf /tmp/opencv.tar.gz "/tmp/opencv-${OPENCV_VERSION}" /tmp/opencv-build
+
 WORKDIR /src
 COPY . .
 # The cache id includes ABI-sensitive dependency versions. Update it whenever
@@ -45,16 +69,16 @@ COPY . .
 # COPY-ed proto as newer than a cached generated header, so a content stamp
 # decides: any proto change discards the staged and generated trees, which
 # forces regeneration; everything else stays warm.
-RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.83.0-ort1.29.0-poppler26.08-cxx23-sessionep2-static1-simdutf9,sharing=locked,target=/build \
+RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.83.0-ort1.29.0-poppler26.08-cxx23-sessionep2-static1-simdutf9-ocv412,sharing=locked,target=/build \
     export PKG_CONFIG_PATH=/opt/poppler/lib/pkgconfig \
  && PROTO_SUM=$(cat *.proto collectors/*.proto | sha256sum | cut -d' ' -f1) \
  && if [ "$(cat /build/.proto-sum 2>/dev/null)" != "$PROTO_SUM" ]; then \
       rm -rf /build/proto /build/generated && printf '%s' "$PROTO_SUM" > /build/.proto-sum; \
     fi \
  && cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
-      -DGRPARSE_WERROR=ON \
+      -DGRPARSE_WERROR=ON -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv4 \
  && cmake --build /build --target grparse-server grparse-stream-client grparse-tests --parallel 4 \
- && LD_LIBRARY_PATH=/opt/poppler/lib ctest --test-dir /build --output-on-failure -L grparse \
+ && LD_LIBRARY_PATH=/opt/poppler/lib:/opt/opencv/lib ctest --test-dir /build --output-on-failure -L grparse \
  && mkdir -p /out \
  && cp /build/grparse-server /out/grparse-server \
  && cp /build/grparse-stream-client /out/grparse-stream-client \
@@ -86,13 +110,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends libcudnn9-cuda-
     && cp -a /usr/lib/x86_64-linux-gnu/libcudnn* /out/runtime-libs/ \
     && for f in /out/grparse-server /out/grparse-stream-client \
                 /out/onnxruntime-lib/*.so* /usr/lib/x86_64-linux-gnu/libcudnn*.so*; do \
-         LD_LIBRARY_PATH=/out/onnxruntime-lib:/opt/poppler/lib ldd "$f" 2>/dev/null; \
+         LD_LIBRARY_PATH=/out/onnxruntime-lib:/opt/poppler/lib:/opt/opencv/lib ldd "$f" 2>/dev/null; \
        done \
        | awk '/=> \// {print $3}' | sort -u \
        | grep -v '^/usr/local/cuda' \
        | grep -v -E '/(libc|libm|libdl|libpthread|librt|libresolv|libnsl|libutil|libanl)\.so' \
        | while read -r lib; do cp -L "$lib" /out/runtime-libs/; done \
-    && ls /out/runtime-libs | wc -l
+    && ls /out/runtime-libs | wc -l \
+    && test "$(ls /out/runtime-libs | grep -cE '^libpoppler\.so\.[0-9]+$')" = 1
 
 # LD_LIBRARY_PATH stands in for ldconfig, and the numeric USER works with or
 # without a passwd entry (65532 is the conventional nonroot uid in hardened
