@@ -126,9 +126,10 @@ int main(int argc, char** argv) {
 
     const grparse::OrtEp ep = selected_provider();
     const char* openvino_device = std::getenv("GRPARSE_OPENVINO_DEVICE");
+    const char* cuda_device = std::getenv("GRPARSE_CUDA_DEVICE");
     grparse::OrtEpSelection selection{
         .ep = ep,
-        .cuda_device = 0,
+        .cuda_device = cuda_device == nullptr || *cuda_device == '\0' ? 0 : std::stoi(cuda_device),
         .openvino_device = openvino_device == nullptr || *openvino_device == '\0'
                                ? "GPU"
                                : openvino_device,
@@ -154,10 +155,11 @@ int main(int argc, char** argv) {
       classifier = std::make_unique<grparse::FigureClassifierPool>(classifier_path, threads);
     }
 
-    std::println("provider={} openvino_device={} layout_model={} labels={} load_ms={:.1f} "
-                 "sessions={} rss_peak_kb={}",
-                 provider_name(ep), selection.openvino_device, grparse::layout_model_name(model),
-                 layout.labels().size(), layout_load_ms, sessions, peak_rss_kb());
+    std::println("provider={} openvino_device={} cuda_device={} layout_model={} labels={} "
+                 "load_ms={:.1f} sessions={} rss_peak_kb={}",
+                 provider_name(ep), selection.openvino_device, selection.cuda_device,
+                 grparse::layout_model_name(model), layout.labels().size(), layout_load_ms,
+                 sessions, peak_rss_kb());
 
     const std::string bytes = read_file(document);
     const bool pdf = document.extension() == ".pdf" || document.extension() == ".PDF";
