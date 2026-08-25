@@ -1,6 +1,6 @@
 # gRParse
 
-C++ gRPC document parse service: **diskless PDF/image to page-streamed protobuf** with boxes and stable offsets. RapidOCR and PicoDet layout run through **ONNX Runtime** on NVIDIA GPUs (CUDA) or Intel GPUs (OpenVINO). Layout labels, reading order, table items with geometry-derived cell grids, and picture items are live; model-based table spans and figure classification are roadmap work.
+C++ gRPC document parse service: **diskless PDF/image to page-streamed protobuf** with boxes and stable offsets. RapidOCR and document layout detection run through **ONNX Runtime** on NVIDIA GPUs (CUDA) or Intel GPUs (OpenVINO). Layout labels, reading order, table items with model or geometry cell grids, picture items, and figure classification are live.
 
 - Architecture (runtime split, anti-seesaw pipeline, offset contract): [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - Collector strategy (gRPC-first fleet, coordination, stream joining): [docs/COLLECTORS.md](docs/COLLECTORS.md)
@@ -20,7 +20,7 @@ merges additively into one page-streamed `Document`:
 ```mermaid
 flowchart LR
     in["document bytes<br/>(gRPC stream, diskless)"] --> route["format routing<br/>+ optional PDF inspector oracle"]
-    route --> cv["CV collector (in-process)<br/>Poppler render / OpenCV decode<br/>RapidOCR + PicoDet layout<br/>SLANet tables, figure classes, ZXing barcodes"]
+    route --> cv["CV collector (in-process)<br/>Poppler render / OpenCV decode<br/>RapidOCR + layout detection<br/>SLANet tables, figure classes, ZXing barcodes"]
     cv --- ort["ONNX Runtime<br/>CUDA or OpenVINO"]
     route --> lo["libreoffice collector<br/>(office formats; typed events<br/>folded client-side, renders re-enter CV)"]
     route --> lol["lol-html collector<br/>(explicit CSS-selector extraction,<br/>folded client-side)"]
@@ -50,7 +50,7 @@ flowchart LR
 
 ## Run
 
-1. Download the four model files listed in [models/README.md](models/README.md).
+1. Download the model files listed in [models/README.md](models/README.md).
 2. Build and start the service:
 
    ```bash
@@ -185,20 +185,35 @@ rather than being silently ignored per page. gRPC memory, thread,
 and stream limits use `GRPARSE_GRPC_MEMORY_MIB`, `GRPARSE_GRPC_MAX_THREADS`,
 and `GRPARSE_MAX_CONCURRENT_STREAMS`.
 
-When `models/layout_publaynet.onnx` is present (see
-[models/README.md](models/README.md)), every page also runs PicoDet layout
-detection on the configured execution provider: text lines inside title and
-list regions are labelled `TITLE`/`LIST_ITEM`, and table and figure regions
-are emitted as `TableItem`/`PictureItem` entries with provenance boxes so
-downstream table and picture extraction have crops to work from. Text streams
-in reading order: a recursive XY-cut over layout regions (or the lines
-themselves when no model is present) splits pages at the widest whitespace
-gap, so multi-column pages read column by column instead of interleaving
-rows, and UTF offsets follow that order. Control it
-with `GRPARSE_LAYOUT=auto|on|off` (`auto`, the default, enables layout when
-the model file exists and says so at startup; `on` fails startup if the model
+When the layout model is present (see
+[models/README.md](models/README.md)), every page also runs layout detection
+on the configured execution provider. `GRPARSE_LAYOUT_MODEL=heron|picodet`
+picks the detector: `heron` (the default, `models/layout_heron.onnx`) predicts
+seventeen labels, `picodet` (`models/layout_publaynet.onnx`) the legacy five.
+Both decoders are compiled in; the choice is made once at startup.
+
+Text lines inside a labelled region take that region's label, so headings,
+list items, captions, footnotes, formulas, code, document indexes,
+checkboxes, forms, and key-value regions all reach the `Document` with their
+own `DocItemLabel` instead of collapsing into plain text. Running headers and
+footers land on the furniture content layer under `#/furniture` rather than
+in the body. Table and picture regions are additionally emitted as
+`TableItem`/`PictureItem` entries with provenance boxes so downstream table
+and picture extraction have crops to work from.
+
+Text streams in reading order: a recursive XY-cut over layout regions (or the
+lines themselves when no model is present) splits pages at the widest
+whitespace gap, so multi-column pages read column by column instead of
+interleaving rows, and UTF offsets follow that order. Control layout with
+`GRPARSE_LAYOUT=auto|on|off` (`auto`, the default, enables layout when the
+selected model's file exists and says so at startup; `on` fails startup if it
 is missing). Full-digital pages are still rasterized when layout is active,
 but continue to skip OCR.
+
+The layout model loads once into a single ONNX Runtime session that every
+inference worker shares, rather than one session per worker: `Run` is
+thread-safe and the decoders hold no state between calls, so pooling only
+bought another full copy of the weights.
 
 Every `TableItem` additionally carries cell structure in `data`. When
 `models/slanet_plus.onnx` is present (`GRPARSE_TABLE_STRUCTURE=auto|on|off`,
@@ -214,17 +229,18 @@ streams as ordinary `TEXT` items too, so UTF offsets stay contiguous for
 clients that ignore tables.
 
 When `models/figure_classifier.onnx` is present (`GRPARSE_FIGURE_CLASSES`,
-same auto/on/off contract), each figure crop also runs the MIT-licensed
-DocumentFigureClassifier (EfficientNet-B0, 16 classes such as bar_chart,
-qr_code, signature, screenshot) and every `PictureItem` carries a
-`classification` annotation with the full sorted class distribution, which
-is what downstream policy hooks (signature routing, barcode triggers, icon
-filtering) key on. The stream never blocks on classification: it is one
-batch=1 device call per figure inside the inference stage.
+same auto/on/off contract), each picture crop also runs the MIT-licensed
+figure classifier (EfficientNet-B0, 26 classes such as bar_chart, qr_code,
+signature, photograph, engineering_drawing, scatter_plot) and every
+`PictureItem` carries a `classification` annotation with the full sorted
+class distribution, which is what downstream policy hooks (signature routing,
+barcode triggers, icon filtering) key on. The stream never blocks on
+classification: it is one batch=1 device call per picture inside the
+inference stage.
 
 Barcode and QR payloads decode without any model: ZXing is compiled in.
-By default (`GRPARSE_BARCODES=auto`) a figure crop is decoded when the
-classifier's top class is `bar_code` or `qr_code`; `on` decodes every figure
+By default (`GRPARSE_BARCODES=auto`) a picture crop is decoded when the
+classifier's top class is `bar_code` or `qr_code`; `on` decodes every picture
 crop (needs only layout, no classifier); `off` disables it. Each decoded
 payload rides on the `PictureItem` as a `misc` annotation with
 `kind: "barcode"` and a struct holding `format` (the ZXing symbology name,
@@ -232,7 +248,7 @@ for example `QRCode` or `Code128`), `value`, and `provenance`. Decoding is
 pure CPU inside the inference stage, after the device calls and before the
 raster is released.
 
-With `GRPARSE_PICTURE_IMAGES=on` (default off) each figure region's pixels
+With `GRPARSE_PICTURE_IMAGES=on` (default off) each picture region's pixels
 are cropped from the page raster in the inference stage, PNG-encoded, and
 attached to its `PictureItem` as an `image/png` data URI with the pixel
 size. The crop happens after OCR and before the raster is released, so

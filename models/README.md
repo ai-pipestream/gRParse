@@ -15,6 +15,49 @@ The model set and dictionary naming are documented by [RapidOcrOnnx](https://git
 
 ## Layout (optional; enables region labels)
 
+`GRPARSE_LAYOUT_MODEL` selects which detector runs: `heron` (the default) or
+`picodet`. Only the selected model's file has to be present; when it is absent
+the server disables layout under `GRPARSE_LAYOUT=auto` and fails startup under
+`GRPARSE_LAYOUT=on`, naming the selection and the path it looked at.
+
+- `layout_heron.onnx` — 17-label document layout detector, RT-DETR-v2
+  architecture, published as ONNX at
+  [docling-project/docling-layout-heron-onnx](https://huggingface.co/docling-project/docling-layout-heron-onnx).
+
+  ```bash
+  curl -L -o layout_heron.onnx \
+    https://huggingface.co/docling-project/docling-layout-heron-onnx/resolve/main/model.onnx
+  ```
+
+  sha256: `59c81a3a2923042d85034ffc487f8f47e4854117e879aef89b2b9f728fb4922a`
+  (171,220,471 bytes)
+
+  License: Apache-2.0. Label map, index = model class id: `0=caption,
+  1=footnote, 2=formula, 3=list_item, 4=page_footer, 5=page_header,
+  6=picture, 7=section_header, 8=table, 9=text, 10=title, 11=document_index,
+  12=code, 13=checkbox_selected, 14=checkbox_unselected, 15=form,
+  16=key_value_region`.
+
+  Graph (opset 18): inputs `images [b,3,640,640]` **uint8** and
+  `orig_target_sizes [b,2]` int64 **width first**; outputs `labels [b,300]`
+  int64, `boxes [b,300,4]` float already in the original page's pixel space
+  (xyxy), and `scores [b,300]` float.
+
+  Preprocess: bilinear resize to 640x640 (no aspect preservation), RGB channel
+  order, raw bytes — the graph rescales and normalizes internally, so there is
+  no `1/255` and no mean/std here. Postprocess: no anchors and no NMS. A
+  detection is dropped below the engine score gate `0.3`, then below its own
+  label gate (`0.5` for caption, footnote, formula, list_item, page_footer,
+  page_header, picture, table, text; `0.45` for section_header, title, code,
+  checkbox_selected, checkbox_unselected, form, key_value_region,
+  document_index); `title` is then emitted as `section_header`. Boxes clip to
+  the page and the result sorts by confidence, then top, then left. Constants
+  mirror the reference pipeline's layout postprocessor. Its wrapper-containment
+  and R-tree overlap resolution are not ported, so co-located duplicates (a
+  caption and a text over the same box, say) can both survive.
+
+  This is the model the `layout-engine-test` heron golden was generated with.
+
 - `layout_publaynet.onnx` — PicoDet layout detector from PaddleDetection's
   PP-StructureV2, trained on PubLayNet; ONNX export published by
   [RapidLayout](https://github.com/RapidAI/RapidLayout).
@@ -28,7 +71,9 @@ The model set and dictionary naming are documented by [RapidOcrOnnx](https://git
 
   License: Apache-2.0 (PaddleDetection model, RapidLayout packaging; PubLayNet
   dataset is CDLA-Permissive). Label map, index = model class id:
-  `0=text, 1=title, 2=list, 3=table, 4=figure`.
+  `0=text, 1=title, 2=list, 3=table, 4=picture`. The reference names class 4
+  "figure"; gRParse speaks one region vocabulary across both detectors, and it
+  is the document schema's "picture".
 
   Preprocess: resize to 608x800 (no aspect preservation), scale 1/255,
   normalize mean `[0.485, 0.456, 0.406]` / std `[0.229, 0.224, 0.225]` applied
@@ -37,9 +82,11 @@ The model set and dictionary naming are documented by [RapidOcrOnnx](https://git
   NMS at IoU 0.5. Constants mirror RapidLayout's `pp` handler, which is the
   reference `layout-engine-test` goldens were generated with.
 
-  When this file is absent the server runs without layout labels; when present
-  it is pooled per inference worker on the configured execution provider
-  (CUDA, OpenVINO, or CPU), like the OCR sessions.
+  When neither layout file is present the server runs without layout labels.
+  The selected model loads into a single session on the configured execution
+  provider (CUDA, OpenVINO, or CPU) and every inference worker shares it;
+  unlike the OCR sessions it is not pooled per worker, because the weights are
+  large and `Ort::Session::Run` is thread-safe.
 
 ## Table structure (optional; enables cell spans and header rows)
 
@@ -73,27 +120,36 @@ The model set and dictionary naming are documented by [RapidOcrOnnx](https://git
 
 ## Figure classifier (optional; enables picture class annotations)
 
-- `figure_classifier.onnx` — [ds4sd/DocumentFigureClassifier](https://huggingface.co/ds4sd/DocumentFigureClassifier)
-  (EfficientNet-B0, MIT license), 16 classes: bar_chart, bar_code,
-  chemistry_markush_structure, chemistry_molecular_structure, flow_chart,
-  icon, line_chart, logo, map, other, pie_chart, qr_code, remote_sensing,
-  screenshot, signature, stamp.
-
-  Upstream publishes safetensors only; generate the ONNX with the committed
-  script (the artifact used for the goldens has sha256
-  `cc4631086634a5e6bcd0bb591df728eb44e2a95207b0f6454d120c7c8b32a80c`; exact
-  bytes depend on the torch version, the goldens tolerate that):
+- `figure_classifier.onnx` — document figure classifier v2.5 (EfficientNet-B0,
+  MIT license), published as ONNX at
+  [docling-project/DocumentFigureClassifier-v2.5](https://huggingface.co/docling-project/DocumentFigureClassifier-v2.5).
 
   ```bash
-  python scripts/export_figure_classifier.py figure_classifier.onnx
+  curl -L -o figure_classifier.onnx \
+    https://huggingface.co/docling-project/DocumentFigureClassifier-v2.5/resolve/main/model.onnx
   ```
 
-  Preprocess: RGB order (unlike the OCR-family models), resize 224x224,
-  scale 1/255, normalize mean `[0.485, 0.456, 0.406]` /
-  std `[0.47853944, 0.4732864, 0.47434163]`, NCHW, per the upstream
-  DocumentFigureClassifierPredictor contract. Output is raw
-  logits; gRParse softmaxes and attaches every class sorted by confidence
-  as a `classification` annotation on the PictureItem.
+  sha256: `27ffc48c27ae4e12c99b6f6de0dd730005245e47b70dd0c1339e62cbac3ec4c0`
+  (16,940,439 bytes)
 
-  Requires layout; runs only on figure crops. When absent, pictures keep
+  26 classes, index = model output index: `0=logo, 1=photograph, 2=icon,
+  3=engineering_drawing, 4=line_chart, 5=bar_chart, 6=other, 7=table,
+  8=flow_chart, 9=screenshot_from_computer, 10=signature,
+  11=screenshot_from_manual, 12=geographical_map, 13=pie_chart,
+  14=page_thumbnail, 15=stamp, 16=music, 17=calendar, 18=qr_code, 19=bar_code,
+  20=full_page_image, 21=scatter_plot, 22=chemistry_structure,
+  23=topographical_map, 24=crossword_puzzle, 25=box_plot`.
+
+  **This file replaced a 16-class predecessor of the same name.** The class
+  count is read from the graph at startup, so a stale file stops the server
+  with both counts rather than failing on the first figure of the first
+  document; re-download it when upgrading.
+
+  Preprocess (opset 20, unchanged from the predecessor): RGB order (unlike the
+  OCR-family models), resize 224x224, scale 1/255, normalize mean
+  `[0.485, 0.456, 0.406]` / std `[0.47853944, 0.4732864, 0.47434163]`, NCHW.
+  Output is raw logits; gRParse softmaxes and attaches every class sorted by
+  confidence as a `classification` annotation on the PictureItem.
+
+  Requires layout; runs only on picture crops. When absent, pictures keep
   their bounding boxes and simply carry no class annotation.

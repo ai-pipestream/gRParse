@@ -231,7 +231,7 @@ gRParse stays **PDF/image only**. Do not embed LibreOffice here.
 | Stage | Shape | Priority |
 |---|---|---|
 | OCR | RapidOcrOnnx (have) | done |
-| Layout OD | PicoDet PubLayNet (have) | done |
+| Layout OD | 17-label detector (default), 5-label legacy | done |
 | Table structure | SLANet-plus (have); geometry word→cell v0 fallback | done |
 | Picture class | DocumentFigureClassifier EfficientNet-B0 (have) | done |
 | Barcode | ZXing, class-triggered or forced, no model | done |
