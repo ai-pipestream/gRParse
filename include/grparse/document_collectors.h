@@ -28,6 +28,7 @@ namespace grparse {
 // loaded; the caller resolves it from configuration, never guesses.
 CollectorOutcome collect_asr_document(const std::shared_ptr<grpc::Channel>& channel,
                                       const std::string& model,
+                                      const std::string& filename,
                                       const std::string& bytes,
                                       CollectorDeadline inbound_deadline =
                                           kNoCollectorDeadline);

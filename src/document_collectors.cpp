@@ -1,5 +1,7 @@
 #include "grparse/document_collectors.h"
 
+#include <cstdlib>
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -145,6 +147,7 @@ CollectorOutcome drain_stream(const char* name, Stream& stream, OnStatus on_stat
 
 CollectorOutcome collect_asr_document(const std::shared_ptr<grpc::Channel>& channel,
                                       const std::string& model,
+                                      const std::string& filename,
                                       const std::string& bytes,
                                       CollectorDeadline inbound_deadline) {
   auto stub = asrv1::AsrService::NewStub(channel);
@@ -155,6 +158,15 @@ CollectorOutcome collect_asr_document(const std::shared_ptr<grpc::Channel>& chan
   asrv1::TranscribeRequest request;
   request.mutable_options()->set_model(model);
   request.mutable_options()->set_emit_document(true);
+  // The transcriber can only stamp the document's identity and register
+  // speakers when asked; diarization stays on unless the deployment turns
+  // it off (GRPARSE_ASR_DIARIZE=0).
+  request.mutable_options()->set_filename(filename);
+  static const bool diarize = [] {
+    const char* value = std::getenv("GRPARSE_ASR_DIARIZE");
+    return value == nullptr || std::string_view(value) != "0";
+  }();
+  request.mutable_options()->set_diarize(diarize);
   upload_stream(*stream, request, bytes, /*always_send_chunk=*/false,
                 [&bytes](asrv1::TranscribeRequest& frame, size_t offset,
                          size_t length, bool /*last*/) {

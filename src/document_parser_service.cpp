@@ -224,7 +224,7 @@ CollectorOutcome run_remote_collector(
         outcome.code = grpc::StatusCode::FAILED_PRECONDITION;
         return outcome;
       }
-      return collect_asr_document(endpoints->channel(id), endpoints->asr_model(), bytes,
+      return collect_asr_document(endpoints->channel(id), endpoints->asr_model(), filename, bytes,
                                   inbound_deadline);
     case pipestream::parse::v1::COLLECTOR_EMAIL:
       return collect_email_document(endpoints->channel(id), document_id, filename,

@@ -143,7 +143,7 @@ void verify_asr_collects_document() {
   ServerFixture server(&service);
   // Large enough to prove multi-chunk uploads reassemble.
   const auto outcome =
-      grparse::collect_asr_document(server.channel(), "small",
+      grparse::collect_asr_document(server.channel(), "small", "clip.wav",
                                     std::string(600U * 1024U, 'x'));
   require(outcome.success, "asr collection succeeds: " + outcome.error);
   require(outcome.document.texts_size() == 1 &&
@@ -155,7 +155,7 @@ void verify_asr_collects_document() {
 void verify_transport_class_collapses_to_unavailable() {
   FailingAsrService service;
   ServerFixture server(&service);
-  const auto outcome = grparse::collect_asr_document(server.channel(), "small", "abc");
+  const auto outcome = grparse::collect_asr_document(server.channel(), "small", "clip.wav", "abc");
   require(!outcome.success, "an INTERNAL collector failure is an outcome");
   require(outcome.code == grpc::StatusCode::UNAVAILABLE,
           "non-caller status classes collapse to UNAVAILABLE");
