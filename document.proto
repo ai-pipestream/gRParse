@@ -1363,6 +1363,10 @@ enum ReferenceKind {
   REFERENCE_KIND_FOOTNOTE = 2;
   REFERENCE_KIND_CLAIM = 3;
   REFERENCE_KIND_SECTION = 4;
+  REFERENCE_KIND_CROSS_REF = 5;
+  REFERENCE_KIND_FIGURE = 6;
+  REFERENCE_KIND_TABLE = 7;
+  REFERENCE_KIND_EQUATION = 8;
 }
 
 // DocumentMeta carries the metadata the source declares about itself.
