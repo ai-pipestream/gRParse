@@ -627,7 +627,16 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
       } else if (local_collector(id)) {
         collector.run = [id, bytes] { return run_local_collector(id, *bytes); };
       } else if (pdf_routing) {
-        collector.run = [run_cv, tuning, endpoints, bytes, inbound_deadline]() {
+        collector.run = [run_cv, tuning, endpoints, bytes, inbound_deadline, context]() {
+          // Same pre-dial cancellation check as the plain collector legs: a
+          // call that died after the dequeue check must not dial the
+          // inspector either.
+          if (context->IsCancelled()) {
+            CollectorOutcome outcome;
+            outcome.error = "request cancelled";
+            outcome.code = grpc::StatusCode::CANCELLED;
+            return outcome;
+          }
           const PdfParseResult parsed =
               collect_pdf(endpoints->channel(pipestream::parse::v1::COLLECTOR_PDF), *bytes,
                           inbound_deadline);
@@ -668,7 +677,16 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
         };
       } else {
         collector.run = [id, endpoints, bytes, requested_name, ebcdic_layout_json,
-                         lol_html_options_json, inbound_deadline]() {
+                         lol_html_options_json, inbound_deadline, context]() {
+          // The dequeue check answered "still listening" before this parse
+          // started; a cancel can land any time after. Ask again before
+          // dialing so a dead call costs no collector leg.
+          if (context->IsCancelled()) {
+            CollectorOutcome outcome;
+            outcome.error = "request cancelled";
+            outcome.code = grpc::StatusCode::CANCELLED;
+            return outcome;
+          }
           return run_remote_collector(id, endpoints, requested_name.string(),
                                       requested_name.string(), std::string(), *bytes,
                                       *ebcdic_layout_json, *lol_html_options_json,

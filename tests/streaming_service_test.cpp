@@ -1323,8 +1323,13 @@ pipestream::parse::v1::ConvertSourceRequest pdf_unary_request() {
 // A call that dies while it is still in the executor queue must cost nothing
 // when its turn comes: the worker asks the context first, answers CANCELLED,
 // and never decodes the payload or dials a collector. Proven by pinning the
-// only worker to a held conversion, cancelling the call queued behind it,
-// and reading the collector's dial count afterwards.
+// only worker to a held conversion, expiring the call queued behind it, and
+// reading the collector's dial count afterwards. The expiry is a deadline,
+// not TryCancel: a deadline fires from a local timer on both peers, while a
+// cancel has to cross the transport as a frame and would race the freed
+// worker, making the no-dial assertion a coin flip under parallel test load.
+// (TryCancel's client-visible status is pinned by
+// verify_unary_cancellation_finishes_without_wedging.)
 void verify_queued_then_cancelled_call_never_dials_a_collector() {
   FakePdfInspector inspector(pdfv1::PDF_TYPE_MIXED, {2});
   PdfInspectorServer inspector_server(&inspector);
@@ -1361,28 +1366,30 @@ void verify_queued_then_cancelled_call_never_dials_a_collector() {
   recognizer.wait_until_entered();
   require(inspector.dials() == 1, "the held conversion dialed the inspector once");
 
-  grpc::ClientContext cancelled_context;
-  cancelled_context.set_deadline(std::chrono::system_clock::now() + 30s);
-  grpc::Status cancelled_status;
+  grpc::ClientContext expired_context;
+  // Short enough to expire while the worker is held, long enough that the
+  // call is queued well before it fires.
+  expired_context.set_deadline(std::chrono::system_clock::now() + 600ms);
+  grpc::Status expired_status;
   std::thread queued([&] {
     auto client = pipestream::parse::v1::ParseService::NewStub(channel);
     pipestream::parse::v1::ConvertSourceResponse response;
-    cancelled_status = client->ConvertSource(&cancelled_context, pdf_unary_request(), &response);
+    expired_status = client->ConvertSource(&expired_context, pdf_unary_request(), &response);
   });
   // Long enough for the handler to run and the task to reach the queue; the
   // held worker guarantees it cannot leave the queue before the release.
   std::this_thread::sleep_for(200ms);
-  cancelled_context.TryCancel();
   queued.join();
-  require(cancelled_status.error_code() == grpc::StatusCode::CANCELLED,
-          "a cancelled call ends as CANCELLED");
+  // The client's own deadline fires locally, so the call always ends
+  // DEADLINE_EXCEEDED from the client's side, however the server answered.
+  require(expired_status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED,
+          "a queued call outliving its deadline ends as DEADLINE_EXCEEDED, got " +
+              expired_status.error_message());
 
-  // The client has its CANCELLED status, but the server learns of the
-  // cancel from a transport frame that races the worker being freed: the
-  // dequeue check is best-effort by design. Give the notification time to
-  // land before releasing the worker, so the assertion below tests the
-  // check rather than the transport's timing under parallel test load.
-  std::this_thread::sleep_for(500ms);
+  // The deadline has passed on the server too — its timer is local to the
+  // call, so unlike a cancel frame there is nothing still in flight.
+  // Releasing the worker now dequeues a task the dequeue check must find
+  // dead, deterministically.
   recognizer.release();
   holder.join();
   require(holder_status.ok(), "the held conversion completes: " + holder_status.error_message());
@@ -1390,7 +1397,7 @@ void verify_queued_then_cancelled_call_never_dials_a_collector() {
   // wrong thing before concluding it did the right one.
   std::this_thread::sleep_for(300ms);
   require(inspector.dials() == 1,
-          "the cancelled call must be answered before anything is dialed; dials was " +
+          "the expired call must be answered before anything is dialed; dials was " +
               std::to_string(inspector.dials()));
 
   server->Shutdown(std::chrono::system_clock::now() + 2s);
