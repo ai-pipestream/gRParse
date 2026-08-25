@@ -223,7 +223,9 @@ std::string serialized(const std::vector<parsev1::Chunk>& chunks) {
     google::protobuf::io::StringOutputStream sink(&bytes);
     google::protobuf::io::CodedOutputStream stream(&sink);
     stream.SetSerializationDeterministic(true);
-    response.SerializeToCodedStream(&stream);
+    if (!response.SerializeToCodedStream(&stream)) {
+      throw std::runtime_error("chunk list serialization failed");
+    }
   }
   return bytes;
 }
@@ -415,6 +417,7 @@ void verify_pages_items_and_offsets_propagate() {
   const auto chunks = chunk_hierarchical(document, offsets, {}, "guide.pdf");
 
   const auto* sparrows = find_chunk(chunks, "Sparrows are small");
+  require(sparrows != nullptr, "the paragraph must chunk");
   require(sparrows->has_start_offset() && sparrows->has_end_offset(),
           "a text chunk with an offset entry reports its span");
   const auto entry = offsets.at(sparrows->doc_items(0));
@@ -428,6 +431,7 @@ void verify_pages_items_and_offsets_propagate() {
              "the offset table's source rides as metadata");
 
   const auto* list = find_chunk(chunks, "- nests");
+  require(list != nullptr, "the list must chunk");
   require(list->has_start_offset(), "a list chunk spans its items");
   require(static_cast<std::uint64_t>(list->start_offset()) ==
               offsets.at(list->doc_items(1)).start &&
@@ -443,6 +447,7 @@ void verify_pages_items_and_offsets_propagate() {
   partial.erase(list->doc_items(2));
   const auto partial_chunks = chunk_hierarchical(document, partial, {}, "guide.pdf");
   const auto* partial_list = find_chunk(partial_chunks, "- nests");
+  require(partial_list != nullptr, "the list still chunks without its entries");
   require(!partial_list->has_start_offset() && !partial_list->has_end_offset(),
           "a chunk with one item missing its entry reports no span at all");
 
@@ -467,6 +472,7 @@ void verify_mixed_text_source_is_reported() {
   offsets[items.at(0)] = OffsetEntry{8, 9, parsev1::TEXT_SOURCE_DIGITAL_PDF};
   offsets[items.at(1)] = OffsetEntry{10, 11, parsev1::TEXT_SOURCE_OCR};
   const auto chunks = chunk_hierarchical(document, offsets, {}, "mix.pdf");
+  require(chunks.size() == 3, "one chunk per paragraph plus the list");
   require_eq(find_chunk(chunks, "one")->metadata().at("text_source"), "digital",
              "a digital-only chunk");
   require_eq(find_chunk(chunks, "two")->metadata().at("text_source"), "ocr",
