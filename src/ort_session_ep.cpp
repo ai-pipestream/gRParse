@@ -136,6 +136,11 @@ Ort::Session make_session(Ort::Env& env, const std::filesystem::path& model_path
                  "runs on CPU",
                  what, ort_ep_name(ep), model_path.string(), error.what());
   }
+  return make_cpu_session(env, model_path, intra_op_threads);
+}
+
+Ort::Session make_cpu_session(Ort::Env& env, const std::filesystem::path& model_path,
+                              int intra_op_threads) {
   Ort::SessionOptions cpu_options;
   cpu_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
   const int threads = resolved_intra_op_threads(intra_op_threads);

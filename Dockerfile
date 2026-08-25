@@ -41,8 +41,16 @@ COPY . .
 # The cache id includes ABI-sensitive dependency versions. Update it whenever
 # gRPC, ONNX Runtime, CUDA, the base toolchain, or a dependency patch under
 # patches/ changes — a stale cache would keep an unpatched dependency tree.
+# Cache-mounted build trees outlive proto changes, and ninja cannot see a
+# COPY-ed proto as newer than a cached generated header, so a content stamp
+# decides: any proto change discards the staged and generated trees, which
+# forces regeneration; everything else stays warm.
 RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.83.0-ort1.29.0-poppler26.08-cxx23-sessionep2-static1-simdutf9,sharing=locked,target=/build \
     export PKG_CONFIG_PATH=/opt/poppler/lib/pkgconfig \
+ && PROTO_SUM=$(cat *.proto collectors/*.proto | sha256sum | cut -d' ' -f1) \
+ && if [ "$(cat /build/.proto-sum 2>/dev/null)" != "$PROTO_SUM" ]; then \
+      rm -rf /build/proto /build/generated && printf '%s' "$PROTO_SUM" > /build/.proto-sum; \
+    fi \
  && cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
       -DGRPARSE_WERROR=ON \
  && cmake --build /build --target grparse-server grparse-stream-client grparse-tests --parallel 4 \

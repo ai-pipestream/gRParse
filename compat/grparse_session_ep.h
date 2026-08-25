@@ -93,5 +93,11 @@ Ort::Session make_session(Ort::Env& env, const std::filesystem::path& model_path
                           OrtPrecision precision = OrtPrecision::kProviderDefault,
                           int intra_op_threads = kIntraOpProcessDefault);
 
+// The CPU-only session make_session falls back to, exposed for callers that
+// must retreat AFTER creation: some provider failures only surface at the
+// first inference (a runtime kernel compile), which make_session cannot see.
+Ort::Session make_cpu_session(Ort::Env& env, const std::filesystem::path& model_path,
+                              int intra_op_threads = kIntraOpProcessDefault);
+
 
 }  // namespace grparse

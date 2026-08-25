@@ -9,6 +9,7 @@
 #include <numeric>
 #include <stdexcept>
 #include <string>
+#include <print>
 #include <utility>
 #include <vector>
 
@@ -347,14 +348,35 @@ class LayoutEngine::Impl {
                                " is missing: " + model_path.string() +
                                " (see models/README.md)");
     }
-    // Same provider decision point as the OCR sessions, and the one session
-    // in this process that pins single precision: the detector's boxes and
-    // its marginal detections do not survive half precision.
-    // One session serves every worker, so it is the one that may have all the
-    // cores; the pooled sessions divide them.
-    session_ = make_session(env_, model_path, "layout", OrtPrecision::kFloat32,
-                            kIntraOpAllCores);
+    // Same provider decision point as the OCR sessions. Precision is pinned
+    // PER MODEL: the query detector's marginal detections do not survive
+    // half precision, so it demands single precision on every device; the
+    // anchor-free detector is accuracy-safe at half precision (2e-4 output
+    // delta) and single precision trips a GPU-plugin runtime-compile
+    // failure on its graph on Intel devices, so it keeps the provider
+    // default. One session serves every worker, so it is the one that may
+    // have all the cores; the pooled sessions divide them.
+    const OrtPrecision precision = model == LayoutModel::kHeron
+                                       ? OrtPrecision::kFloat32
+                                       : OrtPrecision::kProviderDefault;
+    session_ = make_session(env_, model_path, "layout", precision, kIntraOpAllCores);
     strategy_->bind(session_);
+    // Some provider failures only surface at the first inference (a runtime
+    // kernel compile, not session creation), which would otherwise leave a
+    // running server failing every page. Probe once; on failure retreat to
+    // CPU exactly like a creation failure would have.
+    const cv::Mat probe(64, 64, CV_8UC3, cv::Scalar(255, 255, 255));
+    try {
+      (void)strategy_->detect(session_, probe);
+    } catch (const std::exception& error) {
+      std::println(stderr,
+                   "gRParse layout: the configured execution provider failed its first "
+                   "inference ({}); this model runs on CPU",
+                   error.what());
+      session_ = make_cpu_session(env_, model_path, kIntraOpAllCores);
+      strategy_->bind(session_);
+      (void)strategy_->detect(session_, probe);  // a CPU failure is fatal
+    }
   }
 
   std::vector<LayoutRegion> detect_regions(const cv::Mat& image) {
