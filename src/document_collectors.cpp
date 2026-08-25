@@ -738,9 +738,10 @@ CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>&
     web->Clear();
     web->set_target_uri(*target);
     if (metadata.has_record_date()) {
-      // WARC-Date parsed by the server; ToString renders RFC 3339, which is
-      // the ISO 8601 profile WebMeta.crawl_time asks for.
-      web->set_crawl_time(
+      // WARC-Date arrives parsed; the typed instant carries it and the raw
+      // twin keeps the RFC 3339 rendering for readers of the source form.
+      *web->mutable_crawl_time() = metadata.record_date();
+      web->set_crawl_time_raw(
           google::protobuf::util::TimeUtil::ToString(metadata.record_date()));
     }
     if (metadata.has_http_headers()) {

@@ -973,8 +973,9 @@ void verify_fastwarc_captures_web_provenance() {
   const auto& web = outcome.document.origin().web();
   require(web.target_uri() == "https://example.com/page",
           "WARC-Target-URI reaches the document's web provenance");
-  require(web.crawl_time() == "2024-01-02T03:04:05Z",
-          "the parsed WARC-Date lands as an ISO 8601 crawl time, not prose");
+  require(web.crawl_time().seconds() == 1704164645 &&
+              web.crawl_time_raw() == "2024-01-02T03:04:05Z",
+          "the parsed WARC-Date lands typed, with the raw spelling beside it");
   require(web.http_status() == 200,
           "the status code parses out of the raw HTTP status line");
   require(web.content_language() == "en-GB",

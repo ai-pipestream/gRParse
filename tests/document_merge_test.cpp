@@ -188,7 +188,8 @@ void verify_metadata_merges_beside_a_stamped_origin() {
   docv1::Document crawl = collector_document();
   auto* web = crawl.mutable_origin()->mutable_web();
   web->set_target_uri("https://example.com/page");
-  web->set_crawl_time("2024-01-02T03:04:05Z");
+  web->mutable_crawl_time()->set_seconds(1704164645);
+  web->set_crawl_time_raw("2024-01-02T03:04:05Z");
   web->set_http_status(200);
   (*web->mutable_headers())["etag"] = "\"deadbeef\"";
   grparse::merge_documents(std::move(crawl), &target);
@@ -209,7 +210,8 @@ void verify_metadata_merges_beside_a_stamped_origin() {
               target.origin().binary_hash() == 4096,
           "the stamped archive identity is never overwritten");
   require(target.origin().web().target_uri() == "https://example.com/page" &&
-              target.origin().web().crawl_time() == "2024-01-02T03:04:05Z" &&
+              target.origin().web().crawl_time().seconds() == 1704164645 &&
+              target.origin().web().crawl_time_raw() == "2024-01-02T03:04:05Z" &&
               target.origin().web().http_status() == 200,
           "the archive leg's web provenance survives the stamped origin");
   require(target.origin().web().canonical_uri() == "https://example.com/canonical",

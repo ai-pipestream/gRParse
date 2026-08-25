@@ -174,7 +174,10 @@ void merge_documents(docv1::Document&& source, docv1::Document* target) {
         web->set_canonical_uri(source_web.canonical_uri());
       }
       if (!web->has_crawl_time() && source_web.has_crawl_time()) {
-        web->set_crawl_time(source_web.crawl_time());
+        *web->mutable_crawl_time() = source_web.crawl_time();
+      }
+      if (!web->has_crawl_time_raw() && source_web.has_crawl_time_raw()) {
+        web->set_crawl_time_raw(source_web.crawl_time_raw());
       }
       if (!web->has_http_status() && source_web.has_http_status()) {
         web->set_http_status(source_web.http_status());
@@ -196,10 +199,16 @@ void merge_documents(docv1::Document&& source, docv1::Document* target) {
     const docv1::DocumentMeta& incoming = source.source_meta();
     if (!meta->has_title() && incoming.has_title()) meta->set_title(incoming.title());
     if (!meta->has_created() && incoming.has_created()) {
-      meta->set_created(incoming.created());
+      *meta->mutable_created() = incoming.created();
     }
     if (!meta->has_modified() && incoming.has_modified()) {
-      meta->set_modified(incoming.modified());
+      *meta->mutable_modified() = incoming.modified();
+    }
+    if (!meta->has_created_raw() && incoming.has_created_raw()) {
+      meta->set_created_raw(incoming.created_raw());
+    }
+    if (!meta->has_modified_raw() && incoming.has_modified_raw()) {
+      meta->set_modified_raw(incoming.modified_raw());
     }
     if (!meta->has_language() && incoming.has_language()) {
       meta->set_language(incoming.language());
