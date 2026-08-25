@@ -21,6 +21,7 @@
 
 #include "grparse/base64.h"
 #include "grparse/collector_coordinator.h"
+#include "grparse/confluence_storage.h"
 #include "grparse/document_assembly.h"
 #include "grparse/document_collectors.h"
 #include "grparse/document_merge.h"
@@ -45,6 +46,12 @@ uint64_t content_hash(const std::string& document) {
 
 std::string mimetype_for(const fs::path& path) {
   const auto extension = path.extension().string();
+  // The wiki storage dialect names itself by suffix, and its own content
+  // type is what the document's origin must carry: a ".storage.xhtml" body
+  // is not the plain XHTML its final extension would otherwise claim.
+  if (confluence_storage_format(path.string(), std::string())) {
+    return kConfluenceStorageMimetype;
+  }
   if (extension == ".pdf") return "application/pdf";
   if (extension == ".jpg" || extension == ".jpeg") return "image/jpeg";
   if (extension == ".tif" || extension == ".tiff") return "image/tiff";
@@ -104,6 +111,7 @@ const char* collector_name(pipestream::parse::v1::Collector collector) {
     case pipestream::parse::v1::COLLECTOR_LOL_HTML: return "lol-html";
     case pipestream::parse::v1::COLLECTOR_FASTWARC: return "fastwarc";
     case pipestream::parse::v1::COLLECTOR_PDF: return "pdf";
+    case pipestream::parse::v1::COLLECTOR_CONFLUENCE: return "confluence-storage";
     default: return "unspecified";
   }
 }
@@ -127,6 +135,29 @@ const char* collector_target_env(pipestream::parse::v1::Collector collector) {
 // True for every collector run_remote_collector can dial.
 bool remote_collector(pipestream::parse::v1::Collector id) {
   return *collector_target_env(id) != '\0';
+}
+
+// True for the collectors that parse in this process instead of over a
+// channel. The CV pipeline is in process too but keeps its own path: it is
+// page-streamed and tunable, while these are a straight bytes-in,
+// Document-out fold with nothing to configure and nothing to reach.
+bool local_collector(pipestream::parse::v1::Collector id) {
+  return id == pipestream::parse::v1::COLLECTOR_CONFLUENCE;
+}
+
+// Runs one in-process collector. Never throws; failures are outcomes, so a
+// local collector degrades exactly like a dialed one.
+CollectorOutcome run_local_collector(pipestream::parse::v1::Collector id,
+                                     const std::string& bytes) {
+  if (id == pipestream::parse::v1::COLLECTOR_CONFLUENCE) {
+    return parse_confluence_storage(bytes);
+  }
+  // Unreachable: the local_collector guard admits only the ids above.
+  CollectorOutcome outcome;
+  outcome.error = std::string("collector '") + collector_name(id) +
+                  "' is not wired in yet";
+  outcome.code = grpc::StatusCode::UNIMPLEMENTED;
+  return outcome;
 }
 
 const char* pdf_class_name(PdfClass pdf_class) {
@@ -534,6 +565,8 @@ grpc::Status DocumentParserService::ConvertSource(
       collector.id = id;
       if (id == pipestream::parse::v1::COLLECTOR_GRPARSE_CV) {
         collector.run = [run_cv, tuning] { return run_cv(tuning); };
+      } else if (local_collector(id)) {
+        collector.run = [id, bytes] { return run_local_collector(id, *bytes); };
       } else if (pdf_routing) {
         collector.run = [run_cv, tuning, endpoints, bytes]() {
           const PdfParseResult parsed =
@@ -855,6 +888,7 @@ class DocumentStreamReactor final
     bool pdf_routing = false;
     PageScheduler::OcrTuning tuning;
     std::vector<pipestream::parse::v1::Collector> remotes;
+    std::vector<pipestream::parse::v1::Collector> locals;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       // The resolved recognition fields validate exactly like the unary
@@ -894,6 +928,9 @@ class DocumentStreamReactor final
         if (id == pipestream::parse::v1::COLLECTOR_GRPARSE_CV) {
           want_cv = true;
           ++pending_parts_;
+        } else if (local_collector(id)) {
+          locals.push_back(id);
+          ++pending_parts_;
         } else if (remote_collector(id)) {
           remotes.push_back(id);
           ++pending_parts_;
@@ -917,6 +954,9 @@ class DocumentStreamReactor final
       document_bytes_hash_ = hash;
     }
 
+    for (const auto id : locals) {
+      spawn_local_collector(id, bytes);
+    }
     for (const auto id : remotes) {
       if (id == pipestream::parse::v1::COLLECTOR_PDF && pdf_routing) {
         spawn_pdf_router(bytes, pdf, tuning);
@@ -1027,6 +1067,24 @@ class DocumentStreamReactor final
     record_part_failure_locked(
         pipestream::parse::v1::COLLECTOR_PDF,
         grpc::Status(outcome.code, outcome.error + "; fell back to the in-process CV path"));
+  }
+
+  // An in-process collector runs on its own thread for the same reason a
+  // remote one does: the fold is straight-line work on the request bytes,
+  // not a gRPC reaction, and the gate keeps its completion safe against
+  // reactor teardown.
+  void spawn_local_collector(pipestream::parse::v1::Collector id,
+                             std::shared_ptr<const std::string> bytes) {
+    const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
+    std::thread([weak_gate, id, bytes]() {
+      CollectorOutcome outcome = run_local_collector(id, *bytes);
+      if (const auto gate = weak_gate.lock()) {
+        std::lock_guard<std::mutex> lock(gate->mutex);
+        if (gate->reactor != nullptr) {
+          gate->reactor->on_collector_done(id, std::move(outcome));
+        }
+      }
+    }).detach();
   }
 
   // A remote collector runs on its own thread: it is a blocking client

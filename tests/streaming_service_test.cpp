@@ -14,6 +14,7 @@
 #include "ai/pipestream/parse/v1/parse_stream.grpc.pb.h"
 #include "ai/pipestream/pdf/v1/pdf_service.grpc.pb.h"
 #include "grparse/base64.h"
+#include "grparse/confluence_storage.h"
 #include "grparse/document_assembly.h"
 #include "grparse/document_parser_service.h"
 #include "grparse/page_scheduler.h"
@@ -708,6 +709,84 @@ void verify_stream_resolves_recognition_options() {
   server->Wait();
 }
 
+// A storage body small enough to pin exactly: one heading, one paragraph
+// with inline formatting, one task.
+constexpr char kStorageBody[] =
+    "<h1>Runbook</h1><p>step <strong>one</strong></p>"
+    "<ac:task-list><ac:task><ac:task-status>complete</ac:task-status>"
+    "<ac:task-body>done</ac:task-body></ac:task></ac:task-list>";
+
+void verify_unary_storage_suffix_routes_in_process(TestServer* server) {
+  // No collector endpoint is configured on this server, so a document that
+  // reaches its handler at all proves the route is in process.
+  auto client = server->unary_stub();
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  pipestream::parse::v1::ConvertSourceRequest request;
+  auto* source = request.mutable_request()->add_sources()->mutable_file();
+  source->set_filename("handbook.confluence");
+  source->set_base64_string(
+      grparse::encode_base64(kStorageBody, sizeof(kStorageBody) - 1));
+  request.mutable_request()->mutable_options()->add_to_formats(
+      pipestream::parse::v1::OUTPUT_FORMAT_TEXT);
+  pipestream::parse::v1::ConvertSourceResponse response;
+  const grpc::Status status = client->ConvertSource(&context, request, &response);
+  require(status.ok(), "storage conversion failed: " + status.error_message());
+  require(response.response().status() == pipestream::parse::v1::CONVERSION_STATUS_SUCCESS,
+          "the storage parse is a full success");
+
+  const auto& document = response.response().document().doc();
+  require(document.origin().mimetype() == grparse::kConfluenceStorageMimetype,
+          "the origin carries the storage content type: " +
+              document.origin().mimetype());
+  require(document.origin().filename() == "handbook.confluence" &&
+              document.name() == "handbook.confluence",
+          "identity comes from the request filename");
+  require(document.texts_size() == 3, "heading, paragraph and task");
+  require(document.texts(0).section_header().level() == 1,
+          "the heading kept its level through the service");
+  require(document.texts(0).section_header().base().source_size() == 1 &&
+              document.texts(0).section_header().base().source(0).collector().collector() ==
+                  "confluence-storage",
+          "items are attributed to the storage handler");
+  require(response.response().document().exports().text() == "Runbook\nstep one\ndone",
+          "the text export of the storage body: " +
+              response.response().document().exports().text());
+}
+
+void verify_stream_storage_content_type_routes_in_process(TestServer* server) {
+  auto client = server->stub();
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  auto stream = client->StreamProcessDocument(&context);
+  pipestream::parse::v1::DocumentChunk source;
+  source.set_document_id("storage-test");
+  source.set_filename("page.bin");
+  source.set_content_type(grparse::kConfluenceStorageMimetype);
+  source.set_data(kStorageBody);
+  source.set_complete(true);
+  require(stream->Write(source), "storage client could not write source chunk");
+  stream->WritesDone();
+
+  std::vector<pipestream::parse::v1::DocumentStreamEvent> events;
+  pipestream::parse::v1::DocumentStreamEvent event;
+  while (stream->Read(&event)) events.push_back(event);
+  const grpc::Status status = stream->Finish();
+  require(status.ok(), "storage stream failed: " + status.error_message());
+  require(events.size() == 2, "one collector document and the terminal event");
+  require(events.at(0).has_collector_document(),
+          "the content type routed to a collector, not the CV path");
+  require(events.at(0).collector_document().collector() ==
+              pipestream::parse::v1::COLLECTOR_CONFLUENCE,
+          "the storage content type routes to the storage handler");
+  const auto& document = events.at(0).collector_document().document();
+  require(document.texts_size() == 3, "the streamed parse has the same shape");
+  require(document.texts(2).list_item().base().label() ==
+              docv1::DOC_ITEM_LABEL_CHECKBOX_SELECTED,
+          "the completed task survived the stream");
+  require(events.at(1).has_complete(), "terminal metadata event");
+}
+
 void verify_get_service_info(TestServer* server) {
   auto client = server->unary_stub();
   grpc::ClientContext context;
@@ -1010,6 +1089,8 @@ int main() {
     verify_unary_digital_path_bypasses_ocr();
     verify_wide_page_window_streams_completely();
     verify_deadline_cancels_scheduler_work();
+    verify_unary_storage_suffix_routes_in_process(&server);
+    verify_stream_storage_content_type_routes_in_process(&server);
     verify_get_service_info(&server);
     verify_pdf_fast_path_skips_the_cv_pipeline();
     verify_pdf_classification_restricts_recognition();

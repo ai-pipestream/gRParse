@@ -73,6 +73,18 @@ void verify_routing() {
           "xml content type routes to the xml collector");
   require(grparse::route_collector("page.xhtml", "") == parsev1::COLLECTOR_MARKUP,
           "the +xml suffix family belongs to the markup collector, not xml");
+  require(grparse::route_collector("handbook.confluence", "") ==
+              parsev1::COLLECTOR_CONFLUENCE,
+          "the wiki storage suffix routes to the in-process storage handler");
+  require(grparse::route_collector("handbook.storage.xhtml", "") ==
+              parsev1::COLLECTOR_CONFLUENCE,
+          "the storage double suffix outranks the markup route its extension "
+          "would otherwise take");
+  require(grparse::route_collector(
+              "upload.bin",
+              "application/vnd.atlassian.confluence.storage+xhtml") ==
+              parsev1::COLLECTOR_CONFLUENCE,
+          "the storage content type routes to the storage handler");
   require(grparse::route_collector("archive.dclx", "") == parsev1::COLLECTOR_XML,
           "the doclang archive routes to the xml collector");
   require(grparse::route_collector("BOOK.TAR.GZ", "") == parsev1::COLLECTOR_XML,

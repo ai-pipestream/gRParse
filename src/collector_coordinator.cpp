@@ -7,6 +7,7 @@
 #include <initializer_list>
 #include <utility>
 
+#include "grparse/confluence_storage.h"
 #include "grparse/document_merge.h"
 
 namespace pipestream = ai::pipestream;
@@ -94,6 +95,12 @@ pipestream::parse::v1::Collector route_collector(const std::string& filename,
       ends_with(lowercase(filename), ".warc.zst") ||
       ends_with(lowercase(filename), ".warc.lz4") || type == "application/warc") {
     return pipestream::parse::v1::COLLECTOR_FASTWARC;
+  }
+  // The wiki storage dialect before the markup route: its ".storage.xhtml"
+  // suffix ends in an extension the markup collector otherwise claims, and
+  // the macro layer is exactly what routing there would lose.
+  if (confluence_storage_format(filename, content_type)) {
+    return pipestream::parse::v1::COLLECTOR_CONFLUENCE;
   }
   if (extension == ".epub" || type == "application/epub+zip") {
     return pipestream::parse::v1::COLLECTOR_EPUB;

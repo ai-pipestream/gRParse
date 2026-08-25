@@ -67,7 +67,8 @@ bool office_format(const std::string& filename, const std::string& content_type)
 
 // The collector a document routes to when the caller selects none: office
 // formats to libreoffice, WARC archives (.warc and its gzip/zstd/lz4 forms,
-// or the application/warc content type) to fastwarc, audio and video to asr,
+// or the application/warc content type) to fastwarc, the wiki storage
+// dialect to the in-process storage handler, audio and video to asr,
 // .eml/.msg to email, XML
 // and its archive forms (.dclx, .tar.gz METS exports) to xml, .epub to
 // epub, text markup (Markdown, HTML, AsciiDoc, LaTeX, WebVTT, BoxNote,

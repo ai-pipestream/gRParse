@@ -216,6 +216,11 @@ enum Collector {
   // selection with other collectors it is a plain Document-emitting
   // collector instead, like the others.
   COLLECTOR_PDF = 13;
+  // The in-process wiki storage handler: XHTML with the macro layer of the
+  // ac: and ri: namespaces, parsed here rather than dialed. The default for
+  // the storage content type and for the .confluence / .storage.xhtml
+  // suffixes; plain XHTML with no macro layer stays with COLLECTOR_MARKUP.
+  COLLECTOR_CONFLUENCE = 14;
 }
 
 // ============================================================================
