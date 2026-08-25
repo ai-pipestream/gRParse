@@ -113,6 +113,14 @@ message Document {
 
   // Media stream metadata for audio and video sources.
   optional MediaMeta media = 21;
+
+  // Tracked changes the source records (insertions, deletions, format
+  // edits), each anchored to the content it touches.
+  repeated ChangeRecord changes = 22;
+
+  // Named anchors the source declares (bookmarks, reference marks), the
+  // targets its own cross-references point at.
+  repeated NamedAnchor anchors = 23;
 }
 
 // DocumentOrigin contains metadata about the source document file.
@@ -672,6 +680,10 @@ message TextItemBase {
 
   // Raw label fallback for forward-compatibility with newer label vocabularies.
   optional string label_raw = 16;
+
+  // The source's own named style for the item (a word processor's
+  // paragraph style), verbatim; extension beyond the upstream dialect.
+  optional string style_name = 17;
 }
 
 // TitleItem represents a document title or major heading.
@@ -1230,6 +1242,10 @@ message PageItem {
   Size size = 1;
   optional ImageRef image = 2;
   int32 page_no = 3;
+  // The coordinate unit this page's size and its items' boxes are measured
+  // in (px, pt, twip); unset keeps the producer's historical space.
+  // Extension beyond the upstream dialect.
+  optional string unit = 4;
 }
 
 // ============================================================================
@@ -1280,6 +1296,17 @@ message InlineSpan {
   optional string hyperlink = 3;
   // Internal cross-reference target (footnote, citation, section).
   optional FineRef target = 4;
+  // Character-run attributes beyond the boolean set: the source's font
+  // family and size (points), text color as #rrggbb, and the run's own
+  // language tag when it differs from the item's.
+  optional string font_family = 5;
+  optional double font_size_pt = 6;
+  optional string color = 7;
+  optional string language = 8;
+  // The source field code a generated run came from (a page number, a
+  // date, a cross-reference), so resolved field text stays distinguishable
+  // from authored text.
+  optional string field_code = 9;
 }
 
 // DocumentMeta carries the metadata the source declares about itself.
@@ -1332,6 +1359,9 @@ message TableColumnSchema {
   // One-based occurrence for a column inside an OCCURS group; unset for
   // columns that occur once.
   optional int32 occurs_index = 7;
+  // The column's display width in the page unit, when the source declares
+  // one.
+  optional double width = 9;
   // Named value conditions declared on the column (copybook level-88),
   // each rendered as its literal or "low THRU high" range.
   repeated string conditions = 8;
@@ -1405,6 +1435,28 @@ message OutlineEntry {
   optional int32 page_no = 3;
   // The item or destination the entry points at, when resolvable.
   optional FineRef target = 4;
+}
+
+// ChangeRecord is one tracked change the source records.
+message ChangeRecord {
+  // Stable id within the document, as the source names it.
+  string id = 1;
+  // The change kind in the source's own vocabulary (insert, delete,
+  // format), lower-cased.
+  string kind = 2;
+  string author = 3;
+  // ISO 8601, verbatim from the source.
+  optional string timestamp = 4;
+  // The item and span the change touches.
+  optional FineRef target = 5;
+  // The text the change removed or replaced, when the source keeps it.
+  optional string content = 6;
+}
+
+// NamedAnchor is one named position the source declares.
+message NamedAnchor {
+  string name = 1;
+  FineRef target = 2;
 }
 
 // BarcodeAnnotation is one decoded machine-readable code payload.
