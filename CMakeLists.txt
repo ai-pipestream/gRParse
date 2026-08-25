@@ -499,6 +499,7 @@ if(BUILD_TESTING)
     barcode-decoder-test
     base64-test
     canonical-json-test
+    chunking-test
     collector-coordinator-test
     confluence-storage-test
     docling-map-test

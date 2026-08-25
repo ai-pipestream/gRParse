@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <grpcpp/grpcpp.h>
@@ -1074,6 +1075,99 @@ void verify_streaming_pdf_classification_restricts_recognition() {
   }
 }
 
+// One real parse through the chunking RPCs: the same source ConvertSource
+// takes, chunked instead of exported.
+void verify_hierarchical_chunk_rpc_carries_digest_and_offsets(TestServer* server) {
+  auto client = server->unary_stub();
+  pipestream::parse::v1::ChunkHierarchicalSourceRequest request;
+  auto* source = request.mutable_request()->add_sources()->mutable_file();
+  source->set_filename("image.png");
+  source->set_base64_string("bWVtb3J5");
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  pipestream::parse::v1::ChunkHierarchicalSourceResponse response;
+  const grpc::Status status = client->ChunkHierarchicalSource(&context, request, &response);
+  require(status.ok(), "hierarchical chunking failed: " + status.error_message());
+
+  const auto& chunks = response.response().chunks();
+  require(chunks.size() == 3, "one chunk per recognized line");
+  const std::vector<std::string> expected{"one", "two", "three"};
+  // The offsets are the parse's own: three lines separated by one code point
+  // each in the document's text stream.
+  const std::vector<std::pair<int, int>> spans{{0, 3}, {4, 7}, {8, 13}};
+  for (int index = 0; index < chunks.size(); ++index) {
+    const auto& chunk = chunks.Get(index);
+    require(chunk.text() == expected.at(static_cast<size_t>(index)), "chunk text");
+    require(chunk.filename() == "image.png", "every chunk names its source file");
+    require(chunk.chunk_index() == index, "chunk_index is the emission ordinal");
+    require(chunk.rules_digest() == "grparse-hier/1", "the hierarchical rules digest rides out");
+    require(chunk.num_tokens() == 1, "one word, one token");
+    require(chunk.has_start_offset() && chunk.has_end_offset(),
+            "a parse with an offset table gives its chunks spans");
+    require(chunk.start_offset() == spans.at(static_cast<size_t>(index)).first &&
+                chunk.end_offset() == spans.at(static_cast<size_t>(index)).second,
+            "the chunk span is the parse's own offset entry");
+    require(chunk.page_numbers_size() == 1 && chunk.page_numbers(0) == index + 1,
+            "the chunk carries the page it came from");
+    require(chunk.metadata().at("text_source") == "ocr",
+            "the recognized-text source rides as metadata");
+  }
+  require(response.response().documents().empty(),
+          "the converted document rides along only when it is asked for");
+  require(response.response().processing_time() >= 0.0, "processing time is reported");
+}
+
+void verify_hybrid_chunk_rpc_merges_and_validates(TestServer* server) {
+  auto client = server->unary_stub();
+  pipestream::parse::v1::ChunkHybridSourceRequest request;
+  auto* source = request.mutable_request()->add_sources()->mutable_file();
+  source->set_filename("image.png");
+  source->set_base64_string("bWVtb3J5");
+  request.mutable_request()->set_include_converted_doc(true);
+  request.mutable_request()->mutable_chunking_options()->set_max_tokens(8);
+
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  pipestream::parse::v1::ChunkHybridSourceResponse response;
+  const grpc::Status status = client->ChunkHybridSource(&context, request, &response);
+  require(status.ok(), "hybrid chunking failed: " + status.error_message());
+  require(response.response().chunks_size() == 1,
+          "three peers under one empty trail merge inside the budget");
+  const auto& chunk = response.response().chunks(0);
+  require(chunk.text() == "one\ntwo\nthree", "merged peers join with a newline");
+  require(chunk.rules_digest() ==
+              "grparse-hybrid/1;tok=wordish/1;sent=sentence/1;max_tokens=8;merge_peers=true",
+          "the hybrid rules digest spells out the budget: " + chunk.rules_digest());
+  require(chunk.start_offset() == 0 && chunk.end_offset() == 13,
+          "the merged span is the union of the merged chunks' spans");
+  require(chunk.doc_items_size() == 3, "the merged chunk names every item it consumed");
+  require(response.response().documents_size() == 1 &&
+              response.response().documents(0).content().doc().texts_size() == 3,
+          "include_converted_doc returns the parsed document too");
+
+  pipestream::parse::v1::ChunkHybridSourceRequest without_budget;
+  *without_budget.mutable_request()->add_sources() = request.request().sources(0);
+  grpc::ClientContext budget_context;
+  pipestream::parse::v1::ChunkHybridSourceResponse rejected;
+  const grpc::Status budget_status =
+      client->ChunkHybridSource(&budget_context, without_budget, &rejected);
+  require(budget_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
+          "a hybrid request without a budget must be rejected");
+  require(budget_status.error_message().contains("max_tokens"),
+          "the rejection names the missing option: " + budget_status.error_message());
+
+  pipestream::parse::v1::ChunkHybridSourceRequest foreign_tokenizer = request;
+  foreign_tokenizer.mutable_request()->mutable_chunking_options()->set_tokenizer("bpe");
+  grpc::ClientContext tokenizer_context;
+  pipestream::parse::v1::ChunkHybridSourceResponse tokenizer_rejected;
+  const grpc::Status tokenizer_status =
+      client->ChunkHybridSource(&tokenizer_context, foreign_tokenizer, &tokenizer_rejected);
+  require(tokenizer_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
+          "an unknown tokenizer must be rejected");
+  require(tokenizer_status.error_message().contains("wordish/1"),
+          "the rejection lists what is supported: " + tokenizer_status.error_message());
+}
+
 }  // namespace
 
 int main() {
@@ -1097,6 +1191,8 @@ int main() {
     verify_pdf_collector_failure_degrades_to_the_cv_path();
     verify_streaming_pdf_fast_path_emits_the_collector_document();
     verify_streaming_pdf_classification_restricts_recognition();
+    verify_hierarchical_chunk_rpc_carries_digest_and_offsets(&server);
+    verify_hybrid_chunk_rpc_merges_and_validates(&server);
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
     std::println(stderr, "streaming-service-test: {}", error.what());
