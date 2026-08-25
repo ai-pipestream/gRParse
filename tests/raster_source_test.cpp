@@ -101,7 +101,13 @@ void verify_only_advertised_formats_are_admitted() {
 
   for (const char* extension : {".webp", ".bmp"}) {
     std::vector<unsigned char> buffer;
-    if (!cv::imencode(extension, image, buffer)) continue;  // codec not built here
+    // A codec that is not built here cannot craft the probe. OpenCV reports
+    // a missing encoder by throwing, not by returning false.
+    try {
+      if (!cv::imencode(extension, image, buffer)) continue;
+    } catch (const cv::Exception&) {
+      continue;
+    }
     try {
       grparse::open_in_memory_document(
           std::make_shared<const std::string>(buffer.begin(), buffer.end()), /*pdf=*/false);

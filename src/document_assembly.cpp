@@ -182,6 +182,17 @@ std::vector<TextBlock> build_text_blocks(const OcrPage& page) {
   return blocks;
 }
 
+// True when every vertex of the quad lies on a corner of its own hull, so
+// the polygon carries no information the box does not.
+bool polygon_is_axis_aligned(const std::vector<cv::Point>& polygon, const AxisAlignedBox& box) {
+  for (const auto& vertex : polygon) {
+    const bool on_x = vertex.x == box.left || vertex.x == box.right;
+    const bool on_y = vertex.y == box.top || vertex.y == box.bottom;
+    if (!on_x || !on_y) return false;
+  }
+  return true;
+}
+
 // Where a floating region belongs in the block sequence: before the first
 // block it owns lines of, else before the first block that starts below its
 // top edge, else after everything on the page.
@@ -439,9 +450,14 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
         predicted->set_confidence(figure_class.confidence);
       }
     }
-    // Decoded payloads ride as misc annotations: the upstream schema has no dedicated
-    // barcode type, and the struct keeps format and value machine-readable.
+    // Decoded payloads ride on the typed barcode arm, and once more as the
+    // legacy misc-annotation struct so existing consumers keep working for
+    // one release.
     for (const auto& barcode : region.barcodes) {
+      auto* typed = picture->add_annotations()->mutable_barcode();
+      typed->set_format(barcode.format);
+      typed->set_value(barcode.text);
+      typed->set_provenance("zxing-cpp");
       auto* misc = picture->add_annotations()->mutable_misc();
       misc->set_kind("barcode");
       auto& fields = *misc->mutable_content()->mutable_fields();
@@ -507,11 +523,22 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     // into the merged text (code points), so nothing about where each line
     // sat on the page is lost to the merge.
     for (const auto& span : spans) {
+      const auto& member = source.lines[span.line];
       auto* provenance = base->add_prov();
       provenance->set_page_no(page_number);
       provenance->mutable_charspan()->set_start(static_cast<int32_t>(span.start));
       provenance->mutable_charspan()->set_end(static_cast<int32_t>(span.end));
-      set_bounding_box(bounding_box(source.lines[span.line]), provenance->mutable_bbox());
+      const AxisAlignedBox box = bounding_box(member);
+      set_bounding_box(box, provenance->mutable_bbox());
+      // Rotated or skewed lines keep their exact quad; an axis-aligned quad
+      // adds nothing over the box and is skipped.
+      if (!polygon_is_axis_aligned(member.polygon, box)) {
+        for (const auto& vertex : member.polygon) {
+          auto* point = provenance->add_polygon();
+          point->set_x(vertex.x);
+          point->set_y(vertex.y);
+        }
+      }
     }
 
     if (cursor->has_text) ++cursor->utf_offset;

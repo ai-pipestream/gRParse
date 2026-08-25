@@ -277,21 +277,24 @@ void verify_barcode_payloads_become_misc_annotations() {
   grparse::append_page_data(page, 1, &cursor, &data);
   require(data.pictures_size() == 1, "figure region must emit a picture");
   const auto& picture = data.pictures(0);
-  require(picture.annotations_size() == 3, "classification plus one misc per payload");
+  require(picture.annotations_size() == 5,
+          "classification plus a typed arm and a legacy misc per payload");
   require(picture.annotations(0).has_classification(), "classification annotation stays first");
-  for (int index = 1; index < picture.annotations_size(); ++index) {
-    require(picture.annotations(index).has_misc(), "payload annotations use the misc shape");
-  }
-  const auto& first = picture.annotations(1).misc();
+  const auto& typed = picture.annotations(1).barcode();
+  require(picture.annotations(1).has_barcode() && typed.format() == "QRCode" &&
+              typed.value() == "https://example.com/a" && typed.provenance() == "zxing-cpp",
+          "the typed arm carries format, value, and provenance");
+  const auto& first = picture.annotations(2).misc();
   require(first.kind() == "barcode", "misc annotation kind");
   const auto& fields = first.content().fields();
   require(fields.at("format").string_value() == "QRCode" &&
               fields.at("value").string_value() == "https://example.com/a" &&
               fields.at("provenance").string_value() == "zxing-cpp",
-          "misc struct carries format, value, and provenance");
-  require(picture.annotations(2).misc().content().fields().at("value").string_value() ==
-              "SKU-1234",
-          "every payload gets its own annotation");
+          "the legacy misc struct stays emitted alongside");
+  require(picture.annotations(3).barcode().value() == "SKU-1234" &&
+              picture.annotations(4).misc().content().fields().at("value").string_value() ==
+                  "SKU-1234",
+          "every payload gets both shapes");
 }
 
 // The detector's full vocabulary has to survive assembly: every structural
@@ -523,6 +526,29 @@ void verify_section_header_levels() {
   require(document.texts(4).section_header().level() == 3, "producer-set levels stay untouched");
 }
 
+// A rotated line keeps its exact quad in provenance; an axis-aligned line
+// adds no polygon because the box already says everything.
+void verify_rotated_lines_keep_their_quad() {
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1000, 1000, {line("straight", 100)}};
+  page.lines.push_back(grparse::OcrLine{
+      "slanted", {{10, 200}, {90, 220}, {86, 250}, {6, 230}}, 0.9F});
+
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(page, 1, &cursor, &data);
+  require(data.texts_size() == 2, "both lines emit");
+  require(data.texts(0).text().base().prov(0).polygon_size() == 0,
+          "axis-aligned lines carry no polygon");
+  const auto& prov = data.texts(1).text().base().prov(0);
+  require(prov.polygon_size() == 4, "rotated lines keep all four vertices");
+  require(prov.polygon(0).x() == 10 && prov.polygon(0).y() == 200 &&
+              prov.polygon(1).x() == 90 && prov.polygon(1).y() == 220,
+          "vertices arrive in source order");
+  require(prov.bbox().l() == 6 && prov.bbox().r() == 90 && prov.bbox().t() == 200 &&
+              prov.bbox().b() == 250,
+          "bbox stays the axis-aligned hull");
+}
+
 }  // namespace
 
 int main() {
@@ -541,6 +567,7 @@ int main() {
     verify_unclaimed_table_line_stays_body_text();
     verify_captions_attach_to_nearest_float();
     verify_section_header_levels();
+    verify_rotated_lines_keep_their_quad();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
     std::println(stderr, "document-assembly-test: {}", error.what());
