@@ -362,28 +362,101 @@ bool column_is_numeric(const std::vector<std::string>& values) {
 // reproduce that, including the repr() nesting inside containers.
 // ---------------------------------------------------------------------------
 
+// The code points the reference spells out inside a quoted string: the
+// assigned control, format and separator categories, minus the plain space.
+// The unassigned, private-use and surrogate code points it also spells out
+// are deliberately not listed: that set moves with the character database
+// version, and no document text reaches this path carrying one.
+bool non_printable(char32_t code_point) {
+  if (code_point < 0x20) return true;
+  static constexpr std::pair<char32_t, char32_t> kRanges[] = {
+      {0x007f, 0x00a0},   {0x00ad, 0x00ad},   {0x0600, 0x0605},
+      {0x061c, 0x061c},   {0x06dd, 0x06dd},   {0x070f, 0x070f},
+      {0x0890, 0x0891},   {0x08e2, 0x08e2},   {0x1680, 0x1680},
+      {0x180e, 0x180e},   {0x2000, 0x200f},   {0x2028, 0x202f},
+      {0x205f, 0x2064},   {0x2066, 0x206f},   {0x3000, 0x3000},
+      {0xfeff, 0xfeff},   {0xfff9, 0xfffb},   {0x110bd, 0x110bd},
+      {0x110cd, 0x110cd}, {0x13430, 0x1343f}, {0x1bca0, 0x1bca3},
+      {0x1d173, 0x1d17a}, {0xe0001, 0xe0001}, {0xe0020, 0xe007f},
+  };
+  for (const auto& [low, high] : kRanges) {
+    if (code_point < low) return false;
+    if (code_point <= high) return true;
+  }
+  return false;
+}
+
+// The code point starting at `at` and the bytes it spans, or a span of 0 for
+// a byte that starts no well-formed sequence (left verbatim).
+std::pair<char32_t, std::size_t> utf8_code_point(std::string_view text,
+                                                 std::size_t at) {
+  const auto lead = static_cast<unsigned char>(text[at]);
+  std::size_t span = 0;
+  char32_t code_point = 0;
+  if (lead < 0x80) return {lead, 1};
+  if ((lead & 0xe0) == 0xc0) {
+    span = 2;
+    code_point = lead & 0x1f;
+  } else if ((lead & 0xf0) == 0xe0) {
+    span = 3;
+    code_point = lead & 0x0f;
+  } else if ((lead & 0xf8) == 0xf0) {
+    span = 4;
+    code_point = lead & 0x07;
+  } else {
+    return {0, 0};
+  }
+  if (at + span > text.size()) return {0, 0};
+  for (std::size_t i = 1; i < span; ++i) {
+    const auto byte = static_cast<unsigned char>(text[at + i]);
+    if ((byte & 0xc0) != 0x80) return {0, 0};
+    code_point = (code_point << 6) | (byte & 0x3f);
+  }
+  return {code_point, span};
+}
+
 std::string python_string_repr(const std::string& text) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  const auto append_hex = [](std::string* out, char32_t value, int digits) {
+    for (int shift = (digits - 1) * 4; shift >= 0; shift -= 4) {
+      out->push_back(kHex[(value >> shift) & 0xf]);
+    }
+  };
   const char quote = text.contains('\'') && !text.contains('"') ? '"' : '\'';
   std::string out(1, quote);
-  for (const char c : text) {
-    const auto byte = static_cast<unsigned char>(c);
+  for (std::size_t at = 0; at < text.size();) {
+    const char c = text[at];
     if (c == quote || c == '\\') {
       out.push_back('\\');
       out.push_back(c);
-    } else if (c == '\n') {
-      out.append("\\n");
-    } else if (c == '\r') {
-      out.append("\\r");
-    } else if (c == '\t') {
-      out.append("\\t");
-    } else if (byte < 0x20 || byte == 0x7f) {
-      static constexpr char kHex[] = "0123456789abcdef";
-      out.append("\\x");
-      out.push_back(kHex[byte >> 4]);
-      out.push_back(kHex[byte & 0x0f]);
-    } else {
-      out.push_back(c);
+      ++at;
+      continue;
     }
+    if (c == '\n' || c == '\r' || c == '\t') {
+      out.push_back('\\');
+      out.push_back(c == '\n' ? 'n' : c == '\r' ? 'r' : 't');
+      ++at;
+      continue;
+    }
+    const auto [code_point, span] = utf8_code_point(text, at);
+    if (span == 0) {
+      out.push_back(c);
+      ++at;
+      continue;
+    }
+    if (!non_printable(code_point)) {
+      out.append(text, at, span);
+    } else if (code_point < 0x100) {
+      out.append("\\x");
+      append_hex(&out, code_point, 2);
+    } else if (code_point < 0x10000) {
+      out.append("\\u");
+      append_hex(&out, code_point, 4);
+    } else {
+      out.append("\\U");
+      append_hex(&out, code_point, 8);
+    }
+    at += span;
   }
   out.push_back(quote);
   return out;

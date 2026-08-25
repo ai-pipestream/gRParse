@@ -415,7 +415,9 @@ void verify_markdown_escaping_marker_and_formatting_rules() {
 // already carrying a namespace first, then the pipestream-namespaced folds of
 // the rest, with a collision between two folded names broken by a numeric
 // suffix. The wire map is unordered, so this order is the export's own
-// deterministic choice, shared with the canonical JSON export.
+// deterministic choice, shared with the canonical JSON export. A string
+// inside a container is quoted and its non-printable code points spelled
+// out; a string standing alone is not.
 void verify_markdown_custom_meta_field_order() {
   docv1::Document document = base_document("meta-order.pdf");
   auto& fields = *document.mutable_body()->mutable_meta()->mutable_custom_fields();
@@ -423,11 +425,15 @@ void verify_markdown_custom_meta_field_order() {
   fields["acme__note"].set_string_value("conforming");
   fields["z:one"].set_string_value("folded");
   fields["z_one"].set_string_value("collides");
+  auto* list = fields["acme__list"].mutable_list_value();
+  list->add_values()->set_string_value("a\xc2\xa0" "b");      // U+00A0
+  list->add_values()->set_string_value("z\xe2\x80\x8b" "w");  // U+200B
   add_text(&document, "#/body", docv1::BaseTextItem::kText,
            docv1::DOC_ITEM_LABEL_TEXT, "body");
 
   const std::string markdown = grparse::render_markdown(document);
-  require(markdown == "body\n\nconforming\n\ncapital\n\nfolded\n\ncollides",
+  require(markdown == "body\n\n['a\\xa0b', 'z\\u200bw']\n\nconforming\n\ncapital"
+                      "\n\nfolded\n\ncollides",
           "custom meta field order differs:\n" + markdown);
 }
 
