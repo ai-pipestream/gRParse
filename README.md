@@ -235,10 +235,12 @@ ratio.
 
 ## Collector scatter-gather
 
-gRParse is the coordinator of a set of parser collectors. The in-process CV
-path above is one collector (`COLLECTOR_GRPARSE_CV`); the rest are remote
-services, each configured with a `GRPARSE_<NAME>_TARGET=<host:port>`
-environment variable and left unconfigured otherwise:
+gRParse is the coordinator of a set of parser collectors. Two of them parse
+in process and need no configuration at all: the CV path above
+(`COLLECTOR_GRPARSE_CV`) and the wiki storage handler
+(`COLLECTOR_CONFLUENCE`). The rest are remote services, each configured with
+a `GRPARSE_<NAME>_TARGET=<host:port>` environment variable and left
+unconfigured otherwise:
 
 | Collector | Target env | Routed by default for |
 |---|---|---|
@@ -252,6 +254,7 @@ environment variable and left unconfigured otherwise:
 | `COLLECTOR_LOL_HTML` | `GRPARSE_LOL_HTML_TARGET` | never routed; explicit selection with `ConvertDocumentOptions.lol_html_options_json` (the protobuf JSON of `lolhtml.v1.ExtractOptions`) only. Targeted CSS-selector extraction from HTML, not whole-document conversion: matches fold into a group per rule. HTML with no selection routes to `COLLECTOR_MARKUP` |
 | `COLLECTOR_FASTWARC` | `GRPARSE_FASTWARC_TARGET` | `.warc`, `.warc.gz`, `.warc.zst`, `.warc.lz4`, `application/warc`. WARC archive parsing via fastwarc-grpc: records fold client-side into a group per record (metadata plus the payload when it reads as text, capped at 64 KiB); recoverable record errors become warnings and a framing error keeps the records already parsed |
 | `COLLECTOR_PDF` | `GRPARSE_PDF_TARGET` | PDF, when configured (the CV path stays the default otherwise). The routing oracle for PDF: its classification decides the parse, see below |
+| `COLLECTOR_CONFLUENCE` | none: in process | `application/vnd.atlassian.confluence.storage+xhtml`, `.confluence`, `.storage.xhtml`. The wiki storage dialect (XHTML plus the `ac:`/`ri:` macro layer), parsed here rather than dialed: headings, inline formatting and links, lists, tables with their spans, code and task macros, panels, and attachment pointers. A bare `.xhtml` stays with `COLLECTOR_MARKUP` |
 
 A request selects collectors explicitly (`ConvertDocumentOptions.collectors`,
 or `DocumentChunk.collectors` on the streaming RPC); an empty selection
