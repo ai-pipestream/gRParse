@@ -137,9 +137,12 @@ docv1::TableItem* add_table(docv1::Document* document, const std::string& parent
   return table;
 }
 
-docv1::TableCell* grid_cell(docv1::TableRow* row, const std::string& text,
-                            bool column_header, int row_index, int col_index,
-                            int row_span = 1, int col_span = 1) {
+// Writes one cell into both projections a producer fills: the flat cell list
+// the exports read and the wire grid the markup renderers read.
+docv1::TableCell* grid_cell(docv1::TableData* data, docv1::TableRow* row,
+                            const std::string& text, bool column_header,
+                            int row_index, int col_index, int row_span = 1,
+                            int col_span = 1) {
   auto* cell = row->add_cells();
   cell->set_text(text);
   cell->set_column_header(column_header);
@@ -149,6 +152,7 @@ docv1::TableCell* grid_cell(docv1::TableRow* row, const std::string& text,
   cell->set_end_row_offset_idx(row_index + row_span);
   cell->set_start_col_offset_idx(col_index);
   cell->set_end_col_offset_idx(col_index + col_span);
+  *data->add_table_cells() = *cell;
   return cell;
 }
 
@@ -194,10 +198,10 @@ docv1::Document rich_document() {
   auto* data = table->mutable_data();
   data->set_num_rows(2);
   data->set_num_cols(2);
-  grid_cell(data->add_grid(), "Fuel", true, 0, 0);
-  grid_cell(data->mutable_grid(0), "Rate|Unit", true, 0, 1);
-  grid_cell(data->add_grid(), "Diesel", false, 1, 0);
-  grid_cell(data->mutable_grid(1), "0.9", false, 1, 1);
+  grid_cell(data, data->add_grid(), "Fuel", true, 0, 0);
+  grid_cell(data, data->mutable_grid(0), "Rate|Unit", true, 0, 1);
+  grid_cell(data, data->add_grid(), "Diesel", false, 1, 0);
+  grid_cell(data, data->mutable_grid(1), "0.9", false, 1, 1);
 
   add_code(&document, "#/body", "print('hi')", docv1::CODE_LANGUAGE_LABEL_PYTHON);
   add_text(&document, "#/body", docv1::BaseTextItem::kFormula,
@@ -233,24 +237,26 @@ void verify_markdown_renders_every_item_type() {
       "\n"
       "- alpha\n"
       "- beta\n"
-      "    1. one\n"
-      "    2. two\n"
+      // The nested group carries the ordered-list label, which the load
+      // normalization does not count as a list group: its items migrate into
+      // a synthesized one, so they sit a second level deep and take the
+      // default marker.
+      "        - one\n"
+      "        - two\n"
       "\n"
-      "*Fuel table*\n"
+      "Fuel table\n"
       "\n"
-      "| Fuel | Rate\\|Unit |\n"
-      "|---|---|\n"
-      "| Diesel | 0.9 |\n"
+      "| Fuel   |   Rate&#124;Unit |\n"
+      "|--------|------------------|\n"
+      "| Diesel |              0.9 |\n"
       "\n"
-      "```python\nprint('hi')\n```\n"
+      "```\nprint('hi')\n```\n"
       "\n"
       "$$E = mc^2$$\n"
       "\n"
-      "<!-- formula-not-decoded -->\n"
+      "A chart\n"
       "\n"
-      "*A chart*\n"
-      "\n"
-      "![A chart](figure1.png)\n"
+      "<!-- image -->\n"
       "\n"
       "<!-- image -->\n"
       "\n"
@@ -288,7 +294,7 @@ void verify_markdown_reconstructs_grid_from_flat_cells() {
   north_east->set_end_col_offset_idx(2);
 
   const std::string markdown = grparse::render_markdown(document);
-  require(markdown == "| a | b |\n|---|---|\n|  | d |",
+  require(markdown == "| a   | b   |\n|-----|-----|\n|     | d   |",
           "flat-cell table reconstruction differs:\n" + markdown);
 }
 
@@ -298,10 +304,131 @@ void verify_markdown_multiline_cells_stay_single_line() {
   auto* data = table->mutable_data();
   data->set_num_rows(1);
   data->set_num_cols(1);
-  grid_cell(data->add_grid(), "first\nsecond", true, 0, 0);
+  grid_cell(data, data->add_grid(), "first\nsecond", true, 0, 0);
   const std::string markdown = grparse::render_markdown(document);
-  require(markdown == "| first second |\n|---|",
+  require(markdown == "| first second   |\n|----------------|",
           "cell newlines must collapse to spaces:\n" + markdown);
+}
+
+// The rules with the least margin for error: what escapes, what the
+// formatting delimiters look like and in what order they nest, and how a list
+// picks its marker and its indent. Every expectation here is the reference
+// rendering of the same document, taken from the validation harness
+// (scripts/validate_markdown.py).
+void verify_markdown_escaping_marker_and_formatting_rules() {
+  docv1::Document document = base_document("pins.pdf");
+
+  const auto text_base = [&](const std::string& ref) -> docv1::TextItemBase* {
+    const std::string prefix = "#/texts/";
+    return document.mutable_texts(std::stoi(ref.substr(prefix.size())))
+        ->mutable_text()
+        ->mutable_base();
+  };
+  const auto list_item = [&](const std::string& ref) -> docv1::ListItem* {
+    const std::string prefix = "#/texts/";
+    return document.mutable_texts(std::stoi(ref.substr(prefix.size())))
+        ->mutable_list_item();
+  };
+
+  // Underscores escape and the HTML specials escape, but an inline image
+  // target is left verbatim so the URL survives.
+  add_text(&document, "#/body", docv1::BaseTextItem::kText,
+           docv1::DOC_ITEM_LABEL_TEXT, "snake_case and <b>a & b</b>");
+  add_text(&document, "#/body", docv1::BaseTextItem::kText,
+           docv1::DOC_ITEM_LABEL_TEXT, "see ![alt_text](http://x/a_b.png) here");
+
+  // Formatting wraps the escaped text, bold innermost; underline and the
+  // scripts have no Markdown spelling and drop.
+  const std::string bold = add_text(&document, "#/body", docv1::BaseTextItem::kText,
+                                    docv1::DOC_ITEM_LABEL_TEXT, "bold_text");
+  text_base(bold)->mutable_formatting()->set_bold(true);
+  const std::string both = add_text(&document, "#/body", docv1::BaseTextItem::kText,
+                                    docv1::DOC_ITEM_LABEL_TEXT, "both");
+  text_base(both)->mutable_formatting()->set_bold(true);
+  text_base(both)->mutable_formatting()->set_italic(true);
+  const std::string marks = add_text(&document, "#/body", docv1::BaseTextItem::kText,
+                                     docv1::DOC_ITEM_LABEL_TEXT, "marks");
+  text_base(marks)->mutable_formatting()->set_strikethrough(true);
+  text_base(marks)->mutable_formatting()->set_underline(true);
+  text_base(marks)->mutable_formatting()->set_script(docv1::SCRIPT_SUPER);
+
+  // The hyperlink wraps last and its target is normalized, not escaped.
+  const std::string link = add_text(&document, "#/body", docv1::BaseTextItem::kText,
+                                    docv1::DOC_ITEM_LABEL_TEXT, "link_here");
+  text_base(link)->set_hyperlink("https://EXAMPLE.com");
+
+  // An already-valid marker stays as the whole marker; any other marker with
+  // an alphanumeric in it rides behind a generated "-"; an item with no
+  // marker of its own takes the model default "-". A nested group indents by
+  // four spaces per level.
+  const std::string list = add_group(&document, "#/body", docv1::GROUP_LABEL_LIST);
+  const std::string starred = add_text(&document, list, docv1::BaseTextItem::kListItem,
+                                       docv1::DOC_ITEM_LABEL_LIST_ITEM, "starred");
+  list_item(starred)->set_marker("*");
+  const std::string lettered = add_text(&document, list, docv1::BaseTextItem::kListItem,
+                                        docv1::DOC_ITEM_LABEL_LIST_ITEM, "lettered");
+  list_item(lettered)->set_marker("a)");
+  add_text(&document, list, docv1::BaseTextItem::kListItem,
+           docv1::DOC_ITEM_LABEL_LIST_ITEM, "bulleted");
+  const std::string sub = add_group(&document, list, docv1::GROUP_LABEL_LIST);
+  add_text(&document, sub, docv1::BaseTextItem::kListItem,
+           docv1::DOC_ITEM_LABEL_LIST_ITEM, "deeper");
+
+  // An enumerated item whose marker is present but empty is numbered by its
+  // position in the group.
+  const std::string enumerated = add_group(&document, "#/body", docv1::GROUP_LABEL_LIST);
+  const std::string first = add_text(&document, enumerated,
+                                     docv1::BaseTextItem::kListItem,
+                                     docv1::DOC_ITEM_LABEL_LIST_ITEM, "first", 0, true);
+  list_item(first)->set_marker("");
+  const std::string second = add_text(&document, enumerated,
+                                      docv1::BaseTextItem::kListItem,
+                                      docv1::DOC_ITEM_LABEL_LIST_ITEM, "second", 0, true);
+  list_item(second)->set_marker("");
+
+  const std::string markdown = grparse::render_markdown(document);
+  const std::string expected =
+      "snake\\_case and &lt;b&gt;a &amp; b&lt;/b&gt;\n"
+      "\n"
+      "see ![alt_text](http://x/a_b.png) here\n"
+      "\n"
+      "**bold\\_text**\n"
+      "\n"
+      "***both***\n"
+      "\n"
+      "~~marks~~\n"
+      "\n"
+      "[link\\_here](https://example.com/)\n"
+      "\n"
+      "* starred\n"
+      "- a) lettered\n"
+      "- bulleted\n"
+      "    - deeper\n"
+      "\n"
+      "1. first\n"
+      "2. second";
+  require(markdown == expected,
+          "markdown escaping/marker/formatting rules differ:\n" + markdown);
+}
+
+// Custom meta fields render in the order the exports give them: a name
+// already carrying a namespace first, then the pipestream-namespaced folds of
+// the rest, with a collision between two folded names broken by a numeric
+// suffix. The wire map is unordered, so this order is the export's own
+// deterministic choice, shared with the canonical JSON export.
+void verify_markdown_custom_meta_field_order() {
+  docv1::Document document = base_document("meta-order.pdf");
+  auto& fields = *document.mutable_body()->mutable_meta()->mutable_custom_fields();
+  fields["A"].set_string_value("capital");
+  fields["acme__note"].set_string_value("conforming");
+  fields["z:one"].set_string_value("folded");
+  fields["z_one"].set_string_value("collides");
+  add_text(&document, "#/body", docv1::BaseTextItem::kText,
+           docv1::DOC_ITEM_LABEL_TEXT, "body");
+
+  const std::string markdown = grparse::render_markdown(document);
+  require(markdown == "body\n\nconforming\n\ncapital\n\nfolded\n\ncollides",
+          "custom meta field order differs:\n" + markdown);
 }
 
 void verify_html_renders_structure_and_escapes() {
@@ -328,11 +455,11 @@ void verify_html_renders_structure_and_escapes() {
   // The header cell spans both columns; the grid mirrors it into each
   // covered position, as the table-structure and office folds do.
   auto* header_row = data->add_grid();
-  grid_cell(header_row, "H", true, 0, 0, 1, 2);
-  grid_cell(header_row, "H", true, 0, 0, 1, 2);
+  grid_cell(data, header_row, "H", true, 0, 0, 1, 2);
+  header_row->add_cells()->CopyFrom(data->table_cells(0));
   auto* body_row = data->add_grid();
-  grid_cell(body_row, "a", false, 1, 0);
-  grid_cell(body_row, "b", false, 1, 1);
+  grid_cell(data, body_row, "a", false, 1, 0);
+  grid_cell(data, body_row, "b", false, 1, 1);
 
   auto* figure = add_picture(&document, "#/body", "figs/one.png");
   figure->add_captions()->set_ref(
@@ -438,10 +565,10 @@ void verify_captions_render_once() {
   auto* data = table->mutable_data();
   data->set_num_rows(1);
   data->set_num_cols(1);
-  grid_cell(data->add_grid(), "x", true, 0, 0);
+  grid_cell(data, data->add_grid(), "x", true, 0, 0);
 
   const std::string markdown = grparse::render_markdown(document);
-  require(markdown == "*Only once*\n\n| x |\n|---|",
+  require(markdown == "Only once\n\n| x   |\n|-----|",
           "caption must render exactly once:\n" + markdown);
   const std::string html = grparse::render_html(document);
   require(html.find("Only once") == html.rfind("Only once"),
@@ -457,9 +584,12 @@ void verify_picture_descriptions_surface_in_exports() {
   auto* meta_picture = add_picture(&meta_only, "#/body", "fig.png");
   meta_picture->mutable_meta()->mutable_description()->set_text(
       "A bar chart of quarterly sales");
+  // Markdown positions every picture with the placeholder (the export's
+  // default image mode) and prints the description as the meta paragraph
+  // after it.
   const std::string meta_markdown = grparse::render_markdown(meta_only);
   require_contains(meta_markdown,
-                   "![Image](fig.png)\n\n*A bar chart of quarterly sales*",
+                   "<!-- image -->\n\nA bar chart of quarterly sales",
                    "markdown surfaces the meta description under the image");
   require_contains(grparse::render_html(meta_only),
                    "<figure><img src=\"fig.png\" alt=\"Image\"/>"
@@ -477,9 +607,12 @@ void verify_picture_descriptions_surface_in_exports() {
   auto* annotation = annotated->add_annotations()->mutable_description();
   annotation->set_kind("description");
   annotation->set_text("An annotated diagram");
-  require_contains(grparse::render_markdown(annotation_only),
-                   "![Image](fig.png)\n\n*An annotated diagram*",
-                   "markdown falls back to the annotation description");
+  // Markdown does not: the wire annotation list is a projection of meta that
+  // the exports drop, exactly as the canonical JSON export drops it.
+  const std::string annotation_markdown = grparse::render_markdown(annotation_only);
+  require(annotation_markdown == "<!-- image -->",
+          "markdown must ignore the wire annotation projection:\n" +
+              annotation_markdown);
   require_contains(grparse::render_html(annotation_only),
                    "<p>An annotated diagram</p>",
                    "html falls back to the annotation description");
@@ -494,7 +627,7 @@ void verify_picture_descriptions_surface_in_exports() {
   both_picture->add_annotations()->mutable_description()->set_text(
       "annotation text");
   const std::string both_markdown = grparse::render_markdown(both);
-  require_contains(both_markdown, "*meta text*",
+  require_contains(both_markdown, "<!-- image -->\n\nmeta text",
                    "markdown prefers the meta description");
   require(!both_markdown.contains("annotation text"),
           "markdown must not also render the annotation description:\n" +
@@ -516,7 +649,7 @@ void verify_picture_descriptions_surface_in_exports() {
       ->mutable_description()
       ->set_text("no image here");
   require_contains(grparse::render_markdown(imageless),
-                   "<!-- image -->\n\n*no image here*",
+                   "<!-- image -->\n\nno image here",
                    "markdown keeps the description under the placeholder");
 }
 
@@ -863,6 +996,8 @@ int main() {
     verify_markdown_renders_every_item_type();
     verify_markdown_reconstructs_grid_from_flat_cells();
     verify_markdown_multiline_cells_stay_single_line();
+    verify_markdown_escaping_marker_and_formatting_rules();
+    verify_markdown_custom_meta_field_order();
     verify_html_renders_structure_and_escapes();
     verify_non_body_layers_are_excluded();
     verify_captions_render_once();
