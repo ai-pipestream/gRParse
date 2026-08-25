@@ -73,6 +73,11 @@ void set_ort_intra_op_threads(int threads) { intra_op_threads.store(threads > 0 
 
 int ort_intra_op_threads() { return intra_op_threads.load(); }
 
+void append_execution_provider(Ort::SessionOptions& options, int legacy_gpu_index) {
+  append_execution_provider(options, legacy_gpu_index, OrtPrecision::kProviderDefault,
+                            kIntraOpProcessDefault);
+}
+
 void append_execution_provider(Ort::SessionOptions& options, int legacy_gpu_index,
                                OrtPrecision precision, int requested_intra_op_threads) {
   hook_invocations.fetch_add(1);

@@ -70,9 +70,16 @@ uint64_t ep_hook_invocations();
 // Called by the patched RapidOcrOnnx nets.  When no explicit selection was
 // made, legacy_gpu_index keeps upstream semantics: >= 0 appends CUDA for that
 // device, negative appends nothing (CPU).
+//
+// This two-argument form is a real overload rather than defaulted parameters
+// on the one below, and must stay that way: it is the exact signature
+// patches/rapidocr-session-ep.patch compiles against, and giving it default
+// arguments instead would rename the symbol every time this file grows a
+// knob - which links fine from a clean tree and fails only against a warm
+// dependency cache, at the worst possible moment.
+void append_execution_provider(Ort::SessionOptions& options, int legacy_gpu_index);
 void append_execution_provider(Ort::SessionOptions& options, int legacy_gpu_index,
-                               OrtPrecision precision = OrtPrecision::kProviderDefault,
-                               int intra_op_threads = kIntraOpProcessDefault);
+                               OrtPrecision precision, int intra_op_threads);
 
 // Builds one session for a model file on the configured provider.
 //
@@ -85,5 +92,6 @@ Ort::Session make_session(Ort::Env& env, const std::filesystem::path& model_path
                           std::string_view what,
                           OrtPrecision precision = OrtPrecision::kProviderDefault,
                           int intra_op_threads = kIntraOpProcessDefault);
+
 
 }  // namespace grparse

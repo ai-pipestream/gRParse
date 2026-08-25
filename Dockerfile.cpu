@@ -41,7 +41,7 @@ COPY . .
 # corrupt) one /build tree. The 3000s test ceiling exists for the emulated
 # arm64 leg; native builds finish each test in seconds.
 ARG TARGETARCH
-RUN --mount=type=cache,id=grparse-cpu-ubuntu26-grpc1.83.0-ort1.29.0-poppler26.08-cxx23-sessionep1-static1-simdutf9-${TARGETARCH},target=/build \
+RUN --mount=type=cache,id=grparse-cpu-ubuntu26-grpc1.83.0-ort1.29.0-poppler26.08-cxx23-sessionep2-static1-simdutf9-${TARGETARCH},target=/build \
     export PKG_CONFIG_PATH=/opt/poppler/lib/pkgconfig \
  && cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
       -DGRPARSE_WERROR=ON -DGRPARSE_ORT_PACKAGE=cpu -DGRPARSE_TEST_TIMEOUT=3000 \
