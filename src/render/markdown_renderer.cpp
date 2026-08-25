@@ -263,7 +263,6 @@ bool is_python_float(std::string_view raw, double* value) {
     fraction_digits = scan_digits(text, &at);
   }
   if (!leading_digits && !fraction_digits) return false;
-  const std::size_t mantissa_end = at;
   if (at < text.size() && (text[at] == 'e' || text[at] == 'E')) {
     ++at;
     if (at < text.size() && (text[at] == '+' || text[at] == '-')) ++at;
@@ -277,7 +276,6 @@ bool is_python_float(std::string_view raw, double* value) {
   for (std::size_t i = mantissa_start; i < text.size(); ++i) {
     if (text[i] != '_') plain.push_back(text[i]);
   }
-  static_cast<void>(mantissa_end);
   *value = std::strtod(plain.c_str(), nullptr);
   return true;
 }
@@ -655,7 +653,7 @@ class MarkdownRenderer : RendererBase {
     consumed_.insert("#/body");
     parts.push_back(join(part_texts(get_parts("#/body", 0, false)), "\n\n"));
     if (document_.body().has_meta()) {
-      parts.push_back(serialize_meta(document_.body().meta(), MetaShape::kBase));
+      parts.push_back(serialize_meta(document_.body().meta()));
     }
     return join(parts, "\n\n");
   }
@@ -670,8 +668,6 @@ class MarkdownRenderer : RendererBase {
     std::string text;
     std::string first_span;
   };
-
-  enum class MetaShape { kBase, kFloating, kPicture };
 
   std::set<std::string> caption_refs_;
   std::set<std::string> footnote_refs_;
@@ -1004,7 +1000,7 @@ class MarkdownRenderer : RendererBase {
       parts.push_back(
           serialize_group_content(ref, *group, list_level, inline_scope, first_span));
       if (group->has_meta() && !excluded(ref)) {
-        parts.push_back(serialize_meta(group->meta(), MetaShape::kBase));
+        parts.push_back(serialize_meta(group->meta()));
       }
       return join(parts, "\n\n");
     }
@@ -1096,7 +1092,7 @@ class MarkdownRenderer : RendererBase {
     }
     const auto* base = text_base(text);
     if (base != nullptr && base->has_meta()) {
-      parts->push_back(serialize_meta(base->meta(), MetaShape::kBase));
+      parts->push_back(serialize_meta(base->meta()));
     }
   }
 
@@ -1170,13 +1166,12 @@ class MarkdownRenderer : RendererBase {
   // marker of its own.
   std::string list_item_prefix(const std::string& ref,
                                const docv1::BaseTextItem& text) {
+    // An unset marker takes the model default.
     std::string marker = "-";
-    bool enumerated = false;
-    if (text.item_case() == docv1::BaseTextItem::kListItem) {
-      enumerated = text.list_item().enumerated();
-      if (text.list_item().has_marker()) marker = text.list_item().marker();
+    if (text.item_case() == docv1::BaseTextItem::kListItem &&
+        text.list_item().has_marker()) {
+      marker = text.list_item().marker();
     }
-    static_cast<void>(enumerated);
 
     const bool has_alnum = std::ranges::any_of(marker, [](unsigned char c) {
       return std::isalnum(c) != 0;
@@ -1555,10 +1550,9 @@ class MarkdownRenderer : RendererBase {
 
   // -- meta -----------------------------------------------------------------
 
-  std::string serialize_meta(const docv1::BaseMeta& meta, MetaShape shape) {
+  std::string serialize_meta(const docv1::BaseMeta& meta) {
     std::vector<std::string> parts;
     append_base_meta(meta, &parts);
-    static_cast<void>(shape);
     append_custom_fields(meta.custom_fields(), &parts);
     return join(parts, "\n\n");
   }
