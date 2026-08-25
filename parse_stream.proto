@@ -141,6 +141,12 @@ message DocumentComplete {
   // Collectors that failed during this parse; empty when every selected
   // collector contributed.
   repeated CollectorFailure collector_failures = 2;
+  // Heading depth per section-header self_ref. Depth clusters over the
+  // whole document's heading heights, so it cannot be known while pages
+  // stream: streamed section headers carry level 0 (unset) and this map,
+  // emitted with the terminal event, is the authoritative assignment.
+  // Consumers assembling a document from the page events apply it last.
+  map<string, int32> section_header_levels = 3;
 }
 
 message StreamDocumentRequest {

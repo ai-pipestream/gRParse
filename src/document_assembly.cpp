@@ -195,15 +195,20 @@ bool polygon_is_axis_aligned(const std::vector<cv::Point>& polygon, const AxisAl
 
 // Where a floating region belongs in the block sequence: before the first
 // block it owns lines of, else before the first block that starts below its
-// top edge, else after everything on the page.
+// top edge IN ITS OWN COLUMN, else after everything on the page. Reading
+// order is column-major, so the text-less fallback must only consider
+// blocks the region horizontally overlaps; comparing tops across columns
+// would anchor a right-column float into the middle of the left column.
 size_t region_anchor(const OcrPage& page, const std::vector<TextBlock>& blocks,
                      const LayoutRegion& region) {
   for (size_t index = 0; index < blocks.size(); ++index) {
     if (blocks[index].region == &region) return index;
   }
   for (size_t index = 0; index < blocks.size(); ++index) {
-    const auto& first = page.lines[blocks[index].lines.front()];
-    if (bounding_box(first).top >= region.top) return index;
+    const AxisAlignedBox box = bounding_box(page.lines[blocks[index].lines.front()]);
+    const int overlap = std::min(box.right, region.right) - std::max(box.left, region.left);
+    if (overlap <= 0) continue;
+    if (box.top >= region.top) return index;
   }
   return blocks.size();
 }
@@ -754,50 +759,76 @@ void append_page_to_document(
   }
 }
 
-void assign_section_header_levels(pipestream::document::v1::Document* document) {
-  if (document == nullptr) throw std::invalid_argument("Document is required");
-  struct Pending {
-    pipestream::document::v1::SectionHeaderItem* item;
-    double height;
-  };
-  std::vector<Pending> pending;
-  for (auto& text : *document->mutable_texts()) {
-    if (text.item_case() != pipestream::document::v1::BaseTextItem::kSectionHeader) continue;
-    auto* header = text.mutable_section_header();
-    if (header->level() > 0) continue;  // the producer already chose
-    std::vector<double> heights;
-    for (const auto& provenance : header->base().prov()) {
-      const auto& box = provenance.bbox();
-      const double height = std::abs(box.b() - box.t());
-      if (height > 0) heights.push_back(height);
-    }
-    if (heights.empty()) {
-      header->set_level(1);
-      continue;
-    }
-    // The median line height stands for the heading; one clipped or merged
-    // line must not drag a heading into another cluster.
-    const auto middle = heights.begin() + static_cast<std::ptrdiff_t>(heights.size() / 2);
-    std::nth_element(heights.begin(), middle, heights.end());
-    pending.push_back({header, *middle});
+namespace {
+
+// The median prov box height of one heading; one clipped or merged line
+// must not drag a heading into another cluster. Zero means unusable.
+double median_header_height(const pipestream::document::v1::SectionHeaderItem& header) {
+  std::vector<double> heights;
+  for (const auto& provenance : header.base().prov()) {
+    const auto& box = provenance.bbox();
+    const double height = std::abs(box.b() - box.t());
+    if (height > 0) heights.push_back(height);
   }
-  if (pending.empty()) return;
+  if (heights.empty()) return 0;
+  const auto middle = heights.begin() + static_cast<std::ptrdiff_t>(heights.size() / 2);
+  std::nth_element(heights.begin(), middle, heights.end());
+  return *middle;
+}
+
+}  // namespace
+
+std::map<std::string, int32_t> section_header_levels(std::vector<HeaderHeight> headers) {
+  std::map<std::string, int32_t> levels;
   // Tallest first; a heading founds a deeper level when it is visibly
   // smaller (below 85%) than the current level's founding height. Depth
   // saturates at 6, the deepest level exports render.
-  std::vector<Pending*> by_height;
-  by_height.reserve(pending.size());
-  for (auto& entry : pending) by_height.push_back(&entry);
-  std::ranges::stable_sort(by_height,
-                           [](const Pending* a, const Pending* b) { return a->height > b->height; });
+  std::ranges::stable_sort(headers, [](const HeaderHeight& a, const HeaderHeight& b) {
+    return a.height > b.height;
+  });
   int level = 0;
   double founding = std::numeric_limits<double>::infinity();
-  for (auto* entry : by_height) {
-    if (entry->height < 0.85 * founding) {
-      level = std::min(level + 1, 6);
-      founding = entry->height;
+  for (const auto& header : headers) {
+    if (header.height <= 0) {
+      levels[header.self_ref] = 1;
+      continue;
     }
-    entry->item->set_level(std::max(level, 1));
+    if (header.height < 0.85 * founding) {
+      level = std::min(level + 1, 6);
+      founding = header.height;
+    }
+    levels[header.self_ref] = std::max(level, 1);
+  }
+  return levels;
+}
+
+void collect_header_heights(const pipestream::parse::v1::PageData& page,
+                            std::vector<HeaderHeight>* into) {
+  if (into == nullptr) throw std::invalid_argument("Header height output is required");
+  for (const auto& text : page.texts()) {
+    if (text.item_case() != pipestream::document::v1::BaseTextItem::kSectionHeader) continue;
+    const auto& header = text.section_header();
+    if (header.level() > 0) continue;  // the producer already chose
+    into->push_back({header.base().self_ref(), median_header_height(header)});
+  }
+}
+
+void assign_section_header_levels(pipestream::document::v1::Document* document) {
+  if (document == nullptr) throw std::invalid_argument("Document is required");
+  std::vector<HeaderHeight> pending;
+  for (const auto& text : document->texts()) {
+    if (text.item_case() != pipestream::document::v1::BaseTextItem::kSectionHeader) continue;
+    const auto& header = text.section_header();
+    if (header.level() > 0) continue;  // the producer already chose
+    pending.push_back({header.base().self_ref(), median_header_height(header)});
+  }
+  if (pending.empty()) return;
+  const auto levels = section_header_levels(std::move(pending));
+  for (auto& text : *document->mutable_texts()) {
+    if (text.item_case() != pipestream::document::v1::BaseTextItem::kSectionHeader) continue;
+    auto* header = text.mutable_section_header();
+    const auto assigned = levels.find(header->base().self_ref());
+    if (assigned != levels.end()) header->set_level(assigned->second);
   }
 }
 

@@ -522,6 +522,9 @@ add_library(grparse_core STATIC
   src/targets/zip_writer.cpp
   src/text_geometry.cpp)
 target_include_directories(grparse_core PUBLIC include)
+# The served version string names the accelerator flavor this build carries.
+target_compile_definitions(grparse_core
+  PRIVATE GRPARSE_ORT_PACKAGE_NAME="${GRPARSE_ORT_PACKAGE}")
 target_link_libraries(grparse_core
   # grparse_curl is PUBLIC for its link options alone: they belong to every
   # executable that ends up with both TLS stacks in its link closure.

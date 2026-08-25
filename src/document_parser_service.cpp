@@ -47,6 +47,13 @@ uint64_t content_hash(const std::string& document) {
   return hash;
 }
 
+// The version every image reports names its own accelerator flavor; the
+// build injects it so the OpenVINO and CPU images stop claiming cuda.
+#ifndef GRPARSE_ORT_PACKAGE_NAME
+#define GRPARSE_ORT_PACKAGE_NAME "unknown"
+#endif
+constexpr const char* kServiceVersion = "grparse-0.1.0-" GRPARSE_ORT_PACKAGE_NAME;
+
 std::string mimetype_for(const fs::path& path) {
   const auto extension = path.extension().string();
   // The wiki storage dialect names itself by suffix, and its own content
@@ -92,7 +99,9 @@ std::string mimetype_for(const fs::path& path) {
   if (extension == ".mkv") return "video/x-matroska";
   if (extension == ".webm") return "video/webm";
   if (extension == ".mov") return "video/quicktime";
-  return "image/png";
+  if (extension == ".png") return "image/png";
+  // An extension nothing above recognizes must not masquerade as an image.
+  return "application/octet-stream";
 }
 
 bool is_pdf(const std::string& content, const fs::path& filename) {
@@ -918,7 +927,7 @@ grpc::ServerUnaryReactor* DocumentParserService::Health(
     grpc::CallbackServerContext* context, const pipestream::parse::v1::HealthRequest*,
     pipestream::parse::v1::HealthResponse* response) {
   response->set_status("ready");
-  response->set_version("grparse-0.1.0-cuda");
+  response->set_version(kServiceVersion);
   return finish_inline(context, grpc::Status::OK);
 }
 
@@ -927,7 +936,7 @@ grpc::ServerUnaryReactor* DocumentParserService::GetServiceInfo(
     const pipestream::parse::v1::GetServiceInfoRequest*,
     pipestream::parse::v1::GetServiceInfoResponse* response) {
   response->set_name("gRParse");
-  response->set_version("grparse-0.1.0-cuda");
+  response->set_version(kServiceVersion);
   auto* ui = response->mutable_ui();
   ui->set_title("gRParse");
   ui->set_path("/ui/grparse");
@@ -1369,6 +1378,9 @@ class DocumentStreamReactor final
       event->message->set_document_id(document_id_);
       event->message->set_total_pages(total_pages_);
       append_page_data(*page_it->second, next_page_, &assembly_cursor_, event->message->mutable_page());
+      // Heading depth needs every page's heights; the terminal event ships
+      // the clustered result for the level-0 headers streamed here.
+      collect_header_heights(event->message->page(), &header_heights_);
       completed_pages_.erase(page_it);
       events_.push_back(std::move(event));
       ++next_page_;
@@ -1451,6 +1463,10 @@ class DocumentStreamReactor final
     origin->set_mimetype(pdf_ ? "application/pdf" : mimetype_for(filename_));
     origin->set_binary_hash(document_bytes_hash_);
     *complete->mutable_collector_failures() = collector_failures_;
+    if (!header_heights_.empty()) {
+      auto levels = section_header_levels(std::move(header_heights_));
+      complete->mutable_section_header_levels()->insert(levels.begin(), levels.end());
+    }
     events_.push_back(std::move(event));
     request_finish_locked(grpc::Status::OK);
   }
@@ -1505,6 +1521,9 @@ class DocumentStreamReactor final
   std::map<int, std::shared_ptr<const OcrPage>> completed_pages_;
   std::deque<std::unique_ptr<ArenaEvent>> events_;
   AssemblyCursor assembly_cursor_;
+  // Level-less section headers streamed so far, clustered into depths for
+  // the terminal event.
+  std::vector<HeaderHeight> header_heights_;
   grpc::Status finish_status_;
   std::vector<pipestream::parse::v1::Collector> requested_collectors_;
   // Recognition fields resolved from the first chunk that set each one;

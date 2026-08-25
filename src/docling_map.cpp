@@ -481,8 +481,10 @@ void DoclingMapper::fold_table(const officev1::TableData& table,
       if (cell_bbox(cell.line_rects(), &box)) *out->mutable_bbox() = box;
     }
   }
-  if (table.rows() > 0 && table.columns() > 0
-      && table.rows() * table.columns() <= kMaxGridCells) {
+  // 64-bit product: adversarial row and column counts must saturate the
+  // guard, not overflow it into acceptance.
+  if (table.rows() > 0 && table.columns() > 0 &&
+      static_cast<int64_t>(table.rows()) * table.columns() <= kMaxGridCells) {
     for (int row = 0; row < table.rows(); row++) {
       docv1::TableRow* out_row = data->add_grid();
       for (int column = 0; column < table.columns(); column++) {

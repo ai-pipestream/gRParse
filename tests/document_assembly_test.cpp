@@ -567,6 +567,36 @@ void verify_rotated_lines_keep_their_quad() {
           "bbox stays the axis-aligned hull");
 }
 
+// PageData names the page's body order directly, and a text-less float on a
+// two-column page anchors into its own column rather than the left one.
+void verify_body_order_and_column_anchoring() {
+  const auto column_line = [](std::string text, int left, int top) {
+    return grparse::OcrLine{
+        std::move(text),
+        {{left, top}, {left + 80, top}, {left + 80, top + 10}, {left, top + 10}},
+        0.9F};
+  };
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1000, 1000,
+                        {column_line("left one", 10, 100), column_line("left two", 10, 400),
+                         column_line("right one", 510, 100),
+                         column_line("right two", 510, 400)}};
+  // A picture with no interior text, sitting in the right column between
+  // that column's two lines.
+  page.regions = {{"picture", 0.8F, 500, 200, 1000, 350}};
+
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(page, 1, &cursor, &data);
+  std::vector<std::string> order;
+  for (const auto& ref : data.body_order()) order.push_back(ref.ref());
+  require(order.size() == 5, "body order names every body item");
+  require(order[0] == "#/texts/0" && order[1] == "#/texts/1",
+          "the left column reads first");
+  require(order[2] == "#/texts/2" && order[3] == "#/pictures/0" &&
+              order[4] == "#/texts/3",
+          "the float lands between its own column's lines");
+}
+
 }  // namespace
 
 int main() {
@@ -586,6 +616,7 @@ int main() {
     verify_captions_attach_to_nearest_float();
     verify_section_header_levels();
     verify_rotated_lines_keep_their_quad();
+    verify_body_order_and_column_anchoring();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
     std::println(stderr, "document-assembly-test: {}", error.what());
