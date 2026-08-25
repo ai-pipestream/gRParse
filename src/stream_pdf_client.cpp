@@ -1,10 +1,12 @@
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <print>
 #include <string>
+#include <string_view>
 
 #include <grpcpp/grpcpp.h>
 
@@ -23,6 +25,40 @@ std::string content_type_for(const fs::path& document) {
   if (extension == ".jpg" || extension == ".jpeg") return "image/jpeg";
   if (extension == ".tif" || extension == ".tiff") return "image/tiff";
   return "";
+}
+
+// GRPARSE_STREAM_CLIENT_ITEMS=1 prints one line per emitted item: its label,
+// its content layer, and its provenance box.  That is the shape a caller
+// needs to diff two servers against each other - two execution providers, two
+// layout models - which the per-page counters above cannot show.
+void dump_page_items(const pipestream::parse::v1::PageData& page) {
+  const auto* labels = pipestream::document::v1::DocItemLabel_descriptor();
+  const auto* layers = pipestream::document::v1::ContentLayer_descriptor();
+  const auto print = [&](std::string_view kind, const std::string& self_ref, int label, int layer,
+                         const pipestream::document::v1::BoundingBox& box) {
+    std::println("  item {} {} {} {} [{:.1f}, {:.1f}, {:.1f}, {:.1f}]", kind, self_ref,
+                 labels->FindValueByNumber(label)->name(),
+                 layers->FindValueByNumber(layer)->name(), box.l(), box.t(), box.r(), box.b());
+  };
+  for (const auto& text : page.texts()) {
+    const auto& base = text.text().base();
+    print("text", base.self_ref(), base.label(), base.content_layer(),
+          base.prov().empty() ? pipestream::document::v1::BoundingBox() : base.prov(0).bbox());
+  }
+  for (const auto& table : page.tables()) {
+    print("table", table.self_ref(), table.label(), table.content_layer(),
+          table.prov().empty() ? pipestream::document::v1::BoundingBox() : table.prov(0).bbox());
+  }
+  for (const auto& picture : page.pictures()) {
+    print("picture", picture.self_ref(), picture.label(), picture.content_layer(),
+          picture.prov().empty() ? pipestream::document::v1::BoundingBox() : picture.prov(0).bbox());
+    for (const auto& annotation : picture.annotations()) {
+      if (!annotation.has_classification()) continue;
+      for (const auto& predicted : annotation.classification().predicted_classes()) {
+        std::println("    class {} {:.4f}", predicted.class_name(), predicted.confidence());
+      }
+    }
+  }
 }
 
 int main(int argc, char** argv) {
@@ -62,6 +98,8 @@ int main(int argc, char** argv) {
   stream->Write(final_chunk);
   stream->WritesDone();
 
+  const char* items = std::getenv("GRPARSE_STREAM_CLIENT_ITEMS");
+  const bool dump_items = items != nullptr && std::string_view(items) == "1";
   int page_events = 0;
   pipestream::parse::v1::DocumentStreamEvent event;
   while (stream->Read(&event)) {
@@ -96,6 +134,7 @@ int main(int argc, char** argv) {
                    event.page().page_number(), event.page().texts_size(), digital_items,
                    ocr_items, labelled_items, event.page().tables_size(), filled_cells,
                    event.page().pictures_size(), picture_images, barcodes);
+      if (dump_items) dump_page_items(event.page());
     } else if (event.has_complete()) {
       std::println("complete total_pages={}", event.total_pages());
     }
