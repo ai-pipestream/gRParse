@@ -1036,11 +1036,11 @@ message PictureItem {
   repeated SourceType source = 12;
   repeated FineRef comments = 13;
   repeated PictureAnnotation annotations = 14;
-  // Identity of the drawing shape this picture came from (extension beyond
-  // the upstream dialect).
-  optional ShapeMeta shape = 15;
   // Raw label fallback for forward-compatibility with newer label vocabularies.
   optional string label_raw = 15;
+  // Identity of the drawing shape this picture came from (extension beyond
+  // the upstream dialect).
+  optional ShapeMeta shape = 16;
 }
 
 // PictureMeta contains rich metadata for pictures, including AI analysis.
