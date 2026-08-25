@@ -111,6 +111,12 @@ message PageData {
   // shape remains unchanged; this transport metadata lets downstream clients
   // index pages without renumbering or overloading ProvenanceItem.charspan.
   repeated TextOffset text_offsets = 6;
+  // The page's body-layer items in reading order, referencing entries of
+  // texts/tables/pictures above. Furniture items and captions claimed by a
+  // table or picture are absent: they hang off the furniture group and the
+  // claiming item respectively. Empty only for producers predating this
+  // field; consumers then fall back to texts-tables-pictures order.
+  repeated ai.pipestream.document.v1.RefItem body_order = 7;
 }
 
 message TextOffset {

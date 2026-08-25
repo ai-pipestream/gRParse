@@ -29,4 +29,12 @@ void append_page_to_document(
     google::protobuf::RepeatedPtrField<ai::pipestream::parse::v1::TextOffset>* text_offsets =
         nullptr);
 
+// Assigns heading levels to section headers the detector produced, by
+// clustering their line heights across the whole document: the tallest
+// cluster is level 1, each visibly smaller cluster one level deeper. Items
+// whose producer already chose a level (anything nonzero) are left alone.
+// Heights are only comparable when every page rasterized at the same scale,
+// which is how the CV path renders; callers mixing scales must not use this.
+void assign_section_header_levels(ai::pipestream::document::v1::Document* document);
+
 }  // namespace grparse

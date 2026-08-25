@@ -37,6 +37,28 @@ uint64_t fingerprint(std::string_view bytes) {
   return hash;
 }
 
+// The base of any text arm the server emits. CodeItem keeps its fields
+// inline instead of a nested base and returns null; this diagnostic tool
+// then skips it rather than printing garbage.
+const pipestream::document::v1::TextItemBase* text_item_base(
+    const pipestream::document::v1::BaseTextItem& item) {
+  switch (item.item_case()) {
+    case pipestream::document::v1::BaseTextItem::kTitle: return &item.title().base();
+    case pipestream::document::v1::BaseTextItem::kSectionHeader:
+      return &item.section_header().base();
+    case pipestream::document::v1::BaseTextItem::kListItem: return &item.list_item().base();
+    case pipestream::document::v1::BaseTextItem::kFormula: return &item.formula().base();
+    case pipestream::document::v1::BaseTextItem::kText: return &item.text().base();
+    case pipestream::document::v1::BaseTextItem::kFieldHeading:
+      return &item.field_heading().base();
+    case pipestream::document::v1::BaseTextItem::kFieldValue:
+      return &item.field_value().base();
+    case pipestream::document::v1::BaseTextItem::kCode:
+    case pipestream::document::v1::BaseTextItem::ITEM_NOT_SET: return nullptr;
+  }
+  return nullptr;
+}
+
 // GRPARSE_STREAM_CLIENT_ITEMS=1 prints one line per emitted item: its label,
 // its content layer, and its provenance box.  That is the shape a caller
 // needs to diff two servers against each other - two execution providers, two
@@ -51,9 +73,10 @@ void dump_page_items(const pipestream::parse::v1::PageData& page) {
                  layers->FindValueByNumber(layer)->name(), box.l(), box.t(), box.r(), box.b());
   };
   for (const auto& text : page.texts()) {
-    const auto& base = text.text().base();
-    print("text", base.self_ref(), base.label(), base.content_layer(),
-          base.prov().empty() ? pipestream::document::v1::BoundingBox() : base.prov(0).bbox());
+    const auto* base = text_item_base(text);
+    if (base == nullptr) continue;
+    print("text", base->self_ref(), base->label(), base->content_layer(),
+          base->prov().empty() ? pipestream::document::v1::BoundingBox() : base->prov(0).bbox());
   }
   for (const auto& table : page.tables()) {
     print("table", table.self_ref(), table.label(), table.content_layer(),
@@ -123,7 +146,10 @@ int main(int argc, char** argv) {
       }
       int labelled_items = 0;
       for (const auto& text : event.page().texts()) {
-        if (text.text().base().label() != pipestream::document::v1::DOC_ITEM_LABEL_TEXT) ++labelled_items;
+        const auto* base = text_item_base(text);
+        if (base != nullptr && base->label() != pipestream::document::v1::DOC_ITEM_LABEL_TEXT) {
+          ++labelled_items;
+        }
       }
       int filled_cells = 0;
       for (const auto& table : event.page().tables()) {

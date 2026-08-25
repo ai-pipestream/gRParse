@@ -21,6 +21,27 @@ grparse::OcrLine line(std::string text, int top) {
                           0.875F};
 }
 
+grparse::OcrLine sized_line(std::string text, int top, int height) {
+  return grparse::OcrLine{std::move(text),
+                          {{10, top}, {90, top}, {90, top + height}, {10, top + height}},
+                          0.875F};
+}
+
+// The base of whichever arm assembly chose for the item; the choice itself
+// is asserted where it matters.
+const ai::pipestream::document::v1::TextItemBase& item_base(
+    const ai::pipestream::document::v1::BaseTextItem& item) {
+  namespace docv1 = ai::pipestream::document::v1;
+  switch (item.item_case()) {
+    case docv1::BaseTextItem::kTitle: return item.title().base();
+    case docv1::BaseTextItem::kSectionHeader: return item.section_header().base();
+    case docv1::BaseTextItem::kListItem: return item.list_item().base();
+    case docv1::BaseTextItem::kFormula: return item.formula().base();
+    case docv1::BaseTextItem::kText: return item.text().base();
+    default: throw std::runtime_error("unexpected text item arm");
+  }
+}
+
 void verify_contract_shape() {
   const auto* document = ai::pipestream::document::v1::Document::descriptor();
   require(document->FindFieldByName("texts")->number() == 7, "Document.texts field changed");
@@ -81,13 +102,13 @@ void verify_layout_regions_map_labels_and_emit_items() {
 
   ai::pipestream::parse::v1::PageData data;
   grparse::append_page_data(page, 1, &cursor, &data);
-  require(data.texts_size() == 3, "layout page text count");
-  require(data.texts(0).text().base().label() == ai::pipestream::document::v1::DOC_ITEM_LABEL_TITLE,
-          "a line inside a title region becomes a TITLE item");
+  require(data.texts_size() == 2, "layout page text count: the table carries its own line");
+  require(data.texts(0).has_title() &&
+              item_base(data.texts(0)).label() ==
+                  ai::pipestream::document::v1::DOC_ITEM_LABEL_TITLE,
+          "a line inside a title region becomes a TITLE item on the title arm");
   require(data.texts(1).text().base().label() == ai::pipestream::document::v1::DOC_ITEM_LABEL_TEXT,
           "a line outside every region stays TEXT");
-  require(data.texts(2).text().base().label() == ai::pipestream::document::v1::DOC_ITEM_LABEL_TEXT,
-          "table cell text stays TEXT until Epic D structures it");
   require(data.tables_size() == 1 && data.tables(0).self_ref() == "#/tables/0" &&
               data.tables(0).label() == ai::pipestream::document::v1::DOC_ITEM_LABEL_TABLE,
           "table region must become a TableItem");
@@ -128,11 +149,14 @@ void verify_layout_regions_map_labels_and_emit_items() {
   require(document.tables(0).data().num_rows() == 1 &&
               document.tables(0).data().table_cells(0).text() == "cell",
           "unary path carries the same table cells as the stream");
-  require(document.body().children_size() == 5, "body references texts, table, and picture");
-  require(document.body().children(3).ref() == "#/tables/0" &&
-              document.body().children(4).ref() == "#/pictures/0",
-          "region item refs must join the body graph");
-  require(plain_text == "Heading\nbody text\ncell", "regions must not disturb the text stream");
+  require(document.body().children_size() == 4, "body references texts, table, and picture");
+  require(document.body().children(0).ref() == "#/texts/0" &&
+              document.body().children(1).ref() == "#/texts/1" &&
+              document.body().children(2).ref() == "#/tables/0" &&
+              document.body().children(3).ref() == "#/pictures/0",
+          "floats join the body graph at their reading-order anchors");
+  require(plain_text == "Heading\nbody text",
+          "table interior text lives in the table, not the text stream");
 }
 
 // Model-structured cells override the geometry grid: spans and header flags
@@ -303,7 +327,7 @@ void verify_every_region_label_reaches_the_document() {
     ai::pipestream::parse::v1::PageData data;
     grparse::append_page_data(page, 1, &cursor, &data);
     require(data.texts_size() == 1, std::string("one item for a ") + expected.region + " region");
-    require(data.texts(0).text().base().label() == expected.label,
+    require(item_base(data.texts(0)).label() == expected.label,
             std::string("a line inside a ") + expected.region + " region takes that label");
   }
 }
@@ -385,6 +409,120 @@ void verify_items_carry_collector_sources() {
           "pictures name the layout detector");
 }
 
+// Consecutive lines of one prose region merge into a single item whose
+// provenance keeps every member line's box and charspan; the offset row
+// spans the merged text and carries the weakest member confidence.
+void verify_region_lines_merge_into_one_item() {
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1000, 1000, {line("line one", 100), line("line two", 120)}};
+  page.lines[1].confidence = 0.5F;
+  page.regions = {{"text", 0.9F, 0, 90, 1000, 140}};
+
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(page, 1, &cursor, &data);
+  require(data.texts_size() == 1, "one region, one item");
+  const auto& base = data.texts(0).text().base();
+  require(base.text() == "line one line two", "members join with a space");
+  require(base.prov_size() == 2, "one provenance entry per member line");
+  require(base.prov(0).charspan().start() == 0 && base.prov(0).charspan().end() == 8,
+          "first member charspan");
+  require(base.prov(1).charspan().start() == 9 && base.prov(1).charspan().end() == 17,
+          "second member charspan skips the separator");
+  require(base.prov(0).bbox().t() == 100 && base.prov(1).bbox().t() == 120,
+          "each member keeps its own box");
+  require(data.text_offsets_size() == 1, "one offset row for the merged item");
+  require(data.text_offsets(0).utf_start() == 0 && data.text_offsets(0).utf_end() == 17,
+          "offset row spans the merged text");
+  require(data.text_offsets(0).confidence() == 0.5F,
+          "the row is as trustworthy as its shakiest member");
+}
+
+// A line whose center misses every recognized cell of a structured table is
+// not carried by the table item and must stay ordinary body text.
+void verify_unclaimed_table_line_stays_body_text() {
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1000, 1000, {line("inside", 300), line("stray", 380)}};
+  grparse::LayoutRegion table{"table", 0.8F, 0, 250, 1000, 450};
+  // One recognized cell covering only the first line's center.
+  table.structured_cells = {{0, 0, 1, 1, false, 0, 290, 1000, 340}};
+  page.regions = {table};
+
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(page, 1, &cursor, &data);
+  require(data.texts_size() == 1 && data.texts(0).text().base().text() == "stray",
+          "the unclaimed line survives as body text");
+  require(data.tables(0).data().table_cells(0).text() == "inside",
+          "the claimed line lives in its cell");
+}
+
+// A caption binds to the nearest float it visually labels and leaves the
+// body graph; a caption with no float in reach stays free prose.
+void verify_captions_attach_to_nearest_float() {
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1000, 2000,
+                        {line("Figure 1: shoreline", 820), line("Orphan caption", 1900)}};
+  page.regions = {
+      {"picture", 0.7F, 0, 500, 1000, 800},
+      {"caption", 0.9F, 0, 810, 1000, 840},
+      {"caption", 0.9F, 0, 1890, 1000, 1930},
+  };
+
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(page, 1, &cursor, &data);
+  require(data.pictures_size() == 1 && data.texts_size() == 2, "one picture, two captions");
+  const auto& attached = data.texts(0).text().base();
+  require(attached.label() == ai::pipestream::document::v1::DOC_ITEM_LABEL_CAPTION,
+          "caption label survives attachment");
+  require(attached.parent().ref() == "#/pictures/0", "the near caption re-parents to its float");
+  require(data.pictures(0).captions_size() == 1 &&
+              data.pictures(0).captions(0).ref() == attached.self_ref(),
+          "the float claims the caption by reference");
+  const auto& orphan = data.texts(1).text().base();
+  require(orphan.parent().ref() == "#/body", "a caption with no float in reach stays body prose");
+
+  grparse::AssemblyCursor document_cursor;
+  ai::pipestream::document::v1::Document document;
+  std::string plain_text;
+  grparse::append_page_to_document(page, 1, &document_cursor, &document, &plain_text);
+  bool claimed_in_body = false;
+  for (const auto& child : document.body().children()) {
+    if (child.ref() == attached.self_ref()) claimed_in_body = true;
+  }
+  require(!claimed_in_body, "a claimed caption never doubles as a body child");
+  require(plain_text == "Figure 1: shoreline\nOrphan caption",
+          "captions keep their place in the text stream");
+}
+
+// Heading depth comes from clustering heights across the document: the
+// tallest cluster is level 1, each visibly smaller cluster one deeper, and
+// levels a producer already set stay untouched.
+void verify_section_header_levels() {
+  namespace docv1 = ai::pipestream::document::v1;
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1000, 2000,
+                        {sized_line("Chapter", 100, 40), sized_line("Subsection", 300, 20),
+                         sized_line("Another chapter", 600, 40), line("prose", 900)}};
+  page.regions = {
+      {"section_header", 0.9F, 0, 90, 1000, 150},
+      {"section_header", 0.9F, 0, 290, 1000, 330},
+      {"section_header", 0.9F, 0, 590, 1000, 650},
+  };
+
+  ai::pipestream::document::v1::Document document;
+  std::string plain_text;
+  grparse::append_page_to_document(page, 1, &cursor, &document, &plain_text);
+  // A producer-set level, as an office collector would emit it.
+  auto* preset = document.add_texts()->mutable_section_header();
+  preset->mutable_base()->set_self_ref("#/texts/9");
+  preset->set_level(3);
+
+  grparse::assign_section_header_levels(&document);
+  require(document.texts(0).section_header().level() == 1, "tallest cluster is level 1");
+  require(document.texts(1).section_header().level() == 2, "smaller heights go one deeper");
+  require(document.texts(2).section_header().level() == 1, "equal heights share a level");
+  require(document.texts(4).section_header().level() == 3, "producer-set levels stay untouched");
+}
+
 }  // namespace
 
 int main() {
@@ -399,6 +537,10 @@ int main() {
     verify_page_preview_becomes_page_image();
     verify_barcode_payloads_become_misc_annotations();
     verify_items_carry_collector_sources();
+    verify_region_lines_merge_into_one_item();
+    verify_unclaimed_table_line_stays_body_text();
+    verify_captions_attach_to_nearest_float();
+    verify_section_header_levels();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
     std::println(stderr, "document-assembly-test: {}", error.what());

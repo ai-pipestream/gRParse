@@ -1,12 +1,14 @@
 #include "grparse/document_assembly.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
 
+#include "render/renderer_base.h"
 #include "grparse/base64.h"
 #include "grparse/reading_order.h"
 #include "grparse/region_geometry.h"
@@ -99,6 +101,100 @@ void set_region_bounding_box(const LayoutRegion& region, pipestream::document::v
   output->set_r(region.right);
   output->set_b(region.bottom);
   output->set_coord_origin(pipestream::document::v1::COORD_ORIGIN_TOPLEFT);
+}
+
+// One body block: a run of consecutive reading-order lines bound to the same
+// layout region, or a single unbound line. The block is the unit of item
+// emission: a prose region becomes one item whose provenance keeps every
+// member line's box and charspan, instead of one item per OCR line.
+struct TextBlock {
+  const LayoutRegion* region = nullptr;
+  std::vector<size_t> lines;
+  // The text of these lines already rides inside the region's own item (a
+  // table's cells), so the block anchors ordering but emits nothing.
+  bool suppressed = false;
+};
+
+// Which page lines a table's own item carries, so those lines do not stream
+// a second time as body prose. Structured cells claim a line when its center
+// falls inside a recognized cell; the geometry grid claims every line it
+// clustered. A line neither claims stays ordinary body text.
+std::vector<bool> table_claimed_lines(const OcrPage& page, const LayoutRegion& region) {
+  std::vector<bool> claimed(page.lines.size(), false);
+  if (!region.structured_cells.empty()) {
+    for (size_t index = 0; index < page.lines.size(); ++index) {
+      const auto& line = page.lines[index];
+      if (line.text.empty() || line.polygon.empty()) continue;
+      if (region_for_line(page, line) != &region) continue;
+      const cv::Point center = bounding_box(line).center();
+      for (const auto& cell : region.structured_cells) {
+        if (center.x >= cell.left && center.x <= cell.right && center.y >= cell.top &&
+            center.y <= cell.bottom) {
+          claimed[index] = true;
+          break;
+        }
+      }
+    }
+    return claimed;
+  }
+  const TableGrid grid = build_table_grid(page, region);
+  for (const auto& cell : grid.cells) {
+    for (const size_t line_index : cell.line_indices) claimed[line_index] = true;
+  }
+  return claimed;
+}
+
+// Whether consecutive lines of this region merge into one item. Lists stay
+// per-line (each line is its own item) and unbound lines never merge,
+// because nothing proves either belongs with its neighbor.
+bool region_aggregates(const LayoutRegion* region) {
+  if (region == nullptr) return false;
+  return region->label != "list" && region->label != "list_item" && region->label != "table";
+}
+
+std::vector<TextBlock> build_text_blocks(const OcrPage& page) {
+  // Claim maps are per table region and looked up by line below.
+  std::unordered_map<const LayoutRegion*, std::vector<bool>> claims;
+  for (const auto& region : page.regions) {
+    if (region.label == "table") claims.emplace(&region, table_claimed_lines(page, region));
+  }
+  std::vector<TextBlock> blocks;
+  for (const size_t line_index : reading_order(page)) {
+    const auto& line = page.lines[line_index];
+    if (line.text.empty() || line.polygon.empty()) continue;
+    const LayoutRegion* region = region_for_line(page, line);
+    bool suppressed = false;
+    if (const auto claim = claims.find(region); claim != claims.end()) {
+      suppressed = claim->second[line_index];
+    }
+    const bool merges = suppressed || region_aggregates(region);
+    if (merges && !blocks.empty() && blocks.back().region == region &&
+        blocks.back().suppressed == suppressed) {
+      blocks.back().lines.push_back(line_index);
+      continue;
+    }
+    TextBlock block;
+    block.region = region;
+    block.suppressed = suppressed;
+    block.lines.push_back(line_index);
+    blocks.push_back(std::move(block));
+  }
+  return blocks;
+}
+
+// Where a floating region belongs in the block sequence: before the first
+// block it owns lines of, else before the first block that starts below its
+// top edge, else after everything on the page.
+size_t region_anchor(const OcrPage& page, const std::vector<TextBlock>& blocks,
+                     const LayoutRegion& region) {
+  for (size_t index = 0; index < blocks.size(); ++index) {
+    if (blocks[index].region == &region) return index;
+  }
+  for (size_t index = 0; index < blocks.size(); ++index) {
+    const auto& first = page.lines[blocks[index].lines.front()];
+    if (bounding_box(first).top >= region.top) return index;
+  }
+  return blocks.size();
 }
 
 // Big-endian 32-bit read for the PNG IHDR dimensions.
@@ -263,59 +359,52 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     set_picture_image(source.preview_png, output->mutable_page_meta()->mutable_image());
   }
 
-  // Emission order defines text offsets, refs, and body order, so lines are
-  // walked in reading order (multi-column aware) rather than input order.
-  for (const size_t line_index : reading_order(source)) {
-    const auto& line = source.lines[line_index];
-    if (line.text.empty() || line.polygon.empty()) continue;
-    const std::string self_ref = "#/texts/" + std::to_string(cursor->text_index++);
-    auto* base = output->add_texts()->mutable_text()->mutable_base();
-    base->set_self_ref(self_ref);
-    const LayoutRegion* region = region_for_line(source, line);
-    const bool furniture = is_furniture_region(region);
-    base->mutable_parent()->set_ref(furniture ? "#/furniture" : "#/body");
-    base->set_content_layer(furniture ? pipestream::document::v1::CONTENT_LAYER_FURNITURE
-                                      : pipestream::document::v1::CONTENT_LAYER_BODY);
-    base->set_label(region == nullptr ? pipestream::document::v1::DOC_ITEM_LABEL_TEXT
-                                      : label_for_region(region->label));
-    base->set_orig(line.text);
-    base->set_text(line.text);
+  // Emission order defines text offsets, refs, and body order, so blocks are
+  // walked in reading order (multi-column aware) rather than input order,
+  // with floating items placed at their reading-order anchors instead of
+  // appended after the page's prose.
+  const std::vector<TextBlock> blocks = build_text_blocks(source);
 
-    const uint64_t length = utf8_codepoint_count(line.text);
-    auto* provenance = base->add_prov();
-    provenance->set_page_no(page_number);
-    provenance->mutable_charspan()->set_start(0);
-    if (length > static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
-      throw std::length_error("OCR line exceeds document charspan range");
-    }
-    provenance->mutable_charspan()->set_end(static_cast<int32_t>(length));
-    set_bounding_box(bounding_box(line), provenance->mutable_bbox());
-
-    if (cursor->has_text) ++cursor->utf_offset;
-    auto* offset = output->add_text_offsets();
-    offset->set_self_ref(self_ref);
-    offset->set_utf_start(cursor->utf_offset);
-    cursor->utf_offset += length;
-    offset->set_utf_end(cursor->utf_offset);
-    if (line.confidence.has_value()) offset->set_confidence(*line.confidence);
-    const auto text_source = text_source_for(source, line);
-    offset->set_source(text_source);
-    add_collector_source(text_source == pipestream::parse::v1::TEXT_SOURCE_DIGITAL_PDF
-                             ? "poppler-text"
-                             : "rapidocr",
-                         line.confidence, base->mutable_source());
-    cursor->has_text = true;
+  struct Placed {
+    const LayoutRegion* region;
+    size_t anchor;
+  };
+  std::vector<Placed> placed;
+  for (const auto& region : source.regions) {
+    if (region.label != "table" && region.label != "picture") continue;
+    placed.push_back({&region, region_anchor(source, blocks, region)});
   }
+  std::ranges::stable_sort(placed, [](const Placed& a, const Placed& b) {
+    if (a.anchor != b.anchor) return a.anchor < b.anchor;
+    if (a.region->top != b.region->top) return a.region->top < b.region->top;
+    return a.region->left < b.region->left;
+  });
 
-  // Table and picture regions become items in their own right so later
-  // structure work has crops to work from; their inner text already streamed
-  // above as TEXT.
   const std::string& layout_model = source.layout_model.empty() ? kUnnamedLayoutModel
                                                                 : source.layout_model;
-  for (const auto& region : source.regions) {
+
+  // Floats and caption items emitted on this page, kept for the caption
+  // attachment pass; body_order collects the page's body children in the
+  // order a reader meets them.
+  struct EmittedFloat {
+    const LayoutRegion* region;
+    std::string self_ref;
+    google::protobuf::RepeatedPtrField<pipestream::document::v1::RefItem>* captions;
+  };
+  std::vector<EmittedFloat> floats;
+  struct EmittedCaption {
+    const LayoutRegion* region;
+    std::string self_ref;
+    pipestream::document::v1::TextItemBase* base;
+  };
+  std::vector<EmittedCaption> captions;
+  std::vector<std::string> body_order;
+
+  const auto emit_float = [&](const LayoutRegion& region) {
     if (region.label == "table") {
       auto* table = output->add_tables();
-      table->set_self_ref("#/tables/" + std::to_string(cursor->table_index++));
+      const std::string self_ref = "#/tables/" + std::to_string(cursor->table_index++);
+      table->set_self_ref(self_ref);
       table->mutable_parent()->set_ref("#/body");
       table->set_content_layer(pipestream::document::v1::CONTENT_LAYER_BODY);
       table->set_label(pipestream::document::v1::DOC_ITEM_LABEL_TABLE);
@@ -325,39 +414,187 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
       fill_table_data(source, region, table->mutable_data());
       add_collector_source(region.structured_cells.empty() ? "geometry" : "slanet-plus",
                            region.confidence, table->mutable_source());
-    } else if (region.label == "picture") {
-      auto* picture = output->add_pictures();
-      picture->set_self_ref("#/pictures/" + std::to_string(cursor->picture_index++));
-      picture->mutable_parent()->set_ref("#/body");
-      picture->set_content_layer(pipestream::document::v1::CONTENT_LAYER_BODY);
-      picture->set_label(pipestream::document::v1::DOC_ITEM_LABEL_PICTURE);
-      auto* provenance = picture->add_prov();
-      provenance->set_page_no(page_number);
-      set_region_bounding_box(region, provenance->mutable_bbox());
-      add_collector_source(layout_model, region.confidence, picture->mutable_source());
-      if (!region.image_png.empty()) set_picture_image(region.image_png, picture->mutable_image());
-      if (!region.figure_classes.empty()) {
-        auto* classification = picture->add_annotations()->mutable_classification();
-        classification->set_kind("classification");
-        classification->set_provenance("figure-classifier");
-        for (const auto& figure_class : region.figure_classes) {
-          auto* predicted = classification->add_predicted_classes();
-          predicted->set_class_name(figure_class.label);
-          predicted->set_confidence(figure_class.confidence);
-        }
-      }
-      // Decoded payloads ride as misc annotations: the upstream schema has no dedicated
-      // barcode type, and the struct keeps format and value machine-readable.
-      for (const auto& barcode : region.barcodes) {
-        auto* misc = picture->add_annotations()->mutable_misc();
-        misc->set_kind("barcode");
-        auto& fields = *misc->mutable_content()->mutable_fields();
-        fields["format"].set_string_value(barcode.format);
-        fields["value"].set_string_value(barcode.text);
-        fields["provenance"].set_string_value("zxing-cpp");
+      floats.push_back({&region, self_ref, table->mutable_captions()});
+      body_order.push_back(self_ref);
+      return;
+    }
+    auto* picture = output->add_pictures();
+    const std::string self_ref = "#/pictures/" + std::to_string(cursor->picture_index++);
+    picture->set_self_ref(self_ref);
+    picture->mutable_parent()->set_ref("#/body");
+    picture->set_content_layer(pipestream::document::v1::CONTENT_LAYER_BODY);
+    picture->set_label(pipestream::document::v1::DOC_ITEM_LABEL_PICTURE);
+    auto* provenance = picture->add_prov();
+    provenance->set_page_no(page_number);
+    set_region_bounding_box(region, provenance->mutable_bbox());
+    add_collector_source(layout_model, region.confidence, picture->mutable_source());
+    if (!region.image_png.empty()) set_picture_image(region.image_png, picture->mutable_image());
+    if (!region.figure_classes.empty()) {
+      auto* classification = picture->add_annotations()->mutable_classification();
+      classification->set_kind("classification");
+      classification->set_provenance("figure-classifier");
+      for (const auto& figure_class : region.figure_classes) {
+        auto* predicted = classification->add_predicted_classes();
+        predicted->set_class_name(figure_class.label);
+        predicted->set_confidence(figure_class.confidence);
       }
     }
+    // Decoded payloads ride as misc annotations: the upstream schema has no dedicated
+    // barcode type, and the struct keeps format and value machine-readable.
+    for (const auto& barcode : region.barcodes) {
+      auto* misc = picture->add_annotations()->mutable_misc();
+      misc->set_kind("barcode");
+      auto& fields = *misc->mutable_content()->mutable_fields();
+      fields["format"].set_string_value(barcode.format);
+      fields["value"].set_string_value(barcode.text);
+      fields["provenance"].set_string_value("zxing-cpp");
+    }
+    floats.push_back({&region, self_ref, picture->mutable_captions()});
+    body_order.push_back(self_ref);
+  };
+
+  const auto emit_block = [&](const TextBlock& block) {
+    const LayoutRegion* region = block.region;
+    // Code lines keep their line structure; prose members join with spaces.
+    const char separator = region != nullptr && region->label == "code" ? '\n' : ' ';
+    std::string merged;
+    struct MemberSpan {
+      size_t line;
+      uint64_t start;
+      uint64_t end;
+    };
+    std::vector<MemberSpan> spans;
+    spans.reserve(block.lines.size());
+    uint64_t code_points = 0;
+    for (const size_t line_index : block.lines) {
+      const auto& line = source.lines[line_index];
+      if (!merged.empty()) {
+        merged.push_back(separator);
+        ++code_points;
+      }
+      const uint64_t length = utf8_codepoint_count(line.text);
+      spans.push_back({line_index, code_points, code_points + length});
+      code_points += length;
+      merged += line.text;
+    }
+    if (code_points > static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
+      throw std::length_error("Text block exceeds document charspan range");
+    }
+
+    const std::string self_ref = "#/texts/" + std::to_string(cursor->text_index++);
+    const auto label = region == nullptr ? pipestream::document::v1::DOC_ITEM_LABEL_TEXT
+                                         : label_for_region(region->label);
+    auto* item = output->add_texts();
+    pipestream::document::v1::TextItemBase* base = nullptr;
+    if (label == pipestream::document::v1::DOC_ITEM_LABEL_TITLE) {
+      base = item->mutable_title()->mutable_base();
+    } else if (label == pipestream::document::v1::DOC_ITEM_LABEL_SECTION_HEADER) {
+      // Level stays unset here; assign_section_header_levels clusters the
+      // whole document's heading heights once every page is in.
+      base = item->mutable_section_header()->mutable_base();
+    } else {
+      base = item->mutable_text()->mutable_base();
+    }
+    const bool furniture = is_furniture_region(region);
+    base->set_self_ref(self_ref);
+    base->mutable_parent()->set_ref(furniture ? "#/furniture" : "#/body");
+    base->set_content_layer(furniture ? pipestream::document::v1::CONTENT_LAYER_FURNITURE
+                                      : pipestream::document::v1::CONTENT_LAYER_BODY);
+    base->set_label(label);
+    base->set_orig(merged);
+    base->set_text(merged);
+    // One provenance entry per member line: its own box, its own charspan
+    // into the merged text (code points), so nothing about where each line
+    // sat on the page is lost to the merge.
+    for (const auto& span : spans) {
+      auto* provenance = base->add_prov();
+      provenance->set_page_no(page_number);
+      provenance->mutable_charspan()->set_start(static_cast<int32_t>(span.start));
+      provenance->mutable_charspan()->set_end(static_cast<int32_t>(span.end));
+      set_bounding_box(bounding_box(source.lines[span.line]), provenance->mutable_bbox());
+    }
+
+    if (cursor->has_text) ++cursor->utf_offset;
+    auto* offset = output->add_text_offsets();
+    offset->set_self_ref(self_ref);
+    offset->set_utf_start(cursor->utf_offset);
+    cursor->utf_offset += code_points;
+    offset->set_utf_end(cursor->utf_offset);
+    cursor->has_text = true;
+
+    // The row's confidence is the weakest member's; a block is only as
+    // trustworthy as its shakiest line.
+    std::optional<float> confidence;
+    bool digital = false;
+    bool ocr = false;
+    for (const size_t line_index : block.lines) {
+      const auto& line = source.lines[line_index];
+      if (line.confidence.has_value()) {
+        confidence = confidence.has_value() ? std::min(*confidence, *line.confidence)
+                                            : *line.confidence;
+      }
+      if (text_source_for(source, line) == pipestream::parse::v1::TEXT_SOURCE_DIGITAL_PDF) {
+        digital = true;
+      } else {
+        ocr = true;
+      }
+    }
+    if (confidence.has_value()) offset->set_confidence(*confidence);
+    // A uniform block keeps its origin; mixed digital and OCR members report
+    // OCR, the weaker claim.
+    offset->set_source(digital && !ocr ? pipestream::parse::v1::TEXT_SOURCE_DIGITAL_PDF
+                                       : pipestream::parse::v1::TEXT_SOURCE_OCR);
+    if (digital) add_collector_source("poppler-text", confidence, base->mutable_source());
+    if (ocr) add_collector_source("rapidocr", confidence, base->mutable_source());
+
+    if (region != nullptr && region->label == "caption") captions.push_back({region, self_ref, base});
+    if (!furniture) body_order.push_back(self_ref);
+  };
+
+  size_t next_placed = 0;
+  for (size_t index = 0; index <= blocks.size(); ++index) {
+    while (next_placed < placed.size() && placed[next_placed].anchor == index) {
+      emit_float(*placed[next_placed].region);
+      ++next_placed;
+    }
+    if (index == blocks.size()) break;
+    if (!blocks[index].suppressed) emit_block(blocks[index]);
   }
+
+  // A caption binds to the nearest table or picture it visually labels: at
+  // least 30% of the caption's width overlapping horizontally and a vertical
+  // gap of at most 1.5 caption heights, nearest gap wins. The claimed
+  // caption re-parents under the float and leaves body order; renderers then
+  // emit it with its float instead of as free prose.
+  for (auto& caption : captions) {
+    const double width = caption.region->right - caption.region->left;
+    const double height = caption.region->bottom - caption.region->top;
+    if (width <= 0 || height <= 0) continue;
+    const EmittedFloat* best = nullptr;
+    double best_gap = 0;
+    for (const auto& target : floats) {
+      const double overlap = std::min(caption.region->right, target.region->right) -
+                             std::max(caption.region->left, target.region->left);
+      if (overlap < 0.3 * width) continue;
+      double gap = 0;
+      if (caption.region->top >= target.region->bottom) {
+        gap = caption.region->top - target.region->bottom;
+      } else if (caption.region->bottom <= target.region->top) {
+        gap = target.region->top - caption.region->bottom;
+      }
+      if (gap > 1.5 * height) continue;
+      if (best == nullptr || gap < best_gap) {
+        best = &target;
+        best_gap = gap;
+      }
+    }
+    if (best == nullptr) continue;
+    caption.base->mutable_parent()->set_ref(best->self_ref);
+    best->captions->Add()->set_ref(caption.self_ref);
+    std::erase(body_order, caption.self_ref);
+  }
+
+  for (const auto& ref : body_order) output->add_body_order()->set_ref(ref);
 }
 
 void append_page_to_document(
@@ -376,30 +613,90 @@ void append_page_to_document(
   }
   (*document->mutable_pages())[page_number] = std::move(*page.mutable_page_meta());
 
+  // With a body order the page names its own body children (captions a
+  // float claimed and furniture rows already absent); without one, legacy
+  // producers fall back to texts-tables-pictures order.
+  const bool ordered = page.body_order_size() > 0;
+
   auto* texts = page.mutable_texts();
   document->mutable_texts()->Reserve(document->texts_size() + texts->size());
   document->mutable_body()->mutable_children()->Reserve(document->body().children_size() +
                                                         texts->size());
   for (auto& text : *texts) {
     // Read everything needed from `text` before it is moved out.
-    const auto& base = text.text().base();
-    auto* parent = base.content_layer() == pipestream::document::v1::CONTENT_LAYER_FURNITURE
-                       ? document->mutable_furniture()
-                       : document->mutable_body();
-    parent->add_children()->set_ref(base.self_ref());
-    if (!plain_text->empty()) plain_text->push_back('\n');
-    plain_text->append(base.text());
+    const auto* base = render::text_base(text);
+    if (base != nullptr) {
+      const bool furniture =
+          base->content_layer() == pipestream::document::v1::CONTENT_LAYER_FURNITURE;
+      if (furniture) {
+        document->mutable_furniture()->add_children()->set_ref(base->self_ref());
+      } else if (!ordered) {
+        document->mutable_body()->add_children()->set_ref(base->self_ref());
+      }
+      if (!plain_text->empty()) plain_text->push_back('\n');
+      plain_text->append(base->text());
+    }
     // Hand the item over instead of deep-copying every box and string again.
     *document->add_texts() = std::move(text);
   }
 
   for (auto& table : *page.mutable_tables()) {
-    document->mutable_body()->add_children()->set_ref(table.self_ref());
+    if (!ordered) document->mutable_body()->add_children()->set_ref(table.self_ref());
     *document->add_tables() = std::move(table);
   }
   for (auto& picture : *page.mutable_pictures()) {
-    document->mutable_body()->add_children()->set_ref(picture.self_ref());
+    if (!ordered) document->mutable_body()->add_children()->set_ref(picture.self_ref());
     *document->add_pictures() = std::move(picture);
+  }
+  for (const auto& ref : page.body_order()) {
+    document->mutable_body()->add_children()->set_ref(ref.ref());
+  }
+}
+
+void assign_section_header_levels(pipestream::document::v1::Document* document) {
+  if (document == nullptr) throw std::invalid_argument("Document is required");
+  struct Pending {
+    pipestream::document::v1::SectionHeaderItem* item;
+    double height;
+  };
+  std::vector<Pending> pending;
+  for (auto& text : *document->mutable_texts()) {
+    if (text.item_case() != pipestream::document::v1::BaseTextItem::kSectionHeader) continue;
+    auto* header = text.mutable_section_header();
+    if (header->level() > 0) continue;  // the producer already chose
+    std::vector<double> heights;
+    for (const auto& provenance : header->base().prov()) {
+      const auto& box = provenance.bbox();
+      const double height = std::abs(box.b() - box.t());
+      if (height > 0) heights.push_back(height);
+    }
+    if (heights.empty()) {
+      header->set_level(1);
+      continue;
+    }
+    // The median line height stands for the heading; one clipped or merged
+    // line must not drag a heading into another cluster.
+    const auto middle = heights.begin() + static_cast<std::ptrdiff_t>(heights.size() / 2);
+    std::nth_element(heights.begin(), middle, heights.end());
+    pending.push_back({header, *middle});
+  }
+  if (pending.empty()) return;
+  // Tallest first; a heading founds a deeper level when it is visibly
+  // smaller (below 85%) than the current level's founding height. Depth
+  // saturates at 6, the deepest level exports render.
+  std::vector<Pending*> by_height;
+  by_height.reserve(pending.size());
+  for (auto& entry : pending) by_height.push_back(&entry);
+  std::ranges::stable_sort(by_height,
+                           [](const Pending* a, const Pending* b) { return a->height > b->height; });
+  int level = 0;
+  double founding = std::numeric_limits<double>::infinity();
+  for (auto* entry : by_height) {
+    if (entry->height < 0.85 * founding) {
+      level = std::min(level + 1, 6);
+      founding = entry->height;
+    }
+    entry->item->set_level(std::max(level, 1));
   }
 }
 

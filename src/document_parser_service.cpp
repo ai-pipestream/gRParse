@@ -547,6 +547,9 @@ grpc::Status parse_source(grpc::ServerContext* context,
           append_page_to_document(*page->second, page_number, &assembly_cursor,
                                   &outcome.document, &plain_text, &offsets);
         }
+        // Heading depth clusters over the whole document's heights, so it
+        // can only run after every page is in.
+        assign_section_header_levels(&outcome.document);
         *cv_offsets = std::move(offsets);
         outcome.success = true;
         return outcome;
