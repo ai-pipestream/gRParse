@@ -4,6 +4,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 #include "grparse/base64.h"
@@ -16,6 +17,10 @@ namespace pipestream = ai::pipestream;
 
 namespace grparse {
 namespace {
+
+// Attribution when a detector reached assembly without naming itself (test
+// doubles and older callers).
+const std::string kUnnamedLayoutModel = "layout";
 
 void set_bounding_box(const AxisAlignedBox& box, pipestream::document::v1::BoundingBox* output) {
   output->set_l(box.left);
@@ -53,13 +58,39 @@ pipestream::parse::v1::TextSource text_source_for(const OcrPage& page, const Ocr
   }
 }
 
-// PubLayNet region label -> document item label for the text lines inside it.
-// Lines inside table/figure regions keep TEXT: the region itself is emitted
-// as a TableItem/PictureItem, and cell/caption structure is Epic D/E work.
+// Region label -> document item label for the text lines inside it.  Covers
+// both detectors' vocabularies; lines inside table/picture regions keep TEXT,
+// because the region itself is emitted as a TableItem/PictureItem and
+// cell/caption structure is later work.
 pipestream::document::v1::DocItemLabel label_for_region(const std::string& label) {
-  if (label == "title") return pipestream::document::v1::DOC_ITEM_LABEL_TITLE;
-  if (label == "list") return pipestream::document::v1::DOC_ITEM_LABEL_LIST_ITEM;
-  return pipestream::document::v1::DOC_ITEM_LABEL_TEXT;
+  namespace docv1 = pipestream::document::v1;
+  static const std::unordered_map<std::string, docv1::DocItemLabel> kLabels = {
+      {"caption", docv1::DOC_ITEM_LABEL_CAPTION},
+      {"checkbox_selected", docv1::DOC_ITEM_LABEL_CHECKBOX_SELECTED},
+      {"checkbox_unselected", docv1::DOC_ITEM_LABEL_CHECKBOX_UNSELECTED},
+      {"code", docv1::DOC_ITEM_LABEL_CODE},
+      {"document_index", docv1::DOC_ITEM_LABEL_DOCUMENT_INDEX},
+      {"footnote", docv1::DOC_ITEM_LABEL_FOOTNOTE},
+      {"form", docv1::DOC_ITEM_LABEL_FORM},
+      {"formula", docv1::DOC_ITEM_LABEL_FORMULA},
+      {"key_value_region", docv1::DOC_ITEM_LABEL_KEY_VALUE_REGION},
+      {"list", docv1::DOC_ITEM_LABEL_LIST_ITEM},
+      {"list_item", docv1::DOC_ITEM_LABEL_LIST_ITEM},
+      {"page_footer", docv1::DOC_ITEM_LABEL_PAGE_FOOTER},
+      {"page_header", docv1::DOC_ITEM_LABEL_PAGE_HEADER},
+      {"section_header", docv1::DOC_ITEM_LABEL_SECTION_HEADER},
+      {"title", docv1::DOC_ITEM_LABEL_TITLE},
+  };
+  const auto found = kLabels.find(label);
+  return found == kLabels.end() ? docv1::DOC_ITEM_LABEL_TEXT : found->second;
+}
+
+// Running headers and footers are page furniture, not body prose: they carry
+// the furniture content layer and hang off the furniture group instead of
+// #/body, so renderers that walk the body never fold a page number into the
+// running text.
+bool is_furniture_region(const LayoutRegion* region) {
+  return region != nullptr && (region->label == "page_header" || region->label == "page_footer");
 }
 
 void set_region_bounding_box(const LayoutRegion& region, pipestream::document::v1::BoundingBox* output) {
@@ -240,9 +271,11 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     const std::string self_ref = "#/texts/" + std::to_string(cursor->text_index++);
     auto* base = output->add_texts()->mutable_text()->mutable_base();
     base->set_self_ref(self_ref);
-    base->mutable_parent()->set_ref("#/body");
-    base->set_content_layer(pipestream::document::v1::CONTENT_LAYER_BODY);
     const LayoutRegion* region = region_for_line(source, line);
+    const bool furniture = is_furniture_region(region);
+    base->mutable_parent()->set_ref(furniture ? "#/furniture" : "#/body");
+    base->set_content_layer(furniture ? pipestream::document::v1::CONTENT_LAYER_FURNITURE
+                                      : pipestream::document::v1::CONTENT_LAYER_BODY);
     base->set_label(region == nullptr ? pipestream::document::v1::DOC_ITEM_LABEL_TEXT
                                       : label_for_region(region->label));
     base->set_orig(line.text);
@@ -274,8 +307,11 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     cursor->has_text = true;
   }
 
-  // Table and figure regions become items in their own right so Epics D and E
-  // have crops to work from; their inner text already streamed above as TEXT.
+  // Table and picture regions become items in their own right so later
+  // structure work has crops to work from; their inner text already streamed
+  // above as TEXT.
+  const std::string& layout_model = source.layout_model.empty() ? kUnnamedLayoutModel
+                                                                : source.layout_model;
   for (const auto& region : source.regions) {
     if (region.label == "table") {
       auto* table = output->add_tables();
@@ -289,7 +325,7 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
       fill_table_data(source, region, table->mutable_data());
       add_collector_source(region.structured_cells.empty() ? "geometry" : "slanet-plus",
                            region.confidence, table->mutable_source());
-    } else if (region.label == "figure") {
+    } else if (region.label == "picture") {
       auto* picture = output->add_pictures();
       picture->set_self_ref("#/pictures/" + std::to_string(cursor->picture_index++));
       picture->mutable_parent()->set_ref("#/body");
@@ -298,12 +334,12 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
       auto* provenance = picture->add_prov();
       provenance->set_page_no(page_number);
       set_region_bounding_box(region, provenance->mutable_bbox());
-      add_collector_source("picodet-publaynet", region.confidence, picture->mutable_source());
+      add_collector_source(layout_model, region.confidence, picture->mutable_source());
       if (!region.image_png.empty()) set_picture_image(region.image_png, picture->mutable_image());
       if (!region.figure_classes.empty()) {
         auto* classification = picture->add_annotations()->mutable_classification();
         classification->set_kind("classification");
-        classification->set_provenance("DocumentFigureClassifier");
+        classification->set_provenance("figure-classifier");
         for (const auto& figure_class : region.figure_classes) {
           auto* predicted = classification->add_predicted_classes();
           predicted->set_class_name(figure_class.label);
@@ -347,7 +383,10 @@ void append_page_to_document(
   for (auto& text : *texts) {
     // Read everything needed from `text` before it is moved out.
     const auto& base = text.text().base();
-    document->mutable_body()->add_children()->set_ref(base.self_ref());
+    auto* parent = base.content_layer() == pipestream::document::v1::CONTENT_LAYER_FURNITURE
+                       ? document->mutable_furniture()
+                       : document->mutable_body();
+    parent->add_children()->set_ref(base.self_ref());
     if (!plain_text->empty()) plain_text->push_back('\n');
     plain_text->append(base.text());
     // Hand the item over instead of deep-copying every box and string again.

@@ -77,7 +77,7 @@ void verify_title_band_reads_before_columns() {
 void verify_textless_regions_are_ignored() {
   grparse::OcrPage page{1000, 800, {}};
   page.lines = {line_at("first", 50, 100), line_at("second", 50, 200)};
-  page.regions = {{"figure", 0.8F, 500, 100, 900, 700}};
+  page.regions = {{"picture", 0.8F, 500, 100, 900, 700}};
   const auto texts = ordered_texts(page);
   const std::vector<std::string> expected = {"first", "second"};
   require(texts == expected, "textless regions must drop out of the order");

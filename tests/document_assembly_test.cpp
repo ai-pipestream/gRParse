@@ -76,7 +76,7 @@ void verify_layout_regions_map_labels_and_emit_items() {
   page.regions = {
       {"title", 0.9F, 0, 0, 1000, 40},
       {"table", 0.8F, 0, 250, 1000, 400},
-      {"figure", 0.7F, 0, 500, 1000, 800},
+      {"picture", 0.7F, 0, 500, 1000, 800},
   };
 
   ai::pipestream::parse::v1::PageData data;
@@ -178,7 +178,7 @@ void verify_captured_figure_bytes_become_image_refs() {
   grparse::AssemblyCursor cursor;
   grparse::OcrPage page{1000, 1000, {line("body", 100)}};
   // Minimal PNG prefix: 8-byte signature, IHDR length/tag, width 300, height 200.
-  page.regions = {{"figure", 0.7F, 0, 500, 1000, 800,
+  page.regions = {{"picture", 0.7F, 0, 500, 1000, 800,
                    {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D, 'I', 'H', 'D',
                     'R', 0, 0, 0x01, 0x2C, 0, 0, 0, 0xC8}}};
 
@@ -196,14 +196,14 @@ void verify_captured_figure_bytes_become_image_refs() {
 
   grparse::AssemblyCursor classified_cursor;
   grparse::OcrPage classified{1000, 1000, {line("caption", 100)}};
-  grparse::LayoutRegion figure{"figure", 0.7F, 0, 500, 1000, 800};
+  grparse::LayoutRegion figure{"picture", 0.7F, 0, 500, 1000, 800};
   figure.figure_classes = {{"bar_chart", 0.9F}, {"other", 0.1F}};
   classified.regions = {figure};
   ai::pipestream::parse::v1::PageData classified_data;
   grparse::append_page_data(classified, 1, &classified_cursor, &classified_data);
   const auto& annotation = classified_data.pictures(0).annotations(0).classification();
   require(annotation.kind() == "classification" &&
-              annotation.provenance() == "DocumentFigureClassifier",
+              annotation.provenance() == "figure-classifier",
           "classification annotation carries its provenance");
   require(annotation.predicted_classes_size() == 2 &&
               annotation.predicted_classes(0).class_name() == "bar_chart" &&
@@ -244,7 +244,7 @@ void verify_page_preview_becomes_page_image() {
 void verify_barcode_payloads_become_misc_annotations() {
   grparse::AssemblyCursor cursor;
   grparse::OcrPage page{1000, 1000, {line("caption", 100)}};
-  grparse::LayoutRegion figure{"figure", 0.7F, 0, 500, 1000, 800};
+  grparse::LayoutRegion figure{"picture", 0.7F, 0, 500, 1000, 800};
   figure.figure_classes = {{"qr_code", 0.95F}};
   figure.barcodes = {{"QRCode", "https://example.com/a"}, {"Code128", "SKU-1234"}};
   page.regions = {figure};
@@ -280,8 +280,9 @@ void verify_items_carry_collector_sources() {
   grparse::LayoutRegion geometry_table{"table", 0.8F, 0, 250, 1000, 400};
   grparse::LayoutRegion structured_table{"table", 0.85F, 0, 420, 1000, 480};
   structured_table.structured_cells = {{0, 0, 1, 1, false, 0, 420, 1000, 480}};
-  grparse::LayoutRegion figure{"figure", 0.7F, 0, 500, 1000, 800};
+  grparse::LayoutRegion figure{"picture", 0.7F, 0, 500, 1000, 800};
   page.regions = {geometry_table, structured_table, figure};
+  page.layout_model = "layout-heron";
 
   ai::pipestream::parse::v1::PageData data;
   grparse::append_page_data(page, 1, &cursor, &data);
@@ -300,7 +301,7 @@ void verify_items_carry_collector_sources() {
   require(data.tables(1).source(0).collector().confidence() > 0.84,
           "table source carries the region confidence");
   require(data.pictures(0).source(0).collector().collector() == "grparse" &&
-              data.pictures(0).source(0).collector().model() == "picodet-publaynet",
+              data.pictures(0).source(0).collector().model() == "layout-heron",
           "pictures name the layout detector");
 }
 

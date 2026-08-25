@@ -324,7 +324,7 @@ void verify_figure_classification_runs_on_crops() {
   FakeRecognizer recognizer;
   FakeDetector detector;
   detector.regions = {
-      grparse::LayoutRegion{"figure", 0.8F, 1, 1, 3, 3},
+      grparse::LayoutRegion{"picture", 0.8F, 1, 1, 3, 3},
       grparse::LayoutRegion{"title", 0.9F, 0, 0, 50, 10},
   };
   FakeClassifier classifier;
@@ -373,7 +373,7 @@ void verify_picture_capture_encodes_figure_crops() {
   FakeRecognizer recognizer;
   FakeDetector detector;
   detector.regions = {
-      grparse::LayoutRegion{"figure", 0.8F, 0, 0, 3, 3},
+      grparse::LayoutRegion{"picture", 0.8F, 0, 0, 3, 3},
       grparse::LayoutRegion{"title", 0.9F, 0, 0, 50, 10},
   };
   grparse::PageScheduler::Options options{2, 2, 2, 2, 1, 1, 1};
@@ -406,7 +406,7 @@ void verify_picture_capture_encodes_figure_crops() {
   for (const auto& page : delivered) {
     require(page->regions.size() == 2, "both regions must survive capture");
     const auto& figure = page->regions[0];
-    require(figure.label == "figure" && figure.image_png.size() > 8,
+    require(figure.label == "picture" && figure.image_png.size() > 8,
             "figure region must carry an encoded crop");
     require(figure.image_png[0] == 0x89 && figure.image_png[1] == 'P' &&
                 figure.image_png[2] == 'N' && figure.image_png[3] == 'G',
@@ -490,7 +490,7 @@ cv::Mat qr_page(grparse::LayoutRegion* qr_region) {
   require(!fixture.empty(), "QR fixture must load: " + path);
   cv::Mat page(fixture.rows + 40, fixture.cols + 40, CV_8UC3, cv::Scalar(255, 255, 255));
   fixture.copyTo(page(cv::Rect(20, 20, fixture.cols, fixture.rows)));
-  *qr_region = grparse::LayoutRegion{"figure", 0.8F, 20, 20, 20 + fixture.cols - 1,
+  *qr_region = grparse::LayoutRegion{"picture", 0.8F, 20, 20, 20 + fixture.cols - 1,
                                      20 + fixture.rows - 1};
   return page;
 }

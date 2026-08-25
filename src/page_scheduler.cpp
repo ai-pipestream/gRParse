@@ -593,8 +593,10 @@ class PageScheduler::Impl final {
         {
           const BusyTimer timer(inference_busy_ns_);
           std::vector<LayoutRegion> regions;
+          std::string layout_model;
           if (region_detector_ != nullptr) {
             regions = region_detector_->detect_regions(job.image);
+            layout_model = region_detector_->model_name();
             pages_layout_labelled_.fetch_add(1);
           }
           // Structure runs on table crops only, grouped with the other device
@@ -616,10 +618,10 @@ class PageScheduler::Impl final {
               }
             }
           }
-          // Classification also runs on figure crops only, same grouping.
+          // Classification also runs on picture crops only, same grouping.
           if (figure_classifier_ != nullptr) {
             for (auto& region : regions) {
-              if (region.label != "figure") continue;
+              if (region.label != "picture") continue;
               const cv::Mat crop = crop_region(job.image, region);
               if (crop.empty()) continue;
               region.figure_classes = figure_classifier_->classify(crop);
@@ -651,7 +653,7 @@ class PageScheduler::Impl final {
           // before the raster drops; the crop is a view, the PNG is owned.
           if (options_.capture_picture_images && !job.image.empty()) {
             for (auto& region : regions) {
-              if (region.label != "figure") continue;
+              if (region.label != "picture") continue;
               const cv::Mat crop = crop_region(job.image, region);
               if (!crop.empty()) cv::imencode(".png", crop, region.image_png);
             }
@@ -660,7 +662,7 @@ class PageScheduler::Impl final {
           // runs after the device calls but before the raster drops.
           if (options_.barcode_mode != BarcodeMode::kOff && !job.image.empty()) {
             for (auto& region : regions) {
-              if (region.label != "figure") continue;
+              if (region.label != "picture") continue;
               if (options_.barcode_mode == BarcodeMode::kClassTriggered &&
                   !barcode_class(region)) {
                 continue;
@@ -679,6 +681,7 @@ class PageScheduler::Impl final {
           // Drop the raster the moment the device stage is done with it (B5).
           job.image.release();
           assembled.regions = std::move(regions);
+          assembled.layout_model = std::move(layout_model);
           result = std::make_shared<const OcrPage>(std::move(assembled));
         }
         enqueue_assembly(job.page, std::move(result));

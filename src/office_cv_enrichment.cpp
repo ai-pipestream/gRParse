@@ -48,11 +48,11 @@ void add_collector_source(const std::string& model, std::optional<float> confide
   if (confidence.has_value()) collector->set_confidence(*confidence);
 }
 
-// One detected figure as a PictureItem, box scaled from render pixels into
+// One detected picture as a PictureItem, box scaled from render pixels into
 // the page's own coordinate space and linked into the body like every other
 // mapped item.
 void append_figure(const LayoutRegion& region, int page_number, double scale,
-                   docv1::Document* document) {
+                   const std::string& layout_model, docv1::Document* document) {
   const std::string ref = "#/pictures/" + std::to_string(document->pictures_size());
   docv1::PictureItem* picture = document->add_pictures();
   picture->set_self_ref(ref);
@@ -69,12 +69,12 @@ void append_figure(const LayoutRegion& region, int page_number, double scale,
   box->set_r(region.right * scale);
   box->set_b(region.bottom * scale);
   box->set_coord_origin(docv1::COORD_ORIGIN_TOPLEFT);
-  add_collector_source("picodet-publaynet", region.confidence, picture->mutable_source());
+  add_collector_source(layout_model, region.confidence, picture->mutable_source());
 
   if (!region.figure_classes.empty()) {
     auto* classification = picture->add_annotations()->mutable_classification();
     classification->set_kind("classification");
-    classification->set_provenance("DocumentFigureClassifier");
+    classification->set_provenance("figure-classifier");
     for (const auto& figure_class : region.figure_classes) {
       auto* predicted = classification->add_predicted_classes();
       predicted->set_class_name(figure_class.label);
@@ -106,8 +106,9 @@ void enrich_office_document(const OfficeCvEnrichment& enrichment,
     const double scale = page.size().width() / static_cast<double>(raster.cols);
 
     std::vector<LayoutRegion> regions = enrichment.detector->detect_regions(raster);
+    const std::string layout_model = enrichment.detector->model_name();
     for (auto& region : regions) {
-      if (region.label != "figure") continue;
+      if (region.label != "picture") continue;
       const cv::Mat crop = crop_region(raster, region);
       if (crop.empty()) continue;
       if (enrichment.classifier != nullptr) {
@@ -118,7 +119,7 @@ void enrich_office_document(const OfficeCvEnrichment& enrichment,
           (enrichment.barcode_mode == PageScheduler::BarcodeMode::kClassTriggered &&
            barcode_class(region));
       if (decode) region.barcodes = decode_barcodes(crop);
-      append_figure(region, page_number, scale, document);
+      append_figure(region, page_number, scale, layout_model, document);
     }
   }
 }

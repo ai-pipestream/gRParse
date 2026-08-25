@@ -30,7 +30,7 @@ class WholePageFigureDetector final : public grparse::RegionDetector {
   std::vector<grparse::LayoutRegion> detect_regions(const cv::Mat& image) override {
     ++calls;
     grparse::LayoutRegion region;
-    region.label = "figure";
+    region.label = "picture";
     region.confidence = 0.9F;
     region.right = image.cols - 1;
     region.bottom = image.rows - 1;
@@ -105,7 +105,7 @@ void verify_detected_figure_lands_scaled_classified_and_decoded() {
           "the box scales from render pixels into the page's twips space");
   require(picture.source_size() == 1 &&
               picture.source(0).collector().collector() == "grparse" &&
-              picture.source(0).collector().model() == "picodet-publaynet",
+              picture.source(0).collector().model() == "layout",
           "the CV leg tags its own source");
 
   bool classified = false;

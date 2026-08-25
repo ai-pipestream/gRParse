@@ -42,7 +42,7 @@ void verify_region_binding() {
   page.width = 1000;
   page.height = 1000;
   page.regions = {make_region("table", 0.9F, 0, 0, 100, 100),
-                  make_region("figure", 0.5F, 50, 50, 150, 150),
+                  make_region("picture", 0.5F, 50, 50, 150, 150),
                   make_region("text", 0.7F, 400, 400, 500, 500)};
 
   // Center (75, 75) lies inside both the table and the figure; confidence wins.
@@ -51,7 +51,7 @@ void verify_region_binding() {
 
   // Center (125, 125) lies only inside the figure.
   const auto* figure_only = grparse::region_for_line(page, make_line(110, 110, 140, 140));
-  require(figure_only != nullptr && figure_only->label == "figure",
+  require(figure_only != nullptr && figure_only->label == "picture",
           "sole containing region binds");
 
   // The rule is center containment: a line overlapping the table's corner but
@@ -95,7 +95,7 @@ void verify_clip_region() {
 
 void verify_crop_region() {
   cv::Mat raster(100, 100, CV_8UC3, cv::Scalar(1, 2, 3));
-  const auto region = make_region("figure", 1.0F, 10, 20, 30, 50);
+  const auto region = make_region("picture", 1.0F, 10, 20, 30, 50);
 
   cv::Mat crop = grparse::crop_region(raster, region);
   require(crop.cols == 20 && crop.rows == 30, "crop size matches the clipped region");
