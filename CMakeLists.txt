@@ -462,6 +462,7 @@ add_library(grparse_core STATIC
   src/render/canonical_json_renderer.cpp
   src/render/markdown_renderer.cpp
   src/render/html_renderer.cpp
+  src/render/gdocs_renderer.cpp
   src/render/doctags_renderer.cpp
   src/render/doclang_renderer.cpp
   src/render/vtt_renderer.cpp
@@ -511,6 +512,7 @@ if(BUILD_TESTING)
     document-merge-test
     document-render-test
     figure-classifier-test
+    gdocs-renderer-test
     layout-decode-test
     layout-engine-test
     office-collector-test

@@ -51,6 +51,9 @@ enum OutputFormat {
   // label-discriminated items, "$ref" references, canonical enum strings),
   // as opposed to OUTPUT_FORMAT_JSON's protobuf-JSON of the wire schema.
   OUTPUT_FORMAT_CANONICAL_JSON = 10;
+  // The document rendered into the body shape of the Docs API "document"
+  // resource, ready for a create-then-patch integration.
+  OUTPUT_FORMAT_GDOCS_JSON = 11;
 }
 
 // OCR engine selection.
@@ -540,6 +543,8 @@ message DocumentExports {
   optional string yaml = 9;
   // The upstream-canonical JSON dialect (see OUTPUT_FORMAT_CANONICAL_JSON).
   optional string canonical_json = 10;
+  // The Docs API body shape (see OUTPUT_FORMAT_GDOCS_JSON).
+  optional string gdocs_json = 11;
 }
 
 // DocumentResponse contains the converted document and optional exports.

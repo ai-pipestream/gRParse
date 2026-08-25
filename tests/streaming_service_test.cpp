@@ -457,6 +457,7 @@ void verify_unary_multi_format_exports(TestServer* server) {
   options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_HTML_SPLIT_PAGE);
   options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_YAML);
   options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_CANONICAL_JSON);
+  options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_GDOCS_JSON);
   grpc::ClientContext context;
   context.set_deadline(std::chrono::system_clock::now() + 10s);
   pipestream::parse::v1::ConvertSourceResponse response;
@@ -496,6 +497,10 @@ void verify_unary_multi_format_exports(TestServer* server) {
               exports.canonical_json().contains("\"$ref\""),
           "multi-format canonical export: " +
               exports.canonical_json().substr(0, 200));
+  require(exports.has_gdocs_json() &&
+              exports.gdocs_json().contains("\"namedStyleType\": \"NORMAL_TEXT\"") &&
+              exports.gdocs_json().contains("\"inlineImagePlaceholders\""),
+          "multi-format Docs export: " + exports.gdocs_json().substr(0, 200));
 
   auto default_request = unary_request();
   default_request.mutable_request()->mutable_options()->clear_to_formats();
@@ -511,7 +516,7 @@ void verify_unary_multi_format_exports(TestServer* server) {
               !default_exports.has_html() && !default_exports.has_json() &&
               !default_exports.has_doctags() && !default_exports.has_doclang() &&
               !default_exports.has_vtt() && !default_exports.has_html_split_page() &&
-              !default_exports.has_yaml(),
+              !default_exports.has_yaml() && !default_exports.has_gdocs_json(),
           "empty to_formats must keep the plain-text default alone");
 }
 

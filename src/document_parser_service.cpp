@@ -313,6 +313,7 @@ bool renderable(pipestream::parse::v1::OutputFormat format) {
     case pipestream::parse::v1::OUTPUT_FORMAT_VTT:
     case pipestream::parse::v1::OUTPUT_FORMAT_YAML:
     case pipestream::parse::v1::OUTPUT_FORMAT_CANONICAL_JSON:
+    case pipestream::parse::v1::OUTPUT_FORMAT_GDOCS_JSON:
       return true;
     default:
       return false;
@@ -720,6 +721,9 @@ void render_exports(const pipestream::parse::v1::ConvertDocumentOptions& options
   }
   if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_CANONICAL_JSON)) {
     exports->set_canonical_json(render_canonical_json(document));
+  }
+  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_GDOCS_JSON)) {
+    exports->set_gdocs_json(render_gdocs_json(document));
   }
   if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_DOCTAGS)) {
     exports->set_doctags(render_doctags(document));

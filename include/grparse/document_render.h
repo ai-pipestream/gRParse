@@ -55,6 +55,17 @@ std::string render_json(const ai::pipestream::document::v1::Document& document);
 // would corrupt arena references).
 std::string render_canonical_json(const ai::pipestream::document::v1::Document& document);
 
+// Renders the document into the body shape of the Docs API "document"
+// resource: a {"title", "body": {"content": [...]}, "lists",
+// "inlineImagePlaceholders"} object whose structural elements are the
+// paragraphs, bulleted paragraphs, and tables that API accepts. Pictures
+// cannot carry bytes in a create body, so each one renders as a placeholder
+// paragraph and is listed under "inlineImagePlaceholders" for the
+// integration layer to upload and patch; the file header of
+// src/render/gdocs_renderer.cpp states that contract in full. Output is
+// deterministic: the same document always renders byte for byte the same.
+std::string render_gdocs_json(const ai::pipestream::document::v1::Document& document);
+
 // Renders docling's DocTags serialization: a "<doctag>" wrapper holding one
 // line per body item, label-named tags ("<title>", "<section_header_level_N>",
 // "<text>"...), "<unordered_list>"/"<ordered_list>" with "<list_item>"
