@@ -18,6 +18,7 @@
 #include <google/protobuf/struct.pb.h>
 
 #include "grparse/document_render.h"
+#include "grparse/schema_version.h"
 #include "canonical_json_writer.h"
 #include "load_normalization.h"
 #include "renderer_base.h"
@@ -40,7 +41,7 @@ using render::ordered_custom_fields;
 // the dialect's own schema name and the schema version this renderer
 // implements.
 constexpr std::string_view kSchemaName = "DoclingDocument";
-constexpr std::string_view kSchemaVersion = "1.10.0";
+constexpr std::string_view kSchemaVersion = kUpstreamSchemaVersion;
 
 // ---------------------------------------------------------------------------
 // Enum tag -> canonical string tables. Unknown tags fall back to the model

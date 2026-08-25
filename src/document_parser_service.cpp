@@ -1,4 +1,5 @@
 #include "grparse/document_parser_service.h"
+#include "grparse/schema_version.h"
 
 #include <algorithm>
 #include <chrono>
@@ -485,8 +486,8 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     // the wire schema minor this repo currently mirrors, and must match
     // what every other producer stamps on its documents.
     pipestream::document::v1::Document base;
-    base.set_schema_name("docling_document_v2");
-    base.set_version("1.10.0");
+    base.set_schema_name(kWireSchemaName);
+    base.set_version(kUpstreamSchemaVersion);
     base.set_name(requested_name.filename().string());
     auto* origin = base.mutable_origin();
     origin->set_filename(requested_name.filename().string());
@@ -846,13 +847,29 @@ grpc::ServerUnaryReactor* DocumentParserService::ConvertSource(
     // here on the conversion's own worker because it compresses and uploads,
     // which is not work a gRPC event thread may be handed.
     const auto& target = request->request().target();
+    bool delivery_failed = false;
     if (targets::needs_delivery(target)) {
       const grpc::Status delivered =
           targets::deliver(target, *document, document_response->exports(),
                            converted->mutable_target_result());
-      if (!delivered.ok()) return delivered;
+      if (!delivered.ok()) {
+        // Delivery is additive, never a replacement: the conversion the
+        // response already carries survives a store that would not take it.
+        // The failure lands as an error item and a partial status, except a
+        // misconfigured target itself, which the caller must fix and gets
+        // told about at the RPC layer.
+        if (delivered.error_code() == grpc::StatusCode::INVALID_ARGUMENT ||
+            delivered.error_code() == grpc::StatusCode::UNIMPLEMENTED) {
+          return delivered;
+        }
+        delivery_failed = true;
+        auto* error = converted->add_errors();
+        error->set_component_type(pipestream::parse::v1::COMPONENT_TYPE_PIPELINE);
+        error->set_module_name("target-delivery");
+        error->set_error_message(delivered.error_message());
+      }
     }
-    converted->set_status(result.failures.empty()
+    converted->set_status(result.failures.empty() && !delivery_failed
                               ? pipestream::parse::v1::CONVERSION_STATUS_SUCCESS
                               : pipestream::parse::v1::CONVERSION_STATUS_PARTIAL_SUCCESS);
     converted->set_processing_time(

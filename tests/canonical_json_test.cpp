@@ -780,6 +780,35 @@ void verify_bboxes_clamp_to_their_page() {
   require_contains(rendered, "\"l\": -7.0", "unknown pages never clamp");
 }
 
+// An ordered-list group relabels to a plain list group at load, exactly like
+// the reference model, and its items stay put: no migration, no synthesized
+// group, and the ordered label never reaches the canonical output.
+void verify_ordered_list_groups_relabel_to_list() {
+  docv1::Document document = base_document("ordered");
+  auto* item_base = text_base(&document, docv1::BaseTextItem::kListItem,
+                              docv1::DOC_ITEM_LABEL_LIST_ITEM, "one");
+  const std::string item_ref = item_base->self_ref();
+  auto* body_children = document.mutable_body()->mutable_children();
+  body_children->RemoveLast();  // the helper linked the item under the body
+  const std::string group_ref = "#/groups/" + std::to_string(document.groups_size());
+  auto* group = document.add_groups();
+  group->set_self_ref(group_ref);
+  group->mutable_parent()->set_ref("#/body");
+  group->set_content_layer(docv1::CONTENT_LAYER_BODY);
+  group->set_name("group");
+  group->set_label(docv1::GROUP_LABEL_ORDERED_LIST);
+  group->add_children()->set_ref(item_ref);
+  body_children->Add()->set_ref(group_ref);
+  item_base->mutable_parent()->set_ref(group_ref);
+
+  const std::string rendered = grparse::render_canonical_json(document);
+  require_contains(rendered, "\"label\": \"list\"", "the group relabels to list");
+  require_absent(rendered, "ordered_list", "the ordered label never dumps");
+  require_contains(rendered, "\"$ref\": \"#/texts/0\"", "the item keeps its home");
+  require(rendered.find("\"#/groups/1\"") == std::string::npos,
+          "no group is synthesized for an ordered-list member");
+}
+
 void verify_misplaced_list_items_migrate_into_a_group() {
   docv1::Document document = base_document("migrate");
   text_base(&document, docv1::BaseTextItem::kText, docv1::DOC_ITEM_LABEL_TEXT,
@@ -969,6 +998,7 @@ int main() {
     verify_pages_dump_in_numeric_order();
     verify_origin_and_raw_label_states();
     verify_bboxes_clamp_to_their_page();
+    verify_ordered_list_groups_relabel_to_list();
     verify_misplaced_list_items_migrate_into_a_group();
     verify_clean_documents_render_unnormalized();
     verify_concurrent_renders_share_one_document();

@@ -415,7 +415,7 @@ void verify_picture_placeholders_carry_the_upload_contract() {
                    "        \"width\": 640.0,\n"
                    "        \"height\": 480.0\n"
                    "      },\n"
-                   "      \"contentIndex\": 1\n"
+                   "      \"contentOrdinal\": 1\n"
                    "    },\n"
                    "    {\n"
                    "      \"selfRef\": \"#/pictures/1\",\n"
@@ -424,7 +424,7 @@ void verify_picture_placeholders_carry_the_upload_contract() {
                    "        \"width\": 0.0,\n"
                    "        \"height\": 0.0\n"
                    "      },\n"
-                   "      \"contentIndex\": 2\n"
+                   "      \"contentOrdinal\": 2\n"
                    "    }\n"
                    "  ]",
                    "every picture owes one placeholder entry");

@@ -1377,6 +1377,12 @@ void verify_queued_then_cancelled_call_never_dials_a_collector() {
   require(cancelled_status.error_code() == grpc::StatusCode::CANCELLED,
           "a cancelled call ends as CANCELLED");
 
+  // The client has its CANCELLED status, but the server learns of the
+  // cancel from a transport frame that races the worker being freed: the
+  // dequeue check is best-effort by design. Give the notification time to
+  // land before releasing the worker, so the assertion below tests the
+  // check rather than the transport's timing under parallel test load.
+  std::this_thread::sleep_for(500ms);
   recognizer.release();
   holder.join();
   require(holder_status.ok(), "the held conversion completes: " + holder_status.error_message());

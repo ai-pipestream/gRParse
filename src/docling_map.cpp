@@ -1,6 +1,7 @@
 // Ported from grpc-libreoffice src/docling_map.cpp (the canonical copy).
 // Keep in sync until the protos-home work gives the mapper one home.
 #include "grparse/docling_map.h"
+#include "grparse/schema_version.h"
 
 #include <algorithm>
 #include <cctype>
@@ -20,8 +21,8 @@ namespace {
 // The schema identity carried on the document root: the wire schema name
 // and the schema minor this repo currently mirrors. Every producer in the
 // fleet stamps the same pair.
-constexpr const char* kSchemaName = "docling_document_v2";
-constexpr const char* kSchemaVersion = "1.10.0";
+constexpr const char* kSchemaName = kWireSchemaName;
+constexpr const char* kSchemaVersion = kUpstreamSchemaVersion;
 
 // Grids above this cell count keep table_cells only; a fully materialized
 // grid over a sparse used range would dwarf the data it carries.
@@ -1654,7 +1655,12 @@ std::vector<std::string> docling_integrity_errors(
                         const google::protobuf::RepeatedPtrField<
                             docv1::ProvenanceItem>& prov) {
     for (const docv1::ProvenanceItem& item : prov) {
-      if (item.page_no() < 1) {
+      // A page-plane locator needs a 1-based page. The page-less arms
+      // (a media time span, a byte range, a sheet cell) locate content in
+      // their own space and legitimately carry no page at all.
+      const bool page_less =
+          item.has_time() || item.has_byte_range() || item.has_grid();
+      if (item.page_no() < 1 && !page_less) {
         errors.push_back("provenance of " + owner + " has page_no "
                          + std::to_string(item.page_no())
                          + ", which is not a 1-based page");
@@ -1669,7 +1675,9 @@ std::vector<std::string> docling_integrity_errors(
   auto collect_graph = [&](const std::string& owner,
                            const docv1::GraphData& graph) {
     for (const docv1::GraphCell& cell : graph.cells()) {
-      if (cell.has_prov() && cell.prov().page_no() < 1) {
+      if (cell.has_prov() && cell.prov().page_no() < 1 &&
+          !(cell.prov().has_time() || cell.prov().has_byte_range() ||
+            cell.prov().has_grid())) {
         errors.push_back("provenance of graph cell "
                          + std::to_string(cell.cell_id()) + " of " + owner
                          + " has page_no " + std::to_string(cell.prov().page_no())

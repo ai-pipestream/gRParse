@@ -283,7 +283,8 @@ message Target {
 // InBodyTarget returns results in the response body (default).
 message InBodyTarget {}
 
-// PutTarget sends results via HTTP PUT.
+// PutTarget sends results via HTTP PUT. Declared for wire compatibility;
+// this server answers it UNIMPLEMENTED.
 message PutTarget {
   string url = 1;
 }
@@ -295,7 +296,11 @@ message S3Target {
   string secret_key = 3;
   string bucket = 4;
   optional string key_prefix = 5;
-  bool verify_ssl = 6;
+  // TLS peer and hostname verification. UNSET MEANS VERIFY: a plain bool
+  // here would default to false and silently ship credentials and content
+  // with verification off; presence-tracked, only an explicit false
+  // disables it (for self-signed internal stores).
+  optional bool verify_ssl = 6;
 }
 
 // ZipTarget returns results as a ZIP archive.
@@ -303,7 +308,8 @@ message ZipTarget {}
 
 // PreSignedUrlTarget stores results in the configured artifact storage and
 // returns pre-signed download URLs. Requires artifact storage to be enabled
-// on the server; not supported for chunk endpoints.
+// on the server; not supported for chunk endpoints. Declared for wire
+// compatibility; this server answers it UNIMPLEMENTED.
 message PreSignedUrlTarget {}
 
 // StoredObject names one object a target wrote to an object store.

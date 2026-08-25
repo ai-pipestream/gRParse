@@ -36,7 +36,9 @@ grpc::Status deliver_s3(const parsev1::S3Target& target, const docv1::Document& 
   config.secret_key = target.secret_key();
   config.bucket = target.bucket();
   config.key_prefix = target.key_prefix();
-  config.verify_ssl = target.verify_ssl();
+  // Verification stays on unless the caller explicitly turned it off; an
+  // absent field must never mean insecure.
+  config.verify_ssl = target.has_verify_ssl() ? target.verify_ssl() : true;
 
   std::vector<UploadedObject> objects;
   try {

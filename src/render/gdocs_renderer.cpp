@@ -8,8 +8,12 @@
 // differs is the target vocabulary. Instead of markup, each body item becomes
 // one structural element of the Docs API "document" resource, streamed
 // straight into the canonical JSON writer the other JSON export uses (same
-// two-space layout, same ASCII-only escaping), so a downstream integration can
-// hand the payload to documents.create and follow it with one batchUpdate.
+// two-space layout, same ASCII-only escaping). The payload is a
+// shape-faithful rendering of that resource, not a create body: the API's
+// documents.create accepts only a title, so an integration walks
+// body.content and translates each element into batchUpdate requests
+// (insertText, insertTable, updateParagraphStyle), computing its own UTF-16
+// character indices as it inserts. No field here is a character index.
 //
 // The emitted object is always
 //
@@ -31,13 +35,15 @@
 // caption text (empty when it has none), and is recorded under
 // "inlineImagePlaceholders" as
 //
-//   {"selfRef", "mimeType", "size": {"width", "height"}, "contentIndex"}
+//   {"selfRef", "mimeType", "size": {"width", "height"}, "contentOrdinal"}
 //
-// where contentIndex is that paragraph's position in body.content. The
-// integration layer owns the second leg: upload the bytes it holds for
-// selfRef, then replace the placeholder paragraph at contentIndex with an
-// inline image of the uploaded URI. The picture's own bytes never appear in
-// this export, whatever the document carries.
+// where contentOrdinal is that paragraph's zero-based position in the
+// body.content ARRAY (an ordinal, deliberately not named like the API's
+// character indexes). The integration layer owns the second leg: upload the
+// bytes it holds for selfRef, then replace the placeholder paragraph it
+// finds at that ordinal with an inline image of the uploaded URI. The
+// picture's own bytes never appear in this export, whatever the document
+// carries.
 #include "gdocs_renderer.h"
 
 #include <algorithm>
@@ -608,7 +614,7 @@ class GdocsRenderer : RendererBase {
       writer_.member_double("width", placeholder.width);
       writer_.member_double("height", placeholder.height);
       writer_.end_object();
-      writer_.member_int("contentIndex", placeholder.content_index);
+      writer_.member_int("contentOrdinal", placeholder.content_index);
       writer_.end_object();
     }
     writer_.end_array();
