@@ -520,6 +520,70 @@ void verify_unary_multi_format_exports(TestServer* server) {
           "empty to_formats must keep the plain-text default alone");
 }
 
+// A ZipTarget is additive delivery: the archive rides beside a response body
+// that is still complete, and two identical conversions produce the same
+// archive bytes.
+void verify_unary_zip_target_delivers_an_archive(TestServer* server) {
+  auto client = server->unary_stub();
+  auto request = unary_request();
+  request.mutable_request()->mutable_target()->mutable_zip();
+
+  const auto convert = [&client, &request] {
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ConvertSourceResponse response;
+    const grpc::Status status = client->ConvertSource(&context, request, &response);
+    require(status.ok(), "zip-target conversion failed: " + status.error_message());
+    return response;
+  };
+
+  const auto response = convert();
+  require(response.response().has_target_result(), "a zip target must deliver a result");
+  const auto& delivered = response.response().target_result();
+  require(delivered.has_archive(), "a zip target delivers an archive");
+  require(delivered.archive().starts_with("PK\x03\x04"),
+          "the archive must be a ZIP");
+  require(delivered.objects().empty(), "a zip target writes no objects");
+  require(response.response().document().doc().texts_size() == 3 &&
+              response.response().document().exports().text() == "one\ntwo\nthree",
+          "the response body stays complete beside the archive");
+
+  require(convert().response().target_result().archive() == delivered.archive(),
+          "two identical conversions must deliver identical archives");
+}
+
+// The targets the wire declares but this server does not serve say so by
+// name, and the ones it treats as the default deliver nothing extra.
+void verify_unary_unimplemented_targets_are_refused(TestServer* server) {
+  auto client = server->unary_stub();
+  const auto refuse = [&client](auto&& select, const std::string& name) {
+    auto request = unary_request();
+    select(request.mutable_request()->mutable_target());
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ConvertSourceResponse response;
+    const grpc::Status status = client->ConvertSource(&context, request, &response);
+    require(status.error_code() == grpc::StatusCode::UNIMPLEMENTED,
+            "target '" + name + "' must be refused as unimplemented, not answered");
+    require(status.error_message().contains(name),
+            "the refusal names the target: " + status.error_message());
+  };
+  refuse([](pipestream::parse::v1::Target* target) { target->mutable_put()->set_url("http://sink"); },
+         "put");
+  refuse([](pipestream::parse::v1::Target* target) { target->mutable_presigned_url(); },
+         "presigned_url");
+
+  auto inbody = unary_request();
+  inbody.mutable_request()->mutable_target()->mutable_inbody();
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  pipestream::parse::v1::ConvertSourceResponse response;
+  const grpc::Status status = client->ConvertSource(&context, inbody, &response);
+  require(status.ok(), "an inbody target is the default: " + status.error_message());
+  require(!response.response().has_target_result(),
+          "an inbody target delivers nothing beside the response body");
+}
+
 void verify_unary_digital_path_bypasses_ocr() {
   TestServer server(0ms, true);
   auto client = server.unary_stub();
@@ -1341,6 +1405,8 @@ int main() {
     verify_unsupported_options_are_rejected(&server);
     verify_recognition_options_steer_the_cv_leg(&server);
     verify_unary_multi_format_exports(&server);
+    verify_unary_zip_target_delivers_an_archive(&server);
+    verify_unary_unimplemented_targets_are_refused(&server);
     verify_stream_resolves_recognition_options();
     verify_unary_digital_path_bypasses_ocr();
     verify_wide_page_window_streams_completely();

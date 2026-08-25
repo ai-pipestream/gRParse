@@ -30,6 +30,7 @@
 #include "grparse/document_render.h"
 #include "grparse/in_memory_document.h"
 #include "grparse/office_collector.h"
+#include "targets/target_step.h"
 
 namespace fs = std::filesystem;
 namespace pipestream = ai::pipestream;
@@ -805,6 +806,17 @@ grpc::ServerUnaryReactor* DocumentParserService::ConvertSource(
     // TEXT keeps its arena-order line export, the rest fold the body tree.
     const auto& options = request->request().options();
     render_exports(options, *document, document_response->mutable_exports());
+    // The target delivers the same conversion somewhere else; the response
+    // body above keeps everything it already carries either way. It runs
+    // here on the conversion's own worker because it compresses and uploads,
+    // which is not work a gRPC event thread may be handed.
+    const auto& target = request->request().target();
+    if (targets::needs_delivery(target)) {
+      const grpc::Status delivered =
+          targets::deliver(target, *document, document_response->exports(),
+                           converted->mutable_target_result());
+      if (!delivered.ok()) return delivered;
+    }
     converted->set_status(result.failures.empty()
                               ? pipestream::parse::v1::CONVERSION_STATUS_SUCCESS
                               : pipestream::parse::v1::CONVERSION_STATUS_PARTIAL_SUCCESS);

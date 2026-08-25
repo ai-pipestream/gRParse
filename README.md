@@ -93,6 +93,32 @@ The helper invokes the compiled bidirectional-streaming client. It reads the
 source and sends fixed-size chunks directly to gRPC; it does not base64-encode
 the document or create temporary files.
 
+### Result targets
+
+`ConvertSource` takes an optional `Target` naming where the result goes besides the response body. Targets are additive delivery, never a replacement: a response that carries a `target_result` still carries its full `DocumentResponse`.
+
+| Target | What it does |
+|---|---|
+| `inbody` (or unset) | the default: the response body alone |
+| `zip` | returns the result bundle as a ZIP in `TargetResult.archive` |
+| `s3` | writes the same bundle to an S3-compatible store and returns one `StoredObject` (key, ETag, size) per member |
+| `put`, `presigned_url` | `UNIMPLEMENTED`, named in the status message |
+
+The bundle is one canonical file set, identical whichever target delivers it:
+
+| Member | Contents |
+|---|---|
+| `manifest.json` | every other member with its SHA-256 and byte size, plus the generator and schema version |
+| `document.pb` | the `Document`, deterministically serialized |
+| `document.json` | the canonical JSON dialect of the same document |
+| `exports/<name>.<ext>` | one file per output format the request asked for |
+| `pages/page_NNNN.png` | each page image the document embeds |
+| `pictures/pic_NNNN.png` | each picture image the document embeds |
+
+Determinism is the point here too: members are sorted by path, archive timestamps are fixed at the MS-DOS epoch, the compressor is held to one setting, and the manifest carries no whitespace, no clock, and sorted keys. The same document and the same requested formats produce a byte-identical archive on every machine and every run.
+
+`S3Target` signs each PUT with AWS Signature V4 over libcurl; path style, no SDK, no ambient credential chain. The credentials come only from the request, are never logged, and never appear in an error message. `endpoint` may name any S3-compatible store (with or without a scheme, defaulting to https), `verify_ssl` is honored, and the region is read from the endpoint host or defaults to `us-east-1`. Uploads run on their own pool, sized by `GRPARSE_UPLOAD_WORKERS` (default 4) and `GRPARSE_UPLOAD_QUEUE` (default 32), and the RPC finishes only once every object is written; the first store refusal fails the call with `UNAVAILABLE` naming the key.
+
 ### Examples: browser demo and other-language clients
 
 [`examples/`](examples/README.md) holds working consumers of the streaming
