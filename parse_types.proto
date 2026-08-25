@@ -643,13 +643,33 @@ message Chunk {
   string filename = 1;
   int32 chunk_index = 2;
   string text = 3;
+  // Reserved for a richer serialization of the same chunk. It currently
+  // repeats `text` verbatim and is populated only when the request sets
+  // include_raw_text.
   optional string raw_text = 4;
+  // Token count of the chunk's contextualized text (the headings joined with
+  // "\n", then "\n", then the text) under the chunker's own tokenizer. Always
+  // populated by both chunkers.
   optional int32 num_tokens = 5;
   repeated string headings = 6;
   repeated string captions = 7;
   repeated string doc_items = 8;
   repeated int32 page_numbers = 9;
   map<string, string> metadata = 10;
+  // Half-open [start_offset, end_offset) span of the chunk in the document's
+  // concatenated body-text stream, counted in UTF-8 CODE POINTS, not bytes.
+  // Both are set together or neither is: a chunk whose items the parse gave
+  // no offset table entry for carries neither field rather than a guess.
+  optional int64 start_offset = 11;
+  optional int64 end_offset = 12;
+  // The exact boundary-rule version this chunk was produced under. Identical
+  // input bytes and an identical digest guarantee identical chunk bytes.
+  //
+  //   hierarchical: "grparse-hier/1"
+  //   hybrid:       "grparse-hybrid/1;tok=wordish/1;sent=sentence/1;
+  //                  max_tokens=N;merge_peers=B"
+  //                 (one line on the wire, N decimal, B "true" or "false")
+  string rules_digest = 13;
 }
 
 // ChunkDocumentResponse mirrors the REST chunk response body.
