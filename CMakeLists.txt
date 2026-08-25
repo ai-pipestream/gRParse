@@ -475,6 +475,7 @@ add_library(grparse_core STATIC
   src/document_assembly.cpp
   src/in_memory_document.cpp
   src/ocr_engine.cpp
+  src/layout_decode.cpp
   src/layout_engine.cpp
   src/page_scheduler.cpp
   src/prometheus_metrics.cpp
@@ -508,6 +509,7 @@ if(BUILD_TESTING)
     document-merge-test
     document-render-test
     figure-classifier-test
+    layout-decode-test
     layout-engine-test
     office-collector-test
     office-cv-enrichment-test
@@ -540,6 +542,13 @@ if(BUILD_TESTING)
   # tests, never installed or staged into images.
   add_executable(grparse-markdown-tool tests/markdown_tool.cpp)
   target_link_libraries(grparse-markdown-tool PRIVATE grparse_core grparse_flags)
+  # Development utility for layout measurement: a document in, per-page
+  # detections, label counts, and device timings out on whichever execution
+  # provider the environment selects.  Built with the tests, never installed
+  # or staged into images.
+  add_executable(grparse-layout-tool tests/layout_tool.cpp)
+  target_include_directories(grparse-layout-tool PRIVATE compat)
+  target_link_libraries(grparse-layout-tool PRIVATE grparse_core grparse_ort_ep grparse_flags)
   # The umbrella target is what image builds compile.  Building it (instead of
   # naming test binaries in each Dockerfile) means a test added here can never
   # be silently absent from an image's ctest run ("Not Run" failures).

@@ -184,15 +184,18 @@ std::unique_ptr<grparse::OcrEnginePool> build_engine_pool(const std::filesystem:
 
 // GRPARSE_LAYOUT: auto (default) enables layout labelling when the model file
 // exists; on requires it and fails startup when absent; off disables it.
-// Nothing here degrades silently: auto logs which way it went.
-std::unique_ptr<grparse::LayoutEnginePool> build_layout_pool(
-    const std::filesystem::path& models_dir, size_t worker_count) {
+// GRPARSE_LAYOUT_MODEL picks which detector that file is.  Nothing here
+// degrades silently: auto logs which way it went, and an explicitly selected
+// model that is not on disk stops the process.
+std::unique_ptr<grparse::LayoutEngine> build_layout_engine(
+    const std::filesystem::path& models_dir) {
   const char* configured = std::getenv("GRPARSE_LAYOUT");
   const std::string mode = configured == nullptr || *configured == '\0' ? "auto" : configured;
   if (mode != "auto" && mode != "on" && mode != "off") {
     throw std::invalid_argument("GRPARSE_LAYOUT must be auto, on, or off");
   }
-  const std::filesystem::path model = models_dir / "layout_publaynet.onnx";
+  const grparse::LayoutModel selection = grparse::configured_layout_model();
+  const std::filesystem::path model = models_dir / grparse::layout_model_file(selection);
   if (mode == "off") {
     std::println("gRParse layout: disabled (GRPARSE_LAYOUT=off)");
     return nullptr;
@@ -201,11 +204,13 @@ std::unique_ptr<grparse::LayoutEnginePool> build_layout_pool(
     std::println("gRParse layout: disabled (no {}; see models/README.md)", model.string());
     return nullptr;
   }
-  // "on" with a missing file reaches the pool constructor, which throws with
-  // the model path — the fail-loud startup the explicit setting asks for.
-  auto pool = std::make_unique<grparse::LayoutEnginePool>(model, worker_count);
-  std::println("gRParse layout: enabled ({} sessions, {})", pool->size(), model.string());
-  return pool;
+  // "on" with a missing file reaches the engine constructor, which throws with
+  // the model path and the selection - the fail-loud startup that setting asks
+  // for.  One session serves every inference worker.
+  auto engine = std::make_unique<grparse::LayoutEngine>(model, selection);
+  std::println("gRParse layout: enabled ({}, {} labels, one shared session, {})",
+               grparse::layout_model_name(selection), engine->labels().size(), model.string());
+  return engine;
 }
 
 // GRPARSE_TABLE_STRUCTURE follows the same auto/on/off contract as layout.
@@ -406,7 +411,7 @@ int main() {
     const int gpu_index = configured_index("GRPARSE_CUDA_DEVICE", 0);
     const std::filesystem::path models_dir = models == nullptr ? "/models" : models;
     const auto engines = build_engine_pool(models_dir, inference_workers, gpu_index);
-    const auto layout = build_layout_pool(models_dir, inference_workers);
+    const auto layout = build_layout_engine(models_dir);
     const auto table_structure =
         build_table_structure_pool(models_dir, inference_workers, layout != nullptr);
     const auto figure_classes =

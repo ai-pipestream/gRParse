@@ -2,11 +2,15 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <numeric>
 #include <stdexcept>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include <opencv2/imgproc.hpp>
 
@@ -15,12 +19,122 @@
 namespace grparse {
 namespace {
 
-// Model geometry and thresholds mirror RapidLayout's pp_layout_publaynet
-// handler, which is the reference this implementation is golden-tested
-// against.  The export is a raw PicoDet head: four pyramid levels of class
-// scores plus DFL box distributions that must be decoded here.
-constexpr int kInputHeight = 800;
-constexpr int kInputWidth = 608;
+// One inference plus decode for a model family.  Implementations are immutable
+// after bind(): every buffer a detect() call needs lives on the calling
+// worker's stack, which is what lets one shared session serve all of them.
+class LayoutStrategy {
+ public:
+  virtual ~LayoutStrategy() = default;
+  // Validates the graph against what the decode expects and caches its
+  // input/output names.  Throws when the file is not the model it claims.
+  virtual void bind(Ort::Session& session) = 0;
+  virtual std::vector<LayoutRegion> detect(Ort::Session& session, const cv::Mat& image) const = 0;
+};
+
+Ort::MemoryInfo cpu_memory() {
+  return Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+}
+
+// ---------------------------------------------------------------------------
+// Query-based detector: 300 queries, boxes already in page pixels, no NMS.
+// ---------------------------------------------------------------------------
+
+constexpr int kQueryInputSide = 640;
+
+class QueryDetectorStrategy final : public LayoutStrategy {
+ public:
+  void bind(Ort::Session& session) override {
+    Ort::AllocatorWithDefaultOptions allocator;
+    if (session.GetInputCount() != 2 || session.GetOutputCount() != 3) {
+      throw std::runtime_error(
+          "Layout model does not look like the query-based detector (expected 2 inputs and 3 "
+          "outputs)");
+    }
+    for (size_t index = 0; index < 2; ++index) {
+      input_names_.push_back(session.GetInputNameAllocated(index, allocator).get());
+    }
+    for (size_t index = 0; index < 3; ++index) {
+      output_names_.push_back(session.GetOutputNameAllocated(index, allocator).get());
+    }
+    if (input_names_[0] != "images" || input_names_[1] != "orig_target_sizes") {
+      throw std::runtime_error("Layout model inputs must be images and orig_target_sizes");
+    }
+    labels_index_ = name_index("labels");
+    boxes_index_ = name_index("boxes");
+    scores_index_ = name_index("scores");
+    for (const auto& name : input_names_) input_pointers_.push_back(name.c_str());
+    for (const auto& name : output_names_) output_pointers_.push_back(name.c_str());
+  }
+
+  std::vector<LayoutRegion> detect(Ort::Session& session, const cv::Mat& image) const override {
+    // Preprocess: bilinear resize to the fixed square, channel order swapped
+    // to RGB, raw bytes.  This graph rescales and normalizes internally, so
+    // neither happens here.
+    cv::Mat resized;
+    cv::resize(image, resized, cv::Size(kQueryInputSide, kQueryInputSide), 0, 0, cv::INTER_LINEAR);
+    std::vector<uint8_t> pixels(static_cast<size_t>(3) * kQueryInputSide * kQueryInputSide);
+    const size_t plane = static_cast<size_t>(kQueryInputSide) * kQueryInputSide;
+    for (int row = 0; row < kQueryInputSide; ++row) {
+      const cv::Vec3b* source = resized.ptr<cv::Vec3b>(row);
+      for (int column = 0; column < kQueryInputSide; ++column) {
+        const size_t offset = static_cast<size_t>(row) * kQueryInputSide + column;
+        for (int channel = 0; channel < 3; ++channel) {
+          // BGR pixel -> RGB tensor channel.
+          pixels[plane * static_cast<size_t>(channel) + offset] = source[column][2 - channel];
+        }
+      }
+    }
+
+    // Width first: the graph rescales its normalized boxes by this pair, so
+    // transposing it silently produces boxes for a page of the wrong shape.
+    std::array<int64_t, 2> original_size = {static_cast<int64_t>(image.cols),
+                                            static_cast<int64_t>(image.rows)};
+    const std::array<int64_t, 4> image_shape = {1, 3, kQueryInputSide, kQueryInputSide};
+    const std::array<int64_t, 2> size_shape = {1, 2};
+    const Ort::MemoryInfo memory = cpu_memory();
+    std::array<Ort::Value, 2> inputs = {
+        Ort::Value::CreateTensor<uint8_t>(memory, pixels.data(), pixels.size(), image_shape.data(),
+                                          image_shape.size()),
+        Ort::Value::CreateTensor<int64_t>(memory, original_size.data(), original_size.size(),
+                                          size_shape.data(), size_shape.size())};
+    auto outputs = session.Run(Ort::RunOptions{nullptr}, input_pointers_.data(), inputs.data(),
+                               inputs.size(), output_pointers_.data(), output_pointers_.size());
+
+    const auto shape = outputs[scores_index_].GetTensorTypeAndShapeInfo().GetShape();
+    if (shape.size() != 2 || shape[0] != 1) {
+      throw std::runtime_error("Layout model returned an unexpected score shape");
+    }
+    return decode_query_detector(outputs[labels_index_].GetTensorData<int64_t>(),
+                                 outputs[boxes_index_].GetTensorData<float>(),
+                                 outputs[scores_index_].GetTensorData<float>(),
+                                 static_cast<size_t>(shape[1]), image.cols, image.rows);
+  }
+
+ private:
+  size_t name_index(const std::string& name) const {
+    for (size_t index = 0; index < output_names_.size(); ++index) {
+      if (output_names_[index] == name) return index;
+    }
+    throw std::runtime_error("Layout model has no output named " + name);
+  }
+
+  std::vector<std::string> input_names_;
+  std::vector<std::string> output_names_;
+  std::vector<const char*> input_pointers_;
+  std::vector<const char*> output_pointers_;
+  size_t labels_index_ = 0;
+  size_t boxes_index_ = 0;
+  size_t scores_index_ = 0;
+};
+
+// ---------------------------------------------------------------------------
+// Anchor-free detector: four pyramid levels of class scores plus DFL box
+// distributions that must be decoded and suppressed here.  Geometry and
+// thresholds mirror the handler this decode is golden-tested against.
+// ---------------------------------------------------------------------------
+
+constexpr int kGridHeight = 800;
+constexpr int kGridWidth = 608;
 constexpr std::array<int, 4> kStrides = {8, 16, 32, 64};
 constexpr int kRegBins = 8;  // DFL bins per box side
 constexpr float kConfidenceThreshold = 0.5F;
@@ -36,7 +150,7 @@ constexpr std::array<float, 3> kStd = {0.229F, 0.224F, 0.225F};
 struct Candidate {
   float score = 0.0F;
   int label = 0;
-  // Box in model input space (608x800), clipped there before rescaling.
+  // Box in model input space, clipped there before rescaling.
   float left = 0.0F, top = 0.0F, right = 0.0F, bottom = 0.0F;
 };
 
@@ -74,52 +188,32 @@ void append_class_nms(std::vector<Candidate>& picked, std::vector<Candidate> can
   }
 }
 
-}  // namespace
-
-const std::vector<std::string>& LayoutEngine::labels() {
-  static const std::vector<std::string> kLabels = {"text", "title", "list", "table", "figure"};
-  return kLabels;
-}
-
-class LayoutEngine::Impl {
+class AnchorFreeStrategy final : public LayoutStrategy {
  public:
-  explicit Impl(const std::filesystem::path& model_path)
-      : env_(ORT_LOGGING_LEVEL_ERROR, "grparse-layout") {
-    if (!std::filesystem::exists(model_path)) {
-      throw std::runtime_error("Layout model is missing: " + model_path.string());
-    }
-    options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
-    // Same provider decision point as the OCR sessions.
-    append_execution_provider(options_, -1);
-    session_ = Ort::Session(env_, model_path.c_str(), options_);
-
+  void bind(Ort::Session& session) override {
     Ort::AllocatorWithDefaultOptions allocator;
-    input_name_ = session_.GetInputNameAllocated(0, allocator).get();
-    const size_t output_count = session_.GetOutputCount();
+    input_name_ = session.GetInputNameAllocated(0, allocator).get();
+    const size_t output_count = session.GetOutputCount();
     if (output_count != kStrides.size() * 2) {
       throw std::runtime_error("Layout model has an unexpected output count");
     }
     for (size_t index = 0; index < output_count; ++index) {
-      output_names_.push_back(session_.GetOutputNameAllocated(index, allocator).get());
+      output_names_.push_back(session.GetOutputNameAllocated(index, allocator).get());
     }
-    for (const auto& name : output_names_) output_name_pointers_.push_back(name.c_str());
+    for (const auto& name : output_names_) output_pointers_.push_back(name.c_str());
   }
 
-  std::vector<LayoutRegion> detect_regions(const cv::Mat& image) {
-    if (image.empty() || image.type() != CV_8UC3) {
-      throw std::invalid_argument("Layout detection expects a non-empty BGR image");
-    }
-
+  std::vector<LayoutRegion> detect(Ort::Session& session, const cv::Mat& image) const override {
     // Preprocess: plain resize (no aspect preservation, per reference),
     // scale to [0,1], per-channel normalize, HWC -> CHW.
     cv::Mat resized;
-    cv::resize(image, resized, cv::Size(kInputWidth, kInputHeight));
-    std::vector<float> tensor(static_cast<size_t>(3) * kInputHeight * kInputWidth);
-    const size_t plane = static_cast<size_t>(kInputHeight) * kInputWidth;
-    for (int row = 0; row < kInputHeight; ++row) {
+    cv::resize(image, resized, cv::Size(kGridWidth, kGridHeight));
+    std::vector<float> tensor(static_cast<size_t>(3) * kGridHeight * kGridWidth);
+    const size_t plane = static_cast<size_t>(kGridHeight) * kGridWidth;
+    for (int row = 0; row < kGridHeight; ++row) {
       const cv::Vec3b* pixels = resized.ptr<cv::Vec3b>(row);
-      for (int column = 0; column < kInputWidth; ++column) {
-        const size_t offset = static_cast<size_t>(row) * kInputWidth + column;
+      for (int column = 0; column < kGridWidth; ++column) {
+        const size_t offset = static_cast<size_t>(row) * kGridWidth + column;
         for (int channel = 0; channel < 3; ++channel) {
           tensor[plane * static_cast<size_t>(channel) + offset] =
               (static_cast<float>(pixels[column][channel]) / 255.0F - kMean[channel]) /
@@ -128,24 +222,26 @@ class LayoutEngine::Impl {
       }
     }
 
-    const std::array<int64_t, 4> input_shape = {1, 3, kInputHeight, kInputWidth};
-    Ort::MemoryInfo memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    const std::array<int64_t, 4> input_shape = {1, 3, kGridHeight, kGridWidth};
+    const Ort::MemoryInfo memory = cpu_memory();
     Ort::Value input = Ort::Value::CreateTensor<float>(memory, tensor.data(), tensor.size(),
                                                        input_shape.data(), input_shape.size());
     const char* input_names[] = {input_name_.c_str()};
-    auto outputs = session_.Run(Ort::RunOptions{nullptr}, input_names, &input, 1,
-                                output_name_pointers_.data(), output_name_pointers_.size());
+    auto outputs = session.Run(Ort::RunOptions{nullptr}, input_names, &input, 1,
+                               output_pointers_.data(), output_pointers_.size());
 
-    // Decode each pyramid level: outputs [0..3] are class scores [1, N, 5],
-    // outputs [4..7] the matching DFL box distributions [1, N, 4 * kRegBins].
-    const int class_count = static_cast<int>(labels().size());
+    // Decode each pyramid level: the first half of the outputs are class
+    // scores [1, N, C], the second half the matching DFL box distributions
+    // [1, N, 4 * kRegBins].
+    const auto& names = layout_labels(LayoutModel::kPicoDet);
+    const int class_count = static_cast<int>(names.size());
     std::vector<Candidate> candidates;
     for (size_t level = 0; level < kStrides.size(); ++level) {
       const float* scores = outputs[level].GetTensorData<float>();
       const float* distributions = outputs[level + kStrides.size()].GetTensorData<float>();
       const int stride = kStrides[level];
-      const int cells_high = (kInputHeight + stride - 1) / stride;
-      const int cells_wide = (kInputWidth + stride - 1) / stride;
+      const int cells_high = (kGridHeight + stride - 1) / stride;
+      const int cells_wide = (kGridWidth + stride - 1) / stride;
       const int cells = cells_high * cells_wide;
 
       for (int cell = 0; cell < cells; ++cell) {
@@ -181,12 +277,11 @@ class LayoutEngine::Impl {
             (static_cast<float>(cell / cells_wide) + 0.5F) * static_cast<float>(stride);
         Candidate candidate;
         // Clip in model space before rescaling, matching the reference.
-        candidate.left = std::clamp(center_x - distances[0], 0.0F, static_cast<float>(kInputWidth));
-        candidate.top = std::clamp(center_y - distances[1], 0.0F, static_cast<float>(kInputHeight));
-        candidate.right =
-            std::clamp(center_x + distances[2], 0.0F, static_cast<float>(kInputWidth));
+        candidate.left = std::clamp(center_x - distances[0], 0.0F, static_cast<float>(kGridWidth));
+        candidate.top = std::clamp(center_y - distances[1], 0.0F, static_cast<float>(kGridHeight));
+        candidate.right = std::clamp(center_x + distances[2], 0.0F, static_cast<float>(kGridWidth));
         candidate.bottom =
-            std::clamp(center_y + distances[3], 0.0F, static_cast<float>(kInputHeight));
+            std::clamp(center_y + distances[3], 0.0F, static_cast<float>(kGridHeight));
         for (int label = 0; label < class_count; ++label) {
           if (cell_scores[label] > kConfidenceThreshold) {
             candidate.score = cell_scores[label];
@@ -207,13 +302,13 @@ class LayoutEngine::Impl {
       if (!of_class.empty()) append_class_nms(picked, std::move(of_class));
     }
 
-    const float scale_x = static_cast<float>(kInputWidth) / static_cast<float>(image.cols);
-    const float scale_y = static_cast<float>(kInputHeight) / static_cast<float>(image.rows);
+    const float scale_x = static_cast<float>(kGridWidth) / static_cast<float>(image.cols);
+    const float scale_y = static_cast<float>(kGridHeight) / static_cast<float>(image.rows);
     std::vector<LayoutRegion> regions;
     regions.reserve(picked.size());
     for (const auto& candidate : picked) {
       LayoutRegion region;
-      region.label = labels()[static_cast<size_t>(candidate.label)];
+      region.label = names[static_cast<size_t>(candidate.label)];
       region.confidence = candidate.score;
       region.left = static_cast<int>(std::lround(candidate.left / scale_x));
       region.top = static_cast<int>(std::lround(candidate.top / scale_y));
@@ -221,26 +316,77 @@ class LayoutEngine::Impl {
       region.bottom = static_cast<int>(std::lround(candidate.bottom / scale_y));
       regions.push_back(std::move(region));
     }
-    // Deterministic order for downstream assembly: by confidence, then geometry.
-    std::ranges::sort(regions, [](const LayoutRegion& a, const LayoutRegion& b) {
-      if (a.confidence != b.confidence) return a.confidence > b.confidence;
-      if (a.top != b.top) return a.top < b.top;
-      return a.left < b.left;
-    });
+    sort_regions(regions);
     return regions;
   }
+
+ private:
+  std::string input_name_;
+  std::vector<std::string> output_names_;
+  std::vector<const char*> output_pointers_;
+};
+
+std::unique_ptr<LayoutStrategy> make_strategy(LayoutModel model) {
+  if (model == LayoutModel::kHeron) return std::make_unique<QueryDetectorStrategy>();
+  return std::make_unique<AnchorFreeStrategy>();
+}
+
+}  // namespace
+
+const std::vector<std::string>& LayoutEngine::labels(LayoutModel model) {
+  return layout_labels(model);
+}
+
+class LayoutEngine::Impl {
+ public:
+  Impl(const std::filesystem::path& model_path, LayoutModel model)
+      : env_(ORT_LOGGING_LEVEL_ERROR, "grparse-layout"), strategy_(make_strategy(model)) {
+    if (!std::filesystem::exists(model_path)) {
+      throw std::runtime_error("Layout model for GRPARSE_LAYOUT_MODEL=" +
+                               std::string(layout_model_name(model)) +
+                               " is missing: " + model_path.string() +
+                               " (see models/README.md)");
+    }
+    options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
+    // Same provider decision point as the OCR sessions.
+    append_execution_provider(options_, -1);
+    session_ = Ort::Session(env_, model_path.c_str(), options_);
+    strategy_->bind(session_);
+  }
+
+  std::vector<LayoutRegion> detect_regions(const cv::Mat& image) {
+    if (image.empty() || image.type() != CV_8UC3) {
+      throw std::invalid_argument("Layout detection expects a non-empty BGR image");
+    }
+    const uint64_t inside = in_flight_.fetch_add(1) + 1;
+    uint64_t peak = peak_concurrency_.load();
+    while (inside > peak && !peak_concurrency_.compare_exchange_weak(peak, inside)) {
+    }
+    try {
+      auto regions = strategy_->detect(session_, image);
+      in_flight_.fetch_sub(1);
+      detections_.fetch_add(1);
+      return regions;
+    } catch (...) {
+      in_flight_.fetch_sub(1);
+      throw;
+    }
+  }
+
+  Stats stats() const { return Stats{detections_.load(), peak_concurrency_.load()}; }
 
  private:
   Ort::Env env_;
   Ort::SessionOptions options_;
   Ort::Session session_{nullptr};
-  std::string input_name_;
-  std::vector<std::string> output_names_;
-  std::vector<const char*> output_name_pointers_;
+  std::unique_ptr<LayoutStrategy> strategy_;
+  std::atomic<uint64_t> in_flight_{0};
+  std::atomic<uint64_t> peak_concurrency_{0};
+  std::atomic<uint64_t> detections_{0};
 };
 
-LayoutEngine::LayoutEngine(const std::filesystem::path& model_path)
-    : impl_(std::make_unique<Impl>(model_path)) {}
+LayoutEngine::LayoutEngine(const std::filesystem::path& model_path, LayoutModel model)
+    : impl_(std::make_unique<Impl>(model_path, model)), model_(model) {}
 
 LayoutEngine::~LayoutEngine() = default;
 
@@ -248,21 +394,6 @@ std::vector<LayoutRegion> LayoutEngine::detect_regions(const cv::Mat& image) {
   return impl_->detect_regions(image);
 }
 
-LayoutEnginePool::LayoutEnginePool(const std::filesystem::path& model_path, size_t worker_count)
-    : engines_(worker_count, [model_path] { return std::make_unique<LayoutEngine>(model_path); }) {
-  engines_.prime();
-}
-
-std::vector<LayoutRegion> LayoutEnginePool::detect_regions(const cv::Mat& image) {
-  auto lease = engines_.acquire();
-  try {
-    return lease->detect_regions(image);
-  } catch (...) {
-    // Same policy as OCR: a session that throws mid-inference may be wedged;
-    // rebuild it on next acquire instead of reusing it.
-    lease.discard();
-    throw;
-  }
-}
+LayoutEngine::Stats LayoutEngine::stats() const { return impl_->stats(); }
 
 }  // namespace grparse
