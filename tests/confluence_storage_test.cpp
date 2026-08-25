@@ -343,6 +343,20 @@ void verify_code_macro_language_mapping() {
           "a macro with no language parameter claims none");
 }
 
+void verify_list_item_blocks_attach_to_the_list() {
+  const auto outcome = parse(
+      "<ul><li><p>caption</p><p><ac:image>"
+      "<ri:attachment ri:filename=\"a.png\" /></ac:image></p></li></ul>");
+  const auto& document = outcome.document;
+  require(document.texts_size() == 1 &&
+              base_of(document.texts(0)).text() == "caption",
+          "the item keeps the text of its own paragraphs");
+  require(document.pictures_size() == 1,
+          "a block wrapped in a list item's paragraph is not flattened away");
+  require(document.pictures(0).parent().ref() == document.groups(0).self_ref(),
+          "it attaches to the list rather than disappearing into the item");
+}
+
 void verify_task_list_checkbox_states() {
   const auto outcome = parse(
       "<ac:task-list>"
@@ -618,6 +632,7 @@ int main() {
     verify_out_of_range_span_is_clamped();
     verify_oversized_table_keeps_cells_only();
     verify_code_macro_language_mapping();
+    verify_list_item_blocks_attach_to_the_list();
     verify_task_list_checkbox_states();
     verify_panel_macro_marks_items();
     verify_unknown_macro_body_survives();

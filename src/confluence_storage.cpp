@@ -554,6 +554,13 @@ bool is_block(const Node& node) {
                              [](const Node& child) { return is_block(child); });
 }
 
+// True when a block element wraps another block: such a paragraph cannot be
+// read as a run of inline text without losing what it wraps.
+bool contains_block(const Node& node) {
+  return std::ranges::any_of(node.children,
+                             [](const Node& child) { return is_block(child); });
+}
+
 class StorageFold {
  public:
   StorageFold(docv1::Document* document, std::vector<std::string>* warnings)
@@ -991,7 +998,10 @@ void StorageFold::emit_list_item(const Node& node, const std::string& group_ref,
   std::vector<InlineRun> runs;
   std::vector<const Node*> blocks;
   for (const Node& child : node.children) {
-    if (html_is(child, "p")) {
+    // The item's own text is the text of the paragraphs written directly in
+    // it; a paragraph that wraps a block is a block, or the block it wraps
+    // would be flattened into text and lost.
+    if (html_is(child, "p") && !contains_block(child)) {
       std::vector<InlineRun> paragraph;
       collect_inline_children(child, InlineStyle{}, &paragraph);
       trim_runs(&paragraph);
