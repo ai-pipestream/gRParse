@@ -30,8 +30,11 @@ constexpr char kModel[] = "native";
 constexpr int kMaxGridCells = 4096;
 
 // Spans are clamped to the table's own extent; anything larger is malformed
-// markup, and the clamp keeps offsets inside the grid it describes.
+// markup, and the clamp keeps offsets inside the grid it describes. The
+// column ceiling bounds the placement walk itself, so a body full of wide
+// column spans cannot grow the row occupancy without limit.
 constexpr int kMaxSpan = 1024;
+constexpr int kMaxColumns = 4096;
 
 std::string lowercase(std::string value) {
   std::ranges::transform(value, value.begin(), [](unsigned char letter) {
@@ -1134,9 +1137,19 @@ void StorageFold::emit_table(const Node& node, const std::string& parent_ref) {
         ++column;
       }
       int row_span = span_attribute(cell, "rowspan", &clamped);
-      const int col_span = span_attribute(cell, "colspan", &clamped);
+      int col_span = span_attribute(cell, "colspan", &clamped);
       if (row + row_span > num_rows) {
         row_span = num_rows - row;
+        clamped = true;
+      }
+      if (column >= kMaxColumns) {
+        // Past the ceiling there is no slot left to place into; the cell's
+        // text would need a column that cannot be addressed.
+        clamped = true;
+        break;
+      }
+      if (column + col_span > kMaxColumns) {
+        col_span = kMaxColumns - column;
         clamped = true;
       }
       for (int r = row; r < row + row_span; ++r) {
@@ -1189,7 +1202,10 @@ void StorageFold::emit_table(const Node& node, const std::string& parent_ref) {
   // The materialized grid, under the same ceiling the office fold uses: a
   // spanning cell fills every slot it covers, and nothing writes outside the
   // rectangle the header declared.
-  if (num_cols <= 0 || num_rows * num_cols > kMaxGridCells) return;
+  if (num_cols <= 0 ||
+      static_cast<long long>(num_rows) * num_cols > kMaxGridCells) {
+    return;
+  }
   for (int row = 0; row < num_rows; ++row) {
     docv1::TableRow* out_row = data->add_grid();
     for (int column = 0; column < num_cols; ++column) {
