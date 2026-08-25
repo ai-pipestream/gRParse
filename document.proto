@@ -896,6 +896,12 @@ message PictureScatterChartData {
 }
 
 // PictureAnnotation is a union of all annotation types that can appear on a picture.
+//
+// PLACEMENT RULE: item `meta` is the export contract; the canonical dialect
+// reads meta and ignores this list entirely (upstream deprecates it in favor
+// of meta). Producers that want their data visible in dialect exports MUST
+// write it into meta (a first-class slot or a namespaced custom field) and
+// may additionally mirror it here for wire consumers.
 message PictureAnnotation {
   oneof annotation {
     DescriptionAnnotation description = 1;

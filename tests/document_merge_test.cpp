@@ -136,12 +136,52 @@ void verify_merge_is_additive_on_replay() {
           "replayed merge stays well formed");
 }
 
+// Field regions and field items merge like every other arena: renumbered
+// past the target's entries with their references rewritten, and the
+// extension carriers ride along.
+void verify_merge_carries_field_arenas_and_extensions() {
+  docv1::Document target = base_document();
+  auto* existing = target.add_field_regions();
+  existing->set_self_ref("#/field_regions/0");
+  existing->mutable_parent()->set_ref("#/body");
+  target.mutable_body()->add_children()->set_ref("#/field_regions/0");
+
+  docv1::Document source = base_document();
+  auto* region = source.add_field_regions();
+  region->set_self_ref("#/field_regions/0");
+  region->mutable_parent()->set_ref("#/body");
+  source.mutable_body()->add_children()->set_ref("#/field_regions/0");
+  auto* field = source.add_field_items();
+  field->set_self_ref("#/field_items/0");
+  field->mutable_parent()->set_ref("#/field_regions/0");
+  region->add_children()->set_ref("#/field_items/0");
+  auto* attachment = source.add_attachments();
+  attachment->set_id("part:7");
+  attachment->set_media_type("application/pdf");
+  source.mutable_source_meta()->set_title("Quarterly");
+
+  grparse::merge_documents(std::move(source), &target);
+  require(target.field_regions_size() == 2 && target.field_items_size() == 1,
+          "field arenas append");
+  require(target.field_regions(1).self_ref() == "#/field_regions/1",
+          "moved field region renumbers past the existing one");
+  require(target.field_regions(1).children(0).ref() == "#/field_items/0",
+          "field item references follow the renumbering");
+  require(target.field_items(0).parent().ref() == "#/field_regions/1",
+          "field item parents follow the renumbering");
+  require(target.attachments_size() == 1 && target.attachments(0).id() == "part:7",
+          "attachment registry appends");
+  require(target.source_meta().title() == "Quarterly",
+          "first source metadata claim sticks");
+}
+
 }  // namespace
 
 int main() {
   try {
     verify_merge_renumbers_and_rewrites();
     verify_merge_is_additive_on_replay();
+    verify_merge_carries_field_arenas_and_extensions();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
     std::println(stderr, "document-merge-test: {}", error.what());

@@ -295,6 +295,18 @@ void verify_barcode_payloads_become_misc_annotations() {
               picture.annotations(4).misc().content().fields().at("value").string_value() ==
                   "SKU-1234",
           "every payload gets both shapes");
+  require(picture.meta().custom_fields().count("pipestream__barcodes") == 1 &&
+              picture.meta()
+                      .custom_fields()
+                      .at("pipestream__barcodes")
+                      .list_value()
+                      .values_size() == 2,
+          "meta carries the payloads the canonical dialect exports");
+  const auto& classified_meta = picture.meta().classification();
+  require(classified_meta.predictions_size() == 1 &&
+              classified_meta.predictions(0).class_name() == "qr_code" &&
+              classified_meta.predictions(0).created_by() == "figure-classifier",
+          "classification lands in meta as well as the wire annotation");
 }
 
 // The detector's full vocabulary has to survive assembly: every structural
@@ -330,6 +342,12 @@ void verify_every_region_label_reaches_the_document() {
     ai::pipestream::parse::v1::PageData data;
     grparse::append_page_data(page, 1, &cursor, &data);
     require(data.texts_size() == 1, std::string("one item for a ") + expected.region + " region");
+    if (expected.label == docv1::DOC_ITEM_LABEL_CODE) {
+      // CodeItem keeps its fields inline instead of a nested base.
+      require(data.texts(0).has_code() && data.texts(0).code().label() == expected.label,
+              "a line inside a code region becomes a CodeItem");
+      continue;
+    }
     require(item_base(data.texts(0)).label() == expected.label,
             std::string("a line inside a ") + expected.region + " region takes that label");
   }

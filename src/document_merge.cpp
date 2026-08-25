@@ -120,6 +120,10 @@ void merge_documents(docv1::Document&& source, docv1::Document* target) {
             "#/key_value_items/", self_ref_field, &mapping);
   map_arena(source.form_items(), target->form_items_size(), "#/form_items/",
             self_ref_field, &mapping);
+  map_arena(source.field_regions(), target->field_regions_size(), "#/field_regions/",
+            self_ref_field, &mapping);
+  map_arena(source.field_items(), target->field_items_size(), "#/field_items/",
+            self_ref_field, &mapping);
 
   rewrite_refs(mapping, &source);
 
@@ -133,6 +137,12 @@ void merge_documents(docv1::Document&& source, docv1::Document* target) {
   for (auto& item : *source.mutable_form_items()) {
     *target->add_form_items() = std::move(item);
   }
+  for (auto& item : *source.mutable_field_regions()) {
+    *target->add_field_regions() = std::move(item);
+  }
+  for (auto& item : *source.mutable_field_items()) {
+    *target->add_field_items() = std::move(item);
+  }
 
   merge_root_group(std::move(*source.mutable_body()), target->mutable_body());
   merge_root_group(std::move(*source.mutable_furniture()), target->mutable_furniture());
@@ -142,6 +152,20 @@ void merge_documents(docv1::Document&& source, docv1::Document* target) {
   }
   if (!target->has_origin() && source.has_origin()) {
     *target->mutable_origin() = std::move(*source.mutable_origin());
+  }
+  // Model-extension carriers: list-shaped ones append, singular ones keep
+  // the first collector's claim exactly like origin above.
+  for (auto& item : *source.mutable_attachments()) *target->add_attachments() = std::move(item);
+  for (auto& item : *source.mutable_outline()) *target->add_outline() = std::move(item);
+  for (auto& item : *source.mutable_meta_tags()) *target->add_meta_tags() = std::move(item);
+  for (auto& item : *source.mutable_structured_data()) {
+    *target->add_structured_data() = std::move(item);
+  }
+  if (!target->has_source_meta() && source.has_source_meta()) {
+    *target->mutable_source_meta() = std::move(*source.mutable_source_meta());
+  }
+  if (!target->has_media() && source.has_media()) {
+    *target->mutable_media() = std::move(*source.mutable_media());
   }
 }
 

@@ -441,6 +441,11 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     add_collector_source(layout_model, region.confidence, picture->mutable_source());
     if (!region.image_png.empty()) set_picture_image(region.image_png, picture->mutable_image());
     if (!region.figure_classes.empty()) {
+      // Meta is the export contract: the canonical dialect reads item meta
+      // and ignores the wire annotation list, so classes land in both. The
+      // annotation stays for stream consumers reading the wire directly.
+      auto* meta_classification =
+          picture->mutable_meta()->mutable_classification();
       auto* classification = picture->add_annotations()->mutable_classification();
       classification->set_kind("classification");
       classification->set_provenance("figure-classifier");
@@ -448,22 +453,36 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
         auto* predicted = classification->add_predicted_classes();
         predicted->set_class_name(figure_class.label);
         predicted->set_confidence(figure_class.confidence);
+        auto* prediction = meta_classification->add_predictions();
+        prediction->set_confidence(figure_class.confidence);
+        prediction->set_created_by("figure-classifier");
+        prediction->set_class_name(figure_class.label);
       }
     }
-    // Decoded payloads ride on the typed barcode arm, and once more as the
+    // Decoded payloads ride on the typed barcode arm, once more as the
     // legacy misc-annotation struct so existing consumers keep working for
-    // one release.
-    for (const auto& barcode : region.barcodes) {
-      auto* typed = picture->add_annotations()->mutable_barcode();
-      typed->set_format(barcode.format);
-      typed->set_value(barcode.text);
-      typed->set_provenance("zxing-cpp");
-      auto* misc = picture->add_annotations()->mutable_misc();
-      misc->set_kind("barcode");
-      auto& fields = *misc->mutable_content()->mutable_fields();
-      fields["format"].set_string_value(barcode.format);
-      fields["value"].set_string_value(barcode.text);
-      fields["provenance"].set_string_value("zxing-cpp");
+    // one release, and as a namespaced meta custom field because meta is
+    // what the canonical dialect exports.
+    if (!region.barcodes.empty()) {
+      auto* exported = (*picture->mutable_meta()->mutable_custom_fields())
+                           ["pipestream__barcodes"]
+                               .mutable_list_value();
+      for (const auto& barcode : region.barcodes) {
+        auto* typed = picture->add_annotations()->mutable_barcode();
+        typed->set_format(barcode.format);
+        typed->set_value(barcode.text);
+        typed->set_provenance("zxing-cpp");
+        auto* misc = picture->add_annotations()->mutable_misc();
+        misc->set_kind("barcode");
+        auto& fields = *misc->mutable_content()->mutable_fields();
+        fields["format"].set_string_value(barcode.format);
+        fields["value"].set_string_value(barcode.text);
+        fields["provenance"].set_string_value("zxing-cpp");
+        auto& entry = *exported->add_values()->mutable_struct_value()->mutable_fields();
+        entry["format"].set_string_value(barcode.format);
+        entry["value"].set_string_value(barcode.text);
+        entry["provenance"].set_string_value("zxing-cpp");
+      }
     }
     floats.push_back({&region, self_ref, picture->mutable_captions()});
     body_order.push_back(self_ref);
@@ -501,15 +520,35 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     const auto label = region == nullptr ? pipestream::document::v1::DOC_ITEM_LABEL_TEXT
                                          : label_for_region(region->label);
     auto* item = output->add_texts();
+    // Each structural label takes its dedicated arm so the fields only that
+    // arm carries (heading level, list marker, code language) can ever be
+    // populated. CodeItem keeps its fields inline instead of a nested base,
+    // so it is staged in a local base and transcribed below.
+    pipestream::document::v1::TextItemBase staged_code_base;
+    pipestream::document::v1::CodeItem* code_item = nullptr;
     pipestream::document::v1::TextItemBase* base = nullptr;
-    if (label == pipestream::document::v1::DOC_ITEM_LABEL_TITLE) {
-      base = item->mutable_title()->mutable_base();
-    } else if (label == pipestream::document::v1::DOC_ITEM_LABEL_SECTION_HEADER) {
-      // Level stays unset here; assign_section_header_levels clusters the
-      // whole document's heading heights once every page is in.
-      base = item->mutable_section_header()->mutable_base();
-    } else {
-      base = item->mutable_text()->mutable_base();
+    switch (label) {
+      case pipestream::document::v1::DOC_ITEM_LABEL_TITLE:
+        base = item->mutable_title()->mutable_base();
+        break;
+      case pipestream::document::v1::DOC_ITEM_LABEL_SECTION_HEADER:
+        // Level stays unset here; assign_section_header_levels clusters the
+        // whole document's heading heights once every page is in.
+        base = item->mutable_section_header()->mutable_base();
+        break;
+      case pipestream::document::v1::DOC_ITEM_LABEL_LIST_ITEM:
+        base = item->mutable_list_item()->mutable_base();
+        break;
+      case pipestream::document::v1::DOC_ITEM_LABEL_FORMULA:
+        base = item->mutable_formula()->mutable_base();
+        break;
+      case pipestream::document::v1::DOC_ITEM_LABEL_CODE:
+        code_item = item->mutable_code();
+        base = &staged_code_base;
+        break;
+      default:
+        base = item->mutable_text()->mutable_base();
+        break;
     }
     const bool furniture = is_furniture_region(region);
     base->set_self_ref(self_ref);
@@ -574,7 +613,25 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     if (digital) add_collector_source("poppler-text", confidence, base->mutable_source());
     if (ocr) add_collector_source("rapidocr", confidence, base->mutable_source());
 
-    if (region != nullptr && region->label == "caption") captions.push_back({region, self_ref, base});
+    if (code_item != nullptr) {
+      // Transcribe the staged base into CodeItem's inline mirror of the same
+      // fields; the field numbers match by design and the schema notes keep
+      // them matching.
+      code_item->set_self_ref(staged_code_base.self_ref());
+      *code_item->mutable_parent() = staged_code_base.parent();
+      code_item->set_content_layer(staged_code_base.content_layer());
+      code_item->set_label(staged_code_base.label());
+      *code_item->mutable_prov() = staged_code_base.prov();
+      code_item->set_orig(staged_code_base.orig());
+      code_item->set_text(staged_code_base.text());
+      *code_item->mutable_source() = staged_code_base.source();
+    }
+
+    // Never register a caption through the staged code base: it is a local.
+    // (A caption region cannot map to CODE, so this only documents intent.)
+    if (code_item == nullptr && region != nullptr && region->label == "caption") {
+      captions.push_back({region, self_ref, base});
+    }
     if (!furniture) body_order.push_back(self_ref);
   };
 
@@ -650,18 +707,35 @@ void append_page_to_document(
   document->mutable_body()->mutable_children()->Reserve(document->body().children_size() +
                                                         texts->size());
   for (auto& text : *texts) {
-    // Read everything needed from `text` before it is moved out.
+    // Read everything needed from `text` before it is moved out. CodeItem
+    // keeps its fields inline instead of a nested base, so it is read here
+    // rather than through the shared accessor.
     const auto* base = render::text_base(text);
+    std::string_view item_text;
+    std::string_view item_self_ref;
+    auto content_layer = pipestream::document::v1::CONTENT_LAYER_BODY;
+    bool known = false;
     if (base != nullptr) {
+      item_text = base->text();
+      item_self_ref = base->self_ref();
+      content_layer = base->content_layer();
+      known = true;
+    } else if (text.item_case() == pipestream::document::v1::BaseTextItem::kCode) {
+      item_text = text.code().text();
+      item_self_ref = text.code().self_ref();
+      content_layer = text.code().content_layer();
+      known = true;
+    }
+    if (known) {
       const bool furniture =
-          base->content_layer() == pipestream::document::v1::CONTENT_LAYER_FURNITURE;
+          content_layer == pipestream::document::v1::CONTENT_LAYER_FURNITURE;
       if (furniture) {
-        document->mutable_furniture()->add_children()->set_ref(base->self_ref());
+        document->mutable_furniture()->add_children()->set_ref(std::string(item_self_ref));
       } else if (!ordered) {
-        document->mutable_body()->add_children()->set_ref(base->self_ref());
+        document->mutable_body()->add_children()->set_ref(std::string(item_self_ref));
       }
       if (!plain_text->empty()) plain_text->push_back('\n');
-      plain_text->append(base->text());
+      plain_text->append(item_text);
     }
     // Hand the item over instead of deep-copying every box and string again.
     *document->add_texts() = std::move(text);
