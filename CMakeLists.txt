@@ -449,6 +449,7 @@ target_link_libraries(grparse_proto PUBLIC grpc++)
 add_library(grparse_core STATIC
   src/barcode_decoder.cpp
   src/base64.cpp
+  src/call_executor.cpp
   src/collector_coordinator.cpp
   src/confluence_storage.cpp
   src/docling_map.cpp
@@ -499,6 +500,7 @@ if(BUILD_TESTING)
   set(GRPARSE_TESTS
     barcode-decoder-test
     base64-test
+    call-executor-test
     canonical-json-test
     chunking-test
     collector-coordinator-test
