@@ -35,6 +35,14 @@ bool ends_with(const std::string& value, const std::string& suffix) {
 
 }  // namespace
 
+CollectorDeadline capped_collector_deadline(CollectorDeadline inbound,
+                                            std::chrono::system_clock::duration cap) {
+  // now() + cap cannot overflow for the caps this repo uses (minutes), and
+  // kNoCollectorDeadline is time_point::max(), so the unset case falls out
+  // of the min without a branch of its own.
+  return std::min(inbound, std::chrono::system_clock::now() + cap);
+}
+
 CoordinatorResult run_collectors(std::vector<PlannedCollector> collectors,
                                  pipestream::document::v1::Document base) {
   CoordinatorResult result;

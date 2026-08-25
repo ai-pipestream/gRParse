@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <functional>
 #include <string>
 #include <vector>
@@ -11,6 +12,25 @@
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
 
 namespace grparse {
+
+// The absolute wall-clock ceiling a collector leg may not outlive, threaded
+// down from the inbound call's own deadline. Absolute rather than a
+// duration on purpose: a call can sit in the executor queue for as long as
+// the queue is deep, and only an absolute instant survives that wait
+// unchanged.
+using CollectorDeadline = std::chrono::system_clock::time_point;
+
+// "The call carried no deadline", which leaves every leg on its own static
+// cap. It is the default everywhere a deadline is threaded, so a caller that
+// has none to give keeps exactly today's behaviour.
+inline constexpr CollectorDeadline kNoCollectorDeadline = CollectorDeadline::max();
+
+// The deadline one leg's ClientContext gets: the sooner of the inbound
+// ceiling and the leg's own cap measured from now. A leg never outlives the
+// client that asked for it, and never runs past its cap when the client is
+// more patient than the cap is.
+CollectorDeadline capped_collector_deadline(CollectorDeadline inbound,
+                                            std::chrono::system_clock::duration cap);
 
 // One collector's complete output: its projected Document (source-tagged by
 // the collector itself) or the reason it could not contribute.

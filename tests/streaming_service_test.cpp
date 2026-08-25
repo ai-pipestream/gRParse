@@ -1062,10 +1062,15 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
   FakePdfInspector(pdfv1::PdfType type, std::vector<uint32_t> pages_needing_ocr)
       : type_(type), pages_needing_ocr_(std::move(pages_needing_ocr)) {}
 
+  // Counts every dial, so a test can prove a parse that must not happen did
+  // not reach the collector.
+  int dials() const { return dials_.load(); }
+
   grpc::Status ParsePdf(
       grpc::ServerContext*,
       grpc::ServerReaderWriter<pdfv1::ParsePdfResponse, pdfv1::ParsePdfRequest>* stream)
       override {
+    dials_.fetch_add(1);
     pdfv1::ParsePdfRequest request;
     bool emit_document = false;
     std::string bytes;
@@ -1108,6 +1113,7 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
  private:
   pdfv1::PdfType type_;
   std::vector<uint32_t> pages_needing_ocr_;
+  std::atomic<int> dials_{0};
 };
 
 class FailingPdfInspector final : public pdfv1::PdfParseService::Service {
@@ -1270,6 +1276,121 @@ void verify_pdf_collector_failure_degrades_to_the_cv_path() {
           "the degradation is recorded as a collector warning");
 }
 
+// Holds the first recognition until released, so one conversion can be
+// pinned to the single executor worker while the calls behind it queue.
+class GateRecognizer final : public grparse::PageRecognizer {
+ public:
+  grparse::OcrPage extract_page(const cv::Mat& image) override {
+    const int page = image.at<unsigned char>(0, 0);
+    std::unique_lock<std::mutex> lock(mutex_);
+    entered_ = true;
+    entered_signal_.notify_all();
+    released_signal_.wait(lock, [this] { return released_; });
+    lock.unlock();
+    return {100, 200, {{"page-" + std::to_string(page), {{1, 2}, {20, 2}, {20, 12}, {1, 12}}}}};
+  }
+
+  void wait_until_entered() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    entered_signal_.wait(lock, [this] { return entered_; });
+  }
+
+  void release() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      released_ = true;
+    }
+    released_signal_.notify_all();
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable entered_signal_;
+  std::condition_variable released_signal_;
+  bool entered_ = false;
+  bool released_ = false;
+};
+
+pipestream::parse::v1::ConvertSourceRequest pdf_unary_request() {
+  pipestream::parse::v1::ConvertSourceRequest request;
+  auto* source = request.mutable_request()->add_sources()->mutable_file();
+  source->set_filename("queued.pdf");
+  const std::string bytes = "%PDF-in-memory";
+  source->set_base64_string(grparse::encode_base64(bytes.data(), bytes.size()));
+  return request;
+}
+
+// A call that dies while it is still in the executor queue must cost nothing
+// when its turn comes: the worker asks the context first, answers CANCELLED,
+// and never decodes the payload or dials a collector. Proven by pinning the
+// only worker to a held conversion, cancelling the call queued behind it,
+// and reading the collector's dial count afterwards.
+void verify_queued_then_cancelled_call_never_dials_a_collector() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_MIXED, {2});
+  PdfInspectorServer inspector_server(&inspector);
+  GateRecognizer recognizer;
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 3, 2, 3, 2, 2, 2},
+      [](std::shared_ptr<const std::string>, bool, double) {
+        return std::make_shared<RoutableDigitalSource>();
+      });
+  grparse::CollectorTargets targets;
+  targets.pdf = inspector_server.target();
+  // One worker: the second call cannot start until the first finishes, so
+  // the cancel is guaranteed to land while it is still queued.
+  grparse::DocumentParserService service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(targets),
+      {.workers = 1, .queue_capacity = 8});
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "queued-cancel test server failed to start");
+  const auto channel = grpc::CreateChannel("127.0.0.1:" + std::to_string(port),
+                                           grpc::InsecureChannelCredentials());
+
+  grpc::Status holder_status;
+  std::thread holder([&] {
+    auto client = pipestream::parse::v1::ParseService::NewStub(channel);
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 30s);
+    pipestream::parse::v1::ConvertSourceResponse response;
+    holder_status = client->ConvertSource(&context, pdf_unary_request(), &response);
+  });
+  recognizer.wait_until_entered();
+  require(inspector.dials() == 1, "the held conversion dialed the inspector once");
+
+  grpc::ClientContext cancelled_context;
+  cancelled_context.set_deadline(std::chrono::system_clock::now() + 30s);
+  grpc::Status cancelled_status;
+  std::thread queued([&] {
+    auto client = pipestream::parse::v1::ParseService::NewStub(channel);
+    pipestream::parse::v1::ConvertSourceResponse response;
+    cancelled_status = client->ConvertSource(&cancelled_context, pdf_unary_request(), &response);
+  });
+  // Long enough for the handler to run and the task to reach the queue; the
+  // held worker guarantees it cannot leave the queue before the release.
+  std::this_thread::sleep_for(200ms);
+  cancelled_context.TryCancel();
+  queued.join();
+  require(cancelled_status.error_code() == grpc::StatusCode::CANCELLED,
+          "a cancelled call ends as CANCELLED");
+
+  recognizer.release();
+  holder.join();
+  require(holder_status.ok(), "the held conversion completes: " + holder_status.error_message());
+  // The freed worker now dequeues the dead task. Give it room to do the
+  // wrong thing before concluding it did the right one.
+  std::this_thread::sleep_for(300ms);
+  require(inspector.dials() == 1,
+          "the cancelled call must be answered before anything is dialed; dials was " +
+              std::to_string(inspector.dials()));
+
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+}
+
 void verify_streaming_pdf_fast_path_emits_the_collector_document() {
   FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {});
   PdfInspectorServer inspector_server(&inspector);
@@ -1419,6 +1540,7 @@ int main() {
     verify_pdf_fast_path_skips_the_cv_pipeline();
     verify_pdf_classification_restricts_recognition();
     verify_pdf_collector_failure_degrades_to_the_cv_path();
+    verify_queued_then_cancelled_call_never_dials_a_collector();
     verify_streaming_pdf_fast_path_emits_the_collector_document();
     verify_streaming_pdf_classification_restricts_recognition();
     verify_hierarchical_chunk_rpc_carries_digest_and_offsets(&server);

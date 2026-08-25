@@ -4,11 +4,13 @@
 // warning surfacing, and the failure paths are proven without any collector
 // binary.
 
+#include <chrono>
 #include <cstdio>
 #include <memory>
 #include <print>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -309,6 +311,41 @@ void verify_caller_status_classes_survive() {
           "INVALID_ARGUMENT survives the mapping");
   require(outcome.error.contains("sniff found nothing"),
           "the collector's own message survives");
+}
+
+// Never answers: the leg's own deadline is the only thing that can end a
+// call to it.
+class HangingXmlService final : public xmlv1::XmlParseService::Service {
+ public:
+  grpc::Status ParseXml(
+      grpc::ServerContext* context,
+      grpc::ServerReaderWriter<xmlv1::ParseXmlResponse, xmlv1::ParseXmlRequest>* stream)
+      override {
+    xmlv1::ParseXmlRequest request;
+    while (stream->Read(&request)) {
+    }
+    while (!context->IsCancelled()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    return grpc::Status::OK;
+  }
+};
+
+// The inbound call's deadline reaches the leg's ClientContext, not just the
+// helper that computes it: against a collector that never answers, the call
+// ends on the caller's deadline instead of sitting out this leg's own
+// five-minute ceiling.
+void verify_inbound_deadline_bounds_a_hanging_collector() {
+  HangingXmlService service;
+  ServerFixture server(&service);
+  const auto started = std::chrono::steady_clock::now();
+  const auto outcome = grparse::collect_xml_document(
+      server.channel(), "<a/>", std::chrono::system_clock::now() + std::chrono::milliseconds{300});
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  require(!outcome.success && outcome.code == grpc::StatusCode::DEADLINE_EXCEEDED,
+          "a hanging collector ends on the inbound deadline");
+  require(elapsed < std::chrono::seconds{30},
+          "the leg answers on the inbound deadline, not on its own ceiling");
 }
 
 // ---- ebcdic ----------------------------------------------------------------
@@ -1240,6 +1277,7 @@ int main() {
     verify_missing_trailer_fails();
     verify_xml_collects_document_and_formats_warnings();
     verify_caller_status_classes_survive();
+    verify_inbound_deadline_bounds_a_hanging_collector();
     verify_ebcdic_forwards_layout_and_collects();
     verify_ebcdic_without_layout_never_dials();
     verify_epub_collects_document();

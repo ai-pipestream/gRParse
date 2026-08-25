@@ -18,9 +18,15 @@ namespace grparse {
 // When an enrichment with a detector is supplied, the mapped document's page
 // renders additionally run through the CV engines (layout, figure classes,
 // barcodes) before the outcome returns; see office_cv_enrichment.h.
+//
+// `inbound_deadline` is the absolute ceiling of the call that asked for the
+// parse: the stream runs until the sooner of that and this leg's own static
+// cap. kNoCollectorDeadline (the default) means the call carried none, which
+// leaves the leg on its cap alone.
 CollectorOutcome collect_office_document(
     const std::shared_ptr<grpc::Channel>& channel, const std::string& document_id,
     const std::string& filename, const std::string& content_type,
-    const std::string& bytes, const OfficeCvEnrichment& enrichment = {});
+    const std::string& bytes, const OfficeCvEnrichment& enrichment = {},
+    CollectorDeadline inbound_deadline = kNoCollectorDeadline);
 
 }  // namespace grparse

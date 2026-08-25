@@ -17,35 +17,51 @@ namespace grparse {
 // because the fold already happened where the events were made. None of
 // these throw: transport and collector failures land in the outcome so the
 // coordinator can degrade instead of failing the parse.
+//
+// Every client takes `inbound_deadline`, the absolute ceiling of the call
+// that asked for the parse. Each leg runs until the sooner of that and its
+// own static cap, so a client that gave up or ran out of time is never
+// waited on past its own patience; kNoCollectorDeadline (the default) means
+// the call carried none and the leg keeps its cap alone.
 
 // grpc-asr. `model` is the whisper model name the collector must have
 // loaded; the caller resolves it from configuration, never guesses.
 CollectorOutcome collect_asr_document(const std::shared_ptr<grpc::Channel>& channel,
                                       const std::string& model,
-                                      const std::string& bytes);
+                                      const std::string& bytes,
+                                      CollectorDeadline inbound_deadline =
+                                          kNoCollectorDeadline);
 
 // grpc-email (.eml / .msg bytes).
 CollectorOutcome collect_email_document(const std::shared_ptr<grpc::Channel>& channel,
                                         const std::string& document_id,
                                         const std::string& filename,
                                         const std::string& content_type,
-                                        const std::string& bytes);
+                                        const std::string& bytes,
+                                        CollectorDeadline inbound_deadline =
+                                            kNoCollectorDeadline);
 
 // grpc-xml. The dialect is left unspecified so the collector sniffs it; a
 // sniff that fails is that collector's failure, not the parse's.
 CollectorOutcome collect_xml_document(const std::shared_ptr<grpc::Channel>& channel,
-                                      const std::string& bytes);
+                                      const std::string& bytes,
+                                      CollectorDeadline inbound_deadline =
+                                          kNoCollectorDeadline);
 
 // grpc-ebcdic. `layout_json` is the JSON serialization of Docling's
 // EbcdicLayout, forwarded verbatim; empty is a caller error surfaced as an
 // INVALID_ARGUMENT outcome before anything is dialed.
 CollectorOutcome collect_ebcdic_document(const std::shared_ptr<grpc::Channel>& channel,
                                          const std::string& layout_json,
-                                         const std::string& bytes);
+                                         const std::string& bytes,
+                                         CollectorDeadline inbound_deadline =
+                                             kNoCollectorDeadline);
 
 // grpc-epub (.epub archive bytes).
 CollectorOutcome collect_epub_document(const std::shared_ptr<grpc::Channel>& channel,
-                                       const std::string& bytes);
+                                       const std::string& bytes,
+                                       CollectorDeadline inbound_deadline =
+                                           kNoCollectorDeadline);
 
 // grpc-markup (Markdown, HTML, AsciiDoc, LaTeX, WebVTT, BoxNote, Docling
 // JSON). The format is hinted from the filename and content type via
@@ -53,7 +69,9 @@ CollectorOutcome collect_epub_document(const std::shared_ptr<grpc::Channel>& cha
 CollectorOutcome collect_markup_document(const std::shared_ptr<grpc::Channel>& channel,
                                          const std::string& filename,
                                          const std::string& content_type,
-                                         const std::string& bytes);
+                                         const std::string& bytes,
+                                         CollectorDeadline inbound_deadline =
+                                             kNoCollectorDeadline);
 
 // grpc-lol-html, the one collector whose stream carries no document event:
 // it reports CSS selector matches as they happen, so this client folds the
@@ -64,7 +82,9 @@ CollectorOutcome collect_markup_document(const std::shared_ptr<grpc::Channel>& c
 // dialed, because this client never invents selector rules.
 CollectorOutcome collect_lol_html_document(const std::shared_ptr<grpc::Channel>& channel,
                                            const std::string& options_json,
-                                           const std::string& bytes);
+                                           const std::string& bytes,
+                                           CollectorDeadline inbound_deadline =
+                                               kNoCollectorDeadline);
 
 // fastwarc-grpc, the second collector whose stream carries no document
 // event: it reports WARC records as they parse, so this client folds the
@@ -74,7 +94,9 @@ CollectorOutcome collect_lol_html_document(const std::shared_ptr<grpc::Channel>&
 // but keeps the records already collected: a clipped archive is a partial
 // success, not a failure.
 CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>& channel,
-                                           const std::string& bytes);
+                                           const std::string& bytes,
+                                           CollectorDeadline inbound_deadline =
+                                               kNoCollectorDeadline);
 
 // grpc-pdf-inspector's classification of one document, mapped off the wire
 // enum so the routing decision stays proto-free and unit-testable.
@@ -127,12 +149,15 @@ struct PdfParseResult {
 // a text-based document's own Document is the fast-path result while every
 // classification reports its OCR page set in the info event.
 PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
-                           const std::string& bytes);
+                           const std::string& bytes,
+                           CollectorDeadline inbound_deadline = kNoCollectorDeadline);
 
 // The plain collector leg for a selection the pdf collector shares with
 // other collectors: the collector's Document is the contribution, whatever
 // the classification was.
 CollectorOutcome collect_pdf_document(const std::shared_ptr<grpc::Channel>& channel,
-                                      const std::string& bytes);
+                                      const std::string& bytes,
+                                      CollectorDeadline inbound_deadline =
+                                          kNoCollectorDeadline);
 
 }  // namespace grparse

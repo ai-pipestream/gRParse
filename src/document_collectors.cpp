@@ -45,6 +45,8 @@ constexpr size_t kChunkBytes = 256U * 1024U;
 
 // A hung collector must not pin the parse forever. ASR gets a longer leash:
 // transcription runs at a fraction of media real time, not of byte count.
+// These are ceilings, not the deadline: capped_collector_deadline pulls each
+// leg in to the inbound call's own deadline whenever the caller passed one.
 constexpr std::chrono::minutes kDeadline{5};
 constexpr std::chrono::minutes kAsrDeadline{30};
 
@@ -143,10 +145,11 @@ CollectorOutcome drain_stream(const char* name, Stream& stream, OnStatus on_stat
 
 CollectorOutcome collect_asr_document(const std::shared_ptr<grpc::Channel>& channel,
                                       const std::string& model,
-                                      const std::string& bytes) {
+                                      const std::string& bytes,
+                                      CollectorDeadline inbound_deadline) {
   auto stub = asrv1::AsrService::NewStub(channel);
   grpc::ClientContext context;
-  context.set_deadline(std::chrono::system_clock::now() + kAsrDeadline);
+  context.set_deadline(capped_collector_deadline(inbound_deadline, kAsrDeadline));
   auto stream = stub->Transcribe(&context);
 
   asrv1::TranscribeRequest request;
@@ -168,10 +171,11 @@ CollectorOutcome collect_email_document(const std::shared_ptr<grpc::Channel>& ch
                                         const std::string& document_id,
                                         const std::string& filename,
                                         const std::string& content_type,
-                                        const std::string& bytes) {
+                                        const std::string& bytes,
+                                        CollectorDeadline inbound_deadline) {
   auto stub = emailv1::EmailParseService::NewStub(channel);
   grpc::ClientContext context;
-  context.set_deadline(std::chrono::system_clock::now() + kDeadline);
+  context.set_deadline(capped_collector_deadline(inbound_deadline, kDeadline));
   auto stream = stub->ParseEmail(&context);
 
   emailv1::ParseEmailRequest request;
@@ -203,10 +207,11 @@ CollectorOutcome collect_email_document(const std::shared_ptr<grpc::Channel>& ch
 }
 
 CollectorOutcome collect_xml_document(const std::shared_ptr<grpc::Channel>& channel,
-                                      const std::string& bytes) {
+                                      const std::string& bytes,
+                                      CollectorDeadline inbound_deadline) {
   auto stub = xmlv1::XmlParseService::NewStub(channel);
   grpc::ClientContext context;
-  context.set_deadline(std::chrono::system_clock::now() + kDeadline);
+  context.set_deadline(capped_collector_deadline(inbound_deadline, kDeadline));
   auto stream = stub->ParseXml(&context);
 
   xmlv1::ParseXmlRequest request;
@@ -234,7 +239,8 @@ CollectorOutcome collect_xml_document(const std::shared_ptr<grpc::Channel>& chan
 
 CollectorOutcome collect_ebcdic_document(const std::shared_ptr<grpc::Channel>& channel,
                                          const std::string& layout_json,
-                                         const std::string& bytes) {
+                                         const std::string& bytes,
+                                         CollectorDeadline inbound_deadline) {
   if (layout_json.empty()) {
     // Nothing to dial: the collector cannot decode a byte without a layout,
     // and this client never invents one.
@@ -245,7 +251,7 @@ CollectorOutcome collect_ebcdic_document(const std::shared_ptr<grpc::Channel>& c
   }
   auto stub = ebcdicv1::EbcdicParseService::NewStub(channel);
   grpc::ClientContext context;
-  context.set_deadline(std::chrono::system_clock::now() + kDeadline);
+  context.set_deadline(capped_collector_deadline(inbound_deadline, kDeadline));
   auto stream = stub->ParseEbcdic(&context);
 
   ebcdicv1::ParseEbcdicRequest request;
@@ -272,10 +278,11 @@ CollectorOutcome collect_ebcdic_document(const std::shared_ptr<grpc::Channel>& c
 CollectorOutcome collect_markup_document(const std::shared_ptr<grpc::Channel>& channel,
                                          const std::string& filename,
                                          const std::string& content_type,
-                                         const std::string& bytes) {
+                                         const std::string& bytes,
+                                         CollectorDeadline inbound_deadline) {
   auto stub = markupv1::MarkupParseService::NewStub(channel);
   grpc::ClientContext context;
-  context.set_deadline(std::chrono::system_clock::now() + kDeadline);
+  context.set_deadline(capped_collector_deadline(inbound_deadline, kDeadline));
   auto stream = stub->ParseMarkup(&context);
 
   markupv1::ParseMarkupRequest request;
@@ -308,10 +315,11 @@ CollectorOutcome collect_markup_document(const std::shared_ptr<grpc::Channel>& c
 }
 
 CollectorOutcome collect_epub_document(const std::shared_ptr<grpc::Channel>& channel,
-                                       const std::string& bytes) {
+                                       const std::string& bytes,
+                                       CollectorDeadline inbound_deadline) {
   auto stub = epubv1::EpubParseService::NewStub(channel);
   grpc::ClientContext context;
-  context.set_deadline(std::chrono::system_clock::now() + kDeadline);
+  context.set_deadline(capped_collector_deadline(inbound_deadline, kDeadline));
   auto stream = stub->ParseEpub(&context);
 
   epubv1::ParseEpubRequest request;
@@ -337,7 +345,8 @@ CollectorOutcome collect_epub_document(const std::shared_ptr<grpc::Channel>& cha
 
 CollectorOutcome collect_lol_html_document(const std::shared_ptr<grpc::Channel>& channel,
                                            const std::string& options_json,
-                                           const std::string& bytes) {
+                                           const std::string& bytes,
+                                           CollectorDeadline inbound_deadline) {
   CollectorOutcome outcome;
   if (options_json.empty()) {
     // Nothing to dial: the collector extracts what its selector rules name,
@@ -360,7 +369,7 @@ CollectorOutcome collect_lol_html_document(const std::shared_ptr<grpc::Channel>&
 
   auto stub = lolv1::LolHtmlService::NewStub(channel);
   grpc::ClientContext context;
-  context.set_deadline(std::chrono::system_clock::now() + kDeadline);
+  context.set_deadline(capped_collector_deadline(inbound_deadline, kDeadline));
   auto stream = stub->Extract(&context);
 
   lolv1::ExtractRequest request;
@@ -601,10 +610,11 @@ CollectorOutcome collect_lol_html_document(const std::shared_ptr<grpc::Channel>&
 }
 
 CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>& channel,
-                                           const std::string& bytes) {
+                                           const std::string& bytes,
+                                           CollectorDeadline inbound_deadline) {
   auto stub = warcv1::WarcService::NewStub(channel);
   grpc::ClientContext context;
-  context.set_deadline(std::chrono::system_clock::now() + kDeadline);
+  context.set_deadline(capped_collector_deadline(inbound_deadline, kDeadline));
   auto stream = stub->ParseWarc(&context);
 
   warcv1::ParseWarcRequest request;
@@ -919,7 +929,8 @@ PdfRouteDecision route_pdf_by_classification(const PdfClassification& classifica
 }
 
 PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
-                           const std::string& bytes) {
+                           const std::string& bytes,
+                           CollectorDeadline inbound_deadline) {
   PdfParseResult result;
   if (channel == nullptr) {
     result.outcome.error = "pdf collector is not configured (GRPARSE_PDF_TARGET)";
@@ -928,7 +939,7 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
   }
   auto stub = pdfv1::PdfParseService::NewStub(channel);
   grpc::ClientContext context;
-  context.set_deadline(std::chrono::system_clock::now() + kDeadline);
+  context.set_deadline(capped_collector_deadline(inbound_deadline, kDeadline));
   auto stream = stub->ParsePdf(&context);
 
   pdfv1::ParsePdfRequest request;
@@ -998,8 +1009,9 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
 }
 
 CollectorOutcome collect_pdf_document(const std::shared_ptr<grpc::Channel>& channel,
-                                      const std::string& bytes) {
-  return collect_pdf(channel, bytes).outcome;
+                                      const std::string& bytes,
+                                      CollectorDeadline inbound_deadline) {
+  return collect_pdf(channel, bytes, inbound_deadline).outcome;
 }
 
 }  // namespace grparse

@@ -17,7 +17,9 @@ namespace {
 constexpr size_t kChunkBytes = 256U * 1024U;
 
 // A hung collector must not pin the parse forever; the office worker has
-// its own per-document timeout well inside this ceiling.
+// its own per-document timeout well inside this ceiling. It is a ceiling,
+// not the deadline: capped_collector_deadline pulls the leg in to the
+// inbound call's own deadline whenever the caller passed one.
 constexpr std::chrono::minutes kDeadline{5};
 
 grpc::StatusCode map_code(grpc::StatusCode code) {
@@ -38,11 +40,12 @@ grpc::StatusCode map_code(grpc::StatusCode code) {
 CollectorOutcome collect_office_document(
     const std::shared_ptr<grpc::Channel>& channel, const std::string& document_id,
     const std::string& filename, const std::string& content_type,
-    const std::string& bytes, const OfficeCvEnrichment& enrichment) {
+    const std::string& bytes, const OfficeCvEnrichment& enrichment,
+    CollectorDeadline inbound_deadline) {
   CollectorOutcome outcome;
   auto stub = officev1::OfficeRenderService::NewStub(channel);
   grpc::ClientContext context;
-  context.set_deadline(std::chrono::system_clock::now() + kDeadline);
+  context.set_deadline(capped_collector_deadline(inbound_deadline, kDeadline));
   auto stream = stub->StreamPages(&context);
 
   bool write_failed = false;

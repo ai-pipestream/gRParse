@@ -186,13 +186,19 @@ const char* pdf_class_name(PdfClass pdf_class) {
 // Configuration failures are outcomes too, so the parse degrades collector
 // by collector no matter where the failure sits. The office collector keeps
 // its own path: it streams typed events for gRParse to fold and enrich.
+//
+// `inbound_deadline` is the deadline of the call that asked for the parse,
+// threaded down so no leg outlives the client waiting on it; each leg still
+// caps itself at its own ceiling, and kNoCollectorDeadline (an inbound call
+// with no deadline of its own) leaves every leg on that ceiling alone.
 CollectorOutcome run_remote_collector(
     pipestream::parse::v1::Collector id,
     const std::shared_ptr<CollectorEndpoints>& endpoints,
     const std::string& document_id, const std::string& filename,
     const std::string& content_type, const std::string& bytes,
     const std::string& ebcdic_layout_json,
-    const std::string& lol_html_options_json) {
+    const std::string& lol_html_options_json,
+    CollectorDeadline inbound_deadline) {
   CollectorOutcome outcome;
   if (!remote_collector(id)) {
     outcome.error = std::string("collector '") + collector_name(id) +
@@ -210,36 +216,38 @@ CollectorOutcome run_remote_collector(
     case pipestream::parse::v1::COLLECTOR_LIBREOFFICE:
       return collect_office_document(endpoints->channel(id), document_id,
                                      filename, content_type, bytes,
-                                     endpoints->cv_enrichment());
+                                     endpoints->cv_enrichment(), inbound_deadline);
     case pipestream::parse::v1::COLLECTOR_ASR:
       if (endpoints->asr_model().empty()) {
         outcome.error = "asr collector has no model configured (GRPARSE_ASR_MODEL)";
         outcome.code = grpc::StatusCode::FAILED_PRECONDITION;
         return outcome;
       }
-      return collect_asr_document(endpoints->channel(id), endpoints->asr_model(), bytes);
+      return collect_asr_document(endpoints->channel(id), endpoints->asr_model(), bytes,
+                                  inbound_deadline);
     case pipestream::parse::v1::COLLECTOR_EMAIL:
       return collect_email_document(endpoints->channel(id), document_id, filename,
-                                    content_type, bytes);
+                                    content_type, bytes, inbound_deadline);
     case pipestream::parse::v1::COLLECTOR_XML:
-      return collect_xml_document(endpoints->channel(id), bytes);
+      return collect_xml_document(endpoints->channel(id), bytes, inbound_deadline);
     case pipestream::parse::v1::COLLECTOR_EBCDIC:
-      return collect_ebcdic_document(endpoints->channel(id), ebcdic_layout_json, bytes);
+      return collect_ebcdic_document(endpoints->channel(id), ebcdic_layout_json, bytes,
+                                     inbound_deadline);
     case pipestream::parse::v1::COLLECTOR_EPUB:
-      return collect_epub_document(endpoints->channel(id), bytes);
+      return collect_epub_document(endpoints->channel(id), bytes, inbound_deadline);
     case pipestream::parse::v1::COLLECTOR_MARKUP:
       return collect_markup_document(endpoints->channel(id), filename,
-                                     content_type, bytes);
+                                     content_type, bytes, inbound_deadline);
     case pipestream::parse::v1::COLLECTOR_LOL_HTML:
       return collect_lol_html_document(endpoints->channel(id),
-                                       lol_html_options_json, bytes);
+                                       lol_html_options_json, bytes, inbound_deadline);
     case pipestream::parse::v1::COLLECTOR_FASTWARC:
-      return collect_fastwarc_document(endpoints->channel(id), bytes);
+      return collect_fastwarc_document(endpoints->channel(id), bytes, inbound_deadline);
     case pipestream::parse::v1::COLLECTOR_PDF:
       // The plain leg, reached when the pdf collector shares a selection
       // with other collectors: its Document is the contribution. The
       // classification-driven routing lives with the plan, not here.
-      return collect_pdf_document(endpoints->channel(id), bytes);
+      return collect_pdf_document(endpoints->channel(id), bytes, inbound_deadline);
     default:
       // Unreachable: the remote_collector guard admits only the ids the
       // switch handles.
@@ -461,6 +469,11 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
   }
   const grpc::Status option_status = validate_options(request.options(), surface);
   if (!option_status.ok()) return option_status;
+  // Every dialed leg inherits this call's own ceiling, so no collector is
+  // waited on past the patience of the client that asked for the parse. A
+  // call with no deadline yields time_point::max(), which leaves each leg on
+  // its own static cap exactly as before.
+  const CollectorDeadline inbound_deadline = context->deadline();
   try {
     const auto& source = sources.Get(0).file();
     auto bytes = std::make_shared<const std::string>(decode_base64(source.base64_string()));
@@ -613,9 +626,10 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
       } else if (local_collector(id)) {
         collector.run = [id, bytes] { return run_local_collector(id, *bytes); };
       } else if (pdf_routing) {
-        collector.run = [run_cv, tuning, endpoints, bytes]() {
+        collector.run = [run_cv, tuning, endpoints, bytes, inbound_deadline]() {
           const PdfParseResult parsed =
-              collect_pdf(endpoints->channel(pipestream::parse::v1::COLLECTOR_PDF), *bytes);
+              collect_pdf(endpoints->channel(pipestream::parse::v1::COLLECTOR_PDF), *bytes,
+                          inbound_deadline);
           const PdfRouteDecision route = route_pdf_by_classification(parsed.classification);
           if (parsed.outcome.success && route.fast_path) {
             return parsed.outcome;
@@ -653,10 +667,11 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
         };
       } else {
         collector.run = [id, endpoints, bytes, requested_name, ebcdic_layout_json,
-                         lol_html_options_json]() {
+                         lol_html_options_json, inbound_deadline]() {
           return run_remote_collector(id, endpoints, requested_name.string(),
                                       requested_name.string(), std::string(), *bytes,
-                                      *ebcdic_layout_json, *lol_html_options_json);
+                                      *ebcdic_layout_json, *lol_html_options_json,
+                                      inbound_deadline);
         };
       }
       plan.push_back(std::move(collector));
@@ -761,8 +776,19 @@ void render_exports(const pipestream::parse::v1::ConvertDocumentOptions& options
 // where it can act on the answer.
 class ParseUnaryReactor final : public grpc::ServerUnaryReactor {
  public:
-  ParseUnaryReactor(CallExecutor& executor, std::function<grpc::Status()> work) {
-    const bool queued = executor.submit([this, work = std::move(work)] {
+  ParseUnaryReactor(grpc::CallbackServerContext* context, CallExecutor& executor,
+                    std::function<grpc::Status()> work) {
+    const bool queued = executor.submit([this, context, work = std::move(work)] {
+      // A call can wait in the queue behind every conversion ahead of it, so
+      // the first thing a worker does is ask whether anyone is still
+      // listening. The answer costs one atomic read and saves the whole
+      // parse behind it: the base64 decode of up to a few hundred megabytes,
+      // and every collector leg after that.
+      if (context->IsCancelled()) {
+        Finish(grpc::Status(grpc::StatusCode::CANCELLED,
+                            "request cancelled before conversion started"));
+        return;
+      }
       grpc::Status status;
       try {
         status = work();
@@ -798,7 +824,7 @@ grpc::ServerUnaryReactor* DocumentParserService::ConvertSource(
     grpc::CallbackServerContext* context,
     const pipestream::parse::v1::ConvertSourceRequest* request,
     pipestream::parse::v1::ConvertSourceResponse* response) {
-  return new ParseUnaryReactor(executor_, [this, context, request, response] {
+  return new ParseUnaryReactor(context, executor_, [this, context, request, response] {
     const auto started = std::chrono::steady_clock::now();
     SourceParse parsed;
     const grpc::Status parse_status = parse_source(context, request->request(), scheduler_,
@@ -861,7 +887,7 @@ grpc::ServerUnaryReactor* DocumentParserService::ChunkHierarchicalSource(
     grpc::CallbackServerContext* context,
     const pipestream::parse::v1::ChunkHierarchicalSourceRequest* request,
     pipestream::parse::v1::ChunkHierarchicalSourceResponse* response) {
-  return new ParseUnaryReactor(executor_, [this, context, request, response] {
+  return new ParseUnaryReactor(context, executor_, [this, context, request, response] {
     const auto started = std::chrono::steady_clock::now();
     const auto& chunk_request = request->request();
     SourceParse parsed;
@@ -892,7 +918,7 @@ grpc::ServerUnaryReactor* DocumentParserService::ChunkHybridSource(
     grpc::CallbackServerContext* context,
     const pipestream::parse::v1::ChunkHybridSourceRequest* request,
     pipestream::parse::v1::ChunkHybridSourceResponse* response) {
-  return new ParseUnaryReactor(executor_, [this, context, request, response] {
+  return new ParseUnaryReactor(context, executor_, [this, context, request, response] {
     const auto started = std::chrono::steady_clock::now();
     const auto& chunk_request = request->request();
     // The budget decides every boundary, so it is validated before any work
@@ -1249,13 +1275,14 @@ class DocumentStreamReactor final
                         PageScheduler::OcrTuning tuning) {
     const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
     auto endpoints = endpoints_;
-    std::thread([weak_gate, endpoints, bytes = std::move(bytes), pdf,
+    const CollectorDeadline inbound_deadline = context_->deadline();
+    std::thread([weak_gate, endpoints, bytes = std::move(bytes), pdf, inbound_deadline,
                  tuning = std::move(tuning)]() mutable {
       const PdfParseResult parsed = collect_pdf(
           endpoints == nullptr
               ? nullptr
               : endpoints->channel(pipestream::parse::v1::COLLECTOR_PDF),
-          *bytes);
+          *bytes, inbound_deadline);
       const PdfRouteDecision route = route_pdf_by_classification(parsed.classification);
       if (parsed.outcome.success && route.fast_path) {
         if (const auto gate = weak_gate.lock()) {
@@ -1317,10 +1344,11 @@ class DocumentStreamReactor final
   // A remote collector runs on its own thread: it is a blocking client
   // stream, not a gRPC reaction. The gate keeps its completion safe against
   // reactor teardown exactly like the scheduler callbacks. A client cancel
-  // abandons the result; the collector's own deadline bounds the orphaned
-  // call. The streaming wire carries no ebcdic layout and no lol-html
-  // rules, so selecting either collector here degrades to that collector's
-  // own INVALID_ARGUMENT.
+  // abandons the result; the leg's deadline, the sooner of this call's own
+  // and the collector's cap, bounds the orphaned call, so a client that
+  // walked away is not waited on past the deadline it set. The streaming
+  // wire carries no ebcdic layout and no lol-html rules, so selecting either
+  // collector here degrades to that collector's own INVALID_ARGUMENT.
   void spawn_remote_collector(pipestream::parse::v1::Collector id,
                               std::shared_ptr<const std::string> bytes) {
     std::string document_id;
@@ -1334,10 +1362,12 @@ class DocumentStreamReactor final
     }
     const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
     auto endpoints = endpoints_;
-    std::thread([weak_gate, endpoints, id, bytes, document_id, filename, content_type]() {
+    const CollectorDeadline inbound_deadline = context_->deadline();
+    std::thread([weak_gate, endpoints, id, bytes, document_id, filename, content_type,
+                 inbound_deadline]() {
       CollectorOutcome outcome = run_remote_collector(
           id, endpoints, document_id, filename, content_type, *bytes,
-          std::string(), std::string());
+          std::string(), std::string(), inbound_deadline);
       if (const auto gate = weak_gate.lock()) {
         std::lock_guard<std::mutex> lock(gate->mutex);
         if (gate->reactor != nullptr) {

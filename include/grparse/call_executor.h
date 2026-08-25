@@ -36,6 +36,16 @@ class CallExecutor final {
   // Drains the queue and joins every worker.  Queued tasks still run: each one
   // owns a live RPC that must be finished, and dropping it would leave the
   // call hanging until its deadline.
+  //
+  // The drain is bounded by the work, not by a clock: a worker already inside
+  // a collector leg is joined only when that leg's deadline expires, and the
+  // longest cap is the ASR one at 30 minutes.  So SIGTERM can hold the
+  // process for as long as the slowest leg still in flight, well past the
+  // server's own 10 s Shutdown deadline (which force-cancels the inbound
+  // calls but cannot reach the outbound ones).  Every leg inherits its
+  // inbound call's deadline, so the bound in practice is the longest
+  // client-set deadline among the calls in flight; an orchestrator grace
+  // period shorter than that ends in SIGKILL.
   ~CallExecutor();
 
   // Queues `task`, or returns false when the queue is full or the pool is

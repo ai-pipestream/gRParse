@@ -1,8 +1,11 @@
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <print>
 #include <stdexcept>
 #include <string>
+
+#include <grpcpp/client_context.h>
 
 #include "grparse/collector_coordinator.h"
 
@@ -227,6 +230,37 @@ void verify_failure_isolation() {
           "the failed collector degrades to a failure entry");
 }
 
+// Every collector leg runs until the sooner of the inbound call's deadline
+// and its own static cap. The ClientContext round-trip is part of the check
+// because a capped instant that never reaches a context caps nothing.
+void verify_collector_deadline_caps_at_the_sooner_instant() {
+  using std::chrono::system_clock;
+  constexpr auto kCap = std::chrono::minutes{5};
+
+  const auto impatient = system_clock::now() + std::chrono::seconds{2};
+  require(grparse::capped_collector_deadline(impatient, kCap) == impatient,
+          "an inbound deadline inside the cap is the leg's deadline");
+
+  const auto patient = system_clock::now() + std::chrono::hours{2};
+  const auto ceiling = grparse::capped_collector_deadline(patient, kCap);
+  require(ceiling < patient && ceiling <= system_clock::now() + kCap,
+          "a client more patient than the cap gets the cap, measured from now");
+
+  const auto unset =
+      grparse::capped_collector_deadline(grparse::kNoCollectorDeadline, kCap);
+  require(unset > system_clock::now() && unset <= system_clock::now() + kCap,
+          "an unset inbound deadline leaves the leg on its own cap");
+
+  // The deadline gRPC carries is the capped instant, not the cap: a leg
+  // dialed for an impatient client answers when that client gives up.
+  grpc::ClientContext context;
+  context.set_deadline(grparse::capped_collector_deadline(impatient, kCap));
+  const auto carried = context.deadline();
+  require(carried >= impatient - std::chrono::milliseconds{1} &&
+              carried <= impatient + std::chrono::milliseconds{1},
+          "the leg's context carries the capped instant");
+}
+
 }  // namespace
 
 int main() {
@@ -234,6 +268,7 @@ int main() {
     verify_routing();
     verify_scatter_gather_merges_additively();
     verify_failure_isolation();
+    verify_collector_deadline_caps_at_the_sooner_instant();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
     std::println(stderr, "collector-coordinator-test: {}", error.what());
