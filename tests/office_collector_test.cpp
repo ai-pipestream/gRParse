@@ -189,13 +189,18 @@ void verify_collects_and_folds_typed_stream() {
     if (!item.has_text()) continue;
     const auto& base = item.text().base();
     if (base.text() == "collector comment") {
-      comment_ok = base.meta().custom_fields().count("author") == 1 &&
-                   base.meta().custom_fields().at("author").string_value() ==
-                       "Alice";
+      // The author moved from the custom-field holding pen to the typed
+      // comment identity.
+      comment_ok = base.has_comment_meta() && base.comment_meta().author() == "Alice";
     }
-    if (base.label() ==
+  }
+  // The checkbox folds through the form subtree now: its state IS its
+  // label on the field-value arm, not a custom field.
+  for (const auto& item : document.texts()) {
+    if (!item.has_field_value()) continue;
+    if (item.field_value().base().label() ==
         ai::pipestream::document::v1::DOC_ITEM_LABEL_CHECKBOX_SELECTED) {
-      checkbox_ok = base.meta().custom_fields().at("checked").bool_value();
+      checkbox_ok = true;
     }
   }
   require(comment_ok, "the comment folds with its author");
@@ -207,12 +212,11 @@ void verify_collects_and_folds_typed_stream() {
         ai::pipestream::document::v1::GROUP_LABEL_COMMENT_SECTION) {
       comment_group = group.parent().ref() == "#/furniture";
     }
-    if (group.label() == ai::pipestream::document::v1::GROUP_LABEL_FORM_AREA) {
-      form_group = true;
-    }
   }
+  // Form fields fold through the field arenas now, not a form-area group.
+  form_group = document.field_regions_size() > 0 && document.field_items_size() > 0;
   require(comment_group && form_group,
-          "comments and form fields land in their sections");
+          "comments land in their section and form fields in their arenas");
   require(document.pages_size() == 1, "page rects become page items");
 }
 

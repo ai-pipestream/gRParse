@@ -34,6 +34,15 @@ namespace grparse {
 // Impress, and Calc positions are already page-local per part. All emitted
 // doubles stay in twips; unit policy beyond that is the consumer's.
 //
+// The office wire counts comments, tracked changes, bookmarks, and field
+// marks in one document-absolute character space. The mapper keeps an index
+// of that space while body paragraphs stream past, and resolves every
+// anchor against it once the terminal RenderStatus arrives: a comment
+// back-links to the item it annotates, a tracked change and a bookmark each
+// carry a FineRef into an item's own character range, and a cross-reference
+// field points at the anchor it names. An anchor that falls in content the
+// fold does not emit is kept without a target rather than dropped.
+//
 // A partial event stream (StreamOptions part selection) builds a valid
 // Document from any subset; only DocumentInfo and RenderStatus are assumed.
 class DoclingMapper {
@@ -63,7 +72,15 @@ class DoclingMapper {
  private:
   // The classification of a new text item, selecting its BaseTextItem
   // variant.
-  enum class TextKind { kTitle, kSectionHeader, kList, kFormula, kText };
+  enum class TextKind {
+    kTitle,
+    kSectionHeader,
+    kList,
+    kFormula,
+    kText,
+    kFieldHeading,
+    kFieldValue,
+  };
 
   // The handle to a freshly appended text item: the shared base fields plus
   // its arena reference.
@@ -71,6 +88,53 @@ class DoclingMapper {
     ai::pipestream::document::v1::BaseTextItem* item = nullptr;
     ai::pipestream::document::v1::TextItemBase* base = nullptr;
     std::string ref;
+  };
+
+  // One body item's extent in the document-absolute character space, in
+  // arrival order (which is ascending offset order).
+  struct BodySpan {
+    long long start = 0;
+    long long end = 0;
+    std::string ref;
+  };
+
+  // A comment item waiting for the body index to be complete so its
+  // anchored item can be found and back-linked.
+  struct PendingComment {
+    std::string ref;
+    long long start = 0;
+    long long end = 0;
+  };
+
+  // A cross-reference span waiting for the anchor it names to be resolved.
+  struct PendingReference {
+    std::string item_ref;
+    int span_index = 0;
+    std::string target_name;
+  };
+
+  // A named anchor and the document-absolute range it covers, resolved to
+  // an item once the body index is complete.
+  struct PendingAnchor {
+    std::string name;
+    long long start = 0;
+    long long end = 0;
+  };
+
+  // A form field and the document-absolute range it covers; the index is
+  // the field's own arena position.
+  struct PendingFieldSpan {
+    int index = 0;
+    long long start = 0;
+    long long end = 0;
+  };
+
+  // A tracked change and the document-absolute range it touches; the index
+  // is the change's own arena position.
+  struct PendingChange {
+    int index = 0;
+    long long start = 0;
+    long long end = 0;
   };
 
   ai::pipestream::document::v1::GroupItem* group_by_ref(const std::string& ref);
@@ -92,6 +156,10 @@ class DoclingMapper {
       ai::pipestream::document::v1::DocItemLabel label,
       ai::pipestream::document::v1::ContentLayer layer,
       const std::string& parent_ref, std::string* ref_out);
+  // Creates the form region and the form whose graph pairs the fields, once
+  // the first form field arrives.
+  void ensure_form_arena();
+
   ai::pipestream::document::v1::TableItem* add_table(
       ai::pipestream::document::v1::ContentLayer layer,
       const std::string& parent_ref, std::string* ref_out);
@@ -127,11 +195,56 @@ class DoclingMapper {
       long long span_end);
 
   // Folds an office TableData cell grid into a docling TableItem: grid
-  // dimensions, placed cells, and split or merged cells that do not map to
-  // the base grid as custom_fields keyed by their office cell name. Cells
-  // carrying per-cell line rectangles get a page-local bbox.
+  // dimensions, placed cells with their merge spans, and the rich runs of
+  // each cell as inline spans. A split or merged office cell keeps the
+  // base-grid position its name anchors at, so a merged table stays
+  // structurally readable; only a cell name the office core never anchored
+  // falls back to a custom field. Cells carrying per-cell line rectangles
+  // get a page-local bbox.
   void fold_table(const ai::pipestream::office::v1::TableData& table,
                   ai::pipestream::document::v1::TableItem* item);
+
+  // Appends one InlineSpan per coalesced run: adjacent runs agreeing on
+  // every character attribute become one span whose range is code points
+  // into the item's own text. Runs carrying nothing worth recording add no
+  // span. owner_ref, when non-empty, registers each cross-reference span
+  // for resolution against the document's named anchors. base_offset is
+  // where the first run starts in the item's text, for items assembled from
+  // several run sequences.
+  void add_run_spans(
+      const google::protobuf::RepeatedPtrField<
+          ai::pipestream::office::v1::TextRun>& runs,
+      google::protobuf::RepeatedPtrField<
+          ai::pipestream::document::v1::InlineSpan>* spans,
+      const std::string& owner_ref, long long base_offset = 0);
+
+  // Registers one embedded object as an attachment of the document: its
+  // container class id, the container's own word for what it is, and the
+  // item the payload became.
+  void register_embedded_object(
+      const ai::pipestream::office::v1::EmbeddedObject& object,
+      const std::string& item_ref);
+
+  // The name of a sheet by its zero-based ordinal; empty when no Sheet
+  // header for it has arrived.
+  std::string sheet_label(int index) const;
+
+  // The text item behind an arena reference ("#/texts/N"); null when the
+  // reference names no text item.
+  ai::pipestream::document::v1::TextItemBase* text_by_ref(
+      const std::string& ref);
+
+  // Resolves a range of the document-absolute character space to the item
+  // that holds it, with the range rebased to that item's own text. False
+  // when no emitted item covers the start of the range.
+  bool resolve_doc_span(long long start, long long end,
+                        ai::pipestream::document::v1::FineRef* out) const;
+
+  // Resolves everything that anchors in the document-absolute character
+  // space once the whole body has streamed past: comment back-links,
+  // tracked-change targets, named anchors, and the cross-reference spans
+  // that point at them.
+  void resolve_anchors();
 
   // The page-local union of a cell's line rectangles on their first page;
   // false when there is nothing to measure.
@@ -182,7 +295,28 @@ class DoclingMapper {
   bool finished_ = false;
   std::vector<std::string> warnings_;
   std::string document_type_;
+  // The document's own language tag, so a run only carries one when it
+  // differs.
+  std::string document_language_;
   std::vector<ai::pipestream::office::v1::PageRect> page_rects_;
+  // The document-absolute character space, one entry per emitted body item
+  // in ascending offset order.
+  std::vector<BodySpan> body_spans_;
+  std::vector<PendingComment> pending_comments_;
+  // Comment items by the office core's comment name, and the reply links
+  // waiting for the comment they name to arrive.
+  std::map<std::string, std::string> comment_ref_by_name_;
+  std::vector<std::pair<std::string, std::string>> pending_comment_parents_;
+  // Embedded objects registered as attachments, numbered in arrival order.
+  int attachment_index_ = 0;
+  // Named ranges arrive before the sheets they sit on, so the sheet each
+  // one names is filled in once the sheet headers have streamed past:
+  // (index in Document.named_ranges, zero-based sheet ordinal).
+  std::vector<std::pair<int, int>> pending_range_sheets_;
+  std::vector<PendingReference> pending_references_;
+  std::vector<PendingAnchor> pending_anchors_;
+  std::vector<PendingChange> pending_changes_;
+  std::vector<PendingFieldSpan> pending_field_spans_;
   // Pages a document-absolute box was stamped against without a rectangle
   // to subtract, so the warning that its coordinates stay document-absolute
   // is emitted once per page instead of once per box.
@@ -193,6 +327,7 @@ class DoclingMapper {
   std::map<int, std::string> sheet_group_;
   std::map<int, int> sheet_table_;
   std::map<int, std::string> sheet_comments_;
+  std::map<int, std::string> sheet_name_;
   std::map<int, ai::pipestream::document::v1::ContentLayer> sheet_layer_;
   std::map<int, std::string> slide_group_;
   // Draw group nesting: (page index, child group_path) to the group's ref,
@@ -202,9 +337,13 @@ class DoclingMapper {
   // The text document has a single draw page, so the path alone keys it.
   std::map<std::string, std::string> writer_groups_;
   // The lazily created document-level comment section (Writer comments and
-  // slide annotations) and form-field area group refs.
+  // slide annotations).
   std::string comments_group_ref_;
-  std::string form_fields_group_ref_;
+  // The lazily created form arena: the region every field item hangs from,
+  // and the form whose graph pairs each key with its value.
+  std::string field_region_ref_;
+  std::string form_item_ref_;
+  int graph_cell_id_ = 0;
 };
 
 // Returns structural integrity problems of a mapped document: RefItem

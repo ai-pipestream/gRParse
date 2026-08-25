@@ -306,14 +306,19 @@ void verify_uniform_formatting_and_hyperlinks() {
           "uniformly bold runs set item-level bold formatting");
   require(base.hyperlink() == "https://example.test/a",
           "the first hyperlink lands in the docling hyperlink slot");
-  const auto& links =
-      base.meta().custom_fields().at("hyperlinks").list_value();
-  require(links.values_size() == 1,
-          "adjacent runs of the same link merge into one entry");
-  const auto& link = links.values(0).struct_value().fields();
-  require(link.at("char_start").number_value() == 0.0 &&
-              link.at("char_end").number_value() == 10.0,
-          "the merged link covers both runs' characters");
+  // Every link reaches the item as an inline span carrying its own range,
+  // and adjacent runs agreeing on everything coalesce into one span.
+  int link_spans = 0;
+  for (const docv1::InlineSpan& span : base.spans()) {
+    if (span.hyperlink() != "https://example.test/a") continue;
+    link_spans++;
+    require(span.range().start() == 0 && span.range().end() == 10,
+            "the merged link span covers both runs' characters");
+  }
+  require(link_spans == 1,
+          "adjacent runs of the same link coalesce into one span");
+  require(base.meta().custom_fields().empty(),
+          "links no longer need a value map");
 
   // Mixed formatting keeps the item's formatting unset.
   grparse::DoclingMapper mixed;
@@ -350,26 +355,43 @@ void verify_table_fold_grid_and_off_grid_cells() {
       cell->set_text(texts[row][column]);
     }
   }
-  // A split cell outside the base grid stays addressable by office name.
+  // A split cell anchors at the base-grid cell its office name starts from.
   officev1::TableCellData* split = table->add_cells();
   split->set_row(-1);
   split->set_column(-1);
   split->set_name("B2.1");
   split->set_text("split text");
+  // A name that anchors nowhere still keeps its text.
+  officev1::TableCellData* stray = table->add_cells();
+  stray->set_row(-1);
+  stray->set_column(-1);
+  stray->set_name("?");
+  stray->set_text("stray text");
   mapper.consume(event);
   const docv1::Document& document = mapper.document();
   require(document.tables_size() == 1, "one TableData folds into one table");
   const docv1::TableItem& item = document.tables(0);
   require(item.data().num_rows() == 2 && item.data().num_cols() == 2,
           "grid dimensions survive the fold");
-  require(item.data().table_cells_size() == 4,
-          "off-grid cells are excluded from table_cells");
+  require(item.data().table_cells_size() == 5,
+          "an anchored split cell is a cell, not a custom field");
   require(item.data().grid_size() == 2 &&
               item.data().grid(1).cells(0).text() == "c",
           "the materialized grid places cell text by offsets");
-  require(item.meta().custom_fields().at("cell:B2.1").string_value() ==
-              "split text",
-          "off-grid cell text rides custom_fields keyed by office name");
+  require(item.data().grid(1).cells(1).text() == "d",
+          "a base cell keeps its grid slot against a later split cell");
+  bool split_placed = false;
+  for (const docv1::TableCell& cell : item.data().table_cells()) {
+    if (cell.text() != "split text") continue;
+    split_placed = cell.start_row_offset_idx() == 1 &&
+                   cell.start_col_offset_idx() == 1;
+  }
+  require(split_placed, "the split cell anchors where its name says");
+  require(item.meta().custom_fields().count("cell:B2.1") == 0,
+          "an anchored split cell needs no custom field");
+  require(item.meta().custom_fields().at("cell:?").string_value() ==
+              "stray text",
+          "a cell name anchoring nowhere still keeps its text");
   require(grparse::docling_integrity_errors(document).empty(),
           "table mapping stays well formed");
 }
@@ -466,13 +488,12 @@ void verify_sheet_rows_fold_into_the_sheet_table() {
   require(table.data().table_cells_size() == 2 &&
               table.data().table_cells(0).text() == "42.5",
           "sheet cells keep their display text");
-  require(table.meta().custom_fields().at("A2").number_value() == 42.5,
-          "numeric cells keep their number keyed by A1 name");
-  const auto& formula =
-      table.meta().custom_fields().at("B2").struct_value().fields();
-  require(formula.at("formula").string_value() == "=A2*2" &&
-              formula.at("number").number_value() == 85.0,
-          "formula cells keep expression and value keyed by A1 name");
+  require(table.data().table_cells(0).value().number() == 42.5,
+          "a numeric cell carries its number on the cell");
+  require(table.data().table_cells(1).value().formula() == "=A2*2",
+          "a formula cell carries its expression on the cell");
+  require(table.meta().custom_fields().count("A2") == 0,
+          "no A1-keyed side map beside the grid");
   require(grparse::docling_integrity_errors(document).empty(),
           "sheet mapping stays well formed");
 }
@@ -502,9 +523,8 @@ void verify_hidden_sheet_maps_to_invisible_layer() {
           "hidden sheets land on the invisible layer");
   require(document.tables(0).content_layer() == docv1::CONTENT_LAYER_INVISIBLE,
           "the hidden sheet's table inherits the layer");
-  require(document.groups(0).meta().custom_fields().at("visible").bool_value()
-              == false,
-          "visibility is recorded on the group");
+  require(!document.groups(0).sheet().visible(),
+          "visibility is a typed sheet attribute on the group");
 }
 
 void verify_metadata_maps_name_language_and_fields() {
@@ -520,13 +540,14 @@ void verify_metadata_maps_name_language_and_fields() {
   const docv1::Document& document = mapper.document();
   require(document.name() == "Quarterly Report",
           "the stored title names the document");
-  const auto& fields = document.body().meta().custom_fields();
-  require(fields.at("author").string_value() == "Ada",
-          "author rides the body custom fields");
-  require(fields.at("keywords").list_value().values_size() == 2 &&
-              fields.at("keywords").list_value().values(1).string_value() ==
-                  "q3",
-          "keywords keep their order in a list value");
+  const docv1::DocumentMeta& source_meta = document.source_meta();
+  require(source_meta.authors_size() == 1 && source_meta.authors(0) == "Ada",
+          "the author is typed on the document metadata");
+  require(source_meta.keywords_size() == 2 &&
+              source_meta.keywords(1) == "q3",
+          "keywords keep their order");
+  require(document.body().meta().keywords().values_size() == 2,
+          "keywords also reach the body keywords field");
   const docv1::LanguageMetaField& language = document.body().meta().language();
   require(language.code_raw() == "en-US",
           "the raw language tag is preserved");

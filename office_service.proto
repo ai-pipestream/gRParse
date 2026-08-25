@@ -4,6 +4,8 @@ syntax = "proto3";
 
 package ai.pipestream.office.v1;
 
+import "ai/pipestream/document/v1/document.proto";
+
 option go_package = "github.com/ai-pipestream/grpc-libreoffice/gen/go/ai/pipestream/office/v1;officev1";
 option java_multiple_files = true;
 option java_outer_classname = "OfficeServiceProto";
@@ -21,6 +23,11 @@ option java_package = "ai.pipestream.office.v1";
 //                        determined from the filename or content type, or the
 //                        office core could not load the document.
 //   RESOURCE_EXHAUSTED - the document exceeds the configured byte cap.
+//   FAILED_PRECONDITION- the document package is broken and would need
+//                        LibreOffice's repair path, which the request did
+//                        not opt into (allow_package_repair).
+//   UNIMPLEMENTED      - reserved; this version implements the repair path
+//                        when allow_package_repair is set.
 //   DEADLINE_EXCEEDED  - the worker exceeded the per-document timeout and
 //                        was killed.
 //   INTERNAL           - the worker crashed or failed mid-render.
@@ -40,6 +47,15 @@ service OfficeRenderService {
   // render core accepts. Intended for orchestrators and tool facades doing
   // capability discovery.
   rpc GetServiceInfo(GetServiceInfoRequest) returns (GetServiceInfoResponse);
+
+  // ToDocument runs the same load and extraction as StreamPages, then folds
+  // the event stream into one ai.pipestream.document.v1.Document through the
+  // server-side mapper. The upload contract and StreamOptions match
+  // StreamPages; page images are omitted from the mapped document unless
+  // DOCUMENT_PART_PAGES is listed explicitly in StreamOptions.parts (they
+  // are large and the mapper already records page geometry from
+  // DocumentInfo). Failures use the same status codes as StreamPages.
+  rpc ToDocument(stream StreamPagesRequest) returns (ToDocumentResponse);
 }
 
 // DocumentChunk is one chunk of an uploaded document. The identity fields
@@ -132,6 +148,136 @@ message StreamOptions {
   // DOCUMENT_PART_UNSPECIFIED entries are ignored; order and duplicates do
   // not matter.
   repeated DocumentPart parts = 1;
+  // Requested render DPI for this document's page images, overriding the
+  // server's configured default for this request only. Zero or absent means
+  // the server default. Nonzero values are clamped to [24, 600]; a page may
+  // still render below the resolved DPI when it would otherwise exceed the
+  // server's per-side pixel bound. The DPI each page actually rendered at is
+  // reported in PageImage.dpi. Resolved across the upload stream like parts:
+  // the first nonzero value wins.
+  int32 render_dpi = 2;
+  // First page to paint as a PageImage, 1-based inclusive. Zero means from
+  // the first page. The range restricts only page images: pages outside it
+  // are never painted (the work is skipped, not just the emission), while
+  // DocumentInfo keeps the full page_count and page_rects and typed content
+  // is unaffected. Each emitted PageImage keeps its document-absolute index.
+  // A range entirely past the last page yields zero page images and a
+  // normal RenderStatus. A negative value, or first_page > last_page when
+  // both are set, is rejected with INVALID_ARGUMENT. Resolved across the
+  // upload stream as one pair: the first request with either field nonzero
+  // wins.
+  int32 first_page = 3;
+  // Last page to paint as a PageImage, 1-based inclusive. Zero means
+  // through the last page. See first_page for the shared range contract.
+  int32 last_page = 4;
+  // Encoding for this document's page images. Unspecified means PNG, the
+  // lossless default. JPEG and WebP are lossy and typically several times
+  // smaller; each emitted PageImage names the encoding it actually carries
+  // in its format field. Resolved across the upload stream as one pair with
+  // page_quality: the first request with either field nonzero wins.
+  PageImageFormat page_format = 5;
+  // Quality for lossy page encodings, 1 to 100; higher is better and
+  // larger. Zero means the server default (85). Ignored for PNG. Values
+  // outside [0, 100] are rejected with INVALID_ARGUMENT.
+  int32 page_quality = 6;
+  // Fit-to-width in pixels: the page's width is scaled to this many pixels
+  // and the effective DPI is derived from that scale. Zero means unset
+  // (use render_dpi). Still clamped by the server's per-side pixel bound.
+  // Resolved as the first nonzero value in the upload stream.
+  int32 max_width_px = 7;
+  // When true, page images are converted to grayscale before encoding.
+  // Ignored for SVG vector pages. First true in the upload stream wins.
+  bool grayscale = 8;
+  // Per-request worker deadline in seconds, overriding the server default
+  // for this document only. Zero means the server default. Values outside
+  // [0, 600] are rejected with INVALID_ARGUMENT. First nonzero wins.
+  int32 timeout_seconds = 9;
+  // How tracked changes (redlines) are displayed in the loaded document
+  // before paint and extraction. Unspecified leaves the document as stored.
+  // First nonzero value in the upload stream wins.
+  TrackedChangeDisplay tracked_changes = 10;
+  // When set to SVG, each page is exported as a vector graphic instead of
+  // a raster. PageImage.format is PAGE_IMAGE_FORMAT_SVG and the png field
+  // carries the SVG bytes. Unspecified means raster using page_format.
+  PageVectorFormat vector_format = 11;
+  // When true, hidden sheets and hidden slides are omitted from page
+  // images and from DocumentInfo.page_count / page_rects. Typed content
+  // for hidden parts is still extracted. First true wins.
+  bool skip_hidden = 12;
+  // When true, spreadsheet page images are cropped to the used cell range
+  // instead of the full sheet canvas. No effect on other document classes.
+  // First true wins.
+  bool paint_used_range = 13;
+  // When true, each presentation slide is followed by its notes page as an
+  // extra PageImage (and an extra DocumentInfo.page_rects entry). Notes
+  // pages are painted in notes-page space. First true wins.
+  bool include_notes_pages = 14;
+  // Form field values to write into the loaded document before paint and
+  // export. Matched by FormField.name. First non-empty list wins.
+  repeated FormFillValue form_values = 15;
+  // Character spans in the document's annotation text space to redact:
+  // overlapping line boxes are painted black on page images, and matching
+  // rectangles are drawn on the document before PDF export. First
+  // non-empty list wins.
+  repeated TextSpan redact_spans = 16;
+}
+
+// TrackedChangeDisplay selects how Writer redlines are shown in the loaded
+// document before rendering or extraction.
+enum TrackedChangeDisplay {
+  // Unset; the document is left in the mode it was stored with.
+  TRACKED_CHANGE_DISPLAY_UNSPECIFIED = 0;
+  // Leave the stored display mode unchanged.
+  TRACKED_CHANGE_DISPLAY_AS_IS = 1;
+  // Accept every tracked change (final / no markup).
+  TRACKED_CHANGE_DISPLAY_FINAL = 2;
+  // Reject every tracked change (original text).
+  TRACKED_CHANGE_DISPLAY_ORIGINAL = 3;
+  // Show insertions and deletions as markup.
+  TRACKED_CHANGE_DISPLAY_SHOW_MARKUP = 4;
+}
+
+// PageVectorFormat selects a vector encoding for page images.
+enum PageVectorFormat {
+  // Unset; pages rasterize using page_format.
+  PAGE_VECTOR_FORMAT_UNSPECIFIED = 0;
+  // Force raster even if a later request names a vector format. Not
+  // emitted on responses.
+  PAGE_VECTOR_FORMAT_NONE = 1;
+  // One SVG document per page.
+  PAGE_VECTOR_FORMAT_SVG = 2;
+}
+
+// FormFillValue is one named form field to write before render or export.
+message FormFillValue {
+  // The field's name as stored in the document (FormField.name).
+  string name = 1;
+  // The value to write: text content, a dropdown entry (or its index as
+  // text), or "true"/"false" for a checkbox.
+  string value = 2;
+}
+
+// TextSpan is a half-open range in the document's annotation text space,
+// the same space TextRun.char_offset uses.
+message TextSpan {
+  // Inclusive start, Unicode code points, zero-based.
+  int64 char_start = 1;
+  // Exclusive end. Must be >= char_start; a zero-length span is ignored.
+  int64 char_end = 2;
+}
+
+// PageImageFormat names the encodings a page image can be produced in.
+enum PageImageFormat {
+  // Unset; requests render PNG, and responses never carry it.
+  PAGE_IMAGE_FORMAT_UNSPECIFIED = 0;
+  // Lossless PNG, the default.
+  PAGE_IMAGE_FORMAT_PNG = 1;
+  // Lossy baseline JPEG.
+  PAGE_IMAGE_FORMAT_JPEG = 2;
+  // Lossy WebP.
+  PAGE_IMAGE_FORMAT_WEBP = 3;
+  // SVG vector graphic. The png field carries UTF-8 SVG bytes.
+  PAGE_IMAGE_FORMAT_SVG = 4;
 }
 
 // StreamPagesRequest carries one upload chunk of a StreamPages call.
@@ -143,6 +289,9 @@ message StreamPagesRequest {
   // so callers should send it on the first chunk. Absent or empty means
   // every part.
   StreamOptions options = 2;
+  // Opt-in for LibreOffice's broken-package repair path; identical
+  // semantics to ConvertToPdfRequest.allow_package_repair.
+  bool allow_package_repair = 3;
 }
 
 // StreamPagesResponse is one event of a StreamPages response stream. Order:
@@ -251,6 +400,54 @@ message StreamPagesResponse {
 message ConvertToPdfRequest {
   // The upload chunk.
   DocumentChunk chunk = 1;
+  // Opt-in for LibreOffice's broken-package repair path. Repair rebuilds
+  // the document from whatever the office core can salvage, so the caller
+  // is accepting a rewritten and possibly lossy copy of the upload; it also
+  // stages that copy through the office core's own temp machinery (sfx2
+  // forces a staging file whenever RepairPackage is set, placed under the
+  // same tmpfs as every other temp spill in this deployment). Default
+  // false: a document whose package is broken but repairable fails with
+  // FAILED_PRECONDITION naming this field instead of being repaired. May be
+  // sent on any request in the upload stream; true on any request enables
+  // it. A broken package is never repaired silently.
+  bool allow_package_repair = 2;
+  // Per-request worker deadline in seconds; same contract as
+  // StreamOptions.timeout_seconds.
+  int32 timeout_seconds = 3;
+  // Tracked-change display applied before export; same contract as
+  // StreamOptions.tracked_changes.
+  TrackedChangeDisplay tracked_changes = 4;
+  // Form field values written before export; same contract as
+  // StreamOptions.form_values.
+  repeated FormFillValue form_values = 5;
+  // Character spans to redact on the exported PDF; same contract as
+  // StreamOptions.redact_spans.
+  repeated TextSpan redact_spans = 6;
+  // When true, hidden sheets and hidden slides are guaranteed omitted from
+  // the PDF, and DocumentInfo.page_count / page_rects describe only the
+  // visible set. When false, the office core's own defaults apply: hidden
+  // sheets are never exported, and hidden slides follow the installation's
+  // configured pdf filter defaults (omitted in a stock installation).
+  bool skip_hidden = 7;
+  // First page to include in the PDF, 1-based inclusive. Zero means from
+  // the first page. A negative value, or first_page > last_page when both
+  // are set, is rejected with INVALID_ARGUMENT.
+  int32 first_page = 8;
+  // Last page to include in the PDF, 1-based inclusive. Zero means through
+  // the last page.
+  int32 last_page = 9;
+}
+
+// ToDocumentResponse is the unary result of ToDocument: the mapped
+// document plus the same identity and status StreamPages would have
+// streamed.
+message ToDocumentResponse {
+  // The mapped document. Structurally valid; complete when status is OK.
+  ai.pipestream.document.v1.Document document = 1;
+  // The resolved document identity from the load.
+  DocumentInfo document_info = 2;
+  // The terminal outcome, including warnings from extraction.
+  RenderStatus status = 3;
 }
 
 // ConvertToPdfResponse is one event of a ConvertToPdf response stream:
@@ -316,8 +513,14 @@ message PageImage {
   // The DPI the page was rendered at. May be lower than the requested DPI
   // when a page would otherwise exceed the configured pixel bound.
   int32 dpi = 4;
-  // The page encoded as a PNG.
+  // The encoded page image. PNG unless the request selected another
+  // encoding through StreamOptions.page_format; the field name predates
+  // format selection. The format field names what these bytes are.
   bytes png = 5;
+  // The encoding the png field actually carries. Always set by servers
+  // that support format selection; absent (unspecified) from older servers,
+  // whose bytes are always PNG.
+  PageImageFormat format = 6;
 }
 
 // TwipsPoint is a point in twips (1/1440 inch), document-absolute: the
@@ -446,8 +649,8 @@ message TextRun {
   // Offset of this run's first character in the document's annotation text
   // space, counted in Unicode code points. The annotation text space is the
   // concatenation of every body run's text in emission order with one
-  // newline after each body paragraph. -1 for runs outside the body flow
-  // (headers, footers, footnotes, indexes).
+  // newline after each body paragraph, resolved field runs included. -1 for
+  // runs outside the body flow (headers, footers, footnotes, indexes).
   int64 char_offset = 9;
   // The run's length in Unicode code points.
   int64 char_length = 10;
@@ -461,6 +664,38 @@ message TextRun {
   // The hyperlink's name as authored; empty when unset or when the run is
   // not inside a hyperlink.
   string hyperlink_name = 13;
+  // Character escapement on the office core's percentage scale: positive
+  // raises the run (superscript), negative lowers it (subscript), 0 sits on
+  // the baseline.
+  int32 escapement = 14;
+  // The run's own language as a BCP-47 tag built from the office core's
+  // character locale, for example "de-DE"; empty when the run declares no
+  // locale of its own.
+  string language = 15;
+  // The office field type this run's text was resolved from, as the last
+  // segment of the field's programmatic service name, for example
+  // "PageNumber", "DateTime", "GetReference", or "Database". Empty for
+  // authored text. A run carrying this holds the field's rendered result,
+  // not its command, and it is part of the annotation text space like any
+  // other run.
+  string field_code = 16;
+  // The name a cross-reference or reference-mark field points at (the
+  // bookmark, reference mark, or sequence name); empty for every other
+  // field and for authored text.
+  string field_target = 17;
+  // True when the run's font declares a fixed pitch, which is what makes
+  // monospaced text monospaced.
+  bool monospace = 18;
+  // True when the run's case mapping renders it in small capitals.
+  bool small_caps = 19;
+  // True when the run is overlined.
+  bool overline = 20;
+  // The run's named character style, for example "Emphasis"; empty when the
+  // run uses the paragraph's own character formatting.
+  string char_style = 21;
+  // Highlight (character background) color as 0xRRGGBB; -1 when the run has
+  // no highlight, which is the office core's own transparent value.
+  int32 highlight_rgb = 22;
 }
 
 // Paragraph is one body paragraph of a text document, in reading order, with
@@ -819,6 +1054,14 @@ message TableCellData {
   // round-trip per cell; empty otherwise or when the layout could not be
   // measured.
   repeated LineBox line_rects = 5;
+  // Row span of a vertical merge anchored at this cell: 1 when the cell is
+  // not merged, greater when the cell anchors a merged block. A text table
+  // leaves the cells a merge covers out of its cell list entirely, so a
+  // covered cell rarely gets an event of its own; 0 marks one that does.
+  int32 row_span = 6;
+  // Column span of the cell, derived from the distance to the next cell
+  // name in the same row: 1 when the cell is not merged horizontally.
+  int32 column_span = 7;
 }
 
 // TableData is one table of a text document, in reading order, with its cell
@@ -882,6 +1125,11 @@ message EmbeddedImage {
   // a draw-page group of a text document; empty at the top level. The same
   // scheme as Shape.group_path.
   string group_path = 10;
+  // The image's accessibility title from the document; empty when unset.
+  string title = 11;
+  // The image's accessibility description (alt text) from the document;
+  // empty when unset.
+  string description = 12;
 }
 
 // EmbeddedObjectKind classifies an embedded object's inner content.
@@ -1062,6 +1310,21 @@ message Sheet {
   int32 used_end_column = 8;
   // Defined print areas; empty when the whole used area prints.
   repeated SheetRangeRef print_areas = 9;
+  // Column widths in twips for columns 0 through used_end_column, in column
+  // order; empty when the office core did not report them.
+  repeated int32 column_widths_twips = 10;
+}
+
+// CellDateTime is a spreadsheet cell's wall-clock date and time. A cell's
+// date is a civil value the document writes without a timezone, so the
+// components are reported as written rather than as an instant.
+message CellDateTime {
+  int32 year = 1;
+  int32 month = 2;
+  int32 day = 3;
+  int32 hour = 4;
+  int32 minute = 5;
+  int32 second = 6;
 }
 
 // SheetCell is one non-empty cell of a used row.
@@ -1087,6 +1350,20 @@ message SheetCell {
   int32 merged_columns = 8;
   // Row span of a merged region anchored at this cell; 1 when not merged.
   int32 merged_rows = 9;
+  // True when the cell's number format is a date, time, or datetime format,
+  // so number is a date serial rather than a plain quantity.
+  bool is_datetime = 10;
+  // The cell's wall-clock date and time, resolved from its serial against
+  // the document's own null date; set only when is_datetime. A spreadsheet
+  // date states no timezone, so neither does this.
+  CellDateTime datetime = 11;
+  // True when the cell's number format is a logical format, so number is 0
+  // or 1 standing for false or true.
+  bool is_boolean = 12;
+  // The office core's error code for a formula cell that evaluates to an
+  // error; 0 when the cell holds a value. display carries the rendered
+  // error literal.
+  int32 error_code = 13;
 }
 
 // SheetRow is one used row of a sheet, streamed the moment it is parsed.
@@ -1107,6 +1384,11 @@ message SheetNamedRange {
   string content = 2;
   // NamedRangeFlag bits from the office core.
   int32 type_flags = 3;
+  // The cells the name resolves to, when it names a range rather than an
+  // expression; absent when the office core cannot resolve it.
+  SheetRangeRef range = 4;
+  // Zero-based ordinal of the sheet the range sits on; -1 when unresolved.
+  int32 sheet_index = 5;
 }
 
 // SheetDatabaseRange is one database range defined on the workbook: a named
@@ -1267,6 +1549,11 @@ message Shape {
   // children, which have no caret anchor; also set alongside anchor when
   // the model reports it.
   TwipsPoint position = 14;
+  // The shape's accessibility title from the document; empty when unset.
+  string title = 15;
+  // The shape's accessibility description (alt text) from the document;
+  // empty when unset.
+  string description = 16;
 }
 
 // PlaceholderRole is the presentation role of a slide shape, derived from
@@ -1346,6 +1633,16 @@ message SlideShape {
   // painted slide; its geometry is in notes-page space and has no
   // PageImage.
   bool notes = 11;
+  // The shape's cell grid when it is a table shape; unset for every other
+  // shape. Only rows, columns, and cells are meaningful here: a table shape
+  // has no reading-order index, and its geometry is the shape's own
+  // position and size.
+  TableData table = 12;
+  // The shape's accessibility title from the document; empty when unset.
+  string title = 13;
+  // The shape's accessibility description (alt text) from the document;
+  // empty when unset.
+  string description = 14;
 }
 
 // DrawingShape is one shape from a drawing page, in paint order. A group
@@ -1390,6 +1687,11 @@ message DrawingShape {
   // char_offset is -1 because drawing shapes sit outside the body annotation
   // text space.
   repeated TextRun runs = 12;
+  // The shape's accessibility title from the document; empty when unset.
+  string title = 13;
+  // The shape's accessibility description (alt text) from the document;
+  // empty when unset.
+  string description = 14;
 }
 
 // PdfChunk is one chunk of a produced PDF, in order. Concatenating every
@@ -1449,4 +1751,38 @@ message GetServiceInfoResponse {
   // TextFrame, Shape, EmbeddedObject, and the Sheet family) alongside page
   // images, selectable per request through StreamOptions.
   bool typed_content = 10;
+  // True when uploaded document bytes never reach persistent storage:
+  // staging, the office profile, and the office core's temp spills all live
+  // on RAM-backed tmpfs, verified at server startup and re-verified by
+  // every worker. Broken-package repair, which stages a rewritten copy
+  // through LibreOffice's own machinery, is gated behind the
+  // allow_package_repair opt-in. tmpfs pages are swappable, so a host with
+  // swap enabled may still page document bytes to the swap device; the
+  // guarantee is about filesystems, not about RAM never leaving the DIMMs.
+  bool diskless_documents = 11;
+  // LibreOffice-internal temporary artifacts that can exist during a
+  // render, one entry per artifact class, named so callers can reason
+  // about their own threat model. Every class lives inside the
+  // per-document tmpfs work dir and is removed with it when the worker
+  // exits.
+  repeated string internal_temp_artifacts = 12;
+  // True when ToDocument is implemented and folds a StreamPages event
+  // stream into one ai.pipestream.document.v1.Document.
+  bool document_mapping = 13;
+  // True when allow_package_repair actually repairs a broken package
+  // instead of returning UNIMPLEMENTED.
+  bool package_repair = 14;
+  // Frontend advertisement for the shared demo shell.
+  UiInfo ui = 15;
+}
+
+// Frontend advertisement. Same shape in every ai-pipestream grpc service:
+// the demo shell reads it to build its tab bar.
+message UiInfo {
+  // Tab title, e.g. "LibreOffice".
+  string title = 1;
+  // Shell mount path, e.g. "/ui/libreoffice".
+  string path = 2;
+  // One line, used as the tab tooltip.
+  string description = 3;
 }
