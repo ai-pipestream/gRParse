@@ -372,17 +372,18 @@ std::string picture_description(const docv1::PictureItem& picture) {
 
 std::string picture_classification_class(const docv1::PictureItem& picture) {
   if (picture.has_meta() && picture.meta().has_classification()) {
-    std::string predicted_class;
-    double best = -1.0;
-    for (const auto& prediction : picture.meta().classification().predictions()) {
-      const double confidence =
-          prediction.has_confidence() ? prediction.confidence() : 0.0;
-      if (confidence > best) {
-        best = confidence;
-        predicted_class = prediction.class_name();
+    // The reference rule: the highest confidence among predictions that
+    // carry one; when none does, the first prediction by convention.
+    const auto& predictions = picture.meta().classification().predictions();
+    const docv1::PictureClassificationPrediction* best = nullptr;
+    for (const auto& prediction : predictions) {
+      if (!prediction.has_confidence()) continue;
+      if (best == nullptr || prediction.confidence() > best->confidence()) {
+        best = &prediction;
       }
     }
-    return predicted_class;
+    if (best == nullptr && !predictions.empty()) best = &predictions[0];
+    return best != nullptr ? best->class_name() : std::string();
   }
   for (const auto& annotation : picture.annotations()) {
     if (annotation.has_classification() &&

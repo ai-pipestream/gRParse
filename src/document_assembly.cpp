@@ -264,6 +264,10 @@ void fill_structured_table_data(const OcrPage& page, const LayoutRegion& region,
   });
 
   std::vector<int> owner(static_cast<size_t>(rows) * static_cast<size_t>(cols), -1);
+  // Each line belongs to exactly one cell: the first whose box contains its
+  // center, matching table_claimed_lines. Overlapping model boxes must not
+  // duplicate the same text into two cells.
+  std::vector<bool> line_taken(lines.size(), false);
   std::vector<pipestream::document::v1::TableCell> protos;
   protos.reserve(region.structured_cells.size());
   for (const auto& cell : region.structured_cells) {
@@ -276,11 +280,14 @@ void fill_structured_table_data(const OcrPage& page, const LayoutRegion& region,
     proto_cell.set_end_col_offset_idx(cell.col + cell.col_span);
     proto_cell.set_column_header(cell.header);
     std::string text;
-    for (const auto& member : lines) {
+    for (size_t member_index = 0; member_index < lines.size(); ++member_index) {
+      if (line_taken[member_index]) continue;
+      const auto& member = lines[member_index];
       const cv::Point center = member.box.center();
       const bool contains = center.x >= cell.left && center.x <= cell.right &&
                             center.y >= cell.top && center.y <= cell.bottom;
       if (!contains) continue;
+      line_taken[member_index] = true;
       if (!text.empty()) text.push_back(' ');
       text += page.lines[member.index].text;
     }
