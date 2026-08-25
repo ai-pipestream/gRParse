@@ -20,7 +20,8 @@ request arrives, the caller either names the collectors explicitly or leaves
 the selection empty, in which case gRParse routes by filename and content
 type: office formats to libreoffice, WARC to fastwarc, audio/video to asr,
 `.eml`/`.msg` to email, XML and its archive forms to xml, `.epub` to epub,
-text markup to markup, and PDF/raster to the in-process CV path — with one
+text markup to markup, the wiki storage dialect to the in-process handler
+below, and PDF/raster to the in-process CV path — with one
 twist: a PDF routes to the pdf inspector instead when one is configured,
 and its classification then decides between the collector's own fast-path
 Document (text-based) and a CV run whose OCR is restricted to the pages
@@ -54,6 +55,18 @@ On the streaming RPC, each collector's document is emitted as a
 `CollectorDocument` event the moment that collector finishes, interleaved
 with the CV path's page events, so a client watching the stream sees
 multi-format results assemble in real time.
+
+The rule has one deliberate exception besides the CV path. The wiki storage
+dialect is XHTML with a macro layer in the `ac:` and `ri:` namespaces, and
+no service in the fleet owns it: routed as generic markup its macros are
+mangled or dropped, and standing up a service for one XML subset with a
+fixed construct set would buy a network hop and a deployment rather than a
+parser. It is therefore handled in process, by a dependency free parse over
+that subset (`COLLECTOR_CONFLUENCE`). It is a collector like any other from
+every other angle: it stamps its own `CollectorSource`, it merges
+additively, it degrades into a failure entry, and it can be selected
+explicitly beside remote collectors. The bar for the next such exception is
+the same one it cleared: a constrained format with no owner anywhere else.
 
 The mechanics — the routing table, per-collector env vars, fold details, and
 the merge contract — are in the README's collector scatter-gather section;
