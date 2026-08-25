@@ -686,7 +686,8 @@ message Chunk {
   repeated int32 page_numbers = 9;
   map<string, string> metadata = 10;
   // Half-open [start_offset, end_offset) span of the chunk in the document's
-  // concatenated body-text stream, counted in UTF-8 CODE POINTS, not bytes.
+  // concatenated text stream (furniture included), counted in UTF-8 CODE
+  // POINTS, not bytes.
   // Both are set together or neither is: a chunk whose items the parse gave
   // no offset table entry for carries neither field rather than a guess.
   optional int64 start_offset = 11;

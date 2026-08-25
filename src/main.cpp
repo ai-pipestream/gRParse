@@ -564,6 +564,11 @@ int main() {
     quota.Resize(configured_size("GRPARSE_GRPC_MEMORY_MIB", 640, 16384) * 1024U * 1024U);
     quota.SetMaxThreads(static_cast<int>(configured_size("GRPARSE_GRPC_MAX_THREADS", 64, 1024)));
     builder.SetResourceQuota(quota);
+    // Per connection, not per server: one client channel may have 32 RPCs in
+    // flight while the executor above admits many more across all clients.
+    // Deliberate — the cap is a per-peer fairness bound, so a single client
+    // cannot fill the conversion queue on its own, and a client that wants
+    // more concurrency opens more channels.
     builder.AddChannelArgument(GRPC_ARG_MAX_CONCURRENT_STREAMS,
                                static_cast<int>(configured_size("GRPARSE_MAX_CONCURRENT_STREAMS", 32, 1024)));
     builder.RegisterService(&service);

@@ -51,7 +51,12 @@ struct BarcodeResult {
 // One detected layout region in page pixel coordinates (top-left origin,
 // the same space text boxes use).  Boxes are corners, edges inclusive.
 struct LayoutRegion {
-  std::string label;  // text, title, list, table, figure
+  // The detector's own class name, not a normalized vocabulary: the
+  // 17-label set the query detector emits (caption, list_item, page_header,
+  // section_header, table, text, code, key_value_region, ...) or picodet's
+  // five (text, title, list, table, picture).  Both are spelled out in
+  // layout_labels(), src/layout_decode.cpp.
+  std::string label;
   float confidence = 0.0F;
   int left = 0;
   int top = 0;

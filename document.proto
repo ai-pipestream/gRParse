@@ -11,9 +11,21 @@ option java_package = "ai.pipestream.document.v1";
 // Pipestream document structure.
 //
 // This proto defines the complete structure of a parsed document. The schema
-// mirrors the DoclingDocument v2 JSON schema field for field so that
-// documents interoperate with that ecosystem; the mirror is maintained by
+// is the upstream document v2 JSON schema mirrored field for field, plus the
+// documented extensions this repo adds on top of it; every extension is
+// called out at its own field and is additive, so removing them all yields a
+// document the upstream dialect can express. The mirror is maintained by
 // review, and "upstream" in comments below refers to that schema.
+//
+// Field-number policy:
+// - `custom_fields` is pinned at 100 in every message that carries one, so
+//   the escape hatch sits at the same number wherever a reader looks for it.
+// - Extension fields are appended after the numbers the upstream mirror
+//   occupies, never interleaved with them, so an upstream addition lands on
+//   the number upstream chose.
+// - Numbers are never reused. No field in this file has ever been removed,
+//   which is why there are no `reserved` ranges to guard; the day one is,
+//   its number and name go into a `reserved` statement in the same change.
 //
 // Document Structure Overview:
 // ===========================
@@ -29,7 +41,10 @@ option java_package = "ai.pipestream.document.v1";
 
 // Document is the root message representing a complete parsed document.
 message Document {
-  // Schema identifier for versioning (e.g., "docling_document_v2", kept for upstream interop)
+  // Schema identifier for versioning (e.g., "docling_document_v2"). Producers
+  // stamp it, but upstream interop does not run through this field: the
+  // canonical renderer emits the upstream identity from its own constant and
+  // ignores whatever a producer put here.
   optional string schema_name = 1;
 
   // Version number of the upstream schema used
@@ -154,6 +169,8 @@ message GroupItem {
   optional BaseMeta meta = 5;
   optional string name = 6;
   GroupLabel label = 7;
+  // Raw label fallback for forward-compatibility with newer label vocabularies.
+  optional string label_raw = 8;
 }
 
 // RefItem is a JSON Pointer reference to another item in the document.
@@ -652,6 +669,9 @@ message TextItemBase {
   // Admonition kind for callout blocks (info, warning, note, tip), when the
   // source marks one (extension beyond the upstream dialect).
   optional string admonition_kind = 15;
+
+  // Raw label fallback for forward-compatibility with newer label vocabularies.
+  optional string label_raw = 16;
 }
 
 // TitleItem represents a document title or major heading.
@@ -715,6 +735,8 @@ message CodeItem {
   optional CodeLanguageLabel code_language = 18;
   // Raw language string (fallback for unknown enum values).
   optional string code_language_raw = 19;
+  // Raw label fallback for forward-compatibility with newer label vocabularies.
+  optional string label_raw = 20;
 }
 
 // FormulaItem represents a mathematical formula or equation.

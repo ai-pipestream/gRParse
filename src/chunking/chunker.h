@@ -47,10 +47,11 @@
 
 namespace grparse::chunking {
 
-// One text item's place in the document's concatenated body-text stream, in
-// UTF-8 code points. This is the parse's own side table (PageData.text_offsets),
-// not something the chunker can derive: a document that arrives without one
-// yields chunks with no offsets rather than invented ones.
+// One text item's place in the document's concatenated text stream
+// (furniture included), in UTF-8 code points. This is the parse's own side
+// table (PageData.text_offsets), not something the chunker can derive: a
+// document that arrives without one yields chunks with no offsets rather
+// than invented ones.
 struct OffsetEntry {
   std::uint64_t start = 0;
   std::uint64_t end = 0;
