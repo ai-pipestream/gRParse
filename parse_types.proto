@@ -306,6 +306,27 @@ message ZipTarget {}
 // on the server; not supported for chunk endpoints.
 message PreSignedUrlTarget {}
 
+// StoredObject names one object a target wrote to an object store.
+message StoredObject {
+  // Object key, including the request's key_prefix.
+  string key = 1;
+  // The store's entity tag for the written object, verbatim and with its
+  // quoting as the store returned it. Empty when the store returned none.
+  string etag = 2;
+  uint64 size_bytes = 3;
+}
+
+// TargetResult carries what a non-inbody Target produced. Targets are an
+// additive delivery of the same conversion, never a replacement: a response
+// that carries a TargetResult still carries its DocumentResponse in full.
+message TargetResult {
+  // The ZIP archive of the result bundle, set only by ZipTarget.
+  optional bytes archive = 1;
+  // The objects written, in the bundle's own sorted path order. Set only by
+  // the store-writing targets.
+  repeated StoredObject objects = 2;
+}
+
 // ============================================================================
 // Convert Options
 // ============================================================================
@@ -608,6 +629,9 @@ message ConvertDocumentResponse {
   // Raw status fallback for forward-compatibility with newer upstream
   // conversion status vocabularies.
   optional string status_raw = 6;
+  // What the request's Target delivered, when it named one other than
+  // inbody. `document` above stays populated either way.
+  optional TargetResult target_result = 7;
 }
 
 // HierarchicalChunkerOptions configures the hierarchical chunker.

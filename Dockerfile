@@ -14,7 +14,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates cmake curl g++ git make ninja-build pkg-config xz-utils \
     libfreetype-dev libfontconfig-dev libjpeg-dev libopenjp2-7-dev \
-    liblcms2-dev libboost-dev \
+    liblcms2-dev libboost-dev libcurl4-openssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Poppler is vendored from source instead of taken from the distro: ubuntu

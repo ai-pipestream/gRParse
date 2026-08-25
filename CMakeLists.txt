@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(gRParse VERSION 0.1.0 LANGUAGES CXX)
+project(gRParse VERSION 0.1.0 LANGUAGES CXX C)
 
 include(CTest)
 
@@ -179,10 +179,38 @@ FetchContent_Declare(simdutf
   GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(simdutf)
 
+# miniz supplies the raw deflate compressor and the CRC-32 the ZIP target
+# writes its archives with; the ZIP container itself is written here, because
+# no stock archiver produces the byte-identical output a reproducible bundle
+# needs.  The release artifact is the amalgamated distribution (two files, no
+# build system of its own), so SOURCE_SUBDIR names a directory that does not
+# exist: FetchContent then populates without trying to configure it.
+FetchContent_Declare(miniz SOURCE_SUBDIR disabled
+  URL https://github.com/richgel999/miniz/releases/download/3.1.2/miniz-3.1.2.zip
+  URL_HASH SHA256=f0446d863f9c19926ad9483c523fdc42e42b8d4a6a431d27e09d49c79a140d9a)
+FetchContent_MakeAvailable(miniz)
+add_library(miniz STATIC "${miniz_SOURCE_DIR}/miniz.c")
+target_include_directories(miniz PUBLIC "${miniz_SOURCE_DIR}")
+
 find_package(OpenCV 4.5 REQUIRED COMPONENTS core imgcodecs imgproc)
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
+# libcurl carries the S3 target's signed PUTs.  The distribution's own, not a
+# vendored copy: the three images already ship a TLS stack, and the signing is
+# this repo's (Signature V4 over the request headers), so nothing here needs
+# an AWS SDK.
+find_package(CURL REQUIRED)
 pkg_check_modules(POPPLER_CPP REQUIRED IMPORTED_TARGET poppler-cpp)
+
+# The server links gRPC's vendored BoringSSL statically and libcurl
+# dynamically, and libcurl's TLS backend is OpenSSL.  The two define the same
+# symbol names, so an executable that exported the static definitions would
+# hand libcurl BoringSSL's SSL_* at load time and break it on the first https
+# upload.  Keeping every static archive's symbols out of the dynamic symbol
+# table is what holds the two apart.
+add_library(grparse_curl INTERFACE)
+target_link_libraries(grparse_curl INTERFACE CURL::libcurl)
+target_link_options(grparse_curl INTERFACE "LINKER:--exclude-libs,ALL")
 
 # The execution-provider hook the patched RapidOcrOnnx nets call into.
 add_library(grparse_ort_ep STATIC src/ort_session_ep.cpp)
@@ -485,11 +513,20 @@ add_library(grparse_core STATIC
   src/region_geometry.cpp
   src/table_structure.cpp
   src/table_structure_engine.cpp
+  src/targets/bundle.cpp
+  src/targets/s3_client.cpp
+  src/targets/s3_uploader.cpp
+  src/targets/sha256.cpp
+  src/targets/sigv4.cpp
+  src/targets/target_step.cpp
+  src/targets/zip_writer.cpp
   src/text_geometry.cpp)
 target_include_directories(grparse_core PUBLIC include)
 target_link_libraries(grparse_core
-  PUBLIC grparse_proto rapidocr PkgConfig::POPPLER_CPP Threads::Threads
-  PRIVATE ZXing::ZXing yaml-cpp::yaml-cpp simdutf::simdutf grparse_flags)
+  # grparse_curl is PUBLIC for its link options alone: they belong to every
+  # executable that ends up with both TLS stacks in its link closure.
+  PUBLIC grparse_proto rapidocr PkgConfig::POPPLER_CPP Threads::Threads grparse_curl
+  PRIVATE ZXing::ZXing yaml-cpp::yaml-cpp simdutf::simdutf miniz grparse_flags)
 
 add_executable(grparse-server src/main.cpp)
 target_link_libraries(grparse-server PRIVATE grparse_core grparse_flags grpc++_reflection)
@@ -529,6 +566,7 @@ if(BUILD_TESTING)
     streaming-service-test
     table-structure-engine-test
     table-structure-test
+    targets-test
     text-geometry-test)
   foreach(test_name IN LISTS GRPARSE_TESTS)
     string(REPLACE "-" "_" test_source "${test_name}")

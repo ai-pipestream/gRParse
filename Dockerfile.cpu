@@ -11,7 +11,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates cmake curl g++ git make ninja-build pkg-config xz-utils \
     libfreetype-dev libfontconfig-dev libjpeg-dev libopenjp2-7-dev \
-    liblcms2-dev libboost-dev \
+    liblcms2-dev libboost-dev libcurl4-openssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Poppler is vendored from source instead of taken from the distro: ubuntu
@@ -101,7 +101,7 @@ ENV GRPARSE_LISTEN_ADDRESS=0.0.0.0:50051 GRPARSE_MODELS_DIR=/models GRPARSE_PAGE
 # image used to inherit DejaVu from its base while the others had Liberation
 # alone; all three now ask for the same fonts explicitly.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libfreetype6 libfontconfig1 libjpeg8 libopenjp2-7 liblcms2-2 \
+    libfreetype6 libfontconfig1 libjpeg8 libopenjp2-7 liblcms2-2 libcurl4t64 \
     fonts-liberation fonts-dejavu-core fontconfig \
     && rm -rf /var/lib/apt/lists/* && fc-cache -f
 COPY --from=build /out/grparse-server /usr/local/bin/grparse-server
