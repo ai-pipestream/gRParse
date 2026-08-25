@@ -41,7 +41,7 @@ COPY . .
 # corrupt) one /build tree. The 3000s test ceiling exists for the emulated
 # arm64 leg; native builds finish each test in seconds.
 ARG TARGETARCH
-RUN --mount=type=cache,id=grparse-cpu-ubuntu26-grpc1.83.0-ort1.29.0-poppler26.08-cxx23-sessionep2-static1-simdutf9-${TARGETARCH},target=/build \
+RUN --mount=type=cache,id=grparse-cpu-ubuntu26-grpc1.83.0-ort1.29.0-poppler26.08-cxx23-sessionep2-static1-simdutf9-${TARGETARCH},sharing=locked,target=/build \
     export PKG_CONFIG_PATH=/opt/poppler/lib/pkgconfig \
  && cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
       -DGRPARSE_WERROR=ON -DGRPARSE_ORT_PACKAGE=cpu -DGRPARSE_TEST_TIMEOUT=3000 \
@@ -54,7 +54,8 @@ RUN --mount=type=cache,id=grparse-cpu-ubuntu26-grpc1.83.0-ort1.29.0-poppler26.08
 
 FROM ubuntu:26.04
 ENV GRPARSE_LISTEN_ADDRESS=0.0.0.0:50051 GRPARSE_MODELS_DIR=/models GRPARSE_PAGE_WORKERS=2 \
-    GRPARSE_ORT_EP=cpu
+    GRPARSE_ORT_EP=cpu \
+    GRPARSE_LAYOUT_MODEL=picodet
 # fonts-liberation gives poppler metric-compatible base-14 substitutes so
 # non-embedded Helvetica/Times/Courier text rasterizes instead of rendering
 # blank (layout detection and page previews read those pixels). The

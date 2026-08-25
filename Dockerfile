@@ -41,7 +41,7 @@ COPY . .
 # The cache id includes ABI-sensitive dependency versions. Update it whenever
 # gRPC, ONNX Runtime, CUDA, the base toolchain, or a dependency patch under
 # patches/ changes — a stale cache would keep an unpatched dependency tree.
-RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.83.0-ort1.29.0-poppler26.08-cxx23-sessionep2-static1-simdutf9,target=/build \
+RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.83.0-ort1.29.0-poppler26.08-cxx23-sessionep2-static1-simdutf9,sharing=locked,target=/build \
     export PKG_CONFIG_PATH=/opt/poppler/lib/pkgconfig \
  && cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
       -DGRPARSE_WERROR=ON \
