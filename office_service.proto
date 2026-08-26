@@ -521,6 +521,14 @@ message PageImage {
   // that support format selection; absent (unspecified) from older servers,
   // whose bytes are always PNG.
   PageImageFormat format = 6;
+  // Name of the page style in force on this page, naming the same style a
+  // PageStyleInfo event of this stream describes. For text documents the
+  // page cursor reports it per page, so a document that switches styles
+  // reports the switch. For spreadsheets it is the sheet's page style, for
+  // presentations and drawings the page's master. Empty when the office
+  // core does not name one for this page; a presentation's notes page
+  // never carries one.
+  string page_style = 7;
 }
 
 // TwipsPoint is a point in twips (1/1440 inch), document-absolute: the

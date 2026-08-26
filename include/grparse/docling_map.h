@@ -246,6 +246,13 @@ class DoclingMapper {
   // that point at them.
   void resolve_anchors();
 
+  // Checks every page style name a page carries against the PageStyle
+  // catalogue, which streams in after the page images do. A name that
+  // matches nothing in a catalogue that was collected is kept, because it
+  // is still what the layout reported, and named in a warning so the
+  // divergence is visible rather than silent.
+  void resolve_page_styles();
+
   // The page-local union of a cell's line rectangles on their first page;
   // false when there is nothing to measure.
   bool cell_bbox(const google::protobuf::RepeatedPtrField<
@@ -299,6 +306,9 @@ class DoclingMapper {
   // differs.
   std::string document_language_;
   std::vector<ai::pipestream::office::v1::PageRect> page_rects_;
+  // The 1-based page numbers whose style name came off the wire, so the
+  // catalogue check at the end of the stream visits only those.
+  std::vector<int> styled_pages_;
   // The document-absolute character space, one entry per emitted body item
   // in ascending offset order.
   std::vector<BodySpan> body_spans_;

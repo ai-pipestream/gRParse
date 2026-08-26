@@ -1047,6 +1047,14 @@ void DoclingMapper::on_page_image(const officev1::PageImage& image) {
     page->mutable_size()->set_height(
         static_cast<double>(image.height_px()) * 1440.0 / image.dpi());
   }
+  // The page's own style, as the layout put it there. It names one of the
+  // PageStyle declarations the fold collects, which arrive later in the
+  // stream, so the name is kept here and checked against the catalogue when
+  // the stream closes.
+  if (!image.page_style().empty()) {
+    page->set_style_name(image.page_style());
+    styled_pages_.push_back(image.index() + 1);
+  }
   // The request selects the page encoding, so the media type has to come
   // from what the response says it produced, not from the default.
   const std::string mime = page_image_mime(image.format());
@@ -1144,7 +1152,32 @@ void DoclingMapper::on_status(const officev1::RenderStatus& status) {
   // can close before the paragraph it sits in is emitted, and a
   // cross-reference can name an anchor from a later page.
   resolve_anchors();
+  resolve_page_styles();
   finished_ = true;
+}
+
+void DoclingMapper::resolve_page_styles() {
+  // Nothing to resolve against when the page style catalogue was not part
+  // of the request; the names on the pages stay as the layout reported
+  // them.
+  if (document_.page_styles_size() == 0) return;
+  for (int page_no : styled_pages_) {
+    auto found = document_.pages().find(page_no);
+    if (found == document_.pages().end()) continue;
+    const std::string& name = found->second.style_name();
+    bool declared = false;
+    for (const docv1::PageStyle& style : document_.page_styles()) {
+      if (style.name() == name) {
+        declared = true;
+        break;
+      }
+    }
+    if (!declared) {
+      warnings_.push_back("page " + std::to_string(page_no)
+                          + " names page style \"" + name
+                          + "\", which the style catalogue does not declare");
+    }
+  }
 }
 
 void DoclingMapper::on_paragraph(const officev1::Paragraph& paragraph) {
