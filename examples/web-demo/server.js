@@ -362,12 +362,32 @@ function shortLabel(label) {
   return typeof label === "string" ? label.replace("DOC_ITEM_LABEL_", "").toLowerCase() : "text";
 }
 
-function mapBoundingBox(bbox) {
+// Boxes reach the page in whichever origin their producer measures in: the
+// CV path's rasters are top-left pixels, a collector's fold of a PDF is
+// bottom-left points. The page draws in top-left, so a bottom-left box is
+// flipped against the page height here, once, and the JSON the page exports
+// is top-left throughout.
+function mapBoundingBox(bbox, pageHeight) {
   if (!bbox) return null;
-  return { l: bbox.l, t: bbox.t, r: bbox.r, b: bbox.b };
+  const l = Number(bbox.l) || 0;
+  const r = Number(bbox.r) || 0;
+  let t = Number(bbox.t) || 0;
+  let b = Number(bbox.b) || 0;
+  if (bbox.coordOrigin === "COORD_ORIGIN_BOTTOMLEFT" && pageHeight) {
+    const top = pageHeight - Math.max(t, b);
+    const bottom = pageHeight - Math.min(t, b);
+    t = top;
+    b = bottom;
+  }
+  return {
+    l: Math.min(l, r),
+    t: Math.min(t, b),
+    r: Math.max(l, r),
+    b: Math.max(t, b),
+  };
 }
 
-function mapText(baseText) {
+function mapText(baseText, pageHeight) {
   const kind = baseText.item;
   if (!kind || !baseText[kind]) return null;
   // Every text variant wraps TextItemBase as `base` except CodeItem, which
@@ -380,16 +400,16 @@ function mapText(baseText) {
     ref: base.selfRef,
     label: shortLabel(base.label),
     text: base.text,
-    bbox: prov ? mapBoundingBox(prov.bbox) : null,
+    bbox: prov ? mapBoundingBox(prov.bbox, pageHeight) : null,
   };
 }
 
-function mapTable(table) {
+function mapTable(table, pageHeight) {
   const prov = Array.isArray(table.prov) && table.prov.length > 0 ? table.prov[0] : null;
   const data = table.data || {};
   return {
     ref: table.selfRef,
-    bbox: prov ? mapBoundingBox(prov.bbox) : null,
+    bbox: prov ? mapBoundingBox(prov.bbox, pageHeight) : null,
     numRows: data.numRows || 0,
     numCols: data.numCols || 0,
     cells: (data.tableCells || []).map((cell) => ({
@@ -399,12 +419,12 @@ function mapTable(table) {
       rowSpan: cell.rowSpan,
       colSpan: cell.colSpan,
       header: Boolean(cell.columnHeader),
-      bbox: mapBoundingBox(cell.bbox),
+      bbox: mapBoundingBox(cell.bbox, pageHeight),
     })),
   };
 }
 
-function mapPicture(picture) {
+function mapPicture(picture, pageHeight) {
   const prov = Array.isArray(picture.prov) && picture.prov.length > 0 ? picture.prov[0] : null;
   // The classifier's distribution rides an annotation (see document_assembly.cpp),
   // sorted most-confident first.
@@ -423,7 +443,7 @@ function mapPicture(picture) {
   }
   return {
     ref: picture.selfRef,
-    bbox: prov ? mapBoundingBox(prov.bbox) : null,
+    bbox: prov ? mapBoundingBox(prov.bbox, pageHeight) : null,
     classes: predictions.slice(0, 3).map((p) => ({ name: p.className, confidence: p.confidence })),
     barcodes,
     imageUri: picture.image && picture.image.uri ? picture.image.uri : null,
@@ -433,6 +453,7 @@ function mapPicture(picture) {
 function mapEvent(event) {
   if (event.page) {
     const page = event.page;
+    const pageHeight = page.pageMeta && page.pageMeta.size ? Number(page.pageMeta.size.height) : 0;
     return {
       type: "page",
       pageNumber: page.pageNumber,
@@ -443,7 +464,7 @@ function mapEvent(event) {
       image: page.pageMeta && page.pageMeta.image && page.pageMeta.image.uri
         ? page.pageMeta.image.uri
         : null,
-      texts: (page.texts || []).map(mapText).filter(Boolean),
+      texts: (page.texts || []).map((text) => mapText(text, pageHeight)).filter(Boolean),
       offsets: (page.textOffsets || []).map((offset) => ({
         ref: offset.selfRef,
         start: offset.utfStart,
@@ -453,8 +474,8 @@ function mapEvent(event) {
           : null,
         confidence: offset.confidence,
       })),
-      tables: (page.tables || []).map(mapTable),
-      pictures: (page.pictures || []).map(mapPicture),
+      tables: (page.tables || []).map((table) => mapTable(table, pageHeight)),
+      pictures: (page.pictures || []).map((picture) => mapPicture(picture, pageHeight)),
     };
   }
   if (event.complete) {
