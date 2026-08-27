@@ -176,7 +176,9 @@ function renderPage(event) {
   totals.texts += event.texts.length;
   totals.tables += event.tables.length;
   totals.pictures += event.pictures.length;
-  for (const offset of event.offsets) totals[offset.source === "digital" ? "digital" : "ocr"] += 1;
+  // Collector documents with no OCR-or-digital story leave the source
+  // unset; those items count as neither.
+  for (const offset of event.offsets) if (offset.source) totals[offset.source] += 1;
   for (const picture of event.pictures) totals.barcodes += picture.barcodes.length;
   setStat("stat-pages", event.totalPages ? `${totals.pages}/${event.totalPages}` : `${totals.pages}`);
   setStat("stat-texts", `${totals.texts}`);

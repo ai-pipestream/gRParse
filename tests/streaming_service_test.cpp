@@ -1059,8 +1059,10 @@ class RoutableDigitalSource final : public grparse::PageSource {
 // one folded document, then the status trailer.
 class FakePdfInspector final : public pdfv1::PdfParseService::Service {
  public:
-  FakePdfInspector(pdfv1::PdfType type, std::vector<uint32_t> pages_needing_ocr)
-      : type_(type), pages_needing_ocr_(std::move(pages_needing_ocr)) {}
+  FakePdfInspector(pdfv1::PdfType type, std::vector<uint32_t> pages_needing_ocr,
+                   bool paged_document = false)
+      : type_(type), pages_needing_ocr_(std::move(pages_needing_ocr)),
+        paged_document_(paged_document) {}
 
   // Counts every dial, so a test can prove a parse that must not happen did
   // not reach the collector.
@@ -1102,6 +1104,40 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
     base->set_text("from pdf inspector");
     base->add_source()->mutable_collector()->set_collector("pdf");
     document.mutable_body()->add_children()->set_ref("#/texts/0");
+    if (paged_document_) {
+      // A two-page fold: the first text on page 1 with a box, a second
+      // text and a picture on page 2, a page-less table after them, and
+      // page sizes the collector measured.
+      base->add_prov()->set_page_no(1);
+      base->mutable_prov(0)->mutable_bbox()->set_l(10);
+      base->mutable_prov(0)->mutable_bbox()->set_t(700);
+      base->mutable_prov(0)->mutable_bbox()->set_r(200);
+      base->mutable_prov(0)->mutable_bbox()->set_b(690);
+      auto* second = document.add_texts()->mutable_section_header()->mutable_base();
+      second->set_self_ref("#/texts/1");
+      second->mutable_parent()->set_ref("#/body");
+      second->set_label(docv1::DOC_ITEM_LABEL_SECTION_HEADER);
+      second->set_text("page two heading");
+      second->add_prov()->set_page_no(2);
+      document.mutable_body()->add_children()->set_ref("#/texts/1");
+      auto* picture = document.add_pictures();
+      picture->set_self_ref("#/pictures/0");
+      picture->mutable_parent()->set_ref("#/body");
+      picture->set_label(docv1::DOC_ITEM_LABEL_PICTURE);
+      picture->add_prov()->set_page_no(2);
+      document.mutable_body()->add_children()->set_ref("#/pictures/0");
+      auto* table = document.add_tables();
+      table->set_self_ref("#/tables/0");
+      table->mutable_parent()->set_ref("#/body");
+      table->set_label(docv1::DOC_ITEM_LABEL_TABLE);
+      document.mutable_body()->add_children()->set_ref("#/tables/0");
+      for (const int page_no : {1, 2}) {
+        auto& page = (*document.mutable_pages())[page_no];
+        page.set_page_no(page_no);
+        page.mutable_size()->set_width(612);
+        page.mutable_size()->set_height(792);
+      }
+    }
     *event.mutable_document() = std::move(document);
     stream->Write(event);
     event.Clear();
@@ -1113,6 +1149,7 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
  private:
   pdfv1::PdfType type_;
   std::vector<uint32_t> pages_needing_ocr_;
+  bool paged_document_;
   std::atomic<int> dials_{0};
 };
 
@@ -1420,6 +1457,58 @@ void verify_streaming_pdf_fast_path_emits_the_collector_document() {
   require(run.events.at(1).has_complete(), "the stream closes with the complete event");
 }
 
+// The routed text PDF must stream like a rasterized one: a page event per
+// page carrying the collector's items in reading order, before the whole
+// document and the terminal event. A stream consumer that only renders
+// pages otherwise sees nothing for every text-based PDF.
+void verify_streaming_pdf_fast_path_projects_pages() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {}, /*paged_document=*/true);
+  PdfInspectorServer inspector_server(&inspector);
+  const StreamPdfRun run = run_stream_pdf(inspector_server.target());
+  require(run.status.ok(), "paged fast-path stream failed: " + run.status.error_message());
+  require(run.recognizer_calls == 0, "the projected fast path must not touch the recognizer");
+  require(run.events.size() == 4,
+          "two page events, the collector document, then complete; got " +
+              std::to_string(run.events.size()));
+  for (const auto& event : run.events) {
+    require(event.total_pages() == 2, "every event names the projected page count");
+  }
+  const auto& first = run.events.at(0);
+  require(first.has_page() && first.page().page_number() == 1, "page 1 streams first");
+  require(first.page().page_meta().size().width() == 612 &&
+              first.page().page_meta().page_no() == 1,
+          "page metadata comes from the collector's page map");
+  require(first.page().texts_size() == 1 &&
+              first.page().texts(0).text().base().text() == "from pdf inspector" &&
+              first.page().texts(0).text().base().prov(0).bbox().l() == 10,
+          "page 1 carries its text with the collector's box");
+  require(first.page().text_offsets_size() == 1 &&
+              first.page().text_offsets(0).self_ref() == "#/texts/0" &&
+              first.page().text_offsets(0).utf_end() == 18 &&
+              first.page().text_offsets(0).source() ==
+                  pipestream::parse::v1::TEXT_SOURCE_DIGITAL_PDF,
+          "text offsets index the collector's digital text");
+  require(first.page().body_order_size() == 1 &&
+              first.page().body_order(0).ref() == "#/texts/0",
+          "page 1 body order names its one item");
+  const auto& second = run.events.at(1);
+  require(second.has_page() && second.page().page_number() == 2, "page 2 streams second");
+  require(second.page().texts_size() == 1 && second.page().pictures_size() == 1 &&
+              second.page().tables_size() == 1,
+          "page 2 carries its heading, its picture, and the page-less table that follows them");
+  require(second.page().text_offsets(0).utf_start() == 18,
+          "offsets continue across pages");
+  require(second.page().body_order_size() == 3 &&
+              second.page().body_order(0).ref() == "#/texts/1" &&
+              second.page().body_order(1).ref() == "#/pictures/0" &&
+              second.page().body_order(2).ref() == "#/tables/0",
+          "page 2 body order follows the body tree");
+  require(run.events.at(2).has_collector_document() &&
+              run.events.at(2).collector_document().document().texts_size() == 2,
+          "the whole document still follows the pages");
+  require(run.events.at(3).has_complete(), "the stream closes with the complete event");
+}
+
 void verify_streaming_pdf_classification_restricts_recognition() {
   FakePdfInspector inspector(pdfv1::PDF_TYPE_SCANNED, {1, 2, 3});
   PdfInspectorServer inspector_server(&inspector);
@@ -1555,6 +1644,7 @@ int main() {
     verify_pdf_collector_failure_degrades_to_the_cv_path();
     verify_queued_then_cancelled_call_never_dials_a_collector();
     verify_streaming_pdf_fast_path_emits_the_collector_document();
+    verify_streaming_pdf_fast_path_projects_pages();
     verify_streaming_pdf_classification_restricts_recognition();
     verify_hierarchical_chunk_rpc_carries_digest_and_offsets(&server);
     verify_hybrid_chunk_rpc_merges_and_validates(&server);

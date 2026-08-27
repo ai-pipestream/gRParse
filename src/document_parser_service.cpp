@@ -31,6 +31,7 @@
 #include "grparse/document_render.h"
 #include "grparse/in_memory_document.h"
 #include "grparse/office_collector.h"
+#include "grparse/page_projection.h"
 #include "targets/target_step.h"
 
 namespace fs = std::filesystem;
@@ -1478,6 +1479,27 @@ class DocumentStreamReactor final
     std::lock_guard<std::mutex> lock(mutex_);
     if (client_cancelled_) return;
     if (outcome.success) {
+      // A collector's finished document reaches the stream as page events
+      // first, the same shape the CV pipeline emits page by page, so a
+      // consumer that renders pages sees an inspector-routed text PDF
+      // exactly as it sees a rasterized one. The whole document follows
+      // as the collector-document event for consumers that want it intact.
+      // The pdf collector's text is the document's own text layer; other
+      // collectors' text has no OCR-or-digital story to tell.
+      auto pages = project_page_data(
+          outcome.document, collector == pipestream::parse::v1::COLLECTOR_PDF
+                                ? pipestream::parse::v1::TEXT_SOURCE_DIGITAL_PDF
+                                : pipestream::parse::v1::TEXT_SOURCE_UNSPECIFIED);
+      if (!pages.empty()) {
+        total_pages_ = std::max(total_pages_, static_cast<int>(pages.size()));
+        for (auto& page : pages) {
+          auto page_event = std::make_unique<ArenaEvent>();
+          page_event->message->set_document_id(document_id_);
+          page_event->message->set_total_pages(total_pages_);
+          *page_event->message->mutable_page() = std::move(page);
+          events_.push_back(std::move(page_event));
+        }
+      }
       auto event = std::make_unique<ArenaEvent>();
       event->message->set_document_id(document_id_);
       event->message->set_total_pages(total_pages_);

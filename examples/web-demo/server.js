@@ -448,7 +448,9 @@ function mapEvent(event) {
         ref: offset.selfRef,
         start: offset.utfStart,
         end: offset.utfEnd,
-        source: offset.source === "TEXT_SOURCE_DIGITAL_PDF" ? "digital" : "ocr",
+        source: offset.source === "TEXT_SOURCE_DIGITAL_PDF" ? "digital"
+          : offset.source === "TEXT_SOURCE_OCR" ? "ocr"
+          : null,
         confidence: offset.confidence,
       })),
       tables: (page.tables || []).map(mapTable),
