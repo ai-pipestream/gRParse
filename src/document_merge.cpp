@@ -3,6 +3,7 @@
 #include <map>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <google/protobuf/descriptor.h>
 #include <google/protobuf/message.h>
@@ -87,18 +88,115 @@ void map_arena(const Arena& source_items, int existing, const std::string& prefi
   }
 }
 
-// Appends the source root group's children and metadata to the target's.
-// Children arrive already rewritten.
-void merge_root_group(docv1::GroupItem&& source, docv1::GroupItem* target) {
-  for (auto& child : *source.mutable_children()) {
-    *target->add_children() = std::move(child);
+// The key of one map entry as a string, for telling whether the target
+// already answers it. Map keys are integral, boolean, or string.
+std::string map_key_repr(const google::protobuf::Message& entry) {
+  const auto* field = entry.GetDescriptor()->map_key();
+  const auto* reflection = entry.GetReflection();
+  using google::protobuf::FieldDescriptor;
+  switch (field->cpp_type()) {
+    case FieldDescriptor::CPPTYPE_INT32: return std::to_string(reflection->GetInt32(entry, field));
+    case FieldDescriptor::CPPTYPE_INT64: return std::to_string(reflection->GetInt64(entry, field));
+    case FieldDescriptor::CPPTYPE_UINT32: return std::to_string(reflection->GetUInt32(entry, field));
+    case FieldDescriptor::CPPTYPE_UINT64: return std::to_string(reflection->GetUInt64(entry, field));
+    case FieldDescriptor::CPPTYPE_BOOL: return reflection->GetBool(entry, field) ? "1" : "0";
+    case FieldDescriptor::CPPTYPE_STRING: return reflection->GetString(entry, field);
+    default: return std::string();
   }
-  if (source.has_meta()) {
-    auto& fields = *target->mutable_meta()->mutable_custom_fields();
-    for (auto& [key, value] : *source.mutable_meta()->mutable_custom_fields()) {
-      // Additive: an existing key wins, a new key lands.
-      fields.emplace(key, std::move(value));
+}
+
+// Appends one repeated scalar element of `source` to `target`.
+void append_scalar(const google::protobuf::Message& source, google::protobuf::Message* target,
+                   const google::protobuf::FieldDescriptor* field, int index) {
+  const auto* from = source.GetReflection();
+  const auto* to = target->GetReflection();
+  using google::protobuf::FieldDescriptor;
+  switch (field->cpp_type()) {
+    case FieldDescriptor::CPPTYPE_INT32:
+      to->AddInt32(target, field, from->GetRepeatedInt32(source, field, index));
+      break;
+    case FieldDescriptor::CPPTYPE_INT64:
+      to->AddInt64(target, field, from->GetRepeatedInt64(source, field, index));
+      break;
+    case FieldDescriptor::CPPTYPE_UINT32:
+      to->AddUInt32(target, field, from->GetRepeatedUInt32(source, field, index));
+      break;
+    case FieldDescriptor::CPPTYPE_UINT64:
+      to->AddUInt64(target, field, from->GetRepeatedUInt64(source, field, index));
+      break;
+    case FieldDescriptor::CPPTYPE_DOUBLE:
+      to->AddDouble(target, field, from->GetRepeatedDouble(source, field, index));
+      break;
+    case FieldDescriptor::CPPTYPE_FLOAT:
+      to->AddFloat(target, field, from->GetRepeatedFloat(source, field, index));
+      break;
+    case FieldDescriptor::CPPTYPE_BOOL:
+      to->AddBool(target, field, from->GetRepeatedBool(source, field, index));
+      break;
+    case FieldDescriptor::CPPTYPE_ENUM:
+      to->AddEnumValue(target, field, from->GetRepeatedEnumValue(source, field, index));
+      break;
+    case FieldDescriptor::CPPTYPE_STRING:
+      to->AddString(target, field, from->GetRepeatedString(source, field, index));
+      break;
+    case FieldDescriptor::CPPTYPE_MESSAGE:
+      break;
+  }
+}
+
+// The scatter-gather rule for everything that is not an arena, applied by
+// reflection so a field the schema grows is carried the day it lands
+// instead of the day someone notices it missing: a singular field the
+// target has not answered takes the source's answer, a message answered by
+// both merges field by field, a list appends, and a map keeps the target's
+// entry for a key both carry. Nothing the target already says is changed.
+void merge_message(google::protobuf::Message&& source, google::protobuf::Message* target) {
+  const auto* descriptor = source.GetDescriptor();
+  const auto* from = source.GetReflection();
+  const auto* to = target->GetReflection();
+  for (int index = 0; index < descriptor->field_count(); ++index) {
+    const auto* field = descriptor->field(index);
+    if (field->is_map()) {
+      std::map<std::string, bool> answered;
+      const int existing = to->FieldSize(*target, field);
+      for (int entry = 0; entry < existing; ++entry) {
+        answered.emplace(map_key_repr(to->GetRepeatedMessage(*target, field, entry)), true);
+      }
+      const int incoming = from->FieldSize(source, field);
+      for (int entry = 0; entry < incoming; ++entry) {
+        auto* moved = from->MutableRepeatedMessage(&source, field, entry);
+        if (answered.contains(map_key_repr(*moved))) continue;
+        to->AddMessage(target, field)->CopyFrom(*moved);
+      }
+      continue;
     }
+    if (field->is_repeated()) {
+      const int incoming = from->FieldSize(source, field);
+      if (incoming == 0) continue;
+      if (to->FieldSize(*target, field) == 0) {
+        to->SwapFields(target, &source, {field});
+        continue;
+      }
+      for (int entry = 0; entry < incoming; ++entry) {
+        if (field->cpp_type() == google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE) {
+          to->AddMessage(target, field)->CopyFrom(from->GetRepeatedMessage(source, field, entry));
+        } else {
+          append_scalar(source, target, field, entry);
+        }
+      }
+      continue;
+    }
+    if (!from->HasField(source, field)) continue;
+    if (field->cpp_type() == google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE) {
+      if (to->HasField(*target, field)) {
+        merge_message(std::move(*from->MutableMessage(&source, field)),
+                      to->MutableMessage(target, field));
+      } else {
+        to->SwapFields(target, &source, {field});
+      }
+      continue;
+    }
+    if (!to->HasField(*target, field)) to->SwapFields(target, &source, {field});
   }
 }
 
@@ -127,6 +225,8 @@ void merge_documents(docv1::Document&& source, docv1::Document* target) {
 
   rewrite_refs(mapping, &source);
 
+  // The arenas append in their renumbered order; the root groups' own
+  // self_refs are fixed names and stay the target's.
   for (auto& item : *source.mutable_groups()) *target->add_groups() = std::move(item);
   for (auto& item : *source.mutable_texts()) *target->add_texts() = std::move(item);
   for (auto& item : *source.mutable_pictures()) *target->add_pictures() = std::move(item);
@@ -143,98 +243,20 @@ void merge_documents(docv1::Document&& source, docv1::Document* target) {
   for (auto& item : *source.mutable_field_items()) {
     *target->add_field_items() = std::move(item);
   }
+  source.clear_groups();
+  source.clear_texts();
+  source.clear_pictures();
+  source.clear_tables();
+  source.clear_key_value_items();
+  source.clear_form_items();
+  source.clear_field_regions();
+  source.clear_field_items();
 
-  merge_root_group(std::move(*source.mutable_body()), target->mutable_body());
-  merge_root_group(std::move(*source.mutable_furniture()), target->mutable_furniture());
-
-  for (auto& [number, page] : *source.mutable_pages()) {
-    target->mutable_pages()->emplace(number, std::move(page));
-  }
-  // The origin merges field by field rather than whole. The service stamps
-  // the archive's own filename, mimetype, and hash before any collector
-  // runs, so a wholesale move would only ever land when nothing had been
-  // stamped, and the web provenance a collector discovers inside the payload
-  // (the crawled URL, the page's canonical URI) would be dropped every time.
-  // The scatter-gather rule still holds: a field the target already carries
-  // is never overwritten, so the archive leg and the HTML leg both survive.
-  if (source.has_origin()) {
-    docv1::DocumentOrigin* origin = target->mutable_origin();
-    const docv1::DocumentOrigin& incoming = source.origin();
-    if (origin->mimetype().empty()) origin->set_mimetype(incoming.mimetype());
-    if (origin->filename().empty()) origin->set_filename(incoming.filename());
-    if (origin->binary_hash() == 0) origin->set_binary_hash(incoming.binary_hash());
-    if (!origin->has_uri() && incoming.has_uri()) origin->set_uri(incoming.uri());
-    if (incoming.has_web()) {
-      docv1::WebMeta* web = origin->mutable_web();
-      const docv1::WebMeta& source_web = incoming.web();
-      if (!web->has_target_uri() && source_web.has_target_uri()) {
-        web->set_target_uri(source_web.target_uri());
-      }
-      if (!web->has_canonical_uri() && source_web.has_canonical_uri()) {
-        web->set_canonical_uri(source_web.canonical_uri());
-      }
-      if (!web->has_crawl_time() && source_web.has_crawl_time()) {
-        *web->mutable_crawl_time() = source_web.crawl_time();
-      }
-      if (!web->has_crawl_time_raw() && source_web.has_crawl_time_raw()) {
-        web->set_crawl_time_raw(source_web.crawl_time_raw());
-      }
-      if (!web->has_http_status() && source_web.has_http_status()) {
-        web->set_http_status(source_web.http_status());
-      }
-      if (!web->has_content_language() && source_web.has_content_language()) {
-        web->set_content_language(source_web.content_language());
-      }
-      // emplace leaves a name the target already answered alone.
-      for (const auto& [name, value] : source_web.headers()) {
-        web->mutable_headers()->emplace(name, value);
-      }
-    }
-  }
-  // Source-declared metadata merges the same way; the page-level pairs
-  // append, because two collectors reading the same page report different
-  // tags rather than competing answers to one.
-  if (source.has_source_meta()) {
-    docv1::DocumentMeta* meta = target->mutable_source_meta();
-    const docv1::DocumentMeta& incoming = source.source_meta();
-    if (!meta->has_title() && incoming.has_title()) meta->set_title(incoming.title());
-    if (!meta->has_created() && incoming.has_created()) {
-      *meta->mutable_created() = incoming.created();
-    }
-    if (!meta->has_modified() && incoming.has_modified()) {
-      *meta->mutable_modified() = incoming.modified();
-    }
-    if (!meta->has_created_raw() && incoming.has_created_raw()) {
-      meta->set_created_raw(incoming.created_raw());
-    }
-    if (!meta->has_modified_raw() && incoming.has_modified_raw()) {
-      meta->set_modified_raw(incoming.modified_raw());
-    }
-    if (!meta->has_language() && incoming.has_language()) {
-      meta->set_language(incoming.language());
-    }
-    if (!meta->has_generator() && incoming.has_generator()) {
-      meta->set_generator(incoming.generator());
-    }
-    for (const auto& author : incoming.authors()) meta->add_authors(author);
-    for (const auto& keyword : incoming.keywords()) meta->add_keywords(keyword);
-    for (const auto& [name, value] : incoming.extra()) {
-      meta->mutable_extra()->emplace(name, value);
-    }
-  }
-  // The remaining model-extension carriers: list-shaped ones append,
-  // singular ones keep the first collector's claim exactly like origin.
-  for (auto& tag : *source.mutable_meta_tags()) {
-    *target->add_meta_tags() = std::move(tag);
-  }
-  for (auto& item : *source.mutable_attachments()) *target->add_attachments() = std::move(item);
-  for (auto& item : *source.mutable_outline()) *target->add_outline() = std::move(item);
-  for (auto& item : *source.mutable_structured_data()) {
-    *target->add_structured_data() = std::move(item);
-  }
-  if (!target->has_media() && source.has_media()) {
-    *target->mutable_media() = std::move(*source.mutable_media());
-  }
+  // Everything else: the root groups (children append, meta merges), pages
+  // by number with the target winning a collision, the origin and the
+  // source metadata field by field beside whatever the service stamped, and
+  // every document-level carrier the model has or grows.
+  merge_message(std::move(source), target);
 }
 
 }  // namespace grparse
