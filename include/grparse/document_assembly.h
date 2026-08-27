@@ -19,6 +19,9 @@ struct AssemblyCursor {
 };
 
 uint64_t utf8_codepoint_count(const std::string& text);
+// Embeds a PNG as a data URI on the image ref, sized from its own header.
+void set_picture_image(const std::vector<unsigned char>& png,
+                       ai::pipestream::document::v1::ImageRef* image);
 void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cursor,
                       ai::pipestream::parse::v1::PageData* output);
 // Folds one page into the document. `text_offsets`, when given, collects the

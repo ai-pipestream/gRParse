@@ -219,19 +219,6 @@ uint32_t read_be32(const unsigned char* bytes) {
          (static_cast<uint32_t>(bytes[2]) << 8) | bytes[3];
 }
 
-// Embed a captured crop as a data URI.  The pixel size comes from the PNG
-// IHDR itself, which is authoritative regardless of the page's coordinate
-// space (digital pages measure in PDF points, crops in raster pixels).
-void set_picture_image(const std::vector<unsigned char>& png, pipestream::document::v1::ImageRef* image) {
-  image->set_mimetype("image/png");
-  // IHDR starts at byte 8; width and height are its first two fields.
-  if (png.size() >= 24) {
-    image->mutable_size()->set_width(read_be32(png.data() + 16));
-    image->mutable_size()->set_height(read_be32(png.data() + 20));
-  }
-  image->set_uri("data:image/png;base64," + encode_base64(png.data(), png.size()));
-}
-
 // Model table structure (D3): the recognized cells carry real spans and
 // header rows.  Lines bound to the table land in the first cell whose box
 // contains their center; the flat cell list holds each cell once while the
@@ -359,6 +346,21 @@ void fill_table_data(const OcrPage& page, const LayoutRegion& region,
 }
 
 }  // namespace
+
+// Embed a captured crop as a data URI.  The pixel size comes from the PNG
+// IHDR itself, which is authoritative regardless of the page's coordinate
+// space (digital pages measure in PDF points, crops in raster pixels).
+void set_picture_image(const std::vector<unsigned char>& png,
+                       pipestream::document::v1::ImageRef* image) {
+  image->set_mimetype("image/png");
+  // IHDR starts at byte 8; width and height are its first two fields.
+  if (png.size() >= 24) {
+    image->mutable_size()->set_width(read_be32(png.data() + 16));
+    image->mutable_size()->set_height(read_be32(png.data() + 20));
+  }
+  image->set_uri("data:image/png;base64," + encode_base64(png.data(), png.size()));
+}
+
 
 uint64_t utf8_codepoint_count(const std::string& text) {
   uint64_t count = 0;

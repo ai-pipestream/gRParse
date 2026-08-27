@@ -162,6 +162,9 @@ class PageScheduler final {
   // Pages a single document may hold undelivered before it needs credits back.
   // Stream reactors must size their own buffers from this, not from a constant.
   size_t page_window() const;
+  // Whether page previews are captured: the CV path paints them off its
+  // rasters, and a collector-folded PDF gets them rendered on purpose.
+  bool captures_page_images() const;
 
  private:
   class Impl;

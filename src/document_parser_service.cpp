@@ -31,6 +31,7 @@
 #include "grparse/document_render.h"
 #include "grparse/in_memory_document.h"
 #include "grparse/office_collector.h"
+#include "grparse/page_previews.h"
 #include "grparse/page_projection.h"
 #include "targets/target_step.h"
 
@@ -619,6 +620,9 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
         pdf && plan_ids.size() == 1 && plan_ids[0] == pipestream::parse::v1::COLLECTOR_PDF &&
         endpoints != nullptr && endpoints->has(pipestream::parse::v1::COLLECTOR_PDF);
 
+    // A collector-folded PDF never rasterized; when previews are on, it
+    // gets them rendered so the shell has a page to paint the boxes on.
+    const bool previews = scheduler.captures_page_images();
     std::vector<PlannedCollector> plan;
     for (const auto id : plan_ids) {
       PlannedCollector collector;
@@ -628,7 +632,8 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
       } else if (local_collector(id)) {
         collector.run = [id, bytes] { return run_local_collector(id, *bytes); };
       } else if (pdf_routing) {
-        collector.run = [run_cv, tuning, endpoints, bytes, inbound_deadline, context]() {
+        collector.run = [run_cv, tuning, endpoints, bytes, inbound_deadline, context,
+                         previews]() {
           // Same pre-dial cancellation check as the plain collector legs: a
           // call that died after the dequeue check must not dial the
           // inspector either.
@@ -643,7 +648,9 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
                           inbound_deadline);
           const PdfRouteDecision route = route_pdf_by_classification(parsed.classification);
           if (parsed.outcome.success && route.fast_path) {
-            return parsed.outcome;
+            PdfParseResult fast = parsed;
+            if (previews) attach_page_previews(bytes, &fast.outcome.document);
+            return fast.outcome;
           }
           CollectorOutcome outcome;
           if (!parsed.outcome.success) {
@@ -1312,15 +1319,19 @@ class DocumentStreamReactor final
     const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
     auto endpoints = endpoints_;
     const CollectorDeadline inbound_deadline = context_->deadline();
+    const bool previews = scheduler_.captures_page_images();
     std::thread([weak_gate, endpoints, bytes = std::move(bytes), pdf, inbound_deadline,
-                 tuning = std::move(tuning)]() mutable {
-      const PdfParseResult parsed = collect_pdf(
+                 tuning = std::move(tuning), previews]() mutable {
+      PdfParseResult parsed = collect_pdf(
           endpoints == nullptr
               ? nullptr
               : endpoints->channel(pipestream::parse::v1::COLLECTOR_PDF),
           *bytes, inbound_deadline);
       const PdfRouteDecision route = route_pdf_by_classification(parsed.classification);
       if (parsed.outcome.success && route.fast_path) {
+        // Rendered before the reactor sees the document, on this thread,
+        // where the blocking work already is.
+        if (previews) attach_page_previews(bytes, &parsed.outcome.document);
         if (const auto gate = weak_gate.lock()) {
           std::lock_guard<std::mutex> lock(gate->mutex);
           if (gate->reactor != nullptr) {

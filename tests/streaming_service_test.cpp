@@ -1233,10 +1233,13 @@ struct StreamPdfRun {
   int recognizer_calls = 0;
 };
 
-StreamPdfRun run_stream_pdf(const std::string& pdf_target) {
+StreamPdfRun run_stream_pdf(const std::string& pdf_target, bool capture_page_images = false,
+                            const std::string& pdf_bytes = "%PDF-in-memory") {
   FakeRecognizer recognizer;
+  grparse::PageScheduler::Options options{2, 3, 2, 3, 2, 2, 2};
+  options.capture_page_images = capture_page_images;
   grparse::PageScheduler scheduler(
-      recognizer, {2, 3, 2, 3, 2, 2, 2},
+      recognizer, options,
       [](std::shared_ptr<const std::string>, bool, double) {
         return std::make_shared<RoutableDigitalSource>();
       });
@@ -1259,7 +1262,7 @@ StreamPdfRun run_stream_pdf(const std::string& pdf_target) {
   chunk.set_document_id("pdf-routing");
   chunk.set_filename("routing.pdf");
   chunk.set_content_type("application/pdf");
-  chunk.set_data("%PDF-in-memory");
+  chunk.set_data(pdf_bytes);
   chunk.set_complete(true);
   require(stream->Write(chunk), "pdf routing client could not write the source chunk");
   stream->WritesDone();
@@ -1509,6 +1512,69 @@ void verify_streaming_pdf_fast_path_projects_pages() {
   require(run.events.at(3).has_complete(), "the stream closes with the complete event");
 }
 
+// A real two-page PDF, so the fast path has something to render.
+std::string two_page_pdf() {
+  const std::string content = "BT /F1 24 Tf 72 700 Td (Hello) Tj ET\n";
+  std::vector<std::string> objects = {
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> "
+      ">> /Contents 5 0 R >>",
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+      "<< /Length " + std::to_string(content.size()) + " >>\nstream\n" + content + "endstream",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> "
+      ">> /Contents 5 0 R >>",
+  };
+  std::string pdf = "%PDF-1.4\n";
+  std::vector<size_t> offsets;
+  for (size_t index = 0; index < objects.size(); ++index) {
+    offsets.push_back(pdf.size());
+    pdf += std::to_string(index + 1) + " 0 obj\n" + objects[index] + "\nendobj\n";
+  }
+  const size_t xref = pdf.size();
+  pdf += "xref\n0 " + std::to_string(objects.size() + 1) + "\n0000000000 65535 f \n";
+  for (const size_t offset : offsets) {
+    std::string entry = std::to_string(offset);
+    entry.insert(entry.begin(), 10 - entry.size(), '0');
+    pdf += entry + " 00000 n \n";
+  }
+  pdf += "trailer\n<< /Size " + std::to_string(objects.size() + 1) +
+         " /Root 1 0 R >>\nstartxref\n" + std::to_string(xref) + "\n%%EOF\n";
+  return pdf;
+}
+
+// With previews on, the routed text PDF streams its pages with a rendered
+// preview under the boxes, exactly as the CV path does; the whole document
+// that follows carries the same previews on its page map.
+void verify_streaming_pdf_fast_path_renders_previews() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {}, /*paged_document=*/true);
+  PdfInspectorServer inspector_server(&inspector);
+  const StreamPdfRun run =
+      run_stream_pdf(inspector_server.target(), /*capture_page_images=*/true, two_page_pdf());
+  require(run.status.ok(), "preview fast-path stream failed: " + run.status.error_message());
+  require(run.recognizer_calls == 0, "previews never touch the recognizer");
+  require(run.events.size() == 4, "two pages, the document, complete");
+  for (const int index : {0, 1}) {
+    const auto& meta = run.events.at(index).page().page_meta();
+    require(meta.has_image() && meta.image().mimetype() == "image/png" &&
+                meta.image().size().height() > 0,
+            "page " + std::to_string(index + 1) + " streams with its preview");
+    require(meta.size().width() == 612, "the collector's page size rides beside the preview");
+  }
+  const auto& document = run.events.at(2).collector_document().document();
+  require(document.pages().at(2).has_image(), "the whole document carries the previews too");
+}
+
+// With previews off nothing is rendered: the fast path stays the fast path.
+void verify_streaming_pdf_fast_path_skips_previews_when_off() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {}, /*paged_document=*/true);
+  PdfInspectorServer inspector_server(&inspector);
+  const StreamPdfRun run =
+      run_stream_pdf(inspector_server.target(), /*capture_page_images=*/false, two_page_pdf());
+  require(run.status.ok(), "stream failed: " + run.status.error_message());
+  require(!run.events.at(0).page().page_meta().has_image(), "no preview was asked for");
+}
+
 void verify_streaming_pdf_classification_restricts_recognition() {
   FakePdfInspector inspector(pdfv1::PDF_TYPE_SCANNED, {1, 2, 3});
   PdfInspectorServer inspector_server(&inspector);
@@ -1645,6 +1711,8 @@ int main() {
     verify_queued_then_cancelled_call_never_dials_a_collector();
     verify_streaming_pdf_fast_path_emits_the_collector_document();
     verify_streaming_pdf_fast_path_projects_pages();
+    verify_streaming_pdf_fast_path_renders_previews();
+    verify_streaming_pdf_fast_path_skips_previews_when_off();
     verify_streaming_pdf_classification_restricts_recognition();
     verify_hierarchical_chunk_rpc_carries_digest_and_offsets(&server);
     verify_hybrid_chunk_rpc_merges_and_validates(&server);

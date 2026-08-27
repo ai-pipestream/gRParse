@@ -1,4 +1,5 @@
 #include "grparse/page_scheduler.h"
+#include "grparse/page_previews.h"
 
 #include <algorithm>
 #include <chrono>
@@ -27,22 +28,6 @@ bool barcode_class(const LayoutRegion& region) {
   if (region.figure_classes.empty()) return false;
   const std::string& top = region.figure_classes.front().label;
   return top == "bar_code" || top == "qr_code";
-}
-
-// Longest side of a captured page preview.  Rasters render at 200 DPI
-// (a letter page is ~1700x2200); previews exist to be painted under boxes,
-// not re-OCRed, so half that keeps events an order of magnitude smaller.
-constexpr int kPagePreviewMaxSide = 1100;
-
-// Downscaled copy of the raster for the page preview; the raster itself when
-// it is already within bounds.  Never aliases past the encode that follows.
-cv::Mat preview_of(const cv::Mat& raster) {
-  const int longest = std::max(raster.cols, raster.rows);
-  if (longest <= kPagePreviewMaxSide) return raster;
-  const double scale = static_cast<double>(kPagePreviewMaxSide) / longest;
-  cv::Mat scaled;
-  cv::resize(raster, scaled, cv::Size(), scale, scale, cv::INTER_AREA);
-  return scaled;
 }
 
 template <typename T>
@@ -326,6 +311,7 @@ class PageScheduler::Impl final {
   }
 
   size_t page_window() const { return options_.page_window; }
+  bool captures_page_images() const { return options_.capture_page_images; }
 
  private:
   void stop() {
@@ -801,5 +787,6 @@ PageScheduler::Ticket PageScheduler::submit(std::shared_ptr<const std::string> b
 PageScheduler::Metrics PageScheduler::metrics() const { return impl_->metrics(); }
 
 size_t PageScheduler::page_window() const { return impl_->page_window(); }
+bool PageScheduler::captures_page_images() const { return impl_->captures_page_images(); }
 
 }  // namespace grparse
