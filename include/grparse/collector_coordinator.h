@@ -49,6 +49,9 @@ struct CollectorOutcome {
 // One collector planned into a parse: its wire identity and the callable
 // that produces its outcome. The callable must not throw; failures are
 // outcomes.
+// The wire name of a collector, as its items' CollectorSource spells it.
+const char* collector_name(ai::pipestream::parse::v1::Collector collector);
+
 struct PlannedCollector {
   ai::pipestream::parse::v1::Collector id =
       ai::pipestream::parse::v1::COLLECTOR_UNSPECIFIED;

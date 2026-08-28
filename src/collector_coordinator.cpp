@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "grparse/confluence_storage.h"
+#include "grparse/document_collectors.h"
 #include "grparse/document_merge.h"
 
 namespace pipestream = ai::pipestream;
@@ -65,7 +66,12 @@ CoordinatorResult run_collectors(std::vector<PlannedCollector> collectors,
           {collectors[index].id, std::move(outcome.error), outcome.code});
       continue;
     }
-    merge_documents(std::move(outcome.document), &result.document);
+    // The collector's document-level account is kept whole and its
+    // answers are attributed, so a value another collector displaces is
+    // still on the wire under the collector that gave it.
+    pipestream::document::v1::CollectorSource claimant;
+    claimant.set_collector(collector_name(collectors[index].id));
+    merge_documents(std::move(outcome.document), &result.document, claimant);
     ++result.succeeded;
   }
   return result;

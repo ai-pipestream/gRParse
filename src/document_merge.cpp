@@ -1,6 +1,7 @@
 #include "grparse/document_merge.h"
 
 #include <map>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -144,16 +145,97 @@ void append_scalar(const google::protobuf::Message& source, google::protobuf::Me
   }
 }
 
+const auto self_ref_field = [](const auto& item) { return item.self_ref(); };
+
+// forward declaration for the recursion between the merge and the claim walk
+struct Tracking;
+void claim_fields_under(google::protobuf::Message* message, const Tracking& tracking);
+
+// Provenance tracking for a message that carries a `field_sources` list:
+// the list itself, the path prefix of the message inside the tracked root,
+// and the collector claiming the source's answers.
+struct Tracking {
+  google::protobuf::Message* root = nullptr;
+  const google::protobuf::FieldDescriptor* list = nullptr;
+  std::string prefix;
+  const docv1::CollectorSource* claimant = nullptr;
+  std::string mimetype;
+};
+
+const google::protobuf::FieldDescriptor* field_sources_of(
+    const google::protobuf::Descriptor* descriptor) {
+  const auto* field = descriptor->FindFieldByName("field_sources");
+  if (field == nullptr || !field->is_repeated() ||
+      field->cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE ||
+      field->message_type()->full_name() != docv1::FieldSource::descriptor()->full_name()) {
+    return nullptr;
+  }
+  return field;
+}
+
+// The recorded source of `path` on the tracked root, when one is recorded.
+docv1::FieldSource* recorded(const Tracking& tracking, const std::string& path) {
+  const auto* reflection = tracking.root->GetReflection();
+  const int size = reflection->FieldSize(*tracking.root, tracking.list);
+  for (int index = 0; index < size; ++index) {
+    auto* entry = static_cast<docv1::FieldSource*>(
+        reflection->MutableRepeatedMessage(tracking.root, tracking.list, index));
+    if (entry->field() == path) return entry;
+  }
+  return nullptr;
+}
+
+void record(const Tracking& tracking, const std::string& path) {
+  docv1::FieldSource* entry = recorded(tracking, path);
+  if (entry == nullptr) {
+    entry = static_cast<docv1::FieldSource*>(
+        tracking.root->GetReflection()->AddMessage(tracking.root, tracking.list));
+    entry->set_field(path);
+  }
+  *entry->mutable_source() = *tracking.claimant;
+}
+
+// Whether the claimant's answer displaces the one the target carries:
+// confidence first when both state one, then standing for the format; a
+// tie leaves the target's answer.
+bool claimant_wins(const Tracking& tracking, const std::string& path) {
+  const docv1::FieldSource* holder = recorded(tracking, path);
+  if (holder == nullptr) return false;
+  const auto& incumbent = holder->source();
+  const auto& challenger = *tracking.claimant;
+  if (incumbent.has_confidence() && challenger.has_confidence() &&
+      incumbent.confidence() != challenger.confidence()) {
+    return challenger.confidence() > incumbent.confidence();
+  }
+  return document_claim_rank(challenger.collector(), tracking.mimetype) >
+         document_claim_rank(incumbent.collector(), tracking.mimetype);
+}
+
 // The scatter-gather rule for everything that is not an arena, applied by
 // reflection so a field the schema grows is carried the day it lands
 // instead of the day someone notices it missing: a singular field the
 // target has not answered takes the source's answer, a message answered by
 // both merges field by field, a list appends, and a map keeps the target's
-// entry for a key both carry. Nothing the target already says is changed.
-void merge_message(google::protobuf::Message&& source, google::protobuf::Message* target) {
+// entry for a key both carry. Nothing the target already says is changed,
+// except under provenance tracking, where a claimant that outranks the
+// recorded holder of a field displaces it and is recorded in its place.
+void merge_message(google::protobuf::Message&& source, google::protobuf::Message* target,
+                   Tracking tracking) {
   const auto* descriptor = source.GetDescriptor();
   const auto* from = source.GetReflection();
   const auto* to = target->GetReflection();
+  if (tracking.claimant != nullptr) {
+    if (const auto* list = field_sources_of(descriptor); list != nullptr) {
+      // This message tracks its own fields; the claimant is the authority
+      // on where the source's answers came from, so any list the source
+      // carried is re-derived here rather than appended.
+      from->ClearField(&source, list);
+      tracking.root = target;
+      tracking.list = list;
+      tracking.prefix.clear();
+    }
+  }
+  const bool tracked = tracking.claimant != nullptr && tracking.root != nullptr;
   for (int index = 0; index < descriptor->field_count(); ++index) {
     const auto* field = descriptor->field(index);
     if (field->is_map()) {
@@ -188,23 +270,88 @@ void merge_message(google::protobuf::Message&& source, google::protobuf::Message
     }
     if (!from->HasField(source, field)) continue;
     if (field->cpp_type() == google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE) {
+      Tracking nested = tracking;
+      if (tracked) nested.prefix = tracking.prefix + std::string(field->name()) + ".";
       if (to->HasField(*target, field)) {
         merge_message(std::move(*from->MutableMessage(&source, field)),
-                      to->MutableMessage(target, field));
+                      to->MutableMessage(target, field), nested);
       } else {
         to->SwapFields(target, &source, {field});
+        if (tracking.claimant != nullptr) {
+          // A message taken whole: every singular field it answers is the
+          // claimant's. One that tracks itself starts its own list here,
+          // re-derived from the claimant rather than carried from the
+          // source; one that does not is attributed under the enclosing
+          // tracked message, when there is one.
+          auto* taken = to->MutableMessage(target, field);
+          if (const auto* list = field_sources_of(field->message_type()); list != nullptr) {
+            taken->GetReflection()->ClearField(taken, list);
+            Tracking own = tracking;
+            own.root = taken;
+            own.list = list;
+            own.prefix.clear();
+            claim_fields_under(taken, own);
+          } else if (tracked) {
+            claim_fields_under(taken, nested);
+          }
+        }
       }
       continue;
     }
-    if (!to->HasField(*target, field)) to->SwapFields(target, &source, {field});
+    const std::string path = tracking.prefix + std::string(field->name());
+    if (!to->HasField(*target, field)) {
+      to->SwapFields(target, &source, {field});
+      if (tracked) record(tracking, path);
+    } else if (tracked && claimant_wins(tracking, path)) {
+      to->SwapFields(target, &source, {field});
+      record(tracking, path);
+    }
   }
 }
 
-const auto self_ref_field = [](const auto& item) { return item.self_ref(); };
+// Records the claimant for every singular field `message` answers, into
+// the tracking root, recursing through nested messages.
+void claim_fields_under(google::protobuf::Message* message, const Tracking& tracking) {
+  const auto* descriptor = message->GetDescriptor();
+  const auto* reflection = message->GetReflection();
+  for (int index = 0; index < descriptor->field_count(); ++index) {
+    const auto* field = descriptor->field(index);
+    if (field->is_repeated() || !reflection->HasField(*message, field)) continue;
+    if (field->cpp_type() == google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE) {
+      Tracking nested = tracking;
+      nested.prefix = tracking.prefix + std::string(field->name()) + ".";
+      claim_fields_under(reflection->MutableMessage(message, field), nested);
+      continue;
+    }
+    record(tracking, tracking.prefix + std::string(field->name()));
+  }
+}
 
-}  // namespace
+// The document-level account a source carries, whole, for Document.claims.
+// Absent when the source says nothing at the document level.
+std::optional<docv1::CollectorClaim> claim_of(const docv1::Document& source,
+                                              const docv1::CollectorSource& claimant) {
+  if (!source.has_source_meta() && !source.has_origin() && source.page_styles_size() == 0 &&
+      !source.has_email() && !source.has_media()) {
+    return std::nullopt;
+  }
+  docv1::CollectorClaim claim;
+  *claim.mutable_source() = claimant;
+  if (source.has_source_meta()) *claim.mutable_source_meta() = source.source_meta();
+  if (source.has_origin()) *claim.mutable_origin() = source.origin();
+  for (const auto& style : source.page_styles()) *claim.add_page_styles() = style;
+  if (source.has_email()) *claim.mutable_email() = source.email();
+  if (source.has_media()) *claim.mutable_media() = source.media();
+  // A claim's own account never carries provenance lists: it is one
+  // collector's word, whole.
+  claim.mutable_source_meta()->clear_field_sources();
+  claim.mutable_origin()->clear_field_sources();
+  if (!source.has_source_meta()) claim.clear_source_meta();
+  if (!source.has_origin()) claim.clear_origin();
+  return claim;
+}
 
-void merge_documents(docv1::Document&& source, docv1::Document* target) {
+void merge_arenas(docv1::Document&& source, docv1::Document* target) {
   RefMap mapping;
   map_arena(source.groups(), target->groups_size(), "#/groups/", self_ref_field,
             &mapping);
@@ -256,7 +403,54 @@ void merge_documents(docv1::Document&& source, docv1::Document* target) {
   // by number with the target winning a collision, the origin and the
   // source metadata field by field beside whatever the service stamped, and
   // every document-level carrier the model has or grows.
-  merge_message(std::move(source), target);
+}
+
+}  // namespace
+
+void merge_documents(docv1::Document&& source, docv1::Document* target) {
+  merge_arenas(std::move(source), target);
+  merge_message(std::move(source), target, Tracking{});
+}
+
+void merge_documents(docv1::Document&& source, docv1::Document* target,
+                     const docv1::CollectorSource& claimant) {
+  if (claimant.collector().empty()) {
+    merge_documents(std::move(source), target);
+    return;
+  }
+  std::optional<docv1::CollectorClaim> claim = claim_of(source, claimant);
+  merge_arenas(std::move(source), target);
+  Tracking tracking;
+  tracking.claimant = &claimant;
+  tracking.mimetype = target->origin().mimetype();
+  merge_message(std::move(source), target, tracking);
+  if (claim.has_value()) *target->add_claims() = std::move(*claim);
+}
+
+int document_claim_rank(const std::string& collector, const std::string& mimetype) {
+  if (collector == "grparse") return 100;
+  const bool ooxml = mimetype.contains("officedocument");
+  const bool ole2 = mimetype == "application/msword" || mimetype.contains("ms-excel") ||
+                    mimetype.contains("ms-powerpoint");
+  const bool opendocument = mimetype.contains("opendocument");
+  const bool spreadsheet = mimetype.contains("spreadsheet") || mimetype.contains("ms-excel") ||
+                           mimetype == "text/csv";
+  const bool office = ooxml || ole2 || opendocument || mimetype == "text/csv" ||
+                      mimetype == "application/rtf";
+  if (collector == "poi") return ooxml || ole2 ? 3 : 0;
+  if (collector == "calamine") return spreadsheet ? 2 : 0;
+  if (collector == "libreoffice") return office ? 1 : 0;
+  return 0;
+}
+
+void claim_fields(google::protobuf::Message* tracked, const docv1::CollectorSource& claimant) {
+  const auto* list = field_sources_of(tracked->GetDescriptor());
+  if (list == nullptr) return;
+  Tracking tracking;
+  tracking.root = tracked;
+  tracking.list = list;
+  tracking.claimant = &claimant;
+  claim_fields_under(tracked, tracking);
 }
 
 }  // namespace grparse

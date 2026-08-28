@@ -111,25 +111,6 @@ bool is_pdf(const std::string& content, const fs::path& filename) {
   return filename.extension() == ".pdf" || content.starts_with("%PDF-");
 }
 
-const char* collector_name(pipestream::parse::v1::Collector collector) {
-  switch (collector) {
-    case pipestream::parse::v1::COLLECTOR_GRPARSE_CV: return "grparse-cv";
-    case pipestream::parse::v1::COLLECTOR_LIBREOFFICE: return "libreoffice";
-    case pipestream::parse::v1::COLLECTOR_POI: return "poi";
-    case pipestream::parse::v1::COLLECTOR_CALAMINE: return "calamine";
-    case pipestream::parse::v1::COLLECTOR_ASR: return "asr";
-    case pipestream::parse::v1::COLLECTOR_EMAIL: return "email";
-    case pipestream::parse::v1::COLLECTOR_XML: return "xml";
-    case pipestream::parse::v1::COLLECTOR_EBCDIC: return "ebcdic";
-    case pipestream::parse::v1::COLLECTOR_EPUB: return "epub";
-    case pipestream::parse::v1::COLLECTOR_MARKUP: return "markup";
-    case pipestream::parse::v1::COLLECTOR_LOL_HTML: return "lol-html";
-    case pipestream::parse::v1::COLLECTOR_FASTWARC: return "fastwarc";
-    case pipestream::parse::v1::COLLECTOR_PDF: return "pdf";
-    case pipestream::parse::v1::COLLECTOR_CONFLUENCE: return "confluence-storage";
-    default: return "unspecified";
-  }
-}
 
 const char* collector_target_env(pipestream::parse::v1::Collector collector) {
   switch (collector) {
@@ -408,6 +389,27 @@ grpc::Status status_from_exception(std::exception_ptr failure);
 
 }  // namespace
 
+const char* collector_name(pipestream::parse::v1::Collector collector) {
+  switch (collector) {
+    case pipestream::parse::v1::COLLECTOR_GRPARSE_CV: return "grparse-cv";
+    case pipestream::parse::v1::COLLECTOR_LIBREOFFICE: return "libreoffice";
+    case pipestream::parse::v1::COLLECTOR_POI: return "poi";
+    case pipestream::parse::v1::COLLECTOR_CALAMINE: return "calamine";
+    case pipestream::parse::v1::COLLECTOR_ASR: return "asr";
+    case pipestream::parse::v1::COLLECTOR_EMAIL: return "email";
+    case pipestream::parse::v1::COLLECTOR_XML: return "xml";
+    case pipestream::parse::v1::COLLECTOR_EBCDIC: return "ebcdic";
+    case pipestream::parse::v1::COLLECTOR_EPUB: return "epub";
+    case pipestream::parse::v1::COLLECTOR_MARKUP: return "markup";
+    case pipestream::parse::v1::COLLECTOR_LOL_HTML: return "lol-html";
+    case pipestream::parse::v1::COLLECTOR_FASTWARC: return "fastwarc";
+    case pipestream::parse::v1::COLLECTOR_PDF: return "pdf";
+    case pipestream::parse::v1::COLLECTOR_CONFLUENCE: return "confluence-storage";
+    default: return "unspecified";
+  }
+}
+
+
 const std::string& CollectorEndpoints::target(
     pipestream::parse::v1::Collector id) const {
   static const std::string kNone;
@@ -495,6 +497,16 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     origin->set_filename(requested_name.filename().string());
     origin->set_mimetype(pdf ? "application/pdf" : mimetype_for(requested_name));
     origin->set_binary_hash(content_hash(*bytes));
+    // The stamp is the service's own claim: attributed like any other, and
+    // ranked above every collector's, so no collector's idea of the
+    // filename or the hash displaces what the request said.
+    pipestream::document::v1::CollectorSource stamp;
+    stamp.set_collector("grparse");
+    claim_fields(origin, stamp);
+    auto* stamp_claim = base.add_claims();
+    *stamp_claim->mutable_source() = stamp;
+    *stamp_claim->mutable_origin() = *origin;
+    stamp_claim->mutable_origin()->clear_field_sources();
     base.mutable_body()->set_self_ref("#/body");
     base.mutable_body()->set_content_layer(pipestream::document::v1::CONTENT_LAYER_BODY);
     base.mutable_furniture()->set_self_ref("#/furniture");
