@@ -86,9 +86,15 @@ RUN --mount=type=cache,id=grparse-cpu-ubuntu26-grpc1.83.0-ort1.29.0-poppler26.08
  && cp -a /build/_deps/onnxruntime-src/lib /out/ort-libs
 
 FROM ubuntu:26.04
+# The layout model is the same one the CUDA and OpenVINO images run, so a
+# document parses to the same items on every accelerator: measured on a real
+# corpus, the lighter picodet detector left a receipt as one word per
+# paragraph while heron on the CPU provider was byte-identical to the GPU
+# legs at about 2.2x the latency (eval/RESULTS-2026-08-29.md). Speed over
+# parity is still one flip away: GRPARSE_LAYOUT_MODEL=picodet.
 ENV GRPARSE_LISTEN_ADDRESS=0.0.0.0:50051 GRPARSE_MODELS_DIR=/models GRPARSE_PAGE_WORKERS=2 \
     GRPARSE_ORT_EP=cpu \
-    GRPARSE_LAYOUT_MODEL=picodet
+    GRPARSE_LAYOUT_MODEL=heron
 # fonts-liberation gives poppler metric-compatible base-14 substitutes so
 # non-embedded Helvetica/Times/Courier text rasterizes instead of rendering
 # blank (layout detection and page previews read those pixels). The
