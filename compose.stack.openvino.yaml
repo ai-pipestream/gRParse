@@ -1,0 +1,27 @@
+# Intel overlay: gRParse on ONNX Runtime's OpenVINO execution provider, for
+# hosts with an Intel Arc GPU (Battlemage, Alchemist) or integrated
+# graphics.
+#
+#   docker compose -f compose.stack.yaml -f compose.stack.openvino.yaml up
+#
+# What it changes, and why:
+#   - swaps gRParse to the Intel image (pipestreamai/grparse:latest-openvino,
+#     built from Dockerfile.openvino), which carries no CUDA toolchain,
+#   - drops `gpus: all` and passes the render device instead, which is how
+#     OpenVINO reaches the GPU,
+#   - sets GRPARSE_ORT_EP=openvino and names the OpenVINO device (GPU by
+#     default; CPU or NPU are the other values the plugin accepts), with a
+#     compiled-kernel cache so the second boot does not recompile.
+services:
+  grparse:
+    image: pipestreamai/grparse:latest-openvino
+    build:
+      context: .
+      dockerfile: Dockerfile.openvino
+    gpus: !reset null
+    devices:
+      - /dev/dri:/dev/dri
+    environment:
+      GRPARSE_ORT_EP: openvino
+      GRPARSE_OPENVINO_DEVICE: GPU
+      GRPARSE_OPENVINO_CACHE_DIR: /tmp/openvino-cache

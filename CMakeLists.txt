@@ -582,6 +582,15 @@ if(BUILD_TESTING)
     target_link_libraries(${test_name} PRIVATE grparse_core grparse_flags)
     add_test(NAME ${test_name} COMMAND ${test_name})
   endforeach()
+  # Opt-in oracle battery (eval/README.md): skips (77) unless GRPARSE_TARGET,
+  # VLM_ENDPOINT and EVAL_CORPUS are set in the environment, so a green
+  # build never claims it ran.
+  find_package(Python3 COMPONENTS Interpreter)
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME vlm-oracle-eval
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/eval/compare_vlm.py)
+    set_tests_properties(vlm-oracle-eval PROPERTIES SKIP_RETURN_CODE 77 LABELS eval)
+  endif()
   # Development utility for the canonical JSON validation harness
   # (scripts/validate_canonical_json.py): Document in, canonical JSON out.
   # Built with the tests, never installed or staged into images.
