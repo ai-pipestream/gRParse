@@ -17,6 +17,15 @@ skip code, so the battery is opt-in):
   VLM_PROMPT       optional prompt override
   EVAL_DPI         raster DPI for the VLM pages (default 150)
   EVAL_LABEL       a label for this run (e.g. "cuda", "xpu", "cpu")
+  VLM_REFERENCE    optional directory of a finished run; its saved
+                   <stem>.vlm.md files stand in for the endpoint, so the
+                   gRParse legs of an accelerator matrix score against one
+                   oracle output without regenerating it (VLM_ENDPOINT is
+                   then only recorded, not called)
+  GRPARSE_COLLECTORS  optional comma list of Collector enum names to force
+                   (e.g. COLLECTOR_GRPARSE_CV to keep a PDF on the in-process
+                   CV path instead of the inspector route), so the same
+                   corpus times gRParse's own accelerator
 
 Needs grpcio and grpcio-tools (uv run --with grpcio --with grpcio-tools).
 """
@@ -92,6 +101,8 @@ def grparse_markdown(stub, parse_pb2, parse_types_pb2, pdf: Path) -> tuple[str, 
     source.file.filename = pdf.name
     source.file.base64_string = base64.b64encode(pdf.read_bytes()).decode()
     request.request.options.to_formats.append(parse_types_pb2.OUTPUT_FORMAT_MARKDOWN)
+    for name in filter(None, os.environ.get("GRPARSE_COLLECTORS", "").split(",")):
+        request.request.options.collectors.append(parse_types_pb2.Collector.Value(name.strip()))
     started = time.monotonic()
     response = stub.ConvertSource(request, timeout=3600)
     elapsed = time.monotonic() - started
@@ -257,15 +268,19 @@ def main() -> int:
             print(f"== {pdf.name}", file=sys.stderr)
             reference, grparse_seconds, stats = grparse_markdown(stub, parse_pb2, parse_types_pb2, pdf)
             (out / f"{pdf.stem}.grparse.md").write_text(reference)
+            reference_dir = os.environ.get("VLM_REFERENCE")
             with tempfile.TemporaryDirectory() as pages_dir:
                 pages = rasterize(pdf, dpi, Path(pages_dir))
                 page_texts, usages = [], []
-                for page in pages:
-                    text, usage = vlm_markdown(endpoint, prompt, page)
-                    page_texts.append(text)
-                    usages.append(usage)
-                    print(f"   page {page.stem.rsplit('-', 1)[1]}: {usage}", file=sys.stderr)
-            candidate = "\n\n".join(page_texts)
+                if reference_dir:
+                    candidate = (Path(reference_dir) / f"{pdf.stem}.vlm.md").read_text()
+                else:
+                    for page in pages:
+                        text, usage = vlm_markdown(endpoint, prompt, page)
+                        page_texts.append(text)
+                        usages.append(usage)
+                        print(f"   page {page.stem.rsplit('-', 1)[1]}: {usage}", file=sys.stderr)
+                    candidate = "\n\n".join(page_texts)
             (out / f"{pdf.stem}.vlm.md").write_text(candidate)
             vlm_seconds = sum(u.get("wall_seconds", 0.0) for u in usages)
             generated = sum(u.get("completion_tokens", 0) for u in usages)
@@ -280,6 +295,8 @@ def main() -> int:
             results.append(record)
             print(json.dumps(record), file=sys.stderr)
         report = {"label": label, "grparse_target": target, "vlm_endpoint": endpoint,
+                  "vlm_reference": os.environ.get("VLM_REFERENCE", ""),
+                  "grparse_collectors": os.environ.get("GRPARSE_COLLECTORS", ""),
                   "vlm": vlm_model, "prompt": prompt, "dpi": dpi, "results": results}
         write_report(out, report)
     return 0
