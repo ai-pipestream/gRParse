@@ -862,7 +862,22 @@ function groupContainer(record) {
   if (label === "list") return el("ul", "dv-list");
   if (label === "inline") return el("div", "dv-inline-group");
   const section = el("section", `dv-group dv-group-${label}`);
-  if (record.base.name) {
+  const chapter = model.chapters ? model.chapters.get(record.ref) : null;
+  if (chapter) {
+    // A chapter reads as a chapter: its table-of-contents title (falling
+    // back to the archive path), its position in the spine, and a badge on
+    // auxiliary content a linear read skips.
+    const head = el("header", "dv-chapter-head");
+    const title = el("span", "dv-chapter-title");
+    title.textContent = chapter.title || record.base.name || "(untitled chapter)";
+    head.appendChild(title);
+    const pos = el("span", "dv-chapter-pos");
+    pos.textContent = `chapter ${chapter.pos} of ${chapter.total}`;
+    head.appendChild(pos);
+    if (chapter.aux) head.appendChild(badge("auxiliary", "dv-chapter-aux"));
+    if (chapter.title && record.base.name) head.title = record.base.name;
+    section.appendChild(head);
+  } else if (record.base.name) {
     const name = el("div", "dv-group-name");
     name.textContent = record.base.name;
     section.appendChild(name);
@@ -886,7 +901,12 @@ function renderRun(refs, ctx, container) {
       renderRun(record.base.children, ctx, group);
       // Only groups that actually rendered something appear; a group whose
       // items all live on other pages leaves no empty shell behind.
-      if (group.querySelector(".dv-item")) container.appendChild(group);
+      if (group.querySelector(".dv-item")) {
+        container.appendChild(group);
+        // Registered like an item view so a TOC entry or an #item= anchor
+        // naming the group can scroll to and highlight it.
+        viewEntryFor(record.ref).contents.push(group);
+      }
       continue;
     }
     if (ctx.include(record)) {
@@ -1192,6 +1212,8 @@ function buildViewer(doc) {
   clearSearch();
   renderInfo(doc);
   renderLegend();
+  indexChapters();
+  renderOutline(doc);
 
   const pages = pageNumbers(doc);
   lazyObserver = new IntersectionObserver((entries) => {
@@ -1256,6 +1278,98 @@ function renderUnpaged() {
     }
   }
   if (section.querySelector(".dv-collector-bucket")) results.appendChild(section);
+}
+
+// ---------------------------------------------------------------------------
+// Outline: the document's own table of contents (an epub's TOC, a PDF's
+// bookmarks), rendered as navigation instead of being dropped.
+// ---------------------------------------------------------------------------
+
+const tocCard = document.getElementById("doc-toc");
+const tocEntries = document.getElementById("toc-entries");
+
+function customField(meta, key) {
+  const fields = meta && meta.customFields;
+  return fields ? fields[key] : undefined;
+}
+
+// Names, orders and counts the chapter groups: title from the first outline
+// entry targeting the group, position from the spine index the collector
+// recorded (falling back to arena order), auxiliary from linear=false.
+function indexChapters() {
+  const chapters = new Map();
+  const groups = model.doc.groups || [];
+  const refs = [];
+  for (let index = 0; index < groups.length; index += 1) {
+    const group = groups[index];
+    if (group.label !== "GROUP_LABEL_CHAPTER") continue;
+    const ref = group.selfRef || `#/groups/${index}`;
+    const spine = customField(group.meta, "epub.spine_index");
+    const linear = customField(group.meta, "epub.linear");
+    refs.push(ref);
+    chapters.set(ref, {
+      title: null,
+      pos: spine && typeof spine.numberValue === "number" ? spine.numberValue + 1 : refs.length,
+      total: 0,
+      aux: Boolean(linear && linear.kind === "boolValue" && linear.boolValue === false),
+    });
+  }
+  for (const ref of refs) chapters.get(ref).total = refs.length;
+  const walkTitles = (entries) => {
+    for (const entry of entries || []) {
+      const ref = entry.target && entry.target.ref;
+      if (ref && chapters.has(ref) && !chapters.get(ref).title && entry.title) {
+        chapters.get(ref).title = entry.title;
+      }
+      walkTitles(entry.children);
+    }
+  };
+  walkTitles(model.doc.outline);
+  model.chapters = chapters.size > 0 ? chapters : null;
+}
+
+// Scrolls to (and highlights) whatever an outline entry points at: an item
+// or group by ref through the #item= anchor, else a page card by number.
+function followOutlineEntry(entry) {
+  const ref = entry.target && entry.target.ref;
+  if (ref && model.byRef.has(ref)) {
+    const params = new URLSearchParams();
+    params.set("item", ref);
+    const hash = `#${params.toString()}`;
+    if (window.location.hash === hash) applyAnchorFromHash();
+    else window.location.hash = hash;
+    return;
+  }
+  if (entry.pageNo) {
+    ensurePageBuilt(entry.pageNo);
+    const card = results.querySelector(`[data-page="${entry.pageNo}"]`);
+    if (card) scrollElementIntoView(card);
+  }
+}
+
+function renderOutline(doc) {
+  tocEntries.textContent = "";
+  const flat = [];
+  const flatten = (entries, depth) => {
+    for (const entry of entries || []) {
+      flat.push([entry, depth]);
+      flatten(entry.children, depth + 1);
+    }
+  };
+  flatten(doc.outline, 0);
+  tocCard.hidden = flat.length === 0;
+  if (flat.length === 0) return;
+  for (const [entry, depth] of flat) {
+    const level = Math.max(entry.level ? entry.level - 1 : depth, depth);
+    const row = el("button", "dv-toc-entry");
+    row.type = "button";
+    row.style.setProperty("--toc-depth", String(level));
+    row.textContent = entry.title || "(untitled)";
+    const reachable = (entry.target && entry.target.ref && model.byRef.has(entry.target.ref)) || entry.pageNo;
+    if (reachable) row.addEventListener("click", () => followOutlineEntry(entry));
+    else row.disabled = true;
+    tocEntries.appendChild(row);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2365,6 +2479,8 @@ function contentTypeFor(name) {
 function resetRun() {
   clearSearch();
   setLoadedMarkdown(null);
+  tocCard.hidden = true;
+  tocEntries.textContent = "";
   loadedDialect = null;
   results.textContent = "";
   results.classList.remove("dv-root");

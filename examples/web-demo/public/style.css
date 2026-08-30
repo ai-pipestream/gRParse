@@ -876,3 +876,59 @@ h1 { margin: 0; font-size: 26px; letter-spacing: 0.5px; }
   border-radius: 8px;
   padding: 10px 12px;
 }
+
+/* Document outline (TOC) card and chapter headers. */
+.dv-toc {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 16px;
+  margin-bottom: 20px;
+}
+.dv-toc summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 600;
+  user-select: none;
+}
+.dv-toc-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.dv-toc-entry {
+  display: block;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  padding: 3px 8px;
+  margin-left: calc(var(--toc-depth, 0) * 16px);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.dv-toc-entry:hover:not(:disabled) { background: var(--border); color: var(--accent); }
+.dv-toc-entry:disabled { color: var(--muted); cursor: default; }
+.dv-chapter-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+  margin-bottom: 8px;
+}
+.dv-chapter-title { font-size: 14px; font-weight: 600; color: var(--fg); }
+.dv-chapter-pos { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.dv-chapter-aux {
+  font-size: 10px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 7px;
+}

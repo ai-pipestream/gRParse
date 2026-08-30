@@ -63,3 +63,26 @@
 - The cwd trap struck again: a `cd ..` from examples/web-demo made the second shell
   rebuild silently a no-op (compose file not found), which looked like protobufjs
   dropping to_formats. Absolute paths for compose invocations, always.
+
+### 2026-08-30 (later still): the outline becomes navigation; chapters get names
+
+- Ask: "how about the chapters and spine and stuff? we can do better with epub". The
+  parse already carried the spine (chapter groups in order, epub.spine_index/linear),
+  and the TOC (Document.outline with real titles targeting the chapter groups); the
+  viewer dropped all of it on the floor.
+- Landed (viewer only): a collapsible "Table of contents" card above the results renders
+  Document.outline (indent by level; entries click through the existing #item= anchor
+  to scroll+highlight the target, or to the page card for page-only entries like PDF
+  bookmarks; unreachable entries disable). Chapter groups render a real header: TOC
+  title (href fallback in a tooltip), "chapter N of M" from the spine index, an
+  "auxiliary" badge for linear=false. Group containers now register in model.view so
+  group refs are anchorable at all. Works for every outline-bearing format, not epub
+  alone.
+- Verified live: gatsby 25 TOC entries / 7 chapter heads, alice 16 entries with the
+  Roman-numeral chapter titles; clicking entry 3 sets #item=, highlights the group in
+  view; sample.pdf shows no TOC card, renders 2 page cards, zero console errors.
+- Environment note, not a regression: the freshly rolled grparse container could not
+  allocate CUDA workspaces (CUBLAS failure 3, card at 15.8/16.4 GiB) because the North
+  Micro Vision CUDA server from the 08-29 eval still held ~5.7 GiB. Stopped
+  north-micro-vision-north-cuda-1 (docker start brings it back, weights cached),
+  restarted grparse, card at 8.9 GiB, PDF paths green again.
