@@ -2324,6 +2324,29 @@ function downloadDocument() {
 
 downloadButton.addEventListener("click", () => downloadDocument());
 
+// The markdown export of the current parse, when the bridge sent one; the
+// button only shows for runs that carried it (JSON uploads never do).
+const markdownButton = document.getElementById("download-markdown");
+let loadedMarkdown = null;
+
+function setLoadedMarkdown(markdown) {
+  loadedMarkdown = typeof markdown === "string" && markdown !== "" ? markdown : null;
+  markdownButton.hidden = loadedMarkdown === null;
+}
+
+markdownButton.addEventListener("click", () => {
+  if (loadedMarkdown === null) return;
+  const blob = new Blob([loadedMarkdown], { type: "text/markdown" });
+  const url = URL.createObjectURL(blob);
+  const anchor = el("a");
+  anchor.href = url;
+  anchor.download = downloadFileName(model && model.doc).replace(/\.json$/, ".md");
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+});
+
 // ---------------------------------------------------------------------------
 // Upload plumbing: NDJSON relay from /api/document/parse.
 // ---------------------------------------------------------------------------
@@ -2341,6 +2364,7 @@ function contentTypeFor(name) {
 
 function resetRun() {
   clearSearch();
+  setLoadedMarkdown(null);
   loadedDialect = null;
   results.textContent = "";
   results.classList.remove("dv-root");
@@ -2382,6 +2406,7 @@ function handleEvent(event) {
     while (progressPages.childNodes.length > 14) progressPages.removeChild(progressPages.firstChild);
   } else if (event.type === "document") {
     loadedDialect = DIALECT_LABELS.native;
+    setLoadedMarkdown(event.markdown);
     if (event.document && typeof event.document === "object") buildViewer(event.document);
     else banner("error", "The stream's document line carried no document.");
   } else if (event.type === "error") {
@@ -2490,3 +2515,19 @@ fetch("api/document/status")
     chip.textContent = "bridge unreachable";
     chip.className = "health bad";
   });
+
+// Hand-off from the main page: a page-less parse there stores its
+// collectors' union in sessionStorage and embeds this page to render it.
+// The key is consumed on read so a plain later visit starts empty.
+if (new URLSearchParams(window.location.search).has("handoff")) {
+  let handoff = null;
+  try {
+    handoff = sessionStorage.getItem("grparse-document-handoff");
+    sessionStorage.removeItem("grparse-document-handoff");
+  } catch (_error) { /* storage unavailable: fall through to the dropzone */ }
+  if (handoff) {
+    dropzone.hidden = true;
+    loadedDialect = DIALECT_LABELS.native;
+    if (!loadDocumentJson(handoff)) dropzone.hidden = false;
+  }
+}

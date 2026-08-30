@@ -497,6 +497,10 @@ function mapEvent(event) {
       tables: (doc.tables || []).length,
       pictures: (doc.pictures || []).length,
       warnings: event.collectorDocument.warnings || [],
+      // The collector's complete projected Document rides along so the page
+      // can show page-less formats (epub, email, ...) as content instead of
+      // an empty page rail: the union the collectors produced is the result.
+      document: doc,
     };
   }
   return { type: "other" };
@@ -1213,12 +1217,14 @@ surface.post(
     // The conversion leg: the response's document.doc is the complete merged
     // document as a native message, which proto-loader has already decoded
     // into the protobuf-JSON shape the page renders (camelCase fields, enum
-    // names). No export formats are requested; a rendered export would only
-    // duplicate the same document as a string.
+    // names). The markdown export is requested alongside: it is the one
+    // rendered form worth carrying (the "proper markdown" of the merged
+    // union), and the page offers it as a download next to the JSON.
     const call = parseClient.ConvertSource(
       {
         request: {
           sources: [{ file: { base64String: body.toString("base64"), filename } }],
+          options: { toFormats: ["OUTPUT_FORMAT_MARKDOWN"] },
         },
       },
       { deadline },
@@ -1236,7 +1242,14 @@ surface.post(
           finish();
           return;
         }
-        send({ type: "document", elapsedMs: Date.now() - startedAt, document: doc });
+        const exports = documentResponse.exports || {};
+        send({
+          type: "document",
+          elapsedMs: Date.now() - startedAt,
+          document: doc,
+          // The wire calls the field `md`; the page-facing line spells it out.
+          ...(typeof exports.md === "string" && exports.md !== "" ? { markdown: exports.md } : {}),
+        });
         finish();
       },
     );

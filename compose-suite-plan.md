@@ -36,3 +36,30 @@
 - Follow-on (grpc-markup): a cover page whose only content is `<svg><image xlink:href>`
   projects no picture, so that chapter group stays empty and the cover keeps its body-level
   seat (still inlined). Mapping SVG `<image>` to a PictureItem in markup closes it.
+
+### 2026-08-30 (later): the main tab shows the union; markdown export in the shell
+
+- Ask: "grparse should be able to show the union of the two joined together". The union
+  already existed (epub skeleton + markup chapters merged into one Document); only the
+  main page-stream tab had nothing to draw for a page-less format.
+- Landed (shell only, no wire change): /api/parse's collector event now carries the
+  collector's complete Document; when a parse completes with zero pages and a collector
+  document arrived, index.html hands it to document.html via sessionStorage
+  ("grparse-document-handoff") and embeds the viewer in an iframe below the stats
+  (quota overflow degrades to a link). document.html?handoff=1 consumes the key, hides
+  its dropzone, renders. .epub added to the picker accept list and content-type map.
+- Markdown: /api/document/parse now requests OUTPUT_FORMAT_MARKDOWN (the wire field is
+  exports.md, not exports.markdown - the first build read the wrong name) and the
+  Document tab grows a "Download Markdown" button when the export rides along.
+- Verified live: gatsby.epub on the main tab renders 1695 items with the image inline
+  in the embedded viewer, dropzone hidden, no console errors; sample.pdf still renders
+  2 page canvases with no iframe; markdown export 292 KB / 13 headings for gatsby,
+  617 B for sample.html; markdown button shows for parses, never for JSON uploads.
+- Known wart: the markdown serializer renders meta custom fields by reference parity
+  ("append_custom_fields" in src/render/markdown_renderer.cpp), so epub/markup
+  provenance keys (epub.idref, html.src, ...) surface as bare paragraphs near pictures
+  and chapter heads. Parity-gated; fixing it means an options knob on render_markdown,
+  not a fold change.
+- The cwd trap struck again: a `cd ..` from examples/web-demo made the second shell
+  rebuild silently a no-op (compose file not found), which looked like protobufjs
+  dropping to_formats. Absolute paths for compose invocations, always.

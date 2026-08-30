@@ -59,6 +59,7 @@ function contentTypeFor(name) {
   return {
     pdf: "application/pdf", png: "image/png", jpg: "image/jpeg",
     jpeg: "image/jpeg", tif: "image/tiff", tiff: "image/tiff",
+    epub: "application/epub+zip",
   }[ext] || "";
 }
 
@@ -214,14 +215,50 @@ function handleEvent(event) {
     banner("done", failures.length === 0
       ? `Complete: ${event.totalPages} page(s).`
       : `Complete with collector failures: ${failures.map((f) => f.error).join("; ")}`);
+    // A page-less format (epub, email, spreadsheets, ...) has nothing for
+    // the page rail, but the collectors' union is a complete document:
+    // render it here through the embedded Document viewer instead of
+    // showing an empty page.
+    if (!event.totalPages && totals.pages === 0 && collectorDocument) {
+      showCollectorDocument();
+    }
   } else if (event.type === "collector") {
     banner("done", `Collector document: ${event.texts} texts, ${event.tables} tables, ${event.pictures} pictures.`);
+    if (event.document) collectorDocument = event.document;
   } else if (event.type === "error") {
     banner("error", `Stream error: ${event.message}`);
   }
 }
 
+// The last collector's complete Document for the current run; page-less
+// formats render it through the embedded Document viewer on completion.
+let collectorDocument = null;
+
+// Hands the collector's Document to the viewer page via sessionStorage and
+// embeds it below the stats. Falls back to a plain link when the document
+// is too large for the storage quota (the viewer re-parses the upload).
+function showCollectorDocument() {
+  const host = document.getElementById("results");
+  try {
+    sessionStorage.setItem("grparse-document-handoff", JSON.stringify(collectorDocument));
+  } catch (_error) {
+    const note = document.createElement("p");
+    note.className = "handoff-note";
+    note.innerHTML = 'This format has no pages; the parsed content is too large to hand over in place. Open the <a href="document.html">Document viewer</a> and drop the same file there.';
+    host.replaceChildren(note);
+    return;
+  }
+  const note = document.createElement("p");
+  note.className = "handoff-note";
+  note.innerHTML = 'This format has no pages, so the parsed content renders below as a document. It also has its own page: <a href="document.html" target="_blank">Document viewer</a>.';
+  const frame = document.createElement("iframe");
+  frame.src = "document.html?handoff=1";
+  frame.style.cssText = "width:100%;height:80vh;border:1px solid #30363d;border-radius:8px;background:transparent";
+  host.replaceChildren(note, frame);
+}
+
 async function parseFile(file) {
+  collectorDocument = null;
   resetRun(file.name);
   dropzone.classList.add("busy");
   const query = new URLSearchParams({ filename: file.name, contentType: contentTypeFor(file.name) });
