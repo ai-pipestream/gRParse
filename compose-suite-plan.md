@@ -86,3 +86,17 @@
   Micro Vision CUDA server from the 08-29 eval still held ~5.7 GiB. Stopped
   north-micro-vision-north-cuda-1 (docker start brings it back, weights cached),
   restarted grparse, card at 8.9 GiB, PDF paths green again.
+
+### 2026-08-30 (evening): North Micro Vision serves from krick-1 only
+
+- Policy: the 4080 belongs to gRParse's CV path; VLM serving lives on krick-1. The
+  local north-cuda container stays stopped (docker start north-micro-vision-north-cuda-1
+  to revive); north-xpu on krick-1:8086 (Arc Pro B70) had been up 40h and healthy.
+- Direct test: sample.pdf page 1 through krick-1:8086 chat completions: 275 tokens at
+  60.4 tok/s, faithful markdown (heading + list + prose).
+- The stack's vlm-convert image predated the north_micro_vision preset (43f3290);
+  rebuilt from ../grpc-vlm-convert and rolled, status now lists north_micro_vision.
+  End to end through the shell bridge (preset VLM_PRESET_NORTH_MICRO_VISION, endpoint
+  http://krick-1.taild24b1c.ts.net:8086): 1 page in 4.3s, pagesOk=1, 9 structured items.
+- ENRICH_VLM_URL / GRPC_VLM_ENDPOINT defaults stay on the Qwen server (krick-1:8085);
+  North is a per-request preset+endpoint choice, both servers on the same box.
