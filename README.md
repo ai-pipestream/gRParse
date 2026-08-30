@@ -348,6 +348,16 @@ what the collector itself attributed. The vendored wire
 contracts live in `collectors/` (see its README); each collector repo owns
 its contract.
 
+Four family members are *not* collectors, whatever `compose.stack.yaml` runs
+next to them: grPOIc, grpc-calamine, grpc-enrich and grpc-vlm-convert are
+dialed by the demo shell directly and never by gRParse. The merge already
+ranks `poi` and `calamine` claims below gRParse's own (see
+`document_claim_rank`), so folding their native wires in is the open item,
+not a schema change. fastwarc is the other way round: a collector here, but
+the stack leaves `GRPARSE_FASTWARC_TARGET` unset because the vendored
+`fastwarc.v1` dialect is not wire-compatible with the published image; the
+shell dials it itself.
+
 The libreoffice leg is a hybrid: office text, tables, and typed content are
 exact from the office core, so gRParse does not OCR office documents — but
 the collector's page renders (the `PageImage` PNGs it streams anyway) run
