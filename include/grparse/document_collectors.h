@@ -58,11 +58,27 @@ CollectorOutcome collect_ebcdic_document(const std::shared_ptr<grpc::Channel>& c
                                          CollectorDeadline inbound_deadline =
                                              kNoCollectorDeadline);
 
-// grpc-epub (.epub archive bytes).
+// grpc-epub (.epub archive bytes): the collector's own Document, which is
+// a skeleton by contract (empty chapter groups, pictures by reference).
 CollectorOutcome collect_epub_document(const std::shared_ptr<grpc::Channel>& channel,
                                        const std::string& bytes,
                                        CollectorDeadline inbound_deadline =
                                            kNoCollectorDeadline);
+
+// grpc-epub, then grpc-markup once per chapter: the whole book. The epub
+// stream's chapter XHTML and image bytes are kept instead of dropped, each
+// chapter is dialed through `markup` with the HTML hint, and the chapters'
+// Documents and the images plug into the skeleton (see epub_book.h). A
+// chapter the markup collector cannot parse leaves its group empty and
+// says so in a warning; the book never fails for one chapter. With no
+// markup channel (`GRPARSE_MARKUP_TARGET` unset) the skeleton is the
+// outcome, with a warning naming the variable, so the degradation is
+// visible rather than silent.
+CollectorOutcome collect_epub_book(const std::shared_ptr<grpc::Channel>& epub,
+                                   const std::shared_ptr<grpc::Channel>& markup,
+                                   const std::string& bytes,
+                                   CollectorDeadline inbound_deadline =
+                                       kNoCollectorDeadline);
 
 // grpc-markup (Markdown, HTML, AsciiDoc, LaTeX, WebVTT, BoxNote, Docling
 // JSON). The format is hinted from the filename and content type via

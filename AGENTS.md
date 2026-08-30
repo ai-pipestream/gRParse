@@ -44,7 +44,7 @@ file under `collectors/` copied byte-identical from the sister repo.
 | `grpc-pdf-inspector` | `main` | Rust (Cargo, buf) | 50067 | `pdf_types.proto`, `pdf_service.proto` | PDF routing oracle: classifies, and text PDFs take its fast path |
 | `grpc-email` | `main` | Java (Gradle, buf) | 50054 | `email_service.proto` | `.eml`, `.msg`, `message/rfc822` |
 | `grpc-xml` | `main` | Rust (Cargo, buf) | 50066 | `xml.proto`, `xml_service.proto` | `.xml`, `.nxml`, `.xbrl`, METS/GBS archives |
-| `grpc-epub` | `main` | Rust (Cargo, buf) | 50064 | `epub_types.proto`, `epub_service.proto` | `.epub` |
+| `grpc-epub` | `main` | Rust (Cargo, buf) | 50064 | `epub_types.proto`, `epub_service.proto` | `.epub`; returns a skeleton by contract, gRParse folds the chapters through `grpc-markup` and inlines the images (`src/epub_book.cpp`), so a working epub parse needs both targets |
 | `grpc-markup` | `main` | Rust (Cargo, buf) | 50065 | `markup.proto`, `markup_service.proto` | `.md`, `.html`, `.adoc`, `.tex`, `.vtt`, `.boxnote`, `.json` |
 | `grpc-ebcdic` | `main` | Rust (Cargo, buf) | 50063 | `ebcdic.proto`, `ebcdic_service.proto` | never by format; explicit `ebcdic_layout_json` only |
 | `grpc-lol-html` | `master` | Rust (Cargo, buf) | 50057 | `lolhtml_types.proto`, `lolhtml_service.proto` | never by format; explicit `lol_html_options_json` only |

@@ -326,7 +326,7 @@ unconfigured otherwise:
 | `COLLECTOR_EMAIL` | `GRPARSE_EMAIL_TARGET` | `.eml`, `.msg`, `message/rfc822` |
 | `COLLECTOR_XML` | `GRPARSE_XML_TARGET` | `.xml`, `.nxml`, `.xbrl`, `application/xml`, `text/xml` (never the `+xml` suffix family), plus the archive forms `.dclx` and `.tar.gz` (METS/GBS) |
 | `COLLECTOR_EBCDIC` | `GRPARSE_EBCDIC_TARGET` | never routed; explicit selection with `ConvertDocumentOptions.ebcdic_layout_json` only |
-| `COLLECTOR_EPUB` | `GRPARSE_EPUB_TARGET` | `.epub` |
+| `COLLECTOR_EPUB` | `GRPARSE_EPUB_TARGET` (+ `GRPARSE_MARKUP_TARGET` for the chapters) | `.epub`. The epub collector returns the book's skeleton by contract (metadata, outline, one empty chapter group per spine item, pictures by `epub:<href>` reference); gRParse keeps the chapter XHTML and image bytes its stream carries, dials the markup collector once per XHTML chapter, plugs each chapter's items under its group in spine order, and inlines the images as `data:` URIs (manifest media type wins; above 16 MiB an image keeps its reference). Without a markup target the skeleton is the result and a warning names the variable |
 | `COLLECTOR_MARKUP` | `GRPARSE_MARKUP_TARGET` | text markup: `.md`, `.html`/`.htm`/`.xhtml`, `.adoc`, `.tex`, `.vtt`, `.boxnote`, and `.json` (Docling JSON re-ingest); the dial carries a format hint from the filename, and the collector sniffs when none resolves |
 | `COLLECTOR_LOL_HTML` | `GRPARSE_LOL_HTML_TARGET` | never routed; explicit selection with `ConvertDocumentOptions.lol_html_options_json` (the protobuf JSON of `lolhtml.v1.ExtractOptions`) only. Targeted CSS-selector extraction from HTML, not whole-document conversion: matches fold into a group per rule. HTML with no selection routes to `COLLECTOR_MARKUP` |
 | `COLLECTOR_FASTWARC` | `GRPARSE_FASTWARC_TARGET` | `.warc`, `.warc.gz`, `.warc.zst`, `.warc.lz4`, `application/warc`. WARC archive parsing via fastwarc-grpc: records fold client-side into a group per record (metadata plus the payload when it reads as text, capped at 64 KiB); recoverable record errors become warnings and a framing error keeps the records already parsed |
@@ -339,7 +339,9 @@ routes by format as above, with PDF and raster inputs staying on the CV
 path. No code path converts office bytes to PDF in order to parse them.
 
 The libreoffice collector streams typed events that gRParse folds into a
-`Document` itself, and the lol-html collector's match stream is likewise
+`Document` itself, the epub collector's skeleton is completed here from its
+typed chapter and resource events plus one markup leg per chapter
+(`src/epub_book.cpp`), and the lol-html collector's match stream is likewise
 folded client-side (its forward-only wire deliberately has no document
 event); every other remote collector projects its own typed stream into a
 source-tagged `Document` server-side (their `emit_document` option), so

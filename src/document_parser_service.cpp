@@ -218,7 +218,14 @@ CollectorOutcome run_remote_collector(
       return collect_ebcdic_document(endpoints->channel(id), ebcdic_layout_json, bytes,
                                      inbound_deadline);
     case pipestream::parse::v1::COLLECTOR_EPUB:
-      return collect_epub_document(endpoints->channel(id), bytes, inbound_deadline);
+      // The book, not the skeleton: the chapters fold through the markup
+      // collector when one is configured, and the leg says so when not.
+      return collect_epub_book(
+          endpoints->channel(id),
+          endpoints->has(pipestream::parse::v1::COLLECTOR_MARKUP)
+              ? endpoints->channel(pipestream::parse::v1::COLLECTOR_MARKUP)
+              : nullptr,
+          bytes, inbound_deadline);
     case pipestream::parse::v1::COLLECTOR_MARKUP:
       return collect_markup_document(endpoints->channel(id), filename,
                                      content_type, bytes, inbound_deadline);

@@ -407,6 +407,11 @@ void merge_arenas(docv1::Document&& source, docv1::Document* target) {
 
 }  // namespace
 
+void rewrite_references(const std::map<std::string, std::string>& renumbering,
+                        google::protobuf::Message* message) {
+  rewrite_refs(renumbering, message);
+}
+
 void merge_documents(docv1::Document&& source, docv1::Document* target) {
   merge_arenas(std::move(source), target);
   merge_message(std::move(source), target, Tracking{});

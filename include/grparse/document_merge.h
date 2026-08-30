@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <string>
 
 #include <google/protobuf/message.h>
@@ -43,5 +44,13 @@ int document_claim_rank(const std::string& collector, const std::string& mimetyp
 // The service uses it on the identity it stamps before any collector runs.
 void claim_fields(google::protobuf::Message* tracked,
                   const ai::pipestream::document::v1::CollectorSource& claimant);
+
+// Rewrites every item reference (RefItem.ref, FineRef.ref, an item's own
+// self_ref) that `renumbering` maps, anywhere under `message`; values it
+// does not map pass through. The merge uses it to renumber appended arenas,
+// and anything else that removes or reorders arena items owes the same
+// rewrite to every reference into them.
+void rewrite_references(const std::map<std::string, std::string>& renumbering,
+                        google::protobuf::Message* message);
 
 }  // namespace grparse

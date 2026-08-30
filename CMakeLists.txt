@@ -482,6 +482,7 @@ add_library(grparse_core STATIC
   src/confluence_storage.cpp
   src/docling_map.cpp
   src/document_merge.cpp
+  src/epub_book.cpp
   src/document_render.cpp
   src/render/renderer_base.cpp
   src/render/load_normalization.cpp
@@ -553,6 +554,7 @@ if(BUILD_TESTING)
     document-collectors-test
     document-merge-test
     document-render-test
+    epub-book-test
     figure-classifier-test
     gdocs-renderer-test
     layout-decode-test

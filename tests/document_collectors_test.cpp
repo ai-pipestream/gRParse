@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdio>
 #include <memory>
+#include <mutex>
 #include <print>
 #include <stdexcept>
 #include <string>
@@ -484,6 +485,204 @@ void verify_missing_document_event_fails() {
           "the failure explains the collector predates emit_document");
 }
 
+// Streams the epub wire the way the collector does for a two-chapter book:
+// the chapters' XHTML and the image bytes as typed events, then the
+// skeleton Document (empty chapter groups, a picture by reference), then
+// the status trailer.
+class BookEpubService final : public epubv1::EpubParseService::Service {
+ public:
+  grpc::Status ParseEpub(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<epubv1::ParseEpubResponse, epubv1::ParseEpubRequest>*
+          stream) override {
+    epubv1::ParseEpubRequest request;
+    while (stream->Read(&request)) {
+    }
+    epubv1::ParseEpubResponse event;
+    auto* first = event.mutable_chapter();
+    first->set_spine_index(0);
+    first->set_href("OPS/ch01.xhtml");
+    first->set_media_type("application/xhtml+xml");
+    first->set_content("<html><body><h1>One</h1><img src=\"images/a.jpg\"/></body></html>");
+    stream->Write(event);
+    event.Clear();
+    auto* image = event.mutable_resource();
+    image->set_href("OPS/images/a.jpg");
+    image->set_media_type("image/jpeg");
+    image->set_kind(epubv1::RESOURCE_KIND_IMAGE);
+    image->set_content("JPEGBYTES");
+    stream->Write(event);
+    event.Clear();
+    auto* second = event.mutable_chapter();
+    second->set_spine_index(1);
+    second->set_href("OPS/ch02.xhtml");
+    second->set_media_type("application/xhtml+xml");
+    second->set_content("<html><body><h1>Two</h1></body></html>");
+    stream->Write(event);
+    event.Clear();
+    auto* svg = event.mutable_chapter();
+    svg->set_spine_index(2);
+    svg->set_href("OPS/plate.svg");
+    svg->set_media_type("image/svg+xml");
+    svg->set_content("<svg/>");
+    stream->Write(event);
+    event.Clear();
+
+    docv1::Document skeleton;
+    skeleton.mutable_body()->set_self_ref("#/body");
+    skeleton.mutable_furniture()->set_self_ref("#/furniture");
+    skeleton.mutable_source_meta()->set_title("The Book");
+    for (const auto* href : {"OPS/ch01.xhtml", "OPS/ch02.xhtml", "OPS/plate.svg"}) {
+      auto* group = skeleton.add_groups();
+      group->set_self_ref("#/groups/" + std::to_string(skeleton.groups_size() - 1));
+      group->mutable_parent()->set_ref("#/body");
+      group->set_label(docv1::GROUP_LABEL_CHAPTER);
+      group->set_name(href);
+      skeleton.mutable_body()->add_children()->set_ref(group->self_ref());
+    }
+    auto* picture = skeleton.add_pictures();
+    picture->set_self_ref("#/pictures/0");
+    picture->mutable_parent()->set_ref("#/body");
+    picture->mutable_image()->set_mimetype("image/jpeg");
+    picture->mutable_image()->set_uri("epub:OPS/images/a.jpg");
+    picture->add_source()->mutable_collector()->set_collector("epub");
+    skeleton.mutable_body()->add_children()->set_ref("#/pictures/0");
+    *event.mutable_document() = skeleton;
+    stream->Write(event);
+    event.Clear();
+    event.mutable_status()->set_chapters_emitted(3);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+};
+
+// Parses the XHTML the book fake hands out: expects the HTML hint, and
+// projects a heading per <h1> and a picture per <img src>, so the fold's
+// href resolution and placement are exercised end to end. Records every
+// dial so the test can prove one leg per XHTML chapter.
+class HtmlMarkupService final : public markupv1::MarkupParseService::Service {
+ public:
+  grpc::Status ParseMarkup(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<markupv1::ParseMarkupResponse,
+                               markupv1::ParseMarkupRequest>* stream) override {
+    markupv1::ParseMarkupRequest request;
+    markupv1::MarkupFormat format = markupv1::MARKUP_FORMAT_UNSPECIFIED;
+    std::string bytes;
+    while (stream->Read(&request)) {
+      if (request.has_options()) {
+        format = request.options().format();
+      } else {
+        bytes += request.chunk();
+      }
+    }
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      dials_.push_back(bytes);
+    }
+    if (format != markupv1::MARKUP_FORMAT_HTML) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          "book chapters must be dialed with the HTML hint");
+    }
+    docv1::Document document;
+    document.mutable_body()->set_self_ref("#/body");
+    document.mutable_furniture()->set_self_ref("#/furniture");
+    document.mutable_source_meta()->set_title("chapter page title");
+    const size_t h1 = bytes.find("<h1>");
+    if (h1 != std::string::npos) {
+      auto* base = document.add_texts()->mutable_section_header()->mutable_base();
+      base->set_self_ref("#/texts/0");
+      base->mutable_parent()->set_ref("#/body");
+      base->set_label(docv1::DOC_ITEM_LABEL_SECTION_HEADER);
+      base->set_text(bytes.substr(h1 + 4, bytes.find("</h1>") - h1 - 4));
+      base->add_source()->mutable_collector()->set_collector("markup");
+      document.mutable_body()->add_children()->set_ref("#/texts/0");
+    }
+    const size_t src = bytes.find("src=\"");
+    if (src != std::string::npos) {
+      auto* picture = document.add_pictures();
+      picture->set_self_ref("#/pictures/0");
+      picture->mutable_parent()->set_ref("#/body");
+      picture->mutable_image()->set_mimetype("image/unknown");
+      picture->mutable_image()->set_uri(
+          bytes.substr(src + 5, bytes.find('"', src + 5) - src - 5));
+      picture->add_source()->mutable_collector()->set_collector("markup");
+      document.mutable_body()->add_children()->set_ref("#/pictures/0");
+    }
+    markupv1::ParseMarkupResponse event;
+    *event.mutable_document() = document;
+    stream->Write(event);
+    event.Clear();
+    event.mutable_status();
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+
+  std::vector<std::string> dials() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return dials_;
+  }
+
+ private:
+  std::mutex mutex_;
+  std::vector<std::string> dials_;
+};
+
+void verify_epub_book_folds_chapters_and_images() {
+  BookEpubService epub;
+  ServerFixture epub_server(&epub);
+  HtmlMarkupService markup;
+  ServerFixture markup_server(&markup);
+  const auto outcome = grparse::collect_epub_book(epub_server.channel(),
+                                                  markup_server.channel(), "PK\x03\x04zip");
+  require(outcome.success, "the book collects: " + outcome.error);
+  require(markup.dials().size() == 2,
+          "the markup collector is dialed once per XHTML chapter and never for the SVG");
+
+  const auto& book = outcome.document;
+  require(book.groups_size() == 3 && book.texts_size() == 2 && book.pictures_size() == 1,
+          "the book holds the skeleton's groups, both headings, and one picture");
+  require(book.groups(0).children_size() == 2 && book.groups(1).children_size() == 1 &&
+              book.groups(2).children_size() == 0,
+          "chapter one holds its heading and picture, chapter two its heading, the SVG nothing");
+  require(book.texts(0).section_header().base().text() == "One" &&
+              book.texts(0).section_header().base().parent().ref() == "#/groups/0" &&
+              book.texts(1).section_header().base().text() == "Two" &&
+              book.texts(1).section_header().base().parent().ref() == "#/groups/1",
+          "each heading sits under its own chapter group");
+  const auto& picture = book.pictures(0);
+  require(picture.parent().ref() == "#/groups/0",
+          "the image sits in the chapter that references it, not at the body");
+  require(picture.image().mimetype() == "image/jpeg" &&
+              picture.image().uri().starts_with("data:image/jpeg;base64,"),
+          "the image is inlined under the manifest's media type");
+  require(book.body().children_size() == 3,
+          "the body lists the three chapter groups and no orphaned picture");
+  require(book.source_meta().title() == "The Book",
+          "a chapter's page title never overrides the book's");
+  bool svg_noted = false;
+  for (const auto& warning : outcome.warnings) {
+    if (warning.contains("OPS/plate.svg") && warning.contains("not XHTML")) svg_noted = true;
+  }
+  require(svg_noted, "the SVG spine item is reported, not silently skipped");
+}
+
+void verify_epub_book_without_markup_keeps_the_skeleton() {
+  BookEpubService epub;
+  ServerFixture epub_server(&epub);
+  const auto outcome = grparse::collect_epub_book(epub_server.channel(), nullptr, "PK\x03\x04zip");
+  require(outcome.success, "the skeleton still collects without markup: " + outcome.error);
+  require(outcome.document.texts_size() == 0 && outcome.document.groups_size() == 3,
+          "the chapter groups stay empty");
+  require(outcome.document.pictures(0).image().uri() == "epub:OPS/images/a.jpg",
+          "without the fold the picture keeps its reference");
+  bool named = false;
+  for (const auto& warning : outcome.warnings) {
+    if (warning.contains("GRPARSE_MARKUP_TARGET")) named = true;
+  }
+  require(named, "the degradation names the variable that would fix it");
+}
+
 // ---- markup ----------------------------------------------------------------
 
 // Succeeds only when the client forwarded emit_document, the format hint the
@@ -537,6 +736,22 @@ void verify_markup_forwards_hint_and_collects() {
               outcome.warnings[0] ==
                   "WARNING_CODE_EMBEDDED_HTML_FLATTENED: raw <div> flattened (x3)",
           "markup warnings flatten with code and count");
+}
+
+void verify_epub_book_survives_a_failing_chapter() {
+  BookEpubService epub;
+  ServerFixture epub_server(&epub);
+  FakeMarkupService markdown_only;  // rejects the HTML hint
+  ServerFixture markup_server(&markdown_only);
+  const auto outcome = grparse::collect_epub_book(epub_server.channel(),
+                                                  markup_server.channel(), "PK\x03\x04zip");
+  require(outcome.success, "a chapter the markup collector rejects never sinks the book");
+  require(outcome.document.texts_size() == 0, "the rejected chapters contribute nothing");
+  int reported = 0;
+  for (const auto& warning : outcome.warnings) {
+    if (warning.contains("could not be parsed by the markup collector")) reported++;
+  }
+  require(reported == 2, "each rejected chapter is reported");
 }
 
 // ---- lol-html --------------------------------------------------------------
@@ -1283,6 +1498,9 @@ int main() {
     verify_ebcdic_without_layout_never_dials();
     verify_epub_collects_document();
     verify_missing_document_event_fails();
+    verify_epub_book_folds_chapters_and_images();
+    verify_epub_book_without_markup_keeps_the_skeleton();
+    verify_epub_book_survives_a_failing_chapter();
     verify_markup_forwards_hint_and_collects();
     verify_lol_html_forwards_rules_and_folds();
     verify_lol_html_without_rules_never_dials();
