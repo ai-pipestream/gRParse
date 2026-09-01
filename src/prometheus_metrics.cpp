@@ -2,8 +2,11 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+#include <fstream>
 
 #include <cerrno>
 #include <cstring>
@@ -37,6 +40,33 @@ std::string http_response(const char* status_line, const std::string& content_ty
   return response.str();
 }
 
+// Resident set size from /proc/self/statm and CPU time from getrusage:
+// both are one syscall or one small read, cheap enough for every scrape.
+struct ProcessUsage {
+  uint64_t resident_bytes = 0;
+  double cpu_seconds = 0.0;
+};
+
+ProcessUsage read_process_usage() {
+  ProcessUsage usage;
+  if (std::ifstream statm("/proc/self/statm"); statm) {
+    uint64_t total_pages = 0;
+    uint64_t resident_pages = 0;
+    if (statm >> total_pages >> resident_pages) {
+      const long page_size = ::sysconf(_SC_PAGESIZE);
+      usage.resident_bytes = resident_pages * static_cast<uint64_t>(page_size > 0 ? page_size : 4096);
+    }
+  }
+  struct rusage self {};
+  if (::getrusage(RUSAGE_SELF, &self) == 0) {
+    usage.cpu_seconds = static_cast<double>(self.ru_utime.tv_sec) +
+                        static_cast<double>(self.ru_utime.tv_usec) / 1e6 +
+                        static_cast<double>(self.ru_stime.tv_sec) +
+                        static_cast<double>(self.ru_stime.tv_usec) / 1e6;
+  }
+  return usage;
+}
+
 void write_all(int fd, const std::string& data) {
   size_t sent = 0;
   while (sent < data.size()) {
@@ -52,6 +82,14 @@ std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
                                       const OcrEnginePool::Stats& ocr_pool,
                                       const PageScheduler::Options& options,
                                       const RepairTotals& repairs) {
+  return render_prometheus_metrics(metrics, ocr_pool, options, repairs, data_totals());
+}
+
+std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
+                                      const OcrEnginePool::Stats& ocr_pool,
+                                      const PageScheduler::Options& options,
+                                      const RepairTotals& repairs,
+                                      const DataTotals& data) {
   std::ostringstream out;
   out.precision(15);
 
@@ -84,6 +122,28 @@ std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
       << "grparse_repairs_total{kind=\"furniture_demoted\"} " << repairs.furniture_demoted << '\n'
       << "grparse_repairs_total{kind=\"hyphens_rejoined\"} " << repairs.hyphens_rejoined << '\n'
       << "grparse_repairs_total{kind=\"paragraphs_merged\"} " << repairs.paragraphs_merged << '\n';
+
+  out << "# HELP grparse_data_changes_total Data-plane changes made to finished documents, "
+         "by kind.\n"
+         "# TYPE grparse_data_changes_total counter\n"
+      << "grparse_data_changes_total{kind=\"charts_bound\"} " << data.charts_bound << '\n'
+      << "grparse_data_changes_total{kind=\"chart_captions\"} " << data.chart_captions << '\n'
+      << "grparse_data_changes_total{kind=\"sheet_header_rows\"} " << data.sheet_header_rows
+      << '\n'
+      << "grparse_data_changes_total{kind=\"mimetypes_sniffed\"} " << data.mimetypes_sniffed
+      << '\n'
+      << "grparse_data_changes_total{kind=\"cv_enrichment_skipped\"} "
+      << data.cv_enrichment_skipped << '\n';
+
+  // The process gauges the standard client libraries export, so a scrape
+  // can chart memory and CPU beside the pipeline counters.
+  const ProcessUsage usage = read_process_usage();
+  out << "# HELP process_resident_memory_bytes Resident memory size in bytes.\n"
+         "# TYPE process_resident_memory_bytes gauge\n"
+      << "process_resident_memory_bytes " << usage.resident_bytes << '\n'
+      << "# HELP process_cpu_seconds_total Total user and system CPU time spent in seconds.\n"
+         "# TYPE process_cpu_seconds_total counter\n"
+      << "process_cpu_seconds_total " << usage.cpu_seconds << '\n';
 
   out << "# HELP grparse_pages_waiting Pages queued ahead of a pipeline stage.\n"
          "# TYPE grparse_pages_waiting gauge\n"

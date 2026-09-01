@@ -656,3 +656,26 @@ if(BUILD_TESTING)
 endif()
 
 install(TARGETS grparse-server grparse-stream-client RUNTIME DESTINATION bin)
+
+# ---- data plane: content sniffing and data-change counters ------------------
+# Appended as one block: the sources join grparse_core and the tests join the
+# grparse suite with the same timeout and label as the list above. The
+# sniffer test reads the scorecard corpus when it is present, so a signature
+# the synthetic cases model wrongly fails against the real fixtures.
+target_sources(grparse_core PRIVATE
+  src/content_sniff.cpp
+  src/data_totals.cpp)
+if(BUILD_TESTING)
+  set(GRPARSE_DATA_TESTS content-sniff-test)
+  foreach(test_name IN LISTS GRPARSE_DATA_TESTS)
+    string(REPLACE "-" "_" test_source "${test_name}")
+    add_executable(${test_name} "tests/${test_source}.cpp")
+    target_link_libraries(${test_name} PRIVATE grparse_core grparse_flags)
+    add_test(NAME ${test_name} COMMAND ${test_name})
+  endforeach()
+  add_dependencies(grparse-tests ${GRPARSE_DATA_TESTS})
+  set_tests_properties(${GRPARSE_DATA_TESTS} PROPERTIES
+    TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
+  set_tests_properties(content-sniff-test PROPERTIES
+    ENVIRONMENT "GRPARSE_TEST_CORPUS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/golden/corpus")
+endif()

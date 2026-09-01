@@ -3,6 +3,7 @@
 #ifndef GRPARSE_DOCLING_MAP_H
 #define GRPARSE_DOCLING_MAP_H
 
+#include <deque>
 #include <map>
 #include <set>
 #include <string>
@@ -138,6 +139,9 @@ class DoclingMapper {
   };
 
   ai::pipestream::document::v1::GroupItem* group_by_ref(const std::string& ref);
+  // Appends child_ref to the children of parent_ref: a group, the two
+  // roots, a form arena item, or a picture or table that owns the child
+  // (a chart's data table, a caption).
   void link_child(const std::string& parent_ref, const std::string& child_ref);
   // Stamps the CollectorSource attribution ("libreoffice"/"lok") every text,
   // picture, and table item carries.
@@ -224,6 +228,61 @@ class DoclingMapper {
   void register_embedded_object(
       const ai::pipestream::office::v1::EmbeddedObject& object,
       const std::string& item_ref);
+
+  // Emits one chart composite: a CHART picture, the data table bound under
+  // it as its child, and a caption from the chart title. `object` is the
+  // collector's embedded chart (null when only a SheetChart arrived) and
+  // `sheet_chart` the sheet-side event naming its source ranges (null off
+  // sheets). The table folds the typed series when the object carries any,
+  // the sheet cells its ranges cover otherwise. Geometry is the object's
+  // laid-out box on page_index, page-local or document-absolute as the
+  // caller says.
+  void emit_chart(const ai::pipestream::office::v1::EmbeddedObject* object,
+                  const ai::pipestream::office::v1::SheetChart* sheet_chart,
+                  const std::string& parent_ref,
+                  ai::pipestream::document::v1::ContentLayer layer,
+                  bool page_local, int page_index, double l, double t,
+                  double r, double b);
+  // Folds an embedded chart's series into a table: one label row on top
+  // (column headers), categories down the first column (row headers), one
+  // series per further column, numbers typed. Scatter series put their x
+  // values in the first column.
+  void fold_chart_series(
+      const ai::pipestream::office::v1::EmbeddedChart& chart,
+      ai::pipestream::document::v1::TableData* data);
+  // Folds the sheet cells a SheetChart's ranges cover into a table rebased
+  // at the ranges' top-left corner, header flags from the chart's own
+  // has_column_headers / has_row_headers. False when the sheet's table has
+  // not been mapped.
+  bool fold_sheet_range(const ai::pipestream::office::v1::SheetChart& chart,
+                        ai::pipestream::document::v1::TableData* data);
+  // The typed per-kind annotation plus the tabular projection on the chart
+  // picture, for consumers of the upstream annotation vocabulary.
+  void add_chart_annotations(
+      const ai::pipestream::office::v1::EmbeddedChart& chart,
+      ai::pipestream::document::v1::PictureItem* picture);
+  // Takes the first pending chart of page_index, or the one whose laid-out
+  // position matches `at` when given. False when none is waiting.
+  bool take_pending_chart(int page_index,
+                          const ai::pipestream::office::v1::TwipsPoint* at,
+                          ai::pipestream::office::v1::EmbeddedObject* out);
+  // Emits every chart still waiting once the stream ends, under the sheet
+  // or slide group of its page when one was mapped, else under the body.
+  void flush_pending_charts();
+  // Marks the header row of each sheet table once every row has arrived:
+  // a database range that declares one, else the first row with two or
+  // more text cells directly above a row carrying typed quantities. A lone
+  // merged text cell spanning the width above the header is a section row.
+  void mark_sheet_header_rows();
+
+  // Moves child_ref, already among parent_ref's children, to directly after
+  // after_ref (to the front when after_ref is empty or absent).
+  void move_child_after(const std::string& parent_ref, const std::string& child_ref,
+                        const std::string& after_ref);
+  // The slot of the empty paragraph an inline picture is anchored in: same
+  // page, caret at or below the picture's top and within its height plus a
+  // line. Consumed on return; -1 when no slot fits.
+  int take_anchor_slot(int page_index, long long anchor_y, long long height);
 
   // The name of a sheet by its zero-based ordinal; empty when no Sheet
   // header for it has arrived.
@@ -319,6 +378,25 @@ class DoclingMapper {
   std::vector<std::pair<std::string, std::string>> pending_comment_parents_;
   // Embedded objects registered as attachments, numbered in arrival order.
   int attachment_index_ = 0;
+  // Where an empty Writer paragraph sat in the body: an inline picture's
+  // anchor paragraph is exactly such a paragraph, so the picture takes its
+  // place in the reading order instead of trailing the body.
+  struct ParagraphSlot {
+    int page_index = -1;
+    long long caret_y = 0;
+    // The body child the slot follows; empty when it led the body.
+    std::string after_ref;
+  };
+  std::vector<ParagraphSlot> paragraph_slots_;
+  // True once a slide's title placeholder has become the deck's title;
+  // every later slide title is a section heading.
+  bool deck_title_emitted_ = false;
+  // Embedded charts waiting for the event that places them in the reading
+  // order (a sheet's SheetChart, a slide's OLE2 shape), keyed by the sheet
+  // or slide they sit on, in arrival order. Writer charts never wait: their
+  // caret anchor places them as they arrive.
+  std::map<int, std::deque<ai::pipestream::office::v1::EmbeddedObject>>
+      pending_charts_;
   // Named ranges arrive before the sheets they sit on, so the sheet each
   // one names is filled in once the sheet headers have streamed past:
   // (index in Document.named_ranges, zero-based sheet ordinal).

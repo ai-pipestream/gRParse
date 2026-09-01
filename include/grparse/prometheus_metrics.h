@@ -6,6 +6,7 @@
 #include <string>
 #include <thread>
 
+#include "grparse/data_totals.h"
 #include "grparse/document_repair.h"
 #include "grparse/ocr_engine.h"
 #include "grparse/page_scheduler.h"
@@ -20,7 +21,17 @@ namespace grparse {
 // only the buckets).  Stage busy nanoseconds are exported as
 // grparse_stage_busy_seconds_total next to grparse_stage_workers, so
 // rate(busy_seconds[1m]) / workers is the same busy fraction the stdout line
-// prints.  The repair totals export as grparse_repairs_total{kind=...}.
+// prints.  The repair totals export as grparse_repairs_total{kind=...} and
+// the data-plane totals as grparse_data_changes_total{kind=...}, plus the
+// process_resident_memory_bytes and process_cpu_seconds_total gauges the
+// standard client libraries export.
+std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
+                                      const OcrEnginePool::Stats& ocr_pool,
+                                      const PageScheduler::Options& options,
+                                      const RepairTotals& repairs,
+                                      const DataTotals& data);
+
+// The server's own call: the data totals are the live process counters.
 std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
                                       const OcrEnginePool::Stats& ocr_pool,
                                       const PageScheduler::Options& options,

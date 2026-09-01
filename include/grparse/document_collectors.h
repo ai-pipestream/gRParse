@@ -42,6 +42,15 @@ CollectorOutcome collect_email_document(const std::shared_ptr<grpc::Channel>& ch
                                         CollectorDeadline inbound_deadline =
                                             kNoCollectorDeadline);
 
+// Gives a document whose collector recorded the source's own title only as
+// metadata (an HTML <title>) a TITLE item at the head of the body, so the
+// heading tree starts where the source says it does. A body that already
+// has a title item, or metadata with no title, is left alone. The item is
+// attributed to this service with the model "source-meta-title": it is
+// derived from the collector's claim, not claimed by the collector. Returns
+// true when an item was added.
+bool promote_source_title(ai::pipestream::document::v1::Document* document);
+
 // grpc-xml. The dialect is left unspecified so the collector sniffs it; a
 // sniff that fails is that collector's failure, not the parse's.
 CollectorOutcome collect_xml_document(const std::shared_ptr<grpc::Channel>& channel,

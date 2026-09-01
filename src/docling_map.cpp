@@ -7,12 +7,18 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
+#include <deque>
+#include <iterator>
 #include <set>
 #include <sstream>
+#include <vector>
 
 #include <google/protobuf/struct.pb.h>
 #include <google/protobuf/timestamp.pb.h>
+
+#include "grparse/data_totals.h"
 
 namespace grparse {
 
@@ -386,6 +392,104 @@ void set_grid_span(const officev1::SheetRangeRef& range,
   end->set_sheet(sheet);
 }
 
+// "%g", the spelling the office collector's own tabular projection uses,
+// so a series value reads the same whether it arrived typed or projected.
+std::string double_text(double value) {
+  char buffer[32];
+  std::snprintf(buffer, sizeof buffer, "%g", value);
+  return buffer;
+}
+
+// True when the cell's typed value is a quantity (number, date, logical)
+// rather than text, a formula, or an error.
+bool quantity_cell(const docv1::TableCell& cell) {
+  if (!cell.has_value()) return false;
+  switch (cell.value().kind_case()) {
+    case docv1::CellValue::kNumber:
+    case docv1::CellValue::kBoolean:
+    case docv1::CellValue::kDatetime:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// True when the cell reads as a label: non-blank text with no typed value.
+bool label_cell(const docv1::TableCell& cell) {
+  if (cell.has_value() && cell.value().kind_case() != docv1::CellValue::KIND_NOT_SET) {
+    return false;
+  }
+  for (const char c : cell.text()) {
+    if (std::isspace(static_cast<unsigned char>(c)) == 0) return true;
+  }
+  return false;
+}
+
+// Places one cell of a grid built from typed data.
+docv1::TableCell* place_cell(docv1::TableData* data, int row, int column,
+                             const std::string& text) {
+  docv1::TableCell* cell = data->add_table_cells();
+  cell->set_start_row_offset_idx(row);
+  cell->set_end_row_offset_idx(row + 1);
+  cell->set_start_col_offset_idx(column);
+  cell->set_end_col_offset_idx(column + 1);
+  cell->set_row_span(1);
+  cell->set_col_span(1);
+  cell->set_text(text);
+  return cell;
+}
+
+// Materializes data->grid from table_cells for grids under kMaxGridCells:
+// one slot per base position, the first cell placed at a slot keeping it.
+// 64-bit product: adversarial row and column counts must saturate the
+// guard, not overflow it into acceptance.
+void fill_grid_from_cells(docv1::TableData* data) {
+  const int rows = data->num_rows();
+  const int columns = data->num_cols();
+  if (rows <= 0 || columns <= 0 ||
+      static_cast<int64_t>(rows) * columns > kMaxGridCells) {
+    return;
+  }
+  for (int row = 0; row < rows; row++) {
+    docv1::TableRow* out_row = data->add_grid();
+    for (int column = 0; column < columns; column++) {
+      docv1::TableCell* out = out_row->add_cells();
+      out->set_start_row_offset_idx(row);
+      out->set_end_row_offset_idx(row + 1);
+      out->set_start_col_offset_idx(column);
+      out->set_end_col_offset_idx(column + 1);
+      out->set_row_span(1);
+      out->set_col_span(1);
+    }
+  }
+  // Several cells can anchor at one slot when a base cell was split, so
+  // the first cell placed there keeps it: the base cell is emitted before
+  // the pieces split out of it.
+  std::set<std::pair<int, int>> filled;
+  for (const docv1::TableCell& cell : data->table_cells()) {
+    // Merged or irregular office tables can report cells beyond the
+    // declared grid; those stay in table_cells but have no grid slot.
+    if (cell.start_row_offset_idx() >= data->grid_size()) continue;
+    docv1::TableRow* out_row = data->mutable_grid(cell.start_row_offset_idx());
+    if (cell.start_col_offset_idx() >= out_row->cells_size()) continue;
+    if (!filled.insert({cell.start_row_offset_idx(),
+                        cell.start_col_offset_idx()}).second) {
+      continue;
+    }
+    docv1::TableCell* slot = out_row->mutable_cells(cell.start_col_offset_idx());
+    slot->set_text(cell.text());
+    slot->set_row_span(cell.row_span());
+    slot->set_col_span(cell.col_span());
+    slot->set_end_row_offset_idx(cell.end_row_offset_idx());
+    slot->set_end_col_offset_idx(cell.end_col_offset_idx());
+    slot->set_column_header(cell.column_header());
+    slot->set_row_header(cell.row_header());
+    slot->set_row_section(cell.row_section());
+    if (cell.has_value()) *slot->mutable_value() = cell.value();
+    if (cell.has_bbox()) *slot->mutable_bbox() = cell.bbox();
+  }
+}
+
 }  // namespace
 
 DoclingMapper::DoclingMapper() {
@@ -427,6 +531,24 @@ void DoclingMapper::link_child(const std::string& parent_ref,
     int index = std::atoi(parent_ref.c_str() + field_prefix.size());
     if (index >= 0 && index < document_.field_items_size()) {
       document_.mutable_field_items(index)->add_children()->set_ref(child_ref);
+      return;
+    }
+  }
+  // A picture owns its caption and, for a chart, its data table; a table
+  // owns its caption.
+  const std::string picture_prefix = "#/pictures/";
+  if (parent_ref.starts_with(picture_prefix)) {
+    int index = std::atoi(parent_ref.c_str() + picture_prefix.size());
+    if (index >= 0 && index < document_.pictures_size()) {
+      document_.mutable_pictures(index)->add_children()->set_ref(child_ref);
+      return;
+    }
+  }
+  const std::string table_prefix = "#/tables/";
+  if (parent_ref.starts_with(table_prefix)) {
+    int index = std::atoi(parent_ref.c_str() + table_prefix.size());
+    if (index >= 0 && index < document_.tables_size()) {
+      document_.mutable_tables(index)->add_children()->set_ref(child_ref);
       return;
     }
   }
@@ -637,6 +759,43 @@ void DoclingMapper::register_embedded_object(
 std::string DoclingMapper::sheet_label(int index) const {
   auto found = sheet_name_.find(index);
   return found != sheet_name_.end() ? found->second : std::string();
+}
+
+void DoclingMapper::move_child_after(const std::string& parent_ref,
+                                     const std::string& child_ref,
+                                     const std::string& after_ref) {
+  google::protobuf::RepeatedPtrField<docv1::RefItem>* children =
+      group_by_ref(parent_ref)->mutable_children();
+  int from = -1;
+  int anchor = -1;
+  for (int i = 0; i < children->size(); i++) {
+    if (children->Get(i).ref() == child_ref) from = i;
+    if (!after_ref.empty() && children->Get(i).ref() == after_ref) anchor = i;
+  }
+  if (from < 0) return;
+  const int to = anchor < from ? anchor + 1 : anchor;
+  if (to == from) return;
+  // Rotate the child into place; every reference stays what it was.
+  if (to < from) {
+    for (int i = from; i > to; i--) children->SwapElements(i, i - 1);
+  } else {
+    for (int i = from; i < to; i++) children->SwapElements(i, i + 1);
+  }
+}
+
+int DoclingMapper::take_anchor_slot(int page_index, long long anchor_y,
+                                    long long height) {
+  // The anchor caret sits on the picture's line, at or below its top edge;
+  // a line's worth of slack (600 twips) covers the line height itself.
+  constexpr long long kLineSlack = 600;
+  int best = -1;
+  for (int i = 0; i < static_cast<int>(paragraph_slots_.size()); i++) {
+    const ParagraphSlot& slot = paragraph_slots_[i];
+    if (slot.page_index != page_index) continue;
+    if (slot.caret_y < anchor_y || slot.caret_y > anchor_y + height + kLineSlack) continue;
+    if (best < 0 || slot.caret_y < paragraph_slots_[best].caret_y) best = i;
+  }
+  return best;
 }
 
 docv1::TextItemBase* DoclingMapper::text_by_ref(const std::string& ref) {
@@ -912,47 +1071,7 @@ void DoclingMapper::fold_table(const officev1::TableData& table,
       if (cell_bbox(cell.line_rects(), &box)) *out->mutable_bbox() = box;
     }
   }
-  // 64-bit product: adversarial row and column counts must saturate the
-  // guard, not overflow it into acceptance.
-  if (table.rows() > 0 && table.columns() > 0 &&
-      static_cast<int64_t>(table.rows()) * table.columns() <= kMaxGridCells) {
-    for (int row = 0; row < table.rows(); row++) {
-      docv1::TableRow* out_row = data->add_grid();
-      for (int column = 0; column < table.columns(); column++) {
-        docv1::TableCell* out = out_row->add_cells();
-        out->set_start_row_offset_idx(row);
-        out->set_end_row_offset_idx(row + 1);
-        out->set_start_col_offset_idx(column);
-        out->set_end_col_offset_idx(column + 1);
-        out->set_row_span(1);
-        out->set_col_span(1);
-      }
-    }
-    // Several cells can anchor at one slot when a base cell was split, so
-    // the first cell placed there keeps it: the base cell is emitted before
-    // the pieces split out of it.
-    std::set<std::pair<int, int>> filled;
-    for (const docv1::TableCell& cell : data->table_cells()) {
-      // Merged or irregular office tables can report cells beyond the
-      // declared grid; those stay in table_cells but have no grid slot.
-      if (cell.start_row_offset_idx() >= data->grid_size()) continue;
-      docv1::TableRow* out_row = data->mutable_grid(cell.start_row_offset_idx());
-      if (cell.start_col_offset_idx() >= out_row->cells_size()) continue;
-      if (!filled.insert({cell.start_row_offset_idx(),
-                          cell.start_col_offset_idx()}).second) {
-        continue;
-      }
-      docv1::TableCell* slot =
-          out_row->mutable_cells(cell.start_col_offset_idx());
-      slot->set_text(cell.text());
-      slot->set_row_span(cell.row_span());
-      slot->set_col_span(cell.col_span());
-      slot->set_end_row_offset_idx(cell.end_row_offset_idx());
-      slot->set_end_col_offset_idx(cell.end_col_offset_idx());
-      if (cell.has_value()) *slot->mutable_value() = cell.value();
-      if (cell.has_bbox()) *slot->mutable_bbox() = cell.bbox();
-    }
-  }
+  fill_grid_from_cells(data);
 }
 
 void DoclingMapper::consume(const officev1::StreamPagesResponse& event) {
@@ -1148,6 +1267,11 @@ void DoclingMapper::on_status(const officev1::RenderStatus& status) {
   for (const std::string& warning : status.warnings()) {
     warnings_.push_back(warning);
   }
+  // Charts whose placing event never came still belong to their sheet or
+  // slide; sheet header rows need every row in before the first can be
+  // judged against the second.
+  flush_pending_charts();
+  mark_sheet_header_rows();
   // Anchors resolve only once the whole body has streamed past: a comment
   // can close before the paragraph it sits in is emitted, and a
   // cross-reference can name an anchor from a later page.
@@ -1183,6 +1307,18 @@ void DoclingMapper::resolve_page_styles() {
 void DoclingMapper::on_paragraph(const officev1::Paragraph& paragraph) {
   std::string text = concat_runs(paragraph.runs());
   long long length = runs_length(paragraph.runs());
+  // A paragraph with nothing but whitespace is no text item: it is either
+  // a spacer or the anchor line of an inline picture, and in the latter
+  // case the picture takes the slot when it arrives.
+  if (std::ranges::all_of(text, [](unsigned char c) { return std::isspace(c) != 0; })) {
+    ParagraphSlot slot;
+    slot.page_index = paragraph.page_index();
+    slot.caret_y = paragraph.start().y();
+    const auto& children = document_.body().children();
+    if (!children.empty()) slot.after_ref = children[children.size() - 1].ref();
+    paragraph_slots_.push_back(std::move(slot));
+    return;
+  }
   // Provenance charspans are 0-indexed within the item's own text; the
   // document-absolute paragraph offset stays on the office wire only.
   const long long span_start = 0;
@@ -1254,11 +1390,22 @@ void DoclingMapper::on_embedded_image(const officev1::EmbeddedImage& image) {
              container != writer_groups_.end()) {
     parent = container->second;
   }
+  std::string picture_ref;
   docv1::PictureItem* picture = add_picture(
       docv1::DOC_ITEM_LABEL_PICTURE, docv1::CONTENT_LAYER_BODY, parent,
-      nullptr);
+      &picture_ref);
   if (!image.name().empty()) picture->mutable_shape()->set_name(image.name());
   set_alt_text(image.title(), image.description(), picture);
+  // A Writer picture anchored in an otherwise empty paragraph takes that
+  // paragraph's place in the body instead of trailing it.
+  if (parent == "#/body" && image.has_anchor() && !page_local) {
+    const int slot = take_anchor_slot(image.page_index(), image.anchor().y(),
+                                      image.height_twips());
+    if (slot >= 0) {
+      move_child_after("#/body", picture_ref, paragraph_slots_[slot].after_ref);
+      paragraph_slots_.erase(paragraph_slots_.begin() + slot);
+    }
+  }
   if (!image.data().empty()) {
     docv1::ImageRef* ref = picture->mutable_image();
     ref->set_mimetype(image.mime_type());
@@ -1425,9 +1572,21 @@ void DoclingMapper::on_slide_shape(const officev1::SlideShape& shape) {
     return;
   }
 
+  // An OLE2 shape whose embedded chart arrived ahead of the slide walk is
+  // that chart's place in the slide's reading order.
+  if (ends_with(shape.shape_type(), "OLE2Shape")) {
+    officev1::EmbeddedObject object;
+    if (take_pending_chart(shape.slide_index(), &shape.position(), &object)) {
+      emit_chart(&object, nullptr, parent, layer, true, prov_page, l, t, r, b);
+      return;
+    }
+  }
+
+  // Text is what the runs say, not that runs exist: an object shape's
+  // empty run is a placeholder, and a placeholder text item is nothing.
   bool has_text = false;
   for (const officev1::SlideTextParagraph& paragraph : shape.paragraphs()) {
-    if (!paragraph.runs().empty()) has_text = true;
+    if (runs_length(paragraph.runs()) > 0) has_text = true;
   }
   if (!has_text) {
     if (ends_with(shape.shape_type(), "GraphicObjectShape")
@@ -1475,9 +1634,18 @@ void DoclingMapper::on_slide_shape(const officev1::SlideShape& shape) {
   }
 
   TextHandle handle;
-  if (shape.placeholder_role() == officev1::PLACEHOLDER_ROLE_TITLE) {
-    handle = add_text(TextKind::kTitle, docv1::DOC_ITEM_LABEL_TITLE, layer,
-                      parent);
+  if (shape.placeholder_role() == officev1::PLACEHOLDER_ROLE_TITLE && !shape.notes()) {
+    // The deck has one title, on its title slide; every later slide title
+    // heads a section of the deck.
+    if (!deck_title_emitted_) {
+      handle = add_text(TextKind::kTitle, docv1::DOC_ITEM_LABEL_TITLE, layer,
+                        parent);
+      deck_title_emitted_ = true;
+    } else {
+      handle = add_text(TextKind::kSectionHeader,
+                        docv1::DOC_ITEM_LABEL_SECTION_HEADER, layer, parent);
+      handle.item->mutable_section_header()->set_level(1);
+    }
   } else {
     handle = add_text(TextKind::kText, docv1::DOC_ITEM_LABEL_TEXT, layer,
                       parent);
@@ -1645,11 +1813,23 @@ void DoclingMapper::on_embedded_object(const officev1::EmbeddedObject& object) {
     return;
   }
 
-  bool is_chart = object.kind() == officev1::EMBEDDED_OBJECT_KIND_CHART;
+  if (object.kind() == officev1::EMBEDDED_OBJECT_KIND_CHART) {
+    // Sheet and slide charts wait for the event that places them in the
+    // reading order (the sheet's SheetChart, the slide's OLE2 shape); a
+    // Writer chart is placed by its caret anchor as it arrives.
+    if (document_type_ == "spreadsheet" || document_type_ == "presentation") {
+      pending_charts_[object.page_index()].push_back(object);
+      return;
+    }
+    emit_chart(&object, nullptr, "#/body", docv1::CONTENT_LAYER_BODY,
+               page_local, object.page_index(), l, t, r, b);
+    return;
+  }
+
   std::string picture_ref;
   docv1::PictureItem* picture = add_picture(
-      is_chart ? docv1::DOC_ITEM_LABEL_CHART : docv1::DOC_ITEM_LABEL_PICTURE,
-      docv1::CONTENT_LAYER_BODY, "#/body", &picture_ref);
+      docv1::DOC_ITEM_LABEL_PICTURE, docv1::CONTENT_LAYER_BODY, "#/body",
+      &picture_ref);
   if (!object.name().empty()) picture->mutable_shape()->set_name(object.name());
   register_embedded_object(object, picture_ref);
   if (!object.replacement_image().empty()) {
@@ -1662,9 +1842,10 @@ void DoclingMapper::on_embedded_object(const officev1::EmbeddedObject& object) {
   }
   add_prov(picture->mutable_prov(), object.page_index(), page_local, l, t, r, b,
            0, 0);
-  if (!is_chart) return;
+}
 
-  const officev1::EmbeddedChart& chart = object.chart();
+void DoclingMapper::add_chart_annotations(const officev1::EmbeddedChart& chart,
+                                          docv1::PictureItem* picture) {
   const auto& series = chart.series();
   switch (chart.kind()) {
     case officev1::EMBEDDED_CHART_KIND_BAR:
@@ -1749,6 +1930,320 @@ void DoclingMapper::on_embedded_object(const officev1::EmbeddedObject& object) {
   docv1::TableItem scratch;
   fold_table(chart.tabular(), &scratch);
   *tabular->mutable_chart_data() = scratch.data();
+}
+
+void DoclingMapper::fold_chart_series(const officev1::EmbeddedChart& chart,
+                                      docv1::TableData* data) {
+  const auto& series = chart.series();
+  bool scatter = false;
+  int body_rows = chart.categories_size();
+  for (const officev1::EmbeddedChartSeries& one : series) {
+    if (one.values_x_size() > 0) scatter = true;
+    body_rows = std::max(body_rows, one.values_y_size());
+  }
+  data->set_num_rows(body_rows + 1);
+  data->set_num_cols(series.size() + 1);
+
+  // The schema: the first column is the category (or x) axis, every other
+  // one a series; the axis titles name them when the chart states them.
+  docv1::TableColumnSchema* axis = data->add_columns();
+  if (!chart.x_axis_title().empty()) axis->set_name(chart.x_axis_title());
+  axis->set_declared_type(scatter ? "number" : "text");
+  for (int column = 0; column < series.size(); column++) {
+    docv1::TableColumnSchema* schema = data->add_columns();
+    std::string label = series[column].label();
+    if (label.empty() && series.size() == 1) label = chart.y_axis_title();
+    if (!label.empty()) schema->set_name(label);
+    schema->set_declared_type("number");
+  }
+
+  // The label row: the axis title over the categories, a series label over
+  // each value column.
+  place_cell(data, 0, 0, chart.x_axis_title())->set_column_header(true);
+  for (int column = 0; column < series.size(); column++) {
+    std::string label = series[column].label();
+    if (label.empty()) {
+      label = series.size() == 1 && !chart.y_axis_title().empty()
+                  ? chart.y_axis_title()
+                  : "Series " + std::to_string(column + 1);
+    }
+    place_cell(data, 0, column + 1, label)->set_column_header(true);
+  }
+  for (int row = 0; row < body_rows; row++) {
+    docv1::TableCell* head;
+    if (row < chart.categories_size()) {
+      head = place_cell(data, row + 1, 0, chart.categories(row));
+    } else if (scatter && !series.empty() && row < series[0].values_x_size()) {
+      head = place_cell(data, row + 1, 0, double_text(series[0].values_x(row)));
+      head->mutable_value()->set_number(series[0].values_x(row));
+    } else {
+      head = place_cell(data, row + 1, 0, std::to_string(row + 1));
+    }
+    head->set_row_header(true);
+    for (int column = 0; column < series.size(); column++) {
+      const officev1::EmbeddedChartSeries& one = series[column];
+      if (row >= one.values_y_size()) continue;
+      docv1::TableCell* cell =
+          place_cell(data, row + 1, column + 1, double_text(one.values_y(row)));
+      cell->mutable_value()->set_number(one.values_y(row));
+    }
+  }
+  fill_grid_from_cells(data);
+}
+
+bool DoclingMapper::fold_sheet_range(const officev1::SheetChart& chart,
+                                     docv1::TableData* data) {
+  auto found = sheet_table_.find(chart.sheet_index());
+  if (found == sheet_table_.end() || chart.ranges().empty()) return false;
+  const docv1::TableData& sheet = document_.tables(found->second).data();
+  int top = chart.ranges(0).start_row();
+  int left = chart.ranges(0).start_column();
+  int bottom = chart.ranges(0).end_row();
+  int right = chart.ranges(0).end_column();
+  for (const officev1::SheetRangeRef& range : chart.ranges()) {
+    top = std::min(top, range.start_row());
+    left = std::min(left, range.start_column());
+    bottom = std::max(bottom, range.end_row());
+    right = std::max(right, range.end_column());
+  }
+  if (bottom < top || right < left) return false;
+  data->set_num_rows(bottom - top + 1);
+  data->set_num_cols(right - left + 1);
+  for (const docv1::TableCell& cell : sheet.table_cells()) {
+    const int row = cell.start_row_offset_idx();
+    const int column = cell.start_col_offset_idx();
+    if (row < top || row > bottom || column < left || column > right) continue;
+    docv1::TableCell* out = data->add_table_cells();
+    *out = cell;
+    out->set_start_row_offset_idx(row - top);
+    out->set_end_row_offset_idx(std::min(cell.end_row_offset_idx(), bottom + 1) - top);
+    out->set_start_col_offset_idx(column - left);
+    out->set_end_col_offset_idx(std::min(cell.end_col_offset_idx(), right + 1) - left);
+    out->set_row_span(out->end_row_offset_idx() - out->start_row_offset_idx());
+    out->set_col_span(out->end_col_offset_idx() - out->start_col_offset_idx());
+    if (chart.has_column_headers() && row == top) out->set_column_header(true);
+    if (chart.has_row_headers() && column == left) out->set_row_header(true);
+  }
+  fill_grid_from_cells(data);
+  return true;
+}
+
+void DoclingMapper::emit_chart(const officev1::EmbeddedObject* object,
+                               const officev1::SheetChart* sheet_chart,
+                               const std::string& parent_ref,
+                               docv1::ContentLayer layer, bool page_local,
+                               int page_index, double l, double t, double r,
+                               double b) {
+  std::string picture_ref;
+  docv1::PictureItem* picture = add_picture(docv1::DOC_ITEM_LABEL_CHART, layer,
+                                            parent_ref, &picture_ref);
+  std::string name;
+  if (object != nullptr && !object->name().empty()) name = object->name();
+  if (name.empty() && sheet_chart != nullptr) name = sheet_chart->name();
+  if (!name.empty()) picture->mutable_shape()->set_name(name);
+  if (object != nullptr) {
+    register_embedded_object(*object, picture_ref);
+    if (!object->replacement_image().empty()) {
+      docv1::ImageRef* ref = picture->mutable_image();
+      ref->set_mimetype(object->replacement_mime_type());
+      ref->mutable_size()->set_width(static_cast<double>(object->width_twips()));
+      ref->mutable_size()->set_height(static_cast<double>(object->height_twips()));
+      ref->set_uri(data_uri(object->replacement_mime_type(),
+                            object->replacement_image()));
+    }
+  }
+  add_prov(picture->mutable_prov(), page_index, page_local, l, t, r, b, 0, 0);
+  // Where the chart's data came from, as grid spans on the sheet it sits on.
+  const std::string sheet =
+      sheet_chart != nullptr ? sheet_label(sheet_chart->sheet_index()) : std::string();
+  if (sheet_chart != nullptr) {
+    docv1::ChartMeta* sources = picture->mutable_chart();
+    for (const officev1::SheetRangeRef& range : sheet_chart->ranges()) {
+      set_grid_span(range, sheet, sources->add_sources());
+    }
+    sources->set_has_column_headers(sheet_chart->has_column_headers());
+    sources->set_has_row_headers(sheet_chart->has_row_headers());
+  }
+  const bool typed = object != nullptr && object->has_chart();
+  if (typed) add_chart_annotations(object->chart(), picture);
+
+  // The data, bound as the chart's own table: typed series when the object
+  // carries them, the sheet cells the ranges cover otherwise.
+  std::string table_ref;
+  docv1::TableItem* table = add_table(layer, picture_ref, &table_ref);
+  bool folded = false;
+  if (typed && !object->chart().series().empty()) {
+    fold_chart_series(object->chart(), table->mutable_data());
+    folded = true;
+  } else if (typed && object->chart().has_tabular() &&
+             object->chart().tabular().rows() > 0) {
+    fold_table(object->chart().tabular(), table);
+    for (docv1::TableCell& cell : *table->mutable_data()->mutable_table_cells()) {
+      if (cell.start_row_offset_idx() == 0) cell.set_column_header(true);
+      if (cell.start_col_offset_idx() == 0 && cell.start_row_offset_idx() > 0) {
+        cell.set_row_header(true);
+      }
+    }
+    folded = true;
+  }
+  if (!folded && sheet_chart != nullptr) {
+    folded = fold_sheet_range(*sheet_chart, table->mutable_data());
+  }
+  add_prov(table->mutable_prov(), page_index, page_local, l, t, r, b, 0, 0);
+  // Row provenance back into the sheet grid when the table's rows are the
+  // range's rows: a single source range whose header row is the label row.
+  if (sheet_chart != nullptr && sheet_chart->ranges_size() == 1) {
+    const officev1::SheetRangeRef& range = sheet_chart->ranges(0);
+    const int first_sheet_row =
+        range.start_row() - (sheet_chart->has_column_headers() ? 0 : 1);
+    for (int row = 0; row < table->data().num_rows(); row++) {
+      const int sheet_row = first_sheet_row + row;
+      if (sheet_row < range.start_row() || sheet_row > range.end_row()) continue;
+      docv1::ProvenanceItem* row_prov = table->mutable_data()->add_row_prov();
+      row_prov->set_page_no(sheet_chart->sheet_index() + 1);
+      docv1::GridCell* grid = row_prov->mutable_grid();
+      grid->set_row(sheet_row);
+      grid->set_col(range.start_column());
+      if (!sheet.empty()) grid->set_sheet(sheet);
+    }
+  }
+  if (!folded) {
+    warnings_.push_back("chart " + (name.empty() ? picture_ref : name) +
+                        " carried no data to bind");
+  }
+
+  // The chart title is the composite's caption.
+  const std::string title = typed ? object->chart().title() : std::string();
+  if (!title.empty()) {
+    TextHandle caption = add_text(TextKind::kText, docv1::DOC_ITEM_LABEL_CAPTION,
+                                  layer, picture_ref);
+    caption.base->set_text(title);
+    caption.base->set_orig(title);
+    add_prov(caption.base->mutable_prov(), page_index, page_local, l, t, r, b, 0,
+             static_cast<long long>(title.size()));
+    picture->add_captions()->set_ref(caption.ref);
+    data_counters().chart_captions.fetch_add(1, std::memory_order_relaxed);
+  }
+  data_counters().charts_bound.fetch_add(1, std::memory_order_relaxed);
+  data_log("chart " + (name.empty() ? picture_ref : name) + " bound to " + table_ref +
+           " (" + std::to_string(table->data().num_rows()) + "x" +
+           std::to_string(table->data().num_cols()) + (folded ? "" : ", no data") +
+           (title.empty() ? ")" : ", caption)"));
+}
+
+bool DoclingMapper::take_pending_chart(int page_index,
+                                       const officev1::TwipsPoint* at,
+                                       officev1::EmbeddedObject* out) {
+  auto found = pending_charts_.find(page_index);
+  if (found == pending_charts_.end() || found->second.empty()) return false;
+  std::deque<officev1::EmbeddedObject>& waiting = found->second;
+  auto picked = waiting.end();
+  if (at == nullptr) {
+    picked = waiting.begin();
+  } else {
+    // Positions come from the same model geometry on both events; a twip
+    // of slack covers unit rounding.
+    for (auto it = waiting.begin(); it != waiting.end(); ++it) {
+      if (std::llabs(it->position().x() - at->x()) <= 1 &&
+          std::llabs(it->position().y() - at->y()) <= 1) {
+        picked = it;
+        break;
+      }
+    }
+  }
+  if (picked == waiting.end()) return false;
+  *out = std::move(*picked);
+  waiting.erase(picked);
+  if (waiting.empty()) pending_charts_.erase(found);
+  return true;
+}
+
+void DoclingMapper::flush_pending_charts() {
+  std::map<int, std::deque<officev1::EmbeddedObject>> waiting;
+  waiting.swap(pending_charts_);
+  for (auto& [page_index, charts] : waiting) {
+    std::string parent = "#/body";
+    docv1::ContentLayer layer = docv1::CONTENT_LAYER_BODY;
+    if (auto sheet = sheet_group_.find(page_index); sheet != sheet_group_.end()) {
+      parent = sheet->second;
+      if (auto sheet_layer = sheet_layer_.find(page_index);
+          sheet_layer != sheet_layer_.end()) layer = sheet_layer->second;
+    } else if (auto slide = slide_group_.find(page_index);
+               slide != slide_group_.end()) {
+      parent = slide->second;
+    }
+    for (const officev1::EmbeddedObject& object : charts) {
+      const double l = static_cast<double>(object.position().x());
+      const double t = static_cast<double>(object.position().y());
+      emit_chart(&object, nullptr, parent, layer, true, object.page_index(), l, t,
+                 l + static_cast<double>(object.width_twips()),
+                 t + static_cast<double>(object.height_twips()));
+    }
+  }
+}
+
+void DoclingMapper::mark_sheet_header_rows() {
+  for (const auto& [sheet_index, table_index] : sheet_table_) {
+    docv1::TableData* data = document_.mutable_tables(table_index)->mutable_data();
+    // Cells by row, in arrival order (ascending rows, ascending columns).
+    std::map<int, std::vector<docv1::TableCell*>> rows;
+    for (docv1::TableCell& cell : *data->mutable_table_cells()) {
+      rows[cell.start_row_offset_idx()].push_back(&cell);
+    }
+    if (rows.empty()) continue;
+    int marked = 0;
+    // A database range that declares a header names the row outright. The
+    // range's sheet is still pending here (names resolve with the anchors),
+    // so the pending list is what pairs a range with its sheet.
+    std::set<int> declared_rows;
+    const std::string sheet = sheet_label(sheet_index);
+    for (const auto& [range_index, range_sheet] : pending_range_sheets_) {
+      if (range_sheet != sheet_index || range_index >= document_.named_ranges_size()) continue;
+      const docv1::NamedRange& range = document_.named_ranges(range_index);
+      if (range.kind() != "database" || !range.has_headers() || !range.has_range()) continue;
+      const int header_row = range.range().start().row();
+      declared_rows.insert(header_row);
+      auto found = rows.find(header_row);
+      if (found == rows.end()) continue;
+      for (docv1::TableCell* cell : found->second) {
+        const int column = cell->start_col_offset_idx();
+        if (column < range.range().start().col() || column > range.range().end().col()) continue;
+        if (!cell->column_header()) marked++;
+        cell->set_column_header(true);
+      }
+    }
+    // Otherwise the first row with two or more labels directly above a row
+    // that carries quantities; a lone merged label spanning the used width
+    // above it is a section row, not a header.
+    if (declared_rows.empty()) {
+      auto it = rows.begin();
+      if (it->second.size() == 1 && it->second[0]->col_span() >= 2 &&
+          it->second[0]->col_span() >= data->num_cols() && label_cell(*it->second[0])) {
+        it->second[0]->set_row_section(true);
+        ++it;
+      }
+      if (it != rows.end()) {
+        auto next = std::next(it);
+        const bool labels = it->second.size() >= 2 &&
+                            std::ranges::all_of(it->second, [](const docv1::TableCell* cell) {
+                              return label_cell(*cell);
+                            });
+        const bool quantities_below =
+            next != rows.end() &&
+            std::ranges::any_of(next->second, [](const docv1::TableCell* cell) {
+              return quantity_cell(*cell);
+            });
+        if (labels && quantities_below) {
+          for (docv1::TableCell* cell : it->second) cell->set_column_header(true);
+          marked += static_cast<int>(it->second.size());
+        }
+      }
+    }
+    if (marked > 0) {
+      data_counters().sheet_header_rows.fetch_add(1, std::memory_order_relaxed);
+      data_log("sheet " + sheet + ": header row marked (" + std::to_string(marked) + " cells)");
+    }
+  }
 }
 
 void DoclingMapper::on_sheet(const officev1::Sheet& sheet) {
@@ -1935,19 +2430,20 @@ void DoclingMapper::on_sheet_chart(const officev1::SheetChart& chart) {
   docv1::ContentLayer layer = docv1::CONTENT_LAYER_BODY;
   auto sheet_layer = sheet_layer_.find(chart.sheet_index());
   if (sheet_layer != sheet_layer_.end()) layer = sheet_layer->second;
-  docv1::PictureItem* picture = add_picture(docv1::DOC_ITEM_LABEL_CHART, layer,
-                                            sheet_ref, nullptr);
-  if (!chart.name().empty()) picture->mutable_shape()->set_name(chart.name());
-  // Where the chart's data came from, as grid spans on the sheet it sits on.
-  docv1::ChartMeta* provenance = picture->mutable_chart();
-  const std::string sheet = sheet_label(chart.sheet_index());
-  for (const officev1::SheetRangeRef& range : chart.ranges()) {
-    set_grid_span(range, sheet, provenance->add_sources());
+  // The sheet's draw page announced the same chart as an embedded object
+  // before the sheet streamed; that event carries the series, this one the
+  // source ranges. Together they are one chart under the sheet.
+  officev1::EmbeddedObject object;
+  if (take_pending_chart(chart.sheet_index(), nullptr, &object)) {
+    const double l = static_cast<double>(object.position().x());
+    const double t = static_cast<double>(object.position().y());
+    emit_chart(&object, &chart, sheet_ref, layer, true, chart.sheet_index(), l, t,
+               l + static_cast<double>(object.width_twips()),
+               t + static_cast<double>(object.height_twips()));
+    return;
   }
-  provenance->set_has_column_headers(chart.has_column_headers());
-  provenance->set_has_row_headers(chart.has_row_headers());
-  add_prov(picture->mutable_prov(), chart.sheet_index(), true, 0, 0, 0, 0, 0,
-           0);
+  emit_chart(nullptr, &chart, sheet_ref, layer, true, chart.sheet_index(), 0, 0, 0,
+             0);
 }
 
 void DoclingMapper::on_sheet_pivot_table(
