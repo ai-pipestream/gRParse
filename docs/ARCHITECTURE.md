@@ -17,6 +17,17 @@ highlights / heatmaps                  →  Web UI (consumes offsets + boxes)
 JSON document shape                    →  shared contract (MIT-shaped schema)
 ```
 
+The repair pass (`src/document_repair.cpp`) sits after the additive merge and
+before every renderer: it is the first point at which the whole `Document`
+exists, so it is where facts that no single page or collector can see get
+acted on. It demotes running headers, footers and page numbers from the body
+tree to furniture, rejoins words a line break hyphenated, and merges a
+paragraph a page or column break split into its predecessor with references
+renumbered through the same `rewrite_references` the merge uses. It changes
+labels, tree membership and text only; it never invents items, touches
+geometry, or reads anything but the `Document`, which keeps it identical for
+the CV path and every collector. `GRPARSE_REPAIR=off` removes it entirely.
+
 ## Boundary tests
 
 | Question | Layer |
@@ -252,6 +263,7 @@ overlapping the next page's device inference.
 - Render + selective OCR
 - Layout / table / figure ONNX pools
 - Assemble + reading order
+- Post-merge repair (running furniture, hyphenation, paragraph continuation)
 - Stream page JSON with provenance
 - Backpressure, limits, pipeline metrics
 

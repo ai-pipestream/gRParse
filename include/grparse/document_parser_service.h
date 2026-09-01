@@ -3,6 +3,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 
 #include <grpcpp/grpcpp.h>
@@ -10,6 +11,7 @@
 #include "ai/pipestream/parse/v1/parse.grpc.pb.h"
 #include "ai/pipestream/parse/v1/parse_stream.grpc.pb.h"
 #include "grparse/call_executor.h"
+#include "grparse/document_repair.h"
 #include "grparse/office_cv_enrichment.h"
 #include "grparse/page_scheduler.h"
 
@@ -73,12 +75,17 @@ class CollectorEndpoints {
 // each hands its work to the executor and finishes the call from there, which
 // is what keeps a slow parse from pinning an event-manager thread. The trivial
 // surfaces (Health, GetServiceInfo) finish inline because they do no work.
+//
+// `repair` is the post-merge repair pass every parsing surface runs on the
+// merged Document before rendering (see document_repair.h); nullopt skips
+// it, which is what GRPARSE_REPAIR=off selects at startup.
 class DocumentParserService final
     : public ai::pipestream::parse::v1::ParseService::CallbackService {
  public:
   DocumentParserService(PageScheduler& scheduler,
                         std::shared_ptr<CollectorEndpoints> endpoints,
-                        CallExecutor::Options executor_options = {});
+                        CallExecutor::Options executor_options = {},
+                        std::optional<RepairOptions> repair = RepairOptions{});
 
   grpc::ServerUnaryReactor* ConvertSource(
       grpc::CallbackServerContext* context,
@@ -107,6 +114,7 @@ class DocumentParserService final
  private:
   PageScheduler& scheduler_;
   std::shared_ptr<CollectorEndpoints> endpoints_;
+  std::optional<RepairOptions> repair_;
   // Declared last so it is torn down first: joining the workers before the
   // endpoints and the scheduler reference go away is what keeps an in-flight
   // parse from outliving what it reads.
@@ -115,8 +123,12 @@ class DocumentParserService final
 
 class DocumentStreamingService final : public ai::pipestream::parse::v1::ParseStreamingService::CallbackService {
  public:
+  // The stream has no merged Document: each collector's finished Document
+  // is what the repair pass runs on, before it is projected into page
+  // events and emitted whole.
   DocumentStreamingService(PageScheduler& scheduler,
-                           std::shared_ptr<CollectorEndpoints> endpoints);
+                           std::shared_ptr<CollectorEndpoints> endpoints,
+                           std::optional<RepairOptions> repair = RepairOptions{});
 
   grpc::ServerBidiReactor<ai::pipestream::parse::v1::DocumentChunk,
                           ai::pipestream::parse::v1::DocumentStreamEvent>*
@@ -125,6 +137,7 @@ class DocumentStreamingService final : public ai::pipestream::parse::v1::ParseSt
  private:
   PageScheduler& scheduler_;
   std::shared_ptr<CollectorEndpoints> endpoints_;
+  std::optional<RepairOptions> repair_;
 };
 
 }  // namespace grparse

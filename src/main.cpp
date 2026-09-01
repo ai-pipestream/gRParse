@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <print>
 #include <sstream>
 #include <string>
@@ -22,6 +23,7 @@
 #include <grpcpp/health_check_service_interface.h>
 
 #include "grparse/document_parser_service.h"
+#include "grparse/document_repair.h"
 #include "grparse/figure_classifier.h"
 #include "grparse/layout_engine.h"
 #include "grparse/page_scheduler.h"
@@ -385,6 +387,27 @@ std::string format_metrics(const grparse::PageScheduler::Metrics& current,
   return line.str();
 }
 
+// GRPARSE_REPAIR: on (default) runs the post-merge repair pass on every
+// finished Document (running headers and footers demoted to furniture,
+// line-break hyphenation rejoined, paragraphs a page break split merged);
+// off skips it; debug runs it and prints one line per document it changed.
+std::optional<grparse::RepairOptions> configure_repair() {
+  const char* configured = std::getenv("GRPARSE_REPAIR");
+  const std::string mode = configured == nullptr ? "on" : configured;
+  if (mode != "on" && mode != "off" && mode != "debug") {
+    throw std::invalid_argument("GRPARSE_REPAIR must be on, off, or debug");
+  }
+  if (mode == "off") {
+    std::println("gRParse document repair: disabled (GRPARSE_REPAIR=off)");
+    return std::nullopt;
+  }
+  grparse::RepairOptions options;
+  options.log_report = mode == "debug";
+  std::println("gRParse document repair: enabled{}",
+               options.log_report ? " with per-document log lines (GRPARSE_REPAIR=debug)" : "");
+  return options;
+}
+
 void install_shutdown_signal_pipe(int* signal_pipe) {
   if (pipe2(signal_pipe, O_CLOEXEC) != 0) {
     throw std::runtime_error("Could not create graceful shutdown signal pipe");
@@ -553,8 +576,9 @@ int main() {
     executor_options.queue_capacity = configured_size("GRPARSE_UNARY_QUEUE", 64, 4096);
     std::println("gRParse unary executor: {} workers, queue {}", executor_options.workers,
                  executor_options.queue_capacity);
-    grparse::DocumentParserService service(scheduler, endpoints, executor_options);
-    grparse::DocumentStreamingService streaming_service(scheduler, endpoints);
+    const std::optional<grparse::RepairOptions> repair = configure_repair();
+    grparse::DocumentParserService service(scheduler, endpoints, executor_options, repair);
+    grparse::DocumentStreamingService streaming_service(scheduler, endpoints, repair);
     grpc::EnableDefaultHealthCheckService(true);
     grpc::reflection::InitProtoReflectionServerBuilderPlugin();
     grpc::ServerBuilder builder;
@@ -588,7 +612,7 @@ int main() {
       metrics_exporter = std::make_unique<grparse::MetricsHttpServer>(
           static_cast<uint16_t>(metrics_port), [&scheduler, &engines, &options] {
             return grparse::render_prometheus_metrics(scheduler.metrics(), engines->stats(),
-                                                      options);
+                                                      options, grparse::repair_totals());
           });
       std::println("gRParse metrics exporter: http://0.0.0.0:{}/metrics",
                    metrics_exporter->port());

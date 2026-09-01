@@ -50,7 +50,8 @@ void write_all(int fd, const std::string& data) {
 
 std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
                                       const OcrEnginePool::Stats& ocr_pool,
-                                      const PageScheduler::Options& options) {
+                                      const PageScheduler::Options& options,
+                                      const RepairTotals& repairs) {
   std::ostringstream out;
   out.precision(15);
 
@@ -76,6 +77,13 @@ std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
           metrics.barcodes_decoded);
   counter(out, "grparse_pages_cancelled_total", "Pages abandoned by cancelled documents.",
           metrics.pages_cancelled);
+
+  out << "# HELP grparse_repairs_total Changes the post-merge repair pass made to finished "
+         "documents, by kind.\n"
+         "# TYPE grparse_repairs_total counter\n"
+      << "grparse_repairs_total{kind=\"furniture_demoted\"} " << repairs.furniture_demoted << '\n'
+      << "grparse_repairs_total{kind=\"hyphens_rejoined\"} " << repairs.hyphens_rejoined << '\n'
+      << "grparse_repairs_total{kind=\"paragraphs_merged\"} " << repairs.paragraphs_merged << '\n';
 
   out << "# HELP grparse_pages_waiting Pages queued ahead of a pipeline stage.\n"
          "# TYPE grparse_pages_waiting gauge\n"

@@ -6,6 +6,7 @@
 #include <string>
 #include <thread>
 
+#include "grparse/document_repair.h"
 #include "grparse/ocr_engine.h"
 #include "grparse/page_scheduler.h"
 
@@ -19,10 +20,11 @@ namespace grparse {
 // only the buckets).  Stage busy nanoseconds are exported as
 // grparse_stage_busy_seconds_total next to grparse_stage_workers, so
 // rate(busy_seconds[1m]) / workers is the same busy fraction the stdout line
-// prints.
+// prints.  The repair totals export as grparse_repairs_total{kind=...}.
 std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
                                       const OcrEnginePool::Stats& ocr_pool,
-                                      const PageScheduler::Options& options);
+                                      const PageScheduler::Options& options,
+                                      const RepairTotals& repairs = {});
 
 // Minimal single-threaded HTTP listener serving GET /metrics.  Deliberately
 // dependency-free: a scrape endpoint needs one short-lived response per

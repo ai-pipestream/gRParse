@@ -29,6 +29,7 @@
 #include "grparse/document_collectors.h"
 #include "grparse/document_merge.h"
 #include "grparse/document_render.h"
+#include "grparse/document_repair.h"
 #include "grparse/in_memory_document.h"
 #include "grparse/office_collector.h"
 #include "grparse/page_previews.h"
@@ -449,9 +450,11 @@ std::shared_ptr<grpc::Channel> CollectorEndpoints::channel(
 
 DocumentParserService::DocumentParserService(PageScheduler& scheduler,
                                              std::shared_ptr<CollectorEndpoints> endpoints,
-                                             CallExecutor::Options executor_options)
+                                             CallExecutor::Options executor_options,
+                                             std::optional<RepairOptions> repair)
     : scheduler_(scheduler),
       endpoints_(std::move(endpoints)),
+      repair_(std::move(repair)),
       executor_(executor_options) {}
 
 namespace {
@@ -473,6 +476,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
                           const pipestream::parse::v1::ConvertDocumentRequest& request,
                           PageScheduler& scheduler,
                           const std::shared_ptr<CollectorEndpoints>& collectors,
+                          const std::optional<RepairOptions>& repair,
                           const std::string& surface, SourceParse* parsed) {
   const auto& sources = request.sources();
   if (sources.size() != 1 || !sources.Get(0).has_file()) {
@@ -737,11 +741,20 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
       return grpc::Status(first.code, message);
     }
 
+    // The merged Document is complete here, and this is the one place every
+    // unary surface renders from, so the post-merge repair pass runs here:
+    // running headers and footers demoted to furniture, line-break
+    // hyphenation rejoined, paragraphs a page break split merged.
+    const bool repaired_text =
+        repair.has_value() &&
+        run_repair_pass(&result.document, *repair).changed_text_or_arenas();
     // The offset table describes the CV collector's own text stream. It is
-    // published only when that collector is the entire document: a merge
-    // renumbers arena references, and a table that no longer names the items
-    // it describes is worse than no table at all.
-    if (result.succeeded == 1 && !cv_offsets->empty()) {
+    // published only when that collector is the entire document and the
+    // repair pass left its text and arena alone: a merge renumbers arena
+    // references, a repair that retires items or rewrites text moves them,
+    // and a table that no longer names the items it describes is worse than
+    // no table at all.
+    if (result.succeeded == 1 && !cv_offsets->empty() && !repaired_text) {
       chunking::add_offsets(*cv_offsets, &parsed->offsets);
     }
     // Collector warnings are not failures; they stay on the document, keyed
@@ -874,7 +887,7 @@ grpc::ServerUnaryReactor* DocumentParserService::ConvertSource(
     const auto started = std::chrono::steady_clock::now();
     SourceParse parsed;
     const grpc::Status parse_status = parse_source(context, request->request(), scheduler_,
-                                                   endpoints_, "ConvertSource", &parsed);
+                                                   endpoints_, repair_, "ConvertSource", &parsed);
     if (!parse_status.ok()) return parse_status;
     auto& result = parsed.result;
     auto* converted = response->mutable_response();
@@ -957,7 +970,8 @@ grpc::ServerUnaryReactor* DocumentParserService::ChunkHierarchicalSource(
     *convert.mutable_sources() = chunk_request.sources();
     *convert.mutable_options() = chunk_request.convert_options();
     const grpc::Status parse_status =
-        parse_source(context, convert, scheduler_, endpoints_, "ChunkHierarchicalSource", &parsed);
+        parse_source(context, convert, scheduler_, endpoints_, repair_, "ChunkHierarchicalSource",
+                     &parsed);
     if (!parse_status.ok()) return parse_status;
     auto* chunked = response->mutable_response();
     const chunking::ChunkOptions options{chunk_request.chunking_options().use_markdown_tables(),
@@ -993,7 +1007,8 @@ grpc::ServerUnaryReactor* DocumentParserService::ChunkHybridSource(
     *convert.mutable_sources() = chunk_request.sources();
     *convert.mutable_options() = chunk_request.convert_options();
     const grpc::Status parse_status =
-        parse_source(context, convert, scheduler_, endpoints_, "ChunkHybridSource", &parsed);
+        parse_source(context, convert, scheduler_, endpoints_, repair_, "ChunkHybridSource",
+                     &parsed);
     if (!parse_status.ok()) return parse_status;
     auto* chunked = response->mutable_response();
     for (auto& chunk :
@@ -1066,10 +1081,12 @@ class DocumentStreamReactor final
                                      pipestream::parse::v1::DocumentStreamEvent> {
  public:
   DocumentStreamReactor(grpc::CallbackServerContext* context, PageScheduler& scheduler,
-                        std::shared_ptr<CollectorEndpoints> endpoints)
+                        std::shared_ptr<CollectorEndpoints> endpoints,
+                        std::optional<RepairOptions> repair)
       : context_(context),
         scheduler_(scheduler),
         endpoints_(std::move(endpoints)),
+        repair_(std::move(repair)),
         // The scheduler never delivers more than one page window ahead of
         // the credits this reactor returns, so the configured window is the
         // exact buffer bound; any smaller cap would fail well-behaved
@@ -1506,6 +1523,11 @@ class DocumentStreamReactor final
   }
 
   void on_collector_done(pipestream::parse::v1::Collector collector, CollectorOutcome outcome) {
+    // A collector's Document is complete the moment it lands here, and this
+    // is where it is projected and emitted, so the repair pass runs on it
+    // first, on the caller's thread and outside the reactor lock: it is
+    // straight-line work on the outcome alone.
+    if (outcome.success && repair_.has_value()) run_repair_pass(&outcome.document, *repair_);
     std::lock_guard<std::mutex> lock(mutex_);
     if (client_cancelled_) return;
     if (outcome.success) {
@@ -1625,6 +1647,7 @@ class DocumentStreamReactor final
   grpc::CallbackServerContext* context_;
   PageScheduler& scheduler_;
   std::shared_ptr<CollectorEndpoints> endpoints_;
+  const std::optional<RepairOptions> repair_;
   const size_t maximum_buffered_pages_;
   std::shared_ptr<CallbackGate> callback_gate_;
   std::mutex mutex_;
@@ -1668,12 +1691,13 @@ class DocumentStreamReactor final
 }  // namespace
 
 DocumentStreamingService::DocumentStreamingService(PageScheduler& scheduler,
-                                                   std::shared_ptr<CollectorEndpoints> endpoints)
-    : scheduler_(scheduler), endpoints_(std::move(endpoints)) {}
+                                                   std::shared_ptr<CollectorEndpoints> endpoints,
+                                                   std::optional<RepairOptions> repair)
+    : scheduler_(scheduler), endpoints_(std::move(endpoints)), repair_(std::move(repair)) {}
 
 grpc::ServerBidiReactor<pipestream::parse::v1::DocumentChunk, pipestream::parse::v1::DocumentStreamEvent>*
 DocumentStreamingService::StreamProcessDocument(grpc::CallbackServerContext* context) {
-  return new DocumentStreamReactor(context, scheduler_, endpoints_);
+  return new DocumentStreamReactor(context, scheduler_, endpoints_, repair_);
 }
 
 }  // namespace grparse
