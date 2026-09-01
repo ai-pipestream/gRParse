@@ -49,7 +49,7 @@ npx playwright show-report out/html      # optional
 `npm ci` installs the pinned `@playwright/test`; if Chromium is not cached
 yet, `npx playwright install chromium` fetches it once. Reports land in
 `out/html/` and `out/junit.xml`; screenshots of failures in `test-results/`.
-`E2E_WORKERS` (default 2) bounds the load on the shared parsers. Run a
+`E2E_WORKERS` (default 1, serial: the shell proxy bug in `specs/proxy.spec.ts` makes parallel workers trip each other) bounds the load on the shared parsers. Run a
 single surface with `npx playwright test specs/document.spec.ts`.
 
 ## Running as a compose profile

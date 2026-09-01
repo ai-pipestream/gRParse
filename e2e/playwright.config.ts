@@ -6,8 +6,11 @@ import { defineConfig, devices } from "@playwright/test";
 const baseURL = process.env.E2E_BASE_URL ?? "http://127.0.0.1:18081";
 
 // The parsers are shared by every worker, and OCR on a CPU-only host is
-// slow, so the default parallelism is modest. E2E_WORKERS overrides it.
-const workers = Number(process.env.E2E_WORKERS ?? 2);
+// slow, and the shell proxy answers 400 on the request that follows a
+// streamed POST to the same frontend (specs/proxy.spec.ts), so two workers
+// sharing a frontend can trip each other. One worker is deterministic
+// against a single stack; E2E_WORKERS raises it once that bug is fixed.
+const workers = Number(process.env.E2E_WORKERS ?? 1);
 
 export default defineConfig({
   testDir: "./specs",
