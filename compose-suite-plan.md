@@ -439,7 +439,16 @@
   38/38 twice and Playwright 50 passed, 1 skipped on the OpenVINO image; the
   S3 eval on the refactored stack 34 of 1483 checks red on the same 32
   objects with the same findings as before the refactor.
+- Playwright locally: a full run taken right after the S3 passes failed
+  figures.docx ("upload never finished": grpc-libreoffice was still rendering
+  corners.xlsx server-side after the eval's client deadline) and the markup
+  UI ("Parsed with no content blocks"); on the quiet stack the document specs
+  pass, three repeats of the service-UI sequence pass 24/24, and the markup
+  parse API answers identically 10 of 10 through the proxy and direct. The
+  markup UI symptom is an intermittent flake of that UI's browser flow (seen
+  three times today, always after heavy load, never on demand); owner
+  grpc-markup, next step is a trace of the failing run's network log.
 - Follow-ons: document_repair.cpp (966) and document_assembly.cpp (888) are
   the next largest units and were not touched; `.vtt` in the extension table;
   the four bespoke test mains (chunking, the three model-gated tests) keep
-  their own shape.
+  their own shape; the markup UI flake above.
