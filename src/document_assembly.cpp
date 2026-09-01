@@ -384,6 +384,13 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
   if (!source.preview_png.empty()) {
     set_picture_image(source.preview_png, output->mutable_page_meta()->mutable_image());
   }
+  // A turn orientation recovery applied lands in the page's typed quality
+  // slot: the page's geometry, size and preview are all in the turned frame,
+  // and this is how a client that renders the source itself catches up.
+  if (source.rotation_degrees != 0) {
+    output->mutable_page_meta()->mutable_quality()->set_rotation_degrees(
+        static_cast<double>(source.rotation_degrees));
+  }
 
   // Emission order defines text offsets, refs, and body order, so blocks are
   // walked in reading order (multi-column aware) rather than input order,

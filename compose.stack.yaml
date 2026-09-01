@@ -70,6 +70,14 @@ services:
       # path and the in-process CV/ONNX pipeline is skipped; scanned pages
       # fall through with OCR restricted to the pages the inspector names.
       GRPARSE_PDF_TARGET: "pdf-inspector:50067"
+      # Raster charts: pictures the classifier calls a chart go to the enrich
+      # service for a table (opt-in; unset turns the call off). The endpoint
+      # is named per request because the enrich default (ENRICH_VLM_URL,
+      # Qwen on :8085) answered 0 of 12 chart images through enrich while
+      # North on :8086 answered 12 of 12 (eval/chart_derender/README.md).
+      GRPARSE_ENRICH_TARGET: "enrich:50056"
+      GRPARSE_ENRICH_TIMEOUT_MS: "5000"
+      GRPARSE_ENRICH_VLM_ENDPOINT: "${GRPARSE_ENRICH_VLM_ENDPOINT:-http://krick-1.taild24b1c.ts.net:8086}"
     gpus: all
     read_only: true
     tmpfs:

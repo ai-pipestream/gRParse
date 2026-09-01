@@ -159,10 +159,14 @@ differing field. Recording with `--repeat 2` stores the observed stability, so
 a known-unstable document is a known row that a later fix flips to stable
 (re-record to lock it), while a stable document going unstable is a regression.
 
-Memory is informational only: when `EVAL_METRICS_URL` (or, for a local target,
-the `parse-stack-grparse-1` container's `:9464/metrics`) exposes
+Memory is informational only: when `EVAL_METRICS_URL` (or, for a local
+target with no explicit URL, the `parse-stack-grparse-1` container's
+`:9464/metrics`, its address read with a read-only `docker inspect`) exposes
 `process_resident_memory_bytes`, the report notes the RSS before and after the
-run; when it does not, the note says so.
+run; when docker is unavailable or the endpoint exposes nothing, the note says
+memory was not sampled. A private instance on a published host port is a
+local target too, so it resolves to the stack container unless
+`EVAL_METRICS_URL` names its own exporter.
 
 ### Zero-skip (pre-release) mode
 

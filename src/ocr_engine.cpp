@@ -96,7 +96,9 @@ OcrEngine::Page OcrEngine::extract_page(const cv::Mat& image) {
       for (const float score : block.charScores) confidence += score;
       confidence /= static_cast<float>(block.charScores.size());
     }
-    page.lines.push_back(Line{block.text, block.boxPoint, confidence, TextOrigin::kOcr});
+    Line line{block.text, block.boxPoint, confidence, TextOrigin::kOcr};
+    line.flipped = block.angleIndex == 1;
+    page.lines.push_back(std::move(line));
   }
   return page;
 }

@@ -86,6 +86,14 @@
    "sha256": "00fc5b5f9c156130285f684c3cc73f526992384286c8d0e647a7235a618f615f",
    "bytes": 126710
   },
+  "rotated-scan-180.pdf": {
+   "sha256": "ba4bfd0a5e0175eecfa93b33fd5dafcfa2dbd93d05c993d5eb4d9887b40666c6",
+   "bytes": 202911
+  },
+  "rotated-scan-mixed.pdf": {
+   "sha256": "bdfa6be1e343d12133b920a0affb48484a8c7dd91c5574cab43899f5a9f9baa0",
+   "bytes": 615771
+  },
   "rotated-scan.pdf": {
    "sha256": "f3a3120b3c5f86413d3bd3d58a162d6428cbdf5cdb5d235963b670c818cc338f",
    "bytes": 223853

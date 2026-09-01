@@ -746,3 +746,22 @@ if(BUILD_TESTING)
   set_tests_properties(${GRPARSE_CHART_TESTS} PROPERTIES
     TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
 endif()
+
+# ---- orientation recovery: turned scans re-read upright -----------------------
+# Appended as one block, like the data plane above: the source joins
+# grparse_core and the test joins the grparse suite with the same timeout and
+# label.  The test drives the recovery with a fake recognizer (no models).
+target_sources(grparse_core PRIVATE
+  src/orientation_recovery.cpp)
+if(BUILD_TESTING)
+  set(GRPARSE_ORIENTATION_TESTS orientation-recovery-test)
+  foreach(test_name IN LISTS GRPARSE_ORIENTATION_TESTS)
+    string(REPLACE "-" "_" test_source "${test_name}")
+    add_executable(${test_name} "tests/${test_source}.cpp")
+    target_link_libraries(${test_name} PRIVATE grparse_core grparse_flags)
+    add_test(NAME ${test_name} COMMAND ${test_name})
+  endforeach()
+  add_dependencies(grparse-tests ${GRPARSE_ORIENTATION_TESTS})
+  set_tests_properties(${GRPARSE_ORIENTATION_TESTS} PROPERTIES
+    TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
+endif()

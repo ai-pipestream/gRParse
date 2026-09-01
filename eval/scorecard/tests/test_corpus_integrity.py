@@ -29,7 +29,7 @@ SCORECARD_DIR = REPO / "eval" / "scorecard"
 MAX_FILE_BYTES = 2 * 1024 * 1024
 # The whole in-repo corpus, pinned well above today's size (882,713 bytes as
 # of the lane-3 fixtures) and well below the point where a checkout hurts.
-MAX_CORPUS_BYTES = 1_572_864
+MAX_CORPUS_BYTES = 2_621_440  # raised 2026-09-01 for the turned-scan PDFs (was 1_572_864 at 34 docs)
 # Personal documents that must never enter the corpus. Names, because that is
 # what a stray copy would arrive under.
 DENIED_NAMES = frozenset({"1786127653702.pdf", "792387684640_OUTBOUND_LABEL.pdf"})

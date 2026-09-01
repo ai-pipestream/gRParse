@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <vector>
 
 #include <opencv2/core.hpp>
 
@@ -50,5 +51,46 @@ struct RotationVote {
 };
 
 RotationVote page_rotation_vote(const OcrPage& page, double aspect = 1.5, int minimum_lines = 3);
+
+// What one read of a page says about how well it read: the lines with
+// text, the mean recognition confidence over the lines that carry one (0
+// when none does), and how many lines the angle classifier turned 180
+// degrees before reading.  With RapidOCR's most-angle vote the flipped
+// count is all or nothing, so `upside_down` (more than half flipped) is
+// the page-level signal that the raster was fed in upside down.
+struct ReadQuality {
+  int lines = 0;
+  int scored_lines = 0;
+  float mean_confidence = 0.0F;
+  int flipped_lines = 0;
+  bool upside_down = false;
+};
+
+ReadQuality page_read_quality(const OcrPage& page);
+
+// The clockwise turns worth re-reading a page at, from its first read: 90
+// and 270 when the line boxes vote a quarter turn (the vote cannot tell
+// the two apart), 180 when the classifier flipped most lines, all three
+// when neither says anything but the read is poor (mean confidence below
+// `confidence_floor` over at least `minimum_lines` lines), nothing
+// otherwise.  Each turn appears at most once, so the caller's cost is
+// bounded by three extra reads per page.
+std::vector<int> rotation_candidates(const RotationVote& vote, const ReadQuality& quality,
+                                     float confidence_floor = 0.5F, int minimum_lines = 3);
+
+// How reads of one page rank against each other.  A read with text beats
+// one without; an upright read (wide lines at least as many as tall ones,
+// no quarter-turn vote, not upside down) beats one that is not; among
+// equals the higher mean confidence wins.
+// Comparable with the relational operators in that order.
+struct ReadScore {
+  bool has_text = false;
+  bool upright = false;
+  float mean_confidence = 0.0F;
+
+  auto operator<=>(const ReadScore&) const = default;
+};
+
+ReadScore score_read(const OcrPage& page);
 
 }  // namespace grparse

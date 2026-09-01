@@ -1,3 +1,4 @@
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -1098,6 +1099,190 @@ void verify_render_dpi_reaches_source_factory() {
   require(factory_dpi.load() == 300.0, "a tuned render DPI must reach the source factory");
 }
 
+// Orientation recovery through the pipeline.  The source renders the
+// upright 4x2 marker raster turned a quarter turn clockwise; the recognizer
+// reads a portrait raster as tall boxes, a landscape raster with the marker
+// top-left as upright confident lines, and one with the marker bottom-right
+// as lines the classifier flipped.  Same fake as orientation_recovery_test.
+constexpr unsigned char kMarker = 255;
+
+cv::Mat upright_marker_raster() {
+  cv::Mat raster(2, 4, CV_8UC1, cv::Scalar(0));
+  raster.at<unsigned char>(0, 0) = kMarker;
+  return raster;
+}
+
+class TurnedSource final : public grparse::PageSource {
+ public:
+  explicit TurnedSource(int degrees, bool digital_layer = false)
+      : degrees_(degrees), digital_layer_(digital_layer) {}
+  int page_count() const override { return 1; }
+
+  std::optional<grparse::OcrPage> extract_digital_page(int) const override {
+    if (!digital_layer_) return std::nullopt;
+    // A partial layer: one line, not complete, so recognition still runs.
+    grparse::OcrPage page{100, 100,
+                          {{"digital", {{0, 0}, {40, 0}, {40, 8}, {0, 8}}, std::nullopt,
+                            grparse::TextOrigin::kDigitalPdf}}};
+    page.source = grparse::OcrPage::Source::kDigitalPdf;
+    page.skip_ocr = false;
+    return page;
+  }
+
+  cv::Mat render_page(int) const override {
+    return grparse::turn_raster(upright_marker_raster(), degrees_);
+  }
+
+ private:
+  int degrees_;
+  bool digital_layer_;
+};
+
+class MarkerRecognizer final : public grparse::PageRecognizer {
+ public:
+  grparse::OcrPage extract_page(const cv::Mat& image) override {
+    calls.fetch_add(1);
+    grparse::OcrPage page{image.cols, image.rows, {}};
+    page.source = grparse::OcrPage::Source::kOcr;
+    if (image.rows > image.cols) {
+      for (int line = 0; line < 5; ++line) {
+        page.lines.push_back(grparse::OcrLine{
+            "tall", {{30 * line, 10}, {30 * line + 20, 10}, {30 * line + 20, 400}, {30 * line, 400}},
+            0.7F, grparse::TextOrigin::kOcr});
+      }
+      return page;
+    }
+    const bool upright = image.at<unsigned char>(0, 0) == kMarker;
+    for (int line = 0; line < 5; ++line) {
+      grparse::OcrLine read{upright ? "upright" : "flipped",
+                            {{10, 30 * line}, {400, 30 * line}, {400, 30 * line + 20}, {10, 30 * line + 20}},
+                            upright ? 0.95F : 0.9F, grparse::TextOrigin::kOcr};
+      read.flipped = !upright;
+      page.lines.push_back(std::move(read));
+    }
+    return page;
+  }
+
+  std::atomic<int> calls{0};
+};
+
+struct DeliveredPage {
+  std::mutex mutex;
+  std::shared_ptr<const grparse::OcrPage> page;
+};
+
+grparse::PageScheduler::Callbacks capturing_callbacks(Result* result, DeliveredPage* delivered) {
+  grparse::PageScheduler::Callbacks callbacks = callbacks_for(result);
+  callbacks.on_page = [result, delivered](int page_number,
+                                          std::shared_ptr<const grparse::OcrPage> page) {
+    {
+      std::lock_guard<std::mutex> lock(delivered->mutex);
+      delivered->page = std::move(page);
+    }
+    std::lock_guard<std::mutex> lock(result->mutex);
+    result->completed_pages.push_back(page_number);
+    return grparse::PageScheduler::DeliveryResult::kAcceptedAndRelease;
+  };
+  return callbacks;
+}
+
+void verify_turned_scan_is_rerecognized_upright() {
+  MarkerRecognizer recognizer;
+  grparse::PageScheduler::Options options{2, 2, 2, 2, 1, 1, 1};
+  options.capture_page_images = true;
+  grparse::PageScheduler scheduler(
+      recognizer, options,
+      [](std::shared_ptr<const std::string>, bool, double) { return std::make_shared<TurnedSource>(90); });
+  Result result;
+  DeliveredPage delivered;
+  scheduler.submit(std::make_shared<const std::string>("memory"), false,
+                   capturing_callbacks(&result, &delivered));
+  wait_until_finished(&result);
+  require(!result.failure, "turned scan failed");
+  require(recognizer.calls.load() == 3, "one read plus one per quarter turn, never more");
+
+  std::lock_guard<std::mutex> lock(delivered.mutex);
+  require(delivered.page != nullptr, "the page must be delivered");
+  require(delivered.page->rotation_degrees == 270, "a 90 clockwise feed is undone by 270");
+  require(delivered.page->width == 4 && delivered.page->height == 2,
+          "the delivered page is the upright raster's size");
+  require(delivered.page->lines.size() == 5 && delivered.page->lines.front().text == "upright",
+          "the delivered lines are the upright read");
+  require(!delivered.page->preview_png.empty(), "the preview is captured");
+  const cv::Mat preview = cv::imdecode(delivered.page->preview_png, cv::IMREAD_UNCHANGED);
+  require(preview.cols == 4 && preview.rows == 2, "the preview is the upright raster");
+
+  const auto metrics = scheduler.metrics();
+  require(metrics.pages_recognized == 1, "pages_recognized counts pages, not passes");
+  require(metrics.pages_rerecognized == 1, "one page was re-read");
+  require(metrics.rerecognition_passes == 2, "two extra passes were spent");
+  require(metrics.rotations_applied == std::array<uint64_t, 3>{0, 0, 1},
+          "the 270 degree turn is the one counted");
+}
+
+void verify_upside_down_scan_takes_one_extra_pass() {
+  MarkerRecognizer recognizer;
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 2, 2, 2, 1, 1, 1},
+      [](std::shared_ptr<const std::string>, bool, double) { return std::make_shared<TurnedSource>(180); });
+  Result result;
+  DeliveredPage delivered;
+  scheduler.submit(std::make_shared<const std::string>("memory"), false,
+                   capturing_callbacks(&result, &delivered));
+  wait_until_finished(&result);
+  require(!result.failure, "upside-down scan failed");
+  require(recognizer.calls.load() == 2, "an upside-down vote costs exactly one extra read");
+  std::lock_guard<std::mutex> lock(delivered.mutex);
+  require(delivered.page->rotation_degrees == 180 && delivered.page->lines.front().text == "upright",
+          "the half turn is kept");
+  const auto metrics = scheduler.metrics();
+  require(metrics.rotations_applied == std::array<uint64_t, 3>{0, 1, 0} &&
+              metrics.rerecognition_passes == 1,
+          "the 180 degree turn is counted once");
+}
+
+// A page with a digital text layer is never re-read, whatever its raster
+// looks like, and neither is any page when recovery is switched off.
+void verify_digital_layer_and_disabled_recovery_never_rerecognize() {
+  {
+    MarkerRecognizer recognizer;
+    grparse::PageScheduler scheduler(
+        recognizer, {2, 2, 2, 2, 1, 1, 1},
+        [](std::shared_ptr<const std::string>, bool, double) {
+          return std::make_shared<TurnedSource>(90, true);
+        });
+    Result result;
+    DeliveredPage delivered;
+    scheduler.submit(std::make_shared<const std::string>("memory"), true,
+                     capturing_callbacks(&result, &delivered));
+    wait_until_finished(&result);
+    require(!result.failure, "partial digital page failed");
+    require(recognizer.calls.load() == 1, "a page with a digital layer is read once");
+    std::lock_guard<std::mutex> lock(delivered.mutex);
+    require(delivered.page->rotation_degrees == 0, "no turn is applied over a digital layer");
+    require(delivered.page->source == grparse::OcrPage::Source::kMerged, "the layer still merges");
+    require(scheduler.metrics().pages_rerecognized == 0, "nothing counted as re-read");
+  }
+  {
+    MarkerRecognizer recognizer;
+    grparse::PageScheduler::Options options{2, 2, 2, 2, 1, 1, 1};
+    options.orientation.enabled = false;
+    grparse::PageScheduler scheduler(
+        recognizer, options,
+        [](std::shared_ptr<const std::string>, bool, double) { return std::make_shared<TurnedSource>(90); });
+    Result result;
+    DeliveredPage delivered;
+    scheduler.submit(std::make_shared<const std::string>("memory"), false,
+                     capturing_callbacks(&result, &delivered));
+    wait_until_finished(&result);
+    require(!result.failure, "recovery-off scan failed");
+    require(recognizer.calls.load() == 1, "disabled recovery reads once");
+    std::lock_guard<std::mutex> lock(delivered.mutex);
+    require(delivered.page->rotation_degrees == 0 && delivered.page->width == 2,
+            "disabled recovery delivers the page as fed");
+  }
+}
+
 int main() {
   try {
     verify_pipeline_and_metrics();
@@ -1120,6 +1305,9 @@ int main() {
     verify_delivery_cancellation_drains_queued_work();
     verify_page_credits_bound_a_document();
     verify_uncredited_document_survives_later_submissions();
+    verify_turned_scan_is_rerecognized_upright();
+    verify_upside_down_scan_takes_one_extra_pass();
+    verify_digital_layer_and_disabled_recovery_never_rerecognize();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
     std::println(stderr, "page-scheduler-test: {}", error.what());
