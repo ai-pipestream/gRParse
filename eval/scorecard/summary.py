@@ -165,6 +165,32 @@ def _top_class(picture: dict[str, Any]) -> str:
     return ""
 
 
+def _derender_summary(picture: dict[str, Any]) -> dict[str, Any] | None:
+    """The chart table a VLM derendered onto a picture, when the picture carries
+    a GenerationSource (the chart derender leg's provenance). Office charts
+    carry their tabular annotation from the live model with no generation
+    source, so they never get this block; their table is a bound TableItem
+    already summarized under ``tables``. The title is the one field a repeat
+    run may legitimately rephrase; ``stability`` treats it as descriptive."""
+    generation = next((s.get("generation") for s in picture.get("source", []) or [] if s.get("generation")), None)
+    if generation is None:
+        return None
+    for annotation in picture.get("annotations", []) or []:
+        tabular = annotation.get("tabular_chart")
+        if not tabular:
+            continue
+        data = tabular.get("chart_data", {}) or {}
+        cells = _table_cells({"data": data})
+        return {
+            "model": generation.get("model", ""),
+            "title": normalize_text(tabular.get("title"))[:SHORT_TEXT],
+            "rows": int(data.get("num_rows", 0)) or max((c[0] + c[2] for c in cells), default=0),
+            "cols": int(data.get("num_cols", 0)) or max((c[1] + c[3] for c in cells), default=0),
+            "cells": cells,
+        }
+    return None
+
+
 def _collectors(item: dict[str, Any]) -> list[str]:
     names = set()
     for source in item.get("source", []) or []:
@@ -187,7 +213,8 @@ def _picture_summary(node: Node, arena: dict[str, Node], preceding_heading: str,
                      parent_label: str) -> dict[str, Any]:
     item = node.item
     prov = item.get("prov", []) or []
-    return {
+    derender = _derender_summary(item)
+    return ({"derender": derender} if derender else {}) | {
         "ref": node.ref, "parent": (item.get("parent") or {}).get("ref", ""),
         "parent_label": parent_label, "parent_name": group_name,
         "preceding_heading": preceding_heading[:SHORT_TEXT],

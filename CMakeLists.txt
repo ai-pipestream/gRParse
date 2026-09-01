@@ -701,3 +701,48 @@ if(BUILD_TESTING)
   set_tests_properties(${GRPARSE_DRIFT_TESTS} PROPERTIES
     TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
 endif()
+
+# ---- chart derender leg: grpc-enrich contract, module, and chart tests ------
+# Appended as one block. The enrich contract is vendored like every collector
+# contract (collectors/README.md) and compiled by its own protoc step so the
+# staged document.proto it imports is the one generated above; the stubs join
+# grparse_proto, the leg joins grparse_core, and the tests join the grparse
+# suite with the same timeout and label as the list above.
+file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/enrich/v1")
+configure_file(collectors/enrich_service.proto
+  "${STAGED_PROTO_DIR}/ai/pipestream/enrich/v1/enrich_service.proto" COPYONLY)
+set(ENRICH_PROTO "${STAGED_PROTO_DIR}/ai/pipestream/enrich/v1/enrich_service.proto")
+set(ENRICH_GENERATED
+  "${GENERATED_DIR}/ai/pipestream/enrich/v1/enrich_service.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/enrich/v1/enrich_service.pb.h"
+  "${GENERATED_DIR}/ai/pipestream/enrich/v1/enrich_service.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/enrich/v1/enrich_service.grpc.pb.h")
+add_custom_command(
+  OUTPUT ${ENRICH_GENERATED}
+  COMMAND $<TARGET_FILE:protoc>
+  ARGS --proto_path=${STAGED_PROTO_DIR}
+       --proto_path=${protobuf_SOURCE_DIR}/src
+       --cpp_out=${GENERATED_DIR}
+       --grpc_out=${GENERATED_DIR}
+       --plugin=protoc-gen-grpc=$<TARGET_FILE:grpc_cpp_plugin>
+       ${ENRICH_PROTO}
+  DEPENDS collectors/enrich_service.proto document.proto
+          "${GENERATED_DIR}/ai/pipestream/document/v1/document.pb.h"
+          protoc grpc_cpp_plugin
+  VERBATIM)
+target_sources(grparse_proto PRIVATE
+  "${GENERATED_DIR}/ai/pipestream/enrich/v1/enrich_service.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/enrich/v1/enrich_service.grpc.pb.cc")
+target_sources(grparse_core PRIVATE src/chart_derender.cpp)
+if(BUILD_TESTING)
+  set(GRPARSE_CHART_TESTS chart-composite-test chart-derender-test)
+  foreach(test_name IN LISTS GRPARSE_CHART_TESTS)
+    string(REPLACE "-" "_" test_source "${test_name}")
+    add_executable(${test_name} "tests/${test_source}.cpp")
+    target_link_libraries(${test_name} PRIVATE grparse_core grparse_flags)
+    add_test(NAME ${test_name} COMMAND ${test_name})
+  endforeach()
+  add_dependencies(grparse-tests ${GRPARSE_CHART_TESTS})
+  set_tests_properties(${GRPARSE_CHART_TESTS} PROPERTIES
+    TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
+endif()

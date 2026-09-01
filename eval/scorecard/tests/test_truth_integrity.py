@@ -113,17 +113,32 @@ def test_only_the_first_heading_may_be_a_title() -> None:
     assert not problems, "\n  ".join(problems)
 
 
-def test_figure_anchors_reference_an_anchor_the_file_lists() -> None:
+def _listed_texts(value: object, out: list[str]) -> None:
+    """Every string the truth file lists, wherever it sits, except figure placement snippets."""
+    if isinstance(value, str):
+        out.append(value)
+    elif isinstance(value, list):
+        for item in value:
+            _listed_texts(item, out)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            if key != "after":
+                _listed_texts(item, out)
+
+
+def test_figure_anchors_reference_text_the_file_lists() -> None:
     problems: list[str] = []
     for path in _truth_files():
         truth = _load(path)
-        anchors = set(truth.get("anchors", []))
+        texts: list[str] = []
+        _listed_texts({k: v for k, v in truth.items() if k not in ("doc_id", "source", "notes")}, texts)
         for index, figure in enumerate(truth.get("figures", [])):
-            if figure["after"] not in anchors:
-                problems.append(f"{path.name}: figures[{index}].after {figure['after']!r} is not one of the anchors")
+            snippet = figure["after"]
+            if not any(snippet in text for text in texts):
+                problems.append(f"{path.name}: figures[{index}].after {snippet!r} matches no anchor, heading or cell")
     assert not problems, (
-        "a figure is placed relative to a located anchor, so its 'after' has to be an anchor:\n  "
-        + "\n  ".join(problems)
+        "a figure is placed relative to text the file itself locates (an anchor, heading or cell), "
+        "so its 'after' has to be a snippet of one of them:\n  " + "\n  ".join(problems)
     )
 
 

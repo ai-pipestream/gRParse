@@ -1,0 +1,255 @@
+{
+ "doc_id": "pptx-charts",
+ "source": "the generator eval/scorecard/fixtures/pptx_charts.py and its data module chart_data.py, cross-checked with unzip -p ppt/slides/slide*.xml and ppt/charts/chart*.xml",
+ "notes": [
+  "Four slides: title slide (level 0 title, one subtitle paragraph), then three title-only slides (level 1) each holding one chart: a two-series clustered column chart titled 'Revenue by region' with axis titles Region and kUSD, a pie chart titled 'Share by segment', and a line chart with no chart title but axis titles Month and Degrees C.",
+  "Each chart is expected as one CHART picture under its slide group after the slide title, with its data bound as a table (label row, then one row per category) and, when the chart has a title, a caption carrying it.",
+  "Chart tables: the corner cell is the category axis title when the chart states one (Region, Month); the pie has none and its corner is not asserted. Series labels head the value columns.",
+  "Anchors: the subtitle, the two chart captions and the last slide title; slide titles double as group names, so the figure anchors name the slide group.",
+  "Numbers display as written: 120, 135.5, 70.25, 97."
+ ],
+ "headings": [
+  {
+   "text": "Charts Fixture Deck",
+   "level": 0
+  },
+  {
+   "text": "Quarterly Revenue by Region",
+   "level": 1
+  },
+  {
+   "text": "Market Share",
+   "level": 1
+  },
+  {
+   "text": "Temperature Trend",
+   "level": 1
+  }
+ ],
+ "anchors": [
+  "Three chart slides",
+  "Revenue by region",
+  "Share by segment",
+  "Temperature Trend"
+ ],
+ "tables": [
+  {
+   "table": "Revenue chart",
+   "cells": [
+    [
+     0,
+     0,
+     "Region"
+    ],
+    [
+     0,
+     1,
+     "Q1"
+    ],
+    [
+     0,
+     2,
+     "Q2"
+    ],
+    [
+     1,
+     0,
+     "North"
+    ],
+    [
+     1,
+     1,
+     "120"
+    ],
+    [
+     1,
+     2,
+     "135.5"
+    ],
+    [
+     2,
+     0,
+     "South"
+    ],
+    [
+     2,
+     1,
+     "80"
+    ],
+    [
+     2,
+     2,
+     "97"
+    ],
+    [
+     3,
+     0,
+     "East"
+    ],
+    [
+     3,
+     1,
+     "143"
+    ],
+    [
+     3,
+     2,
+     "70.25"
+    ],
+    [
+     4,
+     0,
+     "West"
+    ],
+    [
+     4,
+     1,
+     "88"
+    ],
+    [
+     4,
+     2,
+     "101"
+    ]
+   ]
+  },
+  {
+   "table": "Share chart",
+   "cells": [
+    [
+     0,
+     1,
+     "Share"
+    ],
+    [
+     1,
+     0,
+     "Alpha"
+    ],
+    [
+     1,
+     1,
+     "45"
+    ],
+    [
+     2,
+     0,
+     "Beta"
+    ],
+    [
+     2,
+     1,
+     "30"
+    ],
+    [
+     3,
+     0,
+     "Gamma"
+    ],
+    [
+     3,
+     1,
+     "15"
+    ],
+    [
+     4,
+     0,
+     "Delta"
+    ],
+    [
+     4,
+     1,
+     "10"
+    ]
+   ]
+  },
+  {
+   "table": "Temperature chart",
+   "cells": [
+    [
+     0,
+     0,
+     "Month"
+    ],
+    [
+     0,
+     1,
+     "Celsius"
+    ],
+    [
+     1,
+     0,
+     "Jan"
+    ],
+    [
+     1,
+     1,
+     "3.5"
+    ],
+    [
+     2,
+     0,
+     "Feb"
+    ],
+    [
+     2,
+     1,
+     "4.1"
+    ],
+    [
+     3,
+     0,
+     "Mar"
+    ],
+    [
+     3,
+     1,
+     "7.8"
+    ],
+    [
+     4,
+     0,
+     "Apr"
+    ],
+    [
+     4,
+     1,
+     "11.2"
+    ],
+    [
+     5,
+     0,
+     "May"
+    ],
+    [
+     5,
+     1,
+     "15.6"
+    ],
+    [
+     6,
+     0,
+     "Jun"
+    ],
+    [
+     6,
+     1,
+     "18.9"
+    ]
+   ]
+  }
+ ],
+ "figures": [
+  {
+   "after": "Quarterly Revenue by Region",
+   "caption": "Revenue by region"
+  },
+  {
+   "after": "Market Share",
+   "caption": "Share by segment"
+  },
+  {
+   "after": "Temperature Trend"
+  }
+ ]
+}

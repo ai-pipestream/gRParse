@@ -19,3 +19,7 @@ uv run --with python-docx python "$here/docx_figures.py" "$out_dir"
 uv run --with openpyxl python "$here/xlsx_sixty_sheets.py" "$out_dir"
 uv run --with python-docx python "$here/docx_form.py" "$out_dir"
 bash "$here/rotated_scan.sh" "$out_dir"
+# Chart fixtures (chart_data.py is the shared data set): the workbook also
+# paints its charts to PNG for eval/chart_derender, so matplotlib rides along.
+uv run --with openpyxl --with matplotlib python "$here/xlsx_charts.py" "$out_dir" "$here/../../chart_derender/renders"
+uv run --with python-pptx python "$here/pptx_charts.py" "$out_dir"

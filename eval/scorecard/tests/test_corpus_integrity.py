@@ -67,7 +67,13 @@ def test_no_orphan_corpus_files() -> None:
 def test_manifest_document_ids_are_unique_and_complete() -> None:
     ids = [doc.doc_id for doc in load_manifest()]
     assert len(ids) == len(set(ids)), "duplicate document ids in corpus.json"
-    assert len(ids) == 34, f"the corpus is 34 documents; found {len(ids)}"
+    assert len(ids) >= 34, f"the corpus had 34 documents; found {len(ids)} (removals are deliberate, say why)"
+    pinned = set(_fixture_manifest())
+    referenced = {doc.path.name for doc in load_manifest() if not doc.external}
+    assert referenced == pinned, (
+        f"corpus.json and fixtures/manifest.json disagree: only in corpus {sorted(referenced - pinned)}, "
+        f"only in manifest {sorted(pinned - referenced)}; run fixtures/write_manifest.py"
+    )
 
 
 def test_fixture_digests_match_the_pinned_manifest() -> None:

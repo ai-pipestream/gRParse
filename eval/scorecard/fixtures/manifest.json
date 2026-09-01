@@ -10,6 +10,14 @@
    "sha256": "421607461220a0fb06a9a8fb70f3d410e97ee2a9ce3b484d594b3a9d169ed583",
    "bytes": 305
   },
+  "charts.pptx": {
+   "sha256": "99f798ba39ee01567d4af061ab7001dc278529a580dfbe5e5437ab31b50ebdf0",
+   "bytes": 49793
+  },
+  "charts.xlsx": {
+   "sha256": "8b7d704d72cec25ac37b0a3fb2d76b794d13fd2f45a3885ecea288ab2cc708ff",
+   "bytes": 10894
+  },
   "cover-first.epub": {
    "sha256": "bf52a4d7618d086fd7ec9326807343d0d3b39f5c516623d48c2e651301e5a28c",
    "bytes": 1762

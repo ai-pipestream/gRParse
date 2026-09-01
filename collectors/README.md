@@ -15,6 +15,7 @@ re-copy the file and rebuild.
 | `lolhtml_types.proto`, `lolhtml_service.proto` | grpc-lol-html `proto/lolhtml/v1/` (`types.proto` is renamed here to stay unambiguous; it stages back to `lolhtml/v1/types.proto`) |
 | `warc.proto`, `warc_service.proto` | fastwarc-grpc `proto/fastwarc/v1/` (stages back to `fastwarc/v1/`) |
 | `pdf_types.proto`, `pdf_service.proto` | grpc-pdf-inspector `proto/ai/pipestream/pdf/v1/` (`types.proto` is renamed here to stay unambiguous; it stages back to `ai/pipestream/pdf/v1/types.proto`) |
+| `enrich_service.proto` | grpc-enrich `proto/ai/pipestream/enrich/v1/enrich_service.proto` (the chart derender leg, `GRPARSE_ENRICH_TARGET`; an enrichment peer rather than a collector, dialed after the merge) |
 
 A copy that is not byte-identical is worse than no copy: the tests dial fakes
 built from these same generated stubs, so a skewed field number agrees with
