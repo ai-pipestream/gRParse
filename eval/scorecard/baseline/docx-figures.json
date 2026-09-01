@@ -36,9 +36,9 @@
  ],
  "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
  "counts": {
-  "body_items": 22,
+  "body_items": 20,
   "by_label": {
-   "picture": 4,
+   "picture": 2,
    "section_header": 6,
    "text": 11,
    "title": 1
@@ -50,7 +50,7 @@
   "key_value_items": 0,
   "orphans": 0,
   "pages": 2,
-  "pictures": 4,
+  "pictures": 2,
   "reading_chars": 1293,
   "tables": 0,
   "texts": 18
@@ -98,10 +98,10 @@
   }
  ],
  "markdown": {
-  "chars": 1427,
+  "chars": 1395,
   "headings": 7,
   "images": 0,
-  "sha256": "7a1e41614055ee3372e27347ec8cace198ecd83d6625fb44be2843e859b5ea4b",
+  "sha256": "c98867768dabc23ff9739dcf61e2f79ef0631709d9dfce083d715c5a62ec0165",
   "table_rows": 0
  },
  "origin_mimetype": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -141,34 +141,6 @@
    "parent_name": "",
    "preceding_heading": "3. Conclusion",
    "ref": "#/pictures/1"
-  },
-  {
-   "caption": "",
-   "classification": "other",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 2,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "3. Conclusion",
-   "ref": "#/pictures/2"
-  },
-  {
-   "caption": "",
-   "classification": "other",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 1,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "3. Conclusion",
-   "ref": "#/pictures/3"
   }
  ],
  "reading": [
@@ -317,20 +289,6 @@
    "key": "",
    "label": "picture",
    "ref": "#/pictures/1",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/2",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/3",
    "text": ""
   }
  ],

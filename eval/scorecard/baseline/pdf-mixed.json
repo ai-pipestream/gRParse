@@ -20,24 +20,38 @@
  ],
  "content_type": "application/pdf",
  "counts": {
-  "body_items": 0,
-  "by_label": {},
+  "body_items": 3,
+  "by_label": {
+   "text": 3
+  },
   "form_items": 0,
-  "furniture_items": 3,
+  "furniture_items": 0,
   "groups": 0,
   "headings": 0,
   "key_value_items": 0,
   "orphans": 0,
   "pages": 6,
   "pictures": 0,
-  "reading_chars": 0,
+  "reading_chars": 650,
   "tables": 0,
   "texts": 3
  },
  "doc_id": "pdf-mixed",
  "filename": "mixed.pdf",
  "format": "pdf",
- "furniture_reading": [
+ "furniture_reading": [],
+ "groups": [],
+ "headings": [],
+ "markdown": {
+  "chars": 757,
+  "headings": 0,
+  "images": 0,
+  "sha256": "4500d6c7ab33039967b7d13f916ebf17734f24d1130ca8f032c4a967abc49119",
+  "table_rows": 0
+ },
+ "origin_mimetype": "application/pdf",
+ "pictures": [],
+ "reading": [
   {
    "hash": "1aabe098d2f6272f",
    "key": "the mixed document page 1 lorem",
@@ -60,23 +74,9 @@
    "text": "the mixed document, page 5 lorem ipsum dolor sit amet lorem "
   }
  ],
- "groups": [],
- "headings": [],
- "markdown": {
-  "chars": 103,
-  "headings": 0,
-  "images": 0,
-  "sha256": "24e3ac9c2ee01ed2ff6878e2933a19ad47952c13067b14a48a6800013bba05fd",
-  "table_rows": 0
- },
- "origin_mimetype": "application/pdf",
- "pictures": [],
- "reading": [],
- "reading_text": "",
+ "reading_text": "the mixed document, page 1 lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit ame t lorem ipsum dolor sit amet\nthe mixed document, page 2 lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit ame t lorem ipsum dolor sit amet\nthe mixed document, page 5 lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit ame t lorem ipsum dolor sit amet",
  "schema": 1,
  "status": "CONVERSION_STATUS_SUCCESS",
  "tables": [],
- "warnings": [
-  "no-reading-text"
- ]
+ "warnings": []
 }

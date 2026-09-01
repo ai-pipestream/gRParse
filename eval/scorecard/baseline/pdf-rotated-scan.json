@@ -59,12 +59,12 @@
  "groups": [],
  "headings": [
   {
-   "level": 3,
+   "level": 1,
    "ref": "#/texts/5",
    "text": "1. West Egg"
   },
   {
-   "level": 2,
+   "level": 1,
    "ref": "#/texts/13",
    "text": "F. Scott Fitzgerald (1925). Public domain text from the Project Gutenberg transcription."
   },
@@ -75,10 +75,10 @@
   }
  ],
  "markdown": {
-  "chars": 4248,
+  "chars": 4245,
   "headings": 3,
   "images": 0,
-  "sha256": "880f8f653488e477ec03a6edee42f137ad44f222765f1487f477f8af3f144246",
+  "sha256": "2f55904d64272a54874950489f7f4956a1b80a55919749da44d6ab30ed39404d",
   "table_rows": 0
  },
  "origin_mimetype": "application/pdf",
@@ -116,7 +116,7 @@
    "hash": "38371e711cd7b6d8",
    "key": "1. west egg",
    "label": "section_header",
-   "level": 3,
+   "level": 1,
    "ref": "#/texts/5",
    "text": "1. West Egg"
   },
@@ -173,7 +173,7 @@
    "hash": "9523c815c48ce112",
    "key": "f scott fitzgerald 1925 public domain",
    "label": "section_header",
-   "level": 2,
+   "level": 1,
    "ref": "#/texts/13",
    "text": "F. Scott Fitzgerald (1925). Public domain text from the Proj"
   },

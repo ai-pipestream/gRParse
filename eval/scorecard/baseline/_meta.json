@@ -37,7 +37,7 @@
  ],
  "gates": {
   "docx-figures": {
-   "latency_ms": 316.9,
+   "latency_ms": 297.3,
    "stable": false,
    "truth": {
     "truth_anchors_found": 1.0,
@@ -59,11 +59,11 @@
    }
   },
   "docx-sample3": {
-   "latency_ms": 393.8,
+   "latency_ms": 396.5,
    "stable": false,
    "truth": {
     "truth_anchors_found": 1.0,
-    "truth_figures": 0.0,
+    "truth_figures": 1.0,
     "truth_heading_levels": 1.0,
     "truth_headings": 1.0,
     "truth_order": 1.0,
@@ -137,27 +137,27 @@
    }
   },
   "pdf-diffusion-paper": {
-   "latency_ms": 422.5,
+   "latency_ms": 422.8,
    "stable": true,
    "truth": {
     "truth_anchors_found": 1.0,
     "truth_figures": 0.3333,
-    "truth_heading_levels": 0.7,
-    "truth_headings": 0.6897,
+    "truth_heading_levels": 1.0,
+    "truth_headings": 0.9412,
     "truth_order": 1.0,
     "truth_table_cells": 0.9268
    }
   },
   "pdf-dummy": {
-   "latency_ms": 8.3,
+   "latency_ms": 8.1,
    "stable": true
   },
   "pdf-form": {
-   "latency_ms": 10.1,
+   "latency_ms": 10.3,
    "stable": true,
    "truth": {
     "truth_anchors_found": 1.0,
-    "truth_heading_levels": 0.5,
+    "truth_heading_levels": 1.0,
     "truth_headings": 1.0,
     "truth_order": 1.0,
     "truth_table_cells": 0.0645
@@ -172,15 +172,15 @@
    "stable": true
   },
   "pdf-mixed": {
-   "latency_ms": 155.3,
+   "latency_ms": 176.9,
    "stable": true
   },
   "pdf-rotated-scan": {
-   "latency_ms": 1563.8,
+   "latency_ms": 1543.6,
    "stable": true,
    "truth": {
     "truth_anchors_found": 0.6,
-    "truth_heading_levels": 0.0,
+    "truth_heading_levels": 0.5,
     "truth_headings": 0.8,
     "truth_order": 0.3333
    }
@@ -190,12 +190,12 @@
    "stable": true
   },
   "pdf-two-column": {
-   "latency_ms": 82.0,
+   "latency_ms": 77.8,
    "stable": true,
    "truth": {
     "truth_anchors_found": 1.0,
-    "truth_heading_levels": 0.8333,
-    "truth_headings": 0.3871,
+    "truth_heading_levels": 1.0,
+    "truth_headings": 1.0,
     "truth_order": 0.9778
    }
   },
@@ -384,6 +384,129 @@
    "reason": "floors: truth anchors reselected without em-dash openings",
    "service": "gRParse grparse-0.1.0-cuda",
    "timestamp": "2026-09-01T02:23:20+00:00"
+  },
+  {
+   "documents": [
+    "pdf-diffusion-paper"
+   ],
+   "gate_changes": [
+    {
+     "after": 0.9412,
+     "before": 0.6897,
+     "doc_id": "pdf-diffusion-paper",
+     "metric": "truth_headings",
+     "reason": "raised"
+    },
+    {
+     "after": 1.0,
+     "before": 0.7,
+     "doc_id": "pdf-diffusion-paper",
+     "metric": "truth_heading_levels",
+     "reason": "raised"
+    }
+   ],
+   "partial": true,
+   "reason": "gRParse cb3af81: title lines merged into a TitleItem, run-in subsection headings split, levels from numbering, floats reordered by geometry",
+   "service": "gRParse grparse-0.1.0-cuda",
+   "timestamp": "2026-09-01T02:53:06+00:00"
+  },
+  {
+   "documents": [
+    "pdf-two-column"
+   ],
+   "gate_changes": [
+    {
+     "after": 1.0,
+     "before": 0.3871,
+     "doc_id": "pdf-two-column",
+     "metric": "truth_headings",
+     "reason": "raised"
+    },
+    {
+     "after": 1.0,
+     "before": 0.8333,
+     "doc_id": "pdf-two-column",
+     "metric": "truth_heading_levels",
+     "reason": "raised"
+    }
+   ],
+   "partial": true,
+   "reason": "gRParse cb3af81: quoted and sentence lines are no longer headings, title promoted",
+   "service": "gRParse grparse-0.1.0-cuda",
+   "timestamp": "2026-09-01T02:53:06+00:00"
+  },
+  {
+   "documents": [
+    "pdf-form"
+   ],
+   "gate_changes": [
+    {
+     "after": 1.0,
+     "before": 0.5,
+     "doc_id": "pdf-form",
+     "metric": "truth_heading_levels",
+     "reason": "raised"
+    }
+   ],
+   "partial": true,
+   "reason": "gRParse cb3af81: title promoted, checkbox and label rows split into their own items",
+   "service": "gRParse grparse-0.1.0-cuda",
+   "timestamp": "2026-09-01T02:53:06+00:00"
+  },
+  {
+   "documents": [
+    "pdf-mixed"
+   ],
+   "partial": true,
+   "reason": "gRParse cb3af81: page paragraphs are no longer demoted as running furniture",
+   "service": "gRParse grparse-0.1.0-cuda",
+   "timestamp": "2026-09-01T02:53:07+00:00"
+  },
+  {
+   "documents": [
+    "docx-sample3",
+    "docx-figures"
+   ],
+   "gate_changes": [
+    {
+     "after": 1.0,
+     "before": 0.0,
+     "doc_id": "docx-sample3",
+     "metric": "truth_figures",
+     "reason": "raised"
+    }
+   ],
+   "partial": true,
+   "reason": "gRParse cb3af81: CV pictures anchored beside their paragraph and deduplicated against the collector's pictures",
+   "service": "gRParse grparse-0.1.0-cuda",
+   "timestamp": "2026-09-01T02:53:08+00:00"
+  },
+  {
+   "documents": [
+    "pdf-dummy"
+   ],
+   "partial": true,
+   "reason": "gRParse cb3af81: a document's only heading is level 1",
+   "service": "gRParse grparse-0.1.0-cuda",
+   "timestamp": "2026-09-01T02:53:08+00:00"
+  },
+  {
+   "documents": [
+    "pdf-rotated-scan"
+   ],
+   "gate_changes": [
+    {
+     "after": 0.5,
+     "before": 0.0,
+     "doc_id": "pdf-rotated-scan",
+     "metric": "truth_heading_levels",
+     "reason": "raised"
+    }
+   ],
+   "partial": true,
+   "reason": "gRParse cb3af81: an OCR fragment survives the furniture block rule and the byline is no longer read as enumerated",
+   "service": "gRParse grparse-0.1.0-cuda",
+   "timestamp": "2026-09-01T02:53:09+00:00"
   }
  ],
  "manifest": "eval/scorecard/corpus.json",

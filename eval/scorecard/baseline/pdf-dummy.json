@@ -56,16 +56,16 @@
  "groups": [],
  "headings": [
   {
-   "level": 2,
+   "level": 1,
    "ref": "#/texts/0",
    "text": "Dummy PDF file"
   }
  ],
  "markdown": {
-  "chars": 18,
+  "chars": 17,
   "headings": 1,
   "images": 0,
-  "sha256": "5df3f61b88c4626d07bfec4185297c1b007af03f883e5d0c4a6328a7beb687a9",
+  "sha256": "a054060abf5bea5d2cfc26ea549920a43caccf40f836bc211aaede0da402c726",
   "table_rows": 0
  },
  "origin_mimetype": "application/pdf",
@@ -73,8 +73,9 @@
  "reading": [
   {
    "hash": "41417fb420a737c8",
+   "key": "dummy pdf file",
    "label": "section_header",
-   "level": 2,
+   "level": 1,
    "ref": "#/texts/0",
    "text": "Dummy PDF file"
   }

@@ -113,11 +113,39 @@
   "chars": 3373,
   "headings": 9,
   "images": 0,
-  "sha256": "9ea3f0dd93f05fe02bff667712aefaec56b20a8788c094f60dce5d099493fe7e",
+  "sha256": "8096169183e79e151577fa569c3dadfab2857adfa740a33d47c8c3c3fdfe5e76",
   "table_rows": 15
  },
  "origin_mimetype": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
  "pictures": [
+  {
+   "caption": "",
+   "classification": "engineering_drawing",
+   "collectors": [
+    "grparse"
+   ],
+   "image": null,
+   "page": 1,
+   "parent": "#/body",
+   "parent_label": "body",
+   "parent_name": "",
+   "preceding_heading": "Images",
+   "ref": "#/pictures/2"
+  },
+  {
+   "caption": "",
+   "classification": "pie_chart",
+   "collectors": [
+    "grparse"
+   ],
+   "image": null,
+   "page": 2,
+   "parent": "#/body",
+   "parent_label": "body",
+   "parent_name": "",
+   "preceding_heading": "Images",
+   "ref": "#/pictures/3"
+  },
   {
    "caption": "",
    "classification": "",
@@ -153,39 +181,12 @@
    "parent_name": "",
    "preceding_heading": "Columns",
    "ref": "#/pictures/1"
-  },
-  {
-   "caption": "",
-   "classification": "engineering_drawing",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 1,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "Columns",
-   "ref": "#/pictures/2"
-  },
-  {
-   "caption": "",
-   "classification": "pie_chart",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 2,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "Columns",
-   "ref": "#/pictures/3"
   }
  ],
  "reading": [
   {
    "hash": "3b13284502ee8d00",
+   "key": "sample document",
    "label": "section_header",
    "level": 1,
    "ref": "#/texts/0",
@@ -193,12 +194,14 @@
   },
   {
    "hash": "1658c7ee6e59e59d",
+   "key": "this document was created using accessibility",
    "label": "text",
    "ref": "#/texts/1",
    "text": "This document was created using accessibility techniques for"
   },
   {
    "hash": "a3e7821cf681efe3",
+   "key": "headings",
    "label": "section_header",
    "level": 2,
    "ref": "#/texts/2",
@@ -206,12 +209,14 @@
   },
   {
    "hash": "7c0ffa31c44e169b",
+   "key": "there are eight section headings in",
    "label": "text",
    "ref": "#/texts/3",
    "text": "There are eight section headings in this document. At the be"
   },
   {
    "hash": "308d5a0903f2c571",
+   "key": "lists",
    "label": "section_header",
    "level": 2,
    "ref": "#/texts/4",
@@ -219,60 +224,70 @@
   },
   {
    "hash": "1736bc93de746d51",
+   "key": "the following outline of the sections",
    "label": "text",
    "ref": "#/texts/5",
    "text": "The following outline of the sections of this document is an"
   },
   {
    "hash": "a3e7821cf681efe3",
+   "key": "headings",
    "label": "list_item",
    "ref": "#/texts/6",
    "text": "Headings"
   },
   {
    "hash": "308d5a0903f2c571",
+   "key": "lists",
    "label": "list_item",
    "ref": "#/texts/7",
    "text": "Lists"
   },
   {
    "hash": "9024c197d84940e4",
+   "key": "links",
    "label": "list_item",
    "ref": "#/texts/8",
    "text": "Links"
   },
   {
    "hash": "be7e2f20129365c2",
+   "key": "images",
    "label": "list_item",
    "ref": "#/texts/9",
    "text": "Images"
   },
   {
    "hash": "e3fe2a3fe52c9c35",
+   "key": "tables",
    "label": "list_item",
    "ref": "#/texts/10",
    "text": "Tables"
   },
   {
    "hash": "194205fc1dae5867",
+   "key": "simple tables",
    "label": "list_item",
    "ref": "#/texts/11",
    "text": "Simple Tables"
   },
   {
    "hash": "f9787b17d5af5d36",
+   "key": "complex tables",
    "label": "list_item",
    "ref": "#/texts/12",
    "text": "Complex Tables"
   },
   {
    "hash": "53aade77cd69a77b",
+   "key": "columns",
    "label": "list_item",
    "ref": "#/texts/13",
    "text": "Columns"
   },
   {
    "hash": "9024c197d84940e4",
+   "key": "links",
    "label": "section_header",
    "level": 2,
    "ref": "#/texts/14",
@@ -280,18 +295,21 @@
   },
   {
    "hash": "e76c54e2bfafdb63",
+   "key": "in web documents links can point",
    "label": "text",
    "ref": "#/texts/15",
    "text": "In web documents, links can point different locations on the"
   },
   {
    "hash": "8e8936fd2a064ffc",
+   "key": "top of this page sample document",
    "label": "text",
    "ref": "#/texts/16",
    "text": "Top of this Page Sample Document Sample Document (docx)"
   },
   {
    "hash": "be7e2f20129365c2",
+   "key": "images",
    "label": "section_header",
    "level": 2,
    "ref": "#/texts/17",
@@ -299,36 +317,56 @@
   },
   {
    "hash": "59677d4b75949849",
+   "key": "documents may contain images for example",
    "label": "text",
    "ref": "#/texts/18",
    "text": "Documents may contain images. For example, there is an image"
   },
   {
+   "hash": "",
+   "key": "",
+   "label": "picture",
+   "ref": "#/pictures/2",
+   "text": ""
+  },
+  {
    "hash": "72534e08763602fd",
+   "key": "alt text should communicate what an",
    "label": "text",
    "ref": "#/texts/19",
    "text": "Alt text should communicate what an image means, not how it "
   },
   {
    "hash": "e3b0c44298fc1c14",
+   "key": "",
    "label": "text",
    "ref": "#/texts/20",
    "text": ""
   },
   {
    "hash": "46812db81bf07dd2",
+   "key": "some images such as charts or",
    "label": "text",
    "ref": "#/texts/21",
    "text": "Some images, such as charts or graphs, require long descript"
   },
   {
+   "hash": "",
+   "key": "",
+   "label": "picture",
+   "ref": "#/pictures/3",
+   "text": ""
+  },
+  {
    "hash": "e3b0c44298fc1c14",
+   "key": "",
    "label": "text",
    "ref": "#/texts/22",
    "text": ""
   },
   {
    "hash": "e3fe2a3fe52c9c35",
+   "key": "tables",
    "label": "section_header",
    "level": 2,
    "ref": "#/texts/23",
@@ -336,6 +374,7 @@
   },
   {
    "hash": "194205fc1dae5867",
+   "key": "simple tables",
    "label": "section_header",
    "level": 3,
    "ref": "#/texts/24",
@@ -343,24 +382,28 @@
   },
   {
    "hash": "5ed9848eecf337c4",
+   "key": "simple tables have a uniform number",
    "label": "text",
    "ref": "#/texts/25",
    "text": "Simple tables have a uniform number of columns and rows, wit"
   },
   {
    "hash": "4bb32cbfa92acb1c",
+   "key": "6x3",
    "label": "table",
    "ref": "#/tables/0",
    "text": "6x3"
   },
   {
    "hash": "e3b0c44298fc1c14",
+   "key": "",
    "label": "text",
    "ref": "#/texts/26",
    "text": ""
   },
   {
    "hash": "f9787b17d5af5d36",
+   "key": "complex tables",
    "label": "section_header",
    "level": 3,
    "ref": "#/texts/27",
@@ -368,24 +411,28 @@
   },
   {
    "hash": "32f224bf3ae4ed85",
+   "key": "the following is a complex table",
    "label": "text",
    "ref": "#/texts/28",
    "text": "The following is a complex table, using merged cells as head"
   },
   {
    "hash": "54c3954f47638fc6",
+   "key": "7x3",
    "label": "table",
    "ref": "#/tables/1",
    "text": "7x3"
   },
   {
    "hash": "e3b0c44298fc1c14",
+   "key": "",
    "label": "text",
    "ref": "#/texts/29",
    "text": ""
   },
   {
    "hash": "53aade77cd69a77b",
+   "key": "columns",
    "label": "section_header",
    "level": 2,
    "ref": "#/texts/30",
@@ -393,38 +440,30 @@
   },
   {
    "hash": "612762f2f4373bd8",
+   "key": "this is an example of columns",
    "label": "text",
    "ref": "#/texts/31",
    "text": "This is an example of columns. With columns, the page is spl"
   },
   {
    "hash": "e97cce9db5ed9a29",
+   "key": "when columns are not created correctly",
    "label": "text",
    "ref": "#/texts/32",
    "text": "When columns are not created correctly, screen readers may r"
   },
   {
    "hash": "9bd151e32c7e17c2",
+   "key": "",
    "label": "picture",
    "ref": "#/pictures/0",
    "text": ""
   },
   {
    "hash": "3624f3b104bb8e00",
+   "key": "",
    "label": "picture",
    "ref": "#/pictures/1",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "label": "picture",
-   "ref": "#/pictures/2",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "label": "picture",
-   "ref": "#/pictures/3",
    "text": ""
   }
  ],
