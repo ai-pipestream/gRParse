@@ -33,8 +33,9 @@
  ],
  "content_type": "text/html",
  "counts": {
-  "body_items": 2,
+  "body_items": 3,
   "by_label": {
+   "picture": 1,
    "text": 2
   },
   "form_items": 0,
@@ -44,7 +45,7 @@
   "key_value_items": 0,
   "orphans": 0,
   "pages": 0,
-  "pictures": 0,
+  "pictures": 1,
   "reading_chars": 62,
   "tables": 0,
   "texts": 2
@@ -56,20 +57,45 @@
  "groups": [],
  "headings": [],
  "markdown": {
-  "chars": 72,
+  "chars": 88,
   "headings": 0,
   "images": 0,
-  "sha256": "bad9004960d9f2cdca5abc32d7c338dc62f88a19f8e2dc9f120a3bcd49e62965",
+  "sha256": "1a518917af4a56d622ce91deced0616c5c821826f112d4069da1d169b0a7b74c",
   "table_rows": 0
  },
  "origin_mimetype": "application/octet-stream",
- "pictures": [],
+ "pictures": [
+  {
+   "caption": "",
+   "classification": "",
+   "collectors": [
+    "markup"
+   ],
+   "image": {
+    "bytes": 164,
+    "mimetype": "image/svg+xml",
+    "sha256": "84732657fad1f19794f60d533740e135d72d2c36295cfd96d2f0e55c9f56366a"
+   },
+   "page": null,
+   "parent": "#/body",
+   "parent_label": "body",
+   "parent_name": "",
+   "preceding_heading": "",
+   "ref": "#/pictures/0"
+  }
+ ],
  "reading": [
   {
    "hash": "9bf4820269409821",
    "label": "text",
    "ref": "#/texts/0",
    "text": "HTML text."
+  },
+  {
+   "hash": "84732657fad1f197",
+   "label": "picture",
+   "ref": "#/pictures/0",
+   "text": ""
   },
   {
    "hash": "df83db883d7a2ddd",

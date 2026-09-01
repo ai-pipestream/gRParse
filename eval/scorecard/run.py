@@ -20,6 +20,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,7 @@ if str(EVAL_DIR) not in sys.path:
     sys.path.insert(0, str(EVAL_DIR))
 
 from scorecard.corpus import REPO, CorpusDocument, DEFAULT_MANIFEST, load_manifest, select  # noqa: E402
+from scorecard.meta import merge_meta  # noqa: E402
 from scorecard.report import write_report  # noqa: E402
 from scorecard.scoring import PASS, REGRESS, score_document  # noqa: E402
 from scorecard.summary import summarize  # noqa: E402
@@ -139,13 +141,17 @@ def main(argv: list[str]) -> int:
 
     wall = time.monotonic() - started
     if args.record:
-        write_json(args.baseline_dir / "_meta.json", {
+        meta_path = args.baseline_dir / "_meta.json"
+        existing = json.loads(meta_path.read_text()) if meta_path.is_file() else None
+        run_meta = {
             "service": f"{info.name} {info.version}", "target": info.target,
             "manifest": str(args.manifest.relative_to(REPO)) if args.manifest.is_relative_to(REPO) else str(args.manifest),
             "documents": [e["doc_id"] for e in entries if e["status"] == "recorded"],
             "skipped": {e["doc_id"]: e["reason"] for e in entries if e["status"] == "skipped"},
             "reason": args.reason,
-        })
+        }
+        timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        write_json(meta_path, merge_meta(existing, run_meta, partial=bool(args.only), timestamp=timestamp))
     report = {
         "label": args.label, "mode": "record" if args.record else "score", "target": info.target,
         "service": f"{info.name} {info.version}", "baseline_dir": str(args.baseline_dir),

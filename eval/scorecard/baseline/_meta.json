@@ -25,6 +25,49 @@
   "epub-great-gatsby",
   "pdf-diffusion-paper"
  ],
+ "history": [
+  {
+   "documents": [
+    "docx-sample3",
+    "xlsx-sample3",
+    "xlsx-temperature",
+    "xlsx-formula-issue",
+    "xlsx-rows-with-gaps",
+    "pptx-sample1",
+    "pdf-dummy",
+    "pdf-hello-text",
+    "html-cdata-svg",
+    "html-mathml-formula",
+    "html-entities",
+    "html-deep-nesting",
+    "md-streaming-markup",
+    "eml-plain-text",
+    "eml-multipart-attachments",
+    "xml-jats-article",
+    "xml-uspto-grant",
+    "epub-two-chapters",
+    "epub-cover-first",
+    "png-report-page",
+    "png-span-table",
+    "png-bar-chart",
+    "epub-great-gatsby",
+    "pdf-diffusion-paper"
+   ],
+   "partial": false,
+   "reason": "",
+   "service": "gRParse grparse-0.1.0-cuda",
+   "timestamp": "2026-09-01T00:20:07+00:00"
+  },
+  {
+   "documents": [
+    "html-cdata-svg"
+   ],
+   "partial": true,
+   "reason": "grpc-markup 8fce0e0 now projects an inline vector svg as a picture",
+   "service": "gRParse grparse-0.1.0-cuda",
+   "timestamp": "2026-09-01T00:25:23+00:00"
+  }
+ ],
  "manifest": "eval/scorecard/corpus.json",
  "reason": "",
  "service": "gRParse grparse-0.1.0-cuda",
