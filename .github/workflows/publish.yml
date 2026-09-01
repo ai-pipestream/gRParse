@@ -1,15 +1,21 @@
 name: Publish Image
 
-# Builds the full image (the build stage runs the test suite), boot-proofs the
-# runtime stage with scripts/smoke-test.sh, and only then pushes it to
-# docker.io/pipestreamai and our Forgejo container registry. Dispatch this
-# from Forgejo (git.rokkon.com), where the DOCKER_USER/DOCKER_TOKEN and
-# CICD_TOKEN org secrets live; on the GitHub mirror the secrets are absent and
-# a stray dispatch fails at login, pushing nothing.
+# Builds each image variant (the build stage runs the test suite), boot-proofs
+# the runtime stage with scripts/smoke-test.sh, and only then pushes it to
+# docker.io/pipestreamai. Every push to main republishes the :latest tags; a
+# manual dispatch with a version input also tags that version. Three legs:
+# Dockerfile (CUDA, owns the plain :latest tag), Dockerfile.cpu (:latest-cpu),
+# Dockerfile.openvino (:latest-openvino).
 #
-# amd64 only: the image is CUDA-specific and the arm64 fleet has no NVIDIA
-# GPUs to serve it.
+# Docker Hub credentials come from the DOCKER_USER / DOCKER_TOKEN org secrets
+# on GitHub. The Forgejo push (git.rokkon.com) runs only when its CICD_TOKEN
+# secret exists; elsewhere that login and those tags are skipped.
+#
+# amd64 only: the CUDA image is NVIDIA-specific, and the arm64 legs for the
+# CPU and OpenVINO variants are a separate, deferred workstream.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       version:
@@ -20,6 +26,10 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    env:
+      DOCKERFILE: Dockerfile
+      SUFFIX: ''
+      CICD_TOKEN: ${{ secrets.CICD_TOKEN }}
     steps:
       - uses: actions/checkout@v7
       - name: Set up Docker Buildx
@@ -31,34 +41,168 @@ jobs:
           username: ${{ secrets.DOCKER_USER }}
           password: ${{ secrets.DOCKER_TOKEN }}
       - name: Log in to Forgejo container registry
+        if: ${{ env.CICD_TOKEN != '' }}
         uses: docker/login-action@v4
         with:
           registry: git.rokkon.com
           username: ${{ github.actor }}
           password: ${{ secrets.CICD_TOKEN }}
+      - name: Compute tags
+        id: tags
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          tags="docker.io/pipestreamai/grparse:latest${SUFFIX}"
+          if [ -n "$VERSION" ]; then
+            tags="$tags,docker.io/pipestreamai/grparse:${VERSION}${SUFFIX}"
+          fi
+          if [ -n "$CICD_TOKEN" ]; then
+            tags="$tags,git.rokkon.com/ai-pipestream/grparse:latest${SUFFIX}"
+            if [ -n "$VERSION" ]; then
+              tags="$tags,git.rokkon.com/ai-pipestream/grparse:${VERSION}${SUFFIX}"
+            fi
+          fi
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+          echo "push_tags=$(tr ',' ' ' <<<"$tags")" >> "$GITHUB_OUTPUT"
       - name: Build image (runs the test suite in the build stage)
         uses: docker/build-push-action@v7
         with:
           context: .
+          file: ${{ env.DOCKERFILE }}
           platforms: linux/amd64
           load: true
           provenance: false
           sbom: false
-          tags: |
-            docker.io/pipestreamai/grparse:${{ inputs.version }}
-            docker.io/pipestreamai/grparse:latest
-            git.rokkon.com/ai-pipestream/grparse:${{ inputs.version }}
-            git.rokkon.com/ai-pipestream/grparse:latest
+          tags: ${{ steps.tags.outputs.tags }}
       - name: Boot-proof the image before any push
         # A build is not done until the artifact has started up for real:
         # library closure plus boot-to-main, no GPU or models needed.
-        run: ./scripts/smoke-test.sh docker.io/pipestreamai/grparse:${{ inputs.version }}
+        run: ./scripts/smoke-test.sh docker.io/pipestreamai/grparse:latest${{ env.SUFFIX }}
       - name: Push all tags
         run: |
-          for tag in \
-            docker.io/pipestreamai/grparse:${{ inputs.version }} \
-            docker.io/pipestreamai/grparse:latest \
-            git.rokkon.com/ai-pipestream/grparse:${{ inputs.version }} \
-            git.rokkon.com/ai-pipestream/grparse:latest; do
+          for tag in ${{ steps.tags.outputs.push_tags }}; do
+            docker push "$tag"
+          done
+
+  publish-cpu:
+    runs-on: ubuntu-latest
+    env:
+      DOCKERFILE: Dockerfile.cpu
+      SUFFIX: '-cpu'
+      CICD_TOKEN: ${{ secrets.CICD_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Log in to Docker Hub (docker.io)
+        uses: docker/login-action@v4
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+      - name: Log in to Forgejo container registry
+        if: ${{ env.CICD_TOKEN != '' }}
+        uses: docker/login-action@v4
+        with:
+          registry: git.rokkon.com
+          username: ${{ github.actor }}
+          password: ${{ secrets.CICD_TOKEN }}
+      - name: Compute tags
+        id: tags
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          tags="docker.io/pipestreamai/grparse:latest${SUFFIX}"
+          if [ -n "$VERSION" ]; then
+            tags="$tags,docker.io/pipestreamai/grparse:${VERSION}${SUFFIX}"
+          fi
+          if [ -n "$CICD_TOKEN" ]; then
+            tags="$tags,git.rokkon.com/ai-pipestream/grparse:latest${SUFFIX}"
+            if [ -n "$VERSION" ]; then
+              tags="$tags,git.rokkon.com/ai-pipestream/grparse:${VERSION}${SUFFIX}"
+            fi
+          fi
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+          echo "push_tags=$(tr ',' ' ' <<<"$tags")" >> "$GITHUB_OUTPUT"
+      - name: Build image (runs the test suite in the build stage)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ env.DOCKERFILE }}
+          platforms: linux/amd64
+          load: true
+          provenance: false
+          sbom: false
+          tags: ${{ steps.tags.outputs.tags }}
+      - name: Boot-proof the image before any push
+        # A build is not done until the artifact has started up for real:
+        # library closure plus boot-to-main, no GPU or models needed.
+        run: ./scripts/smoke-test.sh docker.io/pipestreamai/grparse:latest${{ env.SUFFIX }}
+      - name: Push all tags
+        run: |
+          for tag in ${{ steps.tags.outputs.push_tags }}; do
+            docker push "$tag"
+          done
+
+  publish-openvino:
+    runs-on: ubuntu-latest
+    env:
+      DOCKERFILE: Dockerfile.openvino
+      SUFFIX: '-openvino'
+      CICD_TOKEN: ${{ secrets.CICD_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Log in to Docker Hub (docker.io)
+        uses: docker/login-action@v4
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+      - name: Log in to Forgejo container registry
+        if: ${{ env.CICD_TOKEN != '' }}
+        uses: docker/login-action@v4
+        with:
+          registry: git.rokkon.com
+          username: ${{ github.actor }}
+          password: ${{ secrets.CICD_TOKEN }}
+      - name: Compute tags
+        id: tags
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          tags="docker.io/pipestreamai/grparse:latest${SUFFIX}"
+          if [ -n "$VERSION" ]; then
+            tags="$tags,docker.io/pipestreamai/grparse:${VERSION}${SUFFIX}"
+          fi
+          if [ -n "$CICD_TOKEN" ]; then
+            tags="$tags,git.rokkon.com/ai-pipestream/grparse:latest${SUFFIX}"
+            if [ -n "$VERSION" ]; then
+              tags="$tags,git.rokkon.com/ai-pipestream/grparse:${VERSION}${SUFFIX}"
+            fi
+          fi
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+          echo "push_tags=$(tr ',' ' ' <<<"$tags")" >> "$GITHUB_OUTPUT"
+      - name: Build image (runs the test suite in the build stage)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ env.DOCKERFILE }}
+          platforms: linux/amd64
+          load: true
+          provenance: false
+          sbom: false
+          tags: ${{ steps.tags.outputs.tags }}
+      - name: Boot-proof the image before any push
+        # A build is not done until the artifact has started up for real:
+        # library closure plus boot-to-main, no GPU or models needed.
+        run: ./scripts/smoke-test.sh docker.io/pipestreamai/grparse:latest${{ env.SUFFIX }}
+      - name: Push all tags
+        run: |
+          for tag in ${{ steps.tags.outputs.push_tags }}; do
             docker push "$tag"
           done
