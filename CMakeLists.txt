@@ -234,7 +234,7 @@ set(protobuf_INSTALL OFF CACHE BOOL "" FORCE)
 set(ABSL_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(grpc
   GIT_REPOSITORY https://github.com/grpc/grpc.git
-  GIT_TAG v1.83.0
+  GIT_TAG v1.83.1
   GIT_SHALLOW TRUE
   GIT_SUBMODULES_RECURSE TRUE)
 FetchContent_MakeAvailable(grpc)
