@@ -13,3 +13,6 @@ build-*/
 corpus-*/
 eval/out/
 __pycache__/
+e2e/**/node_modules/
+e2e/out/
+e2e/test-results/

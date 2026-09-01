@@ -589,6 +589,24 @@ docker run --rm --network host \
   grparse-grparse /input/document.pdf localhost:50051
 ```
 
+## End-to-end suite
+
+`e2e/` holds a Playwright suite that drives the whole demo stack through
+the nginx front door: the shell and its tabs, one corpus fixture per parser
+through the Document tab, the gRParse page stream, every proxied service UI
+under `/ui/<name>/`, and the status endpoints. It runs against a stack that
+is already up, or as the `e2e` compose profile:
+
+```bash
+cd e2e && npm ci && E2E_BASE_URL=http://127.0.0.1:8080 npx playwright test   # existing stack
+scripts/stack-e2e.sh                                                          # up -d --wait, then run --rm playwright
+NO_GPU=1 scripts/stack-e2e.sh                                                 # CPU overlay; INTEL=1 for OpenVINO
+```
+
+Reports land in `e2e/out/` (HTML and JUnit). The script exits with
+Playwright's exit code. Details, the fixture tables, and the known red
+tests are in [`e2e/README.md`](e2e/README.md).
+
 ## Development
 
 The container is the supported build environment. It runs Ubuntu 26.04

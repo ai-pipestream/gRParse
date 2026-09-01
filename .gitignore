@@ -85,3 +85,8 @@ models/ppocr_keys_v1.txt
 # Scorecard and oracle-eval outputs (eval/scorecard/run.py, eval/compare_vlm.py)
 eval/out/
 __pycache__/
+
+# Playwright end-to-end suite (e2e/README.md)
+e2e/node_modules/
+e2e/out/
+e2e/test-results/
