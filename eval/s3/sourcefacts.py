@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import html
+from html.parser import HTMLParser
 import io
 import re
 import zipfile
@@ -15,8 +16,6 @@ from dataclasses import dataclass, field
 from typing import Any
 from xml.etree import ElementTree
 
-_HTML_HEADING = re.compile(rb"<h([1-6])\b[^>]*>(.*?)</h\1\s*>", re.I | re.S)
-_HTML_TITLE = re.compile(rb"<title\b[^>]*>(.*?)</title>", re.I | re.S)
 _HTML_STRIP = re.compile(rb"<(script|style)\b.*?</\1>|<!--.*?-->", re.I | re.S)
 _ATTACHMENT = re.compile(rb"^content-disposition:\s*attachment", re.I | re.M)
 _MULTIPART = re.compile(rb"^content-type:\s*multipart/", re.I | re.M)
@@ -62,13 +61,55 @@ def _plain(markup: bytes) -> str:
     return " ".join(html.unescape(text).split())
 
 
+class _HeadingReader(HTMLParser):
+    """Headings and the title as the tokenizer sees them. A regex over the
+    bytes read a literal "<h6>" inside a title="..." attribute as a heading
+    (the WHATWG specification does that); the tokenizer knows an attribute
+    value from a tag."""
+
+    _SKIP = frozenset({"script", "style", "template", "textarea", "noscript"})
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.headings: list[tuple[int, str]] = []
+        self.title: str | None = None
+        self._open: tuple[int, list[str]] | None = None
+        self._title: list[str] | None = None
+        self._skip = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in self._SKIP:
+            self._skip += 1
+        elif self._skip == 0 and len(tag) == 2 and tag[0] == "h" and tag[1] in "123456":
+            self._open = (int(tag[1]), [])
+        elif tag == "title" and self.title is None:
+            self._title = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIP:
+            self._skip = max(0, self._skip - 1)
+        elif self._open is not None and tag == f"h{self._open[0]}":
+            level, parts = self._open
+            self.headings.append((level, " ".join("".join(parts).split())))
+            self._open = None
+        elif tag == "title" and self._title is not None:
+            self.title = " ".join("".join(self._title).split())
+            self._title = None
+
+    def handle_data(self, data: str) -> None:
+        if self._open is not None:
+            self._open[1].append(data)
+        if self._title is not None:
+            self._title.append(data)
+
+
 def html_facts(data: bytes) -> SourceFacts:
     body = _HTML_STRIP.sub(b"", data)
-    headings = [(int(m.group(1)), _plain(m.group(2))) for m in _HTML_HEADING.finditer(body)]
-    title_match = _HTML_TITLE.search(body)
-    title = _plain(title_match.group(1)) if title_match else None
+    reader = _HeadingReader()
+    reader.feed(body.decode("utf-8", "replace"))
+    reader.close()
     visible = _plain(re.sub(rb"<head\b.*?</head>", b"", body, flags=re.I | re.S))
-    return SourceFacts(headings=headings, title=title, has_text=bool(visible))
+    return SourceFacts(headings=reader.headings, title=reader.title, has_text=bool(visible))
 
 
 def _md_inline(text: str) -> str:

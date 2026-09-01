@@ -35,10 +35,6 @@ KNOWN_FINDINGS: tuple[KnownFinding, ...] = (
         "a sparse sheet with cells at the far corners of the grid (calamine's corners.xlsx) makes the office "
         "core render the whole used range and run past its per-document timeout"),
     KnownFinding(
-        "parse_succeeds", "markup collector: status # (CANCELLED)", "grpc-markup",
-        "a 15 MB HTML page (the WHATWG specification, lol-html's large sample) ends the markup leg with a bare "
-        "CANCELLED status; the collector's own limit or the leg's deadline should name itself"),
-    KnownFinding(
         "table_grids", "grid rows have", "grpc-markup",
         "an HTML table whose header cell spans two columns is emitted with a ragged grid (2 cells in a "
         "3-column row); the dialect's grid repeats a spanning cell at every position it covers"),

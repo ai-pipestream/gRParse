@@ -171,8 +171,7 @@ red on purpose so every report says whose they are:
 | `warnings_typed` | gRParse, schema follow-on | collector warnings ride `body.meta.custom_fields[collector_warnings:<name>]`; a typed `Document.warnings` extension is a fleet-wide schema sweep |
 | `parse_succeeds` (WARC) | fastwarc-grpc | the stack leaves `GRPARSE_FASTWARC_TARGET` unset until the vendored `fastwarc.v1` dialect and the published image agree |
 | `parse_succeeds` (`corners.xlsx`) | grpc-libreoffice | a sheet with cells at the far corners of the grid runs past the office core's per-document timeout |
-| `parse_succeeds` (`html-spec.html`) | grpc-markup | a 15 MB HTML page ends the markup leg with a bare CANCELLED status |
-| `table_grids` (`streaming-markup.html`) | grpc-markup | a header cell spanning two columns yields a ragged grid |
+| `table_grids` (`streaming-markup.html`, `html-spec.html`) | grpc-markup | a header cell spanning columns yields a ragged grid (the 15 MB page parses since the collector channels took the server's message limit; 23 of its tables are ragged) |
 
 The gRParse-side findings the first runs produced are fixed and pinned by
 the tests in `tests/` registered under `GRPARSE_S3_EVAL_TESTS` in
@@ -184,8 +183,10 @@ and label rows over numeric formulas left unmarked
 (`docling_map_sheet_shape_test`), Writer pictures trailing the body
 (`docling_map_trailing_pictures_test`), extension-less names never routed by
 their bytes and `.txt` failing on the CV path (`collector_route_by_bytes_test`),
-a `.csv` origin reading `text/plain` (`content_sniff_precedence_test`), and a
-failed leg reporting an empty status (`document_collectors_status_test`).
+a `.csv` origin reading `text/plain` (`content_sniff_precedence_test`), a
+failed leg reporting an empty status (`document_collectors_status_test`), and
+collector channels capped at gRPC's 4 MB default while the server accepts
+520 MB (`collector_channel_limits_test`).
 Expectations the evidence corrected: mail headers are the typed `EmailMeta`,
 sheet tables carry no materialised grid, a first-level heading or the source
 title may be the title item, a blank scan yields no text, a markup source

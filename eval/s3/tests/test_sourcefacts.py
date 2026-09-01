@@ -10,6 +10,15 @@ def test_html_headings_and_title() -> None:
     assert bare.has_text is False and bare.title == "T"
 
 
+def test_html_headings_ignore_tags_quoted_in_attributes_and_templates() -> None:
+    page = (b"<html><body><h2>Real</h2>"
+            b'<p><a title="The <h1> to <h6> elements are headings. <h6> is the lowest.">x</a></p>'
+            b"<template><h3>Not rendered</h3></template><textarea><h4>typed</h4></textarea>"
+            b"<pre>&lt;h5&gt;escaped&lt;/h5&gt;</pre><h6>Last</h6></body></html>")
+    facts = source_facts("html", "html", page)
+    assert facts.headings == [(2, "Real"), (6, "Last")]
+
+
 def test_markdown_headings_skip_fences_and_read_setext() -> None:
     text = b"---\ntitle: Front Matter\n---\nTitle\n=====\n\n# One *bold* #\n\n```\n# not a heading\n```\n\n## [Two](x)\n\nSub\n---\n"
     facts = source_facts("md", "markdown", text)
