@@ -13,14 +13,13 @@
 
 #include "grparse/base64.h"
 #include "grparse/epub_book.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 docv1::RefItem ref(const std::string& value) {
   docv1::RefItem item;
@@ -276,15 +275,10 @@ void verify_degradations_are_reported() {
 }  // namespace
 
 int main() {
-  try {
-    verify_href_resolution();
-    verify_chapters_plug_into_their_groups();
-    verify_images_are_placed_and_inlined();
-    verify_degradations_are_reported();
-  } catch (const std::exception& failure) {
-    std::println(stderr, "FAILED: {}", failure.what());
-    return 1;
-  }
-  std::println("epub book test passed");
-  return 0;
+  return grparse_test::run_test_main({.on_failure = "FAILED", .on_success = "epub book test passed"}, {
+      verify_href_resolution,
+      verify_chapters_plug_into_their_groups,
+      verify_images_are_placed_and_inlined,
+      verify_degradations_are_reported,
+  });
 }

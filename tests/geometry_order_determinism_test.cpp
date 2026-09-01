@@ -20,14 +20,13 @@
 
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "grparse/document_reading_order.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 constexpr const char* kPdf = "pdf";
 
@@ -262,15 +261,10 @@ void verify_picture_anchoring_is_idempotent() {
 }  // namespace
 
 int main() {
-  try {
-    verify_body_order_is_independent_of_report_order();
-    verify_body_order_is_idempotent();
-    verify_picture_anchoring_is_independent_of_report_order();
-    verify_picture_anchoring_is_idempotent();
-  } catch (const std::exception& error) {
-    std::println(stderr, "geometry-order-determinism-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
-  std::println("geometry-order-determinism-test: ok");
-  return EXIT_SUCCESS;
+  return grparse_test::run_test_main("geometry-order-determinism-test", "ok", {
+      verify_body_order_is_independent_of_report_order,
+      verify_body_order_is_idempotent,
+      verify_picture_anchoring_is_independent_of_report_order,
+      verify_picture_anchoring_is_idempotent,
+  });
 }

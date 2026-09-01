@@ -13,14 +13,13 @@
 
 #include "ai/pipestream/office/v1/office_service.grpc.pb.h"
 #include "grparse/office_collector.h"
+#include "support/check.h"
 
 namespace officev1 = ai::pipestream::office::v1;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 // Reads the upload, checks the chunk contract, and streams a one-paragraph
 // typed document back.
@@ -253,14 +252,10 @@ void verify_unreachable_endpoint_is_a_failure() {
 }  // namespace
 
 int main() {
-  try {
-    verify_collects_and_folds_typed_stream();
-    verify_load_failure_degrades_to_outcome();
-    verify_truncated_stream_is_a_failure();
-    verify_unreachable_endpoint_is_a_failure();
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "office-collector-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("office-collector-test", {
+      verify_collects_and_folds_typed_stream,
+      verify_load_failure_degrades_to_outcome,
+      verify_truncated_stream_is_a_failure,
+      verify_unreachable_endpoint_is_a_failure,
+  });
 }

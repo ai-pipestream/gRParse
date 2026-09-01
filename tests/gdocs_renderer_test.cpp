@@ -12,12 +12,13 @@
 
 #include <grpcpp/grpcpp.h>
 
+#include "../src/render/gdocs_renderer.h"
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "ai/pipestream/parse/v1/parse.grpc.pb.h"
 #include "grparse/document_parser_service.h"
 #include "grparse/document_render.h"
 #include "grparse/page_scheduler.h"
-#include "../src/render/gdocs_renderer.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 namespace parsev1 = ai::pipestream::parse::v1;
@@ -26,9 +27,7 @@ namespace {
 
 using namespace std::chrono_literals;
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 void require_contains(const std::string& haystack, const std::string& needle,
                       const std::string& message) {
@@ -701,25 +700,46 @@ void verify_service_accepts_and_dispatches_the_format() {
           "an explicit format list renders nothing else");
 }
 
+// An empty document must still be a well formed create body: a title, an
+// empty content array, and both registries present but empty.
+void verify_an_empty_document_is_still_a_create_body() {
+  const docv1::Document document = base_document("empty.pdf");
+  const std::string rendered = grparse::render_gdocs_json(document);
+  require_contains(rendered, "\"title\": \"empty.pdf\"",
+                   "an empty document still names itself");
+  require_contains(rendered, "\"content\"", "an empty document still opens a content array");
+  require_absent(rendered, "\"paragraph\"", "an empty document carries no structural element");
+  require_absent(rendered, "\"table\"", "an empty document carries no table");
+  require(grparse::render_gdocs_json(document) == rendered,
+          "an empty document renders the same way twice");
+}
+
+// The list identifiers are numbered in the order the walk meets them, which
+// is what keeps two renders of one document byte-identical.
+void verify_list_identifiers_are_numbered_in_walk_order() {
+  require(grparse::render::gdocs_list_id(0) == "kix.list0" &&
+              grparse::render::gdocs_list_id(1) == "kix.list1" &&
+              grparse::render::gdocs_list_id(12) == "kix.list12",
+          "a list identifier is the API's prefix plus the list's ordinal");
+}
+
 }  // namespace
 
 int main() {
-  try {
-    verify_heading_styles_map_and_clamp();
-    verify_document_name_is_the_title_fallback();
-    verify_list_nesting_shares_one_list_id();
-    verify_stray_list_item_opens_its_own_list();
-    verify_spanned_table_writes_each_cell_once();
-    verify_captions_render_beside_their_float_once();
-    verify_picture_placeholders_carry_the_upload_contract();
-    verify_code_rides_a_monospace_run();
-    verify_non_body_layers_are_skipped();
-    verify_heading_and_table_document_shape();
-    verify_render_is_deterministic();
-    verify_service_accepts_and_dispatches_the_format();
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "gdocs-renderer-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("gdocs-renderer-test", {
+      verify_heading_styles_map_and_clamp,
+      verify_document_name_is_the_title_fallback,
+      verify_list_nesting_shares_one_list_id,
+      verify_stray_list_item_opens_its_own_list,
+      verify_spanned_table_writes_each_cell_once,
+      verify_captions_render_beside_their_float_once,
+      verify_picture_placeholders_carry_the_upload_contract,
+      verify_code_rides_a_monospace_run,
+      verify_non_body_layers_are_skipped,
+      verify_heading_and_table_document_shape,
+      verify_an_empty_document_is_still_a_create_body,
+      verify_list_identifiers_are_numbered_in_walk_order,
+      verify_render_is_deterministic,
+      verify_service_accepts_and_dispatches_the_format,
+  });
 }

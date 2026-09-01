@@ -6,12 +6,11 @@
 #include <vector>
 
 #include "grparse/reading_order.h"
+#include "support/check.h"
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 grparse::OcrLine line_at(std::string text, int left, int top, int width = 200, int height = 20) {
   return grparse::OcrLine{std::move(text),
@@ -168,19 +167,15 @@ void verify_box_cut_policy() {
 }  // namespace
 
 int main() {
-  try {
-    verify_box_cut_reads_bands_then_columns();
-    verify_box_cut_fallback_is_stable();
-    verify_box_cut_policy();
-    verify_two_columns_without_regions();
-    verify_two_columns_with_regions();
-    verify_title_band_reads_before_columns();
-    verify_textless_regions_are_ignored();
-    verify_determinism();
-    verify_degenerate_inputs();
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "reading-order-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("reading-order-test", {
+      verify_box_cut_reads_bands_then_columns,
+      verify_box_cut_fallback_is_stable,
+      verify_box_cut_policy,
+      verify_two_columns_without_regions,
+      verify_two_columns_with_regions,
+      verify_title_band_reads_before_columns,
+      verify_textless_regions_are_ignored,
+      verify_determinism,
+      verify_degenerate_inputs,
+  });
 }

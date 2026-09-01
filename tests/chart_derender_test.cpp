@@ -23,15 +23,14 @@
 #include "grparse/chart_derender.h"
 #include "grparse/data_totals.h"
 #include "grparse/document_parser_service.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 namespace enrichv1 = ai::pipestream::enrich::v1;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 const std::string kPng = "\x89PNG\r\n\x1a\nfake-chart-pixels";
 
@@ -482,20 +481,15 @@ void verify_off_by_default_dials_nothing() {
 }  // namespace
 
 int main() {
-  try {
-    verify_candidates_need_a_chart_verdict_pixels_and_no_typed_table();
-    verify_fold_attributes_the_table_to_the_model();
-    verify_leg_dials_folds_and_counts();
-    verify_skip_events_and_empty_tables_count_as_skipped();
-    verify_deadline_bounds_the_leg_and_never_fails_the_document();
-    verify_unreachable_peer_is_a_warning();
-    verify_duplicate_tables_fold_once_and_never_go_negative();
-    verify_fold_lands_on_a_picture_without_self_ref();
-    verify_off_by_default_dials_nothing();
-    std::println("chart-derender-test: all checks passed");
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "chart-derender-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("chart-derender-test", "all checks passed", {
+      verify_candidates_need_a_chart_verdict_pixels_and_no_typed_table,
+      verify_fold_attributes_the_table_to_the_model,
+      verify_leg_dials_folds_and_counts,
+      verify_skip_events_and_empty_tables_count_as_skipped,
+      verify_deadline_bounds_the_leg_and_never_fails_the_document,
+      verify_unreachable_peer_is_a_warning,
+      verify_duplicate_tables_fold_once_and_never_go_negative,
+      verify_fold_lands_on_a_picture_without_self_ref,
+      verify_off_by_default_dials_nothing,
+  });
 }

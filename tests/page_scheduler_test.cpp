@@ -15,14 +15,13 @@
 #include <opencv2/imgcodecs.hpp>
 
 #include "grparse/page_scheduler.h"
+#include "support/check.h"
 
 namespace {
 
 using namespace std::chrono_literals;
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 class FakeSource final : public grparse::PageSource {
  public:
@@ -1284,33 +1283,29 @@ void verify_digital_layer_and_disabled_recovery_never_rerecognize() {
 }
 
 int main() {
-  try {
-    verify_pipeline_and_metrics();
-    verify_cancellation_drains_bounded_work();
-    verify_digital_pages_bypass_render_and_inference();
-    verify_layout_labels_digital_pages_without_ocr();
-    verify_table_structure_runs_on_crops();
-    verify_figure_classification_runs_on_crops();
-    verify_picture_capture_encodes_figure_crops();
-    verify_page_capture_encodes_previews();
-    verify_barcode_decode_triggers_on_class();
-    verify_barcode_gate_and_forced_mode();
-    verify_partial_digital_merges_with_ocr();
-    verify_inspector_page_set_restricts_ocr();
-    verify_recognition_modes_outrank_the_page_set();
-    verify_ocr_off_reads_only_the_embedded_layer();
-    verify_ocr_off_still_runs_layout();
-    verify_force_ocr_replaces_the_embedded_layer();
-    verify_render_dpi_reaches_source_factory();
-    verify_delivery_cancellation_drains_queued_work();
-    verify_page_credits_bound_a_document();
-    verify_uncredited_document_survives_later_submissions();
-    verify_turned_scan_is_rerecognized_upright();
-    verify_upside_down_scan_takes_one_extra_pass();
-    verify_digital_layer_and_disabled_recovery_never_rerecognize();
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "page-scheduler-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("page-scheduler-test", {
+      verify_pipeline_and_metrics,
+      verify_cancellation_drains_bounded_work,
+      verify_digital_pages_bypass_render_and_inference,
+      verify_layout_labels_digital_pages_without_ocr,
+      verify_table_structure_runs_on_crops,
+      verify_figure_classification_runs_on_crops,
+      verify_picture_capture_encodes_figure_crops,
+      verify_page_capture_encodes_previews,
+      verify_barcode_decode_triggers_on_class,
+      verify_barcode_gate_and_forced_mode,
+      verify_partial_digital_merges_with_ocr,
+      verify_inspector_page_set_restricts_ocr,
+      verify_recognition_modes_outrank_the_page_set,
+      verify_ocr_off_reads_only_the_embedded_layer,
+      verify_ocr_off_still_runs_layout,
+      verify_force_ocr_replaces_the_embedded_layer,
+      verify_render_dpi_reaches_source_factory,
+      verify_delivery_cancellation_drains_queued_work,
+      verify_page_credits_bound_a_document,
+      verify_uncredited_document_survives_later_submissions,
+      verify_turned_scan_is_rerecognized_upright,
+      verify_upside_down_scan_takes_one_extra_pass,
+      verify_digital_layer_and_disabled_recovery_never_rerecognize,
+  });
 }

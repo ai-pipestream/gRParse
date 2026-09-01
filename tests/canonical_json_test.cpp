@@ -11,6 +11,7 @@
 #include "../src/render/canonical_json_writer.h"
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "grparse/document_render.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 
@@ -20,9 +21,7 @@ using grparse::render::escape_json_ascii;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 void require_eq(const std::string& actual, const std::string& expected,
                 const std::string& message) {
@@ -1004,36 +1003,32 @@ void verify_escape_fast_path_equivalence() {
 }  // namespace
 
 int main() {
-  try {
-    verify_double_formatting_matches_reference_repr();
-    verify_integral_decimal_is_exact();
-    verify_ascii_escaping_matches_reference_dump();
-    verify_empty_document_layout_and_identity();
-    verify_identity_header_is_constant();
-    verify_text_variants_flatten_with_subclass_members();
-    verify_generic_arm_dispatches_on_label();
-    verify_code_item_inlined_base_flattens();
-    verify_prov_charspan_and_coord_origins();
-    verify_table_grid_spans_headers_and_rich_cells();
-    verify_picture_meta_and_annotations();
-    verify_key_value_graphs();
-    verify_track_sources_and_collector_dropping();
-    verify_meta_suppression_and_defaults();
-    verify_custom_field_rekeying_and_values();
-    verify_field_arenas_suppressed_when_empty();
-    verify_pages_dump_in_numeric_order();
-    verify_origin_and_raw_label_states();
-    verify_bboxes_clamp_to_their_page();
-    verify_typed_barcodes_project_into_meta();
-    verify_ordered_list_groups_relabel_to_list();
-    verify_misplaced_list_items_migrate_into_a_group();
-    verify_clean_documents_render_unnormalized();
-    verify_concurrent_renders_share_one_document();
-    verify_double_formatting_round_trips();
-    verify_escape_fast_path_equivalence();
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "canonical-json-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("canonical-json-test", {
+      verify_double_formatting_matches_reference_repr,
+      verify_integral_decimal_is_exact,
+      verify_ascii_escaping_matches_reference_dump,
+      verify_empty_document_layout_and_identity,
+      verify_identity_header_is_constant,
+      verify_text_variants_flatten_with_subclass_members,
+      verify_generic_arm_dispatches_on_label,
+      verify_code_item_inlined_base_flattens,
+      verify_prov_charspan_and_coord_origins,
+      verify_table_grid_spans_headers_and_rich_cells,
+      verify_picture_meta_and_annotations,
+      verify_key_value_graphs,
+      verify_track_sources_and_collector_dropping,
+      verify_meta_suppression_and_defaults,
+      verify_custom_field_rekeying_and_values,
+      verify_field_arenas_suppressed_when_empty,
+      verify_pages_dump_in_numeric_order,
+      verify_origin_and_raw_label_states,
+      verify_bboxes_clamp_to_their_page,
+      verify_typed_barcodes_project_into_meta,
+      verify_ordered_list_groups_relabel_to_list,
+      verify_misplaced_list_items_migrate_into_a_group,
+      verify_clean_documents_render_unnormalized,
+      verify_concurrent_renders_share_one_document,
+      verify_double_formatting_round_trips,
+      verify_escape_fast_path_equivalence,
+  });
 }

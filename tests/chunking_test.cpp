@@ -14,6 +14,7 @@
 #include "../src/chunking/token_counter.h"
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 namespace parsev1 = ai::pipestream::parse::v1;
@@ -29,9 +30,7 @@ using grparse::chunking::validate_hybrid_options;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 void require_eq(const std::string& actual, const std::string& expected,
                 const std::string& message) {

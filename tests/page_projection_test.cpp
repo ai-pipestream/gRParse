@@ -4,6 +4,7 @@
 #include <string>
 
 #include "grparse/page_projection.h"
+#include "support/check.h"
 
 namespace {
 
@@ -11,9 +12,7 @@ namespace docv1 = ai::pipestream::document::v1;
 namespace parsev1 = ai::pipestream::parse::v1;
 using grparse::project_page_data;
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 docv1::TextItemBase* add_text(docv1::Document* document, const std::string& ref,
                               const std::string& text, int page, bool body = true) {
@@ -132,14 +131,10 @@ void verify_orphans_are_placed() {
 }  // namespace
 
 int main() {
-  try {
-    verify_pageless_document_projects_nothing();
-    verify_tree_order_and_page_inheritance();
-    verify_page_map_metadata_is_carried();
-    verify_orphans_are_placed();
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "page-projection-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("page-projection-test", {
+      verify_pageless_document_projects_nothing,
+      verify_tree_order_and_page_inheritance,
+      verify_page_map_metadata_is_carried,
+      verify_orphans_are_placed,
+  });
 }

@@ -10,14 +10,13 @@
 #include <thread>
 
 #include "grparse/call_executor.h"
+#include "support/check.h"
 
 namespace {
 
 using namespace std::chrono_literals;
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 // A latch the tests park tasks on so a worker is provably occupied without a
 // sleep deciding the outcome.
@@ -127,14 +126,10 @@ void verify_a_throwing_task_leaves_the_pool_serving() {
 }  // namespace
 
 int main() {
-  try {
-    verify_tasks_run_off_the_submitting_thread();
-    verify_a_full_queue_refuses();
-    verify_shutdown_drains_the_queue();
-    verify_a_throwing_task_leaves_the_pool_serving();
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "call-executor-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("call-executor-test", {
+      verify_tasks_run_off_the_submitting_thread,
+      verify_a_full_queue_refuses,
+      verify_shutdown_drains_the_queue,
+      verify_a_throwing_task_leaves_the_pool_serving,
+  });
 }

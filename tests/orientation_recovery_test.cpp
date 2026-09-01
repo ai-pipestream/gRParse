@@ -16,12 +16,11 @@
 
 #include "grparse/orientation_recovery.h"
 #include "grparse/text_geometry.h"
+#include "support/check.h"
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 constexpr unsigned char kMarker = 255;
 constexpr unsigned char kPoorMarker = 7;
@@ -187,16 +186,12 @@ void verify_confidence_floor_is_configurable() {
 }  // namespace
 
 int main() {
-  try {
-    verify_turn_raster_geometry();
-    verify_quarter_turn_is_recovered();
-    verify_half_turn_is_recovered();
-    verify_poor_read_tries_every_turn_once_and_keeps_upright();
-    verify_clean_and_disabled_reads_cost_nothing();
-    verify_confidence_floor_is_configurable();
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "orientation-recovery-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("orientation-recovery-test", {
+      verify_turn_raster_geometry,
+      verify_quarter_turn_is_recovered,
+      verify_half_turn_is_recovered,
+      verify_poor_read_tries_every_turn_once_and_keeps_upright,
+      verify_clean_and_disabled_reads_cost_nothing,
+      verify_confidence_floor_is_configurable,
+  });
 }

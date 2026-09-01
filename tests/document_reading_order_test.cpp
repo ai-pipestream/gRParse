@@ -15,14 +15,13 @@
 #include <google/protobuf/util/message_differencer.h>
 
 #include "grparse/document_reading_order.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 constexpr const char* kPdf = "pdf";
 
@@ -355,18 +354,13 @@ void verify_picture_anchoring() {
 }  // namespace
 
 int main() {
-  try {
-    verify_columns_title_footnote_and_furniture();
-    verify_figure_caption_and_boxless_items();
-    verify_pages_and_groups();
-    verify_producer_gate();
-    verify_coverage_gate_and_aside_attachment();
-    verify_paper_page_two_anchors();
-    verify_picture_anchoring();
-  } catch (const std::exception& error) {
-    std::println(stderr, "document-reading-order-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
-  std::println("document-reading-order-test: ok");
-  return EXIT_SUCCESS;
+  return grparse_test::run_test_main("document-reading-order-test", "ok", {
+      verify_columns_title_footnote_and_furniture,
+      verify_figure_caption_and_boxless_items,
+      verify_pages_and_groups,
+      verify_producer_gate,
+      verify_coverage_gate_and_aside_attachment,
+      verify_paper_page_two_anchors,
+      verify_picture_anchoring,
+  });
 }

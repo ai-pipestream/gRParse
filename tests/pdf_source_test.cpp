@@ -14,12 +14,11 @@
 #include "grparse/in_memory_document.h"
 #include "grparse/reading_order.h"
 #include "grparse/text_geometry.h"
+#include "support/check.h"
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 constexpr double kRenderScale = grparse::kDefaultRenderDpi / 72.0;
 constexpr int kMediaWidth = 612;
@@ -313,19 +312,15 @@ void verify_two_column_digital_pdf_reads_in_column_order() {
 }
 
 int main() {
-  try {
-    verify_digital_text_and_geometry();
-    verify_dense_text_layer_skips_ocr();
-    verify_rotated_page_geometry();
-    verify_render_matches_page_size();
-    verify_per_document_render_dpi();
-    verify_invalid_input_is_rejected();
-    verify_concurrent_page_access();
-    verify_raster_source();
-    verify_two_column_digital_pdf_reads_in_column_order();
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "pdf-source-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("pdf-source-test", {
+      verify_digital_text_and_geometry,
+      verify_dense_text_layer_skips_ocr,
+      verify_rotated_page_geometry,
+      verify_render_matches_page_size,
+      verify_per_document_render_dpi,
+      verify_invalid_input_is_rejected,
+      verify_concurrent_page_access,
+      verify_raster_source,
+      verify_two_column_digital_pdf_reads_in_column_order,
+  });
 }

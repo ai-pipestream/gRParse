@@ -8,15 +8,14 @@
 #include <grpcpp/client_context.h>
 
 #include "grparse/collector_coordinator.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 namespace parsev1 = ai::pipestream::parse::v1;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 docv1::Document base_document() {
   docv1::Document document;
@@ -264,14 +263,10 @@ void verify_collector_deadline_caps_at_the_sooner_instant() {
 }  // namespace
 
 int main() {
-  try {
-    verify_routing();
-    verify_scatter_gather_merges_additively();
-    verify_failure_isolation();
-    verify_collector_deadline_caps_at_the_sooner_instant();
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "collector-coordinator-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("collector-coordinator-test", {
+      verify_routing,
+      verify_scatter_gather_merges_additively,
+      verify_failure_isolation,
+      verify_collector_deadline_caps_at_the_sooner_instant,
+  });
 }

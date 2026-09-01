@@ -11,14 +11,13 @@
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "grparse/docling_map.h"
 #include "grparse/document_merge.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 docv1::Document base_document() {
   docv1::Document document;
@@ -521,20 +520,16 @@ void verify_unnamed_merge_records_nothing() {
 }  // namespace
 
 int main() {
-  try {
-    verify_merge_renumbers_and_rewrites();
-    verify_merge_is_additive_on_replay();
-    verify_merge_carries_field_arenas_and_extensions();
-    verify_metadata_merges_beside_a_stamped_origin();
-    verify_every_field_survives_the_merge();
-    verify_merge_never_overwrites_the_target();
-    verify_contested_fields_resolve_by_rank_and_keep_every_account();
-    verify_confidence_beats_standing();
-    verify_standing_is_per_format();
-    verify_unnamed_merge_records_nothing();
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "document-merge-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("document-merge-test", {
+      verify_merge_renumbers_and_rewrites,
+      verify_merge_is_additive_on_replay,
+      verify_merge_carries_field_arenas_and_extensions,
+      verify_metadata_merges_beside_a_stamped_origin,
+      verify_every_field_survives_the_merge,
+      verify_merge_never_overwrites_the_target,
+      verify_contested_fields_resolve_by_rank_and_keep_every_account,
+      verify_confidence_beats_standing,
+      verify_standing_is_per_format,
+      verify_unnamed_merge_records_nothing,
+  });
 }

@@ -10,6 +10,7 @@
 #include <string>
 
 #include "grparse/content_sniff.h"
+#include "support/check.h"
 
 namespace {
 
@@ -47,13 +48,8 @@ void verify_specific_sniffs_still_outrank_the_name() {
 }  // namespace
 
 int main() {
-  try {
-    verify_generic_text_yields_to_a_specific_name();
-    verify_specific_sniffs_still_outrank_the_name();
-  } catch (const std::exception& error) {
-    std::println(stderr, "content_sniff_precedence_test: {}", error.what());
-    return 1;
-  }
-  std::println("content_sniff_precedence_test: ok");
-  return 0;
+  return grparse_test::run_test_main("content_sniff_precedence_test", "ok", {
+      verify_generic_text_yields_to_a_specific_name,
+      verify_specific_sniffs_still_outrank_the_name,
+  });
 }

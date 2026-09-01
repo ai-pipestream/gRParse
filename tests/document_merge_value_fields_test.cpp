@@ -13,14 +13,13 @@
 
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "grparse/document_merge.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 docv1::Document base_document() {
   docv1::Document document;
@@ -98,14 +97,9 @@ void verify_claim_fields_stops_at_values() {
 }  // namespace
 
 int main() {
-  try {
-    verify_timestamp_is_attributed_as_one_field();
-    verify_timestamp_is_taken_or_left_whole();
-    verify_claim_fields_stops_at_values();
-  } catch (const std::exception& error) {
-    std::println(stderr, "document_merge_value_fields_test: {}", error.what());
-    return 1;
-  }
-  std::println("document_merge_value_fields_test: ok");
-  return 0;
+  return grparse_test::run_test_main("document_merge_value_fields_test", "ok", {
+      verify_timestamp_is_attributed_as_one_field,
+      verify_timestamp_is_taken_or_left_whole,
+      verify_claim_fields_stops_at_values,
+  });
 }

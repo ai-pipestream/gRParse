@@ -13,14 +13,13 @@
 #include <vector>
 
 #include "grparse/paragraph_split.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 const std::vector<std::string> kPdf = {"pdf"};
 
@@ -170,16 +169,11 @@ void verify_structural_producers_are_left_alone() {
 }  // namespace
 
 int main() {
-  try {
-    verify_run_in_heading_detection();
-    verify_form_row_detection();
-    verify_document_split_and_geometry();
-    verify_form_rows_split_on_document();
-    verify_structural_producers_are_left_alone();
-  } catch (const std::exception& error) {
-    std::println(stderr, "paragraph-split-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
-  std::println("paragraph-split-test: ok");
-  return EXIT_SUCCESS;
+  return grparse_test::run_test_main("paragraph-split-test", "ok", {
+      verify_run_in_heading_detection,
+      verify_form_row_detection,
+      verify_document_split_and_geometry,
+      verify_form_rows_split_on_document,
+      verify_structural_producers_are_left_alone,
+  });
 }

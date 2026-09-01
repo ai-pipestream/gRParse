@@ -5,12 +5,11 @@
 #include <string>
 
 #include "grparse_session_ep.h"
+#include "support/check.h"
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 // The selection state and the hook counter are process-global and the
 // explicit-selection latch never resets, so the checks run in one fixed
@@ -90,16 +89,11 @@ void verify_latest_selection_wins() {
 }  // namespace
 
 int main() {
-  try {
-    verify_default_selection_is_cpu();
-    verify_legacy_negative_index_appends_nothing_but_counts();
-    verify_selection_round_trips_and_copies();
-    verify_explicit_cpu_overrides_legacy_gpu_index();
-    verify_latest_selection_wins();
-    std::println("ort-session-ep-test: all checks passed");
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "ort-session-ep-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("ort-session-ep-test", "all checks passed", {
+      verify_default_selection_is_cpu,
+      verify_legacy_negative_index_appends_nothing_but_counts,
+      verify_selection_round_trips_and_copies,
+      verify_explicit_cpu_overrides_legacy_gpu_index,
+      verify_latest_selection_wins,
+  });
 }

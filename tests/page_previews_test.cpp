@@ -6,14 +6,13 @@
 #include <vector>
 
 #include "grparse/page_previews.h"
+#include "support/check.h"
 
 namespace {
 
 namespace docv1 = ai::pipestream::document::v1;
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 // A complete two-page PDF with a base-14 font, so nothing depends on the
 // host's fonts.
@@ -86,12 +85,8 @@ void verify_unopenable_bytes_change_nothing() {
 }  // namespace
 
 int main() {
-  try {
-    verify_previews_attach_to_every_page();
-    verify_unopenable_bytes_change_nothing();
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "page-previews-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("page-previews-test", {
+      verify_previews_attach_to_every_page,
+      verify_unopenable_bytes_change_nothing,
+  });
 }

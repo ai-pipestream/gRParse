@@ -9,14 +9,13 @@
 #include <vector>
 
 #include "grparse/resource_pool.h"
+#include "support/check.h"
 
 namespace {
 
 using namespace std::chrono_literals;
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 struct Counted {
   explicit Counted(int identity) : id(identity) { live.fetch_add(1); }
@@ -164,18 +163,16 @@ void verify_capacity_must_be_positive() {
 }  // namespace
 
 int main() {
-  try {
-    verify_lazy_construction_and_reuse();
-    verify_prime_builds_every_slot();
-    verify_factory_failure_returns_the_slot();
-    verify_discard_rebuilds_the_slot();
-    verify_wait_time_is_observed();
-    verify_capacity_bounds_concurrency();
-    verify_capacity_must_be_positive();
-    require(Counted::live.load() == 0, "every pooled resource must be destroyed with its pool");
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "resource-pool-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("resource-pool-test", {
+      [] {
+        verify_lazy_construction_and_reuse();
+        verify_prime_builds_every_slot();
+        verify_factory_failure_returns_the_slot();
+        verify_discard_rebuilds_the_slot();
+        verify_wait_time_is_observed();
+        verify_capacity_bounds_concurrency();
+        verify_capacity_must_be_positive();
+        require(Counted::live.load() == 0, "every pooled resource must be destroyed with its pool");
+      },
+  });
 }

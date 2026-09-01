@@ -11,12 +11,11 @@
 
 #include "grparse/ocr_types.h"
 #include "grparse/region_geometry.h"
+#include "support/check.h"
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 grparse::OcrLine make_line(int left, int top, int right, int bottom) {
   return grparse::OcrLine{"line",
@@ -114,14 +113,9 @@ void verify_crop_region() {
 }  // namespace
 
 int main() {
-  try {
-    verify_region_binding();
-    verify_clip_region();
-    verify_crop_region();
-  } catch (const std::exception& error) {
-    std::println(stderr, "region_geometry_test failed: {}", error.what());
-    return EXIT_FAILURE;
-  }
-  std::println("region_geometry_test passed");
-  return EXIT_SUCCESS;
+  return grparse_test::run_test_main({.on_failure = "region_geometry_test failed", .on_success = "region_geometry_test passed"}, {
+      verify_region_binding,
+      verify_clip_region,
+      verify_crop_region,
+  });
 }

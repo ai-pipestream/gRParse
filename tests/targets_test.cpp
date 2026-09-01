@@ -26,6 +26,7 @@
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
 #include "grparse/base64.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 namespace parsev1 = ai::pipestream::parse::v1;
@@ -33,9 +34,7 @@ namespace targets = grparse::targets;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 // A one-pixel PNG stands in for a page render: the bundle only ever moves the
 // bytes behind a data URI, so their content is irrelevant and their identity
@@ -515,19 +514,15 @@ void verify_incomplete_targets_are_rejected() {
 }  // namespace
 
 int main() {
-  try {
-    verify_sha256_matches_the_published_vectors();
-    verify_bundles_are_reproducible();
-    verify_bundle_carries_the_canonical_file_set();
-    verify_manifest_describes_every_member();
-    verify_sigv4_matches_the_published_vector();
-    verify_region_comes_from_the_endpoint();
-    verify_uploads_land_as_objects();
-    verify_a_refused_upload_fails_without_leaking();
-    verify_incomplete_targets_are_rejected();
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "targets-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("targets-test", {
+      verify_sha256_matches_the_published_vectors,
+      verify_bundles_are_reproducible,
+      verify_bundle_carries_the_canonical_file_set,
+      verify_manifest_describes_every_member,
+      verify_sigv4_matches_the_published_vector,
+      verify_region_comes_from_the_endpoint,
+      verify_uploads_land_as_objects,
+      verify_a_refused_upload_fails_without_leaking,
+      verify_incomplete_targets_are_rejected,
+  });
 }

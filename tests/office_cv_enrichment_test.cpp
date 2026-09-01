@@ -10,6 +10,7 @@
 
 #include "grparse/base64.h"
 #include "grparse/office_cv_enrichment.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 namespace fs = std::filesystem;
@@ -19,9 +20,7 @@ namespace {
 // The committed fixture encodes this payload (see tests/data/qr_code.png).
 constexpr const char* kQrPayload = "https://github.com/krickert/gRParse/e3";
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 // A detector that reports two figures per page in a different order on
 // every call, the way a real detector's output order is not stable.
@@ -308,16 +307,12 @@ void verify_pages_without_usable_images_are_skipped() {
 }  // namespace
 
 int main() {
-  try {
-    verify_null_detector_is_a_noop();
-    verify_detected_figure_lands_scaled_classified_and_decoded();
-    verify_class_gate_blocks_decode();
-    verify_figures_anchor_deterministically();
-    verify_detections_dedupe_against_existing_pictures();
-    verify_pages_without_usable_images_are_skipped();
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "office-cv-enrichment-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("office-cv-enrichment-test", {
+      verify_null_detector_is_a_noop,
+      verify_detected_figure_lands_scaled_classified_and_decoded,
+      verify_class_gate_blocks_decode,
+      verify_figures_anchor_deterministically,
+      verify_detections_dedupe_against_existing_pictures,
+      verify_pages_without_usable_images_are_skipped,
+  });
 }

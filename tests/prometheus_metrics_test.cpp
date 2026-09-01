@@ -16,12 +16,11 @@
 #include <vector>
 
 #include "grparse/prometheus_metrics.h"
+#include "support/check.h"
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 void require_contains(const std::string& haystack, const std::string& needle,
                       const std::string& message) {
@@ -260,15 +259,11 @@ void verify_renderer_exception_becomes_500() {
 }  // namespace
 
 int main() {
-  try {
-    verify_render_counters_and_gauges();
-    verify_render_rotation_repair_and_office_cv_families();
-    verify_render_histogram_is_cumulative();
-    verify_http_listener();
-    verify_renderer_exception_becomes_500();
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "prometheus-metrics-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("prometheus-metrics-test", {
+      verify_render_counters_and_gauges,
+      verify_render_rotation_repair_and_office_cv_families,
+      verify_render_histogram_is_cumulative,
+      verify_http_listener,
+      verify_renderer_exception_becomes_500,
+  });
 }

@@ -12,15 +12,14 @@
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "ai/pipestream/office/v1/office_service.pb.h"
 #include "grparse/docling_map.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 namespace officev1 = ai::pipestream::office::v1;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 officev1::StreamPagesResponse info_event(int sheets) {
   officev1::StreamPagesResponse event;
@@ -168,14 +167,9 @@ void verify_text_formulas_do_not_make_a_header() {
 }  // namespace
 
 int main() {
-  try {
-    verify_empty_sheets_fold_to_empty_tables();
-    verify_formula_display_counts_as_a_quantity();
-    verify_text_formulas_do_not_make_a_header();
-  } catch (const std::exception& error) {
-    std::println(stderr, "docling_map_sheet_shape_test: {}", error.what());
-    return 1;
-  }
-  std::println("docling_map_sheet_shape_test: ok");
-  return 0;
+  return grparse_test::run_test_main("docling_map_sheet_shape_test", "ok", {
+      verify_empty_sheets_fold_to_empty_tables,
+      verify_formula_display_counts_as_a_quantity,
+      verify_text_formulas_do_not_make_a_header,
+  });
 }
