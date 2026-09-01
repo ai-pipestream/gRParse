@@ -27,14 +27,13 @@
 #include "grparse/document_repair.h"
 #include "grparse/heading_hierarchy.h"
 #include "grparse/paragraph_split.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 // One body item as a text-layer collector reports it.
 struct Item {
@@ -313,15 +312,10 @@ void verify_each_pass_is_idempotent_on_its_own() {
 }  // namespace
 
 int main() {
-  try {
-    verify_pinned_composite_repair();
-    verify_the_pass_settles_in_one_run();
-    verify_the_fixed_point_is_report_order_independent();
-    verify_each_pass_is_idempotent_on_its_own();
-  } catch (const std::exception& error) {
-    std::println(stderr, "repair-idempotence-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
-  std::println("repair-idempotence-test: ok");
-  return EXIT_SUCCESS;
+  return grparse_test::run_test_main("repair-idempotence-test", "ok", {
+      verify_pinned_composite_repair,
+      verify_the_pass_settles_in_one_run,
+      verify_the_fixed_point_is_report_order_independent,
+      verify_each_pass_is_idempotent_on_its_own,
+  });
 }

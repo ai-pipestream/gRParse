@@ -8,6 +8,7 @@
 #include <opencv2/imgcodecs.hpp>
 
 #include "grparse/figure_classifier.h"
+#include "support/check.h"
 
 namespace {
 
@@ -15,9 +16,7 @@ namespace fs = std::filesystem;
 
 constexpr int kSkipExitCode = 77;
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 void verify_missing_model_fails_loudly() {
   bool threw = false;

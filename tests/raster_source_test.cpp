@@ -13,12 +13,11 @@
 #include <opencv2/imgcodecs.hpp>
 
 #include "grparse/in_memory_document.h"
+#include "support/check.h"
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 std::shared_ptr<const std::string> encode(const cv::Mat& image, const std::string& extension) {
   std::vector<unsigned char> buffer;
@@ -120,17 +119,12 @@ void verify_only_advertised_formats_are_admitted() {
 }  // namespace
 
 int main() {
-  try {
-    verify_png_round_trip();
-    verify_grayscale_normalizes_to_bgr();
-    verify_jpeg_decodes();
-    verify_page_range();
-    verify_invalid_bytes();
-    verify_only_advertised_formats_are_admitted();
-  } catch (const std::exception& error) {
-    std::println(stderr, "raster_source_test failed: {}", error.what());
-    return EXIT_FAILURE;
-  }
-  std::println("raster_source_test passed");
-  return EXIT_SUCCESS;
+  return grparse_test::run_test_main({.on_failure = "raster_source_test failed", .on_success = "raster_source_test passed"}, {
+      verify_png_round_trip,
+      verify_grayscale_normalizes_to_bgr,
+      verify_jpeg_decodes,
+      verify_page_range,
+      verify_invalid_bytes,
+      verify_only_advertised_formats_are_admitted,
+  });
 }

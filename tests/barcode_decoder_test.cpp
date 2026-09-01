@@ -9,6 +9,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "grparse/barcode_decoder.h"
+#include "support/check.h"
 
 namespace {
 
@@ -17,9 +18,7 @@ namespace fs = std::filesystem;
 // The committed fixture encodes this payload (see tests/data/qr_code.png).
 constexpr const char* kQrPayload = "https://github.com/krickert/gRParse/e3";
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 cv::Mat load_fixture() {
   const char* data_dir = std::getenv("GRPARSE_TEST_DATA_DIR");
@@ -84,16 +83,14 @@ void verify_determinism(const cv::Mat& fixture) {
 }  // namespace
 
 int main() {
-  try {
-    const cv::Mat fixture = load_fixture();
-    verify_qr_fixture_decodes(fixture);
-    verify_grayscale_decodes(fixture);
-    verify_roi_view_decodes(fixture);
-    verify_blank_and_empty_images();
-    verify_determinism(fixture);
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "barcode-decoder-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("barcode-decoder-test", {
+      [] {
+        const cv::Mat fixture = load_fixture();
+        verify_qr_fixture_decodes(fixture);
+        verify_grayscale_decodes(fixture);
+        verify_roi_view_decodes(fixture);
+        verify_blank_and_empty_images();
+        verify_determinism(fixture);
+      },
+  });
 }

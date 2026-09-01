@@ -10,15 +10,14 @@
 #include <string>
 
 #include "grparse/collector_coordinator.h"
+#include "support/check.h"
 
 namespace parsev1 = ai::pipestream::parse::v1;
 namespace markupv1 = ai::pipestream::markup::v1;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 std::string le16(unsigned value) {
   return {static_cast<char>(value & 0xFF), static_cast<char>((value >> 8) & 0xFF)};
@@ -104,14 +103,9 @@ void verify_plain_text_reads_as_markdown() {
 }  // namespace
 
 int main() {
-  try {
-    verify_extension_less_names_route_by_bytes();
-    verify_a_name_that_says_something_keeps_its_say();
-    verify_plain_text_reads_as_markdown();
-  } catch (const std::exception& error) {
-    std::println(stderr, "collector_route_by_bytes_test: {}", error.what());
-    return 1;
-  }
-  std::println("collector_route_by_bytes_test: ok");
-  return 0;
+  return grparse_test::run_test_main("collector_route_by_bytes_test", "ok", {
+      verify_extension_less_names_route_by_bytes,
+      verify_a_name_that_says_something_keeps_its_say,
+      verify_plain_text_reads_as_markdown,
+  });
 }

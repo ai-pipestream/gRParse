@@ -14,15 +14,14 @@
 
 #include "ai/pipestream/office/v1/office_service.pb.h"
 #include "grparse/docling_map.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 namespace officev1 = ai::pipestream::office::v1;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 struct Series {
   std::string label;
@@ -410,19 +409,14 @@ void verify_repeat_runs_are_byte_identical() {
 }  // namespace
 
 int main() {
-  try {
-    verify_multi_series_bar_gets_one_annotation_per_series();
-    verify_single_series_bar_keeps_the_axis_title();
-    verify_pie_without_title_names_corner_from_sheet_and_mints_no_caption();
-    verify_presentation_pie_without_sheet_leaves_the_corner_blank();
-    verify_numeric_categories_and_typed_cells();
-    verify_unlabelled_series_get_positional_labels();
-    verify_chart_without_data_binds_an_empty_table_and_warns();
-    verify_repeat_runs_are_byte_identical();
-    std::println("chart-composite-test: all checks passed");
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "chart-composite-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("chart-composite-test", "all checks passed", {
+      verify_multi_series_bar_gets_one_annotation_per_series,
+      verify_single_series_bar_keeps_the_axis_title,
+      verify_pie_without_title_names_corner_from_sheet_and_mints_no_caption,
+      verify_presentation_pie_without_sheet_leaves_the_corner_blank,
+      verify_numeric_categories_and_typed_cells,
+      verify_unlabelled_series_get_positional_labels,
+      verify_chart_without_data_binds_an_empty_table_and_warns,
+      verify_repeat_runs_are_byte_identical,
+  });
 }

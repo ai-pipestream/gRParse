@@ -22,6 +22,7 @@
 #include "grparse/document_assembly.h"
 #include "grparse/document_parser_service.h"
 #include "grparse/page_scheduler.h"
+#include "support/check.h"
 
 namespace {
 
@@ -30,9 +31,7 @@ namespace docv1 = ai::pipestream::document::v1;
 namespace pdfv1 = ai::pipestream::pdf::v1;
 namespace pipestream = ai::pipestream;
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 class FakeSource final : public grparse::PageSource {
  public:
@@ -1686,39 +1685,37 @@ void verify_hybrid_chunk_rpc_merges_and_validates(TestServer* server) {
 }  // namespace
 
 int main() {
-  try {
-    TestServer server;
-    verify_ordered_page_stream(&server);
-    verify_data_after_complete_is_rejected(&server);
-    verify_unary_uses_scheduler_and_shared_assembly(&server);
-    verify_unsupported_options_are_rejected(&server);
-    verify_recognition_options_steer_the_cv_leg(&server);
-    verify_unary_multi_format_exports(&server);
-    verify_unary_zip_target_delivers_an_archive(&server);
-    verify_unary_unimplemented_targets_are_refused(&server);
-    verify_stream_resolves_recognition_options();
-    verify_unary_digital_path_bypasses_ocr();
-    verify_wide_page_window_streams_completely();
-    verify_deadline_cancels_scheduler_work();
-    verify_unary_storage_suffix_routes_in_process(&server);
-    verify_stream_storage_content_type_routes_in_process(&server);
-    verify_get_service_info(&server);
-    verify_unary_callback_path_admits_concurrent_conversions();
-    verify_unary_cancellation_finishes_without_wedging();
-    verify_pdf_fast_path_skips_the_cv_pipeline();
-    verify_pdf_classification_restricts_recognition();
-    verify_pdf_collector_failure_degrades_to_the_cv_path();
-    verify_queued_then_cancelled_call_never_dials_a_collector();
-    verify_streaming_pdf_fast_path_emits_the_collector_document();
-    verify_streaming_pdf_fast_path_projects_pages();
-    verify_streaming_pdf_fast_path_renders_previews();
-    verify_streaming_pdf_fast_path_skips_previews_when_off();
-    verify_streaming_pdf_classification_restricts_recognition();
-    verify_hierarchical_chunk_rpc_carries_digest_and_offsets(&server);
-    verify_hybrid_chunk_rpc_merges_and_validates(&server);
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "streaming-service-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("streaming-service-test", {
+      [] {
+        TestServer server;
+        verify_ordered_page_stream(&server);
+        verify_data_after_complete_is_rejected(&server);
+        verify_unary_uses_scheduler_and_shared_assembly(&server);
+        verify_unsupported_options_are_rejected(&server);
+        verify_recognition_options_steer_the_cv_leg(&server);
+        verify_unary_multi_format_exports(&server);
+        verify_unary_zip_target_delivers_an_archive(&server);
+        verify_unary_unimplemented_targets_are_refused(&server);
+        verify_stream_resolves_recognition_options();
+        verify_unary_digital_path_bypasses_ocr();
+        verify_wide_page_window_streams_completely();
+        verify_deadline_cancels_scheduler_work();
+        verify_unary_storage_suffix_routes_in_process(&server);
+        verify_stream_storage_content_type_routes_in_process(&server);
+        verify_get_service_info(&server);
+        verify_unary_callback_path_admits_concurrent_conversions();
+        verify_unary_cancellation_finishes_without_wedging();
+        verify_pdf_fast_path_skips_the_cv_pipeline();
+        verify_pdf_classification_restricts_recognition();
+        verify_pdf_collector_failure_degrades_to_the_cv_path();
+        verify_queued_then_cancelled_call_never_dials_a_collector();
+        verify_streaming_pdf_fast_path_emits_the_collector_document();
+        verify_streaming_pdf_fast_path_projects_pages();
+        verify_streaming_pdf_fast_path_renders_previews();
+        verify_streaming_pdf_fast_path_skips_previews_when_off();
+        verify_streaming_pdf_classification_restricts_recognition();
+        verify_hierarchical_chunk_rpc_carries_digest_and_offsets(&server);
+        verify_hybrid_chunk_rpc_merges_and_validates(&server);
+      },
+  });
 }

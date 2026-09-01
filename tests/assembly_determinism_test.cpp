@@ -22,14 +22,13 @@
 #include "grparse/document_assembly.h"
 #include "grparse/document_render.h"
 #include "grparse/document_repair.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 grparse::OcrLine line(std::string text, int left, int top, int right, int bottom) {
   return grparse::OcrLine{std::move(text),
@@ -193,14 +192,9 @@ void verify_repaired_assembly_is_byte_identical_and_settled() {
 }  // namespace
 
 int main() {
-  try {
-    verify_pinned_assembly_shape();
-    verify_assembly_is_byte_identical_across_runs();
-    verify_repaired_assembly_is_byte_identical_and_settled();
-  } catch (const std::exception& error) {
-    std::println(stderr, "assembly-determinism-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
-  std::println("assembly-determinism-test: ok");
-  return EXIT_SUCCESS;
+  return grparse_test::run_test_main("assembly-determinism-test", "ok", {
+      verify_pinned_assembly_shape,
+      verify_assembly_is_byte_identical_across_runs,
+      verify_repaired_assembly_is_byte_identical_and_settled,
+  });
 }

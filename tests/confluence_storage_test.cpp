@@ -8,14 +8,13 @@
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "grparse/confluence_storage.h"
 #include "grparse/docling_map.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 grparse::CollectorOutcome parse(const std::string& storage) {
   grparse::CollectorOutcome outcome = grparse::parse_confluence_storage(storage);
@@ -619,33 +618,28 @@ void verify_real_page_fixture_shape() {
 }  // namespace
 
 int main() {
-  try {
-    verify_routing_predicate();
-    verify_headings_map_by_level();
-    verify_uniform_and_mixed_formatting();
-    verify_inline_marks_and_scripts();
-    verify_hyperlinks_land_in_slot_and_custom_field();
-    verify_entities_and_cdata();
-    verify_lists_nest_and_carry_markers();
-    verify_table_headers_spans_and_grid();
-    verify_row_header_and_thead_section();
-    verify_out_of_range_span_is_clamped();
-    verify_oversized_table_keeps_cells_only();
-    verify_code_macro_language_mapping();
-    verify_list_item_blocks_attach_to_the_list();
-    verify_task_list_checkbox_states();
-    verify_panel_macro_marks_items();
-    verify_unknown_macro_body_survives();
-    verify_attachment_and_url_images();
-    verify_page_link_pointer();
-    verify_unknown_tags_descend_transparently();
-    verify_malformed_markup_recovers();
-    verify_empty_body_is_rejected();
-    verify_real_page_fixture_shape();
-    std::println("confluence-storage-test: all checks passed");
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "confluence-storage-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("confluence-storage-test", "all checks passed", {
+      verify_routing_predicate,
+      verify_headings_map_by_level,
+      verify_uniform_and_mixed_formatting,
+      verify_inline_marks_and_scripts,
+      verify_hyperlinks_land_in_slot_and_custom_field,
+      verify_entities_and_cdata,
+      verify_lists_nest_and_carry_markers,
+      verify_table_headers_spans_and_grid,
+      verify_row_header_and_thead_section,
+      verify_out_of_range_span_is_clamped,
+      verify_oversized_table_keeps_cells_only,
+      verify_code_macro_language_mapping,
+      verify_list_item_blocks_attach_to_the_list,
+      verify_task_list_checkbox_states,
+      verify_panel_macro_marks_items,
+      verify_unknown_macro_body_survives,
+      verify_attachment_and_url_images,
+      verify_page_link_pointer,
+      verify_unknown_tags_descend_transparently,
+      verify_malformed_markup_recovers,
+      verify_empty_body_is_rejected,
+      verify_real_page_fixture_shape,
+  });
 }

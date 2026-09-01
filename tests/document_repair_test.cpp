@@ -15,14 +15,13 @@
 #include <google/protobuf/util/message_differencer.h>
 
 #include "grparse/document_repair.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 docv1::Document base_document() {
   docv1::Document document;
@@ -664,28 +663,23 @@ void verify_totals_accumulate() {
 }  // namespace
 
 int main() {
-  try {
-    verify_running_header_demoted();
-    verify_page_numbers_demoted();
-    verify_section_header_in_band_not_demoted();
-    verify_page_spanning_paragraph_not_demoted();
-    verify_top_text_block_not_demoted();
-    verify_single_page_untouched();
-    verify_normalization_and_page_number_shapes();
-    verify_reference_years_are_not_page_numbers();
-    verify_hyphen_rejoin();
-    verify_continuation_merged_across_pages();
-    verify_continuation_applies_hyphen_rule();
-    verify_continuation_merges_within_a_page();
-    verify_side_by_side_captions_do_not_merge();
-    verify_next_page_caption_does_not_merge();
-    verify_continuation_not_merged();
-    verify_pass_is_idempotent();
-    verify_totals_accumulate();
-  } catch (const std::exception& error) {
-    std::println(stderr, "document-repair-test: {}", error.what());
-    return 1;
-  }
-  std::println("document-repair-test: ok");
-  return 0;
+  return grparse_test::run_test_main("document-repair-test", "ok", {
+      verify_running_header_demoted,
+      verify_page_numbers_demoted,
+      verify_section_header_in_band_not_demoted,
+      verify_page_spanning_paragraph_not_demoted,
+      verify_top_text_block_not_demoted,
+      verify_single_page_untouched,
+      verify_normalization_and_page_number_shapes,
+      verify_reference_years_are_not_page_numbers,
+      verify_hyphen_rejoin,
+      verify_continuation_merged_across_pages,
+      verify_continuation_applies_hyphen_rule,
+      verify_continuation_merges_within_a_page,
+      verify_side_by_side_captions_do_not_merge,
+      verify_next_page_caption_does_not_merge,
+      verify_continuation_not_merged,
+      verify_pass_is_idempotent,
+      verify_totals_accumulate,
+  });
 }

@@ -9,12 +9,11 @@
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "ai/pipestream/parse/v1/parse_stream.pb.h"
 #include "grparse/document_assembly.h"
+#include "support/check.h"
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 grparse::OcrLine line(std::string text, int top) {
   return grparse::OcrLine{std::move(text), {{10, top}, {90, top}, {90, top + 10}, {10, top + 10}},
@@ -646,28 +645,24 @@ void verify_recovered_rotation_reaches_page_quality() {
 }
 
 int main() {
-  try {
-    verify_contract_shape();
-    verify_offsets_and_provenance();
-    verify_layout_regions_map_labels_and_emit_items();
-    verify_every_region_label_reaches_the_document();
-    verify_headers_and_footers_are_furniture();
-    verify_structured_cells_override_geometry();
-    verify_captured_figure_bytes_become_image_refs();
-    verify_page_preview_becomes_page_image();
-    verify_barcode_payloads_become_misc_annotations();
-    verify_items_carry_collector_sources();
-    verify_region_lines_merge_into_one_item();
-    verify_unclaimed_table_line_stays_body_text();
-    verify_captions_attach_to_nearest_float();
-    verify_section_header_levels();
-    verify_numbered_section_header_levels();
-    verify_rotated_lines_keep_their_quad();
-    verify_body_order_and_column_anchoring();
-    verify_recovered_rotation_reaches_page_quality();
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "document-assembly-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("document-assembly-test", {
+      verify_contract_shape,
+      verify_offsets_and_provenance,
+      verify_layout_regions_map_labels_and_emit_items,
+      verify_every_region_label_reaches_the_document,
+      verify_headers_and_footers_are_furniture,
+      verify_structured_cells_override_geometry,
+      verify_captured_figure_bytes_become_image_refs,
+      verify_page_preview_becomes_page_image,
+      verify_barcode_payloads_become_misc_annotations,
+      verify_items_carry_collector_sources,
+      verify_region_lines_merge_into_one_item,
+      verify_unclaimed_table_line_stays_body_text,
+      verify_captions_attach_to_nearest_float,
+      verify_section_header_levels,
+      verify_numbered_section_header_levels,
+      verify_rotated_lines_keep_their_quad,
+      verify_body_order_and_column_anchoring,
+      verify_recovered_rotation_reaches_page_quality,
+  });
 }

@@ -11,12 +11,11 @@
 #include <grpcpp/support/status.h>
 
 #include "grparse/document_collectors.h"
+#include "support/check.h"
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 void verify_status_text() {
   const std::string with_message = grparse::collector_status_text(
@@ -32,12 +31,7 @@ void verify_status_text() {
 }  // namespace
 
 int main() {
-  try {
-    verify_status_text();
-  } catch (const std::exception& error) {
-    std::println(stderr, "document_collectors_status_test: {}", error.what());
-    return 1;
-  }
-  std::println("document_collectors_status_test: ok");
-  return 0;
+  return grparse_test::run_test_main("document_collectors_status_test", "ok", {
+      verify_status_text,
+  });
 }

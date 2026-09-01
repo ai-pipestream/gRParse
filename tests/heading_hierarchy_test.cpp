@@ -15,14 +15,13 @@
 #include <google/protobuf/util/message_differencer.h>
 
 #include "grparse/heading_hierarchy.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 grparse::HeaderHeight header(const std::string& ref, const std::string& text, double height,
                              int page, double top) {
@@ -327,20 +326,15 @@ void verify_producer_levels_win() {
 }  // namespace
 
 int main() {
-  try {
-    verify_numbering_depths();
-    verify_section_words();
-    verify_paper_levels();
-    verify_numbering_without_title();
-    verify_legacy_clustering();
-    verify_font_sizes_win_when_complete();
-    verify_document_title_merge_and_levels();
-    verify_prose_headings_demoted();
-    verify_producer_levels_win();
-  } catch (const std::exception& error) {
-    std::println(stderr, "heading-hierarchy-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
-  std::println("heading-hierarchy-test: ok");
-  return EXIT_SUCCESS;
+  return grparse_test::run_test_main("heading-hierarchy-test", "ok", {
+      verify_numbering_depths,
+      verify_section_words,
+      verify_paper_levels,
+      verify_numbering_without_title,
+      verify_legacy_clustering,
+      verify_font_sizes_win_when_complete,
+      verify_document_title_merge_and_levels,
+      verify_prose_headings_demoted,
+      verify_producer_levels_win,
+  });
 }

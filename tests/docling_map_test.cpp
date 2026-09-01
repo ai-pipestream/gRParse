@@ -8,15 +8,14 @@
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "ai/pipestream/office/v1/office_service.pb.h"
 #include "grparse/docling_map.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 namespace officev1 = ai::pipestream::office::v1;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 officev1::TextRun make_run(const std::string& text, long long offset = 0) {
   officev1::TextRun run;
@@ -1348,42 +1347,37 @@ void verify_sheet_header_rows_are_marked() {
 }  // namespace
 
 int main() {
-  try {
-    verify_fresh_mapper_builds_valid_skeleton();
-    verify_document_info_maps_identity_and_pages();
-    verify_unknown_extension_falls_back_to_octet_stream();
-    verify_status_finishes_and_keeps_warnings();
-    verify_unset_event_is_ignored();
-    verify_paragraph_classification();
-    verify_line_prov_is_page_local_with_charspans();
-    verify_unknown_page_rect_warns_instead_of_stamping_silently();
-    verify_caret_prov_fallback_and_unresolved_page();
-    verify_uniform_formatting_and_hyperlinks();
-    verify_table_fold_grid_and_off_grid_cells();
-    verify_out_of_grid_cell_offsets_do_not_write_the_grid();
-    verify_huge_grid_keeps_cells_only();
-    verify_sheet_rows_fold_into_the_sheet_table();
-    verify_row_for_unknown_sheet_is_dropped();
-    verify_hidden_sheet_maps_to_invisible_layer();
-    verify_metadata_maps_name_language_and_fields();
-    verify_header_footer_lands_in_furniture();
-    verify_per_page_style();
-    verify_take_moves_the_document_out();
-    verify_integrity_errors_flag_broken_references();
-    verify_integrity_errors_cover_the_form_arenas();
-    verify_sheet_chart_pairs_with_its_embedded_object();
-    verify_sheet_chart_without_object_folds_the_sheet_cells();
-    verify_unplaced_chart_flushes_under_its_sheet_at_the_end();
-    verify_slide_ole_shape_places_the_chart();
-    verify_writer_chart_binds_on_arrival();
-    verify_sheet_header_rows_are_marked();
-    verify_inline_pictures_take_their_anchor_paragraphs_place();
-    verify_unanchored_picture_still_trails_the_body();
-    verify_slide_titles_after_the_first_are_section_headings();
-    std::println("docling-map-test: all checks passed");
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "docling-map-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("docling-map-test", "all checks passed", {
+      verify_fresh_mapper_builds_valid_skeleton,
+      verify_document_info_maps_identity_and_pages,
+      verify_unknown_extension_falls_back_to_octet_stream,
+      verify_status_finishes_and_keeps_warnings,
+      verify_unset_event_is_ignored,
+      verify_paragraph_classification,
+      verify_line_prov_is_page_local_with_charspans,
+      verify_unknown_page_rect_warns_instead_of_stamping_silently,
+      verify_caret_prov_fallback_and_unresolved_page,
+      verify_uniform_formatting_and_hyperlinks,
+      verify_table_fold_grid_and_off_grid_cells,
+      verify_out_of_grid_cell_offsets_do_not_write_the_grid,
+      verify_huge_grid_keeps_cells_only,
+      verify_sheet_rows_fold_into_the_sheet_table,
+      verify_row_for_unknown_sheet_is_dropped,
+      verify_hidden_sheet_maps_to_invisible_layer,
+      verify_metadata_maps_name_language_and_fields,
+      verify_header_footer_lands_in_furniture,
+      verify_per_page_style,
+      verify_take_moves_the_document_out,
+      verify_integrity_errors_flag_broken_references,
+      verify_integrity_errors_cover_the_form_arenas,
+      verify_sheet_chart_pairs_with_its_embedded_object,
+      verify_sheet_chart_without_object_folds_the_sheet_cells,
+      verify_unplaced_chart_flushes_under_its_sheet_at_the_end,
+      verify_slide_ole_shape_places_the_chart,
+      verify_writer_chart_binds_on_arrival,
+      verify_sheet_header_rows_are_marked,
+      verify_inline_pictures_take_their_anchor_paragraphs_place,
+      verify_unanchored_picture_still_trails_the_body,
+      verify_slide_titles_after_the_first_are_section_headings,
+  });
 }

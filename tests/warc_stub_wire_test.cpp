@@ -20,14 +20,13 @@
 #include <google/protobuf/util/time_util.h>
 
 #include "fastwarc/v1/warc_service.pb.h"
+#include "support/check.h"
 
 namespace warcv1 = fastwarc::v1;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 // ---- longhand wire-format writers ------------------------------------------
 //
@@ -261,16 +260,11 @@ void verify_contract_shape() {
 }  // namespace
 
 int main() {
-  try {
-    verify_literal_record_metadata_bytes();
-    verify_full_record_metadata_wire();
-    verify_payload_chunk_and_record_end_wire();
-    verify_response_envelope_wire();
-    verify_contract_shape();
-  } catch (const std::exception& failure) {
-    std::println(stderr, "FAILED: {}", failure.what());
-    return 1;
-  }
-  std::println("warc stub wire test passed");
-  return 0;
+  return grparse_test::run_test_main({.on_failure = "FAILED", .on_success = "warc stub wire test passed"}, {
+      verify_literal_record_metadata_bytes,
+      verify_full_record_metadata_wire,
+      verify_payload_chunk_and_record_end_wire,
+      verify_response_envelope_wire,
+      verify_contract_shape,
+  });
 }

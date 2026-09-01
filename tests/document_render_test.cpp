@@ -8,14 +8,13 @@
 
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "grparse/document_render.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 void require_contains(const std::string& haystack, const std::string& needle,
                       const std::string& message) {
@@ -999,29 +998,25 @@ void verify_json_preserves_field_names_and_round_trips() {
 }  // namespace
 
 int main() {
-  try {
-    verify_markdown_renders_every_item_type();
-    verify_markdown_reconstructs_grid_from_flat_cells();
-    verify_markdown_multiline_cells_stay_single_line();
-    verify_markdown_escaping_marker_and_formatting_rules();
-    verify_markdown_custom_meta_field_order();
-    verify_html_renders_structure_and_escapes();
-    verify_non_body_layers_are_excluded();
-    verify_captions_render_once();
-    verify_picture_descriptions_surface_in_exports();
-    verify_doctags_renders_every_item_type();
-    verify_doctags_otsl_spans_and_locations();
-    verify_doclang_renders_grpc_xml_vocabulary();
-    verify_doclang_escapes_xml_content();
-    verify_vtt_renders_timed_cues();
-    verify_split_page_assigns_by_provenance();
-    verify_split_page_without_provenance_is_one_page();
-    verify_yaml_matches_json_structure();
-    verify_empty_document_renders();
-    verify_json_preserves_field_names_and_round_trips();
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "document-render-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("document-render-test", {
+      verify_markdown_renders_every_item_type,
+      verify_markdown_reconstructs_grid_from_flat_cells,
+      verify_markdown_multiline_cells_stay_single_line,
+      verify_markdown_escaping_marker_and_formatting_rules,
+      verify_markdown_custom_meta_field_order,
+      verify_html_renders_structure_and_escapes,
+      verify_non_body_layers_are_excluded,
+      verify_captions_render_once,
+      verify_picture_descriptions_surface_in_exports,
+      verify_doctags_renders_every_item_type,
+      verify_doctags_otsl_spans_and_locations,
+      verify_doclang_renders_grpc_xml_vocabulary,
+      verify_doclang_escapes_xml_content,
+      verify_vtt_renders_timed_cues,
+      verify_split_page_assigns_by_provenance,
+      verify_split_page_without_provenance_is_one_page,
+      verify_yaml_matches_json_structure,
+      verify_empty_document_renders,
+      verify_json_preserves_field_names_and_round_trips,
+  });
 }

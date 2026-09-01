@@ -4,17 +4,15 @@
 #include <stdexcept>
 #include <string>
 
+#include "ai/pipestream/parse/v1/parse_stream.pb.h"
+#include "grparse/document_assembly.h"
 #include "grparse/ocr_types.h"
 #include "grparse/text_geometry.h"
-#include "grparse/document_assembly.h"
-
-#include "ai/pipestream/parse/v1/parse_stream.pb.h"
+#include "support/check.h"
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 grparse::OcrLine make_line(std::string text, int left, int top, int right, int bottom,
                            grparse::TextOrigin origin, float confidence = 0.8F) {
@@ -211,15 +209,11 @@ void verify_read_quality_candidates_and_ranking() {
 }
 
 int main() {
-  try {
-    verify_iou_and_overlap();
-    verify_extreme_coordinates_do_not_overflow();
-    verify_merge_dedupes_and_sorts();
-    verify_rotation_vote();
-    verify_read_quality_candidates_and_ranking();
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "text-geometry-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("text-geometry-test", {
+      verify_iou_and_overlap,
+      verify_extreme_coordinates_do_not_overflow,
+      verify_merge_dedupes_and_sorts,
+      verify_rotation_vote,
+      verify_read_quality_candidates_and_ranking,
+  });
 }

@@ -13,14 +13,13 @@
 
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "grparse/docling_map.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 docv1::TextItemBase* add_paragraph(docv1::Document* document, const std::string& text) {
   const std::string ref = "#/texts/" + std::to_string(document->texts_size());
@@ -93,14 +92,9 @@ void verify_a_page_plane_item_still_needs_a_page() {
 }  // namespace
 
 int main() {
-  try {
-    verify_line_addressed_provenance_is_page_less();
-    verify_page_destinations_resolve();
-    verify_a_page_plane_item_still_needs_a_page();
-  } catch (const std::exception& error) {
-    std::println(stderr, "docling_integrity_destinations_test: {}", error.what());
-    return 1;
-  }
-  std::println("docling_integrity_destinations_test: ok");
-  return 0;
+  return grparse_test::run_test_main("docling_integrity_destinations_test", "ok", {
+      verify_line_addressed_provenance_is_page_less,
+      verify_page_destinations_resolve,
+      verify_a_page_plane_item_still_needs_a_page,
+  });
 }

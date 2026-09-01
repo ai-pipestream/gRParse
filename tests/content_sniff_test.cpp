@@ -9,14 +9,13 @@
 
 #include "grparse/confluence_storage.h"
 #include "grparse/content_sniff.h"
+#include "support/check.h"
 
 namespace fs = std::filesystem;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 void require_sniff(const std::string& bytes, const std::string& expected,
                    const std::string& what) {
@@ -208,17 +207,12 @@ void verify_corpus_fixtures() {
 }  // namespace
 
 int main() {
-  try {
-    verify_container_signatures();
-    verify_binary_signatures();
-    verify_text_signatures();
-    verify_extension_map();
-    verify_resolution_order();
-    verify_corpus_fixtures();
-    std::println("content-sniff-test: all checks passed");
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "content-sniff-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("content-sniff-test", "all checks passed", {
+      verify_container_signatures,
+      verify_binary_signatures,
+      verify_text_signatures,
+      verify_extension_map,
+      verify_resolution_order,
+      verify_corpus_fixtures,
+  });
 }

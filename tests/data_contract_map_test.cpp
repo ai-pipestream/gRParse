@@ -22,6 +22,7 @@
 #include "grparse/data_totals.h"
 #include "grparse/docling_map.h"
 #include "grparse/document_render.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 namespace officev1 = ai::pipestream::office::v1;
@@ -35,9 +36,7 @@ const auto integrity_errors = [](const docv1::Document& document) {
   return grparse::docling_integrity_errors(document);
 };
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 // ---- event builders -------------------------------------------------------
 
@@ -490,16 +489,11 @@ void verify_identical_streams_fold_to_identical_bytes() {
 }  // namespace
 
 int main() {
-  try {
-    verify_the_chart_composite_is_exactly_one_of_each();
-    verify_sheet_header_marking_keeps_the_spans();
-    verify_inline_drawings_keep_their_place_and_their_types();
-    verify_the_only_colon_key_is_the_unplaceable_cell_escape();
-    verify_identical_streams_fold_to_identical_bytes();
-  } catch (const std::exception& error) {
-    std::println(stderr, "data-contract-map-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
-  std::println("data-contract-map-test: ok");
-  return EXIT_SUCCESS;
+  return grparse_test::run_test_main("data-contract-map-test", "ok", {
+      verify_the_chart_composite_is_exactly_one_of_each,
+      verify_sheet_header_marking_keeps_the_spans,
+      verify_inline_drawings_keep_their_place_and_their_types,
+      verify_the_only_colon_key_is_the_unplaceable_cell_escape,
+      verify_identical_streams_fold_to_identical_bytes,
+  });
 }

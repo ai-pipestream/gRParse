@@ -9,12 +9,11 @@
 
 #include "grparse/region_geometry.h"
 #include "grparse/table_structure.h"
+#include "support/check.h"
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 grparse::OcrLine line_at(std::string text, int left, int top, int width = 100, int height = 20) {
   return grparse::OcrLine{std::move(text),
@@ -172,16 +171,12 @@ void verify_determinism() {
 }  // namespace
 
 int main() {
-  try {
-    verify_simple_grid();
-    verify_word_spacing_and_blank_cells();
-    verify_line_binding();
-    verify_multi_table_pages();
-    verify_region_crops();
-    verify_determinism();
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "table-structure-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("table-structure-test", {
+      verify_simple_grid,
+      verify_word_spacing_and_blank_cells,
+      verify_line_binding,
+      verify_multi_table_pages,
+      verify_region_crops,
+      verify_determinism,
+  });
 }

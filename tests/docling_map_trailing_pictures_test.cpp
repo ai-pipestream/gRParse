@@ -14,6 +14,7 @@
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "ai/pipestream/office/v1/office_service.pb.h"
 #include "grparse/docling_map.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 namespace officev1 = ai::pipestream::office::v1;
@@ -22,9 +23,7 @@ namespace {
 
 constexpr long long kPageHeight = 16838;
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 officev1::StreamPagesResponse info_event(int pages) {
   officev1::StreamPagesResponse event;
@@ -192,15 +191,10 @@ void verify_two_trailing_pictures_on_one_page_keep_their_order() {
 }  // namespace
 
 int main() {
-  try {
-    verify_trailing_pictures_are_placed_by_page_and_position();
-    verify_pictures_in_order_stay_where_the_fold_put_them();
-    verify_slotted_pictures_keep_their_paragraphs_place();
-    verify_two_trailing_pictures_on_one_page_keep_their_order();
-  } catch (const std::exception& error) {
-    std::println(stderr, "docling_map_trailing_pictures_test: {}", error.what());
-    return 1;
-  }
-  std::println("docling_map_trailing_pictures_test: ok");
-  return 0;
+  return grparse_test::run_test_main("docling_map_trailing_pictures_test", "ok", {
+      verify_trailing_pictures_are_placed_by_page_and_position,
+      verify_pictures_in_order_stay_where_the_fold_put_them,
+      verify_slotted_pictures_keep_their_paragraphs_place,
+      verify_two_trailing_pictures_on_one_page_keep_their_order,
+  });
 }

@@ -28,14 +28,13 @@
 #include "grparse/document_collectors.h"
 #include "grparse/document_merge.h"
 #include "grparse/office_cv_enrichment.h"
+#include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 // The four words the resolution may rest on; anything else is a new
 // vocabulary a reader was never told about.
@@ -230,15 +229,10 @@ void verify_the_disabled_enrichment_leg_is_a_total_no_op() {
 }  // namespace
 
 int main() {
-  try {
-    verify_the_mimetype_ladder_is_stamped_on_the_origin();
-    verify_the_evidence_rides_as_a_typed_claim();
-    verify_a_metadata_title_becomes_one_attributed_title_item();
-    verify_the_disabled_enrichment_leg_is_a_total_no_op();
-  } catch (const std::exception& error) {
-    std::println(stderr, "data-contract-origin-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
-  std::println("data-contract-origin-test: ok");
-  return EXIT_SUCCESS;
+  return grparse_test::run_test_main("data-contract-origin-test", "ok", {
+      verify_the_mimetype_ladder_is_stamped_on_the_origin,
+      verify_the_evidence_rides_as_a_typed_claim,
+      verify_a_metadata_title_becomes_one_attributed_title_item,
+      verify_the_disabled_enrichment_leg_is_a_total_no_op,
+  });
 }

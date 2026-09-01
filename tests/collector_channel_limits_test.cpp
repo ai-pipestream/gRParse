@@ -14,12 +14,11 @@
 #include <grpcpp/support/channel_arguments.h>
 
 #include "grparse/document_parser_service.h"
+#include "support/check.h"
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 int integer_argument(const grpc::ChannelArguments& arguments, const char* key) {
   const grpc_channel_args args = arguments.c_channel_args();
@@ -43,12 +42,7 @@ void verify_limits() {
 }  // namespace
 
 int main() {
-  try {
-    verify_limits();
-  } catch (const std::exception& error) {
-    std::println(stderr, "collector_channel_limits_test: {}", error.what());
-    return 1;
-  }
-  std::println("collector_channel_limits_test: ok");
-  return 0;
+  return grparse_test::run_test_main("collector_channel_limits_test", "ok", {
+      verify_limits,
+  });
 }

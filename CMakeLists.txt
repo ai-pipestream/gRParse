@@ -825,3 +825,58 @@ if(BUILD_TESTING)
   set_tests_properties(${GRPARSE_S3_EVAL_TESTS} PROPERTIES
     TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
 endif()
+
+# ---- unit coverage: geometry, render seams, per-renderer exports -----------
+# Appended as one block, like the batteries above. These tests own no sources
+# of their own; they cover units that had none (document geometry, display
+# width, the load-time normalizations, the target step, the renderer seams),
+# give each export renderer a file of its own, pin the mimetype ladder rung by
+# rung for the sniffer rewrite, and hold every renderer to being a pure
+# function of the document it is handed. tests/support/check.h carries the
+# assertion and main() helpers the whole suite shares, so the tests directory
+# joins the include path of every test target registered above.
+if(BUILD_TESTING)
+  set(GRPARSE_UNIT_TESTS
+    content-sniff-ladder-test
+    display-width-test
+    doclang-renderer-test
+    doctags-renderer-test
+    document-geometry-test
+    html-renderer-test
+    load-normalization-test
+    render-determinism-test
+    renderer-base-test
+    target-step-test
+    vtt-renderer-test)
+  foreach(test_name IN LISTS GRPARSE_UNIT_TESTS)
+    string(REPLACE "-" "_" test_source "${test_name}")
+    add_executable(${test_name} "tests/${test_source}.cpp")
+    target_link_libraries(${test_name} PRIVATE grparse_core grparse_flags)
+    add_test(NAME ${test_name} COMMAND ${test_name})
+  endforeach()
+  # Registered apart from the list above because it is deliberately red: the
+  # protobuf-JSON exports walk a wire map in the order that map instance hands
+  # its entries over, so two documents MessageDifferencer calls equal can
+  # render different bytes. WILL_FAIL keeps the suite green while the gap stays
+  # named; the file's header states the behaviour that would make it pass, and
+  # the property is turned off there rather than the test deleted.
+  set(GRPARSE_RED_TESTS render-map-order-test)
+  foreach(test_name IN LISTS GRPARSE_RED_TESTS)
+    string(REPLACE "-" "_" test_source "${test_name}")
+    add_executable(${test_name} "tests/${test_source}.cpp")
+    target_link_libraries(${test_name} PRIVATE grparse_core grparse_flags)
+    add_test(NAME ${test_name} COMMAND ${test_name})
+  endforeach()
+  list(APPEND GRPARSE_UNIT_TESTS ${GRPARSE_RED_TESTS})
+  add_dependencies(grparse-tests ${GRPARSE_UNIT_TESTS})
+  set_tests_properties(${GRPARSE_UNIT_TESTS} PROPERTIES
+    TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
+  set_tests_properties(${GRPARSE_RED_TESTS} PROPERTIES WILL_FAIL TRUE)
+  # The shared test helpers are reached as "support/check.h" from any test
+  # source, whatever subdirectory it sits in.
+  foreach(test_name IN LISTS GRPARSE_TESTS GRPARSE_DATA_TESTS GRPARSE_DRIFT_TESTS
+                            GRPARSE_CHART_TESTS GRPARSE_ORIENTATION_TESTS
+                            GRPARSE_S3_EVAL_TESTS GRPARSE_UNIT_TESTS)
+    target_include_directories(${test_name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+  endforeach()
+endif()

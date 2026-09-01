@@ -28,6 +28,7 @@
 #include "grparse/document_collectors.h"
 #include "grparse/document_parser_service.h"
 #include "lolhtml/v1/lolhtml_service.grpc.pb.h"
+#include "support/check.h"
 
 namespace asrv1 = ai::pipestream::asr::v1;
 namespace docv1 = ai::pipestream::document::v1;
@@ -43,9 +44,7 @@ namespace xmlv1 = ai::pipestream::xml::v1;
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 // The one-item Document every fake serves; the clients must carry it across
 // unchanged, because the fold already happened in the collector.
@@ -1512,44 +1511,39 @@ void verify_source_title_promotes_to_a_title_item() {
 }
 
 int main() {
-  try {
-    verify_source_title_promotes_to_a_title_item();
-    verify_asr_collects_document();
-    verify_transport_class_collapses_to_unavailable();
-    verify_email_collects_document_and_warnings();
-    verify_missing_trailer_fails();
-    verify_xml_collects_document_and_formats_warnings();
-    verify_caller_status_classes_survive();
-    verify_inbound_deadline_bounds_a_hanging_collector();
-    verify_ebcdic_forwards_layout_and_collects();
-    verify_ebcdic_without_layout_never_dials();
-    verify_epub_collects_document();
-    verify_missing_document_event_fails();
-    verify_epub_book_folds_chapters_and_images();
-    verify_epub_book_without_markup_keeps_the_skeleton();
-    verify_epub_book_survives_a_failing_chapter();
-    verify_markup_forwards_hint_and_collects();
-    verify_lol_html_forwards_rules_and_folds();
-    verify_lol_html_without_rules_never_dials();
-    verify_lol_html_in_band_error_is_terminal();
-    verify_lol_html_captures_page_identity();
-    verify_fastwarc_folds_records_and_warnings();
-    verify_fastwarc_captures_web_provenance();
-    verify_fastwarc_response_supersedes_the_request_record();
-    verify_fastwarc_framing_error_keeps_records();
-    verify_fastwarc_transport_failure_without_records();
-    verify_fastwarc_truncates_payload_text();
-    verify_pdf_collects_document_classification_and_warnings();
-    verify_pdf_scanned_reports_the_ocr_page_set();
-    verify_pdf_routing_decision_logic();
-    verify_pdf_encoding_issues_defeat_the_fast_path();
-    verify_pdf_collector_failure_is_an_outcome();
-    verify_pdf_endpoint_configuration();
-    verify_pdf_plain_leg_returns_the_document();
-  } catch (const std::exception& failure) {
-    std::println(stderr, "FAILED: {}", failure.what());
-    return 1;
-  }
-  std::println("document collectors test passed");
-  return 0;
+  return grparse_test::run_test_main({.on_failure = "FAILED", .on_success = "document collectors test passed"}, {
+      verify_source_title_promotes_to_a_title_item,
+      verify_asr_collects_document,
+      verify_transport_class_collapses_to_unavailable,
+      verify_email_collects_document_and_warnings,
+      verify_missing_trailer_fails,
+      verify_xml_collects_document_and_formats_warnings,
+      verify_caller_status_classes_survive,
+      verify_inbound_deadline_bounds_a_hanging_collector,
+      verify_ebcdic_forwards_layout_and_collects,
+      verify_ebcdic_without_layout_never_dials,
+      verify_epub_collects_document,
+      verify_missing_document_event_fails,
+      verify_epub_book_folds_chapters_and_images,
+      verify_epub_book_without_markup_keeps_the_skeleton,
+      verify_epub_book_survives_a_failing_chapter,
+      verify_markup_forwards_hint_and_collects,
+      verify_lol_html_forwards_rules_and_folds,
+      verify_lol_html_without_rules_never_dials,
+      verify_lol_html_in_band_error_is_terminal,
+      verify_lol_html_captures_page_identity,
+      verify_fastwarc_folds_records_and_warnings,
+      verify_fastwarc_captures_web_provenance,
+      verify_fastwarc_response_supersedes_the_request_record,
+      verify_fastwarc_framing_error_keeps_records,
+      verify_fastwarc_transport_failure_without_records,
+      verify_fastwarc_truncates_payload_text,
+      verify_pdf_collects_document_classification_and_warnings,
+      verify_pdf_scanned_reports_the_ocr_page_set,
+      verify_pdf_routing_decision_logic,
+      verify_pdf_encoding_issues_defeat_the_fast_path,
+      verify_pdf_collector_failure_is_an_outcome,
+      verify_pdf_endpoint_configuration,
+      verify_pdf_plain_leg_returns_the_document,
+  });
 }

@@ -22,12 +22,11 @@
 #include <opencv2/core.hpp>
 
 #include "grparse/in_memory_document.h"
+#include "support/check.h"
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 std::string pdf_object(int number, const std::string& body) {
   return std::to_string(number) + " 0 obj\n" + body + "\nendobj\n";
@@ -143,13 +142,8 @@ void verify_independent_sources_survive_concurrency() {
 }  // namespace
 
 int main() {
-  try {
-    verify_shared_source_survives_concurrency();
-    verify_independent_sources_survive_concurrency();
-  } catch (const std::exception& error) {
-    std::println(stderr, "FAILED: {}", error.what());
-    return EXIT_FAILURE;
-  }
-  std::println("pdf source concurrency test passed");
-  return EXIT_SUCCESS;
+  return grparse_test::run_test_main({.on_failure = "FAILED", .on_success = "pdf source concurrency test passed"}, {
+      verify_shared_source_survives_concurrency,
+      verify_independent_sources_survive_concurrency,
+  });
 }

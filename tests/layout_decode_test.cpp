@@ -9,12 +9,11 @@
 #include <vector>
 
 #include "grparse/layout_decode.h"
+#include "support/check.h"
 
 namespace {
 
-void require(bool condition, const std::string& message) {
-  if (!condition) throw std::runtime_error(message);
-}
+using grparse_test::require;
 
 constexpr int kPageWidth = 1000;
 constexpr int kPageHeight = 1400;
@@ -214,21 +213,17 @@ void verify_null_inputs_are_rejected() {
 }  // namespace
 
 int main() {
-  try {
-    verify_label_set();
-    verify_model_selection();
-    verify_engine_score_gate();
-    verify_per_label_gates();
-    verify_title_remap();
-    verify_boxes_clip_to_the_page();
-    verify_boxes_are_page_pixels();
-    verify_deterministic_order();
-    verify_unknown_class_ids_are_ignored();
-    verify_every_label_decodes();
-    verify_null_inputs_are_rejected();
-    return EXIT_SUCCESS;
-  } catch (const std::exception& error) {
-    std::println(stderr, "layout-decode-test: {}", error.what());
-    return EXIT_FAILURE;
-  }
+  return grparse_test::run_test_main("layout-decode-test", {
+      verify_label_set,
+      verify_model_selection,
+      verify_engine_score_gate,
+      verify_per_label_gates,
+      verify_title_remap,
+      verify_boxes_clip_to_the_page,
+      verify_boxes_are_page_pixels,
+      verify_deterministic_order,
+      verify_unknown_class_ids_are_ignored,
+      verify_every_label_decodes,
+      verify_null_inputs_are_rejected,
+  });
 }
