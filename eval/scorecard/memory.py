@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 import subprocess
 import urllib.request
-from typing import Callable
+from collections.abc import Callable
 
 RSS_METRIC = "process_resident_memory_bytes"
 CONTAINER = "parse-stack-grparse-1"

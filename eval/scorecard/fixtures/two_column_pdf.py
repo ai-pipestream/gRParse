@@ -147,7 +147,7 @@ def body_paragraph(index: int, text: str, note_numbers: dict[int, int]) -> str:
 
 def render(paragraphs: list[str]) -> str:
     note_numbers = {index: n for n, index in enumerate(sorted(FOOTNOTES), start=1)}
-    lines = [f'<?xml version="1.0" encoding="UTF-8"?>', f"<office:document {NAMESPACES}>",
+    lines = ['<?xml version="1.0" encoding="UTF-8"?>', f"<office:document {NAMESPACES}>",
              STYLES.replace("{header}", escape(HEADER)), " <office:body>", "  <office:text>",
              f'  <text:p text:style-name="Title">{escape(TITLE)}</text:p>',
              f'  <text:p text:style-name="Byline">{escape(BYLINE)}</text:p>',

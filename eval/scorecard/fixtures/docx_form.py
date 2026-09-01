@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from docx import Document
@@ -21,7 +21,7 @@ from docx.shared import Pt
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_OUT = HERE.parents[2] / "tests" / "golden" / "corpus"
-FIXED_TIME = datetime(2000, 1, 1, tzinfo=timezone.utc)
+FIXED_TIME = datetime(2000, 1, 1, tzinfo=UTC)
 EMPTY, CHECKED = "☐", "☒"
 
 FIELDS = (

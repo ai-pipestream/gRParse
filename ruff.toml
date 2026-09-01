@@ -1,0 +1,11 @@
+# Lint for the Python under eval/ (uvx ruff check eval/). The C++ and the
+# TypeScript have their own gates (the docker build with -Werror, tsc).
+line-length = 120
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+# E501: the eval code favours one long readable line over a wrapped one.
+# B905: zip() over parallel lists whose lengths the caller already checked;
+# strict=True would change behaviour where they differ on purpose.
+ignore = ["E501", "B905"]

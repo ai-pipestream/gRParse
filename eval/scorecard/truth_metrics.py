@@ -26,8 +26,9 @@ from __future__ import annotations
 
 import unicodedata
 from bisect import bisect_left
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any
 
 # curly quotes, en and em dashes, soft hyphen
 QUOTES = {"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"', "\u2013": "-", "\u2014": "-", "\u00ad": ""}

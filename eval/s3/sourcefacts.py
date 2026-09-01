@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import csv
 import html
-from html.parser import HTMLParser
 import io
 import re
 import zipfile
 from dataclasses import dataclass, field
+from html.parser import HTMLParser
 from typing import Any
 from xml.etree import ElementTree
 

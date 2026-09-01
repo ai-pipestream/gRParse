@@ -17,6 +17,7 @@ if str(EVAL_DIR) not in sys.path:
     sys.path.insert(0, str(EVAL_DIR))
 
 from scorecard.client import ConvertResult, ServiceInfo  # noqa: E402
+
 from s3.checks import ObjectContext  # noqa: E402
 from s3.document import View  # noqa: E402
 from s3.source import ObjectRef  # noqa: E402
@@ -27,8 +28,8 @@ LIBRE = [{"collector": {"collector": "libreoffice", "model": "writer"}}]
 CV = [{"collector": {"collector": "grparse", "model": "rapidocr"}}]
 
 
-def prov(page: int, l: float, t: float, r: float, b: float) -> dict[str, Any]:
-    return {"page_no": page, "bbox": {"l": l, "t": t, "r": r, "b": b, "coord_origin": "COORD_ORIGIN_TOPLEFT"}}
+def prov(page: int, left: float, top: float, right: float, bottom: float) -> dict[str, Any]:
+    return {"page_no": page, "bbox": {"l": left, "t": top, "r": right, "b": bottom, "coord_origin": "COORD_ORIGIN_TOPLEFT"}}
 
 
 class Builder:
@@ -47,7 +48,7 @@ class Builder:
                       + [{"source": {"collector": c}, "source_meta": {"title": "T"}} for c in collectors],
         }
 
-    def page(self, number: int, width: float = 12240, height: float = 15840) -> "Builder":
+    def page(self, number: int, width: float = 12240, height: float = 15840) -> Builder:
         self.doc["pages"][str(number)] = {"page_no": number, "size": {"width": width, "height": height}, "unit": "twip"}
         return self
 
@@ -286,7 +287,7 @@ class FakeClient:
         # The service dies (service_info fails too) after this many conversions.
         self.die_after = die_after
 
-    def __enter__(self) -> "FakeClient":
+    def __enter__(self) -> FakeClient:
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -302,6 +303,7 @@ class FakeClient:
     def convert_bytes(self, data: bytes, filename: str, *, formats=(), collectors=(), ebcdic_layout_json=None,
                       timeout=None):
         from scorecard.client import Unreachable
+
         from s3.formats import extension_of
 
         self.calls.append((filename, tuple(collectors), ebcdic_layout_json))

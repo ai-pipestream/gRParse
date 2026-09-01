@@ -93,7 +93,7 @@ def test_fixture_digests_match_the_pinned_manifest() -> None:
                          f"found {digest[:12]} ({len(data)} bytes)")
     assert not moved, (
         "corpus fixtures changed byte for byte, so every recorded baseline and truth "
-        f"floor now describes different bytes:\n  " + "\n  ".join(moved) + f"\n{REGENERATE}"
+        "floor now describes different bytes:\n  " + "\n  ".join(moved) + f"\n{REGENERATE}"
     )
 
 

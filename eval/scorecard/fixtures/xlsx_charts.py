@@ -16,7 +16,7 @@ are painted to PNG there with matplotlib (needs ``--with matplotlib``).
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -30,7 +30,7 @@ if str(HERE) not in sys.path:
 from chart_data import BAR, CHARTS, LINE, PIE, ChartSpec, normalize_zip, render_charts  # noqa: E402
 
 DEFAULT_OUT = HERE.parents[2] / "tests" / "golden" / "corpus"
-FIXED_TIME = datetime(2000, 1, 1, tzinfo=timezone.utc)
+FIXED_TIME = datetime(2000, 1, 1, tzinfo=UTC)
 CHART_ANCHOR = "E2"
 
 

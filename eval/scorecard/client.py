@@ -74,7 +74,7 @@ class GrparseClient:
         self._parse_pb2 = None
         self._parse_types_pb2 = None
 
-    def __enter__(self) -> "GrparseClient":
+    def __enter__(self) -> GrparseClient:
         import grpc
 
         self._staged = tempfile.TemporaryDirectory()

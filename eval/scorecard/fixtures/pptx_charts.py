@@ -16,7 +16,7 @@ embedded workbook through xlsxwriter, which offers no clock hook).
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pptx import Presentation
@@ -31,7 +31,7 @@ if str(HERE) not in sys.path:
 from chart_data import BAR, LINE, PIE, ChartSpec, normalize_zip  # noqa: E402
 
 DEFAULT_OUT = HERE.parents[2] / "tests" / "golden" / "corpus"
-FIXED_TIME = datetime(2000, 1, 1, tzinfo=timezone.utc)
+FIXED_TIME = datetime(2000, 1, 1, tzinfo=UTC)
 DECK_TITLE = "Charts Fixture Deck"
 SUBTITLE = "Three chart slides: a column chart, a pie chart and a line chart"
 

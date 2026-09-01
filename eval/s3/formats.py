@@ -7,7 +7,8 @@ declaration gRParse sees, and the origin must agree with it.
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 # Extension (without the dot, lower-case, compound suffixes kept) to the
 # mimetype the extension declares. Mirror of content_sniff.cpp plus the

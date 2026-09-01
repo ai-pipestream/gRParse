@@ -12,7 +12,7 @@ come from a fixed arithmetic rule, never from random numbers.
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -21,7 +21,7 @@ from openpyxl.utils import get_column_letter
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_OUT = HERE.parents[2] / "tests" / "golden" / "corpus"
-FIXED_TIME = datetime(2000, 1, 1, tzinfo=timezone.utc)
+FIXED_TIME = datetime(2000, 1, 1, tzinfo=UTC)
 SHEETS = 60
 WIDE_COLUMNS = 40
 WIDE_ROWS = 12

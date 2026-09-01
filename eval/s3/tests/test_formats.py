@@ -1,5 +1,4 @@
-from s3.formats import (acceptable_mimetypes, extension_of, family_of, parser_type, pdf_has_text_layer,
-                        strip_extension)
+from s3.formats import acceptable_mimetypes, extension_of, family_of, parser_type, pdf_has_text_layer, strip_extension
 from s3.tests.fixtures import Builder, word_document
 
 

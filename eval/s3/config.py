@@ -6,9 +6,9 @@ written into a report.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
 
 
 class ConfigError(ValueError):
@@ -67,7 +67,7 @@ class Config:
     convert_timeout: float
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str], repo_root: Path) -> "Config":
+    def from_env(cls, env: Mapping[str, str], repo_root: Path) -> Config:
         missing = [name for name in ("EVAL_S3_ENDPOINT", "EVAL_S3_BUCKET") if not env.get(name)]
         access = env.get("AWS_ACCESS_KEY_ID") or env.get("EVAL_S3_ACCESS_KEY") or ""
         secret = env.get("AWS_SECRET_ACCESS_KEY") or env.get("EVAL_S3_SECRET_KEY") or ""

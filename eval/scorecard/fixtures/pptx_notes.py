@@ -9,7 +9,7 @@ Deterministic: core properties carry a fixed timestamp and no author.
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pptx import Presentation
@@ -17,7 +17,7 @@ from pptx.util import Inches, Pt
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_OUT = HERE.parents[2] / "tests" / "golden" / "corpus"
-FIXED_TIME = datetime(2000, 1, 1, tzinfo=timezone.utc)
+FIXED_TIME = datetime(2000, 1, 1, tzinfo=UTC)
 
 BULLETS = (
     (0, "Three kinds of slide content"),

@@ -132,11 +132,11 @@ class View:
             vertical = top_down(bbox, height)
             if vertical is None:
                 continue
-            l, r = float(bbox.get("l", 0.0)), float(bbox.get("r", 0.0))
-            if r - l <= 0 or vertical[1] - vertical[0] <= 0:
+            box_left, box_right = float(bbox.get("l", 0.0)), float(bbox.get("r", 0.0))
+            if box_right - box_left <= 0 or vertical[1] - vertical[0] <= 0:
                 continue
-            left = l if left is None else min(left, l)
-            right = r if right is None else max(right, r)
+            left = box_left if left is None else min(left, box_left)
+            right = box_right if right is None else max(right, box_right)
             top = vertical[0] if top is None else min(top, vertical[0])
             bottom = vertical[1] if bottom is None else max(bottom, vertical[1])
         if left is None:

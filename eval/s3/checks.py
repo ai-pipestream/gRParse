@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 EVAL_DIR = Path(__file__).resolve().parents[1]
 if str(EVAL_DIR) not in sys.path:
@@ -21,8 +22,15 @@ from scorecard.stability import first_difference  # noqa: E402
 from scorecard.summary import Node, _table_cells, _top_class, normalize_text  # noqa: E402
 
 from .document import View  # noqa: E402
-from .formats import (KNOWN_COLLECTORS, NOT_SELF_DESCRIBING, PAGED, TEXT_BEARING, acceptable_mimetypes,  # noqa: E402
-                      declared_mimetype, pdf_has_text_layer)
+from .formats import (  # noqa: E402
+    KNOWN_COLLECTORS,
+    NOT_SELF_DESCRIBING,
+    PAGED,
+    TEXT_BEARING,
+    acceptable_mimetypes,
+    declared_mimetype,
+    pdf_has_text_layer,
+)
 from .integrity import integrity_errors  # noqa: E402
 from .pngcheck import png_is_uniform  # noqa: E402
 from .sourcefacts import SourceFacts  # noqa: E402
@@ -362,13 +370,15 @@ def boxes_in_page(ctx: ObjectContext) -> list[Failure]:
                 continue
             width, height = size
             bbox = prov["bbox"]
-            l, r = float(bbox.get("l", 0)), float(bbox.get("r", 0))
-            t, b = float(bbox.get("t", 0)), float(bbox.get("b", 0))
-            if r - l <= 0 or abs(b - t) <= 0:
+            left, right = float(bbox.get("l", 0)), float(bbox.get("r", 0))
+            top, bottom = float(bbox.get("t", 0)), float(bbox.get("b", 0))
+            if right - left <= 0 or abs(bottom - top) <= 0:
                 continue
             tol_x, tol_y = width * PAGE_TOLERANCE, height * PAGE_TOLERANCE
-            if l < -tol_x or r > width + tol_x or min(t, b) < -tol_y or max(t, b) > height + tol_y:
-                outside.append(f"{ref} p{page} [{l:.0f},{t:.0f},{r:.0f},{b:.0f}] page {width:.0f}x{height:.0f}")
+            if (left < -tol_x or right > width + tol_x or min(top, bottom) < -tol_y
+                    or max(top, bottom) > height + tol_y):
+                outside.append(f"{ref} p{page} [{left:.0f},{top:.0f},{right:.0f},{bottom:.0f}] "
+                               f"page {width:.0f}x{height:.0f}")
     if not outside:
         return []
     return [_fail("boxes_in_page", "provenance box outside its page", boxes=_cap(outside), count=len(outside))]

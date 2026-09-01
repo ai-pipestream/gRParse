@@ -42,7 +42,7 @@ class MetricResult:
 
     @staticmethod
     def of(name: str, value: float | None, threshold: float, *, higher_is_better: bool = True,
-           detail: str = "") -> "MetricResult":
+           detail: str = "") -> MetricResult:
         if value is None:
             return MetricResult(name, None, threshold, higher_is_better, SKIP, detail)
         ok = value >= threshold if higher_is_better else value <= threshold

@@ -4,8 +4,19 @@ import copy
 
 from s3.checks import CHECKS, mask_descriptive, run_checks
 from s3.sourcefacts import SourceFacts
-from s3.tests.fixtures import (Builder, CV, context, deck_document, email_document, epub_document, html_document,
-                               result, scan_document, sheet_document, word_document)
+from s3.tests.fixtures import (
+    CV,
+    Builder,
+    context,
+    deck_document,
+    email_document,
+    epub_document,
+    html_document,
+    result,
+    scan_document,
+    sheet_document,
+    word_document,
+)
 
 
 def verdicts(document, key, **kwargs):
@@ -275,8 +286,9 @@ def test_ocr_text_and_reading_order() -> None:
     found, _ = failing(b.build(), "e.png")
     assert "neither text nor a picture" in found["ocr_text"].cause
     # a flat page preview says the scan is blank, which is not a recognition miss
-    from s3.tests.fixtures import flat_png
     import base64
+
+    from s3.tests.fixtures import flat_png
     blank = Builder("application/pdf", "blank.pdf", collectors=())
     blank.page(1, 100, 100)
     blank.doc["pages"]["1"]["image"] = {"mimetype": "image/png",

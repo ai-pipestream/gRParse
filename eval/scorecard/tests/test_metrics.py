@@ -104,7 +104,8 @@ def test_table_cell_f1_exact_partial_and_absent() -> None:
 
 
 def test_table_cell_f1_is_per_table_index() -> None:
-    t1 = _table([(0, 0, "a")]); t2 = _table([(0, 0, "b")])
+    t1 = _table([(0, 0, "a")])
+    t2 = _table([(0, 0, "b")])
     assert metrics.table_cell_f1([t1, t2], [t1, t2]) == (1.0, 1.0, 1.0)
     p, r, f1 = metrics.table_cell_f1([t1, t2], [t2, t1])
     assert f1 == 0.0, "tables that swap places do not match by index"

@@ -26,7 +26,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -34,9 +34,16 @@ EVAL_DIR = Path(__file__).resolve().parents[1]
 if str(EVAL_DIR) not in sys.path:
     sys.path.insert(0, str(EVAL_DIR))
 
-from scorecard.corpus import REPO, CorpusDocument, DEFAULT_MANIFEST, load_manifest, select  # noqa: E402
 from scorecard.changes import document_changes  # noqa: E402
-from scorecard.gates import GateChange, latency_result, median_ms, ratchet, stability_result, truth_results  # noqa: E402
+from scorecard.corpus import DEFAULT_MANIFEST, REPO, CorpusDocument, load_manifest, select  # noqa: E402
+from scorecard.gates import (  # noqa: E402
+    GateChange,
+    latency_result,
+    median_ms,
+    ratchet,
+    stability_result,
+    truth_results,
+)
 from scorecard.memory import memory_note, metrics_url, sample_rss  # noqa: E402
 from scorecard.meta import merge_meta  # noqa: E402
 from scorecard.report import write_report  # noqa: E402
@@ -232,7 +239,7 @@ class Runner:
         if not self.args.record:
             run_meta["documents"] = list(self.new_gates)
             run_meta["reason"] = f"floors: {self.args.reason}" if self.args.reason else "floors"
-        timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        timestamp = datetime.now(UTC).replace(microsecond=0).isoformat()
         partial = bool(self.args.only) or not self.args.record
         write_json(meta_path, merge_meta(existing, run_meta, partial=partial, timestamp=timestamp))
 

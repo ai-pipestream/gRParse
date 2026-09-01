@@ -11,7 +11,8 @@ from __future__ import annotations
 import difflib
 import re
 from collections import Counter
-from typing import Any, Hashable, Sequence
+from collections.abc import Hashable, Sequence
+from typing import Any
 
 WORD = re.compile(r"\w+", re.UNICODE)
 

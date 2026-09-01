@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from .checks import Failure, ObjectContext, run_checks
+from .checks import ObjectContext, run_checks
 from .formats import collectors_of, parser_type
 from .owners import owner_of
 

@@ -10,8 +10,17 @@ if str(EVAL_DIR) not in sys.path:
     sys.path.insert(0, str(EVAL_DIR))
 
 from scorecard.truth_metrics import (  # noqa: E402
-    anchor_offsets, anchor_positions, figure_scores, find_entry, heading_scores, longest_increasing_run, normalize,
-    prefix_match, reading_order_scores, score_truth, table_cell_scores,
+    anchor_offsets,
+    anchor_positions,
+    figure_scores,
+    find_entry,
+    heading_scores,
+    longest_increasing_run,
+    normalize,
+    prefix_match,
+    reading_order_scores,
+    score_truth,
+    table_cell_scores,
 )
 
 

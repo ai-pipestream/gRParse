@@ -11,7 +11,15 @@ if str(EVAL_DIR) not in sys.path:
     sys.path.insert(0, str(EVAL_DIR))
 
 from scorecard.memory import (  # noqa: E402
-    CONTAINER, NOT_SAMPLED, docker_container_ip, memory_note, metrics_url, parse_rss, sample_rss, target_host)
+    CONTAINER,
+    NOT_SAMPLED,
+    docker_container_ip,
+    memory_note,
+    metrics_url,
+    parse_rss,
+    sample_rss,
+    target_host,
+)
 
 
 def _no_docker(_: str) -> str | None:

@@ -24,8 +24,9 @@ from __future__ import annotations
 import os
 import sys
 import time
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any
 
 EVAL_DIR = Path(__file__).resolve().parents[1]
 if str(EVAL_DIR) not in sys.path:
