@@ -212,3 +212,97 @@
   object compiled after its header was edited kept the newer mtime), so acceptance
   builds use a fresh scope. The first scorecard run after a deploy fails latency on
   one or two docs from warm-up; the second run is the verdict.
+
+### 2026-09-01: anti-drift battery, four lanes (collector fidelity, charts, rotation, browser e2e), krick-1
+
+- Program: an Opus agent first pinned the data (15daa89): five offline ctests
+  (assembly determinism across runs and input permutations, geometry order and
+  picture anchoring over all permutations, repair fixed points, the chart and sheet
+  contracts, the mimetype precedence and an exact allowlist for colon-keyed custom
+  fields, `cell:?` only) and three scorecard modules (fixture manifest with sha256,
+  size caps and a personal-document denylist; truth schema and floors never above
+  their baseline; generators that regenerate byte-for-byte or pin their clock). Then
+  three Fable lanes in worktrees with private rigs, as before, plus a fourth for the
+  browser suite; the coordinator committed per lane, merged from the main checkout,
+  built in a fresh scope, deployed, scored twice, re-recorded with reasons.
+- Lane A, grpc-pdf-inspector (6606929 vendor, 0cd27b0 service): a two-column page
+  arrives line by line across both columns, so blocks are now located as run chains
+  (two-column.pdf: 0 body items without a box, was 10 of 16 on page 1); fused
+  side-by-side blocks split back in column order; Form XObjects reach the wire as
+  `SPAN_KIND_FORM` placements and become pictures (paper Figures 2 and 3; 17
+  pictures, heading 3.2 present, headings 0.941 to 0.971, table cells 0.927 to
+  0.978); table lines outside the vertical rules with one populated cell are
+  dropped (form.pdf: intro is a paragraph, table cells 0.065 to 1.000); the
+  parser's repeated-text verdict applies only to edge lines and text runs
+  (long-text furniture 110 to 0). Vendor suite unchanged at 1015/14. 30 tests.
+- Lane B, charts (33a3604): one bar annotation per series (series past the first
+  were dropped), positional series names, blank corner from the sheet header;
+  fixtures charts.xlsx and charts.pptx with truth (charts_bound 48 per run, table
+  cells 1.000 on both, was unmeasured); paper Table 1 truth (table cells floor
+  0.927 to 0.978); an opt-in enrich call (`GRPARSE_ENRICH_TARGET`, 5 s deadline,
+  off unless set) that sends chart pictures with pixels to grpc-enrich and stores
+  the returned table in `tabular_chart` with GenerationSource provenance;
+  `eval/chart_derender/compare.py` measured both VLM endpoints through enrich: Qwen
+  on :8085 answered 0 of 12 chart images (ragged CSV, one reply asking for the
+  image: the request wiring, not the model), North on :8086 answered 12 of 12 (line
+  chart cells 1.00, bar 0.73, pie 0.80, 350 to 500 ms, stable). The stack now sets
+  the leg on with North named per request; the enrich default is unchanged.
+- Lane C, rotation and metrics (059c019): after the first recognition of a page
+  with no text layer the angle vote picks 90/270, 180, or all three on a poor read;
+  recognition runs again on the rotated raster, the best read is kept, and that
+  raster replaces the original for layout, crops, previews and page size, so all
+  geometry shares one upright frame (`PageItem.quality.rotation_degrees`, an
+  existing typed slot). New fixtures rotated-scan-180 and rotated-scan-mixed; all
+  three rotated docs at 1.000 on headings, levels, order and anchors (from
+  0.800/0.500/0.333/0.600). Prometheus: `grparse_pages_rerecognized_total`,
+  `grparse_rerecognition_passes_total`, `grparse_page_rotations_total{degrees}`,
+  `grparse_repair_changes_total{kind}` (all nine, replacing `grparse_repairs_total`),
+  `grparse_office_cv_total{kind}`, plus the derender kinds. Cost: the 90 degree
+  scan went from 1.5 s to 4.8 s on the CUDA stack (three passes); recorded.
+- Lane E, browser suite (7483ef9, 0079676): `e2e/` with 51 Playwright tests over the
+  shell, the Document tab (one fixture per parser), the gRParse stream, each service
+  UI, health, and one red marker; `compose.stack.e2e.yaml` (`e2e` profile) and
+  `scripts/stack-e2e.sh`. Found and kept red: the shell proxy returns 400 on the
+  request after a streamed POST to the same frontend (`examples/web-demo/server.js`
+  `proxyToFrontend`; two parallel workers trip each other on it, so one worker is
+  the default) and the Document tab progress bar stays visible after a parse.
+- Local outcome (`final-3`, `--repeat 2`, CUDA stack): 38 scored, 38 pass, all
+  stable; 49 ctests; 113 scorecard unit tests; e2e 50 passed, 1 skipped (no
+  calamine tab). Re-records: three pdf docs for the collector, three rotated docs
+  for orientation recovery, with the GPU latency budgets.
+- Corpus note: `scanned-image.pdf` is three pages holding one 8x8 gray image each
+  (a classification sample), so zero text items is the right answer; it is not an
+  OCR fixture.
+- krick-1 (Intel Arc, OpenVINO): the same merged state runs there from
+  `~/parse-stack` (images by `docker save | zstd | ssh | docker load`, 24
+  containers, `compose.stack.openvino.yaml` + `compose.stack.standalone.yaml`).
+  Two host-specific faults found and fixed on the way: the OpenVINO GPU plugin
+  compiles a kernel set per input size, so its cache filled the 256 MB `/tmp`
+  tmpfs after a handful of documents and a truncated blob aborted the process
+  (`clCreateProgramWithBinary`, exit 139; pages went missing before the abort);
+  the cache now lives in a named volume (c919567; 847 MB after two corpus runs).
+  And a host without sibling checkouts gets empty root-owned stubs for the
+  shell's `../<repo>/proto` bind mounts, so every peer reported "proto
+  unavailable"; the standalone overlay mounts them from `./protos`. Result on
+  krick-1: scorecard 38 scored, 38 pass, all stable, twice (75 s and 56 s wall
+  once the cache is warm; the 90 degree scan 5.0 s, on par with CUDA at 4.8 s),
+  Playwright 50 passed, 1 skipped. Fourteen empty root-owned stub directories
+  remain in krick-1's home (`~/grpc-*`, `~/fastwarc-grpc`, `~/grPOIc`) for the
+  owner to remove.
+- Follow-ons, by owner:
+  - gRParse: the geometric re-cut moves a right-column item on two-column.pdf page 6
+    now that all items carry boxes (`document_reading_order`, truth_order 0.978);
+    orientation recovery could probe at reduced resolution before paying three full
+    passes; OpenVINO compiles a kernel set per OCR crop width (2400 blobs after
+    seven documents, 40 s per rotated doc cold), so crop widths want bucketing on
+    that provider; the Dockerfiles could touch project sources before the build to
+    end the stale-object trap for good; `page 10` reference item without a box.
+  - grpc-enrich: `EnrichOptions` has no decoding controls (no greedy request);
+    `ItemAnnotation.model` comes back empty; `ChartCsvParser` rejects pipe-separated
+    tables and Qwen's output; the :8085 image-not-seen behaviour.
+  - Shell: the proxy 400 after a streamed POST; the progress bar CSS.
+  - Scorecard: the paper's Figure 2 anchor sits past the 60-char entry prefix; the
+    e2e suite has no rows yet for the fastwarc, POI, ASR, Enrich and VLM Convert
+    uploads; CI runs neither the e2e suite nor the scorecard.
+  - Proto (fleet sweep): a typed multi-series bar slot, chart title on `ChartMeta`,
+    `CollectorClaim.warnings`, `TextItemBase.page_style_name`, `GroupItem.slide`.

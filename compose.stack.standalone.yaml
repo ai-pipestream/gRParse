@@ -1,0 +1,36 @@
+# Standalone overlay: run the stack on a host that has no sibling checkouts.
+#
+#   docker compose -f compose.stack.yaml -f compose.stack.standalone.yaml ... up -d
+#
+# compose.stack.yaml bind-mounts the peers' proto trees from ../<repo> for the
+# shell and the whisper weights from ../grpc-asr/models for asr. On a host that
+# only holds this directory (krick-1 runs it from ~/parse-stack), populate
+# ./protos with the same relative paths first, from a workspace checkout:
+#
+#   for rel in $(grep -oE '\.\./[A-Za-z0-9_./-]+:' compose.stack.yaml | tr -d ':' | sed 's|^\.\./||' | sort -u); do
+#     rsync -a --mkpath /work/main/grpc-services/$rel/ <host>:~/parse-stack/protos/$rel/
+#   done
+#
+# A missing bind source makes dockerd create an empty root-owned directory in
+# place, and the shell then reports every peer "proto unavailable"; this
+# overlay keeps those paths out of the picture.
+services:
+  shell:
+    volumes: !override
+      - ./protos/fastwarc-grpc/proto:/fastwarc-grpc/proto:ro
+      - ./protos/grpc-asr/proto:/grpc-asr/proto:ro
+      - ./protos/grpc-calamine/proto:/grpc-calamine/proto:ro
+      - ./protos/grpc-ebcdic/proto:/grpc-ebcdic/proto:ro
+      - ./protos/grpc-email/proto:/grpc-email/proto:ro
+      - ./protos/grpc-enrich/proto:/grpc-enrich/proto:ro
+      - ./protos/grpc-epub/proto:/grpc-epub/proto:ro
+      - ./protos/grpc-libreoffice/proto:/grpc-libreoffice/proto:ro
+      - ./protos/grpc-lol-html/proto:/grpc-lol-html/proto:ro
+      - ./protos/grpc-markup/proto:/grpc-markup/proto:ro
+      - ./protos/grpc-pdf-inspector/proto:/grpc-pdf-inspector/proto:ro
+      - ./protos/grpc-vlm-convert/proto:/grpc-vlm-convert/proto:ro
+      - ./protos/grpc-xml/proto:/grpc-xml/proto:ro
+      - ./protos/grPOIc/grpoic-api/src/main/proto:/grPOIc/grpoic-api/src/main/proto:ro
+  asr:
+    volumes: !override
+      - ./protos/grpc-asr/models:/models:ro

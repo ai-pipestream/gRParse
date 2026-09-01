@@ -185,7 +185,20 @@ Changes section, and re-record a legitimate move in the same change with
 against hand-derived truth files (`eval/scorecard/truth/`) whose floors only
 ratchet up, gates latency (`EVAL_LATENCY=off` on CPU instances) and
 stability (`--repeat 2`), and `EVAL_REQUIRE=1` makes a skip a failure for
-release runs.
+release runs. Two more gates sit next to it. The anti-drift battery (ctests
+`assembly-determinism-test`, `geometry-order-determinism-test`,
+`repair-idempotence-test`, `data-contract-map-test`,
+`data-contract-origin-test`, plus the `test_corpus_integrity`,
+`test_truth_integrity` and `test_fixture_generators` modules under
+`eval/scorecard/tests/`) pins what the passes must keep producing offline:
+the same canonical JSON across runs and input permutations, fixed points for
+repair, the chart and sheet shapes, the mimetype precedence, an exact
+allowlist for colon-keyed custom fields (`cell:?` only), a sha256 manifest
+of the fixtures (`eval/scorecard/fixtures/write_manifest.py` updates it on
+purpose), truth files that validate and floors never above their baseline.
+The Playwright suite (`e2e/`, section 5) drives the shell and every service
+UI in the compose stack; it runs with one worker until the shell proxy bug
+in `e2e/specs/proxy.spec.ts` is fixed.
 
 The build tree lives in a BuildKit cache mount keyed by toolchain. Two builders
 on one host that share it (a developer build and a local CI run of the same
@@ -213,6 +226,33 @@ docker compose -f compose.stack.yaml --profile parsers --profile heavy up   # + 
 Only the nginx proxy publishes a port (8080); services reach each other by
 compose service name. The shell bakes the protos into its image: after any
 schema change, `build shell` and `up -d shell`, a restart is not enough.
+
+The stack has a browser-level gate: `scripts/stack-e2e.sh` brings it up and
+runs the Playwright suite in `e2e/` through the `e2e` profile
+(`compose.stack.e2e.yaml`, `E2E_BASE_URL=http://proxy:8080`), exiting with
+the suite's code; against a stack that is already up, `cd e2e && npm ci &&
+E2E_BASE_URL=http://127.0.0.1:<proxy port> npx playwright test`. Fixtures
+come only from `tests/golden/corpus`.
+
+A second host runs the same stack from the same files. The Intel host
+krick-1 (Arc GPU, no NVIDIA runtime) runs it from `~/parse-stack/`
+(`compose.stack.yaml`, `compose.stack.openvino.yaml`,
+`compose.stack.expose-grpc.yaml`, `compose.stack.standalone.yaml`,
+`compose/nginx.conf`, `.env` with the two VLM URLs, `models` linked to
+`~/grparse-models`, byte-identical to `models/`, and `protos/<repo>/...`
+holding the peers' proto trees and the whisper weights, see the standalone
+overlay's header; without it dockerd creates empty root-owned stubs for the
+`../<repo>` bind sources and the shell reports every peer unreachable). Images travel by `docker save <images> | zstd | ssh krick-1
+'zstd -d | docker load'`, never by a registry push from a workstation; the
+gRParse image is `pipestreamai/grparse:latest-openvino` from
+`Dockerfile.openvino`, built in a fresh cache scope like any acceptance
+build (the OpenVINO cache mount trips the same stale-object trap as the
+CUDA one). Score it with `GRPARSE_TARGET=krick-1.taild24b1c.ts.net:50051
+EVAL_LATENCY=off` (latency budgets are the CUDA stack's) and run the e2e
+suite with `E2E_BASE_URL=http://krick-1.taild24b1c.ts.net:8080`. The
+OpenVINO kernel cache must live on a real disk (the overlay's named
+volume): the GPU plugin compiles per input size, and a full tmpfs ends in
+an OpenCL abort (exit 139).
 
 ### 6. Work in worktrees
 
