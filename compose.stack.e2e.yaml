@@ -37,7 +37,7 @@ services:
     environment:
       E2E_BASE_URL: "http://proxy:8080"
       E2E_CORPUS_DIR: /corpus
-      E2E_WORKERS: "${E2E_WORKERS:-2}"
+      E2E_WORKERS: "${E2E_WORKERS:-1}"
       E2E_READY_TIMEOUT_MS: "${E2E_READY_TIMEOUT_MS:-300000}"
       CI: "1"
       # The bind-mounted user has no home inside the image.

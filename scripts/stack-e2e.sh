@@ -12,7 +12,7 @@
 #   E2E_BUILD=1        pass --build to `up`
 #   E2E_DOWN=1         tear the project down after the run
 #   E2E_WAIT_SECONDS   `up --wait` timeout (default 600)
-#   E2E_WORKERS        Playwright workers (default 2)
+#   E2E_WORKERS        Playwright workers (default 1; see e2e/playwright.config.ts)
 #
 # The exit code is Playwright's exit code; nothing here greps output.
 set -euo pipefail
