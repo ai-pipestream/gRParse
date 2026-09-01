@@ -481,6 +481,23 @@ add_library(grparse_core STATIC
   src/collector_coordinator.cpp
   src/confluence_storage.cpp
   src/docling_map.cpp
+  src/office_fold/anchor_index.cpp
+  src/office_fold/annotation_fold.cpp
+  src/office_fold/arena.cpp
+  src/office_fold/attachments.cpp
+  src/office_fold/chart_fold.cpp
+  src/office_fold/fold_base.cpp
+  src/office_fold/form_fold.cpp
+  src/office_fold/grid_cells.cpp
+  src/office_fold/integrity_check.cpp
+  src/office_fold/object_fold.cpp
+  src/office_fold/page_fold.cpp
+  src/office_fold/run_text.cpp
+  src/office_fold/shape_fold.cpp
+  src/office_fold/shape_meta.cpp
+  src/office_fold/sheet_fold.cpp
+  src/office_fold/value_convert.cpp
+  src/office_fold/writer_fold.cpp
   src/document_merge.cpp
   src/document_repair.cpp
   src/epub_book.cpp
