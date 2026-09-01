@@ -250,6 +250,11 @@ class DoclingMapper {
   void fold_chart_series(
       const ai::pipestream::office::v1::EmbeddedChart& chart,
       ai::pipestream::document::v1::TableData* data);
+  // Names a series table's blank corner cell from the sheet header cell at
+  // the chart's source range top-left, when the range declares column
+  // headers (a pie has no axis title to name it otherwise).
+  void name_chart_corner(const ai::pipestream::office::v1::SheetChart& chart,
+                         ai::pipestream::document::v1::TableData* data);
   // Folds the sheet cells a SheetChart's ranges cover into a table rebased
   // at the ranges' top-left corner, header flags from the chart's own
   // has_column_headers / has_row_headers. False when the sheet's table has

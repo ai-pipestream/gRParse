@@ -170,6 +170,8 @@ green result cannot be an empty one.
 | `figures.docx` | `docx-figures` | `docx_figures.py` (PNGs drawn with `convert`) | two captioned figures anchored mid-body under numbered headings |
 | `sixty-sheets.xlsx` | `xlsx-sixty-sheets` | `xlsx_sixty_sheets.py` | 60 sheets, a merged three-column title over a bold header row, a 40-column sheet |
 | `form.docx`, `form.pdf` | `docx-form`, `pdf-form` | `docx_form.py` (docx, then `soffice` to PDF) | label/value table with empty cells and ballot-box checkboxes |
+| `charts.xlsx` | `xlsx-charts` | `xlsx_charts.py` (data in `chart_data.py`; also paints the charts to `eval/chart_derender/renders/`) | three sheets, each a data table plus one chart: two-series column chart with title and axis titles, one-series line chart with a title, pie chart with no title |
+| `charts.pptx` | `pptx-charts` | `pptx_charts.py` (data in `chart_data.py`) | title slide plus three titled chart slides: two-series column chart, pie chart with a title, line chart with no chart title |
 
 `long-text.pdf`, `mixed.pdf` and `scanned-image.pdf` are copied from
 `grpc-pdf-inspector/demos/sample-data/`, which generates them itself
@@ -180,3 +182,11 @@ fixture. Fixtures stay under 2 MB each.
 Metric and summary code lives outside the service; the CTest registration
 (`LABELS eval`, `SKIP_RETURN_CODE 77`, like `vlm-oracle-eval`) is a
 `CMakeLists.txt` change made alongside the runner.
+
+The two chart fixtures and their truth files quote one data module, so the
+truth cannot drift from the fixture; both generators pin document
+properties and rewrite the package (and, for the deck, each chart's
+embedded workbook) with fixed zip timestamps, and repeat runs are
+byte-identical. `eval/chart_derender/` holds the enrich-side evidence for
+the opt-in chart derender leg (`compare.py`, its README with the measured
+numbers per VLM endpoint); it dials grpc-enrich, not gRParse.

@@ -1,0 +1,611 @@
+{
+ "agreement": {
+  "agreed": 2,
+  "claimed_fields": {
+   "grparse": 4,
+   "libreoffice": 11
+  },
+  "collectors": [
+   "grparse",
+   "libreoffice"
+  ],
+  "conflicts": [],
+  "shared": 2,
+  "winners": {
+   "origin.binary_hash": "grparse",
+   "origin.filename": "grparse",
+   "origin.mimetype": "grparse",
+   "origin.mimetype_evidence": "grparse",
+   "source_meta.created.seconds": "libreoffice",
+   "source_meta.editing_cycles": "libreoffice",
+   "source_meta.editing_duration_seconds": "libreoffice",
+   "source_meta.generator": "libreoffice",
+   "source_meta.modified.seconds": "libreoffice",
+   "source_meta.statistics.paragraphs": "libreoffice",
+   "source_meta.statistics.words": "libreoffice",
+   "source_meta.title": "libreoffice"
+  }
+ },
+ "collectors": [
+  "grparse",
+  "libreoffice"
+ ],
+ "content_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+ "counts": {
+  "body_items": 17,
+  "by_label": {
+   "group:slide": 4,
+   "picture": 3,
+   "section_header": 3,
+   "table": 3,
+   "text": 3,
+   "title": 1
+  },
+  "form_items": 0,
+  "furniture_items": 0,
+  "groups": 4,
+  "headings": 4,
+  "key_value_items": 0,
+  "orphans": 0,
+  "pages": 4,
+  "pictures": 3,
+  "reading_chars": 352,
+  "tables": 3,
+  "texts": 7
+ },
+ "doc_id": "pptx-charts",
+ "filename": "charts.pptx",
+ "format": "pptx",
+ "furniture_reading": [],
+ "groups": [
+  {
+   "children": 2,
+   "depth": 1,
+   "label": "slide",
+   "name": "Charts Fixture Deck",
+   "ref": "#/groups/0"
+  },
+  {
+   "children": 2,
+   "depth": 1,
+   "label": "slide",
+   "name": "Quarterly Revenue by Region",
+   "ref": "#/groups/1"
+  },
+  {
+   "children": 2,
+   "depth": 1,
+   "label": "slide",
+   "name": "Market Share",
+   "ref": "#/groups/2"
+  },
+  {
+   "children": 2,
+   "depth": 1,
+   "label": "slide",
+   "name": "Temperature Trend",
+   "ref": "#/groups/3"
+  }
+ ],
+ "headings": [
+  {
+   "level": 0,
+   "ref": "#/texts/0",
+   "text": "Charts Fixture Deck"
+  },
+  {
+   "level": 1,
+   "ref": "#/texts/2",
+   "text": "Quarterly Revenue by Region"
+  },
+  {
+   "level": 1,
+   "ref": "#/texts/4",
+   "text": "Market Share"
+  },
+  {
+   "level": 1,
+   "ref": "#/texts/6",
+   "text": "Temperature Trend"
+  }
+ ],
+ "markdown": {
+  "chars": 256,
+  "headings": 4,
+  "images": 0,
+  "sha256": "fc78e96bec08c5a2e76c6729b17debf949bfb489f86b435243b57577ed93c48a",
+  "table_rows": 0
+ },
+ "origin_mimetype": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+ "pictures": [
+  {
+   "caption": "Revenue by region",
+   "classification": "",
+   "collectors": [
+    "libreoffice"
+   ],
+   "image": {
+    "bytes": 20768,
+    "mimetype": "image/png",
+    "sha256": "cb1124b17f3405d760316cab1f138ed27ec7f668d533aa4938b561a6ffb3cfe2"
+   },
+   "page": 2,
+   "parent": "#/groups/1",
+   "parent_label": "group:slide",
+   "parent_name": "Quarterly Revenue by Region",
+   "preceding_heading": "Quarterly Revenue by Region",
+   "ref": "#/pictures/0"
+  },
+  {
+   "caption": "Share by segment",
+   "classification": "",
+   "collectors": [
+    "libreoffice"
+   ],
+   "image": {
+    "bytes": 11309,
+    "mimetype": "image/png",
+    "sha256": "b228473f83f04ef92ffaddbc36fb73eed4b1843483d5c170d4e1bec9884f03be"
+   },
+   "page": 3,
+   "parent": "#/groups/2",
+   "parent_label": "group:slide",
+   "parent_name": "Market Share",
+   "preceding_heading": "Market Share",
+   "ref": "#/pictures/1"
+  },
+  {
+   "caption": "",
+   "classification": "",
+   "collectors": [
+    "libreoffice"
+   ],
+   "image": {
+    "bytes": 15103,
+    "mimetype": "image/png",
+    "sha256": "c47940bc138850b1655c4e5144c890b02bbfb82581fef92a201d78706136dfd5"
+   },
+   "page": 4,
+   "parent": "#/groups/3",
+   "parent_label": "group:slide",
+   "parent_name": "Temperature Trend",
+   "preceding_heading": "Temperature Trend",
+   "ref": "#/pictures/2"
+  }
+ ],
+ "reading": [
+  {
+   "hash": "32825566d7bdb52f",
+   "key": "charts fixture deck",
+   "label": "group:slide",
+   "name": "Charts Fixture Deck",
+   "ref": "#/groups/0",
+   "text": "Charts Fixture Deck"
+  },
+  {
+   "hash": "49fe82af3756a3e6",
+   "key": "charts fixture deck",
+   "label": "title",
+   "level": 0,
+   "ref": "#/texts/0",
+   "text": "Charts Fixture Deck"
+  },
+  {
+   "hash": "9fde8c1c9da5984a",
+   "key": "three chart slides a column chart",
+   "label": "text",
+   "ref": "#/texts/1",
+   "text": "Three chart slides: a column chart, a pie chart and a line c"
+  },
+  {
+   "hash": "bc26c96940e38964",
+   "key": "quarterly revenue by region",
+   "label": "group:slide",
+   "name": "Quarterly Revenue by Region",
+   "ref": "#/groups/1",
+   "text": "Quarterly Revenue by Region"
+  },
+  {
+   "hash": "db95c076c8fd2677",
+   "key": "quarterly revenue by region",
+   "label": "section_header",
+   "level": 1,
+   "ref": "#/texts/2",
+   "text": "Quarterly Revenue by Region"
+  },
+  {
+   "hash": "cb1124b17f3405d7",
+   "key": "revenue by region",
+   "label": "picture",
+   "ref": "#/pictures/0",
+   "text": "Revenue by region"
+  },
+  {
+   "hash": "b5d8f2790cdfadbd",
+   "key": "5x3",
+   "label": "table",
+   "ref": "#/tables/0",
+   "text": "5x3"
+  },
+  {
+   "hash": "27683bd07bca3ee0",
+   "key": "revenue by region",
+   "label": "text",
+   "ref": "#/texts/3",
+   "text": "Revenue by region"
+  },
+  {
+   "hash": "ff25bbd1f38d6286",
+   "key": "market share",
+   "label": "group:slide",
+   "name": "Market Share",
+   "ref": "#/groups/2",
+   "text": "Market Share"
+  },
+  {
+   "hash": "294c9bcdab96c6ab",
+   "key": "market share",
+   "label": "section_header",
+   "level": 1,
+   "ref": "#/texts/4",
+   "text": "Market Share"
+  },
+  {
+   "hash": "b228473f83f04ef9",
+   "key": "share by segment",
+   "label": "picture",
+   "ref": "#/pictures/1",
+   "text": "Share by segment"
+  },
+  {
+   "hash": "3900d2b9976f478b",
+   "key": "5x2",
+   "label": "table",
+   "ref": "#/tables/1",
+   "text": "5x2"
+  },
+  {
+   "hash": "021c4c5898906400",
+   "key": "share by segment",
+   "label": "text",
+   "ref": "#/texts/5",
+   "text": "Share by segment"
+  },
+  {
+   "hash": "8f133cab55ecc7a1",
+   "key": "temperature trend",
+   "label": "group:slide",
+   "name": "Temperature Trend",
+   "ref": "#/groups/3",
+   "text": "Temperature Trend"
+  },
+  {
+   "hash": "2df456e23cd43ccf",
+   "key": "temperature trend",
+   "label": "section_header",
+   "level": 1,
+   "ref": "#/texts/6",
+   "text": "Temperature Trend"
+  },
+  {
+   "hash": "c47940bc138850b1",
+   "key": "",
+   "label": "picture",
+   "ref": "#/pictures/2",
+   "text": ""
+  },
+  {
+   "hash": "8a45952760c5645f",
+   "key": "7x2",
+   "label": "table",
+   "ref": "#/tables/2",
+   "text": "7x2"
+  }
+ ],
+ "reading_text": "Charts Fixture Deck\nThree chart slides: a column chart, a pie chart and a line chart\nQuarterly Revenue by Region\nRegion\nQ1\nQ2\nNorth\n120\n135.5\nSouth\n80\n97\nEast\n143\n70.25\nWest\n88\n101\nRevenue by region\nMarket Share\nShare\nAlpha\n45\nBeta\n30\nGamma\n15\nDelta\n10\nShare by segment\nTemperature Trend\nMonth\nCelsius\nJan\n3.5\nFeb\n4.1\nMar\n7.8\nApr\n11.2\nMay\n15.6\nJun\n18.9",
+ "schema": 1,
+ "status": "CONVERSION_STATUS_SUCCESS",
+ "tables": [
+  {
+   "caption": "",
+   "cells": [
+    [
+     0,
+     0,
+     1,
+     1,
+     "Region"
+    ],
+    [
+     0,
+     1,
+     1,
+     1,
+     "Q1"
+    ],
+    [
+     0,
+     2,
+     1,
+     1,
+     "Q2"
+    ],
+    [
+     1,
+     0,
+     1,
+     1,
+     "North"
+    ],
+    [
+     1,
+     1,
+     1,
+     1,
+     "120"
+    ],
+    [
+     1,
+     2,
+     1,
+     1,
+     "135.5"
+    ],
+    [
+     2,
+     0,
+     1,
+     1,
+     "South"
+    ],
+    [
+     2,
+     1,
+     1,
+     1,
+     "80"
+    ],
+    [
+     2,
+     2,
+     1,
+     1,
+     "97"
+    ],
+    [
+     3,
+     0,
+     1,
+     1,
+     "East"
+    ],
+    [
+     3,
+     1,
+     1,
+     1,
+     "143"
+    ],
+    [
+     3,
+     2,
+     1,
+     1,
+     "70.25"
+    ],
+    [
+     4,
+     0,
+     1,
+     1,
+     "West"
+    ],
+    [
+     4,
+     1,
+     1,
+     1,
+     "88"
+    ],
+    [
+     4,
+     2,
+     1,
+     1,
+     "101"
+    ]
+   ],
+   "cols": 3,
+   "column_headers": 3,
+   "ref": "#/tables/0",
+   "rows": 5
+  },
+  {
+   "caption": "",
+   "cells": [
+    [
+     0,
+     0,
+     1,
+     1,
+     ""
+    ],
+    [
+     0,
+     1,
+     1,
+     1,
+     "Share"
+    ],
+    [
+     1,
+     0,
+     1,
+     1,
+     "Alpha"
+    ],
+    [
+     1,
+     1,
+     1,
+     1,
+     "45"
+    ],
+    [
+     2,
+     0,
+     1,
+     1,
+     "Beta"
+    ],
+    [
+     2,
+     1,
+     1,
+     1,
+     "30"
+    ],
+    [
+     3,
+     0,
+     1,
+     1,
+     "Gamma"
+    ],
+    [
+     3,
+     1,
+     1,
+     1,
+     "15"
+    ],
+    [
+     4,
+     0,
+     1,
+     1,
+     "Delta"
+    ],
+    [
+     4,
+     1,
+     1,
+     1,
+     "10"
+    ]
+   ],
+   "cols": 2,
+   "column_headers": 2,
+   "ref": "#/tables/1",
+   "rows": 5
+  },
+  {
+   "caption": "",
+   "cells": [
+    [
+     0,
+     0,
+     1,
+     1,
+     "Month"
+    ],
+    [
+     0,
+     1,
+     1,
+     1,
+     "Celsius"
+    ],
+    [
+     1,
+     0,
+     1,
+     1,
+     "Jan"
+    ],
+    [
+     1,
+     1,
+     1,
+     1,
+     "3.5"
+    ],
+    [
+     2,
+     0,
+     1,
+     1,
+     "Feb"
+    ],
+    [
+     2,
+     1,
+     1,
+     1,
+     "4.1"
+    ],
+    [
+     3,
+     0,
+     1,
+     1,
+     "Mar"
+    ],
+    [
+     3,
+     1,
+     1,
+     1,
+     "7.8"
+    ],
+    [
+     4,
+     0,
+     1,
+     1,
+     "Apr"
+    ],
+    [
+     4,
+     1,
+     1,
+     1,
+     "11.2"
+    ],
+    [
+     5,
+     0,
+     1,
+     1,
+     "May"
+    ],
+    [
+     5,
+     1,
+     1,
+     1,
+     "15.6"
+    ],
+    [
+     6,
+     0,
+     1,
+     1,
+     "Jun"
+    ],
+    [
+     6,
+     1,
+     1,
+     1,
+     "18.9"
+    ]
+   ],
+   "cols": 2,
+   "column_headers": 2,
+   "ref": "#/tables/2",
+   "rows": 7
+  }
+ ],
+ "warnings": []
+}

@@ -1850,18 +1850,25 @@ void DoclingMapper::add_chart_annotations(const officev1::EmbeddedChart& chart,
   switch (chart.kind()) {
     case officev1::EMBEDDED_CHART_KIND_BAR:
     case officev1::EMBEDDED_CHART_KIND_COLUMN: {
-      if (series.empty()) break;
-      docv1::PictureBarChartData* bars =
-          picture->add_annotations()->mutable_bar_chart();
-      bars->set_kind("bar_chart_data");
-      bars->set_title(chart.title());
-      bars->set_x_axis_label(chart.x_axis_title());
-      bars->set_y_axis_label(chart.y_axis_title());
-      for (int i = 0; i < series[0].values_y_size(); i++) {
-        docv1::ChartBar* bar = bars->add_bars();
-        bar->set_label(i < chart.categories_size() ? chart.categories(i)
-                                                   : std::to_string(i + 1));
-        bar->set_values(series[0].values_y(i));
+      // The bar annotation is single-series by shape, so a clustered chart
+      // gets one annotation per series, in series order (the stacked-bar
+      // slot carries integer values only and would round the data). The
+      // axis labels stay the chart's own axis titles on every annotation;
+      // the series names live on the bound table's label row, in the same
+      // order. A typed multi-series slot is a schema follow-on.
+      for (const officev1::EmbeddedChartSeries& one : series) {
+        docv1::PictureBarChartData* bars =
+            picture->add_annotations()->mutable_bar_chart();
+        bars->set_kind("bar_chart_data");
+        bars->set_title(chart.title());
+        bars->set_x_axis_label(chart.x_axis_title());
+        bars->set_y_axis_label(chart.y_axis_title());
+        for (int i = 0; i < one.values_y_size(); i++) {
+          docv1::ChartBar* bar = bars->add_bars();
+          bar->set_label(i < chart.categories_size() ? chart.categories(i)
+                                                     : std::to_string(i + 1));
+          bar->set_values(one.values_y(i));
+        }
       }
       break;
     }
@@ -1949,11 +1956,20 @@ void DoclingMapper::fold_chart_series(const officev1::EmbeddedChart& chart,
   docv1::TableColumnSchema* axis = data->add_columns();
   if (!chart.x_axis_title().empty()) axis->set_name(chart.x_axis_title());
   axis->set_declared_type(scatter ? "number" : "text");
+  // A series without a label is named by its position, in the schema and
+  // on the label row alike, so the two never disagree.
+  const auto series_label = [&chart, &series](int column) {
+    std::string label = series[column].label();
+    if (label.empty()) {
+      label = series.size() == 1 && !chart.y_axis_title().empty()
+                  ? chart.y_axis_title()
+                  : "Series " + std::to_string(column + 1);
+    }
+    return label;
+  };
   for (int column = 0; column < series.size(); column++) {
     docv1::TableColumnSchema* schema = data->add_columns();
-    std::string label = series[column].label();
-    if (label.empty() && series.size() == 1) label = chart.y_axis_title();
-    if (!label.empty()) schema->set_name(label);
+    schema->set_name(series_label(column));
     schema->set_declared_type("number");
   }
 
@@ -1961,13 +1977,7 @@ void DoclingMapper::fold_chart_series(const officev1::EmbeddedChart& chart,
   // each value column.
   place_cell(data, 0, 0, chart.x_axis_title())->set_column_header(true);
   for (int column = 0; column < series.size(); column++) {
-    std::string label = series[column].label();
-    if (label.empty()) {
-      label = series.size() == 1 && !chart.y_axis_title().empty()
-                  ? chart.y_axis_title()
-                  : "Series " + std::to_string(column + 1);
-    }
-    place_cell(data, 0, column + 1, label)->set_column_header(true);
+    place_cell(data, 0, column + 1, series_label(column))->set_column_header(true);
   }
   for (int row = 0; row < body_rows; row++) {
     docv1::TableCell* head;
@@ -1989,6 +1999,39 @@ void DoclingMapper::fold_chart_series(const officev1::EmbeddedChart& chart,
     }
   }
   fill_grid_from_cells(data);
+}
+
+void DoclingMapper::name_chart_corner(const officev1::SheetChart& chart,
+                                      docv1::TableData* data) {
+  // A chart without a category axis title (a pie, an untitled axis) leaves
+  // the corner blank; the sheet's own header cell over the category column
+  // names it when the source range starts on a header row. Nothing is
+  // invented: the text is the sheet's, at the range's top-left cell.
+  if (!chart.has_column_headers() || chart.ranges().empty()) return;
+  docv1::TableCell* corner = nullptr;
+  for (docv1::TableCell& cell : *data->mutable_table_cells()) {
+    if (cell.start_row_offset_idx() == 0 && cell.start_col_offset_idx() == 0) corner = &cell;
+  }
+  if (corner == nullptr || !corner->text().empty()) return;
+  auto found = sheet_table_.find(chart.sheet_index());
+  if (found == sheet_table_.end()) return;
+  const officev1::SheetRangeRef& range = chart.ranges(0);
+  for (const docv1::TableCell& cell : document_.tables(found->second).data().table_cells()) {
+    if (cell.start_row_offset_idx() != range.start_row() ||
+        cell.start_col_offset_idx() != range.start_column() || cell.text().empty()) {
+      continue;
+    }
+    corner->set_text(cell.text());
+    if (data->columns_size() > 0 && data->columns(0).name().empty()) {
+      data->mutable_columns(0)->set_name(cell.text());
+    }
+    // The grid was materialized from the cells already; its corner slot
+    // mirrors the change.
+    if (data->grid_size() > 0 && data->grid(0).cells_size() > 0) {
+      data->mutable_grid(0)->mutable_cells(0)->set_text(cell.text());
+    }
+    return;
+  }
 }
 
 bool DoclingMapper::fold_sheet_range(const officev1::SheetChart& chart,
@@ -2074,6 +2117,7 @@ void DoclingMapper::emit_chart(const officev1::EmbeddedObject* object,
   bool folded = false;
   if (typed && !object->chart().series().empty()) {
     fold_chart_series(object->chart(), table->mutable_data());
+    if (sheet_chart != nullptr) name_chart_corner(*sheet_chart, table->mutable_data());
     folded = true;
   } else if (typed && object->chart().has_tabular() &&
              object->chart().tabular().rows() > 0) {

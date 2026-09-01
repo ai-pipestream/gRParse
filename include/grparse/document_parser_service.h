@@ -11,6 +11,7 @@
 #include "ai/pipestream/parse/v1/parse.grpc.pb.h"
 #include "ai/pipestream/parse/v1/parse_stream.grpc.pb.h"
 #include "grparse/call_executor.h"
+#include "grparse/chart_derender.h"
 #include "grparse/document_repair.h"
 #include "grparse/office_cv_enrichment.h"
 #include "grparse/page_scheduler.h"
@@ -34,6 +35,10 @@ struct CollectorTargets {
   std::string lol_html;
   std::string fastwarc;
   std::string pdf;
+  // The chart derender leg (grpc-enrich, GRPARSE_ENRICH_TARGET): not a
+  // collector but a peer dialed after the merge; an empty target means the
+  // leg does not exist in this deployment.
+  ChartDerenderOptions derender;
 };
 
 // Shared handle to the out-of-process collectors the coordinator can fan
@@ -58,6 +63,12 @@ class CollectorEndpoints {
 
   const std::string& asr_model() const { return targets_.asr_model; }
 
+  // The chart derender leg's options and its lazily created channel; null
+  // when GRPARSE_ENRICH_TARGET is unset.
+  const ChartDerenderOptions& derender() const { return targets_.derender; }
+  bool has_derender() const { return targets_.derender.enabled(); }
+  std::shared_ptr<grpc::Channel> enrich_channel();
+
   // The CV engines the office collector runs over LibreOffice page renders;
   // an all-null enrichment disables the hybrid leg.
   const OfficeCvEnrichment& cv_enrichment() const { return cv_enrichment_; }
@@ -68,6 +79,7 @@ class CollectorEndpoints {
   std::mutex mutex_;
   std::map<ai::pipestream::parse::v1::Collector, std::shared_ptr<grpc::Channel>>
       channels_;
+  std::shared_ptr<grpc::Channel> enrich_channel_;
 };
 
 // Every unary surface runs on gRPC's callback API. The parsing surfaces block

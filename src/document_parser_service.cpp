@@ -449,6 +449,16 @@ std::shared_ptr<grpc::Channel> CollectorEndpoints::channel(
   return channel;
 }
 
+std::shared_ptr<grpc::Channel> CollectorEndpoints::enrich_channel() {
+  if (!has_derender()) return nullptr;
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (enrich_channel_ == nullptr) {
+    enrich_channel_ = grpc::CreateChannel(targets_.derender.target,
+                                          grpc::InsecureChannelCredentials());
+  }
+  return enrich_channel_;
+}
+
 DocumentParserService::DocumentParserService(PageScheduler& scheduler,
                                              std::shared_ptr<CollectorEndpoints> endpoints,
                                              CallExecutor::Options executor_options,
@@ -750,6 +760,19 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     const bool repaired_text =
         repair.has_value() &&
         run_repair_pass(&result.document, *repair).changed_text_or_arenas();
+    // The chart derender leg runs on the finished document, after the merge
+    // and the repair pass, so it sees every raster chart the CV path
+    // classified and none of the office charts (those carry their typed
+    // table already). Advisory and bounded: it edits picture annotations
+    // only, never the text or the arenas, and its failures are warnings.
+    if (collectors != nullptr && collectors->has_derender() && !context->IsCancelled()) {
+      const ChartDerenderReport derendered = derender_charts(
+          collectors->enrich_channel(), collectors->derender(), &result.document,
+          inbound_deadline);
+      for (const std::string& warning : derendered.warnings) {
+        result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, warning);
+      }
+    }
     // The offset table describes the CV collector's own text stream. It is
     // published only when that collector is the entire document and the
     // repair pass left its text and arena alone: a merge renumbers arena

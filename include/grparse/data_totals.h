@@ -11,14 +11,18 @@ namespace grparse {
 // names one change a reader could verify on the wire: a chart that came
 // with a bound data table, a caption minted from a chart title, a sheet
 // row marked as a column header, a mimetype that came from the bytes
-// instead of the name, and a spreadsheet whose page renders were kept away
-// from the CV detector.
+// instead of the name, a spreadsheet whose page renders were kept away
+// from the CV detector, a raster chart whose data table came back from the
+// enrich service's VLM derender, and a chart candidate that leg passed over
+// (no pixels, a skip event, a timeout or a transport failure).
 struct DataTotals {
   uint64_t charts_bound = 0;
   uint64_t chart_captions = 0;
   uint64_t sheet_header_rows = 0;
   uint64_t mimetypes_sniffed = 0;
   uint64_t cv_enrichment_skipped = 0;
+  uint64_t charts_derendered = 0;
+  uint64_t chart_derender_skipped = 0;
 };
 
 // The live counters behind data_totals(). Increments are relaxed atomics:
@@ -29,6 +33,8 @@ struct DataCounters {
   std::atomic<uint64_t> sheet_header_rows{0};
   std::atomic<uint64_t> mimetypes_sniffed{0};
   std::atomic<uint64_t> cv_enrichment_skipped{0};
+  std::atomic<uint64_t> charts_derendered{0};
+  std::atomic<uint64_t> chart_derender_skipped{0};
 };
 
 DataCounters& data_counters();

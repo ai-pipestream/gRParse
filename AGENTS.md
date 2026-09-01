@@ -58,7 +58,9 @@ Two collectors are compiled in and have no repo: the CV path
 ### Shell peers gRParse does not dial
 
 They run in the stack and get a tab in the demo shell
-(`examples/web-demo`), which dials them directly. gRParse never calls them.
+(`examples/web-demo`), which dials them directly. gRParse never calls them
+as collectors; grpc-enrich is the exception below, dialed after the merge
+only when `GRPARSE_ENRICH_TARGET` names it.
 The merge already ranks `poi` and `calamine` claims below gRParse's own
 (`document_claim_rank` in `src/document_merge.cpp`), so wiring the first two
 in as collectors is the open item, not a schema change.
@@ -67,7 +69,7 @@ in as collectors is the open item, not a schema change.
 |---|---|---|---|---|---|
 | `grPOIc` | `main` | Java/Kotlin (Gradle) | 50052 | `POIC_TARGET` | Apache POI over office documents |
 | `grpc-calamine` | `main` on GitHub (`development` was the working branch; check) | Rust (Cargo, buf) | 50062 | opt-in `calamine` compose profile | spreadsheets; meant to be hosted by an external project, so nothing in that repo may mention gRParse or the shell |
-| `grpc-enrich` | `main` | Java (Gradle, buf) | 50056 gRPC, 50068 HTTP | `ENRICH_TARGET` | `Document` in, stream of `ItemAnnotation` out; needs `ENRICH_VLM_URL` |
+| `grpc-enrich` | `main` | Java (Gradle, buf) | 50056 gRPC, 50068 HTTP | `ENRICH_TARGET` | `Document` in, stream of `ItemAnnotation` out; needs `ENRICH_VLM_URL`. The one peer gRParse also dials, opt-in: `GRPARSE_ENRICH_TARGET` turns on the chart derender leg (raster charts' tables from the VLM, after the merge), contract vendored as `collectors/enrich_service.proto` |
 | `grpc-vlm-convert` | `main` | C++ (CMake, buf) | 50058 gRPC, 50059 HTTP | `VLM_CONVERT_TARGET` | calls an external VLM server; also hosts the open VLM serving stack under `serving/` used by `eval/` |
 
 ### Adjacent, not family

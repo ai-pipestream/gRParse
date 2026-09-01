@@ -33,7 +33,9 @@
   "xlsx-sixty-sheets",
   "pdf-rotated-scan",
   "docx-form",
-  "pdf-form"
+  "pdf-form",
+  "xlsx-charts",
+  "pptx-charts"
  ],
  "gates": {
   "docx-figures": {
@@ -138,7 +140,7 @@
    }
   },
   "pdf-diffusion-paper": {
-   "latency_ms": 422.8,
+   "latency_ms": 456.2,
    "stable": true,
    "truth": {
     "truth_anchors_found": 1.0,
@@ -146,7 +148,7 @@
     "truth_heading_levels": 1.0,
     "truth_headings": 0.9412,
     "truth_order": 1.0,
-    "truth_table_cells": 0.9268
+    "truth_table_cells": 0.9781
    }
   },
   "pdf-dummy": {
@@ -212,6 +214,18 @@
    "latency_ms": 208.5,
    "stable": true
   },
+  "pptx-charts": {
+   "latency_ms": 2838.9,
+   "stable": true,
+   "truth": {
+    "truth_anchors_found": 1.0,
+    "truth_figures": 1.0,
+    "truth_heading_levels": 1.0,
+    "truth_headings": 1.0,
+    "truth_order": 1.0,
+    "truth_table_cells": 1.0
+   }
+  },
   "pptx-notes": {
    "latency_ms": 389.3,
    "stable": true,
@@ -226,6 +240,16 @@
   "pptx-sample1": {
    "latency_ms": 276.2,
    "stable": true
+  },
+  "xlsx-charts": {
+   "latency_ms": 369.1,
+   "stable": true,
+   "truth": {
+    "truth_anchors_found": 1.0,
+    "truth_figures": 1.0,
+    "truth_order": 1.0,
+    "truth_table_cells": 1.0
+   }
   },
   "xlsx-formula-issue": {
    "latency_ms": 183.6,
@@ -630,6 +654,34 @@
    "reason": "gRParse 04b7f5b: origin mimetype sniffed from content; mimetype evidence is descriptive and no longer counted in agreement",
    "service": "gRParse grparse-0.1.0-cuda",
    "timestamp": "2026-09-01T03:14:28+00:00"
+  },
+  {
+   "documents": [
+    "xlsx-charts",
+    "pptx-charts"
+   ],
+   "partial": true,
+   "reason": "lane-charts: new chart fixtures charts.xlsx and charts.pptx (chart composite: CHART picture, bound series table, caption from the title; corner named from the sheet header)",
+   "service": "gRParse grparse-0.1.0-cuda",
+   "timestamp": "2026-09-01T04:09:24+00:00"
+  },
+  {
+   "documents": [
+    "pdf-diffusion-paper"
+   ],
+   "gate_changes": [
+    {
+     "after": 0.9781,
+     "before": 0.9268,
+     "doc_id": "pdf-diffusion-paper",
+     "metric": "truth_table_cells",
+     "reason": "raised"
+    }
+   ],
+   "partial": true,
+   "reason": "floors: lane-charts: Table 1 truth cells added from pdftotext -layout (17x9 numeric body), table_cells floor rises",
+   "service": "gRParse grparse-0.1.0-cuda",
+   "timestamp": "2026-09-01T04:09:25+00:00"
   }
  ],
  "manifest": "eval/scorecard/corpus.json",

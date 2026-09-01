@@ -527,6 +527,14 @@ int main() {
         .lol_html = collector_env("GRPARSE_LOL_HTML_TARGET"),
         .fastwarc = collector_env("GRPARSE_FASTWARC_TARGET"),
         .pdf = collector_env("GRPARSE_PDF_TARGET"),
+        // The chart derender leg through grpc-enrich: off unless a target
+        // is named; the timeout bounds the whole leg per parse.
+        .derender = grparse::ChartDerenderOptions{
+            .target = collector_env("GRPARSE_ENRICH_TARGET"),
+            .timeout = std::chrono::milliseconds(
+                configured_size("GRPARSE_ENRICH_TIMEOUT_MS", 5000, 600000)),
+            .vlm_endpoint = collector_env("GRPARSE_ENRICH_VLM_ENDPOINT"),
+        },
     };
     // The hybrid leg: office documents' page renders run through the same
     // layout/classifier/barcode engines the CV path uses, sharing its pools.
@@ -556,6 +564,15 @@ int main() {
     report_collector("lol-html", targets.lol_html);
     report_collector("fastwarc", targets.fastwarc);
     report_collector("pdf", targets.pdf);
+    if (targets.derender.enabled()) {
+      std::println("gRParse chart derender (enrich): {} ({} ms{})", targets.derender.target,
+                   targets.derender.timeout.count(),
+                   targets.derender.vlm_endpoint.empty()
+                       ? std::string()
+                       : ", vlm " + targets.derender.vlm_endpoint);
+    } else {
+      std::println("gRParse chart derender (enrich): not configured");
+    }
     if (!targets.libreoffice.empty()) {
       std::println("gRParse office CV enrichment: {}",
                    layout != nullptr ? "enabled (layout"

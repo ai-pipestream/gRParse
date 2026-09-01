@@ -1,10 +1,11 @@
 {
  "doc_id": "pdf-diffusion-paper",
- "source": "pdftotext and pdftotext -layout over the source PDF, read page by page; Table 2 cells from the -layout grid",
+ "source": "pdftotext and pdftotext -layout over the source PDF, read page by page; Table 1 and Table 2 cells from the -layout grid",
  "notes": [
   "Headings: the title (two typeset lines), unnumbered ABSTRACT and REFERENCES, numbered sections 1 to 7 and subsections 3.1 to 4.4, level 0 for the title, 1 for sections, 2 for subsections. Small-caps spacing ('I NTRODUCTION') is a rendering artifact, not part of the heading.",
   "Anchors: first words of body paragraphs in reading order across all 11 pages, skipping the line-number gutter (000-539) and the running header, which are furniture. Bold run-in labels (Benchmarks, Metrics, Models) are avoided as anchor starts.",
-  "Table 2 (page 8): two header rows (language, then Data Generator / Repair Model / Sketch / Execution x3), nine data rows grouped by Data Generator. Table 1 is omitted because its numeric body is not recoverable from the text layer with certainty.",
+  "Table 1 (page 6): 17 rows by 9 columns read from pdftotext -layout. Row 0 holds the language spans (Python, PowerShell, Excel formula) over their two columns each, given by the top-left cell; row 1 the nine column labels (Denoiser, Decoder, Noise, Sketch, Execute x3); rows 2 to 16 are five groups of three noise rows (Any %, Best %, Pooled or Pooled %), each a label plus six numbers in print order, so the numeric body is derivable with certainty. The Decoder labels (CodeFusion, Clamping, Decoder, Clamping, Decoder) sit on each group's middle row in the layout text; the two vertically centered Denoiser labels Unet and Transformer straddle group boundaries and are not asserted.",
+  "Table 2 (page 8): two header rows (language, then Data Generator / Repair Model / Sketch / Execution x3), nine data rows grouped by Data Generator.",
   "Figures 1 to 3 sit at the top of pages 2, 3 and 4, between the paragraph that ends the previous page and the first paragraph of that page."
  ],
  "headings": [
@@ -105,6 +106,251 @@
   "Rohan Bavishi, Harshit Joshi"
  ],
  "tables": [
+  {
+   "table": "Table 1",
+   "cells": [
+    [
+     0,
+     3,
+     "Python"
+    ],
+    [
+     0,
+     5,
+     "PowerShell"
+    ],
+    [
+     0,
+     7,
+     "Excel formula"
+    ],
+    [
+     1,
+     0,
+     "Denoiser"
+    ],
+    [
+     1,
+     1,
+     "Decoder"
+    ],
+    [
+     1,
+     2,
+     "Noise"
+    ],
+    [
+     1,
+     3,
+     "Sketch"
+    ],
+    [
+     1,
+     4,
+     "Execute"
+    ],
+    [
+     1,
+     7,
+     "Sketch"
+    ],
+    [
+     1,
+     8,
+     "Execute"
+    ],
+    [
+     3,
+     0,
+     "CodeFusion"
+    ],
+    [
+     3,
+     1,
+     "CodeFusion"
+    ],
+    [
+     6,
+     1,
+     "Clamping"
+    ],
+    [
+     9,
+     1,
+     "Decoder"
+    ],
+    [
+     12,
+     1,
+     "Clamping"
+    ],
+    [
+     15,
+     1,
+     "Decoder"
+    ],
+    [
+     2,
+     2,
+     "Any %"
+    ],
+    [
+     2,
+     3,
+     "65.3"
+    ],
+    [
+     2,
+     8,
+     "63.4"
+    ],
+    [
+     3,
+     2,
+     "Best %"
+    ],
+    [
+     3,
+     4,
+     "62.0"
+    ],
+    [
+     4,
+     2,
+     "Pooled"
+    ],
+    [
+     4,
+     7,
+     "57.1"
+    ],
+    [
+     5,
+     2,
+     "Any %"
+    ],
+    [
+     5,
+     3,
+     "19.4"
+    ],
+    [
+     6,
+     2,
+     "Best %"
+    ],
+    [
+     6,
+     6,
+     "3.3"
+    ],
+    [
+     7,
+     2,
+     "Pooled %"
+    ],
+    [
+     7,
+     6,
+     "3.3"
+    ],
+    [
+     8,
+     2,
+     "Any %"
+    ],
+    [
+     8,
+     5,
+     "3.4"
+    ],
+    [
+     9,
+     2,
+     "Best %"
+    ],
+    [
+     9,
+     4,
+     "32.6"
+    ],
+    [
+     10,
+     2,
+     "Pooled %"
+    ],
+    [
+     10,
+     8,
+     "23.1"
+    ],
+    [
+     11,
+     2,
+     "Any %"
+    ],
+    [
+     11,
+     3,
+     "55.2"
+    ],
+    [
+     12,
+     2,
+     "Best %"
+    ],
+    [
+     12,
+     6,
+     "11.8"
+    ],
+    [
+     13,
+     2,
+     "Pooled"
+    ],
+    [
+     13,
+     5,
+     "7.5"
+    ],
+    [
+     14,
+     2,
+     "Any %"
+    ],
+    [
+     14,
+     3,
+     "64.7"
+    ],
+    [
+     14,
+     4,
+     "66.9"
+    ],
+    [
+     15,
+     2,
+     "Best %"
+    ],
+    [
+     15,
+     5,
+     "10.7"
+    ],
+    [
+     16,
+     2,
+     "Pooled"
+    ],
+    [
+     16,
+     8,
+     "57.8"
+    ]
+   ]
+  },
   {
    "table": "Table 2",
    "cells": [

@@ -1,0 +1,105 @@
+{
+ "bar": {
+  "header": [
+   "Region",
+   "Q1",
+   "Q2"
+  ],
+  "image": "bar.png",
+  "kind": "bar",
+  "name": "Revenue",
+  "rows": [
+   [
+    "North",
+    120,
+    135.5
+   ],
+   [
+    "South",
+    80,
+    97
+   ],
+   [
+    "East",
+    143,
+    70.25
+   ],
+   [
+    "West",
+    88,
+    101
+   ]
+  ],
+  "title": "Revenue by region",
+  "x_title": "Region",
+  "y_title": "kUSD"
+ },
+ "line": {
+  "header": [
+   "Month",
+   "Celsius"
+  ],
+  "image": "line.png",
+  "kind": "line",
+  "name": "Temperature",
+  "rows": [
+   [
+    "Jan",
+    3.5
+   ],
+   [
+    "Feb",
+    4.1
+   ],
+   [
+    "Mar",
+    7.8
+   ],
+   [
+    "Apr",
+    11.2
+   ],
+   [
+    "May",
+    15.6
+   ],
+   [
+    "Jun",
+    18.9
+   ]
+  ],
+  "title": "Monthly mean temperature",
+  "x_title": "Month",
+  "y_title": "Degrees C"
+ },
+ "pie": {
+  "header": [
+   "Segment",
+   "Share"
+  ],
+  "image": "pie.png",
+  "kind": "pie",
+  "name": "Share",
+  "rows": [
+   [
+    "Alpha",
+    45
+   ],
+   [
+    "Beta",
+    30
+   ],
+   [
+    "Gamma",
+    15
+   ],
+   [
+    "Delta",
+    10
+   ]
+  ],
+  "title": "",
+  "x_title": "",
+  "y_title": ""
+ }
+}

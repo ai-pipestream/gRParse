@@ -4,9 +4,25 @@ from __future__ import annotations
 
 from typing import Any
 
+# Leaves a repeat run may legitimately word differently without the document
+# being unstable. The only one today is the title a VLM derendered onto a
+# raster chart (``pictures[i].derender.title``): a generative model may
+# rephrase a title between runs while reading the same bars. The derendered
+# cell counts and cells stay in the fingerprint, so a run that reads
+# different numbers is still unstable. Mirrors DESCRIPTIVE_LEAVES in
+# ``agreement.py``.
+DESCRIPTIVE_LEAF_SUFFIXES = ("].derender.title",)
+
+
+def descriptive(path: str) -> bool:
+    return path.endswith(DESCRIPTIVE_LEAF_SUFFIXES)
+
 
 def first_difference(a: Any, b: Any, path: str = "") -> str | None:
-    """Dotted path of the first leaf where two JSON-like values differ, or None."""
+    """Dotted path of the first leaf where two JSON-like values differ, or None;
+    descriptive leaves (see DESCRIPTIVE_LEAF_SUFFIXES) never count."""
+    if descriptive(path):
+        return None
     if isinstance(a, dict) and isinstance(b, dict):
         for key in sorted(set(a) | set(b)):
             here = f"{path}.{key}" if path else str(key)

@@ -20,6 +20,9 @@ DataTotals data_totals() {
   totals.mimetypes_sniffed = live.mimetypes_sniffed.load(std::memory_order_relaxed);
   totals.cv_enrichment_skipped =
       live.cv_enrichment_skipped.load(std::memory_order_relaxed);
+  totals.charts_derendered = live.charts_derendered.load(std::memory_order_relaxed);
+  totals.chart_derender_skipped =
+      live.chart_derender_skipped.load(std::memory_order_relaxed);
   return totals;
 }
 

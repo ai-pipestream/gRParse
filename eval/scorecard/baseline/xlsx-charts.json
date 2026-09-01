@@ -1,0 +1,850 @@
+{
+ "agreement": {
+  "agreed": 2,
+  "claimed_fields": {
+   "grparse": 4,
+   "libreoffice": 6
+  },
+  "collectors": [
+   "grparse",
+   "libreoffice"
+  ],
+  "conflicts": [],
+  "shared": 2,
+  "winners": {
+   "origin.binary_hash": "grparse",
+   "origin.filename": "grparse",
+   "origin.mimetype": "grparse",
+   "origin.mimetype_evidence": "grparse",
+   "source_meta.created.seconds": "libreoffice",
+   "source_meta.generator": "libreoffice",
+   "source_meta.modified.seconds": "libreoffice"
+  }
+ },
+ "collectors": [
+  "grparse",
+  "libreoffice"
+ ],
+ "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+ "counts": {
+  "body_items": 14,
+  "by_label": {
+   "group:sheet": 3,
+   "picture": 3,
+   "table": 6,
+   "text": 2
+  },
+  "form_items": 0,
+  "furniture_items": 0,
+  "groups": 3,
+  "headings": 0,
+  "key_value_items": 0,
+  "orphans": 0,
+  "pages": 3,
+  "pictures": 3,
+  "reading_chars": 406,
+  "tables": 6,
+  "texts": 2
+ },
+ "doc_id": "xlsx-charts",
+ "filename": "charts.xlsx",
+ "format": "xlsx",
+ "furniture_reading": [],
+ "groups": [
+  {
+   "children": 2,
+   "depth": 1,
+   "label": "sheet",
+   "name": "Revenue",
+   "ref": "#/groups/0"
+  },
+  {
+   "children": 2,
+   "depth": 1,
+   "label": "sheet",
+   "name": "Temperature",
+   "ref": "#/groups/1"
+  },
+  {
+   "children": 2,
+   "depth": 1,
+   "label": "sheet",
+   "name": "Share",
+   "ref": "#/groups/2"
+  }
+ ],
+ "headings": [],
+ "markdown": {
+  "chars": 550,
+  "headings": 0,
+  "images": 0,
+  "sha256": "5828cb30eea81aeb72bfacdbd8cf968a223bcbc2fc746dfd692cd8e200f13044",
+  "table_rows": 20
+ },
+ "origin_mimetype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+ "pictures": [
+  {
+   "caption": "Revenue by region",
+   "classification": "",
+   "collectors": [
+    "libreoffice"
+   ],
+   "image": {
+    "bytes": 14248,
+    "mimetype": "image/png",
+    "sha256": "10443c66e10226903f15e15fbb87766ff735dbe2411509f906586c87b2c66134"
+   },
+   "page": 1,
+   "parent": "#/groups/0",
+   "parent_label": "group:sheet",
+   "parent_name": "Revenue",
+   "preceding_heading": "",
+   "ref": "#/pictures/0"
+  },
+  {
+   "caption": "Monthly mean temperature",
+   "classification": "",
+   "collectors": [
+    "libreoffice"
+   ],
+   "image": {
+    "bytes": 14676,
+    "mimetype": "image/png",
+    "sha256": "b93365ffb642d15b0a66e14293d692dad405a02898b719dc81d1b8d34684d083"
+   },
+   "page": 2,
+   "parent": "#/groups/1",
+   "parent_label": "group:sheet",
+   "parent_name": "Temperature",
+   "preceding_heading": "",
+   "ref": "#/pictures/1"
+  },
+  {
+   "caption": "",
+   "classification": "",
+   "collectors": [
+    "libreoffice"
+   ],
+   "image": {
+    "bytes": 5808,
+    "mimetype": "image/png",
+    "sha256": "4e5658009ba7c2031eb4850124768c722bf04de376eeeed917c129251b9752bf"
+   },
+   "page": 3,
+   "parent": "#/groups/2",
+   "parent_label": "group:sheet",
+   "parent_name": "Share",
+   "preceding_heading": "",
+   "ref": "#/pictures/2"
+  }
+ ],
+ "reading": [
+  {
+   "hash": "d6a75453a560e2fd",
+   "key": "revenue",
+   "label": "group:sheet",
+   "name": "Revenue",
+   "ref": "#/groups/0",
+   "text": "Revenue"
+  },
+  {
+   "hash": "b5d8f2790cdfadbd",
+   "key": "5x3",
+   "label": "table",
+   "ref": "#/tables/0",
+   "text": "5x3"
+  },
+  {
+   "hash": "10443c66e1022690",
+   "key": "revenue by region",
+   "label": "picture",
+   "ref": "#/pictures/0",
+   "text": "Revenue by region"
+  },
+  {
+   "hash": "b5d8f2790cdfadbd",
+   "key": "5x3",
+   "label": "table",
+   "ref": "#/tables/1",
+   "text": "5x3"
+  },
+  {
+   "hash": "27683bd07bca3ee0",
+   "key": "revenue by region",
+   "label": "text",
+   "ref": "#/texts/0",
+   "text": "Revenue by region"
+  },
+  {
+   "hash": "420ac836e576670c",
+   "key": "temperature",
+   "label": "group:sheet",
+   "name": "Temperature",
+   "ref": "#/groups/1",
+   "text": "Temperature"
+  },
+  {
+   "hash": "8a45952760c5645f",
+   "key": "7x2",
+   "label": "table",
+   "ref": "#/tables/2",
+   "text": "7x2"
+  },
+  {
+   "hash": "b93365ffb642d15b",
+   "key": "monthly mean temperature",
+   "label": "picture",
+   "ref": "#/pictures/1",
+   "text": "Monthly mean temperature"
+  },
+  {
+   "hash": "8a45952760c5645f",
+   "key": "7x2",
+   "label": "table",
+   "ref": "#/tables/3",
+   "text": "7x2"
+  },
+  {
+   "hash": "136c37b8bc3301c4",
+   "key": "monthly mean temperature",
+   "label": "text",
+   "ref": "#/texts/1",
+   "text": "Monthly mean temperature"
+  },
+  {
+   "hash": "ec43fb8b7ca93504",
+   "key": "share",
+   "label": "group:sheet",
+   "name": "Share",
+   "ref": "#/groups/2",
+   "text": "Share"
+  },
+  {
+   "hash": "8995f84d1c737d31",
+   "key": "5x2",
+   "label": "table",
+   "ref": "#/tables/4",
+   "text": "5x2"
+  },
+  {
+   "hash": "4e5658009ba7c203",
+   "key": "",
+   "label": "picture",
+   "ref": "#/pictures/2",
+   "text": ""
+  },
+  {
+   "hash": "8995f84d1c737d31",
+   "key": "5x2",
+   "label": "table",
+   "ref": "#/tables/5",
+   "text": "5x2"
+  }
+ ],
+ "reading_text": "Region\nQ1\nQ2\nNorth\n120\n135.5\nSouth\n80\n97\nEast\n143\n70.25\nWest\n88\n101\nRegion\nQ1\nQ2\nNorth\n120\n135.5\nSouth\n80\n97\nEast\n143\n70.25\nWest\n88\n101\nRevenue by region\nMonth\nCelsius\nJan\n3.5\nFeb\n4.1\nMar\n7.8\nApr\n11.2\nMay\n15.6\nJun\n18.9\nMonth\nCelsius\nJan\n3.5\nFeb\n4.1\nMar\n7.8\nApr\n11.2\nMay\n15.6\nJun\n18.9\nMonthly mean temperature\nSegment\nShare\nAlpha\n45\nBeta\n30\nGamma\n15\nDelta\n10\nSegment\nShare\nAlpha\n45\nBeta\n30\nGamma\n15\nDelta\n10",
+ "schema": 1,
+ "status": "CONVERSION_STATUS_SUCCESS",
+ "tables": [
+  {
+   "caption": "",
+   "cells": [
+    [
+     0,
+     0,
+     1,
+     1,
+     "Region"
+    ],
+    [
+     0,
+     1,
+     1,
+     1,
+     "Q1"
+    ],
+    [
+     0,
+     2,
+     1,
+     1,
+     "Q2"
+    ],
+    [
+     1,
+     0,
+     1,
+     1,
+     "North"
+    ],
+    [
+     1,
+     1,
+     1,
+     1,
+     "120"
+    ],
+    [
+     1,
+     2,
+     1,
+     1,
+     "135.5"
+    ],
+    [
+     2,
+     0,
+     1,
+     1,
+     "South"
+    ],
+    [
+     2,
+     1,
+     1,
+     1,
+     "80"
+    ],
+    [
+     2,
+     2,
+     1,
+     1,
+     "97"
+    ],
+    [
+     3,
+     0,
+     1,
+     1,
+     "East"
+    ],
+    [
+     3,
+     1,
+     1,
+     1,
+     "143"
+    ],
+    [
+     3,
+     2,
+     1,
+     1,
+     "70.25"
+    ],
+    [
+     4,
+     0,
+     1,
+     1,
+     "West"
+    ],
+    [
+     4,
+     1,
+     1,
+     1,
+     "88"
+    ],
+    [
+     4,
+     2,
+     1,
+     1,
+     "101"
+    ]
+   ],
+   "cols": 3,
+   "column_headers": 3,
+   "ref": "#/tables/0",
+   "rows": 5
+  },
+  {
+   "caption": "",
+   "cells": [
+    [
+     0,
+     0,
+     1,
+     1,
+     "Region"
+    ],
+    [
+     0,
+     1,
+     1,
+     1,
+     "Q1"
+    ],
+    [
+     0,
+     2,
+     1,
+     1,
+     "Q2"
+    ],
+    [
+     1,
+     0,
+     1,
+     1,
+     "North"
+    ],
+    [
+     1,
+     1,
+     1,
+     1,
+     "120"
+    ],
+    [
+     1,
+     2,
+     1,
+     1,
+     "135.5"
+    ],
+    [
+     2,
+     0,
+     1,
+     1,
+     "South"
+    ],
+    [
+     2,
+     1,
+     1,
+     1,
+     "80"
+    ],
+    [
+     2,
+     2,
+     1,
+     1,
+     "97"
+    ],
+    [
+     3,
+     0,
+     1,
+     1,
+     "East"
+    ],
+    [
+     3,
+     1,
+     1,
+     1,
+     "143"
+    ],
+    [
+     3,
+     2,
+     1,
+     1,
+     "70.25"
+    ],
+    [
+     4,
+     0,
+     1,
+     1,
+     "West"
+    ],
+    [
+     4,
+     1,
+     1,
+     1,
+     "88"
+    ],
+    [
+     4,
+     2,
+     1,
+     1,
+     "101"
+    ]
+   ],
+   "cols": 3,
+   "column_headers": 3,
+   "ref": "#/tables/1",
+   "rows": 5
+  },
+  {
+   "caption": "",
+   "cells": [
+    [
+     0,
+     0,
+     1,
+     1,
+     "Month"
+    ],
+    [
+     0,
+     1,
+     1,
+     1,
+     "Celsius"
+    ],
+    [
+     1,
+     0,
+     1,
+     1,
+     "Jan"
+    ],
+    [
+     1,
+     1,
+     1,
+     1,
+     "3.5"
+    ],
+    [
+     2,
+     0,
+     1,
+     1,
+     "Feb"
+    ],
+    [
+     2,
+     1,
+     1,
+     1,
+     "4.1"
+    ],
+    [
+     3,
+     0,
+     1,
+     1,
+     "Mar"
+    ],
+    [
+     3,
+     1,
+     1,
+     1,
+     "7.8"
+    ],
+    [
+     4,
+     0,
+     1,
+     1,
+     "Apr"
+    ],
+    [
+     4,
+     1,
+     1,
+     1,
+     "11.2"
+    ],
+    [
+     5,
+     0,
+     1,
+     1,
+     "May"
+    ],
+    [
+     5,
+     1,
+     1,
+     1,
+     "15.6"
+    ],
+    [
+     6,
+     0,
+     1,
+     1,
+     "Jun"
+    ],
+    [
+     6,
+     1,
+     1,
+     1,
+     "18.9"
+    ]
+   ],
+   "cols": 2,
+   "column_headers": 2,
+   "ref": "#/tables/2",
+   "rows": 7
+  },
+  {
+   "caption": "",
+   "cells": [
+    [
+     0,
+     0,
+     1,
+     1,
+     "Month"
+    ],
+    [
+     0,
+     1,
+     1,
+     1,
+     "Celsius"
+    ],
+    [
+     1,
+     0,
+     1,
+     1,
+     "Jan"
+    ],
+    [
+     1,
+     1,
+     1,
+     1,
+     "3.5"
+    ],
+    [
+     2,
+     0,
+     1,
+     1,
+     "Feb"
+    ],
+    [
+     2,
+     1,
+     1,
+     1,
+     "4.1"
+    ],
+    [
+     3,
+     0,
+     1,
+     1,
+     "Mar"
+    ],
+    [
+     3,
+     1,
+     1,
+     1,
+     "7.8"
+    ],
+    [
+     4,
+     0,
+     1,
+     1,
+     "Apr"
+    ],
+    [
+     4,
+     1,
+     1,
+     1,
+     "11.2"
+    ],
+    [
+     5,
+     0,
+     1,
+     1,
+     "May"
+    ],
+    [
+     5,
+     1,
+     1,
+     1,
+     "15.6"
+    ],
+    [
+     6,
+     0,
+     1,
+     1,
+     "Jun"
+    ],
+    [
+     6,
+     1,
+     1,
+     1,
+     "18.9"
+    ]
+   ],
+   "cols": 2,
+   "column_headers": 2,
+   "ref": "#/tables/3",
+   "rows": 7
+  },
+  {
+   "caption": "",
+   "cells": [
+    [
+     0,
+     0,
+     1,
+     1,
+     "Segment"
+    ],
+    [
+     0,
+     1,
+     1,
+     1,
+     "Share"
+    ],
+    [
+     1,
+     0,
+     1,
+     1,
+     "Alpha"
+    ],
+    [
+     1,
+     1,
+     1,
+     1,
+     "45"
+    ],
+    [
+     2,
+     0,
+     1,
+     1,
+     "Beta"
+    ],
+    [
+     2,
+     1,
+     1,
+     1,
+     "30"
+    ],
+    [
+     3,
+     0,
+     1,
+     1,
+     "Gamma"
+    ],
+    [
+     3,
+     1,
+     1,
+     1,
+     "15"
+    ],
+    [
+     4,
+     0,
+     1,
+     1,
+     "Delta"
+    ],
+    [
+     4,
+     1,
+     1,
+     1,
+     "10"
+    ]
+   ],
+   "cols": 2,
+   "column_headers": 2,
+   "ref": "#/tables/4",
+   "rows": 5
+  },
+  {
+   "caption": "",
+   "cells": [
+    [
+     0,
+     0,
+     1,
+     1,
+     "Segment"
+    ],
+    [
+     0,
+     1,
+     1,
+     1,
+     "Share"
+    ],
+    [
+     1,
+     0,
+     1,
+     1,
+     "Alpha"
+    ],
+    [
+     1,
+     1,
+     1,
+     1,
+     "45"
+    ],
+    [
+     2,
+     0,
+     1,
+     1,
+     "Beta"
+    ],
+    [
+     2,
+     1,
+     1,
+     1,
+     "30"
+    ],
+    [
+     3,
+     0,
+     1,
+     1,
+     "Gamma"
+    ],
+    [
+     3,
+     1,
+     1,
+     1,
+     "15"
+    ],
+    [
+     4,
+     0,
+     1,
+     1,
+     "Delta"
+    ],
+    [
+     4,
+     1,
+     1,
+     1,
+     "10"
+    ]
+   ],
+   "cols": 2,
+   "column_headers": 2,
+   "ref": "#/tables/5",
+   "rows": 5
+  }
+ ],
+ "warnings": []
+}
