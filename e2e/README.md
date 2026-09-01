@@ -31,7 +31,7 @@ messages name the service and the fixture.
 | `grparse.spec.ts` | the gRParse page-stream tab: the bundled two-page sample and the corpus `hello-text.pdf` stream two page cards with painted box overlays and a completion banner |
 | `service-uis.spec.ts` | every `*-ui` frontend under its `/ui/<name>/` prefix loads and parses one fixture through its own upload control (ebcdic streams its bundled sample; calamine is load-only and skipped unless its profile is up) |
 | `health.spec.ts` | `/api/health`, every native tab's `/api/<name>/status` reports reachable, every registry entry reachable, tab dots green (amber allowed for a VLM tab without an endpoint) |
-| `proxy.spec.ts` | a documented red test for a shell proxy bug (below) |
+| `proxy.spec.ts` | the request after a proxied parse stream is served (a fault that was live until the nginx 1.31 bump; five stream/request pairs) |
 
 Adding a parser: one row in `lib/shell.ts` (its tab), one in
 `lib/document-tab.ts` (a corpus fixture and what it must render), one in
@@ -49,7 +49,7 @@ npx playwright show-report out/html      # optional
 `npm ci` installs the pinned `@playwright/test`; if Chromium is not cached
 yet, `npx playwright install chromium` fetches it once. Reports land in
 `out/html/` and `out/junit.xml`; screenshots of failures in `test-results/`.
-`E2E_WORKERS` (default 1, serial: the shell proxy bug in `specs/proxy.spec.ts` makes parallel workers trip each other) bounds the load on the shared parsers. Run a
+`E2E_WORKERS` (default 1, serial: the parsers are shared, and grpc-markup has answered a UI parse with no blocks while another client was loading it) bounds the load on the shared parsers. Run a
 single surface with `npx playwright test specs/document.spec.ts`.
 
 ## Running as a compose profile
@@ -85,13 +85,6 @@ suite. They pass (as expected failures) today; when the bug is fixed they
 flip to an unexpected pass and fail the run, which is the signal to delete
 the marker.
 
-- `proxy.spec.ts`: after the shell proxies a streamed POST to a service
-  frontend, the next request it forwards to that frontend is answered
-  `400` with an empty body (`examples/web-demo/server.js`,
-  `proxyToFrontend`; the frontends answer `200` when reached directly).
-  `lib/service-ui-flows.ts` spends that request deliberately after every
-  stream so the rest of the suite is deterministic; remove the drain with
-  the marker.
 - `document.spec.ts` "progress bar disappears": `.dv-progress` has
   `display: flex` in `style.css`, which outranks the `hidden` attribute the
   Document tab sets when a parse finishes, so the "parsing..." bar stays
