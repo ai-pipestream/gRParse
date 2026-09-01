@@ -81,6 +81,7 @@ RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.83.1-ort1.29.0-poppler26
  && if [ "$(cat /build/.proto-sum 2>/dev/null)" != "$PROTO_SUM" ]; then \
       rm -rf /build/proto /build/generated && printf '%s' "$PROTO_SUM" > /build/.proto-sum; \
     fi \
+ && sh scripts/stamp-sources.sh /build \
  && cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
       -DGRPARSE_WERROR=ON -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv4 \
  && cmake --build /build --target grparse-server grparse-stream-client grparse-tests --parallel 4 \
