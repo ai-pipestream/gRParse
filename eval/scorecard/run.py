@@ -37,8 +37,6 @@ from scorecard.summary import summarize  # noqa: E402
 
 SKIP = 77
 BASELINE_DIR = Path(__file__).resolve().parent / "baseline"
-CTEST_NOTE = ("CTest wiring (add_test with LABELS eval and SKIP_RETURN_CODE 77, like vlm-oracle-eval) is left "
-              "to the CMakeLists.txt owner; this runner is invoked directly until then.")
 
 
 def skip(reason: str) -> int:
@@ -97,7 +95,7 @@ def main(argv: list[str]) -> int:
     started = time.monotonic()
     entries: list[dict[str, Any]] = []
     totals = {"scored": 0, "passed": 0, "regressed": 0, "skipped": 0, "no_baseline": 0, "recorded": 0}
-    notes = [CTEST_NOTE]
+    notes: list[str] = []
     if args.record and args.reason:
         notes.append(f"baseline re-recorded: {args.reason}")
 
