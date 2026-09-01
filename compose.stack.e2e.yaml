@@ -1,0 +1,50 @@
+# Playwright end-to-end runner for the demo stack (see e2e/README.md).
+#
+# Adds one service, `playwright`, under the `e2e` profile. It runs the
+# suite in e2e/ from inside the compose network against the nginx front
+# door (http://proxy:8080), the same path a browser on the host takes, and
+# writes its reports to e2e/out/ on the host. It never joins `up`: the
+# profile is enabled only for `run`, so a stack can stay up while the
+# suite runs against it as many times as needed.
+#
+#   docker compose -f compose.stack.yaml -f compose.stack.e2e.yaml \
+#     --profile parsers --profile heavy up -d --wait
+#   docker compose -f compose.stack.yaml -f compose.stack.e2e.yaml \
+#     --profile e2e run --rm playwright
+#
+# scripts/stack-e2e.sh does both and exits with Playwright's exit code.
+# The image tag must match the @playwright/test version pinned in
+# e2e/package.json (the browsers ship inside the image).
+services:
+  playwright:
+    profiles: ["e2e"]
+    image: mcr.microsoft.com/playwright:v1.62.1-noble
+    # Run as the invoking host user so node_modules and out/ land in the
+    # bind-mounted checkout with the right owner; scripts/stack-e2e.sh
+    # exports these, the defaults cover the common single-user case.
+    user: "${E2E_UID:-1000}:${E2E_GID:-1000}"
+    working_dir: /e2e
+    # Chromium wants a large shared-memory segment; the host IPC namespace
+    # is what the Playwright image documentation recommends.
+    ipc: host
+    volumes:
+      - ./e2e:/e2e
+      - ./tests/golden/corpus:/corpus:ro
+    # Lets `run --rm --no-deps -e E2E_BASE_URL=http://host.docker.internal:<port> playwright`
+    # target a stack published on the host instead of this project's proxy.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      E2E_BASE_URL: "http://proxy:8080"
+      E2E_CORPUS_DIR: /corpus
+      E2E_WORKERS: "${E2E_WORKERS:-2}"
+      E2E_READY_TIMEOUT_MS: "${E2E_READY_TIMEOUT_MS:-300000}"
+      CI: "1"
+      # The bind-mounted user has no home inside the image.
+      HOME: /tmp
+      npm_config_cache: /tmp/npm-cache
+      npm_config_update_notifier: "false"
+    depends_on:
+      - proxy
+      - shell
+    command: ["bash", "-c", "npm ci --no-audit --no-fund && npx playwright test"]

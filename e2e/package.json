@@ -1,0 +1,21 @@
+{
+  "name": "grparse-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Playwright end-to-end suite for the parser compose stack (compose.stack.yaml)",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "report": "playwright show-report out/html",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@types/node": "24.13.3",
+    "typescript": "5.9.3"
+  }
+}
