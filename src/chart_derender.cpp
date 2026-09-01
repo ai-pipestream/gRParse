@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <chrono>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -46,6 +48,25 @@ bool has_tabular_chart(const docv1::PictureItem& picture) {
   return std::ranges::any_of(picture.annotations(), [](const docv1::PictureAnnotation& one) {
     return one.has_tabular_chart();
   });
+}
+
+// The picture a wire self_ref names: the one that carries that self_ref, or,
+// for a picture the arena never named (chart_derender_candidates sends those
+// under "#/pictures/<index>"), the one at that index. Null when neither.
+docv1::PictureItem* picture_for(const std::string& self_ref, docv1::Document* document) {
+  for (docv1::PictureItem& picture : *document->mutable_pictures()) {
+    if (!picture.self_ref().empty() && picture.self_ref() == self_ref) return &picture;
+  }
+  constexpr std::string_view kPrefix = "#/pictures/";
+  if (!self_ref.starts_with(kPrefix)) return nullptr;
+  const std::string_view digits(self_ref.data() + kPrefix.size(),
+                                self_ref.size() - kPrefix.size());
+  int index = 0;
+  const auto [end, error] = std::from_chars(digits.data(), digits.data() + digits.size(), index);
+  if (error != std::errc() || end != digits.data() + digits.size()) return nullptr;
+  if (index < 0 || index >= document->pictures_size()) return nullptr;
+  docv1::PictureItem* picture = document->mutable_pictures(index);
+  return picture->self_ref().empty() ? picture : nullptr;
 }
 
 // Splits "data:<mimetype>;base64,<payload>" into decoded bytes; false for
@@ -153,11 +174,10 @@ bool fold_chart_table(const enrichv1::ItemAnnotation& annotation, const std::str
   if (!annotation.has_chart_table() || empty_table(annotation.chart_table().table())) {
     return false;
   }
-  auto target = std::ranges::find_if(*document->mutable_pictures(),
-                                     [&annotation](const docv1::PictureItem& picture) {
-                                       return picture.self_ref() == annotation.self_ref();
-                                     });
-  if (target == document->mutable_pictures()->end()) return false;
+  docv1::PictureItem* target = picture_for(annotation.self_ref(), document);
+  // A picture that already carries a table (an office chart, or an earlier
+  // answer for the same picture) keeps it: the fold is applied once.
+  if (target == nullptr || has_tabular_chart(*target)) return false;
   const enrichv1::ChartTable& chart = annotation.chart_table();
   const docv1::TableData data = normalized_table(chart.table());
 
@@ -239,12 +259,20 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
 
   int folded = 0;
   int skipped_events = 0;
+  // Every self_ref a table already landed on: a peer that answers one
+  // picture twice adds nothing the second time, and the count of pictures
+  // still waiting for a table never drops below zero.
+  std::set<std::string> answered;
   enrichv1::EnrichDocumentResponse event;
   while (stream->Read(&event)) {
     if (event.has_annotation()) {
       const enrichv1::ItemAnnotation& annotation = event.annotation();
-      if (fold_chart_table(annotation, options.vlm_endpoint, document)) {
+      if (annotation.has_chart_table() && answered.contains(annotation.self_ref())) {
+        report.warnings.push_back("chart derender: " + annotation.self_ref() +
+                                  " returned a duplicate table, ignored");
+      } else if (fold_chart_table(annotation, options.vlm_endpoint, document)) {
         ++folded;
+        answered.insert(annotation.self_ref());
         data_log("chart " + annotation.self_ref() + " derendered by " + annotation.model() +
                  " (" + std::to_string(annotation.chart_table().table().num_rows()) + "x" +
                  std::to_string(annotation.chart_table().table().num_cols()) + ")");
@@ -271,11 +299,12 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
                                               std::memory_order_relaxed);
   // Every candidate that came back without a table, whatever the cause, is
   // one skip: a skip event, an empty table, a stream cut short by the
-  // deadline or the transport.
-  count_skipped(report.candidates - folded);
-  if (report.candidates - folded > skipped_events && status.ok()) {
-    report.warnings.push_back("chart derender: " +
-                              std::to_string(report.candidates - folded - skipped_events) +
+  // deadline or the transport. Never below zero: the skip counter is
+  // unsigned and a wrapped total would outlive the parse.
+  const int unanswered = std::max(0, report.candidates - folded);
+  count_skipped(unanswered);
+  if (unanswered > skipped_events && status.ok()) {
+    report.warnings.push_back("chart derender: " + std::to_string(unanswered - skipped_events) +
                               " chart(s) received no event before the stream ended");
   }
   return report;

@@ -63,12 +63,15 @@ ai::pipestream::document::v1::Document chart_derender_request_document(
     const ai::pipestream::document::v1::Document& document,
     const std::vector<ChartCandidate>& candidates);
 
-// Folds one ChartTable annotation into the picture whose self_ref it names:
+// Folds one ChartTable annotation into the picture whose self_ref it names
+// (or, for a picture the arena never named, the one at the index in
+// "#/pictures/<index>", the name chart_derender_candidates sent it under):
 // a tabular_chart annotation (title, typed cells), the picture meta's
 // tabular_chart field with created_by = model, and a GenerationSource on
 // the picture naming the model (and the endpoint when known). Returns
-// false, touching nothing, when no picture has that self_ref or the table
-// is empty. Pure apart from the document it edits.
+// false, touching nothing, when no picture matches, the picture already
+// carries a tabular chart, or the table is empty. Pure apart from the
+// document it edits; applying the same annotation twice folds it once.
 bool fold_chart_table(const ai::pipestream::enrich::v1::ItemAnnotation& annotation,
                       const std::string& endpoint,
                       ai::pipestream::document::v1::Document* document);

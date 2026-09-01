@@ -103,7 +103,7 @@ enrichv1::ChartTable canned_table(const std::string& title) {
   return chart;
 }
 
-enum class FakeMode { kAnswer, kSkip, kEmptyTable, kSlow };
+enum class FakeMode { kAnswer, kSkip, kEmptyTable, kSlow, kDuplicate };
 
 class FakeEnrichService final : public enrichv1::EnrichService::Service {
  public:
@@ -162,6 +162,9 @@ class FakeEnrichService final : public enrichv1::EnrichService::Service {
             mode_ == FakeMode::kEmptyTable ? enrichv1::ChartTable() : canned_table("Revenue by region");
       }
       stream->Write(event);
+      // A peer that answers the same picture twice (a retry that also
+      // delivered the first answer): the second table must not count.
+      if (mode_ == FakeMode::kDuplicate) stream->Write(event);
     }
     event.Clear();
     event.mutable_complete()->set_succeeded(mode_ == FakeMode::kAnswer ? seen.document.pictures_size() : 0);
@@ -391,6 +394,59 @@ void verify_unreachable_peer_is_a_warning() {
   require(document.SerializeAsString() == before, "the document is untouched");
 }
 
+// A peer that sends two tables for one picture folds one: the picture ends
+// with a single tabular annotation and a single GenerationSource, the report
+// never goes negative, and the process skip counter does not move (a
+// negative skip count cast to uint64 would wrap the exported metric).
+void verify_duplicate_tables_fold_once_and_never_go_negative() {
+  FakeEnrichService fake(FakeMode::kDuplicate);
+  ServerFixture server(&fake);
+  docv1::Document document = sample_document();
+  const uint64_t derendered_before = grparse::data_totals().charts_derendered;
+  const uint64_t skipped_before = grparse::data_totals().chart_derender_skipped;
+  const grparse::ChartDerenderReport report =
+      grparse::derender_charts(server.channel(), options_for(server.target()), &document);
+  require(report.candidates == 1 && report.derendered == 1,
+          "one candidate answered twice is one derendered chart, got " +
+              std::to_string(report.derendered));
+  require(report.skipped == 0, "a duplicate answer is not a skip, got skipped=" +
+                                   std::to_string(report.skipped));
+  require(grparse::data_totals().charts_derendered == derendered_before + 1 &&
+              grparse::data_totals().chart_derender_skipped == skipped_before,
+          "the counters move by one derendered chart and no skips");
+  int tabular = 0;
+  for (const docv1::PictureAnnotation& one : document.pictures(0).annotations()) {
+    if (one.has_tabular_chart()) ++tabular;
+  }
+  require(tabular == 1, "the picture carries one tabular annotation, got " + std::to_string(tabular));
+  require(document.pictures(0).source_size() == 1, "the picture carries one GenerationSource");
+  require(report.warnings.size() == 1 && report.warnings[0].contains("#/pictures/0") &&
+              report.warnings[0].contains("duplicate"),
+          "the second table is reported as a duplicate: " +
+              (report.warnings.empty() ? std::string("no warning") : report.warnings[0]));
+}
+
+// A picture the arena never named gets the positional self_ref on the wire,
+// so the table the peer returns under that name has to land on it.
+void verify_fold_lands_on_a_picture_without_self_ref() {
+  docv1::Document document = sample_document();
+  document.mutable_pictures(0)->clear_self_ref();
+  const std::vector<grparse::ChartCandidate> candidates =
+      grparse::chart_derender_candidates(document);
+  require(candidates.size() == 1 && candidates[0].self_ref == "#/pictures/0",
+          "an unnamed picture is sent under its positional self_ref");
+  enrichv1::ItemAnnotation annotation;
+  annotation.set_self_ref(candidates[0].self_ref);
+  annotation.set_model("fake-vlm");
+  *annotation.mutable_chart_table() = canned_table("Revenue by region");
+  require(grparse::fold_chart_table(annotation, "", &document),
+          "a table returned under the positional self_ref folds onto the unnamed picture");
+  require(document.pictures(0).meta().tabular_chart().created_by() == "fake-vlm",
+          "the fold landed on the picture that was sent");
+  require(grparse::chart_derender_candidates(document).empty(),
+          "the folded picture is no longer a candidate");
+}
+
 void verify_off_by_default_dials_nothing() {
   grparse::CollectorTargets targets;
   require(!targets.derender.enabled(), "no target, no leg");
@@ -433,6 +489,8 @@ int main() {
     verify_skip_events_and_empty_tables_count_as_skipped();
     verify_deadline_bounds_the_leg_and_never_fails_the_document();
     verify_unreachable_peer_is_a_warning();
+    verify_duplicate_tables_fold_once_and_never_go_negative();
+    verify_fold_lands_on_a_picture_without_self_ref();
     verify_off_by_default_dials_nothing();
     std::println("chart-derender-test: all checks passed");
     return EXIT_SUCCESS;
