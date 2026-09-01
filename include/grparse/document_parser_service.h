@@ -41,6 +41,15 @@ struct CollectorTargets {
   ChartDerenderOptions derender;
 };
 
+// The largest message this server accepts on its own port and the largest
+// answer it accepts from a collector: one number, so a document the server
+// let in can come back from a collector. gRPC's default of 4 MB refused a
+// 15 MB HTML page's markup answer with RESOURCE_EXHAUSTED.
+inline constexpr int kMaxMessageBytes = 520 * 1024 * 1024;
+
+// The channel arguments every collector channel is created with.
+grpc::ChannelArguments collector_channel_arguments();
+
 // Shared handle to the out-of-process collectors the coordinator can fan
 // out to: the targets plus one lazily created channel per collector, shared
 // by every parse.

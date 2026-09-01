@@ -437,6 +437,13 @@ const std::string& CollectorEndpoints::target(
   }
 }
 
+grpc::ChannelArguments collector_channel_arguments() {
+  grpc::ChannelArguments arguments;
+  arguments.SetMaxReceiveMessageSize(kMaxMessageBytes);
+  arguments.SetMaxSendMessageSize(kMaxMessageBytes);
+  return arguments;
+}
+
 std::shared_ptr<grpc::Channel> CollectorEndpoints::channel(
     pipestream::parse::v1::Collector id) {
   const std::string& where = target(id);
@@ -444,7 +451,8 @@ std::shared_ptr<grpc::Channel> CollectorEndpoints::channel(
   std::lock_guard<std::mutex> lock(mutex_);
   auto& channel = channels_[id];
   if (channel == nullptr) {
-    channel = grpc::CreateChannel(where, grpc::InsecureChannelCredentials());
+    channel = grpc::CreateCustomChannel(where, grpc::InsecureChannelCredentials(),
+                                        collector_channel_arguments());
   }
   return channel;
 }
@@ -453,8 +461,9 @@ std::shared_ptr<grpc::Channel> CollectorEndpoints::enrich_channel() {
   if (!has_derender()) return nullptr;
   std::lock_guard<std::mutex> lock(mutex_);
   if (enrich_channel_ == nullptr) {
-    enrich_channel_ = grpc::CreateChannel(targets_.derender.target,
-                                          grpc::InsecureChannelCredentials());
+    enrich_channel_ = grpc::CreateCustomChannel(targets_.derender.target,
+                                                grpc::InsecureChannelCredentials(),
+                                                collector_channel_arguments());
   }
   return enrich_channel_;
 }

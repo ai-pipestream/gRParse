@@ -773,7 +773,8 @@ endif()
 # whole by the merge, line-addressed provenance and page destinations in the
 # integrity walk, the sheet fold's empty-sheet and formula-header shapes,
 # routing by bytes for names that say nothing, the mimetype ladder's
-# generic-text rule, and a failed leg's status text. They own no sources.
+# generic-text rule, a failed leg's status text, and the collector channels'
+# message limits. They own no sources.
 if(BUILD_TESTING)
   set(GRPARSE_S3_EVAL_TESTS
     document-merge-value-fields-test
@@ -782,7 +783,8 @@ if(BUILD_TESTING)
     docling-map-trailing-pictures-test
     collector-route-by-bytes-test
     content-sniff-precedence-test
-    document-collectors-status-test)
+    document-collectors-status-test
+    collector-channel-limits-test)
   foreach(test_name IN LISTS GRPARSE_S3_EVAL_TESTS)
     string(REPLACE "-" "_" test_source "${test_name}")
     add_executable(${test_name} "tests/${test_source}.cpp")
