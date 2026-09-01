@@ -65,11 +65,17 @@ COPY . .
 # The cache id includes ABI-sensitive dependency versions. Update it whenever
 # gRPC, ONNX Runtime, CUDA, the base toolchain, or a dependency patch under
 # patches/ changes — a stale cache would keep an unpatched dependency tree.
+# Two builders that share this cache mount (a developer build and a local CI
+# run of the same Dockerfile) can leave each other's object files newer than
+# the sources, and ninja then skips a recompile that was needed. Give a
+# concurrent builder its own tree: --build-arg GRPARSE_BUILD_CACHE_SCOPE=ci
+# suffixes the cache id; the default keeps the existing tree.
+ARG GRPARSE_BUILD_CACHE_SCOPE=
 # Cache-mounted build trees outlive proto changes, and ninja cannot see a
 # COPY-ed proto as newer than a cached generated header, so a content stamp
 # decides: any proto change discards the staged and generated trees, which
 # forces regeneration; everything else stays warm.
-RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.83.0-ort1.29.0-poppler26.08-cxx23-sessionep2-static1-simdutf9-ocv412,sharing=locked,target=/build \
+RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.83.0-ort1.29.0-poppler26.08-cxx23-sessionep2-static1-simdutf9-ocv412${GRPARSE_BUILD_CACHE_SCOPE},sharing=locked,target=/build \
     export PKG_CONFIG_PATH=/opt/poppler/lib/pkgconfig \
  && PROTO_SUM=$(cat *.proto collectors/*.proto | sha256sum | cut -d' ' -f1) \
  && if [ "$(cat /build/.proto-sum 2>/dev/null)" != "$PROTO_SUM" ]; then \
