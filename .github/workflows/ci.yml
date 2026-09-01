@@ -12,7 +12,7 @@ jobs:
   cuda-image:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Build full image and run non-GPU tests
         # The full build (not just the build stage) also assembles the
         # runtime stage, so a runtime library missing from the staged
@@ -27,7 +27,7 @@ jobs:
   openvino-image:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Build Intel/OpenVINO image and run non-GPU tests
         run: docker build --progress=plain -f Dockerfile.openvino -t grparse-ci-openvino .
       - name: Boot-proof the runtime image
@@ -40,7 +40,7 @@ jobs:
   fuzz-smoke:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install Clang and the ingest-door dependencies
         run: |
           sudo apt-get update

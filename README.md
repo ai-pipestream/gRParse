@@ -168,7 +168,7 @@ The runtime stage is minimal-base compatible: it runs no package manager and
 no ldconfig, ships its complete non-CUDA shared-library closure from the
 build stage (cuDNN included), runs as the numeric non-root user 65532, and
 asks the base only for glibc and the CUDA runtime libraries. The default base
-is `nvidia/cuda:13.3.0-runtime-ubuntu26.04`; a hardened base such as a Docker
+is `nvidia/cuda:13.3.1-runtime-ubuntu26.04`; a hardened base such as a Docker
 Hardened Images `nvidia-cuda` mirror drops in without a Dockerfile change:
 
 ```bash
@@ -614,9 +614,9 @@ tests are in [`e2e/README.md`](e2e/README.md).
 ## Development
 
 The container is the supported build environment. It runs Ubuntu 26.04
-with CUDA 13.3, cuDNN 9, ONNX Runtime GPU 1.28.0 for CUDA 13,
-RapidOcrOnnx 1.2.3 C++ sources, and gRPC 1.83.0. These are the newest applicable
-upstream versions as of 2026-08-11. RapidOCR 3.9.2 is the current Python package
+with CUDA 13.3.1, cuDNN 9, ONNX Runtime GPU 1.29.0 for CUDA 13, poppler 26.08.0, OpenCV 4.14.0,
+RapidOcrOnnx 1.2.3 C++ sources, and gRPC 1.83.1. These are the newest applicable
+upstream versions as of 2026-09-01. RapidOCR 3.9.2 is the current Python package
 release; its C++ entry point still directs users to RapidOcrOnnx, whose newest
 C++ tag is 1.2.3. The container needs an NVIDIA Container Toolkit-enabled
 Docker installation. A CUDA-capable ONNX Runtime build is required for the

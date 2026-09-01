@@ -39,8 +39,8 @@
     },
     {
       "customType": "regex",
-      "description": "gRPC version embedded in both Dockerfiles' build-cache ids (must move with the CMake pin so stale trees never mix)",
-      "managerFilePatterns": ["/^Dockerfile$/", "/^Dockerfile\\.openvino$/"],
+      "description": "gRPC version embedded in the three Dockerfiles' build-cache ids (must move with the CMake pin so stale trees never mix)",
+      "managerFilePatterns": ["/^Dockerfile$/", "/^Dockerfile\\.cpu$/", "/^Dockerfile\\.openvino$/"],
       "matchStrings": ["-grpc(?<currentValue>\\d+\\.\\d+\\.\\d+)-ort"],
       "depNameTemplate": "grpc/grpc",
       "datasourceTemplate": "github-releases",
@@ -48,19 +48,12 @@
     },
     {
       "customType": "regex",
-      "description": "CUDA-path ONNX Runtime version embedded in the Dockerfile's build-cache id",
-      "managerFilePatterns": ["/^Dockerfile$/"],
-      "matchStrings": ["cuda13-grpc\\d+\\.\\d+\\.\\d+-ort(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "description": "CUDA- and CPU-path ONNX Runtime version embedded in the Dockerfile and Dockerfile.cpu build-cache ids",
+      "managerFilePatterns": ["/^Dockerfile$/", "/^Dockerfile\\.cpu$/"],
+      "matchStrings": ["(?:cuda13|cpu-ubuntu26)-grpc\\d+\\.\\d+\\.\\d+-ort(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
       "depNameTemplate": "microsoft/onnxruntime",
       "datasourceTemplate": "github-releases",
       "extractVersionTemplate": "^v(?<version>.*)$"
-    }
-  ],
-  "packageRules": [
-    {
-      "description": "zxing-cpp 3.x requires C++20 in its public headers; this project is C++17",
-      "matchDepNames": ["zxing-cpp/zxing-cpp"],
-      "allowedVersions": "<3.0.0"
     }
   ]
 }

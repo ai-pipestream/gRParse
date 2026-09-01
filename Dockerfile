@@ -42,8 +42,8 @@ RUN curl -fsSL -o /tmp/poppler.tar.xz "https://poppler.freedesktop.org/poppler-$
 # versions and shift how pages rasterize. This build carries only the three
 # modules the server uses, with no GDAL and the image codecs linked in
 # statically, so the binary's library closure holds exactly one poppler.
-ARG OPENCV_VERSION=4.12.0
-ARG OPENCV_SHA256=44c106d5bb47efec04e531fd93008b3fcd1d27138985c5baf4eafac0e1ec9e9d
+ARG OPENCV_VERSION=4.14.0
+ARG OPENCV_SHA256=ee8fb9b30eb60850431b4656447080e3737b56e45719c92b67f245950609f86e
 RUN curl -fsSL -o /tmp/opencv.tar.gz "https://github.com/opencv/opencv/archive/refs/tags/${OPENCV_VERSION}.tar.gz" \
  && echo "${OPENCV_SHA256}  /tmp/opencv.tar.gz" | sha256sum -c - \
  && tar -xzf /tmp/opencv.tar.gz -C /tmp \
@@ -75,7 +75,7 @@ ARG GRPARSE_BUILD_CACHE_SCOPE=
 # COPY-ed proto as newer than a cached generated header, so a content stamp
 # decides: any proto change discards the staged and generated trees, which
 # forces regeneration; everything else stays warm.
-RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.83.0-ort1.29.0-poppler26.08-cxx23-sessionep2-static1-simdutf9-ocv412${GRPARSE_BUILD_CACHE_SCOPE},sharing=locked,target=/build \
+RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.83.1-ort1.29.0-poppler26.08-cxx23-sessionep2-static1-simdutf9-ocv414${GRPARSE_BUILD_CACHE_SCOPE},sharing=locked,target=/build \
     export PKG_CONFIG_PATH=/opt/poppler/lib/pkgconfig \
  && PROTO_SUM=$(cat *.proto collectors/*.proto | sha256sum | cut -d' ' -f1) \
  && if [ "$(cat /build/.proto-sum 2>/dev/null)" != "$PROTO_SUM" ]; then \

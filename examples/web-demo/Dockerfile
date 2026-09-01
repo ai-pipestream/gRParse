@@ -1,7 +1,7 @@
 # Build from the repository root so the contract protos are in context:
 #   docker build -f examples/web-demo/Dockerfile -t grparse-web-demo .
 # Or just: docker compose --profile demo up --build
-FROM node:24-alpine
+FROM node:26-alpine
 WORKDIR /app
 COPY examples/web-demo/package.json ./
 RUN npm install --omit=dev
