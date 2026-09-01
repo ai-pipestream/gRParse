@@ -556,6 +556,112 @@ SalvagedListItem salvage_list_item(const docv1::BaseTextItem& text) {
   return out;
 }
 
+// Inserts a fresh list group under `parent_ref`, positioned where the run's
+// first item stands so the group takes its place in reading order.
+void insert_list_group(docv1::Document* doc, const std::string& parent_ref,
+                       const std::string& first_ref) {
+  const std::string group_ref = "#/groups/" + std::to_string(doc->groups_size());
+  auto* group = doc->add_groups();
+  group->set_self_ref(group_ref);
+  group->mutable_parent()->set_ref(parent_ref);
+  group->set_content_layer(docv1::CONTENT_LAYER_BODY);
+  group->set_name("group");
+  group->set_label(docv1::GROUP_LABEL_LIST);
+  NodeFields parent_fields = node_fields(doc, parent_ref);  // pointers may have moved
+  int position = parent_fields.children->size();
+  for (int i = 0; i < parent_fields.children->size(); ++i) {
+    if (parent_fields.children->Get(i).ref() == first_ref) {
+      position = i;
+      break;
+    }
+  }
+  parent_fields.children->Add()->set_ref(group_ref);
+  for (int i = parent_fields.children->size() - 1; i > position; --i) {
+    parent_fields.children->SwapElements(i, i - 1);
+  }
+}
+
+// Unlinks every node of the run's subtrees from its parent.
+void unlink_from_parents(docv1::Document* doc,
+                         const std::map<std::string, std::set<int>>& deleted) {
+  for (const auto& [arena, indices] : deleted) {
+    for (const int index : indices) {
+      const std::string ref = "#/" + arena + "/" + std::to_string(index);
+      const NodeFields fields = node_fields(doc, ref);
+      if (!fields.resolved || fields.parent == nullptr) continue;
+      NodeFields owner = node_fields(doc, fields.parent->ref());
+      if (!owner.resolved || owner.children == nullptr) continue;
+      for (int i = 0; i < owner.children->size(); ++i) {
+        if (owner.children->Get(i).ref() == ref) {
+          owner.children->DeleteSubrange(i, 1);
+          break;
+        }
+      }
+    }
+  }
+}
+
+// Deletes the run's items and their subtrees, renumbering every surviving
+// reference; the lookup it returns maps each arena's deleted indices, which
+// is what a later run's own indices have to shift by.
+DeleteLookup delete_run_subtrees(docv1::Document* doc,
+                                 const std::vector<std::string>& run_refs) {
+  std::map<std::string, std::set<int>> deleted;
+  {
+    std::set<std::string> visited;
+    for (const auto& ref : run_refs) collect_subtree(doc, ref, &deleted, &visited);
+  }
+  unlink_from_parents(doc, deleted);
+  DeleteLookup lookup;
+  for (const auto& [arena, indices] : deleted) {
+    lookup[arena].assign(indices.begin(), indices.end());
+    delete_arena_entries(doc, arena, indices);
+  }
+  {
+    std::set<std::string> visited;
+    renumber_subtree(doc, "#/body", run_refs, lookup, &visited);
+  }
+  return lookup;
+}
+
+// The runs still waiting their turn shift with the same renumbering.
+template <typename Iterator>
+void shift_pending_runs(Iterator begin, Iterator end, const DeleteLookup& lookup) {
+  for (auto pending = begin; pending != end; ++pending) {
+    for (int& index : *pending) {
+      const RefParts parts = parse_ref_parts(
+          renumbered_ref("#/texts/" + std::to_string(index), lookup));
+      index = parts.index;
+    }
+  }
+}
+
+// Re-appends the salvaged payloads as list items of the group just inserted,
+// in run order.
+void append_salvaged_items(docv1::Document* doc,
+                           const std::vector<SalvagedListItem>& salvaged) {
+  const std::string group_ref =
+      "#/groups/" + std::to_string(doc->groups_size() - 1);
+  auto* group = doc->mutable_groups(doc->groups_size() - 1);
+  for (const auto& item : salvaged) {
+    const std::string new_ref = "#/texts/" + std::to_string(doc->texts_size());
+    auto* entry = doc->add_texts()->mutable_list_item();
+    auto* base = entry->mutable_base();
+    base->set_self_ref(new_ref);
+    base->mutable_parent()->set_ref(group_ref);
+    base->set_content_layer(item.base.content_layer());
+    base->set_label(docv1::DOC_ITEM_LABEL_LIST_ITEM);
+    if (!item.base.prov().empty()) *base->add_prov() = item.base.prov(0);
+    base->set_orig(!item.base.orig().empty() ? item.base.orig() : item.base.text());
+    base->set_text(item.base.text());
+    if (item.base.has_formatting()) *base->mutable_formatting() = item.base.formatting();
+    if (item.base.has_hyperlink()) base->set_hyperlink(item.base.hyperlink());
+    entry->set_enumerated(item.enumerated);
+    entry->set_marker(item.marker);
+    group->add_children()->set_ref(new_ref);
+  }
+}
+
 void migrate_misplaced_list_items(docv1::Document* doc) {
   RunCollector collector;
   collector.doc = doc;
@@ -568,7 +674,7 @@ void migrate_misplaced_list_items(docv1::Document* doc) {
     const NodeFields first_fields = node_fields(doc, first_ref);
     if (!first_fields.resolved || first_fields.parent == nullptr) continue;
     const std::string parent_ref = first_fields.parent->ref();
-    NodeFields parent_fields = node_fields(doc, parent_ref);
+    const NodeFields parent_fields = node_fields(doc, parent_ref);
     if (!parent_fields.resolved || parent_fields.children == nullptr) continue;
 
     // Salvage the run's payloads before anything moves.
@@ -579,87 +685,10 @@ void migrate_misplaced_list_items(docv1::Document* doc) {
       run_refs.push_back("#/texts/" + std::to_string(index));
     }
 
-    // Insert the new list group before the run's first item.
-    const std::string group_ref = "#/groups/" + std::to_string(doc->groups_size());
-    auto* group = doc->add_groups();
-    group->set_self_ref(group_ref);
-    group->mutable_parent()->set_ref(parent_ref);
-    group->set_content_layer(docv1::CONTENT_LAYER_BODY);
-    group->set_name("group");
-    group->set_label(docv1::GROUP_LABEL_LIST);
-    parent_fields = node_fields(doc, parent_ref);  // pointers may have moved
-    int position = parent_fields.children->size();
-    for (int i = 0; i < parent_fields.children->size(); ++i) {
-      if (parent_fields.children->Get(i).ref() == first_ref) {
-        position = i;
-        break;
-      }
-    }
-    parent_fields.children->Add()->set_ref(group_ref);
-    for (int i = parent_fields.children->size() - 1; i > position; --i) {
-      parent_fields.children->SwapElements(i, i - 1);
-    }
-
-    // Delete the run items and their subtrees.
-    std::map<std::string, std::set<int>> deleted;
-    {
-      std::set<std::string> visited;
-      for (const auto& ref : run_refs) collect_subtree(doc, ref, &deleted, &visited);
-    }
-    for (const auto& [arena, indices] : deleted) {
-      for (const int index : indices) {
-        const std::string ref = "#/" + arena + "/" + std::to_string(index);
-        const NodeFields fields = node_fields(doc, ref);
-        if (!fields.resolved || fields.parent == nullptr) continue;
-        NodeFields owner = node_fields(doc, fields.parent->ref());
-        if (!owner.resolved || owner.children == nullptr) continue;
-        for (int i = 0; i < owner.children->size(); ++i) {
-          if (owner.children->Get(i).ref() == ref) {
-            owner.children->DeleteSubrange(i, 1);
-            break;
-          }
-        }
-      }
-    }
-    DeleteLookup lookup;
-    for (const auto& [arena, indices] : deleted) {
-      lookup[arena].assign(indices.begin(), indices.end());
-      delete_arena_entries(doc, arena, indices);
-    }
-    {
-      std::set<std::string> visited;
-      renumber_subtree(doc, "#/body", run_refs, lookup, &visited);
-    }
-    // Earlier (still pending) runs shift with the same renumbering.
-    for (auto pending = std::next(run); pending != collector.runs.rend(); ++pending) {
-      for (int& index : *pending) {
-        const RefParts parts = parse_ref_parts(
-            renumbered_ref("#/texts/" + std::to_string(index), lookup));
-        index = parts.index;
-      }
-    }
-
-    // Re-append the salvaged items under the group, in run order.
-    const std::string final_group_ref =
-        "#/groups/" + std::to_string(doc->groups_size() - 1);
-    auto* final_group = doc->mutable_groups(doc->groups_size() - 1);
-    for (const auto& item : salvaged) {
-      const std::string new_ref = "#/texts/" + std::to_string(doc->texts_size());
-      auto* entry = doc->add_texts()->mutable_list_item();
-      auto* base = entry->mutable_base();
-      base->set_self_ref(new_ref);
-      base->mutable_parent()->set_ref(final_group_ref);
-      base->set_content_layer(item.base.content_layer());
-      base->set_label(docv1::DOC_ITEM_LABEL_LIST_ITEM);
-      if (!item.base.prov().empty()) *base->add_prov() = item.base.prov(0);
-      base->set_orig(!item.base.orig().empty() ? item.base.orig() : item.base.text());
-      base->set_text(item.base.text());
-      if (item.base.has_formatting()) *base->mutable_formatting() = item.base.formatting();
-      if (item.base.has_hyperlink()) base->set_hyperlink(item.base.hyperlink());
-      entry->set_enumerated(item.enumerated);
-      entry->set_marker(item.marker);
-      final_group->add_children()->set_ref(new_ref);
-    }
+    insert_list_group(doc, parent_ref, first_ref);
+    const DeleteLookup lookup = delete_run_subtrees(doc, run_refs);
+    shift_pending_runs(std::next(run), collector.runs.rend(), lookup);
+    append_salvaged_items(doc, salvaged);
   }
 }
 

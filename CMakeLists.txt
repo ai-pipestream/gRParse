@@ -480,6 +480,12 @@ add_library(grparse_core STATIC
   src/call_executor.cpp
   src/collector_coordinator.cpp
   src/confluence_storage.cpp
+  src/confluence/storage_blocks.cpp
+  src/confluence/storage_fold.cpp
+  src/confluence/storage_node.cpp
+  src/confluence/storage_parser.cpp
+  src/confluence/storage_table.cpp
+  src/confluence/storage_text.cpp
   src/docling_map.cpp
   src/office_fold/anchor_index.cpp
   src/office_fold/annotation_fold.cpp
@@ -505,8 +511,15 @@ add_library(grparse_core STATIC
   src/render/renderer_base.cpp
   src/render/load_normalization.cpp
   src/render/display_width.cpp
+  src/render/markdown_text.cpp
+  src/render/text_class.cpp
+  src/render/value_repr.cpp
+  src/render/meta_repr.cpp
+  src/render/table_markdown.cpp
   src/render/canonical_json_writer.cpp
+  src/render/canonical_json_labels.cpp
   src/render/canonical_json_renderer.cpp
+  src/render/markdown_walk.cpp
   src/render/markdown_renderer.cpp
   src/render/html_renderer.cpp
   src/render/gdocs_renderer.cpp
