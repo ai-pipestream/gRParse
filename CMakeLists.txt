@@ -529,8 +529,21 @@ add_library(grparse_core STATIC
   src/chunking/token_counter.cpp
   src/chunking/sentence_rules.cpp
   src/chunking/chunker.cpp
-  src/document_collectors.cpp
+  src/collectors/asr_collector.cpp
+  src/collectors/collector_support.cpp
+  src/collectors/ebcdic_collector.cpp
+  src/collectors/email_collector.cpp
+  src/collectors/epub_collector.cpp
+  src/collectors/fastwarc_collector.cpp
+  src/collectors/lol_html_collector.cpp
+  src/collectors/markup_collector.cpp
+  src/collectors/pdf_collector.cpp
+  src/collectors/xml_collector.cpp
+  src/collector_endpoints.cpp
+  src/parse_support.cpp
+  src/source_parse.cpp
   src/document_parser_service.cpp
+  src/document_streaming_service.cpp
   src/office_collector.cpp
   src/office_cv_enrichment.cpp
   src/figure_classifier.cpp
@@ -569,7 +582,7 @@ target_link_libraries(grparse_core
   PUBLIC grparse_proto rapidocr PkgConfig::POPPLER_CPP Threads::Threads grparse_curl
   PRIVATE ZXing::ZXing yaml-cpp::yaml-cpp simdutf::simdutf miniz grparse_flags)
 
-add_executable(grparse-server src/main.cpp)
+add_executable(grparse-server src/main.cpp src/server_config.cpp)
 target_link_libraries(grparse-server PRIVATE grparse_core grparse_flags grpc++_reflection)
 
 add_executable(grparse-stream-client src/stream_pdf_client.cpp)
