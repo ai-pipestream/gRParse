@@ -58,10 +58,31 @@ def sequence_similarity(baseline: Sequence[Hashable], live: Sequence[Hashable]) 
     return 1.0 - levenshtein(baseline, live) / longest
 
 
+KEY_WORDS = 6
+KEY_CHARS = 40
+KEY_SOURCE_CHARS = 60
+
+
+def prefix_key(text: str) -> str:
+    """A stable identity for an item: its first 6 normalized words, or its
+    first 40 characters when it has fewer words. Read from the summary's
+    60-character prefix so old and new baselines key identically."""
+    source = " ".join((text or "")[:KEY_SOURCE_CHARS].split()).lower()
+    tokens = WORD.findall(source)
+    if len(tokens) >= KEY_WORDS:
+        return " ".join(tokens[:KEY_WORDS])
+    return source[:KEY_CHARS]
+
+
+def order_key(entry: dict[str, Any]) -> tuple[str, str]:
+    """(label, prefix key): what the order metric and the change diff align on."""
+    return entry.get("label", ""), entry.get("key") or prefix_key(entry.get("text", ""))
+
+
 def reading_order_similarity(baseline: list[dict[str, Any]], live: list[dict[str, Any]]) -> float:
-    """Edit similarity over the (label, hash) reading sequence."""
-    key = lambda e: (e.get("label", ""), e.get("hash", ""))  # noqa: E731
-    return sequence_similarity([key(e) for e in baseline], [key(e) for e in live])
+    """Edit similarity over the (label, prefix key) reading sequence, so an
+    edit inside an item is not a move; the full hash stays with the text metric."""
+    return sequence_similarity([order_key(e) for e in baseline], [order_key(e) for e in live])
 
 
 def _cell_triples(tables: list[dict[str, Any]]) -> Counter:

@@ -29,6 +29,7 @@ if str(EVAL_DIR) not in sys.path:
     sys.path.insert(0, str(EVAL_DIR))
 
 from scorecard.corpus import REPO, CorpusDocument, DEFAULT_MANIFEST, load_manifest, select  # noqa: E402
+from scorecard.changes import document_changes  # noqa: E402
 from scorecard.meta import merge_meta  # noqa: E402
 from scorecard.report import write_report  # noqa: E402
 from scorecard.scoring import PASS, REGRESS, score_document  # noqa: E402
@@ -131,7 +132,8 @@ def main(argv: list[str]) -> int:
                         print(f"?? {doc.doc_id}: no baseline", file=sys.stderr)
                     else:
                         score = score_document(baseline, summary)
-                        entry.update({"status": "scored", "score": score.as_dict()})
+                        entry.update({"status": "scored", "score": score.as_dict(),
+                                      "changes": document_changes(baseline, summary, score.count_delta)})
                         totals["scored"] += 1
                         totals["passed" if score.verdict == PASS else "regressed"] += 1
                         print(f"== {doc.doc_id}: {score.verdict} ({timing['elapsed_ms']} ms)", file=sys.stderr)

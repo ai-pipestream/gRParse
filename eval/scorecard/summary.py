@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .agreement import agreement_section
+from .metrics import prefix_key
 
 SUMMARY_SCHEMA = 1
 SHORT_TEXT = 60
@@ -199,7 +200,8 @@ def _picture_summary(node: Node, arena: dict[str, Node], preceding_heading: str,
 
 
 def _reading_entry(node: Node, label: str, text: str, digest: str, level: int | None) -> dict[str, Any]:
-    entry: dict[str, Any] = {"ref": node.ref, "label": label, "text": text[:SHORT_TEXT], "hash": digest}
+    entry: dict[str, Any] = {"ref": node.ref, "label": label, "text": text[:SHORT_TEXT], "hash": digest,
+                             "key": prefix_key(text)}
     if level is not None:
         entry["level"] = level
     if node.kind == "group" and node.item.get("name"):
@@ -299,7 +301,8 @@ def summarize(document: dict[str, Any], markdown: str, *, doc_id: str, fmt: str,
     furniture_reading = []
     for node in furniture.nodes:
         text = normalize_text(node.base.get("text")) if node.kind == "text" else ""
-        furniture_reading.append({"ref": node.ref, "label": _label(node), "text": text[:SHORT_TEXT], "hash": short_hash(text)})
+        furniture_reading.append({"ref": node.ref, "label": _label(node), "text": text[:SHORT_TEXT],
+                                  "hash": short_hash(text), "key": prefix_key(text)})
 
     orphans = sorted((ref for ref in arena if ref not in reachable), key=_ref_key)
     unplaced_pictures = [ref for ref in orphans if ref.startswith("#/pictures/")]

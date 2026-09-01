@@ -47,13 +47,41 @@ def test_sequence_similarity_normalizes_by_longest() -> None:
     assert approx(metrics.sequence_similarity([1, 2], [3, 4]), 0.0)
 
 
-def test_reading_order_uses_label_and_hash() -> None:
-    a = [{"label": "section_header", "hash": "h1"}, {"label": "text", "hash": "h2"}, {"label": "table", "hash": "h3"}]
-    swapped = [a[1], a[0], a[2]]
-    assert metrics.reading_order_similarity(a, a) == 1.0
-    assert approx(metrics.reading_order_similarity(a, swapped), 1 - 2 / 3)
+def test_prefix_key_words_or_chars() -> None:
+    assert metrics.prefix_key("The  Quick brown fox jumps over the lazy dog") == "the quick brown fox jumps over"
+    assert metrics.prefix_key("Short title") == "short title"
+    assert metrics.prefix_key("x" * 80) == "x" * 40, "few words: first 40 characters"
+    assert metrics.prefix_key("") == ""
+    assert metrics.prefix_key("a b c d e f g") == metrics.prefix_key("a b c d e f Z"), "the seventh word is not part of the key"
+
+
+def _entry(label: str, text: str, ref: str = "") -> dict:
+    return {"label": label, "text": text[:60], "hash": str(hash(text)), "ref": ref}
+
+
+def test_reading_order_ignores_edits_inside_an_item() -> None:
+    paragraph = "Diffusion models are continuous noise operators over the latent space of a trained encoder"
+    a = [_entry("section_header", "Intro"), _entry("text", paragraph), _entry("text", "Second paragraph here"),
+         _entry("table", "3x2")]
+    edited = [a[0], _entry("text", paragraph.replace("latent space", "latent manifold")), a[2], a[3]]
+    assert metrics.reading_order_similarity(a, edited) == 1.0
+    assert metrics.text_similarity(paragraph, edited[1]["text"]) < 1.0, "the text metric still sees the edit"
+
+
+def test_reading_order_penalizes_a_real_swap() -> None:
+    a = [_entry("section_header", "Intro"), _entry("text", "First paragraph of the introduction section"),
+         _entry("text", "Second paragraph of the introduction section"), _entry("table", "3x2")]
+    swapped = [a[0], a[2], a[1], a[3]]
+    value = metrics.reading_order_similarity(a, swapped)
+    assert value < 0.95, value
     relabeled = [dict(a[0], label="text")] + a[1:]
-    assert approx(metrics.reading_order_similarity(a, relabeled), 1 - 1 / 3)
+    assert approx(metrics.reading_order_similarity(a, relabeled), 1 - 1 / 4)
+    assert metrics.reading_order_similarity(a, a) == 1.0
+
+
+def test_order_key_prefers_stored_key() -> None:
+    assert metrics.order_key({"label": "text", "key": "stored key", "text": "other text"}) == ("text", "stored key")
+    assert metrics.order_key({"label": "text", "text": "Derived from text"}) == ("text", "derived from text")
 
 
 def _table(cells: list[tuple[int, int, str]], rows: int = 2, cols: int = 2, spans: dict | None = None) -> dict:

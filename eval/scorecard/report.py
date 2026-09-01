@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .changes import has_changes, render_lines
 from .scoring import PASS, REGRESS, SKIP
 
 METRIC_COLUMNS = ("text", "order", "table_cells", "table_structure", "headings", "pictures", "warnings", "agreement")
@@ -78,6 +79,13 @@ def render_markdown(report: dict[str, Any]) -> str:
         lines.extend(["", "## Cross-collector agreement", "",
                       "| doc | collectors | shared fields | agreed | conflicts | winners | conflict -> winner |",
                       "|---|---|---|---|---|---|---|", *agreement_rows])
+    changed = [e for e in report["documents"] if e.get("status") == "scored" and has_changes(e.get("changes"))]
+    if changed:
+        lines.extend(["", "## Changes", ""])
+        for entry in changed:
+            lines.append(f"### {entry['doc_id']} ({entry['score']['verdict']})")
+            lines.extend(render_lines(entry["changes"]))
+            lines.append("")
     if report.get("notes"):
         lines.extend(["", "## Notes", "", *[f"- {note}" for note in report["notes"]]])
     return "\n".join(lines) + "\n"
