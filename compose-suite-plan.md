@@ -452,3 +452,38 @@
   the next largest units and were not touched; `.vtt` in the extension table;
   the four bespoke test mains (chunking, the three model-gated tests) keep
   their own shape; the markup UI flake above.
+
+### 2026-09-02: the open dependency PRs on Forgejo, reviewed and merged
+
+- Twenty Renovate PRs were open across thirteen parser repos. Seventeen are
+  merged, each on a green run of its repo's own gate against the merged
+  result (Gradle builds, cargo test plus clippy and fmt, Docker image
+  builds; grpc-opennlp-analysis additionally nativeCompile for the GraalVM
+  plugin bump). Renovate does not refresh Cargo.lock here, so each crate
+  bump needed a lock refresh on the branch; grpc-xml and grpc-epub needed
+  the quick-xml 0.42 string-API migration, grpc-ebcdic and grpc-xml a
+  libprotobuf-dev line in the Dockerfile (a baseline failure, not the
+  bump's).
+- Three stay open on purpose, each with the evidence in a PR comment or the
+  branch: grpc-pdf-inspector lopdf 0.44 and pyo3 0.29 both edit the
+  vendored parser tree whose version moves are the re-vendoring procedure
+  (and lopdf 0.44 turns a page decode failure into silently blank text);
+  calamine quick-xml 0.42 is 171 compile errors in upstream parsing code
+  that upstream itself has not migrated. The central Renovate config now
+  ignores vendor/** so the two vendored-tree PRs stop regenerating.
+- Two findings for the owner:
+  - grpc-ebcdic, grpc-xml and grpc-epub have Forgejo default branch
+    `development` that is a stale strict ancestor of `main` (which GitHub
+    mirrors and which sits 15, 35 and 16 commits ahead), so Renovate and
+    these merges land on a dead line. On `main` the rust 1.98 and
+    libprotobuf fixes already exist and grpc-xml is already on quick-xml
+    0.42; grpc-epub's quick-xml 0.42 migration is the one real piece not on
+    `main`. Repoint Renovate or retire `development`.
+  - calamine `master` had a policy of staying byte-identical to upstream
+    (the 2026-08-15 revert of the dependency rollup says so); merging the
+    criterion and sha2 bumps departs from it. If the policy stands, revert
+    c15bda98 and 32d45e50 and add a Renovate ignore for this repo.
+- Forgejo push-mirrors cover every repo checked (grpc-email, grpc-markup,
+  grpc-pdf-inspector, calamine verified in sync after the merges), so no
+  manual GitHub pushes were needed. grpc-epub has a pre-existing flaky
+  streaming test (fast hosts defeat its fewer-than-all-chapters assertion).
