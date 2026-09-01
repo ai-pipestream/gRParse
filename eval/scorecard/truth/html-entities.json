@@ -1,0 +1,20 @@
+{
+ "doc_id": "html-entities",
+ "source": "the html source read directly (entities decoded by hand)",
+ "notes": [
+  "<title> is the document title (level 0); the body has two paragraphs and a <script> that must not appear.",
+  "Anchors are the two paragraphs with their entities decoded: & and curly quotes, café with an e-acute."
+ ],
+ "headings": [
+  {
+   "text": "Baughman & Datron",
+   "level": 0
+  }
+ ],
+ "anchors": [
+  "Byrd & Davis, “curly” quotes",
+  "link & text"
+ ],
+ "tables": [],
+ "figures": []
+}

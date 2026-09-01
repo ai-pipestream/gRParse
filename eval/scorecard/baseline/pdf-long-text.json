@@ -1,0 +1,847 @@
+{
+ "agreement": {
+  "agreed": 1,
+  "claimed_fields": {
+   "grparse": 3,
+   "pdf": 6
+  },
+  "collectors": [
+   "grparse",
+   "pdf"
+  ],
+  "conflicts": [],
+  "shared": 1,
+  "winners": {
+   "origin.binary_hash": "grparse",
+   "origin.filename": "grparse",
+   "origin.mimetype": "grparse",
+   "source_meta.format_version": "pdf",
+   "source_meta.protection.allows_extraction": "pdf",
+   "source_meta.protection.allows_printing": "pdf",
+   "source_meta.protection.opened_without_password": "pdf",
+   "source_meta.structured": "pdf"
+  }
+ },
+ "collectors": [
+  "grparse",
+  "pdf"
+ ],
+ "content_type": "application/pdf",
+ "counts": {
+  "body_items": 1,
+  "by_label": {
+   "text": 1
+  },
+  "form_items": 0,
+  "furniture_items": 110,
+  "groups": 0,
+  "headings": 0,
+  "key_value_items": 0,
+  "orphans": 0,
+  "pages": 12,
+  "pictures": 0,
+  "reading_chars": 705,
+  "tables": 0,
+  "texts": 111
+ },
+ "doc_id": "pdf-long-text",
+ "filename": "long-text.pdf",
+ "format": "pdf",
+ "furniture_reading": [
+  {
+   "hash": "a140302a373a16c5",
+   "key": "the long document, page 2",
+   "label": "text",
+   "ref": "#/texts/1",
+   "text": "the long document, page 2"
+  },
+  {
+   "hash": "65f113a130d2b2fc",
+   "key": "lorem ipsum dolor sit amet lorem",
+   "label": "text",
+   "ref": "#/texts/2",
+   "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem "
+  },
+  {
+   "hash": "1cc779cf68f6237e",
+   "key": "lorem ipsum dolor sit amet lorem",
+   "label": "text",
+   "ref": "#/texts/3",
+   "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem "
+  },
+  {
+   "hash": "1802fbf8fc9c349d",
+   "key": "t lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/4",
+   "text": "t lorem ipsum dolor sit amet lorem ipsum dolor sit amet lore"
+  },
+  {
+   "hash": "49c2fc74e28944af",
+   "key": "et lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/5",
+   "text": "et lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor"
+  },
+  {
+   "hash": "099205a3be1887e1",
+   "key": "met lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/6",
+   "text": "met lorem ipsum dolor sit amet lorem ipsum dolor sit amet lo"
+  },
+  {
+   "hash": "ef20ebd03d9fbdeb",
+   "key": "amet lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/7",
+   "text": "amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l"
+  },
+  {
+   "hash": "f3878d839c9cae4a",
+   "key": "amet lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/8",
+   "text": "amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l"
+  },
+  {
+   "hash": "5785d8c7e7a101cc",
+   "key": "t amet lorem ipsum dolor sit",
+   "label": "text",
+   "ref": "#/texts/9",
+   "text": "t amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet"
+  },
+  {
+   "hash": "790819bcd3e1215d",
+   "key": "it amet lorem ipsum dolor sit",
+   "label": "text",
+   "ref": "#/texts/10",
+   "text": "it amet lorem ipsum dolor sit amet"
+  },
+  {
+   "hash": "b22f3a4a48d0b745",
+   "key": "the long document, page 3",
+   "label": "text",
+   "ref": "#/texts/11",
+   "text": "the long document, page 3"
+  },
+  {
+   "hash": "65f113a130d2b2fc",
+   "key": "lorem ipsum dolor sit amet lorem",
+   "label": "text",
+   "ref": "#/texts/12",
+   "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem "
+  },
+  {
+   "hash": "1cc779cf68f6237e",
+   "key": "lorem ipsum dolor sit amet lorem",
+   "label": "text",
+   "ref": "#/texts/13",
+   "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem "
+  },
+  {
+   "hash": "1802fbf8fc9c349d",
+   "key": "t lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/14",
+   "text": "t lorem ipsum dolor sit amet lorem ipsum dolor sit amet lore"
+  },
+  {
+   "hash": "49c2fc74e28944af",
+   "key": "et lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/15",
+   "text": "et lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor"
+  },
+  {
+   "hash": "099205a3be1887e1",
+   "key": "met lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/16",
+   "text": "met lorem ipsum dolor sit amet lorem ipsum dolor sit amet lo"
+  },
+  {
+   "hash": "ef20ebd03d9fbdeb",
+   "key": "amet lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/17",
+   "text": "amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l"
+  },
+  {
+   "hash": "f3878d839c9cae4a",
+   "key": "amet lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/18",
+   "text": "amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l"
+  },
+  {
+   "hash": "5785d8c7e7a101cc",
+   "key": "t amet lorem ipsum dolor sit",
+   "label": "text",
+   "ref": "#/texts/19",
+   "text": "t amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet"
+  },
+  {
+   "hash": "790819bcd3e1215d",
+   "key": "it amet lorem ipsum dolor sit",
+   "label": "text",
+   "ref": "#/texts/20",
+   "text": "it amet lorem ipsum dolor sit amet"
+  },
+  {
+   "hash": "0a10e46424152b25",
+   "key": "the long document, page 4",
+   "label": "text",
+   "ref": "#/texts/21",
+   "text": "the long document, page 4"
+  },
+  {
+   "hash": "65f113a130d2b2fc",
+   "key": "lorem ipsum dolor sit amet lorem",
+   "label": "text",
+   "ref": "#/texts/22",
+   "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem "
+  },
+  {
+   "hash": "1cc779cf68f6237e",
+   "key": "lorem ipsum dolor sit amet lorem",
+   "label": "text",
+   "ref": "#/texts/23",
+   "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem "
+  },
+  {
+   "hash": "1802fbf8fc9c349d",
+   "key": "t lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/24",
+   "text": "t lorem ipsum dolor sit amet lorem ipsum dolor sit amet lore"
+  },
+  {
+   "hash": "49c2fc74e28944af",
+   "key": "et lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/25",
+   "text": "et lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor"
+  },
+  {
+   "hash": "099205a3be1887e1",
+   "key": "met lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/26",
+   "text": "met lorem ipsum dolor sit amet lorem ipsum dolor sit amet lo"
+  },
+  {
+   "hash": "ef20ebd03d9fbdeb",
+   "key": "amet lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/27",
+   "text": "amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l"
+  },
+  {
+   "hash": "f3878d839c9cae4a",
+   "key": "amet lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/28",
+   "text": "amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l"
+  },
+  {
+   "hash": "5785d8c7e7a101cc",
+   "key": "t amet lorem ipsum dolor sit",
+   "label": "text",
+   "ref": "#/texts/29",
+   "text": "t amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet"
+  },
+  {
+   "hash": "790819bcd3e1215d",
+   "key": "it amet lorem ipsum dolor sit",
+   "label": "text",
+   "ref": "#/texts/30",
+   "text": "it amet lorem ipsum dolor sit amet"
+  },
+  {
+   "hash": "09d3279600f146d2",
+   "key": "the long document, page 5",
+   "label": "text",
+   "ref": "#/texts/31",
+   "text": "the long document, page 5"
+  },
+  {
+   "hash": "65f113a130d2b2fc",
+   "key": "lorem ipsum dolor sit amet lorem",
+   "label": "text",
+   "ref": "#/texts/32",
+   "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem "
+  },
+  {
+   "hash": "1cc779cf68f6237e",
+   "key": "lorem ipsum dolor sit amet lorem",
+   "label": "text",
+   "ref": "#/texts/33",
+   "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem "
+  },
+  {
+   "hash": "1802fbf8fc9c349d",
+   "key": "t lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/34",
+   "text": "t lorem ipsum dolor sit amet lorem ipsum dolor sit amet lore"
+  },
+  {
+   "hash": "49c2fc74e28944af",
+   "key": "et lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/35",
+   "text": "et lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor"
+  },
+  {
+   "hash": "099205a3be1887e1",
+   "key": "met lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/36",
+   "text": "met lorem ipsum dolor sit amet lorem ipsum dolor sit amet lo"
+  },
+  {
+   "hash": "ef20ebd03d9fbdeb",
+   "key": "amet lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/37",
+   "text": "amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l"
+  },
+  {
+   "hash": "f3878d839c9cae4a",
+   "key": "amet lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/38",
+   "text": "amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l"
+  },
+  {
+   "hash": "5785d8c7e7a101cc",
+   "key": "t amet lorem ipsum dolor sit",
+   "label": "text",
+   "ref": "#/texts/39",
+   "text": "t amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet"
+  },
+  {
+   "hash": "790819bcd3e1215d",
+   "key": "it amet lorem ipsum dolor sit",
+   "label": "text",
+   "ref": "#/texts/40",
+   "text": "it amet lorem ipsum dolor sit amet"
+  },
+  {
+   "hash": "3c3d0980a525a701",
+   "key": "the long document, page 6",
+   "label": "text",
+   "ref": "#/texts/41",
+   "text": "the long document, page 6"
+  },
+  {
+   "hash": "65f113a130d2b2fc",
+   "key": "lorem ipsum dolor sit amet lorem",
+   "label": "text",
+   "ref": "#/texts/42",
+   "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem "
+  },
+  {
+   "hash": "1cc779cf68f6237e",
+   "key": "lorem ipsum dolor sit amet lorem",
+   "label": "text",
+   "ref": "#/texts/43",
+   "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem "
+  },
+  {
+   "hash": "1802fbf8fc9c349d",
+   "key": "t lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/44",
+   "text": "t lorem ipsum dolor sit amet lorem ipsum dolor sit amet lore"
+  },
+  {
+   "hash": "49c2fc74e28944af",
+   "key": "et lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/45",
+   "text": "et lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor"
+  },
+  {
+   "hash": "099205a3be1887e1",
+   "key": "met lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/46",
+   "text": "met lorem ipsum dolor sit amet lorem ipsum dolor sit amet lo"
+  },
+  {
+   "hash": "ef20ebd03d9fbdeb",
+   "key": "amet lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/47",
+   "text": "amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l"
+  },
+  {
+   "hash": "f3878d839c9cae4a",
+   "key": "amet lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/48",
+   "text": "amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l"
+  },
+  {
+   "hash": "5785d8c7e7a101cc",
+   "key": "t amet lorem ipsum dolor sit",
+   "label": "text",
+   "ref": "#/texts/49",
+   "text": "t amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet"
+  },
+  {
+   "hash": "790819bcd3e1215d",
+   "key": "it amet lorem ipsum dolor sit",
+   "label": "text",
+   "ref": "#/texts/50",
+   "text": "it amet lorem ipsum dolor sit amet"
+  },
+  {
+   "hash": "8b94effdddb5fbb7",
+   "key": "the long document, page 7",
+   "label": "text",
+   "ref": "#/texts/51",
+   "text": "the long document, page 7"
+  },
+  {
+   "hash": "65f113a130d2b2fc",
+   "key": "lorem ipsum dolor sit amet lorem",
+   "label": "text",
+   "ref": "#/texts/52",
+   "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem "
+  },
+  {
+   "hash": "1cc779cf68f6237e",
+   "key": "lorem ipsum dolor sit amet lorem",
+   "label": "text",
+   "ref": "#/texts/53",
+   "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem "
+  },
+  {
+   "hash": "1802fbf8fc9c349d",
+   "key": "t lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/54",
+   "text": "t lorem ipsum dolor sit amet lorem ipsum dolor sit amet lore"
+  },
+  {
+   "hash": "49c2fc74e28944af",
+   "key": "et lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/55",
+   "text": "et lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor"
+  },
+  {
+   "hash": "099205a3be1887e1",
+   "key": "met lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/56",
+   "text": "met lorem ipsum dolor sit amet lorem ipsum dolor sit amet lo"
+  },
+  {
+   "hash": "ef20ebd03d9fbdeb",
+   "key": "amet lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/57",
+   "text": "amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l"
+  },
+  {
+   "hash": "f3878d839c9cae4a",
+   "key": "amet lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/58",
+   "text": "amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l"
+  },
+  {
+   "hash": "5785d8c7e7a101cc",
+   "key": "t amet lorem ipsum dolor sit",
+   "label": "text",
+   "ref": "#/texts/59",
+   "text": "t amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet"
+  },
+  {
+   "hash": "790819bcd3e1215d",
+   "key": "it amet lorem ipsum dolor sit",
+   "label": "text",
+   "ref": "#/texts/60",
+   "text": "it amet lorem ipsum dolor sit amet"
+  },
+  {
+   "hash": "67317287cd589fd6",
+   "key": "the long document, page 8",
+   "label": "text",
+   "ref": "#/texts/61",
+   "text": "the long document, page 8"
+  },
+  {
+   "hash": "65f113a130d2b2fc",
+   "key": "lorem ipsum dolor sit amet lorem",
+   "label": "text",
+   "ref": "#/texts/62",
+   "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem "
+  },
+  {
+   "hash": "1cc779cf68f6237e",
+   "key": "lorem ipsum dolor sit amet lorem",
+   "label": "text",
+   "ref": "#/texts/63",
+   "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem "
+  },
+  {
+   "hash": "1802fbf8fc9c349d",
+   "key": "t lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/64",
+   "text": "t lorem ipsum dolor sit amet lorem ipsum dolor sit amet lore"
+  },
+  {
+   "hash": "49c2fc74e28944af",
+   "key": "et lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/65",
+   "text": "et lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor"
+  },
+  {
+   "hash": "099205a3be1887e1",
+   "key": "met lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/66",
+   "text": "met lorem ipsum dolor sit amet lorem ipsum dolor sit amet lo"
+  },
+  {
+   "hash": "ef20ebd03d9fbdeb",
+   "key": "amet lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/67",
+   "text": "amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l"
+  },
+  {
+   "hash": "f3878d839c9cae4a",
+   "key": "amet lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/68",
+   "text": "amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l"
+  },
+  {
+   "hash": "5785d8c7e7a101cc",
+   "key": "t amet lorem ipsum dolor sit",
+   "label": "text",
+   "ref": "#/texts/69",
+   "text": "t amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet"
+  },
+  {
+   "hash": "790819bcd3e1215d",
+   "key": "it amet lorem ipsum dolor sit",
+   "label": "text",
+   "ref": "#/texts/70",
+   "text": "it amet lorem ipsum dolor sit amet"
+  },
+  {
+   "hash": "50cb52e321b3da21",
+   "key": "the long document, page 9",
+   "label": "text",
+   "ref": "#/texts/71",
+   "text": "the long document, page 9"
+  },
+  {
+   "hash": "65f113a130d2b2fc",
+   "key": "lorem ipsum dolor sit amet lorem",
+   "label": "text",
+   "ref": "#/texts/72",
+   "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem "
+  },
+  {
+   "hash": "1cc779cf68f6237e",
+   "key": "lorem ipsum dolor sit amet lorem",
+   "label": "text",
+   "ref": "#/texts/73",
+   "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem "
+  },
+  {
+   "hash": "1802fbf8fc9c349d",
+   "key": "t lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/74",
+   "text": "t lorem ipsum dolor sit amet lorem ipsum dolor sit amet lore"
+  },
+  {
+   "hash": "49c2fc74e28944af",
+   "key": "et lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/75",
+   "text": "et lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor"
+  },
+  {
+   "hash": "099205a3be1887e1",
+   "key": "met lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/76",
+   "text": "met lorem ipsum dolor sit amet lorem ipsum dolor sit amet lo"
+  },
+  {
+   "hash": "ef20ebd03d9fbdeb",
+   "key": "amet lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/77",
+   "text": "amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l"
+  },
+  {
+   "hash": "f3878d839c9cae4a",
+   "key": "amet lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/78",
+   "text": "amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l"
+  },
+  {
+   "hash": "5785d8c7e7a101cc",
+   "key": "t amet lorem ipsum dolor sit",
+   "label": "text",
+   "ref": "#/texts/79",
+   "text": "t amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet"
+  },
+  {
+   "hash": "790819bcd3e1215d",
+   "key": "it amet lorem ipsum dolor sit",
+   "label": "text",
+   "ref": "#/texts/80",
+   "text": "it amet lorem ipsum dolor sit amet"
+  },
+  {
+   "hash": "e03aa7809c86e0e9",
+   "key": "the long document, page 10",
+   "label": "text",
+   "ref": "#/texts/81",
+   "text": "the long document, page 10"
+  },
+  {
+   "hash": "65f113a130d2b2fc",
+   "key": "lorem ipsum dolor sit amet lorem",
+   "label": "text",
+   "ref": "#/texts/82",
+   "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem "
+  },
+  {
+   "hash": "1cc779cf68f6237e",
+   "key": "lorem ipsum dolor sit amet lorem",
+   "label": "text",
+   "ref": "#/texts/83",
+   "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem "
+  },
+  {
+   "hash": "1802fbf8fc9c349d",
+   "key": "t lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/84",
+   "text": "t lorem ipsum dolor sit amet lorem ipsum dolor sit amet lore"
+  },
+  {
+   "hash": "49c2fc74e28944af",
+   "key": "et lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/85",
+   "text": "et lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor"
+  },
+  {
+   "hash": "099205a3be1887e1",
+   "key": "met lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/86",
+   "text": "met lorem ipsum dolor sit amet lorem ipsum dolor sit amet lo"
+  },
+  {
+   "hash": "ef20ebd03d9fbdeb",
+   "key": "amet lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/87",
+   "text": "amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l"
+  },
+  {
+   "hash": "f3878d839c9cae4a",
+   "key": "amet lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/88",
+   "text": "amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l"
+  },
+  {
+   "hash": "5785d8c7e7a101cc",
+   "key": "t amet lorem ipsum dolor sit",
+   "label": "text",
+   "ref": "#/texts/89",
+   "text": "t amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet"
+  },
+  {
+   "hash": "790819bcd3e1215d",
+   "key": "it amet lorem ipsum dolor sit",
+   "label": "text",
+   "ref": "#/texts/90",
+   "text": "it amet lorem ipsum dolor sit amet"
+  },
+  {
+   "hash": "e63345c81c16bf88",
+   "key": "the long document, page 11",
+   "label": "text",
+   "ref": "#/texts/91",
+   "text": "the long document, page 11"
+  },
+  {
+   "hash": "65f113a130d2b2fc",
+   "key": "lorem ipsum dolor sit amet lorem",
+   "label": "text",
+   "ref": "#/texts/92",
+   "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem "
+  },
+  {
+   "hash": "1cc779cf68f6237e",
+   "key": "lorem ipsum dolor sit amet lorem",
+   "label": "text",
+   "ref": "#/texts/93",
+   "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem "
+  },
+  {
+   "hash": "1802fbf8fc9c349d",
+   "key": "t lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/94",
+   "text": "t lorem ipsum dolor sit amet lorem ipsum dolor sit amet lore"
+  },
+  {
+   "hash": "49c2fc74e28944af",
+   "key": "et lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/95",
+   "text": "et lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor"
+  },
+  {
+   "hash": "099205a3be1887e1",
+   "key": "met lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/96",
+   "text": "met lorem ipsum dolor sit amet lorem ipsum dolor sit amet lo"
+  },
+  {
+   "hash": "ef20ebd03d9fbdeb",
+   "key": "amet lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/97",
+   "text": "amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l"
+  },
+  {
+   "hash": "f3878d839c9cae4a",
+   "key": "amet lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/98",
+   "text": "amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l"
+  },
+  {
+   "hash": "5785d8c7e7a101cc",
+   "key": "t amet lorem ipsum dolor sit",
+   "label": "text",
+   "ref": "#/texts/99",
+   "text": "t amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet"
+  },
+  {
+   "hash": "790819bcd3e1215d",
+   "key": "it amet lorem ipsum dolor sit",
+   "label": "text",
+   "ref": "#/texts/100",
+   "text": "it amet lorem ipsum dolor sit amet"
+  },
+  {
+   "hash": "a3a74a390bf1f70c",
+   "key": "the long document, page 12",
+   "label": "text",
+   "ref": "#/texts/101",
+   "text": "the long document, page 12"
+  },
+  {
+   "hash": "65f113a130d2b2fc",
+   "key": "lorem ipsum dolor sit amet lorem",
+   "label": "text",
+   "ref": "#/texts/102",
+   "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem "
+  },
+  {
+   "hash": "1cc779cf68f6237e",
+   "key": "lorem ipsum dolor sit amet lorem",
+   "label": "text",
+   "ref": "#/texts/103",
+   "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem "
+  },
+  {
+   "hash": "1802fbf8fc9c349d",
+   "key": "t lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/104",
+   "text": "t lorem ipsum dolor sit amet lorem ipsum dolor sit amet lore"
+  },
+  {
+   "hash": "49c2fc74e28944af",
+   "key": "et lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/105",
+   "text": "et lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor"
+  },
+  {
+   "hash": "099205a3be1887e1",
+   "key": "met lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/106",
+   "text": "met lorem ipsum dolor sit amet lorem ipsum dolor sit amet lo"
+  },
+  {
+   "hash": "ef20ebd03d9fbdeb",
+   "key": "amet lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/107",
+   "text": "amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l"
+  },
+  {
+   "hash": "f3878d839c9cae4a",
+   "key": "amet lorem ipsum dolor sit amet",
+   "label": "text",
+   "ref": "#/texts/108",
+   "text": "amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l"
+  },
+  {
+   "hash": "5785d8c7e7a101cc",
+   "key": "t amet lorem ipsum dolor sit",
+   "label": "text",
+   "ref": "#/texts/109",
+   "text": "t amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet"
+  },
+  {
+   "hash": "790819bcd3e1215d",
+   "key": "it amet lorem ipsum dolor sit",
+   "label": "text",
+   "ref": "#/texts/110",
+   "text": "it amet lorem ipsum dolor sit amet"
+  }
+ ],
+ "groups": [],
+ "headings": [],
+ "markdown": {
+  "chars": 705,
+  "headings": 0,
+  "images": 0,
+  "sha256": "146dc84a48dc7eb6369e5b54f7299db0df93bd8dc24ca14aa6c1f45a11a31479",
+  "table_rows": 0
+ },
+ "origin_mimetype": "application/pdf",
+ "pictures": [],
+ "reading": [
+  {
+   "hash": "146dc84a48dc7eb6",
+   "key": "the long document page 1 lorem",
+   "label": "text",
+   "ref": "#/texts/0",
+   "text": "the long document, page 1 lorem ipsum dolor sit amet lorem i"
+  }
+ ],
+ "reading_text": "the long document, page 1 lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit ame t lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit am et lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit a met lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor si t amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor s it amet lorem ipsum dolor sit amet",
+ "schema": 1,
+ "status": "CONVERSION_STATUS_SUCCESS",
+ "tables": [],
+ "warnings": []
+}

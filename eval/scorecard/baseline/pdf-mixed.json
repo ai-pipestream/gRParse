@@ -1,0 +1,82 @@
+{
+ "agreement": {
+  "agreed": 0,
+  "claimed_fields": {
+   "grparse": 3
+  },
+  "collectors": [
+   "grparse"
+  ],
+  "conflicts": [],
+  "shared": 0,
+  "winners": {
+   "origin.binary_hash": "grparse",
+   "origin.filename": "grparse",
+   "origin.mimetype": "grparse"
+  }
+ },
+ "collectors": [
+  "grparse"
+ ],
+ "content_type": "application/pdf",
+ "counts": {
+  "body_items": 0,
+  "by_label": {},
+  "form_items": 0,
+  "furniture_items": 3,
+  "groups": 0,
+  "headings": 0,
+  "key_value_items": 0,
+  "orphans": 0,
+  "pages": 6,
+  "pictures": 0,
+  "reading_chars": 0,
+  "tables": 0,
+  "texts": 3
+ },
+ "doc_id": "pdf-mixed",
+ "filename": "mixed.pdf",
+ "format": "pdf",
+ "furniture_reading": [
+  {
+   "hash": "1aabe098d2f6272f",
+   "key": "the mixed document page 1 lorem",
+   "label": "text",
+   "ref": "#/texts/0",
+   "text": "the mixed document, page 1 lorem ipsum dolor sit amet lorem "
+  },
+  {
+   "hash": "292bf37b1c4fd107",
+   "key": "the mixed document page 2 lorem",
+   "label": "text",
+   "ref": "#/texts/1",
+   "text": "the mixed document, page 2 lorem ipsum dolor sit amet lorem "
+  },
+  {
+   "hash": "48220ce1905cca99",
+   "key": "the mixed document page 5 lorem",
+   "label": "text",
+   "ref": "#/texts/2",
+   "text": "the mixed document, page 5 lorem ipsum dolor sit amet lorem "
+  }
+ ],
+ "groups": [],
+ "headings": [],
+ "markdown": {
+  "chars": 103,
+  "headings": 0,
+  "images": 0,
+  "sha256": "24e3ac9c2ee01ed2ff6878e2933a19ad47952c13067b14a48a6800013bba05fd",
+  "table_rows": 0
+ },
+ "origin_mimetype": "application/pdf",
+ "pictures": [],
+ "reading": [],
+ "reading_text": "",
+ "schema": 1,
+ "status": "CONVERSION_STATUS_SUCCESS",
+ "tables": [],
+ "warnings": [
+  "no-reading-text"
+ ]
+}

@@ -1,0 +1,33 @@
+{
+ "doc_id": "epub-two-chapters",
+ "source": "unzip -p of OEBPS/text/chap1.xhtml and chap2.xhtml plus content.opf spine order",
+ "notes": [
+  "Each chapter file is <h1>, one <p>, one <img alt=cover>; spine order is chap1 then chap2.",
+  "h1 is the chapter heading, level 1 (there is no separate document title element in the body)."
+ ],
+ "headings": [
+  {
+   "text": "Chapter One",
+   "level": 1
+  },
+  {
+   "text": "Chapter Two",
+   "level": 1
+  }
+ ],
+ "anchors": [
+  "The first chapter.",
+  "The second chapter."
+ ],
+ "tables": [],
+ "figures": [
+  {
+   "after": "The first chapter.",
+   "caption": ""
+  },
+  {
+   "after": "The second chapter.",
+   "caption": ""
+  }
+ ]
+}

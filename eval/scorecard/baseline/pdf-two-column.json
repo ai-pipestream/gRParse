@@ -1,0 +1,1244 @@
+{
+ "agreement": {
+  "agreed": 1,
+  "claimed_fields": {
+   "grparse": 3,
+   "pdf": 13
+  },
+  "collectors": [
+   "grparse",
+   "pdf"
+  ],
+  "conflicts": [],
+  "shared": 1,
+  "winners": {
+   "origin.binary_hash": "grparse",
+   "origin.filename": "grparse",
+   "origin.mimetype": "grparse",
+   "origin.source_id": "pdf",
+   "source_meta.authoring_tool": "pdf",
+   "source_meta.created.seconds": "pdf",
+   "source_meta.created_raw": "pdf",
+   "source_meta.format_version": "pdf",
+   "source_meta.generator": "pdf",
+   "source_meta.language": "pdf",
+   "source_meta.protection.allows_extraction": "pdf",
+   "source_meta.protection.allows_printing": "pdf",
+   "source_meta.protection.opened_without_password": "pdf",
+   "source_meta.raw_metadata": "pdf",
+   "source_meta.structured": "pdf"
+  }
+ },
+ "collectors": [
+  "grparse",
+  "pdf"
+ ],
+ "content_type": "application/pdf",
+ "counts": {
+  "body_items": 133,
+  "by_label": {
+   "section_header": 25,
+   "text": 108
+  },
+  "form_items": 0,
+  "furniture_items": 12,
+  "groups": 0,
+  "headings": 25,
+  "key_value_items": 0,
+  "orphans": 0,
+  "pages": 6,
+  "pictures": 0,
+  "reading_chars": 28907,
+  "tables": 0,
+  "texts": 145
+ },
+ "doc_id": "pdf-two-column",
+ "filename": "two-column.pdf",
+ "format": "pdf",
+ "furniture_reading": [
+  {
+   "hash": "87176526d9971e2d",
+   "key": "the great gatsby a two column",
+   "label": "text",
+   "ref": "#/texts/0",
+   "text": "THE GREAT GATSBY, A TWO-COLUMN READING-ORDER FIXTURE"
+  },
+  {
+   "hash": "e8b8355262d0af49",
+   "key": "page 1",
+   "label": "text",
+   "ref": "#/texts/1",
+   "text": "Page 1"
+  },
+  {
+   "hash": "87176526d9971e2d",
+   "key": "the great gatsby a two column",
+   "label": "text",
+   "ref": "#/texts/16",
+   "text": "THE GREAT GATSBY, A TWO-COLUMN READING-ORDER FIXTURE"
+  },
+  {
+   "hash": "794f7062cf3f56f2",
+   "key": "page 2",
+   "label": "text",
+   "ref": "#/texts/17",
+   "text": "Page 2"
+  },
+  {
+   "hash": "87176526d9971e2d",
+   "key": "the great gatsby a two column",
+   "label": "text",
+   "ref": "#/texts/30",
+   "text": "THE GREAT GATSBY, A TWO-COLUMN READING-ORDER FIXTURE"
+  },
+  {
+   "hash": "b2172e20df3711d8",
+   "key": "page 3",
+   "label": "text",
+   "ref": "#/texts/31",
+   "text": "Page 3"
+  },
+  {
+   "hash": "87176526d9971e2d",
+   "key": "the great gatsby a two column",
+   "label": "text",
+   "ref": "#/texts/64",
+   "text": "THE GREAT GATSBY, A TWO-COLUMN READING-ORDER FIXTURE"
+  },
+  {
+   "hash": "be315c294e89da2f",
+   "key": "page 4",
+   "label": "text",
+   "ref": "#/texts/65",
+   "text": "Page 4"
+  },
+  {
+   "hash": "87176526d9971e2d",
+   "key": "the great gatsby a two column",
+   "label": "text",
+   "ref": "#/texts/101",
+   "text": "THE GREAT GATSBY, A TWO-COLUMN READING-ORDER FIXTURE"
+  },
+  {
+   "hash": "438ff2afcf15e4b4",
+   "key": "page 5",
+   "label": "text",
+   "ref": "#/texts/102",
+   "text": "Page 5"
+  },
+  {
+   "hash": "87176526d9971e2d",
+   "key": "the great gatsby a two column",
+   "label": "text",
+   "ref": "#/texts/131",
+   "text": "THE GREAT GATSBY, A TWO-COLUMN READING-ORDER FIXTURE"
+  },
+  {
+   "hash": "b97e7d061ab32cd8",
+   "key": "page 6",
+   "label": "text",
+   "ref": "#/texts/132",
+   "text": "Page 6"
+  }
+ ],
+ "groups": [],
+ "headings": [
+  {
+   "level": 1,
+   "ref": "#/texts/2",
+   "text": "The Great Gatsby, Chapter One, Reset in Two Columns with Footnotes and a Running Header"
+  },
+  {
+   "level": 1,
+   "ref": "#/texts/4",
+   "text": "1. West Egg"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/32",
+   "text": "1.1 The Buchanan House"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/42",
+   "text": "“I’m p-paralysed with happiness.”"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/51",
+   "text": "“I’d like to.”"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/56",
+   "text": "“What you doing, Nick?”"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/57",
+   "text": "“I’m a bond man.”"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/58",
+   "text": "“Who with?”"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/59",
+   "text": "I told him."
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/61",
+   "text": "This annoyed me."
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/69",
+   "text": "1.2 Dinner at the Buchanans"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/72",
+   "text": "Her host looked at her incredulously."
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/76",
+   "text": "“I don’t know a single—”"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/77",
+   "text": "“You must know Gatsby.”"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/78",
+   "text": "“Gatsby?” demanded Daisy. “What Gatsby?”"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/85",
+   "text": "“Look!” she complained; “I hurt it.”"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/89",
+   "text": "“Hulking,” insisted Daisy."
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/106",
+   "text": "“That’s why I came over tonight.”"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/117",
+   "text": "“Is something happening?” I inquired innocently."
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/119",
+   "text": "“I don’t.”"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/121",
+   "text": "“Got some woman?” I repeated blankly."
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/122",
+   "text": "Miss Baker nodded."
+  },
+  {
+   "level": 1,
+   "ref": "#/texts/125",
+   "text": "2. The Valley of Ashes"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/137",
+   "text": "2.1 The Garage on the Edge of the Waste Land"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/141",
+   "text": "“Works pretty slow, don’t he?”"
+  }
+ ],
+ "markdown": {
+  "chars": 29136,
+  "headings": 25,
+  "images": 0,
+  "sha256": "67b521d766918b9e8e6c13bd95d77fbe88587cda9749ef2dcecc73fc7a1ffdd8",
+  "table_rows": 0
+ },
+ "origin_mimetype": "application/pdf",
+ "pictures": [],
+ "reading": [
+  {
+   "hash": "c247f5e3da321c3d",
+   "key": "the great gatsby chapter one reset",
+   "label": "section_header",
+   "level": 1,
+   "ref": "#/texts/2",
+   "text": "The Great Gatsby, Chapter One, Reset in Two Columns with Foo"
+  },
+  {
+   "hash": "9523c815c48ce112",
+   "key": "f scott fitzgerald 1925 public domain",
+   "label": "text",
+   "ref": "#/texts/3",
+   "text": "F. Scott Fitzgerald (1925). Public domain text from the Proj"
+  },
+  {
+   "hash": "38371e711cd7b6d8",
+   "key": "1. west egg",
+   "label": "section_header",
+   "level": 1,
+   "ref": "#/texts/4",
+   "text": "1. West Egg"
+  },
+  {
+   "hash": "b739f6322b6fe915",
+   "key": "in my younger and more vulnerable",
+   "label": "text",
+   "ref": "#/texts/5",
+   "text": "In my younger and more vulnerable years my father gave me so"
+  },
+  {
+   "hash": "9ef296a0684bf9cc",
+   "key": "whenever you feel like criticizing anyone",
+   "label": "text",
+   "ref": "#/texts/6",
+   "text": "“Whenever you feel like criticizing anyone,” he told me, “ju"
+  },
+  {
+   "hash": "624c083608468e92",
+   "key": "he didn t say any more",
+   "label": "text",
+   "ref": "#/texts/7",
+   "text": "He didn’t say any more, but we’ve always been unusually comm"
+  },
+  {
+   "hash": "f8affc1127fdb4f8",
+   "key": "and after boasting this way of",
+   "label": "text",
+   "ref": "#/texts/8",
+   "text": "And, after boasting this way of my tolerance, I come to the "
+  },
+  {
+   "hash": "d0b3d170c5402237",
+   "key": "1 the narrator gives his family",
+   "label": "text",
+   "ref": "#/texts/9",
+   "text": "1 The narrator gives his family history as fact within the n"
+  },
+  {
+   "hash": "54dbd5dbda623806",
+   "key": "ative temperament it was an extraordinary",
+   "label": "text",
+   "ref": "#/texts/10",
+   "text": "ative temperament”—it was an extraordinary gift for hope, a "
+  },
+  {
+   "hash": "493e276678d10218",
+   "key": "my family have been prominent well",
+   "label": "text",
+   "ref": "#/texts/11",
+   "text": "My family have been prominent, well-to-do people in this Mid"
+  },
+  {
+   "hash": "230e28d3495f43bf",
+   "key": "i never saw this great uncle",
+   "label": "text",
+   "ref": "#/texts/12",
+   "text": "I never saw this great-uncle, but I’m supposed to look like "
+  },
+  {
+   "hash": "d18004543f52c7a5",
+   "key": "the practical thing was to find",
+   "label": "text",
+   "ref": "#/texts/13",
+   "text": "The practical thing was to find rooms in the city, but it wa"
+  },
+  {
+   "hash": "0f3a9bf30d5daf78",
+   "key": "it was lonely for a day",
+   "label": "text",
+   "ref": "#/texts/14",
+   "text": "It was lonely for a day or so until one morning some man, mo"
+  },
+  {
+   "hash": "43404fba765055e4",
+   "key": "how do you get to west",
+   "label": "text",
+   "ref": "#/texts/15",
+   "text": "“How do you get to West Egg village?” he asked helplessly."
+  },
+  {
+   "hash": "78d0d128f92f698f",
+   "key": "i told him and as i",
+   "label": "text",
+   "ref": "#/texts/18",
+   "text": "I told him. And as I walked on I was lonely no longer. I was"
+  },
+  {
+   "hash": "de661e162686b380",
+   "key": "and so with the sunshine and",
+   "label": "text",
+   "ref": "#/texts/19",
+   "text": "And so with the sunshine and the great bursts of leaves grow"
+  },
+  {
+   "hash": "03e0d054d5edfa2a",
+   "key": "there was so much to read",
+   "label": "text",
+   "ref": "#/texts/20",
+   "text": "There was so much to read, for one thing, and so much fine h"
+  },
+  {
+   "hash": "30aa8646057652e5",
+   "key": "it was a matter of chance",
+   "label": "text",
+   "ref": "#/texts/21",
+   "text": "It was a matter of chance that I should have rented a house "
+  },
+  {
+   "hash": "92a72b5765f7fb65",
+   "key": "i lived at west egg the",
+   "label": "text",
+   "ref": "#/texts/22",
+   "text": "I lived at West Egg, the—well, the less fashionable of the t"
+  },
+  {
+   "hash": "5ef55c63691afb04",
+   "key": "across the courtesy bay the white",
+   "label": "text",
+   "ref": "#/texts/23",
+   "text": "Across the courtesy bay the white palaces of fashionable"
+  },
+  {
+   "hash": "ca3d8e7910dabcd5",
+   "key": "east egg glittered along the water",
+   "label": "text",
+   "ref": "#/texts/24",
+   "text": "East Egg glittered along the water, and the history of the s"
+  },
+  {
+   "hash": "0476fe30f6ceb9a4",
+   "key": "her husband among various physical accomplishments",
+   "label": "text",
+   "ref": "#/texts/25",
+   "text": "Her husband, among various physical accomplishments, had bee"
+  },
+  {
+   "hash": "85e5b921b896f726",
+   "key": "why they came east i don",
+   "label": "text",
+   "ref": "#/texts/26",
+   "text": "Why they came East I don’t know. They had spent a year in Fr"
+  },
+  {
+   "hash": "6e7f1037cd7397b3",
+   "key": "and so it happened that on",
+   "label": "text",
+   "ref": "#/texts/27",
+   "text": "And so it happened that on a warm windy evening I drove over"
+  },
+  {
+   "hash": "4ebf97e3db19e00c",
+   "key": "he had changed since his new",
+   "label": "text",
+   "ref": "#/texts/28",
+   "text": "He had changed since his New Haven years. Now he was a sturd"
+  },
+  {
+   "hash": "d3f7149f290ce948",
+   "key": "his speaking voice a gruff husky",
+   "label": "text",
+   "ref": "#/texts/29",
+   "text": "His speaking voice, a gruff husky tenor, added to the impres"
+  },
+  {
+   "hash": "6917cfa4f628b7a7",
+   "key": "1.1 the buchanan house",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/32",
+   "text": "1.1 The Buchanan House"
+  },
+  {
+   "hash": "5eb311c73c7959aa",
+   "key": "now don t think my opinion",
+   "label": "text",
+   "ref": "#/texts/33",
+   "text": "“Now, don’t think my opinion on these matters is final,” he "
+  },
+  {
+   "hash": "8982b2479c1fe5a4",
+   "key": "we talked for a few minutes",
+   "label": "text",
+   "ref": "#/texts/34",
+   "text": "We talked for a few minutes on the sunny porch."
+  },
+  {
+   "hash": "0860ab8b20cfd1ee",
+   "key": "i ve got a nice place",
+   "label": "text",
+   "ref": "#/texts/35",
+   "text": "“I’ve got a nice place here,” he said, his eyes flashing abo"
+  },
+  {
+   "hash": "3b31fb7071716542",
+   "key": "turning me around by one arm",
+   "label": "text",
+   "ref": "#/texts/36",
+   "text": "Turning me around by one arm, he moved a broad flat hand alo"
+  },
+  {
+   "hash": "53a3f471b8ed6308",
+   "key": "it belonged to demaine the oil",
+   "label": "text",
+   "ref": "#/texts/37",
+   "text": "“It belonged to Demaine, the oil man.” He turned me around a"
+  },
+  {
+   "hash": "b10582cb40b5e1d4",
+   "key": "we walked through a high hallway",
+   "label": "text",
+   "ref": "#/texts/38",
+   "text": "We walked through a high hallway into a bright rosycoloured "
+  },
+  {
+   "hash": "a139a78334da3b9b",
+   "key": "the only completely stationary object in",
+   "label": "text",
+   "ref": "#/texts/39",
+   "text": "The only completely stationary object in the room was an eno"
+  },
+  {
+   "hash": "fdad249df9b74bed",
+   "key": "the younger of the two was",
+   "label": "text",
+   "ref": "#/texts/40",
+   "text": "The younger of the two was a stranger to me. She was extende"
+  },
+  {
+   "hash": "e43fa5d5ea167f0d",
+   "key": "the other girl daisy made an",
+   "label": "text",
+   "ref": "#/texts/41",
+   "text": "The other girl, Daisy, made an attempt to rise—she leaned sl"
+  },
+  {
+   "hash": "9cadad4ba0fbdd35",
+   "key": "i m p paralysed with happiness",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/42",
+   "text": "“I’m p-paralysed with happiness.”"
+  },
+  {
+   "hash": "16ae3d0d3de64561",
+   "key": "she laughed again as if she",
+   "label": "text",
+   "ref": "#/texts/43",
+   "text": "She laughed again, as if she said something very witty, and "
+  },
+  {
+   "hash": "ae0fd24599b91117",
+   "key": "wanted to see that was a",
+   "label": "text",
+   "ref": "#/texts/44",
+   "text": "wanted to see. That was a way she had. She hinted in a murmu"
+  },
+  {
+   "hash": "7b27e85a567242c1",
+   "key": "at any rate miss baker s",
+   "label": "text",
+   "ref": "#/texts/45",
+   "text": "At any rate, Miss Baker’s lips fluttered, she nodded at me a"
+  },
+  {
+   "hash": "3948f21482e92d38",
+   "key": "i looked back at my cousin",
+   "label": "text",
+   "ref": "#/texts/46",
+   "text": "I looked back at my cousin, who began to ask me questions in"
+  },
+  {
+   "hash": "edf6ca6972e12928",
+   "key": "i told her how i had",
+   "label": "text",
+   "ref": "#/texts/47",
+   "text": "I told her how I had stopped off in Chicago for a day on my "
+  },
+  {
+   "hash": "f42f3934bdb6fbb1",
+   "key": "do they miss me she cried",
+   "label": "text",
+   "ref": "#/texts/48",
+   "text": "“Do they miss me?” she cried ecstatically."
+  },
+  {
+   "hash": "4f598fd6415323fb",
+   "key": "the whole town is desolate all",
+   "label": "text",
+   "ref": "#/texts/49",
+   "text": "“The whole town is desolate. All the cars have the left rear"
+  },
+  {
+   "hash": "23724ebcf8ad0679",
+   "key": "how gorgeous let s go back",
+   "label": "text",
+   "ref": "#/texts/50",
+   "text": "“How gorgeous! Let’s go back, Tom. Tomorrow!” Then she added"
+  },
+  {
+   "hash": "90f686a4aa02cb79",
+   "key": "“i’d like to.”",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/51",
+   "text": "“I’d like to.”"
+  },
+  {
+   "hash": "ca6482242fccb535",
+   "key": "she s asleep she s three",
+   "label": "text",
+   "ref": "#/texts/52",
+   "text": "“She’s asleep. She’s three years old. Haven’t you ever seen "
+  },
+  {
+   "hash": "772fc09d4bc3b047",
+   "key": "“never.”",
+   "label": "text",
+   "ref": "#/texts/53",
+   "text": "“Never.”"
+  },
+  {
+   "hash": "86432c5b124662d6",
+   "key": "well you ought to see her",
+   "label": "text",
+   "ref": "#/texts/54",
+   "text": "“Well, you ought to see her. She’s—”"
+  },
+  {
+   "hash": "aead04a38c6ea7ec",
+   "key": "tom buchanan who had been hovering",
+   "label": "text",
+   "ref": "#/texts/55",
+   "text": "Tom Buchanan, who had been hovering restlessly about the roo"
+  },
+  {
+   "hash": "db2112cc98210cd7",
+   "key": "“what you doing, nick?”",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/56",
+   "text": "“What you doing, Nick?”"
+  },
+  {
+   "hash": "5f37dd7b9079d23a",
+   "key": "“i’m a bond man.”",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/57",
+   "text": "“I’m a bond man.”"
+  },
+  {
+   "hash": "61a2b7ca46829f5b",
+   "key": "“who with?”",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/58",
+   "text": "“Who with?”"
+  },
+  {
+   "hash": "3732bf488d1e32bc",
+   "key": "i told him.",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/59",
+   "text": "I told him."
+  },
+  {
+   "hash": "e75002a9ad1d4a85",
+   "key": "never heard of them he remarked",
+   "label": "text",
+   "ref": "#/texts/60",
+   "text": "“Never heard of them,” he remarked decisively."
+  },
+  {
+   "hash": "435bac5e9719796d",
+   "key": "this annoyed me.",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/61",
+   "text": "This annoyed me."
+  },
+  {
+   "hash": "32422361bc0a11e8",
+   "key": "you will i answered shortly you",
+   "label": "text",
+   "ref": "#/texts/62",
+   "text": "“You will,” I answered shortly. “You will if you stay in the"
+  },
+  {
+   "hash": "ed10c77164038c1a",
+   "key": "oh i ll stay in the",
+   "label": "text",
+   "ref": "#/texts/63",
+   "text": "“Oh, I’ll stay in the East, don’t you worry,” he said, glanc"
+  },
+  {
+   "hash": "402299299cb786de",
+   "key": "for something more i d be",
+   "label": "text",
+   "ref": "#/texts/66",
+   "text": "for something more. “I’d be a God damned fool to live anywhe"
+  },
+  {
+   "hash": "0b1f5a062a47cc4a",
+   "key": "at this point miss baker said",
+   "label": "text",
+   "ref": "#/texts/67",
+   "text": "At this point Miss Baker said: “Absolutely!” with such sudde"
+  },
+  {
+   "hash": "a44606f593e24612",
+   "key": "i m stiff she complained i",
+   "label": "text",
+   "ref": "#/texts/68",
+   "text": "“I’m stiff,” she complained, “I’ve been lying on that sofa f"
+  },
+  {
+   "hash": "dd93d7ec2b4a993f",
+   "key": "1 2 dinner at the buchanans",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/69",
+   "text": "1.2 Dinner at the Buchanans"
+  },
+  {
+   "hash": "264618d4e9d455e2",
+   "key": "don t look at me daisy",
+   "label": "text",
+   "ref": "#/texts/70",
+   "text": "“Don’t look at me,” Daisy retorted, “I’ve been trying to get"
+  },
+  {
+   "hash": "446e398e3d31fac2",
+   "key": "no thanks said miss baker to",
+   "label": "text",
+   "ref": "#/texts/71",
+   "text": "“No, thanks,” said Miss Baker to the four cocktails just in "
+  },
+  {
+   "hash": "c6eff36bd50d4538",
+   "key": "her host looked at her incredulously",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/72",
+   "text": "Her host looked at her incredulously."
+  },
+  {
+   "hash": "956c009b0c667ffd",
+   "key": "you are he took down his",
+   "label": "text",
+   "ref": "#/texts/73",
+   "text": "“You are!” He took down his drink as if it were a drop in th"
+  },
+  {
+   "hash": "e44bf654fee5232e",
+   "key": "i looked at miss baker wondering",
+   "label": "text",
+   "ref": "#/texts/74",
+   "text": "I looked at Miss Baker, wondering what it was she “got done."
+  },
+  {
+   "hash": "372705d5e298468a",
+   "key": "you live in west egg she",
+   "label": "text",
+   "ref": "#/texts/75",
+   "text": "“You live in West Egg,” she remarked contemptuously. “I know"
+  },
+  {
+   "hash": "981e9f69dc4e2ba9",
+   "key": "i don t know a single",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/76",
+   "text": "“I don’t know a single—”"
+  },
+  {
+   "hash": "5bbe72ac3fa42c71",
+   "key": "“you must know gatsby.”",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/77",
+   "text": "“You must know Gatsby.”"
+  },
+  {
+   "hash": "26e6656f79dedfdd",
+   "key": "“gatsby?” demanded daisy. “what gatsby?”",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/78",
+   "text": "“Gatsby?” demanded Daisy. “What Gatsby?”"
+  },
+  {
+   "hash": "2c3e10d21f3b169e",
+   "key": "before i could reply that he",
+   "label": "text",
+   "ref": "#/texts/79",
+   "text": "Before I could reply that he was my neighbour dinner was ann"
+  },
+  {
+   "hash": "c9ede657c03726f0",
+   "key": "slenderly languidly their hands set lightly",
+   "label": "text",
+   "ref": "#/texts/80",
+   "text": "Slenderly, languidly, their hands set lightly on their hips,"
+  },
+  {
+   "hash": "d4cbcae87752c576",
+   "key": "why candles objected daisy frowning she",
+   "label": "text",
+   "ref": "#/texts/81",
+   "text": "“Why candles?” objected Daisy, frowning. She snapped them ou"
+  },
+  {
+   "hash": "941bc43ace56723c",
+   "key": "we ought to plan something yawned",
+   "label": "text",
+   "ref": "#/texts/82",
+   "text": "“We ought to plan something,” yawned Miss Baker, sitting dow"
+  },
+  {
+   "hash": "31b2b55af9d6daa1",
+   "key": "all right said daisy what ll",
+   "label": "text",
+   "ref": "#/texts/83",
+   "text": "“All right,” said Daisy. “What’ll we plan?” She turned to me"
+  },
+  {
+   "hash": "946d0c0c3101ed81",
+   "key": "before i could answer her eyes",
+   "label": "text",
+   "ref": "#/texts/84",
+   "text": "Before I could answer her eyes fastened with an awed express"
+  },
+  {
+   "hash": "b48844242d1b132f",
+   "key": "look she complained i hurt it",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/85",
+   "text": "“Look!” she complained; “I hurt it.”"
+  },
+  {
+   "hash": "8321b4b2dd75dfed",
+   "key": "we all looked the knuckle was",
+   "label": "text",
+   "ref": "#/texts/86",
+   "text": "We all looked—the knuckle was black and blue."
+  },
+  {
+   "hash": "4d701c2eb3d20ce5",
+   "key": "you did it tom she said",
+   "label": "text",
+   "ref": "#/texts/87",
+   "text": "“You did it, Tom,” she said accusingly. “I know you didn’t m"
+  },
+  {
+   "hash": "aacdd50f9e8f70d9",
+   "key": "i hate that word hulking objected",
+   "label": "text",
+   "ref": "#/texts/88",
+   "text": "“I hate that word ‘hulking,’ ” objected Tom crossly, “even i"
+  },
+  {
+   "hash": "4ccb8f0e18428978",
+   "key": "“hulking,” insisted daisy.",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/89",
+   "text": "“Hulking,” insisted Daisy."
+  },
+  {
+   "hash": "4d3e769b2dc102bb",
+   "key": "sometimes she and miss baker talked",
+   "label": "text",
+   "ref": "#/texts/90",
+   "text": "Sometimes she and Miss Baker talked at once, unobtrusively a"
+  },
+  {
+   "hash": "d13ede53afbe67df",
+   "key": "you make me feel uncivilized daisy",
+   "label": "text",
+   "ref": "#/texts/91",
+   "text": "“You make me feel uncivilized, Daisy,” I confessed on my sec"
+  },
+  {
+   "hash": "eeb2abc90e1ffa63",
+   "key": "i meant nothing in particular by",
+   "label": "text",
+   "ref": "#/texts/92",
+   "text": "I meant nothing in particular by this remark, but it was tak"
+  },
+  {
+   "hash": "95165260f3895d0b",
+   "key": "civilization s going to pieces broke",
+   "label": "text",
+   "ref": "#/texts/93",
+   "text": "“Civilization’s going to pieces,” broke out Tom violently. “"
+  },
+  {
+   "hash": "f9fba132d6b6f8bc",
+   "key": "why no i answered rather surprised",
+   "label": "text",
+   "ref": "#/texts/94",
+   "text": "“Why, no,” I answered, rather surprised by his tone."
+  },
+  {
+   "hash": "47a832c1ccd34cc9",
+   "key": "well it s a fine book",
+   "label": "text",
+   "ref": "#/texts/95",
+   "text": "“Well, it’s a fine book, and everybody ought to read it. The"
+  },
+  {
+   "hash": "4252cb2b63a8d797",
+   "key": "tom s getting very profound said",
+   "label": "text",
+   "ref": "#/texts/96",
+   "text": "“Tom’s getting very profound,” said Daisy, with an expressio"
+  },
+  {
+   "hash": "ea614d272591c3f4",
+   "key": "well these books are all scientific",
+   "label": "text",
+   "ref": "#/texts/97",
+   "text": "“Well, these books are all scientific,” insisted Tom, glanci"
+  },
+  {
+   "hash": "156e85ddb4ed144e",
+   "key": "we ve got to beat them",
+   "label": "text",
+   "ref": "#/texts/98",
+   "text": "“We’ve got to beat them down,” whispered Daisy, winking fero"
+  },
+  {
+   "hash": "1d31e8db3d6a3905",
+   "key": "you ought to live in california",
+   "label": "text",
+   "ref": "#/texts/99",
+   "text": "“You ought to live in California—” began Miss Baker, but Tom"
+  },
+  {
+   "hash": "05331dfd310056eb",
+   "key": "this idea is that we re",
+   "label": "text",
+   "ref": "#/texts/100",
+   "text": "“This idea is that we’re Nordics. I am, and you are, and"
+  },
+  {
+   "hash": "e8e301c707ea6b8d",
+   "key": "you are and after an infinitesimal",
+   "label": "text",
+   "ref": "#/texts/103",
+   "text": "you are, and—” After an infinitesimal hesitation he included"
+  },
+  {
+   "hash": "9e382e2b8e9d5d14",
+   "key": "there was something pathetic in his",
+   "label": "text",
+   "ref": "#/texts/104",
+   "text": "There was something pathetic in his concentration, as if his"
+  },
+  {
+   "hash": "2edcdfb8c482122d",
+   "key": "i ll tell you a family",
+   "label": "text",
+   "ref": "#/texts/105",
+   "text": "“I’ll tell you a family secret,” she whispered enthusiastica"
+  },
+  {
+   "hash": "f9aef8746d395288",
+   "key": "that s why i came over",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/106",
+   "text": "“That’s why I came over tonight.”"
+  },
+  {
+   "hash": "d2dba8982f4de14b",
+   "key": "well he wasn t always a",
+   "label": "text",
+   "ref": "#/texts/107",
+   "text": "“Well, he wasn’t always a butler; he used to be the silver p"
+  },
+  {
+   "hash": "2a0894baa6328ef6",
+   "key": "things went from bad to worse",
+   "label": "text",
+   "ref": "#/texts/108",
+   "text": "“Things went from bad to worse,” suggested Miss Baker."
+  },
+  {
+   "hash": "e801d2c23482d6af",
+   "key": "yes things went from bad to",
+   "label": "text",
+   "ref": "#/texts/109",
+   "text": "“Yes. Things went from bad to worse, until finally he had to"
+  },
+  {
+   "hash": "9cca0b8428c8dc5b",
+   "key": "for a moment the last sunshine",
+   "label": "text",
+   "ref": "#/texts/110",
+   "text": "For a moment the last sunshine fell with romantic affection "
+  },
+  {
+   "hash": "643a2024fb3f59a4",
+   "key": "the butler came back and murmured",
+   "label": "text",
+   "ref": "#/texts/111",
+   "text": "The butler came back and murmured something close to Tom’s e"
+  },
+  {
+   "hash": "11f7b7231cb60766",
+   "key": "i love to see you at",
+   "label": "text",
+   "ref": "#/texts/112",
+   "text": "“I love to see you at my table, Nick. You remind me of a —of"
+  },
+  {
+   "hash": "c1ce7e0305affa88",
+   "key": "this was untrue i am not",
+   "label": "text",
+   "ref": "#/texts/113",
+   "text": "This was untrue. I am not even faintly like a rose. She was "
+  },
+  {
+   "hash": "0c9fb9b58b5ae480",
+   "key": "miss baker and i exchanged a",
+   "label": "text",
+   "ref": "#/texts/114",
+   "text": "Miss Baker and I exchanged a short glance consciously devoid"
+  },
+  {
+   "hash": "249e56a5b644367b",
+   "key": "this mr gatsby you spoke of",
+   "label": "text",
+   "ref": "#/texts/115",
+   "text": "“This Mr. Gatsby you spoke of is my neighbour—” I began."
+  },
+  {
+   "hash": "84820f2c34ffa8ff",
+   "key": "don t talk i want to",
+   "label": "text",
+   "ref": "#/texts/116",
+   "text": "“Don’t talk. I want to hear what happens.”"
+  },
+  {
+   "hash": "037c26290bc40ab9",
+   "key": "is something happening i inquired innocently",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/117",
+   "text": "“Is something happening?” I inquired innocently."
+  },
+  {
+   "hash": "e69835ae27dbdd93",
+   "key": "you mean to say you don",
+   "label": "text",
+   "ref": "#/texts/118",
+   "text": "“You mean to say you don’t know?” said Miss Baker, honestly "
+  },
+  {
+   "hash": "df2ab854bead4263",
+   "key": "“i don’t.”",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/119",
+   "text": "“I don’t.”"
+  },
+  {
+   "hash": "b5760fb874f21487",
+   "key": "why she said hesitantly tom s",
+   "label": "text",
+   "ref": "#/texts/120",
+   "text": "“Why—” she said hesitantly. “Tom’s got some woman in New Yor"
+  },
+  {
+   "hash": "89cf3c6400100e84",
+   "key": "got some woman i repeated blankly",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/121",
+   "text": "“Got some woman?” I repeated blankly."
+  },
+  {
+   "hash": "63be9b0ff83acca7",
+   "key": "miss baker nodded.",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/122",
+   "text": "Miss Baker nodded."
+  },
+  {
+   "hash": "8e9e5f917f0545ce",
+   "key": "she might have the decency not",
+   "label": "text",
+   "ref": "#/texts/123",
+   "text": "“She might have the decency not to telephone him at dinner t"
+  },
+  {
+   "hash": "21433dda4a712a20",
+   "key": "almost before i had grasped her",
+   "label": "text",
+   "ref": "#/texts/124",
+   "text": "Almost before I had grasped her meaning there was the flutte"
+  },
+  {
+   "hash": "d97972e3f89053d9",
+   "key": "2. the valley of ashes",
+   "label": "section_header",
+   "level": 1,
+   "ref": "#/texts/125",
+   "text": "2. The Valley of Ashes"
+  },
+  {
+   "hash": "ebcad564d8d92eb7",
+   "key": "about halfway between west egg and",
+   "label": "text",
+   "ref": "#/texts/126",
+   "text": "About halfway between West Egg and New York the motor road h"
+  },
+  {
+   "hash": "839453d12b9282ce",
+   "key": "but above the grey land and",
+   "label": "text",
+   "ref": "#/texts/127",
+   "text": "But above the grey land and the spasms of bleak dust which d"
+  },
+  {
+   "hash": "adfe83e5dbc05f6b",
+   "key": "the valley of ashes is bounded",
+   "label": "text",
+   "ref": "#/texts/128",
+   "text": "The valley of ashes is bounded on one side by a small foul r"
+  },
+  {
+   "hash": "6e58df52a6258293",
+   "key": "the fact that he had one",
+   "label": "text",
+   "ref": "#/texts/129",
+   "text": "The fact that he had one was insisted upon wherever he"
+  },
+  {
+   "hash": "b3363277fd66d68b",
+   "key": "2 the valley of ashes is",
+   "label": "text",
+   "ref": "#/texts/130",
+   "text": "2 The valley of ashes is usually identified with the Corona "
+  },
+  {
+   "hash": "7cc3c1fc3b328a44",
+   "key": "was known his acquaintances resented the",
+   "label": "text",
+   "ref": "#/texts/133",
+   "text": "was known. His acquaintances resented the fact that he crêpe"
+  },
+  {
+   "hash": "026dda49ee23796a",
+   "key": "i think he d tanked up",
+   "label": "text",
+   "ref": "#/texts/134",
+   "text": "I think he’d tanked up a good deal at luncheon, and his dete"
+  },
+  {
+   "hash": "196e8c11c0313725",
+   "key": "i followed him over a low",
+   "label": "text",
+   "ref": "#/texts/135",
+   "text": "I followed him over a low whitewashed railroad fence, and we"
+  },
+  {
+   "hash": "1686032c09fd131b",
+   "key": "the interior was unprosperous and bare",
+   "label": "text",
+   "ref": "#/texts/136",
+   "text": "The interior was unprosperous and bare; the only car visible"
+  },
+  {
+   "hash": "3b437c6af22e3ae9",
+   "key": "2 1 the garage on the",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/137",
+   "text": "2.1 The Garage on the Edge of the Waste Land"
+  },
+  {
+   "hash": "680d6b8981a5eec2",
+   "key": "hello wilson old man said tom",
+   "label": "text",
+   "ref": "#/texts/138",
+   "text": "“Hello, Wilson, old man,” said Tom, slapping him jovially on"
+  },
+  {
+   "hash": "b9324cb756ea73de",
+   "key": "i can t complain answered wilson",
+   "label": "text",
+   "ref": "#/texts/139",
+   "text": "“I can’t complain,” answered Wilson unconvincingly. “When ar"
+  },
+  {
+   "hash": "30dc841a9102b8c2",
+   "key": "next week i ve got my",
+   "label": "text",
+   "ref": "#/texts/140",
+   "text": "“Next week; I’ve got my man working on it now.”"
+  },
+  {
+   "hash": "59c07cf4b51cd827",
+   "key": "works pretty slow don t he",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/141",
+   "text": "“Works pretty slow, don’t he?”"
+  },
+  {
+   "hash": "4d50e277f89bd7e4",
+   "key": "no he doesn t said tom",
+   "label": "text",
+   "ref": "#/texts/142",
+   "text": "“No, he doesn’t,” said Tom coldly. “And if you feel that way"
+  },
+  {
+   "hash": "a687ba67e787f1b8",
+   "key": "i don t mean that explained",
+   "label": "text",
+   "ref": "#/texts/143",
+   "text": "“I don’t mean that,” explained Wilson quickly. “I just meant"
+  },
+  {
+   "hash": "4326a0fe723d3458",
+   "key": "his voice faded off and tom",
+   "label": "text",
+   "ref": "#/texts/144",
+   "text": "His voice faded off and Tom glanced impatiently around the g"
+  }
+ ],
+ "reading_text": "The Great Gatsby, Chapter One, Reset in Two Columns with Footnotes and a Running Header\nF. Scott Fitzgerald (1925). Public domain text from the Project Gutenberg transcription.\n1. West Egg\nIn my younger and more vulnerable years my father gave me some advice that I’ve been turning over in my mind ever since.\n“Whenever you feel like criticizing anyone,” he told me, “just remember that all the people in this world haven’t had the advantages that you’ve had.”\nHe didn’t say any more, but we’ve always been unusually communicative in a reserved way, and I understood that he meant a great deal more than that. 1 In consequence, I’m inclined to reserve all judgements, a habit that has opened up many curious natures to me and also made me the victim of not a few veteran bores. The abnormal mind is quick to detect and attach itself to this quality when it appears in a normal person, and so it came about that in college I was unjustly accused of being a politician, because I was privy to the secret griefs of wild, unknown men. Most of the confidences were unsought—frequently I have feigned sleep, preoccupation, or a hostile levity when I realized by some unmistakable sign that an intimate revelation was quivering on the horizon; for the intimate revelations of young men, or at least the terms in which they express them, are usually plagiaristic and marred by obvious suppressions. Reserving judgements is a matter of infinite hope. I am still a little afraid of missing something if I forget that, as my father snobbishly suggested, and I snobbishly repeat, a sense of the fundamental decencies is parcelled out unequally at birth.\nAnd, after boasting this way of my tolerance, I come to the admission that it has a limit. Conduct may be founded on the hard rock or the wet marshes, but after a certain point I don’t care what it’s founded on. When I came back from the East last autumn I felt that I wanted the world to be in uniform and at a sort of moral attention forever; I wanted no more riotous excursions with privileged glimpses into the human heart. Only Gatsby, the man who gives his name to this book, was exempt from my reaction —Gatsby, who represented everything for which I have an unaffected scorn. If personality is an unbroken series of successful gestures, then there was something gorgeous about him, some heightened sensitivity to the promises of life, as if he were related to one of those intricate machines that register earthquakes ten thousand miles away. This responsiveness had nothing to do with that flabby impressionability which is dignified under the name of the “cre-\n1 The narrator gives his family history as fact within the novel; the Dukes of Buccleuch are a real Scottish title.\native temperament”—it was an extraordinary gift for hope, a romantic readiness such as I have never found in any other person and which it is not likely I shall ever find again. No—Gatsby turned out all right at the end; it is what preyed on Gatsby, what foul dust floated in the wake of his dreams that temporarily closed out my interest in the abortive sorrows and short-winded elations of men.\nMy family have been prominent, well-to-do people in this Middle Western city for three generations. The Carraways are something of a clan, and we have a tradition that we’re descended from the Dukes of Buccleuch, but the actual founder of my line was my grandfather’s brother, who came here in fifty-one, sent a substitute to the Civil War, and started the wholesale hardware business that my father carries on today.\nI never saw this great-uncle, but I’m supposed to look like him—with special reference to the rather hard-boiled painting that hangs in father’s office. I graduated from New Haven in 1915, just a quarter of a century after my father, and a little later I participated in that delayed Teutonic migration known as the Great War. I enjoyed the counterraid so thoroughly that I came back restless. Instead of being the warm centre of the world, the Middle West now seemed like the ragged edge of the universe—so I decided to go East and learn the bond business. Everybody I knew was in the bond business, so I supposed it could support one more single man. All my aunts and uncles talked it over as if they were choosing a prep school for me, and fi-nally said, “Why—ye-es,” with very grave, hesitant faces. Father agreed to finance me for a year, and after various delays I came East, permanently, I thought, in the spring of twenty-two.\nThe practical thing was to find rooms in the city, but it was a warm season, and I had just left a country of wide lawns and friendly trees, so when a young man at the office suggested that we take a house together in a commuting town, it sounded like a great idea. He found the house, a weather-beaten cardboard bungalow at eighty a month, but at the last minute the firm ordered him to Washington, and I went out to the country alone. I had a dog—at least I had him for a few days until he ran away—and an old Dodge and a Finnish woman, who made my bed and cooked breakfast and muttered Finnish wisdom to herself over the electric stove.\nIt was lonely for a day or so until one morning some man, more recently arrived than I, stopped me on the road.\n“How do you get to West Egg village?” he asked helplessly.\nI told him. And as I walked on I was lonely no longer. I was a guide, a pathfinder, an original settler. He had casually conferred on me the freedom of the neighbourhood.\nAnd so with the sunshine and the great bursts of leaves growing on the trees, just as things grow in fast movies, I had that familiar conviction that life was beginning over again with the summer.\nThere was so much to read, for one thing, and so much fine health to be pulled down out of the young breath-giving air. I bought a dozen volumes on banking and credit and investment securities, and they stood on my shelf in red and gold like new money from the mint, promising to unfold the shining secrets that only Midas and Morgan and Maecenas knew. And I had the high intention of reading many other books besides. I was rather literary in college —one year I wrote a series of very solemn and obvious editorials for the Yale News—and now I was going to bring back all such things into my life and become again that most limited of all specialists, the “well-rounded man.” This isn’t just an epigram—life is much more successfully looked at from a single window, after all.\nIt was a matter of chance that I should have rented a house in one of the strangest communities in North America. It was on that slender riotous island which extends itself due east of New York—and where there are, among other natural curiosities, two unusual formations of land. Twenty miles from the city a pair of enormous eggs, identical in contour and separated only by a courtesy bay, jut out into the most domesticated body of salt water in the Western hemisphere, the great wet barnyard of Long Island Sound. They are not perfect ovals—like the egg in the Columbus story, they are both crushed flat at the contact end—but their physical resemblance must be a source of perpetual wonder to the gulls that fly overhead. To the wingless a more interesting phenomenon is their dissimilarity in every particular except shape and size.\nI lived at West Egg, the—well, the less fashionable of the two, though this is a most superficial tag to express the bizarre and not a little sinister contrast between them. My house was at the very tip of the egg, only fifty yards from the Sound, and squeezed between two huge places that rented for twelve or fifteen thousand a season. The one on my right was a colossal affair by any standard—it was a factual imitation of some Hôtel de Ville in Normandy, with a tower on one side, spanking new under a thin beard of raw ivy, and a marble swimming pool, and more than forty acres of lawn and garden. It was Gatsby’s mansion. Or, rather, as I didn’t know Mr. Gatsby, it was a mansion inhabited by a gentleman of that name. My own house was an eyesore, but it was a small eyesore, and it had been overlooked, so I had a view of the water, a partial view of my neighbour’s lawn, and the consoling proximity of millionaires—all for eighty dollars a month.\nAcross the courtesy bay the white palaces of fashionable\nEast Egg glittered along the water, and the history of the summer really begins on the evening I drove over there to have dinner with the Tom Buchanans. Daisy was my second cousin once removed, and I’d known Tom in college. And just after the war I spent two days with them in Chicago.\nHer husband, among various physical accomplishments, had been one of the most powerful ends that ever played football at New Haven—a national figure in a way, one of those men who reach such an acute limited excellence at twenty-one that everything afterward savours of anticlimax. His family were enormously wealthy—even in college his freedom with money was a matter for reproach— but now he’d left Chicago and come East in a fashion that rather took your breath away: for instance, he’d brought down a string of polo ponies from Lake Forest. It was hard to realize that a man in my own generation was wealthy enough to do that.\nWhy they came East I don’t know. They had spent a year in France for no particular reason, and then drifted here and there unrestfully wherever people played polo and were rich together. This was a permanent move, said Daisy over the telephone, but I didn’t believe it—I had no sight into Daisy’s heart, but I felt that Tom would drift on forever seeking, a little wistfully, for the dramatic turbulence of some irrecoverable football game.\nAnd so it happened that on a warm windy evening I drove over to East Egg to see two old friends whom I scarcely knew at all. Their house was even more elaborate than I expected, a cheerful red-and-white Georgian Colonial mansion, overlooking the bay. The lawn started at the beach and ran towards the front door for a quarter of a mile, jumping over sundials and brick walks and burning gardens—finally when it reached the house drifting up the side in bright vines as though from the momentum of its run. The front was broken by a line of French windows, glowing now with reflected gold and wide open to the warm windy afternoon, and Tom Buchanan in riding clothes was standing with his legs apart on the front porch.\nHe had changed since his New Haven years. Now he was a sturdy straw-haired man of thirty, with a rather hard mouth and a supercilious manner. Two shining arrogant eyes had established dominance over his face and gave him the appearance of always leaning aggressively forward. Not even the effeminate swank of his riding clothes could hide the enormous power of that body—he seemed to fill those glistening boots until he strained the top lacing, and you could see a great pack of muscle shifting when his shoulder moved under his thin coat. It was a body capable of enormous leverage—a cruel body.\nHis speaking voice, a gruff husky tenor, added to the impression of fractiousness he conveyed. There was a touch of paternal contempt in it, even toward people he liked—and there were men at New Haven who had hated his guts.\n1.1 The Buchanan House\n“Now, don’t think my opinion on these matters is final,” he seemed to say, “just because I’m stronger and more of a man than you are.” We were in the same senior society, and while we were never intimate I always had the impression that he approved of me and wanted me to like him with some harsh, defiant wistfulness of his own.\nWe talked for a few minutes on the sunny porch.\n“I’ve got a nice place here,” he said, his eyes flashing about restlessly.\nTurning me around by one arm, he moved a broad flat hand along the front vista, including in its sweep a sunken Italian garden, a half acre of deep, pungent roses, and a snub-nosed motorboat that bumped the tide offshore.\n“It belonged to Demaine, the oil man.” He turned me around again, politely and abruptly. “We’ll go inside.”\nWe walked through a high hallway into a bright rosycoloured space, fragilely bound into the house by French windows at either end. The windows were ajar and gleaming white against the fresh grass outside that seemed to grow a little way into the house. A breeze blew through the room, blew curtains in at one end and out the other like pale flags, twisting them up toward the frosted weddingcake of the ceiling, and then rippled over the winecoloured rug, making a shadow on it as wind does on the sea.\nThe only completely stationary object in the room was an enormous couch on which two young women were buoyed up as though upon an anchored balloon. They were both in white, and their dresses were rippling and fluttering as if they had just been blown back in after a short flight around the house. I must have stood for a few moments listening to the whip and snap of the curtains and the groan of a picture on the wall. Then there was a boom as Tom Buchanan shut the rear windows and the caught wind died out about the room, and the curtains and the rugs and the two young women ballooned slowly to the floor.\nThe younger of the two was a stranger to me. She was extended full length at her end of the divan, completely motionless, and with her chin raised a little, as if she were balancing something on it which was quite likely to fall. If she saw me out of the corner of her eyes she gave no hint of it—indeed, I was almost surprised into murmuring an apology for having disturbed her by coming in.\nThe other girl, Daisy, made an attempt to rise—she leaned slightly forward with a conscientious expression— then she laughed, an absurd, charming little laugh, and I laughed too and came forward into the room.\n“I’m p-paralysed with happiness.”\nShe laughed again, as if she said something very witty, and held my hand for a moment, looking up into my face, promising that there was no one in the world she so much\nwanted to see. That was a way she had. She hinted in a murmur that the surname of the balancing girl was Baker. (I’ve heard it said that Daisy’s murmur was only to make people lean toward her; an irrelevant criticism that made it no less charming.)\nAt any rate, Miss Baker’s lips fluttered, she nodded at me almost imperceptibly, and then quickly tipped her head back again—the object she was balancing had obviously tottered a little and given her something of a fright. Again a sort of apology arose to my lips. Almost any exhibition of complete self-sufficiency draws a stunned tribute from me.\nI looked back at my cousin, who began to ask me questions in her low, thrilling voice. It was the kind of voice that the ear follows up and down, as if each speech is an arrangement of notes that will never be played again. Her face was sad and lovely with bright things in it, bright eyes and a bright passionate mouth, but there was an excitement in her voice that men who had cared for her found difficult to forget: a singing compulsion, a whispered “Listen,” a promise that she had done gay, exciting things just a while since and that there were gay, exciting things hovering in the next hour.\nI told her how I had stopped off in Chicago for a day on my way East, and how a dozen people had sent their love through me.\n“Do they miss me?” she cried ecstatically.\n“The whole town is desolate. All the cars have the left rear wheel painted black as a mourning wreath, and there’s a persistent wail all night along the north shore.”\n“How gorgeous! Let’s go back, Tom. Tomorrow!” Then she added irrelevantly: “You ought to see the baby.”\n“I’d like to.”\n“She’s asleep. She’s three years old. Haven’t you ever seen her?”\n“Never.”\n“Well, you ought to see her. She’s—”\nTom Buchanan, who had been hovering restlessly about the room, stopped and rested his hand on my shoulder.\n“What you doing, Nick?”\n“I’m a bond man.”\n“Who with?”\nI told him.\n“Never heard of them,” he remarked decisively.\nThis annoyed me.\n“You will,” I answered shortly. “You will if you stay in the East.”\n“Oh, I’ll stay in the East, don’t you worry,” he said, glancing at Daisy and then back at me, as if he were alert\nfor something more. “I’d be a God damned fool to live anywhere else.”\nAt this point Miss Baker said: “Absolutely!” with such suddenness that I started—it was the first word she had uttered since I came into the room. Evidently it surprised her as much as it did me, for she yawned and with a series of rapid, deft movements stood up into the room.\n“I’m stiff,” she complained, “I’ve been lying on that sofa for as long as I can remember.”\n1.2 Dinner at the Buchanans\n“Don’t look at me,” Daisy retorted, “I’ve been trying to get you to New York all afternoon.”\n“No, thanks,” said Miss Baker to the four cocktails just in from the pantry. “I’m absolutely in training.”\nHer host looked at her incredulously.\n“You are!” He took down his drink as if it were a drop in the bottom of a glass. “How you ever get anything done is beyond me.”\nI looked at Miss Baker, wondering what it was she “got done.” I enjoyed looking at her. She was a slender, smallbreasted girl, with an erect carriage, which she accentuated by throwing her body backward at the shoulders like a young cadet. Her grey sun-strained eyes looked back at me with polite reciprocal curiosity out of a wan, charming, discontented face. It occurred to me now that I had seen her, or a picture of her, somewhere before.\n“You live in West Egg,” she remarked contemptuously. “I know somebody there.”\n“I don’t know a single—”\n“You must know Gatsby.”\n“Gatsby?” demanded Daisy. “What Gatsby?”\nBefore I could reply that he was my neighbour dinner was announced; wedging his tense arm imperatively under mine, Tom Buchanan compelled me from the room as though he were moving a checker to another square.\nSlenderly, languidly, their hands set lightly on their hips, the two young women preceded us out on to a rosycoloured porch, open toward the sunset, where four candles flickered on the table in the diminished wind.\n“Why candles?” objected Daisy, frowning. She snapped them out with her fingers. “In two weeks it’ll be the longest day in the year.” She looked at us all radiantly. “Do you always watch for the longest day of the year and then miss it? I always watch for the longest day in the year and then miss it.”\n“We ought to plan something,” yawned Miss Baker, sitting down at the table as if she were getting into bed.\n“All right,” said Daisy. “What’ll we plan?” She turned to me helplessly: “What do people plan?”\nBefore I could answer her eyes fastened with an awed expression on her little finger.\n“Look!” she complained; “I hurt it.”\nWe all looked—the knuckle was black and blue.\n“You did it, Tom,” she said accusingly. “I know you didn’t mean to, but you did do it. That’s what I get for marrying a brute of a man, a great, big, hulking physical specimen of a—”\n“I hate that word ‘hulking,’ ” objected Tom crossly, “even in kidding.”\n“Hulking,” insisted Daisy.\nSometimes she and Miss Baker talked at once, unobtrusively and with a bantering inconsequence that was never quite chatter, that was as cool as their white dresses and their impersonal eyes in the absence of all desire. They were here, and they accepted Tom and me, making only a polite pleasant effort to entertain or to be entertained. They knew that presently dinner would be over and a little later the evening too would be over and casually put away. It was sharply different from the West, where an evening was hurried from phase to phase towards its close, in a continually disappointed anticipation or else in sheer nervous dread of the moment itself.\n“You make me feel uncivilized, Daisy,” I confessed on my second glass of corky but rather impressive claret. “Can’t you talk about crops or something?”\nI meant nothing in particular by this remark, but it was taken up in an unexpected way.\n“Civilization’s going to pieces,” broke out Tom violently. “I’ve gotten to be a terrible pessimist about things. Have you read The Rise of the Coloured Empires by this man Goddard?”\n“Why, no,” I answered, rather surprised by his tone.\n“Well, it’s a fine book, and everybody ought to read it. The idea is if we don’t look out the white race will be— will be utterly submerged. It’s all scientific stuff; it’s been proved.”\n“Tom’s getting very profound,” said Daisy, with an expression of unthoughtful sadness. “He reads deep books with long words in them. What was that word we—”\n“Well, these books are all scientific,” insisted Tom, glancing at her impatiently. “This fellow has worked out the whole thing. It’s up to us, who are the dominant race, to watch out or these other races will have control of things.”\n“We’ve got to beat them down,” whispered Daisy, winking ferociously toward the fervent sun.\n“You ought to live in California—” began Miss Baker, but Tom interrupted her by shifting heavily in his chair.\n“This idea is that we’re Nordics. I am, and you are, and\nyou are, and—” After an infinitesimal hesitation he included Daisy with a slight nod, and she winked at me again. “—And we’ve produced all the things that go to make civilization—oh, science and art, and all that. Do you see?”\nThere was something pathetic in his concentration, as if his complacency, more acute than of old, was not enough to him any more. When, almost immediately, the telephone rang inside and the butler left the porch Daisy seized upon the momentary interruption and leaned towards me.\n“I’ll tell you a family secret,” she whispered enthusiastically. “It’s about the butler’s nose. Do you want to hear about the butler’s nose?”\n“That’s why I came over tonight.”\n“Well, he wasn’t always a butler; he used to be the silver polisher for some people in New York that had a silver service for two hundred people. He had to polish it from morning till night, until finally it began to affect his nose —”\n“Things went from bad to worse,” suggested Miss Baker.\n“Yes. Things went from bad to worse, until finally he had to give up his position.”\nFor a moment the last sunshine fell with romantic affection upon her glowing face; her voice compelled me forward breathlessly as I listened—then the glow faded, each light deserting her with lingering regret, like children leaving a pleasant street at dusk.\nThe butler came back and murmured something close to Tom’s ear, whereupon Tom frowned, pushed back his chair, and without a word went inside. As if his absence quickened something within her, Daisy leaned forward again, her voice glowing and singing.\n“I love to see you at my table, Nick. You remind me of a —of a rose, an absolute rose. Doesn’t he?” She turned to Miss Baker for confirmation: “An absolute rose?”\nThis was untrue. I am not even faintly like a rose. She was only extemporizing, but a stirring warmth flowed from her, as if her heart was trying to come out to you concealed in one of those breathless, thrilling words. Then suddenly she threw her napkin on the table and excused herself and went into the house.\nMiss Baker and I exchanged a short glance consciously devoid of meaning. I was about to speak when she sat up alertly and said “Sh!” in a warning voice. A subdued impassioned murmur was audible in the room beyond, and Miss Baker leaned forward unashamed, trying to hear. The murmur trembled on the verge of coherence, sank down, mounted excitedly, and then ceased altogether.\n“This Mr. Gatsby you spoke of is my neighbour—” I began.\n“Don’t talk. I want to hear what happens.”\n“Is something happening?” I inquired innocently.\n“You mean to say you don’t know?” said Miss Baker, honestly surprised. “I thought everybody knew.”\n“I don’t.”\n“Why—” she said hesitantly. “Tom’s got some woman in New York.”\n“Got some woman?” I repeated blankly.\nMiss Baker nodded.\n“She might have the decency not to telephone him at dinner time. Don’t you think?”\nAlmost before I had grasped her meaning there was the flutter of a dress and the crunch of leather boots, and Tom and Daisy were back at the table.\n2. The Valley of Ashes\nAbout halfway between West Egg and New York the motor road hastily joins the railroad and runs beside it for a quarter of a mile, so as to shrink away from a certain desolate area of land. 2 This is a valley of ashes—a fantastic farm where ashes grow like wheat into ridges and hills and grotesque gardens; where ashes take the forms of houses and chimneys and rising smoke and, finally, with a transcendent effort, of ash-grey men, who move dimly and already crumbling through the powdery air. Occasionally a line of grey cars crawls along an invisible track, gives out a ghastly creak, and comes to rest, and immediately the ash-grey men swarm up with leaden spades and stir up an impenetrable cloud, which screens their obscure operations from your sight.\nBut above the grey land and the spasms of bleak dust which drift endlessly over it, you perceive, after a moment, the eyes of Doctor T. J. Eckleburg. The eyes of Doctor T. J. Eckleburg are blue and gigantic—their retinas are one yard high. They look out of no face, but, instead, from a pair of enormous yellow spectacles which pass over a nonexistent nose. Evidently some wild wag of an oculist set them there to fatten his practice in the borough of Queens, and then sank down himself into eternal blindness, or forgot them and moved away. But his eyes, dimmed a little by many paintless days, under sun and rain, brood on over the solemn dumping ground.\nThe valley of ashes is bounded on one side by a small foul river, and, when the drawbridge is up to let barges through, the passengers on waiting trains can stare at the dismal scene for as long as half an hour. There is always a halt there of at least a minute, and it was because of this that I first met Tom Buchanan’s mistress.\nThe fact that he had one was insisted upon wherever he\n2 The valley of ashes is usually identified with the Corona ash dumps in Queens, levelled for the 1939 World's Fair.\nwas known. His acquaintances resented the fact that he crêpe-de-chine, contained no facet or gleam of beauty, but turned up in popular cafés with her and, leaving her at a ta-there was an immediately perceptible vitality about her as ble, sauntered about, chatting with whomsoever he knew. if the nerves of her body were continually smouldering. Though I was curious to see her, I had no desire to meet She smiled slowly and, walking through her husband as if her—but I did. I went up to New York with Tom on the he were a ghost, shook hands with Tom, looking him flush train one afternoon, and when we stopped by the ash-heaps in the eye. Then she wet her lips, and without turning he jumped to his feet and, taking hold of my elbow, liter-around spoke to her husband in a soft, coarse voice: ally forced me from the car. “Get some chairs, why don’t you, so somebody can sit “We’re getting off,” he insisted. “I want you to meet my down.” girl.”\nI think he’d tanked up a good deal at luncheon, and his determination to have my company bordered on violence. The supercilious assumption was that on Sunday afternoon I had nothing better to do.\nI followed him over a low whitewashed railroad fence, and we walked back a hundred yards along the road under Doctor Eckleburg’s persistent stare. The only building in sight was a small block of yellow brick sitting on the edge of the waste land, a sort of compact Main Street ministering to it, and contiguous to absolutely nothing. One of the three shops it contained was for rent and another was an all-night restaurant, approached by a trail of ashes; the third was a garage—Repairs. George B. Wilson. Cars bought and sold.—and I followed Tom inside.\nThe interior was unprosperous and bare; the only car visible was the dust-covered wreck of a Ford which crouched in a dim corner. It had occurred to me that this shadow of a garage must be a blind, and that sumptuous and romantic apartments were concealed overhead, when the proprietor himself appeared in the door of an office, wiping his hands on a piece of waste. He was a blond, spiritless man, anaemic, and faintly handsome. When he saw us a damp gleam of hope sprang into his light blue eyes.\n2.1 The Garage on the Edge of the Waste Land\n“Hello, Wilson, old man,” said Tom, slapping him jovially on the shoulder. “How’s business?”\n“I can’t complain,” answered Wilson unconvincingly. “When are you going to sell me that car?”\n“Next week; I’ve got my man working on it now.”\n“Works pretty slow, don’t he?”\n“No, he doesn’t,” said Tom coldly. “And if you feel that way about it, maybe I’d better sell it somewhere else after all.”\n“I don’t mean that,” explained Wilson quickly. “I just meant—”\nHis voice faded off and Tom glanced impatiently around the garage. Then I heard footsteps on a stairs, and in a mo-ment the thickish figure of a woman blocked out the light from the office door. She was in the middle thirties, and faintly stout, but she carried her flesh sensuously as some women can. Her face, above a spotted dress of dark blue",
+ "schema": 1,
+ "status": "CONVERSION_STATUS_SUCCESS",
+ "tables": [],
+ "warnings": []
+}

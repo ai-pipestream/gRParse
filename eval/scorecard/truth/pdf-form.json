@@ -1,0 +1,119 @@
+{
+ "doc_id": "pdf-form",
+ "source": "form.docx as above; the PDF is its soffice conversion, checked with pdftotext -layout",
+ "notes": [
+  "Title style paragraph is level 0, 'Declaration' is Heading 1.",
+  "The table is 12 rows x 2 columns: a header row and eleven label/value rows; Serial number, Loan end, Approver and Notes have empty value cells that must survive as empty cells, not vanish.",
+  "Checkbox rows use U+2612 (checked) and U+2610 (empty) characters inside the cell text.",
+  "Same facts as docx-form; the PDF has no style information, so the title is still level 0 by its role and 'Declaration' level 1."
+ ],
+ "headings": [
+  {
+   "text": "Equipment Loan Request",
+   "level": 0
+  },
+  {
+   "text": "Declaration",
+   "level": 1
+  }
+ ],
+ "anchors": [
+  "Complete every field.",
+  "☒ I confirm the equipment",
+  "☐ I request an extension form",
+  "Signature:"
+ ],
+ "tables": [
+  {
+   "table": "form",
+   "cells": [
+    [
+     0,
+     0,
+     "Field"
+    ],
+    [
+     0,
+     1,
+     "Value"
+    ],
+    [
+     1,
+     0,
+     "Request number"
+    ],
+    [
+     1,
+     1,
+     "EQ-2024-0117"
+    ],
+    [
+     2,
+     1,
+     "M. Okafor"
+    ],
+    [
+     4,
+     1,
+     "Total station, tripod, two prisms"
+    ],
+    [
+     5,
+     0,
+     "Serial number"
+    ],
+    [
+     5,
+     1,
+     ""
+    ],
+    [
+     6,
+     1,
+     "2024-03-04"
+    ],
+    [
+     7,
+     0,
+     "Loan end"
+    ],
+    [
+     7,
+     1,
+     ""
+    ],
+    [
+     8,
+     1,
+     "☒ Standard ☐ Urgent ☐ Emergency"
+    ],
+    [
+     9,
+     1,
+     "☐ Yes ☒ No"
+    ],
+    [
+     10,
+     0,
+     "Approver"
+    ],
+    [
+     10,
+     1,
+     ""
+    ],
+    [
+     11,
+     0,
+     "Notes"
+    ],
+    [
+     11,
+     1,
+     ""
+    ]
+   ]
+  }
+ ],
+ "figures": []
+}

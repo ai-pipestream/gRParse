@@ -1,0 +1,64 @@
+{
+ "doc_id": "epub-great-gatsby",
+ "source": "unzip of the epub; h1/h2 elements and first <p> of each chapter read from the OEBPS xhtml files in spine order",
+ "notes": [
+  "Chapter headings are <h2> with Roman numerals I to IX, level 2; the <h1> 'The Great Gatsby by F. Scott Fitzgerald' is level 1. Front matter and the licence section are left out of the heading list.",
+  "Anchors: the opening words of chapters I to IX in spine order, plus the book's last paragraph."
+ ],
+ "headings": [
+  {
+   "text": "The Great Gatsby by F. Scott Fitzgerald",
+   "level": 1
+  },
+  {
+   "text": "I",
+   "level": 2
+  },
+  {
+   "text": "II",
+   "level": 2
+  },
+  {
+   "text": "III",
+   "level": 2
+  },
+  {
+   "text": "IV",
+   "level": 2
+  },
+  {
+   "text": "V",
+   "level": 2
+  },
+  {
+   "text": "VI",
+   "level": 2
+  },
+  {
+   "text": "VII",
+   "level": 2
+  },
+  {
+   "text": "VIII",
+   "level": 2
+  },
+  {
+   "text": "IX",
+   "level": 2
+  }
+ ],
+ "anchors": [
+  "In my younger and more vulnerable years",
+  "About halfway between West Egg and New York",
+  "There was music from my neighbour’s house",
+  "On Sunday morning while church bells rang",
+  "When I came home to West Egg that night",
+  "About this time an ambitious young reporter",
+  "It was when curiosity about Gatsby was at its highest",
+  "I couldn’t sleep all night; a foghorn",
+  "After two years I remember the rest of that day",
+  "So we beat on, boats against the current"
+ ],
+ "tables": [],
+ "figures": []
+}

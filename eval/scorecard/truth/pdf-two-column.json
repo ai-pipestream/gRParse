@@ -1,0 +1,84 @@
+{
+ "doc_id": "pdf-two-column",
+ "source": "the generator eval/scorecard/fixtures/two_column_pdf.py and gatsby_excerpt.txt; page breaks checked with pdftotext -f N -l N",
+ "notes": [
+  "Title is one 20pt paragraph that wraps to two lines (level 0); numbered headings follow the generator: 1. and 2. are level 1, 1.1, 1.2 and 2.1 are level 2.",
+  "Anchors: the byline, then the first six words of body paragraphs in source order (every paragraph on page 1, then roughly every fifth); the sequence crosses both columns on every page and all six page breaks, so column-major or page-interleaved reading shows as breaks.",
+  "The running header, the 'Page N' footer and the two footnotes are furniture and appear in no anchor."
+ ],
+ "headings": [
+  {
+   "text": "The Great Gatsby, Chapter One, Reset in Two Columns with Footnotes and a Running Header",
+   "level": 0
+  },
+  {
+   "text": "1. West Egg",
+   "level": 1
+  },
+  {
+   "text": "1.1 The Buchanan House",
+   "level": 2
+  },
+  {
+   "text": "1.2 Dinner at the Buchanans",
+   "level": 2
+  },
+  {
+   "text": "2. The Valley of Ashes",
+   "level": 1
+  },
+  {
+   "text": "2.1 The Garage on the Edge of the Waste Land",
+   "level": 2
+  }
+ ],
+ "anchors": [
+  "F. Scott Fitzgerald (1925).",
+  "In my younger and more vulnerable",
+  "“Whenever you feel like criticizing anyone,”",
+  "He didn’t say any more, but",
+  "And, after boasting this way of",
+  "My family have been prominent, well-to-do",
+  "I never saw this great-uncle, but",
+  "The practical thing was to find",
+  "It was lonely for a day",
+  "“How do you get to West",
+  "I told him. And as I",
+  "And so with the sunshine and",
+  "There was so much to read,",
+  "Across the courtesy bay the white",
+  "Her husband, among various physical accomplishments,",
+  "He had changed since his New",
+  "His speaking voice, a gruff husky",
+  "“Now, don’t think my opinion on",
+  "“I’ve got a nice place here,”",
+  "We walked through a high hallway",
+  "She laughed again, as if she",
+  "“The whole town is desolate. All",
+  "“Well, you ought to see her.",
+  "“Never heard of them,” he remarked",
+  "“You will,” I answered shortly. “You",
+  "At this point Miss Baker said:",
+  "“Don’t look at me,” Daisy retorted,",
+  "“You are!” He took down his",
+  "“Gatsby?” demanded Daisy. “What Gatsby?”",
+  "“All right,” said Daisy. “What’ll we",
+  "“I hate that word ‘hulking,’ ”",
+  "“Civilization’s going to pieces,” broke out",
+  "“We’ve got to beat them down,”",
+  "“This idea is that we’re Nordics.",
+  "“That’s why I came over tonight.”",
+  "The butler came back and murmured",
+  "“Don’t talk. I want to hear",
+  "“Got some woman?” I repeated blankly.",
+  "Almost before I had grasped her",
+  "About halfway between West Egg and",
+  "The valley of ashes is bounded",
+  "“We’re getting off,” he insisted. “I",
+  "“Hello, Wilson, old man,” said Tom,",
+  "“Works pretty slow, don’t he?”",
+  "“Get some chairs, why don’t you,"
+ ],
+ "tables": [],
+ "figures": []
+}

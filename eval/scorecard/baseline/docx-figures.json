@@ -1,0 +1,345 @@
+{
+ "agreement": {
+  "agreed": 2,
+  "claimed_fields": {
+   "grparse": 3,
+   "libreoffice": 17
+  },
+  "collectors": [
+   "grparse",
+   "libreoffice"
+  ],
+  "conflicts": [],
+  "shared": 2,
+  "winners": {
+   "origin.binary_hash": "grparse",
+   "origin.filename": "grparse",
+   "origin.mimetype": "grparse",
+   "source_meta.created.seconds": "libreoffice",
+   "source_meta.editing_cycles": "libreoffice",
+   "source_meta.generator": "libreoffice",
+   "source_meta.modified.seconds": "libreoffice",
+   "source_meta.statistics.characters": "libreoffice",
+   "source_meta.statistics.images": "libreoffice",
+   "source_meta.statistics.objects": "libreoffice",
+   "source_meta.statistics.pages": "libreoffice",
+   "source_meta.statistics.paragraphs": "libreoffice",
+   "source_meta.statistics.tables": "libreoffice",
+   "source_meta.statistics.words": "libreoffice",
+   "source_meta.template": "libreoffice",
+   "source_meta.title": "libreoffice"
+  }
+ },
+ "collectors": [
+  "grparse",
+  "libreoffice"
+ ],
+ "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+ "counts": {
+  "body_items": 22,
+  "by_label": {
+   "picture": 4,
+   "section_header": 6,
+   "text": 11,
+   "title": 1
+  },
+  "form_items": 0,
+  "furniture_items": 0,
+  "groups": 0,
+  "headings": 7,
+  "key_value_items": 0,
+  "orphans": 0,
+  "pages": 2,
+  "pictures": 4,
+  "reading_chars": 1293,
+  "tables": 0,
+  "texts": 18
+ },
+ "doc_id": "docx-figures",
+ "filename": "figures.docx",
+ "format": "docx",
+ "furniture_reading": [],
+ "groups": [],
+ "headings": [
+  {
+   "level": 0,
+   "ref": "#/texts/0",
+   "text": "Field Notes on Two Figures"
+  },
+  {
+   "level": 1,
+   "ref": "#/texts/1",
+   "text": "1. Introduction"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/3",
+   "text": "1.1 Scope"
+  },
+  {
+   "level": 1,
+   "ref": "#/texts/5",
+   "text": "2. The Figures"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/6",
+   "text": "2.1 The First Figure"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/11",
+   "text": "2.2 The Second Figure"
+  },
+  {
+   "level": 1,
+   "ref": "#/texts/16",
+   "text": "3. Conclusion"
+  }
+ ],
+ "markdown": {
+  "chars": 1427,
+  "headings": 7,
+  "images": 0,
+  "sha256": "7a1e41614055ee3372e27347ec8cace198ecd83d6625fb44be2843e859b5ea4b",
+  "table_rows": 0
+ },
+ "origin_mimetype": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+ "pictures": [
+  {
+   "caption": "",
+   "classification": "",
+   "collectors": [
+    "libreoffice"
+   ],
+   "image": {
+    "bytes": 5199,
+    "mimetype": "image/png",
+    "sha256": "56db7a10bd84e9669869167673b0b686861afcca4af775957af4b44952be740e"
+   },
+   "page": 1,
+   "parent": "#/body",
+   "parent_label": "body",
+   "parent_name": "",
+   "preceding_heading": "3. Conclusion",
+   "ref": "#/pictures/0"
+  },
+  {
+   "caption": "",
+   "classification": "",
+   "collectors": [
+    "libreoffice"
+   ],
+   "image": {
+    "bytes": 5032,
+    "mimetype": "image/png",
+    "sha256": "cc823a6740f8ee3a24cba9fcd7cfed4e6cc514ba84ff65d18956133f6674b70f"
+   },
+   "page": 2,
+   "parent": "#/body",
+   "parent_label": "body",
+   "parent_name": "",
+   "preceding_heading": "3. Conclusion",
+   "ref": "#/pictures/1"
+  },
+  {
+   "caption": "",
+   "classification": "other",
+   "collectors": [
+    "grparse"
+   ],
+   "image": null,
+   "page": 2,
+   "parent": "#/body",
+   "parent_label": "body",
+   "parent_name": "",
+   "preceding_heading": "3. Conclusion",
+   "ref": "#/pictures/2"
+  },
+  {
+   "caption": "",
+   "classification": "other",
+   "collectors": [
+    "grparse"
+   ],
+   "image": null,
+   "page": 1,
+   "parent": "#/body",
+   "parent_label": "body",
+   "parent_name": "",
+   "preceding_heading": "3. Conclusion",
+   "ref": "#/pictures/3"
+  }
+ ],
+ "reading": [
+  {
+   "hash": "dc43607bfde4da6e",
+   "key": "field notes on two figures",
+   "label": "title",
+   "level": 0,
+   "ref": "#/texts/0",
+   "text": "Field Notes on Two Figures"
+  },
+  {
+   "hash": "6e62ee82e3df2a7d",
+   "key": "1. introduction",
+   "label": "section_header",
+   "level": 1,
+   "ref": "#/texts/1",
+   "text": "1. Introduction"
+  },
+  {
+   "hash": "fa3cef7ad4a3439a",
+   "key": "this document exists to check that",
+   "label": "text",
+   "ref": "#/texts/2",
+   "text": "This document exists to check that a parser keeps two figure"
+  },
+  {
+   "hash": "550db76ec35ba9dd",
+   "key": "1.1 scope",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/3",
+   "text": "1.1 Scope"
+  },
+  {
+   "hash": "5ffb956f0cf7188e",
+   "key": "the scope is deliberately narrow two",
+   "label": "text",
+   "ref": "#/texts/4",
+   "text": "The scope is deliberately narrow: two figures, two captions,"
+  },
+  {
+   "hash": "e56ceba313b2a209",
+   "key": "2. the figures",
+   "label": "section_header",
+   "level": 1,
+   "ref": "#/texts/5",
+   "text": "2. The Figures"
+  },
+  {
+   "hash": "994ed0b35f053b3d",
+   "key": "2.1 the first figure",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/6",
+   "text": "2.1 The First Figure"
+  },
+  {
+   "hash": "3198d672286b27bf",
+   "key": "the first figure follows this paragraph",
+   "label": "text",
+   "ref": "#/texts/7",
+   "text": "The first figure follows this paragraph. It is a plain blue "
+  },
+  {
+   "hash": "e3b0c44298fc1c14",
+   "key": "",
+   "label": "text",
+   "ref": "#/texts/8",
+   "text": ""
+  },
+  {
+   "hash": "e06aa6f3b39e5872",
+   "key": "figure 1 a blue rectangle labelled",
+   "label": "text",
+   "ref": "#/texts/9",
+   "text": "Figure 1: A blue rectangle labelled A, drawn for this fixtur"
+  },
+  {
+   "hash": "760c2e2f2e3bd732",
+   "key": "after the first figure the text",
+   "label": "text",
+   "ref": "#/texts/10",
+   "text": "After the first figure the text continues with an unrelated "
+  },
+  {
+   "hash": "18a7117d62090c9c",
+   "key": "2.2 the second figure",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/11",
+   "text": "2.2 The Second Figure"
+  },
+  {
+   "hash": "310c2a540e0e62c0",
+   "key": "the second figure follows this paragraph",
+   "label": "text",
+   "ref": "#/texts/12",
+   "text": "The second figure follows this paragraph and is orange. It s"
+  },
+  {
+   "hash": "e3b0c44298fc1c14",
+   "key": "",
+   "label": "text",
+   "ref": "#/texts/13",
+   "text": ""
+  },
+  {
+   "hash": "a921a8a8b589c9a8",
+   "key": "figure 2 an orange rectangle labelled",
+   "label": "text",
+   "ref": "#/texts/14",
+   "text": "Figure 2: An orange rectangle labelled B, drawn for this fix"
+  },
+  {
+   "hash": "7b9e84e27b9b2722",
+   "key": "with both figures placed the closing",
+   "label": "text",
+   "ref": "#/texts/15",
+   "text": "With both figures placed, the closing section sums up what a"
+  },
+  {
+   "hash": "12d9fa0dcff8c39b",
+   "key": "3. conclusion",
+   "label": "section_header",
+   "level": 1,
+   "ref": "#/texts/16",
+   "text": "3. Conclusion"
+  },
+  {
+   "hash": "4b418b138376b525",
+   "key": "nothing in this document is copied",
+   "label": "text",
+   "ref": "#/texts/17",
+   "text": "Nothing in this document is copied from another source; the "
+  },
+  {
+   "hash": "56db7a10bd84e966",
+   "key": "",
+   "label": "picture",
+   "ref": "#/pictures/0",
+   "text": ""
+  },
+  {
+   "hash": "cc823a6740f8ee3a",
+   "key": "",
+   "label": "picture",
+   "ref": "#/pictures/1",
+   "text": ""
+  },
+  {
+   "hash": "",
+   "key": "",
+   "label": "picture",
+   "ref": "#/pictures/2",
+   "text": ""
+  },
+  {
+   "hash": "",
+   "key": "",
+   "label": "picture",
+   "ref": "#/pictures/3",
+   "text": ""
+  }
+ ],
+ "reading_text": "Field Notes on Two Figures\n1. Introduction\nThis document exists to check that a parser keeps two figures where the author put them: each figure sits between the paragraph that introduces it and its caption, under a numbered heading.\n1.1 Scope\nThe scope is deliberately narrow: two figures, two captions, one small hierarchy of headings.\n2. The Figures\n2.1 The First Figure\nThe first figure follows this paragraph. It is a plain blue rectangle with a white label, so any picture classifier should call it a graphic rather than a photograph.\nFigure 1: A blue rectangle labelled A, drawn for this fixture.\nAfter the first figure the text continues with an unrelated remark about the weather, which was mild for the season and made the field survey easier than the previous year.\n2.2 The Second Figure\nThe second figure follows this paragraph and is orange. It should not be merged with the first figure, and its caption must stay below it rather than above.\nFigure 2: An orange rectangle labelled B, drawn for this fixture.\nWith both figures placed, the closing section sums up what a reader should have seen: two headings at level one, three at level two, two pictures and two captions.\n3. Conclusion\nNothing in this document is copied from another source; the prose was written for the fixture.",
+ "schema": 1,
+ "status": "CONVERSION_STATUS_SUCCESS",
+ "tables": [],
+ "warnings": [
+  "empty-text:#/texts/8",
+  "empty-text:#/texts/13"
+ ]
+}

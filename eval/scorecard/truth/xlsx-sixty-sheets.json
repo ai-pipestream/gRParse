@@ -1,0 +1,131 @@
+{
+ "doc_id": "xlsx-sixty-sheets",
+ "source": "the generator eval/scorecard/fixtures/xlsx_sixty_sheets.py, cross-checked with an openpyxl dump",
+ "notes": [
+  "Sheets in order: Summary, Wide, Sheet03 ... Sheet60 (60 sheets); anchors are one distinctive cell text per sampled sheet in that order (sheet names are group names, which the reading text does not carry).",
+  "Summary: A1:C1 merged title (top-left cell given, row 0), bold header row 1, five data rows; Total is row 6.",
+  "Wide: 40 columns C01..C40, 12 numeric rows where cell (r, c) = r*100 + c with r, c 1-based; (12, 40) = 1240.",
+  "Sheet60: header Item/Quantity/Price, row 3 is item-60-3, 180, 270 (stored 270.0)."
+ ],
+ "headings": [],
+ "anchors": [
+  "Quarterly totals by region",
+  "C40",
+  "item-03-1",
+  "item-31-1",
+  "item-60-1"
+ ],
+ "tables": [
+  {
+   "table": "Summary",
+   "cells": [
+    [
+     0,
+     0,
+     "Quarterly totals by region"
+    ],
+    [
+     1,
+     0,
+     "Region"
+    ],
+    [
+     1,
+     1,
+     "Units"
+    ],
+    [
+     1,
+     2,
+     "Revenue"
+    ],
+    [
+     2,
+     0,
+     "North"
+    ],
+    [
+     2,
+     1,
+     "120"
+    ],
+    [
+     2,
+     2,
+     "2400.5"
+    ],
+    [
+     6,
+     0,
+     "Total"
+    ],
+    [
+     6,
+     2,
+     "8920.75"
+    ]
+   ]
+  },
+  {
+   "table": "Wide",
+   "cells": [
+    [
+     0,
+     0,
+     "C01"
+    ],
+    [
+     0,
+     39,
+     "C40"
+    ],
+    [
+     1,
+     0,
+     "101"
+    ],
+    [
+     1,
+     39,
+     "140"
+    ],
+    [
+     12,
+     39,
+     "1240"
+    ]
+   ]
+  },
+  {
+   "table": "Sheet60",
+   "cells": [
+    [
+     0,
+     0,
+     "Item"
+    ],
+    [
+     0,
+     2,
+     "Price"
+    ],
+    [
+     3,
+     0,
+     "item-60-3"
+    ],
+    [
+     3,
+     1,
+     "180"
+    ],
+    [
+     3,
+     2,
+     "270"
+    ]
+   ]
+  }
+ ],
+ "figures": []
+}

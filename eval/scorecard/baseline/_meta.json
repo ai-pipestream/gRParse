@@ -23,8 +23,248 @@
   "png-span-table",
   "png-bar-chart",
   "epub-great-gatsby",
-  "pdf-diffusion-paper"
+  "pdf-diffusion-paper",
+  "pdf-long-text",
+  "pdf-mixed",
+  "pdf-scanned-image",
+  "pdf-two-column",
+  "pptx-notes",
+  "docx-figures",
+  "xlsx-sixty-sheets",
+  "pdf-rotated-scan",
+  "docx-form",
+  "pdf-form"
  ],
+ "gates": {
+  "docx-figures": {
+   "latency_ms": 316.9,
+   "stable": false,
+   "truth": {
+    "truth_anchors_found": 1.0,
+    "truth_figures": 0.0,
+    "truth_heading_levels": 1.0,
+    "truth_headings": 1.0,
+    "truth_order": 1.0
+   }
+  },
+  "docx-form": {
+   "latency_ms": 246.8,
+   "stable": true,
+   "truth": {
+    "truth_anchors_found": 1.0,
+    "truth_heading_levels": 1.0,
+    "truth_headings": 1.0,
+    "truth_order": 1.0,
+    "truth_table_cells": 1.0
+   }
+  },
+  "docx-sample3": {
+   "latency_ms": 393.8,
+   "stable": false,
+   "truth": {
+    "truth_anchors_found": 1.0,
+    "truth_figures": 0.0,
+    "truth_heading_levels": 1.0,
+    "truth_headings": 1.0,
+    "truth_order": 1.0,
+    "truth_table_cells": 0.9744
+   }
+  },
+  "eml-multipart-attachments": {
+   "latency_ms": 4.2,
+   "stable": true
+  },
+  "eml-plain-text": {
+   "latency_ms": 2.5,
+   "stable": true
+  },
+  "epub-cover-first": {
+   "latency_ms": 1.2,
+   "stable": true
+  },
+  "epub-great-gatsby": {
+   "latency_ms": 25.4,
+   "stable": true,
+   "truth": {
+    "truth_anchors_found": 1.0,
+    "truth_heading_levels": 0.9,
+    "truth_headings": 0.8696,
+    "truth_order": 1.0
+   }
+  },
+  "epub-two-chapters": {
+   "latency_ms": 1.3,
+   "stable": true,
+   "truth": {
+    "truth_anchors_found": 1.0,
+    "truth_figures": 1.0,
+    "truth_heading_levels": 0.0,
+    "truth_headings": 1.0,
+    "truth_order": 1.0
+   }
+  },
+  "html-cdata-svg": {
+   "latency_ms": 0.9,
+   "stable": true
+  },
+  "html-deep-nesting": {
+   "latency_ms": 5.0,
+   "stable": true
+  },
+  "html-entities": {
+   "latency_ms": 0.7,
+   "stable": true,
+   "truth": {
+    "truth_anchors_found": 1.0,
+    "truth_headings": 0.0,
+    "truth_order": 1.0
+   }
+  },
+  "html-mathml-formula": {
+   "latency_ms": 0.8,
+   "stable": true
+  },
+  "md-streaming-markup": {
+   "latency_ms": 1.0,
+   "stable": true,
+   "truth": {
+    "truth_anchors_found": 1.0,
+    "truth_figures": 1.0,
+    "truth_heading_levels": 1.0,
+    "truth_headings": 1.0,
+    "truth_order": 1.0,
+    "truth_table_cells": 1.0
+   }
+  },
+  "pdf-diffusion-paper": {
+   "latency_ms": 422.5,
+   "stable": true,
+   "truth": {
+    "truth_anchors_found": 1.0,
+    "truth_figures": 0.3333,
+    "truth_heading_levels": 0.7,
+    "truth_headings": 0.6897,
+    "truth_order": 1.0,
+    "truth_table_cells": 0.9268
+   }
+  },
+  "pdf-dummy": {
+   "latency_ms": 8.3,
+   "stable": true
+  },
+  "pdf-form": {
+   "latency_ms": 10.1,
+   "stable": true,
+   "truth": {
+    "truth_anchors_found": 1.0,
+    "truth_heading_levels": 0.5,
+    "truth_headings": 1.0,
+    "truth_order": 1.0,
+    "truth_table_cells": 0.0645
+   }
+  },
+  "pdf-hello-text": {
+   "latency_ms": 11.1,
+   "stable": true
+  },
+  "pdf-long-text": {
+   "latency_ms": 56.1,
+   "stable": true
+  },
+  "pdf-mixed": {
+   "latency_ms": 155.3,
+   "stable": true
+  },
+  "pdf-rotated-scan": {
+   "latency_ms": 1563.8,
+   "stable": true,
+   "truth": {
+    "truth_anchors_found": 0.6,
+    "truth_heading_levels": 0.0,
+    "truth_headings": 0.8,
+    "truth_order": 0.3333
+   }
+  },
+  "pdf-scanned-image": {
+   "latency_ms": 125.8,
+   "stable": true
+  },
+  "pdf-two-column": {
+   "latency_ms": 82.0,
+   "stable": true,
+   "truth": {
+    "truth_anchors_found": 1.0,
+    "truth_heading_levels": 0.8333,
+    "truth_headings": 0.3871,
+    "truth_order": 0.9778
+   }
+  },
+  "png-bar-chart": {
+   "latency_ms": 39.1,
+   "stable": true
+  },
+  "png-report-page": {
+   "latency_ms": 594.9,
+   "stable": true
+  },
+  "png-span-table": {
+   "latency_ms": 208.5,
+   "stable": true
+  },
+  "pptx-notes": {
+   "latency_ms": 416.0,
+   "stable": true,
+   "truth": {
+    "truth_anchors_found": 1.0,
+    "truth_heading_levels": 0.25,
+    "truth_headings": 0.8,
+    "truth_order": 1.0,
+    "truth_table_cells": 1.0
+   }
+  },
+  "pptx-sample1": {
+   "latency_ms": 276.2,
+   "stable": true
+  },
+  "xlsx-formula-issue": {
+   "latency_ms": 240.0,
+   "stable": true
+  },
+  "xlsx-rows-with-gaps": {
+   "latency_ms": 207.5,
+   "stable": true
+  },
+  "xlsx-sample3": {
+   "latency_ms": 379.4,
+   "stable": true
+  },
+  "xlsx-sixty-sheets": {
+   "latency_ms": 5426.4,
+   "stable": false,
+   "truth": {
+    "truth_anchors_found": 1.0,
+    "truth_order": 1.0,
+    "truth_table_cells": 1.0
+   }
+  },
+  "xlsx-temperature": {
+   "latency_ms": 269.4,
+   "stable": true,
+   "truth": {
+    "truth_anchors_found": 1.0,
+    "truth_order": 1.0,
+    "truth_table_cells": 1.0
+   }
+  },
+  "xml-jats-article": {
+   "latency_ms": 1.2,
+   "stable": true
+  },
+  "xml-uspto-grant": {
+   "latency_ms": 0.8,
+   "stable": true
+  }
+ },
  "history": [
   {
    "documents": [
@@ -66,6 +306,84 @@
    "reason": "grpc-markup 8fce0e0 now projects an inline vector svg as a picture",
    "service": "gRParse grparse-0.1.0-cuda",
    "timestamp": "2026-09-01T00:25:23+00:00"
+  },
+  {
+   "documents": [
+    "pdf-long-text",
+    "pdf-mixed",
+    "pdf-scanned-image",
+    "pdf-two-column",
+    "pptx-notes",
+    "docx-figures",
+    "xlsx-sixty-sheets",
+    "pdf-rotated-scan",
+    "docx-form",
+    "pdf-form"
+   ],
+   "partial": true,
+   "reason": "new fixture",
+   "service": "gRParse grparse-0.1.0-cuda",
+   "timestamp": "2026-09-01T02:21:31+00:00"
+  },
+  {
+   "documents": [
+    "docx-sample3",
+    "xlsx-sample3",
+    "xlsx-temperature",
+    "xlsx-formula-issue",
+    "xlsx-rows-with-gaps",
+    "pptx-sample1",
+    "pdf-dummy",
+    "pdf-hello-text",
+    "html-cdata-svg",
+    "html-mathml-formula",
+    "html-entities",
+    "html-deep-nesting",
+    "md-streaming-markup",
+    "eml-plain-text",
+    "eml-multipart-attachments",
+    "xml-jats-article",
+    "xml-uspto-grant",
+    "epub-two-chapters",
+    "epub-cover-first",
+    "png-report-page",
+    "png-span-table",
+    "png-bar-chart",
+    "epub-great-gatsby",
+    "pdf-diffusion-paper",
+    "pdf-long-text",
+    "pdf-mixed",
+    "pdf-scanned-image",
+    "pdf-two-column",
+    "pptx-notes",
+    "docx-figures",
+    "xlsx-sixty-sheets",
+    "pdf-rotated-scan",
+    "docx-form",
+    "pdf-form"
+   ],
+   "gate_changes": [
+    {
+     "after": false,
+     "before": true,
+     "doc_id": "docx-figures",
+     "metric": "stable",
+     "reason": "observed"
+    }
+   ],
+   "partial": true,
+   "reason": "floors",
+   "service": "gRParse grparse-0.1.0-cuda",
+   "timestamp": "2026-09-01T02:21:55+00:00"
+  },
+  {
+   "documents": [
+    "pdf-two-column"
+   ],
+   "partial": true,
+   "reason": "floors: truth anchors reselected without em-dash openings",
+   "service": "gRParse grparse-0.1.0-cuda",
+   "timestamp": "2026-09-01T02:23:20+00:00"
   }
  ],
  "manifest": "eval/scorecard/corpus.json",

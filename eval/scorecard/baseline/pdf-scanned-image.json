@@ -1,0 +1,60 @@
+{
+ "agreement": {
+  "agreed": 0,
+  "claimed_fields": {
+   "grparse": 3
+  },
+  "collectors": [
+   "grparse"
+  ],
+  "conflicts": [],
+  "shared": 0,
+  "winners": {
+   "origin.binary_hash": "grparse",
+   "origin.filename": "grparse",
+   "origin.mimetype": "grparse"
+  }
+ },
+ "collectors": [
+  "grparse"
+ ],
+ "content_type": "application/pdf",
+ "counts": {
+  "body_items": 0,
+  "by_label": {},
+  "form_items": 0,
+  "furniture_items": 0,
+  "groups": 0,
+  "headings": 0,
+  "key_value_items": 0,
+  "orphans": 0,
+  "pages": 3,
+  "pictures": 0,
+  "reading_chars": 0,
+  "tables": 0,
+  "texts": 0
+ },
+ "doc_id": "pdf-scanned-image",
+ "filename": "scanned-image.pdf",
+ "format": "pdf",
+ "furniture_reading": [],
+ "groups": [],
+ "headings": [],
+ "markdown": {
+  "chars": 105,
+  "headings": 0,
+  "images": 0,
+  "sha256": "5f37d581c8ffc027dbd6f88ddd9267ba7ba2562785da0b5ad5594d53dbc90971",
+  "table_rows": 0
+ },
+ "origin_mimetype": "application/pdf",
+ "pictures": [],
+ "reading": [],
+ "reading_text": "",
+ "schema": 1,
+ "status": "CONVERSION_STATUS_SUCCESS",
+ "tables": [],
+ "warnings": [
+  "no-reading-text"
+ ]
+}

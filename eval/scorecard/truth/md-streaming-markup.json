@@ -1,0 +1,73 @@
+{
+ "doc_id": "md-streaming-markup",
+ "source": "the markdown source read directly",
+ "notes": [
+  "'# Streaming Markup' is the title (level 0); '## Blocks' is level 2, its nominal markdown level.",
+  "Anchors follow source order: paragraph, quote, bullets, nested ordered items, code, the footnote paragraph.",
+  "Table: header Name/Role, rows Ada/Analyst and Charles/Engine.",
+  "The image follows the table; the nearest preceding text anchor is the code block, and the next anchor is the footnote paragraph. Its title text is 'Plate 1' and its alt text 'The engine'."
+ ],
+ "headings": [
+  {
+   "text": "Streaming Markup",
+   "level": 0
+  },
+  {
+   "text": "Blocks",
+   "level": 2
+  }
+ ],
+ "anchors": [
+  "An opening paragraph with emphasis",
+  "A quoted sentence.",
+  "first bullet",
+  "second bullet",
+  "nested one",
+  "nested two",
+  "fn main()",
+  "A paragraph mentioning"
+ ],
+ "tables": [
+  {
+   "table": "Name/Role",
+   "cells": [
+    [
+     0,
+     0,
+     "Name"
+    ],
+    [
+     0,
+     1,
+     "Role"
+    ],
+    [
+     1,
+     0,
+     "Ada"
+    ],
+    [
+     1,
+     1,
+     "Analyst"
+    ],
+    [
+     2,
+     0,
+     "Charles"
+    ],
+    [
+     2,
+     1,
+     "Engine"
+    ]
+   ]
+  }
+ ],
+ "figures": [
+  {
+   "after": "fn main()",
+   "caption": "Plate 1"
+  }
+ ]
+}

@@ -1,0 +1,82 @@
+{
+ "doc_id": "pptx-notes",
+ "source": "the generator eval/scorecard/fixtures/pptx_notes.py, cross-checked with unzip -p ppt/slides/slide*.xml and ppt/notesSlides/*.xml",
+ "notes": [
+  "Four slides: title slide (level 0 title), bullets, table, closing; slide titles are level 1.",
+  "Anchors follow slide order; each slide's speaker note is expected after that slide's content and before the next slide's title, which is where a reader of the notes view sees it.",
+  "Table on slide 3: header row plus three data rows, four columns."
+ ],
+ "headings": [
+  {
+   "text": "Notes Fixture Deck",
+   "level": 0
+  },
+  {
+   "text": "What This Deck Covers",
+   "level": 1
+  },
+  {
+   "text": "Stations by Line",
+   "level": 1
+  },
+  {
+   "text": "Closing Slide Without Notes",
+   "level": 1
+  }
+ ],
+ "anchors": [
+  "A small deck with speaker notes",
+  "Welcome. This deck exists",
+  "Three kinds of slide content",
+  "a title with a subtitle",
+  "a four column table",
+  "Speaker notes on every content slide",
+  "notes are not on the slide canvas",
+  "Second slide notes",
+  "Third slide notes",
+  "Closing Slide Without Notes"
+ ],
+ "tables": [
+  {
+   "table": "Stations by Line",
+   "cells": [
+    [
+     0,
+     0,
+     "Station"
+    ],
+    [
+     0,
+     3,
+     "Platforms"
+    ],
+    [
+     1,
+     0,
+     "Harbor Point"
+    ],
+    [
+     2,
+     2,
+     "1925"
+    ],
+    [
+     3,
+     0,
+     "Orchard Hill"
+    ],
+    [
+     3,
+     1,
+     "Green"
+    ],
+    [
+     3,
+     3,
+     "2"
+    ]
+   ]
+  }
+ ],
+ "figures": []
+}

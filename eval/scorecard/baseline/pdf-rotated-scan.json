@@ -1,0 +1,194 @@
+{
+ "agreement": {
+  "agreed": 0,
+  "claimed_fields": {
+   "grparse": 3
+  },
+  "collectors": [
+   "grparse"
+  ],
+  "conflicts": [],
+  "shared": 0,
+  "winners": {
+   "origin.binary_hash": "grparse",
+   "origin.filename": "grparse",
+   "origin.mimetype": "grparse"
+  }
+ },
+ "collectors": [
+  "grparse"
+ ],
+ "content_type": "application/pdf",
+ "counts": {
+  "body_items": 14,
+  "by_label": {
+   "section_header": 3,
+   "text": 11
+  },
+  "form_items": 0,
+  "furniture_items": 2,
+  "groups": 0,
+  "headings": 3,
+  "key_value_items": 0,
+  "orphans": 0,
+  "pages": 1,
+  "pictures": 0,
+  "reading_chars": 4113,
+  "tables": 0,
+  "texts": 16
+ },
+ "doc_id": "pdf-rotated-scan",
+ "filename": "rotated-scan.pdf",
+ "format": "pdf",
+ "furniture_reading": [
+  {
+   "hash": "e8b8355262d0af49",
+   "key": "page 1",
+   "label": "text",
+   "ref": "#/texts/0",
+   "text": "Page 1"
+  },
+  {
+   "hash": "87176526d9971e2d",
+   "key": "the great gatsby a two column",
+   "label": "text",
+   "ref": "#/texts/15",
+   "text": "THE GREAT GATSBY, A TWO-COLUMN READING-ORDER FIXTURE"
+  }
+ ],
+ "groups": [],
+ "headings": [
+  {
+   "level": 3,
+   "ref": "#/texts/5",
+   "text": "1. West Egg"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/13",
+   "text": "F. Scott Fitzgerald (1925). Public domain text from the Project Gutenberg transcription."
+  },
+  {
+   "level": 1,
+   "ref": "#/texts/14",
+   "text": "The Great Gatsby, Chapter One, Reset in Two Columns"
+  }
+ ],
+ "markdown": {
+  "chars": 4248,
+  "headings": 3,
+  "images": 0,
+  "sha256": "880f8f653488e477ec03a6edee42f137ad44f222765f1487f477f8af3f144246",
+  "table_rows": 0
+ },
+ "origin_mimetype": "application/pdf",
+ "pictures": [],
+ "reading": [
+  {
+   "hash": "368fbf32d664cdc0",
+   "key": "the narrator gives his family history",
+   "label": "text",
+   "ref": "#/texts/1",
+   "text": "The narrator gives his family history as fact within the nov"
+  },
+  {
+   "hash": "373bc26c00f80122",
+   "key": "gives his name to this book",
+   "label": "text",
+   "ref": "#/texts/2",
+   "text": "gives his name to this book, was exempt from my reaction sio"
+  },
+  {
+   "hash": "aacc4ff6563641e5",
+   "key": "celled out unequally at birth bishly",
+   "label": "text",
+   "ref": "#/texts/3",
+   "text": "celled out unequally at birth. bishly repeat, a sense of the"
+  },
+  {
+   "hash": "638e03aed748cfbc",
+   "key": "just remember that all the people",
+   "label": "text",
+   "ref": "#/texts/4",
+   "text": "\"just remember that all the people in this world haven't"
+  },
+  {
+   "hash": "38371e711cd7b6d8",
+   "key": "1. west egg",
+   "label": "section_header",
+   "level": 3,
+   "ref": "#/texts/5",
+   "text": "1. West Egg"
+  },
+  {
+   "hash": "1a2159d00e63f967",
+   "key": "gave me some advice that i",
+   "label": "text",
+   "ref": "#/texts/6",
+   "text": "gave me some advice that I've been turning over in my mind e"
+  },
+  {
+   "hash": "599ea2151a3d8a09",
+   "key": "man more recently arrived than i",
+   "label": "text",
+   "ref": "#/texts/7",
+   "text": "man, more recently arrived than I, stopped me on the road. I"
+  },
+  {
+   "hash": "be62dfdc59fdcee7",
+   "key": "and i went out to the",
+   "label": "text",
+   "ref": "#/texts/8",
+   "text": "and I went out to the country alone. I had a dogat least I a"
+  },
+  {
+   "hash": "27152210e5770c75",
+   "key": "to go east and learn the",
+   "label": "text",
+   "ref": "#/texts/9",
+   "text": "to go East and learn the bond business. Everybody I knew one"
+  },
+  {
+   "hash": "76bea57bd1a6fafa",
+   "key": "twenty-two.",
+   "label": "text",
+   "ref": "#/texts/10",
+   "text": "twenty-two."
+  },
+  {
+   "hash": "6f639375a82b0ed0",
+   "key": "actual founder of my line was",
+   "label": "text",
+   "ref": "#/texts/11",
+   "text": "actual founder of my line was my grandfather's brother, who "
+  },
+  {
+   "hash": "9e5f6099e5a85414",
+   "key": "again no gatsby turned out all",
+   "label": "text",
+   "ref": "#/texts/12",
+   "text": "again. No-Gatsby turned out all right at the end; it is othe"
+  },
+  {
+   "hash": "9523c815c48ce112",
+   "key": "f scott fitzgerald 1925 public domain",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/13",
+   "text": "F. Scott Fitzgerald (1925). Public domain text from the Proj"
+  },
+  {
+   "hash": "9494a686c09b6b8c",
+   "key": "the great gatsby chapter one reset",
+   "label": "section_header",
+   "level": 1,
+   "ref": "#/texts/14",
+   "text": "The Great Gatsby, Chapter One, Reset in Two Columns"
+  }
+ ],
+ "reading_text": "The narrator gives his family history as fact within the novel; the Dukes of Buccleuch are a real Scottish title.\ngives his name to this book, was exempt from my reaction sionability which is dignified under the name of the “cresponsiveness had nothing to do with that flabby impresthat register earthquakes ten thousand miles away. This rewanted no more riotous excursions with privileged be in uniform and at a sort of moral attention forever; I about him, some heightened sensitivity to the promises of glimpses into the human heart. Only Gatsby, the man who point I don't care what it's founded on. When I came back on the hard rock or the wet marshes, but after a certain the admission that it has a limit. Conduct may be founded life, as if he were related to one of those intricate machines unaffected scorn. If personality is an unbroken series of from the East last autumn I felt that I wanted the world to Gatsby, who represented everything for which I have an\ncelled out unequally at birth. bishly repeat, a sense of the fundamental decencies is parcollege I was unjustly accused of being a politician, beappears in a normal person, and so it came about that in is quick to detect and attach itself to this quality when it I'm inclined to reserve all judgements, a habit that has ally communicative in a reserved way, and I understood lation was quivering on the horizon; for the intimate revemen. Most of the confidences were unsoughtexpress them, are usually plagiaristic and marred by obvilations of young men, or at least the terms in which they I realized by some unmistakable sign that an intimate revethe victim of not a few veteran bores. The abnormal mind opened up many curious natures to me and also made me He didn't say any more, but we've always been unusufrequently I\n\"just remember that all the people in this world haven't\n1. West Egg\ngave me some advice that I've been turning over in my mind ever since. In my younger and more vulnerable years my father\nman, more recently arrived than I, stopped me on the road. It was lonely for a day or so until one morning some\nand I went out to the country alone. I had a dogat least I a weather-beaten cardboard bungalow at eighty a month, but at the last minute the firm ordered him to Washington, cooked breakfast and muttered Finnish wisdom to herself over the electric stove. Dodge and a Finnish woman, who made my bed and lawns and friendly trees, so when a young man at the ofwas a warm season, and I had just left a country of wide had him for a few days until he ran away-and an old\nto go East and learn the bond business. Everybody I knew one more single man. All my aunts and uncles talked it like him-with special reference to the rather hard-boiled delays I came East, permanently, I thought, in the spring of Father agreed to finance me for a year, and after various was in the bond business, so I supposed it could support raid so thoroughly that I came back restless. Instead of bemigration known as the Great War. I enjoyed the counter- New Haven in 19i5, just a quarter of a century after my fapainting that hangs in father's office. I graduated from ther, and a little later I participated in that delayed Teutonic .I never saw this great-uncle, but I'm supposed to look\ntwenty-two.\nactual founder of my line was my grandfather's brother, who came here in fifty-one, sent a substitute to the Civil raways are something of a clan, and we have a tradition War, and started the wholesale hardware business that my that we're descended from the Dukes of Buccleuch, but the father carries on today. My family have been prominent, well-to-do people in\nagain. No-Gatsby turned out all right at the end; it is other person and which it is not likely I shall ever find a romantic readiness such as I have never found in any abortive sorrows and short-winded elations of men. of his dreams that temporarily closed out my interest in the what preyed on Gatsby, what foul dust floated in the wake\nF. Scott Fitzgerald (1925). Public domain text from the Project Gutenberg transcription.\nThe Great Gatsby, Chapter One, Reset in Two Columns",
+ "schema": 1,
+ "status": "CONVERSION_STATUS_SUCCESS",
+ "tables": [],
+ "warnings": []
+}

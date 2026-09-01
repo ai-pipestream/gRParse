@@ -1,0 +1,51 @@
+{
+ "doc_id": "xlsx-temperature",
+ "source": "openpyxl dump of Sheet1 (A1:B3)",
+ "notes": [
+  "One sheet, header row label/value, two data rows; B2 is 22.2222 and B3 is 72 (stored as 72.0, General format).",
+  "Anchors are cell texts in row order (sheet names are group names, which the reading text does not carry)."
+ ],
+ "headings": [],
+ "anchors": [
+  "celsius",
+  "fahrenheit"
+ ],
+ "tables": [
+  {
+   "table": "Sheet1",
+   "cells": [
+    [
+     0,
+     0,
+     "label"
+    ],
+    [
+     0,
+     1,
+     "value"
+    ],
+    [
+     1,
+     0,
+     "celsius"
+    ],
+    [
+     1,
+     1,
+     "22.2222"
+    ],
+    [
+     2,
+     0,
+     "fahrenheit"
+    ],
+    [
+     2,
+     1,
+     "72"
+    ]
+   ]
+  }
+ ],
+ "figures": []
+}

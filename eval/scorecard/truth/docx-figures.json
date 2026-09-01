@@ -1,0 +1,60 @@
+{
+ "doc_id": "docx-figures",
+ "source": "the generator eval/scorecard/fixtures/docx_figures.py, cross-checked with unzip -p word/document.xml",
+ "notes": [
+  "Title style paragraph is level 0; '1.', '2.', '3.' are Heading 1 (level 1); '1.1', '2.1', '2.2' are Heading 2.",
+  "Each figure is an inline picture in its own paragraph directly after the paragraph that introduces it, followed by a Caption-style paragraph."
+ ],
+ "headings": [
+  {
+   "text": "Field Notes on Two Figures",
+   "level": 0
+  },
+  {
+   "text": "1. Introduction",
+   "level": 1
+  },
+  {
+   "text": "1.1 Scope",
+   "level": 2
+  },
+  {
+   "text": "2. The Figures",
+   "level": 1
+  },
+  {
+   "text": "2.1 The First Figure",
+   "level": 2
+  },
+  {
+   "text": "2.2 The Second Figure",
+   "level": 2
+  },
+  {
+   "text": "3. Conclusion",
+   "level": 1
+  }
+ ],
+ "anchors": [
+  "This document exists to check",
+  "The scope is deliberately narrow",
+  "The first figure follows this paragraph",
+  "Figure 1: A blue rectangle",
+  "After the first figure the text continues",
+  "The second figure follows this paragraph",
+  "Figure 2: An orange rectangle",
+  "With both figures placed",
+  "Nothing in this document is copied"
+ ],
+ "tables": [],
+ "figures": [
+  {
+   "after": "The first figure follows this paragraph",
+   "caption": "Figure 1: A blue rectangle labelled A"
+  },
+  {
+   "after": "The second figure follows this paragraph",
+   "caption": "Figure 2: An orange rectangle labelled B"
+  }
+ ]
+}

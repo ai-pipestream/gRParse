@@ -63,3 +63,16 @@ def test_merge_does_not_mutate_inputs() -> None:
     before = (list(base["documents"]), list(base["history"]), dict(base["skipped"]))
     merge_meta(base, dict(PARTIAL, documents=["z"]), partial=True, timestamp="t1")
     assert (base["documents"], base["history"], base["skipped"]) == before
+
+
+def test_gates_survive_partial_and_full_records_and_upsert() -> None:
+    base = merge_meta(None, dict(FULL, gates={"a": {"truth": {"truth_order": 0.9}, "latency_ms": 10.0}}), partial=False, timestamp="t0")
+    assert base["gates"] == {"a": {"truth": {"truth_order": 0.9}, "latency_ms": 10.0}}
+    run = dict(PARTIAL, gates={"b": {"stable": False}},
+               gate_changes=[{"doc_id": "b", "metric": "stable", "before": True, "after": False, "reason": "observed"}])
+    meta = merge_meta(base, run, partial=True, timestamp="t1")
+    assert meta["gates"] == {"a": {"truth": {"truth_order": 0.9}, "latency_ms": 10.0}, "b": {"stable": False}}
+    assert meta["history"][1]["gate_changes"] == run["gate_changes"]
+    assert "gate_changes" not in meta["history"][0]
+    fresh = merge_meta(meta, dict(FULL, gates={"a": {"latency_ms": 20.0}}), partial=False, timestamp="t2")
+    assert fresh["gates"] == {"a": {"latency_ms": 20.0}, "b": {"stable": False}}, "a full record keeps other rows and replaces recorded ones"
