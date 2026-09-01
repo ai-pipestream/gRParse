@@ -196,71 +196,87 @@ std::string normalized_uri(const std::string& uri) {
   return scheme + "://" + authority + tail;
 }
 
+namespace {
+
+// The canonical spelling of every tag the vocabulary names. A tag the table
+// does not list (unset, unspecified, or one this build does not know) has no
+// canonical spelling and reports none.
+struct CodeLanguageName {
+  docv1::CodeLanguageLabel tag;
+  std::string_view name;
+};
+
+constexpr CodeLanguageName kCodeLanguageNames[] = {
+    {docv1::CODE_LANGUAGE_LABEL_ADA, "Ada"},
+    {docv1::CODE_LANGUAGE_LABEL_AWK, "Awk"},
+    {docv1::CODE_LANGUAGE_LABEL_BASH, "Bash"},
+    {docv1::CODE_LANGUAGE_LABEL_BC, "bc"},
+    {docv1::CODE_LANGUAGE_LABEL_C, "C"},
+    {docv1::CODE_LANGUAGE_LABEL_C_SHARP, "C#"},
+    {docv1::CODE_LANGUAGE_LABEL_C_PLUS_PLUS, "C++"},
+    {docv1::CODE_LANGUAGE_LABEL_CMAKE, "CMake"},
+    {docv1::CODE_LANGUAGE_LABEL_COBOL, "COBOL"},
+    {docv1::CODE_LANGUAGE_LABEL_CSS, "CSS"},
+    {docv1::CODE_LANGUAGE_LABEL_CEYLON, "Ceylon"},
+    {docv1::CODE_LANGUAGE_LABEL_CLOJURE, "Clojure"},
+    {docv1::CODE_LANGUAGE_LABEL_CRYSTAL, "Crystal"},
+    {docv1::CODE_LANGUAGE_LABEL_CUDA, "Cuda"},
+    {docv1::CODE_LANGUAGE_LABEL_CYTHON, "Cython"},
+    {docv1::CODE_LANGUAGE_LABEL_D, "D"},
+    {docv1::CODE_LANGUAGE_LABEL_DART, "Dart"},
+    {docv1::CODE_LANGUAGE_LABEL_DC, "dc"},
+    {docv1::CODE_LANGUAGE_LABEL_DOCKERFILE, "Dockerfile"},
+    {docv1::CODE_LANGUAGE_LABEL_ELIXIR, "Elixir"},
+    {docv1::CODE_LANGUAGE_LABEL_ERLANG, "Erlang"},
+    {docv1::CODE_LANGUAGE_LABEL_FORTRAN, "FORTRAN"},
+    {docv1::CODE_LANGUAGE_LABEL_FORTH, "Forth"},
+    {docv1::CODE_LANGUAGE_LABEL_GO, "Go"},
+    {docv1::CODE_LANGUAGE_LABEL_HTML, "HTML"},
+    {docv1::CODE_LANGUAGE_LABEL_HASKELL, "Haskell"},
+    {docv1::CODE_LANGUAGE_LABEL_HAXE, "Haxe"},
+    {docv1::CODE_LANGUAGE_LABEL_JAVA, "Java"},
+    {docv1::CODE_LANGUAGE_LABEL_JAVASCRIPT, "JavaScript"},
+    {docv1::CODE_LANGUAGE_LABEL_JSON, "JSON"},
+    {docv1::CODE_LANGUAGE_LABEL_JULIA, "Julia"},
+    {docv1::CODE_LANGUAGE_LABEL_KOTLIN, "Kotlin"},
+    {docv1::CODE_LANGUAGE_LABEL_LISP, "Lisp"},
+    {docv1::CODE_LANGUAGE_LABEL_LUA, "Lua"},
+    {docv1::CODE_LANGUAGE_LABEL_MATLAB, "Matlab"},
+    {docv1::CODE_LANGUAGE_LABEL_MOONSCRIPT, "MoonScript"},
+    {docv1::CODE_LANGUAGE_LABEL_NIM, "Nim"},
+    {docv1::CODE_LANGUAGE_LABEL_OCAML, "OCaml"},
+    {docv1::CODE_LANGUAGE_LABEL_OBJECTIVEC, "ObjectiveC"},
+    {docv1::CODE_LANGUAGE_LABEL_OCTAVE, "Octave"},
+    {docv1::CODE_LANGUAGE_LABEL_PHP, "PHP"},
+    {docv1::CODE_LANGUAGE_LABEL_PASCAL, "Pascal"},
+    {docv1::CODE_LANGUAGE_LABEL_PERL, "Perl"},
+    {docv1::CODE_LANGUAGE_LABEL_PROLOG, "Prolog"},
+    {docv1::CODE_LANGUAGE_LABEL_PYTHON, "Python"},
+    {docv1::CODE_LANGUAGE_LABEL_RACKET, "Racket"},
+    {docv1::CODE_LANGUAGE_LABEL_RUBY, "Ruby"},
+    {docv1::CODE_LANGUAGE_LABEL_RUST, "Rust"},
+    {docv1::CODE_LANGUAGE_LABEL_SML, "SML"},
+    {docv1::CODE_LANGUAGE_LABEL_SQL, "SQL"},
+    {docv1::CODE_LANGUAGE_LABEL_SCALA, "Scala"},
+    {docv1::CODE_LANGUAGE_LABEL_SCHEME, "Scheme"},
+    {docv1::CODE_LANGUAGE_LABEL_SWIFT, "Swift"},
+    {docv1::CODE_LANGUAGE_LABEL_TYPESCRIPT, "TypeScript"},
+    {docv1::CODE_LANGUAGE_LABEL_UNKNOWN, "unknown"},
+    {docv1::CODE_LANGUAGE_LABEL_VISUALBASIC, "VisualBasic"},
+    {docv1::CODE_LANGUAGE_LABEL_XML, "XML"},
+    {docv1::CODE_LANGUAGE_LABEL_YAML, "YAML"},
+    {docv1::CODE_LANGUAGE_LABEL_LATEX, "Latex"},
+    {docv1::CODE_LANGUAGE_LABEL_TIKZ, "Tikz"},
+    {docv1::CODE_LANGUAGE_LABEL_DOCLANG, "DocLang"},
+};
+
+}  // namespace
+
 std::optional<std::string_view> code_language_string(docv1::CodeLanguageLabel tag) {
-  switch (tag) {
-    case docv1::CODE_LANGUAGE_LABEL_ADA: return "Ada";
-    case docv1::CODE_LANGUAGE_LABEL_AWK: return "Awk";
-    case docv1::CODE_LANGUAGE_LABEL_BASH: return "Bash";
-    case docv1::CODE_LANGUAGE_LABEL_BC: return "bc";
-    case docv1::CODE_LANGUAGE_LABEL_C: return "C";
-    case docv1::CODE_LANGUAGE_LABEL_C_SHARP: return "C#";
-    case docv1::CODE_LANGUAGE_LABEL_C_PLUS_PLUS: return "C++";
-    case docv1::CODE_LANGUAGE_LABEL_CMAKE: return "CMake";
-    case docv1::CODE_LANGUAGE_LABEL_COBOL: return "COBOL";
-    case docv1::CODE_LANGUAGE_LABEL_CSS: return "CSS";
-    case docv1::CODE_LANGUAGE_LABEL_CEYLON: return "Ceylon";
-    case docv1::CODE_LANGUAGE_LABEL_CLOJURE: return "Clojure";
-    case docv1::CODE_LANGUAGE_LABEL_CRYSTAL: return "Crystal";
-    case docv1::CODE_LANGUAGE_LABEL_CUDA: return "Cuda";
-    case docv1::CODE_LANGUAGE_LABEL_CYTHON: return "Cython";
-    case docv1::CODE_LANGUAGE_LABEL_D: return "D";
-    case docv1::CODE_LANGUAGE_LABEL_DART: return "Dart";
-    case docv1::CODE_LANGUAGE_LABEL_DC: return "dc";
-    case docv1::CODE_LANGUAGE_LABEL_DOCKERFILE: return "Dockerfile";
-    case docv1::CODE_LANGUAGE_LABEL_ELIXIR: return "Elixir";
-    case docv1::CODE_LANGUAGE_LABEL_ERLANG: return "Erlang";
-    case docv1::CODE_LANGUAGE_LABEL_FORTRAN: return "FORTRAN";
-    case docv1::CODE_LANGUAGE_LABEL_FORTH: return "Forth";
-    case docv1::CODE_LANGUAGE_LABEL_GO: return "Go";
-    case docv1::CODE_LANGUAGE_LABEL_HTML: return "HTML";
-    case docv1::CODE_LANGUAGE_LABEL_HASKELL: return "Haskell";
-    case docv1::CODE_LANGUAGE_LABEL_HAXE: return "Haxe";
-    case docv1::CODE_LANGUAGE_LABEL_JAVA: return "Java";
-    case docv1::CODE_LANGUAGE_LABEL_JAVASCRIPT: return "JavaScript";
-    case docv1::CODE_LANGUAGE_LABEL_JSON: return "JSON";
-    case docv1::CODE_LANGUAGE_LABEL_JULIA: return "Julia";
-    case docv1::CODE_LANGUAGE_LABEL_KOTLIN: return "Kotlin";
-    case docv1::CODE_LANGUAGE_LABEL_LISP: return "Lisp";
-    case docv1::CODE_LANGUAGE_LABEL_LUA: return "Lua";
-    case docv1::CODE_LANGUAGE_LABEL_MATLAB: return "Matlab";
-    case docv1::CODE_LANGUAGE_LABEL_MOONSCRIPT: return "MoonScript";
-    case docv1::CODE_LANGUAGE_LABEL_NIM: return "Nim";
-    case docv1::CODE_LANGUAGE_LABEL_OCAML: return "OCaml";
-    case docv1::CODE_LANGUAGE_LABEL_OBJECTIVEC: return "ObjectiveC";
-    case docv1::CODE_LANGUAGE_LABEL_OCTAVE: return "Octave";
-    case docv1::CODE_LANGUAGE_LABEL_PHP: return "PHP";
-    case docv1::CODE_LANGUAGE_LABEL_PASCAL: return "Pascal";
-    case docv1::CODE_LANGUAGE_LABEL_PERL: return "Perl";
-    case docv1::CODE_LANGUAGE_LABEL_PROLOG: return "Prolog";
-    case docv1::CODE_LANGUAGE_LABEL_PYTHON: return "Python";
-    case docv1::CODE_LANGUAGE_LABEL_RACKET: return "Racket";
-    case docv1::CODE_LANGUAGE_LABEL_RUBY: return "Ruby";
-    case docv1::CODE_LANGUAGE_LABEL_RUST: return "Rust";
-    case docv1::CODE_LANGUAGE_LABEL_SML: return "SML";
-    case docv1::CODE_LANGUAGE_LABEL_SQL: return "SQL";
-    case docv1::CODE_LANGUAGE_LABEL_SCALA: return "Scala";
-    case docv1::CODE_LANGUAGE_LABEL_SCHEME: return "Scheme";
-    case docv1::CODE_LANGUAGE_LABEL_SWIFT: return "Swift";
-    case docv1::CODE_LANGUAGE_LABEL_TYPESCRIPT: return "TypeScript";
-    case docv1::CODE_LANGUAGE_LABEL_UNKNOWN: return "unknown";
-    case docv1::CODE_LANGUAGE_LABEL_VISUALBASIC: return "VisualBasic";
-    case docv1::CODE_LANGUAGE_LABEL_XML: return "XML";
-    case docv1::CODE_LANGUAGE_LABEL_YAML: return "YAML";
-    case docv1::CODE_LANGUAGE_LABEL_LATEX: return "Latex";
-    case docv1::CODE_LANGUAGE_LABEL_TIKZ: return "Tikz";
-    case docv1::CODE_LANGUAGE_LABEL_DOCLANG: return "DocLang";
-    default: return std::nullopt;
+  for (const auto& [known, name] : kCodeLanguageNames) {
+    if (known == tag) return name;
   }
+  return std::nullopt;
 }
 
 // The BCP-47 code is the lowercase suffix of the proto enum name.
