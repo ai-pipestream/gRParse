@@ -108,7 +108,8 @@ class GrparseClient:
         return self.convert_bytes(path.read_bytes(), filename or path.name)
 
     def convert_bytes(self, data: bytes, filename: str, *, formats: tuple[str, ...] = DEFAULT_FORMATS,
-                      collectors: tuple[str, ...] = (), ebcdic_layout_json: bytes | None = None) -> ConvertResult:
+                      collectors: tuple[str, ...] = (), ebcdic_layout_json: bytes | None = None,
+                      timeout: float | None = None) -> ConvertResult:
         """One ConvertSource over in-memory bytes (nothing touches disk). ``formats``
         are OutputFormat names without the prefix, ``collectors`` Collector enum
         names without theirs; RPC failures are returned, not raised."""
@@ -129,7 +130,7 @@ class GrparseClient:
             request.request.options.ebcdic_layout_json = ebcdic_layout_json
         started = time.monotonic()
         try:
-            response = self._stub.ConvertSource(request, timeout=CONVERT_TIMEOUT_SECONDS)
+            response = self._stub.ConvertSource(request, timeout=timeout or CONVERT_TIMEOUT_SECONDS)
         except grpc.RpcError as error:
             elapsed = (time.monotonic() - started) * 1000.0
             if error.code() == grpc.StatusCode.UNAVAILABLE:

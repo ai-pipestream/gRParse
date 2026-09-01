@@ -83,13 +83,27 @@ def convert_once(client: Any, data: bytes, name: str, kwargs: dict[str, Any]) ->
                              rpc_error=f"UNAVAILABLE: {str(error).split(': ', 1)[-1] or 'collector leg failed'}")
 
 
+def ran_out_of_time(result: Any, timeout: float) -> bool:
+    """The client deadline fired, or the parse used most of it: a repeat would
+    wait as long again for the same answer, so one such run is evidence enough."""
+    if (result.rpc_error or "").startswith("DEADLINE_EXCEEDED"):
+        return True
+    return result.elapsed_ms >= timeout * 1000.0 * 0.8
+
+
 def convert_object(client: Any, key: str, data: bytes, ext: str, *, repeat: int, sniff: bool,
-                   layout: bytes | None) -> tuple[list[Any], Any | None]:
+                   layout: bytes | None, timeout: float) -> tuple[list[Any], Any | None]:
     name = key.rsplit("/", 1)[-1]
-    kwargs: dict[str, Any] = {"formats": FORMATS}
+    kwargs: dict[str, Any] = {"formats": FORMATS, "timeout": timeout}
     if layout is not None:
         kwargs.update(collectors=("EBCDIC",), ebcdic_layout_json=layout)
-    runs = [convert_once(client, data, name, kwargs) for _ in range(repeat)]
+    runs: list[Any] = []
+    for _ in range(repeat):
+        runs.append(convert_once(client, data, name, kwargs))
+        if ran_out_of_time(runs[-1], timeout):
+            break
+    if ran_out_of_time(runs[0], timeout):
+        return runs, None
     sniffed = convert_once(client, data, strip_extension(name), kwargs) if sniff and ext else None
     return runs, sniffed
 
@@ -121,7 +135,8 @@ def evaluate_bucket(config: Config, source: ObjectSource, client: Any, results: 
         do_sniff = sniffed_per_ext.get(ext, 0) < config.sniff_per_extension and family != "ebcdic"
         if do_sniff:
             sniffed_per_ext[ext] = sniffed_per_ext.get(ext, 0) + 1
-        runs, sniff = convert_object(client, ref.key, data, ext, repeat=config.repeat, sniff=do_sniff, layout=layout)
+        runs, sniff = convert_object(client, ref.key, data, ext, repeat=config.repeat, sniff=do_sniff, layout=layout,
+                                     timeout=config.convert_timeout)
         first = runs[0]
         view = View(first.document) if first.document and not first.rpc_error else None
         ctx = ObjectContext(key=ref.key, ext=ext, family=family, size=ref.size,

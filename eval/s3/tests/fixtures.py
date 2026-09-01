@@ -299,11 +299,13 @@ class FakeClient:
             raise Unreachable("down")
         return ServiceInfo(name="gRParse", version="test", target=self.target)
 
-    def convert_bytes(self, data: bytes, filename: str, *, formats=(), collectors=(), ebcdic_layout_json=None):
+    def convert_bytes(self, data: bytes, filename: str, *, formats=(), collectors=(), ebcdic_layout_json=None,
+                      timeout=None):
         from scorecard.client import Unreachable
         from s3.formats import extension_of
 
         self.calls.append((filename, tuple(collectors), ebcdic_layout_json))
+        self.timeouts = getattr(self, "timeouts", []) + [timeout]
         if self.die_after is not None and len(self.calls) > self.die_after:
             raise Unreachable(f"{self.target}: failed to connect")
         ext = extension_of(filename)

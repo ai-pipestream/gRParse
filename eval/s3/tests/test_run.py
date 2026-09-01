@@ -117,3 +117,17 @@ def test_a_dead_service_ends_the_run_with_a_partial_report() -> None:
     code, report, markdown, *_ = _run(objects, {"docx": result(word_document())}, die_after=3)
     assert code == SKIP and report is not None
     assert report["totals"]["evaluated"] == 1 and any("cut short" in note for note in report["notes"])
+
+
+def test_a_parse_that_runs_out_of_time_is_not_repeated_or_sniffed() -> None:
+    objects = {"r/corners.xlsx": b"1", "r/b.docx": b"2"}
+    answers = {"xlsx": result(None, status="RPC_ERROR", rpc_error="DEADLINE_EXCEEDED: Deadline Exceeded"),
+               "docx": result(word_document())}
+    code, report, markdown, source, clients, _ = _run(objects, answers, env_extra={"EVAL_S3_CONVERT_TIMEOUT": "30"})
+    assert code == 1 and report["totals"]["evaluated"] == 2
+    names = [call[0] for call in clients[0].calls]
+    assert names.count("corners.xlsx") == 1 and "corners" not in names
+    assert names.count("b.docx") == 2 and "b" in names
+    assert set(clients[0].timeouts) == {30.0}
+    finding = next(f for f in report["findings"] if f["check"] == "parse_succeeds")
+    assert finding["keys"] == ["r/corners.xlsx"] and "DEADLINE_EXCEEDED" in finding["cause"]

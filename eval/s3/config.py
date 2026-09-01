@@ -62,6 +62,9 @@ class Config:
     sniff_per_extension: int
     # A skipped object (no EBCDIC layout beside it) fails the run.
     require: bool
+    # Client deadline per conversion, seconds. A document that runs past it
+    # is that object's failure; the run moves on instead of waiting.
+    convert_timeout: float
 
     @classmethod
     def from_env(cls, env: Mapping[str, str], repo_root: Path) -> "Config":
@@ -91,6 +94,7 @@ class Config:
             repeat=max(1, repeat),
             sniff_per_extension=_int(env, "EVAL_S3_SNIFF_PER_EXTENSION", 1) or 0,
             require=_flag(env, "EVAL_REQUIRE", False),
+            convert_timeout=float(_int(env, "EVAL_S3_CONVERT_TIMEOUT", 600) or 600),
         )
 
     def public_endpoint(self) -> str:

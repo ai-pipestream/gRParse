@@ -32,6 +32,8 @@ def test_aws_names_and_defaults() -> None:
     config = Config.from_env(env, Path("/repo"))
     assert config.out == Path("/repo/eval/out") and config.max_objects is None and config.repeat == 2
     assert config.sniff_per_extension == 1 and not config.require and config.target == "localhost:50051"
+    assert config.convert_timeout == 600.0
+    assert Config.from_env(dict(env, EVAL_S3_CONVERT_TIMEOUT="45"), Path("/repo")).convert_timeout == 45.0
 
 
 def test_bad_integer_is_named() -> None:
