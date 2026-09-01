@@ -149,11 +149,6 @@ void verify_two_equal_documents_render_the_same_bytes() {
   require(google::protobuf::util::MessageDifferencer::Equals(first_build, second_build),
           "the fixture itself is built the same way twice");
   for (const auto& [name, render] : renderers()) {
-    // The protobuf-JSON exports are left out here on purpose: they walk the
-    // wire maps in the order the map itself hands them over, so two equal
-    // documents can render different bytes. render_map_order_test.cpp holds
-    // that as its own case.
-    if (name == "json" || name == "yaml") continue;
     require_equal(render(first_build) == render(second_build), true,
                   name + " must not depend on where the document was allocated");
   }

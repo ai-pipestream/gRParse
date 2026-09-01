@@ -1,18 +1,12 @@
-// A deliberately red test: render_json (and render_yaml, which re-emits it)
-// must be a pure function of the document's CONTENT, not of the wire map
-// instance it happens to hold. Two documents that MessageDifferencer calls
-// equal render different bytes today, because the protobuf JSON printer walks
-// a map field in the order that map hands its entries over, and a proto map's
-// iteration order is a property of the instance.
-//
-// Expected behaviour: two equal documents render byte-identical JSON, the way
-// every other export in this service already does. Until that holds the test
-// stays red and is registered WILL_FAIL in CMakeLists.txt, so the suite stays
-// green while the gap stays named.
+// render_json (and render_yaml, which re-emits it) is a pure function of
+// the document's CONTENT, not of the wire map instance it happens to hold.
+// The protobuf JSON printer walks a map field in the order that map hands its
+// entries over, and a proto map's iteration order is a property of the
+// instance; render/json_key_order.h orders those objects afterwards. Two
+// documents MessageDifferencer calls equal must render identical bytes.
 //
 // The first case narrows it down: a document with no map field at all is
-// already stable, so the map is what moves.
-
+// stable without that pass, so the map is what moved.
 #include <string>
 
 #include <google/protobuf/util/message_differencer.h>

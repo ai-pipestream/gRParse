@@ -509,6 +509,7 @@ add_library(grparse_core STATIC
   src/epub_book.cpp
   src/document_render.cpp
   src/render/renderer_base.cpp
+  src/render/json_key_order.cpp
   src/render/load_normalization.cpp
   src/render/display_width.cpp
   src/render/markdown_text.cpp
@@ -856,8 +857,10 @@ if(BUILD_TESTING)
     doctags-renderer-test
     document-geometry-test
     html-renderer-test
+    json-key-order-test
     load-normalization-test
     render-determinism-test
+    render-map-order-test
     renderer-base-test
     target-step-test
     vtt-renderer-test)
@@ -867,24 +870,9 @@ if(BUILD_TESTING)
     target_link_libraries(${test_name} PRIVATE grparse_core grparse_flags)
     add_test(NAME ${test_name} COMMAND ${test_name})
   endforeach()
-  # Registered apart from the list above because it is deliberately red: the
-  # protobuf-JSON exports walk a wire map in the order that map instance hands
-  # its entries over, so two documents MessageDifferencer calls equal can
-  # render different bytes. WILL_FAIL keeps the suite green while the gap stays
-  # named; the file's header states the behaviour that would make it pass, and
-  # the property is turned off there rather than the test deleted.
-  set(GRPARSE_RED_TESTS render-map-order-test)
-  foreach(test_name IN LISTS GRPARSE_RED_TESTS)
-    string(REPLACE "-" "_" test_source "${test_name}")
-    add_executable(${test_name} "tests/${test_source}.cpp")
-    target_link_libraries(${test_name} PRIVATE grparse_core grparse_flags)
-    add_test(NAME ${test_name} COMMAND ${test_name})
-  endforeach()
-  list(APPEND GRPARSE_UNIT_TESTS ${GRPARSE_RED_TESTS})
   add_dependencies(grparse-tests ${GRPARSE_UNIT_TESTS})
   set_tests_properties(${GRPARSE_UNIT_TESTS} PROPERTIES
     TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
-  set_tests_properties(${GRPARSE_RED_TESTS} PROPERTIES WILL_FAIL TRUE)
   # The shared test helpers are reached as "support/check.h" from any test
   # source, whatever subdirectory it sits in.
   foreach(test_name IN LISTS GRPARSE_TESTS GRPARSE_DATA_TESTS GRPARSE_DRIFT_TESTS

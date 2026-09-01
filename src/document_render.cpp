@@ -6,9 +6,12 @@
 #include "grparse/document_render.h"
 
 #include <google/protobuf/util/json_util.h>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <yaml-cpp/yaml.h>
+
+#include "render/json_key_order.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 
@@ -23,7 +26,11 @@ std::string render_json(const docv1::Document& document) {
     throw std::runtime_error("document JSON export failed: " +
                              std::string(status.message()));
   }
-  return out;
+  // The printer writes map fields in the map instance's own order; the
+  // export is a function of the document's contents (render/json_key_order.h).
+  static const std::set<std::string> kMapFields =
+      render::map_field_names(docv1::Document::descriptor());
+  return render::sort_map_objects(out, kMapFields);
 }
 
 namespace {
