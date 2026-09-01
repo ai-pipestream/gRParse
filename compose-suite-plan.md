@@ -391,3 +391,55 @@
   - grpc-libreoffice: far-corner sparse sheets; grpc-markup: the 15 MB page and
     spanning header cells in the grid.
   - Corpus: add txt, csv, jpg and audio fixtures somewhere the seed can find them.
+
+### 2026-09-01 (night): cleanup and decomposition, four lanes, same output
+
+- Survey first: 21k lines of C++ across src/ and include/, 22k of tests. Smell
+  debt was near zero (no dead code, no TODOs, no stream flushes), so the work
+  was structural: four files had grown into everything-files (docling_map.cpp
+  3057 lines, document_parser_service.cpp 1752, markdown_renderer.cpp 1747,
+  confluence_storage.cpp 1401, then document_collectors.cpp 1174 and a
+  281-line main()), 56 of 60 test files repeated the same assertion helper,
+  and fourteen units had no test naming them. The Python under eval/ got a
+  ruff pass (imports, deprecated typing, ambiguous names) with the config
+  pinned in ruff.toml.
+- Four lanes in worktrees with disjoint ownership, none committing, each
+  building in its own cache scope and each holding the same identity gate:
+  every ctest, then the scorecard against a private CPU instance built from
+  its tree with the Changes section identical before and after (a pure
+  refactor moves nothing; nobody re-records). Results:
+  - Mapper: DoclingMapper is an event router over grparse::office_fold, one
+    unit per plane with its own pending state, an arena, an anchor index and
+    the integrity walk; 36 files, largest 484 lines, no translation-unit
+    fallback.
+  - Service: five units for the parser service (endpoints, shared support,
+    per-source pipeline, unary, streaming), one collector leg per file under
+    src/collectors, main() 281 to 60 lines with every environment read in
+    server_config (names, defaults, messages and the startup log
+    byte-identical against the previous image), the sniff rules a flat table.
+  - Render: markdown as per-item emission over a structural walk with the
+    value, meta, label, table and text helpers in units of their own;
+    Confluence storage as six units; canonical JSON judged one flat
+    serialiser and split by layer only. Every renderer's output over the 36
+    golden documents identical before and after (180 files).
+  - Tests: tests/support/check.h and document_builder.h replace the repeated
+    helpers; 12 new test files (geometry, display width, load normalisation,
+    the html, doctags, doclang and vtt renderers, renderer_base, the sniff
+    table, target_step, determinism); 57 to 69 ctests.
+- What the new tests found: the protobuf JSON export (and the YAML that
+  re-emits it) depended on map iteration order, so two equal Documents could
+  render different bytes. Fixed with render/json_key_order (map objects sorted
+  by content, everything else copied through); the red test is a regular one,
+  70 ctests. Two smaller facts pinned as passing tests: `.vtt` is not in the
+  extension table although a comment says it is, and a bare "BM" is text.
+- Merge order mapper, render, tests, service; no conflicts. Outcome on the
+  merged image: 70 ctests on both build stages; scorecard 38/38 twice on the
+  local CUDA stack with the Changes section identical to the pre-refactor run
+  (the pdf-two-column committed-summary drift from the S3 lane); krick-1
+  38/38 twice and Playwright 50 passed, 1 skipped on the OpenVINO image; the
+  S3 eval on the refactored stack 34 of 1483 checks red on the same 32
+  objects with the same findings as before the refactor.
+- Follow-ons: document_repair.cpp (966) and document_assembly.cpp (888) are
+  the next largest units and were not touched; `.vtt` in the extension table;
+  the four bespoke test mains (chunking, the three model-gated tests) keep
+  their own shape.

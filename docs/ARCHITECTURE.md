@@ -267,6 +267,43 @@ overlapping the next page's device inference.
 - Stream page JSON with provenance
 - Backpressure, limits, pipeline metrics
 
+### Source layout (after the 2026-09-01 decomposition)
+
+One unit, one job; no source file over about 800 lines, no function over
+about 60 unless it is a flat table. Public headers under `include/grparse/`
+are the stable include paths; the units below sit behind them.
+
+- `src/main.cpp` wires the server; every environment read lives in
+  `src/server_config.{h,cpp}` (names, defaults and messages are the contract).
+- Unary and streaming surfaces: `src/document_parser_service.cpp` (unary),
+  `src/document_streaming_service.cpp`, `src/source_parse.{h,cpp}` (the
+  per-source pipeline both share), `src/parse_support.{h,cpp}`,
+  `src/collector_endpoints.cpp` (channels and their message limits).
+- Collector legs: `src/collectors/<name>.cpp`, one per remote collector, over
+  `src/collectors/collector_support.{h,cpp}` (stream drain, status text,
+  deadlines).
+- Office fold: `DoclingMapper` (`src/docling_map.cpp`) routes office stream
+  events to `src/office_fold/`: `arena` (the growing Document and its append
+  primitives), one fold per plane (`page_fold`, `writer_fold`, `shape_fold`,
+  `sheet_fold`, `chart_fold`, `form_fold`, `annotation_fold`, `object_fold`),
+  `anchor_index` (the character-space resolution pass), `integrity_check`.
+- Exports: `src/render/`, one renderer per format over `renderer_base`;
+  markdown is `markdown_renderer` (per-item emission) over `markdown_walk`
+  (structure) with `value_repr`, `meta_repr`, `text_class`, `table_markdown`,
+  `markdown_text`; canonical JSON is `canonical_json_renderer` over
+  `canonical_json_parts` and `canonical_json_labels`; the protobuf JSON and
+  YAML exports (`src/document_render.cpp`) run through `json_key_order` so map
+  fields print in content order.
+- Confluence storage format: `src/confluence/` (text helpers, node types,
+  parser, block rules, table placement, the Document builder) behind
+  `src/confluence_storage.cpp`.
+- Mimetype: `src/content_sniff.cpp`, a flat signature table walked in
+  precedence order plus the extension table.
+- Tests: `tests/<unit>_test.cpp`, plain executables over
+  `tests/support/check.h` (`require`, `require_equal`, `run_test_main`) and
+  `tests/support/document_builder.h`; registered in blocks in
+  `CMakeLists.txt` under the `grparse` label.
+
 ## Java ownership (external; tracked with `area:java` here)
 
 - Consume page stream / final document JSON
