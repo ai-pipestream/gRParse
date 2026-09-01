@@ -306,3 +306,88 @@
     uploads; CI runs neither the e2e suite nor the scorecard.
   - Proto (fleet sweep): a typed multi-series bar slot, chart title on `ChartMeta`,
     `CollectorClaim.warnings`, `TextItemBase.page_style_name`, `GroupItem.slide`.
+
+### 2026-09-01 (later): dependency refresh, source stamp, S3 corpus eval
+
+- Dependencies (52c9c18, 51c0320): gRPC 1.83.1, OpenCV 4.14.0, express 5.2,
+  @grpc/grpc-js 1.14, TypeScript 7.0, node 26, nginx 1.31, the GitHub actions
+  majors. Unchanged on purpose: ONNX Runtime 1.29.0 and onnxruntime-openvino
+  1.24.1 (the newest each provider publishes), poppler 26.08, CUDA 13.3.1 on
+  ubuntu 26.04, zxing, yaml-cpp, simdutf, miniz, Playwright. OpenCV 5 is
+  deferred: it changes pixels under the detectors and would move baselines
+  for no gain in output. All three images green, 49 ctests each, scorecard
+  unchanged before and after.
+- Source stamp (258cc86): `scripts/stamp-sources.sh` keeps a content manifest
+  of every first-party source under the cache mount and touches whatever
+  changed since the previous build, so ninja can no longer keep an object
+  compiled from an older file. The stale-object trap that bit the OpenVINO
+  build during the rotation lane (one file recompiled, link failed) and again
+  during this lane is closed; a warm build logs `stamp: 0`, a fresh scope
+  `stamp: 173`.
+- S3 corpus eval (5577daa): `eval/s3/run.py` lists a bucket, reads each object
+  into memory, parses it twice through the unary API (and a sample per
+  extension once more under a name with no extension), and runs 25 named
+  shape checks over the merged Document, grouped by (parser type x file type).
+  Exit 1 on a failed check, 77 when the bucket or gRParse is unreachable; the
+  report groups failures by cause and names the owner of the known ones
+  (`eval/s3/owners.py`). `compose.stack.s3.yaml` adds RustFS under the `s3`
+  profile with credentials from the environment only;
+  `eval/s3/seed_from_workspace.py` seeds it from the sibling repositories'
+  fixtures (113 objects, 19 extensions, 11 repositories; no txt, csv, jpg or
+  audio fixtures exist anywhere in the family, so those routes are covered by
+  ctests only). 58 unit tests cover the tool.
+- What the first runs found on the stack as deployed: 92 of 1474 checks failed
+  across 68 objects. Seven were gRParse bugs, each fixed with a ctest (49 to
+  56): the merge attributed `created` field by field inside the Timestamp
+  (`created.seconds`, two collectors could interleave seconds and nanos); a
+  name with no extension routed by name alone, so docx, eml, md, html and xml
+  bytes died on the CV path; the generic `text/plain` sniff outranked a
+  specific text extension (`.csv`); Writer pictures without a paragraph slot
+  trailed the body (a page-23 figure after page 208); empty and hidden sheets
+  folded as 1 x 1 tables with no cells, and a header row over formula cells
+  was not marked; the integrity walk called line-addressed provenance
+  "page 0" and rejected `#/pages/N` targets; a leg failing with an empty
+  status message read "markup collector: ". After the fixes: 33 of 1470
+  checks red on 32 objects on the merged stack, twice, then 34 of 1483 on
+  the same 32 objects once the 15 MB page parsed (its ragged grids), every
+  one with an owner outside the lane (below). Nineteen scorecard baselines
+  re-recorded with a reason (the agreement section now names `created` and
+  `modified` whole).
+- Outcome on the final image (3c563e9 and after): 57 ctests on both build
+  stages, the stamp recompiling only the touched files; scorecard 38/38 on
+  the local CUDA stack (twice on an idle stack; a run taken while the S3 pass
+  was loading the same parsers regressed on latency alone) and 38/38 twice
+  on krick-1; S3 eval 34/1483 as above; Playwright 50 passed, 1 skipped on
+  krick-1 and locally; the shell proxy spec asserts for real on both.
+- Two more from running it on the merged stack: with the status text fixed, the
+  15 MB WHATWG page's markup leg turned out to fail with RESOURCE_EXHAUSTED
+  ("Received message larger than max"): the collector channels kept gRPC's
+  4 MB default receive limit while the server accepts 520 MB. One constant
+  (`kMaxMessageBytes`) now sets both sides and every collector channel; ctest
+  `collector-channel-limits-test` pins it (57 ctests). And a parse that ran
+  past gRParse's own budget (calamine's far-corner sheet, about ten minutes)
+  was parsed twice more by the runner; `EVAL_S3_CONVERT_TIMEOUT` (600 s)
+  caps a conversion and a timed-out object is parsed once.
+- The shell proxy 400 after a streamed POST does not reproduce behind nginx
+  1.31 (the deps bump), on either stack, in five stream/request pairs; it did
+  behind 1.27. `e2e/specs/proxy.spec.ts` is a live assertion now and the
+  workaround request in the UI flows is gone. Seen once under load: grpc-markup
+  answered a UI parse of streaming-markup.md with no blocks while the S3 eval
+  was driving it (passes alone); the suite stays at one worker.
+- Kept red on purpose (the report names them): collector warnings ride
+  `custom_fields[collector_warnings:<name>]` because the Document has no typed
+  warnings slot (schema sweep); every WARC object fails because the stack
+  leaves `GRPARSE_FASTWARC_TARGET` unset (wire dialect); calamine's
+  `corners.xlsx` runs the office render past its timeout; grpc-markup emits
+  ragged grids for spanning header cells (`streaming-markup.html`, and 23
+  tables of the 15 MB WHATWG page once it parsed). The eval's own HTML
+  heading reader was a regex and took a `<h6>` quoted inside a `title`
+  attribute of that page for a heading; it is the stdlib tokenizer now.
+- Follow-ons, by owner:
+  - gRParse: typed `Document.warnings` to retire the keyed warnings; a way to
+    judge blank rasters without the page preview; the e2e suite still has no
+    S3 row.
+  - fastwarc-grpc: reconcile the vendored `fastwarc.v1` dialect with the image.
+  - grpc-libreoffice: far-corner sparse sheets; grpc-markup: the 15 MB page and
+    spanning header cells in the grid.
+  - Corpus: add txt, csv, jpg and audio fixtures somewhere the seed can find them.
