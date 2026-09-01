@@ -119,7 +119,11 @@ std::string join_hyphenated_fragments(std::string_view head, std::string_view ta
 // layout explains the split: the sibling sits on the next page and the
 // item had run into the lower half of its own page, or the sibling sits on
 // the same page across a column break (starting at least a line above the
-// item's last line, wholly to its right, with a real word first). Texts join
+// item's last line, wholly to its right). Either way the sibling's first
+// token must be a word of two letters or more (a lone letter is an
+// enumerator), and a short sibling (under 6 words) ending in terminal
+// punctuation after a long item (12 words or more) is a caption-like
+// fragment, not a continuation. Texts join
 // with a space (or by the hyphen rule), provenance, sources, spans and
 // comments carry over, and the sibling is retired from the body and the
 // texts arena with every reference renumbered. Only direct body children

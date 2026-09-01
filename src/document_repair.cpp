@@ -641,23 +641,51 @@ std::optional<Placement> placement_on(const docv1::TextItemBase& item, int page,
 // is a plausible reason for it to stop mid-sentence.
 constexpr double kPageBreakDepth = 0.5;
 
+// The tail's first token must be a word of two letters or more: a lone
+// letter ("b", "(b)") is an enumerator, not the rest of a sentence.
+constexpr size_t kMinimumContinuationWord = 2;
+// A tail of fewer words than this that ends in terminal punctuation, after
+// a head of at least kLongParagraphWords, is a caption-like fragment the
+// layout emitted next (a sub-figure label, a table note), not the rest of
+// the head's sentence.
+constexpr int kFragmentWords = 6;
+constexpr int kLongParagraphWords = 12;
+
+int word_count(std::string_view text) {
+  int words = 0;
+  bool in_word = false;
+  for (const char c : text) {
+    const bool space = is_ascii_space(c);
+    if (!space && !in_word) ++words;
+    in_word = !space;
+  }
+  return words;
+}
+
+// Whether the tail's text reads as the rest of the head's sentence at all,
+// before any geometry is consulted.
+bool reads_as_continuation(std::string_view head_text, std::string_view tail_text) {
+  const std::string_view tail = trim_left(tail_text);
+  if (leading_word(tail).size() < kMinimumContinuationWord) return false;
+  const std::string_view tail_trimmed = trim_right(tail);
+  const bool fragment = word_count(tail) < kFragmentWords && !tail_trimmed.empty() &&
+                        kTerminalPunctuation.contains(tail_trimmed.back());
+  return !(fragment && word_count(head_text) >= kLongParagraphWords);
+}
+
 // A column break on one page: the tail begins in a column to the right of
 // where the head stopped (no horizontal overlap) and at least one of the
 // head's line heights above it, so two captions or cells sharing a row
-// never read as one paragraph; and the tail's first token is a word of two
-// letters or more, because a lone letter ("b", "(b)") is an enumerator.
-constexpr size_t kMinimumContinuationWord = 2;
-
-bool column_break(const Placement& head_end, const Placement& tail_start,
-                  std::string_view tail_text) {
+// never read as one paragraph.
+bool column_break(const Placement& head_end, const Placement& tail_start) {
   const double line_height = std::max(head_end.bottom - head_end.top, 1.0);
   if (tail_start.top > head_end.top - line_height) return false;
-  if (tail_start.left < head_end.right) return false;
-  return leading_word(trim_left(tail_text)).size() >= kMinimumContinuationWord;
+  return tail_start.left >= head_end.right;
 }
 
-// Whether `tail` continues `head`: an open ending, a lowercase start, and
-// a layout that explains the split. Across a page break the head must have
+// Whether `tail` continues `head`: an open ending, a lowercase start, a
+// tail that reads as the rest of a sentence (see reads_as_continuation),
+// and a layout that explains the split. Across a page break the head must have
 // run into the lower half of its page; on one page the pair must sit
 // across a column break. Items with no page or box never merge: the rule
 // exists for page and column breaks and has nothing to say elsewhere.
@@ -665,13 +693,14 @@ bool continues(const docv1::TextItemBase& head, const docv1::TextItemBase& tail,
                const std::map<int, double>& heights) {
   if (head.children_size() > 0 || tail.children_size() > 0) return false;
   if (!ends_open(head.text()) || !starts_lowercase(tail.text())) return false;
+  if (!reads_as_continuation(head.text(), tail.text())) return false;
   const auto head_end = placement_on(head, last_page(head.prov()), heights, /*lowest=*/true);
   const auto tail_start = placement_on(tail, first_page(tail.prov()), heights, /*lowest=*/false);
   if (!head_end.has_value() || !tail_start.has_value()) return false;
   if (tail_start->page == head_end->page + 1) {
     return head_end->bottom >= head_end->height * kPageBreakDepth;
   }
-  if (tail_start->page == head_end->page) return column_break(*head_end, *tail_start, tail.text());
+  if (tail_start->page == head_end->page) return column_break(*head_end, *tail_start);
   return false;
 }
 

@@ -34,13 +34,37 @@ docv1::Document base_document() {
   return document;
 }
 
-void add_pages(docv1::Document* document, int count, double height = 1000.0) {
+void add_pages(docv1::Document* document, int count, double height = 1000.0,
+               double width = 800.0) {
   for (int page = 1; page <= count; ++page) {
     auto& item = (*document->mutable_pages())[page];
     item.set_page_no(page);
-    item.mutable_size()->set_width(800.0);
+    item.mutable_size()->set_width(width);
     item.mutable_size()->set_height(height);
   }
+}
+
+// A body-level TextItem whose box is given edge by edge in the stated
+// coordinate origin, the way a collector's provenance arrives.
+std::string add_prose_box(docv1::Document* document, const std::string& text, int page,
+                          double l, double t, double r, double b, docv1::CoordOrigin origin) {
+  const std::string ref = "#/texts/" + std::to_string(document->texts_size());
+  auto* base = document->add_texts()->mutable_text()->mutable_base();
+  base->set_self_ref(ref);
+  base->mutable_parent()->set_ref("#/body");
+  base->set_label(docv1::DOC_ITEM_LABEL_TEXT);
+  base->set_content_layer(docv1::CONTENT_LAYER_BODY);
+  base->set_text(text);
+  auto* prov = base->add_prov();
+  prov->set_page_no(page);
+  auto* box = prov->mutable_bbox();
+  box->set_l(l);
+  box->set_t(t);
+  box->set_r(r);
+  box->set_b(b);
+  box->set_coord_origin(origin);
+  document->mutable_body()->add_children()->set_ref(ref);
+  return ref;
 }
 
 void place(docv1::TextItemBase* base, int page, double top, double bottom) {
@@ -380,6 +404,52 @@ void verify_continuation_merges_within_a_page() {
           "same-page neighbours join");
 }
 
+// The live case: a paragraph cut mid-sentence at the foot of page 2 (a
+// bottom-left box on a 612x792 page) followed on page 3 by a sub-figure
+// caption the layout model emitted as the next body item.
+constexpr const char* kLongParagraph =
+    "Text generation is a discrete generation task, where the model must choose one token "
+    "at every step and the diffusion process has to be defined over a discrete space, where t";
+
+void verify_next_page_caption_does_not_merge() {
+  {
+    docv1::Document document = base_document();
+    add_pages(&document, 3, 792.0, 612.0);
+    add_prose_box(&document, kLongParagraph, 2, 108.0, 153.0, 504.0, 60.6,
+                  docv1::COORD_ORIGIN_BOTTOMLEFT);
+    add_prose_box(&document, "b Regular reverse diffusion.", 3, 120.9, 684.8, 312.8, 669.9,
+                  docv1::COORD_ORIGIN_BOTTOMLEFT);
+    require(grparse::merge_continuations(&document, {}) == 0,
+            "a sub-figure caption on the next page is not the rest of the sentence");
+  }
+  {
+    docv1::Document document = base_document();
+    add_pages(&document, 3, 792.0, 612.0);
+    add_prose_box(&document, kLongParagraph, 2, 108.0, 153.0, 504.0, 60.6,
+                  docv1::COORD_ORIGIN_BOTTOMLEFT);
+    add_prose_box(&document, "regular reverse diffusion.", 3, 120.9, 684.8, 312.8, 669.9,
+                  docv1::COORD_ORIGIN_BOTTOMLEFT);
+    require(grparse::merge_continuations(&document, {}) == 0,
+            "a short punctuated fragment after a long paragraph is caption-like");
+  }
+  {
+    docv1::Document document = base_document();
+    add_pages(&document, 3, 792.0, 612.0);
+    const std::string head = add_prose_box(&document, kLongParagraph, 2, 108.0, 153.0, 504.0,
+                                           60.6, docv1::COORD_ORIGIN_BOTTOMLEFT);
+    add_prose_box(&document,
+                  "denotes the step index and the transition kernel is a categorical "
+                  "distribution over the vocabulary.",
+                  3, 108.0, 700.0, 504.0, 620.0, docv1::COORD_ORIGIN_BOTTOMLEFT);
+    require(grparse::merge_continuations(&document, {}) == 1,
+            "the genuine rest of the sentence on the next page still merges");
+    require(base_at(document, head).text().ends_with("where t denotes the step index and the "
+                                                     "transition kernel is a categorical "
+                                                     "distribution over the vocabulary."),
+            "the bottom-left boxes read as one paragraph");
+  }
+}
+
 void verify_side_by_side_captions_do_not_merge() {
   {
     docv1::Document document = base_document();
@@ -544,6 +614,7 @@ int main() {
     verify_continuation_applies_hyphen_rule();
     verify_continuation_merges_within_a_page();
     verify_side_by_side_captions_do_not_merge();
+    verify_next_page_caption_does_not_merge();
     verify_continuation_not_merged();
     verify_pass_is_idempotent();
     verify_totals_accumulate();
