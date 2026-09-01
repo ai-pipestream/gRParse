@@ -2,6 +2,7 @@
 #include "grparse/schema_version.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
@@ -24,6 +25,8 @@
 #include "chunking/chunker.h"
 #include "grparse/base64.h"
 #include "grparse/collector_coordinator.h"
+#include "grparse/content_sniff.h"
+#include "grparse/data_totals.h"
 #include "grparse/confluence_storage.h"
 #include "grparse/document_assembly.h"
 #include "grparse/document_collectors.h"
@@ -58,54 +61,35 @@ uint64_t content_hash(const std::string& document) {
 #endif
 constexpr const char* kServiceVersion = "grparse-0.1.0-" GRPARSE_ORT_PACKAGE_NAME;
 
-std::string mimetype_for(const fs::path& path) {
-  const auto extension = path.extension().string();
-  // The wiki storage dialect names itself by suffix, and its own content
-  // type is what the document's origin must carry: a ".storage.xhtml" body
-  // is not the plain XHTML its final extension would otherwise claim.
-  if (confluence_storage_format(path.string(), std::string())) {
-    return kConfluenceStorageMimetype;
+// Stamps the origin's mimetype and what it rests on: the request's own
+// content type first, the bytes next, the name last (content_sniff.h).
+void stamp_origin_mimetype(const std::string& declared_content_type,
+                           const std::string& bytes, const fs::path& filename,
+                           pipestream::document::v1::DocumentOrigin* origin) {
+  const MimetypeResolution resolved = resolve_mimetype(declared_content_type, bytes, filename);
+  origin->set_mimetype(resolved.mimetype);
+  origin->set_mimetype_evidence(resolved.evidence);
+  if (resolved.evidence == "magic") {
+    data_counters().mimetypes_sniffed.fetch_add(1, std::memory_order_relaxed);
+    data_log("origin " + filename.string() + " mimetype " + resolved.mimetype +
+             " from the bytes");
   }
-  if (extension == ".pdf") return "application/pdf";
-  if (extension == ".jpg" || extension == ".jpeg") return "image/jpeg";
-  if (extension == ".tif" || extension == ".tiff") return "image/tiff";
-  if (extension == ".docx") {
-    return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+}
+
+// True when the office document is a spreadsheet by name or declared type.
+// Sheet renders are cell grids the layout detector reads as one figure, so
+// the CV enrichment leg is kept off them: every picture a sheet holds
+// reaches the document typed, through the office collector's own events.
+bool spreadsheet_format(const fs::path& filename, const std::string& content_type) {
+  std::string extension = filename.extension().string();
+  std::ranges::transform(extension, extension.begin(),
+                         [](unsigned char c) { return std::tolower(c); });
+  for (const char* sheet : {".xls", ".xlsx", ".xlsm", ".xlsb", ".ods", ".ots", ".fods", ".csv"}) {
+    if (extension == sheet) return true;
   }
-  if (extension == ".xlsx") {
-    return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-  }
-  if (extension == ".pptx") {
-    return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
-  }
-  if (extension == ".odt") return "application/vnd.oasis.opendocument.text";
-  if (extension == ".ods") return "application/vnd.oasis.opendocument.spreadsheet";
-  if (extension == ".odp") return "application/vnd.oasis.opendocument.presentation";
-  if (extension == ".doc") return "application/msword";
-  if (extension == ".xls") return "application/vnd.ms-excel";
-  if (extension == ".ppt") return "application/vnd.ms-powerpoint";
-  if (extension == ".csv") return "text/csv";
-  if (extension == ".rtf") return "application/rtf";
-  if (extension == ".epub") return "application/epub+zip";
-  if (extension == ".eml") return "message/rfc822";
-  if (extension == ".msg") return "application/vnd.ms-outlook";
-  if (extension == ".xml" || extension == ".nxml" || extension == ".xbrl") {
-    return "application/xml";
-  }
-  if (extension == ".mp3") return "audio/mpeg";
-  if (extension == ".wav") return "audio/wav";
-  if (extension == ".m4a") return "audio/mp4";
-  if (extension == ".flac") return "audio/flac";
-  if (extension == ".ogg" || extension == ".oga" || extension == ".opus") {
-    return "audio/ogg";
-  }
-  if (extension == ".mp4" || extension == ".m4v") return "video/mp4";
-  if (extension == ".mkv") return "video/x-matroska";
-  if (extension == ".webm") return "video/webm";
-  if (extension == ".mov") return "video/quicktime";
-  if (extension == ".png") return "image/png";
-  // An extension nothing above recognizes must not masquerade as an image.
-  return "application/octet-stream";
+  std::string type = content_type;
+  std::ranges::transform(type, type.begin(), [](unsigned char c) { return std::tolower(c); });
+  return type.contains("spreadsheet") || type.contains("ms-excel") || type == "text/csv";
 }
 
 bool is_pdf(const std::string& content, const fs::path& filename) {
@@ -198,10 +182,18 @@ CollectorOutcome run_remote_collector(
     return outcome;
   }
   switch (id) {
-    case pipestream::parse::v1::COLLECTOR_LIBREOFFICE:
+    case pipestream::parse::v1::COLLECTOR_LIBREOFFICE: {
+      const bool spreadsheet = spreadsheet_format(filename, content_type);
+      if (spreadsheet && endpoints->cv_enrichment().detector != nullptr) {
+        data_counters().cv_enrichment_skipped.fetch_add(1, std::memory_order_relaxed);
+        data_log("office " + filename + ": spreadsheet, CV enrichment of sheet renders skipped");
+      }
       return collect_office_document(endpoints->channel(id), document_id,
                                      filename, content_type, bytes,
-                                     endpoints->cv_enrichment(), inbound_deadline);
+                                     spreadsheet ? OfficeCvEnrichment{}
+                                                 : endpoints->cv_enrichment(),
+                                     inbound_deadline);
+    }
     case pipestream::parse::v1::COLLECTOR_ASR:
       if (endpoints->asr_model().empty()) {
         outcome.error = "asr collector has no model configured (GRPARSE_ASR_MODEL)";
@@ -227,9 +219,18 @@ CollectorOutcome run_remote_collector(
               ? endpoints->channel(pipestream::parse::v1::COLLECTOR_MARKUP)
               : nullptr,
           bytes, inbound_deadline);
-    case pipestream::parse::v1::COLLECTOR_MARKUP:
-      return collect_markup_document(endpoints->channel(id), filename,
-                                     content_type, bytes, inbound_deadline);
+    case pipestream::parse::v1::COLLECTOR_MARKUP: {
+      CollectorOutcome outcome = collect_markup_document(
+          endpoints->channel(id), filename, content_type, bytes, inbound_deadline);
+      // An HTML page's <title> is the document's title; the collector
+      // records it as metadata only. Whole pages only: an epub chapter's
+      // title is the chapter's, and the book folds those on its own.
+      if (outcome.success &&
+          markup_format_for(filename, content_type) == pipestream::markup::v1::MARKUP_FORMAT_HTML) {
+        promote_source_title(&outcome.document);
+      }
+      return outcome;
+    }
     case pipestream::parse::v1::COLLECTOR_LOL_HTML:
       return collect_lol_html_document(endpoints->channel(id),
                                        lol_html_options_json, bytes, inbound_deadline);
@@ -506,7 +507,8 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     base.set_name(requested_name.filename().string());
     auto* origin = base.mutable_origin();
     origin->set_filename(requested_name.filename().string());
-    origin->set_mimetype(pdf ? "application/pdf" : mimetype_for(requested_name));
+    // A FileSource declares no content type; the bytes speak before the name.
+    stamp_origin_mimetype(std::string(), *bytes, requested_name, origin);
     origin->set_binary_hash(content_hash(*bytes));
     // The stamp is the service's own claim: attributed like any other, and
     // ranked above every collector's, so no collector's idea of the
@@ -1278,12 +1280,20 @@ class DocumentStreamReactor final
         return;
       }
     }
-    // Hash the request once, here, rather than under the reactor lock at
-    // completion: it is a linear pass over up to 500 MiB.
+    // Hash and sniff the request once, here, rather than under the reactor
+    // lock at completion: the hash is a linear pass over up to 500 MiB, and
+    // the bytes are gone by the time the completion event is built.
     const uint64_t hash = content_hash(*bytes);
+    const MimetypeResolution resolved = resolve_mimetype(content_type_, *bytes, filename_);
+    if (resolved.evidence == "magic") {
+      data_counters().mimetypes_sniffed.fetch_add(1, std::memory_order_relaxed);
+      data_log("origin " + filename_.string() + " mimetype " + resolved.mimetype +
+               " from the bytes");
+    }
     {
       std::lock_guard<std::mutex> lock(mutex_);
       document_bytes_hash_ = hash;
+      origin_mimetype_ = resolved;
     }
 
     for (const auto id : locals) {
@@ -1599,7 +1609,8 @@ class DocumentStreamReactor final
     auto* complete = event->message->mutable_complete();
     auto* origin = complete->mutable_origin();
     origin->set_filename(filename_.string());
-    origin->set_mimetype(pdf_ ? "application/pdf" : mimetype_for(filename_));
+    origin->set_mimetype(origin_mimetype_.mimetype);
+    origin->set_mimetype_evidence(origin_mimetype_.evidence);
     origin->set_binary_hash(document_bytes_hash_);
     *complete->mutable_collector_failures() = collector_failures_;
     if (!header_heights_.empty()) {
@@ -1657,6 +1668,9 @@ class DocumentStreamReactor final
   std::string content_type_;
   std::string bytes_;
   uint64_t document_bytes_hash_ = 0;
+  // The origin mimetype and its evidence, resolved while the bytes were
+  // still in hand.
+  MimetypeResolution origin_mimetype_;
   PageScheduler::Ticket ticket_;
   std::map<int, std::shared_ptr<const OcrPage>> completed_pages_;
   std::deque<std::unique_ptr<ArenaEvent>> events_;

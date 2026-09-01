@@ -804,6 +804,547 @@ void verify_integrity_errors_cover_the_form_arenas() {
               (clean.empty() ? std::string() : clean.front()));
 }
 
+// ---- charts and sheet headers ---------------------------------------------
+
+officev1::StreamPagesResponse sheet_event(int index, const std::string& name,
+                                          int used_end_row, int used_end_column) {
+  officev1::StreamPagesResponse event;
+  officev1::Sheet* sheet = event.mutable_sheet();
+  sheet->set_index(index);
+  sheet->set_name(name);
+  sheet->set_visible(true);
+  sheet->set_tab_color_rgb(-1);
+  sheet->set_used_end_row(used_end_row);
+  sheet->set_used_end_column(used_end_column);
+  return event;
+}
+
+officev1::SheetCell* text_cell(officev1::SheetRow* row, int column,
+                               const std::string& text) {
+  officev1::SheetCell* cell = row->add_cells();
+  cell->set_column(column);
+  cell->set_type(officev1::SHEET_CELL_TYPE_TEXT);
+  cell->set_display(text);
+  cell->set_merged_columns(1);
+  cell->set_merged_rows(1);
+  return cell;
+}
+
+officev1::SheetCell* number_cell(officev1::SheetRow* row, int column, double value) {
+  officev1::SheetCell* cell = row->add_cells();
+  cell->set_column(column);
+  cell->set_type(officev1::SHEET_CELL_TYPE_VALUE);
+  cell->set_number(value);
+  char buffer[32];
+  std::snprintf(buffer, sizeof buffer, "%g", value);
+  cell->set_display(buffer);
+  cell->set_merged_columns(1);
+  cell->set_merged_rows(1);
+  return cell;
+}
+
+officev1::StreamPagesResponse row_event(int sheet_index, int row) {
+  officev1::StreamPagesResponse event;
+  event.mutable_sheet_row()->set_sheet_index(sheet_index);
+  event.mutable_sheet_row()->set_row(row);
+  return event;
+}
+
+// A three-category, two-series column chart as the office collector emits
+// it off a sheet or slide draw page: page-local position, a replacement
+// graphic, typed series, and the tabular projection.
+officev1::StreamPagesResponse chart_object_event(int page_index, const std::string& name,
+                                                 long long x, long long y) {
+  officev1::StreamPagesResponse event;
+  officev1::EmbeddedObject* object = event.mutable_embedded_object();
+  object->set_index(0);
+  object->set_kind(officev1::EMBEDDED_OBJECT_KIND_CHART);
+  object->set_page_index(page_index);
+  object->set_name(name);
+  object->mutable_position()->set_x(x);
+  object->mutable_position()->set_y(y);
+  object->set_width_twips(8000);
+  object->set_height_twips(4000);
+  object->set_replacement_mime_type("image/png");
+  object->set_replacement_image("\x89PNG-bytes");
+  officev1::EmbeddedChart* chart = object->mutable_chart();
+  chart->set_kind(officev1::EMBEDDED_CHART_KIND_COLUMN);
+  chart->set_chart_type_service("com.sun.star.chart2.ColumnChartType");
+  chart->set_title("Revenue by region");
+  chart->set_x_axis_title("Region");
+  chart->set_y_axis_title("kUSD");
+  for (const char* category : {"North", "South", "West"}) chart->add_categories(category);
+  officev1::EmbeddedChartSeries* q1 = chart->add_series();
+  q1->set_label("Q1");
+  for (double value : {120.0, 80.0, 64.0}) q1->add_values_y(value);
+  officev1::EmbeddedChartSeries* q2 = chart->add_series();
+  q2->set_label("Q2");
+  for (double value : {135.5, 97.0, 70.25}) q2->add_values_y(value);
+  officev1::TableData* tabular = chart->mutable_tabular();
+  tabular->set_rows(4);
+  tabular->set_columns(3);
+  return event;
+}
+
+officev1::StreamPagesResponse sheet_chart_event(int sheet_index, const std::string& name,
+                                                int end_row, int end_column) {
+  officev1::StreamPagesResponse event;
+  officev1::SheetChart* chart = event.mutable_sheet_chart();
+  chart->set_sheet_index(sheet_index);
+  chart->set_name(name);
+  officev1::SheetRangeRef* range = chart->add_ranges();
+  range->set_start_row(0);
+  range->set_start_column(0);
+  range->set_end_row(end_row);
+  range->set_end_column(end_column);
+  chart->set_has_column_headers(true);
+  chart->set_has_row_headers(true);
+  return event;
+}
+
+officev1::StreamPagesResponse status_event() {
+  officev1::StreamPagesResponse event;
+  event.mutable_status()->set_state(officev1::RenderStatus::STATE_OK);
+  return event;
+}
+
+officev1::StreamPagesResponse spreadsheet_info_event() {
+  officev1::StreamPagesResponse event;
+  officev1::DocumentInfo* info = event.mutable_document_info();
+  info->set_document_id("book.xlsx");
+  info->set_source_format("xlsx");
+  info->set_page_count(1);
+  info->set_document_type("spreadsheet");
+  officev1::PageRect* page = info->add_page_rects();
+  page->set_width_twips(24000);
+  page->set_height_twips(15000);
+  return event;
+}
+
+// The sheet behind the chart: a header row and three data rows.
+void feed_sales_sheet(grparse::DoclingMapper* mapper) {
+  mapper->consume(sheet_event(0, "Sales", 3, 2));
+  officev1::StreamPagesResponse header = row_event(0, 0);
+  text_cell(header.mutable_sheet_row(), 0, "Region");
+  text_cell(header.mutable_sheet_row(), 1, "Q1");
+  text_cell(header.mutable_sheet_row(), 2, "Q2");
+  mapper->consume(header);
+  const char* regions[] = {"North", "South", "West"};
+  const double q1[] = {120.0, 80.0, 64.0};
+  const double q2[] = {135.5, 97.0, 70.25};
+  for (int i = 0; i < 3; i++) {
+    officev1::StreamPagesResponse row = row_event(0, i + 1);
+    text_cell(row.mutable_sheet_row(), 0, regions[i]);
+    number_cell(row.mutable_sheet_row(), 1, q1[i]);
+    number_cell(row.mutable_sheet_row(), 2, q2[i]);
+    mapper->consume(row);
+  }
+}
+
+const docv1::TableCell* cell_at(const docv1::TableData& data, int row, int column) {
+  for (const docv1::TableCell& cell : data.table_cells()) {
+    if (cell.start_row_offset_idx() == row && cell.start_col_offset_idx() == column) {
+      return &cell;
+    }
+  }
+  return nullptr;
+}
+
+std::string caption_text(const docv1::Document& document, const docv1::PictureItem& picture) {
+  require(picture.captions_size() == 1, "the chart carries one caption");
+  const std::string& ref = picture.captions(0).ref();
+  for (const docv1::BaseTextItem& item : document.texts()) {
+    if (item.has_text() && item.text().base().self_ref() == ref) {
+      require(item.text().base().label() == docv1::DOC_ITEM_LABEL_CAPTION,
+              "the caption is a CAPTION item");
+      require(item.text().base().parent().ref() == picture.self_ref(),
+              "the caption parents under the chart");
+      return item.text().base().text();
+    }
+  }
+  throw std::runtime_error("caption " + ref + " is not a text item");
+}
+
+void verify_sheet_chart_pairs_with_its_embedded_object() {
+  grparse::DoclingMapper mapper;
+  mapper.consume(spreadsheet_info_event());
+  // The draw-page object arrives before the sheet, as the collector emits it.
+  mapper.consume(chart_object_event(0, "Chart 1", 4779, 299));
+  const docv1::Document& streaming = mapper.document();
+  require(streaming.pictures_size() == 0,
+          "a sheet chart waits for the sheet that places it");
+  feed_sales_sheet(&mapper);
+  mapper.consume(sheet_chart_event(0, "Object 1", 3, 2));
+  mapper.consume(status_event());
+
+  const docv1::Document& document = mapper.document();
+  require(document.pictures_size() == 1, "one chart, one picture: no empty twin");
+  const docv1::PictureItem& picture = document.pictures(0);
+  require(picture.label() == docv1::DOC_ITEM_LABEL_CHART, "the picture is a CHART item");
+  require(picture.parent().ref() == document.groups(0).self_ref(),
+          "the chart sits under its sheet group");
+  require(picture.has_image() && picture.image().mimetype() == "image/png",
+          "the replacement graphic rides on the chart");
+  require(picture.has_chart() && picture.chart().sources_size() == 1 &&
+              picture.chart().sources(0).end().row() == 3 &&
+              picture.chart().sources(0).start().sheet() == "Sales" &&
+              picture.chart().has_column_headers(),
+          "the sheet ranges are the chart's typed provenance");
+  require(picture.prov_size() == 1 && picture.prov(0).page_no() == 1 &&
+              picture.prov(0).bbox().l() == 4779 && picture.prov(0).bbox().r() == 12779,
+          "the chart keeps the object's laid-out box");
+  require(picture.shape().name() == "Chart 1", "the object's name is the shape name");
+  require(caption_text(document, picture) == "Revenue by region",
+          "the chart title is the caption");
+
+  // The bound table: a child of the chart, the series as columns.
+  require(document.tables_size() == 2, "the sheet table and the chart's own table");
+  const docv1::TableItem& table = document.tables(1);
+  require(table.parent().ref() == picture.self_ref(), "the data table parents under the chart");
+  bool listed = false;
+  for (const docv1::RefItem& child : picture.children()) {
+    if (child.ref() == table.self_ref()) listed = true;
+  }
+  require(listed, "the chart lists its data table among its children");
+  const docv1::TableData& data = table.data();
+  require(data.num_rows() == 4 && data.num_cols() == 3, "categories down, series across");
+  const docv1::TableCell* corner = cell_at(data, 0, 0);
+  const docv1::TableCell* q2 = cell_at(data, 0, 2);
+  const docv1::TableCell* south = cell_at(data, 2, 0);
+  const docv1::TableCell* value = cell_at(data, 3, 2);
+  require(corner != nullptr && corner->text() == "Region" && corner->column_header(),
+          "the axis title heads the category column");
+  require(q2 != nullptr && q2->text() == "Q2" && q2->column_header(),
+          "series labels are column headers");
+  require(south != nullptr && south->text() == "South" && south->row_header(),
+          "categories are row headers");
+  require(value != nullptr && value->text() == "70.25" && value->value().number() == 70.25,
+          "values stay numeric beside their display text");
+  require(data.columns_size() == 3 && data.columns(0).name() == "Region" &&
+              data.columns(2).name() == "Q2" && data.columns(2).declared_type() == "number",
+          "the column schema names the axis and the series");
+  require(data.grid_size() == 4 && data.grid(0).cells(1).column_header(),
+          "the grid mirrors the header flags");
+  require(data.row_prov_size() == 4 && data.row_prov(0).grid().row() == 0 &&
+              data.row_prov(3).grid().row() == 3 && data.row_prov(3).grid().sheet() == "Sales",
+          "each table row points back at its sheet row");
+  require(table.prov_size() == 1 && table.prov(0).bbox().l() == 4779,
+          "the table shares the chart's box");
+  require(table.source_size() == 1 && table.source(0).collector().collector() == "libreoffice",
+          "the table is attributed like every mapped item");
+
+  bool bar = false;
+  bool tabular = false;
+  for (const docv1::PictureAnnotation& annotation : picture.annotations()) {
+    if (annotation.has_bar_chart()) bar = annotation.bar_chart().y_axis_label() == "kUSD";
+    if (annotation.has_tabular_chart()) tabular = true;
+  }
+  require(bar && tabular, "the typed annotations stay on the chart");
+  require(document.attachments_size() == 1 && document.attachments(0).item_ref() == picture.self_ref(),
+          "the embedded object is registered once, against the chart");
+  require(grparse::docling_integrity_errors(document).empty(),
+          "the chart composite stays well formed");
+}
+
+void verify_sheet_chart_without_object_folds_the_sheet_cells() {
+  grparse::DoclingMapper mapper;
+  mapper.consume(spreadsheet_info_event());
+  feed_sales_sheet(&mapper);
+  mapper.consume(sheet_chart_event(0, "Object 1", 3, 2));
+  mapper.consume(status_event());
+  const docv1::Document& document = mapper.document();
+  require(document.pictures_size() == 1 && document.tables_size() == 2,
+          "a sheet chart with no object still binds a table");
+  const docv1::TableData& data = document.tables(1).data();
+  require(data.num_rows() == 4 && data.num_cols() == 3, "the table is the source range");
+  const docv1::TableCell* header = cell_at(data, 0, 1);
+  const docv1::TableCell* label = cell_at(data, 2, 0);
+  const docv1::TableCell* value = cell_at(data, 1, 2);
+  require(header != nullptr && header->text() == "Q1" && header->column_header(),
+          "has_column_headers marks the first range row");
+  require(label != nullptr && label->text() == "South" && label->row_header(),
+          "has_row_headers marks the first range column");
+  require(value != nullptr && value->value().number() == 135.5,
+          "sheet values keep their typed value in the chart table");
+  require(!document.pictures(0).has_image(), "no object, no image to carry");
+  require(document.pictures(0).captions_size() == 0, "no title known, no caption minted");
+  require(grparse::docling_integrity_errors(document).empty(), "the fallback stays well formed");
+}
+
+void verify_unplaced_chart_flushes_under_its_sheet_at_the_end() {
+  grparse::DoclingMapper mapper;
+  mapper.consume(spreadsheet_info_event());
+  mapper.consume(chart_object_event(0, "Chart 1", 100, 200));
+  mapper.consume(sheet_event(0, "Empty", 0, 0));
+  require(mapper.document().pictures_size() == 0, "still waiting after the sheet header");
+  mapper.consume(status_event());
+  const docv1::Document& document = mapper.document();
+  require(document.pictures_size() == 1 &&
+              document.pictures(0).parent().ref() == document.groups(0).self_ref(),
+          "the stream end places a chart no SheetChart claimed under its sheet");
+  require(document.tables_size() == 2 && cell_at(document.tables(1).data(), 1, 1) != nullptr,
+          "the flushed chart binds its series table");
+  require(grparse::docling_integrity_errors(document).empty(), "the flush stays well formed");
+}
+
+void verify_slide_ole_shape_places_the_chart() {
+  grparse::DoclingMapper mapper;
+  officev1::StreamPagesResponse info_event;
+  officev1::DocumentInfo* info = info_event.mutable_document_info();
+  info->set_document_id("deck.pptx");
+  info->set_source_format("pptx");
+  info->set_page_count(1);
+  info->set_document_type("presentation");
+  info->add_page_rects()->set_width_twips(14400);
+  mapper.consume(info_event);
+  mapper.consume(chart_object_event(0, "Chart 2", 1440, 2160));
+
+  officev1::StreamPagesResponse slide_event;
+  slide_event.mutable_slide()->set_index(0);
+  slide_event.mutable_slide()->set_name("Trend");
+  mapper.consume(slide_event);
+
+  officev1::StreamPagesResponse title_event;
+  officev1::SlideShape* title = title_event.mutable_slide_shape();
+  title->set_slide_index(0);
+  title->set_shape_type("com.sun.star.presentation.TitleTextShape");
+  title->set_placeholder_role(officev1::PLACEHOLDER_ROLE_TITLE);
+  *title->add_paragraphs()->add_runs() = make_run("Trend");
+  mapper.consume(title_event);
+
+  // The chart's own shape: an OLE2 shape with one empty run, as the office
+  // core reports object shapes.
+  officev1::StreamPagesResponse ole_event;
+  officev1::SlideShape* ole = ole_event.mutable_slide_shape();
+  ole->set_slide_index(0);
+  ole->set_z_order(1);
+  ole->set_shape_type("com.sun.star.drawing.OLE2Shape");
+  ole->mutable_position()->set_x(1440);
+  ole->mutable_position()->set_y(2160);
+  ole->set_width_twips(8000);
+  ole->set_height_twips(4000);
+  ole->add_paragraphs()->add_runs()->set_char_offset(-1);
+  mapper.consume(ole_event);
+  mapper.consume(status_event());
+
+  const docv1::Document& document = mapper.document();
+  require(document.pictures_size() == 1, "the OLE2 shape and the object are one chart");
+  const docv1::PictureItem& picture = document.pictures(0);
+  require(picture.label() == docv1::DOC_ITEM_LABEL_CHART &&
+              picture.parent().ref() == document.groups(0).self_ref(),
+          "the chart sits under its slide, where the shape walk placed it");
+  const docv1::GroupItem& slide = document.groups(0);
+  require(slide.children_size() == 2 && slide.children(1).ref() == picture.self_ref(),
+          "the chart follows the title in slide order");
+  int empty_texts = 0;
+  for (const docv1::BaseTextItem& item : document.texts()) {
+    if (item.has_text() && item.text().base().text().empty()) empty_texts++;
+  }
+  require(empty_texts == 0, "the object shape's empty run makes no text item");
+  require(caption_text(document, picture) == "Revenue by region", "the slide chart is captioned");
+  require(document.tables_size() == 1 &&
+              document.tables(0).parent().ref() == picture.self_ref(),
+          "the slide chart binds its table");
+  require(grparse::docling_integrity_errors(document).empty(), "the slide chart stays well formed");
+}
+
+void verify_writer_chart_binds_on_arrival() {
+  grparse::DoclingMapper mapper;
+  mapper.consume(document_info_event());
+  officev1::StreamPagesResponse event = chart_object_event(0, "Object 3", 0, 0);
+  officev1::EmbeddedObject* object = event.mutable_embedded_object();
+  object->clear_position();
+  object->mutable_anchor()->set_x(1000);
+  object->mutable_anchor()->set_y(2000);
+  mapper.consume(event);
+  const docv1::Document& document = mapper.document();
+  require(document.pictures_size() == 1 && document.pictures(0).parent().ref() == "#/body",
+          "a text document's chart is placed by its anchor as it arrives");
+  require(document.tables_size() == 1 && document.tables(0).data().num_rows() == 4,
+          "and binds its series table at once");
+  require(document.pictures(0).prov(0).bbox().t() == 2000,
+          "the anchor is the box's origin on its page");
+}
+
+officev1::StreamPagesResponse image_event(int index, int page_index, long long x,
+                                          long long y, long long height) {
+  officev1::StreamPagesResponse event;
+  officev1::EmbeddedImage* image = event.mutable_embedded_image();
+  image->set_index(index);
+  image->set_page_index(page_index);
+  image->set_name("Picture " + std::to_string(index + 1));
+  image->set_mime_type("image/png");
+  image->set_data("png");
+  image->set_width_twips(4000);
+  image->set_height_twips(height);
+  image->mutable_anchor()->set_x(x);
+  image->mutable_anchor()->set_y(y);
+  return event;
+}
+
+officev1::StreamPagesResponse empty_paragraph_event(int page_index, long long caret_y,
+                                                    const std::string& text = "") {
+  officev1::StreamPagesResponse event = paragraph_event(text);
+  event.mutable_paragraph()->set_page_index(page_index);
+  event.mutable_paragraph()->mutable_start()->set_y(caret_y);
+  event.mutable_paragraph()->mutable_end()->set_y(caret_y);
+  return event;
+}
+
+void verify_inline_pictures_take_their_anchor_paragraphs_place() {
+  grparse::DoclingMapper mapper;
+  mapper.consume(document_info_event());
+  mapper.consume(paragraph_event("Documents may contain images."));
+  // The anchor paragraph: one empty run, caret at the picture's baseline,
+  // below the picture's top by its height.
+  mapper.consume(empty_paragraph_event(0, 14108));
+  mapper.consume(paragraph_event("Alt text should communicate meaning."));
+  mapper.consume(empty_paragraph_event(0, 15000, " "));  // a spacer
+  mapper.consume(paragraph_event("Tables follow."));
+  // Images arrive after every paragraph, as the collector emits them.
+  mapper.consume(image_event(0, 0, 3929, 12398, 1958));
+  mapper.consume(status_event());
+
+  const docv1::Document& document = mapper.document();
+  require(document.texts_size() == 3, "empty and whitespace paragraphs make no text items");
+  for (const docv1::BaseTextItem& item : document.texts()) {
+    require(!item.text().base().text().empty(), "no text item is empty");
+  }
+  const auto& body = document.body().children();
+  require(body.size() == 4, "three paragraphs and one picture in the body");
+  require(body[0].ref() == "#/texts/0" && body[1].ref() == "#/pictures/0" &&
+              body[2].ref() == "#/texts/1" && body[3].ref() == "#/texts/2",
+          "the picture sits where its anchor paragraph was");
+  const docv1::PictureItem& picture = document.pictures(0);
+  require(picture.prov_size() == 1 && picture.prov(0).page_no() == 1 &&
+              picture.prov(0).bbox().l() == 3929 && picture.prov(0).bbox().t() == 12398 &&
+              picture.prov(0).bbox().r() == 7929 && picture.prov(0).bbox().b() == 14356,
+          "the picture carries its page and box");
+  require(grparse::docling_integrity_errors(document).empty(), "placement stays well formed");
+}
+
+void verify_unanchored_picture_still_trails_the_body() {
+  grparse::DoclingMapper mapper;
+  mapper.consume(document_info_event());
+  mapper.consume(paragraph_event("Only text here."));
+  mapper.consume(empty_paragraph_event(1, 21000));  // wrong page for the picture
+  mapper.consume(image_event(0, 0, 100, 5000, 1000));
+  mapper.consume(status_event());
+  const auto& body = mapper.document().body().children();
+  require(body.size() == 2 && body[1].ref() == "#/pictures/0",
+          "a picture with no matching slot keeps its arrival position");
+}
+
+void verify_slide_titles_after_the_first_are_section_headings() {
+  grparse::DoclingMapper mapper;
+  officev1::StreamPagesResponse info_event;
+  officev1::DocumentInfo* info = info_event.mutable_document_info();
+  info->set_document_type("presentation");
+  info->set_page_count(2);
+  info->add_page_rects()->set_width_twips(14400);
+  info->add_page_rects()->set_width_twips(14400);
+  mapper.consume(info_event);
+  for (int slide_index = 0; slide_index < 2; slide_index++) {
+    officev1::StreamPagesResponse slide_event;
+    slide_event.mutable_slide()->set_index(slide_index);
+    mapper.consume(slide_event);
+    officev1::StreamPagesResponse title_event;
+    officev1::SlideShape* title = title_event.mutable_slide_shape();
+    title->set_slide_index(slide_index);
+    title->set_shape_type("com.sun.star.presentation.TitleTextShape");
+    title->set_placeholder_role(officev1::PLACEHOLDER_ROLE_TITLE);
+    *title->add_paragraphs()->add_runs() = make_run(slide_index == 0 ? "Deck" : "Agenda");
+    mapper.consume(title_event);
+  }
+  const docv1::Document& document = mapper.document();
+  require(document.texts_size() == 2, "two slide titles");
+  require(document.texts(0).has_title() && document.texts(0).title().base().text() == "Deck",
+          "the first slide's title is the deck title");
+  require(document.texts(1).has_section_header() &&
+              document.texts(1).section_header().level() == 1 &&
+              document.texts(1).section_header().base().text() == "Agenda",
+          "a later slide's title is a level-1 section heading");
+}
+
+void verify_sheet_header_rows_are_marked() {
+  grparse::DoclingMapper mapper;
+  mapper.consume(spreadsheet_info_event());
+  // Sheet 0: a merged title above a header row above quantities.
+  mapper.consume(sheet_event(0, "Report", 3, 2));
+  officev1::StreamPagesResponse title = row_event(0, 0);
+  officev1::SheetCell* merged = text_cell(title.mutable_sheet_row(), 0, "Quarterly totals");
+  merged->set_merged_columns(3);
+  mapper.consume(title);
+  officev1::StreamPagesResponse header = row_event(0, 1);
+  text_cell(header.mutable_sheet_row(), 0, "Item");
+  text_cell(header.mutable_sheet_row(), 1, "Units");
+  text_cell(header.mutable_sheet_row(), 2, "Price");
+  mapper.consume(header);
+  officev1::StreamPagesResponse widget = row_event(0, 2);
+  text_cell(widget.mutable_sheet_row(), 0, "Widget");
+  number_cell(widget.mutable_sheet_row(), 1, 10);
+  number_cell(widget.mutable_sheet_row(), 2, 2.5);
+  mapper.consume(widget);
+  officev1::StreamPagesResponse bundle = row_event(0, 3);
+  officev1::SheetCell* tall = text_cell(bundle.mutable_sheet_row(), 0, "Bundle");
+  tall->set_merged_rows(2);
+  number_cell(bundle.mutable_sheet_row(), 1, 1);
+  mapper.consume(bundle);
+  // Sheet 1: all text, nothing numeric below: no header claimed.
+  mapper.consume(sheet_event(1, "Notes", 1, 1));
+  officev1::StreamPagesResponse first = row_event(1, 0);
+  text_cell(first.mutable_sheet_row(), 0, "alpha");
+  text_cell(first.mutable_sheet_row(), 1, "beta");
+  mapper.consume(first);
+  officev1::StreamPagesResponse second = row_event(1, 1);
+  text_cell(second.mutable_sheet_row(), 0, "gamma");
+  text_cell(second.mutable_sheet_row(), 1, "delta");
+  mapper.consume(second);
+  // Sheet 2: a database range declares its header outright, even over
+  // text-only rows.
+  officev1::StreamPagesResponse database;
+  officev1::SheetDatabaseRange* range = database.mutable_sheet_database_range();
+  range->set_name("Names");
+  range->set_sheet_index(2);
+  range->set_contains_header(true);
+  range->mutable_range()->set_start_row(0);
+  range->mutable_range()->set_start_column(0);
+  range->mutable_range()->set_end_row(1);
+  range->mutable_range()->set_end_column(1);
+  mapper.consume(database);
+  mapper.consume(sheet_event(2, "Names", 1, 1));
+  officev1::StreamPagesResponse names_header = row_event(2, 0);
+  text_cell(names_header.mutable_sheet_row(), 0, "first");
+  text_cell(names_header.mutable_sheet_row(), 1, "last");
+  mapper.consume(names_header);
+  officev1::StreamPagesResponse names_row = row_event(2, 1);
+  text_cell(names_row.mutable_sheet_row(), 0, "Ada");
+  text_cell(names_row.mutable_sheet_row(), 1, "Lovelace");
+  mapper.consume(names_row);
+  mapper.consume(status_event());
+
+  const docv1::Document& document = mapper.document();
+  const docv1::TableData& report = document.tables(0).data();
+  require(cell_at(report, 0, 0)->row_section() && !cell_at(report, 0, 0)->column_header() &&
+              cell_at(report, 0, 0)->col_span() == 3,
+          "a merged title spanning the width is a section row");
+  require(cell_at(report, 1, 0)->column_header() && cell_at(report, 1, 2)->column_header(),
+          "the label row above quantities is the header row");
+  require(!cell_at(report, 2, 0)->column_header() && !cell_at(report, 2, 1)->column_header(),
+          "data rows are not headers");
+  require(cell_at(report, 3, 0)->row_span() == 2 && cell_at(report, 3, 0)->end_row_offset_idx() == 5,
+          "a merged cell keeps its row span");
+  const docv1::TableData& notes = document.tables(1).data();
+  for (const docv1::TableCell& cell : notes.table_cells()) {
+    require(!cell.column_header() && !cell.row_section(), "text-only sheets claim no header");
+  }
+  const docv1::TableData& names = document.tables(2).data();
+  require(cell_at(names, 0, 0)->column_header() && cell_at(names, 0, 1)->column_header() &&
+              !cell_at(names, 1, 0)->column_header(),
+          "a database range with a header names the header row");
+  require(grparse::docling_integrity_errors(document).empty(), "header marking stays well formed");
+}
+
 }  // namespace
 
 int main() {
@@ -830,6 +1371,15 @@ int main() {
     verify_take_moves_the_document_out();
     verify_integrity_errors_flag_broken_references();
     verify_integrity_errors_cover_the_form_arenas();
+    verify_sheet_chart_pairs_with_its_embedded_object();
+    verify_sheet_chart_without_object_folds_the_sheet_cells();
+    verify_unplaced_chart_flushes_under_its_sheet_at_the_end();
+    verify_slide_ole_shape_places_the_chart();
+    verify_writer_chart_binds_on_arrival();
+    verify_sheet_header_rows_are_marked();
+    verify_inline_pictures_take_their_anchor_paragraphs_place();
+    verify_unanchored_picture_still_trails_the_body();
+    verify_slide_titles_after_the_first_are_section_headings();
     std::println("docling-map-test: all checks passed");
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {

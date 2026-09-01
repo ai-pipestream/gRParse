@@ -1485,8 +1485,35 @@ void verify_pdf_plain_leg_returns_the_document() {
 
 }  // namespace
 
+void verify_source_title_promotes_to_a_title_item() {
+  docv1::Document document;
+  document.mutable_body()->set_self_ref("#/body");
+  docv1::TextItemBase* paragraph = document.add_texts()->mutable_text()->mutable_base();
+  paragraph->set_self_ref("#/texts/0");
+  paragraph->mutable_parent()->set_ref("#/body");
+  paragraph->set_text("Byrd & Davis");
+  document.mutable_body()->add_children()->set_ref("#/texts/0");
+  require(!grparse::promote_source_title(&document), "no source title, nothing to promote");
+  document.mutable_source_meta()->set_title("Baughman & Datron");
+  require(grparse::promote_source_title(&document), "a source title becomes a title item");
+  require(document.texts_size() == 2 && document.texts(1).has_title() &&
+              document.texts(1).title().base().text() == "Baughman & Datron" &&
+              document.texts(1).title().base().label() == docv1::DOC_ITEM_LABEL_TITLE,
+          "the item carries the title text");
+  require(document.body().children_size() == 2 &&
+              document.body().children(0).ref() == "#/texts/1" &&
+              document.body().children(1).ref() == "#/texts/0",
+          "the title leads the body");
+  require(document.texts(1).title().base().source(0).collector().collector() == "grparse" &&
+              document.texts(1).title().base().source(0).collector().model() == "source-meta-title",
+          "the item is attributed as derived from the collector's claim");
+  require(!grparse::promote_source_title(&document), "a body with a title is left alone");
+  require(!grparse::promote_source_title(nullptr), "a null document is a no-op");
+}
+
 int main() {
   try {
+    verify_source_title_promotes_to_a_title_item();
     verify_asr_collects_document();
     verify_transport_class_collapses_to_unavailable();
     verify_email_collects_document_and_warnings();

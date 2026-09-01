@@ -83,8 +83,28 @@ void verify_render_counters_and_gauges() {
       .assembly_workers = 1,
   };
 
-  const std::string text = grparse::render_prometheus_metrics(metrics, ocr, options);
+  grparse::DataTotals data;
+  data.charts_bound = 4;
+  data.sheet_header_rows = 2;
+  data.mimetypes_sniffed = 9;
+  const std::string text =
+      grparse::render_prometheus_metrics(metrics, ocr, options, grparse::RepairTotals{}, data);
   require_contains(text, "grparse_documents_submitted_total 7\n", "submitted counter");
+  require_contains(text, "# TYPE grparse_data_changes_total counter\n", "data totals type line");
+  require_contains(text, "grparse_data_changes_total{kind=\"charts_bound\"} 4\n",
+                   "charts bound counter");
+  require_contains(text, "grparse_data_changes_total{kind=\"sheet_header_rows\"} 2\n",
+                   "sheet header rows counter");
+  require_contains(text, "grparse_data_changes_total{kind=\"mimetypes_sniffed\"} 9\n",
+                   "sniffed mimetypes counter");
+  require_contains(text, "grparse_data_changes_total{kind=\"cv_enrichment_skipped\"} 0\n",
+                   "untouched data counters read zero");
+  require_contains(text, "# TYPE process_resident_memory_bytes gauge\n", "resident memory gauge");
+  require_contains(text, "# TYPE process_cpu_seconds_total counter\n", "cpu seconds counter");
+  const auto rss_at = text.find("\nprocess_resident_memory_bytes ");
+  require(rss_at != std::string::npos &&
+              std::stoull(text.substr(rss_at + 31)) > 0,
+          "a running process has a resident set");
   require_contains(text, "grparse_documents_rejected_total 2\n", "rejected counter");
   require_contains(text, "grparse_documents_queued 3\n", "queued gauge");
   require_contains(text, "grparse_pages_digital_total 11\n", "digital pages counter");
