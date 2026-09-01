@@ -18,7 +18,7 @@
    "origin.mimetype_evidence": "grparse",
    "origin.source_id": "pdf",
    "source_meta.authoring_tool": "pdf",
-   "source_meta.created.seconds": "pdf",
+   "source_meta.created": "pdf",
    "source_meta.created_raw": "pdf",
    "source_meta.format_version": "pdf",
    "source_meta.generator": "pdf",

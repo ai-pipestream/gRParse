@@ -278,6 +278,8 @@ class DoclingMapper {
   // a database range that declares one, else the first row with two or
   // more text cells directly above a row carrying typed quantities. A lone
   // merged text cell spanning the width above the header is a section row.
+  void size_empty_sheet_tables();
+  void anchor_trailing_pictures();
   void mark_sheet_header_rows();
 
   // Moves child_ref, already among parent_ref's children, to directly after
@@ -393,6 +395,9 @@ class DoclingMapper {
     std::string after_ref;
   };
   std::vector<ParagraphSlot> paragraph_slots_;
+  // Body pictures whose anchor met no empty paragraph, judged against the
+  // finished body by anchor_trailing_pictures.
+  std::set<std::string> unslotted_pictures_;
   // True once a slide's title placeholder has become the deck's title;
   // every later slide title is a section heading.
   bool deck_title_emitted_ = false;

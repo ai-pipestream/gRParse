@@ -162,6 +162,14 @@ struct Tracking {
   std::string mimetype;
 };
 
+// A message that is a single value on the wire, not a record of fields a
+// collector answers one by one: the well-known types. A Timestamp is taken
+// or left whole, attributed under the field that holds it ("created"), never
+// as "created.seconds" with its nanos merged in from another collector.
+bool is_value_message(const google::protobuf::Descriptor* descriptor) {
+  return descriptor->file()->package() == "google.protobuf";
+}
+
 const google::protobuf::FieldDescriptor* field_sources_of(
     const google::protobuf::Descriptor* descriptor) {
   const auto* field = descriptor->FindFieldByName("field_sources");
@@ -269,7 +277,8 @@ void merge_message(google::protobuf::Message&& source, google::protobuf::Message
       continue;
     }
     if (!from->HasField(source, field)) continue;
-    if (field->cpp_type() == google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE) {
+    if (field->cpp_type() == google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE &&
+        !is_value_message(field->message_type())) {
       Tracking nested = tracking;
       if (tracked) nested.prefix = tracking.prefix + std::string(field->name()) + ".";
       if (to->HasField(*target, field)) {
@@ -317,7 +326,8 @@ void claim_fields_under(google::protobuf::Message* message, const Tracking& trac
   for (int index = 0; index < descriptor->field_count(); ++index) {
     const auto* field = descriptor->field(index);
     if (field->is_repeated() || !reflection->HasField(*message, field)) continue;
-    if (field->cpp_type() == google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE) {
+    if (field->cpp_type() == google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE &&
+        !is_value_message(field->message_type())) {
       Tracking nested = tracking;
       nested.prefix = tracking.prefix + std::string(field->name()) + ".";
       claim_fields_under(reflection->MutableMessage(message, field), nested);

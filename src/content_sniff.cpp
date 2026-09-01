@@ -390,12 +390,17 @@ MimetypeResolution resolve_mimetype(string_view declared_content_type,
   if (confluence_storage_format(filename.string(), std::string())) {
     return {kConfluenceStorageMimetype, "extension"};
   }
-  if (std::string sniffed = sniff_mimetype(bytes); !sniffed.empty()) {
-    return {std::move(sniffed), "magic"};
-  }
-  if (std::string by_name = extension_mimetype(filename); by_name != kOctetStream) {
+  std::string sniffed = sniff_mimetype(bytes);
+  std::string by_name = extension_mimetype(filename);
+  // The bytes outrank the name, except that "text/plain" is what the text
+  // ladder says when it recognises nothing in particular: a name that names
+  // a specific text format (.csv, .md, .vtt) knows more than that.
+  if (sniffed == "text/plain" && by_name != kOctetStream && by_name != "text/plain" &&
+      by_name.starts_with("text/")) {
     return {std::move(by_name), "extension"};
   }
+  if (!sniffed.empty()) return {std::move(sniffed), "magic"};
+  if (by_name != kOctetStream) return {std::move(by_name), "extension"};
   return {std::string(kOctetStream), "fallback"};
 }
 

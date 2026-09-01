@@ -497,6 +497,16 @@ one data module, `chart_data.py`, with truth files quoting the same data),
 and the scorecard's stability rule treats a derendered chart's title as
 descriptive while keeping its cells in the fingerprint.
 
+Whether every collector's data merged into the Document shape correctly is
+checked on a whole corpus by the S3 eval (`eval/s3/`, see
+[`eval/s3/README.md`](eval/s3/README.md)): every object of an S3-compatible
+bucket goes through the unary parse (twice, plus once under a name with no
+extension) and a battery of named shape checks, and the report groups the
+results by file type and by parser type with every failure's key, check and
+evidence. It reads the corpus into memory only and runs against whichever
+bucket the environment names; `compose.stack.s3.yaml` adds a private RustFS
+under the `s3` profile for a stack that brings its own.
+
 The server registers standard gRPC health checking and reflection in addition
 to the contract's `Health` RPC. SIGINT and SIGTERM initiate a bounded graceful
 shutdown.

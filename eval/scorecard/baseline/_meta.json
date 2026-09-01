@@ -798,6 +798,33 @@
    "reason": "059c019: orientation recovery reads turned pages up to three times (latency 1.5 s to 4.8 s on the GPU stack), CUDA OCR text differs by one item from the CPU rig, latency budgets recorded on the GPU stack",
    "service": "gRParse grparse-0.1.0-cuda",
    "timestamp": "2026-09-01T04:50:04+00:00"
+  },
+  {
+   "documents": [
+    "docx-sample3",
+    "xlsx-sample3",
+    "xlsx-formula-issue",
+    "pptx-sample1",
+    "pdf-dummy",
+    "eml-plain-text",
+    "eml-multipart-attachments",
+    "epub-two-chapters",
+    "epub-cover-first",
+    "epub-great-gatsby",
+    "pdf-diffusion-paper",
+    "pdf-two-column",
+    "pptx-notes",
+    "docx-figures",
+    "xlsx-sixty-sheets",
+    "docx-form",
+    "pdf-form",
+    "xlsx-charts",
+    "pptx-charts"
+   ],
+   "partial": true,
+   "reason": "s3 eval: the merge attributes well-known value fields whole, so source_meta.created and source_meta.modified are the field_sources entries in place of created.seconds and modified.seconds; xlsx-sample3 additionally records its header row (a label row over formula cells that display numbers is now marked column_header); pdf-two-column keeps its committed summary with only the agreement section updated",
+   "service": "gRParse grparse-0.1.0-cuda",
+   "timestamp": "2026-09-01T07:20:14+00:00"
   }
  ],
  "manifest": "eval/scorecard/corpus.json",

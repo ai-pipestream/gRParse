@@ -765,3 +765,31 @@ if(BUILD_TESTING)
   set_tests_properties(${GRPARSE_ORIENTATION_TESTS} PROPERTIES
     TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
 endif()
+
+# ---- S3 corpus eval findings: regression tests per module -------------------
+# Appended as one block, like the batteries above. Each test reproduces one
+# finding of eval/s3 (the bucket-driven shape battery) from a hand-built
+# collector stream or document and pins the fix: value fields attributed
+# whole by the merge, line-addressed provenance and page destinations in the
+# integrity walk, the sheet fold's empty-sheet and formula-header shapes,
+# routing by bytes for names that say nothing, the mimetype ladder's
+# generic-text rule, and a failed leg's status text. They own no sources.
+if(BUILD_TESTING)
+  set(GRPARSE_S3_EVAL_TESTS
+    document-merge-value-fields-test
+    docling-integrity-destinations-test
+    docling-map-sheet-shape-test
+    docling-map-trailing-pictures-test
+    collector-route-by-bytes-test
+    content-sniff-precedence-test
+    document-collectors-status-test)
+  foreach(test_name IN LISTS GRPARSE_S3_EVAL_TESTS)
+    string(REPLACE "-" "_" test_source "${test_name}")
+    add_executable(${test_name} "tests/${test_source}.cpp")
+    target_link_libraries(${test_name} PRIVATE grparse_core grparse_flags)
+    add_test(NAME ${test_name} COMMAND ${test_name})
+  endforeach()
+  add_dependencies(grparse-tests ${GRPARSE_S3_EVAL_TESTS})
+  set_tests_properties(${GRPARSE_S3_EVAL_TESTS} PROPERTIES
+    TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
+endif()

@@ -11,14 +11,18 @@
 #include <ctime>
 #include <deque>
 #include <iterator>
+#include <optional>
 #include <set>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 #include <google/protobuf/struct.pb.h>
 #include <google/protobuf/timestamp.pb.h>
 
 #include "grparse/data_totals.h"
+#include "grparse/document_geometry.h"
+#include "grparse/document_reading_order.h"
 
 namespace grparse {
 
@@ -400,8 +404,31 @@ std::string double_text(double value) {
   return buffer;
 }
 
+// True when the text is a plain number as a sheet displays one: an optional
+// sign, digits with optional group separators, an optional fraction.
+bool numeric_display(const std::string& text) {
+  size_t i = 0;
+  while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i])) != 0) i++;
+  if (i < text.size() && (text[i] == '-' || text[i] == '+')) i++;
+  int digits = 0;
+  bool fraction = false;
+  for (; i < text.size(); i++) {
+    const char c = text[i];
+    if (std::isdigit(static_cast<unsigned char>(c)) != 0) {
+      digits++;
+    } else if ((c == '.' || c == ',') && !fraction && i + 1 < text.size()) {
+      if (c == '.') fraction = true;
+    } else {
+      break;
+    }
+  }
+  while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i])) != 0) i++;
+  return digits > 0 && i == text.size();
+}
+
 // True when the cell's typed value is a quantity (number, date, logical)
-// rather than text, a formula, or an error.
+// rather than text or an error. A formula counts by what it displays: a
+// header row sits over "=ROW()-1" showing "1" exactly as over a literal 1.
 bool quantity_cell(const docv1::TableCell& cell) {
   if (!cell.has_value()) return false;
   switch (cell.value().kind_case()) {
@@ -409,6 +436,8 @@ bool quantity_cell(const docv1::TableCell& cell) {
     case docv1::CellValue::kBoolean:
     case docv1::CellValue::kDatetime:
       return true;
+    case docv1::CellValue::kFormula:
+      return numeric_display(cell.text());
     default:
       return false;
   }
@@ -1271,7 +1300,9 @@ void DoclingMapper::on_status(const officev1::RenderStatus& status) {
   // slide; sheet header rows need every row in before the first can be
   // judged against the second.
   flush_pending_charts();
+  size_empty_sheet_tables();
   mark_sheet_header_rows();
+  anchor_trailing_pictures();
   // Anchors resolve only once the whole body has streamed past: a comment
   // can close before the paragraph it sits in is emitted, and a
   // cross-reference can name an anchor from a later page.
@@ -1404,6 +1435,11 @@ void DoclingMapper::on_embedded_image(const officev1::EmbeddedImage& image) {
     if (slot >= 0) {
       move_child_after("#/body", picture_ref, paragraph_slots_[slot].after_ref);
       paragraph_slots_.erase(paragraph_slots_.begin() + slot);
+    } else {
+      // No paragraph to take the place of: the picture sits where it
+      // arrived, and once the stream is in it is judged against the body
+      // around it (anchor_trailing_pictures).
+      unslotted_pictures_.insert(picture_ref);
     }
   }
   if (!image.data().empty()) {
@@ -2226,6 +2262,52 @@ void DoclingMapper::flush_pending_charts() {
   }
 }
 
+// A Writer picture whose anchor met no empty paragraph (a wrapped image
+// beside prose, a picture arriving after the paragraphs of its page) was
+// appended to the body in arrival order, wherever its page is: a page-23
+// figure after page 208's last paragraph. Once every paragraph is in, such
+// a picture is placed by its provenance the way the CV enrichment's
+// pictures are: after the paragraph beside it, in page order. Only a
+// picture the fold could not slot AND that sits behind a body item which
+// comes later on the page plane is trailing; a slotted picture keeps the
+// place its anchor paragraph gave it, and an unslotted one that arrived in
+// reading order is left where the fold put it.
+void DoclingMapper::anchor_trailing_pictures() {
+  if (document_type_ != "text" || unslotted_pictures_.empty()) return;
+  const std::map<int, double> heights = document_page_heights(document_);
+  std::vector<std::string> trailing;
+  std::optional<ItemPlacement> last;
+  for (const docv1::RefItem& child : document_.body().children()) {
+    const std::optional<ItemPlacement> placement =
+        item_placement(document_, child.ref(), heights);
+    if (!placement.has_value()) continue;
+    if (unslotted_pictures_.contains(child.ref()) && last.has_value() &&
+        std::pair(placement->page, placement->box.top) <
+            std::pair(last->page, last->box.top)) {
+      trailing.push_back(child.ref());
+      continue;
+    }
+    last = placement;
+  }
+  if (trailing.empty()) return;
+  const PictureAnchorReport report = anchor_pictures_by_provenance(&document_, trailing);
+  data_log("office " + document_.name() + ": " + std::to_string(report.anchored)
+           + " trailing picture(s) placed by provenance");
+}
+
+// A sheet that streamed no cell is empty: its table says 0 x 0 rather than
+// the 1 x 1 its used range reads as (used_end_row and used_end_column are
+// zero for an empty sheet and for a sheet whose only cell is A1 alike, and
+// only the cells tell the two apart).
+void DoclingMapper::size_empty_sheet_tables() {
+  for (const auto& [sheet_index, table_index] : sheet_table_) {
+    docv1::TableData* data = document_.mutable_tables(table_index)->mutable_data();
+    if (data->table_cells_size() > 0) continue;
+    data->set_num_rows(0);
+    data->set_num_cols(0);
+  }
+}
+
 void DoclingMapper::mark_sheet_header_rows() {
   for (const auto& [sheet_index, table_index] : sheet_table_) {
     docv1::TableData* data = document_.mutable_tables(table_index)->mutable_data();
@@ -2770,6 +2852,11 @@ std::vector<std::string> docling_integrity_errors(
     const docv1::Document& document) {
   std::vector<std::string> errors;
   std::set<std::string> refs = {"#/body", "#/furniture"};
+  // A page is a destination too: an outline row or a link span may point at
+  // "#/pages/N", which resolves whenever the document has that page.
+  for (const auto& [number, page] : document.pages()) {
+    refs.insert("#/pages/" + std::to_string(number));
+  }
   // (item ref, parent ref) pairs and every children list, gathered in one
   // walk so parents can be validated against their children afterwards.
   std::vector<std::pair<std::string, std::string>> parents;
@@ -2803,8 +2890,8 @@ std::vector<std::string> docling_integrity_errors(
       // A page-plane locator needs a 1-based page. The page-less arms
       // (a media time span, a byte range, a sheet cell) locate content in
       // their own space and legitimately carry no page at all.
-      const bool page_less =
-          item.has_time() || item.has_byte_range() || item.has_grid();
+      const bool page_less = item.has_time() || item.has_byte_range() ||
+                             item.has_grid() || item.has_line_range();
       if (item.page_no() < 1 && !page_less) {
         errors.push_back("provenance of " + owner + " has page_no "
                          + std::to_string(item.page_no())
@@ -2822,7 +2909,7 @@ std::vector<std::string> docling_integrity_errors(
     for (const docv1::GraphCell& cell : graph.cells()) {
       if (cell.has_prov() && cell.prov().page_no() < 1 &&
           !(cell.prov().has_time() || cell.prov().has_byte_range() ||
-            cell.prov().has_grid())) {
+            cell.prov().has_grid() || cell.prov().has_line_range())) {
         errors.push_back("provenance of graph cell "
                          + std::to_string(cell.cell_id()) + " of " + owner
                          + " has page_no " + std::to_string(cell.prov().page_no())

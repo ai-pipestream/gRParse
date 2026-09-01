@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "grparse/confluence_storage.h"
+#include "grparse/content_sniff.h"
 #include "grparse/document_collectors.h"
 #include "grparse/document_merge.h"
 
@@ -149,6 +150,21 @@ pipestream::parse::v1::Collector route_collector(const std::string& filename,
   return pipestream::parse::v1::COLLECTOR_GRPARSE_CV;
 }
 
+pipestream::parse::v1::Collector route_document(const std::string& filename,
+                                                 const std::string& declared_content_type,
+                                                 std::string_view bytes) {
+  // A name that declares a type keeps its say: "image.png" holding text
+  // bytes is a bad image, not a markup document. Only a name that declares
+  // nothing (no extension, an unknown one) lets the bytes route.
+  const std::filesystem::path path(filename);
+  if (!declared_content_type.empty() || extension_mimetype(path) != "application/octet-stream") {
+    return route_collector(filename, declared_content_type);
+  }
+  const MimetypeResolution resolved = resolve_mimetype(declared_content_type, bytes, path);
+  const bool informative = resolved.mimetype != "application/octet-stream";
+  return route_collector(filename, informative ? resolved.mimetype : declared_content_type);
+}
+
 pipestream::markup::v1::MarkupFormat markup_format_for(
     const std::string& filename, const std::string& content_type) {
   const std::string extension =
@@ -182,6 +198,11 @@ pipestream::markup::v1::MarkupFormat markup_format_for(
   // being guessed around here.
   if (extension == ".json" || type == "application/json") {
     return pipestream::markup::v1::MARKUP_FORMAT_DOCLING_JSON;
+  }
+  // Plain text last, after every format a name or type names outright: it
+  // is read as Markdown, of which it is the trivial case.
+  if (extension == ".txt" || type == "text/plain") {
+    return pipestream::markup::v1::MARKUP_FORMAT_MARKDOWN;
   }
   return pipestream::markup::v1::MARKUP_FORMAT_UNSPECIFIED;
 }

@@ -518,7 +518,10 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     auto* origin = base.mutable_origin();
     origin->set_filename(requested_name.filename().string());
     // A FileSource declares no content type; the bytes speak before the name.
+    // The resolved type is the origin's and, below, the routing's and every
+    // dialed collector's: what the bytes are is decided once.
     stamp_origin_mimetype(std::string(), *bytes, requested_name, origin);
+    const std::string resolved_type = origin->mimetype();
     origin->set_binary_hash(content_hash(*bytes));
     // The stamp is the service's own claim: attributed like any other, and
     // ranked above every collector's, so no collector's idea of the
@@ -641,7 +644,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     // Unconfigured, PDF stays on the CV path exactly as before.
     const auto selected_collectors =
         requested_collectors(request.options().collectors());
-    auto routed = route_collector(requested_name.string(), std::string());
+    auto routed = route_document(requested_name.string(), std::string(), *bytes);
     if (selected_collectors.empty() && pdf &&
         routed == pipestream::parse::v1::COLLECTOR_GRPARSE_CV &&
         endpoints != nullptr && endpoints->has(pipestream::parse::v1::COLLECTOR_PDF)) {
@@ -719,7 +722,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
           return outcome;
         };
       } else {
-        collector.run = [id, endpoints, bytes, requested_name, ebcdic_layout_json,
+        collector.run = [id, endpoints, bytes, requested_name, resolved_type, ebcdic_layout_json,
                          lol_html_options_json, inbound_deadline, context]() {
           // The dequeue check answered "still listening" before this parse
           // started; a cancel can land any time after. Ask again before
@@ -731,7 +734,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
             return outcome;
           }
           return run_remote_collector(id, endpoints, requested_name.string(),
-                                      requested_name.string(), std::string(), *bytes,
+                                      requested_name.string(), resolved_type, *bytes,
                                       *ebcdic_layout_json, *lol_html_options_json,
                                       inbound_deadline);
         };
@@ -1269,7 +1272,7 @@ class DocumentStreamReactor final
       // the stream. The parse degrades collector by collector instead of
       // failing while any part succeeds. The default PDF route becomes the
       // pdf inspector when one is configured, exactly like the unary path.
-      auto routed = route_collector(filename_.string(), content_type_);
+      auto routed = route_document(filename_.string(), content_type_, *bytes);
       if (requested_collectors_.empty() && pdf &&
           routed == pipestream::parse::v1::COLLECTOR_GRPARSE_CV && endpoints_ != nullptr &&
           endpoints_->has(pipestream::parse::v1::COLLECTOR_PDF)) {

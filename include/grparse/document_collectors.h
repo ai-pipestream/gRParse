@@ -24,6 +24,11 @@ namespace grparse {
 // waited on past its own patience; kNoCollectorDeadline (the default) means
 // the call carried none and the leg keeps its cap alone.
 
+// The text a failed collector leg reports: the collector's name, then the
+// status message, or the status code's name when the message is empty, so
+// a leg that failed with a bare code never reads as "markup collector: ".
+std::string collector_status_text(const char* name, const grpc::Status& status);
+
 // grpc-asr. `model` is the whisper model name the collector must have
 // loaded; the caller resolves it from configuration, never guesses.
 CollectorOutcome collect_asr_document(const std::shared_ptr<grpc::Channel>& channel,

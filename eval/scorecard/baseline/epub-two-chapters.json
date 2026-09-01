@@ -3,7 +3,7 @@
   "agreed": 2,
   "claimed_fields": {
    "epub": 14,
-   "grparse": 3
+   "grparse": 4
   },
   "collectors": [
    "epub",
@@ -15,7 +15,8 @@
    "origin.binary_hash": "grparse",
    "origin.filename": "grparse",
    "origin.mimetype": "grparse",
-   "source_meta.created.seconds": "epub",
+   "origin.mimetype_evidence": "grparse",
+   "source_meta.created": "epub",
    "source_meta.created_raw": "epub",
    "source_meta.language": "epub",
    "source_meta.title": "epub"
@@ -129,6 +130,7 @@
  "reading": [
   {
    "hash": "30e4a36e348c12af",
+   "key": "oebps/text/chap1.xhtml",
    "label": "group:chapter",
    "name": "OEBPS/text/chap1.xhtml",
    "ref": "#/groups/0",
@@ -136,6 +138,7 @@
   },
   {
    "hash": "3e93ded328010c26",
+   "key": "chapter one",
    "label": "title",
    "level": 0,
    "ref": "#/texts/0",
@@ -143,18 +146,21 @@
   },
   {
    "hash": "f4868817e211f5ce",
+   "key": "the first chapter.",
    "label": "text",
    "ref": "#/texts/1",
    "text": "The first chapter."
   },
   {
    "hash": "2c01509242e2489c",
+   "key": "",
    "label": "picture",
    "ref": "#/pictures/0",
    "text": ""
   },
   {
    "hash": "866a577a8e31a599",
+   "key": "oebps/text/chap2.xhtml",
    "label": "group:chapter",
    "name": "OEBPS/text/chap2.xhtml",
    "ref": "#/groups/1",
@@ -162,6 +168,7 @@
   },
   {
    "hash": "85c0e5bd4d6773ce",
+   "key": "chapter two",
    "label": "title",
    "level": 0,
    "ref": "#/texts/2",
@@ -169,12 +176,14 @@
   },
   {
    "hash": "b5ef06f22b856777",
+   "key": "the second chapter.",
    "label": "text",
    "ref": "#/texts/3",
    "text": "The second chapter."
   },
   {
    "hash": "2c01509242e2489c",
+   "key": "",
    "label": "picture",
    "ref": "#/pictures/1",
    "text": ""

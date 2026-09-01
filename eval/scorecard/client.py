@@ -42,6 +42,18 @@ class ConvertResult:
     elapsed_ms: float
     timings: dict[str, float] = field(default_factory=dict)
     rpc_error: str | None = None
+    # Every export the call asked for, by the OutputFormat name without its
+    # prefix ("md", "canonical_json"); ``markdown`` stays the md shortcut.
+    exports: dict[str, str] = field(default_factory=dict)
+
+
+# The exports a plain convert asks for; callers that need more name them.
+DEFAULT_FORMATS = ("MARKDOWN",)
+EXPORT_FIELDS = {
+    "TEXT": "text", "MARKDOWN": "md", "HTML": "html", "JSON": "json",
+    "CANONICAL_JSON": "canonical_json", "GDOCS_JSON": "gdocs_json", "DOCTAGS": "doctags",
+    "DOCLANG": "doclang", "VTT": "vtt", "HTML_SPLIT_PAGE": "html_split_page", "YAML": "yaml",
+}
 
 
 @dataclass
@@ -93,14 +105,28 @@ class GrparseClient:
 
     def convert(self, path: Path, filename: str | None = None) -> ConvertResult:
         """One ConvertSource with markdown requested; RPC failures are returned, not raised."""
+        return self.convert_bytes(path.read_bytes(), filename or path.name)
+
+    def convert_bytes(self, data: bytes, filename: str, *, formats: tuple[str, ...] = DEFAULT_FORMATS,
+                      collectors: tuple[str, ...] = (), ebcdic_layout_json: bytes | None = None) -> ConvertResult:
+        """One ConvertSource over in-memory bytes (nothing touches disk). ``formats``
+        are OutputFormat names without the prefix, ``collectors`` Collector enum
+        names without theirs; RPC failures are returned, not raised."""
         import grpc
         from google.protobuf.json_format import MessageToDict
 
         request = self._parse_pb2.ConvertSourceRequest()
         source = request.request.sources.add()
-        source.file.filename = filename or path.name
-        source.file.base64_string = base64.b64encode(path.read_bytes()).decode()
-        request.request.options.to_formats.append(self._parse_types_pb2.OUTPUT_FORMAT_MARKDOWN)
+        source.file.filename = filename
+        source.file.base64_string = base64.b64encode(data).decode()
+        for name in formats:
+            request.request.options.to_formats.append(
+                self._parse_types_pb2.OutputFormat.Value(f"OUTPUT_FORMAT_{name}"))
+        for name in collectors:
+            request.request.options.collectors.append(
+                self._parse_types_pb2.Collector.Value(f"COLLECTOR_{name}"))
+        if ebcdic_layout_json is not None:
+            request.request.options.ebcdic_layout_json = ebcdic_layout_json
         started = time.monotonic()
         try:
             response = self._stub.ConvertSource(request, timeout=CONVERT_TIMEOUT_SECONDS)
@@ -116,5 +142,7 @@ class GrparseClient:
         errors = [{"module": e.module_name, "component": self._parse_types_pb2.ComponentType.Name(e.component_type),
                    "message": e.error_message} for e in body.errors]
         status = self._parse_types_pb2.ConversionStatus.Name(body.status)
+        exports = {EXPORT_FIELDS[name]: getattr(body.document.exports, EXPORT_FIELDS[name]) or ""
+                   for name in formats if name in EXPORT_FIELDS}
         return ConvertResult(document=document, markdown=body.document.exports.md or "", status=status,
-                             errors=errors, elapsed_ms=elapsed, timings=dict(body.timings))
+                             errors=errors, elapsed_ms=elapsed, timings=dict(body.timings), exports=exports)

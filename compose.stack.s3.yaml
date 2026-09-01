@@ -1,0 +1,30 @@
+# Optional S3 for the corpus eval (eval/s3/README.md): a private RustFS the
+# stack can bring up beside the parsers, so the S3-driven battery has a
+# bucket to read without touching any shared store. Opt-in by profile:
+#
+#   RUSTFS_ACCESS_KEY=<choose> RUSTFS_SECRET_KEY=<choose> \
+#     docker compose -f compose.stack.yaml -f compose.stack.s3.yaml --profile s3 up -d rustfs
+#
+# The credentials come from the environment at invocation time and have no
+# default here: compose refuses to start the service when either is unset.
+# Data lives on the named volume; nothing is published on the host except
+# the S3 port on the loopback interface, which is what eval/s3/run.py and
+# eval/s3/seed_from_workspace.py dial (EVAL_S3_ENDPOINT=http://127.0.0.1:9000).
+# gRParse itself never reads this store: the eval fetches each object into
+# memory and streams it over gRPC.
+services:
+  rustfs:
+    profiles: ["s3"]
+    image: rustfs/rustfs:1.0.0-beta.11-preview.1
+    environment:
+      RUSTFS_ACCESS_KEY: "${RUSTFS_ACCESS_KEY:?set RUSTFS_ACCESS_KEY in the environment}"
+      RUSTFS_SECRET_KEY: "${RUSTFS_SECRET_KEY:?set RUSTFS_SECRET_KEY in the environment}"
+    ports:
+      - "127.0.0.1:9000:9000"
+    volumes:
+      - rustfs-data:/data
+      - rustfs-logs:/logs
+
+volumes:
+  rustfs-data:
+  rustfs-logs:
