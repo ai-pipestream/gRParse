@@ -100,3 +100,43 @@
   http://krick-1.taild24b1c.ts.net:8086): 1 page in 4.3s, pagesOk=1, 9 structured items.
 - ENRICH_VLM_URL / GRPC_VLM_ENDPOINT defaults stay on the Qwen server (krick-1:8085);
   North is a per-request preset+endpoint choice, both servers on the same box.
+
+### 2026-08-31: three agents, one ruler (scorecard, repair pass, picture sources)
+
+- Program: three concurrent agents with disjoint ownership and no commits of their own;
+  the coordinator committed by path. Agent 1 (eval/, tests/golden/) built the ruler,
+  agents 2 (src/, include/, tests/*.cpp) and 3 (grpc-markup) were measured with it.
+- Scorecard (`eval/scorecard/`, 338a2f1 e076922 807db70 df5cac9): 24-document corpus
+  (22 small fixtures copied from sister repos, 2 external by path), one ConvertSource
+  per doc, a compact structural summary per Document committed as the baseline, pure
+  metric functions (text, order keyed on label plus first six words, table cell F1 and
+  structure, headings, picture placement, warnings, claims agreement) with explicit
+  tolerances, a Changes section listing what moved per doc, exit 0/1/77. Registered as
+  the opt-in `structural-scorecard` ctest (LABELS eval). Whole run: ~3-5 s.
+- grpc-markup 8fce0e0: pictures from `<svg><image>` (href, else namespaced xlink:href),
+  small vector `<svg>` as a data URI, `<picture>` via its `<img>`, `srcset` without
+  `src`, image `<object>`/`<embed>`; decorative svgs produce nothing; a CAPTION adjacent
+  to a picture binds into PictureItem.captions (also AsciiDoc/LaTeX). +22 tests, live
+  probe returned the nested EPUB cover as `#/pictures/0` with `image.uri` intact.
+- gRParse repair pass (e1fa639 02765bc f8818e7): post-merge, format-agnostic, default
+  on (`GRPARSE_REPAIR=on|off|debug`), counters `grparse_repairs_total`. Running
+  header/footer demotion to furniture, line-break hyphen rejoin, paragraph continuation
+  across page/column breaks. The scorecard caught two false positives on the 11-page
+  paper on the first live run ("2023." from a wrapped reference demoted as a page
+  number; a figure sub-caption merged as a continuation) and a third after the first
+  fix (the enumerator rule only covered same-page merges). Final live run: 16 hyphens
+  rejoined, 0 demotions, 0 merges, 24/24 pass, paper back to 121 body items.
+- Build trap found on the way (e79a43e): a local `act` CI run of the same Dockerfile
+  shares the `/build` cache mount and left objects newer than the edited sources, so
+  ninja skipped `document_repair.cpp` and a green in-build ctest verified the OLD
+  binary. Always check the build log compiled the file you changed (`grep 'Building
+  CXX'`); `--build-arg GRPARSE_BUILD_CACHE_SCOPE=ci` gives a second builder its own
+  tree. `touch` does not help: BuildKit keys COPY on content, not mtime.
+- Scorecard observations not yet acted on: docx pictures all appended at body end (CV
+  figures in nondeterministic order), paper heading levels erratic (title split 1+2,
+  ABSTRACT level 3), html/md origin.mimetype application/octet-stream (FileSource has no
+  content type, only the filename hint), xlsx sheets carry an empty PictureItem, bar
+  chart yields no data. Each is a row in the report to move, not an opinion.
+- Rejoin precision on the paper: 14 of 16 right; two joined fragments the layout had
+  already broken ("hyper- t−1", "probabil- that"). A tail fragment of at least two
+  letters would catch the first; the second needs a lexicon. Left as rows to move.

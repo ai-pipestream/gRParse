@@ -173,8 +173,18 @@ scripts/smoke-test.sh pipestreamai/grparse:latest      # boot-proof a built imag
 
 Optional test tiers that skip silently without their prerequisite: the
 layout golden (needs the model file), the VLM oracle eval (test `vlm-oracle-eval`, label `eval`,
-needs `VLM_ENDPOINT`), the vlm-convert golden. A green run proves nothing
-about a tier that skipped; read the skip counts.
+needs `VLM_ENDPOINT`), the structural scorecard (test `structural-scorecard`, label
+`eval`, needs a running gRParse at `GRPARSE_TARGET`; see `eval/README.md`), the
+vlm-convert golden. A green run proves nothing about a tier that skipped; read
+the skip counts.
+
+The build tree lives in a BuildKit cache mount keyed by toolchain. Two builders
+on one host that share it (a developer build and a local CI run of the same
+Dockerfile) can leave each other's objects newer than the sources, and ninja
+then skips a recompile while the in-build ctest passes on the old binary. Check
+that the build log compiled the file you changed (`grep 'Building CXX'`), and
+give a second builder its own tree with
+`--build-arg GRPARSE_BUILD_CACHE_SCOPE=ci`.
 
 ### 5. Run the stack
 
