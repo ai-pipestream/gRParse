@@ -129,12 +129,94 @@ void verify_rotation_vote() {
           "near-square and empty boxes cast no vote");
 }
 
+// The read-quality summary, the candidate turns it and the vote produce,
+// and the ranking between reads of one page.
+void verify_read_quality_candidates_and_ranking() {
+  grparse::OcrPage upright{1000, 1000, {}};
+  for (int line = 0; line < 4; ++line) {
+    upright.lines.push_back(make_line("w", 50, 100 + 30 * line, 600, 120 + 30 * line,
+                                      grparse::TextOrigin::kOcr, 0.9F));
+  }
+  const auto clean = grparse::page_read_quality(upright);
+  require(clean.lines == 4 && clean.scored_lines == 4 && !clean.upside_down &&
+              clean.mean_confidence > 0.89F && clean.mean_confidence < 0.91F,
+          "a clean read: every line scored, none flipped");
+  require(grparse::rotation_candidates(grparse::page_rotation_vote(upright), clean).empty(),
+          "a clean upright read needs no re-read");
+
+  grparse::OcrPage flipped = upright;
+  for (auto& line : flipped.lines) line.flipped = true;
+  const auto upside_down = grparse::page_read_quality(flipped);
+  require(upside_down.flipped_lines == 4 && upside_down.upside_down,
+          "every line flipped is an upside-down page");
+  require(grparse::rotation_candidates(grparse::page_rotation_vote(flipped), upside_down) ==
+              std::vector<int>{180},
+          "an upside-down read tries the half turn only");
+
+  grparse::OcrPage turned{1000, 1000, {}};
+  for (int line = 0; line < 4; ++line) {
+    turned.lines.push_back(make_line("w", 100 + 30 * line, 50, 120 + 30 * line, 600,
+                                     grparse::TextOrigin::kOcr, 0.9F));
+  }
+  require(grparse::rotation_candidates(grparse::page_rotation_vote(turned),
+                                       grparse::page_read_quality(turned)) ==
+              std::vector<int>{90, 270},
+          "a quarter-turn vote tries both quarter turns");
+
+  grparse::OcrPage poor = upright;
+  for (auto& line : poor.lines) line.confidence = 0.3F;
+  require(grparse::rotation_candidates(grparse::page_rotation_vote(poor),
+                                       grparse::page_read_quality(poor)) ==
+              std::vector<int>{90, 180, 270},
+          "a poor upright read tries every turn");
+  require(grparse::rotation_candidates(grparse::page_rotation_vote(poor),
+                                       grparse::page_read_quality(poor), 0.2F)
+              .empty(),
+          "the floor decides what poor means");
+  grparse::OcrPage sparse_poor{1000, 1000, {poor.lines[0], poor.lines[1]}};
+  require(grparse::rotation_candidates(grparse::page_rotation_vote(sparse_poor),
+                                       grparse::page_read_quality(sparse_poor))
+              .empty(),
+          "two poor lines are too few to justify three re-reads");
+
+  grparse::OcrPage unscored = upright;
+  for (auto& line : unscored.lines) line.confidence = std::nullopt;
+  const auto silent = grparse::page_read_quality(unscored);
+  require(silent.scored_lines == 0 && silent.mean_confidence == 0.0F, "no scores, no mean");
+  require(grparse::rotation_candidates(grparse::page_rotation_vote(unscored), silent).empty(),
+          "a read without confidences is never called poor");
+
+  require(grparse::score_read(upright) > grparse::score_read(flipped),
+          "an upright read outranks an upside-down one");
+  require(grparse::score_read(upright) > grparse::score_read(turned),
+          "an upright read outranks a quarter-turned one");
+  require(grparse::score_read(poor) > grparse::score_read(flipped),
+          "upright beats flipped even at lower confidence");
+  require(grparse::score_read(upright) > grparse::score_read(poor),
+          "among upright reads the confident one wins");
+  require(grparse::score_read(turned) > grparse::score_read(grparse::OcrPage{1000, 1000, {}}),
+          "any text beats no text");
+
+  // Two tall lines and one wide one cast no quarter-turn vote (too few),
+  // yet the read is not upright evidence: a turned read of a sparse page
+  // must not outrank the page as fed on confidence alone.
+  grparse::OcrPage sparse_tall{1000, 1000, {}};
+  sparse_tall.lines.push_back(make_line("t", 100, 50, 120, 600, grparse::TextOrigin::kOcr, 0.99F));
+  sparse_tall.lines.push_back(make_line("t", 140, 50, 160, 600, grparse::TextOrigin::kOcr, 0.99F));
+  sparse_tall.lines.push_back(make_line("w", 50, 700, 600, 720, grparse::TextOrigin::kOcr, 0.99F));
+  require(!grparse::page_rotation_vote(sparse_tall).quarter_turn, "two tall lines are no vote");
+  require(!grparse::score_read(sparse_tall).upright, "tall-majority reads are not upright");
+  require(grparse::score_read(poor) > grparse::score_read(sparse_tall),
+          "a poor upright read still outranks a confident tall-majority one");
+}
+
 int main() {
   try {
     verify_iou_and_overlap();
     verify_extreme_coordinates_do_not_overflow();
     verify_merge_dedupes_and_sorts();
     verify_rotation_vote();
+    verify_read_quality_candidates_and_ranking();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
     std::println(stderr, "text-geometry-test: {}", error.what());

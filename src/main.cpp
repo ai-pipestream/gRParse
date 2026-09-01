@@ -346,7 +346,9 @@ unsigned busy_percent(uint64_t busy_ns_delta, double elapsed_seconds, size_t wor
 std::string format_metrics(const grparse::PageScheduler::Metrics& current,
                            const grparse::PageScheduler::Metrics& previous,
                            const grparse::OcrEnginePool::Stats& ocr, double elapsed_seconds,
-                           const grparse::PageScheduler::Options& options) {
+                           const grparse::PageScheduler::Options& options,
+                           const grparse::RepairTotals& repairs,
+                           const grparse::OfficeCvTotals& office_cv) {
   std::ostringstream line;
   line << "gRParse metrics:"
        << " docs{submitted=" << current.documents_submitted
@@ -358,6 +360,21 @@ std::string format_metrics(const grparse::PageScheduler::Metrics& current,
        << ",figures=" << current.figures_classified
        << ",barcodes=" << current.barcodes_decoded
        << ",cancelled=" << current.pages_cancelled << "}"
+       << " rotation{rerecognized=" << current.pages_rerecognized
+       << ",passes=" << current.rerecognition_passes;
+  for (size_t turn = 0; turn < grparse::PageScheduler::kRotationDegrees.size(); ++turn) {
+    line << "," << grparse::PageScheduler::kRotationDegrees[turn] << "="
+         << current.rotations_applied[turn];
+  }
+  line << "}"
+       << " repairs{furniture=" << repairs.furniture_demoted
+       << ",hyphens=" << repairs.hyphens_rejoined << ",paragraphs=" << repairs.paragraphs_merged
+       << ",titles=" << repairs.titles_merged << ",levels=" << repairs.heading_levels_assigned
+       << ",reordered=" << repairs.body_items_reordered << ",splits=" << repairs.headings_split
+       << ",demoted=" << repairs.headings_demoted << ",form_rows=" << repairs.form_rows_split
+       << "}"
+       << " office_cv{added=" << office_cv.pictures_added
+       << ",anchored=" << office_cv.pictures_anchored << "}"
        << " queues{render=" << current.pages_waiting_for_render
        << ",inference=" << current.pages_waiting_for_inference
        << ",assembly=" << current.pages_waiting_for_assembly << "}"
@@ -503,6 +520,19 @@ int main() {
       std::println("gRParse page images: enabled");
     }
     options.barcode_mode = configure_barcode_mode(layout != nullptr, figure_classes != nullptr);
+    // GRPARSE_OCR_ROTATION=on (default) re-reads a layerless page whose
+    // first read says the raster was turned (tall line boxes, an upside-down
+    // classifier vote, or a poor read) at the turns the evidence names and
+    // keeps the best read; off never re-reads.
+    const char* ocr_rotation = std::getenv("GRPARSE_OCR_ROTATION");
+    const std::string ocr_rotation_mode =
+        ocr_rotation == nullptr || *ocr_rotation == '\0' ? "on" : ocr_rotation;
+    if (ocr_rotation_mode != "on" && ocr_rotation_mode != "off") {
+      throw std::invalid_argument("GRPARSE_OCR_ROTATION must be on or off");
+    }
+    options.orientation.enabled = ocr_rotation_mode == "on";
+    std::println("gRParse OCR orientation recovery: {}",
+                 options.orientation.enabled ? "enabled" : "disabled (GRPARSE_OCR_ROTATION=off)");
     grparse::PageScheduler scheduler(*engines, options, grparse::PageSourceFactory{},
                                      layout.get(), table_structure.get(),
                                      figure_classes.get());
@@ -635,7 +665,8 @@ int main() {
           const auto current = scheduler.metrics();
           const auto now = std::chrono::steady_clock::now();
           const double elapsed = std::chrono::duration<double>(now - previous_time).count();
-          std::println("{}", format_metrics(current, previous, engines->stats(), elapsed, options));
+          std::println("{}", format_metrics(current, previous, engines->stats(), elapsed, options,
+                                            grparse::repair_totals(), grparse::office_cv_totals()));
           previous = current;
           previous_time = now;
           lock.lock();

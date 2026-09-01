@@ -23,6 +23,11 @@ struct OcrLine {
   // subset prefix stripped.
   std::optional<std::string> font_name = std::nullopt;
   std::optional<double> font_size_pt = std::nullopt;
+  // True when the angle classifier turned the crop 180 degrees before the
+  // recognizer read it.  RapidOCR's most-angle vote sets it for every line
+  // of a page at once, so it is a page-level upside-down signal
+  // (text_geometry.h, page_read_quality).
+  bool flipped = false;
 };
 
 // One table cell recognized by the structure model.  Grid coordinates are
@@ -102,6 +107,13 @@ struct OcrPage {
   // capture is enabled; empty otherwise.  Its pixel size may differ from
   // width/height (which can be PDF points); the aspect ratio matches.
   std::vector<unsigned char> preview_png = {};
+  // The clockwise turn (0, 90, 180 or 270) the scheduler applied to the
+  // raster before the read it kept.  Everything on the page (lines,
+  // regions, width and height, the preview) is in the turned, upright
+  // frame; the value tells a client that renders the source itself how to
+  // bring its own image into that frame.  Wire slot:
+  // PageItem.quality.rotation_degrees.
+  int rotation_degrees = 0;
 };
 
 // Merge OCR lines into a digital page without duplicating geometry-overlapping text.

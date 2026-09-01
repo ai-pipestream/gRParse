@@ -1,10 +1,11 @@
 {
- "doc_id": "pdf-rotated-scan",
- "source": "page 1 of two-column.pdf (pdftotext -f 1 -l 1) for the text; tesseract --psm 0 confirms the raster is turned 90 degrees clockwise and --psm 1 reads the same paragraphs",
+ "doc_id": "pdf-rotated-scan-180",
+ "source": "page 1 of two-column.pdf (pdftotext -f 1 -l 1) for the text; the generator eval/scorecard/fixtures/rotated_scan.sh turns the 150 dpi grayscale raster 180 degrees (ImageMagick -rotate 180)",
  "notes": [
-  "The page is page 1 of pdf-two-column rotated a quarter turn; the correct reading is the upright page: title, byline, heading '1. West Egg', then the nine paragraphs that start on page 1 in column order (left column top to bottom, then right column).",
+  "The page is page 1 of pdf-two-column upside down; the correct reading is the upright page: title, byline, heading '1. West Egg', then the nine paragraphs that start on page 1 in column order (left column top to bottom, then right column).",
   "Headings: title level 0, '1. West Egg' level 1.",
   "The header line and 'Page 1' are furniture; the footnote at the foot of the left column is not an anchor.",
+  "Same headings and anchors as pdf-rotated-scan: only the turn differs.",
   "The byline anchor starts at 'Scott': the raster's small italic 'F.' loses its period to recognition jitter on some turns, and an anchor must not hinge on one glyph."
  ],
  "headings": [

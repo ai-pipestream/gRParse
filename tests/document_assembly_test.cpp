@@ -622,6 +622,29 @@ void verify_body_order_and_column_anchoring() {
 
 }  // namespace
 
+// A turn orientation recovery applied reaches the page's typed quality
+// slot; a page read as it came carries no quality block for it.
+void verify_recovered_rotation_reaches_page_quality() {
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage turned{200, 100, {line("upright now", 10)}};
+  turned.rotation_degrees = 270;
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(turned, 1, &cursor, &data);
+  require(data.page_meta().has_quality() && data.page_meta().quality().has_rotation_degrees(),
+          "a recovered turn must land in PageItem.quality");
+  require(data.page_meta().quality().rotation_degrees() == 270.0, "the turn is the degrees kept");
+  require(data.page_meta().size().width() == 200 && data.page_meta().size().height() == 100,
+          "the page size is the upright raster's");
+
+  grparse::AssemblyCursor plain_cursor;
+  grparse::OcrPage plain{100, 200, {line("as fed", 10)}};
+  ai::pipestream::parse::v1::PageData plain_data;
+  grparse::append_page_data(plain, 1, &plain_cursor, &plain_data);
+  require(!plain_data.page_meta().has_quality() ||
+              !plain_data.page_meta().quality().has_rotation_degrees(),
+          "an unturned page claims no rotation");
+}
+
 int main() {
   try {
     verify_contract_shape();
@@ -641,6 +664,7 @@ int main() {
     verify_numbered_section_header_levels();
     verify_rotated_lines_keep_their_quad();
     verify_body_order_and_column_anchoring();
+    verify_recovered_rotation_reaches_page_quality();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
     std::println(stderr, "document-assembly-test: {}", error.what());

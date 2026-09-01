@@ -2,9 +2,12 @@
 
 Never a gate: the report gets one line with the resident set size before and
 after the run when ``process_resident_memory_bytes`` is exposed, and a line
-saying it is not when it is not. ``EVAL_METRICS_URL`` names the endpoint;
-without it the address is derived from the ``parse-stack-grparse-1``
-container (read-only ``docker inspect``) when the target is local.
+saying memory was not sampled when it is not. ``EVAL_METRICS_URL`` names the
+endpoint explicitly; without it, a local target (``localhost``,
+``127.0.0.1``, ``0.0.0.0`` or no host) resolves to the stack's
+``parse-stack-grparse-1`` container through a read-only ``docker inspect``,
+and any failure there (no docker, no container, no network) silently means
+"not sampled". A remote target without an explicit URL is never probed.
 """
 
 from __future__ import annotations
@@ -12,11 +15,18 @@ from __future__ import annotations
 import os
 import subprocess
 import urllib.request
+from typing import Callable
 
 RSS_METRIC = "process_resident_memory_bytes"
 CONTAINER = "parse-stack-grparse-1"
 METRICS_PORT = 9464
 TIMEOUT_SECONDS = 3.0
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0", "")
+NOT_SAMPLED = "not sampled (no metrics endpoint; set EVAL_METRICS_URL)"
+
+# Resolves a container's IP on its first network, or None. Injected into
+# metrics_url so the policy is testable without docker.
+ContainerIp = Callable[[str], str | None]
 
 
 def parse_rss(text: str) -> int | None:
@@ -32,26 +42,47 @@ def parse_rss(text: str) -> int | None:
     return None
 
 
-def metrics_url(target: str) -> str | None:
-    explicit = os.environ.get("EVAL_METRICS_URL")
-    if explicit:
-        return explicit
-    host = target.rsplit(":", 1)[0]
-    if host not in ("localhost", "127.0.0.1", "0.0.0.0", ""):
-        return None
+def docker_container_ip(container: str) -> str | None:
+    """The container's IP from ``docker inspect``; None when docker is absent,
+    fails, times out, or the container has no network address."""
     try:
-        ip = subprocess.run(["docker", "inspect", CONTAINER, "--format",
-                             "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"],
-                            capture_output=True, text=True, timeout=5).stdout.strip()
+        completed = subprocess.run(
+            ["docker", "inspect", container, "--format",
+             "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}"],
+            capture_output=True, text=True, timeout=5, check=False)
     except (OSError, subprocess.SubprocessError):
         return None
+    if completed.returncode != 0:
+        return None
+    ip = completed.stdout.strip()
+    return ip or None
+
+
+def target_host(target: str) -> str:
+    """The host part of ``host:port`` (``[v6]:port`` keeps its brackets' content)."""
+    if target.startswith("["):
+        return target[1:target.find("]")] if "]" in target else target
+    return target.rsplit(":", 1)[0] if ":" in target else target
+
+
+def metrics_url(target: str, *, explicit: str | None = None,
+                container_ip: ContainerIp = docker_container_ip) -> str | None:
+    """The Prometheus endpoint for ``target``: ``explicit`` (defaults to
+    ``EVAL_METRICS_URL``) when given, else the stack container's ``:9464``
+    for a local target, else None."""
+    explicit = os.environ.get("EVAL_METRICS_URL") if explicit is None else explicit
+    if explicit:
+        return explicit
+    if target_host(target) not in LOCAL_HOSTS:
+        return None
+    ip = container_ip(CONTAINER)
     return f"http://{ip}:{METRICS_PORT}/metrics" if ip else None
 
 
 def sample_rss(url: str | None) -> tuple[int | None, str]:
     """(bytes or None, note) from one scrape."""
     if not url:
-        return None, "no metrics endpoint (set EVAL_METRICS_URL)"
+        return None, NOT_SAMPLED
     try:
         with urllib.request.urlopen(url, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310
             text = response.read().decode("utf-8", errors="replace")

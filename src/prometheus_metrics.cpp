@@ -88,8 +88,15 @@ std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
 std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
                                       const OcrEnginePool::Stats& ocr_pool,
                                       const PageScheduler::Options& options,
-                                      const RepairTotals& repairs,
-                                      const DataTotals& data) {
+                                      const RepairTotals& repairs, const DataTotals& data) {
+  return render_prometheus_metrics(metrics, ocr_pool, options, repairs, data, office_cv_totals());
+}
+
+std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
+                                      const OcrEnginePool::Stats& ocr_pool,
+                                      const PageScheduler::Options& options,
+                                      const RepairTotals& repairs, const DataTotals& data,
+                                      const OfficeCvTotals& office_cv) {
   std::ostringstream out;
   out.precision(15);
 
@@ -116,12 +123,46 @@ std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
   counter(out, "grparse_pages_cancelled_total", "Pages abandoned by cancelled documents.",
           metrics.pages_cancelled);
 
-  out << "# HELP grparse_repairs_total Changes the post-merge repair pass made to finished "
-         "documents, by kind.\n"
-         "# TYPE grparse_repairs_total counter\n"
-      << "grparse_repairs_total{kind=\"furniture_demoted\"} " << repairs.furniture_demoted << '\n'
-      << "grparse_repairs_total{kind=\"hyphens_rejoined\"} " << repairs.hyphens_rejoined << '\n'
-      << "grparse_repairs_total{kind=\"paragraphs_merged\"} " << repairs.paragraphs_merged << '\n';
+  counter(out, "grparse_pages_rerecognized_total",
+          "Pages read more than once to recover their orientation.", metrics.pages_rerecognized);
+  counter(out, "grparse_rerecognition_passes_total",
+          "Extra recognition passes spent on orientation recovery.",
+          metrics.rerecognition_passes);
+  out << "# HELP grparse_page_rotations_total Pages whose kept read was the raster turned "
+         "clockwise by the labelled degrees.\n"
+         "# TYPE grparse_page_rotations_total counter\n";
+  for (size_t turn = 0; turn < PageScheduler::kRotationDegrees.size(); ++turn) {
+    out << "grparse_page_rotations_total{degrees=\"" << PageScheduler::kRotationDegrees[turn]
+        << "\"} " << metrics.rotations_applied[turn] << '\n';
+  }
+
+  out << "# HELP grparse_repair_changes_total Changes the post-merge repair pass made to "
+         "finished documents, by kind.\n"
+         "# TYPE grparse_repair_changes_total counter\n"
+      << "grparse_repair_changes_total{kind=\"furniture_demoted\"} " << repairs.furniture_demoted
+      << '\n'
+      << "grparse_repair_changes_total{kind=\"hyphens_rejoined\"} " << repairs.hyphens_rejoined
+      << '\n'
+      << "grparse_repair_changes_total{kind=\"paragraphs_merged\"} " << repairs.paragraphs_merged
+      << '\n'
+      << "grparse_repair_changes_total{kind=\"titles_merged\"} " << repairs.titles_merged << '\n'
+      << "grparse_repair_changes_total{kind=\"heading_levels_assigned\"} "
+      << repairs.heading_levels_assigned << '\n'
+      << "grparse_repair_changes_total{kind=\"body_items_reordered\"} "
+      << repairs.body_items_reordered << '\n'
+      << "grparse_repair_changes_total{kind=\"headings_split\"} " << repairs.headings_split
+      << '\n'
+      << "grparse_repair_changes_total{kind=\"headings_demoted\"} " << repairs.headings_demoted
+      << '\n'
+      << "grparse_repair_changes_total{kind=\"form_rows_split\"} " << repairs.form_rows_split
+      << '\n';
+
+  out << "# HELP grparse_office_cv_total Figures the office CV enrichment added to mapped "
+         "office documents, by kind.\n"
+         "# TYPE grparse_office_cv_total counter\n"
+      << "grparse_office_cv_total{kind=\"pictures_added\"} " << office_cv.pictures_added << '\n'
+      << "grparse_office_cv_total{kind=\"pictures_anchored\"} " << office_cv.pictures_anchored
+      << '\n';
 
   out << "# HELP grparse_data_changes_total Data-plane changes made to finished documents, "
          "by kind.\n"

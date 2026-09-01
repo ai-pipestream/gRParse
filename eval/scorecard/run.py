@@ -9,7 +9,8 @@
 Environment: GRPARSE_TARGET (default localhost:50051), EVAL_LABEL (default
 "live"), EVAL_OUT (default eval/out), EVAL_EXTERNAL_CORPUS (directory that
 overrides where external corpus files are looked up), EVAL_LATENCY=off
-(disable the latency budget), EVAL_REQUIRE=1 (a skip is a failure),
+(disable the latency budget; a record then leaves the budget unchanged),
+EVAL_REQUIRE=1 (a skip is a failure),
 EVAL_METRICS_URL (Prometheus endpoint for the informational memory line).
 
 Exit codes: 0 every scored document is within tolerance; 1 at least one
@@ -163,7 +164,10 @@ class Runner:
     def record_gates(self, doc: CorpusDocument, conversion: Conversion) -> None:
         truth = self.truth_for(doc.doc_id)
         scores = score_truth(truth, conversion.summary).values() if truth is not None else {}
-        row, changes = ratchet(doc.doc_id, self.gates.get(doc.doc_id), scores, latency_ms=conversion.latency_ms,
+        # A run with the latency gate off (a CPU instance) measures a latency
+        # that is no budget for anyone; it leaves the recorded budget alone.
+        latency_ms = None if self.args.no_latency else conversion.latency_ms
+        row, changes = ratchet(doc.doc_id, self.gates.get(doc.doc_id), scores, latency_ms=latency_ms,
                                stable=conversion.stable, reason=self.args.reason)
         self.new_gates[doc.doc_id] = row
         self.gate_changes.extend(changes)

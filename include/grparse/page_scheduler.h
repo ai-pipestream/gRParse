@@ -16,6 +16,7 @@
 #include "grparse/table_structure_engine.h"
 #include "grparse/ocr_engine.h"
 #include "grparse/ocr_types.h"
+#include "grparse/orientation_recovery.h"
 
 namespace grparse {
 
@@ -54,6 +55,11 @@ class PageScheduler final {
     bool capture_page_images = false;
     // Decode barcode/QR payloads from figure crops in the inference stage.
     BarcodeMode barcode_mode = BarcodeMode::kOff;
+    // Orientation recovery for recognized pages (orientation_recovery.h):
+    // a page whose first read says the raster was turned is re-read at the
+    // turns the evidence names, at most once per turn, never when the page
+    // has a digital text layer.
+    OrientationOptions orientation = {};
   };
 
   // Per-document recognition tuning, resolved by the caller from request
@@ -92,6 +98,10 @@ class PageScheduler final {
   static constexpr std::array<uint64_t, 9> kPageLatencyBoundsMs = {25,   50,   100,  250, 500,
                                                                    1000, 2500, 5000, 10000};
 
+  // The clockwise turns orientation recovery can keep; Metrics::rotations_applied
+  // counts them in this order.
+  static constexpr std::array<int, 3> kRotationDegrees = {90, 180, 270};
+
   struct Metrics {
     uint64_t documents_submitted = 0;
     uint64_t documents_rejected = 0;
@@ -121,6 +131,12 @@ class PageScheduler final {
     // Completed pages by schedule-to-delivered latency, kPageLatencyBoundsMs
     // bucket bounds plus one overflow bucket.
     std::array<uint64_t, kPageLatencyBoundsMs.size() + 1> page_latency = {};
+    // Pages read more than once to recover their orientation, the extra
+    // recognition passes that cost, and the turns kept, by kRotationDegrees
+    // index.  A page counts in pages_rerecognized whether or not a turn won.
+    uint64_t pages_rerecognized = 0;
+    uint64_t rerecognition_passes = 0;
+    std::array<uint64_t, kRotationDegrees.size()> rotations_applied = {};
   };
 
   class Ticket {

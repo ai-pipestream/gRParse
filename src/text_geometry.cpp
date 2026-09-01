@@ -58,6 +58,47 @@ RotationVote page_rotation_vote(const OcrPage& page, double aspect, int minimum_
   return vote;
 }
 
+ReadQuality page_read_quality(const OcrPage& page) {
+  ReadQuality quality;
+  float confidence_sum = 0.0F;
+  for (const auto& line : page.lines) {
+    if (line.text.empty()) continue;
+    ++quality.lines;
+    if (line.flipped) ++quality.flipped_lines;
+    if (line.confidence.has_value()) {
+      ++quality.scored_lines;
+      confidence_sum += *line.confidence;
+    }
+  }
+  if (quality.scored_lines > 0) {
+    quality.mean_confidence = confidence_sum / static_cast<float>(quality.scored_lines);
+  }
+  quality.upside_down = quality.lines > 0 && 2 * quality.flipped_lines > quality.lines;
+  return quality;
+}
+
+std::vector<int> rotation_candidates(const RotationVote& vote, const ReadQuality& quality,
+                                     float confidence_floor, int minimum_lines) {
+  if (vote.quarter_turn) return {90, 270};
+  if (quality.upside_down) return {180};
+  const bool poor_read = quality.lines >= minimum_lines && quality.scored_lines > 0 &&
+                         quality.mean_confidence < confidence_floor;
+  if (poor_read) return {90, 180, 270};
+  return {};
+}
+
+ReadScore score_read(const OcrPage& page) {
+  const ReadQuality quality = page_read_quality(page);
+  const RotationVote vote = page_rotation_vote(page);
+  // Upright means wide lines outnumber tall ones (a sparse page whose few
+  // lines split evenly is not upright evidence either way), no quarter-turn
+  // vote, and no classifier flip.
+  return ReadScore{.has_text = quality.lines > 0,
+                   .upright = !vote.quarter_turn && !quality.upside_down &&
+                              vote.horizontal_lines >= vote.vertical_lines,
+                   .mean_confidence = quality.mean_confidence};
+}
+
 OcrPage merge_digital_and_ocr(OcrPage digital, OcrPage ocr) {
   OcrPage merged;
   merged.width = digital.width > 0 ? digital.width : ocr.width;

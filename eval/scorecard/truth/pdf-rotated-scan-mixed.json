@@ -1,0 +1,54 @@
+{
+ "doc_id": "pdf-rotated-scan-mixed",
+ "source": "pages 1 to 3 of two-column.pdf (pdftotext -f 1 -l 3; page breaks checked per page) for the text; the generator eval/scorecard/fixtures/rotated_scan.sh leaves page 1 upright, turns page 2 by 90 degrees clockwise and page 3 by 270",
+ "notes": [
+  "Three scanned pages, each turned differently, so a per-page orientation decision is required: page 1 reads as is, page 2 needs a 270 degree turn back, page 3 a 90 degree turn back.",
+  "Headings in source order: the title (level 0) and '1. West Egg' (level 1) on page 1, '1.1 The Buchanan House' (level 2) on page 3.",
+  "Anchors are the pdf-two-column anchors that fall on pages 1 to 3, in source order: ten on page 1, then the paragraphs of pages 2 and 3 in column order; a page read at the wrong orientation shows as a run of missing or out-of-order anchors.",
+  "The running header, the 'Page N' footers and the footnote on page 1 are furniture and appear in no anchor.",
+  "The byline anchor starts at 'Scott': the raster's small italic 'F.' loses its period to recognition jitter on some turns, and an anchor must not hinge on one glyph."
+ ],
+ "headings": [
+  {
+   "text": "The Great Gatsby, Chapter One, Reset in Two Columns with Footnotes and a Running Header",
+   "level": 0
+  },
+  {
+   "text": "1. West Egg",
+   "level": 1
+  },
+  {
+   "text": "1.1 The Buchanan House",
+   "level": 2
+  }
+ ],
+ "anchors": [
+  "Scott Fitzgerald (1925). Public domain",
+  "In my younger and more vulnerable",
+  "“Whenever you feel like criticizing anyone,”",
+  "He didn’t say any more, but",
+  "And, after boasting this way of",
+  "My family have been prominent, well-to-do",
+  "I never saw this great-uncle, but",
+  "The practical thing was to find",
+  "It was lonely for a day",
+  "“How do you get to West",
+  "I told him. And as I",
+  "And so with the sunshine and",
+  "There was so much to read,",
+  "Across the courtesy bay the white",
+  "Her husband, among various physical accomplishments,",
+  "He had changed since his New",
+  "His speaking voice, a gruff husky",
+  "“Now, don’t think my opinion on",
+  "“I’ve got a nice place here,”",
+  "We walked through a high hallway",
+  "She laughed again, as if she",
+  "“The whole town is desolate. All",
+  "“Well, you ought to see her.",
+  "“Never heard of them,” he remarked",
+  "“You will,” I answered shortly. “You"
+ ],
+ "tables": [],
+ "figures": []
+}

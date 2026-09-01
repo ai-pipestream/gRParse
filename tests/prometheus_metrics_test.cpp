@@ -12,6 +12,8 @@
 #include <print>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "grparse/prometheus_metrics.h"
 
@@ -131,6 +133,70 @@ void verify_render_counters_and_gauges() {
   require_contains(text, "# TYPE grparse_page_latency_seconds histogram\n", "histogram type");
 }
 
+// The orientation counters, every repair counter, and the office CV totals,
+// as families a dashboard can select by label.
+void verify_render_rotation_repair_and_office_cv_families() {
+  grparse::PageScheduler::Metrics metrics;
+  metrics.pages_rerecognized = 3;
+  metrics.rerecognition_passes = 5;
+  metrics.rotations_applied = {1, 0, 2};
+
+  grparse::RepairTotals repairs;
+  repairs.furniture_demoted = 11;
+  repairs.hyphens_rejoined = 12;
+  repairs.paragraphs_merged = 13;
+  repairs.titles_merged = 14;
+  repairs.heading_levels_assigned = 15;
+  repairs.body_items_reordered = 16;
+  repairs.headings_split = 17;
+  repairs.headings_demoted = 18;
+  repairs.form_rows_split = 19;
+
+  grparse::OfficeCvTotals office_cv;
+  office_cv.pictures_added = 21;
+  office_cv.pictures_anchored = 20;
+
+  const std::string text = grparse::render_prometheus_metrics(
+      metrics, grparse::OcrEnginePool::Stats{}, grparse::PageScheduler::Options{}, repairs,
+      grparse::DataTotals{}, office_cv);
+  require_contains(text, "# TYPE grparse_pages_rerecognized_total counter\n",
+                   "rerecognized pages type line");
+  require_contains(text, "grparse_pages_rerecognized_total 3\n", "rerecognized pages counter");
+  require_contains(text, "grparse_rerecognition_passes_total 5\n", "rerecognition passes counter");
+  require_contains(text, "# TYPE grparse_page_rotations_total counter\n", "rotations type line");
+  require_contains(text, "grparse_page_rotations_total{degrees=\"90\"} 1\n", "90 degree turns");
+  require_contains(text, "grparse_page_rotations_total{degrees=\"180\"} 0\n", "180 degree turns");
+  require_contains(text, "grparse_page_rotations_total{degrees=\"270\"} 2\n", "270 degree turns");
+
+  require_contains(text, "# TYPE grparse_repair_changes_total counter\n", "repairs type line");
+  const std::vector<std::pair<const char*, int>> kinds = {
+      {"furniture_demoted", 11}, {"hyphens_rejoined", 12},       {"paragraphs_merged", 13},
+      {"titles_merged", 14},     {"heading_levels_assigned", 15}, {"body_items_reordered", 16},
+      {"headings_split", 17},    {"headings_demoted", 18},        {"form_rows_split", 19}};
+  for (const auto& [kind, value] : kinds) {
+    require_contains(text,
+                     "grparse_repair_changes_total{kind=\"" + std::string(kind) + "\"} " +
+                         std::to_string(value) + "\n",
+                     std::string("repair counter ") + kind);
+  }
+  require(!text.contains("grparse_repairs_total"), "the old repair family name is gone");
+
+  require_contains(text, "# TYPE grparse_office_cv_total counter\n", "office cv type line");
+  require_contains(text, "grparse_office_cv_total{kind=\"pictures_added\"} 21\n",
+                   "office cv pictures added");
+  require_contains(text, "grparse_office_cv_total{kind=\"pictures_anchored\"} 20\n",
+                   "office cv pictures anchored");
+
+  // The live-totals overload still renders the families, at their process
+  // values (zero in a test binary that enriched nothing).
+  const std::string live = grparse::render_prometheus_metrics(
+      metrics, grparse::OcrEnginePool::Stats{}, grparse::PageScheduler::Options{});
+  require_contains(live, "grparse_office_cv_total{kind=\"pictures_added\"} 0\n",
+                   "live office cv totals start at zero");
+  require_contains(live, "grparse_repair_changes_total{kind=\"form_rows_split\"} 0\n",
+                   "live repair totals start at zero");
+}
+
 void verify_render_histogram_is_cumulative() {
   grparse::PageScheduler::Metrics metrics;
   metrics.page_latency[0] = 1;  // <= 25 ms
@@ -190,6 +256,7 @@ void verify_renderer_exception_becomes_500() {
 int main() {
   try {
     verify_render_counters_and_gauges();
+    verify_render_rotation_repair_and_office_cv_families();
     verify_render_histogram_is_cumulative();
     verify_http_listener();
     verify_renderer_exception_becomes_500();

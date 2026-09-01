@@ -5,6 +5,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <format>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -17,6 +18,8 @@
 #include <opencv2/imgproc.hpp>
 
 #include "grparse/barcode_decoder.h"
+#include "grparse/data_totals.h"
+#include "grparse/orientation_recovery.h"
 #include "grparse/region_geometry.h"
 
 namespace grparse {
@@ -307,6 +310,11 @@ class PageScheduler::Impl final {
     for (size_t bucket = 0; bucket < latency_buckets_.size(); ++bucket) {
       snapshot.page_latency[bucket] = latency_buckets_[bucket].load();
     }
+    snapshot.pages_rerecognized = pages_rerecognized_.load();
+    snapshot.rerecognition_passes = rerecognition_passes_.load();
+    for (size_t turn = 0; turn < rotations_applied_.size(); ++turn) {
+      snapshot.rotations_applied[turn] = rotations_applied_[turn].load();
+    }
     return snapshot;
   }
 
@@ -434,6 +442,27 @@ class PageScheduler::Impl final {
       ++bucket;
     }
     latency_buckets_[bucket].fetch_add(1);
+  }
+
+  // Counts one page's orientation recovery and, under GRPARSE_DATA_LOG=on,
+  // prints what it tried and kept.
+  void record_orientation(int page_number, const OrientationOutcome& outcome) {
+    if (outcome.passes == 0) return;
+    pages_rerecognized_.fetch_add(1);
+    rerecognition_passes_.fetch_add(static_cast<uint64_t>(outcome.passes));
+    for (size_t turn = 0; turn < kRotationDegrees.size(); ++turn) {
+      if (kRotationDegrees[turn] == outcome.degrees) rotations_applied_[turn].fetch_add(1);
+    }
+    if (!data_log_enabled()) return;
+    std::string tried;
+    for (const int degrees : outcome.tried) {
+      if (!tried.empty()) tried += '/';
+      tried += std::to_string(degrees);
+    }
+    data_log(std::format("page {} orientation: re-read at {} degrees, kept {} (mean confidence "
+                         "{:.2f} -> {:.2f})",
+                         page_number, tried, outcome.degrees, outcome.first_confidence,
+                         outcome.kept_confidence));
   }
 
   void complete_page(const std::shared_ptr<PageJob>& page, PageOutcome outcome) {
@@ -578,6 +607,40 @@ class PageScheduler::Impl final {
         std::shared_ptr<const OcrPage> result;
         {
           const BusyTimer timer(inference_busy_ns_);
+          // Recognition runs first: its read decides whether the raster was
+          // fed in turned, and every device call after it (layout, table
+          // crops, figure crops, the preview) must see the upright raster.
+          OcrPage assembled;
+          if (job.run_ocr) {
+            OcrPage ocr = recognizer_.extract_page(job.image);
+            pages_recognized_.fetch_add(1);
+            const bool digital_layer =
+                job.digital_seed.has_value() && !job.digital_seed->lines.empty();
+            // A page with a digital layer is upright by construction (the
+            // source applied its own rotation), so only layerless pages are
+            // candidates for a turn.
+            if (!digital_layer) {
+              record_orientation(job.page->page_number,
+                                 recover_orientation(recognizer_, options_.orientation,
+                                                     &job.image, &ocr));
+            }
+            if (digital_layer) {
+              assembled = merge_digital_and_ocr(std::move(*job.digital_seed), std::move(ocr));
+            } else {
+              assembled = std::move(ocr);
+            }
+          } else if (job.digital_seed.has_value()) {
+            // The embedded layer settles the page: the raster existed only
+            // for layout or the preview.
+            assembled = std::move(*job.digital_seed);
+          } else {
+            // Recognition is off and the page has no embedded layer: it
+            // assembles empty at raster size, so layout regions still land
+            // in a real coordinate space.
+            assembled.width = job.image.cols;
+            assembled.height = job.image.rows;
+          }
+
           std::vector<LayoutRegion> regions;
           std::string layout_model;
           if (region_detector_ != nullptr) {
@@ -613,27 +676,6 @@ class PageScheduler::Impl final {
               region.figure_classes = figure_classifier_->classify(crop);
               figures_classified_.fetch_add(1);
             }
-          }
-
-          OcrPage assembled;
-          if (job.run_ocr) {
-            OcrPage ocr = recognizer_.extract_page(job.image);
-            pages_recognized_.fetch_add(1);
-            if (job.digital_seed.has_value() && !job.digital_seed->lines.empty()) {
-              assembled = merge_digital_and_ocr(std::move(*job.digital_seed), std::move(ocr));
-            } else {
-              assembled = std::move(ocr);
-            }
-          } else if (job.digital_seed.has_value()) {
-            // The embedded layer settles the page: the raster existed only
-            // for layout or the preview.
-            assembled = std::move(*job.digital_seed);
-          } else {
-            // Recognition is off and the page has no embedded layer: it
-            // assembles empty at raster size, so layout regions still land
-            // in a real coordinate space.
-            assembled.width = job.image.cols;
-            assembled.height = job.image.rows;
           }
           // Crops encode after OCR so the device work is never delayed, but
           // before the raster drops; the crop is a view, the PNG is owned.
@@ -748,6 +790,9 @@ class PageScheduler::Impl final {
   std::atomic<uint64_t> inference_busy_ns_{0};
   std::atomic<uint64_t> assembly_busy_ns_{0};
   std::array<std::atomic<uint64_t>, kPageLatencyBoundsMs.size() + 1> latency_buckets_{};
+  std::atomic<uint64_t> pages_rerecognized_{0};
+  std::atomic<uint64_t> rerecognition_passes_{0};
+  std::array<std::atomic<uint64_t>, kRotationDegrees.size()> rotations_applied_{};
 };
 
 PageScheduler::Ticket::Ticket(std::weak_ptr<State> state) : state_(std::move(state)) {}

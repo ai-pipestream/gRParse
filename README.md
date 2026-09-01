@@ -61,6 +61,29 @@ The service listens on `localhost:50051` and implements `ai.pipestream.parse.v1.
 
 Each PDF request opens a small pool of Poppler documents directly from the request bytes, so render and digital-text extraction for different pages of the same document proceed in parallel. Recognition is selective by default: full native-text pages skip raster OCR, while weak/partial digital layers keep their native boxes and still run OCR, and geometry merge drops overlapping OCR duplicates so headers and scan body can coexist. Two `ConvertDocumentOptions` fields override the default per request: `do_ocr = false` disables recognition entirely, so only the embedded text layer is read and a page with no text layer yields no text; `force_ocr = true` recognizes every page at full-page scope and the recognized text replaces the embedded layer. `do_ocr = false` with `force_ocr = true` is contradictory and rejected by name. Pages rasterize at 200 DPI by default; `render_scale` sets a per-request scale in multiples of 72 DPI (accepted range [1.0, 8.0], rejected outside it by name), and all digital-line geometry scales with it so downstream boxes stay consistent. Raster inputs decode with OpenCV from request memory and are already pixels, so they ignore `render_scale`. Nothing is written to disk on the hot path.
 
+Scanned pages fed in sideways or upside down are read upright. After a
+layerless page's first recognition pass the scheduler judges the read: line
+boxes that are tall rather than wide vote a quarter turn, the angle
+classifier flipping every line says the page is upside down, and a poor read
+(mean confidence under 0.5 over at least three lines) says nothing is known.
+The raster is then recognized again turned 90 and 270 degrees clockwise for a
+quarter-turn vote, 180 for an upside-down one, and all three for a poor read,
+each turn at most once, and the best read wins (text over none, upright over
+turned, then mean confidence). When a turn wins, the turned raster replaces the
+original for everything that follows, so layout regions, table and figure
+crops, the page preview, the page size and every text box are in the upright
+frame together, and the turn is recorded in the page's typed
+`PageItem.quality.rotation_degrees` (clockwise) for a client that renders the
+source itself. Pages with any digital text layer are never re-read: the source
+already applied the page's own rotation. `GRPARSE_OCR_ROTATION=off` disables
+the recovery; the counters are `pages_rerecognized`, `rerecognition_passes`
+and the kept turns by degrees, on the stdout metrics line and in the
+Prometheus exposition (`grparse_pages_rerecognized_total`,
+`grparse_rerecognition_passes_total`,
+`grparse_page_rotations_total{degrees="90"|"180"|"270"}`), and
+`GRPARSE_DATA_LOG=on` prints one line per re-read page with what was tried
+and kept.
+
 `ConvertSource` returns the contract's `ConvertDocumentResponse`, populated with a native `Document`. Each OCR line becomes a `TextItem`, with its page and bounding box in `provenance`; pages, `TableItem`/`PictureItem` entries from layout, and the `#/body` reference graph are also populated. It deliberately leaves asynchronous jobs and remote sources unimplemented.
 
 ### Chunking
@@ -416,7 +439,11 @@ lowercase, is merged with its provenance appended and every reference
 renumbered. Section headers, list items, captions, code and anything inside
 a group are never touched. `GRPARSE_REPAIR=off` disables the pass at
 startup, `GRPARSE_REPAIR=debug` prints one line per document it changed, and
-the Prometheus exposition counts what it did under `grparse_repairs_total`.
+the Prometheus exposition counts what it did under
+`grparse_repair_changes_total{kind=...}`, one series per `RepairTotals`
+counter (`furniture_demoted`, `hyphens_rejoined`, `paragraphs_merged`,
+`titles_merged`, `heading_levels_assigned`, `body_items_reordered`,
+`headings_split`, `headings_demoted`, `form_rows_split`).
 
 The same pass owns the document's shape where the producer had only
 geometry to go on. A body that came entirely from the PDF text layer is
@@ -439,8 +466,11 @@ placeholder is the title while later slide titles are section headers. The
 origin mimetype is resolved from the declared type, then magic bytes and zip
 entries, then the extension, with the evidence stamped on the origin.
 `GRPARSE_DATA_LOG=on` prints one line per data change and
-`grparse_data_changes_total` counts them; the exposition also carries
-`process_resident_memory_bytes` and `process_cpu_seconds_total`.
+`grparse_data_changes_total` counts them; the figures the office CV
+enrichment added and anchored count under
+`grparse_office_cv_total{kind="pictures_added"|"pictures_anchored"}`; the
+exposition also carries `process_resident_memory_bytes` and
+`process_cpu_seconds_total`.
 
 The server registers standard gRPC health checking and reflection in addition
 to the contract's `Health` RPC. SIGINT and SIGTERM initiate a bounded graceful
@@ -449,7 +479,8 @@ shutdown.
 Every `GRPARSE_METRICS_INTERVAL_SECONDS` (default 60, `0` disables) the server
 prints one pipeline metrics line to stdout: document and page counters, queue
 depths, per-stage busy percentages since the previous line, OCR session pool
-acquire/discard/wait totals, and a page-latency histogram from schedule to
+acquire/discard/wait totals, the orientation-recovery counters, the repair and
+office CV totals, and a page-latency histogram from schedule to
 delivery. Render and inference busy percentages climbing together under load
 is the pipeline overlap working; one stage pegged while its neighbor idles
 identifies where to add workers.
@@ -572,7 +603,8 @@ against the reference detector; skips without the model file), office CV
 enrichment (figure boxes scaled into twips, class-gated barcode decode over
 mapped page renders), scheduler (page
 credits, backpressure, partial digital→OCR merge, layout labelling, page
-previews), PDF page
+previews, turned scans re-read upright), orientation recovery (the turn
+decision and its cost bound against a fake recognizer), PDF page
 source (Poppler text/raster geometry, `/Rotate`, concurrent access, two-column
 reading order), Prometheus exporter (exact text rendering, cumulative
 histogram, live loopback scrapes with the 404/405/500 doors), raster page

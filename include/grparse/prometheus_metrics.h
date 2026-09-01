@@ -9,6 +9,7 @@
 #include "grparse/data_totals.h"
 #include "grparse/document_repair.h"
 #include "grparse/ocr_engine.h"
+#include "grparse/office_cv_enrichment.h"
 #include "grparse/page_scheduler.h"
 
 namespace grparse {
@@ -21,17 +22,29 @@ namespace grparse {
 // only the buckets).  Stage busy nanoseconds are exported as
 // grparse_stage_busy_seconds_total next to grparse_stage_workers, so
 // rate(busy_seconds[1m]) / workers is the same busy fraction the stdout line
-// prints.  The repair totals export as grparse_repairs_total{kind=...} and
-// the data-plane totals as grparse_data_changes_total{kind=...}, plus the
+// prints.  Orientation recovery exports as grparse_pages_rerecognized_total,
+// grparse_rerecognition_passes_total and
+// grparse_page_rotations_total{degrees="90"|"180"|"270"}.  The repair totals
+// export as grparse_repair_changes_total{kind=...} (every RepairTotals
+// counter), the office CV enrichment totals as grparse_office_cv_total{kind=...}
+// and the data-plane totals as grparse_data_changes_total{kind=...}, plus the
 // process_resident_memory_bytes and process_cpu_seconds_total gauges the
-// standard client libraries export.
+// standard client libraries export.  This overload is pure in its inputs.
+std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
+                                      const OcrEnginePool::Stats& ocr_pool,
+                                      const PageScheduler::Options& options,
+                                      const RepairTotals& repairs, const DataTotals& data,
+                                      const OfficeCvTotals& office_cv);
+
+// Same, with the office CV totals read from the live process counters.
 std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
                                       const OcrEnginePool::Stats& ocr_pool,
                                       const PageScheduler::Options& options,
                                       const RepairTotals& repairs,
                                       const DataTotals& data);
 
-// The server's own call: the data totals are the live process counters.
+// The server's own call: data and office CV totals are the live process
+// counters.
 std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
                                       const OcrEnginePool::Stats& ocr_pool,
                                       const PageScheduler::Options& options,

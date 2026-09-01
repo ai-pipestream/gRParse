@@ -33,7 +33,9 @@
   "xlsx-sixty-sheets",
   "pdf-rotated-scan",
   "docx-form",
-  "pdf-form"
+  "pdf-form",
+  "pdf-rotated-scan-180",
+  "pdf-rotated-scan-mixed"
  ],
  "gates": {
   "docx-figures": {
@@ -180,10 +182,28 @@
    "latency_ms": 1543.6,
    "stable": true,
    "truth": {
-    "truth_anchors_found": 0.6,
-    "truth_heading_levels": 0.5,
-    "truth_headings": 0.8,
-    "truth_order": 0.3333
+    "truth_anchors_found": 1.0,
+    "truth_heading_levels": 1.0,
+    "truth_headings": 1.0,
+    "truth_order": 1.0
+   }
+  },
+  "pdf-rotated-scan-180": {
+   "stable": true,
+   "truth": {
+    "truth_anchors_found": 1.0,
+    "truth_heading_levels": 1.0,
+    "truth_headings": 1.0,
+    "truth_order": 1.0
+   }
+  },
+  "pdf-rotated-scan-mixed": {
+   "stable": true,
+   "truth": {
+    "truth_anchors_found": 1.0,
+    "truth_heading_levels": 1.0,
+    "truth_headings": 1.0,
+    "truth_order": 1.0
    }
   },
   "pdf-scanned-image": {
@@ -630,6 +650,55 @@
    "reason": "gRParse 04b7f5b: origin mimetype sniffed from content; mimetype evidence is descriptive and no longer counted in agreement",
    "service": "gRParse grparse-0.1.0-cuda",
    "timestamp": "2026-09-01T03:14:28+00:00"
+  },
+  {
+   "documents": [
+    "pdf-rotated-scan-180",
+    "pdf-rotated-scan-mixed"
+   ],
+   "partial": true,
+   "reason": "lane-rotation: new turned-scan fixtures (page 1 at 180; pages 1 to 3 at 0, 90 and 270) read upright by the scheduler's orientation recovery; recorded on a CPU instance, latency budget not recorded",
+   "service": "gRParse grparse-0.1.0-cuda",
+   "timestamp": "2026-09-01T04:25:46+00:00"
+  },
+  {
+   "documents": [
+    "pdf-rotated-scan"
+   ],
+   "gate_changes": [
+    {
+     "after": 1.0,
+     "before": 0.8,
+     "doc_id": "pdf-rotated-scan",
+     "metric": "truth_headings",
+     "reason": "raised"
+    },
+    {
+     "after": 1.0,
+     "before": 0.5,
+     "doc_id": "pdf-rotated-scan",
+     "metric": "truth_heading_levels",
+     "reason": "raised"
+    },
+    {
+     "after": 1.0,
+     "before": 0.3333,
+     "doc_id": "pdf-rotated-scan",
+     "metric": "truth_order",
+     "reason": "raised"
+    },
+    {
+     "after": 1.0,
+     "before": 0.6,
+     "doc_id": "pdf-rotated-scan",
+     "metric": "truth_anchors_found",
+     "reason": "raised"
+    }
+   ],
+   "partial": true,
+   "reason": "lane-rotation: orientation recovery re-reads the 90 degree scan upright; headings 0.800 to 1.000, levels 0.500 to 1.000, order 0.333 to 1.000, anchors 0.600 to 1.000; recorded on a CPU instance, latency budget kept",
+   "service": "gRParse grparse-0.1.0-cuda",
+   "timestamp": "2026-09-01T04:25:58+00:00"
   }
  ],
  "manifest": "eval/scorecard/corpus.json",
