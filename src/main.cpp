@@ -1,18 +1,17 @@
-#include <algorithm>
 #include <atomic>
-#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
 #include <cstdio>
-#include <cstdlib>
+#include <cstdint>
 #include <fcntl.h>
-#include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <print>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <unistd.h>
@@ -23,13 +22,11 @@
 #include <grpcpp/health_check_service_interface.h>
 
 #include "grparse/document_parser_service.h"
-#include "grparse/document_repair.h"
-#include "grparse/figure_classifier.h"
-#include "grparse/layout_engine.h"
+#include "grparse/office_cv_enrichment.h"
 #include "grparse/page_scheduler.h"
 #include "grparse/prometheus_metrics.h"
-#include "grparse/table_structure_engine.h"
 #include "grparse_session_ep.h"
+#include "server_config.h"
 
 namespace {
 
@@ -41,295 +38,6 @@ void request_shutdown(int signal_number) {
   const ssize_t ignored = write(static_cast<int>(shutdown_signal_fd), &signal_byte,
                                 sizeof(signal_byte));
   (void)ignored;
-}
-
-size_t configured_size(const char* name, size_t fallback, size_t maximum = 1024) {
-  const char* configured = std::getenv(name);
-  if (configured != nullptr) {
-    char* end = nullptr;
-    const unsigned long long parsed = std::strtoull(configured, &end, 10);
-    if (end != configured && *end == '\0' && parsed > 0 && parsed <= maximum) {
-      return static_cast<size_t>(parsed);
-    }
-    throw std::invalid_argument(std::string(name) + " must be an integer between 1 and " +
-                                std::to_string(maximum));
-  }
-  return fallback;
-}
-
-int configured_index(const char* name, int fallback, int maximum = 63) {
-  const char* configured = std::getenv(name);
-  if (configured == nullptr) return fallback;
-  char* end = nullptr;
-  const long parsed = std::strtol(configured, &end, 10);
-  if (end == configured || *end != '\0' || parsed < 0 || parsed > maximum) {
-    throw std::invalid_argument(std::string(name) + " must be an integer between 0 and " +
-                                std::to_string(maximum));
-  }
-  return static_cast<int>(parsed);
-}
-
-bool provider_available(const char* name) {
-  const auto providers = Ort::GetAvailableProviders();
-  return std::ranges::find(providers, std::string(name)) != providers.end();
-}
-
-std::string available_providers() {
-  std::string joined;
-  for (const auto& provider : Ort::GetAvailableProviders()) {
-    if (!joined.empty()) joined += ", ";
-    joined += provider;
-  }
-  return joined;
-}
-
-std::string configured_openvino_device() {
-  const char* configured = std::getenv("GRPARSE_OPENVINO_DEVICE");
-  const std::string device =
-      configured == nullptr || *configured == '\0' ? "GPU" : configured;
-  // GPU, GPU.1, CPU, NPU, AUTO:GPU,CPU, HETERO:… — validate the alphabet and
-  // let OpenVINO reject unknown devices itself, loudly, at startup.
-  for (const char letter : device) {
-    if (std::isalnum(static_cast<unsigned char>(letter)) == 0 && letter != '.' &&
-        letter != ':' && letter != ',' && letter != '_' && letter != '-') {
-      throw std::invalid_argument("GRPARSE_OPENVINO_DEVICE contains unsupported characters");
-    }
-  }
-  return device;
-}
-
-// GRPARSE_OPENVINO_CACHE_DIR: where the OpenVINO plugin may keep compiled
-// blobs, so a restart reuses the previous compile instead of repeating it.
-// Unset means no cache, which is the safe default for a read-only container.
-std::string configured_openvino_cache_dir() {
-  const char* configured = std::getenv("GRPARSE_OPENVINO_CACHE_DIR");
-  return configured == nullptr ? std::string() : std::string(configured);
-}
-
-// Builds the warm session pool with an explicit provider selection and proves
-// the RapidOcr hook actually ran — a dependency tree built without
-// patches/rapidocr-session-ep.patch would otherwise run CPU silently.
-std::unique_ptr<grparse::OcrEnginePool> build_pool_with(grparse::OrtEp ep,
-                                                        const std::filesystem::path& models,
-                                                        size_t worker_count, int gpu_index) {
-  grparse::OrtEpSelection selection{
-      .ep = ep,
-      .cuda_device = gpu_index,
-      .openvino_device = configured_openvino_device(),
-      .openvino_cache_dir = configured_openvino_cache_dir(),
-  };
-  grparse::set_ort_ep_selection(selection);
-  auto pool = std::make_unique<grparse::OcrEnginePool>(models, worker_count, -1);
-  if (grparse::ep_hook_invocations() == 0) {
-    throw std::runtime_error(
-        "RapidOcr session hook never ran: the rapidocr dependency was built without "
-        "patches/rapidocr-session-ep.patch; rebuild with a fresh dependency cache");
-  }
-  return pool;
-}
-
-// GRPARSE_ORT_EP selects the ONNX Runtime execution provider (B6).  cuda is
-// the default and keeps the fail-loud behaviour; cpu is a deliberate choice,
-// never a silent fallback; openvino targets Intel GPUs/NPUs through the
-// OpenVINO build of ONNX Runtime; auto prefers CUDA, then OpenVINO, then CPU,
-// logging each fallback.  Requesting a provider this binary was not built
-// with fails with the list that is actually available.
-std::unique_ptr<grparse::OcrEnginePool> build_engine_pool(const std::filesystem::path& models,
-                                                          size_t worker_count, int gpu_index) {
-  const char* configured = std::getenv("GRPARSE_ORT_EP");
-  const std::string ep = configured == nullptr || *configured == '\0' ? "cuda" : configured;
-  if (ep == "cuda") {
-    if (!provider_available("CUDAExecutionProvider")) {
-      throw std::invalid_argument(
-          "GRPARSE_ORT_EP=cuda: this build's ONNX Runtime has no CUDA execution provider "
-          "(available: " + available_providers() + ")");
-    }
-    auto pool = build_pool_with(grparse::OrtEp::kCuda, models, worker_count, gpu_index);
-    std::println("gRParse OCR execution provider: CUDA (device {})", gpu_index);
-    return pool;
-  }
-  if (ep == "openvino") {
-    if (!provider_available("OpenVINOExecutionProvider")) {
-      throw std::invalid_argument(
-          "GRPARSE_ORT_EP=openvino: this build's ONNX Runtime has no OpenVINO execution "
-          "provider (available: " + available_providers() + "); use the image built from "
-          "Dockerfile.openvino");
-    }
-    auto pool = build_pool_with(grparse::OrtEp::kOpenVino, models, worker_count, gpu_index);
-    std::println("gRParse OCR execution provider: OpenVINO ({})", configured_openvino_device());
-    return pool;
-  }
-  if (ep == "cpu") {
-    auto pool = build_pool_with(grparse::OrtEp::kCpu, models, worker_count, gpu_index);
-    std::println("gRParse OCR execution provider: CPU (GRPARSE_ORT_EP=cpu)");
-    return pool;
-  }
-  if (ep == "auto") {
-    if (provider_available("CUDAExecutionProvider")) {
-      try {
-        auto pool = build_pool_with(grparse::OrtEp::kCuda, models, worker_count, gpu_index);
-        std::println("gRParse OCR execution provider: CUDA (device {}, selected by GRPARSE_ORT_EP=auto)",
-                     gpu_index);
-        return pool;
-      } catch (const std::exception& error) {
-        std::println(stderr, "GRPARSE_ORT_EP=auto: CUDA initialization failed ({})", error.what());
-      }
-    }
-    if (provider_available("OpenVINOExecutionProvider")) {
-      try {
-        auto pool = build_pool_with(grparse::OrtEp::kOpenVino, models, worker_count, gpu_index);
-        std::println("gRParse OCR execution provider: OpenVINO ({}, selected by GRPARSE_ORT_EP=auto)",
-                     configured_openvino_device());
-        return pool;
-      } catch (const std::exception& error) {
-        std::println(stderr, "GRPARSE_ORT_EP=auto: OpenVINO initialization failed ({})",
-                     error.what());
-      }
-    }
-    auto pool = build_pool_with(grparse::OrtEp::kCpu, models, worker_count, gpu_index);
-    std::println("gRParse OCR execution provider: CPU (selected by GRPARSE_ORT_EP=auto)");
-    return pool;
-  }
-  throw std::invalid_argument("GRPARSE_ORT_EP must be cuda, openvino, cpu, or auto");
-}
-
-// GRPARSE_LAYOUT: auto (default) enables layout labelling when the model file
-// exists; on requires it and fails startup when absent; off disables it.
-// GRPARSE_LAYOUT_MODEL picks which detector that file is.  Nothing here
-// degrades silently: auto logs which way it went, and an explicitly selected
-// model that is not on disk stops the process.
-std::unique_ptr<grparse::LayoutEngine> build_layout_engine(
-    const std::filesystem::path& models_dir) {
-  const char* configured = std::getenv("GRPARSE_LAYOUT");
-  const std::string mode = configured == nullptr || *configured == '\0' ? "auto" : configured;
-  if (mode != "auto" && mode != "on" && mode != "off") {
-    throw std::invalid_argument("GRPARSE_LAYOUT must be auto, on, or off");
-  }
-  const grparse::LayoutModel selection = grparse::configured_layout_model();
-  const std::filesystem::path model = models_dir / grparse::layout_model_file(selection);
-  if (mode == "off") {
-    std::println("gRParse layout: disabled (GRPARSE_LAYOUT=off)");
-    return nullptr;
-  }
-  if (mode == "auto" && !std::filesystem::exists(model)) {
-    std::println("gRParse layout: disabled (no {}; see models/README.md)", model.string());
-    return nullptr;
-  }
-  // "on" with a missing file reaches the engine constructor, which throws with
-  // the model path and the selection - the fail-loud startup that setting asks
-  // for.  One session serves every inference worker.
-  auto engine = std::make_unique<grparse::LayoutEngine>(model, selection);
-  std::println("gRParse layout: enabled ({}, {} labels, one shared session, {})",
-               grparse::layout_model_name(selection), engine->labels().size(), model.string());
-  return engine;
-}
-
-// GRPARSE_TABLE_STRUCTURE follows the same auto/on/off contract as layout.
-// Structure only ever sees crops of layout-detected table regions, so it
-// additionally requires layout to be active.
-std::unique_ptr<grparse::TableStructureEnginePool> build_table_structure_pool(
-    const std::filesystem::path& models_dir, size_t worker_count, bool layout_active) {
-  const char* configured = std::getenv("GRPARSE_TABLE_STRUCTURE");
-  const std::string mode = configured == nullptr || *configured == '\0' ? "auto" : configured;
-  if (mode != "auto" && mode != "on" && mode != "off") {
-    throw std::invalid_argument("GRPARSE_TABLE_STRUCTURE must be auto, on, or off");
-  }
-  const std::filesystem::path model = models_dir / "slanet_plus.onnx";
-  if (mode == "off") {
-    std::println("gRParse table structure: disabled (GRPARSE_TABLE_STRUCTURE=off)");
-    return nullptr;
-  }
-  if (!layout_active) {
-    if (mode == "on") {
-      throw std::invalid_argument(
-          "GRPARSE_TABLE_STRUCTURE=on needs layout enabled to find table regions");
-    }
-    if (std::filesystem::exists(model)) {
-      std::println("gRParse table structure: disabled (layout is disabled)");
-    }
-    return nullptr;
-  }
-  if (mode == "auto" && !std::filesystem::exists(model)) {
-    std::println("gRParse table structure: disabled (no {}; see models/README.md)",
-                 model.string());
-    return nullptr;
-  }
-  auto pool = std::make_unique<grparse::TableStructureEnginePool>(model, worker_count);
-  std::println("gRParse table structure: enabled ({} sessions, {})", pool->size(),
-               model.string());
-  return pool;
-}
-
-// GRPARSE_FIGURE_CLASSES follows the same auto/on/off contract; the
-// classifier only ever sees crops of layout-detected figure regions.
-std::unique_ptr<grparse::FigureClassifierPool> build_figure_classifier_pool(
-    const std::filesystem::path& models_dir, size_t worker_count, bool layout_active) {
-  const char* configured = std::getenv("GRPARSE_FIGURE_CLASSES");
-  const std::string mode = configured == nullptr || *configured == '\0' ? "auto" : configured;
-  if (mode != "auto" && mode != "on" && mode != "off") {
-    throw std::invalid_argument("GRPARSE_FIGURE_CLASSES must be auto, on, or off");
-  }
-  const std::filesystem::path model = models_dir / "figure_classifier.onnx";
-  if (mode == "off") {
-    std::println("gRParse figure classes: disabled (GRPARSE_FIGURE_CLASSES=off)");
-    return nullptr;
-  }
-  if (!layout_active) {
-    if (mode == "on") {
-      throw std::invalid_argument(
-          "GRPARSE_FIGURE_CLASSES=on needs layout enabled to find figure regions");
-    }
-    if (std::filesystem::exists(model)) {
-      std::println("gRParse figure classes: disabled (layout is disabled)");
-    }
-    return nullptr;
-  }
-  if (mode == "auto" && !std::filesystem::exists(model)) {
-    std::println("gRParse figure classes: disabled (no {}; see models/README.md)",
-                 model.string());
-    return nullptr;
-  }
-  auto pool = std::make_unique<grparse::FigureClassifierPool>(model, worker_count);
-  std::println("gRParse figure classes: enabled ({} sessions, {})", pool->size(),
-               model.string());
-  return pool;
-}
-
-// GRPARSE_BARCODES: auto (default) decodes figure crops whose top classifier
-// call is bar_code or qr_code, so it needs the classifier; on decodes every
-// figure crop (needs only layout); off disables decoding.  ZXing is compiled
-// in, so no model file gates this.
-grparse::PageScheduler::BarcodeMode configure_barcode_mode(bool layout_active,
-                                                           bool classifier_active) {
-  using BarcodeMode = grparse::PageScheduler::BarcodeMode;
-  const char* configured = std::getenv("GRPARSE_BARCODES");
-  const std::string mode = configured == nullptr || *configured == '\0' ? "auto" : configured;
-  if (mode != "auto" && mode != "on" && mode != "off") {
-    throw std::invalid_argument("GRPARSE_BARCODES must be auto, on, or off");
-  }
-  if (mode == "off") {
-    std::println("gRParse barcodes: disabled (GRPARSE_BARCODES=off)");
-    return BarcodeMode::kOff;
-  }
-  if (mode == "on") {
-    if (!layout_active) {
-      throw std::invalid_argument("GRPARSE_BARCODES=on needs layout enabled to find figure regions");
-    }
-    std::println("gRParse barcodes: enabled for all figure crops (GRPARSE_BARCODES=on)");
-    return BarcodeMode::kAll;
-  }
-  if (!classifier_active) {
-    std::println("gRParse barcodes: disabled (figure classes are disabled; "
-                 "GRPARSE_BARCODES=on decodes without the classifier)");
-    return BarcodeMode::kOff;
-  }
-  std::println("gRParse barcodes: enabled for bar_code/qr_code figure classes");
-  return BarcodeMode::kClassTriggered;
-}
-
-size_t page_worker_count() {
-  const unsigned int hardware = std::thread::hardware_concurrency();
-  return std::min<size_t>(2, hardware == 0 ? 1 : hardware);
 }
 
 unsigned busy_percent(uint64_t busy_ns_delta, double elapsed_seconds, size_t workers) {
@@ -404,26 +112,75 @@ std::string format_metrics(const grparse::PageScheduler::Metrics& current,
   return line.str();
 }
 
-// GRPARSE_REPAIR: on (default) runs the post-merge repair pass on every
-// finished Document (running headers and footers demoted to furniture,
-// line-break hyphenation rejoined, paragraphs a page break split merged);
-// off skips it; debug runs it and prints one line per document it changed.
-std::optional<grparse::RepairOptions> configure_repair() {
-  const char* configured = std::getenv("GRPARSE_REPAIR");
-  const std::string mode = configured == nullptr ? "on" : configured;
-  if (mode != "on" && mode != "off" && mode != "debug") {
-    throw std::invalid_argument("GRPARSE_REPAIR must be on, off, or debug");
+// The interval line's own bookkeeping: rates are deltas, so the previous
+// sample and the moment it was taken belong to the reporter, not the caller.
+class MetricsLine {
+ public:
+  MetricsLine(const grparse::PageScheduler& scheduler, const grparse::OcrEnginePool& engines,
+              const grparse::PageScheduler::Options& options)
+      : scheduler_(scheduler),
+        engines_(engines),
+        options_(options),
+        previous_(scheduler.metrics()),
+        previous_time_(std::chrono::steady_clock::now()) {}
+
+  std::string next() {
+    const auto current = scheduler_.metrics();
+    const auto now = std::chrono::steady_clock::now();
+    const double elapsed = std::chrono::duration<double>(now - previous_time_).count();
+    std::string line = format_metrics(current, previous_, engines_.stats(), elapsed, options_,
+                                      grparse::repair_totals(), grparse::office_cv_totals());
+    previous_ = current;
+    previous_time_ = now;
+    return line;
   }
-  if (mode == "off") {
-    std::println("gRParse document repair: disabled (GRPARSE_REPAIR=off)");
-    return std::nullopt;
+
+ private:
+  const grparse::PageScheduler& scheduler_;
+  const grparse::OcrEnginePool& engines_;
+  const grparse::PageScheduler::Options& options_;
+  grparse::PageScheduler::Metrics previous_;
+  std::chrono::steady_clock::time_point previous_time_;
+};
+
+// The metrics line on its own thread, one line per interval until stopped.
+// An interval of 0 starts no thread, which is what disables the line.
+class MetricsLogLoop {
+ public:
+  MetricsLogLoop(int interval_seconds, std::function<std::string()> line) {
+    if (interval_seconds <= 0) return;
+    thread_ = std::thread([this, interval_seconds, line = std::move(line)] {
+      std::unique_lock<std::mutex> lock(mutex_);
+      while (!stop_changed_.wait_for(lock, std::chrono::seconds(interval_seconds),
+                                     [this] { return stop_; })) {
+        lock.unlock();
+        std::println("{}", line());
+        lock.lock();
+      }
+    });
   }
-  grparse::RepairOptions options;
-  options.log_report = mode == "debug";
-  std::println("gRParse document repair: enabled{}",
-               options.log_report ? " with per-document log lines (GRPARSE_REPAIR=debug)" : "");
-  return options;
-}
+
+  MetricsLogLoop(const MetricsLogLoop&) = delete;
+  MetricsLogLoop& operator=(const MetricsLogLoop&) = delete;
+
+  ~MetricsLogLoop() { stop(); }
+
+  void stop() {
+    if (!thread_.joinable()) return;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      stop_ = true;
+    }
+    stop_changed_.notify_all();
+    thread_.join();
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable stop_changed_;
+  bool stop_ = false;
+  std::thread thread_;
+};
 
 void install_shutdown_signal_pipe(int* signal_pipe) {
   if (pipe2(signal_pipe, O_CLOEXEC) != 0) {
@@ -441,284 +198,123 @@ void install_shutdown_signal_pipe(int* signal_pipe) {
   }
 }
 
+// Binds the port and registers both parsing surfaces. Null when the address
+// could not be listened on, which the caller reports and exits over.
+std::unique_ptr<grpc::Server> start_server(const std::string& listen_address,
+                                           grparse::DocumentParserService& service,
+                                           grparse::DocumentStreamingService& streaming_service,
+                                           const grparse::GrpcLimits& limits) {
+  grpc::EnableDefaultHealthCheckService(true);
+  grpc::reflection::InitProtoReflectionServerBuilderPlugin();
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort(listen_address, grpc::InsecureServerCredentials());
+  builder.SetMaxReceiveMessageSize(grparse::kMaxMessageBytes);
+  grpc::ResourceQuota quota;
+  quota.Resize(limits.memory_mib * 1024U * 1024U);
+  quota.SetMaxThreads(static_cast<int>(limits.max_threads));
+  builder.SetResourceQuota(quota);
+  builder.AddChannelArgument(GRPC_ARG_MAX_CONCURRENT_STREAMS,
+                             static_cast<int>(limits.max_concurrent_streams));
+  builder.RegisterService(&service);
+  builder.RegisterService(&streaming_service);
+  return builder.BuildAndStart();
+}
+
+std::unique_ptr<grparse::MetricsHttpServer> start_metrics_exporter(
+    int port, const grparse::PageScheduler& scheduler, const grparse::OcrEnginePool& engines,
+    const grparse::PageScheduler::Options& options) {
+  if (port <= 0) return nullptr;
+  auto exporter = std::make_unique<grparse::MetricsHttpServer>(
+      static_cast<uint16_t>(port), [&scheduler, &engines, &options] {
+        return grparse::render_prometheus_metrics(scheduler.metrics(), engines.stats(), options,
+                                                  grparse::repair_totals());
+      });
+  std::println("gRParse metrics exporter: http://0.0.0.0:{}/metrics", exporter->port());
+  return exporter;
+}
+
+// Serves until SIGINT or SIGTERM arrives on the signal pipe, then drains:
+// the interval line stops first, then the pipe's reader is woken even when
+// Wait() returned without a signal, so join() cannot hang on a read nothing
+// will satisfy.
+void serve_until_signal(grpc::Server& server, const int* signal_pipe, MetricsLogLoop& metrics) {
+  std::atomic<bool> serving{true};
+  std::thread shutdown_thread([&] {
+    unsigned char received_signal = 0;
+    if (read(signal_pipe[0], &received_signal, sizeof(received_signal)) ==
+            static_cast<ssize_t>(sizeof(received_signal)) &&
+        serving.load()) {
+      server.Shutdown(std::chrono::system_clock::now() + std::chrono::seconds(10));
+    }
+  });
+  server.Wait();
+  metrics.stop();
+  serving.store(false);
+  const unsigned char wakeup = 0;
+  if (write(signal_pipe[1], &wakeup, sizeof(wakeup)) < 0) {
+    // The reader has already exited; nothing left to wake.
+  }
+  shutdown_thread.join();
+  shutdown_signal_fd = -1;
+  close(signal_pipe[0]);
+  close(signal_pipe[1]);
+}
+
 }  // namespace
 
 int main() {
   // Container stdout is a pipe (fully buffered); line-buffer it explicitly so
   // the old endl-flushing behaviour survives println, which does not flush.
   std::setvbuf(stdout, nullptr, _IOLBF, 0);
-  const char* models = std::getenv("GRPARSE_MODELS_DIR");
-  const char* address = std::getenv("GRPARSE_LISTEN_ADDRESS");
-  const std::string listen_address = address == nullptr ? "0.0.0.0:50051" : address;
+  const grparse::ProcessConfig process = grparse::read_process_config();
   try {
     int signal_pipe[2];
     install_shutdown_signal_pipe(signal_pipe);
-    const size_t inference_workers = configured_size("GRPARSE_PAGE_WORKERS", page_worker_count(), 64);
-    const unsigned int hardware = std::thread::hardware_concurrency();
-    const size_t render_workers = configured_size(
-        "GRPARSE_RENDER_WORKERS", std::min<size_t>(4, hardware == 0 ? 2 : hardware), 256);
-    const int gpu_index = configured_index("GRPARSE_CUDA_DEVICE", 0);
-    const std::filesystem::path models_dir = models == nullptr ? "/models" : models;
-    // Pooled sessions split the machine instead of each claiming all of it.
-    // ONNX Runtime's default is every core per session, so a pool of them is
-    // oversubscribed by exactly the worker count - which on small machines
-    // costs more than the extra worker earns.  The single shared layout
-    // session is exempt and asks for all cores itself.
-    const size_t cores = hardware == 0 ? 1 : hardware;
-    const int intra_op_threads = configured_index(
-        "GRPARSE_INTRA_OP_THREADS",
-        static_cast<int>(std::max<size_t>(1, cores / inference_workers)), 1024);
-    grparse::set_ort_intra_op_threads(intra_op_threads);
+    const grparse::WorkerConfig workers = grparse::read_worker_config();
+    grparse::set_ort_intra_op_threads(workers.intra_op_threads);
     std::println("gRParse inference threads: {} per pooled session, {} workers, {} cores",
-                 intra_op_threads, inference_workers, cores);
-    const auto engines = build_engine_pool(models_dir, inference_workers, gpu_index);
-    const auto layout = build_layout_engine(models_dir);
-    const auto table_structure =
-        build_table_structure_pool(models_dir, inference_workers, layout != nullptr);
-    const auto figure_classes =
-        build_figure_classifier_pool(models_dir, inference_workers, layout != nullptr);
-    // Named assignment on purpose: a positional brace list of nine same-typed
-    // sizes is one reordering away from a silent misconfiguration.
-    grparse::PageScheduler::Options options;
-    options.document_queue_capacity = configured_size("GRPARSE_DOCUMENT_QUEUE", 8);
-    options.render_queue_capacity = configured_size("GRPARSE_RENDER_QUEUE", 8);
-    options.inference_queue_capacity = configured_size("GRPARSE_INFERENCE_QUEUE", 4);
-    options.assembly_queue_capacity = configured_size("GRPARSE_ASSEMBLY_QUEUE", 8);
-    options.render_workers = render_workers;
-    options.inference_workers = inference_workers;
-    options.assembly_workers = configured_size("GRPARSE_ASSEMBLY_WORKERS", 2, 64);
-    options.page_window = configured_size("GRPARSE_PAGE_WINDOW", 4, 64);
-    options.max_active_documents = configured_size("GRPARSE_MAX_ACTIVE_DOCUMENTS", 32, 1024);
-    options.pdf_parsers = configured_size("GRPARSE_PDF_PARSERS", render_workers, 256);
-    // GRPARSE_PICTURE_IMAGES=on embeds PNG crops of figure regions in picture
-    // items.  Off by default: crops inflate page events on figure-heavy docs.
-    const char* picture_images = std::getenv("GRPARSE_PICTURE_IMAGES");
-    const std::string picture_mode =
-        picture_images == nullptr || *picture_images == '\0' ? "off" : picture_images;
-    if (picture_mode != "on" && picture_mode != "off") {
-      throw std::invalid_argument("GRPARSE_PICTURE_IMAGES must be on or off");
-    }
-    options.capture_picture_images = picture_mode == "on" && layout != nullptr;
-    if (picture_mode == "on" && layout == nullptr) {
-      std::println("gRParse picture images: disabled (layout is disabled)");
-    } else if (options.capture_picture_images) {
-      std::println("gRParse picture images: enabled");
-    }
-    // GRPARSE_PAGE_IMAGES=on embeds a downscaled PNG preview of every page
-    // raster in the page event, so clients can paint boxes over the real
-    // page.  Off by default: previews add bytes to every page event.  Unlike
-    // picture images this needs no layout model; it forces rasterization of
-    // full-digital pages instead.
-    const char* page_images = std::getenv("GRPARSE_PAGE_IMAGES");
-    const std::string page_image_mode =
-        page_images == nullptr || *page_images == '\0' ? "off" : page_images;
-    if (page_image_mode != "on" && page_image_mode != "off") {
-      throw std::invalid_argument("GRPARSE_PAGE_IMAGES must be on or off");
-    }
-    options.capture_page_images = page_image_mode == "on";
-    if (options.capture_page_images) {
-      std::println("gRParse page images: enabled");
-    }
-    options.barcode_mode = configure_barcode_mode(layout != nullptr, figure_classes != nullptr);
-    // GRPARSE_OCR_ROTATION=on (default) re-reads a layerless page whose
-    // first read says the raster was turned (tall line boxes, an upside-down
-    // classifier vote, or a poor read) at the turns the evidence names and
-    // keeps the best read; off never re-reads.
-    const char* ocr_rotation = std::getenv("GRPARSE_OCR_ROTATION");
-    const std::string ocr_rotation_mode =
-        ocr_rotation == nullptr || *ocr_rotation == '\0' ? "on" : ocr_rotation;
-    if (ocr_rotation_mode != "on" && ocr_rotation_mode != "off") {
-      throw std::invalid_argument("GRPARSE_OCR_ROTATION must be on or off");
-    }
-    options.orientation.enabled = ocr_rotation_mode == "on";
-    std::println("gRParse OCR orientation recovery: {}",
-                 options.orientation.enabled ? "enabled" : "disabled (GRPARSE_OCR_ROTATION=off)");
+                 workers.intra_op_threads, workers.inference_workers, workers.cores);
+    const auto engines =
+        grparse::build_engine_pool(process.models_dir, workers.inference_workers, workers.gpu_index);
+    const auto layout = grparse::build_layout_engine(process.models_dir);
+    const auto table_structure = grparse::build_table_structure_pool(
+        process.models_dir, workers.inference_workers, layout != nullptr);
+    const auto figure_classes = grparse::build_figure_classifier_pool(
+        process.models_dir, workers.inference_workers, layout != nullptr);
+    const grparse::PageScheduler::Options options =
+        grparse::read_scheduler_options(workers, layout != nullptr, figure_classes != nullptr);
     grparse::PageScheduler scheduler(*engines, options, grparse::PageSourceFactory{},
-                                     layout.get(), table_structure.get(),
-                                     figure_classes.get());
-    // GRPARSE_<COLLECTOR>_TARGET names each remote collector's endpoint.
-    // Unset leaves that collector unconfigured: documents routed to it then
-    // fail that collector with a clear error instead of being converted
-    // through any intermediate. GRPARSE_ASR_MODEL names the whisper model
-    // grpc-asr must serve; the asr wire requires one.
-    const auto collector_env = [](const char* name) {
-      const char* configured = std::getenv(name);
-      return configured == nullptr ? std::string() : std::string(configured);
-    };
-    grparse::CollectorTargets targets{
-        .libreoffice = collector_env("GRPARSE_LIBREOFFICE_TARGET"),
-        .asr = collector_env("GRPARSE_ASR_TARGET"),
-        .asr_model = collector_env("GRPARSE_ASR_MODEL"),
-        .email = collector_env("GRPARSE_EMAIL_TARGET"),
-        .xml = collector_env("GRPARSE_XML_TARGET"),
-        .ebcdic = collector_env("GRPARSE_EBCDIC_TARGET"),
-        .epub = collector_env("GRPARSE_EPUB_TARGET"),
-        .markup = collector_env("GRPARSE_MARKUP_TARGET"),
-        .lol_html = collector_env("GRPARSE_LOL_HTML_TARGET"),
-        .fastwarc = collector_env("GRPARSE_FASTWARC_TARGET"),
-        .pdf = collector_env("GRPARSE_PDF_TARGET"),
-        // The chart derender leg through grpc-enrich: off unless a target
-        // is named; the timeout bounds the whole leg per parse.
-        .derender = grparse::ChartDerenderOptions{
-            .target = collector_env("GRPARSE_ENRICH_TARGET"),
-            .timeout = std::chrono::milliseconds(
-                configured_size("GRPARSE_ENRICH_TIMEOUT_MS", 5000, 600000)),
-            .vlm_endpoint = collector_env("GRPARSE_ENRICH_VLM_ENDPOINT"),
-        },
-    };
+                                     layout.get(), table_structure.get(), figure_classes.get());
+    const grparse::CollectorTargets targets = grparse::read_collector_targets();
     // The hybrid leg: office documents' page renders run through the same
     // layout/classifier/barcode engines the CV path uses, sharing its pools.
-    grparse::OfficeCvEnrichment office_cv{
+    const grparse::OfficeCvEnrichment office_cv{
         .detector = layout.get(),
         .classifier = figure_classes.get(),
         .barcode_mode = options.barcode_mode,
     };
-    const auto endpoints =
-        std::make_shared<grparse::CollectorEndpoints>(targets, office_cv);
-    const auto report_collector = [](const char* name, const std::string& target) {
-      std::println("gRParse {} collector: {}", name,
-                   target.empty() ? "not configured" : target);
-    };
-    report_collector("libreoffice", targets.libreoffice);
-    report_collector("asr", targets.asr);
-    if (!targets.asr.empty()) {
-      std::println("gRParse asr model: {}",
-                   targets.asr_model.empty() ? "NOT CONFIGURED (GRPARSE_ASR_MODEL)"
-                                             : targets.asr_model);
-    }
-    report_collector("email", targets.email);
-    report_collector("xml", targets.xml);
-    report_collector("ebcdic", targets.ebcdic);
-    report_collector("epub", targets.epub);
-    report_collector("markup", targets.markup);
-    report_collector("lol-html", targets.lol_html);
-    report_collector("fastwarc", targets.fastwarc);
-    report_collector("pdf", targets.pdf);
-    if (targets.derender.enabled()) {
-      std::println("gRParse chart derender (enrich): {} ({} ms{})", targets.derender.target,
-                   targets.derender.timeout.count(),
-                   targets.derender.vlm_endpoint.empty()
-                       ? std::string()
-                       : ", vlm " + targets.derender.vlm_endpoint);
-    } else {
-      std::println("gRParse chart derender (enrich): not configured");
-    }
-    if (!targets.libreoffice.empty()) {
-      std::println("gRParse office CV enrichment: {}",
-                   layout != nullptr ? "enabled (layout"
-                                       + std::string(figure_classes != nullptr
-                                                         ? " + figure classes"
-                                                         : "")
-                                       + ")"
-                                     : "disabled (layout is disabled)");
-    }
-    // The unary surfaces run on gRPC's callback API, so their parsing blocks
-    // on this pool instead of on an event-manager thread. A worker spends
-    // nearly all its life waiting on the scheduler or on a collector, so the
-    // count bounds concurrent conversions rather than CPU use; past the queue
-    // a conversion is refused with RESOURCE_EXHAUSTED instead of queued behind
-    // its own deadline.
-    grparse::CallExecutor::Options executor_options;
-    executor_options.workers = configured_size("GRPARSE_UNARY_WORKERS", 16, 512);
-    executor_options.queue_capacity = configured_size("GRPARSE_UNARY_QUEUE", 64, 4096);
+    const auto endpoints = std::make_shared<grparse::CollectorEndpoints>(targets, office_cv);
+    grparse::report_collector_targets(targets, layout != nullptr, figure_classes != nullptr);
+    const grparse::CallExecutor::Options executor_options = grparse::read_executor_options();
     std::println("gRParse unary executor: {} workers, queue {}", executor_options.workers,
                  executor_options.queue_capacity);
-    const std::optional<grparse::RepairOptions> repair = configure_repair();
+    const std::optional<grparse::RepairOptions> repair = grparse::configure_repair();
     grparse::DocumentParserService service(scheduler, endpoints, executor_options, repair);
     grparse::DocumentStreamingService streaming_service(scheduler, endpoints, repair);
-    grpc::EnableDefaultHealthCheckService(true);
-    grpc::reflection::InitProtoReflectionServerBuilderPlugin();
-    grpc::ServerBuilder builder;
-    builder.AddListeningPort(listen_address, grpc::InsecureServerCredentials());
-    builder.SetMaxReceiveMessageSize(grparse::kMaxMessageBytes);
-    grpc::ResourceQuota quota;
-    quota.Resize(configured_size("GRPARSE_GRPC_MEMORY_MIB", 640, 16384) * 1024U * 1024U);
-    quota.SetMaxThreads(static_cast<int>(configured_size("GRPARSE_GRPC_MAX_THREADS", 64, 1024)));
-    builder.SetResourceQuota(quota);
-    // Per connection, not per server: one client channel may have 32 RPCs in
-    // flight while the executor above admits many more across all clients.
-    // Deliberate — the cap is a per-peer fairness bound, so a single client
-    // cannot fill the conversion queue on its own, and a client that wants
-    // more concurrency opens more channels.
-    builder.AddChannelArgument(GRPC_ARG_MAX_CONCURRENT_STREAMS,
-                               static_cast<int>(configured_size("GRPARSE_MAX_CONCURRENT_STREAMS", 32, 1024)));
-    builder.RegisterService(&service);
-    builder.RegisterService(&streaming_service);
-    const auto server = builder.BuildAndStart();
+    const auto server = start_server(process.listen_address, service, streaming_service,
+                                     grparse::read_grpc_limits());
     if (!server) {
-      std::println(stderr, "Unable to listen on {}", listen_address);
+      std::println(stderr, "Unable to listen on {}", process.listen_address);
       return 1;
     }
-    std::println("gRParse listening on {} (RapidOCR / ONNX Runtime)", listen_address);
-    // GRPARSE_METRICS_PORT exposes the same counters in Prometheus text
-    // format at /metrics.  0 (the default) keeps the listener off; a
-    // configured port that cannot be bound fails startup loudly.
-    const int metrics_port = configured_index("GRPARSE_METRICS_PORT", 0, 65535);
-    std::unique_ptr<grparse::MetricsHttpServer> metrics_exporter;
-    if (metrics_port > 0) {
-      metrics_exporter = std::make_unique<grparse::MetricsHttpServer>(
-          static_cast<uint16_t>(metrics_port), [&scheduler, &engines, &options] {
-            return grparse::render_prometheus_metrics(scheduler.metrics(), engines->stats(),
-                                                      options, grparse::repair_totals());
-          });
-      std::println("gRParse metrics exporter: http://0.0.0.0:{}/metrics",
-                   metrics_exporter->port());
-    }
-    // Pipeline visibility (B4): one metrics line per interval on stdout, where
-    // container logging already looks.  0 disables.
-    const int metrics_interval = configured_index("GRPARSE_METRICS_INTERVAL_SECONDS", 60, 86400);
-    std::mutex metrics_mutex;
-    std::condition_variable metrics_stop_changed;
-    bool metrics_stop = false;
-    std::thread metrics_thread;
-    if (metrics_interval > 0) {
-      metrics_thread = std::thread([&] {
-        auto previous = scheduler.metrics();
-        auto previous_time = std::chrono::steady_clock::now();
-        std::unique_lock<std::mutex> lock(metrics_mutex);
-        while (!metrics_stop_changed.wait_for(lock, std::chrono::seconds(metrics_interval),
-                                              [&] { return metrics_stop; })) {
-          lock.unlock();
-          const auto current = scheduler.metrics();
-          const auto now = std::chrono::steady_clock::now();
-          const double elapsed = std::chrono::duration<double>(now - previous_time).count();
-          std::println("{}", format_metrics(current, previous, engines->stats(), elapsed, options,
-                                            grparse::repair_totals(), grparse::office_cv_totals()));
-          previous = current;
-          previous_time = now;
-          lock.lock();
-        }
-      });
-    }
-    std::atomic<bool> serving{true};
-    std::thread shutdown_thread([&] {
-      unsigned char received_signal = 0;
-      if (read(signal_pipe[0], &received_signal, sizeof(received_signal)) ==
-              static_cast<ssize_t>(sizeof(received_signal)) &&
-          serving.load()) {
-        server->Shutdown(std::chrono::system_clock::now() + std::chrono::seconds(10));
-      }
-    });
-    server->Wait();
-    if (metrics_thread.joinable()) {
-      {
-        std::lock_guard<std::mutex> lock(metrics_mutex);
-        metrics_stop = true;
-      }
-      metrics_stop_changed.notify_all();
-      metrics_thread.join();
-    }
-    // Wake the reader even when Wait() returned without a signal, so join()
-    // cannot hang on a blocking read that will never be satisfied.
-    serving.store(false);
-    const unsigned char wakeup = 0;
-    if (write(signal_pipe[1], &wakeup, sizeof(wakeup)) < 0) {
-      // The reader has already exited; nothing left to wake.
-    }
-    shutdown_thread.join();
-    shutdown_signal_fd = -1;
-    close(signal_pipe[0]);
-    close(signal_pipe[1]);
+    std::println("gRParse listening on {} (RapidOCR / ONNX Runtime)", process.listen_address);
+    const grparse::MetricsConfig metrics_config = grparse::read_metrics_config();
+    const auto metrics_exporter =
+        start_metrics_exporter(metrics_config.port, scheduler, *engines, options);
+    MetricsLine metrics_line(scheduler, *engines, options);
+    MetricsLogLoop metrics_log(metrics_config.interval_seconds,
+                               [&metrics_line] { return metrics_line.next(); });
+    serve_until_signal(*server, signal_pipe, metrics_log);
   } catch (const std::exception& error) {
     std::println(stderr, "Startup failed: {}", error.what());
     return 1;

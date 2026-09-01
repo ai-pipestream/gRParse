@@ -116,24 +116,61 @@ std::string sniff_zip(string_view bytes) {
   return "application/zip";
 }
 
+// One row of the magic-number ladder: `magic` must sit at `offset`, an
+// optional `also` must hold over the whole head, and the row's `mimetype` is
+// what the match declares. `narrow` refines a container signature that names
+// a family rather than a type (a zip says which family through its own
+// entries); an empty answer from it leaves `mimetype` standing.
+struct BinarySignature {
+  string_view magic;
+  size_t offset = 0;
+  string_view mimetype;
+  bool (*also)(string_view bytes) = nullptr;
+  std::string (*narrow)(string_view bytes) = nullptr;
+};
+
+bool riff_container(string_view bytes) { return starts_with(bytes, "RIFF"); }
+
+// A bitmap's file header is 14 bytes; a shorter body carrying "BM" is not one.
+bool bitmap_header_complete(string_view bytes) { return bytes.size() >= 14; }
+
+// The ladder, in precedence order: the first row whose signature sits where
+// it must is the answer, so a row never shadows one above it. Lengths are
+// explicit where a signature carries a NUL a bare literal would cut.
+constexpr std::array<BinarySignature, 14> kBinarySignatures = {{
+    {string_view("PK\x03\x04", 4), 0, "application/zip", nullptr, sniff_zip},
+    {"%PDF-", 0, "application/pdf"},
+    {string_view("\x89PNG\r\n\x1A\n", 8), 0, "image/png"},
+    {string_view("\xFF\xD8\xFF", 3), 0, "image/jpeg"},
+    {"GIF87a", 0, "image/gif"},
+    {"GIF89a", 0, "image/gif"},
+    {string_view("II*\0", 4), 0, "image/tiff"},
+    {string_view("MM\0*", 4), 0, "image/tiff"},
+    // The type tag sits behind the RIFF header's length word; both halves
+    // are required, so the row matches the tag and asks for the container.
+    {"WEBP", 8, "image/webp", riff_container},
+    {"BM", 0, "image/bmp", bitmap_header_complete},
+    {string_view("\x1F\x8B", 2), 0, "application/gzip"},
+    {"WARC/", 0, "application/warc"},
+    {"{\\rtf", 0, "application/rtf"},
+    {"%!PS", 0, "application/postscript"},
+}};
+
+// True when `signature`'s bytes sit exactly where its row puts them.
+bool signature_present(const BinarySignature& signature, string_view bytes) {
+  if (bytes.size() < signature.offset + signature.magic.size()) return false;
+  if (bytes.substr(signature.offset, signature.magic.size()) != signature.magic) return false;
+  return signature.also == nullptr || signature.also(bytes);
+}
+
 std::string sniff_binary(string_view bytes) {
-  if (starts_with(bytes, "PK\x03\x04")) return sniff_zip(bytes);
-  if (starts_with(bytes, "%PDF-")) return "application/pdf";
-  if (starts_with(bytes, "\x89PNG\r\n\x1A\n")) return "image/png";
-  if (starts_with(bytes, "\xFF\xD8\xFF")) return "image/jpeg";
-  if (starts_with(bytes, "GIF87a") || starts_with(bytes, "GIF89a")) return "image/gif";
-  // Explicit lengths: both TIFF magics carry a NUL a bare literal would cut.
-  if (starts_with(bytes, string_view("II*\0", 4)) || starts_with(bytes, string_view("MM\0*", 4))) {
-    return "image/tiff";
+  for (const BinarySignature& signature : kBinarySignatures) {
+    if (!signature_present(signature, bytes)) continue;
+    if (signature.narrow != nullptr) {
+      if (std::string narrowed = signature.narrow(bytes); !narrowed.empty()) return narrowed;
+    }
+    return std::string(signature.mimetype);
   }
-  if (bytes.size() >= 12 && starts_with(bytes, "RIFF") && bytes.substr(8, 4) == "WEBP") {
-    return "image/webp";
-  }
-  if (starts_with(bytes, "BM") && bytes.size() >= 14) return "image/bmp";
-  if (starts_with(bytes, "\x1F\x8B")) return "application/gzip";
-  if (starts_with(bytes, "WARC/")) return "application/warc";
-  if (starts_with(bytes, "{\\rtf")) return "application/rtf";
-  if (starts_with(bytes, "%!PS")) return "application/postscript";
   return {};
 }
 
