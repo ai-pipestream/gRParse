@@ -464,13 +464,20 @@
   the quick-xml 0.42 string-API migration, grpc-ebcdic and grpc-xml a
   libprotobuf-dev line in the Dockerfile (a baseline failure, not the
   bump's).
-- Three stay open on purpose, each with the evidence in a PR comment or the
-  branch: grpc-pdf-inspector lopdf 0.44 and pyo3 0.29 both edit the
-  vendored parser tree whose version moves are the re-vendoring procedure
-  (and lopdf 0.44 turns a page decode failure into silently blank text);
-  calamine quick-xml 0.42 is 171 compile errors in upstream parsing code
-  that upstream itself has not migrated. The central Renovate config now
-  ignores vendor/** so the two vendored-tree PRs stop regenerating.
+- Three were first held for review and then completed at the owner's
+  direction, so all twenty are merged. grpc-pdf-inspector lopdf 0.44: the
+  vendored parser's one call site loses a Result that could not fail (the
+  0.42 body was already lenient; write_all into a Vec was the only error
+  path), recorded in docs/capture-deferrals.md under vendored dependency
+  moves; pyo3 0.29 is the allow_threads to detach rename, with the python
+  feature checked directly since the default gate never builds it. calamine
+  quick-xml 0.42 took a real migration of the readers to the string API
+  (names compare as str, values come in decoded, the per-reader decoder
+  removed; 177 compiler errors worked down to zero), gated on the full
+  matrix including MSRV 1.88, wasm and benches; the pivot-cache test caught
+  one mangled tag arm on the way, which is exactly what the suite is for.
+  The central Renovate config now ignores vendor/** so vendored-tree bumps
+  arrive as re-vendors, not PRs.
 - Two findings for the owner:
   - grpc-ebcdic, grpc-xml and grpc-epub have Forgejo default branch
     `development` that is a stale strict ancestor of `main` (which GitHub
