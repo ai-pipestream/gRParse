@@ -594,6 +594,13 @@ if(BUILD_TESTING)
     add_test(NAME vlm-oracle-eval
       COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/eval/compare_vlm.py)
     set_tests_properties(vlm-oracle-eval PROPERTIES SKIP_RETURN_CODE 77 LABELS eval)
+    # Structural scorecard (eval/README.md): scores a running gRParse at
+    # GRPARSE_TARGET against eval/scorecard/baseline; skips (77) when the
+    # service is unreachable or grpcio is absent, fails (1) on a regression.
+    add_test(NAME structural-scorecard
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/eval/scorecard/run.py
+      WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+    set_tests_properties(structural-scorecard PROPERTIES SKIP_RETURN_CODE 77 LABELS eval)
   endif()
   # Development utility for the canonical JSON validation harness
   # (scripts/validate_canonical_json.py): Document in, canonical JSON out.
