@@ -679,3 +679,25 @@ if(BUILD_TESTING)
   set_tests_properties(content-sniff-test PROPERTIES
     ENVIRONMENT "GRPARSE_TEST_CORPUS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/golden/corpus")
 endif()
+
+# ---- anti-drift battery: determinism, idempotence, data contracts ----------
+# Appended as one block, like the data plane above: these tests own no
+# sources of their own, they pin what the modules already built must keep
+# producing. Split by module so no single file grows into a catch-all.
+if(BUILD_TESTING)
+  set(GRPARSE_DRIFT_TESTS
+    assembly-determinism-test
+    geometry-order-determinism-test
+    repair-idempotence-test
+    data-contract-map-test
+    data-contract-origin-test)
+  foreach(test_name IN LISTS GRPARSE_DRIFT_TESTS)
+    string(REPLACE "-" "_" test_source "${test_name}")
+    add_executable(${test_name} "tests/${test_source}.cpp")
+    target_link_libraries(${test_name} PRIVATE grparse_core grparse_flags)
+    add_test(NAME ${test_name} COMMAND ${test_name})
+  endforeach()
+  add_dependencies(grparse-tests ${GRPARSE_DRIFT_TESTS})
+  set_tests_properties(${GRPARSE_DRIFT_TESTS} PROPERTIES
+    TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
+endif()

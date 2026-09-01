@@ -52,8 +52,22 @@ uv run --with grpcio --with grpcio-tools python eval/scorecard/run.py --record \
 uv run --with grpcio --with grpcio-tools python eval/scorecard/run.py --record-floors \
     --repeat 2 --only <doc-id>                                                 # gates only, summaries untouched
 EVAL_REQUIRE=1 uv run --with grpcio --with grpcio-tools python eval/scorecard/run.py   # pre-release: no skips
-uv run python eval/scorecard/tests/run_tests.py                                 # metric unit tests
+uv run python eval/scorecard/tests/run_tests.py                                 # metric and corpus integrity tests
 ```
+
+The unit tests need no service and no network. Besides the metric functions
+they check the corpus itself: every `corpus.json` entry resolves to a file and
+every file is referenced, each in-repo fixture still hashes to the sha256
+pinned in `eval/scorecard/fixtures/manifest.json`, no fixture or scorecard file
+is above 2 MB and the corpus stays under its pinned ceiling, no personal
+document is present under either tree, every truth file validates against a
+strict schema and names a document the corpus holds, every corpus document has
+a baseline and no baseline outlives its entry, and every truth floor in
+`baseline/_meta.json` is recomputed from the committed baseline so a floor can
+never sit above a score that was actually recorded. Changing a fixture is
+therefore deliberate: regenerate with `fixtures/build_all.sh`, rewrite the
+digests with `fixtures/write_manifest.py`, and say in the commit why the bytes
+moved.
 
 `GRPARSE_TARGET` (default `localhost:50051`) and `EVAL_LABEL` (default
 `live`) name the leg; outputs land in `eval/out/scorecard/<label>/`:

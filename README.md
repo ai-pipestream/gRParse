@@ -580,7 +580,15 @@ source (in-memory PNG/JPEG decode, BGR
 normalization, decode-failure surfacing), reading order (XY-cut multi-column,
 determinism), region geometry (center-containment binding, raster clipping,
 zero-copy crops), resource pool, table structure (geometry grids, cell
-binding, region crops), and streaming/unary contract tests. Third-party dependencies register their own CTest
+binding, region crops), streaming/unary contract tests, and an anti-drift
+battery: one collector input assembling to identical canonical JSON twice
+over, geometry reading order and picture anchoring independent of the order
+the collector reported items in, the repair pass reaching its fixed point in
+one run and reaching the same one from any report order, and the office data
+contract (one chart picture with exactly one bound data table and one
+caption, sheet header marks with their merge spans intact, the mimetype
+ladder stamped on the origin as typed fields with a typed claim behind them,
+and no typed fact degraded into a colon-keyed custom field). Third-party dependencies register their own CTest
 suites, so the label filter is what keeps `ctest` scoped to this project:
 
 ```bash
