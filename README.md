@@ -418,6 +418,30 @@ a group are never touched. `GRPARSE_REPAIR=off` disables the pass at
 startup, `GRPARSE_REPAIR=debug` prints one line per document it changed, and
 the Prometheus exposition counts what it did under `grparse_repairs_total`.
 
+The same pass owns the document's shape where the producer had only
+geometry to go on. A body that came entirely from the PDF text layer is
+re-ordered page by page with the XY-cut the CV path uses (columns top to
+bottom then left to right, footnotes after the page body, captions right
+after the float they label, furniture last). Heading levels follow the
+numbering (`1`, `1.1`, `A.`, `IV`, `Appendix A`), all-caps section words sit
+at depth one, unnumbered headings join the nearest size cluster, and the
+first page's opening heading block becomes the `TitleItem`; run-in headings
+(`4.2 CAPS WORDS Sentence...`) and checkbox or `Label: ____` rows split into
+their own items with provenance cut proportionally. Pictures the office CV
+enrichment detects are deduplicated against the collector's own pictures and
+placed after the paragraph they sit beside, in page order, so output is
+identical run to run; spreadsheets skip that enrichment. Office charts map to
+one `CHART` picture with a bound `TableItem` (series as columns, categories
+as row headers, typed numeric cells, a caption from the chart title), sheet
+tables carry `column_header` and `row_section` marks and merged spans, an
+HTML page's `<title>` is the `TITLE` item, and a deck's first title
+placeholder is the title while later slide titles are section headers. The
+origin mimetype is resolved from the declared type, then magic bytes and zip
+entries, then the extension, with the evidence stamped on the origin.
+`GRPARSE_DATA_LOG=on` prints one line per data change and
+`grparse_data_changes_total` counts them; the exposition also carries
+`process_resident_memory_bytes` and `process_cpu_seconds_total`.
+
 The server registers standard gRPC health checking and reflection in addition
 to the contract's `Health` RPC. SIGINT and SIGTERM initiate a bounded graceful
 shutdown.

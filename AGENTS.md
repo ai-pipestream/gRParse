@@ -176,7 +176,14 @@ layout golden (needs the model file), the VLM oracle eval (test `vlm-oracle-eval
 needs `VLM_ENDPOINT`), the structural scorecard (test `structural-scorecard`, label
 `eval`, needs a running gRParse at `GRPARSE_TARGET`; see `eval/README.md`), the
 vlm-convert golden. A green run proves nothing about a tier that skipped; read
-the skip counts.
+the skip counts. The scorecard is the gate for any change to parsing output:
+run it twice after a deploy (the first run carries warm-up latency), read the
+Changes section, and re-record a legitimate move in the same change with
+`--record --repeat 2 --only <docs> --reason "<commit>: why"`. It scores
+against hand-derived truth files (`eval/scorecard/truth/`) whose floors only
+ratchet up, gates latency (`EVAL_LATENCY=off` on CPU instances) and
+stability (`--repeat 2`), and `EVAL_REQUIRE=1` makes a skip a failure for
+release runs.
 
 The build tree lives in a BuildKit cache mount keyed by toolchain. Two builders
 on one host that share it (a developer build and a local CI run of the same
@@ -184,7 +191,10 @@ Dockerfile) can leave each other's objects newer than the sources, and ninja
 then skips a recompile while the in-build ctest passes on the old binary. Check
 that the build log compiled the file you changed (`grep 'Building CXX'`), and
 give a second builder its own tree with
-`--build-arg GRPARSE_BUILD_CACHE_SCOPE=ci`.
+`--build-arg GRPARSE_BUILD_CACHE_SCOPE=ci`. Every worktree that builds gets
+its own scope (`-<feature>`), and an acceptance build uses a fresh scope: even
+inside one scope an object compiled after a header was edited keeps its newer
+mtime and ninja keeps it.
 
 ### 5. Run the stack
 
@@ -212,7 +222,11 @@ git -C gRParse worktree add ../worktrees/gRParse-<feature> -b <feature> origin/m
 ```
 
 Commit inside the worktree; merge and push from the main checkout. Remove the
-worktree and the local branch when the feature lands.
+worktree and the local branch when the feature lands. A private instance of a
+worktree's image runs against the stack's collectors without touching the
+stack: `docker run --network parse-stack_default -e GRPARSE_ORT_EP=cpu` with
+the `GRPARSE_*_TARGET` values from `compose.stack.yaml` and the models
+directory mounted, then `run.py --target localhost:<port>`.
 
 ## Rules that hold across the family
 

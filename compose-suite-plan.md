@@ -140,3 +140,75 @@
 - Rejoin precision on the paper: 14 of 16 right; two joined fragments the layout had
   already broken ("hyper- t−1", "probabil- that"). A tail fragment of at least two
   letters would catch the first; the second needs a lexicon. Left as rows to move.
+
+### 2026-08-31 (night): three lanes, one ruler v2 (truth floors, layout, data)
+
+- Program: same shape as the morning, three Fable agents with disjoint ownership
+  and no commits of their own. Lane 1 (eval/, tests/golden/) worked in the main
+  checkout; lanes 2 and 3 each in a worktree with its own build cache scope and a
+  private CPU instance on the stack network, scored read-only with the main
+  checkout's ruler. The coordinator committed per lane, merged from the main
+  checkout, built with `grep 'Building CXX'` checks, deployed, scored twice, and
+  re-recorded every intentional move with the commit and a reason.
+- Lane 1, ruler v2 (4f450f2, 04b7f5b): truth files for 14 documents derived from the
+  sources (docx/pptx/xlsx XML, pdftotext, tesseract), absolute metrics (headings,
+  levels, reading-order anchors, table cells, figure anchors) with floors that
+  ratchet in `_meta.json`; ten fixtures with deterministic generators (two-column
+  PDF with footnotes and running header, rotated scan, form docx and pdf, docx with
+  inline figures, pptx with notes, sixty-sheet workbook, three pdf-inspector
+  samples); latency gate max(1.25x, +500 ms); `--repeat 2` stability; `EVAL_REQUIRE`.
+  72 unit tests. Its first pass over the new fixtures produced the rows below.
+- Lane 2, layout (4b954ac, merged cb3af81): geometry-only bodies re-ordered per page
+  by XY-cut; heading hierarchy from numbering with the opening block promoted to
+  TitleItem; run-in headings and form rows split; CV pictures deduplicated and
+  anchored beside their paragraph in page order (deterministic); hyphen rejoin needs
+  a two-letter tail word; running-furniture demotion judges the whole item and never
+  demotes items over twelve words (it had removed every page paragraph from
+  pdf-mixed and pdf-long-text); `page_rotation_vote` ready for the scheduler.
+  Root cause on the paper: the two bad rejoins were line interleaving INSIDE single
+  pdf-collector items, not body order; the paper is single-column, its floats came
+  first on each page. 40 ctests.
+- Lane 3, data (febea43, grpc-libreoffice cd8f667): office charts as one CHART
+  picture with a bound TableItem and caption (an xlsx chart used to be two pictures,
+  a pptx chart an empty text item); spreadsheets skip CV enrichment (the empty
+  picture per sheet, 59 on sixty-sheets, and its nondeterministic page numbers);
+  sheet header rows and spans; inline office pictures take their anchor paragraph's
+  slot; HTML title as TITLE; deck title vs slide headings; mimetype sniffing with
+  `origin.mimetype_evidence`; RSS and CPU gauges; `grparse_data_changes_total`.
+  Collector side: Writer table grid from column separators (docx-sample3's table
+  7x3 to 7x5) and chart replacement graphics re-encoded as PNG instead of
+  StarView metafiles. 41 ctests after the merge.
+- Live outcome (`final`, `--repeat 2`): 34 of 34 pass, every doc stable. Truth
+  gains: paper headings 0.690 to 0.941 and levels 0.700 to 1.000; two-column
+  headings 0.387 to 1.000; pptx-notes levels 0.250 to 1.000; pdf-form levels 0.500
+  to 1.000; docx-sample3 and docx-figures figure anchors 0 to 1.000; html-entities
+  headings 0 to 1.000; rotated-scan levels 0 to 0.500. Nothing fell. Counters over
+  the day's runs: furniture_demoted 0, hyphens_rejoined 492, paragraphs_merged 6,
+  cv_enrichment_skipped 38, sheet_header_rows 486, mimetypes_sniffed 234.
+- Rows the ruler still shows, by owner:
+  - grpc-pdf-inspector: (0,0,0,0) boxes for most multi-line paragraphs in
+    two-column.pdf (no geometric order possible; footnote and last paragraphs stay
+    out of order); lines of side-by-side blocks interleaved inside one item on the
+    paper ("probabil-/that/ity") and heading 3.2 missing entirely; Figures 2 and 3
+    have no picture items; long-text.pdf's 110 furniture items are the collector's
+    own; form.pdf's intro paragraph arrives as table row 0.
+  - gRParse: wire `page_rotation_vote` in the scheduler (re-OCR at 90 and 270, keep
+    the higher mean confidence); export the new repair and office-CV totals in the
+    Prometheus exposition; docx-sample3 still shows four pictures for two drawings
+    because the collector's picture boxes sit one image width right of the drawing;
+    epub chapter h1 comes out as the title (`epub_book.cpp`); raster charts
+    (bar_chart.png) carry the classifier verdict only, a table needs a VLM derender
+    into `PictureTabularChartData`.
+  - Scorecard: no chart fixture yet (charts_bound stayed 0 in corpus runs; the lane
+    3 generator, openpyxl and python-pptx, is the template); `memory.metrics_url`
+    resolves the stack container for a localhost target (`EVAL_METRICS_URL`
+    overrides); paper Table 1 has no truth cells.
+  - Proto (fleet sweep): typed slots for the last keyed strings,
+    `CollectorClaim.warnings`, `TextItemBase.page_style_name`, `GroupItem.slide`,
+    chart titles on `ChartMeta`.
+  - Stack: VLM default stays Qwen on :8085 with North a per-request preset; no
+    enrich-side eval exists to justify flipping it.
+- Method notes: the shared-cache trap appeared once more inside a single scope (an
+  object compiled after its header was edited kept the newer mtime), so acceptance
+  builds use a fresh scope. The first scorecard run after a deploy fails latency on
+  one or two docs from warm-up; the second run is the verdict.
