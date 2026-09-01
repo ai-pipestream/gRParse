@@ -14,6 +14,10 @@ import json
 from typing import Any
 
 CLAIM_SECTIONS = ("origin", "source_meta", "page_styles", "email", "media")
+# Leaves that describe how a claim was made rather than a fact about the
+# document; two collectors are expected to differ here, so they never count
+# as shared or conflicting.
+DESCRIPTIVE_LEAVES = frozenset({"origin.mimetype_evidence"})
 Scalar = str | int | float | bool
 
 
@@ -64,7 +68,8 @@ def agreement_section(document: dict[str, Any]) -> dict[str, Any] | None:
     for collector, leaves in by_collector.items():
         for path, value in leaves.items():
             fields.setdefault(path, {})[collector] = value
-    shared = {path: values for path, values in fields.items() if len(values) > 1}
+    shared = {path: values for path, values in fields.items()
+              if len(values) > 1 and path not in DESCRIPTIVE_LEAVES}
     won = winners(document)
     conflicts = []
     agreed = 0
