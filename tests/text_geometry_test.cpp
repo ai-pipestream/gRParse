@@ -93,11 +93,48 @@ void verify_merge_dedupes_and_sorts() {
 
 }  // namespace
 
+// A page whose detected lines are tall and narrow was rasterized a
+// quarter turn from upright; a normal page, or a page with too few lines
+// to judge, is not.
+void verify_rotation_vote() {
+  grparse::OcrPage upright{1000, 1000, {}};
+  for (int line = 0; line < 5; ++line) {
+    upright.lines.push_back(make_line("w", 50, 100 + 30 * line, 600, 120 + 30 * line,
+                                      grparse::TextOrigin::kOcr));
+  }
+  const auto flat = grparse::page_rotation_vote(upright);
+  require(flat.horizontal_lines == 5 && flat.vertical_lines == 0 && !flat.quarter_turn,
+          "wide lines vote upright");
+
+  grparse::OcrPage turned{1000, 1000, {}};
+  for (int line = 0; line < 5; ++line) {
+    turned.lines.push_back(make_line("w", 100 + 30 * line, 50, 120 + 30 * line, 600,
+                                     grparse::TextOrigin::kOcr));
+  }
+  turned.lines.push_back(make_line("x", 10, 10, 200, 30, grparse::TextOrigin::kOcr));
+  const auto tall = grparse::page_rotation_vote(turned);
+  require(tall.vertical_lines == 5 && tall.horizontal_lines == 1 && tall.quarter_turn,
+          "tall lines outvote one wide line");
+
+  grparse::OcrPage sparse{1000, 1000, {}};
+  sparse.lines.push_back(make_line("w", 100, 50, 120, 600, grparse::TextOrigin::kOcr));
+  sparse.lines.push_back(make_line("w", 140, 50, 160, 600, grparse::TextOrigin::kOcr));
+  require(!grparse::page_rotation_vote(sparse).quarter_turn, "two lines are too few to judge");
+
+  grparse::OcrPage squares{1000, 1000, {}};
+  squares.lines.push_back(make_line("w", 100, 100, 120, 125, grparse::TextOrigin::kOcr));
+  squares.lines.push_back(grparse::OcrLine{"", {}, std::nullopt});
+  const auto square = grparse::page_rotation_vote(squares);
+  require(square.vertical_lines == 0 && square.horizontal_lines == 0,
+          "near-square and empty boxes cast no vote");
+}
+
 int main() {
   try {
     verify_iou_and_overlap();
     verify_extreme_coordinates_do_not_overflow();
     verify_merge_dedupes_and_sorts();
+    verify_rotation_vote();
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
     std::println(stderr, "text-geometry-test: {}", error.what());

@@ -524,7 +524,11 @@ add_library(grparse_core STATIC
   src/targets/sigv4.cpp
   src/targets/target_step.cpp
   src/targets/zip_writer.cpp
-  src/text_geometry.cpp)
+  src/text_geometry.cpp
+  src/document_geometry.cpp
+  src/document_reading_order.cpp
+  src/heading_hierarchy.cpp
+  src/paragraph_split.cpp)
 target_include_directories(grparse_core PUBLIC include)
 # The served version string names the accelerator flavor this build carries.
 target_compile_definitions(grparse_core
@@ -579,7 +583,10 @@ if(BUILD_TESTING)
     table-structure-test
     targets-test
     text-geometry-test
-    warc-stub-wire-test)
+    warc-stub-wire-test
+    document-reading-order-test
+    heading-hierarchy-test
+    paragraph-split-test)
   foreach(test_name IN LISTS GRPARSE_TESTS)
     string(REPLACE "-" "_" test_source "${test_name}")
     add_executable(${test_name} "tests/${test_source}.cpp")

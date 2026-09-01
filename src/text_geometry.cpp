@@ -39,6 +39,25 @@ bool boxes_overlap_significantly(const AxisAlignedBox& a, const AxisAlignedBox& 
   return intersection_over_union(a, b) >= iou_threshold;
 }
 
+RotationVote page_rotation_vote(const OcrPage& page, double aspect, int minimum_lines) {
+  RotationVote vote;
+  for (const auto& line : page.lines) {
+    if (line.polygon.empty()) continue;
+    const AxisAlignedBox box = bounding_box(line);
+    const auto width = static_cast<double>(box.width());
+    const auto height = static_cast<double>(box.height());
+    if (width <= 0 || height <= 0) continue;
+    if (height > aspect * width) {
+      ++vote.vertical_lines;
+    } else if (width > aspect * height) {
+      ++vote.horizontal_lines;
+    }
+  }
+  vote.quarter_turn = vote.vertical_lines >= minimum_lines &&
+                      vote.vertical_lines > 2 * vote.horizontal_lines;
+  return vote;
+}
+
 OcrPage merge_digital_and_ocr(OcrPage digital, OcrPage ocr) {
   OcrPage merged;
   merged.width = digital.width > 0 ? digital.width : ocr.width;

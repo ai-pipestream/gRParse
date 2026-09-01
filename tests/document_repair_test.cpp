@@ -239,6 +239,57 @@ void verify_section_header_in_band_not_demoted() {
   require(same(before, document), "nothing else changed");
 }
 
+// A paragraph whose first line sits in the top band but which runs down
+// the page is body text on every page, however alike the pages read.
+void verify_page_spanning_paragraph_not_demoted() {
+  docv1::Document document = base_document();
+  add_pages(&document, 3);
+  for (int page = 1; page <= 3; ++page) {
+    const std::string ref = add_prose(&document, "the mixed document, page " + std::to_string(page) +
+                                                     " lorem ipsum dolor sit amet",
+                                      page, 40.0, 60.0);
+    auto* base = document.mutable_texts(std::stoi(ref.substr(8)))->mutable_text()->mutable_base();
+    for (int line = 1; line < 40; ++line) place(base, page, 40.0 + 22.0 * line, 60.0 + 22.0 * line);
+  }
+  require(grparse::demote_running_furniture(&document, {}, nullptr) == 0,
+          "a paragraph spanning the page is never furniture");
+
+  // The same paragraph set entirely inside the band, on every page, with
+  // only its page number varying: too many words to be a running header.
+  docv1::Document banded = base_document();
+  add_pages(&banded, 3);
+  std::string words;
+  for (int word = 0; word < 40; ++word) words += " lorem";
+  for (int page = 1; page <= 3; ++page) {
+    add_prose(&banded, "the mixed document, page " + std::to_string(page) + words, page, 40.0, 100.0);
+  }
+  require(grparse::demote_running_furniture(&banded, {}, nullptr) == 0,
+          "a forty-word item in the band is a paragraph, not furniture");
+  grparse::RepairOptions generous;
+  generous.maximum_furniture_words = 100;
+  require(grparse::demote_running_furniture(&banded, generous, nullptr) == 3,
+          "the word cap is what protects it");
+}
+
+// Separate line items stacked from the band down into the body form one
+// block; none of them is a running header even when every page repeats
+// them, while a header standing apart above them still is.
+void verify_top_text_block_not_demoted() {
+  docv1::Document document = base_document();
+  add_pages(&document, 3);
+  for (int page = 1; page <= 3; ++page) {
+    add_prose(&document, "Running header", page, 10.0, 22.0);
+    for (int line = 0; line < 12; ++line) {
+      add_prose(&document, "lorem ipsum dolor sit amet line " + std::to_string(line), page,
+                60.0 + 14.0 * line, 72.0 + 14.0 * line);
+    }
+  }
+  std::vector<std::string> patterns;
+  require(grparse::demote_running_furniture(&document, {}, &patterns) == 3,
+          "only the header apart from the block is demoted");
+  require(patterns == std::vector<std::string>{"running header"}, "the block's lines report nothing");
+}
+
 void verify_single_page_untouched() {
   docv1::Document document = base_document();
   add_pages(&document, 1);
@@ -309,6 +360,17 @@ void verify_hyphen_rejoin() {
           "a spaced dash is not a line-break hyphen");
   require(grparse::rejoin_hyphenated_words("end-\n") == "end-\n",
           "a hyphen with nothing after the break stays");
+  require(grparse::rejoin_hyphenated_words("the hyper-\nt\xE2\x88\x92" "1 t t parameter") ==
+              "the hyper-\nt\xE2\x88\x92" "1 t t parameter",
+          "a one-letter tail token is a stray glyph line, not the rest of the word");
+  require(grparse::rejoin_hyphenated_words("co-\nx2 rate") == "co-\nx2 rate",
+          "a tail token with a digit is not a word");
+  require(grparse::rejoin_hyphenated_words("infor-\nmation, and") == "information, and",
+          "trailing punctuation on the tail token does not block the rejoin");
+  require(grparse::rejoin_hyphenated_words("some-\nthing.") == "something.",
+          "a tail word closing the sentence rejoins");
+  require(grparse::rejoin_hyphenated_words("un-\ndo it") == "undo it",
+          "a two-letter tail word is long enough");
   require(grparse::rejoin_hyphenated_words("exam\xC2\xAD\nple") == "example",
           "a soft hyphen on a line break joins the word");
   require(grparse::rejoin_hyphenated_words("soft\xC2\xADhyphen", &counts) == "softhyphen",
@@ -606,6 +668,8 @@ int main() {
     verify_running_header_demoted();
     verify_page_numbers_demoted();
     verify_section_header_in_band_not_demoted();
+    verify_page_spanning_paragraph_not_demoted();
+    verify_top_text_block_not_demoted();
     verify_single_page_untouched();
     verify_normalization_and_page_number_shapes();
     verify_reference_years_are_not_page_numbers();

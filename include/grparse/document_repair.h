@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -13,14 +14,31 @@ namespace grparse {
 // page, one region, one line. Some of what a reader considers wrong with a
 // parse is only visible once the whole Document exists: the running header
 // that repeats on every page, the word a line break cut in two, the
-// paragraph a page break split. This module fixes those three on the
-// finished Document, format-agnostically, as pure functions a caller can
-// run one at a time or all at once through repair_document.
+// paragraph a page break split, the heading whose depth only makes sense
+// beside every other heading, the page whose floats a text-layer fold put
+// first. This module fixes those on the finished Document,
+// format-agnostically, as pure functions a caller can run one at a time or
+// all at once through repair_document.
 
 struct RepairOptions {
   bool demote_running_furniture = true;
   bool rejoin_hyphenation = true;
   bool merge_continuations = true;
+  // Heading hierarchy (heading_hierarchy.h): title lines merged, levels
+  // from numbering and size, for headers without a level and for those
+  // from `geometry_collectors`.
+  bool infer_heading_hierarchy = true;
+  // Body order (document_reading_order.h): each page's direct body
+  // children in XY-cut reading order, only when the whole document came
+  // from `geometry_collectors`.
+  bool order_body_by_geometry = true;
+  // Paragraph splits (paragraph_split.h) for items from
+  // `geometry_collectors`: a numbered all-caps heading run into its
+  // paragraph, and form rows folded into one item.
+  bool split_paragraphs = true;
+  // Collectors whose order and heading levels are guesses from geometry
+  // rather than document structure; every other producer's choices win.
+  std::vector<std::string> geometry_collectors{"pdf"};
   // A body item is running furniture when its normalized text recurs on at
   // least this many distinct pages and on at least this share of the
   // document's pages (the larger of the two applies).
@@ -29,6 +47,9 @@ struct RepairOptions {
   // The top and bottom bands of a page, as a fraction of its height, where
   // furniture lives.
   double band_fraction = 0.12;
+  // A running header or footer is a line or two; a longer item in a band
+  // is a paragraph however often the document repeats it.
+  int maximum_furniture_words = 12;
   // Continuation merges per pass; a run of short unpunctuated lines (a
   // poem, an address block) stops here instead of folding into one item.
   int maximum_continuation_merges = 256;
@@ -48,21 +69,43 @@ struct RepairReport {
   // Body paragraphs merged into their predecessor across a page or column
   // break.
   int paragraphs_merged = 0;
+  // Title lines on the first page folded into the first of them, and the
+  // section header that became the document's TitleItem.
+  int titles_merged = 0;
+  int titles_promoted = 0;
+  // Section headers whose level was set or changed, and geometry
+  // collectors' headers relabelled as prose.
+  int heading_levels_assigned = 0;
+  int headings_demoted = 0;
+  // Run-in headings split out of the paragraph that followed them, and
+  // form rows split out of one item (paragraph_split.h).
+  int headings_split = 0;
+  int form_rows_split = 0;
+  // Direct body children whose position changed, and the pages that held
+  // them.
+  int body_items_reordered = 0;
+  int pages_reordered = 0;
 
   // Whether the arenas or any item's text changed: everything but a
-  // demotion, which only relabels and re-parents. A side table that
-  // describes item text by reference (an offset table) is stale when this
-  // is true.
+  // demotion, a level, or a body order change, which only relabel and
+  // re-parent. A side table that describes item text by reference (an
+  // offset table) is stale when this is true.
   bool changed_text_or_arenas() const {
-    return hyphens_rejoined > 0 || soft_hyphens_removed > 0 || paragraphs_merged > 0;
+    return hyphens_rejoined > 0 || soft_hyphens_removed > 0 || paragraphs_merged > 0 ||
+           titles_merged > 0 || headings_split > 0 || form_rows_split > 0;
   }
-  bool changed_anything() const { return furniture_demoted > 0 || changed_text_or_arenas(); }
+  bool changed_anything() const {
+    return furniture_demoted > 0 || heading_levels_assigned > 0 || body_items_reordered > 0 ||
+           titles_promoted > 0 || headings_demoted > 0 || changed_text_or_arenas();
+  }
 };
 
 // Runs the enabled repairs in their fixed order: furniture demotion first
-// (so paragraphs a page break split become body neighbours), continuation
-// merging second, hyphenation rejoin last. Idempotent: a second run over
-// the result changes nothing.
+// (so paragraphs a page break split become body neighbours), the run-in
+// heading and form row splits, heading hierarchy, body order (so
+// continuations meet their real neighbours), continuation merging,
+// hyphenation rejoin last. Idempotent: a second run over the result
+// changes nothing.
 RepairReport repair_document(ai::pipestream::document::v1::Document* document,
                              const RepairOptions& options = {});
 
@@ -102,8 +145,12 @@ struct HyphenationCounts {
 // the single space a line join left), and a lowercase letter become the
 // joined word when both fragments are alphabetic and the pair is not a
 // known hyphenated compound ("self-", "well-", "non-" always; "pre-",
-// "post-", "co-", "re-" before a vowel). Soft hyphens (U+00AD) are removed
-// everywhere. Counts accumulate into `counts` when given.
+// "post-", "co-", "re-" before a vowel). The tail's first token must be a
+// word of two letters or more, letters only up to a trailing punctuation
+// mark: "hyper-" followed by a stray "t" (a subscript line folded into the
+// paragraph) or by "x2" is not a broken word and keeps its hyphen. Soft
+// hyphens (U+00AD) are removed everywhere. Counts accumulate into `counts`
+// when given.
 std::string rejoin_hyphenated_words(std::string_view text, HyphenationCounts* counts = nullptr);
 
 // Repair 2 over every TEXT or PARAGRAPH item of the document.
@@ -133,12 +180,26 @@ std::string join_hyphenated_fragments(std::string_view head, std::string_view ta
 int merge_continuations(ai::pipestream::document::v1::Document* document,
                         const RepairOptions& options);
 
+// Removes the retired text items (the keys of `absorbed_by`, each mapped
+// to the item that absorbed it) from the texts arena, renumbers what
+// remains, prunes them from every group, and points every reference at
+// its new name; a reference into a retired item follows it to the item
+// that absorbed it. Shared by every repair that folds two items into one.
+void retire_text_items(ai::pipestream::document::v1::Document* document,
+                       const std::map<std::string, std::string>& absorbed_by);
+
 // Process-wide totals of what the pass changed since startup, for the
 // metrics exposition beside the pipeline counters.
 struct RepairTotals {
   uint64_t furniture_demoted = 0;
   uint64_t hyphens_rejoined = 0;
   uint64_t paragraphs_merged = 0;
+  uint64_t titles_merged = 0;
+  uint64_t heading_levels_assigned = 0;
+  uint64_t body_items_reordered = 0;
+  uint64_t headings_split = 0;
+  uint64_t headings_demoted = 0;
+  uint64_t form_rows_split = 0;
 };
 
 // The pass as the service runs it: repair_document, the report added to

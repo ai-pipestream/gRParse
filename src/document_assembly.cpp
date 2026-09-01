@@ -10,6 +10,7 @@
 
 #include "render/renderer_base.h"
 #include "grparse/base64.h"
+#include "grparse/heading_hierarchy.h"
 #include "grparse/reading_order.h"
 #include "grparse/region_geometry.h"
 #include "grparse/table_structure.h"
@@ -820,38 +821,41 @@ double median_header_font(const pipestream::document::v1::SectionHeaderItem& hea
 
 }  // namespace
 
+// The extent of a heading on its first page in the page's own top-down
+// pixels: the CV path emits every box top-left, so no origin flip applies.
+void place_header(const pipestream::document::v1::SectionHeaderItem& header,
+                  HeaderHeight* entry) {
+  int page = 0;
+  for (const auto& provenance : header.base().prov()) {
+    if (provenance.page_no() > 0 && (page == 0 || provenance.page_no() < page)) {
+      page = provenance.page_no();
+    }
+  }
+  entry->page = page;
+  bool any = false;
+  for (const auto& provenance : header.base().prov()) {
+    if (provenance.page_no() != page || !provenance.has_bbox()) continue;
+    const auto& box = provenance.bbox();
+    const double top = std::min(box.t(), box.b());
+    const double bottom = std::max(box.t(), box.b());
+    entry->top = any ? std::min(entry->top, top) : top;
+    entry->bottom = any ? std::max(entry->bottom, bottom) : bottom;
+    any = true;
+  }
+}
+
+HeaderHeight header_entry(const pipestream::document::v1::SectionHeaderItem& header) {
+  HeaderHeight entry;
+  entry.self_ref = header.base().self_ref();
+  entry.height = median_header_height(header);
+  entry.font_size = median_header_font(header);
+  entry.text = header.base().text();
+  place_header(header, &entry);
+  return entry;
+}
+
 std::map<std::string, int32_t> section_header_levels(std::vector<HeaderHeight> headers) {
-  std::map<std::string, int32_t> levels;
-  // Declared font sizes beat raster heights, but only when every heading
-  // has one: the two are different units, and mixing them would cluster
-  // points against pixels.
-  const bool by_font = !headers.empty() &&
-                       std::ranges::all_of(headers, [](const HeaderHeight& header) {
-                         return header.font_size > 0;
-                       });
-  if (by_font) {
-    for (auto& header : headers) header.height = header.font_size;
-  }
-  // Tallest first; a heading founds a deeper level when it is visibly
-  // smaller (below 85%) than the current level's founding height. Depth
-  // saturates at 6, the deepest level exports render.
-  std::ranges::stable_sort(headers, [](const HeaderHeight& a, const HeaderHeight& b) {
-    return a.height > b.height;
-  });
-  int level = 0;
-  double founding = std::numeric_limits<double>::infinity();
-  for (const auto& header : headers) {
-    if (header.height <= 0) {
-      levels[header.self_ref] = 1;
-      continue;
-    }
-    if (header.height < 0.85 * founding) {
-      level = std::min(level + 1, 6);
-      founding = header.height;
-    }
-    levels[header.self_ref] = std::max(level, 1);
-  }
-  return levels;
+  return infer_heading_levels(std::move(headers));
 }
 
 void collect_header_heights(const pipestream::parse::v1::PageData& page,
@@ -861,29 +865,17 @@ void collect_header_heights(const pipestream::parse::v1::PageData& page,
     if (text.item_case() != pipestream::document::v1::BaseTextItem::kSectionHeader) continue;
     const auto& header = text.section_header();
     if (header.level() > 0) continue;  // the producer already chose
-    into->push_back({header.base().self_ref(), median_header_height(header),
-                     median_header_font(header)});
+    into->push_back(header_entry(header));
   }
 }
 
 void assign_section_header_levels(pipestream::document::v1::Document* document) {
   if (document == nullptr) throw std::invalid_argument("Document is required");
-  std::vector<HeaderHeight> pending;
-  for (const auto& text : document->texts()) {
-    if (text.item_case() != pipestream::document::v1::BaseTextItem::kSectionHeader) continue;
-    const auto& header = text.section_header();
-    if (header.level() > 0) continue;  // the producer already chose
-    pending.push_back({header.base().self_ref(), median_header_height(header),
-                       median_header_font(header)});
-  }
-  if (pending.empty()) return;
-  const auto levels = section_header_levels(std::move(pending));
-  for (auto& text : *document->mutable_texts()) {
-    if (text.item_case() != pipestream::document::v1::BaseTextItem::kSectionHeader) continue;
-    auto* header = text.mutable_section_header();
-    const auto assigned = levels.find(header->base().self_ref());
-    if (assigned != levels.end()) header->set_level(assigned->second);
-  }
+  // Only headers without a level are eligible here: the CV path's own
+  // output, before any collector's levels are in play.
+  HeadingOptions options;
+  options.geometry_collectors.clear();
+  infer_heading_hierarchy(document, options);
 }
 
 }  // namespace grparse
