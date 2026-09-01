@@ -1,30 +1,21 @@
 {
  "agreement": {
-  "agreed": 0,
+  "agreed": 1,
   "claimed_fields": {
-   "grparse": 3,
+   "grparse": 4,
    "markup": 2
   },
   "collectors": [
    "grparse",
    "markup"
   ],
-  "conflicts": [
-   {
-    "field": "origin.mimetype",
-    "values": {
-     "grparse": "application/octet-stream",
-     "markup": "text/html"
-    },
-    "winner": "grparse"
-   }
-  ],
+  "conflicts": [],
   "shared": 1,
   "winners": {
    "origin.binary_hash": "grparse",
    "origin.filename": "grparse",
    "origin.mimetype": "grparse",
-   "origin.mimetype_evidence": "markup"
+   "origin.mimetype_evidence": "grparse"
   }
  },
  "collectors": [
@@ -62,17 +53,19 @@
   "sha256": "9a03bbfbbab89b78433907993ad972073b253468818dd8ebc414010af863793a",
   "table_rows": 0
  },
- "origin_mimetype": "application/octet-stream",
+ "origin_mimetype": "text/html",
  "pictures": [],
  "reading": [
   {
    "hash": "741d4955f2dd529c",
+   "key": "an html paragraph.",
    "label": "text",
    "ref": "#/texts/0",
    "text": "An HTML paragraph."
   },
   {
    "hash": "156f5402c1d0baa8",
+   "key": "x+1",
    "label": "text",
    "ref": "#/texts/1",
    "text": "x+1"
@@ -82,7 +75,5 @@
  "schema": 1,
  "status": "CONVERSION_STATUS_SUCCESS",
  "tables": [],
- "warnings": [
-  "mimetype-mismatch:text/html!=application/octet-stream"
- ]
+ "warnings": []
 }

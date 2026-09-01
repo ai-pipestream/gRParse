@@ -2,7 +2,7 @@
  "agreement": {
   "agreed": 2,
   "claimed_fields": {
-   "grparse": 3,
+   "grparse": 4,
    "libreoffice": 2
   },
   "collectors": [
@@ -14,7 +14,8 @@
   "winners": {
    "origin.binary_hash": "grparse",
    "origin.filename": "grparse",
-   "origin.mimetype": "grparse"
+   "origin.mimetype": "grparse",
+   "origin.mimetype_evidence": "grparse"
   }
  },
  "collectors": [
@@ -23,10 +24,9 @@
  ],
  "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
  "counts": {
-  "body_items": 3,
+  "body_items": 2,
   "by_label": {
    "group:sheet": 1,
-   "picture": 1,
    "table": 1
   },
   "form_items": 0,
@@ -36,7 +36,7 @@
   "key_value_items": 0,
   "orphans": 0,
   "pages": 1,
-  "pictures": 1,
+  "pictures": 0,
   "reading_chars": 8,
   "tables": 1,
   "texts": 0
@@ -56,32 +56,18 @@
  ],
  "headings": [],
  "markdown": {
-  "chars": 162,
+  "chars": 146,
   "headings": 0,
   "images": 0,
-  "sha256": "ab59fe685e0f884a0c881fc84b223e7f5992d3574138563285494a661287e101",
+  "sha256": "9895013ebe8f5e8f68c92f674a7ae88f153eeca4dd12509791baa0757f4ba883",
   "table_rows": 21
  },
  "origin_mimetype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
- "pictures": [
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 1,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/0"
-  }
- ],
+ "pictures": [],
  "reading": [
   {
    "hash": "4ef1caca3f2abd26",
+   "key": "sheet1",
    "label": "group:sheet",
    "name": "Sheet1",
    "ref": "#/groups/0",
@@ -89,15 +75,10 @@
   },
   {
    "hash": "c3abd6f653550d0b",
+   "key": "20x1",
    "label": "table",
    "ref": "#/tables/0",
    "text": "20x1"
-  },
-  {
-   "hash": "",
-   "label": "picture",
-   "ref": "#/pictures/0",
-   "text": ""
   }
  ],
  "reading_text": "3\n4\n6\n20",

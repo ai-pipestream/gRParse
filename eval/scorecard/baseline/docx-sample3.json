@@ -2,7 +2,7 @@
  "agreement": {
   "agreed": 2,
   "claimed_fields": {
-   "grparse": 3,
+   "grparse": 4,
    "libreoffice": 19
   },
   "collectors": [
@@ -15,6 +15,7 @@
    "origin.binary_hash": "grparse",
    "origin.filename": "grparse",
    "origin.mimetype": "grparse",
+   "origin.mimetype_evidence": "grparse",
    "source_meta.created.seconds": "libreoffice",
    "source_meta.editing_cycles": "libreoffice",
    "source_meta.editing_duration_seconds": "libreoffice",
@@ -37,13 +38,13 @@
  ],
  "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
  "counts": {
-  "body_items": 39,
+  "body_items": 35,
   "by_label": {
    "list_item": 8,
    "picture": 4,
    "section_header": 9,
    "table": 2,
-   "text": 16
+   "text": 12
   },
   "form_items": 0,
   "furniture_items": 0,
@@ -55,7 +56,7 @@
   "pictures": 4,
   "reading_chars": 2593,
   "tables": 2,
-  "texts": 33
+  "texts": 29
  },
  "doc_id": "docx-sample3",
  "filename": "sample3.docx",
@@ -90,30 +91,30 @@
   },
   {
    "level": 2,
-   "ref": "#/texts/23",
+   "ref": "#/texts/21",
    "text": "Tables"
   },
   {
    "level": 3,
-   "ref": "#/texts/24",
+   "ref": "#/texts/22",
    "text": "Simple Tables"
   },
   {
    "level": 3,
-   "ref": "#/texts/27",
+   "ref": "#/texts/24",
    "text": "Complex Tables"
   },
   {
    "level": 2,
-   "ref": "#/texts/30",
+   "ref": "#/texts/26",
    "text": "Columns"
   }
  ],
  "markdown": {
-  "chars": 3373,
+  "chars": 3634,
   "headings": 9,
   "images": 0,
-  "sha256": "8096169183e79e151577fa569c3dadfab2857adfa740a33d47c8c3c3fdfe5e76",
+  "sha256": "a3d5b524f313663695e4521949f6dc97cfd8f8b9eea5dc03ca59198110943964",
   "table_rows": 15
  },
  "origin_mimetype": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -131,6 +132,24 @@
    "parent_name": "",
    "preceding_heading": "Images",
    "ref": "#/pictures/2"
+  },
+  {
+   "caption": "",
+   "classification": "",
+   "collectors": [
+    "libreoffice"
+   ],
+   "image": {
+    "bytes": 5427,
+    "mimetype": "image/gif",
+    "sha256": "9bd151e32c7e17c2986bbbee33648291ccac84d2400e4b5d35b565e292bffe98"
+   },
+   "page": 1,
+   "parent": "#/body",
+   "parent_label": "body",
+   "parent_name": "",
+   "preceding_heading": "Images",
+   "ref": "#/pictures/0"
   },
   {
    "caption": "",
@@ -153,24 +172,6 @@
     "libreoffice"
    ],
    "image": {
-    "bytes": 5427,
-    "mimetype": "image/gif",
-    "sha256": "9bd151e32c7e17c2986bbbee33648291ccac84d2400e4b5d35b565e292bffe98"
-   },
-   "page": 1,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "Columns",
-   "ref": "#/pictures/0"
-  },
-  {
-   "caption": "",
-   "classification": "",
-   "collectors": [
-    "libreoffice"
-   ],
-   "image": {
     "bytes": 9398,
     "mimetype": "image/png",
     "sha256": "3624f3b104bb8e00e0355c6dce3b4d8ed664819434d3d9e0c4ee476fd52f21fb"
@@ -179,7 +180,7 @@
    "parent": "#/body",
    "parent_label": "body",
    "parent_name": "",
-   "preceding_heading": "Columns",
+   "preceding_heading": "Images",
    "ref": "#/pictures/1"
   }
  ],
@@ -337,17 +338,17 @@
    "text": "Alt text should communicate what an image means, not how it "
   },
   {
-   "hash": "e3b0c44298fc1c14",
+   "hash": "9bd151e32c7e17c2",
    "key": "",
-   "label": "text",
-   "ref": "#/texts/20",
+   "label": "picture",
+   "ref": "#/pictures/0",
    "text": ""
   },
   {
    "hash": "46812db81bf07dd2",
    "key": "some images such as charts or",
    "label": "text",
-   "ref": "#/texts/21",
+   "ref": "#/texts/20",
    "text": "Some images, such as charts or graphs, require long descript"
   },
   {
@@ -358,10 +359,10 @@
    "text": ""
   },
   {
-   "hash": "e3b0c44298fc1c14",
+   "hash": "3624f3b104bb8e00",
    "key": "",
-   "label": "text",
-   "ref": "#/texts/22",
+   "label": "picture",
+   "ref": "#/pictures/1",
    "text": ""
   },
   {
@@ -369,7 +370,7 @@
    "key": "tables",
    "label": "section_header",
    "level": 2,
-   "ref": "#/texts/23",
+   "ref": "#/texts/21",
    "text": "Tables"
   },
   {
@@ -377,14 +378,14 @@
    "key": "simple tables",
    "label": "section_header",
    "level": 3,
-   "ref": "#/texts/24",
+   "ref": "#/texts/22",
    "text": "Simple Tables"
   },
   {
    "hash": "5ed9848eecf337c4",
    "key": "simple tables have a uniform number",
    "label": "text",
-   "ref": "#/texts/25",
+   "ref": "#/texts/23",
    "text": "Simple tables have a uniform number of columns and rows, wit"
   },
   {
@@ -395,76 +396,48 @@
    "text": "6x3"
   },
   {
-   "hash": "e3b0c44298fc1c14",
-   "key": "",
-   "label": "text",
-   "ref": "#/texts/26",
-   "text": ""
-  },
-  {
    "hash": "f9787b17d5af5d36",
    "key": "complex tables",
    "label": "section_header",
    "level": 3,
-   "ref": "#/texts/27",
+   "ref": "#/texts/24",
    "text": "Complex Tables"
   },
   {
    "hash": "32f224bf3ae4ed85",
    "key": "the following is a complex table",
    "label": "text",
-   "ref": "#/texts/28",
+   "ref": "#/texts/25",
    "text": "The following is a complex table, using merged cells as head"
   },
   {
-   "hash": "54c3954f47638fc6",
-   "key": "7x3",
+   "hash": "423ad48dbc371328",
+   "key": "7x5",
    "label": "table",
    "ref": "#/tables/1",
-   "text": "7x3"
-  },
-  {
-   "hash": "e3b0c44298fc1c14",
-   "key": "",
-   "label": "text",
-   "ref": "#/texts/29",
-   "text": ""
+   "text": "7x5"
   },
   {
    "hash": "53aade77cd69a77b",
    "key": "columns",
    "label": "section_header",
    "level": 2,
-   "ref": "#/texts/30",
+   "ref": "#/texts/26",
    "text": "Columns"
   },
   {
    "hash": "612762f2f4373bd8",
    "key": "this is an example of columns",
    "label": "text",
-   "ref": "#/texts/31",
+   "ref": "#/texts/27",
    "text": "This is an example of columns. With columns, the page is spl"
   },
   {
    "hash": "e97cce9db5ed9a29",
    "key": "when columns are not created correctly",
    "label": "text",
-   "ref": "#/texts/32",
+   "ref": "#/texts/28",
    "text": "When columns are not created correctly, screen readers may r"
-  },
-  {
-   "hash": "9bd151e32c7e17c2",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/0",
-   "text": ""
-  },
-  {
-   "hash": "3624f3b104bb8e00",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/1",
-   "text": ""
   }
  ],
  "reading_text": "Sample Document\nThis document was created using accessibility techniques for headings, lists, image alternate text, tables, and columns. It should be completely accessible using assistive technologies such as screen readers.\nHeadings\nThere are eight section headings in this document. At the beginning, \"Sample Document\" is a level 1 heading. The main section headings, such as \"Headings\" and \"Lists\" are level 2 headings. The Tables section contains two sub-headings, \"Simple Table\" and \"Complex Table,\" which are both level 3 headings.\nLists\nThe following outline of the sections of this document is an ordered (numbered) list with six items. The fifth item, \"Tables,\" contains a nested unordered (bulleted) list with two items.\nHeadings\nLists\nLinks\nImages\nTables\nSimple Tables\nComplex Tables\nColumns\nLinks\nIn web documents, links can point different locations on the page, different pages, or even downloadable documents, such as Word documents or PDFs:\nTop of this Page Sample Document Sample Document (docx)\nImages\nDocuments may contain images. For example, there is an image of the web accessibility symbol to the left of this paragraph. Its alternate text is \"Web Access Symbol\".\nAlt text should communicate what an image means, not how it looks.\nSome images, such as charts or graphs, require long descriptions, but not all document types allow that. In web pages, long descriptions may be provided in several ways: on the page below the image, via a link below the image, or via a link on the image.\nTables\nSimple Tables\nSimple tables have a uniform number of columns and rows, without any merged cells:\nScreen Reader\nResponses\nShare\nJAWS\n853\n49%\nNVDA\n238\n14%\nWindow-Eyes\n214\n12%\nSystem Access\n181\n10%\nVoiceOver\n159\n9%\nComplex Tables\nThe following is a complex table, using merged cells as headers for sections within the table. This can't be made accessible in all types of documents:\nMay 2012\nSeptember 2010\nScreen Reader\nResponses\nShare\nResponses\nShare\nJAWS\n853\n49%\n727\n59%\nNVDA\n238\n14%\n105\n9%\nWindow-Eyes\n214\n12%\n138\n11%\nSystem Access\n181\n10%\n58\n5%\nVoiceOver\n159\n9%\n120\n10%\nColumns\nThis is an example of columns. With columns, the page is split into two or more horizontal sections. Unlike tables, in which you usually read across a row and then down to the next, in columns, you read down a column and then across to the next.\nWhen columns are not created correctly, screen readers may run lines together, reading the first line of the first column, then the first line of the second column, then the second line of the first column, and so on. Obviously, that is not accessible.",
@@ -620,14 +593,14 @@
      0,
      1,
      1,
-     1,
+     2,
      "May 2012"
     ],
     [
      0,
+     3,
+     1,
      2,
-     1,
-     1,
      "September 2010"
     ],
     [
@@ -841,16 +814,11 @@
      "10%"
     ]
    ],
-   "cols": 3,
+   "cols": 5,
    "column_headers": 0,
    "ref": "#/tables/1",
    "rows": 7
   }
  ],
- "warnings": [
-  "empty-text:#/texts/20",
-  "empty-text:#/texts/22",
-  "empty-text:#/texts/26",
-  "empty-text:#/texts/29"
- ]
+ "warnings": []
 }

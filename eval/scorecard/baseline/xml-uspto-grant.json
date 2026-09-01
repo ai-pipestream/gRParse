@@ -2,7 +2,7 @@
  "agreement": {
   "agreed": 1,
   "claimed_fields": {
-   "grparse": 3,
+   "grparse": 4,
    "xml": 5
   },
   "collectors": [
@@ -15,7 +15,7 @@
    "origin.binary_hash": "grparse",
    "origin.filename": "grparse",
    "origin.mimetype": "grparse",
-   "origin.mimetype_evidence": "xml",
+   "origin.mimetype_evidence": "grparse",
    "source_meta.language": "xml",
    "source_meta.title": "xml"
   }
@@ -94,18 +94,21 @@
  "reading": [
   {
    "hash": "1bd46852818b0a40",
+   "key": "11999999",
    "label": "text",
    "ref": "#/texts/0",
    "text": "11999999"
   },
   {
    "hash": "35005dd7c5c86ea5",
+   "key": "17123456",
    "label": "text",
    "ref": "#/texts/1",
    "text": "17123456"
   },
   {
    "hash": "b755cc3a46baf79c",
+   "key": "method for streaming structured document",
    "label": "title",
    "level": 0,
    "ref": "#/texts/2",
@@ -113,24 +116,28 @@
   },
   {
    "hash": "ea2c99d7f61a6768",
+   "key": "rivera ana",
    "label": "text",
    "ref": "#/texts/3",
    "text": "Rivera Ana"
   },
   {
    "hash": "ccbee367f8173af8",
+   "key": "acme streaming corp",
    "label": "text",
    "ref": "#/texts/4",
    "text": "Acme Streaming Corp"
   },
   {
    "hash": "01385ff1d8734c88",
+   "key": "a method streams document items as",
    "label": "text",
    "ref": "#/texts/5",
    "text": "A method streams document items as they are parsed."
   },
   {
    "hash": "b0943e2cec5bb70a",
+   "key": "background",
    "label": "section_header",
    "level": 1,
    "ref": "#/texts/6",
@@ -138,18 +145,21 @@
   },
   {
    "hash": "54aded2526b52c07",
+   "key": "prior systems buffered the entire document",
    "label": "text",
    "ref": "#/texts/7",
    "text": "Prior systems buffered the entire document before emitting i"
   },
   {
    "hash": "dfe95c70b20776d6",
+   "key": "fig 1 is a block diagram",
    "label": "text",
    "ref": "#/texts/8",
    "text": "FIG. 1 is a block diagram of the pipeline."
   },
   {
    "hash": "51afcaec8b0102c8",
+   "key": "detailed description",
    "label": "section_header",
    "level": 1,
    "ref": "#/texts/9",
@@ -157,30 +167,35 @@
   },
   {
    "hash": "54e4ffb8c2f3d831",
+   "key": "the parser emits an event per",
    "label": "text",
    "ref": "#/texts/10",
    "text": "The parser emits an event per completed element."
   },
   {
    "hash": "",
+   "key": "",
    "label": "picture",
    "ref": "#/pictures/0",
    "text": ""
   },
   {
    "hash": "cb93fe807d2de765",
+   "key": "1 a method comprising streaming items",
    "label": "text",
    "ref": "#/texts/11",
    "text": "1. A method comprising streaming items."
   },
   {
    "hash": "2351a9c35f72a385",
+   "key": "2 the method of claim 1",
    "label": "text",
    "ref": "#/texts/12",
    "text": "2. The method of claim 1, wherein items are ordered."
   },
   {
    "hash": "12225b13191df3b3",
+   "key": "3 the method of claim 1",
    "label": "text",
    "ref": "#/texts/13",
    "text": "3. The method of claim 1, further comprising a trailer."

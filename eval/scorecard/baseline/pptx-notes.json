@@ -2,7 +2,7 @@
  "agreement": {
   "agreed": 2,
   "claimed_fields": {
-   "grparse": 3,
+   "grparse": 4,
    "libreoffice": 11
   },
   "collectors": [
@@ -15,6 +15,7 @@
    "origin.binary_hash": "grparse",
    "origin.filename": "grparse",
    "origin.mimetype": "grparse",
+   "origin.mimetype_evidence": "grparse",
    "source_meta.created.seconds": "libreoffice",
    "source_meta.editing_cycles": "libreoffice",
    "source_meta.editing_duration_seconds": "libreoffice",
@@ -35,10 +36,10 @@
   "by_label": {
    "group:slide": 4,
    "list_item": 4,
-   "section_header": 2,
+   "section_header": 5,
    "table": 1,
    "text": 4,
-   "title": 4
+   "title": 1
   },
   "form_items": 0,
   "furniture_items": 0,
@@ -93,7 +94,7 @@
    "text": "Notes Fixture Deck"
   },
   {
-   "level": 0,
+   "level": 1,
    "ref": "#/texts/3",
    "text": "What This Deck Covers"
   },
@@ -108,21 +109,21 @@
    "text": "Speaker notes on every content slide"
   },
   {
-   "level": 0,
+   "level": 1,
    "ref": "#/texts/11",
    "text": "Stations by Line"
   },
   {
-   "level": 0,
+   "level": 1,
    "ref": "#/texts/13",
    "text": "Closing Slide Without Notes"
   }
  ],
  "markdown": {
-  "chars": 670,
+  "chars": 673,
   "headings": 6,
   "images": 0,
-  "sha256": "42136c7e930e535ebac9cb1ce2eb784b42abdc969980a5b4111b8e3edc64f0a3",
+  "sha256": "8a68bb182282f4bc30eebf6efd3c1258474430d395c3fec4740af1b5af6dd4eb",
   "table_rows": 5
  },
  "origin_mimetype": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -169,8 +170,8 @@
   {
    "hash": "d1217bcdad682097",
    "key": "what this deck covers",
-   "label": "title",
-   "level": 0,
+   "label": "section_header",
+   "level": 1,
    "ref": "#/texts/3",
    "text": "What This Deck Covers"
   },
@@ -236,8 +237,8 @@
   {
    "hash": "f875904659d59d2e",
    "key": "stations by line",
-   "label": "title",
-   "level": 0,
+   "label": "section_header",
+   "level": 1,
    "ref": "#/texts/11",
    "text": "Stations by Line"
   },
@@ -266,8 +267,8 @@
   {
    "hash": "352a701a8d28ad97",
    "key": "closing slide without notes",
-   "label": "title",
-   "level": 0,
+   "label": "section_header",
+   "level": 1,
    "ref": "#/texts/13",
    "text": "Closing Slide Without Notes"
   }

@@ -1,30 +1,21 @@
 {
  "agreement": {
-  "agreed": 0,
+  "agreed": 1,
   "claimed_fields": {
-   "grparse": 3,
+   "grparse": 4,
    "markup": 3
   },
   "collectors": [
    "grparse",
    "markup"
   ],
-  "conflicts": [
-   {
-    "field": "origin.mimetype",
-    "values": {
-     "grparse": "application/octet-stream",
-     "markup": "text/html"
-    },
-    "winner": "grparse"
-   }
-  ],
+  "conflicts": [],
   "shared": 1,
   "winners": {
    "origin.binary_hash": "grparse",
    "origin.filename": "grparse",
    "origin.mimetype": "grparse",
-   "origin.mimetype_evidence": "markup",
+   "origin.mimetype_evidence": "grparse",
    "source_meta.title": "markup"
   }
  },
@@ -34,56 +25,71 @@
  ],
  "content_type": "text/html",
  "counts": {
-  "body_items": 2,
+  "body_items": 3,
   "by_label": {
-   "text": 2
+   "text": 2,
+   "title": 1
   },
   "form_items": 0,
   "furniture_items": 0,
   "groups": 0,
-  "headings": 0,
+  "headings": 1,
   "key_value_items": 0,
   "orphans": 0,
   "pages": 0,
   "pictures": 0,
-  "reading_chars": 62,
+  "reading_chars": 80,
   "tables": 0,
-  "texts": 2
+  "texts": 3
  },
  "doc_id": "html-entities",
  "filename": "entities.html",
  "format": "html",
  "furniture_reading": [],
  "groups": [],
- "headings": [],
+ "headings": [
+  {
+   "level": 0,
+   "ref": "#/texts/2",
+   "text": "Baughman & Datron"
+  }
+ ],
  "markdown": {
-  "chars": 96,
-  "headings": 0,
+  "chars": 121,
+  "headings": 1,
   "images": 0,
-  "sha256": "f227348ba579013020d2a7c784146aa74322bd01cf0dcd0547657b6ad718e333",
+  "sha256": "e258d81c69fc576a6f3750f0bdcc118f0567d62c6c46d706c12a8b852e5c4df7",
   "table_rows": 0
  },
- "origin_mimetype": "application/octet-stream",
+ "origin_mimetype": "text/html",
  "pictures": [],
  "reading": [
   {
+   "hash": "62d0213b00075992",
+   "key": "baughman & datron",
+   "label": "title",
+   "level": 0,
+   "ref": "#/texts/2",
+   "text": "Baughman & Datron"
+  },
+  {
    "hash": "195cfbfdd71d5c69",
+   "key": "byrd davis curly quotes escaped tag",
    "label": "text",
    "ref": "#/texts/0",
    "text": "Byrd & Davis, “curly” quotes, <escaped tag>, café."
   },
   {
    "hash": "63fe90340b48e2d2",
+   "key": "link & text",
    "label": "text",
    "ref": "#/texts/1",
    "text": "link & text"
   }
  ],
- "reading_text": "Byrd & Davis, “curly” quotes, <escaped tag>, café.\nlink & text",
+ "reading_text": "Baughman & Datron\nByrd & Davis, “curly” quotes, <escaped tag>, café.\nlink & text",
  "schema": 1,
  "status": "CONVERSION_STATUS_SUCCESS",
  "tables": [],
- "warnings": [
-  "mimetype-mismatch:text/html!=application/octet-stream"
- ]
+ "warnings": []
 }

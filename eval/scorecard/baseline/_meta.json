@@ -37,18 +37,18 @@
  ],
  "gates": {
   "docx-figures": {
-   "latency_ms": 297.3,
-   "stable": false,
+   "latency_ms": 296.6,
+   "stable": true,
    "truth": {
     "truth_anchors_found": 1.0,
-    "truth_figures": 0.0,
+    "truth_figures": 1.0,
     "truth_heading_levels": 1.0,
     "truth_headings": 1.0,
     "truth_order": 1.0
    }
   },
   "docx-form": {
-   "latency_ms": 246.8,
+   "latency_ms": 229.7,
    "stable": true,
    "truth": {
     "truth_anchors_found": 1.0,
@@ -59,15 +59,15 @@
    }
   },
   "docx-sample3": {
-   "latency_ms": 396.5,
-   "stable": false,
+   "latency_ms": 382.3,
+   "stable": true,
    "truth": {
     "truth_anchors_found": 1.0,
     "truth_figures": 1.0,
     "truth_heading_levels": 1.0,
     "truth_headings": 1.0,
     "truth_order": 1.0,
-    "truth_table_cells": 0.9744
+    "truth_table_cells": 1.0
    }
   },
   "eml-multipart-attachments": {
@@ -104,28 +104,29 @@
    }
   },
   "html-cdata-svg": {
-   "latency_ms": 0.9,
+   "latency_ms": 2.5,
    "stable": true
   },
   "html-deep-nesting": {
-   "latency_ms": 5.0,
+   "latency_ms": 6.0,
    "stable": true
   },
   "html-entities": {
-   "latency_ms": 0.7,
+   "latency_ms": 2.6,
    "stable": true,
    "truth": {
     "truth_anchors_found": 1.0,
-    "truth_headings": 0.0,
+    "truth_heading_levels": 1.0,
+    "truth_headings": 1.0,
     "truth_order": 1.0
    }
   },
   "html-mathml-formula": {
-   "latency_ms": 0.8,
+   "latency_ms": 0.7,
    "stable": true
   },
   "md-streaming-markup": {
-   "latency_ms": 1.0,
+   "latency_ms": 0.9,
    "stable": true,
    "truth": {
     "truth_anchors_found": 1.0,
@@ -212,11 +213,11 @@
    "stable": true
   },
   "pptx-notes": {
-   "latency_ms": 416.0,
+   "latency_ms": 389.3,
    "stable": true,
    "truth": {
     "truth_anchors_found": 1.0,
-    "truth_heading_levels": 0.25,
+    "truth_heading_levels": 1.0,
     "truth_headings": 0.8,
     "truth_order": 1.0,
     "truth_table_cells": 1.0
@@ -227,20 +228,20 @@
    "stable": true
   },
   "xlsx-formula-issue": {
-   "latency_ms": 240.0,
+   "latency_ms": 183.6,
    "stable": true
   },
   "xlsx-rows-with-gaps": {
-   "latency_ms": 207.5,
+   "latency_ms": 167.0,
    "stable": true
   },
   "xlsx-sample3": {
-   "latency_ms": 379.4,
+   "latency_ms": 276.8,
    "stable": true
   },
   "xlsx-sixty-sheets": {
-   "latency_ms": 5426.4,
-   "stable": false,
+   "latency_ms": 3045.3,
+   "stable": true,
    "truth": {
     "truth_anchors_found": 1.0,
     "truth_order": 1.0,
@@ -257,11 +258,11 @@
    }
   },
   "xml-jats-article": {
-   "latency_ms": 1.2,
+   "latency_ms": 1.1,
    "stable": true
   },
   "xml-uspto-grant": {
-   "latency_ms": 0.8,
+   "latency_ms": 1.0,
    "stable": true
   }
  },
@@ -507,6 +508,128 @@
    "reason": "gRParse cb3af81: an OCR fragment survives the furniture block rule and the byline is no longer read as enumerated",
    "service": "gRParse grparse-0.1.0-cuda",
    "timestamp": "2026-09-01T02:53:09+00:00"
+  },
+  {
+   "documents": [
+    "xlsx-sample3",
+    "xlsx-formula-issue",
+    "xlsx-rows-with-gaps",
+    "xlsx-sixty-sheets"
+   ],
+   "gate_changes": [
+    {
+     "after": true,
+     "before": false,
+     "doc_id": "xlsx-sixty-sheets",
+     "metric": "stable",
+     "reason": "gRParse 04b7f5b: spreadsheets skip CV enrichment so no empty picture per sheet; header rows and spans marked"
+    }
+   ],
+   "partial": true,
+   "reason": "gRParse 04b7f5b: spreadsheets skip CV enrichment so no empty picture per sheet; header rows and spans marked",
+   "service": "gRParse grparse-0.1.0-cuda",
+   "timestamp": "2026-09-01T03:14:24+00:00"
+  },
+  {
+   "documents": [
+    "docx-sample3"
+   ],
+   "gate_changes": [
+    {
+     "after": 1.0,
+     "before": 0.9744,
+     "doc_id": "docx-sample3",
+     "metric": "truth_table_cells",
+     "reason": "raised"
+    },
+    {
+     "after": true,
+     "before": false,
+     "doc_id": "docx-sample3",
+     "metric": "stable",
+     "reason": "gRParse 04b7f5b and grpc-libreoffice cd8f667: inline pictures take their anchor paragraph's slot, empty paragraphs emit no item, complex table grid built from column separators (7x5)"
+    }
+   ],
+   "partial": true,
+   "reason": "gRParse 04b7f5b and grpc-libreoffice cd8f667: inline pictures take their anchor paragraph's slot, empty paragraphs emit no item, complex table grid built from column separators (7x5)",
+   "service": "gRParse grparse-0.1.0-cuda",
+   "timestamp": "2026-09-01T03:14:25+00:00"
+  },
+  {
+   "documents": [
+    "docx-figures",
+    "docx-form"
+   ],
+   "gate_changes": [
+    {
+     "after": 1.0,
+     "before": 0.0,
+     "doc_id": "docx-figures",
+     "metric": "truth_figures",
+     "reason": "raised"
+    },
+    {
+     "after": true,
+     "before": false,
+     "doc_id": "docx-figures",
+     "metric": "stable",
+     "reason": "gRParse 04b7f5b: inline pictures take their anchor paragraph's slot and empty paragraphs emit no item"
+    }
+   ],
+   "partial": true,
+   "reason": "gRParse 04b7f5b: inline pictures take their anchor paragraph's slot and empty paragraphs emit no item",
+   "service": "gRParse grparse-0.1.0-cuda",
+   "timestamp": "2026-09-01T03:14:26+00:00"
+  },
+  {
+   "documents": [
+    "html-entities"
+   ],
+   "gate_changes": [
+    {
+     "after": 1.0,
+     "before": 0.0,
+     "doc_id": "html-entities",
+     "metric": "truth_headings",
+     "reason": "raised"
+    }
+   ],
+   "partial": true,
+   "reason": "gRParse 04b7f5b: the page title becomes the TITLE item and the origin mimetype is sniffed as text/html",
+   "service": "gRParse grparse-0.1.0-cuda",
+   "timestamp": "2026-09-01T03:14:27+00:00"
+  },
+  {
+   "documents": [
+    "pptx-notes"
+   ],
+   "gate_changes": [
+    {
+     "after": 1.0,
+     "before": 0.25,
+     "doc_id": "pptx-notes",
+     "metric": "truth_heading_levels",
+     "reason": "raised"
+    }
+   ],
+   "partial": true,
+   "reason": "gRParse 04b7f5b: only the first title placeholder is the deck title; later slide titles are section headers",
+   "service": "gRParse grparse-0.1.0-cuda",
+   "timestamp": "2026-09-01T03:14:27+00:00"
+  },
+  {
+   "documents": [
+    "html-cdata-svg",
+    "html-mathml-formula",
+    "html-deep-nesting",
+    "md-streaming-markup",
+    "xml-jats-article",
+    "xml-uspto-grant"
+   ],
+   "partial": true,
+   "reason": "gRParse 04b7f5b: origin mimetype sniffed from content; mimetype evidence is descriptive and no longer counted in agreement",
+   "service": "gRParse grparse-0.1.0-cuda",
+   "timestamp": "2026-09-01T03:14:28+00:00"
   }
  ],
  "manifest": "eval/scorecard/corpus.json",

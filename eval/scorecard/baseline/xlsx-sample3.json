@@ -2,7 +2,7 @@
  "agreement": {
   "agreed": 2,
   "claimed_fields": {
-   "grparse": 3,
+   "grparse": 4,
    "libreoffice": 8
   },
   "collectors": [
@@ -15,6 +15,7 @@
    "origin.binary_hash": "grparse",
    "origin.filename": "grparse",
    "origin.mimetype": "grparse",
+   "origin.mimetype_evidence": "grparse",
    "source_meta.created.seconds": "libreoffice",
    "source_meta.generator": "libreoffice",
    "source_meta.modified.seconds": "libreoffice",
@@ -27,10 +28,9 @@
  ],
  "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
  "counts": {
-  "body_items": 5,
+  "body_items": 4,
   "by_label": {
    "group:sheet": 2,
-   "picture": 1,
    "table": 2
   },
   "form_items": 0,
@@ -40,7 +40,7 @@
   "key_value_items": 0,
   "orphans": 0,
   "pages": 2,
-  "pictures": 1,
+  "pictures": 0,
   "reading_chars": 1144,
   "tables": 2,
   "texts": 0
@@ -67,32 +67,18 @@
  ],
  "headings": [],
  "markdown": {
-  "chars": 3176,
+  "chars": 3160,
   "headings": 0,
   "images": 0,
-  "sha256": "6533e5df62f33a201480da33821447574fa16262f579011fd24331bab3c6a56d",
+  "sha256": "95f5e4b0db4db7a9c4feec49268697c90265b8c59bd06bcdd58bc43c434d7c3f",
   "table_rows": 32
  },
  "origin_mimetype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
- "pictures": [
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 1,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/0"
-  }
- ],
+ "pictures": [],
  "reading": [
   {
    "hash": "4ef1caca3f2abd26",
+   "key": "sheet1",
    "label": "group:sheet",
    "name": "Sheet1",
    "ref": "#/groups/0",
@@ -100,12 +86,14 @@
   },
   {
    "hash": "cbe89750acce586d",
+   "key": "13x7",
    "label": "table",
    "ref": "#/tables/0",
    "text": "13x7"
   },
   {
    "hash": "e61a3473a9f4f313",
+   "key": "mylinks",
    "label": "group:sheet",
    "name": "MyLinks",
    "ref": "#/groups/1",
@@ -113,15 +101,10 @@
   },
   {
    "hash": "4a22514faf4bebb7",
+   "key": "17x3",
    "label": "table",
    "ref": "#/tables/1",
    "text": "17x3"
-  },
-  {
-   "hash": "",
-   "label": "picture",
-   "ref": "#/pictures/0",
-   "text": ""
   }
  ],
  "reading_text": "ID\nMonths\nListMonths\n1\nJanuary\nJanuary\nSelect Month\n2\nFebruary\nFebruary\nAugust\n3\nMarch\nMarch\n4\nApril\nApril\nJune\n5\nJune\nJuly\n6\nJuly\nAugust\n7\nAugust\nOctober\nDecember\n8\nOctober\n9\nDecember\nContextures Products\nPivot Power Premium Add-in\nTime-saving tools for pivot table power users\nUserForms for Data Entry ebook Kit\nStep by step instructions and videos\nContextures Excel Tools Add-in\nMake instant backups, sort sheets, and many more tools\nData Entry Search Popup\nMakes data entry easier when choosing from long list\nData Entry Popup\nSelect single or multiple items from a listbox, to enter in a single cell\n30 Excel Functions in 30 Days eBook Kit\nSample workbook and easy to follow user guide for key Excel functions\nContextures Sites & News\nContextures Excel Newsletter\nWeekly Excel tips, tutorials, videos, and news\nContextures Excel Tips Website\nHundreds of tutorials, tips and sample files\nContextures Excel Blog\nRead the Excel tutorials and share your comments\nExcel Pivot Tables Blog\nPivot table tutorials and tips, with comments and questions\nOther Excel Products\nContextures Recommends\nOther Excel tools and training, recommended by Debra",

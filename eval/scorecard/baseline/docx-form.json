@@ -2,7 +2,7 @@
  "agreement": {
   "agreed": 2,
   "claimed_fields": {
-   "grparse": 3,
+   "grparse": 4,
    "libreoffice": 17
   },
   "collectors": [
@@ -15,6 +15,7 @@
    "origin.binary_hash": "grparse",
    "origin.filename": "grparse",
    "origin.mimetype": "grparse",
+   "origin.mimetype_evidence": "grparse",
    "source_meta.created.seconds": "libreoffice",
    "source_meta.editing_cycles": "libreoffice",
    "source_meta.generator": "libreoffice",
@@ -36,11 +37,11 @@
  ],
  "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
  "counts": {
-  "body_items": 8,
+  "body_items": 7,
   "by_label": {
    "section_header": 1,
    "table": 1,
-   "text": 5,
+   "text": 4,
    "title": 1
   },
   "form_items": 0,
@@ -53,7 +54,7 @@
   "pictures": 0,
   "reading_chars": 587,
   "tables": 1,
-  "texts": 7
+  "texts": 6
  },
  "doc_id": "docx-form",
  "filename": "form.docx",
@@ -68,7 +69,7 @@
   },
   {
    "level": 1,
-   "ref": "#/texts/3",
+   "ref": "#/texts/2",
    "text": "Declaration"
   }
  ],
@@ -105,39 +106,32 @@
    "text": "12x2"
   },
   {
-   "hash": "e3b0c44298fc1c14",
-   "key": "",
-   "label": "text",
-   "ref": "#/texts/2",
-   "text": ""
-  },
-  {
    "hash": "7609342dc466589f",
    "key": "declaration",
    "label": "section_header",
    "level": 1,
-   "ref": "#/texts/3",
+   "ref": "#/texts/2",
    "text": "Declaration"
   },
   {
    "hash": "8a2981f95b53f93b",
    "key": "i confirm the equipment will be",
    "label": "text",
-   "ref": "#/texts/4",
+   "ref": "#/texts/3",
    "text": "☒ I confirm the equipment will be returned clean and complet"
   },
   {
    "hash": "8c4837f0f270c1ee",
    "key": "i request an extension form to",
    "label": "text",
-   "ref": "#/texts/5",
+   "ref": "#/texts/4",
    "text": "☐ I request an extension form to be sent with the equipment."
   },
   {
    "hash": "44ae8c80ba1919cb",
    "key": "signature: ______________________ date: ",
    "label": "text",
-   "ref": "#/texts/6",
+   "ref": "#/texts/5",
    "text": "Signature: ______________________ Date: ____________"
   }
  ],
@@ -323,7 +317,5 @@
    "rows": 12
   }
  ],
- "warnings": [
-  "empty-text:#/texts/2"
- ]
+ "warnings": []
 }

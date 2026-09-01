@@ -2,7 +2,7 @@
  "agreement": {
   "agreed": 2,
   "claimed_fields": {
-   "grparse": 3,
+   "grparse": 4,
    "libreoffice": 6
   },
   "collectors": [
@@ -15,6 +15,7 @@
    "origin.binary_hash": "grparse",
    "origin.filename": "grparse",
    "origin.mimetype": "grparse",
+   "origin.mimetype_evidence": "grparse",
    "source_meta.created.seconds": "libreoffice",
    "source_meta.generator": "libreoffice",
    "source_meta.modified.seconds": "libreoffice"
@@ -26,10 +27,9 @@
  ],
  "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
  "counts": {
-  "body_items": 179,
+  "body_items": 120,
   "by_label": {
    "group:sheet": 60,
-   "picture": 59,
    "table": 60
   },
   "form_items": 0,
@@ -39,7 +39,7 @@
   "key_value_items": 0,
   "orphans": 0,
   "pages": 60,
-  "pictures": 59,
+  "pictures": 0,
   "reading_chars": 6474,
   "tables": 60,
   "texts": 0
@@ -472,841 +472,14 @@
  ],
  "headings": [],
  "markdown": {
-  "chars": 17000,
+  "chars": 16056,
   "headings": 0,
   "images": 0,
-  "sha256": "f60fe1d02b75fcb55c39b0bd1234780f282ab0a3279a52efba74bea9ee996ec9",
+  "sha256": "73e9242d36859f5df6596d14e3766ee85fc937b644e0e65af70f253e14ad959c",
   "table_rows": 312
  },
  "origin_mimetype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
- "pictures": [
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 16,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/0"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 49,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/1"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 58,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/2"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 10,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/3"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 51,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/4"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 7,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/5"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 11,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/6"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 9,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/7"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 55,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/8"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 41,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/9"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 37,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/10"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 56,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/11"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 29,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/12"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 4,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/13"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 57,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/14"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 60,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/15"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 48,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/16"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 43,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/17"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 17,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/18"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 47,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/19"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 46,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/20"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 59,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/21"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 27,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/22"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 3,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/23"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 32,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/24"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 30,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/25"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 1,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/26"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 21,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/27"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 23,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/28"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 28,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/29"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 35,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/30"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 39,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/31"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 38,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/32"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 50,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/33"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 8,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/34"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 18,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/35"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 33,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/36"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 54,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/37"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 36,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/38"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 31,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/39"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 45,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/40"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 25,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/41"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 15,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/42"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 34,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/43"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 6,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/44"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 20,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/45"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 12,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/46"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 53,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/47"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 40,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/48"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 52,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/49"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 42,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/50"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 22,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/51"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 24,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/52"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 44,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/53"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 26,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/54"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 14,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/55"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 13,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/56"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 19,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/57"
-  },
-  {
-   "caption": "",
-   "classification": "table",
-   "collectors": [
-    "grparse"
-   ],
-   "image": null,
-   "page": 5,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "",
-   "ref": "#/pictures/58"
-  }
- ],
+ "pictures": [],
  "reading": [
   {
    "hash": "bc84e35a8a9aa515",
@@ -2207,419 +1380,6 @@
    "label": "table",
    "ref": "#/tables/59",
    "text": "4x3"
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/0",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/1",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/2",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/3",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/4",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/5",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/6",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/7",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/8",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/9",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/10",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/11",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/12",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/13",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/14",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/15",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/16",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/17",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/18",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/19",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/20",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/21",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/22",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/23",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/24",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/25",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/26",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/27",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/28",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/29",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/30",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/31",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/32",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/33",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/34",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/35",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/36",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/37",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/38",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/39",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/40",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/41",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/42",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/43",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/44",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/45",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/46",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/47",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/48",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/49",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/50",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/51",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/52",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/53",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/54",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/55",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/56",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/57",
-   "text": ""
-  },
-  {
-   "hash": "",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/58",
-   "text": ""
   }
  ],
  "reading_text": "Quarterly totals by region\nRegion\nUnits\nRevenue\nNorth\n120\n2400.5\nSouth\n95\n1900\nEast\n143\n2860.25\nWest\n88\n1760\nTotal\n446\n8920.75\nC01\nC02\nC03\nC04\nC05\nC06\nC07\nC08\nC09\nC10\nC11\nC12\nC13\nC14\nC15\nC16\nC17\nC18\nC19\nC20\nC21\nC22\nC23\nC24\nC25\nC26\nC27\nC28\nC29\nC30\nC31\nC32\nC33\nC34\nC35\nC36\nC37\nC38\nC39\nC40\n101\n102\n103\n104\n105\n106\n107\n108\n109\n110\n111\n112\n113\n114\n115\n116\n117\n118\n119\n120\n121\n122\n123\n124\n125\n126\n127\n128\n129\n130\n131\n132\n133\n134\n135\n136\n137\n138\n139\n140\n201\n202\n203\n204\n205\n206\n207\n208\n209\n210\n211\n212\n213\n214\n215\n216\n217\n218\n219\n220\n221\n222\n223\n224\n225\n226\n227\n228\n229\n230\n231\n232\n233\n234\n235\n236\n237\n238\n239\n240\n301\n302\n303\n304\n305\n306\n307\n308\n309\n310\n311\n312\n313\n314\n315\n316\n317\n318\n319\n320\n321\n322\n323\n324\n325\n326\n327\n328\n329\n330\n331\n332\n333\n334\n335\n336\n337\n338\n339\n340\n401\n402\n403\n404\n405\n406\n407\n408\n409\n410\n411\n412\n413\n414\n415\n416\n417\n418\n419\n420\n421\n422\n423\n424\n425\n426\n427\n428\n429\n430\n431\n432\n433\n434\n435\n436\n437\n438\n439\n440\n501\n502\n503\n504\n505\n506\n507\n508\n509\n510\n511\n512\n513\n514\n515\n516\n517\n518\n519\n520\n521\n522\n523\n524\n525\n526\n527\n528\n529\n530\n531\n532\n533\n534\n535\n536\n537\n538\n539\n540\n601\n602\n603\n604\n605\n606\n607\n608\n609\n610\n611\n612\n613\n614\n615\n616\n617\n618\n619\n620\n621\n622\n623\n624\n625\n626\n627\n628\n629\n630\n631\n632\n633\n634\n635\n636\n637\n638\n639\n640\n701\n702\n703\n704\n705\n706\n707\n708\n709\n710\n711\n712\n713\n714\n715\n716\n717\n718\n719\n720\n721\n722\n723\n724\n725\n726\n727\n728\n729\n730\n731\n732\n733\n734\n735\n736\n737\n738\n739\n740\n801\n802\n803\n804\n805\n806\n807\n808\n809\n810\n811\n812\n813\n814\n815\n816\n817\n818\n819\n820\n821\n822\n823\n824\n825\n826\n827\n828\n829\n830\n831\n832\n833\n834\n835\n836\n837\n838\n839\n840\n901\n902\n903\n904\n905\n906\n907\n908\n909\n910\n911\n912\n913\n914\n915\n916\n917\n918\n919\n920\n921\n922\n923\n924\n925\n926\n927\n928\n929\n930\n931\n932\n933\n934\n935\n936\n937\n938\n939\n940\n1001\n1002\n1003\n1004\n1005\n1006\n1007\n1008\n1009\n1010\n1011\n1012\n1013\n1014\n1015\n1016\n1017\n1018\n1019\n1020\n1021\n1022\n1023\n1024\n1025\n1026\n1027\n1028\n1029\n1030\n1031\n1032\n1033\n1034\n1035\n1036\n1037\n1038\n1039\n1040\n1101\n1102\n1103\n1104\n1105\n1106\n1107\n1108\n1109\n1110\n1111\n1112\n1113\n1114\n1115\n1116\n1117\n1118\n1119\n1120\n1121\n1122\n1123\n1124\n1125\n1126\n1127\n1128\n1129\n1130\n1131\n1132\n1133\n1134\n1135\n1136\n1137\n1138\n1139\n1140\n1201\n1202\n1203\n1204\n1205\n1206\n1207\n1208\n1209\n1210\n1211\n1212\n1213\n1214\n1215\n1216\n1217\n1218\n1219\n1220\n1221\n1222\n1223\n1224\n1225\n1226\n1227\n1228\n1229\n1230\n1231\n1232\n1233\n1234\n1235\n1236\n1237\n1238\n1239\n1240\nItem\nQuantity\nPrice\nitem-03-1\n3\n4.5\nitem-03-2\n6\n9\nitem-03-3\n9\n13.5\nItem\nQuantity\nPrice\nitem-04-1\n4\n6\nitem-04-2\n8\n12\nitem-04-3\n12\n18\nItem\nQuantity\nPrice\nitem-05-1\n5\n7.5\nitem-05-2\n10\n15\nitem-05-3\n15\n22.5\nItem\nQuantity\nPrice\nitem-06-1\n6\n9\nitem-06-2\n12\n18\nitem-06-3\n18\n27\nItem\nQuantity\nPrice\nitem-07-1\n7\n10.5\nitem-07-2\n14\n21\nitem-07-3\n21\n31.5\nItem\nQuantity\nPrice\nitem-08-1\n8\n12\nitem-08-2\n16\n24\nitem-08-3\n24\n36\nItem\nQuantity\nPrice\nitem-09-1\n9\n13.5\nitem-09-2\n18\n27\nitem-09-3\n27\n40.5\nItem\nQuantity\nPrice\nitem-10-1\n10\n15\nitem-10-2\n20\n30\nitem-10-3\n30\n45\nItem\nQuantity\nPrice\nitem-11-1\n11\n16.5\nitem-11-2\n22\n33\nitem-11-3\n33\n49.5\nItem\nQuantity\nPrice\nitem-12-1\n12\n18\nitem-12-2\n24\n36\nitem-12-3\n36\n54\nItem\nQuantity\nPrice\nitem-13-1\n13\n19.5\nitem-13-2\n26\n39\nitem-13-3\n39\n58.5\nItem\nQuantity\nPrice\nitem-14-1\n14\n21\nitem-14-2\n28\n42\nitem-14-3\n42\n63\nItem\nQuantity\nPrice\nitem-15-1\n15\n22.5\nitem-15-2\n30\n45\nitem-15-3\n45\n67.5\nItem\nQuantity\nPrice\nitem-16-1\n16\n24\nitem-16-2\n32\n48\nitem-16-3\n48\n72\nItem\nQuantity\nPrice\nitem-17-1\n17\n25.5\nitem-17-2\n34\n51\nitem-17-3\n51\n76.5\nItem\nQuantity\nPrice\nitem-18-1\n18\n27\nitem-18-2\n36\n54\nitem-18-3\n54\n81\nItem\nQuantity\nPrice\nitem-19-1\n19\n28.5\nitem-19-2\n38\n57\nitem-19-3\n57\n85.5\nItem\nQuantity\nPrice\nitem-20-1\n20\n30\nitem-20-2\n40\n60\nitem-20-3\n60\n90\nItem\nQuantity\nPrice\nitem-21-1\n21\n31.5\nitem-21-2\n42\n63\nitem-21-3\n63\n94.5\nItem\nQuantity\nPrice\nitem-22-1\n22\n33\nitem-22-2\n44\n66\nitem-22-3\n66\n99\nItem\nQuantity\nPrice\nitem-23-1\n23\n34.5\nitem-23-2\n46\n69\nitem-23-3\n69\n103.5\nItem\nQuantity\nPrice\nitem-24-1\n24\n36\nitem-24-2\n48\n72\nitem-24-3\n72\n108\nItem\nQuantity\nPrice\nitem-25-1\n25\n37.5\nitem-25-2\n50\n75\nitem-25-3\n75\n112.5\nItem\nQuantity\nPrice\nitem-26-1\n26\n39\nitem-26-2\n52\n78\nitem-26-3\n78\n117\nItem\nQuantity\nPrice\nitem-27-1\n27\n40.5\nitem-27-2\n54\n81\nitem-27-3\n81\n121.5\nItem\nQuantity\nPrice\nitem-28-1\n28\n42\nitem-28-2\n56\n84\nitem-28-3\n84\n126\nItem\nQuantity\nPrice\nitem-29-1\n29\n43.5\nitem-29-2\n58\n87\nitem-29-3\n87\n130.5\nItem\nQuantity\nPrice\nitem-30-1\n30\n45\nitem-30-2\n60\n90\nitem-30-3\n90\n135\nItem\nQuantity\nPrice\nitem-31-1\n31\n46.5\nitem-31-2\n62\n93\nitem-31-3\n93\n139.5\nItem\nQuantity\nPrice\nitem-32-1\n32\n48\nitem-32-2\n64\n96\nitem-32-3\n96\n144\nItem\nQuantity\nPrice\nitem-33-1\n33\n49.5\nitem-33-2\n66\n99\nitem-33-3\n99\n148.5\nItem\nQuantity\nPrice\nitem-34-1\n34\n51\nitem-34-2\n68\n102\nitem-34-3\n102\n153\nItem\nQuantity\nPrice\nitem-35-1\n35\n52.5\nitem-35-2\n70\n105\nitem-35-3\n105\n157.5\nItem\nQuantity\nPrice\nitem-36-1\n36\n54\nitem-36-2\n72\n108\nitem-36-3\n108\n162\nItem\nQuantity\nPrice\nitem-37-1\n37\n55.5\nitem-37-2\n74\n111\nitem-37-3\n111\n166.5\nItem\nQuantity\nPrice\nitem-38-1\n38\n57\nitem-38-2\n76\n114\nitem-38-3\n114\n171\nItem\nQuantity\nPrice\nitem-39-1\n39\n58.5\nitem-39-2\n78\n117\nitem-39-3\n117\n175.5\nItem\nQuantity\nPrice\nitem-40-1\n40\n60\nitem-40-2\n80\n120\nitem-40-3\n120\n180\nItem\nQuantity\nPrice\nitem-41-1\n41\n61.5\nitem-41-2\n82\n123\nitem-41-3\n123\n184.5\nItem\nQuantity\nPrice\nitem-42-1\n42\n63\nitem-42-2\n84\n126\nitem-42-3\n126\n189\nItem\nQuantity\nPrice\nitem-43-1\n43\n64.5\nitem-43-2\n86\n129\nitem-43-3\n129\n193.5\nItem\nQuantity\nPrice\nitem-44-1\n44\n66\nitem-44-2\n88\n132\nitem-44-3\n132\n198\nItem\nQuantity\nPrice\nitem-45-1\n45\n67.5\nitem-45-2\n90\n135\nitem-45-3\n135\n202.5\nItem\nQuantity\nPrice\nitem-46-1\n46\n69\nitem-46-2\n92\n138\nitem-46-3\n138\n207\nItem\nQuantity\nPrice\nitem-47-1\n47\n70.5\nitem-47-2\n94\n141\nitem-47-3\n141\n211.5\nItem\nQuantity\nPrice\nitem-48-1\n48\n72\nitem-48-2\n96\n144\nitem-48-3\n144\n216\nItem\nQuantity\nPrice\nitem-49-1\n49\n73.5\nitem-49-2\n98\n147\nitem-49-3\n147\n220.5\nItem\nQuantity\nPrice\nitem-50-1\n50\n75\nitem-50-2\n100\n150\nitem-50-3\n150\n225\nItem\nQuantity\nPrice\nitem-51-1\n51\n76.5\nitem-51-2\n102\n153\nitem-51-3\n153\n229.5\nItem\nQuantity\nPrice\nitem-52-1\n52\n78\nitem-52-2\n104\n156\nitem-52-3\n156\n234\nItem\nQuantity\nPrice\nitem-53-1\n53\n79.5\nitem-53-2\n106\n159\nitem-53-3\n159\n238.5\nItem\nQuantity\nPrice\nitem-54-1\n54\n81\nitem-54-2\n108\n162\nitem-54-3\n162\n243\nItem\nQuantity\nPrice\nitem-55-1\n55\n82.5\nitem-55-2\n110\n165\nitem-55-3\n165\n247.5\nItem\nQuantity\nPrice\nitem-56-1\n56\n84\nitem-56-2\n112\n168\nitem-56-3\n168\n252\nItem\nQuantity\nPrice\nitem-57-1\n57\n85.5\nitem-57-2\n114\n171\nitem-57-3\n171\n256.5\nItem\nQuantity\nPrice\nitem-58-1\n58\n87\nitem-58-2\n116\n174\nitem-58-3\n174\n261\nItem\nQuantity\nPrice\nitem-59-1\n59\n88.5\nitem-59-2\n118\n177\nitem-59-3\n177\n265.5\nItem\nQuantity\nPrice\nitem-60-1\n60\n90\nitem-60-2\n120\n180\nitem-60-3\n180\n270",
@@ -2764,7 +1524,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/0",
    "rows": 7
   },
@@ -6413,7 +5173,7 @@
     ]
    ],
    "cols": 40,
-   "column_headers": 0,
+   "column_headers": 40,
    "ref": "#/tables/1",
    "rows": 13
   },
@@ -6506,7 +5266,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/2",
    "rows": 4
   },
@@ -6599,7 +5359,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/3",
    "rows": 4
   },
@@ -6692,7 +5452,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/4",
    "rows": 4
   },
@@ -6785,7 +5545,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/5",
    "rows": 4
   },
@@ -6878,7 +5638,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/6",
    "rows": 4
   },
@@ -6971,7 +5731,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/7",
    "rows": 4
   },
@@ -7064,7 +5824,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/8",
    "rows": 4
   },
@@ -7157,7 +5917,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/9",
    "rows": 4
   },
@@ -7250,7 +6010,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/10",
    "rows": 4
   },
@@ -7343,7 +6103,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/11",
    "rows": 4
   },
@@ -7436,7 +6196,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/12",
    "rows": 4
   },
@@ -7529,7 +6289,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/13",
    "rows": 4
   },
@@ -7622,7 +6382,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/14",
    "rows": 4
   },
@@ -7715,7 +6475,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/15",
    "rows": 4
   },
@@ -7808,7 +6568,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/16",
    "rows": 4
   },
@@ -7901,7 +6661,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/17",
    "rows": 4
   },
@@ -7994,7 +6754,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/18",
    "rows": 4
   },
@@ -8087,7 +6847,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/19",
    "rows": 4
   },
@@ -8180,7 +6940,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/20",
    "rows": 4
   },
@@ -8273,7 +7033,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/21",
    "rows": 4
   },
@@ -8366,7 +7126,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/22",
    "rows": 4
   },
@@ -8459,7 +7219,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/23",
    "rows": 4
   },
@@ -8552,7 +7312,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/24",
    "rows": 4
   },
@@ -8645,7 +7405,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/25",
    "rows": 4
   },
@@ -8738,7 +7498,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/26",
    "rows": 4
   },
@@ -8831,7 +7591,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/27",
    "rows": 4
   },
@@ -8924,7 +7684,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/28",
    "rows": 4
   },
@@ -9017,7 +7777,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/29",
    "rows": 4
   },
@@ -9110,7 +7870,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/30",
    "rows": 4
   },
@@ -9203,7 +7963,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/31",
    "rows": 4
   },
@@ -9296,7 +8056,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/32",
    "rows": 4
   },
@@ -9389,7 +8149,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/33",
    "rows": 4
   },
@@ -9482,7 +8242,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/34",
    "rows": 4
   },
@@ -9575,7 +8335,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/35",
    "rows": 4
   },
@@ -9668,7 +8428,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/36",
    "rows": 4
   },
@@ -9761,7 +8521,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/37",
    "rows": 4
   },
@@ -9854,7 +8614,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/38",
    "rows": 4
   },
@@ -9947,7 +8707,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/39",
    "rows": 4
   },
@@ -10040,7 +8800,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/40",
    "rows": 4
   },
@@ -10133,7 +8893,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/41",
    "rows": 4
   },
@@ -10226,7 +8986,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/42",
    "rows": 4
   },
@@ -10319,7 +9079,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/43",
    "rows": 4
   },
@@ -10412,7 +9172,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/44",
    "rows": 4
   },
@@ -10505,7 +9265,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/45",
    "rows": 4
   },
@@ -10598,7 +9358,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/46",
    "rows": 4
   },
@@ -10691,7 +9451,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/47",
    "rows": 4
   },
@@ -10784,7 +9544,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/48",
    "rows": 4
   },
@@ -10877,7 +9637,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/49",
    "rows": 4
   },
@@ -10970,7 +9730,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/50",
    "rows": 4
   },
@@ -11063,7 +9823,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/51",
    "rows": 4
   },
@@ -11156,7 +9916,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/52",
    "rows": 4
   },
@@ -11249,7 +10009,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/53",
    "rows": 4
   },
@@ -11342,7 +10102,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/54",
    "rows": 4
   },
@@ -11435,7 +10195,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/55",
    "rows": 4
   },
@@ -11528,7 +10288,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/56",
    "rows": 4
   },
@@ -11621,7 +10381,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/57",
    "rows": 4
   },
@@ -11714,7 +10474,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/58",
    "rows": 4
   },
@@ -11807,7 +10567,7 @@
     ]
    ],
    "cols": 3,
-   "column_headers": 0,
+   "column_headers": 3,
    "ref": "#/tables/59",
    "rows": 4
   }

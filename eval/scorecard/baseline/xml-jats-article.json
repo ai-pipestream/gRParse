@@ -2,7 +2,7 @@
  "agreement": {
   "agreed": 1,
   "claimed_fields": {
-   "grparse": 3,
+   "grparse": 4,
    "xml": 6
   },
   "collectors": [
@@ -15,7 +15,7 @@
    "origin.binary_hash": "grparse",
    "origin.filename": "grparse",
    "origin.mimetype": "grparse",
-   "origin.mimetype_evidence": "xml",
+   "origin.mimetype_evidence": "grparse",
    "source_meta.title": "xml"
   }
  },
@@ -99,18 +99,21 @@
  "reading": [
   {
    "hash": "4db0a54b451e207c",
+   "key": "journal of streaming parsers",
    "label": "text",
    "ref": "#/texts/0",
    "text": "Journal of Streaming Parsers"
   },
   {
    "hash": "86494f6e73afec5d",
+   "key": "10.1234/jsp.2026.001",
    "label": "text",
    "ref": "#/texts/1",
    "text": "10.1234/jsp.2026.001"
   },
   {
    "hash": "18e2400ab8f51392",
+   "key": "streaming xml without a dom",
    "label": "title",
    "level": 0,
    "ref": "#/texts/2",
@@ -118,42 +121,49 @@
   },
   {
    "hash": "ea2c99d7f61a6768",
+   "key": "rivera ana",
    "label": "text",
    "ref": "#/texts/3",
    "text": "Rivera Ana"
   },
   {
    "hash": "ecb50cd74674c9ca",
+   "key": "okafor chidi",
    "label": "text",
    "ref": "#/texts/4",
    "text": "Okafor Chidi"
   },
   {
    "hash": "ee3681d195f43341",
+   "key": "institute for pull parsing",
    "label": "text",
    "ref": "#/texts/5",
    "text": "Institute for Pull Parsing"
   },
   {
    "hash": "00c30384212361a1",
+   "key": "a collector need not build a",
    "label": "text",
    "ref": "#/texts/6",
    "text": "A collector need not build a tree to produce a document."
   },
   {
    "hash": "b304adc33719d6cd",
+   "key": "streaming",
    "label": "text",
    "ref": "#/texts/7",
    "text": "streaming"
   },
   {
    "hash": "bf92a04e60b4b236",
+   "key": "xml",
    "label": "text",
    "ref": "#/texts/8",
    "text": "xml"
   },
   {
    "hash": "b605350bc0020952",
+   "key": "introduction",
    "label": "section_header",
    "level": 1,
    "ref": "#/texts/9",
@@ -161,18 +171,21 @@
   },
   {
    "hash": "fb46332613bcd49f",
+   "key": "a pull parser yields events in",
    "label": "text",
    "ref": "#/texts/10",
    "text": "A pull parser yields events in document order."
   },
   {
    "hash": "a730975c132b6599",
+   "key": "each item is forwarded as soon",
    "label": "text",
    "ref": "#/texts/11",
    "text": "Each item is forwarded as soon as its end tag is read."
   },
   {
    "hash": "b073f6c68ef87211",
+   "key": "scope",
    "label": "section_header",
    "level": 2,
    "ref": "#/texts/12",
@@ -180,12 +193,14 @@
   },
   {
    "hash": "9b10c4b0586403c0",
+   "key": "four dialects are in scope.",
    "label": "text",
    "ref": "#/texts/13",
    "text": "Four dialects are in scope."
   },
   {
    "hash": "219c4a6c86a716e9",
+   "key": "results",
    "label": "section_header",
    "level": 1,
    "ref": "#/texts/14",
@@ -193,42 +208,49 @@
   },
   {
    "hash": "cae969ced26d5b3f",
+   "key": "throughput by dialect.",
    "label": "text",
    "ref": "#/texts/15",
    "text": "Throughput by dialect."
   },
   {
    "hash": "3fb821647a56bcce",
+   "key": "3x2",
    "label": "table",
    "ref": "#/tables/0",
    "text": "3x2"
   },
   {
    "hash": "",
+   "key": "",
    "label": "picture",
    "ref": "#/pictures/0",
    "text": ""
   },
   {
    "hash": "515f7260086dec85",
+   "key": "the event pipeline.",
    "label": "text",
    "ref": "#/texts/16",
    "text": "The event pipeline."
   },
   {
    "hash": "085a994e588ce1d5",
+   "key": "throughput scales with the number of",
    "label": "text",
    "ref": "#/texts/17",
    "text": "Throughput scales with the number of concurrent streams."
   },
   {
    "hash": "6be521d371d41f1c",
+   "key": "rivera a. parsers. 2025.",
    "label": "text",
    "ref": "#/texts/18",
    "text": "Rivera A. Parsers. 2025."
   },
   {
    "hash": "0e56052d9ca61189",
+   "key": "okafor c. streams. 2026.",
    "label": "text",
    "ref": "#/texts/19",
    "text": "Okafor C. Streams. 2026."

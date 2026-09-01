@@ -1,30 +1,21 @@
 {
  "agreement": {
-  "agreed": 0,
+  "agreed": 1,
   "claimed_fields": {
-   "grparse": 3,
+   "grparse": 4,
    "markup": 2
   },
   "collectors": [
    "grparse",
    "markup"
   ],
-  "conflicts": [
-   {
-    "field": "origin.mimetype",
-    "values": {
-     "grparse": "application/octet-stream",
-     "markup": "text/html"
-    },
-    "winner": "grparse"
-   }
-  ],
+  "conflicts": [],
   "shared": 1,
   "winners": {
    "origin.binary_hash": "grparse",
    "origin.filename": "grparse",
    "origin.mimetype": "grparse",
-   "origin.mimetype_evidence": "markup"
+   "origin.mimetype_evidence": "grparse"
   }
  },
  "collectors": [
@@ -62,11 +53,12 @@
   "sha256": "1afbecefe5776b32794d30068e29a93af9823c5fa44fdb51c25651c6bc404f8b",
   "table_rows": 0
  },
- "origin_mimetype": "application/octet-stream",
+ "origin_mimetype": "text/html",
  "pictures": [],
  "reading": [
   {
    "hash": "1afbecefe5776b32",
+   "key": "the bottom of a 2000 deep",
    "label": "text",
    "ref": "#/texts/0",
    "text": "The bottom of a 2000-deep nest."
@@ -76,7 +68,5 @@
  "schema": 1,
  "status": "CONVERSION_STATUS_SUCCESS",
  "tables": [],
- "warnings": [
-  "mimetype-mismatch:text/html!=application/octet-stream"
- ]
+ "warnings": []
 }
