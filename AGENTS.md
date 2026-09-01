@@ -202,14 +202,20 @@ in `e2e/specs/proxy.spec.ts` is fixed.
 
 The build tree lives in a BuildKit cache mount keyed by toolchain. Two builders
 on one host that share it (a developer build and a local CI run of the same
-Dockerfile) can leave each other's objects newer than the sources, and ninja
-then skips a recompile while the in-build ctest passes on the old binary. Check
-that the build log compiled the file you changed (`grep 'Building CXX'`), and
-give a second builder its own tree with
-`--build-arg GRPARSE_BUILD_CACHE_SCOPE=ci`. Every worktree that builds gets
-its own scope (`-<feature>`), and an acceptance build uses a fresh scope: even
-inside one scope an object compiled after a header was edited keeps its newer
-mtime and ninja keeps it.
+Dockerfile) used to leave each other's objects newer than the sources, and
+ninja then skipped a recompile while the in-build ctest passed on the old
+binary. Since 2026-09-01 every Dockerfile runs `scripts/stamp-sources.sh`
+before cmake: it keeps a sha256 manifest of the first-party sources, headers,
+tests, patches and CMake files in the build tree and touches any file whose
+content changed since the previous build, so ninja recompiles it whatever the
+mtimes say (`stamp: N file(s) newer than their objects` in the log; 0 on an
+unchanged tree). Still give a second builder its own tree with
+`--build-arg GRPARSE_BUILD_CACHE_SCOPE=-<feature>` so parallel lanes do not
+serialise on the shared lock, and still read `grep 'Building CXX'` for the
+file you changed: the stamp covers content, not a CMake list that forgot the
+file. Build with an absolute context path (`docker build ... -f
+/work/main/grpc-services/gRParse/Dockerfile /work/main/grpc-services/gRParse`);
+a shell whose cwd drifted into a worktree once built the wrong tree.
 
 ### 5. Run the stack
 

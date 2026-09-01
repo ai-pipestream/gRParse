@@ -16,3 +16,6 @@ __pycache__/
 e2e/**/node_modules/
 e2e/out/
 e2e/test-results/
+# Editor and agent state (review worktrees under .claude/worktrees would
+# otherwise ride along as context).
+.claude/
