@@ -232,36 +232,124 @@ bool is_roman_numeral(std::string_view token) {
 }
 
 constexpr std::string_view kTokenDecoration = "-|[](){}*_~.,:";
+constexpr std::string_view kSentencePunctuation = ".,;:!?";
 
 // The dressings a page number comes in, with '#' standing for the number
-// (digits or a roman numeral).
-constexpr std::array<std::string_view, 12> kPageNumberShapes = {
-    "#",        "# #",      "# of #",    "page #",  "page # of #", "page # / #",
-    "p #",      "pg #",     "seite #",   "pagina #", "# / #",      "# of # pages",
+// (digits or a roman numeral); the first '#' is the page.
+constexpr std::array<std::string_view, 11> kPageNumberShapes = {
+    "#",      "# of #",  "page #",   "page # of #", "page # / #", "p #",
+    "pg #",   "seite #", "pagina #", "# / #",       "# of # pages",
 };
 
-std::vector<std::string> page_number_tokens(std::string_view normalized) {
-  std::vector<std::string> tokens;
+// How far past the last page a page number may run (front matter numbered
+// apart, a section excerpt) before it stops being plausible.
+constexpr int kPageNumberSlack = 20;
+// Numbers that read as years never number a page unless the document
+// really has that many.
+constexpr int kFirstYear = 1800;
+constexpr int kLastYear = 2100;
+
+int roman_value(std::string_view token) {
+  constexpr std::array<std::pair<char, int>, 7> values = {{
+      {'i', 1}, {'v', 5}, {'x', 10}, {'l', 50}, {'c', 100}, {'d', 500}, {'m', 1000},
+  }};
+  const auto value_of = [&values](char c) {
+    for (const auto& [letter, value] : values) {
+      if (letter == c) return value;
+    }
+    return 0;
+  };
+  int total = 0;
+  for (size_t i = 0; i < token.size(); ++i) {
+    const int value = value_of(token[i]);
+    const int next = i + 1 < token.size() ? value_of(token[i + 1]) : 0;
+    total += value < next ? -value : value;
+  }
+  return total;
+}
+
+// The numeric value a token carries as digits or a roman numeral.
+std::optional<int> number_of(std::string_view token) {
+  if (token.empty()) return std::nullopt;
+  if (std::ranges::all_of(token, is_ascii_digit)) {
+    if (token.size() > 6) return std::nullopt;
+    return std::stoi(std::string(token));
+  }
+  if (is_roman_numeral(token)) return roman_value(token);
+  return std::nullopt;
+}
+
+// Case folded with whitespace collapsed, digits kept.
+std::string fold_text(std::string_view text) {
+  std::string out;
+  bool pending_space = false;
+  for (const char c : text) {
+    if (is_ascii_space(c)) {
+      pending_space = !out.empty();
+      continue;
+    }
+    if (pending_space) out.push_back(' ');
+    pending_space = false;
+    out.push_back(ascii_lower(c));
+  }
+  return out;
+}
+
+// True when a digit run in `folded` is followed by sentence punctuation,
+// which is how a wrapped reference line ("2023.") or a sentence fragment
+// ("3, 4") reads, and never how a page number does. The one exception is
+// an item that is nothing but a number and a single period.
+bool number_punctuated(std::string_view folded) {
+  for (size_t i = 0; i + 1 < folded.size(); ++i) {
+    if (!is_ascii_digit(folded[i]) || is_ascii_digit(folded[i + 1])) continue;
+    if (!kSentencePunctuation.contains(folded[i + 1])) continue;
+    const bool bare = folded[i + 1] == '.' && i + 2 == folded.size() &&
+                      std::ranges::all_of(folded.substr(0, i + 1), is_ascii_digit);
+    if (!bare) return true;
+  }
+  return false;
+}
+
+struct PageNumberTokens {
+  std::vector<std::string> shape;
+  std::optional<int> value;
+};
+
+PageNumberTokens page_number_tokens(std::string_view folded) {
+  PageNumberTokens tokens;
   std::string token;
   const auto flush = [&] {
     std::string_view view(token);
     while (!view.empty() && kTokenDecoration.contains(view.front())) view.remove_prefix(1);
     while (!view.empty() && kTokenDecoration.contains(view.back())) view.remove_suffix(1);
-    if (!view.empty()) tokens.emplace_back(is_roman_numeral(view) ? "#" : std::string(view));
+    if (!view.empty()) {
+      if (const auto number = number_of(view); number.has_value()) {
+        if (!tokens.value.has_value()) tokens.value = number;
+        tokens.shape.emplace_back("#");
+      } else {
+        tokens.shape.emplace_back(view);
+      }
+    }
     token.clear();
   };
-  for (const char c : normalized) {
+  for (const char c : folded) {
     if (c == ' ') {
       flush();
     } else if (c == '/') {
       flush();
-      tokens.emplace_back("/");
+      tokens.shape.emplace_back("/");
     } else {
       token.push_back(c);
     }
   }
   flush();
   return tokens;
+}
+
+bool plausible_page_number(int value, int page_count) {
+  if (value < 1 || value > page_count + kPageNumberSlack) return false;
+  if (value >= kFirstYear && value <= kLastYear && page_count < value) return false;
+  return true;
 }
 
 struct FurnitureCandidate {
@@ -294,15 +382,18 @@ std::string normalize_running_text(std::string_view text) {
   return out;
 }
 
-bool is_page_number_shape(std::string_view normalized) {
-  const std::vector<std::string> tokens = page_number_tokens(normalized);
-  if (tokens.empty()) return false;
+bool is_page_number(std::string_view text, int page_count) {
+  const std::string folded = fold_text(text);
+  if (folded.empty() || number_punctuated(folded)) return false;
+  const PageNumberTokens tokens = page_number_tokens(folded);
+  if (tokens.shape.empty() || !tokens.value.has_value()) return false;
   std::string joined;
-  for (const auto& token : tokens) {
+  for (const auto& token : tokens.shape) {
     if (!joined.empty()) joined.push_back(' ');
     joined += token;
   }
-  return std::ranges::find(kPageNumberShapes, joined) != kPageNumberShapes.end();
+  if (std::ranges::find(kPageNumberShapes, joined) == kPageNumberShapes.end()) return false;
+  return plausible_page_number(*tokens.value, page_count);
 }
 
 int demote_running_furniture(docv1::Document* document, const RepairOptions& options,
@@ -350,7 +441,8 @@ int demote_running_furniture(docv1::Document* document, const RepairOptions& opt
   for (const auto& candidate : candidates) {
     const bool recurring =
         static_cast<int>(pages_by_pattern[candidate.normalized].size()) >= threshold;
-    const bool page_number = is_page_number_shape(candidate.normalized);
+    const bool page_number =
+        is_page_number(document->texts(candidate.arena_index).text().base().text(), pages);
     if (!recurring && !page_number) continue;
     demoted.push_back(&candidate);
     if (recurring) {
@@ -523,6 +615,7 @@ struct Placement {
   double top = 0;
   double bottom = 0;
   double left = 0;
+  double right = 0;
   double height = 0;
 };
 
@@ -536,7 +629,10 @@ std::optional<Placement> placement_on(const docv1::TextItemBase& item, int page,
     const VerticalSpan span = vertical_span(entry.bbox(), height->second);
     const bool better = !found.has_value() ||
                         (lowest ? span.bottom > found->bottom : span.top < found->top);
-    if (better) found = Placement{page, span.top, span.bottom, entry.bbox().l(), height->second};
+    if (better) {
+      found = Placement{page,           span.top,        span.bottom, entry.bbox().l(),
+                        entry.bbox().r(), height->second};
+    }
   }
   return found;
 }
@@ -545,12 +641,26 @@ std::optional<Placement> placement_on(const docv1::TextItemBase& item, int page,
 // is a plausible reason for it to stop mid-sentence.
 constexpr double kPageBreakDepth = 0.5;
 
+// A column break on one page: the tail begins in a column to the right of
+// where the head stopped (no horizontal overlap) and at least one of the
+// head's line heights above it, so two captions or cells sharing a row
+// never read as one paragraph; and the tail's first token is a word of two
+// letters or more, because a lone letter ("b", "(b)") is an enumerator.
+constexpr size_t kMinimumContinuationWord = 2;
+
+bool column_break(const Placement& head_end, const Placement& tail_start,
+                  std::string_view tail_text) {
+  const double line_height = std::max(head_end.bottom - head_end.top, 1.0);
+  if (tail_start.top > head_end.top - line_height) return false;
+  if (tail_start.left < head_end.right) return false;
+  return leading_word(trim_left(tail_text)).size() >= kMinimumContinuationWord;
+}
+
 // Whether `tail` continues `head`: an open ending, a lowercase start, and
 // a layout that explains the split. Across a page break the head must have
-// run into the lower half of its page; across a column break on one page
-// the tail must start higher up and further right than the head stopped.
-// Items with no page or box never merge: the rule exists for page and
-// column breaks and has nothing to say elsewhere.
+// run into the lower half of its page; on one page the pair must sit
+// across a column break. Items with no page or box never merge: the rule
+// exists for page and column breaks and has nothing to say elsewhere.
 bool continues(const docv1::TextItemBase& head, const docv1::TextItemBase& tail,
                const std::map<int, double>& heights) {
   if (head.children_size() > 0 || tail.children_size() > 0) return false;
@@ -561,9 +671,7 @@ bool continues(const docv1::TextItemBase& head, const docv1::TextItemBase& tail,
   if (tail_start->page == head_end->page + 1) {
     return head_end->bottom >= head_end->height * kPageBreakDepth;
   }
-  if (tail_start->page == head_end->page) {
-    return tail_start->top < head_end->top && tail_start->left > head_end->left;
-  }
+  if (tail_start->page == head_end->page) return column_break(*head_end, *tail_start, tail.text());
   return false;
 }
 

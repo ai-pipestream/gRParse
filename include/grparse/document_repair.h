@@ -71,8 +71,8 @@ RepairReport repair_document(ai::pipestream::document::v1::Document* document,
 // page, is a running header or footer: it is relabelled PAGE_HEADER or
 // PAGE_FOOTER, given the furniture content layer, and its reference moves
 // from the body tree to the furniture tree in page order. A standalone page
-// number in a band ("3", "- 3 -", "Page 3 of 12", "iv") counts even though
-// it recurs on no other page. Section headers, titles, and anything inside a
+// number in a band (see is_page_number) counts even though it recurs on no
+// other page. Section headers, titles, and anything inside a
 // group (a list, a table's captions, a chapter) are never demoted. Only
 // items with a page and a box are candidates. Returns the count; the
 // matched patterns append to `patterns` when given.
@@ -84,9 +84,14 @@ int demote_running_furniture(ai::pipestream::document::v1::Document* document,
 // runs collapsed to one space, digit runs replaced by '#', trimmed.
 std::string normalize_running_text(std::string_view text);
 
-// True when `normalized` (as normalize_running_text returns it) is nothing
-// but a page number in one of the usual dressings.
-bool is_page_number_shape(std::string_view normalized);
+// True when an item's text is nothing but a page number in one of the
+// usual dressings ("3", "- 3 -", "Page 3 of 12", "iv") whose value is
+// plausible for a document of `page_count` pages: within [1, page_count +
+// 20], never a year unless the document has that many pages, and never
+// followed by sentence punctuation (a wrapped reference line ending
+// "2023." is prose), except an item that is exactly a number and one
+// period.
+bool is_page_number(std::string_view text, int page_count);
 
 struct HyphenationCounts {
   int rejoined = 0;
@@ -113,7 +118,8 @@ std::string join_hyphenated_fragments(std::string_view head, std::string_view ta
 // PARAGRAPH starting with a lowercase letter, absorbs that sibling when the
 // layout explains the split: the sibling sits on the next page and the
 // item had run into the lower half of its own page, or the sibling sits on
-// the same page higher up and further right (a column break). Texts join
+// the same page across a column break (starting at least a line above the
+// item's last line, wholly to its right, with a real word first). Texts join
 // with a space (or by the hyphen rule), provenance, sources, spans and
 // comments carry over, and the sibling is retired from the body and the
 // texts arena with every reference renumbered. Only direct body children

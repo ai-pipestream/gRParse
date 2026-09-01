@@ -231,11 +231,33 @@ void verify_normalization_and_page_number_shapes() {
           "normalization folds case, collapses whitespace, and replaces digit runs");
   require(grparse::normalize_running_text("Page 3") == grparse::normalize_running_text("PAGE 14"),
           "page numbers on different pages normalize alike");
-  for (const auto* shape : {"#", "- # -", "page # of #", "iv", "p. #", "# / #", "[#]"}) {
-    require(grparse::is_page_number_shape(shape), std::string("page number shape: ") + shape);
+  for (const auto* text : {"3", "- 3 -", "Page 3 of 12", "iv", "p. 7", "3 / 12", "[3]", "7.",
+                           "31", "11", "- 11 -", "Page 11 of 11"}) {
+    require(grparse::is_page_number(text, 11), std::string("page number: ") + text);
   }
-  for (const auto* shape : {"chapter #", "# apples", "", "introduction", "table #: results"}) {
-    require(!grparse::is_page_number_shape(shape), std::string("not a page number: ") + shape);
+  for (const auto* text : {"Chapter 3", "3 apples", "", "Introduction", "Table 3: results",
+                           "2023.", "2023", "45", "0", "mmm", "3, 4", "7.."}) {
+    require(!grparse::is_page_number(text, 11), std::string("not a page number: ") + text);
+  }
+  require(grparse::is_page_number("1850", 1900), "a year is a page when the document is that long");
+}
+
+void verify_reference_years_are_not_page_numbers() {
+  docv1::Document document = base_document();
+  add_pages(&document, 11);
+  add_prose(&document, "Zhengfu He, Tianxiang Sun, Qiong Tang, Kuanning Wang, Xuan-Jing", 11,
+            940.0, 960.0);
+  const std::string year = add_prose(&document, "2023.", 11, 962.0, 982.0);
+  const std::string plain = add_prose(&document, "11", 3, 970.0, 990.0);
+  const std::string dashed = add_prose(&document, "- 11 -", 5, 970.0, 990.0);
+  const std::string of = add_prose(&document, "Page 11 of 11", 7, 970.0, 990.0);
+  require(grparse::demote_running_furniture(&document, {}, nullptr) == 3,
+          "the three page numbers are demoted and the reference year is not");
+  require(base_at(document, year).label() == docv1::DOC_ITEM_LABEL_TEXT,
+          "a wrapped reference line ending in a year stays prose");
+  for (const auto& ref : {plain, dashed, of}) {
+    require(base_at(document, ref).label() == docv1::DOC_ITEM_LABEL_PAGE_FOOTER,
+            "a plausible page number in the bottom band is a footer");
   }
 }
 
@@ -340,17 +362,65 @@ void verify_continuation_applies_hyphen_rule() {
           "a known compound keeps its hyphen across the break");
 }
 
+void set_column(docv1::Document* document, int index, double left, double right) {
+  auto* box = document->mutable_texts(index)->mutable_text()->mutable_base()->mutable_prov(0)->mutable_bbox();
+  box->set_l(left);
+  box->set_r(right);
+}
+
 void verify_continuation_merges_within_a_page() {
   docv1::Document document = base_document();
   add_pages(&document, 1);
   const std::string head = add_prose(&document, "Column one ends mid", 1, 900.0, 920.0);
   add_prose(&document, "sentence in column two.", 1, 100.0, 120.0);
-  auto* second_column = document.mutable_texts(1)->mutable_text()->mutable_base()->mutable_prov(0)->mutable_bbox();
-  second_column->set_l(420.0);
-  second_column->set_r(740.0);
+  set_column(&document, 0, 60.0, 380.0);
+  set_column(&document, 1, 420.0, 740.0);
   require(grparse::merge_continuations(&document, {}) == 1, "a column break merges");
   require(base_at(document, head).text() == "Column one ends mid sentence in column two.",
           "same-page neighbours join");
+}
+
+void verify_side_by_side_captions_do_not_merge() {
+  {
+    docv1::Document document = base_document();
+    add_pages(&document, 1);
+    add_prose(&document, "a Forward diffusion", 1, 500.0, 520.0);
+    add_prose(&document, "b Regular reverse diffusion.", 1, 500.0, 520.0);
+    set_column(&document, 0, 60.0, 380.0);
+    set_column(&document, 1, 420.0, 740.0);
+    require(grparse::merge_continuations(&document, {}) == 0,
+            "two sub-figure captions sharing a row are not a column break");
+  }
+  {
+    docv1::Document document = base_document();
+    add_pages(&document, 1);
+    add_prose(&document, "a Forward diffusion", 1, 500.0, 520.0);
+    add_prose(&document, "regular reverse diffusion.", 1, 505.0, 525.0);
+    set_column(&document, 0, 60.0, 380.0);
+    set_column(&document, 1, 420.0, 740.0);
+    require(grparse::merge_continuations(&document, {}) == 0,
+            "a same-row neighbour does not merge even when it starts with a word");
+  }
+  {
+    docv1::Document document = base_document();
+    add_pages(&document, 1);
+    add_prose(&document, "Column one ends mid", 1, 900.0, 920.0);
+    add_prose(&document, "b continues in column two.", 1, 100.0, 120.0);
+    set_column(&document, 0, 60.0, 380.0);
+    set_column(&document, 1, 420.0, 740.0);
+    require(grparse::merge_continuations(&document, {}) == 0,
+            "a single-letter first token is an enumerator, not a continuation");
+  }
+  {
+    docv1::Document document = base_document();
+    add_pages(&document, 1);
+    add_prose(&document, "Column one ends mid", 1, 900.0, 920.0);
+    add_prose(&document, "sentence overlapping the first column.", 1, 100.0, 120.0);
+    set_column(&document, 0, 60.0, 380.0);
+    set_column(&document, 1, 300.0, 740.0);
+    require(grparse::merge_continuations(&document, {}) == 0,
+            "horizontal overlap with the head is not a column to its right");
+  }
 }
 
 void verify_continuation_not_merged() {
@@ -468,10 +538,12 @@ int main() {
     verify_section_header_in_band_not_demoted();
     verify_single_page_untouched();
     verify_normalization_and_page_number_shapes();
+    verify_reference_years_are_not_page_numbers();
     verify_hyphen_rejoin();
     verify_continuation_merged_across_pages();
     verify_continuation_applies_hyphen_rule();
     verify_continuation_merges_within_a_page();
+    verify_side_by_side_captions_do_not_merge();
     verify_continuation_not_merged();
     verify_pass_is_idempotent();
     verify_totals_accumulate();
