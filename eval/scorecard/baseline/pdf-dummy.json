@@ -1,0 +1,87 @@
+{
+ "agreement": {
+  "agreed": 1,
+  "claimed_fields": {
+   "grparse": 3,
+   "pdf": 12
+  },
+  "collectors": [
+   "grparse",
+   "pdf"
+  ],
+  "conflicts": [],
+  "shared": 1,
+  "winners": {
+   "origin.binary_hash": "grparse",
+   "origin.filename": "grparse",
+   "origin.mimetype": "grparse",
+   "origin.source_id": "pdf",
+   "source_meta.authoring_tool": "pdf",
+   "source_meta.created.seconds": "pdf",
+   "source_meta.created_raw": "pdf",
+   "source_meta.format_version": "pdf",
+   "source_meta.generator": "pdf",
+   "source_meta.protection.allows_extraction": "pdf",
+   "source_meta.protection.allows_printing": "pdf",
+   "source_meta.protection.opened_without_password": "pdf",
+   "source_meta.structured": "pdf"
+  }
+ },
+ "collectors": [
+  "grparse",
+  "pdf"
+ ],
+ "content_type": "application/pdf",
+ "counts": {
+  "body_items": 1,
+  "by_label": {
+   "section_header": 1
+  },
+  "form_items": 0,
+  "furniture_items": 0,
+  "groups": 0,
+  "headings": 1,
+  "key_value_items": 0,
+  "orphans": 0,
+  "pages": 1,
+  "pictures": 0,
+  "reading_chars": 14,
+  "tables": 0,
+  "texts": 1
+ },
+ "doc_id": "pdf-dummy",
+ "filename": "dummy.pdf",
+ "format": "pdf",
+ "furniture_reading": [],
+ "groups": [],
+ "headings": [
+  {
+   "level": 2,
+   "ref": "#/texts/0",
+   "text": "Dummy PDF file"
+  }
+ ],
+ "markdown": {
+  "chars": 18,
+  "headings": 1,
+  "images": 0,
+  "sha256": "5df3f61b88c4626d07bfec4185297c1b007af03f883e5d0c4a6328a7beb687a9",
+  "table_rows": 0
+ },
+ "origin_mimetype": "application/pdf",
+ "pictures": [],
+ "reading": [
+  {
+   "hash": "41417fb420a737c8",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/0",
+   "text": "Dummy PDF file"
+  }
+ ],
+ "reading_text": "Dummy PDF file",
+ "schema": 1,
+ "status": "CONVERSION_STATUS_SUCCESS",
+ "tables": [],
+ "warnings": []
+}

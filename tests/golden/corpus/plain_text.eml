@@ -1,0 +1,13 @@
+From: "Clerk of Court" <clerk@example.gov>
+To: ada@example.com
+Cc: bob@example.com
+Subject: =?UTF-8?Q?R=C3=BCckfrage_zur_Anh=C3=B6rung?=
+Date: Tue, 14 Nov 2023 22:13:20 +0000
+Message-ID: <eml-0001@example.gov>
+In-Reply-To: <parent-0000@example.com>
+References: <root-0000@example.com> <parent-0000@example.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+
+Die Anhörung beginnt um 09:00 Uhr.
+Bitte bringen Sie die Unterlagen mit.

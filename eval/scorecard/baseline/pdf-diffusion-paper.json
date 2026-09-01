@@ -1,0 +1,6774 @@
+{
+ "agreement": {
+  "agreed": 1,
+  "claimed_fields": {
+   "grparse": 3,
+   "pdf": 14
+  },
+  "collectors": [
+   "grparse",
+   "pdf"
+  ],
+  "conflicts": [],
+  "shared": 1,
+  "winners": {
+   "origin.binary_hash": "grparse",
+   "origin.filename": "grparse",
+   "origin.mimetype": "grparse",
+   "origin.source_id": "pdf",
+   "source_meta.authoring_tool": "pdf",
+   "source_meta.created.seconds": "pdf",
+   "source_meta.created_raw": "pdf",
+   "source_meta.format_version": "pdf",
+   "source_meta.generator": "pdf",
+   "source_meta.modified.seconds": "pdf",
+   "source_meta.modified_raw": "pdf",
+   "source_meta.protection.allows_extraction": "pdf",
+   "source_meta.protection.allows_printing": "pdf",
+   "source_meta.protection.opened_without_password": "pdf",
+   "source_meta.structured": "pdf",
+   "source_meta.trapped": "pdf"
+  }
+ },
+ "collectors": [
+  "grparse",
+  "pdf"
+ ],
+ "content_type": "application/pdf",
+ "counts": {
+  "body_items": 121,
+  "by_label": {
+   "code": 2,
+   "group:ordered_list": 2,
+   "list_item": 3,
+   "picture": 4,
+   "section_header": 12,
+   "table": 3,
+   "text": 95
+  },
+  "form_items": 0,
+  "furniture_items": 616,
+  "groups": 2,
+  "headings": 12,
+  "key_value_items": 0,
+  "orphans": 0,
+  "pages": 11,
+  "pictures": 4,
+  "reading_chars": 33626,
+  "tables": 3,
+  "texts": 728
+ },
+ "doc_id": "pdf-diffusion-paper",
+ "filename": "Diffusion_models_are_continuous_human_noise_operators.pdf",
+ "format": "pdf",
+ "furniture_reading": [
+  {
+   "hash": "a4b1c74194dca5b8",
+   "label": "text",
+   "ref": "#/texts/0",
+   "text": "Under review as a conference paper at ICLR 2025"
+  },
+  {
+   "hash": "2ac9a6746aca543a",
+   "label": "text",
+   "ref": "#/texts/1",
+   "text": "000"
+  },
+  {
+   "hash": "7a3e6b16cb75f48f",
+   "label": "text",
+   "ref": "#/texts/2",
+   "text": "001"
+  },
+  {
+   "hash": "a1dd6837f284625b",
+   "label": "text",
+   "ref": "#/texts/3",
+   "text": "002"
+  },
+  {
+   "hash": "88c0413bfef1d057",
+   "label": "text",
+   "ref": "#/texts/4",
+   "text": "003"
+  },
+  {
+   "hash": "9c1850fcaa632f21",
+   "label": "text",
+   "ref": "#/texts/5",
+   "text": "004"
+  },
+  {
+   "hash": "5a96acc64c72c5b2",
+   "label": "text",
+   "ref": "#/texts/6",
+   "text": "005"
+  },
+  {
+   "hash": "c0f890f2fd6b0581",
+   "label": "text",
+   "ref": "#/texts/7",
+   "text": "006"
+  },
+  {
+   "hash": "629f4cf9337b0d0c",
+   "label": "text",
+   "ref": "#/texts/8",
+   "text": "007"
+  },
+  {
+   "hash": "cc1af790b8e0c746",
+   "label": "text",
+   "ref": "#/texts/9",
+   "text": "008"
+  },
+  {
+   "hash": "5371e1a064f3cfff",
+   "label": "text",
+   "ref": "#/texts/10",
+   "text": "009"
+  },
+  {
+   "hash": "13715f6c8b48ed1b",
+   "label": "text",
+   "ref": "#/texts/11",
+   "text": "010"
+  },
+  {
+   "hash": "8a080cea809d1b9d",
+   "label": "text",
+   "ref": "#/texts/12",
+   "text": "011"
+  },
+  {
+   "hash": "bf6aaaab7c143ca1",
+   "label": "text",
+   "ref": "#/texts/13",
+   "text": "012"
+  },
+  {
+   "hash": "b16d9e2bb44a4b72",
+   "label": "text",
+   "ref": "#/texts/14",
+   "text": "013"
+  },
+  {
+   "hash": "72abdfcd75400cfe",
+   "label": "text",
+   "ref": "#/texts/15",
+   "text": "014"
+  },
+  {
+   "hash": "2d54ab36581c7e90",
+   "label": "text",
+   "ref": "#/texts/16",
+   "text": "015"
+  },
+  {
+   "hash": "8449c20ed663992d",
+   "label": "text",
+   "ref": "#/texts/17",
+   "text": "016"
+  },
+  {
+   "hash": "9309f67fd6480663",
+   "label": "text",
+   "ref": "#/texts/18",
+   "text": "017"
+  },
+  {
+   "hash": "45dd9586f26a3cf4",
+   "label": "text",
+   "ref": "#/texts/19",
+   "text": "018"
+  },
+  {
+   "hash": "8eba3ded9f5f3cbb",
+   "label": "text",
+   "ref": "#/texts/20",
+   "text": "019"
+  },
+  {
+   "hash": "c75f53bdcc638b0f",
+   "label": "text",
+   "ref": "#/texts/21",
+   "text": "020"
+  },
+  {
+   "hash": "cad02af28a101dfc",
+   "label": "text",
+   "ref": "#/texts/22",
+   "text": "021"
+  },
+  {
+   "hash": "d970990220a1e7e9",
+   "label": "text",
+   "ref": "#/texts/23",
+   "text": "022"
+  },
+  {
+   "hash": "168167b979b5fbf4",
+   "label": "text",
+   "ref": "#/texts/24",
+   "text": "023"
+  },
+  {
+   "hash": "66a3c6db23417d04",
+   "label": "text",
+   "ref": "#/texts/25",
+   "text": "024"
+  },
+  {
+   "hash": "4f46578a5c392cc9",
+   "label": "text",
+   "ref": "#/texts/26",
+   "text": "025"
+  },
+  {
+   "hash": "343cacd3827e6de6",
+   "label": "text",
+   "ref": "#/texts/27",
+   "text": "026"
+  },
+  {
+   "hash": "79f918029276a994",
+   "label": "text",
+   "ref": "#/texts/28",
+   "text": "027"
+  },
+  {
+   "hash": "76a00ed73f38046e",
+   "label": "text",
+   "ref": "#/texts/29",
+   "text": "028"
+  },
+  {
+   "hash": "406b783f721b16ff",
+   "label": "text",
+   "ref": "#/texts/30",
+   "text": "029"
+  },
+  {
+   "hash": "78b4c871b95d95f5",
+   "label": "text",
+   "ref": "#/texts/31",
+   "text": "030"
+  },
+  {
+   "hash": "23c86fe0b82751dd",
+   "label": "text",
+   "ref": "#/texts/32",
+   "text": "031"
+  },
+  {
+   "hash": "721574dd157b4459",
+   "label": "text",
+   "ref": "#/texts/33",
+   "text": "032"
+  },
+  {
+   "hash": "842d0b270c035fb2",
+   "label": "text",
+   "ref": "#/texts/34",
+   "text": "033"
+  },
+  {
+   "hash": "4071e750b4727116",
+   "label": "text",
+   "ref": "#/texts/35",
+   "text": "034"
+  },
+  {
+   "hash": "41a8c9a10cdfce0a",
+   "label": "text",
+   "ref": "#/texts/36",
+   "text": "035"
+  },
+  {
+   "hash": "58ec1b25c481b2c2",
+   "label": "text",
+   "ref": "#/texts/37",
+   "text": "036"
+  },
+  {
+   "hash": "48a212a91e6da95f",
+   "label": "text",
+   "ref": "#/texts/38",
+   "text": "037"
+  },
+  {
+   "hash": "515ca6ef2552077a",
+   "label": "text",
+   "ref": "#/texts/39",
+   "text": "038"
+  },
+  {
+   "hash": "e1981523bc0228de",
+   "label": "text",
+   "ref": "#/texts/40",
+   "text": "039"
+  },
+  {
+   "hash": "3500318f75ad20f0",
+   "label": "text",
+   "ref": "#/texts/41",
+   "text": "040"
+  },
+  {
+   "hash": "879ce2257ab3468f",
+   "label": "text",
+   "ref": "#/texts/42",
+   "text": "041"
+  },
+  {
+   "hash": "19158c4a7252e121",
+   "label": "text",
+   "ref": "#/texts/43",
+   "text": "042"
+  },
+  {
+   "hash": "82ad92612238288c",
+   "label": "text",
+   "ref": "#/texts/44",
+   "text": "043"
+  },
+  {
+   "hash": "2ba3f4781ce765d0",
+   "label": "text",
+   "ref": "#/texts/45",
+   "text": "044"
+  },
+  {
+   "hash": "2bf64fd8ac1f696d",
+   "label": "text",
+   "ref": "#/texts/46",
+   "text": "045"
+  },
+  {
+   "hash": "b2d084ae2bd0f4b3",
+   "label": "text",
+   "ref": "#/texts/47",
+   "text": "046"
+  },
+  {
+   "hash": "e6489353932b602d",
+   "label": "text",
+   "ref": "#/texts/48",
+   "text": "047"
+  },
+  {
+   "hash": "a585004ef456dd04",
+   "label": "text",
+   "ref": "#/texts/49",
+   "text": "048"
+  },
+  {
+   "hash": "3c241d2674142a5f",
+   "label": "text",
+   "ref": "#/texts/50",
+   "text": "049"
+  },
+  {
+   "hash": "1dd68a2d273df991",
+   "label": "text",
+   "ref": "#/texts/51",
+   "text": "050"
+  },
+  {
+   "hash": "d2f4eb77ffb11b01",
+   "label": "text",
+   "ref": "#/texts/52",
+   "text": "051"
+  },
+  {
+   "hash": "cfbca725ff83b01a",
+   "label": "text",
+   "ref": "#/texts/53",
+   "text": "052"
+  },
+  {
+   "hash": "9b23c0760f95b2c9",
+   "label": "text",
+   "ref": "#/texts/54",
+   "text": "053"
+  },
+  {
+   "hash": "6b86b273ff34fce1",
+   "label": "text",
+   "ref": "#/texts/55",
+   "text": "1"
+  },
+  {
+   "hash": "a4b1c74194dca5b8",
+   "label": "text",
+   "ref": "#/texts/70",
+   "text": "Under review as a conference paper at ICLR 2025"
+  },
+  {
+   "hash": "d86c993d110ef800",
+   "label": "text",
+   "ref": "#/texts/71",
+   "text": "054"
+  },
+  {
+   "hash": "6d4d381fad546406",
+   "label": "text",
+   "ref": "#/texts/72",
+   "text": "055"
+  },
+  {
+   "hash": "b86e34f45be0f49c",
+   "label": "text",
+   "ref": "#/texts/73",
+   "text": "056"
+  },
+  {
+   "hash": "0230a7f0e3ccb489",
+   "label": "text",
+   "ref": "#/texts/74",
+   "text": "057"
+  },
+  {
+   "hash": "18873905ac1540b7",
+   "label": "text",
+   "ref": "#/texts/75",
+   "text": "058"
+  },
+  {
+   "hash": "33de253288ec0ae8",
+   "label": "text",
+   "ref": "#/texts/76",
+   "text": "059"
+  },
+  {
+   "hash": "b301d8e98abdfad6",
+   "label": "text",
+   "ref": "#/texts/77",
+   "text": "060"
+  },
+  {
+   "hash": "f135e1799003db61",
+   "label": "text",
+   "ref": "#/texts/78",
+   "text": "061"
+  },
+  {
+   "hash": "ffdb47b70fde8d22",
+   "label": "text",
+   "ref": "#/texts/79",
+   "text": "062"
+  },
+  {
+   "hash": "060823f51b592344",
+   "label": "text",
+   "ref": "#/texts/80",
+   "text": "063"
+  },
+  {
+   "hash": "5e18d34a87ed6c9b",
+   "label": "text",
+   "ref": "#/texts/81",
+   "text": "064"
+  },
+  {
+   "hash": "b64706e7a27319da",
+   "label": "text",
+   "ref": "#/texts/82",
+   "text": "065"
+  },
+  {
+   "hash": "dcfc099d43f38697",
+   "label": "text",
+   "ref": "#/texts/83",
+   "text": "066"
+  },
+  {
+   "hash": "a7a8ddd54b83931a",
+   "label": "text",
+   "ref": "#/texts/84",
+   "text": "067"
+  },
+  {
+   "hash": "28a14b90b4cb23b9",
+   "label": "text",
+   "ref": "#/texts/85",
+   "text": "068"
+  },
+  {
+   "hash": "e650739e99af18e1",
+   "label": "text",
+   "ref": "#/texts/86",
+   "text": "069"
+  },
+  {
+   "hash": "4536bca8d82be070",
+   "label": "text",
+   "ref": "#/texts/87",
+   "text": "070"
+  },
+  {
+   "hash": "5afbd86adcb5b7f9",
+   "label": "text",
+   "ref": "#/texts/88",
+   "text": "071"
+  },
+  {
+   "hash": "bc7d001b725557c7",
+   "label": "text",
+   "ref": "#/texts/89",
+   "text": "072"
+  },
+  {
+   "hash": "37ff4d2021d1bb2d",
+   "label": "text",
+   "ref": "#/texts/90",
+   "text": "073"
+  },
+  {
+   "hash": "6a353c281b4b65e4",
+   "label": "text",
+   "ref": "#/texts/91",
+   "text": "074"
+  },
+  {
+   "hash": "32cd1acb86cd1ab3",
+   "label": "text",
+   "ref": "#/texts/92",
+   "text": "075"
+  },
+  {
+   "hash": "36094ed4fbe8579b",
+   "label": "text",
+   "ref": "#/texts/93",
+   "text": "076"
+  },
+  {
+   "hash": "aca8d347d8c11954",
+   "label": "text",
+   "ref": "#/texts/94",
+   "text": "077"
+  },
+  {
+   "hash": "5e7f2276a9a8269f",
+   "label": "text",
+   "ref": "#/texts/95",
+   "text": "078"
+  },
+  {
+   "hash": "9c8a49e5cd96b622",
+   "label": "text",
+   "ref": "#/texts/96",
+   "text": "079"
+  },
+  {
+   "hash": "6138545581201372",
+   "label": "text",
+   "ref": "#/texts/97",
+   "text": "080"
+  },
+  {
+   "hash": "8daea4d2b044cd2b",
+   "label": "text",
+   "ref": "#/texts/98",
+   "text": "081"
+  },
+  {
+   "hash": "ffc3fb0bddd8a607",
+   "label": "text",
+   "ref": "#/texts/99",
+   "text": "082"
+  },
+  {
+   "hash": "9c60ff016521ee3f",
+   "label": "text",
+   "ref": "#/texts/100",
+   "text": "083"
+  },
+  {
+   "hash": "26d9f77aa7b5e821",
+   "label": "text",
+   "ref": "#/texts/101",
+   "text": "084"
+  },
+  {
+   "hash": "9e767c1df8684b3e",
+   "label": "text",
+   "ref": "#/texts/102",
+   "text": "085"
+  },
+  {
+   "hash": "1977d36003629a9a",
+   "label": "text",
+   "ref": "#/texts/103",
+   "text": "086"
+  },
+  {
+   "hash": "8ebced264174028f",
+   "label": "text",
+   "ref": "#/texts/104",
+   "text": "087"
+  },
+  {
+   "hash": "7a874734355315df",
+   "label": "text",
+   "ref": "#/texts/105",
+   "text": "088"
+  },
+  {
+   "hash": "0c08340630224ed1",
+   "label": "text",
+   "ref": "#/texts/106",
+   "text": "089"
+  },
+  {
+   "hash": "81aac7f5ae2e7fdd",
+   "label": "text",
+   "ref": "#/texts/107",
+   "text": "090"
+  },
+  {
+   "hash": "eb95621b209ad8b0",
+   "label": "text",
+   "ref": "#/texts/108",
+   "text": "091"
+  },
+  {
+   "hash": "16e5cb32123fe4bf",
+   "label": "text",
+   "ref": "#/texts/109",
+   "text": "092"
+  },
+  {
+   "hash": "891a3e6bc9f5be4c",
+   "label": "text",
+   "ref": "#/texts/110",
+   "text": "093"
+  },
+  {
+   "hash": "5261a1516ce818f8",
+   "label": "text",
+   "ref": "#/texts/111",
+   "text": "094"
+  },
+  {
+   "hash": "115c85c54ec48b81",
+   "label": "text",
+   "ref": "#/texts/112",
+   "text": "095"
+  },
+  {
+   "hash": "f8c0a071f38cbea8",
+   "label": "text",
+   "ref": "#/texts/113",
+   "text": "096"
+  },
+  {
+   "hash": "23f9194bae2863c6",
+   "label": "text",
+   "ref": "#/texts/114",
+   "text": "097"
+  },
+  {
+   "hash": "35e1d1aeed3f7179",
+   "label": "text",
+   "ref": "#/texts/115",
+   "text": "098"
+  },
+  {
+   "hash": "495e31529a5c65b6",
+   "label": "text",
+   "ref": "#/texts/116",
+   "text": "099"
+  },
+  {
+   "hash": "ad57366865126e55",
+   "label": "text",
+   "ref": "#/texts/117",
+   "text": "100"
+  },
+  {
+   "hash": "16dc368a89b428b2",
+   "label": "text",
+   "ref": "#/texts/118",
+   "text": "101"
+  },
+  {
+   "hash": "37834f2f25762f23",
+   "label": "text",
+   "ref": "#/texts/119",
+   "text": "102"
+  },
+  {
+   "hash": "454f63ac30c83229",
+   "label": "text",
+   "ref": "#/texts/120",
+   "text": "103"
+  },
+  {
+   "hash": "5ef6fdf32513aa7c",
+   "label": "text",
+   "ref": "#/texts/121",
+   "text": "104"
+  },
+  {
+   "hash": "1253e9373e781b75",
+   "label": "text",
+   "ref": "#/texts/122",
+   "text": "105"
+  },
+  {
+   "hash": "482d9673cfee5de3",
+   "label": "text",
+   "ref": "#/texts/123",
+   "text": "106"
+  },
+  {
+   "hash": "3346f2bbf6c34bd2",
+   "label": "text",
+   "ref": "#/texts/124",
+   "text": "107"
+  },
+  {
+   "hash": "d4735e3a265e16ee",
+   "label": "text",
+   "ref": "#/texts/125",
+   "text": "2"
+  },
+  {
+   "hash": "a4b1c74194dca5b8",
+   "label": "text",
+   "ref": "#/texts/138",
+   "text": "Under review as a conference paper at ICLR 2025"
+  },
+  {
+   "hash": "9537f32ec7599e1a",
+   "label": "text",
+   "ref": "#/texts/139",
+   "text": "108"
+  },
+  {
+   "hash": "0fd42b3f73c448b3",
+   "label": "text",
+   "ref": "#/texts/140",
+   "text": "109"
+  },
+  {
+   "hash": "9bdb2af6799204a2",
+   "label": "text",
+   "ref": "#/texts/141",
+   "text": "110"
+  },
+  {
+   "hash": "f6e0a1e2ac41945a",
+   "label": "text",
+   "ref": "#/texts/142",
+   "text": "111"
+  },
+  {
+   "hash": "b1556dea32e9d0cd",
+   "label": "text",
+   "ref": "#/texts/143",
+   "text": "112"
+  },
+  {
+   "hash": "6c658ee83fb7e812",
+   "label": "text",
+   "ref": "#/texts/144",
+   "text": "113"
+  },
+  {
+   "hash": "9f1f9dce319c4700",
+   "label": "text",
+   "ref": "#/texts/145",
+   "text": "114"
+  },
+  {
+   "hash": "28dae7c8bde2f3ca",
+   "label": "text",
+   "ref": "#/texts/146",
+   "text": "115"
+  },
+  {
+   "hash": "e5b861a6d8a966df",
+   "label": "text",
+   "ref": "#/texts/147",
+   "text": "116"
+  },
+  {
+   "hash": "2ac878b0e2180616",
+   "label": "text",
+   "ref": "#/texts/148",
+   "text": "117"
+  },
+  {
+   "hash": "85daaf6f7055cd57",
+   "label": "text",
+   "ref": "#/texts/149",
+   "text": "118"
+  },
+  {
+   "hash": "3038bfb575bee6a0",
+   "label": "text",
+   "ref": "#/texts/150",
+   "text": "119"
+  },
+  {
+   "hash": "2abaca4911e68fa9",
+   "label": "text",
+   "ref": "#/texts/151",
+   "text": "120"
+  },
+  {
+   "hash": "89aa1e580023722d",
+   "label": "text",
+   "ref": "#/texts/152",
+   "text": "121"
+  },
+  {
+   "hash": "1be00341082e25c4",
+   "label": "text",
+   "ref": "#/texts/153",
+   "text": "122"
+  },
+  {
+   "hash": "a665a45920422f9d",
+   "label": "text",
+   "ref": "#/texts/154",
+   "text": "123"
+  },
+  {
+   "hash": "6affdae3b3c1aa6a",
+   "label": "text",
+   "ref": "#/texts/155",
+   "text": "124"
+  },
+  {
+   "hash": "0f8ef3377b30fc47",
+   "label": "text",
+   "ref": "#/texts/156",
+   "text": "125"
+  },
+  {
+   "hash": "65a699905c026193",
+   "label": "text",
+   "ref": "#/texts/157",
+   "text": "126"
+  },
+  {
+   "hash": "922c7954216ccfe7",
+   "label": "text",
+   "ref": "#/texts/158",
+   "text": "127"
+  },
+  {
+   "hash": "2747b7c718564ba5",
+   "label": "text",
+   "ref": "#/texts/159",
+   "text": "128"
+  },
+  {
+   "hash": "6566230e3a3ce377",
+   "label": "text",
+   "ref": "#/texts/160",
+   "text": "129"
+  },
+  {
+   "hash": "38d66d9692ac5900",
+   "label": "text",
+   "ref": "#/texts/161",
+   "text": "130"
+  },
+  {
+   "hash": "eeca91fd439b6d5e",
+   "label": "text",
+   "ref": "#/texts/162",
+   "text": "131"
+  },
+  {
+   "hash": "dbb1ded63bc70732",
+   "label": "text",
+   "ref": "#/texts/163",
+   "text": "132"
+  },
+  {
+   "hash": "d2f483672c0239f6",
+   "label": "text",
+   "ref": "#/texts/164",
+   "text": "133"
+  },
+  {
+   "hash": "5d389f5e2e34c6b0",
+   "label": "text",
+   "ref": "#/texts/165",
+   "text": "134"
+  },
+  {
+   "hash": "13671077b66a2987",
+   "label": "text",
+   "ref": "#/texts/166",
+   "text": "135"
+  },
+  {
+   "hash": "36ebe205bcdfc499",
+   "label": "text",
+   "ref": "#/texts/167",
+   "text": "136"
+  },
+  {
+   "hash": "d80eae6e96d148b3",
+   "label": "text",
+   "ref": "#/texts/168",
+   "text": "137"
+  },
+  {
+   "hash": "d6a4031733610bb0",
+   "label": "text",
+   "ref": "#/texts/169",
+   "text": "138"
+  },
+  {
+   "hash": "8d27ba37c5d81010",
+   "label": "text",
+   "ref": "#/texts/170",
+   "text": "139"
+  },
+  {
+   "hash": "dbae772db29058a8",
+   "label": "text",
+   "ref": "#/texts/171",
+   "text": "140"
+  },
+  {
+   "hash": "2c7d5490e6050836",
+   "label": "text",
+   "ref": "#/texts/172",
+   "text": "141"
+  },
+  {
+   "hash": "d4ee9f58e5860574",
+   "label": "text",
+   "ref": "#/texts/173",
+   "text": "142"
+  },
+  {
+   "hash": "d6f0c71ef0c88e45",
+   "label": "text",
+   "ref": "#/texts/174",
+   "text": "143"
+  },
+  {
+   "hash": "5ec1a0c99d428601",
+   "label": "text",
+   "ref": "#/texts/175",
+   "text": "144"
+  },
+  {
+   "hash": "be47addbcb8f6056",
+   "label": "text",
+   "ref": "#/texts/176",
+   "text": "145"
+  },
+  {
+   "hash": "0a5b046d07f6f971",
+   "label": "text",
+   "ref": "#/texts/177",
+   "text": "146"
+  },
+  {
+   "hash": "1d28c120568c10e1",
+   "label": "text",
+   "ref": "#/texts/178",
+   "text": "147"
+  },
+  {
+   "hash": "ec2e990b934dde55",
+   "label": "text",
+   "ref": "#/texts/179",
+   "text": "148"
+  },
+  {
+   "hash": "05ada863a4cf9660",
+   "label": "text",
+   "ref": "#/texts/180",
+   "text": "149"
+  },
+  {
+   "hash": "9ae2bdd7beedc2e7",
+   "label": "text",
+   "ref": "#/texts/181",
+   "text": "150"
+  },
+  {
+   "hash": "8e612bd1f5d132a3",
+   "label": "text",
+   "ref": "#/texts/182",
+   "text": "151"
+  },
+  {
+   "hash": "043066daf2109523",
+   "label": "text",
+   "ref": "#/texts/183",
+   "text": "152"
+  },
+  {
+   "hash": "620c9c332101a5ba",
+   "label": "text",
+   "ref": "#/texts/184",
+   "text": "153"
+  },
+  {
+   "hash": "1d0ebea552eb43d0",
+   "label": "text",
+   "ref": "#/texts/185",
+   "text": "154"
+  },
+  {
+   "hash": "210e3b160c355818",
+   "label": "text",
+   "ref": "#/texts/186",
+   "text": "155"
+  },
+  {
+   "hash": "0fecf9247f3ddc84",
+   "label": "text",
+   "ref": "#/texts/187",
+   "text": "156"
+  },
+  {
+   "hash": "c75de23d89df36ba",
+   "label": "text",
+   "ref": "#/texts/188",
+   "text": "157"
+  },
+  {
+   "hash": "7ed8f0f3b707956d",
+   "label": "text",
+   "ref": "#/texts/189",
+   "text": "158"
+  },
+  {
+   "hash": "ff2ccb6ba423d356",
+   "label": "text",
+   "ref": "#/texts/190",
+   "text": "159"
+  },
+  {
+   "hash": "a512db2741cd2069",
+   "label": "text",
+   "ref": "#/texts/191",
+   "text": "160"
+  },
+  {
+   "hash": "bb668ca955632160",
+   "label": "text",
+   "ref": "#/texts/192",
+   "text": "161"
+  },
+  {
+   "hash": "4e07408562bedb8b",
+   "label": "text",
+   "ref": "#/texts/193",
+   "text": "3"
+  },
+  {
+   "hash": "a4b1c74194dca5b8",
+   "label": "text",
+   "ref": "#/texts/207",
+   "text": "Under review as a conference paper at ICLR 2025"
+  },
+  {
+   "hash": "79d6eaa2676189eb",
+   "label": "text",
+   "ref": "#/texts/208",
+   "text": "162"
+  },
+  {
+   "hash": "3d3286f7cd19074f",
+   "label": "text",
+   "ref": "#/texts/209",
+   "text": "163"
+  },
+  {
+   "hash": "3f9807cb9ae9fb6c",
+   "label": "text",
+   "ref": "#/texts/210",
+   "text": "164"
+  },
+  {
+   "hash": "bc52dd634277c4a3",
+   "label": "text",
+   "ref": "#/texts/211",
+   "text": "165"
+  },
+  {
+   "hash": "e0f05da93a0f5a86",
+   "label": "text",
+   "ref": "#/texts/212",
+   "text": "166"
+  },
+  {
+   "hash": "73d3f1ba062585bc",
+   "label": "text",
+   "ref": "#/texts/213",
+   "text": "167"
+  },
+  {
+   "hash": "80c3cd40fa35f908",
+   "label": "text",
+   "ref": "#/texts/214",
+   "text": "168"
+  },
+  {
+   "hash": "f57e5cb1f4532c00",
+   "label": "text",
+   "ref": "#/texts/215",
+   "text": "169"
+  },
+  {
+   "hash": "734d0759cdb4e0d0",
+   "label": "text",
+   "ref": "#/texts/216",
+   "text": "170"
+  },
+  {
+   "hash": "284de502c9847342",
+   "label": "text",
+   "ref": "#/texts/217",
+   "text": "171"
+  },
+  {
+   "hash": "68519a9eca55c68c",
+   "label": "text",
+   "ref": "#/texts/218",
+   "text": "172"
+  },
+  {
+   "hash": "4a8596a7790b5ca9",
+   "label": "text",
+   "ref": "#/texts/219",
+   "text": "173"
+  },
+  {
+   "hash": "41e521adf8ae7a0f",
+   "label": "text",
+   "ref": "#/texts/220",
+   "text": "174"
+  },
+  {
+   "hash": "dac53c17c250fd4d",
+   "label": "text",
+   "ref": "#/texts/221",
+   "text": "175"
+  },
+  {
+   "hash": "cba28b89eb859497",
+   "label": "text",
+   "ref": "#/texts/222",
+   "text": "176"
+  },
+  {
+   "hash": "8cd2510271575d84",
+   "label": "text",
+   "ref": "#/texts/223",
+   "text": "177"
+  },
+  {
+   "hash": "01d54579da446ae1",
+   "label": "text",
+   "ref": "#/texts/224",
+   "text": "178"
+  },
+  {
+   "hash": "3068430da9e4b7a6",
+   "label": "text",
+   "ref": "#/texts/225",
+   "text": "179"
+  },
+  {
+   "hash": "7b69759630f869f2",
+   "label": "text",
+   "ref": "#/texts/226",
+   "text": "180"
+  },
+  {
+   "hash": "580811fa95269f3e",
+   "label": "text",
+   "ref": "#/texts/227",
+   "text": "181"
+  },
+  {
+   "hash": "bfa7634640c53da7",
+   "label": "text",
+   "ref": "#/texts/228",
+   "text": "182"
+  },
+  {
+   "hash": "b8aed072d29403ec",
+   "label": "text",
+   "ref": "#/texts/229",
+   "text": "183"
+  },
+  {
+   "hash": "52f11620e397f867",
+   "label": "text",
+   "ref": "#/texts/230",
+   "text": "184"
+  },
+  {
+   "hash": "61a229bae1e90331",
+   "label": "text",
+   "ref": "#/texts/231",
+   "text": "185"
+  },
+  {
+   "hash": "2811745d7b8d8874",
+   "label": "text",
+   "ref": "#/texts/232",
+   "text": "186"
+  },
+  {
+   "hash": "38b2d03f3256502b",
+   "label": "text",
+   "ref": "#/texts/233",
+   "text": "187"
+  },
+  {
+   "hash": "d6061bbee6cf13bd",
+   "label": "text",
+   "ref": "#/texts/234",
+   "text": "188"
+  },
+  {
+   "hash": "7045d16ae7f043ec",
+   "label": "text",
+   "ref": "#/texts/235",
+   "text": "189"
+  },
+  {
+   "hash": "2397346b45823e07",
+   "label": "text",
+   "ref": "#/texts/236",
+   "text": "190"
+  },
+  {
+   "hash": "70260742c2952154",
+   "label": "text",
+   "ref": "#/texts/237",
+   "text": "191"
+  },
+  {
+   "hash": "eb3be230bbd2844b",
+   "label": "text",
+   "ref": "#/texts/238",
+   "text": "192"
+  },
+  {
+   "hash": "684fe39f03758de6",
+   "label": "text",
+   "ref": "#/texts/239",
+   "text": "193"
+  },
+  {
+   "hash": "7559ca4a957c8c82",
+   "label": "text",
+   "ref": "#/texts/240",
+   "text": "194"
+  },
+  {
+   "hash": "1dfacb2ea5a03e0a",
+   "label": "text",
+   "ref": "#/texts/241",
+   "text": "195"
+  },
+  {
+   "hash": "b4bbe448fde336bb",
+   "label": "text",
+   "ref": "#/texts/242",
+   "text": "196"
+  },
+  {
+   "hash": "8bcbb4c131df56f7",
+   "label": "text",
+   "ref": "#/texts/243",
+   "text": "197"
+  },
+  {
+   "hash": "a4e00d7e6aa82111",
+   "label": "text",
+   "ref": "#/texts/244",
+   "text": "198"
+  },
+  {
+   "hash": "5a39cadd1b007093",
+   "label": "text",
+   "ref": "#/texts/245",
+   "text": "199"
+  },
+  {
+   "hash": "27badc983df1780b",
+   "label": "text",
+   "ref": "#/texts/246",
+   "text": "200"
+  },
+  {
+   "hash": "43974ed74066b207",
+   "label": "text",
+   "ref": "#/texts/247",
+   "text": "201"
+  },
+  {
+   "hash": "c17edaae86e4016a",
+   "label": "text",
+   "ref": "#/texts/248",
+   "text": "202"
+  },
+  {
+   "hash": "4621c1d55fa4e86c",
+   "label": "text",
+   "ref": "#/texts/249",
+   "text": "203"
+  },
+  {
+   "hash": "fc56dbc6d4652b31",
+   "label": "text",
+   "ref": "#/texts/250",
+   "text": "204"
+  },
+  {
+   "hash": "f8809aff4d69bece",
+   "label": "text",
+   "ref": "#/texts/251",
+   "text": "205"
+  },
+  {
+   "hash": "5cf4e26bd3d87da5",
+   "label": "text",
+   "ref": "#/texts/252",
+   "text": "206"
+  },
+  {
+   "hash": "968076be2e38cf89",
+   "label": "text",
+   "ref": "#/texts/253",
+   "text": "207"
+  },
+  {
+   "hash": "8df66f64b5742439",
+   "label": "text",
+   "ref": "#/texts/254",
+   "text": "208"
+  },
+  {
+   "hash": "83f814f7a92e365c",
+   "label": "text",
+   "ref": "#/texts/255",
+   "text": "209"
+  },
+  {
+   "hash": "d29d53701d3c859e",
+   "label": "text",
+   "ref": "#/texts/256",
+   "text": "210"
+  },
+  {
+   "hash": "093434a3ee9e0a01",
+   "label": "text",
+   "ref": "#/texts/257",
+   "text": "211"
+  },
+  {
+   "hash": "fa2b7af0a811b9ac",
+   "label": "text",
+   "ref": "#/texts/258",
+   "text": "212"
+  },
+  {
+   "hash": "d48ff4b2f68a10fd",
+   "label": "text",
+   "ref": "#/texts/259",
+   "text": "213"
+  },
+  {
+   "hash": "802b906a18591ead",
+   "label": "text",
+   "ref": "#/texts/260",
+   "text": "214"
+  },
+  {
+   "hash": "d86580a57f7bf542",
+   "label": "text",
+   "ref": "#/texts/261",
+   "text": "215"
+  },
+  {
+   "hash": "4b227777d4dd1fc6",
+   "label": "text",
+   "ref": "#/texts/262",
+   "text": "4"
+  },
+  {
+   "hash": "a4b1c74194dca5b8",
+   "label": "text",
+   "ref": "#/texts/275",
+   "text": "Under review as a conference paper at ICLR 2025"
+  },
+  {
+   "hash": "0f4121d0ef1df4c8",
+   "label": "text",
+   "ref": "#/texts/276",
+   "text": "216"
+  },
+  {
+   "hash": "16badfc6202cb3f8",
+   "label": "text",
+   "ref": "#/texts/277",
+   "text": "217"
+  },
+  {
+   "hash": "5966abd0cbfc86f9",
+   "label": "text",
+   "ref": "#/texts/278",
+   "text": "218"
+  },
+  {
+   "hash": "314f04b30f62e005",
+   "label": "text",
+   "ref": "#/texts/279",
+   "text": "219"
+  },
+  {
+   "hash": "36790ecd55c2030d",
+   "label": "text",
+   "ref": "#/texts/280",
+   "text": "220"
+  },
+  {
+   "hash": "67e9c3acebb154a2",
+   "label": "text",
+   "ref": "#/texts/281",
+   "text": "221"
+  },
+  {
+   "hash": "9b871512327c09ce",
+   "label": "text",
+   "ref": "#/texts/282",
+   "text": "222"
+  },
+  {
+   "hash": "56f4da26ed956730",
+   "label": "text",
+   "ref": "#/texts/283",
+   "text": "223"
+  },
+  {
+   "hash": "84a5092e4a5b6fe9",
+   "label": "text",
+   "ref": "#/texts/284",
+   "text": "224"
+  },
+  {
+   "hash": "0e6523810856a138",
+   "label": "text",
+   "ref": "#/texts/285",
+   "text": "225"
+  },
+  {
+   "hash": "8f1f64db81c40ea1",
+   "label": "text",
+   "ref": "#/texts/286",
+   "text": "226"
+  },
+  {
+   "hash": "dfe62e836a0a6f26",
+   "label": "text",
+   "ref": "#/texts/287",
+   "text": "227"
+  },
+  {
+   "hash": "9d693eeee1d1899c",
+   "label": "text",
+   "ref": "#/texts/288",
+   "text": "228"
+  },
+  {
+   "hash": "08490295488a1189",
+   "label": "text",
+   "ref": "#/texts/289",
+   "text": "229"
+  },
+  {
+   "hash": "a0eaec5a55dc2f5b",
+   "label": "text",
+   "ref": "#/texts/290",
+   "text": "230"
+  },
+  {
+   "hash": "138d9e809e386a7b",
+   "label": "text",
+   "ref": "#/texts/291",
+   "text": "231"
+  },
+  {
+   "hash": "835d5e8314340ab8",
+   "label": "text",
+   "ref": "#/texts/292",
+   "text": "232"
+  },
+  {
+   "hash": "c0509a487a18b003",
+   "label": "text",
+   "ref": "#/texts/293",
+   "text": "233"
+  },
+  {
+   "hash": "114bd151f8fb0c58",
+   "label": "text",
+   "ref": "#/texts/294",
+   "text": "234"
+  },
+  {
+   "hash": "0a2d643bfd24a028",
+   "label": "text",
+   "ref": "#/texts/295",
+   "text": "235"
+  },
+  {
+   "hash": "9a049b03f6fc40bf",
+   "label": "text",
+   "ref": "#/texts/296",
+   "text": "236"
+  },
+  {
+   "hash": "f0bc318fb8965cad",
+   "label": "text",
+   "ref": "#/texts/297",
+   "text": "237"
+  },
+  {
+   "hash": "8ae4c23b80d1e7c8",
+   "label": "text",
+   "ref": "#/texts/298",
+   "text": "238"
+  },
+  {
+   "hash": "79bf08685d3138f9",
+   "label": "text",
+   "ref": "#/texts/299",
+   "text": "239"
+  },
+  {
+   "hash": "6af1f692e9496c6d",
+   "label": "text",
+   "ref": "#/texts/300",
+   "text": "240"
+  },
+  {
+   "hash": "749fc650cacb0f06",
+   "label": "text",
+   "ref": "#/texts/301",
+   "text": "241"
+  },
+  {
+   "hash": "14063697603e22d6",
+   "label": "text",
+   "ref": "#/texts/302",
+   "text": "242"
+  },
+  {
+   "hash": "72440a20f54075ac",
+   "label": "text",
+   "ref": "#/texts/303",
+   "text": "243"
+  },
+  {
+   "hash": "82c01ce15b431d42",
+   "label": "text",
+   "ref": "#/texts/304",
+   "text": "244"
+  },
+  {
+   "hash": "011af72a910ac4ac",
+   "label": "text",
+   "ref": "#/texts/305",
+   "text": "245"
+  },
+  {
+   "hash": "37c20f19f3272b5c",
+   "label": "text",
+   "ref": "#/texts/306",
+   "text": "246"
+  },
+  {
+   "hash": "396f804443825586",
+   "label": "text",
+   "ref": "#/texts/307",
+   "text": "247"
+  },
+  {
+   "hash": "766cb53c753baeda",
+   "label": "text",
+   "ref": "#/texts/308",
+   "text": "248"
+  },
+  {
+   "hash": "9f484139a27415ae",
+   "label": "text",
+   "ref": "#/texts/309",
+   "text": "249"
+  },
+  {
+   "hash": "1e472b39b105d349",
+   "label": "text",
+   "ref": "#/texts/310",
+   "text": "250"
+  },
+  {
+   "hash": "c75d3f1f5bcd6914",
+   "label": "text",
+   "ref": "#/texts/311",
+   "text": "251"
+  },
+  {
+   "hash": "d6e5a20b30f87216",
+   "label": "text",
+   "ref": "#/texts/312",
+   "text": "252"
+  },
+  {
+   "hash": "e7866fdc6672f827",
+   "label": "text",
+   "ref": "#/texts/313",
+   "text": "253"
+  },
+  {
+   "hash": "9512d95d00d61bde",
+   "label": "text",
+   "ref": "#/texts/314",
+   "text": "254"
+  },
+  {
+   "hash": "9556b82499cc0aaf",
+   "label": "text",
+   "ref": "#/texts/315",
+   "text": "255"
+  },
+  {
+   "hash": "51e8ea280b44e169",
+   "label": "text",
+   "ref": "#/texts/316",
+   "text": "256"
+  },
+  {
+   "hash": "4c970004b0678d43",
+   "label": "text",
+   "ref": "#/texts/317",
+   "text": "257"
+  },
+  {
+   "hash": "a30f4ef42176d28f",
+   "label": "text",
+   "ref": "#/texts/318",
+   "text": "258"
+  },
+  {
+   "hash": "7c252ab334fb8fd8",
+   "label": "text",
+   "ref": "#/texts/319",
+   "text": "259"
+  },
+  {
+   "hash": "39bb88f40d3aa2b2",
+   "label": "text",
+   "ref": "#/texts/320",
+   "text": "260"
+  },
+  {
+   "hash": "e888a676e1926d0c",
+   "label": "text",
+   "ref": "#/texts/321",
+   "text": "261"
+  },
+  {
+   "hash": "9e6a72557ada15d0",
+   "label": "text",
+   "ref": "#/texts/322",
+   "text": "262"
+  },
+  {
+   "hash": "4be84111a613654b",
+   "label": "text",
+   "ref": "#/texts/323",
+   "text": "263"
+  },
+  {
+   "hash": "bba58959c32abe68",
+   "label": "text",
+   "ref": "#/texts/324",
+   "text": "264"
+  },
+  {
+   "hash": "768b84ef05f655d5",
+   "label": "text",
+   "ref": "#/texts/325",
+   "text": "265"
+  },
+  {
+   "hash": "ea5b27556fbb134d",
+   "label": "text",
+   "ref": "#/texts/326",
+   "text": "266"
+  },
+  {
+   "hash": "8acc23987b8960d8",
+   "label": "text",
+   "ref": "#/texts/327",
+   "text": "267"
+  },
+  {
+   "hash": "8b496bf96bbcc9e5",
+   "label": "text",
+   "ref": "#/texts/328",
+   "text": "268"
+  },
+  {
+   "hash": "f747870ae666c39b",
+   "label": "text",
+   "ref": "#/texts/329",
+   "text": "269"
+  },
+  {
+   "hash": "ef2d127de37b942b",
+   "label": "text",
+   "ref": "#/texts/330",
+   "text": "5"
+  },
+  {
+   "hash": "a4b1c74194dca5b8",
+   "label": "text",
+   "ref": "#/texts/340",
+   "text": "Under review as a conference paper at ICLR 2025"
+  },
+  {
+   "hash": "d8d1790737d57ac4",
+   "label": "text",
+   "ref": "#/texts/341",
+   "text": "270"
+  },
+  {
+   "hash": "3635a91e3da857f7",
+   "label": "text",
+   "ref": "#/texts/342",
+   "text": "271"
+  },
+  {
+   "hash": "1c6c0bb2c7ecdc3b",
+   "label": "text",
+   "ref": "#/texts/343",
+   "text": "272"
+  },
+  {
+   "hash": "303c8bd55875dda2",
+   "label": "text",
+   "ref": "#/texts/344",
+   "text": "273"
+  },
+  {
+   "hash": "718127812c05853f",
+   "label": "text",
+   "ref": "#/texts/345",
+   "text": "274"
+  },
+  {
+   "hash": "3a1dfb05d7257530",
+   "label": "text",
+   "ref": "#/texts/346",
+   "text": "275"
+  },
+  {
+   "hash": "c76b405781134be1",
+   "label": "text",
+   "ref": "#/texts/347",
+   "text": "276"
+  },
+  {
+   "hash": "27d719c754aacd49",
+   "label": "text",
+   "ref": "#/texts/348",
+   "text": "277"
+  },
+  {
+   "hash": "ee62de25ccc2b55d",
+   "label": "text",
+   "ref": "#/texts/349",
+   "text": "278"
+  },
+  {
+   "hash": "efd96aedf377e20a",
+   "label": "text",
+   "ref": "#/texts/350",
+   "text": "279"
+  },
+  {
+   "hash": "7f0a22117f8fe017",
+   "label": "text",
+   "ref": "#/texts/351",
+   "text": "280"
+  },
+  {
+   "hash": "71a1c003a2b855d8",
+   "label": "text",
+   "ref": "#/texts/352",
+   "text": "281"
+  },
+  {
+   "hash": "27e1615212f3c6ea",
+   "label": "text",
+   "ref": "#/texts/353",
+   "text": "282"
+  },
+  {
+   "hash": "e0850a775c17a870",
+   "label": "text",
+   "ref": "#/texts/354",
+   "text": "283"
+  },
+  {
+   "hash": "1e68ed4e3d58a510",
+   "label": "text",
+   "ref": "#/texts/355",
+   "text": "284"
+  },
+  {
+   "hash": "a0d177b4967a6d99",
+   "label": "text",
+   "ref": "#/texts/356",
+   "text": "285"
+  },
+  {
+   "hash": "00328ce57bbc14b3",
+   "label": "text",
+   "ref": "#/texts/357",
+   "text": "286"
+  },
+  {
+   "hash": "d7cdaa5ca0582076",
+   "label": "text",
+   "ref": "#/texts/358",
+   "text": "287"
+  },
+  {
+   "hash": "23c657f2efda7731",
+   "label": "text",
+   "ref": "#/texts/359",
+   "text": "288"
+  },
+  {
+   "hash": "af180e4359fc6179",
+   "label": "text",
+   "ref": "#/texts/360",
+   "text": "289"
+  },
+  {
+   "hash": "09895de0407bcb03",
+   "label": "text",
+   "ref": "#/texts/361",
+   "text": "290"
+  },
+  {
+   "hash": "33512007840ced1b",
+   "label": "text",
+   "ref": "#/texts/362",
+   "text": "291"
+  },
+  {
+   "hash": "6db6eb4af1e18ab8",
+   "label": "text",
+   "ref": "#/texts/363",
+   "text": "292"
+  },
+  {
+   "hash": "7cb676d57114874e",
+   "label": "text",
+   "ref": "#/texts/364",
+   "text": "293"
+  },
+  {
+   "hash": "2cfc8ccbd7c0b176",
+   "label": "text",
+   "ref": "#/texts/365",
+   "text": "294"
+  },
+  {
+   "hash": "9cfd3c755be26b4e",
+   "label": "text",
+   "ref": "#/texts/366",
+   "text": "295"
+  },
+  {
+   "hash": "a0f8b2c4cb1ac82a",
+   "label": "text",
+   "ref": "#/texts/367",
+   "text": "296"
+  },
+  {
+   "hash": "4c15f47afe7f817f",
+   "label": "text",
+   "ref": "#/texts/368",
+   "text": "297"
+  },
+  {
+   "hash": "76ebdb6d45c61ca1",
+   "label": "text",
+   "ref": "#/texts/369",
+   "text": "298"
+  },
+  {
+   "hash": "308831041ea4863c",
+   "label": "text",
+   "ref": "#/texts/370",
+   "text": "299"
+  },
+  {
+   "hash": "983bd614bb5afece",
+   "label": "text",
+   "ref": "#/texts/371",
+   "text": "300"
+  },
+  {
+   "hash": "c3ea99f86b2f8a74",
+   "label": "text",
+   "ref": "#/texts/372",
+   "text": "301"
+  },
+  {
+   "hash": "f32828acecb4282c",
+   "label": "text",
+   "ref": "#/texts/373",
+   "text": "302"
+  },
+  {
+   "hash": "8bd9c0d453533757",
+   "label": "text",
+   "ref": "#/texts/374",
+   "text": "303"
+  },
+  {
+   "hash": "d874e4e4a5df2117",
+   "label": "text",
+   "ref": "#/texts/375",
+   "text": "304"
+  },
+  {
+   "hash": "090d3859ff6840b2",
+   "label": "text",
+   "ref": "#/texts/376",
+   "text": "305"
+  },
+  {
+   "hash": "38b83caefa1ef269",
+   "label": "text",
+   "ref": "#/texts/377",
+   "text": "306"
+  },
+  {
+   "hash": "6d976934be74941f",
+   "label": "text",
+   "ref": "#/texts/378",
+   "text": "307"
+  },
+  {
+   "hash": "48a1706eca5ee614",
+   "label": "text",
+   "ref": "#/texts/379",
+   "text": "308"
+  },
+  {
+   "hash": "43c727ee4fc72505",
+   "label": "text",
+   "ref": "#/texts/380",
+   "text": "309"
+  },
+  {
+   "hash": "226f76b55acb4970",
+   "label": "text",
+   "ref": "#/texts/381",
+   "text": "310"
+  },
+  {
+   "hash": "20e9c64c05a54d19",
+   "label": "text",
+   "ref": "#/texts/382",
+   "text": "311"
+  },
+  {
+   "hash": "865736a1c30a82dc",
+   "label": "text",
+   "ref": "#/texts/383",
+   "text": "312"
+  },
+  {
+   "hash": "8efbbe9bc19ad2e0",
+   "label": "text",
+   "ref": "#/texts/384",
+   "text": "313"
+  },
+  {
+   "hash": "748064be03a08df8",
+   "label": "text",
+   "ref": "#/texts/385",
+   "text": "314"
+  },
+  {
+   "hash": "377adeb4cd4096ad",
+   "label": "text",
+   "ref": "#/texts/386",
+   "text": "315"
+  },
+  {
+   "hash": "7a20311cf7a4b222",
+   "label": "text",
+   "ref": "#/texts/387",
+   "text": "316"
+  },
+  {
+   "hash": "8d1ede4f889e0ed6",
+   "label": "text",
+   "ref": "#/texts/388",
+   "text": "317"
+  },
+  {
+   "hash": "aae02129362d6117",
+   "label": "text",
+   "ref": "#/texts/389",
+   "text": "318"
+  },
+  {
+   "hash": "156091ee0884f36d",
+   "label": "text",
+   "ref": "#/texts/390",
+   "text": "319"
+  },
+  {
+   "hash": "88820462180e5c89",
+   "label": "text",
+   "ref": "#/texts/391",
+   "text": "320"
+  },
+  {
+   "hash": "8d23cf6c86e834a7",
+   "label": "text",
+   "ref": "#/texts/392",
+   "text": "321"
+  },
+  {
+   "hash": "f10d91a7596bf5a6",
+   "label": "text",
+   "ref": "#/texts/393",
+   "text": "322"
+  },
+  {
+   "hash": "3949ac1596ec7710",
+   "label": "text",
+   "ref": "#/texts/394",
+   "text": "323"
+  },
+  {
+   "hash": "e7f6c011776e8db7",
+   "label": "text",
+   "ref": "#/texts/395",
+   "text": "6"
+  },
+  {
+   "hash": "a4b1c74194dca5b8",
+   "label": "text",
+   "ref": "#/texts/401",
+   "text": "Under review as a conference paper at ICLR 2025"
+  },
+  {
+   "hash": "1038e0b72d98745f",
+   "label": "text",
+   "ref": "#/texts/402",
+   "text": "324"
+  },
+  {
+   "hash": "9e11c362bc3d3572",
+   "label": "text",
+   "ref": "#/texts/403",
+   "text": "325"
+  },
+  {
+   "hash": "a4e987d17584557e",
+   "label": "text",
+   "ref": "#/texts/404",
+   "text": "326"
+  },
+  {
+   "hash": "02cca3803b564ede",
+   "label": "text",
+   "ref": "#/texts/405",
+   "text": "327"
+  },
+  {
+   "hash": "2452984f72ef1195",
+   "label": "text",
+   "ref": "#/texts/406",
+   "text": "328"
+  },
+  {
+   "hash": "0791963ca2667a23",
+   "label": "text",
+   "ref": "#/texts/407",
+   "text": "329"
+  },
+  {
+   "hash": "5426d2ca50f244fb",
+   "label": "text",
+   "ref": "#/texts/408",
+   "text": "330"
+  },
+  {
+   "hash": "0bba869d7f392cbc",
+   "label": "text",
+   "ref": "#/texts/409",
+   "text": "331"
+  },
+  {
+   "hash": "7104741a92e73eb6",
+   "label": "text",
+   "ref": "#/texts/410",
+   "text": "332"
+  },
+  {
+   "hash": "556d7dc3a1153563",
+   "label": "text",
+   "ref": "#/texts/411",
+   "text": "333"
+  },
+  {
+   "hash": "058d5d43bf485bf7",
+   "label": "text",
+   "ref": "#/texts/412",
+   "text": "334"
+  },
+  {
+   "hash": "7acc684a848a9b95",
+   "label": "text",
+   "ref": "#/texts/413",
+   "text": "335"
+  },
+  {
+   "hash": "eaa0689a095d4394",
+   "label": "text",
+   "ref": "#/texts/414",
+   "text": "336"
+  },
+  {
+   "hash": "8ede6b26343305e0",
+   "label": "text",
+   "ref": "#/texts/415",
+   "text": "337"
+  },
+  {
+   "hash": "5d8f6cce532a7aeb",
+   "label": "text",
+   "ref": "#/texts/416",
+   "text": "338"
+  },
+  {
+   "hash": "fc95ce176603e9e1",
+   "label": "text",
+   "ref": "#/texts/417",
+   "text": "339"
+  },
+  {
+   "hash": "9644294ac4ffb309",
+   "label": "text",
+   "ref": "#/texts/418",
+   "text": "340"
+  },
+  {
+   "hash": "524b2d27a1e7fbc3",
+   "label": "text",
+   "ref": "#/texts/419",
+   "text": "341"
+  },
+  {
+   "hash": "023849c38925e2af",
+   "label": "text",
+   "ref": "#/texts/420",
+   "text": "342"
+  },
+  {
+   "hash": "3c15285c04fff400",
+   "label": "text",
+   "ref": "#/texts/421",
+   "text": "343"
+  },
+  {
+   "hash": "02e6295d8f522840",
+   "label": "text",
+   "ref": "#/texts/422",
+   "text": "344"
+  },
+  {
+   "hash": "da70dfa4d9f95ac9",
+   "label": "text",
+   "ref": "#/texts/423",
+   "text": "345"
+  },
+  {
+   "hash": "6aac0cf87a32e631",
+   "label": "text",
+   "ref": "#/texts/424",
+   "text": "346"
+  },
+  {
+   "hash": "2289b221b39605c3",
+   "label": "text",
+   "ref": "#/texts/425",
+   "text": "347"
+  },
+  {
+   "hash": "06b2d82840e43ed8",
+   "label": "text",
+   "ref": "#/texts/426",
+   "text": "348"
+  },
+  {
+   "hash": "72ba187b05e705de",
+   "label": "text",
+   "ref": "#/texts/427",
+   "text": "349"
+  },
+  {
+   "hash": "deeeb5df3f2cee6b",
+   "label": "text",
+   "ref": "#/texts/428",
+   "text": "350"
+  },
+  {
+   "hash": "04a8708c3a481ced",
+   "label": "text",
+   "ref": "#/texts/429",
+   "text": "351"
+  },
+  {
+   "hash": "9a72c24f2fd76561",
+   "label": "text",
+   "ref": "#/texts/430",
+   "text": "352"
+  },
+  {
+   "hash": "459535faa370a3b5",
+   "label": "text",
+   "ref": "#/texts/431",
+   "text": "353"
+  },
+  {
+   "hash": "09a1b036b82baba3",
+   "label": "text",
+   "ref": "#/texts/432",
+   "text": "354"
+  },
+  {
+   "hash": "355d8c0ee4e5698e",
+   "label": "text",
+   "ref": "#/texts/433",
+   "text": "355"
+  },
+  {
+   "hash": "03a3d955b8799a90",
+   "label": "text",
+   "ref": "#/texts/434",
+   "text": "356"
+  },
+  {
+   "hash": "2ab0ce7632a611e9",
+   "label": "text",
+   "ref": "#/texts/435",
+   "text": "357"
+  },
+  {
+   "hash": "62a0eae98b9fc0bd",
+   "label": "text",
+   "ref": "#/texts/436",
+   "text": "358"
+  },
+  {
+   "hash": "9197e4844abed2fe",
+   "label": "text",
+   "ref": "#/texts/437",
+   "text": "359"
+  },
+  {
+   "hash": "838f461c2fa673ce",
+   "label": "text",
+   "ref": "#/texts/438",
+   "text": "360"
+  },
+  {
+   "hash": "73daa9289ddd08a5",
+   "label": "text",
+   "ref": "#/texts/439",
+   "text": "361"
+  },
+  {
+   "hash": "3963317a2b410e53",
+   "label": "text",
+   "ref": "#/texts/440",
+   "text": "362"
+  },
+  {
+   "hash": "a43231c2216f23db",
+   "label": "text",
+   "ref": "#/texts/441",
+   "text": "363"
+  },
+  {
+   "hash": "b3dfdc6efe322a6f",
+   "label": "text",
+   "ref": "#/texts/442",
+   "text": "364"
+  },
+  {
+   "hash": "4e47eb5525df25f9",
+   "label": "text",
+   "ref": "#/texts/443",
+   "text": "365"
+  },
+  {
+   "hash": "600b4cdf20cc06a7",
+   "label": "text",
+   "ref": "#/texts/444",
+   "text": "366"
+  },
+  {
+   "hash": "0788979fc9366e21",
+   "label": "text",
+   "ref": "#/texts/445",
+   "text": "367"
+  },
+  {
+   "hash": "8e6aee9efac8086e",
+   "label": "text",
+   "ref": "#/texts/446",
+   "text": "368"
+  },
+  {
+   "hash": "5f193b350c8aba48",
+   "label": "text",
+   "ref": "#/texts/447",
+   "text": "369"
+  },
+  {
+   "hash": "f1607c19a0f910ca",
+   "label": "text",
+   "ref": "#/texts/448",
+   "text": "370"
+  },
+  {
+   "hash": "9b15fed64ef16980",
+   "label": "text",
+   "ref": "#/texts/449",
+   "text": "371"
+  },
+  {
+   "hash": "62f77e7d6197863a",
+   "label": "text",
+   "ref": "#/texts/450",
+   "text": "372"
+  },
+  {
+   "hash": "e52d08747b9d7a6d",
+   "label": "text",
+   "ref": "#/texts/451",
+   "text": "373"
+  },
+  {
+   "hash": "01299ac65733b5a3",
+   "label": "text",
+   "ref": "#/texts/452",
+   "text": "374"
+  },
+  {
+   "hash": "de5872c6bb4494ce",
+   "label": "text",
+   "ref": "#/texts/453",
+   "text": "375"
+  },
+  {
+   "hash": "12e2c8df501501b2",
+   "label": "text",
+   "ref": "#/texts/454",
+   "text": "376"
+  },
+  {
+   "hash": "2c4cf65733783512",
+   "label": "text",
+   "ref": "#/texts/455",
+   "text": "377"
+  },
+  {
+   "hash": "7902699be42c8a8e",
+   "label": "text",
+   "ref": "#/texts/456",
+   "text": "7"
+  },
+  {
+   "hash": "a4b1c74194dca5b8",
+   "label": "text",
+   "ref": "#/texts/463",
+   "text": "Under review as a conference paper at ICLR 2025"
+  },
+  {
+   "hash": "21ef779311a43f0e",
+   "label": "text",
+   "ref": "#/texts/464",
+   "text": "378"
+  },
+  {
+   "hash": "64c212df34c66e6f",
+   "label": "text",
+   "ref": "#/texts/465",
+   "text": "379"
+  },
+  {
+   "hash": "2af4dd48399a5cf6",
+   "label": "text",
+   "ref": "#/texts/466",
+   "text": "380"
+  },
+  {
+   "hash": "392a52e4f77c40bf",
+   "label": "text",
+   "ref": "#/texts/467",
+   "text": "381"
+  },
+  {
+   "hash": "f65ccfbfec288565",
+   "label": "text",
+   "ref": "#/texts/468",
+   "text": "382"
+  },
+  {
+   "hash": "48b361d46638bfa4",
+   "label": "text",
+   "ref": "#/texts/469",
+   "text": "383"
+  },
+  {
+   "hash": "37b73510175057c6",
+   "label": "text",
+   "ref": "#/texts/470",
+   "text": "384"
+  },
+  {
+   "hash": "131b0c35e2d7edef",
+   "label": "text",
+   "ref": "#/texts/471",
+   "text": "385"
+  },
+  {
+   "hash": "15a26c6fa5151c71",
+   "label": "text",
+   "ref": "#/texts/472",
+   "text": "386"
+  },
+  {
+   "hash": "25dac95b8f595046",
+   "label": "text",
+   "ref": "#/texts/473",
+   "text": "387"
+  },
+  {
+   "hash": "ab5e292db6495899",
+   "label": "text",
+   "ref": "#/texts/474",
+   "text": "388"
+  },
+  {
+   "hash": "b98880883fd8d975",
+   "label": "text",
+   "ref": "#/texts/475",
+   "text": "389"
+  },
+  {
+   "hash": "48a1a756f2d83f1d",
+   "label": "text",
+   "ref": "#/texts/476",
+   "text": "390"
+  },
+  {
+   "hash": "a934c244755c66ae",
+   "label": "text",
+   "ref": "#/texts/477",
+   "text": "391"
+  },
+  {
+   "hash": "6ea2fdb3399f4d2e",
+   "label": "text",
+   "ref": "#/texts/478",
+   "text": "392"
+  },
+  {
+   "hash": "99a0b871c9047c4f",
+   "label": "text",
+   "ref": "#/texts/479",
+   "text": "393"
+  },
+  {
+   "hash": "04d19fde0a08b17a",
+   "label": "text",
+   "ref": "#/texts/480",
+   "text": "394"
+  },
+  {
+   "hash": "a3af7b3808c4cf72",
+   "label": "text",
+   "ref": "#/texts/481",
+   "text": "395"
+  },
+  {
+   "hash": "3c1b7053f0edd447",
+   "label": "text",
+   "ref": "#/texts/482",
+   "text": "396"
+  },
+  {
+   "hash": "1d2028ddcd746a7e",
+   "label": "text",
+   "ref": "#/texts/483",
+   "text": "397"
+  },
+  {
+   "hash": "188c1fdca79d927f",
+   "label": "text",
+   "ref": "#/texts/484",
+   "text": "398"
+  },
+  {
+   "hash": "0f78540965a86402",
+   "label": "text",
+   "ref": "#/texts/485",
+   "text": "399"
+  },
+  {
+   "hash": "26d228663f13a885",
+   "label": "text",
+   "ref": "#/texts/486",
+   "text": "400"
+  },
+  {
+   "hash": "dcaadad1cfce4377",
+   "label": "text",
+   "ref": "#/texts/487",
+   "text": "401"
+  },
+  {
+   "hash": "b7c7470e59e2a2df",
+   "label": "text",
+   "ref": "#/texts/488",
+   "text": "402"
+  },
+  {
+   "hash": "d26eae87829adde5",
+   "label": "text",
+   "ref": "#/texts/489",
+   "text": "403"
+  },
+  {
+   "hash": "6b3c238ebcf1f3c0",
+   "label": "text",
+   "ref": "#/texts/490",
+   "text": "404"
+  },
+  {
+   "hash": "a73b320dc0d3a57c",
+   "label": "text",
+   "ref": "#/texts/491",
+   "text": "405"
+  },
+  {
+   "hash": "f64f410744d9470f",
+   "label": "text",
+   "ref": "#/texts/492",
+   "text": "406"
+  },
+  {
+   "hash": "a5abb1500bdeaef4",
+   "label": "text",
+   "ref": "#/texts/493",
+   "text": "407"
+  },
+  {
+   "hash": "e6f47e008cc58b38",
+   "label": "text",
+   "ref": "#/texts/494",
+   "text": "408"
+  },
+  {
+   "hash": "480f5a496560ae42",
+   "label": "text",
+   "ref": "#/texts/495",
+   "text": "409"
+  },
+  {
+   "hash": "612111a352a571cb",
+   "label": "text",
+   "ref": "#/texts/496",
+   "text": "410"
+  },
+  {
+   "hash": "52f14fc33ef45dd8",
+   "label": "text",
+   "ref": "#/texts/497",
+   "text": "411"
+  },
+  {
+   "hash": "fabf5b7fedb3e62a",
+   "label": "text",
+   "ref": "#/texts/498",
+   "text": "412"
+  },
+  {
+   "hash": "1c49f22f6de9bd15",
+   "label": "text",
+   "ref": "#/texts/499",
+   "text": "413"
+  },
+  {
+   "hash": "8111eb1556229541",
+   "label": "text",
+   "ref": "#/texts/500",
+   "text": "414"
+  },
+  {
+   "hash": "fc72c98a6c2916c1",
+   "label": "text",
+   "ref": "#/texts/501",
+   "text": "415"
+  },
+  {
+   "hash": "67e0bdb7b6c549d4",
+   "label": "text",
+   "ref": "#/texts/502",
+   "text": "416"
+  },
+  {
+   "hash": "afcf8bc077e68eb9",
+   "label": "text",
+   "ref": "#/texts/503",
+   "text": "417"
+  },
+  {
+   "hash": "4c8d5b6c695d265f",
+   "label": "text",
+   "ref": "#/texts/504",
+   "text": "418"
+  },
+  {
+   "hash": "cc6aed2709b80e14",
+   "label": "text",
+   "ref": "#/texts/505",
+   "text": "419"
+  },
+  {
+   "hash": "db55da3fc3098e9c",
+   "label": "text",
+   "ref": "#/texts/506",
+   "text": "420"
+  },
+  {
+   "hash": "5092c37bcbc9f0fb",
+   "label": "text",
+   "ref": "#/texts/507",
+   "text": "421"
+  },
+  {
+   "hash": "5658b88806a236b6",
+   "label": "text",
+   "ref": "#/texts/508",
+   "text": "422"
+  },
+  {
+   "hash": "814bb6b8dc12188a",
+   "label": "text",
+   "ref": "#/texts/509",
+   "text": "423"
+  },
+  {
+   "hash": "814fd2e8e45e9a6d",
+   "label": "text",
+   "ref": "#/texts/510",
+   "text": "424"
+  },
+  {
+   "hash": "0dfcddb0440e967f",
+   "label": "text",
+   "ref": "#/texts/511",
+   "text": "425"
+  },
+  {
+   "hash": "9be3da431e0a833d",
+   "label": "text",
+   "ref": "#/texts/512",
+   "text": "426"
+  },
+  {
+   "hash": "42f25adecf476298",
+   "label": "text",
+   "ref": "#/texts/513",
+   "text": "427"
+  },
+  {
+   "hash": "cbf2f7864f1c9883",
+   "label": "text",
+   "ref": "#/texts/514",
+   "text": "428"
+  },
+  {
+   "hash": "2d1007980f492153",
+   "label": "text",
+   "ref": "#/texts/515",
+   "text": "429"
+  },
+  {
+   "hash": "fed88b40aba63cac",
+   "label": "text",
+   "ref": "#/texts/516",
+   "text": "430"
+  },
+  {
+   "hash": "0a1f1256f9bac68e",
+   "label": "text",
+   "ref": "#/texts/517",
+   "text": "431"
+  },
+  {
+   "hash": "2c624232cdd22177",
+   "label": "text",
+   "ref": "#/texts/518",
+   "text": "8"
+  },
+  {
+   "hash": "a4b1c74194dca5b8",
+   "label": "text",
+   "ref": "#/texts/526",
+   "text": "Under review as a conference paper at ICLR 2025"
+  },
+  {
+   "hash": "98f1f17f9a73ccfe",
+   "label": "text",
+   "ref": "#/texts/527",
+   "text": "432"
+  },
+  {
+   "hash": "aaf01d71b55e51b1",
+   "label": "text",
+   "ref": "#/texts/528",
+   "text": "433"
+  },
+  {
+   "hash": "ea415bf50eb65ade",
+   "label": "text",
+   "ref": "#/texts/529",
+   "text": "434"
+  },
+  {
+   "hash": "5f2703a5211db19a",
+   "label": "text",
+   "ref": "#/texts/530",
+   "text": "435"
+  },
+  {
+   "hash": "155d1cf609cedded",
+   "label": "text",
+   "ref": "#/texts/531",
+   "text": "436"
+  },
+  {
+   "hash": "0ef962215cc05578",
+   "label": "text",
+   "ref": "#/texts/532",
+   "text": "437"
+  },
+  {
+   "hash": "18d37c950a3e810d",
+   "label": "text",
+   "ref": "#/texts/533",
+   "text": "438"
+  },
+  {
+   "hash": "050a010ce24d0896",
+   "label": "text",
+   "ref": "#/texts/534",
+   "text": "439"
+  },
+  {
+   "hash": "e3f6959781c353c2",
+   "label": "text",
+   "ref": "#/texts/535",
+   "text": "440"
+  },
+  {
+   "hash": "2dfe70c43208f52b",
+   "label": "text",
+   "ref": "#/texts/536",
+   "text": "441"
+  },
+  {
+   "hash": "5627b4a8f9efbd8f",
+   "label": "text",
+   "ref": "#/texts/537",
+   "text": "442"
+  },
+  {
+   "hash": "6d05621ab7cb7b4f",
+   "label": "text",
+   "ref": "#/texts/538",
+   "text": "443"
+  },
+  {
+   "hash": "3538a1ef2e113da6",
+   "label": "text",
+   "ref": "#/texts/539",
+   "text": "444"
+  },
+  {
+   "hash": "0e12831a7047f759",
+   "label": "text",
+   "ref": "#/texts/540",
+   "text": "445"
+  },
+  {
+   "hash": "75c3e223190bf1a1",
+   "label": "text",
+   "ref": "#/texts/541",
+   "text": "446"
+  },
+  {
+   "hash": "c498f3fe97c0df55",
+   "label": "text",
+   "ref": "#/texts/542",
+   "text": "447"
+  },
+  {
+   "hash": "a4ecdd704d258aa8",
+   "label": "text",
+   "ref": "#/texts/543",
+   "text": "448"
+  },
+  {
+   "hash": "4a30a219a9d7663f",
+   "label": "text",
+   "ref": "#/texts/544",
+   "text": "449"
+  },
+  {
+   "hash": "83151157c10d85af",
+   "label": "text",
+   "ref": "#/texts/545",
+   "text": "450"
+  },
+  {
+   "hash": "caa1aedb2a6ce96b",
+   "label": "text",
+   "ref": "#/texts/546",
+   "text": "451"
+  },
+  {
+   "hash": "549a2fac47d713cc",
+   "label": "text",
+   "ref": "#/texts/547",
+   "text": "452"
+  },
+  {
+   "hash": "d83c7ee736be931d",
+   "label": "text",
+   "ref": "#/texts/548",
+   "text": "453"
+  },
+  {
+   "hash": "48f89b630677c2cb",
+   "label": "text",
+   "ref": "#/texts/549",
+   "text": "454"
+  },
+  {
+   "hash": "f626051bc94422f2",
+   "label": "text",
+   "ref": "#/texts/550",
+   "text": "455"
+  },
+  {
+   "hash": "b3a8e0e1f9ab1bfe",
+   "label": "text",
+   "ref": "#/texts/551",
+   "text": "456"
+  },
+  {
+   "hash": "353767b239099863",
+   "label": "text",
+   "ref": "#/texts/552",
+   "text": "457"
+  },
+  {
+   "hash": "ad21a2b810af49a8",
+   "label": "text",
+   "ref": "#/texts/553",
+   "text": "458"
+  },
+  {
+   "hash": "42f0bec3310ddd8a",
+   "label": "text",
+   "ref": "#/texts/554",
+   "text": "459"
+  },
+  {
+   "hash": "841a05fd378a2c06",
+   "label": "text",
+   "ref": "#/texts/555",
+   "text": "460"
+  },
+  {
+   "hash": "de482c7ed5ca67ae",
+   "label": "text",
+   "ref": "#/texts/556",
+   "text": "461"
+  },
+  {
+   "hash": "da4d43f295ce9263",
+   "label": "text",
+   "ref": "#/texts/557",
+   "text": "462"
+  },
+  {
+   "hash": "06de973bb45531d5",
+   "label": "text",
+   "ref": "#/texts/558",
+   "text": "463"
+  },
+  {
+   "hash": "88b54564b232405a",
+   "label": "text",
+   "ref": "#/texts/559",
+   "text": "464"
+  },
+  {
+   "hash": "ad3b83575249b68a",
+   "label": "text",
+   "ref": "#/texts/560",
+   "text": "465"
+  },
+  {
+   "hash": "826e27285307a923",
+   "label": "text",
+   "ref": "#/texts/561",
+   "text": "466"
+  },
+  {
+   "hash": "e078af3026edb42c",
+   "label": "text",
+   "ref": "#/texts/562",
+   "text": "467"
+  },
+  {
+   "hash": "1e5ee5e58c8f490a",
+   "label": "text",
+   "ref": "#/texts/563",
+   "text": "468"
+  },
+  {
+   "hash": "c6bd343ae0007cdb",
+   "label": "text",
+   "ref": "#/texts/564",
+   "text": "469"
+  },
+  {
+   "hash": "30eec89ddd9c342e",
+   "label": "text",
+   "ref": "#/texts/565",
+   "text": "470"
+  },
+  {
+   "hash": "064c3e311ef63912",
+   "label": "text",
+   "ref": "#/texts/566",
+   "text": "471"
+  },
+  {
+   "hash": "b6cb293891dd6274",
+   "label": "text",
+   "ref": "#/texts/567",
+   "text": "472"
+  },
+  {
+   "hash": "3a8f6d79cd434dc1",
+   "label": "text",
+   "ref": "#/texts/568",
+   "text": "473"
+  },
+  {
+   "hash": "98144d79af444072",
+   "label": "text",
+   "ref": "#/texts/569",
+   "text": "474"
+  },
+  {
+   "hash": "b1585fdb272b3140",
+   "label": "text",
+   "ref": "#/texts/570",
+   "text": "475"
+  },
+  {
+   "hash": "e73cb135243c08ab",
+   "label": "text",
+   "ref": "#/texts/571",
+   "text": "476"
+  },
+  {
+   "hash": "6e82b8197ce29396",
+   "label": "text",
+   "ref": "#/texts/572",
+   "text": "477"
+  },
+  {
+   "hash": "200dd69b70a88134",
+   "label": "text",
+   "ref": "#/texts/573",
+   "text": "478"
+  },
+  {
+   "hash": "9869a8a3a11a3328",
+   "label": "text",
+   "ref": "#/texts/574",
+   "text": "479"
+  },
+  {
+   "hash": "ddfe0e8d462af661",
+   "label": "text",
+   "ref": "#/texts/575",
+   "text": "480"
+  },
+  {
+   "hash": "51d089cdaf0c968c",
+   "label": "text",
+   "ref": "#/texts/576",
+   "text": "481"
+  },
+  {
+   "hash": "d4679c618f1af07e",
+   "label": "text",
+   "ref": "#/texts/577",
+   "text": "482"
+  },
+  {
+   "hash": "48ce32e8ec774159",
+   "label": "text",
+   "ref": "#/texts/578",
+   "text": "483"
+  },
+  {
+   "hash": "a42e815c58f3977f",
+   "label": "text",
+   "ref": "#/texts/579",
+   "text": "484"
+  },
+  {
+   "hash": "5844a72aee9269a6",
+   "label": "text",
+   "ref": "#/texts/580",
+   "text": "485"
+  },
+  {
+   "hash": "19581e27de7ced00",
+   "label": "text",
+   "ref": "#/texts/581",
+   "text": "9"
+  },
+  {
+   "hash": "a4b1c74194dca5b8",
+   "label": "text",
+   "ref": "#/texts/594",
+   "text": "Under review as a conference paper at ICLR 2025"
+  },
+  {
+   "hash": "86b700fab5db3797",
+   "label": "text",
+   "ref": "#/texts/595",
+   "text": "486"
+  },
+  {
+   "hash": "9b19f9ab816598a0",
+   "label": "text",
+   "ref": "#/texts/596",
+   "text": "487"
+  },
+  {
+   "hash": "a77b6cbdf6fae167",
+   "label": "text",
+   "ref": "#/texts/597",
+   "text": "488"
+  },
+  {
+   "hash": "e4be97ce765e6cfc",
+   "label": "text",
+   "ref": "#/texts/598",
+   "text": "489"
+  },
+  {
+   "hash": "cbd02d97b0731d88",
+   "label": "text",
+   "ref": "#/texts/599",
+   "text": "490"
+  },
+  {
+   "hash": "227445a988500528",
+   "label": "text",
+   "ref": "#/texts/600",
+   "text": "491"
+  },
+  {
+   "hash": "23e8b0175874e1bb",
+   "label": "text",
+   "ref": "#/texts/601",
+   "text": "492"
+  },
+  {
+   "hash": "560aa3e6e94314c7",
+   "label": "text",
+   "ref": "#/texts/602",
+   "text": "493"
+  },
+  {
+   "hash": "d18b29d80a8bd366",
+   "label": "text",
+   "ref": "#/texts/603",
+   "text": "494"
+  },
+  {
+   "hash": "ac1270c5058af650",
+   "label": "text",
+   "ref": "#/texts/604",
+   "text": "495"
+  },
+  {
+   "hash": "35bbce4007c5cd57",
+   "label": "text",
+   "ref": "#/texts/605",
+   "text": "496"
+  },
+  {
+   "hash": "dcb5d6e69e4ded78",
+   "label": "text",
+   "ref": "#/texts/606",
+   "text": "497"
+  },
+  {
+   "hash": "f138665c5aa66008",
+   "label": "text",
+   "ref": "#/texts/607",
+   "text": "498"
+  },
+  {
+   "hash": "db3defda18fafc0c",
+   "label": "text",
+   "ref": "#/texts/608",
+   "text": "499"
+  },
+  {
+   "hash": "0604cd3138feed20",
+   "label": "text",
+   "ref": "#/texts/609",
+   "text": "500"
+  },
+  {
+   "hash": "1158e7e12c5e7362",
+   "label": "text",
+   "ref": "#/texts/610",
+   "text": "501"
+  },
+  {
+   "hash": "5344c4110f483793",
+   "label": "text",
+   "ref": "#/texts/611",
+   "text": "502"
+  },
+  {
+   "hash": "7182dd431b5c8833",
+   "label": "text",
+   "ref": "#/texts/612",
+   "text": "503"
+  },
+  {
+   "hash": "ba689abd93c9c6a7",
+   "label": "text",
+   "ref": "#/texts/613",
+   "text": "504"
+  },
+  {
+   "hash": "e13b778ae833ca8c",
+   "label": "text",
+   "ref": "#/texts/614",
+   "text": "505"
+  },
+  {
+   "hash": "a2075145d3cc47b2",
+   "label": "text",
+   "ref": "#/texts/615",
+   "text": "506"
+  },
+  {
+   "hash": "a435270b90e9b709",
+   "label": "text",
+   "ref": "#/texts/616",
+   "text": "507"
+  },
+  {
+   "hash": "ecac903ea62dc1d5",
+   "label": "text",
+   "ref": "#/texts/617",
+   "text": "508"
+  },
+  {
+   "hash": "a05198938c6ca8cd",
+   "label": "text",
+   "ref": "#/texts/618",
+   "text": "509"
+  },
+  {
+   "hash": "5e5c743a015ff8d8",
+   "label": "text",
+   "ref": "#/texts/619",
+   "text": "510"
+  },
+  {
+   "hash": "2c69bc9b34fb0800",
+   "label": "text",
+   "ref": "#/texts/620",
+   "text": "511"
+  },
+  {
+   "hash": "94f8607915dff25f",
+   "label": "text",
+   "ref": "#/texts/621",
+   "text": "512"
+  },
+  {
+   "hash": "39700d452c77592c",
+   "label": "text",
+   "ref": "#/texts/622",
+   "text": "513"
+  },
+  {
+   "hash": "b027feeb60b70f0d",
+   "label": "text",
+   "ref": "#/texts/623",
+   "text": "514"
+  },
+  {
+   "hash": "d4b9aead1dd10a59",
+   "label": "text",
+   "ref": "#/texts/624",
+   "text": "515"
+  },
+  {
+   "hash": "4771bef2c04a34b5",
+   "label": "text",
+   "ref": "#/texts/625",
+   "text": "516"
+  },
+  {
+   "hash": "5088c1bc42f5cc6a",
+   "label": "text",
+   "ref": "#/texts/626",
+   "text": "517"
+  },
+  {
+   "hash": "8952115444bab6de",
+   "label": "text",
+   "ref": "#/texts/627",
+   "text": "518"
+  },
+  {
+   "hash": "0cce0bd361c46fcd",
+   "label": "text",
+   "ref": "#/texts/628",
+   "text": "519"
+  },
+  {
+   "hash": "0b35b06a22779418",
+   "label": "text",
+   "ref": "#/texts/629",
+   "text": "520"
+  },
+  {
+   "hash": "72933e3b31f0070a",
+   "label": "text",
+   "ref": "#/texts/630",
+   "text": "521"
+  },
+  {
+   "hash": "a9346b0068335c63",
+   "label": "text",
+   "ref": "#/texts/631",
+   "text": "522"
+  },
+  {
+   "hash": "a1e8154bd1a4c96e",
+   "label": "text",
+   "ref": "#/texts/632",
+   "text": "523"
+  },
+  {
+   "hash": "388c2eafe5afd475",
+   "label": "text",
+   "ref": "#/texts/633",
+   "text": "524"
+  },
+  {
+   "hash": "c32ffef1ae0cabc0",
+   "label": "text",
+   "ref": "#/texts/634",
+   "text": "525"
+  },
+  {
+   "hash": "f7c2599681e9284c",
+   "label": "text",
+   "ref": "#/texts/635",
+   "text": "526"
+  },
+  {
+   "hash": "e1bb74a7794720ed",
+   "label": "text",
+   "ref": "#/texts/636",
+   "text": "527"
+  },
+  {
+   "hash": "bd3a797ba9489389",
+   "label": "text",
+   "ref": "#/texts/637",
+   "text": "528"
+  },
+  {
+   "hash": "8920a14a7f6469b9",
+   "label": "text",
+   "ref": "#/texts/638",
+   "text": "529"
+  },
+  {
+   "hash": "87e29676d583c04a",
+   "label": "text",
+   "ref": "#/texts/639",
+   "text": "530"
+  },
+  {
+   "hash": "891d46993a36d783",
+   "label": "text",
+   "ref": "#/texts/640",
+   "text": "531"
+  },
+  {
+   "hash": "68f10bf021d7734e",
+   "label": "text",
+   "ref": "#/texts/641",
+   "text": "532"
+  },
+  {
+   "hash": "fb8a0d2da8683cec",
+   "label": "text",
+   "ref": "#/texts/642",
+   "text": "533"
+  },
+  {
+   "hash": "5ef6514ed3304cf6",
+   "label": "text",
+   "ref": "#/texts/643",
+   "text": "534"
+  },
+  {
+   "hash": "20ca98162ba78088",
+   "label": "text",
+   "ref": "#/texts/644",
+   "text": "535"
+  },
+  {
+   "hash": "d11501b090fb2749",
+   "label": "text",
+   "ref": "#/texts/645",
+   "text": "536"
+  },
+  {
+   "hash": "da6813d10025369a",
+   "label": "text",
+   "ref": "#/texts/646",
+   "text": "537"
+  },
+  {
+   "hash": "8def3488486c17df",
+   "label": "text",
+   "ref": "#/texts/647",
+   "text": "538"
+  },
+  {
+   "hash": "5109a4e14cbbfda6",
+   "label": "text",
+   "ref": "#/texts/648",
+   "text": "539"
+  },
+  {
+   "hash": "4a44dc15364204a8",
+   "label": "text",
+   "ref": "#/texts/649",
+   "text": "10"
+  },
+  {
+   "hash": "a4b1c74194dca5b8",
+   "label": "text",
+   "ref": "#/texts/666",
+   "text": "Under review as a conference paper at ICLR 2025"
+  },
+  {
+   "hash": "84f01dd97c687fb2",
+   "label": "text",
+   "ref": "#/texts/667",
+   "text": "540"
+  },
+  {
+   "hash": "5de664ef205f95d4",
+   "label": "text",
+   "ref": "#/texts/668",
+   "text": "541"
+  },
+  {
+   "hash": "2d86377d4cc3e6c8",
+   "label": "text",
+   "ref": "#/texts/669",
+   "text": "542"
+  },
+  {
+   "hash": "18beb4813723e788",
+   "label": "text",
+   "ref": "#/texts/670",
+   "text": "543"
+  },
+  {
+   "hash": "d359f8b537f1888b",
+   "label": "text",
+   "ref": "#/texts/671",
+   "text": "544"
+  },
+  {
+   "hash": "68e476b5d5aeca7b",
+   "label": "text",
+   "ref": "#/texts/672",
+   "text": "545"
+  },
+  {
+   "hash": "6fc8f95bc6465849",
+   "label": "text",
+   "ref": "#/texts/673",
+   "text": "546"
+  },
+  {
+   "hash": "fadb19bfbddde11e",
+   "label": "text",
+   "ref": "#/texts/674",
+   "text": "547"
+  },
+  {
+   "hash": "6e2d4d3a3d4c4bb2",
+   "label": "text",
+   "ref": "#/texts/675",
+   "text": "548"
+  },
+  {
+   "hash": "068814875fcdfb8f",
+   "label": "text",
+   "ref": "#/texts/676",
+   "text": "549"
+  },
+  {
+   "hash": "f89f8d0e735a91c5",
+   "label": "text",
+   "ref": "#/texts/677",
+   "text": "550"
+  },
+  {
+   "hash": "1f09802c4beac758",
+   "label": "text",
+   "ref": "#/texts/678",
+   "text": "551"
+  },
+  {
+   "hash": "cc6bb91d4a9aec9f",
+   "label": "text",
+   "ref": "#/texts/679",
+   "text": "552"
+  },
+  {
+   "hash": "d40fbd13d527595c",
+   "label": "text",
+   "ref": "#/texts/680",
+   "text": "553"
+  },
+  {
+   "hash": "833cd8c0e698745b",
+   "label": "text",
+   "ref": "#/texts/681",
+   "text": "554"
+  },
+  {
+   "hash": "91a73fd806ab2c00",
+   "label": "text",
+   "ref": "#/texts/682",
+   "text": "555"
+  },
+  {
+   "hash": "9d6aa3d89c0171b9",
+   "label": "text",
+   "ref": "#/texts/683",
+   "text": "556"
+  },
+  {
+   "hash": "5fbc314fb0b51134",
+   "label": "text",
+   "ref": "#/texts/684",
+   "text": "557"
+  },
+  {
+   "hash": "dd8e8c8c9dae8978",
+   "label": "text",
+   "ref": "#/texts/685",
+   "text": "558"
+  },
+  {
+   "hash": "0d6f9709edaeba4b",
+   "label": "text",
+   "ref": "#/texts/686",
+   "text": "559"
+  },
+  {
+   "hash": "6bcaea9882504292",
+   "label": "text",
+   "ref": "#/texts/687",
+   "text": "560"
+  },
+  {
+   "hash": "04edd1d773688319",
+   "label": "text",
+   "ref": "#/texts/688",
+   "text": "561"
+  },
+  {
+   "hash": "4eef24c6b8248c22",
+   "label": "text",
+   "ref": "#/texts/689",
+   "text": "562"
+  },
+  {
+   "hash": "fa4ddf29f41b5753",
+   "label": "text",
+   "ref": "#/texts/690",
+   "text": "563"
+  },
+  {
+   "hash": "621cb5d0bdea9584",
+   "label": "text",
+   "ref": "#/texts/691",
+   "text": "564"
+  },
+  {
+   "hash": "236b565af6b51282",
+   "label": "text",
+   "ref": "#/texts/692",
+   "text": "565"
+  },
+  {
+   "hash": "c57727d64e318e2e",
+   "label": "text",
+   "ref": "#/texts/693",
+   "text": "566"
+  },
+  {
+   "hash": "97a6d21df7c51e82",
+   "label": "text",
+   "ref": "#/texts/694",
+   "text": "567"
+  },
+  {
+   "hash": "f8818b67ab25419a",
+   "label": "text",
+   "ref": "#/texts/695",
+   "text": "568"
+  },
+  {
+   "hash": "c7ce483fd1cc5fd4",
+   "label": "text",
+   "ref": "#/texts/696",
+   "text": "569"
+  },
+  {
+   "hash": "085b2a38876eeddc",
+   "label": "text",
+   "ref": "#/texts/697",
+   "text": "570"
+  },
+  {
+   "hash": "f292c8c5c2fe9fd3",
+   "label": "text",
+   "ref": "#/texts/698",
+   "text": "571"
+  },
+  {
+   "hash": "5e74cb2ad4e2c9e2",
+   "label": "text",
+   "ref": "#/texts/699",
+   "text": "572"
+  },
+  {
+   "hash": "5b4afb8d2ed60a57",
+   "label": "text",
+   "ref": "#/texts/700",
+   "text": "573"
+  },
+  {
+   "hash": "8e28c5eb829e92ab",
+   "label": "text",
+   "ref": "#/texts/701",
+   "text": "574"
+  },
+  {
+   "hash": "fb84a9739699e1a2",
+   "label": "text",
+   "ref": "#/texts/702",
+   "text": "575"
+  },
+  {
+   "hash": "f3457dabe1b412ed",
+   "label": "text",
+   "ref": "#/texts/703",
+   "text": "576"
+  },
+  {
+   "hash": "1086d35563c495c1",
+   "label": "text",
+   "ref": "#/texts/704",
+   "text": "577"
+  },
+  {
+   "hash": "b2cc86ae48fd3b87",
+   "label": "text",
+   "ref": "#/texts/705",
+   "text": "578"
+  },
+  {
+   "hash": "59b524f8de039389",
+   "label": "text",
+   "ref": "#/texts/706",
+   "text": "579"
+  },
+  {
+   "hash": "de0023e398111d43",
+   "label": "text",
+   "ref": "#/texts/707",
+   "text": "580"
+  },
+  {
+   "hash": "4299da7466df0951",
+   "label": "text",
+   "ref": "#/texts/708",
+   "text": "581"
+  },
+  {
+   "hash": "421c0a7b6d0ee1c3",
+   "label": "text",
+   "ref": "#/texts/709",
+   "text": "582"
+  },
+  {
+   "hash": "62bfa285013f0880",
+   "label": "text",
+   "ref": "#/texts/710",
+   "text": "583"
+  },
+  {
+   "hash": "085bcb597bbd610a",
+   "label": "text",
+   "ref": "#/texts/711",
+   "text": "584"
+  },
+  {
+   "hash": "c403741c4121989a",
+   "label": "text",
+   "ref": "#/texts/712",
+   "text": "585"
+  },
+  {
+   "hash": "219de1387a6743e5",
+   "label": "text",
+   "ref": "#/texts/713",
+   "text": "586"
+  },
+  {
+   "hash": "82a93b152b275d4c",
+   "label": "text",
+   "ref": "#/texts/714",
+   "text": "587"
+  },
+  {
+   "hash": "a917ca757ac59f9d",
+   "label": "text",
+   "ref": "#/texts/715",
+   "text": "588"
+  },
+  {
+   "hash": "fbe697429f16141b",
+   "label": "text",
+   "ref": "#/texts/716",
+   "text": "589"
+  },
+  {
+   "hash": "e6fcc0253ed7a328",
+   "label": "text",
+   "ref": "#/texts/717",
+   "text": "590"
+  },
+  {
+   "hash": "60f070e3393291d6",
+   "label": "text",
+   "ref": "#/texts/718",
+   "text": "591"
+  },
+  {
+   "hash": "793733573a1dfd14",
+   "label": "text",
+   "ref": "#/texts/719",
+   "text": "592"
+  },
+  {
+   "hash": "d4e33e2934280979",
+   "label": "text",
+   "ref": "#/texts/720",
+   "text": "593"
+  },
+  {
+   "hash": "4fc82b26aecb47d2",
+   "label": "text",
+   "ref": "#/texts/721",
+   "text": "11"
+  }
+ ],
+ "groups": [
+  {
+   "children": 2,
+   "depth": 1,
+   "label": "ordered_list",
+   "name": "",
+   "ref": "#/groups/0"
+  },
+  {
+   "children": 1,
+   "depth": 1,
+   "label": "ordered_list",
+   "name": "",
+   "ref": "#/groups/1"
+  }
+ ],
+ "headings": [
+  {
+   "level": 1,
+   "ref": "#/texts/56",
+   "text": "CODE DIFFUSION MODELS ARE CONTINUOUS HUMAN"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/57",
+   "text": "NOISE OPERATORS"
+  },
+  {
+   "level": 4,
+   "ref": "#/texts/58",
+   "text": "Anonymous authors"
+  },
+  {
+   "level": 3,
+   "ref": "#/texts/60",
+   "text": "ABSTRACT"
+  },
+  {
+   "level": 3,
+   "ref": "#/texts/62",
+   "text": "1 INTRODUCTION"
+  },
+  {
+   "level": 1,
+   "ref": "#/texts/134",
+   "text": "2 BACKGROUND"
+  },
+  {
+   "level": 1,
+   "ref": "#/texts/204",
+   "text": "3 REPAIR AS DIFFUSION"
+  },
+  {
+   "level": 1,
+   "ref": "#/texts/268",
+   "text": "4 EXPERIMENTS"
+  },
+  {
+   "level": 1,
+   "ref": "#/texts/524",
+   "text": "5 RELATED WORK"
+  },
+  {
+   "level": 1,
+   "ref": "#/texts/584",
+   "text": "6 CONCLUSION"
+  },
+  {
+   "level": 1,
+   "ref": "#/texts/586",
+   "text": "7 LIMITATIONS"
+  },
+  {
+   "level": 1,
+   "ref": "#/texts/588",
+   "text": "REFERENCES"
+  }
+ ],
+ "markdown": {
+  "chars": 37146,
+  "headings": 12,
+  "images": 0,
+  "sha256": "351cf95037d2dcf85f9d39a2e7277930b58cd0dca1f335526c8e7a412cbd01d7",
+  "table_rows": 47
+ },
+ "origin_mimetype": "application/pdf",
+ "pictures": [
+  {
+   "caption": "",
+   "classification": "",
+   "collectors": [
+    "pdf"
+   ],
+   "image": null,
+   "page": 2,
+   "parent": "#/body",
+   "parent_label": "body",
+   "parent_name": "",
+   "preceding_heading": "1 INTRODUCTION",
+   "ref": "#/pictures/0"
+  },
+  {
+   "caption": "",
+   "classification": "",
+   "collectors": [
+    "pdf"
+   ],
+   "image": null,
+   "page": 2,
+   "parent": "#/body",
+   "parent_label": "body",
+   "parent_name": "",
+   "preceding_heading": "1 INTRODUCTION",
+   "ref": "#/pictures/1"
+  },
+  {
+   "caption": "",
+   "classification": "",
+   "collectors": [
+    "pdf"
+   ],
+   "image": null,
+   "page": 2,
+   "parent": "#/body",
+   "parent_label": "body",
+   "parent_name": "",
+   "preceding_heading": "1 INTRODUCTION",
+   "ref": "#/pictures/2"
+  },
+  {
+   "caption": "",
+   "classification": "",
+   "collectors": [
+    "pdf"
+   ],
+   "image": null,
+   "page": 2,
+   "parent": "#/body",
+   "parent_label": "body",
+   "parent_name": "",
+   "preceding_heading": "1 INTRODUCTION",
+   "ref": "#/pictures/3"
+  }
+ ],
+ "reading": [
+  {
+   "hash": "c5d43690820b297b",
+   "label": "section_header",
+   "level": 1,
+   "ref": "#/texts/56",
+   "text": "CODE DIFFUSION MODELS ARE CONTINUOUS HUMAN"
+  },
+  {
+   "hash": "d8816af1549625f4",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/57",
+   "text": "NOISE OPERATORS"
+  },
+  {
+   "hash": "2fd192d2103e9b19",
+   "label": "section_header",
+   "level": 4,
+   "ref": "#/texts/58",
+   "text": "Anonymous authors"
+  },
+  {
+   "hash": "5a43c4492ef9fa69",
+   "label": "text",
+   "ref": "#/texts/59",
+   "text": "Paper under double-blind review"
+  },
+  {
+   "hash": "3d1626989d3e9234",
+   "label": "section_header",
+   "level": 3,
+   "ref": "#/texts/60",
+   "text": "ABSTRACT"
+  },
+  {
+   "hash": "274b570f4f3c89c0",
+   "label": "text",
+   "ref": "#/texts/61",
+   "text": "Diffusion for code generates code by iteratively removing no"
+  },
+  {
+   "hash": "4cc3c3176f106b51",
+   "label": "section_header",
+   "level": 3,
+   "ref": "#/texts/62",
+   "text": "1 INTRODUCTION"
+  },
+  {
+   "hash": "9af15719ce876728",
+   "label": "text",
+   "ref": "#/texts/63",
+   "text": "Diffusion models have emerged as a powerful paradigm in gene"
+  },
+  {
+   "hash": "795d62d2ffc77553",
+   "label": "text",
+   "ref": "#/texts/64",
+   "text": "One approach of applying diffusion to discrete domains, like"
+  },
+  {
+   "hash": "6681432264627705",
+   "label": "text",
+   "ref": "#/texts/65",
+   "text": "As an example, consider the following generations from pre-t"
+  },
+  {
+   "hash": "0a9a2e2cf2eb8f69",
+   "label": "text",
+   "ref": "#/texts/66",
+   "text": "(t75%) =IF(COUNTIF(A:A, ‘>10’)=0, ‘No values’, AVERAGE(A:A))"
+  },
+  {
+   "hash": "b2a8940cdba1cb93",
+   "label": "text",
+   "ref": "#/texts/67",
+   "text": "and Python"
+  },
+  {
+   "hash": "a911e8fa95843db5",
+   "label": "text",
+   "ref": "#/texts/68",
+   "text": "(t − t) words = read(‘myfile’).split() 75% 90%"
+  },
+  {
+   "hash": "764eeb9760785020",
+   "label": "text",
+   "ref": "#/texts/69",
+   "text": "(t) words = open(‘myfile’).read().split() 100% with changed "
+  },
+  {
+   "hash": "",
+   "label": "picture",
+   "ref": "#/pictures/0",
+   "text": ""
+  },
+  {
+   "hash": "",
+   "label": "picture",
+   "ref": "#/pictures/1",
+   "text": ""
+  },
+  {
+   "hash": "",
+   "label": "picture",
+   "ref": "#/pictures/2",
+   "text": ""
+  },
+  {
+   "hash": "",
+   "label": "picture",
+   "ref": "#/pictures/3",
+   "text": ""
+  },
+  {
+   "hash": "47113cb98cc8ad53",
+   "label": "text",
+   "ref": "#/texts/126",
+   "text": "Forward process parametrized by computed in closed form."
+  },
+  {
+   "hash": "ca978112ca1bbdca",
+   "label": "text",
+   "ref": "#/texts/127",
+   "text": "a"
+  },
+  {
+   "hash": "be7e2f20129365c2",
+   "label": "text",
+   "ref": "#/texts/128",
+   "text": "Images"
+  },
+  {
+   "hash": "2b1d477e26e65a04",
+   "label": "code",
+   "ref": "#/texts/129",
+   "text": "=SUMIFS( =SUMIFS( =SUM{Orders[ $SDFI*&m@9#! bOrders[TotalAmo"
+  },
+  {
+   "hash": "94fe6cc514a48273",
+   "label": "table",
+   "ref": "#/tables/0",
+   "text": "10x5"
+  },
+  {
+   "hash": "75d7a5045c533781",
+   "label": "text",
+   "ref": "#/texts/130",
+   "text": "Figure 1: Example of diffusion for ⃝ images and ⃝ code. Pure"
+  },
+  {
+   "hash": "6d460cdc43c20de9",
+   "label": "text",
+   "ref": "#/texts/131",
+   "text": "sample x0from the target distribution by a model trained on "
+  },
+  {
+   "hash": "6f622fddb24587af",
+   "label": "text",
+   "ref": "#/texts/132",
+   "text": "training (last-mile) repair systems is the long-tail problem"
+  },
+  {
+   "hash": "ee329605bd6e858f",
+   "label": "text",
+   "ref": "#/texts/133",
+   "text": "2023) and out-of-distribution generalization when introducin"
+  },
+  {
+   "hash": "d2921cd52fcfb91d",
+   "label": "section_header",
+   "level": 1,
+   "ref": "#/texts/134",
+   "text": "2 BACKGROUND"
+  },
+  {
+   "hash": "151237d3e722ef14",
+   "label": "text",
+   "ref": "#/texts/135",
+   "text": "Diffusion Models A diffusion model is a latent variable mode"
+  },
+  {
+   "hash": "b2cea92c623eb6b6",
+   "label": "text",
+   "ref": "#/texts/136",
+   "text": "2020). The sequence of continuous latent variables x1: Tis c"
+  },
+  {
+   "hash": "24cd45df826e19b8",
+   "label": "text",
+   "ref": "#/texts/137",
+   "text": "2022). At inference time, we compute xt−1= α¯tfθ(xt,t) + 1 −"
+  },
+  {
+   "hash": "d524768de39268b3",
+   "label": "text",
+   "ref": "#/texts/194",
+   "text": "b Regular reverse diffusion."
+  },
+  {
+   "hash": "4d744702a0cb94fd",
+   "label": "text",
+   "ref": "#/texts/195",
+   "text": "|$SDFI*&m@9#!|=SUM{Orders[|=SUMIFS(| |---|---|---| |{Ord$[To"
+  },
+  {
+   "hash": "142d2a5db460a164",
+   "label": "code",
+   "ref": "#/texts/196",
+   "text": "=SUMIFS( Orders[TotalAmount], Orders[Region], “East”)"
+  },
+  {
+   "hash": "1cf8f2179a77e83b",
+   "label": "text",
+   "ref": "#/texts/197",
+   "text": "Discrete"
+  },
+  {
+   "hash": "642f9eb0409adda2",
+   "label": "text",
+   "ref": "#/texts/198",
+   "text": "Latent Inject into =Orders SUM( (TotalAmount), reverse proce"
+  },
+  {
+   "hash": "e5c1ec33c2c3b8ee",
+   "label": "text",
+   "ref": "#/texts/199",
+   "text": "Figure 2: Using a pre-trained diffusion process (in black) t"
+  },
+  {
+   "hash": "54d91b996fad9fe2",
+   "label": "text",
+   "ref": "#/texts/200",
+   "text": "(broken, fixed) code pairs for training specialized approach"
+  },
+  {
+   "hash": "f87205899bbeafb5",
+   "label": "text",
+   "ref": "#/texts/201",
+   "text": "a continuous representation E(c) ∈ R kd to which a regular d"
+  },
+  {
+   "hash": "8217bd3f82183265",
+   "label": "text",
+   "ref": "#/texts/202",
+   "text": "Example 2 Figure 1 shows the generations of a latent code di"
+  },
+  {
+   "hash": "4cc1600d039cd95f",
+   "label": "text",
+   "ref": "#/texts/203",
+   "text": "(t75%) =SUMIFS([TotalAmount], Orders[Region], \\East\")) (t − "
+  },
+  {
+   "hash": "3761d526cea31f4f",
+   "label": "section_header",
+   "level": 1,
+   "ref": "#/texts/204",
+   "text": "3 REPAIR AS DIFFUSION"
+  },
+  {
+   "hash": "078dce2ddb79d7fd",
+   "label": "text",
+   "ref": "#/texts/205",
+   "text": "Let cˆ be a buggy code snippet that does not satisfy a speci"
+  },
+  {
+   "hash": "85632ac651a1b198",
+   "label": "text",
+   "ref": "#/texts/206",
+   "text": "3.1 TRAINING THE DIFFUSION MODEL The pre-trained components "
+  },
+  {
+   "hash": "2a811e62c0f02924",
+   "label": "text",
+   "ref": "#/texts/263",
+   "text": "To train these components on a code snippet c, an embedding "
+  },
+  {
+   "hash": "fe379e1ef4ac5387",
+   "label": "text",
+   "ref": "#/texts/264",
+   "text": "L = ∥N(xt,t) − x₀∥ +∥D(ˆx₀) − E(c)∥ − ce(c,H(D(ˆx₀))) | {z} "
+  },
+  {
+   "hash": "c9065e62cfeeeeed",
+   "label": "text",
+   "ref": "#/texts/265",
+   "text": "1.minimize the error between the predicted noise ϵˆ and the "
+  },
+  {
+   "hash": "c553d5d15b3cf01f",
+   "label": "text",
+   "ref": "#/texts/266",
+   "text": "Let X cˆ [E] be the space of embedded representations t x cˆ"
+  },
+  {
+   "hash": "fb3571f462130d44",
+   "label": "text",
+   "ref": "#/texts/267",
+   "text": "3.3 DIFFUSION MODELS AS HUMAN NOISE GENERATORS We exploit th"
+  },
+  {
+   "hash": "4f26edd0d8250240",
+   "label": "section_header",
+   "level": 1,
+   "ref": "#/texts/268",
+   "text": "4 EXPERIMENTS"
+  },
+  {
+   "hash": "080dc43a47e5cc66",
+   "label": "text",
+   "ref": "#/texts/269",
+   "text": "We evaluate both how the diffusion process acts as a repair "
+  },
+  {
+   "hash": "159659c03d7a6465",
+   "label": "text",
+   "ref": "#/texts/270",
+   "text": "4.1 EXPERIMENTAL SETUP Benchmarks We evaluate our approach o"
+  },
+  {
+   "hash": "646249d3e634bbe4",
+   "label": "group:ordered_list",
+   "ref": "#/groups/0",
+   "text": ""
+  },
+  {
+   "hash": "727126105a723932",
+   "label": "list_item",
+   "ref": "#/texts/271",
+   "text": "Excel (Bavishi et al., 2022) is a benchmark of 200 broken fo"
+  },
+  {
+   "hash": "cc4049635b1d082d",
+   "label": "list_item",
+   "ref": "#/texts/272",
+   "text": "PowerShell (Joshi et al., 2023) is a repair benchmark for 20"
+  },
+  {
+   "hash": "516dbb217b8617a7",
+   "label": "text",
+   "ref": "#/texts/273",
+   "text": "2 lected from StackExchange by comparing commends in the que"
+  },
+  {
+   "hash": "919510b3d8b1572d",
+   "label": "text",
+   "ref": "#/texts/274",
+   "text": "www.mrexcel.com www.stackexchange.com"
+  },
+  {
+   "hash": "646249d3e634bbe4",
+   "label": "group:ordered_list",
+   "ref": "#/groups/1",
+   "text": ""
+  },
+  {
+   "hash": "2528c43b9e9d9e52",
+   "label": "list_item",
+   "ref": "#/texts/331",
+   "text": "Python BIFI (Yasunaga & Liang, 2021) is a code repair benchm"
+  },
+  {
+   "hash": "2d2eb4e553ac9b79",
+   "label": "text",
+   "ref": "#/texts/332",
+   "text": "Pre-training data Collecting snippets of code for unsupervis"
+  },
+  {
+   "hash": "e09d3c065184cf1a",
+   "label": "text",
+   "ref": "#/texts/333",
+   "text": "1.For Python, we use a collection of code snippets for simpl"
+  },
+  {
+   "hash": "18a4158154160516",
+   "label": "text",
+   "ref": "#/texts/334",
+   "text": "Models We implement CodeFusion (Singh et al., 2023), the sta"
+  },
+  {
+   "hash": "6a4071692539a7c9",
+   "label": "text",
+   "ref": "#/texts/335",
+   "text": "•The embedding (E) has a dimension of 512."
+  },
+  {
+   "hash": "af4bc6d8f8d03ddd",
+   "label": "text",
+   "ref": "#/texts/336",
+   "text": "•We consider two architectures for the denoiser (D): a trans"
+  },
+  {
+   "hash": "80549a3b5459311c",
+   "label": "text",
+   "ref": "#/texts/337",
+   "text": "2017) with 10 transformer blocks and a U-Net (Ronneberger et"
+  },
+  {
+   "hash": "e3ca2a4e9b6b4754",
+   "label": "text",
+   "ref": "#/texts/338",
+   "text": "•The classification head (H) is a single fully connected lay"
+  },
+  {
+   "hash": "bd5145f9d2dfd95c",
+   "label": "text",
+   "ref": "#/texts/339",
+   "text": "4.2 DIFFUSION AS CODE REPAIR We evaluate a pre-trained diffu"
+  },
+  {
+   "hash": "e5aaaf09ffa8995c",
+   "label": "text",
+   "ref": "#/texts/396",
+   "text": "(a) Excel (b) Python (c) Powershell Figure 4: Figure showing"
+  },
+  {
+   "hash": "4b13c9262e058623",
+   "label": "text",
+   "ref": "#/texts/397",
+   "text": "the noise code (cˆ) injection. The optimal noise level is ma"
+  },
+  {
+   "hash": "5c41d9d35dfc1792",
+   "label": "table",
+   "ref": "#/tables/1",
+   "text": "17x9"
+  },
+  {
+   "hash": "5f8441aa2e28c845",
+   "label": "text",
+   "ref": "#/texts/398",
+   "text": "Table 1: Repair results for different diffusion architecture"
+  },
+  {
+   "hash": "59f90269062348c7",
+   "label": "text",
+   "ref": "#/texts/399",
+   "text": "report sketch and execution match for all languages at diffe"
+  },
+  {
+   "hash": "f07db933f7663ac6",
+   "label": "text",
+   "ref": "#/texts/400",
+   "text": "4.3 DIFFUSION FOR SYNTHETIC DATA GENERATION In the previous "
+  },
+  {
+   "hash": "d7a8b940ca300e9b",
+   "label": "text",
+   "ref": "#/texts/457",
+   "text": "(a) Excel (b) Python (c) Powershell Figure 5: Figure showing"
+  },
+  {
+   "hash": "2a0f1db9018293a1",
+   "label": "text",
+   "ref": "#/texts/458",
+   "text": "the maximum and minimum noise for which a sample was repaire"
+  },
+  {
+   "hash": "6aa784b19a9ba54d",
+   "label": "table",
+   "ref": "#/tables/2",
+   "text": "12x8"
+  },
+  {
+   "hash": "9ba0b90c7fda3252",
+   "label": "text",
+   "ref": "#/texts/459",
+   "text": "Results on finetuning different language models on the synth"
+  },
+  {
+   "hash": "308cf5f437e58f34",
+   "label": "text",
+   "ref": "#/texts/460",
+   "text": "on diffusion-generated data outperform others, suggesting th"
+  },
+  {
+   "hash": "c2e435bac2ae8d04",
+   "label": "text",
+   "ref": "#/texts/461",
+   "text": "Additionally, we analyze the distribution of repairs generat"
+  },
+  {
+   "hash": "1700bd0b6cf8fd0a",
+   "label": "text",
+   "ref": "#/texts/462",
+   "text": "4.4 DIFFUSION AS HUMAN NOISE OPERATORS We analyze the trends"
+  },
+  {
+   "hash": "d226aea544786a31",
+   "label": "text",
+   "ref": "#/texts/519",
+   "text": "(a) Localization (b) Diversity (c) Complexity Figure 6: Figu"
+  },
+  {
+   "hash": "453f0b7da7e6c994",
+   "label": "text",
+   "ref": "#/texts/520",
+   "text": "data. We show (a) Error Localization – average distance betw"
+  },
+  {
+   "hash": "20280ad862775a87",
+   "label": "text",
+   "ref": "#/texts/521",
+   "text": "One key observation is that diffusion models tend to priorit"
+  },
+  {
+   "hash": "2b35402638a9c1d2",
+   "label": "text",
+   "ref": "#/texts/522",
+   "text": "(a) Localization (b) Magnitude Figure 7: Figure showing the "
+  },
+  {
+   "hash": "c788964e4c528a3d",
+   "label": "text",
+   "ref": "#/texts/523",
+   "text": "of (a) localization of edits – maximum distance between modi"
+  },
+  {
+   "hash": "b6d6cbb48ac41385",
+   "label": "section_header",
+   "level": 1,
+   "ref": "#/texts/524",
+   "text": "5 RELATED WORK"
+  },
+  {
+   "hash": "aa1ba690a9499b63",
+   "label": "text",
+   "ref": "#/texts/525",
+   "text": "Diffusion models for text and code Diffusion models have sho"
+  },
+  {
+   "hash": "d4f2c736e80b111e",
+   "label": "text",
+   "ref": "#/texts/582",
+   "text": "Code repair Automated code repair (Zhang et al., 2023) has l"
+  },
+  {
+   "hash": "0dc99ca7f1041c10",
+   "label": "text",
+   "ref": "#/texts/583",
+   "text": "2019). A major limitation of training a repair model is the "
+  },
+  {
+   "hash": "13b4a2193a12031e",
+   "label": "section_header",
+   "level": 1,
+   "ref": "#/texts/584",
+   "text": "6 CONCLUSION"
+  },
+  {
+   "hash": "1628d7b3f6680726",
+   "label": "text",
+   "ref": "#/texts/585",
+   "text": "In this paper, we explored the potential of diffusion models"
+  },
+  {
+   "hash": "c8ef62c0bdc0bf38",
+   "label": "section_header",
+   "level": 1,
+   "ref": "#/texts/586",
+   "text": "7 LIMITATIONS"
+  },
+  {
+   "hash": "bcceb87358e9612d",
+   "label": "text",
+   "ref": "#/texts/587",
+   "text": "In this work, we only consider three languages—Python, Power"
+  },
+  {
+   "hash": "704d8a18e343aa05",
+   "label": "section_header",
+   "level": 1,
+   "ref": "#/texts/588",
+   "text": "REFERENCES"
+  },
+  {
+   "hash": "9a4ecafbcee95c91",
+   "label": "text",
+   "ref": "#/texts/589",
+   "text": "Rohan Bavishi, Harshit Joshi, Jose Cambronero, Anna Fariha, "
+  },
+  {
+   "hash": "2a5ef541d98629e7",
+   "label": "text",
+   "ref": "#/texts/590",
+   "text": "Berkay Berabi, Jingxuan He, Veselin Raychev, and Martin Vech"
+  },
+  {
+   "hash": "735b2b08de24c6f5",
+   "label": "text",
+   "ref": "#/texts/591",
+   "text": "Rahul Gupta, Soham Pal, Aditya Kanade, and Shirish Shevade. "
+  },
+  {
+   "hash": "8954b78b2fc43445",
+   "label": "text",
+   "ref": "#/texts/592",
+   "text": "Zhengfu He, Tianxiang Sun, Qiong Tang, Kuanning Wang, Xuan-J"
+  },
+  {
+   "hash": "89c7c7b9cd0434f0",
+   "label": "text",
+   "ref": "#/texts/593",
+   "text": "2023."
+  },
+  {
+   "hash": "9b8dc70b7a267180",
+   "label": "text",
+   "ref": "#/texts/650",
+   "text": "Vincent J Hellendoorn, Charles Sutton, Rishabh Singh, Petros"
+  },
+  {
+   "hash": "9a686c38ae772d5c",
+   "label": "text",
+   "ref": "#/texts/651",
+   "text": "Jonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusi"
+  },
+  {
+   "hash": "40b6bb05f61366f2",
+   "label": "text",
+   "ref": "#/texts/652",
+   "text": "Jonathan Ho, Tim Salimans, Alexey Gritsenko, William Chan, M"
+  },
+  {
+   "hash": "2b2041aba8cbf6cc",
+   "label": "text",
+   "ref": "#/texts/653",
+   "text": "Kai Huang, Xiangxin Meng, Jian Zhang, Yang Liu, Wenjie Wang,"
+  },
+  {
+   "hash": "0854b90825ce9be4",
+   "label": "text",
+   "ref": "#/texts/654",
+   "text": "Harshit Joshi, Jose´ Cambronero Sanchez, Sumit Gulwani, Vu L"
+  },
+  {
+   "hash": "8a26b22c68ffb238",
+   "label": "text",
+   "ref": "#/texts/655",
+   "text": "Harshit Joshi, Abishai Ebenezer, Jose Cambronero Sanchez, Su"
+  },
+  {
+   "hash": "8842e63330113bab",
+   "label": "text",
+   "ref": "#/texts/656",
+   "text": "2024. Zhifeng Kong, Wei Ping, Jiaji Huang, Kexin Zhao, and B"
+  },
+  {
+   "hash": "9ef6d563481b7bd5",
+   "label": "text",
+   "ref": "#/texts/657",
+   "text": "2021. Xiang Li, John Thickstun, Ishaan Gulrajani, Percy S Li"
+  },
+  {
+   "hash": "24050d2a9d8601e5",
+   "label": "text",
+   "ref": "#/texts/658",
+   "text": "Zhenghao Lin, Yeyun Gong, Yelong Shen, Tong Wu, Zhihao Fan, "
+  },
+  {
+   "hash": "f165b4b8c78def14",
+   "label": "text",
+   "ref": "#/texts/659",
+   "text": "2023. Hoang D. T. Nguyen, Dawei Qi, Abhik Roychoudhury, and "
+  },
+  {
+   "hash": "6ed5df78293983e7",
+   "label": "text",
+   "ref": "#/texts/660",
+   "text": "Yuhua Qi, Xiaoguang Mao, Yan Lei, Ziying Dai, and Chengsong "
+  },
+  {
+   "hash": "0f2786557e101f9a",
+   "label": "text",
+   "ref": "#/texts/661",
+   "text": "Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Es"
+  },
+  {
+   "hash": "561c358229a5c21c",
+   "label": "text",
+   "ref": "#/texts/662",
+   "text": "Olaf Ronneberger, Philipp Fischer, and Thomas Brox. U-net: C"
+  },
+  {
+   "hash": "05229ae5032228ff",
+   "label": "text",
+   "ref": "#/texts/663",
+   "text": "Mukul Singh, Jose Cambronero, Sumit Gulwani, Vu Le, Carina N"
+  },
+  {
+   "hash": "0fbec814e1148a77",
+   "label": "text",
+   "ref": "#/texts/664",
+   "text": "Mukul Singh, Jose Cambronero, Sumit Gulwani, Vu Le, Carina N"
+  },
+  {
+   "hash": "170f03db6fb93bed",
+   "label": "text",
+   "ref": "#/texts/665",
+   "text": "Jascha Sohl-Dickstein, Eric Weiss, Niru Maheswaranathan, and"
+  },
+  {
+   "hash": "c450946ac22f1935",
+   "label": "text",
+   "ref": "#/texts/722",
+   "text": "Michele Tufano, Cody Watson, Gabriele Bavota, Massimiliano D"
+  },
+  {
+   "hash": "9fe040b18104c907",
+   "label": "text",
+   "ref": "#/texts/723",
+   "text": "2019. Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszko"
+  },
+  {
+   "hash": "d0722ba4b2774812",
+   "label": "text",
+   "ref": "#/texts/724",
+   "text": "S. Bengio, H. Wallach, R. Fergus, S. Vishwanathan, and R. Ga"
+  },
+  {
+   "hash": "4e48ce00dabac6f7",
+   "label": "text",
+   "ref": "#/texts/725",
+   "text": "Michihiro Yasunaga and Percy Liang. Graph-based, self-superv"
+  },
+  {
+   "hash": "a5041be6f86e4497",
+   "label": "text",
+   "ref": "#/texts/726",
+   "text": "Michihiro Yasunaga and Percy Liang. Break-it-fix-it: Unsuper"
+  },
+  {
+   "hash": "e7ed5caa93255ad5",
+   "label": "text",
+   "ref": "#/texts/727",
+   "text": "Quanjun Zhang, Chunrong Fang, Yuxiang Ma, Weisong Sun, and Z"
+  }
+ ],
+ "reading_text": "CODE DIFFUSION MODELS ARE CONTINUOUS HUMAN\nNOISE OPERATORS\nAnonymous authors\nPaper under double-blind review\nABSTRACT\nDiffusion for code generates code by iteratively removing noise from the latent representation of a code snippet. During later steps of the diffusion process, when the code snippet has almost converged, these edits resemble last-mile repairs ap- plied to broken or incomplete code. We evaluate the extent to which these errors are similar to those that humans are faced with and the capability of these models to perform last-mile repair. Our insight has two applications with significant impact for code repair. First, we can leverage the diffusion model for last-mile repair by adding noise to a broken code snippet and resuming the diffusion process. Second, we can leverage the diffusion model to generate an arbitrary amount of training data for other last-mile repair approaches (that are computationally more efficient) by sampling an intermediate program (input) and the final program (out- put) from the diffusion process. We perform experiments to evaluate both applications, as well as analyze trends in the evolution of representation through the diffusion pipeline providing insights on the reasoning observed.\n1 INTRODUCTION\nDiffusion models have emerged as a powerful paradigm in generative modeling, particularly for tasks that involve complex data structures (Ho et al., 2020). Instead of generating a sample from the distribution in one go (like a GAN or VAE) or auto-regressively (like a GPT) they learn to iteratively reverse diffusion steps that add Gaussian noise to the data. Initially popularized in the domain of image generation, diffusion models have since been adapted for modalities like video generation (Ho et al., 2022; Xing et al., 2023)—which requires a temporal component—and text or code generation (Li et al., 2022; Singh et al., 2023)—which requires diffusion over discrete tokens.\nOne approach of applying diffusion to discrete domains, like text or code, involves embedding the input, performing diffusion in the embedded representation, and projecting the denoised embeddings back to discrete tokens. To train this model end-to-end, the loss incorporates a component over the discrete tokens, meaning that representation from each step of the reverse diffusion process can be converted back to the discrete space (Lin et al., 2023). Whereas initial generations are mostly latent—their decoding does not resemble anything and tokens frequently change—later generations are more discrete—their decoding is readable and it takes multiple steps to change one token.\nAs an example, consider the following generations from pre-trained CodeFusion (Singh et al., 2023) models—thus without natural language conditioning—trained on Excel\n(t75%) =IF(COUNTIF(A:A, ‘>10’)=0, ‘No values’, AVERAGE(A:A)) (t90%− t100%) =IF(COUNTIF(A:A, ‘>10’)=0, ‘No values’, AVERAGEIF(A:A, ‘>10’))\nand Python\n(t − t) words = read(‘myfile’).split() 75% 90%\n(t) words = open(‘myfile’).read().split() 100% with changed tokens highlighted inred. It appears as if the diffusion model can look at the whole (discrete) program, determine what is missing to make it functional, and apply those fixes. This is exactly the premise of last-mile repair, in which the goal is to repair broken code in such a way that the solution differs minimally from the broken code (Bavishi et al., 2022). A major challenge in\nForward process parametrized by computed in closed form.\na\nImages\n=SUMIFS( =SUMIFS( =SUM{Orders[ $SDFI*&m@9#! bOrders[TotalAmount], [TotalAmount], TotalAmnt), {Ord$[Tot^Alm_t],\n044\n=IF(COUNTIF(A:A,\n‘>10’)=0, ‘No\nvalues’,\nAVERAGE(A:A))\n045\n=IF(COUNTIF(A:A,\n‘>10’)=0, ‘No\nvalues’,\nAVERAGEIF(A:A,\n046\n047\n048\nwords = read(‘myfile’).split()\n049\nwords = open(‘myfile’).read().split()\n050\n051\n052\n053\nFigure 1: Example of diffusion for ⃝ images and ⃝ code. Pure xTis iteratively denoised into a\nsample x0from the target distribution by a model trained on data from the forward process.\ntraining (last-mile) repair systems is the long-tail problem in obtaining training data (Huang et al.,\n2023) and out-of-distribution generalization when introducing synthetic errors (Joshi et al., 2024). In this paper, we address those challenging by asking if code diffusion can serve as a continuous human noise operator? In other words, we evaluate the extent to which these late reverse diffusion steps—where the changing often look like human error fixes—are representative of steps that users could take when fixing a last-mile error. This exploration has two main implications: we can use the diffusion model to directly repair code, and we can use the diffusion model to generate training data for specialized approaches. We evaluate our technique on three programming languages – Python, PowerShell and Excel. We find that diffusion models are capable of last-mile repair with the models being able to repair (56.4– 68.2%) of Python and Excel snippets across different noise levels. We also find that the diffusion generated synthetic data has higher diversity and complexity compared to current state-of-the-art data generators, which is also indicated by the higher performance observed when training on the synthetic data (+2.5 – 3.5%) across multiple languages and models. Furthermore, we find that the models localize and specialize the edits with increasing diffusion timesteps.\n2 BACKGROUND\nDiffusion Models A diffusion model is a latent variable model that constructs a Markov chain x₀,x₁ ···xTand simulates data x₀ ∼ pdataby learning to reverse this Markov chain (Ho et al.,\n2020). The sequence of continuous latent variables x1: Tis constructed by incrementally adding Gaussian noise to data x until, at diffusion step T, samples x are approximately Gaussian. Each 0 T√ transition x → x is parametrized byq(x | x) = N(x; 1 − β x,β I) where the hyper- t−1 t t t−1 t t t−1 t parameter βtis the amount of noise added at diffusion step t. The diffusion model generates samples by reversing this chain: it iteratively denoises the sequence of latent variables xT:0to approximate a sample from the target distribution. Each denoising transition xt→ xt−1is parametrized by the model that predicts pθ(xt−1| xt) = N(xt−1; µθ(xt,t), Σθ(xt,t)). In practice, √ instead of √ constructing the whole chain, we can immediately obtain Q xtfrom x₀ as xt= α¯tx₀ + 1 − α¯tϵ t with α¯t=i=11 − βtand ϵ ∼N(0,I). The model fθ(xt,t) is parametrized to predict x₀ with an empirically validated loss function Lsimple= E √ x 0 ,ϵt,t∥fθ(xt,t√) − x₀∥ 2 (Ho et al., 2020; Li et al.,\n2022). At inference time, we compute xt−1= α¯tfθ(xt,t) + 1 − α¯tϵ to iteratively denoise xt. Example 1 Figure 1 shows the generations of a latent diffusion model. It can be seen how the model iteratively denoises to the concrete representation from the output space. Diffusion Models for Code Code generation is a discrete generation task, where the expected output is a snippet c = [c₁,...,ck] of k tokens. CodeFusion (Singh et al., 2023) draws inspiration from text diffusion (Li et al., 2022) where each token ciis embedded E(ci) ∈ R d to convert c into\nb Regular reverse diffusion.\n|$SDFI*&m@9#!|=SUM{Orders[|=SUMIFS(| |---|---|---| |{Ord$[Tot^Alm_t],|TotalAmnt),|[TotalAmount],| |OrD#@[R#eg&on],|Orders.Region{\"},|Orders[Region],| |'G^ea$T%2!'}|‘East’ ))|“East”))|\n=SUMIFS( Orders[TotalAmount], Orders[Region], “East”)\nDiscrete\nLatent Inject into =Orders SUM( (TotalAmount), reverse process. a Orders(Region), “East”)\nFigure 2: Using a pre-trained diffusion process (in black) to ⃝a repair broken code and ⃝b generate\n(broken, fixed) code pairs for training specialized approaches. ⃝a The broken code is embedded, noise is added for a timestept, and the reverse process is resumed as usual, letting the reverse process fix the code. ⃝b The diffusion process produces intermediate (broken) code snippets cˆ that can be paired with the final code c ∗ to form a training example.\na continuous representation E(c) ∈ R kd to which a regular diffusion process can be applied. In the reverse process, a trainable rounding step pθ(ci| x≤i) computes a distribution over possible tokens for each position i given all previous (denoise) tokens x≤i.\nExample 2 Figure 1 shows the generations of a latent code diffusion model. The intermediate representations, when visualized in the discrete token space, show how the model iteratively denoises to a syntactically valid Excel formula. Furthermore, we can see how the generation at t75%has the table name missing in the structured reference which the model fixes through refinement.\n(t75%) =SUMIFS([TotalAmount], Orders[Region], \\East\")) (t − t) =SUMIFS(Orders[TotalAmount], Orders[Region], \\East\")) 90% 100%\n3 REPAIR AS DIFFUSION\nLet cˆ be a buggy code snippet that does not satisfy a specification T ̸|= c. The goal of last-mile repair ∗ ∗ is to find a code snippet c = arg mincd(c, cˆ) such that T |= c. In the following three sections, we respectively reiterate the components and training process of CODEFUSION, describe how to apply it to problem of last-mile repair, and describe how to generate pairs (ˆc,c ∗ ) that can be used to train specialized systems.\n3.1 TRAINING THE DIFFUSION MODEL The pre-trained components of CODEFUSION generate code from pure Gaussian noise. Because there is no natural language, we can remove the encoder E. A denoiser N removes the noise from xtat timestep t to obtain the denoised embeddings xˆ₀ = N(xt,t). A decoder D performs full self-attention over xˆ₀ to compute a decoded representation D(ˆx₀). This allows each denoised token to be generated with information about other tokens, and improved the likelihood of generating syntactically correct code (Singh et al., 2023). Finally, the classification head H computes p(y | di) for each di∈ D(ˆx₀) to project decoded embeddings back to discrete tokens.\nTo train these components on a code snippet c, an embedding layer E first obtains the continuous representation x = E(c). We sample t ∈ [1,...,T] and ϵ ∼N(0,1) and compute x from x. 0 t t 0 The model is trained on\nL = ∥N(xt,t) − x₀∥ +∥D(ˆx₀) − E(c)∥ − ce(c,H(D(ˆx₀))) | {z} | {z} | {z} 1 2 3 and consists of three parts that\n1.minimize the error between the predicted noise ϵˆ and the actual noisetϵtto train N, 2.minimize the error between the Dsand embedded code to train D and L, and 3.apply cross-entropy loss with respect to the ground truth code snippet c to train H. 3.2 DIFFUSION STEPS AS REPAIR OPERATORS 0 We exploit the Markov property of the reverse diffusion process to inject an embedded version of the noisy snippet into the reverse process. In other words, we can pick some √ t, generate √ ϵ ∼ N(0,1) and compute cˆ xt= αE ¯ (cˆ) + 1 − α¯tϵ where E is the embedding layer (that CodeFusion discards after training). The diffusion process then denoises x cˆ → x cˆ and we return t 0 H(D(N(x cˆ ,0))). 0\nLet X cˆ [E] be the space of embedded representations t x cˆ obtained from cˆ for all ϵ ∼ N(0,1) at step t cˆ t ∗Figure 3: Overlap between Xt(green) (parametrized by E). Let X c [N,D,H] be the space of c ∗ ∗ t and Xtc (blue) indicates that we can embedded representations encountered at step t in reverse find some t for which the embedding diffusion processes starting from ∗ ϵ ∼N(0,1) that end up will project cˆ into a trajectory that ends in c (parametrized by N, D and H). Our intuition is up in c. If∗t is too large, the probabil- that there exists some t for which these spaces have a sig-ity of ending up there is small (too much nificant overlap, and there are thus many values of ϵ that noise). If t is too small, it will never end project cˆ into a trajectory to c ∗. Figure 3 summarizes this. up there (not enough noise).\n3.3 DIFFUSION MODELS AS HUMAN NOISE GENERATORS We exploit the seemingly discrete nature of later diffusion steps to generate synthetic repair data. Starting the reverse process from xT∼ N(0,1) we build the chain xˆT→ xˆ₀ and decode each snippet into cT→ c₀. We can then select any (ct,c₀) as a training pair if ct̸= c₀.\n4 EXPERIMENTS\nWe evaluate both how the diffusion process acts as a repair operator, how the generated data can be used for supervised repair training, and provide additional insights in how the diffusion generates (and repairs) code.\n4.1 EXPERIMENTAL SETUP Benchmarks We evaluate our approach on three different benchmarks that span different styles of code (formulas, code, commands).\nExcel (Bavishi et al., 2022) is a benchmark of 200 broken formulas mined from a public Excel help forum¹.\nPowerShell (Joshi et al., 2023) is a repair benchmark for 208 PowerShell commands col-\n2 lected from StackExchange by comparing commends in the question with those in ac- cepted answers.\nwww.mrexcel.com www.stackexchange.com\nPython BIFI (Yasunaga & Liang, 2021) is a code repair benchmark collected from GitHub. We evaluate on a random sample of 200 syntactically invalid Python code snippets. These do not have a ground truth repair, hence, we employ the same evaluation metric described in the BIFI paper using (1) syntactic validity and (2) token edit distance < 5.\nPre-training data Collecting snippets of code for unsupervised approaches is significantly easier than finding data for repair.\n1.For Python, we use a collection of code snippets for simple tasks from StackOverflow³. The corpus has 130K snippets with an average token length of 79.4 tokens. 2.For Excel, we use a public corpus of 1.8 million workbooks introduced by (Singh et al., 2022). We sample 200K workbooks and scrape all formulas present in them to generate 108K unique formulas with an average length of 35.8 tokens. 3.For Powershell, we mine PowerShell commands from StackOverflow and other online forums ourselves. The corpus has 110K samples with an average length of 24.9 characters. Metrics When available, we use execution match—comparing the output of executing the repaired code with an expected output—which allows for semantically different but functionally equivalent code snippets. To further analyze the syntactic closeness of the repairs to the original code, we also report sketch match, which is implemented as the exact string match of code with constants (strings, numbers, cell references) anonymized. For example, a noisy code snippet SUM(A1:10)/COUNT(A1:10) and its diffusion repaired snippet AVERAGE(A1:A10) match in execution but not in their sketches (SUM(:)/COUNT(:) and AVERAGE(:)). On the other hand, SUM(A1:A5)/COUNT(A1:A5) may not be an execution match but is a sketch match.\nModels We implement CodeFusion (Singh et al., 2023), the state-of-the-art code diffusion model. Further, we also implement the components with the following architectures.\n•The embedding (E) has a dimension of 512.\n•We consider two architectures for the denoiser (D): a transformer encoder (Vaswani et al.,\n2017) with 10 transformer blocks and a U-Net (Ronneberger et al., 2015) model—the tra- ditional denoiser introduced for image diffusion—withXhyper-parameters. •The decoder (D) is a block with 6 transformer decoder layers.\n•The classification head (H) is a single fully connected layer.\n4.2 DIFFUSION AS CODE REPAIR We evaluate a pre-trained diffusion model on the task of code repair. Table 1 presents the results, showing execution accuracy and sketch match across noise levels. We report (1) any % – any noise level was able to correctly repair the code for each sample; (2) best % – picking the best noise level across all samples; and (3) pooled – picking the sample using maximum voting across different noise levels. Our findings demonstrate that all variations of diffusion models have repair capabilities with decoder based architectures performing better as has also been shown to be the case in previous diffusion assessment on code tasks (Singh et al., 2023). Additionally, we examine how error complexity correlates with the noise levels required for repair. Figure 5 shows an area plot of maximum and minimum noise levels where the correct code is generated at least once with increasing complexity, computed as normalized edit distance for the repair tasks. The results suggest the acceptable noise band varies based on the complexity where an earlier injection is preferred for more complex tasks as these require more iterations to repair. Further, across languages we see that Excel has a much wider band as it requires fewer edits while for Python and PowerShell more edits are required for the repair. www.stackoverflow.com\n(a) Excel (b) Python (c) Powershell Figure 4: Figure showing the evolution of execution match for repair with increasing noise level in\nthe noise code (cˆ) injection. The optimal noise level is marked. We find that for simpler languages like formulas, injecting later helps while for more complex languages like Python and Powershell, injecting earlier gives the model more time to repair to the correct code.\nPython\nPowerShell\nExcel formula\nDenoiser\nDecoder\nNoise\nSketch\nExecute\nSketch\nExecute\nSketch\nExecute\nAny %\n65.3\n68.1\n14.3\n21.2\n62.3\n63.4\nCodeFusion\nCodeFusion\nBest %\n60.4\n62.0\n11.0\n17.4\n56.2\n58.9\nPooled\n61.2\n62.4\n11.7\n18.2\n57.1\n59.1\nAny %\n19.4\n20.3\n2.1\n3.5\n17.8\n18.4\nClamping\nBest %\n19.1\n20.1\n1.8\n3.3\n16.7\n17.3\nUnet\nPooled %\n19.1\n20.2\n1.8\n3.3\n16.9\n17.5\nAny %\n34.2\n35.4\n3.4\n5.6\n26.5\n27.2\nDecoder\nBest %\n31.3\n32.6\n3.1\n5.2\n23.4\n24.5\nPooled %\n31.5\n33.0\n3.1\n5.3\n22.8\n23.1\nAny %\n55.2\n56.2\n8.7\n13.5\n50.2\n51.1\nClamping\nBest %\n51.1\n52.5\n7.4\n11.8\n46.5\n47.3\nTransformer\nPooled\n51.9\n52.8\n7.5\n12.1\n47.3\n48.2\nAny %\n64.7\n66.9\n14.2\n21.2\n60.5\n61.1\nDecoder\nBest %\n58.9\n60.2\n10.7\n16.8\n54.2\n56.8\nPooled\n60.1\n61.3\n11.4\n17.9\n54.8\n57.8\nTable 1: Repair results for different diffusion architectures on Python, PowerShell and Excel. We\nreport sketch and execution match for all languages at different noise settings: (1) Any % denotes any noise level was able to satisfy for each sample; (2) Best % denotes picking the best noise level across all samples; (3) Pooled denotes doing a max voting among different noise levels and considering the most frequent code generation as the result. We find that all models have capacity to perform code repair.\n4.3 DIFFUSION FOR SYNTHETIC DATA GENERATION In the previous section, we demonstrated that diffusion models have inherent code repair capabili- ties due to their iterative refinement architecture. As these models progressively refine noisy code representations, they produce intermediate outputs that resemble broken or incomplete code. This suggests that starting from pure noise, the intermediate representations can be viewed as analogous to human-like coding errors. Our hypothesis in this section is that these noisy intermediate representations follow a distribution similar to human errors, making them valuable for generating synthetic data for code repair tasks. To evaluate this hypothesis, we leverage the latent diffusion model for Python, PowerShell, and Excel formulas, extracting discrete intermediate representations at various noise levels as described in Section 3.3. By repeatedly sampling from the diffusion process, we generate a corpus of synthetic code repair data. We then fine-tune several code generation models on this dataset and evaluate their performance on a repair benchmark containing real human errors. Table 2 shows the performance of different data generation techniques across various models. Our results indicate that models trained\n(a) Excel (b) Python (c) Powershell Figure 5: Figure showing the noise range for which the correct code snippet is recovered. We show\nthe maximum and minimum noise for which a sample was repaired correctly. The band width is largest for Excel since it requires simpler and fewer modifcations while powershell has a narrow band towards higher noise as it needs more iterations to repair.\nPython\nPowerShell\nExcel formula\nData Generator\nRepair Model\nSketch\nExecution\nSketch\nExecution\nSketch\nExecution\nCodeT5-small\n89.2\n91.1\n25.4\n34.2\n72.0\n77.6\nDiffusion\nPhi-3.5-mini\n87.5\n88.3\n28.2\n33.2\n71.0\n76.8\nMistral-7B\n87.1\n89.3\n27.4\n34.2\n73.3\n75.6\nCodeT5-small\n87.6\n88.2\n23.4\n28.1\n69.2\n72.1\nGPT-4 Omni\nPhi-3.5-mini\n84.2\n86.9\n21.0\n27.3\n70.1\n74.3\nMistral-7B\n85.4\n87.7\n24.5\n29.4\n69.3\n70.0\nCodeT5-small\n85.4\n87.3\n–\n–\n70.1\n72.4\nSyntactic\nPhi-3.5-mini\n84.2\n85.3\n–\n–\n72.4\n77.6\nMistral-7B\n86.0\n89.3\n–\n–\n71.2\n73.5\nTable 2:\nResults on finetuning different language models on the synthetic repair data generated by diffusion, GPT-4 Omni and Syntactic systems (BiFi (Yasunaga & Liang, 2021) for Python and (Joshi et al., 2023) for Excel). We show Sketch and execution match for all languages. We see that Diffsuion generated data consistently performs better than language model and syntactic systems.\non diffusion-generated data outperform others, suggesting that these intermediate representations are more closely aligned with human error patterns.\nAdditionally, we analyze the distribution of repairs generated by different techniques in terms of complexity, localization, and diversity. Figure 4 provides a comparison of diffusion generated and GPT-4-Omni generated data. We show the average distance between token edits (Localization), average N-gram similarity between randomly sampled data points (Diversity), and average token edit distance between the noisy and correct code (Complexity). Our findings show that diffusion generated data has more diversity, higher complexity, and more global errors, providing further evidence of the alignment between diffusion-generated errors and human error distributions.\n4.4 DIFFUSION AS HUMAN NOISE OPERATORS We analyze the trends in evolution of code during the diffusion process, exploring patterns and de- riving insights. The goal is to better understand how these models process errors and make iterative corrections, drawing comparisons to human-like problem-solving strategies. We also examine the types of errors diffusion models handle effectively and those they struggle with, offering insights into their strengths and limitations as repair operators.\n(a) Localization (b) Diversity (c) Complexity Figure 6: Figure showing the trends in the diffusion (purple) and GPT-4 (green) generated repair\ndata. We show (a) Error Localization – average distance between edits; (b) Diversity – average N- Gram diversity in generated correct code; and (c) Repair Complexity – edit distance of the repair.\nOne key observation is that diffusion models tend to prioritize global repairs before drilling down and addressing local issues. This can be seen by the edits being more localized as we go further in the diffusion process indicating a top down generation paradigm. This top-down approach closely mirrors how humans tackle complex problems, planning the architecture before building the indi- vidual pieces. Figure 7 shows the trends in code refinement over diffusion timesteps. We plot (a) the maximum distance between tokens being edited, indicating global (larger maximum distance between tokens being changed) vs local (smaller maximum distance between tokens being changed) refinement and; (b) the number of tokens being changes indicating the magnitude of change. We find that with increasing diffusion timesteps, the model makes more localized edits which are smaller in magnitude.\n(a) Localization (b) Magnitude Figure 7: Figure showing the trends in code refinement over diffusion timesteps. We show evolution\nof (a) localization of edits – maximum distance between modified tokens as a fraction of total tokens; and (b) magnitude of changes – number of tokens modified as a fraction of total tokens.\n5 RELATED WORK\nDiffusion models for text and code Diffusion models have shown their ability to gradually refine noisy data into realistic outputs through a denoising process (Sohl-Dickstein et al., 2015). They were originally popularized to generate photo-realistic images (Ho et al., 2020; Rombach et al., 2022) and later applied to other high-dimensional data generation, like audio (Kong et al., 2021) and video (Ho et al., 2022) synthesis. Diffusion has also been adapted for to discrete domains like text (Li et al., 2022; Lin et al., 2023) and code (Singh et al., 2023) where the ability to look at the whole previous generation has benefits over auto-regressive generation. Two approaches are embedding discrete tokens into a continuous space where the diffusion takes place and then decoding Li et al. (2022) or directly performing diffusion in the discrete space through a transition matrix He et al. (2023). In this paper, we use the former approach to explore the latent code repair capabilities of these models.\nCode repair Automated code repair (Zhang et al., 2023) has long been a key challenge in software engineering, with early approaches using heuristic searches (Qi et al., 2014) and program synthesis (Nguyen et al., 2013; Bavishi et al., 2022). More recently, transformer-based systems have been shown adept at learning to repair code (Berabi et al., 2021; Yasunaga & Liang, 2021; Tufano et al.,\n2019). A major limitation of training a repair model is the requirement for large quantities of data. That is not true anymore for large language models, which are adept at repair code and can take in additional context like error messages (Joshi et al., 2023). They are expensive to deploy, however, and it is much harder to steer them to remain close to the original code snippet. Human error simulation In order to leverage the corpora of unsupervised data, previous works have explored generating synthetic data using static rules (Joshi et al., 2024; Gupta et al., 2017; Hellen- doorn et al., 2019) or learning to break programs in a natural way (Yasunaga & Liang, 2020; 2021). These approaches are limited to the encoded rules and the quality of the learned code breaker— which depends on the training data—and thus suffer from out-of-domain generalization. In this work we aim to generalize the synthetic data to the long tail of out of domain cases.\n6 CONCLUSION\nIn this paper, we explored the potential of diffusion models as latent repair operators and human error generators for code generation. By injecting broken code in the diffusion process, we find that the models perform last-mile repairs, mirroring the way human programmers debug and rectify their code. We additionally find that sampling intermediate representations from the diffusion process generates noisy code snippets providing diverse and realistic error scenarios. Our findings suggest that the inherent properties of diffusion models can significantly enhance the robustness and per- formance of code repair systems. Our work opens future work into finding alignment between the diffusion process and human cognition for complex task solving like code generation and repair.\n7 LIMITATIONS\nIn this work, we only consider three languages—Python, PowerShell, and Excel formulas— primarily focusing on shorter code snippets. Validating our findings with larger, more complex code-bases and expanding to a broader range of programming languages (such as Java, C++, or JavaScript) is left for future work. While we highlight certain patterns in the reasoning and repair capabilities of diffusion models, these observations are based on qualitative studies of a limited set of examples and need to be verified with larger-scale, quantitative analyses which go beyond the scope of this work. The correlation of the synthetic data to actual human errors is not extensively evalu- ated. Another limitation is the computational cost associated with diffusion models. Due to their iterative nature, diffusion models are resource-intensive compared to autoregressive techniques.\nREFERENCES\nRohan Bavishi, Harshit Joshi, Jose Cambronero, Anna Fariha, Sumit Gulwani, Vu Le, Ivan Radi ´ cek, ˇ and Ashish Tiwari. Neurosymbolic repair for low-code formula languages. Proceedings of the ACM on Programming Languages, 6(OOPSLA2):1093–1122, 2022.\nBerkay Berabi, Jingxuan He, Veselin Raychev, and Martin Vechev. Tfix: Learning to fix coding errors with a text-to-text transformer. In International Conference on Machine Learning, pp. 780–791. PMLR, 2021.\nRahul Gupta, Soham Pal, Aditya Kanade, and Shirish Shevade. Deepfix: Fixing common c language errors by deep learning. In Proceedings of the AAAI Conference on Artificial Intelligence, volume 31, 2017.\nZhengfu He, Tianxiang Sun, Qiong Tang, Kuanning Wang, Xuan-Jing Huang, and Xipeng Qiu. Dif- fusionbert: Improving generative masked language models with diffusion models. In Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics, pp. 4521–4534,\n2023.\nVincent J Hellendoorn, Charles Sutton, Rishabh Singh, Petros Maniatis, and David Bieber. Global relational models of source code. In International conference on learning representations, 2019.\nJonathan Ho, Ajay Jain, and Pieter Abbeel. Denoising diffusion probabilistic models. Advances in neural information processing systems, 33:6840–6851, 2020.\nJonathan Ho, Tim Salimans, Alexey Gritsenko, William Chan, Mohammad Norouzi, and David J Fleet. Video diffusion models. Advances in Neural Information Processing Systems, 35:8633– 8646, 2022.\nKai Huang, Xiangxin Meng, Jian Zhang, Yang Liu, Wenjie Wang, Shuhao Li, and Yuqing Zhang. An empirical study on fine-tuning large language models of code for automated program repair. In 2023 38th IEEE/ACM International Conference on Automated Software Engineering (ASE), pp. 1162–1174. IEEE, 2023.\nHarshit Joshi, Jose´ Cambronero Sanchez, Sumit Gulwani, Vu Le, Gust Verbruggen, and Ivan Radicek. ˇ Repair is nearly generation: Multilingual program repair with llms. In Proceedings of the AAAI Conference on Artificial Intelligence, volume 37, pp. 5131–5140, 2023.\nHarshit Joshi, Abishai Ebenezer, Jose Cambronero Sanchez, Sumit Gulwani, Aditya Kanade, Vu Le, ´ Ivan Radicek, and Gust Verbruggen. ˇ Flame: A small language model for spreadsheet formulas. In Proceedings of the AAAI Conference on Artificial Intelligence, volume 38, pp. 12995–13003,\n2024. Zhifeng Kong, Wei Ping, Jiaji Huang, Kexin Zhao, and Bryan Catanzaro. Diffwave: A versatile diffusion model for audio synthesis. In International Conference on Learning Representations,\n2021. Xiang Li, John Thickstun, Ishaan Gulrajani, Percy S Liang, and Tatsunori B Hashimoto. Diffusion- lm improves controllable text generation. Advances in Neural Information Processing Systems, 35:4328–4343, 2022.\nZhenghao Lin, Yeyun Gong, Yelong Shen, Tong Wu, Zhihao Fan, Chen Lin, Nan Duan, and Weizhu Chen. Text generation with diffusion language models: A pre-training approach with continuous paragraph denoise. In International Conference on Machine Learning, pp. 21051–21064. PMLR,\n2023. Hoang D. T. Nguyen, Dawei Qi, Abhik Roychoudhury, and Satish Chandra. Semfix: Program repair via semantic analysis. International Conference on Software Engineering, pp. 772–781, 2013.\nYuhua Qi, Xiaoguang Mao, Yan Lei, Ziying Dai, and Chengsong Wang. The strength of random search on automated program repair. In Proceedings of the 36th International Conference on Software Engineering, pp. 254–265, 2014.\nRobin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Bjorn Ommer. ¨ High- resolution image synthesis with latent diffusion models. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, pp. 10684–10695, 2022.\nOlaf Ronneberger, Philipp Fischer, and Thomas Brox. U-net: Convolutional networks for biomedi- cal image segmentation, 2015. URL [https://arxiv.org/abs/1505.04597](https://arxiv.org/abs/1505.04597).\nMukul Singh, Jose Cambronero, Sumit Gulwani, Vu Le, Carina Negreanu, Mohammad Raza, and ´ Gust Verbruggen. Cornet: A neurosymbolic approach to learning conditional table formatting rules by example. arXiv preprint arXiv:2208.06032, 2022.\nMukul Singh, Jose Cambronero, Sumit Gulwani, Vu Le, Carina Negreanu, and Gust Verbruggen. ´ Codefusion: A pre-trained diffusion model for code generation. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing, pp. 11697–11708, 2023.\nJascha Sohl-Dickstein, Eric Weiss, Niru Maheswaranathan, and Surya Ganguli. Deep unsupervised learning using nonequilibrium thermodynamics. In International conference on machine learning, pp. 2256–2265. PMLR, 2015.\nMichele Tufano, Cody Watson, Gabriele Bavota, Massimiliano Di Penta, Martin White, and Denys Poshyvanyk. An empirical study on learning bug-fixing patches in the wild via neural machine translation. ACM Transactions on Software Engineering and Methodology (TOSEM), 28(4):1–29,\n2019. Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Ł ukasz Kaiser, and Illia Polosukhin. Attention is all you need. In I. Guyon, U. Von Luxburg,\nS. Bengio, H. Wallach, R. Fergus, S. Vishwanathan, and R. Garnett (eds.), Advances in Neural Information Processing Systems, volume 30. Curran Associates, Inc., 2017. URL https: //proceedings.neurips.cc/paper/2017/file/3f5ee243547dee91fbd053c1c4a845aa-Paper.pdf. Zhen Xing, Qijun Feng, Haoran Chen, Qi Dai, Han Hu, Hang Xu, Zuxuan Wu, and Yu-Gang Jiang. A survey on video diffusion models. ACM Computing Surveys, 2023.\nMichihiro Yasunaga and Percy Liang. Graph-based, self-supervised program repair from diagnostic feedback. In International Conference on Machine Learning, pp. 10799–10808. PMLR, 2020.\nMichihiro Yasunaga and Percy Liang. Break-it-fix-it: Unsupervised learning for program repair. In International conference on machine learning, pp. 11941–11952. PMLR, 2021.\nQuanjun Zhang, Chunrong Fang, Yuxiang Ma, Weisong Sun, and Zhenyu Chen. A survey of learning-based automated program repair. ACM Transactions on Software Engineering and Methodology, 33(2):1–69, 2023.",
+ "schema": 1,
+ "status": "CONVERSION_STATUS_SUCCESS",
+ "tables": [
+  {
+   "caption": "",
+   "cells": [
+    [
+     0,
+     0,
+     1,
+     1,
+     "044"
+    ],
+    [
+     0,
+     1,
+     1,
+     1,
+     "=IF(COUNTIF(A:A,"
+    ],
+    [
+     0,
+     2,
+     1,
+     1,
+     "‘>10’)=0, ‘No"
+    ],
+    [
+     0,
+     3,
+     1,
+     1,
+     "values’,"
+    ],
+    [
+     0,
+     4,
+     1,
+     1,
+     "AVERAGE(A:A))"
+    ],
+    [
+     1,
+     0,
+     1,
+     1,
+     "045"
+    ],
+    [
+     1,
+     1,
+     1,
+     1,
+     "=IF(COUNTIF(A:A,"
+    ],
+    [
+     1,
+     2,
+     1,
+     1,
+     "‘>10’)=0, ‘No"
+    ],
+    [
+     1,
+     3,
+     1,
+     1,
+     "values’,"
+    ],
+    [
+     1,
+     4,
+     1,
+     1,
+     "AVERAGEIF(A:A,"
+    ],
+    [
+     2,
+     0,
+     1,
+     1,
+     "046"
+    ],
+    [
+     2,
+     1,
+     1,
+     1,
+     ""
+    ],
+    [
+     2,
+     2,
+     1,
+     1,
+     ""
+    ],
+    [
+     2,
+     3,
+     1,
+     1,
+     ""
+    ],
+    [
+     2,
+     4,
+     1,
+     1,
+     ""
+    ],
+    [
+     3,
+     0,
+     1,
+     1,
+     "047"
+    ],
+    [
+     3,
+     1,
+     1,
+     1,
+     ""
+    ],
+    [
+     3,
+     2,
+     1,
+     1,
+     ""
+    ],
+    [
+     3,
+     3,
+     1,
+     1,
+     ""
+    ],
+    [
+     3,
+     4,
+     1,
+     1,
+     ""
+    ],
+    [
+     4,
+     0,
+     1,
+     1,
+     "048"
+    ],
+    [
+     4,
+     1,
+     1,
+     1,
+     "words = read(‘myfile’).split()"
+    ],
+    [
+     4,
+     2,
+     1,
+     1,
+     ""
+    ],
+    [
+     4,
+     3,
+     1,
+     1,
+     ""
+    ],
+    [
+     4,
+     4,
+     1,
+     1,
+     ""
+    ],
+    [
+     5,
+     0,
+     1,
+     1,
+     "049"
+    ],
+    [
+     5,
+     1,
+     1,
+     1,
+     "words = open(‘myfile’).read().split()"
+    ],
+    [
+     5,
+     2,
+     1,
+     1,
+     ""
+    ],
+    [
+     5,
+     3,
+     1,
+     1,
+     ""
+    ],
+    [
+     5,
+     4,
+     1,
+     1,
+     ""
+    ],
+    [
+     6,
+     0,
+     1,
+     1,
+     "050"
+    ],
+    [
+     6,
+     1,
+     1,
+     1,
+     ""
+    ],
+    [
+     6,
+     2,
+     1,
+     1,
+     ""
+    ],
+    [
+     6,
+     3,
+     1,
+     1,
+     ""
+    ],
+    [
+     6,
+     4,
+     1,
+     1,
+     ""
+    ],
+    [
+     7,
+     0,
+     1,
+     1,
+     "051"
+    ],
+    [
+     7,
+     1,
+     1,
+     1,
+     ""
+    ],
+    [
+     7,
+     2,
+     1,
+     1,
+     ""
+    ],
+    [
+     7,
+     3,
+     1,
+     1,
+     ""
+    ],
+    [
+     7,
+     4,
+     1,
+     1,
+     ""
+    ],
+    [
+     8,
+     0,
+     1,
+     1,
+     "052"
+    ],
+    [
+     8,
+     1,
+     1,
+     1,
+     ""
+    ],
+    [
+     8,
+     2,
+     1,
+     1,
+     ""
+    ],
+    [
+     8,
+     3,
+     1,
+     1,
+     ""
+    ],
+    [
+     8,
+     4,
+     1,
+     1,
+     ""
+    ],
+    [
+     9,
+     0,
+     1,
+     1,
+     "053"
+    ],
+    [
+     9,
+     1,
+     1,
+     1,
+     ""
+    ],
+    [
+     9,
+     2,
+     1,
+     1,
+     ""
+    ],
+    [
+     9,
+     3,
+     1,
+     1,
+     ""
+    ],
+    [
+     9,
+     4,
+     1,
+     1,
+     ""
+    ]
+   ],
+   "cols": 5,
+   "column_headers": 5,
+   "ref": "#/tables/0",
+   "rows": 10
+  },
+  {
+   "caption": "",
+   "cells": [
+    [
+     0,
+     0,
+     1,
+     1,
+     ""
+    ],
+    [
+     0,
+     1,
+     1,
+     1,
+     ""
+    ],
+    [
+     0,
+     2,
+     1,
+     1,
+     ""
+    ],
+    [
+     0,
+     3,
+     1,
+     1,
+     "Python"
+    ],
+    [
+     0,
+     4,
+     1,
+     1,
+     ""
+    ],
+    [
+     0,
+     5,
+     1,
+     1,
+     "PowerShell"
+    ],
+    [
+     0,
+     6,
+     1,
+     1,
+     ""
+    ],
+    [
+     0,
+     7,
+     1,
+     1,
+     "Excel formula"
+    ],
+    [
+     0,
+     8,
+     1,
+     1,
+     ""
+    ],
+    [
+     1,
+     0,
+     1,
+     1,
+     "Denoiser"
+    ],
+    [
+     1,
+     1,
+     1,
+     1,
+     "Decoder"
+    ],
+    [
+     1,
+     2,
+     1,
+     1,
+     "Noise"
+    ],
+    [
+     1,
+     3,
+     1,
+     1,
+     "Sketch"
+    ],
+    [
+     1,
+     4,
+     1,
+     1,
+     "Execute"
+    ],
+    [
+     1,
+     5,
+     1,
+     1,
+     "Sketch"
+    ],
+    [
+     1,
+     6,
+     1,
+     1,
+     "Execute"
+    ],
+    [
+     1,
+     7,
+     1,
+     1,
+     "Sketch"
+    ],
+    [
+     1,
+     8,
+     1,
+     1,
+     "Execute"
+    ],
+    [
+     2,
+     0,
+     1,
+     1,
+     ""
+    ],
+    [
+     2,
+     1,
+     1,
+     1,
+     ""
+    ],
+    [
+     2,
+     2,
+     1,
+     1,
+     "Any %"
+    ],
+    [
+     2,
+     3,
+     1,
+     1,
+     "65.3"
+    ],
+    [
+     2,
+     4,
+     1,
+     1,
+     "68.1"
+    ],
+    [
+     2,
+     5,
+     1,
+     1,
+     "14.3"
+    ],
+    [
+     2,
+     6,
+     1,
+     1,
+     "21.2"
+    ],
+    [
+     2,
+     7,
+     1,
+     1,
+     "62.3"
+    ],
+    [
+     2,
+     8,
+     1,
+     1,
+     "63.4"
+    ],
+    [
+     3,
+     0,
+     1,
+     1,
+     "CodeFusion"
+    ],
+    [
+     3,
+     1,
+     1,
+     1,
+     "CodeFusion"
+    ],
+    [
+     3,
+     2,
+     1,
+     1,
+     "Best %"
+    ],
+    [
+     3,
+     3,
+     1,
+     1,
+     "60.4"
+    ],
+    [
+     3,
+     4,
+     1,
+     1,
+     "62.0"
+    ],
+    [
+     3,
+     5,
+     1,
+     1,
+     "11.0"
+    ],
+    [
+     3,
+     6,
+     1,
+     1,
+     "17.4"
+    ],
+    [
+     3,
+     7,
+     1,
+     1,
+     "56.2"
+    ],
+    [
+     3,
+     8,
+     1,
+     1,
+     "58.9"
+    ],
+    [
+     4,
+     0,
+     1,
+     1,
+     ""
+    ],
+    [
+     4,
+     1,
+     1,
+     1,
+     ""
+    ],
+    [
+     4,
+     2,
+     1,
+     1,
+     "Pooled"
+    ],
+    [
+     4,
+     3,
+     1,
+     1,
+     "61.2"
+    ],
+    [
+     4,
+     4,
+     1,
+     1,
+     "62.4"
+    ],
+    [
+     4,
+     5,
+     1,
+     1,
+     "11.7"
+    ],
+    [
+     4,
+     6,
+     1,
+     1,
+     "18.2"
+    ],
+    [
+     4,
+     7,
+     1,
+     1,
+     "57.1"
+    ],
+    [
+     4,
+     8,
+     1,
+     1,
+     "59.1"
+    ],
+    [
+     5,
+     0,
+     1,
+     1,
+     ""
+    ],
+    [
+     5,
+     1,
+     1,
+     1,
+     ""
+    ],
+    [
+     5,
+     2,
+     1,
+     1,
+     "Any %"
+    ],
+    [
+     5,
+     3,
+     1,
+     1,
+     "19.4"
+    ],
+    [
+     5,
+     4,
+     1,
+     1,
+     "20.3"
+    ],
+    [
+     5,
+     5,
+     1,
+     1,
+     "2.1"
+    ],
+    [
+     5,
+     6,
+     1,
+     1,
+     "3.5"
+    ],
+    [
+     5,
+     7,
+     1,
+     1,
+     "17.8"
+    ],
+    [
+     5,
+     8,
+     1,
+     1,
+     "18.4"
+    ],
+    [
+     6,
+     0,
+     1,
+     1,
+     ""
+    ],
+    [
+     6,
+     1,
+     1,
+     1,
+     "Clamping"
+    ],
+    [
+     6,
+     2,
+     1,
+     1,
+     "Best %"
+    ],
+    [
+     6,
+     3,
+     1,
+     1,
+     "19.1"
+    ],
+    [
+     6,
+     4,
+     1,
+     1,
+     "20.1"
+    ],
+    [
+     6,
+     5,
+     1,
+     1,
+     "1.8"
+    ],
+    [
+     6,
+     6,
+     1,
+     1,
+     "3.3"
+    ],
+    [
+     6,
+     7,
+     1,
+     1,
+     "16.7"
+    ],
+    [
+     6,
+     8,
+     1,
+     1,
+     "17.3"
+    ],
+    [
+     7,
+     0,
+     1,
+     1,
+     "Unet"
+    ],
+    [
+     7,
+     1,
+     1,
+     1,
+     ""
+    ],
+    [
+     7,
+     2,
+     1,
+     1,
+     "Pooled %"
+    ],
+    [
+     7,
+     3,
+     1,
+     1,
+     "19.1"
+    ],
+    [
+     7,
+     4,
+     1,
+     1,
+     "20.2"
+    ],
+    [
+     7,
+     5,
+     1,
+     1,
+     "1.8"
+    ],
+    [
+     7,
+     6,
+     1,
+     1,
+     "3.3"
+    ],
+    [
+     7,
+     7,
+     1,
+     1,
+     "16.9"
+    ],
+    [
+     7,
+     8,
+     1,
+     1,
+     "17.5"
+    ],
+    [
+     8,
+     0,
+     1,
+     1,
+     ""
+    ],
+    [
+     8,
+     1,
+     1,
+     1,
+     ""
+    ],
+    [
+     8,
+     2,
+     1,
+     1,
+     "Any %"
+    ],
+    [
+     8,
+     3,
+     1,
+     1,
+     "34.2"
+    ],
+    [
+     8,
+     4,
+     1,
+     1,
+     "35.4"
+    ],
+    [
+     8,
+     5,
+     1,
+     1,
+     "3.4"
+    ],
+    [
+     8,
+     6,
+     1,
+     1,
+     "5.6"
+    ],
+    [
+     8,
+     7,
+     1,
+     1,
+     "26.5"
+    ],
+    [
+     8,
+     8,
+     1,
+     1,
+     "27.2"
+    ],
+    [
+     9,
+     0,
+     1,
+     1,
+     ""
+    ],
+    [
+     9,
+     1,
+     1,
+     1,
+     "Decoder"
+    ],
+    [
+     9,
+     2,
+     1,
+     1,
+     "Best %"
+    ],
+    [
+     9,
+     3,
+     1,
+     1,
+     "31.3"
+    ],
+    [
+     9,
+     4,
+     1,
+     1,
+     "32.6"
+    ],
+    [
+     9,
+     5,
+     1,
+     1,
+     "3.1"
+    ],
+    [
+     9,
+     6,
+     1,
+     1,
+     "5.2"
+    ],
+    [
+     9,
+     7,
+     1,
+     1,
+     "23.4"
+    ],
+    [
+     9,
+     8,
+     1,
+     1,
+     "24.5"
+    ],
+    [
+     10,
+     0,
+     1,
+     1,
+     ""
+    ],
+    [
+     10,
+     1,
+     1,
+     1,
+     ""
+    ],
+    [
+     10,
+     2,
+     1,
+     1,
+     "Pooled %"
+    ],
+    [
+     10,
+     3,
+     1,
+     1,
+     "31.5"
+    ],
+    [
+     10,
+     4,
+     1,
+     1,
+     "33.0"
+    ],
+    [
+     10,
+     5,
+     1,
+     1,
+     "3.1"
+    ],
+    [
+     10,
+     6,
+     1,
+     1,
+     "5.3"
+    ],
+    [
+     10,
+     7,
+     1,
+     1,
+     "22.8"
+    ],
+    [
+     10,
+     8,
+     1,
+     1,
+     "23.1"
+    ],
+    [
+     11,
+     0,
+     1,
+     1,
+     ""
+    ],
+    [
+     11,
+     1,
+     1,
+     1,
+     ""
+    ],
+    [
+     11,
+     2,
+     1,
+     1,
+     "Any %"
+    ],
+    [
+     11,
+     3,
+     1,
+     1,
+     "55.2"
+    ],
+    [
+     11,
+     4,
+     1,
+     1,
+     "56.2"
+    ],
+    [
+     11,
+     5,
+     1,
+     1,
+     "8.7"
+    ],
+    [
+     11,
+     6,
+     1,
+     1,
+     "13.5"
+    ],
+    [
+     11,
+     7,
+     1,
+     1,
+     "50.2"
+    ],
+    [
+     11,
+     8,
+     1,
+     1,
+     "51.1"
+    ],
+    [
+     12,
+     0,
+     1,
+     1,
+     ""
+    ],
+    [
+     12,
+     1,
+     1,
+     1,
+     "Clamping"
+    ],
+    [
+     12,
+     2,
+     1,
+     1,
+     "Best %"
+    ],
+    [
+     12,
+     3,
+     1,
+     1,
+     "51.1"
+    ],
+    [
+     12,
+     4,
+     1,
+     1,
+     "52.5"
+    ],
+    [
+     12,
+     5,
+     1,
+     1,
+     "7.4"
+    ],
+    [
+     12,
+     6,
+     1,
+     1,
+     "11.8"
+    ],
+    [
+     12,
+     7,
+     1,
+     1,
+     "46.5"
+    ],
+    [
+     12,
+     8,
+     1,
+     1,
+     "47.3"
+    ],
+    [
+     13,
+     0,
+     1,
+     1,
+     "Transformer"
+    ],
+    [
+     13,
+     1,
+     1,
+     1,
+     ""
+    ],
+    [
+     13,
+     2,
+     1,
+     1,
+     "Pooled"
+    ],
+    [
+     13,
+     3,
+     1,
+     1,
+     "51.9"
+    ],
+    [
+     13,
+     4,
+     1,
+     1,
+     "52.8"
+    ],
+    [
+     13,
+     5,
+     1,
+     1,
+     "7.5"
+    ],
+    [
+     13,
+     6,
+     1,
+     1,
+     "12.1"
+    ],
+    [
+     13,
+     7,
+     1,
+     1,
+     "47.3"
+    ],
+    [
+     13,
+     8,
+     1,
+     1,
+     "48.2"
+    ],
+    [
+     14,
+     0,
+     1,
+     1,
+     ""
+    ],
+    [
+     14,
+     1,
+     1,
+     1,
+     ""
+    ],
+    [
+     14,
+     2,
+     1,
+     1,
+     "Any %"
+    ],
+    [
+     14,
+     3,
+     1,
+     1,
+     "64.7"
+    ],
+    [
+     14,
+     4,
+     1,
+     1,
+     "66.9"
+    ],
+    [
+     14,
+     5,
+     1,
+     1,
+     "14.2"
+    ],
+    [
+     14,
+     6,
+     1,
+     1,
+     "21.2"
+    ],
+    [
+     14,
+     7,
+     1,
+     1,
+     "60.5"
+    ],
+    [
+     14,
+     8,
+     1,
+     1,
+     "61.1"
+    ],
+    [
+     15,
+     0,
+     1,
+     1,
+     ""
+    ],
+    [
+     15,
+     1,
+     1,
+     1,
+     "Decoder"
+    ],
+    [
+     15,
+     2,
+     1,
+     1,
+     "Best %"
+    ],
+    [
+     15,
+     3,
+     1,
+     1,
+     "58.9"
+    ],
+    [
+     15,
+     4,
+     1,
+     1,
+     "60.2"
+    ],
+    [
+     15,
+     5,
+     1,
+     1,
+     "10.7"
+    ],
+    [
+     15,
+     6,
+     1,
+     1,
+     "16.8"
+    ],
+    [
+     15,
+     7,
+     1,
+     1,
+     "54.2"
+    ],
+    [
+     15,
+     8,
+     1,
+     1,
+     "56.8"
+    ],
+    [
+     16,
+     0,
+     1,
+     1,
+     ""
+    ],
+    [
+     16,
+     1,
+     1,
+     1,
+     ""
+    ],
+    [
+     16,
+     2,
+     1,
+     1,
+     "Pooled"
+    ],
+    [
+     16,
+     3,
+     1,
+     1,
+     "60.1"
+    ],
+    [
+     16,
+     4,
+     1,
+     1,
+     "61.3"
+    ],
+    [
+     16,
+     5,
+     1,
+     1,
+     "11.4"
+    ],
+    [
+     16,
+     6,
+     1,
+     1,
+     "17.9"
+    ],
+    [
+     16,
+     7,
+     1,
+     1,
+     "54.8"
+    ],
+    [
+     16,
+     8,
+     1,
+     1,
+     "57.8"
+    ]
+   ],
+   "cols": 9,
+   "column_headers": 9,
+   "ref": "#/tables/1",
+   "rows": 17
+  },
+  {
+   "caption": "",
+   "cells": [
+    [
+     0,
+     0,
+     1,
+     1,
+     ""
+    ],
+    [
+     0,
+     1,
+     1,
+     1,
+     ""
+    ],
+    [
+     0,
+     2,
+     1,
+     1,
+     "Python"
+    ],
+    [
+     0,
+     3,
+     1,
+     1,
+     ""
+    ],
+    [
+     0,
+     4,
+     1,
+     1,
+     "PowerShell"
+    ],
+    [
+     0,
+     5,
+     1,
+     1,
+     ""
+    ],
+    [
+     0,
+     6,
+     1,
+     1,
+     "Excel formula"
+    ],
+    [
+     0,
+     7,
+     1,
+     1,
+     ""
+    ],
+    [
+     1,
+     0,
+     1,
+     1,
+     "Data Generator"
+    ],
+    [
+     1,
+     1,
+     1,
+     1,
+     "Repair Model"
+    ],
+    [
+     1,
+     2,
+     1,
+     1,
+     "Sketch"
+    ],
+    [
+     1,
+     3,
+     1,
+     1,
+     "Execution"
+    ],
+    [
+     1,
+     4,
+     1,
+     1,
+     "Sketch"
+    ],
+    [
+     1,
+     5,
+     1,
+     1,
+     "Execution"
+    ],
+    [
+     1,
+     6,
+     1,
+     1,
+     "Sketch"
+    ],
+    [
+     1,
+     7,
+     1,
+     1,
+     "Execution"
+    ],
+    [
+     2,
+     0,
+     1,
+     1,
+     ""
+    ],
+    [
+     2,
+     1,
+     1,
+     1,
+     "CodeT5-small"
+    ],
+    [
+     2,
+     2,
+     1,
+     1,
+     "89.2"
+    ],
+    [
+     2,
+     3,
+     1,
+     1,
+     "91.1"
+    ],
+    [
+     2,
+     4,
+     1,
+     1,
+     "25.4"
+    ],
+    [
+     2,
+     5,
+     1,
+     1,
+     "34.2"
+    ],
+    [
+     2,
+     6,
+     1,
+     1,
+     "72.0"
+    ],
+    [
+     2,
+     7,
+     1,
+     1,
+     "77.6"
+    ],
+    [
+     3,
+     0,
+     1,
+     1,
+     "Diffusion"
+    ],
+    [
+     3,
+     1,
+     1,
+     1,
+     "Phi-3.5-mini"
+    ],
+    [
+     3,
+     2,
+     1,
+     1,
+     "87.5"
+    ],
+    [
+     3,
+     3,
+     1,
+     1,
+     "88.3"
+    ],
+    [
+     3,
+     4,
+     1,
+     1,
+     "28.2"
+    ],
+    [
+     3,
+     5,
+     1,
+     1,
+     "33.2"
+    ],
+    [
+     3,
+     6,
+     1,
+     1,
+     "71.0"
+    ],
+    [
+     3,
+     7,
+     1,
+     1,
+     "76.8"
+    ],
+    [
+     4,
+     0,
+     1,
+     1,
+     ""
+    ],
+    [
+     4,
+     1,
+     1,
+     1,
+     "Mistral-7B"
+    ],
+    [
+     4,
+     2,
+     1,
+     1,
+     "87.1"
+    ],
+    [
+     4,
+     3,
+     1,
+     1,
+     "89.3"
+    ],
+    [
+     4,
+     4,
+     1,
+     1,
+     "27.4"
+    ],
+    [
+     4,
+     5,
+     1,
+     1,
+     "34.2"
+    ],
+    [
+     4,
+     6,
+     1,
+     1,
+     "73.3"
+    ],
+    [
+     4,
+     7,
+     1,
+     1,
+     "75.6"
+    ],
+    [
+     5,
+     0,
+     1,
+     1,
+     ""
+    ],
+    [
+     5,
+     1,
+     1,
+     1,
+     "CodeT5-small"
+    ],
+    [
+     5,
+     2,
+     1,
+     1,
+     "87.6"
+    ],
+    [
+     5,
+     3,
+     1,
+     1,
+     "88.2"
+    ],
+    [
+     5,
+     4,
+     1,
+     1,
+     "23.4"
+    ],
+    [
+     5,
+     5,
+     1,
+     1,
+     "28.1"
+    ],
+    [
+     5,
+     6,
+     1,
+     1,
+     "69.2"
+    ],
+    [
+     5,
+     7,
+     1,
+     1,
+     "72.1"
+    ],
+    [
+     6,
+     0,
+     1,
+     1,
+     "GPT-4 Omni"
+    ],
+    [
+     6,
+     1,
+     1,
+     1,
+     "Phi-3.5-mini"
+    ],
+    [
+     6,
+     2,
+     1,
+     1,
+     "84.2"
+    ],
+    [
+     6,
+     3,
+     1,
+     1,
+     "86.9"
+    ],
+    [
+     6,
+     4,
+     1,
+     1,
+     "21.0"
+    ],
+    [
+     6,
+     5,
+     1,
+     1,
+     "27.3"
+    ],
+    [
+     6,
+     6,
+     1,
+     1,
+     "70.1"
+    ],
+    [
+     6,
+     7,
+     1,
+     1,
+     "74.3"
+    ],
+    [
+     7,
+     0,
+     1,
+     1,
+     ""
+    ],
+    [
+     7,
+     1,
+     1,
+     1,
+     "Mistral-7B"
+    ],
+    [
+     7,
+     2,
+     1,
+     1,
+     "85.4"
+    ],
+    [
+     7,
+     3,
+     1,
+     1,
+     "87.7"
+    ],
+    [
+     7,
+     4,
+     1,
+     1,
+     "24.5"
+    ],
+    [
+     7,
+     5,
+     1,
+     1,
+     "29.4"
+    ],
+    [
+     7,
+     6,
+     1,
+     1,
+     "69.3"
+    ],
+    [
+     7,
+     7,
+     1,
+     1,
+     "70.0"
+    ],
+    [
+     8,
+     0,
+     1,
+     1,
+     ""
+    ],
+    [
+     8,
+     1,
+     1,
+     1,
+     "CodeT5-small"
+    ],
+    [
+     8,
+     2,
+     1,
+     1,
+     "85.4"
+    ],
+    [
+     8,
+     3,
+     1,
+     1,
+     "87.3"
+    ],
+    [
+     8,
+     4,
+     1,
+     1,
+     "–"
+    ],
+    [
+     8,
+     5,
+     1,
+     1,
+     "–"
+    ],
+    [
+     8,
+     6,
+     1,
+     1,
+     "70.1"
+    ],
+    [
+     8,
+     7,
+     1,
+     1,
+     "72.4"
+    ],
+    [
+     9,
+     0,
+     1,
+     1,
+     "Syntactic"
+    ],
+    [
+     9,
+     1,
+     1,
+     1,
+     "Phi-3.5-mini"
+    ],
+    [
+     9,
+     2,
+     1,
+     1,
+     "84.2"
+    ],
+    [
+     9,
+     3,
+     1,
+     1,
+     "85.3"
+    ],
+    [
+     9,
+     4,
+     1,
+     1,
+     "–"
+    ],
+    [
+     9,
+     5,
+     1,
+     1,
+     "–"
+    ],
+    [
+     9,
+     6,
+     1,
+     1,
+     "72.4"
+    ],
+    [
+     9,
+     7,
+     1,
+     1,
+     "77.6"
+    ],
+    [
+     10,
+     0,
+     1,
+     1,
+     ""
+    ],
+    [
+     10,
+     1,
+     1,
+     1,
+     "Mistral-7B"
+    ],
+    [
+     10,
+     2,
+     1,
+     1,
+     "86.0"
+    ],
+    [
+     10,
+     3,
+     1,
+     1,
+     "89.3"
+    ],
+    [
+     10,
+     4,
+     1,
+     1,
+     "–"
+    ],
+    [
+     10,
+     5,
+     1,
+     1,
+     "–"
+    ],
+    [
+     10,
+     6,
+     1,
+     1,
+     "71.2"
+    ],
+    [
+     10,
+     7,
+     1,
+     1,
+     "73.5"
+    ],
+    [
+     11,
+     0,
+     1,
+     1,
+     "Table 2:"
+    ],
+    [
+     11,
+     1,
+     1,
+     1,
+     ""
+    ],
+    [
+     11,
+     2,
+     1,
+     1,
+     ""
+    ],
+    [
+     11,
+     3,
+     1,
+     1,
+     ""
+    ],
+    [
+     11,
+     4,
+     1,
+     1,
+     ""
+    ],
+    [
+     11,
+     5,
+     1,
+     1,
+     ""
+    ],
+    [
+     11,
+     6,
+     1,
+     1,
+     ""
+    ],
+    [
+     11,
+     7,
+     1,
+     1,
+     ""
+    ]
+   ],
+   "cols": 8,
+   "column_headers": 8,
+   "ref": "#/tables/2",
+   "rows": 12
+  }
+ ],
+ "warnings": [
+  "heading-level-jump:#/texts/58"
+ ]
+}

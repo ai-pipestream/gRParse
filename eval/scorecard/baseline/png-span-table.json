@@ -1,0 +1,176 @@
+{
+ "agreement": {
+  "agreed": 0,
+  "claimed_fields": {
+   "grparse": 3
+  },
+  "collectors": [
+   "grparse"
+  ],
+  "conflicts": [],
+  "shared": 0,
+  "winners": {
+   "origin.binary_hash": "grparse",
+   "origin.filename": "grparse",
+   "origin.mimetype": "grparse"
+  }
+ },
+ "collectors": [
+  "grparse"
+ ],
+ "content_type": "image/png",
+ "counts": {
+  "body_items": 2,
+  "by_label": {
+   "picture": 1,
+   "table": 1
+  },
+  "form_items": 0,
+  "furniture_items": 0,
+  "groups": 0,
+  "headings": 0,
+  "key_value_items": 0,
+  "orphans": 0,
+  "pages": 1,
+  "pictures": 1,
+  "reading_chars": 52,
+  "tables": 1,
+  "texts": 0
+ },
+ "doc_id": "png-span-table",
+ "filename": "span_table.png",
+ "format": "png",
+ "furniture_reading": [],
+ "groups": [],
+ "headings": [],
+ "markdown": {
+  "chars": 207,
+  "headings": 0,
+  "images": 0,
+  "sha256": "78d0592cb5187d242f3675e3a714dd7241166300221f5a885fbffc0d595e7f96",
+  "table_rows": 5
+ },
+ "origin_mimetype": "image/png",
+ "pictures": [
+  {
+   "caption": "",
+   "classification": "table",
+   "collectors": [
+    "grparse"
+   ],
+   "image": null,
+   "page": 1,
+   "parent": "#/body",
+   "parent_label": "body",
+   "parent_name": "",
+   "preceding_heading": "",
+   "ref": "#/pictures/0"
+  }
+ ],
+ "reading": [
+  {
+   "hash": "0df3c900213b0fde",
+   "label": "table",
+   "ref": "#/tables/0",
+   "text": "4x3"
+  },
+  {
+   "hash": "",
+   "label": "picture",
+   "ref": "#/pictures/0",
+   "text": ""
+  }
+ ],
+ "reading_text": "Region\nRevenue\nNorth\n120\n140\nSouth\n95\n110\nWest\n80\n75",
+ "schema": 1,
+ "status": "CONVERSION_STATUS_SUCCESS",
+ "tables": [
+  {
+   "caption": "",
+   "cells": [
+    [
+     0,
+     0,
+     1,
+     1,
+     "Region"
+    ],
+    [
+     0,
+     1,
+     1,
+     2,
+     "Revenue"
+    ],
+    [
+     1,
+     0,
+     1,
+     1,
+     "North"
+    ],
+    [
+     1,
+     1,
+     1,
+     1,
+     "120"
+    ],
+    [
+     1,
+     2,
+     1,
+     1,
+     "140"
+    ],
+    [
+     2,
+     0,
+     1,
+     1,
+     "South"
+    ],
+    [
+     2,
+     1,
+     1,
+     1,
+     "95"
+    ],
+    [
+     2,
+     2,
+     1,
+     1,
+     "110"
+    ],
+    [
+     3,
+     0,
+     1,
+     1,
+     "West"
+    ],
+    [
+     3,
+     1,
+     1,
+     1,
+     "80"
+    ],
+    [
+     3,
+     2,
+     1,
+     1,
+     "75"
+    ]
+   ],
+   "cols": 3,
+   "column_headers": 0,
+   "ref": "#/tables/0",
+   "rows": 4
+  }
+ ],
+ "warnings": []
+}

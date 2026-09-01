@@ -1,0 +1,42 @@
+From: "Clerk of Court" <clerk@example.gov>
+To: ada@example.com
+Cc: bob@example.com
+Subject: =?UTF-8?Q?R=C3=BCckfrage_zur_Anh=C3=B6rung?=
+Date: Tue, 14 Nov 2023 22:13:20 +0000
+Message-ID: <eml-0001@example.gov>
+In-Reply-To: <parent-0000@example.com>
+References: <root-0000@example.com> <parent-0000@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary=mix-42
+
+--mix-42
+Content-Type: multipart/alternative; boundary=alt-42
+
+--alt-42
+Content-Type: text/plain; charset=UTF-8
+
+Die Anhörung beginnt um 09:00 Uhr.
+
+--alt-42
+Content-Type: text/html; charset=UTF-8
+
+<html><body><p>Die Anh&ouml;rung beginnt um 09:00 Uhr.</p><img src="cid:seal@example.gov"></body></html>
+
+--alt-42--
+
+--mix-42
+Content-Type: application/pdf; name="order.pdf"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="order.pdf"
+
+JVBERi0xLjQgbm90IHJlYWxseSBhIHBkZg==
+
+--mix-42
+Content-Type: image/png; name="seal.png"
+Content-Transfer-Encoding: base64
+Content-Disposition: inline; filename="seal.png"
+Content-ID: <seal@example.gov>
+
+iVBORw0KGgo=
+
+--mix-42--

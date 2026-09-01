@@ -11,3 +11,5 @@ examples/clients/go/go
 build/
 build-*/
 corpus-*/
+eval/out/
+__pycache__/

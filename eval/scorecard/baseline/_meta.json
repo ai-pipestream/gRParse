@@ -1,0 +1,33 @@
+{
+ "documents": [
+  "docx-sample3",
+  "xlsx-sample3",
+  "xlsx-temperature",
+  "xlsx-formula-issue",
+  "xlsx-rows-with-gaps",
+  "pptx-sample1",
+  "pdf-dummy",
+  "pdf-hello-text",
+  "html-cdata-svg",
+  "html-mathml-formula",
+  "html-entities",
+  "html-deep-nesting",
+  "md-streaming-markup",
+  "eml-plain-text",
+  "eml-multipart-attachments",
+  "xml-jats-article",
+  "xml-uspto-grant",
+  "epub-two-chapters",
+  "epub-cover-first",
+  "png-report-page",
+  "png-span-table",
+  "png-bar-chart",
+  "epub-great-gatsby",
+  "pdf-diffusion-paper"
+ ],
+ "manifest": "eval/scorecard/corpus.json",
+ "reason": "",
+ "service": "gRParse grparse-0.1.0-cuda",
+ "skipped": {},
+ "target": "localhost:50051"
+}

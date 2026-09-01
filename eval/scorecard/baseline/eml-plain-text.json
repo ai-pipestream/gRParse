@@ -1,0 +1,96 @@
+{
+ "agreement": {
+  "agreed": 2,
+  "claimed_fields": {
+   "email": 14,
+   "grparse": 3
+  },
+  "collectors": [
+   "email",
+   "grparse"
+  ],
+  "conflicts": [
+   {
+    "field": "origin.binary_hash",
+    "values": {
+     "email": "9559247152043944555",
+     "grparse": "16014264067489517712"
+    },
+    "winner": "grparse"
+   }
+  ],
+  "shared": 3,
+  "winners": {
+   "origin.binary_hash": "grparse",
+   "origin.filename": "grparse",
+   "origin.mimetype": "grparse",
+   "source_meta.created.seconds": "email",
+   "source_meta.created_raw": "email",
+   "source_meta.title": "email"
+  }
+ },
+ "collectors": [
+  "email",
+  "grparse"
+ ],
+ "content_type": "message/rfc822",
+ "counts": {
+  "body_items": 2,
+  "by_label": {
+   "text": 1,
+   "title": 1
+  },
+  "form_items": 0,
+  "furniture_items": 0,
+  "groups": 0,
+  "headings": 1,
+  "key_value_items": 0,
+  "orphans": 0,
+  "pages": 0,
+  "pictures": 0,
+  "reading_chars": 95,
+  "tables": 0,
+  "texts": 2
+ },
+ "doc_id": "eml-plain-text",
+ "filename": "plain_text.eml",
+ "format": "eml",
+ "furniture_reading": [],
+ "groups": [],
+ "headings": [
+  {
+   "level": 0,
+   "ref": "#/texts/0",
+   "text": "Rückfrage zur Anhörung"
+  }
+ ],
+ "markdown": {
+  "chars": 130,
+  "headings": 1,
+  "images": 0,
+  "sha256": "1277cffeaf23c98e9b59e2dbbeb9b2388cd7234128514f3744097fe585b64543",
+  "table_rows": 0
+ },
+ "origin_mimetype": "message/rfc822",
+ "pictures": [],
+ "reading": [
+  {
+   "hash": "63a6baa1a0b4254e",
+   "label": "title",
+   "level": 0,
+   "ref": "#/texts/0",
+   "text": "Rückfrage zur Anhörung"
+  },
+  {
+   "hash": "110efa0b30da0cc3",
+   "label": "text",
+   "ref": "#/texts/1",
+   "text": "Die Anhörung beginnt um 09:00 Uhr. Bitte bringen Sie die Unt"
+  }
+ ],
+ "reading_text": "Rückfrage zur Anhörung\nDie Anhörung beginnt um 09:00 Uhr. Bitte bringen Sie die Unterlagen mit.",
+ "schema": 1,
+ "status": "CONVERSION_STATUS_SUCCESS",
+ "tables": [],
+ "warnings": []
+}

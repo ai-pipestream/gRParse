@@ -1,0 +1,82 @@
+{
+ "agreement": {
+  "agreed": 0,
+  "claimed_fields": {
+   "grparse": 3,
+   "markup": 2
+  },
+  "collectors": [
+   "grparse",
+   "markup"
+  ],
+  "conflicts": [
+   {
+    "field": "origin.mimetype",
+    "values": {
+     "grparse": "application/octet-stream",
+     "markup": "text/html"
+    },
+    "winner": "grparse"
+   }
+  ],
+  "shared": 1,
+  "winners": {
+   "origin.binary_hash": "grparse",
+   "origin.filename": "grparse",
+   "origin.mimetype": "grparse",
+   "origin.mimetype_evidence": "markup"
+  }
+ },
+ "collectors": [
+  "grparse",
+  "markup"
+ ],
+ "content_type": "text/html",
+ "counts": {
+  "body_items": 1,
+  "by_label": {
+   "text": 1
+  },
+  "form_items": 0,
+  "furniture_items": 0,
+  "groups": 0,
+  "headings": 0,
+  "key_value_items": 0,
+  "orphans": 0,
+  "pages": 0,
+  "pictures": 0,
+  "reading_chars": 31,
+  "tables": 0,
+  "texts": 1
+ },
+ "doc_id": "html-deep-nesting",
+ "filename": "deep_nesting.html",
+ "format": "html",
+ "furniture_reading": [],
+ "groups": [],
+ "headings": [],
+ "markdown": {
+  "chars": 31,
+  "headings": 0,
+  "images": 0,
+  "sha256": "1afbecefe5776b32794d30068e29a93af9823c5fa44fdb51c25651c6bc404f8b",
+  "table_rows": 0
+ },
+ "origin_mimetype": "application/octet-stream",
+ "pictures": [],
+ "reading": [
+  {
+   "hash": "1afbecefe5776b32",
+   "label": "text",
+   "ref": "#/texts/0",
+   "text": "The bottom of a 2000-deep nest."
+  }
+ ],
+ "reading_text": "The bottom of a 2000-deep nest.",
+ "schema": 1,
+ "status": "CONVERSION_STATUS_SUCCESS",
+ "tables": [],
+ "warnings": [
+  "mimetype-mismatch:text/html!=application/octet-stream"
+ ]
+}

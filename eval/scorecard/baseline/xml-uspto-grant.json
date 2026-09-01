@@ -1,0 +1,194 @@
+{
+ "agreement": {
+  "agreed": 1,
+  "claimed_fields": {
+   "grparse": 3,
+   "xml": 5
+  },
+  "collectors": [
+   "grparse",
+   "xml"
+  ],
+  "conflicts": [],
+  "shared": 1,
+  "winners": {
+   "origin.binary_hash": "grparse",
+   "origin.filename": "grparse",
+   "origin.mimetype": "grparse",
+   "origin.mimetype_evidence": "xml",
+   "source_meta.language": "xml",
+   "source_meta.title": "xml"
+  }
+ },
+ "collectors": [
+  "grparse",
+  "xml"
+ ],
+ "content_type": "application/xml",
+ "counts": {
+  "body_items": 15,
+  "by_label": {
+   "picture": 1,
+   "section_header": 2,
+   "text": 11,
+   "title": 1
+  },
+  "form_items": 0,
+  "furniture_items": 0,
+  "groups": 0,
+  "headings": 3,
+  "key_value_items": 0,
+  "orphans": 0,
+  "pages": 0,
+  "pictures": 1,
+  "reading_chars": 478,
+  "tables": 0,
+  "texts": 14
+ },
+ "doc_id": "xml-uspto-grant",
+ "filename": "uspto-grant.xml",
+ "format": "xml",
+ "furniture_reading": [],
+ "groups": [],
+ "headings": [
+  {
+   "level": 0,
+   "ref": "#/texts/2",
+   "text": "Method for streaming structured documents"
+  },
+  {
+   "level": 1,
+   "ref": "#/texts/6",
+   "text": "BACKGROUND"
+  },
+  {
+   "level": 1,
+   "ref": "#/texts/9",
+   "text": "DETAILED DESCRIPTION"
+  }
+ ],
+ "markdown": {
+  "chars": 2090,
+  "headings": 3,
+  "images": 0,
+  "sha256": "6c8696fd27f0689a78a0750efa0917b6d321d03e12a97bebd831c280141746f4",
+  "table_rows": 0
+ },
+ "origin_mimetype": "application/xml",
+ "pictures": [
+  {
+   "caption": "",
+   "classification": "",
+   "collectors": [
+    "xml"
+   ],
+   "image": null,
+   "page": null,
+   "parent": "#/texts/9",
+   "parent_label": "section_header",
+   "parent_name": "",
+   "preceding_heading": "DETAILED DESCRIPTION",
+   "ref": "#/pictures/0"
+  }
+ ],
+ "reading": [
+  {
+   "hash": "1bd46852818b0a40",
+   "label": "text",
+   "ref": "#/texts/0",
+   "text": "11999999"
+  },
+  {
+   "hash": "35005dd7c5c86ea5",
+   "label": "text",
+   "ref": "#/texts/1",
+   "text": "17123456"
+  },
+  {
+   "hash": "b755cc3a46baf79c",
+   "label": "title",
+   "level": 0,
+   "ref": "#/texts/2",
+   "text": "Method for streaming structured documents"
+  },
+  {
+   "hash": "ea2c99d7f61a6768",
+   "label": "text",
+   "ref": "#/texts/3",
+   "text": "Rivera Ana"
+  },
+  {
+   "hash": "ccbee367f8173af8",
+   "label": "text",
+   "ref": "#/texts/4",
+   "text": "Acme Streaming Corp"
+  },
+  {
+   "hash": "01385ff1d8734c88",
+   "label": "text",
+   "ref": "#/texts/5",
+   "text": "A method streams document items as they are parsed."
+  },
+  {
+   "hash": "b0943e2cec5bb70a",
+   "label": "section_header",
+   "level": 1,
+   "ref": "#/texts/6",
+   "text": "BACKGROUND"
+  },
+  {
+   "hash": "54aded2526b52c07",
+   "label": "text",
+   "ref": "#/texts/7",
+   "text": "Prior systems buffered the entire document before emitting i"
+  },
+  {
+   "hash": "dfe95c70b20776d6",
+   "label": "text",
+   "ref": "#/texts/8",
+   "text": "FIG. 1 is a block diagram of the pipeline."
+  },
+  {
+   "hash": "51afcaec8b0102c8",
+   "label": "section_header",
+   "level": 1,
+   "ref": "#/texts/9",
+   "text": "DETAILED DESCRIPTION"
+  },
+  {
+   "hash": "54e4ffb8c2f3d831",
+   "label": "text",
+   "ref": "#/texts/10",
+   "text": "The parser emits an event per completed element."
+  },
+  {
+   "hash": "",
+   "label": "picture",
+   "ref": "#/pictures/0",
+   "text": ""
+  },
+  {
+   "hash": "cb93fe807d2de765",
+   "label": "text",
+   "ref": "#/texts/11",
+   "text": "1. A method comprising streaming items."
+  },
+  {
+   "hash": "2351a9c35f72a385",
+   "label": "text",
+   "ref": "#/texts/12",
+   "text": "2. The method of claim 1, wherein items are ordered."
+  },
+  {
+   "hash": "12225b13191df3b3",
+   "label": "text",
+   "ref": "#/texts/13",
+   "text": "3. The method of claim 1, further comprising a trailer."
+  }
+ ],
+ "reading_text": "11999999\n17123456\nMethod for streaming structured documents\nRivera Ana\nAcme Streaming Corp\nA method streams document items as they are parsed.\nBACKGROUND\nPrior systems buffered the entire document before emitting it.\nFIG. 1 is a block diagram of the pipeline.\nDETAILED DESCRIPTION\nThe parser emits an event per completed element.\n1. A method comprising streaming items.\n2. The method of claim 1, wherein items are ordered.\n3. The method of claim 1, further comprising a trailer.",
+ "schema": 1,
+ "status": "CONVERSION_STATUS_SUCCESS",
+ "tables": [],
+ "warnings": []
+}

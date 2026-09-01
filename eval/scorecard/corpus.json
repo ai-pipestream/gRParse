@@ -1,0 +1,29 @@
+{
+  "corpus_root": "tests/golden/corpus",
+  "documents": [
+    {"id": "docx-sample3", "format": "docx", "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "path": "sample3.docx", "note": "grpc-libreoffice fixture: headings, lists, two tables, two images"},
+    {"id": "xlsx-sample3", "format": "xlsx", "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "path": "sample3.xlsx", "note": "grpc-libreoffice fixture: two sheets, hyperlinks"},
+    {"id": "xlsx-temperature", "format": "xlsx", "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "path": "temperature.xlsx", "note": "grpc-calamine sample"},
+    {"id": "xlsx-formula-issue", "format": "xlsx", "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "path": "formula.issue.xlsx", "note": "grpc-calamine sample: formulas"},
+    {"id": "xlsx-rows-with-gaps", "format": "xlsx", "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "path": "rows_with_gaps.xlsx", "note": "grpc-calamine sample: sparse rows"},
+    {"id": "pptx-sample1", "format": "pptx", "content_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation", "path": "sample1.pptx", "note": "grpc-libreoffice fixture"},
+    {"id": "pdf-dummy", "format": "pdf", "content_type": "application/pdf", "path": "dummy.pdf", "note": "grpc-libreoffice fixture: one page"},
+    {"id": "pdf-hello-text", "format": "pdf", "content_type": "application/pdf", "path": "hello-text.pdf", "note": "grpc-pdf-inspector sample: two text pages"},
+    {"id": "html-cdata-svg", "format": "html", "content_type": "text/html", "path": "cdata_svg.html", "note": "grpc-lol-html sample"},
+    {"id": "html-mathml-formula", "format": "html", "content_type": "text/html", "path": "mathml_formula.html", "note": "grpc-lol-html sample"},
+    {"id": "html-entities", "format": "html", "content_type": "text/html", "path": "entities.html", "note": "grpc-lol-html sample"},
+    {"id": "html-deep-nesting", "format": "html", "content_type": "text/html", "path": "deep_nesting.html", "note": "grpc-lol-html sample"},
+    {"id": "md-streaming-markup", "format": "md", "content_type": "text/markdown", "path": "streaming-markup.md", "note": "grpc-markup sample"},
+    {"id": "eml-plain-text", "format": "eml", "content_type": "message/rfc822", "path": "plain_text.eml", "note": "grpc-email sample"},
+    {"id": "eml-multipart-attachments", "format": "eml", "content_type": "message/rfc822", "path": "multipart_with_attachments.eml", "note": "grpc-email sample"},
+    {"id": "xml-jats-article", "format": "xml", "content_type": "application/xml", "path": "jats-article.xml", "note": "grpc-xml sample: JATS"},
+    {"id": "xml-uspto-grant", "format": "xml", "content_type": "application/xml", "path": "uspto-grant.xml", "note": "grpc-xml sample: USPTO"},
+    {"id": "epub-two-chapters", "format": "epub", "content_type": "application/epub+zip", "path": "two-chapters.epub", "note": "grpc-epub sample"},
+    {"id": "epub-cover-first", "format": "epub", "content_type": "application/epub+zip", "path": "cover-first.epub", "note": "grpc-epub sample"},
+    {"id": "png-report-page", "format": "png", "content_type": "image/png", "path": "report_page.png", "note": "tests/data raster: layout + table"},
+    {"id": "png-span-table", "format": "png", "content_type": "image/png", "path": "span_table.png", "note": "tests/data raster: spanning table"},
+    {"id": "png-bar-chart", "format": "png", "content_type": "image/png", "path": "bar_chart.png", "note": "tests/data raster: chart figure"},
+    {"id": "epub-great-gatsby", "format": "epub", "content_type": "application/epub+zip", "external_path": "/home/krickert/great_gatsby.epub", "note": "external: full-length book, many chapters"},
+    {"id": "pdf-diffusion-paper", "format": "pdf", "content_type": "application/pdf", "external_path": "/home/krickert/Diffusion_models_are_continuous_human_noise_operators.pdf", "note": "external: 11 page scientific paper with tables and figures"}
+  ]
+}

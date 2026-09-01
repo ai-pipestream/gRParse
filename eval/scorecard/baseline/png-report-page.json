@@ -1,0 +1,272 @@
+{
+ "agreement": {
+  "agreed": 0,
+  "claimed_fields": {
+   "grparse": 3
+  },
+  "collectors": [
+   "grparse"
+  ],
+  "conflicts": [],
+  "shared": 0,
+  "winners": {
+   "origin.binary_hash": "grparse",
+   "origin.filename": "grparse",
+   "origin.mimetype": "grparse"
+  }
+ },
+ "collectors": [
+  "grparse"
+ ],
+ "content_type": "image/png",
+ "counts": {
+  "body_items": 6,
+  "by_label": {
+   "picture": 1,
+   "section_header": 1,
+   "table": 1,
+   "text": 3
+  },
+  "form_items": 0,
+  "furniture_items": 0,
+  "groups": 0,
+  "headings": 1,
+  "key_value_items": 0,
+  "orphans": 0,
+  "pages": 1,
+  "pictures": 1,
+  "reading_chars": 1527,
+  "tables": 1,
+  "texts": 4
+ },
+ "doc_id": "png-report-page",
+ "filename": "report_page.png",
+ "format": "png",
+ "furniture_reading": [],
+ "groups": [],
+ "headings": [
+  {
+   "level": 1,
+   "ref": "#/texts/0",
+   "text": "Quarterly Throughput Report"
+  }
+ ],
+ "markdown": {
+  "chars": 1669,
+  "headings": 1,
+  "images": 0,
+  "sha256": "70a2f1ec3df8f7624e3864096217e3dabb898cabe18bab6f336c579ea7c97e4c",
+  "table_rows": 6
+ },
+ "origin_mimetype": "image/png",
+ "pictures": [
+  {
+   "caption": "",
+   "classification": "table",
+   "collectors": [
+    "grparse"
+   ],
+   "image": null,
+   "page": 1,
+   "parent": "#/body",
+   "parent_label": "body",
+   "parent_name": "",
+   "preceding_heading": "Quarterly Throughput Report",
+   "ref": "#/pictures/0"
+  }
+ ],
+ "reading": [
+  {
+   "hash": "777cc57beb8d62fe",
+   "label": "section_header",
+   "level": 1,
+   "ref": "#/texts/0",
+   "text": "Quarterly Throughput Report"
+  },
+  {
+   "hash": "527644f5d915b9b2",
+   "label": "text",
+   "ref": "#/texts/1",
+   "text": "The streaming parser sustained page pipeline overlap across "
+  },
+  {
+   "hash": "527644f5d915b9b2",
+   "label": "text",
+   "ref": "#/texts/2",
+   "text": "The streaming parser sustained page pipeline overlap across "
+  },
+  {
+   "hash": "dd81f00254f6abdf",
+   "label": "table",
+   "ref": "#/tables/0",
+   "text": "5x4"
+  },
+  {
+   "hash": "93c4df58c5586ba2",
+   "label": "text",
+   "ref": "#/texts/3",
+   "text": "Figure 1: sustained overlap"
+  },
+  {
+   "hash": "",
+   "label": "picture",
+   "ref": "#/pictures/0",
+   "text": ""
+  }
+ ],
+ "reading_text": "Quarterly Throughput Report\nThe streaming parser sustained page pipeline overlap across render and inference stages duri The streaming parser sustained page pipeline overlap across render and inference stages duri The streaming parser sustained page pipeline overlap across render and inference stages duri The streaming parser sustained page pipeline overlap across render and inference stages duri The streaming parser sustained page pipeline overlap across render and inference stages duri The streaming parser sustained page pipeline overlap across render and inference stages duri The streaming parser sustained page pipeline overlap across render and inference stages duri\nThe streaming parser sustained page pipeline overlap across render and inference stages duri The streaming parser sustained page pipeline overlap across render and inference stages duri The streaming parser sustained page pipeline overlap across render and inference stages duri The streaming parser sustained page pipeline overlap across render and inference stages duri The streaming parser sustained page pipeline overlap across render and inference stages duri The streaming parser sustained page pipeline overlap across render and inference stages duri The streaming parser sustained page pipeline overlap across render and inference stages duri\ncol0\ncol 1\ncol 2\ncol3\ncell 1,0\ncell 1, 1\ncell 1,2\ncell 1,3\ncell 2,0\ncell 2, 1\ncell 2,2\ncell 2,3\ncell 3,0\ncell 3, 1\ncell 3,2\ncell 3,3\ncell 4,0\ncell 4, 1\ncell 4,2\ncell 4,3\nFigure 1: sustained overlap",
+ "schema": 1,
+ "status": "CONVERSION_STATUS_SUCCESS",
+ "tables": [
+  {
+   "caption": "",
+   "cells": [
+    [
+     0,
+     0,
+     1,
+     1,
+     "col0"
+    ],
+    [
+     0,
+     1,
+     1,
+     1,
+     "col 1"
+    ],
+    [
+     0,
+     2,
+     1,
+     1,
+     "col 2"
+    ],
+    [
+     0,
+     3,
+     1,
+     1,
+     "col3"
+    ],
+    [
+     1,
+     0,
+     1,
+     1,
+     "cell 1,0"
+    ],
+    [
+     1,
+     1,
+     1,
+     1,
+     "cell 1, 1"
+    ],
+    [
+     1,
+     2,
+     1,
+     1,
+     "cell 1,2"
+    ],
+    [
+     1,
+     3,
+     1,
+     1,
+     "cell 1,3"
+    ],
+    [
+     2,
+     0,
+     1,
+     1,
+     "cell 2,0"
+    ],
+    [
+     2,
+     1,
+     1,
+     1,
+     "cell 2, 1"
+    ],
+    [
+     2,
+     2,
+     1,
+     1,
+     "cell 2,2"
+    ],
+    [
+     2,
+     3,
+     1,
+     1,
+     "cell 2,3"
+    ],
+    [
+     3,
+     0,
+     1,
+     1,
+     "cell 3,0"
+    ],
+    [
+     3,
+     1,
+     1,
+     1,
+     "cell 3, 1"
+    ],
+    [
+     3,
+     2,
+     1,
+     1,
+     "cell 3,2"
+    ],
+    [
+     3,
+     3,
+     1,
+     1,
+     "cell 3,3"
+    ],
+    [
+     4,
+     0,
+     1,
+     1,
+     "cell 4,0"
+    ],
+    [
+     4,
+     1,
+     1,
+     1,
+     "cell 4, 1"
+    ],
+    [
+     4,
+     2,
+     1,
+     1,
+     "cell 4,2"
+    ],
+    [
+     4,
+     3,
+     1,
+     1,
+     "cell 4,3"
+    ]
+   ],
+   "cols": 4,
+   "column_headers": 0,
+   "ref": "#/tables/0",
+   "rows": 5
+  }
+ ],
+ "warnings": []
+}

@@ -1,0 +1,294 @@
+{
+ "agreement": {
+  "agreed": 1,
+  "claimed_fields": {
+   "grparse": 3,
+   "xml": 6
+  },
+  "collectors": [
+   "grparse",
+   "xml"
+  ],
+  "conflicts": [],
+  "shared": 1,
+  "winners": {
+   "origin.binary_hash": "grparse",
+   "origin.filename": "grparse",
+   "origin.mimetype": "grparse",
+   "origin.mimetype_evidence": "xml",
+   "source_meta.title": "xml"
+  }
+ },
+ "collectors": [
+  "grparse",
+  "xml"
+ ],
+ "content_type": "application/xml",
+ "counts": {
+  "body_items": 22,
+  "by_label": {
+   "picture": 1,
+   "section_header": 3,
+   "table": 1,
+   "text": 16,
+   "title": 1
+  },
+  "form_items": 0,
+  "furniture_items": 0,
+  "groups": 0,
+  "headings": 4,
+  "key_value_items": 0,
+  "orphans": 0,
+  "pages": 0,
+  "pictures": 1,
+  "reading_chars": 537,
+  "tables": 1,
+  "texts": 20
+ },
+ "doc_id": "xml-jats-article",
+ "filename": "jats-article.xml",
+ "format": "xml",
+ "furniture_reading": [],
+ "groups": [],
+ "headings": [
+  {
+   "level": 0,
+   "ref": "#/texts/2",
+   "text": "Streaming XML Without a DOM"
+  },
+  {
+   "level": 1,
+   "ref": "#/texts/9",
+   "text": "Introduction"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/12",
+   "text": "Scope"
+  },
+  {
+   "level": 1,
+   "ref": "#/texts/14",
+   "text": "Results"
+  }
+ ],
+ "markdown": {
+  "chars": 1809,
+  "headings": 4,
+  "images": 0,
+  "sha256": "55304e363b3cd4188407e324b1add48e342d1a58be828180b89d7bde179b3d54",
+  "table_rows": 4
+ },
+ "origin_mimetype": "application/xml",
+ "pictures": [
+  {
+   "caption": "",
+   "classification": "",
+   "collectors": [
+    "xml"
+   ],
+   "image": null,
+   "page": null,
+   "parent": "#/texts/14",
+   "parent_label": "section_header",
+   "parent_name": "",
+   "preceding_heading": "Results",
+   "ref": "#/pictures/0"
+  }
+ ],
+ "reading": [
+  {
+   "hash": "4db0a54b451e207c",
+   "label": "text",
+   "ref": "#/texts/0",
+   "text": "Journal of Streaming Parsers"
+  },
+  {
+   "hash": "86494f6e73afec5d",
+   "label": "text",
+   "ref": "#/texts/1",
+   "text": "10.1234/jsp.2026.001"
+  },
+  {
+   "hash": "18e2400ab8f51392",
+   "label": "title",
+   "level": 0,
+   "ref": "#/texts/2",
+   "text": "Streaming XML Without a DOM"
+  },
+  {
+   "hash": "ea2c99d7f61a6768",
+   "label": "text",
+   "ref": "#/texts/3",
+   "text": "Rivera Ana"
+  },
+  {
+   "hash": "ecb50cd74674c9ca",
+   "label": "text",
+   "ref": "#/texts/4",
+   "text": "Okafor Chidi"
+  },
+  {
+   "hash": "ee3681d195f43341",
+   "label": "text",
+   "ref": "#/texts/5",
+   "text": "Institute for Pull Parsing"
+  },
+  {
+   "hash": "00c30384212361a1",
+   "label": "text",
+   "ref": "#/texts/6",
+   "text": "A collector need not build a tree to produce a document."
+  },
+  {
+   "hash": "b304adc33719d6cd",
+   "label": "text",
+   "ref": "#/texts/7",
+   "text": "streaming"
+  },
+  {
+   "hash": "bf92a04e60b4b236",
+   "label": "text",
+   "ref": "#/texts/8",
+   "text": "xml"
+  },
+  {
+   "hash": "b605350bc0020952",
+   "label": "section_header",
+   "level": 1,
+   "ref": "#/texts/9",
+   "text": "Introduction"
+  },
+  {
+   "hash": "fb46332613bcd49f",
+   "label": "text",
+   "ref": "#/texts/10",
+   "text": "A pull parser yields events in document order."
+  },
+  {
+   "hash": "a730975c132b6599",
+   "label": "text",
+   "ref": "#/texts/11",
+   "text": "Each item is forwarded as soon as its end tag is read."
+  },
+  {
+   "hash": "b073f6c68ef87211",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/12",
+   "text": "Scope"
+  },
+  {
+   "hash": "9b10c4b0586403c0",
+   "label": "text",
+   "ref": "#/texts/13",
+   "text": "Four dialects are in scope."
+  },
+  {
+   "hash": "219c4a6c86a716e9",
+   "label": "section_header",
+   "level": 1,
+   "ref": "#/texts/14",
+   "text": "Results"
+  },
+  {
+   "hash": "cae969ced26d5b3f",
+   "label": "text",
+   "ref": "#/texts/15",
+   "text": "Throughput by dialect."
+  },
+  {
+   "hash": "3fb821647a56bcce",
+   "label": "table",
+   "ref": "#/tables/0",
+   "text": "3x2"
+  },
+  {
+   "hash": "",
+   "label": "picture",
+   "ref": "#/pictures/0",
+   "text": ""
+  },
+  {
+   "hash": "515f7260086dec85",
+   "label": "text",
+   "ref": "#/texts/16",
+   "text": "The event pipeline."
+  },
+  {
+   "hash": "085a994e588ce1d5",
+   "label": "text",
+   "ref": "#/texts/17",
+   "text": "Throughput scales with the number of concurrent streams."
+  },
+  {
+   "hash": "6be521d371d41f1c",
+   "label": "text",
+   "ref": "#/texts/18",
+   "text": "Rivera A. Parsers. 2025."
+  },
+  {
+   "hash": "0e56052d9ca61189",
+   "label": "text",
+   "ref": "#/texts/19",
+   "text": "Okafor C. Streams. 2026."
+  }
+ ],
+ "reading_text": "Journal of Streaming Parsers\n10.1234/jsp.2026.001\nStreaming XML Without a DOM\nRivera Ana\nOkafor Chidi\nInstitute for Pull Parsing\nA collector need not build a tree to produce a document.\nstreaming\nxml\nIntroduction\nA pull parser yields events in document order.\nEach item is forwarded as soon as its end tag is read.\nScope\nFour dialects are in scope.\nResults\nThroughput by dialect.\nDialect\nMB/s\nJATS\n180\nXBRL\n240\nThe event pipeline.\nThroughput scales with the number of concurrent streams.\nRivera A. Parsers. 2025.\nOkafor C. Streams. 2026.",
+ "schema": 1,
+ "status": "CONVERSION_STATUS_SUCCESS",
+ "tables": [
+  {
+   "caption": "Throughput by dialect.",
+   "cells": [
+    [
+     0,
+     0,
+     1,
+     1,
+     "Dialect"
+    ],
+    [
+     0,
+     1,
+     1,
+     1,
+     "MB/s"
+    ],
+    [
+     1,
+     0,
+     1,
+     1,
+     "JATS"
+    ],
+    [
+     1,
+     1,
+     1,
+     1,
+     "180"
+    ],
+    [
+     2,
+     0,
+     1,
+     1,
+     "XBRL"
+    ],
+    [
+     2,
+     1,
+     1,
+     1,
+     "240"
+    ]
+   ],
+   "cols": 2,
+   "column_headers": 2,
+   "ref": "#/tables/0",
+   "rows": 3
+  }
+ ],
+ "warnings": []
+}

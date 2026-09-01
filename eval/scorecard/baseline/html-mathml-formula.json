@@ -1,0 +1,88 @@
+{
+ "agreement": {
+  "agreed": 0,
+  "claimed_fields": {
+   "grparse": 3,
+   "markup": 2
+  },
+  "collectors": [
+   "grparse",
+   "markup"
+  ],
+  "conflicts": [
+   {
+    "field": "origin.mimetype",
+    "values": {
+     "grparse": "application/octet-stream",
+     "markup": "text/html"
+    },
+    "winner": "grparse"
+   }
+  ],
+  "shared": 1,
+  "winners": {
+   "origin.binary_hash": "grparse",
+   "origin.filename": "grparse",
+   "origin.mimetype": "grparse",
+   "origin.mimetype_evidence": "markup"
+  }
+ },
+ "collectors": [
+  "grparse",
+  "markup"
+ ],
+ "content_type": "text/html",
+ "counts": {
+  "body_items": 2,
+  "by_label": {
+   "text": 2
+  },
+  "form_items": 0,
+  "furniture_items": 0,
+  "groups": 0,
+  "headings": 0,
+  "key_value_items": 0,
+  "orphans": 0,
+  "pages": 0,
+  "pictures": 0,
+  "reading_chars": 22,
+  "tables": 0,
+  "texts": 2
+ },
+ "doc_id": "html-mathml-formula",
+ "filename": "mathml_formula.html",
+ "format": "html",
+ "furniture_reading": [],
+ "groups": [],
+ "headings": [],
+ "markdown": {
+  "chars": 183,
+  "headings": 0,
+  "images": 0,
+  "sha256": "9a03bbfbbab89b78433907993ad972073b253468818dd8ebc414010af863793a",
+  "table_rows": 0
+ },
+ "origin_mimetype": "application/octet-stream",
+ "pictures": [],
+ "reading": [
+  {
+   "hash": "741d4955f2dd529c",
+   "label": "text",
+   "ref": "#/texts/0",
+   "text": "An HTML paragraph."
+  },
+  {
+   "hash": "156f5402c1d0baa8",
+   "label": "text",
+   "ref": "#/texts/1",
+   "text": "x+1"
+  }
+ ],
+ "reading_text": "An HTML paragraph.\nx+1",
+ "schema": 1,
+ "status": "CONVERSION_STATUS_SUCCESS",
+ "tables": [],
+ "warnings": [
+  "mimetype-mismatch:text/html!=application/octet-stream"
+ ]
+}

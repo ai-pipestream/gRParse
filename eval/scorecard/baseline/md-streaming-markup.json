@@ -1,0 +1,304 @@
+{
+ "agreement": {
+  "agreed": 0,
+  "claimed_fields": {
+   "grparse": 3,
+   "markup": 6
+  },
+  "collectors": [
+   "grparse",
+   "markup"
+  ],
+  "conflicts": [
+   {
+    "field": "origin.mimetype",
+    "values": {
+     "grparse": "application/octet-stream",
+     "markup": "text/markdown"
+    },
+    "winner": "grparse"
+   }
+  ],
+  "shared": 1,
+  "winners": {
+   "origin.binary_hash": "grparse",
+   "origin.filename": "grparse",
+   "origin.mimetype": "grparse",
+   "origin.mimetype_evidence": "markup",
+   "source_meta.title": "markup"
+  }
+ },
+ "collectors": [
+  "grparse",
+  "markup"
+ ],
+ "content_type": "text/markdown",
+ "counts": {
+  "body_items": 18,
+  "by_label": {
+   "code": 1,
+   "formula": 1,
+   "group:list": 1,
+   "group:ordered_list": 1,
+   "group:unspecified": 1,
+   "list_item": 4,
+   "picture": 1,
+   "section_header": 1,
+   "table": 1,
+   "text": 5,
+   "title": 1
+  },
+  "form_items": 0,
+  "furniture_items": 0,
+  "groups": 3,
+  "headings": 2,
+  "key_value_items": 0,
+  "orphans": 0,
+  "pages": 0,
+  "pictures": 1,
+  "reading_chars": 306,
+  "tables": 1,
+  "texts": 13
+ },
+ "doc_id": "md-streaming-markup",
+ "filename": "streaming-markup.md",
+ "format": "md",
+ "furniture_reading": [],
+ "groups": [
+  {
+   "children": 1,
+   "depth": 2,
+   "label": "unspecified",
+   "name": "quote",
+   "ref": "#/groups/0"
+  },
+  {
+   "children": 3,
+   "depth": 2,
+   "label": "list",
+   "name": "list",
+   "ref": "#/groups/1"
+  },
+  {
+   "children": 2,
+   "depth": 3,
+   "label": "ordered_list",
+   "name": "list",
+   "ref": "#/groups/2"
+  }
+ ],
+ "headings": [
+  {
+   "level": 0,
+   "ref": "#/texts/0",
+   "text": "Streaming Markup"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/2",
+   "text": "Blocks"
+  }
+ ],
+ "markdown": {
+  "chars": 728,
+  "headings": 2,
+  "images": 0,
+  "sha256": "e11db8070c4f725fe08a3d56e12e8557f1d718d02a06e1287a323f41cdd60dfa",
+  "table_rows": 4
+ },
+ "origin_mimetype": "application/octet-stream",
+ "pictures": [
+  {
+   "caption": "",
+   "classification": "",
+   "collectors": [
+    "markup"
+   ],
+   "image": {
+    "mimetype": "image/png",
+    "uri": "figures/engine.png"
+   },
+   "page": 0,
+   "parent": "#/texts/2",
+   "parent_label": "section_header",
+   "parent_name": "",
+   "preceding_heading": "Blocks",
+   "ref": "#/pictures/0"
+  }
+ ],
+ "reading": [
+  {
+   "hash": "3f376d1ba1162245",
+   "label": "title",
+   "level": 0,
+   "ref": "#/texts/0",
+   "text": "Streaming Markup"
+  },
+  {
+   "hash": "26857f5b17f2f723",
+   "label": "text",
+   "ref": "#/texts/1",
+   "text": "An opening paragraph with emphasis and inline code."
+  },
+  {
+   "hash": "1cd5a6687bb76e39",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/2",
+   "text": "Blocks"
+  },
+  {
+   "hash": "5fdefec017e0173c",
+   "label": "group:unspecified",
+   "name": "quote",
+   "ref": "#/groups/0",
+   "text": "quote"
+  },
+  {
+   "hash": "d61289e010c11ff9",
+   "label": "text",
+   "ref": "#/texts/3",
+   "text": "A quoted sentence. Split across source lines."
+  },
+  {
+   "hash": "37b8e1b694aa16fc",
+   "label": "group:list",
+   "name": "list",
+   "ref": "#/groups/1",
+   "text": "list"
+  },
+  {
+   "hash": "eed1ff98110ced13",
+   "label": "list_item",
+   "ref": "#/texts/4",
+   "text": "first bullet"
+  },
+  {
+   "hash": "49a1e36f48f8be13",
+   "label": "list_item",
+   "ref": "#/texts/5",
+   "text": "second bullet"
+  },
+  {
+   "hash": "b10bb820712321a3",
+   "label": "group:ordered_list",
+   "name": "list",
+   "ref": "#/groups/2",
+   "text": "list"
+  },
+  {
+   "hash": "bc0f8c6ba9013969",
+   "label": "list_item",
+   "ref": "#/texts/6",
+   "text": "nested one"
+  },
+  {
+   "hash": "07278006f2edf0fb",
+   "label": "list_item",
+   "ref": "#/texts/7",
+   "text": "nested two"
+  },
+  {
+   "hash": "d4fd629f6809b445",
+   "label": "code",
+   "ref": "#/texts/8",
+   "text": "fn main() { println!(\"hi\"); }"
+  },
+  {
+   "hash": "52ce49b0f3474e7a",
+   "label": "table",
+   "ref": "#/tables/0",
+   "text": "3x2"
+  },
+  {
+   "hash": "",
+   "label": "picture",
+   "ref": "#/pictures/0",
+   "text": ""
+  },
+  {
+   "hash": "99cf0212d97b95a6",
+   "label": "text",
+   "ref": "#/texts/9",
+   "text": "A paragraph mentioningn a footnote."
+  },
+  {
+   "hash": "e538463176392c9c",
+   "label": "text",
+   "ref": "#/texts/10",
+   "text": "The footnote body."
+  },
+  {
+   "hash": "2820951a377c18ce",
+   "label": "formula",
+   "ref": "#/texts/11",
+   "text": "E = mc^2"
+  },
+  {
+   "hash": "7af023c43013b9a5",
+   "label": "text",
+   "ref": "#/texts/12",
+   "text": "Docs"
+  }
+ ],
+ "reading_text": "Streaming Markup\nAn opening paragraph with emphasis and inline code.\nBlocks\nA quoted sentence. Split across source lines.\nfirst bullet\nsecond bullet\nnested one\nnested two\nfn main() { println!(\"hi\"); }\nName\nRole\nAda\nAnalyst\nCharles\nEngine\nA paragraph mentioningn a footnote.\nThe footnote body.\nE = mc^2\nDocs",
+ "schema": 1,
+ "status": "CONVERSION_STATUS_SUCCESS",
+ "tables": [
+  {
+   "caption": "",
+   "cells": [
+    [
+     0,
+     0,
+     1,
+     1,
+     "Name"
+    ],
+    [
+     0,
+     1,
+     1,
+     1,
+     "Role"
+    ],
+    [
+     1,
+     0,
+     1,
+     1,
+     "Ada"
+    ],
+    [
+     1,
+     1,
+     1,
+     1,
+     "Analyst"
+    ],
+    [
+     2,
+     0,
+     1,
+     1,
+     "Charles"
+    ],
+    [
+     2,
+     1,
+     1,
+     1,
+     "Engine"
+    ]
+   ],
+   "cols": 2,
+   "column_headers": 6,
+   "ref": "#/tables/0",
+   "rows": 3
+  }
+ ],
+ "warnings": [
+  "mimetype-mismatch:text/markdown!=application/octet-stream",
+  "heading-level-jump:#/texts/2"
+ ]
+}

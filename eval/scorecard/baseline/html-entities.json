@@ -1,0 +1,89 @@
+{
+ "agreement": {
+  "agreed": 0,
+  "claimed_fields": {
+   "grparse": 3,
+   "markup": 3
+  },
+  "collectors": [
+   "grparse",
+   "markup"
+  ],
+  "conflicts": [
+   {
+    "field": "origin.mimetype",
+    "values": {
+     "grparse": "application/octet-stream",
+     "markup": "text/html"
+    },
+    "winner": "grparse"
+   }
+  ],
+  "shared": 1,
+  "winners": {
+   "origin.binary_hash": "grparse",
+   "origin.filename": "grparse",
+   "origin.mimetype": "grparse",
+   "origin.mimetype_evidence": "markup",
+   "source_meta.title": "markup"
+  }
+ },
+ "collectors": [
+  "grparse",
+  "markup"
+ ],
+ "content_type": "text/html",
+ "counts": {
+  "body_items": 2,
+  "by_label": {
+   "text": 2
+  },
+  "form_items": 0,
+  "furniture_items": 0,
+  "groups": 0,
+  "headings": 0,
+  "key_value_items": 0,
+  "orphans": 0,
+  "pages": 0,
+  "pictures": 0,
+  "reading_chars": 62,
+  "tables": 0,
+  "texts": 2
+ },
+ "doc_id": "html-entities",
+ "filename": "entities.html",
+ "format": "html",
+ "furniture_reading": [],
+ "groups": [],
+ "headings": [],
+ "markdown": {
+  "chars": 96,
+  "headings": 0,
+  "images": 0,
+  "sha256": "f227348ba579013020d2a7c784146aa74322bd01cf0dcd0547657b6ad718e333",
+  "table_rows": 0
+ },
+ "origin_mimetype": "application/octet-stream",
+ "pictures": [],
+ "reading": [
+  {
+   "hash": "195cfbfdd71d5c69",
+   "label": "text",
+   "ref": "#/texts/0",
+   "text": "Byrd & Davis, “curly” quotes, <escaped tag>, café."
+  },
+  {
+   "hash": "63fe90340b48e2d2",
+   "label": "text",
+   "ref": "#/texts/1",
+   "text": "link & text"
+  }
+ ],
+ "reading_text": "Byrd & Davis, “curly” quotes, <escaped tag>, café.\nlink & text",
+ "schema": 1,
+ "status": "CONVERSION_STATUS_SUCCESS",
+ "tables": [],
+ "warnings": [
+  "mimetype-mismatch:text/html!=application/octet-stream"
+ ]
+}

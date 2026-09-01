@@ -1,0 +1,81 @@
+{
+ "agreement": {
+  "agreed": 1,
+  "claimed_fields": {
+   "grparse": 3,
+   "pdf": 6
+  },
+  "collectors": [
+   "grparse",
+   "pdf"
+  ],
+  "conflicts": [],
+  "shared": 1,
+  "winners": {
+   "origin.binary_hash": "grparse",
+   "origin.filename": "grparse",
+   "origin.mimetype": "grparse",
+   "source_meta.format_version": "pdf",
+   "source_meta.protection.allows_extraction": "pdf",
+   "source_meta.protection.allows_printing": "pdf",
+   "source_meta.protection.opened_without_password": "pdf",
+   "source_meta.structured": "pdf"
+  }
+ },
+ "collectors": [
+  "grparse",
+  "pdf"
+ ],
+ "content_type": "application/pdf",
+ "counts": {
+  "body_items": 2,
+  "by_label": {
+   "text": 2
+  },
+  "form_items": 0,
+  "furniture_items": 0,
+  "groups": 0,
+  "headings": 0,
+  "key_value_items": 0,
+  "orphans": 0,
+  "pages": 2,
+  "pictures": 0,
+  "reading_chars": 217,
+  "tables": 0,
+  "texts": 2
+ },
+ "doc_id": "pdf-hello-text",
+ "filename": "hello-text.pdf",
+ "format": "pdf",
+ "furniture_reading": [],
+ "groups": [],
+ "headings": [],
+ "markdown": {
+  "chars": 218,
+  "headings": 0,
+  "images": 0,
+  "sha256": "2dd03fd12ca8c6522b5fc960b4b3a5caf4bcb8870580524a1391c9b53e72793f",
+  "table_rows": 0
+ },
+ "origin_mimetype": "application/pdf",
+ "pictures": [],
+ "reading": [
+  {
+   "hash": "2fc4fb64307779f0",
+   "label": "text",
+   "ref": "#/texts/0",
+   "text": "hello from the demo, page 1 lorem ipsum dolor sit amet lorem"
+  },
+  {
+   "hash": "51e26b3a6bb16480",
+   "label": "text",
+   "ref": "#/texts/1",
+   "text": "hello from the demo, page 2 lorem ipsum dolor sit amet lorem"
+  }
+ ],
+ "reading_text": "hello from the demo, page 1 lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet\nhello from the demo, page 2 lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet",
+ "schema": 1,
+ "status": "CONVERSION_STATUS_SUCCESS",
+ "tables": [],
+ "warnings": []
+}

@@ -1,0 +1,150 @@
+{
+ "agreement": {
+  "agreed": 2,
+  "claimed_fields": {
+   "email": 14,
+   "grparse": 3
+  },
+  "collectors": [
+   "email",
+   "grparse"
+  ],
+  "conflicts": [
+   {
+    "field": "origin.binary_hash",
+    "values": {
+     "email": "17489884797683942109",
+     "grparse": "5368419582370657899"
+    },
+    "winner": "grparse"
+   }
+  ],
+  "shared": 3,
+  "winners": {
+   "origin.binary_hash": "grparse",
+   "origin.filename": "grparse",
+   "origin.mimetype": "grparse",
+   "source_meta.created.seconds": "email",
+   "source_meta.created_raw": "email",
+   "source_meta.title": "email"
+  }
+ },
+ "collectors": [
+  "email",
+  "grparse"
+ ],
+ "content_type": "message/rfc822",
+ "counts": {
+  "body_items": 6,
+  "by_label": {
+   "group:list": 1,
+   "list_item": 2,
+   "picture": 1,
+   "text": 1,
+   "title": 1
+  },
+  "form_items": 0,
+  "furniture_items": 0,
+  "groups": 1,
+  "headings": 1,
+  "key_value_items": 0,
+  "orphans": 0,
+  "pages": 0,
+  "pictures": 1,
+  "reading_chars": 125,
+  "tables": 0,
+  "texts": 4
+ },
+ "doc_id": "eml-multipart-attachments",
+ "filename": "multipart_with_attachments.eml",
+ "format": "eml",
+ "furniture_reading": [],
+ "groups": [
+  {
+   "children": 2,
+   "depth": 1,
+   "label": "list",
+   "name": "attachments",
+   "ref": "#/groups/0"
+  }
+ ],
+ "headings": [
+  {
+   "level": 0,
+   "ref": "#/texts/0",
+   "text": "Rückfrage zur Anhörung"
+  }
+ ],
+ "markdown": {
+  "chars": 223,
+  "headings": 1,
+  "images": 0,
+  "sha256": "1e3068869f2fb2f4a3e88b104f8d238d0d80375d64a3511439fd4aee1652597e",
+  "table_rows": 0
+ },
+ "origin_mimetype": "message/rfc822",
+ "pictures": [
+  {
+   "caption": "",
+   "classification": "",
+   "collectors": [
+    "email"
+   ],
+   "image": {
+    "mimetype": "image/png",
+    "uri": "part:1.3"
+   },
+   "page": null,
+   "parent": "#/body",
+   "parent_label": "body",
+   "parent_name": "",
+   "preceding_heading": "Rückfrage zur Anhörung",
+   "ref": "#/pictures/0"
+  }
+ ],
+ "reading": [
+  {
+   "hash": "63a6baa1a0b4254e",
+   "label": "title",
+   "level": 0,
+   "ref": "#/texts/0",
+   "text": "Rückfrage zur Anhörung"
+  },
+  {
+   "hash": "8b304e22731b282f",
+   "label": "text",
+   "ref": "#/texts/1",
+   "text": "Die Anhörung beginnt um 09:00 Uhr."
+  },
+  {
+   "hash": "05e544097b948f5d",
+   "label": "group:list",
+   "name": "attachments",
+   "ref": "#/groups/0",
+   "text": "attachments"
+  },
+  {
+   "hash": "abf6218919b24e73",
+   "label": "list_item",
+   "ref": "#/texts/2",
+   "text": "order.pdf (application/pdf, 25 bytes)"
+  },
+  {
+   "hash": "25a5164c2df4c96e",
+   "label": "list_item",
+   "ref": "#/texts/3",
+   "text": "seal.png (image/png, 8 bytes)"
+  },
+  {
+   "hash": "",
+   "label": "picture",
+   "ref": "#/pictures/0",
+   "text": ""
+  }
+ ],
+ "reading_text": "Rückfrage zur Anhörung\nDie Anhörung beginnt um 09:00 Uhr.\norder.pdf (application/pdf, 25 bytes)\nseal.png (image/png, 8 bytes)",
+ "schema": 1,
+ "status": "CONVERSION_STATUS_SUCCESS",
+ "tables": [],
+ "warnings": []
+}

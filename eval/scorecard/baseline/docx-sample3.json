@@ -1,0 +1,817 @@
+{
+ "agreement": {
+  "agreed": 2,
+  "claimed_fields": {
+   "grparse": 3,
+   "libreoffice": 19
+  },
+  "collectors": [
+   "grparse",
+   "libreoffice"
+  ],
+  "conflicts": [],
+  "shared": 2,
+  "winners": {
+   "origin.binary_hash": "grparse",
+   "origin.filename": "grparse",
+   "origin.mimetype": "grparse",
+   "source_meta.created.seconds": "libreoffice",
+   "source_meta.editing_cycles": "libreoffice",
+   "source_meta.editing_duration_seconds": "libreoffice",
+   "source_meta.generator": "libreoffice",
+   "source_meta.modified.seconds": "libreoffice",
+   "source_meta.modified_by": "libreoffice",
+   "source_meta.statistics.characters": "libreoffice",
+   "source_meta.statistics.images": "libreoffice",
+   "source_meta.statistics.objects": "libreoffice",
+   "source_meta.statistics.pages": "libreoffice",
+   "source_meta.statistics.paragraphs": "libreoffice",
+   "source_meta.statistics.tables": "libreoffice",
+   "source_meta.statistics.words": "libreoffice",
+   "source_meta.template": "libreoffice"
+  }
+ },
+ "collectors": [
+  "grparse",
+  "libreoffice"
+ ],
+ "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+ "counts": {
+  "body_items": 39,
+  "by_label": {
+   "list_item": 8,
+   "picture": 4,
+   "section_header": 9,
+   "table": 2,
+   "text": 16
+  },
+  "form_items": 0,
+  "furniture_items": 0,
+  "groups": 0,
+  "headings": 9,
+  "key_value_items": 0,
+  "orphans": 0,
+  "pages": 3,
+  "pictures": 4,
+  "reading_chars": 2593,
+  "tables": 2,
+  "texts": 33
+ },
+ "doc_id": "docx-sample3",
+ "filename": "sample3.docx",
+ "format": "docx",
+ "furniture_reading": [],
+ "groups": [],
+ "headings": [
+  {
+   "level": 1,
+   "ref": "#/texts/0",
+   "text": "Sample Document"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/2",
+   "text": "Headings"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/4",
+   "text": "Lists"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/14",
+   "text": "Links"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/17",
+   "text": "Images"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/23",
+   "text": "Tables"
+  },
+  {
+   "level": 3,
+   "ref": "#/texts/24",
+   "text": "Simple Tables"
+  },
+  {
+   "level": 3,
+   "ref": "#/texts/27",
+   "text": "Complex Tables"
+  },
+  {
+   "level": 2,
+   "ref": "#/texts/30",
+   "text": "Columns"
+  }
+ ],
+ "markdown": {
+  "chars": 3373,
+  "headings": 9,
+  "images": 0,
+  "sha256": "9ea3f0dd93f05fe02bff667712aefaec56b20a8788c094f60dce5d099493fe7e",
+  "table_rows": 15
+ },
+ "origin_mimetype": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+ "pictures": [
+  {
+   "caption": "",
+   "classification": "",
+   "collectors": [
+    "libreoffice"
+   ],
+   "image": {
+    "bytes": 5427,
+    "mimetype": "image/gif",
+    "sha256": "9bd151e32c7e17c2986bbbee33648291ccac84d2400e4b5d35b565e292bffe98"
+   },
+   "page": 1,
+   "parent": "#/body",
+   "parent_label": "body",
+   "parent_name": "",
+   "preceding_heading": "Columns",
+   "ref": "#/pictures/0"
+  },
+  {
+   "caption": "",
+   "classification": "",
+   "collectors": [
+    "libreoffice"
+   ],
+   "image": {
+    "bytes": 9398,
+    "mimetype": "image/png",
+    "sha256": "3624f3b104bb8e00e0355c6dce3b4d8ed664819434d3d9e0c4ee476fd52f21fb"
+   },
+   "page": 2,
+   "parent": "#/body",
+   "parent_label": "body",
+   "parent_name": "",
+   "preceding_heading": "Columns",
+   "ref": "#/pictures/1"
+  },
+  {
+   "caption": "",
+   "classification": "engineering_drawing",
+   "collectors": [
+    "grparse"
+   ],
+   "image": null,
+   "page": 1,
+   "parent": "#/body",
+   "parent_label": "body",
+   "parent_name": "",
+   "preceding_heading": "Columns",
+   "ref": "#/pictures/2"
+  },
+  {
+   "caption": "",
+   "classification": "pie_chart",
+   "collectors": [
+    "grparse"
+   ],
+   "image": null,
+   "page": 2,
+   "parent": "#/body",
+   "parent_label": "body",
+   "parent_name": "",
+   "preceding_heading": "Columns",
+   "ref": "#/pictures/3"
+  }
+ ],
+ "reading": [
+  {
+   "hash": "3b13284502ee8d00",
+   "label": "section_header",
+   "level": 1,
+   "ref": "#/texts/0",
+   "text": "Sample Document"
+  },
+  {
+   "hash": "1658c7ee6e59e59d",
+   "label": "text",
+   "ref": "#/texts/1",
+   "text": "This document was created using accessibility techniques for"
+  },
+  {
+   "hash": "a3e7821cf681efe3",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/2",
+   "text": "Headings"
+  },
+  {
+   "hash": "7c0ffa31c44e169b",
+   "label": "text",
+   "ref": "#/texts/3",
+   "text": "There are eight section headings in this document. At the be"
+  },
+  {
+   "hash": "308d5a0903f2c571",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/4",
+   "text": "Lists"
+  },
+  {
+   "hash": "1736bc93de746d51",
+   "label": "text",
+   "ref": "#/texts/5",
+   "text": "The following outline of the sections of this document is an"
+  },
+  {
+   "hash": "a3e7821cf681efe3",
+   "label": "list_item",
+   "ref": "#/texts/6",
+   "text": "Headings"
+  },
+  {
+   "hash": "308d5a0903f2c571",
+   "label": "list_item",
+   "ref": "#/texts/7",
+   "text": "Lists"
+  },
+  {
+   "hash": "9024c197d84940e4",
+   "label": "list_item",
+   "ref": "#/texts/8",
+   "text": "Links"
+  },
+  {
+   "hash": "be7e2f20129365c2",
+   "label": "list_item",
+   "ref": "#/texts/9",
+   "text": "Images"
+  },
+  {
+   "hash": "e3fe2a3fe52c9c35",
+   "label": "list_item",
+   "ref": "#/texts/10",
+   "text": "Tables"
+  },
+  {
+   "hash": "194205fc1dae5867",
+   "label": "list_item",
+   "ref": "#/texts/11",
+   "text": "Simple Tables"
+  },
+  {
+   "hash": "f9787b17d5af5d36",
+   "label": "list_item",
+   "ref": "#/texts/12",
+   "text": "Complex Tables"
+  },
+  {
+   "hash": "53aade77cd69a77b",
+   "label": "list_item",
+   "ref": "#/texts/13",
+   "text": "Columns"
+  },
+  {
+   "hash": "9024c197d84940e4",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/14",
+   "text": "Links"
+  },
+  {
+   "hash": "e76c54e2bfafdb63",
+   "label": "text",
+   "ref": "#/texts/15",
+   "text": "In web documents, links can point different locations on the"
+  },
+  {
+   "hash": "8e8936fd2a064ffc",
+   "label": "text",
+   "ref": "#/texts/16",
+   "text": "Top of this Page Sample Document Sample Document (docx)"
+  },
+  {
+   "hash": "be7e2f20129365c2",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/17",
+   "text": "Images"
+  },
+  {
+   "hash": "59677d4b75949849",
+   "label": "text",
+   "ref": "#/texts/18",
+   "text": "Documents may contain images. For example, there is an image"
+  },
+  {
+   "hash": "72534e08763602fd",
+   "label": "text",
+   "ref": "#/texts/19",
+   "text": "Alt text should communicate what an image means, not how it "
+  },
+  {
+   "hash": "e3b0c44298fc1c14",
+   "label": "text",
+   "ref": "#/texts/20",
+   "text": ""
+  },
+  {
+   "hash": "46812db81bf07dd2",
+   "label": "text",
+   "ref": "#/texts/21",
+   "text": "Some images, such as charts or graphs, require long descript"
+  },
+  {
+   "hash": "e3b0c44298fc1c14",
+   "label": "text",
+   "ref": "#/texts/22",
+   "text": ""
+  },
+  {
+   "hash": "e3fe2a3fe52c9c35",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/23",
+   "text": "Tables"
+  },
+  {
+   "hash": "194205fc1dae5867",
+   "label": "section_header",
+   "level": 3,
+   "ref": "#/texts/24",
+   "text": "Simple Tables"
+  },
+  {
+   "hash": "5ed9848eecf337c4",
+   "label": "text",
+   "ref": "#/texts/25",
+   "text": "Simple tables have a uniform number of columns and rows, wit"
+  },
+  {
+   "hash": "4bb32cbfa92acb1c",
+   "label": "table",
+   "ref": "#/tables/0",
+   "text": "6x3"
+  },
+  {
+   "hash": "e3b0c44298fc1c14",
+   "label": "text",
+   "ref": "#/texts/26",
+   "text": ""
+  },
+  {
+   "hash": "f9787b17d5af5d36",
+   "label": "section_header",
+   "level": 3,
+   "ref": "#/texts/27",
+   "text": "Complex Tables"
+  },
+  {
+   "hash": "32f224bf3ae4ed85",
+   "label": "text",
+   "ref": "#/texts/28",
+   "text": "The following is a complex table, using merged cells as head"
+  },
+  {
+   "hash": "54c3954f47638fc6",
+   "label": "table",
+   "ref": "#/tables/1",
+   "text": "7x3"
+  },
+  {
+   "hash": "e3b0c44298fc1c14",
+   "label": "text",
+   "ref": "#/texts/29",
+   "text": ""
+  },
+  {
+   "hash": "53aade77cd69a77b",
+   "label": "section_header",
+   "level": 2,
+   "ref": "#/texts/30",
+   "text": "Columns"
+  },
+  {
+   "hash": "612762f2f4373bd8",
+   "label": "text",
+   "ref": "#/texts/31",
+   "text": "This is an example of columns. With columns, the page is spl"
+  },
+  {
+   "hash": "e97cce9db5ed9a29",
+   "label": "text",
+   "ref": "#/texts/32",
+   "text": "When columns are not created correctly, screen readers may r"
+  },
+  {
+   "hash": "9bd151e32c7e17c2",
+   "label": "picture",
+   "ref": "#/pictures/0",
+   "text": ""
+  },
+  {
+   "hash": "3624f3b104bb8e00",
+   "label": "picture",
+   "ref": "#/pictures/1",
+   "text": ""
+  },
+  {
+   "hash": "",
+   "label": "picture",
+   "ref": "#/pictures/2",
+   "text": ""
+  },
+  {
+   "hash": "",
+   "label": "picture",
+   "ref": "#/pictures/3",
+   "text": ""
+  }
+ ],
+ "reading_text": "Sample Document\nThis document was created using accessibility techniques for headings, lists, image alternate text, tables, and columns. It should be completely accessible using assistive technologies such as screen readers.\nHeadings\nThere are eight section headings in this document. At the beginning, \"Sample Document\" is a level 1 heading. The main section headings, such as \"Headings\" and \"Lists\" are level 2 headings. The Tables section contains two sub-headings, \"Simple Table\" and \"Complex Table,\" which are both level 3 headings.\nLists\nThe following outline of the sections of this document is an ordered (numbered) list with six items. The fifth item, \"Tables,\" contains a nested unordered (bulleted) list with two items.\nHeadings\nLists\nLinks\nImages\nTables\nSimple Tables\nComplex Tables\nColumns\nLinks\nIn web documents, links can point different locations on the page, different pages, or even downloadable documents, such as Word documents or PDFs:\nTop of this Page Sample Document Sample Document (docx)\nImages\nDocuments may contain images. For example, there is an image of the web accessibility symbol to the left of this paragraph. Its alternate text is \"Web Access Symbol\".\nAlt text should communicate what an image means, not how it looks.\nSome images, such as charts or graphs, require long descriptions, but not all document types allow that. In web pages, long descriptions may be provided in several ways: on the page below the image, via a link below the image, or via a link on the image.\nTables\nSimple Tables\nSimple tables have a uniform number of columns and rows, without any merged cells:\nScreen Reader\nResponses\nShare\nJAWS\n853\n49%\nNVDA\n238\n14%\nWindow-Eyes\n214\n12%\nSystem Access\n181\n10%\nVoiceOver\n159\n9%\nComplex Tables\nThe following is a complex table, using merged cells as headers for sections within the table. This can't be made accessible in all types of documents:\nMay 2012\nSeptember 2010\nScreen Reader\nResponses\nShare\nResponses\nShare\nJAWS\n853\n49%\n727\n59%\nNVDA\n238\n14%\n105\n9%\nWindow-Eyes\n214\n12%\n138\n11%\nSystem Access\n181\n10%\n58\n5%\nVoiceOver\n159\n9%\n120\n10%\nColumns\nThis is an example of columns. With columns, the page is split into two or more horizontal sections. Unlike tables, in which you usually read across a row and then down to the next, in columns, you read down a column and then across to the next.\nWhen columns are not created correctly, screen readers may run lines together, reading the first line of the first column, then the first line of the second column, then the second line of the first column, and so on. Obviously, that is not accessible.",
+ "schema": 1,
+ "status": "CONVERSION_STATUS_SUCCESS",
+ "tables": [
+  {
+   "caption": "",
+   "cells": [
+    [
+     0,
+     0,
+     1,
+     1,
+     "Screen Reader"
+    ],
+    [
+     0,
+     1,
+     1,
+     1,
+     "Responses"
+    ],
+    [
+     0,
+     2,
+     1,
+     1,
+     "Share"
+    ],
+    [
+     1,
+     0,
+     1,
+     1,
+     "JAWS"
+    ],
+    [
+     1,
+     1,
+     1,
+     1,
+     "853"
+    ],
+    [
+     1,
+     2,
+     1,
+     1,
+     "49%"
+    ],
+    [
+     2,
+     0,
+     1,
+     1,
+     "NVDA"
+    ],
+    [
+     2,
+     1,
+     1,
+     1,
+     "238"
+    ],
+    [
+     2,
+     2,
+     1,
+     1,
+     "14%"
+    ],
+    [
+     3,
+     0,
+     1,
+     1,
+     "Window-Eyes"
+    ],
+    [
+     3,
+     1,
+     1,
+     1,
+     "214"
+    ],
+    [
+     3,
+     2,
+     1,
+     1,
+     "12%"
+    ],
+    [
+     4,
+     0,
+     1,
+     1,
+     "System Access"
+    ],
+    [
+     4,
+     1,
+     1,
+     1,
+     "181"
+    ],
+    [
+     4,
+     2,
+     1,
+     1,
+     "10%"
+    ],
+    [
+     5,
+     0,
+     1,
+     1,
+     "VoiceOver"
+    ],
+    [
+     5,
+     1,
+     1,
+     1,
+     "159"
+    ],
+    [
+     5,
+     2,
+     1,
+     1,
+     "9%"
+    ]
+   ],
+   "cols": 3,
+   "column_headers": 0,
+   "ref": "#/tables/0",
+   "rows": 6
+  },
+  {
+   "caption": "",
+   "cells": [
+    [
+     0,
+     0,
+     1,
+     1,
+     ""
+    ],
+    [
+     0,
+     1,
+     1,
+     1,
+     "May 2012"
+    ],
+    [
+     0,
+     2,
+     1,
+     1,
+     "September 2010"
+    ],
+    [
+     1,
+     0,
+     1,
+     1,
+     "Screen Reader"
+    ],
+    [
+     1,
+     1,
+     1,
+     1,
+     "Responses"
+    ],
+    [
+     1,
+     2,
+     1,
+     1,
+     "Share"
+    ],
+    [
+     1,
+     3,
+     1,
+     1,
+     "Responses"
+    ],
+    [
+     1,
+     4,
+     1,
+     1,
+     "Share"
+    ],
+    [
+     2,
+     0,
+     1,
+     1,
+     "JAWS"
+    ],
+    [
+     2,
+     1,
+     1,
+     1,
+     "853"
+    ],
+    [
+     2,
+     2,
+     1,
+     1,
+     "49%"
+    ],
+    [
+     2,
+     3,
+     1,
+     1,
+     "727"
+    ],
+    [
+     2,
+     4,
+     1,
+     1,
+     "59%"
+    ],
+    [
+     3,
+     0,
+     1,
+     1,
+     "NVDA"
+    ],
+    [
+     3,
+     1,
+     1,
+     1,
+     "238"
+    ],
+    [
+     3,
+     2,
+     1,
+     1,
+     "14%"
+    ],
+    [
+     3,
+     3,
+     1,
+     1,
+     "105"
+    ],
+    [
+     3,
+     4,
+     1,
+     1,
+     "9%"
+    ],
+    [
+     4,
+     0,
+     1,
+     1,
+     "Window-Eyes"
+    ],
+    [
+     4,
+     1,
+     1,
+     1,
+     "214"
+    ],
+    [
+     4,
+     2,
+     1,
+     1,
+     "12%"
+    ],
+    [
+     4,
+     3,
+     1,
+     1,
+     "138"
+    ],
+    [
+     4,
+     4,
+     1,
+     1,
+     "11%"
+    ],
+    [
+     5,
+     0,
+     1,
+     1,
+     "System Access"
+    ],
+    [
+     5,
+     1,
+     1,
+     1,
+     "181"
+    ],
+    [
+     5,
+     2,
+     1,
+     1,
+     "10%"
+    ],
+    [
+     5,
+     3,
+     1,
+     1,
+     "58"
+    ],
+    [
+     5,
+     4,
+     1,
+     1,
+     "5%"
+    ],
+    [
+     6,
+     0,
+     1,
+     1,
+     "VoiceOver"
+    ],
+    [
+     6,
+     1,
+     1,
+     1,
+     "159"
+    ],
+    [
+     6,
+     2,
+     1,
+     1,
+     "9%"
+    ],
+    [
+     6,
+     3,
+     1,
+     1,
+     "120"
+    ],
+    [
+     6,
+     4,
+     1,
+     1,
+     "10%"
+    ]
+   ],
+   "cols": 3,
+   "column_headers": 0,
+   "ref": "#/tables/1",
+   "rows": 7
+  }
+ ],
+ "warnings": [
+  "empty-text:#/texts/20",
+  "empty-text:#/texts/22",
+  "empty-text:#/texts/26",
+  "empty-text:#/texts/29"
+ ]
+}

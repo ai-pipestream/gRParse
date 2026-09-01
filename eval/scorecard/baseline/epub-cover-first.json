@@ -1,0 +1,188 @@
+{
+ "agreement": {
+  "agreed": 2,
+  "claimed_fields": {
+   "epub": 14,
+   "grparse": 3
+  },
+  "collectors": [
+   "epub",
+   "grparse"
+  ],
+  "conflicts": [],
+  "shared": 2,
+  "winners": {
+   "origin.binary_hash": "grparse",
+   "origin.filename": "grparse",
+   "origin.mimetype": "grparse",
+   "source_meta.created.seconds": "epub",
+   "source_meta.created_raw": "epub",
+   "source_meta.language": "epub",
+   "source_meta.title": "epub"
+  }
+ },
+ "collectors": [
+  "epub",
+  "grparse"
+ ],
+ "content_type": "application/epub+zip",
+ "counts": {
+  "body_items": 8,
+  "by_label": {
+   "group:chapter": 2,
+   "picture": 2,
+   "text": 2,
+   "title": 2
+  },
+  "form_items": 0,
+  "furniture_items": 0,
+  "groups": 2,
+  "headings": 2,
+  "key_value_items": 0,
+  "orphans": 0,
+  "pages": 0,
+  "pictures": 2,
+  "reading_chars": 62,
+  "tables": 0,
+  "texts": 4
+ },
+ "doc_id": "epub-cover-first",
+ "filename": "cover-first.epub",
+ "format": "epub",
+ "furniture_reading": [],
+ "groups": [
+  {
+   "children": 3,
+   "depth": 1,
+   "label": "chapter",
+   "name": "OEBPS/text/chap1.xhtml",
+   "ref": "#/groups/0"
+  },
+  {
+   "children": 3,
+   "depth": 1,
+   "label": "chapter",
+   "name": "OEBPS/text/chap2.xhtml",
+   "ref": "#/groups/1"
+  }
+ ],
+ "headings": [
+  {
+   "level": 0,
+   "ref": "#/texts/0",
+   "text": "Chapter One"
+  },
+  {
+   "level": 0,
+   "ref": "#/texts/2",
+   "text": "Chapter Two"
+  }
+ ],
+ "markdown": {
+  "chars": 828,
+  "headings": 2,
+  "images": 0,
+  "sha256": "cb9c19a6067103960751ee680ce66d5a469e666e7d50ad64a13be50fa810cb77",
+  "table_rows": 0
+ },
+ "origin_mimetype": "application/epub+zip",
+ "pictures": [
+  {
+   "caption": "",
+   "classification": "",
+   "collectors": [
+    "epub",
+    "markup"
+   ],
+   "image": {
+    "bytes": 54,
+    "mimetype": "image/png",
+    "sha256": "2c01509242e2489c93104fccd6ccbec519980bc9aeb6e2e10d42ab79beda3e98"
+   },
+   "page": null,
+   "parent": "#/groups/0",
+   "parent_label": "group:chapter",
+   "parent_name": "OEBPS/text/chap1.xhtml",
+   "preceding_heading": "Chapter One",
+   "ref": "#/pictures/0"
+  },
+  {
+   "caption": "",
+   "classification": "",
+   "collectors": [
+    "epub",
+    "markup"
+   ],
+   "image": {
+    "bytes": 54,
+    "mimetype": "image/png",
+    "sha256": "2c01509242e2489c93104fccd6ccbec519980bc9aeb6e2e10d42ab79beda3e98"
+   },
+   "page": null,
+   "parent": "#/groups/1",
+   "parent_label": "group:chapter",
+   "parent_name": "OEBPS/text/chap2.xhtml",
+   "preceding_heading": "Chapter Two",
+   "ref": "#/pictures/1"
+  }
+ ],
+ "reading": [
+  {
+   "hash": "30e4a36e348c12af",
+   "label": "group:chapter",
+   "name": "OEBPS/text/chap1.xhtml",
+   "ref": "#/groups/0",
+   "text": "OEBPS/text/chap1.xhtml"
+  },
+  {
+   "hash": "3e93ded328010c26",
+   "label": "title",
+   "level": 0,
+   "ref": "#/texts/0",
+   "text": "Chapter One"
+  },
+  {
+   "hash": "f4868817e211f5ce",
+   "label": "text",
+   "ref": "#/texts/1",
+   "text": "The first chapter."
+  },
+  {
+   "hash": "2c01509242e2489c",
+   "label": "picture",
+   "ref": "#/pictures/0",
+   "text": ""
+  },
+  {
+   "hash": "866a577a8e31a599",
+   "label": "group:chapter",
+   "name": "OEBPS/text/chap2.xhtml",
+   "ref": "#/groups/1",
+   "text": "OEBPS/text/chap2.xhtml"
+  },
+  {
+   "hash": "85c0e5bd4d6773ce",
+   "label": "title",
+   "level": 0,
+   "ref": "#/texts/2",
+   "text": "Chapter Two"
+  },
+  {
+   "hash": "b5ef06f22b856777",
+   "label": "text",
+   "ref": "#/texts/3",
+   "text": "The second chapter."
+  },
+  {
+   "hash": "2c01509242e2489c",
+   "label": "picture",
+   "ref": "#/pictures/1",
+   "text": ""
+  }
+ ],
+ "reading_text": "Chapter One\nThe first chapter.\nChapter Two\nThe second chapter.",
+ "schema": 1,
+ "status": "CONVERSION_STATUS_SUCCESS",
+ "tables": [],
+ "warnings": []
+}
