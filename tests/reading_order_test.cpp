@@ -108,10 +108,70 @@ void verify_degenerate_inputs() {
           "blank lines are excluded, real lines kept");
 }
 
+// The box-level cut behind the line order: a full-width title band, two
+// columns beneath it, a figure spanning both columns below them with its
+// caption, and a footnote band at the bottom read as a reader would.
+void verify_box_cut_reads_bands_then_columns() {
+  const std::vector<grparse::OrderBox> boxes = {
+      {550, 200, 950, 220},  // B1
+      {50, 200, 450, 220},   // A1
+      {200, 40, 800, 80},    // title
+      {50, 250, 450, 270},   // A2
+      {550, 250, 950, 270},  // B2
+      {100, 400, 900, 600},  // figure across both columns
+      {300, 610, 700, 625},  // caption under the figure
+      {50, 700, 450, 715},   // footnote band
+  };
+  const std::vector<size_t> expected = {2, 1, 3, 0, 4, 5, 6, 7};
+  require(grparse::xy_cut_order(boxes) == expected,
+          "boxes read title, left column, right column, figure, caption, footnote");
+  require(grparse::xy_cut_order({}).empty(), "no boxes, no order");
+  require(grparse::xy_cut_order({{0, 0, 1, 1}}) == std::vector<size_t>{0},
+          "one box orders itself");
+}
+
+// Boxes that overlap in both axes have no gap to cut; they fall back to
+// top-then-left order and keep input order on exact ties.
+void verify_box_cut_fallback_is_stable() {
+  const std::vector<grparse::OrderBox> boxes = {
+      {10, 10, 100, 100}, {10, 10, 100, 100}, {5, 20, 90, 90}, {0, 10, 50, 60},
+  };
+  const std::vector<size_t> expected = {3, 0, 1, 2};
+  require(grparse::xy_cut_order(boxes) == expected, "overlapping boxes sort by top, left, input");
+}
+
+// The item-level policy: a paragraph gap wider than the gutter no longer
+// splits rows first, and a gap beside a short label is not a gutter.
+void verify_box_cut_policy() {
+  const std::vector<grparse::OrderBox> columns = {
+      {50, 100, 380, 180},  {420, 100, 750, 180},  // row 1, gutter 40 wide
+      {50, 240, 380, 320},  {420, 240, 750, 320},  // row 2, 60 below row 1
+  };
+  const grparse::CutPolicy items{.band_over_gutter = 2.0, .gutter_side_share = 0.5};
+  require(grparse::xy_cut_order(columns) == std::vector<size_t>{0, 1, 2, 3},
+          "the widest-gap rule reads the rows");
+  require(grparse::xy_cut_order(columns, items) == std::vector<size_t>{0, 2, 1, 3},
+          "the item rule reads the columns");
+
+  const std::vector<grparse::OrderBox> labelled = {
+      {150, 80, 400, 90},    // text above the panels
+      {150, 100, 500, 150},  // a row of panels
+      {110, 110, 135, 120},  // a short label left of the panels
+      {150, 170, 500, 185},  // code line under the panels
+  };
+  const std::vector<size_t> order = grparse::xy_cut_order(labelled, items);
+  require(order.size() == 4 && order[0] == 0 && order[3] == 3,
+          "a short label beside one row does not make a column of the whole block: the text "
+          "above still reads first and the code line last");
+}
+
 }  // namespace
 
 int main() {
   try {
+    verify_box_cut_reads_bands_then_columns();
+    verify_box_cut_fallback_is_stable();
+    verify_box_cut_policy();
     verify_two_columns_without_regions();
     verify_two_columns_with_regions();
     verify_title_band_reads_before_columns();

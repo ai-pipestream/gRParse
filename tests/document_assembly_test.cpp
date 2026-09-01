@@ -541,6 +541,32 @@ void verify_section_header_levels() {
   require(document.texts(4).section_header().level() == 3, "producer-set levels stay untouched");
 }
 
+// Numbering in the heading text sets depth; a taller title block that
+// opens the first page sits above the numbered sections.
+void verify_numbered_section_header_levels() {
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1000, 2000,
+                        {sized_line("Report Title", 100, 60), sized_line("1 Scope", 400, 30),
+                         sized_line("1.1 Purpose", 600, 30), sized_line("Overview", 800, 30),
+                         line("prose", 900)}};
+  page.regions = {
+      {"section_header", 0.9F, 0, 90, 1000, 170},
+      {"section_header", 0.9F, 0, 390, 1000, 440},
+      {"section_header", 0.9F, 0, 590, 1000, 640},
+      {"section_header", 0.9F, 0, 790, 1000, 840},
+  };
+  ai::pipestream::document::v1::Document document;
+  std::string plain_text;
+  grparse::append_page_to_document(page, 1, &cursor, &document, &plain_text);
+  grparse::assign_section_header_levels(&document);
+  require(document.texts(0).item_case() == ai::pipestream::document::v1::BaseTextItem::kTitle,
+          "the taller heading block opening page 1 becomes the title item");
+  require(document.texts(1).section_header().level() == 1, "a depth-1 number is level 1");
+  require(document.texts(2).section_header().level() == 2, "a depth-2 number is level 2");
+  require(document.texts(3).section_header().level() == 1,
+          "an unnumbered heading the size of the depth-1 cluster joins it");
+}
+
 // A rotated line keeps its exact quad in provenance; an axis-aligned line
 // adds no polygon because the box already says everything.
 void verify_rotated_lines_keep_their_quad() {
@@ -612,6 +638,7 @@ int main() {
     verify_unclaimed_table_line_stays_body_text();
     verify_captions_attach_to_nearest_float();
     verify_section_header_levels();
+    verify_numbered_section_header_levels();
     verify_rotated_lines_keep_their_quad();
     verify_body_order_and_column_anchoring();
     return EXIT_SUCCESS;

@@ -36,19 +36,28 @@ void append_page_to_document(
         nullptr);
 
 // One section header awaiting a depth: its reference, its median line
-// height in page pixels, and its median declared font size in points when
-// the text layer states one (zero otherwise).
+// height in page pixels, its median declared font size in points when the
+// text layer states one (zero otherwise), and, for the title and numbering
+// rules, its text and where it sits (first page, top-down box edges).
 struct HeaderHeight {
   std::string self_ref;
   double height = 0;
   double font_size = 0;
+  std::string text;
+  int page = 0;
+  double top = 0;
+  double bottom = 0;
 };
 
-// Clusters heading heights into depths: the tallest cluster is level 1,
-// each visibly smaller cluster (below 85% of its predecessor's founding
-// height) one level deeper, saturating at 6. An entry with no usable
-// height takes level 1. Heights are only comparable when every page
-// rasterized at the same scale, which is how the CV path renders.
+// Heading depths for the whole document (see heading_hierarchy.h):
+// numbering in the text sets depth, unnumbered headings take the depth of
+// the nearest numbered size cluster, a first-page title block is level 1
+// above everything, and a document with no numbering clusters heights
+// alone: the tallest cluster is level 1, each visibly smaller cluster
+// (below 85% of its predecessor's founding height) one level deeper,
+// saturating at 6. An entry with no usable height takes level 1. Heights
+// are only comparable when every page rasterized at the same scale, which
+// is how the CV path renders.
 std::map<std::string, int32_t> section_header_levels(std::vector<HeaderHeight> headers);
 
 // The median prov box heights of a page's level-less section headers, in
@@ -57,9 +66,11 @@ std::map<std::string, int32_t> section_header_levels(std::vector<HeaderHeight> h
 void collect_header_heights(const ai::pipestream::parse::v1::PageData& page,
                             std::vector<HeaderHeight>* into);
 
-// Assigns heading levels to section headers the detector produced, by
-// clustering their line heights across the whole document. Items whose
-// producer already chose a level (anything nonzero) are left alone.
+// Assigns heading levels to section headers the detector produced, over
+// the whole document (heading_hierarchy.h): consecutive title lines on the
+// first page merge into one level-1 item, numbering sets depth, the rest
+// cluster by height. Items whose producer already chose a level (anything
+// nonzero) are left alone.
 void assign_section_header_levels(ai::pipestream::document::v1::Document* document);
 
 }  // namespace grparse

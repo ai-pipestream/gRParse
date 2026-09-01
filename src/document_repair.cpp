@@ -14,7 +14,11 @@
 #include <utility>
 #include <vector>
 
+#include "grparse/document_geometry.h"
 #include "grparse/document_merge.h"
+#include "grparse/document_reading_order.h"
+#include "grparse/heading_hierarchy.h"
+#include "grparse/paragraph_split.h"
 
 namespace grparse {
 
@@ -72,20 +76,7 @@ std::string texts_ref(int index) { return std::string(kTextsPrefix) + std::to_st
 
 // The base of a text item that has one; CodeItem inlines its fields and
 // never takes part in these repairs.
-const docv1::TextItemBase* base_of(const docv1::BaseTextItem& item) {
-  switch (item.item_case()) {
-    case docv1::BaseTextItem::kTitle: return &item.title().base();
-    case docv1::BaseTextItem::kSectionHeader: return &item.section_header().base();
-    case docv1::BaseTextItem::kListItem: return &item.list_item().base();
-    case docv1::BaseTextItem::kFormula: return &item.formula().base();
-    case docv1::BaseTextItem::kText: return &item.text().base();
-    case docv1::BaseTextItem::kFieldHeading: return &item.field_heading().base();
-    case docv1::BaseTextItem::kFieldValue: return &item.field_value().base();
-    case docv1::BaseTextItem::kCode:
-    case docv1::BaseTextItem::ITEM_NOT_SET: return nullptr;
-  }
-  return nullptr;
-}
+const docv1::TextItemBase* base_of(const docv1::BaseTextItem& item) { return text_base_of(item); }
 
 std::string self_ref_of(const docv1::BaseTextItem& item, int index) {
   if (item.item_case() == docv1::BaseTextItem::kCode) {
@@ -115,11 +106,7 @@ docv1::TextItemBase* prose_base(docv1::Document* document, const docv1::RefItem&
 }
 
 int first_page(const google::protobuf::RepeatedPtrField<docv1::ProvenanceItem>& prov) {
-  int page = 0;
-  for (const auto& entry : prov) {
-    if (entry.page_no() > 0 && (page == 0 || entry.page_no() < page)) page = entry.page_no();
-  }
-  return page;
+  return first_page_of(prov);
 }
 
 int last_page(const google::protobuf::RepeatedPtrField<docv1::ProvenanceItem>& prov) {
@@ -133,60 +120,68 @@ int last_page(const google::protobuf::RepeatedPtrField<docv1::ProvenanceItem>& p
 
 enum class Band { kNone, kTop, kBottom };
 
-// Page heights by page number: the page map's own size where it states
-// one, otherwise the furthest box edge any item reaches on that page.
 std::map<int, double> page_heights(const docv1::Document& document) {
-  std::map<int, double> heights;
-  for (const auto& [page_no, page] : document.pages()) {
-    if (page.size().height() > 0) heights[page_no] = page.size().height();
-  }
-  std::map<int, double> extents;
-  const auto note = [&extents](const google::protobuf::RepeatedPtrField<docv1::ProvenanceItem>& prov) {
-    for (const auto& entry : prov) {
-      if (entry.page_no() <= 0 || !entry.has_bbox()) continue;
-      auto& extent = extents[entry.page_no()];
-      extent = std::max({extent, entry.bbox().t(), entry.bbox().b()});
-    }
-  };
-  for (const auto& item : document.texts()) {
-    if (item.item_case() == docv1::BaseTextItem::kCode) {
-      note(item.code().prov());
-    } else if (const auto* base = base_of(item); base != nullptr) {
-      note(base->prov());
-    }
-  }
-  for (const auto& table : document.tables()) note(table.prov());
-  for (const auto& picture : document.pictures()) note(picture.prov());
-  for (const auto& [page_no, extent] : extents) {
-    if (!heights.contains(page_no) && extent > 0) heights[page_no] = extent;
-  }
-  return heights;
+  return document_page_heights(document);
 }
 
 // A box's vertical extent measured downward from the page's top edge,
-// whichever origin the box states; a bottom-left box measures its edges
-// upward from the page's bottom.
+// whichever origin the box states (document_geometry.h).
 struct VerticalSpan {
   double top = 0;
   double bottom = 0;
 };
 
 VerticalSpan vertical_span(const docv1::BoundingBox& box, double height) {
-  if (box.coord_origin() == docv1::COORD_ORIGIN_BOTTOMLEFT) {
-    return {height - std::max(box.t(), box.b()), height - std::min(box.t(), box.b())};
-  }
-  return {std::min(box.t(), box.b()), std::max(box.t(), box.b())};
+  const TopDownBox flipped = top_down_box(box, height);
+  return {flipped.top, flipped.bottom};
 }
 
-// The band a box sits in on a page of `height`.
-Band band_of(const docv1::BoundingBox& box, double height, double fraction) {
-  if (height <= 0) return Band::kNone;
-  const VerticalSpan span = vertical_span(box, height);
-  const double center = (span.top + span.bottom) / 2.0;
-  if (center < 0 || center > height) return Band::kNone;
-  if (center <= height * fraction) return Band::kTop;
-  if (center >= height * (1.0 - fraction)) return Band::kBottom;
+// The band a vertical extent lies wholly inside on a page of `height`: the
+// whole extent, not its first line or its center, because a paragraph that
+// starts in the band and runs down the page is body text.
+Band band_of_extent(double top, double bottom, double height, double fraction) {
+  if (height <= 0 || top < 0 || bottom > height || bottom < top) return Band::kNone;
+  if (bottom <= height * fraction) return Band::kTop;
+  if (top >= height * (1.0 - fraction)) return Band::kBottom;
   return Band::kNone;
+}
+
+// One body prose item placed on its page, for the block test below.
+struct PlacedProse {
+  int body_index = 0;
+  int arena_index = 0;
+  TopDownBox box;
+};
+
+// The vertical extent of the text block an item belongs to: the item plus
+// every body prose item on the page reachable through neighbours that
+// overlap it horizontally and sit within one line height (the shorter of
+// the two boxes) above or below. A running header stands apart from the
+// body by more than a line; the first line of a repeated paragraph does
+// not, and neither does a line inside one.
+std::pair<double, double> block_extent(const std::vector<PlacedProse>& page_items, size_t seed) {
+  std::vector<bool> visited(page_items.size(), false);
+  std::vector<size_t> pending{seed};
+  visited[seed] = true;
+  double top = page_items[seed].box.top;
+  double bottom = page_items[seed].box.bottom;
+  while (!pending.empty()) {
+    const TopDownBox current = page_items[pending.back()].box;
+    pending.pop_back();
+    for (size_t index = 0; index < page_items.size(); ++index) {
+      if (visited[index]) continue;
+      const TopDownBox& other = page_items[index].box;
+      const double overlap = std::min(current.right, other.right) - std::max(current.left, other.left);
+      if (overlap <= 0) continue;
+      const double gap = std::max({0.0, other.top - current.bottom, current.top - other.bottom});
+      if (gap > std::min(current.height(), other.height())) continue;
+      visited[index] = true;
+      pending.push_back(index);
+      top = std::min(top, other.top);
+      bottom = std::max(bottom, other.bottom);
+    }
+  }
+  return {top, bottom};
 }
 
 int page_count(const docv1::Document& document) {
@@ -404,28 +399,42 @@ int demote_running_furniture(docv1::Document* document, const RepairOptions& opt
   const auto* body = &document->body();
 
   // Decide first: every direct body child that is prose with a page and a
-  // box in a band is a candidate; nothing inside a group ever is.
-  std::vector<FurnitureCandidate> candidates;
+  // box, whose whole text block lies in a band, is a candidate; nothing
+  // inside a group ever is.
+  std::map<int, std::vector<PlacedProse>> placed_by_page;
   for (int index = 0; index < body->children_size(); ++index) {
     const auto* base = prose_base(document, body->children(index));
     if (base == nullptr || base->children_size() > 0) continue;
-    const int page = first_page(base->prov());
-    if (page <= 0) continue;
-    const auto height = heights.find(page);
-    if (height == heights.end()) continue;
-    Band band = Band::kNone;
-    for (const auto& entry : base->prov()) {
-      if (entry.page_no() != page || !entry.has_bbox()) continue;
-      band = band_of(entry.bbox(), height->second, options.band_fraction);
-      break;
+    const auto placement = provenance_placement(base->prov(), heights);
+    if (!placement.has_value()) continue;
+    placed_by_page[placement->page].push_back(
+        {index, *text_index(body->children(index).ref()), placement->box});
+  }
+  std::vector<FurnitureCandidate> candidates;
+  for (const auto& [page, page_items] : placed_by_page) {
+    const double height = heights.at(page);
+    for (size_t item = 0; item < page_items.size(); ++item) {
+      const auto [block_top, block_bottom] = block_extent(page_items, item);
+      const Band band = band_of_extent(block_top, block_bottom, height, options.band_fraction);
+      if (band == Band::kNone) continue;
+      const auto& placed = page_items[item];
+      const std::string& text = document->texts(placed.arena_index).text().base().text();
+      int words = 0;
+      bool in_word = false;
+      for (const char c : text) {
+        if (!is_ascii_space(c) && !in_word) ++words;
+        in_word = !is_ascii_space(c);
+      }
+      if (words > options.maximum_furniture_words) continue;
+      std::string normalized = normalize_running_text(text);
+      if (normalized.empty()) continue;
+      candidates.push_back({placed.body_index, placed.arena_index, page, band, std::move(normalized)});
     }
-    if (band == Band::kNone) continue;
-    std::string normalized = normalize_running_text(base->text());
-    if (normalized.empty()) continue;
-    candidates.push_back({index, *text_index(body->children(index).ref()), page, band,
-                          std::move(normalized)});
   }
   if (candidates.empty()) return 0;
+  std::ranges::sort(candidates, [](const FurnitureCandidate& a, const FurnitureCandidate& b) {
+    return a.body_index < b.body_index;
+  });
 
   std::map<std::string, std::set<int>> pages_by_pattern;
   for (const auto& candidate : candidates) {
@@ -525,6 +534,21 @@ size_t break_after(std::string_view text, size_t position) {
   return 0;
 }
 
+// The tail's first token must be a word: two letters or more, letters only
+// up to any trailing punctuation. A lone letter ("t" from a subscript line
+// folded into the paragraph) or a token with a digit or symbol in it
+// ("x2", "t-1") is not the rest of a hyphenated word.
+constexpr size_t kMinimumTailWord = 2;
+constexpr std::string_view kTokenPunctuation = ".,;:!?)]}'\"";
+
+bool tail_token_is_word(std::string_view after_break) {
+  size_t end = 0;
+  while (end < after_break.size() && !is_ascii_space(after_break[end])) ++end;
+  std::string_view token = after_break.substr(0, end);
+  while (!token.empty() && kTokenPunctuation.contains(token.back())) token.remove_suffix(1);
+  return token.size() >= kMinimumTailWord && std::ranges::all_of(token, is_ascii_alpha);
+}
+
 }  // namespace
 
 std::string join_hyphenated_fragments(std::string_view head, std::string_view tail) {
@@ -557,7 +581,8 @@ std::string rejoin_hyphenated_words(std::string_view text, HyphenationCounts* co
     }
     const std::string_view head = trailing_word(out);
     const bool joinable = gap > 0 && !head.empty() && !tail.empty() &&
-                          is_ascii_lower(head.back()) && is_ascii_lower(tail.front());
+                          is_ascii_lower(head.back()) && is_ascii_lower(tail.front()) &&
+                          tail_token_is_word(text.substr(after + gap));
     if (!joinable) {
       out.push_back('-');
       ++i;
@@ -768,10 +793,10 @@ void prune_children(docv1::GroupItem* group, const std::set<std::string>& retire
                   children->end());
 }
 
-// Removes the retired items from the texts arena, renumbers what remains,
-// and points every reference at its new name; a reference into a retired
-// item follows it to the item that absorbed it.
-void retire_texts(docv1::Document* document, const std::map<std::string, std::string>& absorbed_by) {
+}  // namespace
+
+void retire_text_items(docv1::Document* document,
+                       const std::map<std::string, std::string>& absorbed_by) {
   std::set<std::string> retired;
   for (const auto& [ref, _] : absorbed_by) retired.insert(ref);
   std::map<std::string, std::string> renumbering;
@@ -796,8 +821,6 @@ void retire_texts(docv1::Document* document, const std::map<std::string, std::st
   if (!renumbering.empty()) rewrite_references(renumbering, document);
 }
 
-}  // namespace
-
 int merge_continuations(docv1::Document* document, const RepairOptions& options) {
   auto* body = document->mutable_body();
   const std::map<int, double> heights = page_heights(*document);
@@ -820,7 +843,7 @@ int merge_continuations(docv1::Document* document, const RepairOptions& options)
     }
     anchor = base;
   }
-  if (merges > 0) retire_texts(document, absorbed_by);
+  if (merges > 0) retire_text_items(document, absorbed_by);
   return merges;
 }
 
@@ -831,6 +854,26 @@ RepairReport repair_document(docv1::Document* document, const RepairOptions& opt
   if (options.demote_running_furniture) {
     report.furniture_demoted =
         demote_running_furniture(document, options, &report.furniture_patterns);
+  }
+  if (options.split_paragraphs) {
+    report.headings_split = split_run_in_headings(document, options.geometry_collectors);
+    report.form_rows_split = split_form_rows(document, options.geometry_collectors);
+  }
+  if (options.infer_heading_hierarchy) {
+    HeadingOptions headings;
+    headings.geometry_collectors = options.geometry_collectors;
+    const HeadingReport outcome = grparse::infer_heading_hierarchy(document, headings);
+    report.titles_merged = outcome.titles_merged;
+    report.titles_promoted = outcome.titles_promoted;
+    report.heading_levels_assigned = outcome.levels_assigned;
+    report.headings_demoted = outcome.headings_demoted;
+  }
+  if (options.order_body_by_geometry) {
+    BodyOrderOptions order;
+    order.geometry_collectors = options.geometry_collectors;
+    const BodyOrderReport outcome = grparse::order_body_by_geometry(document, order);
+    report.body_items_reordered = outcome.items_moved;
+    report.pages_reordered = outcome.pages_reordered;
   }
   if (options.merge_continuations) {
     report.paragraphs_merged = merge_continuations(document, options);
@@ -849,6 +892,12 @@ struct RepairCounters {
   std::atomic<uint64_t> furniture_demoted{0};
   std::atomic<uint64_t> hyphens_rejoined{0};
   std::atomic<uint64_t> paragraphs_merged{0};
+  std::atomic<uint64_t> titles_merged{0};
+  std::atomic<uint64_t> heading_levels_assigned{0};
+  std::atomic<uint64_t> body_items_reordered{0};
+  std::atomic<uint64_t> headings_split{0};
+  std::atomic<uint64_t> headings_demoted{0};
+  std::atomic<uint64_t> form_rows_split{0};
 };
 
 RepairCounters& counters() {
@@ -868,6 +917,18 @@ RepairReport run_repair_pass(docv1::Document* document, const RepairOptions& opt
       std::memory_order_relaxed);
   totals.paragraphs_merged.fetch_add(static_cast<uint64_t>(report.paragraphs_merged),
                                      std::memory_order_relaxed);
+  totals.titles_merged.fetch_add(static_cast<uint64_t>(report.titles_merged),
+                                 std::memory_order_relaxed);
+  totals.heading_levels_assigned.fetch_add(
+      static_cast<uint64_t>(report.heading_levels_assigned), std::memory_order_relaxed);
+  totals.body_items_reordered.fetch_add(static_cast<uint64_t>(report.body_items_reordered),
+                                        std::memory_order_relaxed);
+  totals.headings_split.fetch_add(static_cast<uint64_t>(report.headings_split),
+                                  std::memory_order_relaxed);
+  totals.headings_demoted.fetch_add(static_cast<uint64_t>(report.headings_demoted),
+                                    std::memory_order_relaxed);
+  totals.form_rows_split.fetch_add(static_cast<uint64_t>(report.form_rows_split),
+                                   std::memory_order_relaxed);
   if (options.log_report && report.changed_anything()) {
     std::string patterns;
     for (const auto& pattern : report.furniture_patterns) {
@@ -875,9 +936,14 @@ RepairReport run_repair_pass(docv1::Document* document, const RepairOptions& opt
       patterns += '"' + pattern + '"';
     }
     std::println("gRParse repair: {} furniture demoted [{}], {} hyphens rejoined, {} soft hyphens "
-                 "removed, {} paragraphs merged ({})",
+                 "removed, {} paragraphs merged, {} title lines merged, {} titles promoted, {} "
+                 "heading levels assigned, {} headings demoted, {} run-in headings split, {} form "
+                 "rows split, {} body items reordered on {} pages ({})",
                  report.furniture_demoted, patterns, report.hyphens_rejoined,
-                 report.soft_hyphens_removed, report.paragraphs_merged, document->name());
+                 report.soft_hyphens_removed, report.paragraphs_merged, report.titles_merged,
+                 report.titles_promoted, report.heading_levels_assigned, report.headings_demoted,
+                 report.headings_split, report.form_rows_split, report.body_items_reordered,
+                 report.pages_reordered, document->name());
   }
   return report;
 }
@@ -888,6 +954,12 @@ RepairTotals repair_totals() {
       .furniture_demoted = totals.furniture_demoted.load(std::memory_order_relaxed),
       .hyphens_rejoined = totals.hyphens_rejoined.load(std::memory_order_relaxed),
       .paragraphs_merged = totals.paragraphs_merged.load(std::memory_order_relaxed),
+      .titles_merged = totals.titles_merged.load(std::memory_order_relaxed),
+      .heading_levels_assigned = totals.heading_levels_assigned.load(std::memory_order_relaxed),
+      .body_items_reordered = totals.body_items_reordered.load(std::memory_order_relaxed),
+      .headings_split = totals.headings_split.load(std::memory_order_relaxed),
+      .headings_demoted = totals.headings_demoted.load(std::memory_order_relaxed),
+      .form_rows_split = totals.form_rows_split.load(std::memory_order_relaxed),
   };
 }
 
