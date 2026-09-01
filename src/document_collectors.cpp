@@ -74,7 +74,7 @@ CollectorOutcome finish_outcome(const char* name, const grpc::Status& status,
                                 bool trailer_seen, bool document_seen,
                                 CollectorOutcome outcome) {
   if (!status.ok()) {
-    outcome.error = std::string(name) + " collector: " + status.error_message();
+    outcome.error = collector_status_text(name, status);
     outcome.code = map_code(status.error_code());
     outcome.success = false;
     return outcome;
@@ -145,6 +145,30 @@ CollectorOutcome drain_stream(const char* name, Stream& stream, OnStatus on_stat
 }
 
 }  // namespace
+
+std::string collector_status_text(const char* name, const grpc::Status& status) {
+  std::string text = std::string(name) + " collector: ";
+  if (status.error_message().empty()) {
+    text += "status " + std::to_string(static_cast<int>(status.error_code()));
+    static constexpr std::pair<grpc::StatusCode, const char*> kNames[] = {
+        {grpc::StatusCode::CANCELLED, "CANCELLED"}, {grpc::StatusCode::UNKNOWN, "UNKNOWN"},
+        {grpc::StatusCode::INVALID_ARGUMENT, "INVALID_ARGUMENT"},
+        {grpc::StatusCode::DEADLINE_EXCEEDED, "DEADLINE_EXCEEDED"},
+        {grpc::StatusCode::NOT_FOUND, "NOT_FOUND"}, {grpc::StatusCode::ALREADY_EXISTS, "ALREADY_EXISTS"},
+        {grpc::StatusCode::PERMISSION_DENIED, "PERMISSION_DENIED"},
+        {grpc::StatusCode::RESOURCE_EXHAUSTED, "RESOURCE_EXHAUSTED"},
+        {grpc::StatusCode::FAILED_PRECONDITION, "FAILED_PRECONDITION"},
+        {grpc::StatusCode::ABORTED, "ABORTED"}, {grpc::StatusCode::OUT_OF_RANGE, "OUT_OF_RANGE"},
+        {grpc::StatusCode::UNIMPLEMENTED, "UNIMPLEMENTED"}, {grpc::StatusCode::INTERNAL, "INTERNAL"},
+        {grpc::StatusCode::UNAVAILABLE, "UNAVAILABLE"}, {grpc::StatusCode::DATA_LOSS, "DATA_LOSS"},
+        {grpc::StatusCode::UNAUTHENTICATED, "UNAUTHENTICATED"}};
+    for (const auto& [code, label] : kNames) {
+      if (code == status.error_code()) text += std::string(" (") + label + ")";
+    }
+    return text;
+  }
+  return text + status.error_message();
+}
 
 CollectorOutcome collect_asr_document(const std::shared_ptr<grpc::Channel>& channel,
                                       const std::string& model,

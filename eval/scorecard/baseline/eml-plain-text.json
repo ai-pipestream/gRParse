@@ -2,8 +2,8 @@
  "agreement": {
   "agreed": 2,
   "claimed_fields": {
-   "email": 14,
-   "grparse": 3
+   "email": 15,
+   "grparse": 4
   },
   "collectors": [
    "email",
@@ -24,7 +24,8 @@
    "origin.binary_hash": "grparse",
    "origin.filename": "grparse",
    "origin.mimetype": "grparse",
-   "source_meta.created.seconds": "email",
+   "origin.mimetype_evidence": "grparse",
+   "source_meta.created": "email",
    "source_meta.created_raw": "email",
    "source_meta.title": "email"
   }
@@ -76,6 +77,7 @@
  "reading": [
   {
    "hash": "63a6baa1a0b4254e",
+   "key": "rückfrage zur anhörung",
    "label": "title",
    "level": 0,
    "ref": "#/texts/0",
@@ -83,6 +85,7 @@
   },
   {
    "hash": "110efa0b30da0cc3",
+   "key": "die anhörung beginnt um 09 00",
    "label": "text",
    "ref": "#/texts/1",
    "text": "Die Anhörung beginnt um 09:00 Uhr. Bitte bringen Sie die Unt"

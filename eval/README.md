@@ -208,3 +208,28 @@ embedded workbook) with fixed zip timestamps, and repeat runs are
 byte-identical. `eval/chart_derender/` holds the enrich-side evidence for
 the opt-in chart derender leg (`compare.py`, its README with the measured
 numbers per VLM endpoint); it dials grpc-enrich, not gRParse.
+
+## S3 corpus eval: every object of a bucket through the shape battery
+
+`eval/s3/` runs a whole corpus that lives in an S3-compatible bucket (the
+fleet uses RustFS; `compose.stack.s3.yaml` brings a private one up under the
+`s3` profile) through gRParse's unary parse and a battery of named shape
+checks over the merged `Document`, grouped by file type and by parser type
+(which collectors' items ended up in the result). Objects are fetched into
+memory only; nothing of the corpus is written to disk. Each object is parsed
+twice (byte identity), a sample per extension once more under a name with
+no extension (routing and origin from the bytes alone), and every check is
+a small documented function in `eval/s3/checks.py`: integrity and placement
+of every item, colon-free custom fields and typed warnings, claims and
+sources naming known collectors, origin mimetype against the extension,
+pages and boxes, text presence, table grids, sheet, slide, picture, heading,
+mail, book, OCR, reading-order and chart shapes. Configuration is
+environment only (`EVAL_S3_ENDPOINT`, `EVAL_S3_BUCKET`, the AWS or
+`EVAL_S3_*` credential pair, `GRPARSE_TARGET`, globs and limits); outputs
+land in `eval/out/s3/<label>/report.md` and `report.json` with the (parser
+type x file type) matrix and the failures grouped by cause. Exit codes
+follow the scorecard's: 0 all green, 1 any failure, 77 when the bucket or
+gRParse is unreachable or the selection is empty. Seeding from the sibling
+repositories' fixtures, the check list, and how to add a check are in
+`eval/s3/README.md`; the tool's own tests run with
+`uv run python eval/s3/tests/run_tests.py`.

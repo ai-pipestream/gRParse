@@ -3,6 +3,7 @@
 #include <chrono>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <grpcpp/support/status.h>
@@ -102,9 +103,23 @@ bool office_format(const std::string& filename, const std::string& content_type)
 ai::pipestream::parse::v1::Collector route_collector(const std::string& filename,
                                                      const std::string& content_type);
 
+// The default route with the bytes consulted: the mimetype is resolved the
+// way the origin's is (the declared type, then the bytes, then the name;
+// content_sniff.h) and handed to route_collector as the content type, so a
+// document whose name says nothing (no extension, an .bin upload) still
+// reaches the collector its bytes belong to instead of failing on the CV
+// path. A name that declares a type (any extension content_sniff.h knows)
+// keeps its say and the bytes are not consulted: "image.png" holding text
+// is a bad image, not a markup document.
+ai::pipestream::parse::v1::Collector route_document(const std::string& filename,
+                                                    const std::string& declared_content_type,
+                                                    std::string_view bytes);
+
 // The format hint the markup collector is dialed with, from the filename
-// extension and content type. `MARKUP_FORMAT_UNSPECIFIED` when neither
-// resolves one, which asks the collector to sniff the bytes itself.
+// extension and content type. Plain text (.txt, text/plain) is read as
+// Markdown, of which it is the trivial case. `MARKUP_FORMAT_UNSPECIFIED`
+// when neither resolves one, which asks the collector to sniff the bytes
+// itself.
 ai::pipestream::markup::v1::MarkupFormat markup_format_for(
     const std::string& filename, const std::string& content_type);
 

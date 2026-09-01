@@ -16,9 +16,9 @@
    "origin.filename": "grparse",
    "origin.mimetype": "grparse",
    "origin.mimetype_evidence": "grparse",
-   "source_meta.created.seconds": "libreoffice",
+   "source_meta.created": "libreoffice",
    "source_meta.generator": "libreoffice",
-   "source_meta.modified.seconds": "libreoffice"
+   "source_meta.modified": "libreoffice"
   }
  },
  "collectors": [

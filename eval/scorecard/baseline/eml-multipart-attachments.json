@@ -2,8 +2,8 @@
  "agreement": {
   "agreed": 2,
   "claimed_fields": {
-   "email": 14,
-   "grparse": 3
+   "email": 15,
+   "grparse": 4
   },
   "collectors": [
    "email",
@@ -24,7 +24,8 @@
    "origin.binary_hash": "grparse",
    "origin.filename": "grparse",
    "origin.mimetype": "grparse",
-   "source_meta.created.seconds": "email",
+   "origin.mimetype_evidence": "grparse",
+   "source_meta.created": "email",
    "source_meta.created_raw": "email",
    "source_meta.title": "email"
   }
@@ -105,6 +106,7 @@
  "reading": [
   {
    "hash": "63a6baa1a0b4254e",
+   "key": "rückfrage zur anhörung",
    "label": "title",
    "level": 0,
    "ref": "#/texts/0",
@@ -112,12 +114,14 @@
   },
   {
    "hash": "8b304e22731b282f",
+   "key": "die anhörung beginnt um 09 00",
    "label": "text",
    "ref": "#/texts/1",
    "text": "Die Anhörung beginnt um 09:00 Uhr."
   },
   {
    "hash": "05e544097b948f5d",
+   "key": "attachments",
    "label": "group:list",
    "name": "attachments",
    "ref": "#/groups/0",
@@ -125,18 +129,21 @@
   },
   {
    "hash": "abf6218919b24e73",
+   "key": "order pdf application pdf 25 bytes",
    "label": "list_item",
    "ref": "#/texts/2",
    "text": "order.pdf (application/pdf, 25 bytes)"
   },
   {
    "hash": "25a5164c2df4c96e",
+   "key": "seal png image png 8 bytes",
    "label": "list_item",
    "ref": "#/texts/3",
    "text": "seal.png (image/png, 8 bytes)"
   },
   {
    "hash": "",
+   "key": "",
    "label": "picture",
    "ref": "#/pictures/0",
    "text": ""

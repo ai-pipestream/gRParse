@@ -2,7 +2,7 @@
  "agreement": {
   "agreed": 2,
   "claimed_fields": {
-   "grparse": 3,
+   "grparse": 4,
    "libreoffice": 13
   },
   "collectors": [
@@ -15,11 +15,12 @@
    "origin.binary_hash": "grparse",
    "origin.filename": "grparse",
    "origin.mimetype": "grparse",
-   "source_meta.created.seconds": "libreoffice",
+   "origin.mimetype_evidence": "grparse",
+   "source_meta.created": "libreoffice",
    "source_meta.editing_cycles": "libreoffice",
    "source_meta.editing_duration_seconds": "libreoffice",
    "source_meta.generator": "libreoffice",
-   "source_meta.modified.seconds": "libreoffice",
+   "source_meta.modified": "libreoffice",
    "source_meta.modified_by": "libreoffice",
    "source_meta.statistics.paragraphs": "libreoffice",
    "source_meta.statistics.words": "libreoffice",
@@ -82,6 +83,7 @@
  "reading": [
   {
    "hash": "0d12fee3e3f316de",
+   "key": "presentation title text",
    "label": "group:slide",
    "name": "Presentation Title Text",
    "ref": "#/groups/0",
@@ -89,6 +91,7 @@
   },
   {
    "hash": "97b9e8ff10208043",
+   "key": "presentation title text",
    "label": "title",
    "level": 0,
    "ref": "#/texts/0",
@@ -96,6 +99,7 @@
   },
   {
    "hash": "554e39c9ccb61b1b",
+   "key": "subtitle text",
    "label": "text",
    "ref": "#/texts/1",
    "text": "Subtitle Text"

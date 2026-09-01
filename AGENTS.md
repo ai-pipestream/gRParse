@@ -196,6 +196,19 @@ repair, the chart and sheet shapes, the mimetype precedence, an exact
 allowlist for colon-keyed custom fields (`cell:?` only), a sha256 manifest
 of the fixtures (`eval/scorecard/fixtures/write_manifest.py` updates it on
 purpose), truth files that validate and floors never above their baseline.
+The S3 corpus eval (`eval/s3/run.py`, `eval/s3/README.md`) is the third
+gate: it runs every object of a chosen S3-compatible bucket through the
+unary parse and a battery of named shape checks on the merged Document,
+grouped by (parser type x file type), and exits 1 on any failure and 77
+when the bucket or gRParse is unreachable. Configuration is environment
+only (`EVAL_S3_ENDPOINT`, `EVAL_S3_BUCKET`, the credential pair,
+`GRPARSE_TARGET`); the corpus stays in the bucket and is read into memory.
+Seed a private RustFS (`compose.stack.s3.yaml`, profile `s3`, credentials
+from the environment) with `eval/s3/seed_from_workspace.py` from the
+family's own fixtures, run it twice after a deploy (the second run is the
+verdict), and triage every finding to a test in `tests/` and a fix, a
+collector's repo, or a corrected check; `uv run python
+eval/s3/tests/run_tests.py` covers the tool itself.
 The Playwright suite (`e2e/`, section 5) drives the shell and every service
 UI in the compose stack; it runs with one worker until the shell proxy bug
 in `e2e/specs/proxy.spec.ts` is fixed.
