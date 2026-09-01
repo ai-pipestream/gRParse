@@ -11,7 +11,12 @@
 #     OpenVINO reaches the GPU,
 #   - sets GRPARSE_ORT_EP=openvino and names the OpenVINO device (GPU by
 #     default; CPU or NPU are the other values the plugin accepts), with a
-#     compiled-kernel cache so the second boot does not recompile.
+#     compiled-kernel cache so a later boot does not recompile.
+#   - stores that cache in a named volume, not on the 256 MB /tmp tmpfs: the
+#     GPU plugin compiles a kernel set per input size, OCR crops and turned
+#     rasters add new sizes all the time, and a full tmpfs means truncated
+#     blobs that the next load cannot open (clCreateProgramWithBinary, exit
+#     139, krick-1 2026-09-01 after a handful of documents).
 services:
   grparse:
     image: pipestreamai/grparse:latest-openvino
@@ -24,4 +29,10 @@ services:
     environment:
       GRPARSE_ORT_EP: openvino
       GRPARSE_OPENVINO_DEVICE: GPU
-      GRPARSE_OPENVINO_CACHE_DIR: /tmp/openvino-cache
+      GRPARSE_OPENVINO_CACHE_DIR: /var/cache/openvino
+    volumes:
+      - ./models:/models:ro
+      - openvino-cache:/var/cache/openvino
+
+volumes:
+  openvino-cache:

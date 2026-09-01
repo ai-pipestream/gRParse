@@ -569,7 +569,11 @@ The image defaults to `GRPARSE_ORT_EP=openvino` with
 `GRPARSE_OPENVINO_DEVICE=GPU`; set the device to `GPU.<n>`, `CPU`, `NPU`, or
 an `AUTO:`/`HETERO:` list. `GRPARSE_OPENVINO_CACHE_DIR` points the plugin at a
 writable directory to keep compiled blobs in, which skips the recompile on
-every session create (unset by default: the container runs read-only). The
+every session create (unset by default: the container runs read-only). Give
+it room: the GPU plugin compiles a kernel set per input size, so OCR crops
+and turned rasters add blobs continually (2400 files after a handful of
+documents); the compose overlay uses a named volume, because a small tmpfs
+fills up, and a truncated blob then makes the OpenCL loader abort. The
 layout session asks for single precision explicitly; the GPU plugin's default
 half precision loses that detector real detections and drifts its boxes, while
 the OCR, table, and classifier nets keep the plugin's own choice. OCR startup
