@@ -142,13 +142,13 @@
    }
   },
   "pdf-diffusion-paper": {
-   "latency_ms": 456.2,
+   "latency_ms": 435.7,
    "stable": true,
    "truth": {
     "truth_anchors_found": 1.0,
-    "truth_figures": 0.3333,
+    "truth_figures": 0.6667,
     "truth_heading_levels": 1.0,
-    "truth_headings": 0.9412,
+    "truth_headings": 0.9714,
     "truth_order": 1.0,
     "truth_table_cells": 0.9781
    }
@@ -158,14 +158,14 @@
    "stable": true
   },
   "pdf-form": {
-   "latency_ms": 10.3,
+   "latency_ms": 9.9,
    "stable": true,
    "truth": {
     "truth_anchors_found": 1.0,
     "truth_heading_levels": 1.0,
     "truth_headings": 1.0,
     "truth_order": 1.0,
-    "truth_table_cells": 0.0645
+    "truth_table_cells": 1.0
    }
   },
   "pdf-hello-text": {
@@ -173,7 +173,7 @@
    "stable": true
   },
   "pdf-long-text": {
-   "latency_ms": 56.1,
+   "latency_ms": 55.0,
    "stable": true
   },
   "pdf-mixed": {
@@ -181,7 +181,7 @@
    "stable": true
   },
   "pdf-rotated-scan": {
-   "latency_ms": 1543.6,
+   "latency_ms": 5137.0,
    "stable": true,
    "truth": {
     "truth_anchors_found": 1.0,
@@ -191,6 +191,7 @@
    }
   },
   "pdf-rotated-scan-180": {
+   "latency_ms": 3870.2,
    "stable": true,
    "truth": {
     "truth_anchors_found": 1.0,
@@ -200,6 +201,7 @@
    }
   },
   "pdf-rotated-scan-mixed": {
+   "latency_ms": 7543.2,
    "stable": true,
    "truth": {
     "truth_anchors_found": 1.0,
@@ -751,6 +753,51 @@
    "reason": "lane-rotation: orientation recovery re-reads the 90 degree scan upright; headings 0.800 to 1.000, levels 0.500 to 1.000, order 0.333 to 1.000, anchors 0.600 to 1.000; recorded on a CPU instance, latency budget kept",
    "service": "gRParse grparse-0.1.0-cuda",
    "timestamp": "2026-09-01T04:25:58+00:00"
+  },
+  {
+   "documents": [
+    "pdf-diffusion-paper",
+    "pdf-long-text",
+    "pdf-form"
+   ],
+   "gate_changes": [
+    {
+     "after": 0.9714,
+     "before": 0.9412,
+     "doc_id": "pdf-diffusion-paper",
+     "metric": "truth_headings",
+     "reason": "raised"
+    },
+    {
+     "after": 0.6667,
+     "before": 0.3333,
+     "doc_id": "pdf-diffusion-paper",
+     "metric": "truth_figures",
+     "reason": "raised"
+    },
+    {
+     "after": 1.0,
+     "before": 0.0645,
+     "doc_id": "pdf-form",
+     "metric": "truth_table_cells",
+     "reason": "raised"
+    }
+   ],
+   "partial": true,
+   "reason": "grpc-pdf-inspector 0cd27b0: blocks located as run chains, form XObjects as pictures (paper 17 pictures, heading 3.2 present), form intro is a paragraph and the grid is 12x2, long-text furniture 110 to 0",
+   "service": "gRParse grparse-0.1.0-cuda",
+   "timestamp": "2026-09-01T04:49:31+00:00"
+  },
+  {
+   "documents": [
+    "pdf-rotated-scan",
+    "pdf-rotated-scan-180",
+    "pdf-rotated-scan-mixed"
+   ],
+   "partial": true,
+   "reason": "059c019: orientation recovery reads turned pages up to three times (latency 1.5 s to 4.8 s on the GPU stack), CUDA OCR text differs by one item from the CPU rig, latency budgets recorded on the GPU stack",
+   "service": "gRParse grparse-0.1.0-cuda",
+   "timestamp": "2026-09-01T04:50:04+00:00"
   }
  ],
  "manifest": "eval/scorecard/corpus.json",

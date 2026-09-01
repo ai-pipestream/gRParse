@@ -2,7 +2,7 @@
  "agreement": {
   "agreed": 1,
   "claimed_fields": {
-   "grparse": 3,
+   "grparse": 4,
    "pdf": 14
   },
   "collectors": [
@@ -15,6 +15,7 @@
    "origin.binary_hash": "grparse",
    "origin.filename": "grparse",
    "origin.mimetype": "grparse",
+   "origin.mimetype_evidence": "grparse",
    "origin.source_id": "pdf",
    "source_meta.authoring_tool": "pdf",
    "source_meta.created.seconds": "pdf",
@@ -51,7 +52,7 @@
   "orphans": 0,
   "pages": 1,
   "pictures": 0,
-  "reading_chars": 718,
+  "reading_chars": 602,
   "tables": 1,
   "texts": 8
  },
@@ -73,11 +74,11 @@
   }
  ],
  "markdown": {
-  "chars": 2629,
+  "chars": 1195,
   "headings": 2,
   "images": 0,
-  "sha256": "233a4defc526bf812931bb588b6ab70e777dc3efba1e596cb623253362f4b8aa",
-  "table_rows": 14
+  "sha256": "cfb4e69c0f49a664f035df0e57c6eb36c23fa24512dbd5eb6284045e71abe10a",
+  "table_rows": 13
  },
  "origin_mimetype": "application/pdf",
  "pictures": [],
@@ -98,11 +99,11 @@
    "text": "Complete every field. Leave a value blank only when it is no"
   },
   {
-   "hash": "86c35d413b708bbc",
-   "key": "13x2",
+   "hash": "8fbf3339225d7746",
+   "key": "12x2",
    "label": "table",
    "ref": "#/tables/0",
-   "text": "13x2"
+   "text": "12x2"
   },
   {
    "hash": "36b5319949e4480c",
@@ -148,7 +149,7 @@
    "text": "Date: ____________"
   }
  ],
- "reading_text": "Equipment Loan Request\nComplete every field. Leave a value blank only when it is not yet known; the approver fills in the remaining cells.\nComplete every field. Leave a value blank only when it is not yet known; the approver fills in the remaining cells.\nField\nValue\nRequest number\nEQ-2024-0117\nRequester\nM. Okafor\nDepartment\nField Survey\nEquipment\nTotal station, tripod, two prisms\nSerial number\nLoan start\n2024-03-04\nLoan end\nPriority\n☒ Standard ☐ Urgent ☐ Emergency\nInsurance confirmed\n☐ Yes ☒ No\nApprover\nNotes\nApprover Notes\nDeclaration\n☒ I confirm the equipment will be returned clean and complete.\n☐ I request an extension form to be sent with the equipment.\nSignature: ______________________\nDate: ____________",
+ "reading_text": "Equipment Loan Request\nComplete every field. Leave a value blank only when it is not yet known; the approver fills in the remaining cells.\nField\nValue\nRequest number\nEQ-2024-0117\nRequester\nM. Okafor\nDepartment\nField Survey\nEquipment\nTotal station, tripod, two prisms\nSerial number\nLoan start\n2024-03-04\nLoan end\nPriority\n☒ Standard ☐ Urgent ☐ Emergency\nInsurance confirmed\n☐ Yes ☒ No\nApprover\nNotes\nApprover Notes\nDeclaration\n☒ I confirm the equipment will be returned clean and complete.\n☐ I request an extension form to be sent with the equipment.\nSignature: ______________________\nDate: ____________",
  "schema": 1,
  "status": "CONVERSION_STATUS_SUCCESS",
  "tables": [
@@ -160,178 +161,164 @@
      0,
      1,
      1,
-     "Complete every field. Leave a value blank only when it is not yet known; the approver fills in the remaining cells."
-    ],
-    [
-     0,
-     1,
-     1,
-     1,
-     ""
-    ],
-    [
-     1,
-     0,
-     1,
-     1,
      "Field"
     ],
     [
-     1,
+     0,
      1,
      1,
      1,
      "Value"
     ],
     [
-     2,
+     1,
      0,
      1,
      1,
      "Request number"
     ],
     [
-     2,
+     1,
      1,
      1,
      1,
      "EQ-2024-0117"
     ],
     [
-     3,
+     2,
      0,
      1,
      1,
      "Requester"
     ],
     [
-     3,
+     2,
      1,
      1,
      1,
      "M. Okafor"
     ],
     [
-     4,
+     3,
      0,
      1,
      1,
      "Department"
     ],
     [
-     4,
+     3,
      1,
      1,
      1,
      "Field Survey"
     ],
     [
-     5,
+     4,
      0,
      1,
      1,
      "Equipment"
     ],
     [
-     5,
+     4,
      1,
      1,
      1,
      "Total station, tripod, two prisms"
     ],
     [
-     6,
+     5,
      0,
      1,
      1,
      "Serial number"
     ],
     [
-     6,
+     5,
      1,
      1,
      1,
      ""
     ],
     [
-     7,
+     6,
      0,
      1,
      1,
      "Loan start"
     ],
     [
-     7,
+     6,
      1,
      1,
      1,
      "2024-03-04"
     ],
     [
-     8,
+     7,
      0,
      1,
      1,
      "Loan end"
     ],
     [
-     8,
+     7,
      1,
      1,
      1,
      ""
     ],
     [
-     9,
+     8,
      0,
      1,
      1,
      "Priority"
     ],
     [
-     9,
+     8,
      1,
      1,
      1,
      "☒ Standard ☐ Urgent ☐ Emergency"
     ],
     [
-     10,
+     9,
      0,
      1,
      1,
      "Insurance confirmed"
     ],
     [
-     10,
+     9,
      1,
      1,
      1,
      "☐ Yes ☒ No"
     ],
     [
-     11,
+     10,
      0,
      1,
      1,
      "Approver"
     ],
     [
-     11,
+     10,
      1,
      1,
      1,
      ""
     ],
     [
-     12,
+     11,
      0,
      1,
      1,
      "Notes"
     ],
     [
-     12,
+     11,
      1,
      1,
      1,
@@ -341,7 +328,7 @@
    "cols": 2,
    "column_headers": 2,
    "ref": "#/tables/0",
-   "rows": 13
+   "rows": 12
   }
  ],
  "warnings": []
