@@ -50,13 +50,6 @@ std::string wrapped(const std::string& body) {
   return kPreamble + "\n\\begin{document}\n\n" + body + "\n\n\\end{document}";
 }
 
-void require_contains(const std::string& haystack, const std::string& needle,
-                      const std::string& message) {
-  if (!haystack.contains(needle)) {
-    throw std::runtime_error(message + " (missing: " + needle + ")\nrendered:\n" + haystack);
-  }
-}
-
 void verify_an_empty_document_is_the_bare_skeleton() {
   require_equal(grparse::render_latex(base_document("empty.pdf")),
                 kPreamble + "\n\\begin{document}\n\n\\end{document}",
