@@ -410,9 +410,9 @@ std::string picture_classification_class(const docv1::PictureItem& picture) {
   return std::string();
 }
 
-std::vector<std::string> RendererBase::caption_texts(
+std::vector<const docv1::TextItemBase*> RendererBase::caption_bases(
     const google::protobuf::RepeatedPtrField<docv1::RefItem>& captions) {
-  std::vector<std::string> texts;
+  std::vector<const docv1::TextItemBase*> bases;
   for (const auto& ref : captions) {
     const ArenaRef resolved = parse_ref(ref.ref());
     if (resolved.kind != ArenaRef::kText ||
@@ -421,7 +421,16 @@ std::vector<std::string> RendererBase::caption_texts(
     }
     consumed_.insert(ref.ref());
     const auto* base = text_base(document_.texts(resolved.index));
-    if (base != nullptr && !base->text().empty()) texts.push_back(base->text());
+    if (base != nullptr) bases.push_back(base);
+  }
+  return bases;
+}
+
+std::vector<std::string> RendererBase::caption_texts(
+    const google::protobuf::RepeatedPtrField<docv1::RefItem>& captions) {
+  std::vector<std::string> texts;
+  for (const auto* base : caption_bases(captions)) {
+    if (!base->text().empty()) texts.push_back(base->text());
   }
   return texts;
 }

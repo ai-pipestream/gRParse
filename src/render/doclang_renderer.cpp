@@ -189,8 +189,20 @@ class DoclangRenderer : RendererBase {
 
   void render_captions(const google::protobuf::RepeatedPtrField<docv1::RefItem>& captions,
                        int depth) {
-    for (const auto& caption : caption_texts(captions)) {
-      line(depth, element("caption", "", caption));
+    for (const auto* caption : caption_bases(captions)) {
+      if (caption->text().empty()) continue;
+      if (!caption->has_hyperlink()) {
+        line(depth, element("caption", "", caption->text()));
+        continue;
+      }
+      // A linked caption takes docling's block form: an <href/> head naming
+      // the normalized target, then the caption text as a bare text line.
+      line(depth, "<caption>");
+      line(depth + 1,
+           "<href uri=\"" + escape_html_attribute(normalized_uri(caption->hyperlink())) +
+               "\"/>");
+      line(depth + 1, escape_html_text(caption->text()));
+      line(depth, "</caption>");
     }
   }
 

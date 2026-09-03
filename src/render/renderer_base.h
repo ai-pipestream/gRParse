@@ -146,6 +146,13 @@ class RendererBase {
            layer != ai::pipestream::document::v1::CONTENT_LAYER_UNSPECIFIED;
   }
 
+  // The caption items a table or figure references, in reference order;
+  // entries whose reference does not resolve to a text base are skipped.
+  // Each resolved caption is consumed so the tree walk skips it later.
+  std::vector<const ai::pipestream::document::v1::TextItemBase*> caption_bases(
+      const google::protobuf::RepeatedPtrField<ai::pipestream::document::v1::RefItem>&
+          captions);
+
   // The caption texts a table or figure references, in reference order.
   // Each resolved caption is consumed so the tree walk skips it later.
   std::vector<std::string> caption_texts(

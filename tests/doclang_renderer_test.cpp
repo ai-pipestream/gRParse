@@ -177,6 +177,53 @@ void verify_a_table_with_no_grid_writes_only_its_caption() {
                 "a table with no cells still shows the caption it carries");
 }
 
+void verify_a_linked_caption_takes_the_block_form() {
+  docv1::Document document = base_document("linked-figure.pdf");
+  auto* figure = add_picture(&document, "#/body", "figs/a.png");
+  figure->add_captions()->set_ref(add_owned_text(&document, figure->self_ref(),
+                                                 docv1::DOC_ITEM_LABEL_CAPTION, "A chart"));
+  document.mutable_texts(document.texts_size() - 1)
+      ->mutable_text()
+      ->mutable_base()
+      ->set_hyperlink("https://example.com/chart");
+
+  require_equal(body_of(document),
+                "  <caption>\n"
+                "    <href uri=\"https://example.com/chart\"/>\n"
+                "    A chart\n"
+                "  </caption>\n"
+                "  <picture uri=\"figs/a.png\"/>\n",
+                "a caption carrying a hyperlink renders block-form with an href head");
+
+  docv1::Document plain = base_document("plain-figure.pdf");
+  auto* bare = add_picture(&plain, "#/body", "figs/a.png");
+  bare->add_captions()->set_ref(add_owned_text(&plain, bare->self_ref(),
+                                               docv1::DOC_ITEM_LABEL_CAPTION, "A chart"));
+  require_equal(body_of(plain),
+                "  <caption>A chart</caption>\n"
+                "  <picture uri=\"figs/a.png\"/>\n",
+                "a caption without a hyperlink keeps the plain inline form");
+}
+
+void verify_a_linked_table_caption_normalizes_its_href() {
+  docv1::Document document = base_document("linked-table.pdf");
+  auto* table = add_table(&document, "#/body");
+  table->add_captions()->set_ref(
+      add_owned_text(&document, table->self_ref(), docv1::DOC_ITEM_LABEL_CAPTION, "Fuel"));
+  document.mutable_texts(document.texts_size() - 1)
+      ->mutable_text()
+      ->mutable_base()
+      ->set_hyperlink("https://EXAMPLE.com");
+
+  require_equal(body_of(document),
+                "  <caption>\n"
+                "    <href uri=\"https://example.com/\"/>\n"
+                "    Fuel\n"
+                "  </caption>\n",
+                "a table caption link renders the same block form, host lowercased and "
+                "the empty path made explicit");
+}
+
 void verify_a_picture_element_states_its_uri_and_description() {
   docv1::Document bare = base_document("figure.pdf");
   add_picture(&bare, "#/body", "");
@@ -239,6 +286,8 @@ int main() {
       verify_an_empty_list_group_still_writes_its_element,
       verify_tables_carry_spans_gaps_and_header_cells,
       verify_a_table_with_no_grid_writes_only_its_caption,
+      verify_a_linked_caption_takes_the_block_form,
+      verify_a_linked_table_caption_normalizes_its_href,
       verify_a_picture_element_states_its_uri_and_description,
       verify_the_unserved_arenas_leave_a_comment,
       verify_content_and_attributes_are_xml_escaped,
