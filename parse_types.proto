@@ -54,6 +54,10 @@ enum OutputFormat {
   // The document rendered into the body shape of the Docs API "document"
   // resource, ready for a create-then-patch integration.
   OUTPUT_FORMAT_GDOCS_JSON = 11;
+  // docling's LaTeX serialization: a fixed document class and preamble with
+  // the title hoisted into it, and the body as sections, lists, tables, and
+  // floats.
+  OUTPUT_FORMAT_LATEX = 12;
 }
 
 // OCR engine selection.
@@ -572,6 +576,8 @@ message DocumentExports {
   optional string canonical_json = 10;
   // The Docs API body shape (see OUTPUT_FORMAT_GDOCS_JSON).
   optional string gdocs_json = 11;
+  // The LaTeX serialization (see OUTPUT_FORMAT_LATEX).
+  optional string latex = 12;
 }
 
 // DocumentResponse contains the converted document and optional exports.

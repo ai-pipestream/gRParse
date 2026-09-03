@@ -127,6 +127,9 @@ void render_exports(const pipestream::parse::v1::ConvertDocumentOptions& options
   if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_YAML)) {
     exports->set_yaml(render_yaml(document));
   }
+  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_LATEX)) {
+    exports->set_latex(render_latex(document));
+  }
 }
 
 // The converted document a chunk response carries when the caller asked for

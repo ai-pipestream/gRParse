@@ -144,7 +144,7 @@ std::string render_manifest(const std::vector<BundleFile>& files) {
 // that produced it.  Only the fields the request actually rendered are set,
 // so an unasked-for format contributes no empty file.
 void add_exports(const parsev1::DocumentExports& exports, std::vector<BundleFile>* files) {
-  const std::array<std::pair<std::string_view, const std::string*>, 11> members{{
+  const std::array<std::pair<std::string_view, const std::string*>, 12> members{{
       {"exports/canonical_json.json", exports.has_canonical_json() ? &exports.canonical_json() : nullptr},
       {"exports/doclang.xml", exports.has_doclang() ? &exports.doclang() : nullptr},
       {"exports/doctags.txt", exports.has_doctags() ? &exports.doctags() : nullptr},
@@ -152,6 +152,7 @@ void add_exports(const parsev1::DocumentExports& exports, std::vector<BundleFile
       {"exports/html.html", exports.has_html() ? &exports.html() : nullptr},
       {"exports/html_split_page.html", exports.has_html_split_page() ? &exports.html_split_page() : nullptr},
       {"exports/json.json", exports.has_json() ? &exports.json() : nullptr},
+      {"exports/latex.tex", exports.has_latex() ? &exports.latex() : nullptr},
       {"exports/markdown.md", exports.has_md() ? &exports.md() : nullptr},
       {"exports/text.txt", exports.has_text() ? &exports.text() : nullptr},
       {"exports/vtt.vtt", exports.has_vtt() ? &exports.vtt() : nullptr},

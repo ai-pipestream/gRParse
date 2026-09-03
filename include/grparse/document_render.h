@@ -109,6 +109,21 @@ std::string render_html_split_page(const ai::pipestream::document::v1::Document&
 // through yaml-cpp. Throws std::runtime_error on emitter failure.
 std::string render_yaml(const ai::pipestream::document::v1::Document& document);
 
+// Renders docling-core's LaTeXDocSerializer output with its defaults: the
+// article document class and the reference's package list as the preamble,
+// the first title item hoisted into a "\title{...}" there with "\maketitle"
+// opening the body, section headers as \section/\subsection/\subsubsection
+// (levels outside [1, 3] clamp, where the reference raises), list groups as
+// itemize/enumerate with a two-space indent per nesting level, code blocks as
+// verbatim and inline code as \texttt, formulas as "$...$"/"$$...$$", tables
+// as a "|l|...|l|" tabular with per-row \hline inside a table[h] float that
+// carries the caption, and pictures as figure[h] floats holding the "% image"
+// placeholder. Item text is LaTeX-escaped; code, formula, and URL arguments
+// follow the reference's own escaping rules. Items with no LaTeX counterpart
+// degrade to the reference's "% missing-..." comment placeholders instead of
+// failing the export.
+std::string render_latex(const ai::pipestream::document::v1::Document& document);
+
 }  // namespace grparse
 
 #endif

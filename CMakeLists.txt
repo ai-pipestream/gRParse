@@ -527,6 +527,7 @@ add_library(grparse_core STATIC
   src/render/doctags_renderer.cpp
   src/render/doclang_renderer.cpp
   src/render/vtt_renderer.cpp
+  src/render/latex_renderer.cpp
   src/chunking/token_counter.cpp
   src/chunking/sentence_rules.cpp
   src/chunking/chunker.cpp
@@ -858,6 +859,7 @@ if(BUILD_TESTING)
     document-geometry-test
     html-renderer-test
     json-key-order-test
+    latex-renderer-test
     load-normalization-test
     render-determinism-test
     render-map-order-test

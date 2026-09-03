@@ -80,6 +80,7 @@ bool renderable(pipestream::parse::v1::OutputFormat format) {
     case pipestream::parse::v1::OUTPUT_FORMAT_YAML:
     case pipestream::parse::v1::OUTPUT_FORMAT_CANONICAL_JSON:
     case pipestream::parse::v1::OUTPUT_FORMAT_GDOCS_JSON:
+    case pipestream::parse::v1::OUTPUT_FORMAT_LATEX:
       return true;
     default:
       return false;

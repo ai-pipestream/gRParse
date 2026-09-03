@@ -544,11 +544,13 @@ void verify_non_body_layers_are_excluded() {
   const std::string html = grparse::render_html(document);
   const std::string doctags = grparse::render_doctags(document);
   const std::string doclang = grparse::render_doclang(document);
+  const std::string latex = grparse::render_latex(document);
   for (const auto& [name, rendered] :
        {std::pair<std::string, const std::string&>{"markdown", markdown},
         {"html", html},
         {"doctags", doctags},
-        {"doclang", doclang}}) {
+        {"doclang", doclang},
+        {"latex", latex}}) {
     require_contains(rendered, "visible body", name + " keeps body items");
     require_contains(rendered, "default layer",
                      name + " treats the unspecified layer as body");
@@ -974,6 +976,23 @@ void verify_empty_document_renders() {
           "an empty body renders the bare doclang root");
   require(grparse::render_vtt(document) == "WEBVTT",
           "an empty body renders the bare WEBVTT header");
+  require(grparse::render_latex(document) ==
+              "\\documentclass[11pt,a4paper]{article}\n"
+              "\n"
+              "\\usepackage[utf8]{inputenc} % allow utf-8 input\n"
+              "\\usepackage[T1]{fontenc}    % use 8-bit T1 fonts\n"
+              "\\usepackage{hyperref}       % hyperlinks\n"
+              "\\usepackage{url}            % simple URL typesetting\n"
+              "\\usepackage{booktabs}       % professional-quality tables\n"
+              "\\usepackage{amsfonts}       % blackboard math symbols\n"
+              "\\usepackage{nicefrac}       % compact symbols for 1/2, etc.\n"
+              "\\usepackage{microtype}      % microtypography\n"
+              "\\usepackage{xcolor}         % colors\n"
+              "\\usepackage{graphicx}       % graphics\n"
+              "\\usepackage[normalem]{ulem} % strikethrough\n"
+              "\n\\begin{document}\n"
+              "\n\\end{document}",
+          "an empty body renders the LaTeX preamble around an empty document environment");
   require(!grparse::render_yaml(document).empty(), "an empty body still renders yaml");
 }
 

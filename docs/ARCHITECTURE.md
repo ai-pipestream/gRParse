@@ -290,7 +290,8 @@ are the stable include paths; the units below sit behind them.
 - Exports: `src/render/`, one renderer per format over `renderer_base`;
   markdown is `markdown_renderer` (per-item emission) over `markdown_walk`
   (structure) with `value_repr`, `meta_repr`, `text_class`, `table_markdown`,
-  `markdown_text`; canonical JSON is `canonical_json_renderer` over
+  `markdown_text`; latex is `latex_renderer` (the docling LaTeXDocSerializer
+  port); canonical JSON is `canonical_json_renderer` over
   `canonical_json_parts` and `canonical_json_labels`; the protobuf JSON and
   YAML exports (`src/document_render.cpp`) run through `json_key_order` so map
   fields print in content order.

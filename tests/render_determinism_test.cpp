@@ -49,6 +49,7 @@ const std::vector<std::pair<std::string, Renderer>>& renderers() {
       {"doctags", grparse::render_doctags},
       {"doclang", grparse::render_doclang},
       {"vtt", grparse::render_vtt},
+      {"latex", grparse::render_latex},
   };
   return all;
 }
