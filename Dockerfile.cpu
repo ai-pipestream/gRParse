@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.26
+# syntax=docker/dockerfile:1.27
 # CPU build: ONNX Runtime's plain CPU package, the only one Microsoft
 # publishes for both x86_64 and aarch64, so this is the image for hosts
 # without an NVIDIA or Intel accelerator - Apple Silicon under Docker
