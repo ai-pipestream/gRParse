@@ -19,6 +19,8 @@ using grparse::render_doclang;
 using grparse_test::add_cell;
 using grparse_test::add_code;
 using grparse_test::add_group;
+using grparse_test::add_heading;
+using grparse_test::add_owned_group;
 using grparse_test::add_owned_text;
 using grparse_test::add_paragraph;
 using grparse_test::add_picture;
@@ -177,6 +179,64 @@ void verify_a_table_with_no_grid_writes_only_its_caption() {
                 "a table with no cells still shows the caption it carries");
 }
 
+void verify_a_rich_cell_renders_its_blocks_inside_the_cell() {
+  docv1::Document document = base_document("rich-cells.pdf");
+  auto* table = add_table(&document, "#/body");
+  auto* data = table->mutable_data();
+  data->set_num_rows(2);
+  data->set_num_cols(2);
+  add_cell(data, nullptr, "plain", false, 0, 0);
+
+  const std::string list_blocks =
+      add_owned_group(&document, table->self_ref(), docv1::GROUP_LABEL_UNSPECIFIED);
+  const std::string list = add_group(&document, list_blocks, docv1::GROUP_LABEL_LIST);
+  add_text(&document, list, docv1::BaseTextItem::kListItem, docv1::DOC_ITEM_LABEL_LIST_ITEM,
+           "Pond");
+  add_text(&document, list, docv1::BaseTextItem::kListItem, docv1::DOC_ITEM_LABEL_LIST_ITEM,
+           "Marsh");
+  add_cell(data, nullptr, "", false, 0, 1)->mutable_ref()->set_ref(list_blocks);
+
+  const std::string heading_blocks =
+      add_owned_group(&document, table->self_ref(), docv1::GROUP_LABEL_UNSPECIFIED);
+  add_heading(&document, heading_blocks, "Overview", 1);
+  add_cell(data, nullptr, "", false, 1, 0)->mutable_ref()->set_ref(heading_blocks);
+
+  const std::string table_blocks =
+      add_owned_group(&document, table->self_ref(), docv1::GROUP_LABEL_UNSPECIFIED);
+  auto* nested = add_table(&document, table_blocks);
+  nested->mutable_data()->set_num_rows(1);
+  nested->mutable_data()->set_num_cols(1);
+  add_cell(nested->mutable_data(), nullptr, "Sound", false, 0, 0);
+  add_cell(data, nullptr, "", false, 1, 1)->mutable_ref()->set_ref(table_blocks);
+
+  require_equal(body_of(document),
+                "  <table>\n"
+                "    <tr>\n"
+                "      <td>plain</td>\n"
+                "      <td>\n"
+                "        <list ordered=\"false\">\n"
+                "          <list-item>Pond</list-item>\n"
+                "          <list-item>Marsh</list-item>\n"
+                "        </list>\n"
+                "      </td>\n"
+                "    </tr>\n"
+                "    <tr>\n"
+                "      <td>\n"
+                "        <section-header level=\"1\">Overview</section-header>\n"
+                "      </td>\n"
+                "      <td>\n"
+                "        <table>\n"
+                "          <tr>\n"
+                "            <td>Sound</td>\n"
+                "          </tr>\n"
+                "        </table>\n"
+                "      </td>\n"
+                "    </tr>\n"
+                "  </table>\n",
+                "a rich cell opens its element and renders the group's blocks one indent "
+                "deeper: a list, a heading, and a nested table");
+}
+
 void verify_a_linked_caption_takes_the_block_form() {
   docv1::Document document = base_document("linked-figure.pdf");
   auto* figure = add_picture(&document, "#/body", "figs/a.png");
@@ -285,6 +345,7 @@ int main() {
       verify_a_nested_list_indents_one_level_further,
       verify_an_empty_list_group_still_writes_its_element,
       verify_tables_carry_spans_gaps_and_header_cells,
+      verify_a_rich_cell_renders_its_blocks_inside_the_cell,
       verify_a_table_with_no_grid_writes_only_its_caption,
       verify_a_linked_caption_takes_the_block_form,
       verify_a_linked_table_caption_normalizes_its_href,

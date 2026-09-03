@@ -206,6 +206,27 @@ class DoclangRenderer : RendererBase {
     }
   }
 
+  // A rich cell (docling's RichTableCell.ref) opens its element and renders
+  // the referenced group's blocks inside it, one indent deeper; the group
+  // reference is consumed so the blocks never render twice. Returns false
+  // when the cell carries no usable group reference, leaving the plain
+  // single-line form to the caller.
+  bool render_cell_blocks(const docv1::TableCell* cell, const std::string& tag,
+                          const std::string& attributes, int depth) {
+    if (!cell->has_ref()) return false;
+    const ArenaRef ref = parse_ref(cell->ref().ref());
+    if (ref.kind != ArenaRef::kGroup || ref.index >= document_.groups_size()) {
+      return false;
+    }
+    if (!consume(cell->ref().ref())) return false;
+    const auto& group = document_.groups(ref.index);
+    if (excluded_layer(group.content_layer())) return false;
+    line(depth, "<" + tag + attributes + ">");
+    render_group(group, depth + 1);
+    line(depth, "</" + tag + ">");
+    return true;
+  }
+
   void render_table(const docv1::TableItem& table, int depth) {
     if (excluded_layer(table.content_layer())) return;
     render_captions(table.captions(), depth);
@@ -236,7 +257,9 @@ class DoclangRenderer : RendererBase {
         std::string attributes;
         if (row_span > 1) attributes += " rowspan=\"" + std::to_string(row_span) + "\"";
         if (col_span > 1) attributes += " colspan=\"" + std::to_string(col_span) + "\"";
-        line(depth + 2, element(header ? "th" : "td", attributes, cell->text()));
+        const std::string tag = header ? "th" : "td";
+        if (render_cell_blocks(cell, tag, attributes, depth + 2)) continue;
+        line(depth + 2, element(tag, attributes, cell->text()));
       }
       line(depth + 1, "</tr>");
     }

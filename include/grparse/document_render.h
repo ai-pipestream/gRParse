@@ -82,8 +82,11 @@ std::string render_doctags(const ai::pipestream::document::v1::Document& documen
 // NS_DOCLANG namespace whose element vocabulary is the one that service's
 // dialect fold reads back (title, section-header with level, paragraph,
 // list/list-item, caption, code, formula, footnote, reference, picture with
-// a uri attribute, table/tr/th/td with rowspan and colspan). Content is
-// XML-escaped; provenance is not emitted (the reader skips it anyway).
+// a uri attribute, table/tr/th/td with rowspan and colspan). A caption
+// carrying a hyperlink takes the block form with an `<href uri=...>` head,
+// and a rich table cell (its ref naming a group) renders the group's blocks
+// inside the cell element. Content is XML-escaped; provenance is not
+// emitted (the reader skips it anyway).
 std::string render_doclang(const ai::pipestream::document::v1::Document& document);
 
 // Renders the WebVTT export of track-timed text: a "WEBVTT" header (with the
@@ -118,7 +121,10 @@ std::string render_yaml(const ai::pipestream::document::v1::Document& document);
 // verbatim and inline code as \texttt, formulas as "$...$"/"$$...$$", tables
 // as a "|l|...|l|" tabular with per-row \hline inside a table[h] float that
 // carries the caption, and pictures as figure[h] floats holding the "% image"
-// placeholder. Item text is LaTeX-escaped; code, formula, and URL arguments
+// placeholder. A rich table cell (its ref naming a group) renders its blocks
+// folded onto the cell line: a list keeps its itemize/enumerate environment,
+// a nested table renders as the bare tabular, and a heading degrades to its
+// text. Item text is LaTeX-escaped; code, formula, and URL arguments
 // follow the reference's own escaping rules. Items with no LaTeX counterpart
 // degrade to the reference's "% missing-..." comment placeholders instead of
 // failing the export.

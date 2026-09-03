@@ -144,6 +144,20 @@ inline std::string add_owned_text(docv1::Document* document, const std::string& 
   return ref;
 }
 
+// A rich table cell's block group: it lives in the group arena with the
+// owning table as its parent and is reached only through the cell's ref,
+// never linked under the body. Children attach through the returned ref.
+inline std::string add_owned_group(docv1::Document* document, const std::string& owner,
+                                   docv1::GroupLabel label) {
+  const std::string ref = "#/groups/" + std::to_string(document->groups_size());
+  auto* group = document->add_groups();
+  group->set_self_ref(ref);
+  group->mutable_parent()->set_ref(owner);
+  group->set_label(label);
+  group->set_content_layer(docv1::CONTENT_LAYER_BODY);
+  return ref;
+}
+
 inline docv1::TableItem* add_table(docv1::Document* document, const std::string& parent) {
   const std::string ref = "#/tables/" + std::to_string(document->tables_size());
   auto* table = document->add_tables();

@@ -552,13 +552,17 @@ class LatexRenderer : RendererBase {
 
   // -- tables -----------------------------------------------------------------
 
-  // One cell's text: a rich cell renders the item it points at, a plain cell
-  // escapes its own text; both fold their newlines into spaces.
+  // One cell's text: a plain cell escapes its own text; a rich cell renders
+  // the group it points at through the cell-block idiom below. Both fold
+  // their newlines into spaces, so a cell's block structure lands on the row
+  // line (an itemize environment or a nested tabular survives on one line,
+  // as the reference's RichTableCell path emits it; no p{} column or
+  // minipage idiom exists here, and upstream flattens the same way).
   std::string cell_text(const docv1::TableCell& cell) {
     std::string text;
     if (cell.has_ref()) {
       const std::string& ref = cell.ref().ref();
-      if (consume(ref)) text = serialize(ref, 0, false);
+      if (consume(ref)) text = serialize_cell(ref);
     } else {
       text = escape_latex(cell.text());
     }
@@ -568,6 +572,58 @@ class LatexRenderer : RendererBase {
       out.push_back(c == '\n' ? ' ' : c);
     }
     return out;
+  }
+
+  // A rich cell's reference names the group holding its blocks (docling's
+  // RichTableCell.ref); any other reference falls back to the item
+  // serializer.
+  std::string serialize_cell(const std::string& ref) {
+    const ArenaRef parsed = parse_ref(ref);
+    if (parsed.kind == ArenaRef::kGroup && parsed.index < document_.groups_size()) {
+      return serialize_cell_group(document_.groups(parsed.index));
+    }
+    return serialize(ref, 0, false);
+  }
+
+  // The blocks of one rich cell, joined the way block parts join: a list
+  // keeps its environment, everything else serializes block by block.
+  std::string serialize_cell_group(const docv1::GroupItem& group) {
+    if (is_list_group(group)) return serialize_list(group, 0, false);
+    std::vector<std::string> parts;
+    for (const auto& child : group.children()) {
+      if (!consume(child.ref())) continue;
+      if (excluded_layer(layer_of(child.ref()))) continue;
+      std::string part = serialize_cell_block(child.ref());
+      if (!part.empty()) parts.push_back(std::move(part));
+    }
+    return join(parts, "\n\n");
+  }
+
+  // One block inside a rich cell: a nested table renders as the bare
+  // tabular (a table float cannot live inside a tabular cell) and a heading
+  // degrades to its text (a section command cannot live there either, and a
+  // \title would hoist into the preamble); anything else serializes as at
+  // the top level.
+  std::string serialize_cell_block(const std::string& ref) {
+    const ArenaRef parsed = parse_ref(ref);
+    if (parsed.kind == ArenaRef::kGroup && parsed.index < document_.groups_size()) {
+      return serialize_cell_group(document_.groups(parsed.index));
+    }
+    if (parsed.kind == ArenaRef::kTable && parsed.index < document_.tables_size()) {
+      return tabular(document_.tables(parsed.index).data());
+    }
+    if (parsed.kind == ArenaRef::kText && parsed.index < document_.texts_size()) {
+      const auto& item = document_.texts(parsed.index);
+      const TextClass kind = classify_text(item);
+      if (kind == TextClass::kTitle || kind == TextClass::kSectionHeader) {
+        const auto* base = text_base(item);
+        if (base == nullptr) return std::string();
+        return post_process(base->text(),
+                            base->has_formatting() ? &base->formatting() : nullptr,
+                            base->has_hyperlink() ? &base->hyperlink() : nullptr);
+      }
+    }
+    return serialize(ref, 0, false);
   }
 
   // The tabular block of one table data grid, without span support: every

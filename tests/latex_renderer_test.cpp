@@ -18,6 +18,7 @@ using grparse_test::add_cell;
 using grparse_test::add_code;
 using grparse_test::add_group;
 using grparse_test::add_heading;
+using grparse_test::add_owned_group;
 using grparse_test::add_owned_text;
 using grparse_test::add_paragraph;
 using grparse_test::add_picture;
@@ -164,6 +165,86 @@ void verify_a_table_renders_as_a_floated_tabular() {
                 "escaped cells, and newlines folded to spaces");
 }
 
+void verify_a_rich_cell_with_a_list_renders_the_environment_inline() {
+  docv1::Document document = base_document("rich-list.tex");
+  auto* table = add_table(&document, "#/body");
+  auto* data = table->mutable_data();
+  data->set_num_rows(1);
+  data->set_num_cols(2);
+  add_cell(data, nullptr, "Teal", false, 0, 0);
+  const std::string blocks =
+      add_owned_group(&document, table->self_ref(), docv1::GROUP_LABEL_UNSPECIFIED);
+  const std::string list = add_group(&document, blocks, docv1::GROUP_LABEL_LIST);
+  add_text(&document, list, docv1::BaseTextItem::kListItem, docv1::DOC_ITEM_LABEL_LIST_ITEM,
+           "Pond");
+  add_text(&document, list, docv1::BaseTextItem::kListItem, docv1::DOC_ITEM_LABEL_LIST_ITEM,
+           "Marsh");
+  add_cell(data, nullptr, "", false, 0, 1)->mutable_ref()->set_ref(blocks);
+
+  require_equal(grparse::render_latex(document),
+                wrapped("\\begin{table}[h]\n"
+                        "\\begin{tabular}{|l|l|}\n"
+                        "\\hline\n"
+                        "Teal & \\begin{itemize} \\item Pond \\item Marsh \\end{itemize} "
+                        "\\\\ \\hline\n"
+                        "\\end{tabular}\n"
+                        "\\end{table}"),
+                "a rich cell's list keeps its itemize environment, folded onto the cell "
+                "line");
+}
+
+void verify_a_rich_cell_with_a_nested_table_renders_a_bare_tabular() {
+  docv1::Document document = base_document("rich-table.tex");
+  auto* table = add_table(&document, "#/body");
+  auto* data = table->mutable_data();
+  data->set_num_rows(1);
+  data->set_num_cols(2);
+  add_cell(data, nullptr, "Quack", false, 0, 0);
+  const std::string blocks =
+      add_owned_group(&document, table->self_ref(), docv1::GROUP_LABEL_UNSPECIFIED);
+  auto* nested = add_table(&document, blocks);
+  auto* nested_data = nested->mutable_data();
+  nested_data->set_num_rows(1);
+  nested_data->set_num_cols(2);
+  add_cell(nested_data, nullptr, "Type", true, 0, 0);
+  add_cell(nested_data, nullptr, "Sound", true, 0, 1);
+  add_cell(data, nullptr, "", false, 0, 1)->mutable_ref()->set_ref(blocks);
+
+  require_equal(grparse::render_latex(document),
+                wrapped("\\begin{table}[h]\n"
+                        "\\begin{tabular}{|l|l|}\n"
+                        "\\hline\n"
+                        "Quack & \\begin{tabular}{|l|l|} \\hline Type & Sound \\\\ \\hline "
+                        "\\end{tabular} \\\\ \\hline\n"
+                        "\\end{tabular}\n"
+                        "\\end{table}"),
+                "a nested table renders as the bare tabular: no float wrapper can live "
+                "inside a cell");
+}
+
+void verify_a_rich_cell_with_a_heading_renders_plain_text() {
+  docv1::Document document = base_document("rich-heading.tex");
+  auto* table = add_table(&document, "#/body");
+  auto* data = table->mutable_data();
+  data->set_num_rows(1);
+  data->set_num_cols(2);
+  add_cell(data, nullptr, "1...", false, 0, 0);
+  const std::string blocks =
+      add_owned_group(&document, table->self_ref(), docv1::GROUP_LABEL_UNSPECIFIED);
+  add_heading(&document, blocks, "Overview & details", 1);
+  add_cell(data, nullptr, "", false, 0, 1)->mutable_ref()->set_ref(blocks);
+
+  require_equal(grparse::render_latex(document),
+                wrapped("\\begin{table}[h]\n"
+                        "\\begin{tabular}{|l|l|}\n"
+                        "\\hline\n"
+                        "1... & Overview \\& details \\\\ \\hline\n"
+                        "\\end{tabular}\n"
+                        "\\end{table}"),
+                "a heading inside a cell degrades to its escaped text, never a section "
+                "command");
+}
+
 void verify_formulas_wrap_in_math_delimiters() {
   docv1::Document document = base_document("math.tex");
   add_text(&document, "#/body", docv1::BaseTextItem::kFormula,
@@ -302,6 +383,9 @@ int main() {
       verify_lists_choose_their_environment_and_indent,
       verify_a_stray_list_item_gets_a_list,
       verify_a_table_renders_as_a_floated_tabular,
+      verify_a_rich_cell_with_a_list_renders_the_environment_inline,
+      verify_a_rich_cell_with_a_nested_table_renders_a_bare_tabular,
+      verify_a_rich_cell_with_a_heading_renders_plain_text,
       verify_formulas_wrap_in_math_delimiters,
       verify_code_uses_verbatim_blocks_and_inline_texttt,
       verify_a_picture_is_a_figure_with_the_placeholder,
