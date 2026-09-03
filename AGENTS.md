@@ -302,6 +302,10 @@ directory mounted, then `run.py --target localhost:<port>`.
 - **Push to both remotes** after every commit: `git push origin` and
   `git push github`. GitHub prints "Bypassed rule violations" for direct
   pushes; that is expected.
+- **Docs-only commits carry `[ci skip]`** in the message. GitHub Actions
+  honors the skip keywords natively on push triggers, so a README or
+  `docs/` change does not need the 45-minute publish legs. Manual
+  `workflow_dispatch` still runs regardless.
 - **Commit messages carry no em dashes** (a commit-msg hook rejects them) and
   no tool or model attribution.
 - **Exit codes are the verdict.** Never pipe a build or test through a grep
