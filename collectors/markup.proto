@@ -8,7 +8,8 @@
 // LaTeX, WebVTT, BoxNote and serialized Docling JSON — into one block
 // vocabulary. Every format lands on the same events, so a downstream reader
 // handles a heading the same way whether it was `# Title`, `<h1>`, `= Title`
-// or `\section{Title}`.
+// or `\section{Title}`, and the formatting, links and references inside a
+// block land on one `InlineSpan` vocabulary the same way.
 
 syntax = "proto3";
 
@@ -49,6 +50,231 @@ enum MarkupFormat {
   // A DoclingDocument serialized as JSON, re-ingested losslessly into the
   // Document plane.
   MARKUP_FORMAT_DOCLING_JSON = 7;
+
+  // reStructuredText source. Named so `.rst` bytes resolve to themselves
+  // rather than being mistaken for Markdown by the structure heuristic; a
+  // build without the fold refuses them with `UNIMPLEMENTED` naming this
+  // format.
+  MARKUP_FORMAT_RST = 8;
+}
+
+// IntRange is a half-open `[start, end)` range of Unicode scalar values.
+//
+// Offsets count code points, not bytes, and index the text the same event
+// carries after flattening, so a consumer slices the string it was already
+// given without re-deriving anything.
+message IntRange {
+  // First code point of the range.
+  uint32 start = 1;
+
+  // One past the last code point of the range.
+  uint32 end = 2;
+}
+
+// SpanStyle names one rendering signal a run of text carries.
+//
+// A run may carry several (bold and code at once), which is why the field
+// holding these is repeated rather than an enum-valued scalar.
+enum SpanStyle {
+  // Never sent. Present because proto3 requires a zero value.
+  SPAN_STYLE_UNSPECIFIED = 0;
+
+  // Bold: Markdown `**`, HTML `b`/`strong`, LaTeX `\textbf`.
+  SPAN_STYLE_BOLD = 1;
+
+  // Italic: Markdown `*`, HTML `i`/`em`, LaTeX `\textit`/`\emph`.
+  SPAN_STYLE_ITALIC = 2;
+
+  // Underline: HTML `u`, LaTeX `\underline`.
+  SPAN_STYLE_UNDERLINE = 3;
+
+  // Struck through: Markdown `~~`, HTML `s`/`del`/`strike`.
+  SPAN_STYLE_STRIKETHROUGH = 4;
+
+  // An inline code run: Markdown backticks, HTML `code`, LaTeX `\texttt`.
+  SPAN_STYLE_CODE = 5;
+
+  // Raised: Markdown `^`, HTML `sup`.
+  SPAN_STYLE_SUPERSCRIPT = 6;
+
+  // Lowered: Markdown `~`, HTML `sub`.
+  SPAN_STYLE_SUBSCRIPT = 7;
+
+  // Highlighted: HTML `mark`.
+  SPAN_STYLE_MARK = 8;
+
+  // Small capitals: LaTeX `\textsc`.
+  SPAN_STYLE_SMALL_CAPS = 9;
+
+  // An inline math run. `InlineSpan.raw` carries the source notation.
+  SPAN_STYLE_MATH = 10;
+
+  // Inserted text: HTML `ins`.
+  SPAN_STYLE_INSERTION = 11;
+
+  // An abbreviation whose expansion is in `InlineSpan.raw`: HTML `abbr`.
+  SPAN_STYLE_ABBREVIATION = 12;
+
+  // A quoted run inside a larger text: HTML `q`.
+  SPAN_STYLE_QUOTE = 13;
+
+  // Set smaller than the surrounding text: HTML `small`. Distinct from
+  // `SPAN_STYLE_SMALL_CAPS`, which is a letterform and not a size.
+  SPAN_STYLE_SMALL = 14;
+}
+
+// ReferenceKind names what an `InlineSpan.reference` points at.
+enum ReferenceKind {
+  // The span carries no reference.
+  REFERENCE_KIND_UNSPECIFIED = 0;
+
+  // A footnote marker, pointing at the `BLOCK_LABEL_FOOTNOTE` body whose
+  // `anchor_id` is the same key.
+  REFERENCE_KIND_FOOTNOTE = 1;
+
+  // A bibliographic citation: LaTeX `\cite` and its siblings.
+  REFERENCE_KIND_CITATION = 2;
+
+  // An internal cross-reference to a labelled block: LaTeX `\ref`, an
+  // intra-document `#anchor` link.
+  REFERENCE_KIND_CROSS_REF = 3;
+
+  // A cross-reference to a numbered equation: LaTeX `\eqref`.
+  REFERENCE_KIND_EQUATION_REF = 4;
+
+  // A reference to a bibliography entry declared by `\bibitem`.
+  REFERENCE_KIND_BIBLIOGRAPHY = 5;
+}
+
+// InlineSpan is one contiguous run of a block's text that carries something
+// the flat string cannot say: emphasis, a link, or a reference.
+//
+// Spans are emitted in the order their runs start, they may nest and
+// overlap (bold inside a link is two spans), and every offset is a code
+// point into the text of the event that carries the span. A consumer that
+// ignores this field reads exactly what it read before spans existed.
+message InlineSpan {
+  // The run this span covers, in code points into the enclosing text.
+  // Always set, always within the text's length.
+  IntRange range = 1;
+
+  // Rendering signals the run carries. May be empty when the span exists
+  // only for its link or its reference.
+  repeated SpanStyle styles = 2;
+
+  // Link target for a run the source linked, as written; never
+  // dereferenced. Set for every in-prose link, not only for a block that is
+  // entirely one link.
+  optional string hyperlink = 3;
+
+  // The link's title or tooltip text, when the source wrote one.
+  optional string link_title = 4;
+
+  // The anchor this run defines, when the source names one inside the text
+  // (a LaTeX `\label`, an HTML `id` on an inline element).
+  optional string anchor_id = 5;
+
+  // The key this run points at: a footnote label, a citation key, a
+  // cross-reference target.
+  optional string reference = 6;
+
+  // What `reference` points at. `REFERENCE_KIND_UNSPECIFIED` whenever
+  // `reference` is unset.
+  ReferenceKind reference_kind = 7;
+
+  // The source notation behind the run, when flattening lost it: the TeX
+  // of an inline formula, the expansion of an abbreviation.
+  optional string raw = 8;
+
+  // The run's own font family, as the source names it.
+  optional string font_family = 9;
+
+  // The run's own font size in points.
+  optional double font_size_pt = 10;
+
+  // The run's own text color as `#rrggbb`.
+  optional string color = 11;
+
+  // The run's own BCP 47 language tag, when it differs from the block's.
+  optional string language = 12;
+
+  // The source field code a generated run came from (a page number, a
+  // date, a resolved cross-reference), so generated text stays
+  // distinguishable from authored text.
+  optional string field_code = 13;
+
+  // The named character style the source puts on the run, as written: the
+  // class list of a WebVTT `<c.loud.narrow>` or of any cue tag that carries
+  // one, dots and all. A name, never a resolved rendering: this service has
+  // no stylesheet and does not want one.
+  optional string style_name = 14;
+
+  // The interlinear annotation printed over the run: the reading inside a
+  // WebVTT `<ruby>`'s `<rt>`. The base text stays in the enclosing text and
+  // the reading rides here, so neither is interleaved into the other.
+  optional string annotation = 15;
+}
+
+// AdmonitionKind names the callout a block is marked as.
+enum AdmonitionKind {
+  // The block is not an admonition.
+  ADMONITION_KIND_UNSPECIFIED = 0;
+
+  // AsciiDoc `NOTE:`, a GFM `[!NOTE]` alert.
+  ADMONITION_KIND_NOTE = 1;
+
+  // AsciiDoc `TIP:`, a GFM `[!TIP]` alert.
+  ADMONITION_KIND_TIP = 2;
+
+  // AsciiDoc `IMPORTANT:`, a GFM `[!IMPORTANT]` alert.
+  ADMONITION_KIND_IMPORTANT = 3;
+
+  // AsciiDoc `WARNING:`, a GFM `[!WARNING]` alert.
+  ADMONITION_KIND_WARNING = 4;
+
+  // AsciiDoc `CAUTION:`, a GFM `[!CAUTION]` alert.
+  ADMONITION_KIND_CAUTION = 5;
+}
+
+// Alignment names how a table column or cell places its content. The
+// horizontal members apply to `align`, the vertical ones to `valign`.
+enum Alignment {
+  // The source declares no alignment.
+  ALIGNMENT_UNSPECIFIED = 0;
+
+  // Horizontal: flush left (Markdown `:---`, AsciiDoc `<`, LaTeX `l`).
+  ALIGNMENT_LEFT = 1;
+
+  // Horizontal: centered (Markdown `:---:`, AsciiDoc `^`, LaTeX `c`).
+  ALIGNMENT_CENTER = 2;
+
+  // Horizontal: flush right (Markdown `---:`, AsciiDoc `>`, LaTeX `r`).
+  ALIGNMENT_RIGHT = 3;
+
+  // Horizontal: justified (LaTeX `p{width}`, HTML `align="justify"`).
+  ALIGNMENT_JUSTIFY = 4;
+
+  // Vertical: flush to the top of the cell (AsciiDoc `.<`).
+  ALIGNMENT_TOP = 5;
+
+  // Vertical: centered in the cell (AsciiDoc `.^`).
+  ALIGNMENT_MIDDLE = 6;
+
+  // Vertical: flush to the bottom of the cell (AsciiDoc `.>`).
+  ALIGNMENT_BOTTOM = 7;
+}
+
+// ColumnSpec is one column's declared geometry, in column order.
+message ColumnSpec {
+  // Horizontal alignment the source declares for the column.
+  Alignment align = 1;
+
+  // Vertical alignment the source declares for the column.
+  Alignment valign = 2;
+
+  // The column's declared width, verbatim in the source's own units (`20%`,
+  // `5cm`, `120`). Absent when the source declares none.
+  optional string width = 3;
 }
 
 // FormatEvidence names the signal that resolved the format.
@@ -66,8 +292,8 @@ enum FormatEvidence {
   FORMAT_EVIDENCE_SIGNATURE = 2;
 
   // No signature matched and the bytes were classified by structure. Only
-  // Markdown and AsciiDoc are ever resolved this way, and only when the
-  // request left the format unspecified.
+  // Markdown, AsciiDoc and reStructuredText are ever resolved this way, and
+  // only when the request left the format unspecified.
   FORMAT_EVIDENCE_HEURISTIC = 3;
 }
 
@@ -148,6 +374,25 @@ message MetaMap {
   map<string, MetaValue> entries = 1;
 }
 
+// TaskState is whether a list item carries a checkbox, and whether it is
+// ticked.
+//
+// The state is a fact about the item and not a refinement of its label,
+// which is why it is its own field rather than a `role` spelling: a task
+// item is still a list item, and a consumer that wants the checkbox should
+// not have to match on a string.
+enum TaskState {
+  // The item carries no checkbox.
+  TASK_STATE_UNSPECIFIED = 0;
+
+  // An unticked checkbox: Markdown `- [ ]`, a BoxNote check-list entry the
+  // author has not ticked.
+  TASK_STATE_UNCHECKED = 1;
+
+  // A ticked checkbox: Markdown `- [x]`, a ticked BoxNote check-list entry.
+  TASK_STATE_CHECKED = 2;
+}
+
 // BlockLabel is the structural role of one text block.
 enum BlockLabel {
   // Never sent. Present because proto3 requires a zero value.
@@ -202,7 +447,11 @@ message TextBlock {
   // The block's text: inline markup flattened away, entity and escape
   // sequences decoded, runs of whitespace collapsed except inside
   // `BLOCK_LABEL_CODE` and `BLOCK_LABEL_FORMULA`, which keep their text
-  // verbatim. Never empty.
+  // verbatim. A hard line break the source demands (a Markdown `\\` or
+  // two-space break, an HTML `<br>`) survives the collapsing as a `\n`,
+  // because the author asked for a break rather than for whitespace.
+  // Never empty. What the flattening removed is described by `spans`,
+  // whose ranges index this string.
   string text = 4;
 
   // Heading depth for `BLOCK_LABEL_SECTION_HEADER`, starting at 1. Absent
@@ -225,8 +474,10 @@ message TextBlock {
   // Absent when the source declares none.
   optional string language = 9;
 
-  // Hyperlink target when the entire block is one link. Inline links inside
-  // a larger block are flattened to their text.
+  // Hyperlink target when the entire block is one link, which is a fact
+  // about the block rather than about its runs. A link inside a larger
+  // block is a `spans` entry carrying `hyperlink`, so no URL is lost
+  // either way.
   optional string hyperlink = 10;
 
   // One-based line in the source where the block starts, when the parser
@@ -236,6 +487,42 @@ message TextBlock {
 
   // Provenance, always set.
   CollectorSource source = 12;
+
+  // Formatting, link and reference runs inside `text`, in start order.
+  // Empty when the block is uniform prose, and empty for every block when
+  // the request cleared `ParseOptions.emit_inline_spans`.
+  repeated InlineSpan spans = 13;
+
+  // The anchor this block declares, as the source names it: a Markdown
+  // `{#id}` heading attribute, an HTML `id`, a LaTeX `\label`, a footnote
+  // definition's own label, a `\bibitem` key. Absent when the source names
+  // none.
+  optional string anchor_id = 14;
+
+  // The callout kind the source marks the block as. Never set for a block
+  // the source did not mark.
+  AdmonitionKind admonition = 15;
+
+  // For `BLOCK_LABEL_LIST_ITEM`: the checkbox the source put on the item.
+  // `TASK_STATE_UNSPECIFIED` for an item with none, which is every item of
+  // an ordinary list.
+  TaskState task_state = 16;
+
+  // The source form behind `text`, when the text is a projection of markup
+  // this build does not parse: the verbatim bytes of an HTML block inside a
+  // Markdown document, whose tags were flattened away. Absent for a block
+  // whose text is the source's own words.
+  optional string raw = 18;
+
+  // How deep inside a block quotation this block sat, starting at 1 for a
+  // top-level quote. Absent for a block outside every quotation: a depth of
+  // zero is not a quotation nested zero deep.
+  //
+  // Set on any block, not only on `BLOCK_LABEL_QUOTE`, because a quotation
+  // contains whatever the author put in it: a list item inside a quote
+  // carries the depth too. `BLOCK_LABEL_QUOTE` still says "this block is a
+  // quoted paragraph"; this field says how deep it was.
+  optional uint32 quote_depth = 17;
 }
 
 // TableStart opens a streamed table. Rows follow, then `TableEnd`.
@@ -258,6 +545,17 @@ message TableStart {
 
   // Provenance, always set.
   CollectorSource source = 5;
+
+  // The column geometry the source declares, in column order: a Markdown
+  // delimiter row, an HTML `<colgroup>`, a LaTeX column specification.
+  // Empty when the source declares none; shorter than the widest row when
+  // the source declares only some.
+  repeated ColumnSpec columns = 6;
+
+  // The anchor the source declares on the table itself, as it names it: the
+  // `\label` of a LaTeX `table` float. Absent when the source names none.
+  // A cross reference to a table points here, not at its caption.
+  optional string anchor_id = 7;
 }
 
 // TableCell is one cell of a streamed table row.
@@ -265,7 +563,10 @@ message TableCell {
   // Zero-based column index, advanced by the column spans before it.
   uint32 column_index = 1;
 
-  // Cell text, flattened the same way as `TextBlock.text`. May be empty.
+  // Cell text, flattened the same way as `TextBlock.text`, with `spans`
+  // describing what the flattening removed. Nested block structure inside
+  // a cell flattens into this text; when the cell is rich the same
+  // structure also rides on `blocks`. May be empty.
   string text = 2;
 
   // Columns this cell spans. At least 1; always 1 in formats without spans.
@@ -277,6 +578,61 @@ message TableCell {
   // True when the source marks the cell as a header: a `th`, a cell in
   // `thead`, or a cell in a Markdown or AsciiDoc header row.
   bool is_header = 5;
+
+  // Formatting, link and reference runs inside `text`, in start order.
+  // Empty when the cell is uniform prose, and empty for every cell when the
+  // request cleared `ParseOptions.emit_inline_spans`.
+  repeated InlineSpan spans = 6;
+
+  // Horizontal alignment the source declares on the cell itself, which
+  // overrides the column's. `ALIGNMENT_UNSPECIFIED` when it declares none.
+  Alignment align = 7;
+
+  // Vertical alignment the source declares on the cell itself, which
+  // overrides the column's. `ALIGNMENT_UNSPECIFIED` when it declares none.
+  Alignment valign = 8;
+
+  // The cell's structured content, present only when the cell is rich: it
+  // holds nested block markup (a nested table, a list, a heading, a `pre`
+  // with inline structure) or inline formatting a flat projection would
+  // lose (`u`, `ins`, `sub`, `sup`). The same content still flattens into
+  // `text`; this field is the structure beside the flattening, so a plain
+  // cell never sets it. Only the anchor cell of a span carries blocks: the
+  // positions a span covers are not cells and carry nothing.
+  repeated CellBlock blocks = 9;
+}
+
+// CellBlock is one structured block inside a rich table cell: a text
+// block, an image, or a nested table.
+//
+// No block events stream between `TableRow` and `TableEnd` — the stream's
+// document order forbids them there — so a rich cell's structure rides on
+// the cell itself. A block nested in a cell has no stream `index`: the
+// cell carrying it is its position.
+message CellBlock {
+  // The one shape this block has.
+  oneof kind {
+    // A paragraph, list item, heading or code block of the cell, with its
+    // runs.
+    TextBlock text = 1;
+
+    // An image the cell holds.
+    ImageBlock image = 2;
+
+    // A table nested inside the cell.
+    CellTable table = 3;
+  }
+}
+
+// CellTable is a table nested inside a table cell.
+message CellTable {
+  // The nested table's rows in row order, in the same shape a streamed
+  // table's rows arrive. Their `table_ref` is empty: a nested table has no
+  // stream identity of its own.
+  repeated TableRow rows = 1;
+
+  // The nested table's caption, when it declares one.
+  optional string caption = 2;
 }
 
 // TableRow is one row of a table, emitted as soon as it is parsed.
@@ -329,6 +685,46 @@ message ImageBlock {
 
   // Provenance, always set.
   CollectorSource source = 6;
+
+  // The anchor the source declares on the image itself, as it names it: the
+  // `\label` of a LaTeX `figure` float. Absent when the source names none.
+  // A cross reference to a figure points here, not at its caption.
+  optional string anchor_id = 9;
+
+  // The width the source declares for the image, verbatim in the source's
+  // own units: an HTML `width="640"` or `width="50%"`, a LaTeX
+  // `[width=0.8\textwidth]`. Absent when the source declares none. This is
+  // what the *document* asks for, not what the image is: this service never
+  // fetches an image and so never measures one.
+  optional string width = 7;
+
+  // The height the source declares, on the same terms as `width`.
+  optional string height = 8;
+
+  // The href of an `<a>` whose only content is this image: the link a
+  // click on the picture would follow. Absent when the anchor wraps more
+  // than the image — an `<a>` over image and text together is a link over
+  // prose, and its URL rides on the text's runs instead.
+  optional string hyperlink = 10;
+}
+
+// CueTiming is one karaoke segment of a cue: the run of the cue's text a
+// `<00:00:01.000>` timestamp tag gives its own start time.
+//
+// A cue that carries no timestamp tag carries no `CueTiming` either; its
+// timing is the cue's own `start_ms` / `end_ms` and repeating that once more
+// would say nothing. A cue that carries one gets a segment for every run,
+// the leading run included, so the segments tile the whole text.
+message CueTiming {
+  // The run this segment covers, in code points into `Cue.text`.
+  IntRange range = 1;
+
+  // When the segment starts, in milliseconds from the start of the media.
+  uint64 start_ms = 2;
+
+  // When the segment ends: the next segment's start, or the cue's own end
+  // for the last one.
+  uint64 end_ms = 3;
 }
 
 // Cue is one WebVTT cue: a timed span of caption or subtitle text.
@@ -348,12 +744,24 @@ message Cue {
   // The speaker named by a `<v>` voice span, empty when the cue has none.
   string speaker = 5;
 
-  // The cue payload with voice and styling tags flattened away, timestamps
-  // of karaoke spans removed, and lines joined with `\n`.
+  // The cue payload with its tags flattened away, character entities
+  // decoded, and lines joined with `\n`. What the flattening removed is
+  // described by `spans` and `timings`, whose ranges index this string.
   string text = 6;
 
   // Provenance, always set.
   CollectorSource source = 7;
+
+  // Formatting, class and language runs inside `text`, in start order: a
+  // `<b>`, `<i>` or `<u>` leaves a style, a `<c.name>` leaves the class list
+  // in `style_name`, and a `<lang xx>` leaves the tag in `language`. Empty
+  // when the payload is unmarked, and empty for every cue when the request
+  // cleared `ParseOptions.emit_inline_spans`.
+  repeated InlineSpan spans = 8;
+
+  // Karaoke segments of `text`, in start order, tiling the whole string.
+  // Empty when the cue carries no timestamp tag.
+  repeated CueTiming timings = 9;
 }
 
 // WarningCode names a condition that did not stop the parse.
