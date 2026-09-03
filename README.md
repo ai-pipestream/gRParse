@@ -48,6 +48,10 @@ flowchart LR
     shell -. "/api/uis GetServiceInfo probes" .-> theirs
 ```
 
+A one-minute screencast walks the shell end to end: the family tab bar, a
+live page stream with provenance boxes, and table and figure extraction on a
+real paper. [Watch it here](docs/images/demo-shell-screencast.mp4).
+
 ## Run
 
 1. Download the model files listed in [models/README.md](models/README.md).
