@@ -54,6 +54,18 @@ font-metric boxes at word granularity, not glyph-ink unions. The
 differential alone did not catch revisions 1 and 2; only the scorecard
 leg did, which is why M5 runs both.
 
+## Consensus mode (added later the same day)
+
+Serving the same build with
+`GRPARSE_PDF_BACKEND=localhost:51241,localhost:51242,localhost:51243`
+(the consensus page source voting across all three backends per page)
+ran the same subset in 96.9s. Results match the single grpc-pdfium
+column on the gap documents and improve diffusion-paper text (0.812 vs
+0.792), with some pages taken from other backends. The two-column
+residue is now located: the source word order scores 1.000 on the truth
+anchors (eval/consensus), so the remaining 0.815 comes from the fold's
+own reading-order pass, which is where the next tuning work belongs.
+
 ## M6 evidence status
 
 Held: load, inventory, fonts, scans, most born-digital docs, latency.
