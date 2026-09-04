@@ -244,6 +244,21 @@ came from once the source order was correct. A page whose legs disagree
 too much (the form's ~11% order breaks) falls back to the geometric
 order, which already scores 1.000 there.
 
+## Content-addressed handshake (added 2026-09-04)
+
+`PdfDocument.sha256` makes the document content-addressed. gRParse hashes
+the bytes once per opened document and sends every Probe/Parse/Render with
+`sha256` set and `data` empty, a cache lookup; a
+`LOAD_STATUS_BYTES_REQUIRED` verdict (Probe capabilities, Parse header,
+Render head) is a cache miss and earns exactly one retry with the bytes
+attached. A second miss, or a `LOAD_STATUS_HASH_MISMATCH` (the client
+computed the hash itself, so a mismatch is corruption or a bug), is a hard
+`InvalidDocument`. The first upload caches the bytes server-side and every
+later page and render goes by hash, which is the consensus mode win: the
+per-page fan-out no longer re-ships the document to each leg.
+`GRPARSE_PDF_BACKEND_HANDSHAKE=off` pins the old always-send-bytes
+behavior.
+
 ## Open items (from the 2026-09-04 review)
 
 Fixed the same day: consensus failure isolation (a backend dying
@@ -256,9 +271,9 @@ alignment so line-granularity sources reconcile too.
 
 Still open, tracked here:
 
-- Consensus wire cost is unpriced: each page sends the full document bytes
-  to each backend. Measure on a large PDF before consensus mode leaves
-  localhost; a content-addressed handshake is the additive fix if it hurts.
+- Consensus wire cost: fixed by the content-addressed handshake above.
+  Pages after the first go by hash; `GRPARSE_PDF_BACKEND_HANDSHAKE=off`
+  keeps the old behavior if a backend predates the verdicts.
 - Fleet housekeeping on the three services: default ports collide with
   gRParse/grPOIc/grpc-libreoffice and are unregistered; no UiInfo; no
   publish workflows; grpc-pdfium and grpc-qparse have no Dockerfile;

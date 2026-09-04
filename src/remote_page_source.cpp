@@ -8,6 +8,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -15,6 +16,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "ai/protomolt/parse/pdf/v1/pdf_backend_service.grpc.pb.h"
+#include "targets/sha256.h"
 
 namespace grparse {
 namespace {
@@ -34,6 +36,17 @@ constexpr auto kRenderDeadline = std::chrono::seconds(600);
 
 void set_deadline(grpc::ClientContext* context, std::chrono::seconds budget) {
   context->set_deadline(std::chrono::system_clock::now() + budget);
+}
+
+// The content-addressed handshake: calls go out with PdfDocument.sha256 set
+// and data empty (a cache lookup), and only a LOAD_STATUS_BYTES_REQUIRED
+// verdict earns exactly one retry carrying the bytes. GRPARSE_PDF_BACKEND_
+// HANDSHAKE=off pins the pre-handshake behavior of sending the bytes with
+// every call; read per opened document, the way GRPARSE_PDF_BACKEND itself
+// is read.
+bool handshake_enabled() {
+  const char* configured = std::getenv("GRPARSE_PDF_BACKEND_HANDSHAKE");
+  return configured == nullptr || std::string_view(configured) != "off";
 }
 
 // Born-digital coverage gate, kept numerically identical to the in-process
@@ -65,21 +78,40 @@ class RemotePdfPageSource final : public PageSource {
   RemotePdfPageSource(std::shared_ptr<const std::string> bytes,
                       const std::string& target, double render_dpi)
       : bytes_(std::move(bytes)),
+        handshake_(handshake_enabled()),
+        sha256_(handshake_ ? targets::sha256_hex(*bytes_) : std::string()),
         render_dpi_(render_dpi),
         render_scale_(render_dpi / kPdfUserSpaceDpi),
         stub_(pdfv1::PdfBackendService::NewStub(channel_for(target))) {
-    grpc::ClientContext context;
-    set_deadline(&context, kProbeDeadline);
-    pdfv1::ProbeRequest request;
-    request.mutable_document()->set_data(*bytes_);
+    // A hash-only Probe is a cache lookup; a miss earns exactly one retry
+    // with the bytes attached so the backend can cache them under the hash.
     pdfv1::ProbeResponse response;
-    const grpc::Status status = stub_->Probe(&context, request, &response);
-    if (!status.ok()) {
-      throw InvalidDocument("PDF backend unreachable: " +
-                            status.error_message());
+    bool sent_bytes = !handshake_;
+    for (;;) {
+      grpc::ClientContext context;
+      set_deadline(&context, kProbeDeadline);
+      pdfv1::ProbeRequest request;
+      fill_document(request.mutable_document(), sent_bytes);
+      response.Clear();
+      const grpc::Status status = stub_->Probe(&context, request, &response);
+      if (!status.ok()) {
+        throw InvalidDocument("PDF backend unreachable: " +
+                              status.error_message());
+      }
+      if (response.capabilities().load_status() ==
+              pdfv1::LOAD_STATUS_BYTES_REQUIRED &&
+          !sent_bytes) {
+        sent_bytes = true;
+        continue;
+      }
+      break;
     }
     const auto& caps = response.capabilities();
     if (caps.load_status() != pdfv1::LOAD_STATUS_OK) {
+      // A BYTES_REQUIRED here means the backend kept asking for bytes after
+      // receiving them; a HASH_MISMATCH means the bytes did not hash to the
+      // value the client computed itself. Both are hard errors, as is every
+      // other non-OK verdict.
       throw InvalidDocument(
           "PDF backend could not load the document: " +
           pdfv1::LoadStatus_Name(caps.load_status()) +
@@ -96,138 +128,188 @@ class RemotePdfPageSource final : public PageSource {
 
   std::optional<OcrPage> extract_digital_page(int page_number) const override {
     check_page(page_number);
-    grpc::ClientContext context;
-    set_deadline(&context, kParseDeadline);
-    pdfv1::ParseRequest request;
-    request.mutable_document()->set_data(*bytes_);
-    request.add_families(pdfv1::PDF_FAMILY_TEXT_CELLS);
-    request.add_families(pdfv1::PDF_FAMILY_FONTS);
-    auto* range = request.mutable_pages();
-    range->set_begin(static_cast<uint32_t>(page_number - 1));
-    range->set_end(static_cast<uint32_t>(page_number));
-    auto reader = stub_->Parse(&context, request);
+    bool sent_bytes = !handshake_;
+    for (;;) {
+      grpc::ClientContext context;
+      set_deadline(&context, kParseDeadline);
+      pdfv1::ParseRequest request;
+      fill_document(request.mutable_document(), sent_bytes);
+      request.add_families(pdfv1::PDF_FAMILY_TEXT_CELLS);
+      request.add_families(pdfv1::PDF_FAMILY_FONTS);
+      auto* range = request.mutable_pages();
+      range->set_begin(static_cast<uint32_t>(page_number - 1));
+      range->set_end(static_cast<uint32_t>(page_number));
+      auto reader = stub_->Parse(&context, request);
 
-    pdfv1::ParseResponse message;
-    double page_width_pts = 0.0;
-    double page_height_pts = 0.0;
-    std::map<uint32_t, std::string> font_names;
-    std::vector<pdfv1::TextCell> cells;
-    while (reader->Read(&message)) {
-      switch (message.payload_case()) {
-        case pdfv1::ParseResponse::kHeader:
-          for (const auto& info : message.header().pages()) {
-            if (info.page_index() == static_cast<uint32_t>(page_number - 1)) {
-              page_width_pts = info.width_pts();
-              page_height_pts = info.height_pts();
+      pdfv1::ParseResponse message;
+      double page_width_pts = 0.0;
+      double page_height_pts = 0.0;
+      std::optional<pdfv1::LoadStatus> header_load_status;
+      std::string header_load_detail;
+      std::map<uint32_t, std::string> font_names;
+      std::vector<pdfv1::TextCell> cells;
+      while (reader->Read(&message)) {
+        switch (message.payload_case()) {
+          case pdfv1::ParseResponse::kHeader:
+            header_load_status = message.header().capabilities().load_status();
+            header_load_detail = message.header().capabilities().load_detail();
+            for (const auto& info : message.header().pages()) {
+              if (info.page_index() == static_cast<uint32_t>(page_number - 1)) {
+                page_width_pts = info.width_pts();
+                page_height_pts = info.height_pts();
+              }
             }
-          }
-          break;
-        case pdfv1::ParseResponse::kFonts:
-          for (const auto& font : message.fonts().fonts()) {
-            font_names[font.font_id()] = font.base_name();
-          }
-          break;
-        case pdfv1::ParseResponse::kPage:
-          for (const auto& cell : message.page().text_cells()) {
-            cells.push_back(cell);
-          }
-          break;
-        default:
-          break;
-      }
-    }
-    const grpc::Status status = reader->Finish();
-    if (!status.ok()) {
-      throw InvalidDocument("PDF backend parse failed: " +
-                            status.error_message());
-    }
-    if (page_height_pts <= 0.0) return std::nullopt;
-
-    OcrPage result;
-    result.width = scaled(page_width_pts);
-    result.height = scaled(page_height_pts);
-    result.source = OcrPage::Source::kDigitalPdf;
-    size_t non_whitespace_bytes = 0;
-    double text_top = page_height_pts;
-    double text_bottom = 0.0;
-    result.lines.reserve(cells.size());
-    for (const auto& cell : cells) {
-      if (cell.text().empty()) continue;
-      for (const unsigned char byte : cell.text()) {
-        if (std::isspace(byte) == 0) ++non_whitespace_bytes;
-      }
-      // Contract boxes are bottom-left origin; the fold works in the
-      // top-left raster frame.
-      const double top_pts = page_height_pts - cell.bbox().y1();
-      const double bottom_pts = page_height_pts - cell.bbox().y0();
-      text_top = std::min(text_top, top_pts);
-      text_bottom = std::max(text_bottom, bottom_pts);
-      const int left = scaled(cell.bbox().x0());
-      const int top = scaled(top_pts);
-      const int right = scaled(cell.bbox().x1());
-      const int bottom = scaled(bottom_pts);
-      OcrLine line{cell.text(),
-                   {{left, top}, {right, top}, {right, bottom}, {left, bottom}},
-                   std::nullopt,
-                   TextOrigin::kDigitalPdf};
-      if (cell.has_font_id()) {
-        auto it = font_names.find(cell.font_id());
-        if (it != font_names.end() && !it->second.empty()) {
-          std::string font = it->second;
-          // Embedded subsets carry a random six-letter prefix (ABCDEF+Real).
-          if (const auto plus = font.find('+');
-              plus != std::string::npos && plus + 1 < font.size()) {
-            font.erase(0, plus + 1);
-          }
-          if (!font.empty()) line.font_name = std::move(font);
+            break;
+          case pdfv1::ParseResponse::kFonts:
+            for (const auto& font : message.fonts().fonts()) {
+              font_names[font.font_id()] = font.base_name();
+            }
+            break;
+          case pdfv1::ParseResponse::kPage:
+            for (const auto& cell : message.page().text_cells()) {
+              cells.push_back(cell);
+            }
+            break;
+          default:
+            break;
         }
       }
-      if (cell.has_font_size() && cell.font_size() > 0) {
-        line.font_size_pt = cell.font_size();
+      const grpc::Status status = reader->Finish();
+      if (!status.ok()) {
+        throw InvalidDocument("PDF backend parse failed: " +
+                              status.error_message());
       }
-      result.lines.push_back(std::move(line));
-    }
-    if (result.lines.empty()) return std::nullopt;
+      if (header_load_status == pdfv1::LOAD_STATUS_BYTES_REQUIRED &&
+          !sent_bytes) {
+        // Cache miss on a hash-only request: upload the bytes, once.
+        sent_bytes = true;
+        continue;
+      }
+      if (header_load_status == pdfv1::LOAD_STATUS_BYTES_REQUIRED ||
+          header_load_status == pdfv1::LOAD_STATUS_HASH_MISMATCH) {
+        // Bytes were already on the wire, or the bytes did not hash to the
+        // value the client computed itself: a hard error, not a retry.
+        throw InvalidDocument(
+            "PDF backend could not load the document: " +
+            pdfv1::LoadStatus_Name(*header_load_status) +
+            (header_load_detail.empty() ? "" : " (" + header_load_detail + ")"));
+      }
+      if (page_height_pts <= 0.0) return std::nullopt;
 
-    const double vertical_coverage =
-        page_height_pts > 0.0 ? (text_bottom - text_top) / page_height_pts : 0.0;
-    result.skip_ocr = non_whitespace_bytes >= kMinDigitalNonWhitespace &&
-                      result.lines.size() >= kMinDigitalLines &&
-                      (vertical_coverage >= kMinDigitalVerticalCoverage ||
-                       non_whitespace_bytes >= kStrongDigitalNonWhitespace);
-    return result;
+      OcrPage result;
+      result.width = scaled(page_width_pts);
+      result.height = scaled(page_height_pts);
+      result.source = OcrPage::Source::kDigitalPdf;
+      size_t non_whitespace_bytes = 0;
+      double text_top = page_height_pts;
+      double text_bottom = 0.0;
+      result.lines.reserve(cells.size());
+      for (const auto& cell : cells) {
+        if (cell.text().empty()) continue;
+        for (const unsigned char byte : cell.text()) {
+          if (std::isspace(byte) == 0) ++non_whitespace_bytes;
+        }
+        // Contract boxes are bottom-left origin; the fold works in the
+        // top-left raster frame.
+        const double top_pts = page_height_pts - cell.bbox().y1();
+        const double bottom_pts = page_height_pts - cell.bbox().y0();
+        text_top = std::min(text_top, top_pts);
+        text_bottom = std::max(text_bottom, bottom_pts);
+        const int left = scaled(cell.bbox().x0());
+        const int top = scaled(top_pts);
+        const int right = scaled(cell.bbox().x1());
+        const int bottom = scaled(bottom_pts);
+        OcrLine line{cell.text(),
+                     {{left, top}, {right, top}, {right, bottom}, {left, bottom}},
+                     std::nullopt,
+                     TextOrigin::kDigitalPdf};
+        if (cell.has_font_id()) {
+          auto it = font_names.find(cell.font_id());
+          if (it != font_names.end() && !it->second.empty()) {
+            std::string font = it->second;
+            // Embedded subsets carry a random six-letter prefix (ABCDEF+Real).
+            if (const auto plus = font.find('+');
+                plus != std::string::npos && plus + 1 < font.size()) {
+              font.erase(0, plus + 1);
+            }
+            if (!font.empty()) line.font_name = std::move(font);
+          }
+        }
+        if (cell.has_font_size() && cell.font_size() > 0) {
+          line.font_size_pt = cell.font_size();
+        }
+        result.lines.push_back(std::move(line));
+      }
+      if (result.lines.empty()) return std::nullopt;
+
+      const double vertical_coverage =
+          page_height_pts > 0.0 ? (text_bottom - text_top) / page_height_pts : 0.0;
+      result.skip_ocr = non_whitespace_bytes >= kMinDigitalNonWhitespace &&
+                        result.lines.size() >= kMinDigitalLines &&
+                        (vertical_coverage >= kMinDigitalVerticalCoverage ||
+                         non_whitespace_bytes >= kStrongDigitalNonWhitespace);
+      return result;
+    }
   }
 
   cv::Mat render_page(int page_number) const override {
     check_page(page_number);
-    grpc::ClientContext context;
-    set_deadline(&context, kRenderDeadline);
-    pdfv1::RenderRequest request;
-    request.mutable_document()->set_data(*bytes_);
-    request.set_dpi(render_dpi_);
-    request.set_pixel_format(pdfv1::PIXEL_FORMAT_BGR8);
-    auto* range = request.mutable_pages();
-    range->set_begin(static_cast<uint32_t>(page_number - 1));
-    range->set_end(static_cast<uint32_t>(page_number));
-    auto reader = stub_->Render(&context, request);
+    bool sent_bytes = !handshake_;
+    for (;;) {
+      grpc::ClientContext context;
+      set_deadline(&context, kRenderDeadline);
+      pdfv1::RenderRequest request;
+      fill_document(request.mutable_document(), sent_bytes);
+      request.set_dpi(render_dpi_);
+      request.set_pixel_format(pdfv1::PIXEL_FORMAT_BGR8);
+      auto* range = request.mutable_pages();
+      range->set_begin(static_cast<uint32_t>(page_number - 1));
+      range->set_end(static_cast<uint32_t>(page_number));
+      auto reader = stub_->Render(&context, request);
 
-    pdfv1::RenderResponse message;
-    cv::Mat rendered;
-    while (reader->Read(&message)) {
-      const auto& raster = message.raster();
-      if (raster.width_px() == 0 || raster.height_px() == 0) continue;
-      const cv::Mat view = raster_view(raster);
-      rendered = to_bgr(view, raster.pixel_format());
+      pdfv1::RenderResponse message;
+      cv::Mat rendered;
+      std::optional<pdfv1::LoadStatus> head_load_status;
+      std::string head_load_detail;
+      while (reader->Read(&message)) {
+        // A load verdict arrives as the one-message head of the stream;
+        // on success a server sends rasters only.
+        if (message.has_head()) {
+          head_load_status = message.head().load_status();
+          head_load_detail = message.head().load_detail();
+          continue;
+        }
+        const auto& raster = message.raster();
+        if (raster.width_px() == 0 || raster.height_px() == 0) continue;
+        const cv::Mat view = raster_view(raster);
+        rendered = to_bgr(view, raster.pixel_format());
+      }
+      const grpc::Status status = reader->Finish();
+      if (!status.ok()) {
+        throw InvalidDocument("PDF backend render failed: " +
+                              status.error_message());
+      }
+      if (head_load_status == pdfv1::LOAD_STATUS_BYTES_REQUIRED &&
+          !sent_bytes) {
+        // Cache miss on a hash-only request: upload the bytes, once.
+        sent_bytes = true;
+        continue;
+      }
+      if (head_load_status.has_value() &&
+          *head_load_status != pdfv1::LOAD_STATUS_OK) {
+        // A typed load failure (a second BYTES_REQUIRED, a HASH_MISMATCH,
+        // or any engine verdict) fails the page the way every other Render
+        // failure does.
+        throw InvalidDocument(
+            "PDF backend could not load the document: " +
+            pdfv1::LoadStatus_Name(*head_load_status) +
+            (head_load_detail.empty() ? "" : " (" + head_load_detail + ")"));
+      }
+      if (rendered.empty()) {
+        throw InvalidDocument("PDF page could not be rendered by the backend");
+      }
+      return rendered;
     }
-    const grpc::Status status = reader->Finish();
-    if (!status.ok()) {
-      throw InvalidDocument("PDF backend render failed: " +
-                            status.error_message());
-    }
-    if (rendered.empty()) {
-      throw InvalidDocument("PDF page could not be rendered by the backend");
-    }
-    return rendered;
   }
 
  private:
@@ -235,6 +317,14 @@ class RemotePdfPageSource final : public PageSource {
     if (page_number < 1 || page_number > pages_) {
       throw InvalidDocument("PDF page number is out of range");
     }
+  }
+
+  // Fills the request's document slot. With the handshake on, `sent_bytes`
+  // false addresses the document by hash only (a cache lookup); true
+  // attaches the bytes once so the backend can cache them under the hash.
+  void fill_document(pdfv1::PdfDocument* document, bool sent_bytes) const {
+    if (handshake_) document->set_sha256(sha256_);
+    if (!handshake_ || sent_bytes) document->set_data(*bytes_);
   }
 
   int scaled(double user_space_units) const {
@@ -279,6 +369,8 @@ class RemotePdfPageSource final : public PageSource {
   }
 
   std::shared_ptr<const std::string> bytes_;
+  const bool handshake_;
+  const std::string sha256_;
   const double render_dpi_;
   const double render_scale_;
   std::unique_ptr<pdfv1::PdfBackendService::Stub> stub_;
