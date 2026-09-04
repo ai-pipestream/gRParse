@@ -125,20 +125,81 @@ divergences per data family (the same verdict discipline as the frontend
 regression legs). The corpus starts from the scorecard PDFs plus
 `~/parser-failed-docs`.
 
-## Migration path to an Apache-only default stack
+## Feature tiers
 
-1. Land the proto contract (protos repo) and the capability matrix (this doc).
-2. grpc-pdfium service + differential leg vs the in-process poppler path.
-3. grpc-qparse service joins the differential.
-4. grpc-poppler service (optional profile) so the differential covers all
-   three even after step 6.
-5. gRParse grows `GRPARSE_PDF_BACKEND`: `inprocess` (default, unchanged) or a
-   backend target. Measure the service hop honestly: scorecard latency gate,
-   plus a rasters-over-the-wire cost run at model DPI.
-6. When a permissive backend holds parity on truth floors and the latency gate
-   passes (or the regression is accepted), flip the default and remove the
-   poppler linkage from gRParse. gRParse's shipped image is then Apache-only;
-   grpc-poppler remains as a differential instrument.
+The contract defines every message up front (field numbers are forever); the
+tiers say what a backend must FILL to pass each milestone, not what the proto
+contains.
+
+**Tier 0, the floor** (parity with what gRParse consumes today; a backend is
+useless to the pipeline without all four):
+1. Load from bytes, password optional; typed load errors.
+2. Page inventory: count, per-page size, rotation.
+3. Text cells: text, axis bbox, rotated quad, direction, space width,
+   rendering mode, font table reference.
+4. Page rasters: DPI + pixel format, streamed page range.
+
+**Tier 1, standard extraction** (every backend can fill all of these):
+5. Document metadata (info keys + XMP) and encryption/permissions info.
+6. Font table with embedded font programs where present.
+7. Placed images as typed data (bbox, decoded pixels or pass-through stream).
+8. Hyperlinks.
+9. Outline / bookmarks (qparse declares absent).
+
+**Tier 2, rich families** (capability-gated; pdfium fills most, others some):
+10. Annotations.
+11. Form fields.
+12. Attachments / embedded files.
+13. Vector shapes (qparse, pdfium).
+14. Tagged-PDF struct tree (pdfium only).
+15. Signatures, JavaScript listing, thumbnails (pdfium only).
+16. Deep graphics resources: colorspaces, shadings, patterns, xobjects
+    (qparse only).
+
+**Cross-cutting, present from the first commit:** `Probe` capabilities per
+document, streamed `Parse` chunks under fleet size limits, `Render` as its own
+RPC, typed absent-vs-empty discipline throughout.
+
+## Landing order
+
+Each milestone is one lane with its own gate; nothing depends on a later one.
+
+- **M0: the contract.** Full proto (all tiers) in the protos repo, stubs
+  released. Gate: buf lint/breaking, stub release consumed by a walking
+  skeleton.
+- **M1: grpc-pdfium at tier 0 + the differential harness.** Worker-process
+  pool, pinned prebuilt engine, floor families only, and the differential
+  runner that tables per-family divergence between a backend and the
+  in-process poppler path over the scorecard PDFs + `~/parser-failed-docs`.
+  Gate: differential report exists and text/raster parity is quantified.
+  The harness lands here, not later: it is the acceptance instrument for
+  every subsequent milestone.
+- **M2: grpc-pdfium tiers 1-2.** Gate: every family it claims in `Probe` is
+  exercised by a fixture test; families it cannot fill are declared absent,
+  never empty.
+- **M3: grpc-qparse, tier 0 then its uniques** (cells, shapes, embedded
+  fonts, deep resources). Gate: joins the differential; its cell output is
+  compared against gRParse's fold input expectations.
+- **M4: grpc-poppler** (core/glib API, optional compose profile, GPL-3
+  labeled). Gate: joins the differential; three-way divergence table runs.
+- **M5: gRParse backend-client mode.** `GRPARSE_PDF_BACKEND` selects
+  in-process or a service target; scorecard + latency gate run in both modes;
+  the raster-over-the-wire cost at model DPI is measured and recorded.
+- **M6: the flip (separate decision).** If a permissive backend holds the
+  truth floors and the latency verdict is accepted: default flips, poppler
+  linkage leaves gRParse, default stack is Apache-only. grpc-poppler stays
+  as the differential instrument.
+
+M1/M3/M4 are independent of each other after M0 and can run as parallel
+lanes; M2 can trail M1 while M3 starts. M5 needs any one service at tier 0.
+M6 is gated on evidence, not scheduled.
+
+## License end state
+
+The milestones above ARE the migration: after M6 the default stack ships no
+GPL, gRParse's image is Apache-only, and grpc-poppler survives as an optional,
+labeled differential instrument off the release path. Until M6, nothing in
+gRParse changes and the in-process poppler path remains the baseline truth.
 
 Open questions
 
