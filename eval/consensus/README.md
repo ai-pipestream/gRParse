@@ -34,9 +34,11 @@ metrics, so a win here is a win on the production gate.
   cell F1 1.000 against the form truth, where the in-process CV path
   scores 0.286.
 - **Annotation model**: each outline node carries the winning value under
-  `protomolt` and every source's version under its own parser name, the
-  shape the platform's claims/field_sources convention wants
-  (winner unprefixed for consumers, losers attributed to their parser).
+  `protomolt` and every source's version under its own parser name. This
+  is a prototype-JSON sketch of the direction the platform's typed
+  claims/field_sources convention points; wiring these winners and losers
+  into CollectorClaim/field_sources (typed, not keyed strings) is its own
+  follow-up and has not been built.
 
 ## Run
 
@@ -68,11 +70,11 @@ index and character offset next to the matched index and offset in each
 other word-granularity source (`out/<doc>.alignment.json` holds the
 complete map, the per-document JSON the summary), so either side can look
 up the other. Deviations are annotated where sources disagree: order
-breaks (the source's adjacency differs from consensus; 335 on two-column,
-which are the column-order divergence sites), missing words, and
-same-place text disagreements (92 on two-column), which are correction
-sites: soft-hyphen artifacts, footnote markers fused to words,
-hyphenated-token splits. Each source's vote score rides along as its
+breaks, counted as regressions in the source's order so an inserted word
+is not misread as reordering (85 on two-column, the column-order
+divergence sites), missing words, and same-place text disagreements (92
+on two-column), which are correction sites: soft-hyphen artifacts,
+footnote markers fused to words, hyphenated-token splits. Each source's vote score rides along as its
 weight, which is the extension point for further structure sources: a
 markdown converter or a language model's perceived outline joins as one
 more weighted source with no change to the model.

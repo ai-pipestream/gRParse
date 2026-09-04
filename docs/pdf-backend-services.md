@@ -218,13 +218,44 @@ tiers) reads 1.000 on text, precision and levels; a table grid from the
 qpdf-based service's ruled lines filled with pdfium word cells reads cell
 F1 1.000 where the CV path reads 0.286; and a bidirectional word
 alignment keeps consensus-offset to per-parser-offset maps with
-deviations annotated (order breaks, missing words, same-place text
-disagreements such as soft-hyphen artifacts). Winners are labeled
-`protomolt`, per-parser values under their parser names, the shape the
-claims/field_sources convention wants. Consensus sections drive chunk
+deviations annotated (order regressions, missing words, same-place text
+disagreements such as soft-hyphen artifacts), and rides the wire as
+PageData.reconciliation in consensus mode. Winners are labeled
+`protomolt` with per-parser values under their parser names in the
+prototype's JSON; wiring that into the typed claims/field_sources model
+is follow-up work, not landed. Consensus sections drive chunk
 boundaries, the path toward centroid-ready chunking. Next tuning target
 from the measurements: the fold's own reading-order pass, which is where
 two-column's residual 0.815 comes from once the source order is correct.
+
+## Open items (from the 2026-09-04 review)
+
+Fixed the same day: consensus failure isolation (a backend dying
+mid-document leaves that page's vote and the raster path falls through to
+the next target), RPC deadlines on Probe/Parse/Render, vote normalization
+parity with the validated prototype (quote/dash folding, soft-hyphen and
+noncharacter stripping), order breaks counted as regressions so source-side
+insertions are not misread as reordering, and word-splitting in the
+alignment so line-granularity sources reconcile too.
+
+Still open, tracked here:
+
+- Consensus wire cost is unpriced: each page sends the full document bytes
+  to each backend. Measure on a large PDF before consensus mode leaves
+  localhost; a content-addressed handshake is the additive fix if it hurts.
+- Winners/losers into typed claims: the prototype's protomolt/per-parser
+  JSON is a sketch; the real wiring goes through CollectorClaim and
+  field_sources with registered rank names in document_merge.
+- Fleet housekeeping on the three services: default ports collide with
+  gRParse/grPOIc/grpc-libreoffice and are unregistered; no UiInfo; no
+  publish workflows; grpc-pdfium and grpc-qparse have no Dockerfile;
+  grpc-poppler's image should move to the hardened base with a pinned
+  poppler.
+- Tier 0 TextCell union: only the qpdf-based backend fills direction,
+  space width and rendering mode; grpc-pdfium and grpc-poppler leave them
+  unset.
+- grpc-poppler still speaks poppler-cpp only; the core/glib surface for
+  annotations, forms and the struct tree is design intent, not built.
 
 ## License end state
 

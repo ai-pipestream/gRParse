@@ -391,6 +391,29 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     output->mutable_page_meta()->mutable_quality()->set_rotation_degrees(
         static_cast<double>(source.rotation_degrees));
   }
+  // Multi-backend reconciliation (consensus mode only): the page's word
+  // links to the other backends' streams ride onto the wire as transport
+  // metadata, like text_offsets.
+  for (const auto& rec : source.reconciliation) {
+    auto* out = output->add_reconciliation();
+    out->set_source(rec.source);
+    out->set_weight(rec.weight);
+    out->set_matched(rec.matched);
+    out->set_missing(rec.missing);
+    out->set_order_breaks(rec.order_breaks);
+    out->set_text_deviations(rec.text_deviations);
+    for (const auto& link : rec.links) {
+      auto* wire = out->add_links();
+      wire->set_consensus_index(link.consensus_index);
+      wire->set_consensus_utf_start(link.consensus_utf_start);
+      if (link.source_index.has_value()) {
+        wire->set_source_index(*link.source_index);
+        wire->set_source_utf_start(link.source_utf_start);
+      }
+      if (link.text_deviation) wire->set_text_deviation(true);
+      if (link.order_break) wire->set_order_break(true);
+    }
+  }
 
   // Emission order defines text offsets, refs, and body order, so blocks are
   // walked in reading order (multi-column aware) rather than input order,

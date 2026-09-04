@@ -12,6 +12,7 @@
 
 #include "ai/pipestream/parse/pdf/v1/pdf_backend_service.grpc.pb.h"
 #include "grparse/consensus_page_source.h"
+#include "grparse/document_assembly.h"
 #include "grparse/in_memory_document.h"
 #include "support/check.h"
 
@@ -144,7 +145,9 @@ int main() {
   const auto bytes = std::make_shared<const std::string>("%PDF-fake");
   const std::string expected = "The survey team returned the equipment on time and in good condition.";
 
-  // The majority order wins with the scrambled backend in front.
+  // The majority order wins with the scrambled backend in front, and the
+  // reconciliation for the losing streams rides on the page and onto the
+  // wire, offsets in both directions.
   {
     const auto source = grparse::open_consensus_pdf_document(
         bytes, {bad.target, good_a.target, good_b.target}, 144.0);
@@ -153,6 +156,48 @@ int main() {
     require(page.has_value(), "consensus page extracted");
     require(joined_text(*page) == expected,
             "majority order wins over the scrambled leader");
+
+    require(page->reconciliation.size() == 2,
+            "each losing backend contributes a reconciliation");
+    const grparse::SourceReconciliation* scrambled_rec = nullptr;
+    const grparse::SourceReconciliation* agreeing_rec = nullptr;
+    for (const auto& rec : page->reconciliation) {
+      (rec.source == bad.target ? scrambled_rec : agreeing_rec) = &rec;
+    }
+    require(scrambled_rec != nullptr && agreeing_rec != nullptr,
+            "reconciliations name their sources");
+    require(scrambled_rec->matched == 12 && scrambled_rec->missing == 0,
+            "all words of the scrambled stream link up");
+    require(scrambled_rec->order_breaks > 0,
+            "the scrambled stream's order breaks are annotated");
+    require(agreeing_rec->order_breaks == 0 && agreeing_rec->matched == 12,
+            "the agreeing stream links without breaks");
+    const auto& first = scrambled_rec->links.front();
+    require(first.consensus_index == 0 && first.consensus_utf_start == 0,
+            "consensus side of the first link");
+    // Pairwise swap put "The" second in the scrambled stream, after
+    // "survey" and one joining space.
+    require(first.source_index.has_value() && *first.source_index == 1 &&
+                first.source_utf_start == 7,
+            "source side of the first link points into the other stream");
+
+    grparse::AssemblyCursor cursor;
+    ai::pipestream::parse::v1::PageData wire;
+    grparse::append_page_data(*page, 1, &cursor, &wire);
+    require(wire.reconciliation_size() == 2,
+            "reconciliation crosses onto the wire");
+    bool wire_checked = false;
+    for (const auto& rec : wire.reconciliation()) {
+      if (rec.source() != bad.target) continue;
+      require(rec.matched() == 12 && rec.order_breaks() > 0 &&
+                  rec.links_size() == 12,
+              "wire counts and links match the page");
+      require(rec.links(0).source_index() == 1 &&
+                  rec.links(0).source_utf_start() == 7,
+              "wire link keeps both offsets");
+      wire_checked = true;
+    }
+    require(wire_checked, "the scrambled source is on the wire");
   }
 
   // A backend that cannot load the document drops out of the vote.

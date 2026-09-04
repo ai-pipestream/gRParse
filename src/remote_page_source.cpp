@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <chrono>
 #include <cstdlib>
 #include <map>
 #include <mutex>
@@ -24,6 +25,16 @@ namespace pdfv1 = ai::pipestream::parse::pdf::v1;
 // fit in one message.
 constexpr int kMaxMessageBytes = 520 * 1024 * 1024;
 constexpr double kPdfUserSpaceDpi = 72.0;
+
+// A hung backend must not hang the document; consensus mode multiplies
+// the exposure, so each RPC carries a deadline sized to its work.
+constexpr auto kProbeDeadline = std::chrono::seconds(30);
+constexpr auto kParseDeadline = std::chrono::seconds(300);
+constexpr auto kRenderDeadline = std::chrono::seconds(600);
+
+void set_deadline(grpc::ClientContext* context, std::chrono::seconds budget) {
+  context->set_deadline(std::chrono::system_clock::now() + budget);
+}
 
 // Born-digital coverage gate, kept numerically identical to the in-process
 // path in in_memory_document.cpp so flipping the backend never changes the
@@ -58,6 +69,7 @@ class RemotePdfPageSource final : public PageSource {
         render_scale_(render_dpi / kPdfUserSpaceDpi),
         stub_(pdfv1::PdfBackendService::NewStub(channel_for(target))) {
     grpc::ClientContext context;
+    set_deadline(&context, kProbeDeadline);
     pdfv1::ProbeRequest request;
     request.mutable_document()->set_data(*bytes_);
     pdfv1::ProbeResponse response;
@@ -82,6 +94,7 @@ class RemotePdfPageSource final : public PageSource {
   std::optional<OcrPage> extract_digital_page(int page_number) const override {
     check_page(page_number);
     grpc::ClientContext context;
+    set_deadline(&context, kParseDeadline);
     pdfv1::ParseRequest request;
     request.mutable_document()->set_data(*bytes_);
     request.add_families(pdfv1::PDF_FAMILY_TEXT_CELLS);
@@ -185,6 +198,7 @@ class RemotePdfPageSource final : public PageSource {
   cv::Mat render_page(int page_number) const override {
     check_page(page_number);
     grpc::ClientContext context;
+    set_deadline(&context, kRenderDeadline);
     pdfv1::RenderRequest request;
     request.mutable_document()->set_data(*bytes_);
     request.set_dpi(render_dpi_);

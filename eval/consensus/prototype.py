@@ -378,7 +378,10 @@ def reconcile(backends: dict[str, dict], base_name: str,
             continue
         cells = word_cells(doc)
         if not cells or len(cells) < len(base_cells) * 0.5:
-            continue  # line-granularity legs align by containment, not here
+            # Line-granularity sources are out of scope for this word-level
+            # prototype; the production form (consensus_page_source.cpp)
+            # splits their line texts into words and aligns those.
+            continue
         by_text: dict = {}
         for cell in cells:
             key = (cell["page"], truth_metrics.normalize(cell["text"]))
@@ -405,7 +408,10 @@ def reconcile(backends: dict[str, dict], base_name: str,
                     and abs(c["x0"] - cell["x0"]) < 3.0 and abs(c["y0"] - cell["y0"]) < 3.0
                 ]
                 if nearby:
-                    match = nearby[0]
+                    match = min(
+                        nearby,
+                        key=lambda c: (c["x0"] - cell["x0"]) ** 2 + (c["y0"] - cell["y0"]) ** 2,
+                    )
                     deviation = "text"
                     text_deviations.append((cell, nearby[0]))
                 else:
@@ -414,12 +420,14 @@ def reconcile(backends: dict[str, dict], base_name: str,
             if match is not None:
                 used.add(match["index"])
             alignment.append((cell, match, deviation))
+        # A break is a regression in the source's order; a forward jump is
+        # an insertion on the source side, not a reordering.
         order_breaks = 0
         previous = None
         for _, match, _ in alignment:
             if match is None:
                 continue
-            if previous is not None and match["index"] != previous + 1:
+            if previous is not None and match["index"] <= previous:
                 order_breaks += 1
             previous = match["index"]
         parsers[name] = {

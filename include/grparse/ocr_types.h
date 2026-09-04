@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -88,6 +89,31 @@ struct LayoutRegion {
   std::vector<BarcodeResult> barcodes = {};
 };
 
+// One consensus word linked to the same word in another backend's stream;
+// mirrors parse_stream.proto's ReconciliationLink. Offsets are codepoint
+// positions within each side's own page word stream.
+struct ReconciliationLink {
+  uint32_t consensus_index = 0;
+  uint64_t consensus_utf_start = 0;
+  std::optional<uint32_t> source_index = std::nullopt;
+  uint64_t source_utf_start = 0;
+  bool text_deviation = false;
+  bool order_break = false;
+};
+
+// One non-winning backend's alignment against the page's consensus stream,
+// built by the consensus page source and carried onto the wire as PageData
+// transport metadata.
+struct SourceReconciliation {
+  std::string source;
+  double weight = 0.0;
+  uint32_t matched = 0;
+  uint32_t missing = 0;
+  uint32_t order_breaks = 0;
+  uint32_t text_deviations = 0;
+  std::vector<ReconciliationLink> links = {};
+};
+
 struct OcrPage {
   enum class Source { kOcr, kDigitalPdf, kMerged };
 
@@ -114,6 +140,9 @@ struct OcrPage {
   // bring its own image into that frame.  Wire slot:
   // PageItem.quality.rotation_degrees.
   int rotation_degrees = 0;
+  // Multi-backend reconciliation, filled only by the consensus page
+  // source. Wire slot: PageData.reconciliation.
+  std::vector<SourceReconciliation> reconciliation = {};
 };
 
 // Merge OCR lines into a digital page without duplicating geometry-overlapping text.

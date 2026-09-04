@@ -119,6 +119,54 @@ message PageData {
   // claiming item respectively. Empty only for producers predating this
   // field; consumers then fall back to texts-tables-pictures order.
   repeated ai.pipestream.document.v1.RefItem body_order = 7;
+  // Multi-backend reconciliation for this page, present only when the PDF
+  // layer read the document through more than one backend
+  // (GRPARSE_PDF_BACKEND with a target list). One entry per non-winning
+  // backend, linking the consensus word stream to that backend's own
+  // stream in both directions. Transport metadata like text_offsets: the
+  // core document item shape is unchanged.
+  repeated SourceReconciliation reconciliation = 8;
+}
+
+// One word of the page's consensus reading stream linked to the same word
+// in another backend's stream. Offsets are codepoint positions within each
+// side's own page word stream (words joined by single spaces), a stable
+// coordinate system for the links; document-stream positions come from
+// joining against text_offsets.
+message ReconciliationLink {
+  // Word index in the consensus stream.
+  uint32 consensus_index = 1;
+  // Codepoint offset of the word in the consensus stream.
+  uint64 consensus_utf_start = 2;
+  // Word index in the source's stream; absent when the source lacks the
+  // word.
+  optional uint32 source_index = 3;
+  // Codepoint offset in the source's stream; meaningful when source_index
+  // is set.
+  uint64 source_utf_start = 4;
+  // The source has different characters at the same place (a correction
+  // site: soft-hyphen artifacts, fused footnote markers).
+  bool text_deviation = 5;
+  // The source's adjacency departs from the consensus order here.
+  bool order_break = 6;
+}
+
+// One non-winning backend's alignment against the page's consensus stream.
+message SourceReconciliation {
+  // The backend the links point into (its configured target).
+  string source = 1;
+  // The source's score in the reading-order vote.
+  double weight = 2;
+  // Words linked in both streams.
+  uint32 matched = 3;
+  // Consensus words with no counterpart in this source.
+  uint32 missing = 4;
+  // Links where the source's adjacency departs from consensus.
+  uint32 order_breaks = 5;
+  // Links with different characters at the same place.
+  uint32 text_deviations = 6;
+  // The word-level links, one per consensus word.
+  repeated ReconciliationLink links = 7;
 }
 
 message TextOffset {
