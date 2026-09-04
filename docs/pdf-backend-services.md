@@ -1,8 +1,15 @@
 # PDF backend services: capability matrix and service plan
 
-Status: design, 2026-09-05. Nothing here changes gRParse yet. The in-process
-poppler path stays the baseline until a service backend passes the scorecard
-and the S3 battery at parity; only then do we consider removing the linkage.
+Status 2026-09-04: M0 through M5 landed. The contract is released
+(pipestream-protos v0.15.0, `pdf-backend` module), the three services are up
+(grpc-pdfium tiers 0-2, grpc-qparse, grpc-poppler), the differential runs
+three ways (`eval/pdf_diff`, RESULTS-2026-09-04), and gRParse has the
+`GRPARSE_PDF_BACKEND` client mode with the scorecard run both ways
+(SCORECARD-LEGS-2026-09-04) and the raster wire cost recorded
+(RASTER-COST-2026-09-04). M6 remains evidence-gated: reading order on
+long-text and two-column and the digital+OCR merge on the mixed rotated
+scan are the open gaps, and the latency verdict awaits acceptance. The
+in-process poppler path remains the default until then.
 
 ## Goal
 
