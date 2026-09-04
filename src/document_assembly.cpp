@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -222,6 +223,57 @@ uint32_t read_be32(const unsigned char* bytes) {
          (static_cast<uint32_t>(bytes[2]) << 8) | bytes[3];
 }
 
+// Consensus word index -> page line index, over the same word stream the
+// vote aligned (whitespace-delimited tokens of page.lines in emission
+// order, the split consensus_page_source.cpp votes and reconciles on).
+// Empty when the page never voted.
+std::vector<uint32_t> consensus_word_lines(const OcrPage& page) {
+  std::vector<uint32_t> line_of_word;
+  if (!page.vote.has_value()) return line_of_word;
+  for (size_t index = 0; index < page.lines.size(); ++index) {
+    std::istringstream stream(page.lines[index].text);
+    std::string word;
+    while (stream >> word) line_of_word.push_back(static_cast<uint32_t>(index));
+  }
+  return line_of_word;
+}
+
+// The engine name a vote leg is claimed under: the name the backend
+// reported through Probe, falling back to its dialed target when it never
+// named itself.
+std::string leg_name(const ConsensusVote::Leg& leg) {
+  return leg.engine.empty() ? leg.target : leg.engine;
+}
+
+// The losing legs whose reading deviated inside one block's lines: any
+// text_deviation or order_break link whose consensus word sits on one of
+// those lines. Names are the legs' claim names, in reconciliation order.
+std::vector<std::string> deviating_legs(const OcrPage& page,
+                                        const std::vector<size_t>& block_lines,
+                                        const std::vector<uint32_t>& line_of_word) {
+  std::vector<std::string> names;
+  for (const auto& rec : page.reconciliation) {
+    bool deviates = false;
+    for (const auto& link : rec.links) {
+      if (deviates) break;
+      if (!link.text_deviation && !link.order_break) continue;
+      if (link.consensus_index >= line_of_word.size()) continue;
+      const uint32_t line = line_of_word[link.consensus_index];
+      if (std::ranges::find(block_lines, line) != block_lines.end()) deviates = true;
+    }
+    if (!deviates) continue;
+    std::string name = rec.source;
+    for (const auto& leg : page.vote->legs) {
+      if (leg.target == rec.source) {
+        name = leg_name(leg);
+        break;
+      }
+    }
+    names.push_back(std::move(name));
+  }
+  return names;
+}
+
 // Model table structure (D3): the recognized cells carry real spans and
 // header rows.  Lines bound to the table land in the first cell whose box
 // contains their center; the flat cell list holds each cell once while the
@@ -423,6 +475,10 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
   // items placed at their reading-order anchors instead of appended after
   // the page's prose.
   const std::vector<TextBlock> blocks = build_text_blocks(source);
+
+  // Consensus mode only: the word-to-line index lets each emitted item name
+  // the vote legs whose reading deviated inside it. Empty otherwise.
+  const std::vector<uint32_t> line_of_word = consensus_word_lines(source);
 
   struct Placed {
     const LayoutRegion* region;
@@ -680,6 +736,30 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     if (digital) add_collector_source("poppler-text", confidence, base->mutable_source());
     if (ocr) add_collector_source("rapidocr", confidence, base->mutable_source());
 
+    // Consensus attribution (PDF multi-backend votes only): when a losing
+    // leg's reading deviated inside this item, the item names the vote as
+    // the source of its carried text, and each deviating loser beside it.
+    // The losing words themselves stay on PageData.reconciliation. CodeItem
+    // carries no field_sources arm, so code blocks skip attribution.
+    if (code_item == nullptr && source.vote.has_value()) {
+      const std::vector<std::string> deviating =
+          deviating_legs(source, block.lines, line_of_word);
+      if (!deviating.empty()) {
+        auto* holder = base->add_field_sources();
+        holder->set_field("text");
+        auto* holder_source = holder->mutable_source();
+        holder_source->set_collector("protomolt");
+        holder_source->set_model(leg_name(source.vote->winner));
+        holder_source->set_raw_score(source.vote->winner_score);
+        holder_source->set_raw_score_kind("consensus_bigram_agreement");
+        for (const std::string& loser : deviating) {
+          auto* entry = base->add_field_sources();
+          entry->set_field("text");
+          entry->mutable_source()->set_collector(loser);
+        }
+      }
+    }
+
     if (code_item != nullptr) {
       // Transcribe the staged base into CodeItem's inline mirror of the same
       // fields; the field numbers match by design and the schema notes keep
@@ -819,6 +899,47 @@ void append_page_to_document(
   for (const auto& ref : page.body_order()) {
     document->mutable_body()->add_children()->set_ref(ref.ref());
   }
+}
+
+void append_consensus_claim(const std::vector<const OcrPage*>& pages,
+                            pipestream::document::v1::Document* document) {
+  if (document == nullptr) throw std::invalid_argument("Document assembly output is required");
+  size_t voted = 0;
+  double score_sum = 0.0;
+  std::string winner;
+  bool unanimous = true;
+  for (const OcrPage* page : pages) {
+    if (page == nullptr || !page->vote.has_value()) continue;
+    const std::string name = leg_name(page->vote->winner);
+    if (voted == 0) {
+      winner = name;
+    } else if (name != winner) {
+      unanimous = false;
+    }
+    score_sum += page->vote->winner_score;
+    ++voted;
+  }
+  // No page voted: single-backend documents and single-candidate pages
+  // carry no claim, exactly as before.
+  if (voted == 0) return;
+  // One claim per document, under the vote's own claimant name. The
+  // per-page word detail already rides PageData.reconciliation; repeating
+  // the vote per page would multiply the resolved document by its page
+  // count for nothing a consumer cannot already read there. The score is
+  // the mean of the per-page winning scores over the pages that voted,
+  // with that page count as its samples; it is the vote's own composite
+  // (bigram agreement plus sentence continuity), not a probability, so it
+  // rides raw_score with its kind named, never confidence.
+  auto* claim = document->add_claims();
+  auto* source = claim->mutable_source();
+  source->set_collector("protomolt");
+  // The winning engine is named only when every voted page picked it; a
+  // split document leaves model unset rather than letting one page
+  // subset's winner speak for the whole.
+  if (unanimous) source->set_model(winner);
+  source->set_raw_score(score_sum / static_cast<double>(voted));
+  source->set_raw_score_kind("consensus_bigram_agreement");
+  source->set_raw_score_samples(static_cast<uint64_t>(voted));
 }
 
 namespace {

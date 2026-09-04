@@ -24,6 +24,9 @@ class PageSource {
   virtual int page_count() const = 0;
   virtual std::optional<OcrPage> extract_digital_page(int page_number) const;
   virtual cv::Mat render_page(int page_number) const = 0;
+  // The engine name a remote PDF backend reported through Probe; empty for
+  // the in-process sources. Consensus mode names its vote legs with it.
+  virtual std::string backend_name() const { return {}; }
 };
 
 // The rasterization DPI a source uses when no per-document value arrives.

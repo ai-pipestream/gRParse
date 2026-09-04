@@ -10,6 +10,7 @@
 
 #include <grpcpp/grpcpp.h>
 
+#include "ai/pipestream/document/v1/document.pb.h"
 #include "ai/protomolt/parse/pdf/v1/pdf_backend_service.grpc.pb.h"
 #include "grparse/consensus_page_source.h"
 #include "grparse/document_assembly.h"
@@ -183,6 +184,16 @@ int main() {
                 first.source_utf_start == 7,
             "source side of the first link points into the other stream");
 
+    // The vote's winning half rides the page too: the winner's engine name
+    // (the Probe backend name, not the dialed target), its score, and every
+    // leg that voted.
+    require(page->vote.has_value(), "the vote's winner is recorded");
+    require(page->vote->winner.target == good_a.target &&
+                page->vote->winner.engine == "good-a",
+            "the first agreeing backend wins the tie and names its engine");
+    require(page->vote->winner_score > 0.0, "the winning score is recorded");
+    require(page->vote->legs.size() == 3, "every voting backend is a leg");
+
     grparse::AssemblyCursor cursor;
     ai::pipestream::parse::v1::PageData wire;
     grparse::append_page_data(*page, 1, &cursor, &wire);
@@ -200,6 +211,47 @@ int main() {
       wire_checked = true;
     }
     require(wire_checked, "the scrambled source is on the wire");
+
+    // The assembled document claims the vote: one protomolt claim with the
+    // winner's engine and score. The fake pages emit one cell per word, so
+    // the page is one item per word; the pairwise swap breaks order at
+    // every odd word, and exactly those items name the scrambled leg as
+    // the source that deviated inside them.
+    ai::pipestream::document::v1::Document document;
+    std::string plain_text;
+    grparse::AssemblyCursor document_cursor;
+    grparse::append_page_to_document(*page, 1, &document_cursor, &document,
+                                     &plain_text);
+    grparse::append_consensus_claim({&*page}, &document);
+    require(document.claims_size() == 1, "one claim for the vote");
+    const auto& claim = document.claims(0).source();
+    require(claim.collector() == "protomolt", "the vote claims as protomolt");
+    require(claim.model() == "good-a", "the claim names the winning engine");
+    require(claim.raw_score() == page->vote->winner_score &&
+                claim.raw_score_kind() == "consensus_bigram_agreement" &&
+                claim.raw_score_samples() == 1,
+            "the claim carries the winning score, its kind, and its extent");
+    require(document.texts_size() == 12, "one item per word cell");
+    require(document.texts(0).text().base().field_sources().empty(),
+            "an item whose word linked cleanly carries no vote attribution");
+    const auto& field_sources =
+        document.texts(1).text().base().field_sources();
+    require(field_sources.size() == 2,
+            "the deviating item names the vote and the deviating loser");
+    require(field_sources[0].field() == "text" &&
+                field_sources[0].source().collector() == "protomolt" &&
+                field_sources[0].source().model() == "good-a",
+            "the carried text is the vote winner's reading");
+    require(field_sources[1].field() == "text" &&
+                field_sources[1].source().collector() == "scrambled",
+            "the deviating loser is named on the item");
+    bool clean_leg_named = false;
+    for (int item = 0; item < document.texts_size(); ++item) {
+      for (const auto& entry : document.texts(item).text().base().field_sources()) {
+        clean_leg_named = clean_leg_named || entry.source().collector() == "good-b";
+      }
+    }
+    require(!clean_leg_named, "the agreeing leg did not deviate and is absent");
   }
 
   // A backend that cannot load the document drops out of the vote.
@@ -241,13 +293,27 @@ int main() {
             "a clean vote marks the page source-order-trusted");
   }
 
-  // One healthy backend never votes, so nothing is trusted.
+  // One healthy backend never votes, so nothing is trusted, nothing is
+  // recorded, and the assembled document carries no claim at all.
   {
     const auto source = grparse::open_consensus_pdf_document(
         bytes, {good_a.target}, 144.0);
     const auto page = source->extract_digital_page(1);
     require(page.has_value() && !page->source_order_trusted,
             "a single-candidate page is never trusted");
+    require(!page->vote.has_value() && page->reconciliation.empty(),
+            "a single-candidate page never voted");
+    ai::pipestream::document::v1::Document document;
+    std::string plain_text;
+    grparse::AssemblyCursor cursor;
+    grparse::append_page_to_document(*page, 1, &cursor, &document, &plain_text);
+    grparse::append_consensus_claim({&*page}, &document);
+    require(document.claims_size() == 0, "no vote, no claim");
+    bool attributed = false;
+    for (const auto& text : document.texts()) {
+      attributed = attributed || !text.text().base().field_sources().empty();
+    }
+    require(!attributed, "no vote, no field sources");
   }
 
   const auto targets =

@@ -268,6 +268,8 @@ class CvCollector {
     std::string plain_text;
     AssemblyCursor assembly_cursor;
     google::protobuf::RepeatedPtrField<pipestream::parse::v1::TextOffset> offsets;
+    std::vector<const OcrPage*> assembled_pages;
+    assembled_pages.reserve(collected.pages.size());
     for (int page_number = 1; page_number <= collected.total_pages; ++page_number) {
       const auto page = collected.pages.find(page_number);
       if (page == collected.pages.end()) {
@@ -276,7 +278,11 @@ class CvCollector {
       }
       append_page_to_document(*page->second, page_number, &assembly_cursor,
                               &outcome.document, &plain_text, &offsets);
+      assembled_pages.push_back(page->second.get());
     }
+    // A PDF read through several backends claims its vote: one aggregate
+    // "protomolt" claim for the document, no-op when nothing voted.
+    append_consensus_claim(assembled_pages, &outcome.document);
     // Heading depth clusters over the whole document's heights, so it can
     // only run after every page is in.
     assign_section_header_levels(&outcome.document);

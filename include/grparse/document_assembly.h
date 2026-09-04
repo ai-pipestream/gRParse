@@ -35,6 +35,16 @@ void append_page_to_document(
     google::protobuf::RepeatedPtrField<ai::pipestream::parse::v1::TextOffset>* text_offsets =
         nullptr);
 
+// Appends the consensus vote's document-level claim: one "protomolt"
+// CollectorClaim aggregating every page that voted (the winner's engine
+// name as the model when the vote was unanimous, the mean winning score
+// as the raw score with the voted page count as its samples). Pages that
+// never voted carry no vote and stay out of the aggregate; when no page
+// voted at all the document is left untouched, so single-backend output
+// is unchanged.
+void append_consensus_claim(const std::vector<const OcrPage*>& pages,
+                            ai::pipestream::document::v1::Document* document);
+
 // One section header awaiting a depth: its reference, its median line
 // height in page pixels, its median declared font size in points when the
 // text layer states one (zero otherwise), and, for the title and numbering

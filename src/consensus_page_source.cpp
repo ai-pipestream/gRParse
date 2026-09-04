@@ -304,12 +304,14 @@ class ConsensusPdfPageSource final : public PageSource {
   std::optional<OcrPage> extract_digital_page(int page_number) const override {
     std::vector<OcrPage> candidates;
     std::vector<std::string> names;
+    std::vector<std::string> engines;
     for (const auto& entry : sources_) {
       try {
         auto page = entry.source->extract_digital_page(page_number);
         if (page.has_value() && !page->lines.empty()) {
           candidates.push_back(std::move(*page));
           names.push_back(entry.target);
+          engines.push_back(entry.source->backend_name());
         }
       } catch (const InvalidDocument& error) {
         // A backend that fails mid-document leaves this page's vote; the
@@ -356,6 +358,16 @@ class ConsensusPdfPageSource final : public PageSource {
       page.reconciliation.push_back(reconcile(page, candidates[i], names[i],
                                               scores[i], tolerance_px));
     }
+    // The winning half of the vote stays too: the winner's identity and
+    // score, plus every leg that voted, so the assembled document can claim
+    // the vote (the "protomolt" CollectorClaim) instead of discarding it.
+    ConsensusVote vote;
+    vote.winner = ConsensusVote::Leg{names[winner], engines[winner]};
+    vote.winner_score = scores[winner];
+    for (size_t i = 0; i < candidates.size(); ++i) {
+      vote.legs.push_back(ConsensusVote::Leg{names[i], engines[i]});
+    }
+    page.vote = std::move(vote);
     // A clean vote (every leg nearly complete, nearly monotone) means the
     // winner's emission order is the reading order; the fold may skip its
     // geometric re-order. The early returns above never set this.

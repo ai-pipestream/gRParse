@@ -455,6 +455,16 @@ int document_claim_rank(const std::string& collector, const std::string& mimetyp
   if (collector == "poi") return ooxml || ole2 ? 3 : 0;
   if (collector == "calamine") return spreadsheet ? 2 : 0;
   if (collector == "libreoffice") return office ? 1 : 0;
+  // "protomolt" is the PDF consensus vote's claimant name
+  // (consensus_page_source.cpp): the carried text is the leg whose word
+  // order won the per-page bigram vote. On the truth documents that winner
+  // beat every leg it was voted against, so the vote stands above every
+  // registered collector's standing short of the service's own stamp: 4
+  // clears poi's 3. Scoped to PDF because the vote only ever runs there;
+  // the dialed backends themselves stay unregistered (0): they never merge
+  // as claimants, and a bare engine name must not acquire standing over
+  // the office collectors by accident.
+  if (collector == "protomolt") return mimetype == "application/pdf" ? 4 : 0;
   return 0;
 }
 

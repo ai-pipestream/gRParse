@@ -114,6 +114,25 @@ struct SourceReconciliation {
   std::vector<ReconciliationLink> links = {};
 };
 
+// The consensus vote's record for one page (multi-backend PDF mode only).
+// `reconciliation` carries the losing halves of the vote; this carries the
+// winning half, which the document-level claim and the per-item source
+// attribution are built from.
+struct ConsensusVote {
+  // One backend that read the page: the dialed target (the same name a
+  // SourceReconciliation.source carries) and the engine name the backend
+  // reported through Probe, empty when it did not name itself.
+  struct Leg {
+    std::string target;
+    std::string engine;
+  };
+  // The leg whose word order won the page's bigram vote, and its score.
+  Leg winner;
+  double winner_score = 0.0;
+  // Every leg that voted, winner included, in configured order.
+  std::vector<Leg> legs;
+};
+
 struct OcrPage {
   enum class Source { kOcr, kDigitalPdf, kMerged };
 
@@ -143,6 +162,12 @@ struct OcrPage {
   // Multi-backend reconciliation, filled only by the consensus page
   // source. Wire slot: PageData.reconciliation.
   std::vector<SourceReconciliation> reconciliation = {};
+  // The vote's winning half, filled by the consensus page source only when
+  // at least two backends read the page: who won, with what score, and who
+  // else voted. Absent in single-backend mode and on pages only one
+  // backend could read, so neither place changes shape. Wire slot: the
+  // document-level protomolt claim and per-item field_sources.
+  std::optional<ConsensusVote> vote = std::nullopt;
   // Set by the consensus page source when the vote's winner reconciled
   // cleanly against every losing leg (nearly all words matched, nearly no
   // order breaks; the thresholds live in consensus_page_source.cpp). It

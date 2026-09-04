@@ -505,6 +505,25 @@ void verify_standing_is_per_format() {
           "a tie or a lower standing leaves the holder");
 }
 
+// The consensus vote's claimant name stands above every collector short of
+// the service's own stamp, and only on PDF, the one format the vote runs.
+void verify_protomolt_standing() {
+  const int vote = grparse::document_claim_rank("protomolt", "application/pdf");
+  require(vote > grparse::document_claim_rank("poi", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+          "the vote outranks the strongest registered collector standing");
+  require(vote > grparse::document_claim_rank("calamine", "text/csv") &&
+              vote > grparse::document_claim_rank("libreoffice", "application/rtf"),
+          "the vote outranks calamine and libreoffice standings");
+  require(vote < grparse::document_claim_rank("grparse", "application/pdf"),
+          "the service's own stamp still outranks the vote");
+  require(grparse::document_claim_rank("protomolt", "application/vnd.openxmlformats-officedocument.wordprocessingml.document") == 0,
+          "the vote has no standing off PDF");
+  require(grparse::document_claim_rank("pdfium", "application/pdf") == 0 &&
+              grparse::document_claim_rank("qparse", "application/pdf") == 0 &&
+              grparse::document_claim_rank("poppler", "application/pdf") == 0,
+          "the dialed engines stay unregistered: they never merge as claimants");
+}
+
 // Without a claimant the merge is what it always was: no accounts, no
 // attribution, first claim stands.
 void verify_unnamed_merge_records_nothing() {
@@ -530,6 +549,7 @@ int main() {
       verify_contested_fields_resolve_by_rank_and_keep_every_account,
       verify_confidence_beats_standing,
       verify_standing_is_per_format,
+      verify_protomolt_standing,
       verify_unnamed_merge_records_nothing,
   });
 }

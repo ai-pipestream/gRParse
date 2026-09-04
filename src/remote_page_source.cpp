@@ -87,9 +87,12 @@ class RemotePdfPageSource final : public PageSource {
     }
     pages_ = static_cast<int>(caps.page_count());
     if (pages_ <= 0) throw InvalidDocument("PDF does not contain a renderable page");
+    backend_name_ = caps.backend_name();
   }
 
   int page_count() const override { return pages_; }
+
+  std::string backend_name() const override { return backend_name_; }
 
   std::optional<OcrPage> extract_digital_page(int page_number) const override {
     check_page(page_number);
@@ -280,6 +283,7 @@ class RemotePdfPageSource final : public PageSource {
   const double render_scale_;
   std::unique_ptr<pdfv1::PdfBackendService::Stub> stub_;
   int pages_ = 0;
+  std::string backend_name_;
 };
 
 }  // namespace
