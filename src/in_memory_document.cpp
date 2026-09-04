@@ -21,6 +21,7 @@
 #include <poppler-page.h>
 #include <poppler-page-renderer.h>
 
+#include "grparse/remote_page_source.h"
 #include "grparse/resource_pool.h"
 
 namespace grparse {
@@ -267,7 +268,14 @@ std::shared_ptr<PageSource> open_in_memory_document(std::shared_ptr<const std::s
                                                     size_t pdf_parser_slots, double render_dpi) {
   if (!bytes || bytes->empty()) throw InvalidDocument("Document bytes are empty");
   if (!(render_dpi > 0.0)) throw std::invalid_argument("Render DPI must be positive");
-  if (pdf) return std::make_shared<PdfPageSource>(std::move(bytes), pdf_parser_slots, render_dpi);
+  if (pdf) {
+    // GRPARSE_PDF_BACKEND selects a PdfBackendService target for the PDF
+    // layer; unset or "inprocess" keeps the poppler path below.
+    if (const auto target = remote_pdf_backend_target()) {
+      return open_remote_pdf_document(std::move(bytes), *target, render_dpi);
+    }
+    return std::make_shared<PdfPageSource>(std::move(bytes), pdf_parser_slots, render_dpi);
+  }
   return std::make_shared<RasterPageSource>(std::move(bytes));
 }
 

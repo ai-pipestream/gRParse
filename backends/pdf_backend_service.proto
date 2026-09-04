@@ -1,0 +1,259 @@
+syntax = "proto3";
+
+package ai.pipestream.parse.pdf.v1;
+
+import "ai/pipestream/parse/pdf/v1/pdf_backend_types.proto";
+
+option go_package = "pipestream.ai/protos/gen/parse/pdf/v1;pdfv1";
+option java_multiple_files = true;
+option java_outer_classname = "PdfBackendServiceProto";
+option java_package = "ai.pipestream.parse.pdf.v1";
+
+// The common PDF backend contract. Every PDF backend service (grpc-pdfium,
+// grpc-qparse, grpc-poppler) implements this one service so backends are
+// interchangeable behind a single typed shape and their outputs can be
+// compared family by family in the differential harness.
+//
+// The contract is defined in full up front; what a given backend fills is a
+// runtime property declared through Probe, never a schema variation. Field
+// numbers are forever: changes to this package are additive only.
+
+// The three operations every backend serves.
+service PdfBackendService {
+  // Loads the document and reports what this backend will populate for it.
+  // Capabilities are per-backend AND per-document. Load failures are typed
+  // in the returned capabilities, not gRPC errors; transport and resource
+  // failures remain gRPC errors.
+  rpc Probe(ProbeRequest) returns (ProbeResponse);
+
+  // Parses the document into the typed family stream. The first message is
+  // always the header (capabilities echo plus the page inventory); page
+  // chunks follow in page order, document-level families arrive as their
+  // own messages, and the trailer closes the stream with per-family counts.
+  rpc Parse(ParseRequest) returns (stream ParseResponse);
+
+  // Rasterizes a page range at a DPI and pixel format. Separate from Parse
+  // because rasters dominate bytes and callers often want text without
+  // pixels.
+  rpc Render(RenderRequest) returns (stream RenderResponse);
+}
+
+// A contiguous range of pages. Zero-based, half-open: begin is the first
+// page included, end is the first page excluded. Requests leave the range
+// field unset to mean all pages; a set range must have end greater than
+// begin.
+message PageRange {
+  // First page included, zero-based.
+  uint32 begin = 1;
+  // First page excluded.
+  uint32 end = 2;
+}
+
+// Request for Probe.
+message ProbeRequest {
+  // The document to probe.
+  PdfDocument document = 1;
+}
+
+// Response for Probe.
+message ProbeResponse {
+  // What this backend will populate for this document.
+  BackendCapabilities capabilities = 1;
+}
+
+// Heavy-payload switches. Families select WHICH families stream; these
+// control how much data rides inside a family. All default to false so the
+// lean call is the cheap one.
+message ParseOptions {
+  // Fill PlacedImage.image with the image bytes. Off, placed images carry
+  // geometry and source properties only.
+  bool include_image_data = 1;
+  // Fill AttachmentMeta.data with the embedded file bytes.
+  bool include_attachment_data = 2;
+}
+
+// Request for Parse.
+message ParseRequest {
+  // The document to parse.
+  PdfDocument document = 1;
+  // Families to emit. Empty means every family the backend marks
+  // FAMILY_SUPPORT_SUPPORTED for this document. Requested families the
+  // backend cannot fill are declared in the header capabilities and
+  // otherwise ignored, never errored.
+  repeated PdfFamily families = 2;
+  // Pages to emit page-level families for. Unset means all pages.
+  // Document-level families are unaffected by the range.
+  optional PageRange pages = 3;
+  // Heavy-payload switches.
+  ParseOptions options = 4;
+}
+
+// The first Parse stream message.
+message ParseHeader {
+  // The same verdicts Probe returns, so a Parse stream is self-describing.
+  // When load_status is not LOAD_STATUS_OK the stream ends after this
+  // header.
+  BackendCapabilities capabilities = 1;
+  // The full page inventory (tier 0), regardless of any page range.
+  repeated PageInfo pages = 2;
+}
+
+// Page-level families for one page. A large page may span several PageChunk
+// messages to respect message-size limits; consumers accumulate by
+// page_index. Within one page, chunks arrive contiguously and in order.
+message PageChunk {
+  // Zero-based page index this chunk belongs to.
+  uint32 page_index = 1;
+  // Text cells in the engine's emission order.
+  repeated TextCell text_cells = 2;
+  // Images placed on the page.
+  repeated PlacedImage images = 3;
+  // Link regions.
+  repeated Hyperlink hyperlinks = 4;
+  // Annotations.
+  repeated Annotation annotations = 5;
+  // Form field widgets.
+  repeated FormField form_fields = 6;
+  // Vector path objects.
+  repeated VectorShape shapes = 7;
+  // The stored page thumbnail, when the document carries one.
+  optional EncodedImage thumbnail = 8;
+  // The page's typed graphics resources.
+  optional DeepResources resources = 9;
+}
+
+// A slice of the document font table. May arrive more than once as fonts
+// are discovered; font_id values never repeat within a stream.
+message FontTableChunk {
+  // Font table entries.
+  repeated FontRef fonts = 1;
+}
+
+// The outline tree, sent whole because outlines are small.
+message OutlineChunk {
+  // Top-level outline items in document order.
+  repeated OutlineNode roots = 1;
+}
+
+// The structure tree, sent whole.
+message StructTreeChunk {
+  // Top-level structure elements in structure order.
+  repeated StructNode roots = 1;
+}
+
+// All signature fields of the document.
+message SignatureChunk {
+  // Signatures in document order.
+  repeated SignatureInfo signatures = 1;
+}
+
+// All document-level JavaScript entries.
+message JavaScriptChunk {
+  // Entries in name-tree order.
+  repeated JavaScriptEntry entries = 1;
+}
+
+// A warning attached to the parse, for content the engine skipped or
+// repaired without failing the stream.
+message ParseWarning {
+  // The page the warning is about, when page-scoped.
+  optional uint32 page_index = 1;
+  // The family the warning is about, when family-scoped.
+  optional PdfFamily family = 2;
+  // The engine's message.
+  string message = 3;
+}
+
+// How many items of one family the stream carried.
+message FamilyCount {
+  // The family counted.
+  PdfFamily family = 1;
+  // Total items emitted across the stream.
+  uint64 count = 2;
+}
+
+// The last Parse stream message: totals the harness reconciles against
+// what it received, plus warnings.
+message ParseTrailer {
+  // Per-family item totals for everything emitted on this stream.
+  repeated FamilyCount counts = 1;
+  // Warnings accumulated during the parse.
+  repeated ParseWarning warnings = 2;
+}
+
+// One Parse stream message. The header arrives first and the trailer last;
+// between them, page chunks arrive in page order and document-level chunks
+// may interleave at any point.
+message ParseResponse {
+  // Exactly one chunk kind per stream message.
+  oneof payload {
+    // First message: capabilities plus page inventory.
+    ParseHeader header = 1;
+    // Page-level families for one page.
+    PageChunk page = 2;
+    // Document metadata.
+    DocMeta doc_meta = 3;
+    // Encryption details, only for encrypted documents.
+    EncryptionInfo encryption = 4;
+    // Font table entries.
+    FontTableChunk fonts = 5;
+    // One embedded font program (its own message because programs are
+    // large).
+    EmbeddedFont embedded_font = 6;
+    // The outline tree.
+    OutlineChunk outline = 7;
+    // One attachment (its own message because file bytes are large).
+    AttachmentMeta attachment = 8;
+    // Signature fields.
+    SignatureChunk signatures = 9;
+    // JavaScript entries.
+    JavaScriptChunk javascript = 10;
+    // The structure tree.
+    StructTreeChunk struct_tree = 11;
+    // Last message: totals and warnings.
+    ParseTrailer trailer = 12;
+  }
+}
+
+// Request for Render.
+message RenderRequest {
+  // The document to render.
+  PdfDocument document = 1;
+  // Pages to render. Unset means all pages.
+  optional PageRange pages = 2;
+  // Resolution in dots per inch; must be positive.
+  double dpi = 3;
+  // Requested pixel layout of the output.
+  PixelFormat pixel_format = 4;
+  // Background painted behind transparent content. Unset means opaque
+  // white.
+  optional Color background = 5;
+  // Skip drawing annotation appearances into the raster. Engines draw them
+  // by default, so the false default matches engine behavior.
+  bool omit_annotations = 6;
+}
+
+// One rendered page.
+message PageRaster {
+  // Zero-based page index.
+  uint32 page_index = 1;
+  // Width in pixels.
+  uint32 width_px = 2;
+  // Height in pixels.
+  uint32 height_px = 3;
+  // Bytes per row.
+  uint32 stride_bytes = 4;
+  // The pixel layout actually produced.
+  PixelFormat pixel_format = 5;
+  // The DPI actually rendered.
+  double dpi = 6;
+  // Pixel data, top-down rows, height_px * stride_bytes bytes.
+  bytes pixels = 7;
+}
+
+// One Render stream message: pages arrive in page order, one raster per
+// message.
+message RenderResponse {
+  // The rendered page.
+  PageRaster raster = 1;
+}

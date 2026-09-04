@@ -1,0 +1,954 @@
+syntax = "proto3";
+
+package ai.pipestream.parse.pdf.v1;
+
+option go_package = "pipestream.ai/protos/gen/parse/pdf/v1;pdfv1";
+option java_multiple_files = true;
+option java_outer_classname = "PdfBackendTypesProto";
+option java_package = "ai.pipestream.parse.pdf.v1";
+
+// PDF backend data types: the typed families every interchangeable PDF
+// backend service (grpc-pdfium, grpc-qparse, grpc-poppler) emits over the
+// PdfBackendService contract defined in pdf_backend_service.proto.
+//
+// Coordinate convention for every geometry message in this package: PDF user
+// space of the page's CropBox, origin at the bottom-left corner, y increasing
+// upward, units in points (1/72 inch), before page /Rotate is applied unless
+// a field says otherwise. Raster pixel data is top-down row order.
+//
+// Absent-vs-empty discipline: a backend never emits an empty message for a
+// family it cannot produce. What a backend will populate for a given document
+// is declared up front in BackendCapabilities; families it does not support,
+// or that the document does not contain, are declared there and then simply
+// never appear on the parse stream.
+
+// ---------------------------------------------------------------------------
+// Geometry
+// ---------------------------------------------------------------------------
+
+// Axis-aligned rectangle in page space. x0 <= x1 and y0 <= y1.
+message BoundingBox {
+  // Left edge.
+  double x0 = 1;
+  // Bottom edge.
+  double y0 = 2;
+  // Right edge.
+  double x1 = 3;
+  // Top edge.
+  double y1 = 4;
+}
+
+// A possibly-rotated quadrilateral in page space. Corners follow the text
+// or placement orientation: (x0,y0) is the lower-left corner of the content
+// in its own reading frame, then lower-right, upper-right, upper-left.
+message Quad {
+  // Lower-left x in the content's reading frame.
+  double x0 = 1;
+  // Lower-left y.
+  double y0 = 2;
+  // Lower-right x.
+  double x1 = 3;
+  // Lower-right y.
+  double y1 = 4;
+  // Upper-right x.
+  double x2 = 5;
+  // Upper-right y.
+  double y2 = 6;
+  // Upper-left x.
+  double x3 = 7;
+  // Upper-left y.
+  double y3 = 8;
+}
+
+// A point in page space.
+message PathPoint {
+  // Horizontal coordinate.
+  double x = 1;
+  // Vertical coordinate.
+  double y = 2;
+}
+
+// An RGBA color with components in [0, 1].
+message Color {
+  // Red component.
+  double red = 1;
+  // Green component.
+  double green = 2;
+  // Blue component.
+  double blue = 3;
+  // Alpha component; 1 is opaque.
+  double alpha = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Document input, load status, capabilities
+// ---------------------------------------------------------------------------
+
+// The document to operate on. Backends load from memory only; no backend
+// ever touches a filesystem path.
+message PdfDocument {
+  // The raw PDF bytes.
+  bytes data = 1;
+  // Password to open the document with, when it is encrypted. Backends try
+  // it as the user password first, then as the owner password.
+  optional string password = 2;
+  // Caller-chosen correlation id echoed in logs and errors; never
+  // interpreted by the backend.
+  optional string doc_id = 3;
+}
+
+// Typed outcome of loading the document bytes.
+enum LoadStatus {
+  // Never emitted.
+  LOAD_STATUS_UNSPECIFIED = 0;
+  // The document opened and can be parsed.
+  LOAD_STATUS_OK = 1;
+  // The bytes are not a PDF at all.
+  LOAD_STATUS_NOT_PDF = 2;
+  // The bytes are a PDF but too damaged for this engine to open.
+  LOAD_STATUS_CORRUPT = 3;
+  // The document is encrypted and no password was supplied.
+  LOAD_STATUS_PASSWORD_REQUIRED = 4;
+  // The supplied password did not open the document.
+  LOAD_STATUS_PASSWORD_INCORRECT = 5;
+  // The document uses an encryption scheme this engine does not implement.
+  LOAD_STATUS_UNSUPPORTED_ENCRYPTION = 6;
+  // The engine failed for a reason other than the ones above;
+  // BackendCapabilities.load_detail has the engine's message.
+  LOAD_STATUS_ENGINE_ERROR = 7;
+}
+
+// The typed data families a backend can emit. Every family a document could
+// carry gets a verdict in BackendCapabilities, so absence is always declared,
+// never inferred from an empty stream.
+enum PdfFamily {
+  // Never emitted.
+  PDF_FAMILY_UNSPECIFIED = 0;
+  // Page count, per-page geometry and rotation (PageInfo).
+  PDF_FAMILY_PAGE_INVENTORY = 1;
+  // Text cells with geometry and font references (TextCell).
+  PDF_FAMILY_TEXT_CELLS = 2;
+  // Page rasterization via the Render RPC (PageRaster).
+  PDF_FAMILY_PAGE_RASTER = 3;
+  // Document information keys and XMP (DocMeta).
+  PDF_FAMILY_DOC_METADATA = 4;
+  // Encryption scheme and permission bits (EncryptionInfo).
+  PDF_FAMILY_ENCRYPTION_INFO = 5;
+  // The font table (FontRef).
+  PDF_FAMILY_FONTS = 6;
+  // Embedded font programs as bytes (EmbeddedFont).
+  PDF_FAMILY_EMBEDDED_FONTS = 7;
+  // Images placed on pages, with geometry and optionally pixels
+  // (PlacedImage).
+  PDF_FAMILY_PLACED_IMAGES = 8;
+  // Link regions with their targets (Hyperlink).
+  PDF_FAMILY_HYPERLINKS = 9;
+  // The bookmark tree (OutlineNode).
+  PDF_FAMILY_OUTLINE = 10;
+  // Page annotations (Annotation).
+  PDF_FAMILY_ANNOTATIONS = 11;
+  // Interactive form fields (FormField).
+  PDF_FAMILY_FORM_FIELDS = 12;
+  // Embedded files (AttachmentMeta).
+  PDF_FAMILY_ATTACHMENTS = 13;
+  // Vector path objects (VectorShape).
+  PDF_FAMILY_VECTOR_SHAPES = 14;
+  // The tagged-PDF structure tree (StructNode).
+  PDF_FAMILY_STRUCT_TREE = 15;
+  // Digital signature fields (SignatureInfo).
+  PDF_FAMILY_SIGNATURES = 16;
+  // Document-level JavaScript listing (JavaScriptEntry).
+  PDF_FAMILY_JAVASCRIPT = 17;
+  // Pre-rendered page thumbnails stored in the document (PageChunk
+  // thumbnail).
+  PDF_FAMILY_THUMBNAILS = 18;
+  // Per-page graphics resources: colorspaces, shadings, patterns, xobjects
+  // (DeepResources).
+  PDF_FAMILY_DEEP_RESOURCES = 19;
+}
+
+// A backend's verdict on one family for one document.
+enum FamilySupport {
+  // Never emitted.
+  FAMILY_SUPPORT_UNSPECIFIED = 0;
+  // The backend will emit this family for this document.
+  FAMILY_SUPPORT_SUPPORTED = 1;
+  // The backend implements the family but this document does not carry it
+  // (an unsigned document has no signatures, an untagged one no struct
+  // tree).
+  FAMILY_SUPPORT_ABSENT_IN_DOCUMENT = 2;
+  // The backend's engine cannot produce this family at all.
+  FAMILY_SUPPORT_UNSUPPORTED_BY_BACKEND = 3;
+}
+
+// One family's verdict.
+message FamilyCapability {
+  // Which family this verdict is about.
+  PdfFamily family = 1;
+  // The verdict.
+  FamilySupport support = 2;
+  // Optional human-readable qualifier, for example why a family is
+  // unsupported or degraded.
+  optional string detail = 3;
+}
+
+// What one backend will populate for one document. Returned by Probe and
+// echoed at the head of every Parse stream. Capabilities are per-backend AND
+// per-document: a struct tree exists only when the document is tagged,
+// signatures only when it is signed.
+message BackendCapabilities {
+  // The backend service's stable name, for example "grpc-pdfium".
+  string backend_name = 1;
+  // The underlying engine and its exact pinned version, for example
+  // "pdfium 6721".
+  string engine_version = 2;
+  // Outcome of loading the document. When not LOAD_STATUS_OK the family
+  // list is empty and page_count is unset.
+  LoadStatus load_status = 3;
+  // A verdict for EVERY value of PdfFamily except the unspecified one.
+  // Consumers must treat a family missing from this list as
+  // FAMILY_SUPPORT_UNSUPPORTED_BY_BACKEND announced by an older backend
+  // that predates the family.
+  repeated FamilyCapability families = 4;
+  // Number of pages, when the document loaded.
+  optional uint32 page_count = 5;
+  // The engine's message when load_status is not LOAD_STATUS_OK.
+  optional string load_detail = 6;
+}
+
+// ---------------------------------------------------------------------------
+// Page inventory
+// ---------------------------------------------------------------------------
+
+// Per-page geometry, part of the tier 0 floor.
+message PageInfo {
+  // Zero-based page index.
+  uint32 page_index = 1;
+  // Page width in points AFTER the page's /Rotate is applied; what a
+  // renderer or viewer reports as the page size.
+  double width_pts = 2;
+  // Page height in points after /Rotate.
+  double height_pts = 3;
+  // The page's /Rotate value: 0, 90, 180 or 270 degrees clockwise.
+  int32 rotation_degrees = 4;
+  // The MediaBox as stored, before rotation.
+  BoundingBox media_box = 5;
+  // The CropBox as stored, before rotation. Equal to media_box when the
+  // document does not set one. All page-space geometry in this package is
+  // relative to this box.
+  BoundingBox crop_box = 6;
+}
+
+// ---------------------------------------------------------------------------
+// Text
+// ---------------------------------------------------------------------------
+
+// Dominant reading direction of a text cell.
+enum TextDirection {
+  // The backend does not classify direction.
+  TEXT_DIRECTION_UNSPECIFIED = 0;
+  // Left to right.
+  TEXT_DIRECTION_LEFT_TO_RIGHT = 1;
+  // Right to left.
+  TEXT_DIRECTION_RIGHT_TO_LEFT = 2;
+  // Top to bottom (vertical scripts).
+  TEXT_DIRECTION_TOP_TO_BOTTOM = 3;
+  // Bottom to top.
+  TEXT_DIRECTION_BOTTOM_TO_TOP = 4;
+}
+
+// The PDF text rendering mode (the Tr operator), values 0 through 7.
+enum TextRenderingMode {
+  // The backend does not report the mode.
+  TEXT_RENDERING_MODE_UNSPECIFIED = 0;
+  // Fill glyphs (Tr 0, the default in PDF).
+  TEXT_RENDERING_MODE_FILL = 1;
+  // Stroke glyph outlines (Tr 1).
+  TEXT_RENDERING_MODE_STROKE = 2;
+  // Fill then stroke (Tr 2).
+  TEXT_RENDERING_MODE_FILL_STROKE = 3;
+  // Invisible text (Tr 3), the OCR-underlay mode.
+  TEXT_RENDERING_MODE_INVISIBLE = 4;
+  // Fill and add to clipping path (Tr 4).
+  TEXT_RENDERING_MODE_FILL_CLIP = 5;
+  // Stroke and add to clipping path (Tr 5).
+  TEXT_RENDERING_MODE_STROKE_CLIP = 6;
+  // Fill, stroke and add to clipping path (Tr 6).
+  TEXT_RENDERING_MODE_FILL_STROKE_CLIP = 7;
+  // Add to clipping path only (Tr 7).
+  TEXT_RENDERING_MODE_CLIP = 8;
+}
+
+// One extracted text run: the granularity each engine naturally emits (a
+// poppler text box, a qpdf-based parser cell, a pdfium segment). Carries
+// both the axis-aligned box and the rotated quad, which is the union of
+// what the three engines report.
+message TextCell {
+  // The text content, UTF-8.
+  string text = 1;
+  // Axis-aligned bounds in page space.
+  BoundingBox bbox = 2;
+  // The rotated quad. For unrotated text its corners coincide with bbox.
+  Quad quad = 3;
+  // Dominant reading direction.
+  TextDirection direction = 4;
+  // Width of the space glyph at this cell's font and size, in points; the
+  // signal layout heuristics use to join words.
+  optional double space_width = 5;
+  // The PDF text rendering mode; INVISIBLE marks OCR underlay text.
+  TextRenderingMode rendering_mode = 6;
+  // Reference into the document font table (FontRef.font_id).
+  optional uint32 font_id = 7;
+  // Font size in points.
+  optional double font_size = 8;
+}
+
+// ---------------------------------------------------------------------------
+// Fonts
+// ---------------------------------------------------------------------------
+
+// The font technology as declared by the PDF font dictionary.
+enum FontKind {
+  // Unknown or unreported.
+  FONT_KIND_UNSPECIFIED = 0;
+  // Type 1.
+  FONT_KIND_TYPE1 = 1;
+  // TrueType.
+  FONT_KIND_TRUETYPE = 2;
+  // Type 0 (composite / CID-keyed).
+  FONT_KIND_TYPE0 = 3;
+  // Type 3 (glyphs drawn by content streams).
+  FONT_KIND_TYPE3 = 4;
+  // Multiple Master Type 1.
+  FONT_KIND_MM_TYPE1 = 5;
+}
+
+// One entry in the document font table. font_id values are assigned by the
+// backend, stable within one Parse stream, and referenced by TextCell.
+message FontRef {
+  // The backend-assigned id TextCell.font_id points at.
+  uint32 font_id = 1;
+  // The PostScript base name, subset prefix included, for example
+  // "ABCDEF+Times-Roman".
+  string base_name = 2;
+  // The font family name when the descriptor carries one.
+  optional string family = 3;
+  // The font technology.
+  FontKind kind = 4;
+  // Whether a font program is embedded in the document.
+  bool embedded = 5;
+  // The raw /Flags bitfield from the font descriptor (serif, symbolic,
+  // italic and friends, as defined by the PDF spec).
+  optional uint32 descriptor_flags = 6;
+}
+
+// Format of an embedded font program.
+enum FontProgramFormat {
+  // Unknown container.
+  FONT_PROGRAM_FORMAT_UNSPECIFIED = 0;
+  // Type 1 program (/FontFile).
+  FONT_PROGRAM_FORMAT_TYPE1 = 1;
+  // TrueType program (/FontFile2).
+  FONT_PROGRAM_FORMAT_TRUETYPE = 2;
+  // Bare CFF (/FontFile3 subtype Type1C or CIDFontType0C).
+  FONT_PROGRAM_FORMAT_CFF = 3;
+  // OpenType container (/FontFile3 subtype OpenType).
+  FONT_PROGRAM_FORMAT_OPENTYPE = 4;
+}
+
+// An embedded font program, streamed one per message because programs can
+// be large.
+message EmbeddedFont {
+  // The font table entry this program belongs to.
+  uint32 font_id = 1;
+  // The program container format.
+  FontProgramFormat format = 2;
+  // The decoded font program bytes.
+  bytes program = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Images and rasters
+// ---------------------------------------------------------------------------
+
+// Pixel layout of decoded raster data. Rows are top-down.
+enum PixelFormat {
+  // Never emitted for decoded data.
+  PIXEL_FORMAT_UNSPECIFIED = 0;
+  // 8-bit RGB, 3 bytes per pixel.
+  PIXEL_FORMAT_RGB8 = 1;
+  // 8-bit BGR, 3 bytes per pixel; what the in-process poppler path renders
+  // today.
+  PIXEL_FORMAT_BGR8 = 2;
+  // 8-bit RGBA, 4 bytes per pixel.
+  PIXEL_FORMAT_RGBA8 = 3;
+  // 8-bit BGRA, 4 bytes per pixel.
+  PIXEL_FORMAT_BGRA8 = 4;
+  // 8-bit grayscale, 1 byte per pixel.
+  PIXEL_FORMAT_GRAY8 = 5;
+}
+
+// How EncodedImage.data is encoded.
+enum ImageEncoding {
+  // Never emitted.
+  IMAGE_ENCODING_UNSPECIFIED = 0;
+  // Decoded pixels; pixel_format and stride_bytes describe the layout.
+  IMAGE_ENCODING_PIXELS = 1;
+  // The document's own JPEG (DCTDecode) stream, passed through.
+  IMAGE_ENCODING_JPEG = 2;
+  // The document's own JPEG 2000 (JPXDecode) stream, passed through.
+  IMAGE_ENCODING_JPX = 3;
+  // The document's own JBIG2 stream, passed through.
+  IMAGE_ENCODING_JBIG2 = 4;
+  // The document's own CCITT fax stream, passed through.
+  IMAGE_ENCODING_CCITT = 5;
+  // PNG-encoded by the backend.
+  IMAGE_ENCODING_PNG = 6;
+}
+
+// Raster payload shared by placed images and thumbnails.
+message EncodedImage {
+  // How data is encoded.
+  ImageEncoding encoding = 1;
+  // Pixel layout, set when encoding is IMAGE_ENCODING_PIXELS.
+  PixelFormat pixel_format = 2;
+  // Width in pixels.
+  uint32 width_px = 3;
+  // Height in pixels.
+  uint32 height_px = 4;
+  // Bytes per row for decoded pixels; unset for passthrough streams.
+  optional uint32 stride_bytes = 5;
+  // The image bytes.
+  bytes data = 6;
+}
+
+// An image placed on a page.
+message PlacedImage {
+  // Axis-aligned bounds of the placement in page space.
+  BoundingBox bbox = 1;
+  // The placement quad; differs from bbox when the image is rotated or
+  // sheared by its transform.
+  Quad quad = 2;
+  // The image data. Present only when the request set include_image_data;
+  // geometry and the fields below are always present.
+  optional EncodedImage image = 3;
+  // Intrinsic width of the image resource in pixels.
+  uint32 source_width_px = 4;
+  // Intrinsic height in pixels.
+  uint32 source_height_px = 5;
+  // Bits per color component as stored.
+  optional uint32 bits_per_component = 6;
+  // The colorspace family name as stored, for example "DeviceRGB" or
+  // "ICCBased".
+  optional string colorspace = 7;
+  // True for stencil masks (/ImageMask true).
+  bool is_mask = 8;
+  // The resource name in the page's XObject dictionary, for example "Im0".
+  optional string resource_name = 9;
+}
+
+// ---------------------------------------------------------------------------
+// Navigation: hyperlinks and outline
+// ---------------------------------------------------------------------------
+
+// A destination inside the document.
+message PageDestination {
+  // Zero-based target page index.
+  uint32 page_index = 1;
+  // Target x in that page's space, when the destination sets one.
+  optional double x = 2;
+  // Target y, when set.
+  optional double y = 3;
+  // Zoom factor, when set.
+  optional double zoom = 4;
+}
+
+// A link region on a page.
+message Hyperlink {
+  // The active region in page space.
+  BoundingBox bbox = 1;
+  // An external URI target. Exactly one of uri and destination is set;
+  // a link whose action the engine cannot type is not emitted.
+  optional string uri = 2;
+  // An internal go-to target.
+  optional PageDestination destination = 3;
+}
+
+// One node of the bookmark tree. The tree nests; backends must cycle-guard
+// when walking malformed outlines.
+message OutlineNode {
+  // The displayed title.
+  string title = 1;
+  // Internal destination, when the item targets a page.
+  optional PageDestination destination = 2;
+  // External URI, when the item is a link action.
+  optional string uri = 3;
+  // Child items in document order.
+  repeated OutlineNode children = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Annotations and forms
+// ---------------------------------------------------------------------------
+
+// PDF annotation subtypes.
+enum AnnotationKind {
+  // Subtype not in this list; Annotation.subtype_raw carries the name.
+  ANNOTATION_KIND_UNSPECIFIED = 0;
+  // Sticky note (/Text).
+  ANNOTATION_KIND_TEXT = 1;
+  // Link region (/Link); also surfaced as Hyperlink when typed.
+  ANNOTATION_KIND_LINK = 2;
+  // Free text (/FreeText).
+  ANNOTATION_KIND_FREE_TEXT = 3;
+  // Line (/Line).
+  ANNOTATION_KIND_LINE = 4;
+  // Rectangle (/Square).
+  ANNOTATION_KIND_SQUARE = 5;
+  // Ellipse (/Circle).
+  ANNOTATION_KIND_CIRCLE = 6;
+  // Polygon (/Polygon).
+  ANNOTATION_KIND_POLYGON = 7;
+  // Polyline (/PolyLine).
+  ANNOTATION_KIND_POLYLINE = 8;
+  // Highlight markup (/Highlight).
+  ANNOTATION_KIND_HIGHLIGHT = 9;
+  // Underline markup (/Underline).
+  ANNOTATION_KIND_UNDERLINE = 10;
+  // Squiggly underline markup (/Squiggly).
+  ANNOTATION_KIND_SQUIGGLY = 11;
+  // Strikeout markup (/StrikeOut).
+  ANNOTATION_KIND_STRIKEOUT = 12;
+  // Rubber stamp (/Stamp).
+  ANNOTATION_KIND_STAMP = 13;
+  // Caret (/Caret).
+  ANNOTATION_KIND_CARET = 14;
+  // Freehand ink (/Ink).
+  ANNOTATION_KIND_INK = 15;
+  // Popup window (/Popup).
+  ANNOTATION_KIND_POPUP = 16;
+  // File attachment pin (/FileAttachment).
+  ANNOTATION_KIND_FILE_ATTACHMENT = 17;
+  // Sound (/Sound).
+  ANNOTATION_KIND_SOUND = 18;
+  // Movie (/Movie).
+  ANNOTATION_KIND_MOVIE = 19;
+  // Form field widget (/Widget); field content is surfaced as FormField.
+  ANNOTATION_KIND_WIDGET = 20;
+  // Screen (/Screen).
+  ANNOTATION_KIND_SCREEN = 21;
+  // Printer's mark (/PrinterMark).
+  ANNOTATION_KIND_PRINTER_MARK = 22;
+  // Trap network (/TrapNet).
+  ANNOTATION_KIND_TRAP_NET = 23;
+  // Watermark (/Watermark).
+  ANNOTATION_KIND_WATERMARK = 24;
+  // 3D artwork (/3D).
+  ANNOTATION_KIND_THREE_D = 25;
+  // Redaction (/Redact).
+  ANNOTATION_KIND_REDACT = 26;
+}
+
+// One page annotation.
+message Annotation {
+  // The typed subtype.
+  AnnotationKind kind = 1;
+  // The raw subtype name, always set, so unlisted subtypes stay visible.
+  string subtype_raw = 2;
+  // The annotation rectangle in page space.
+  BoundingBox rect = 3;
+  // The /Contents text.
+  optional string contents = 4;
+  // The author (/T).
+  optional string author = 5;
+  // The modification date as the raw PDF date string.
+  optional string modified_raw = 6;
+  // The /F flags bitfield.
+  optional uint32 flags = 7;
+  // QuadPoints regions for markup annotations.
+  repeated Quad quads = 8;
+  // The annotation color, when set.
+  optional Color color = 9;
+}
+
+// Interactive form field types.
+enum FormFieldKind {
+  // Type not reported.
+  FORM_FIELD_KIND_UNSPECIFIED = 0;
+  // Push button.
+  FORM_FIELD_KIND_PUSH_BUTTON = 1;
+  // Check box.
+  FORM_FIELD_KIND_CHECK_BOX = 2;
+  // Radio button.
+  FORM_FIELD_KIND_RADIO_BUTTON = 3;
+  // Text input.
+  FORM_FIELD_KIND_TEXT = 4;
+  // Combo box.
+  FORM_FIELD_KIND_COMBO_BOX = 5;
+  // List box.
+  FORM_FIELD_KIND_LIST_BOX = 6;
+  // Signature field; signature content is surfaced as SignatureInfo.
+  FORM_FIELD_KIND_SIGNATURE = 7;
+}
+
+// One form field widget on a page.
+message FormField {
+  // The field type.
+  FormFieldKind kind = 1;
+  // The fully-qualified field name.
+  string name = 2;
+  // The current value, when the field has one.
+  optional string value = 3;
+  // The default value, when set.
+  optional string default_value = 4;
+  // Choice options for combo and list boxes, in stored order.
+  repeated string options = 5;
+  // The /Ff field flags bitfield.
+  optional uint32 flags = 6;
+  // The widget rectangle in page space.
+  BoundingBox rect = 7;
+  // Whether the field is read-only.
+  bool read_only = 8;
+  // The alternate (tooltip) name (/TU), when set.
+  optional string alternate_name = 9;
+}
+
+// ---------------------------------------------------------------------------
+// Attachments, signatures, JavaScript
+// ---------------------------------------------------------------------------
+
+// One embedded file.
+message AttachmentMeta {
+  // The attachment's file name.
+  string name = 1;
+  // The description, when set.
+  optional string description = 2;
+  // Uncompressed size in bytes, when recorded.
+  optional uint64 size_bytes = 3;
+  // The declared MIME type, when recorded.
+  optional string mime_type = 4;
+  // Creation date as the raw PDF date string.
+  optional string created_raw = 5;
+  // Modification date as the raw PDF date string.
+  optional string modified_raw = 6;
+  // The MD5 checksum stored in the file spec, when present.
+  optional bytes checksum_md5 = 7;
+  // The file bytes. Present only when the request set
+  // include_attachment_data.
+  optional bytes data = 8;
+}
+
+// One contiguous signed region of the file.
+message SignedByteRange {
+  // Offset from the start of the file.
+  uint64 offset = 1;
+  // Length in bytes.
+  uint64 length = 2;
+}
+
+// One digital signature field. The backend reports what is stored; it does
+// not verify the cryptography.
+message SignatureInfo {
+  // The /SubFilter name, for example "adbe.pkcs7.detached".
+  optional string sub_filter = 1;
+  // The signing reason, when set.
+  optional string reason = 2;
+  // The signing time as the raw PDF date string, when set.
+  optional string signing_time_raw = 3;
+  // The DocMDP permission level 1 through 3, when the signature is a
+  // certification signature.
+  optional uint32 doc_mdp_permission = 4;
+  // The raw /Contents blob (typically PKCS#7).
+  bytes contents = 5;
+  // The signed byte ranges.
+  repeated SignedByteRange byte_ranges = 6;
+}
+
+// One document-level JavaScript entry.
+message JavaScriptEntry {
+  // The entry's name in the name tree.
+  string name = 1;
+  // The script source.
+  string script = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Structure tree
+// ---------------------------------------------------------------------------
+
+// A reference to marked content on a page.
+message MarkedContentRef {
+  // Zero-based page index the content lives on.
+  uint32 page_index = 1;
+  // The marked-content id within that page's content stream.
+  uint32 mcid = 2;
+}
+
+// One node of the tagged-PDF structure tree: the only typed reading-order
+// signal any backend offers, present only in tagged documents.
+message StructNode {
+  // The structure type, for example "P", "H1", "Table", "Figure".
+  string role = 1;
+  // The /T title attribute, when set.
+  optional string title = 2;
+  // The /Alt alternate description, when set.
+  optional string alt_text = 3;
+  // The /ActualText replacement text, when set.
+  optional string actual_text = 4;
+  // The /Lang language tag, when set.
+  optional string lang = 5;
+  // Child nodes in structure order.
+  repeated StructNode children = 6;
+  // Marked content this node points at.
+  repeated MarkedContentRef content = 7;
+}
+
+// ---------------------------------------------------------------------------
+// Vector shapes
+// ---------------------------------------------------------------------------
+
+// A cubic Bezier segment.
+message CubicBezier {
+  // First control point.
+  PathPoint control1 = 1;
+  // Second control point.
+  PathPoint control2 = 2;
+  // End point.
+  PathPoint end = 3;
+}
+
+// One path construction step. Coordinates are in page space with the
+// object's transform already applied.
+message PathSegment {
+  // The operation this segment performs.
+  oneof op {
+    // Start a new subpath at this point.
+    PathPoint move_to = 1;
+    // Straight line to this point.
+    PathPoint line_to = 2;
+    // Cubic Bezier to CubicBezier.end.
+    CubicBezier cubic_to = 3;
+    // Close the current subpath; the value carries no information.
+    bool close = 4;
+  }
+}
+
+// How a path is painted.
+enum PathPaintMode {
+  // Not reported.
+  PATH_PAINT_MODE_UNSPECIFIED = 0;
+  // Filled.
+  PATH_PAINT_MODE_FILL = 1;
+  // Stroked.
+  PATH_PAINT_MODE_STROKE = 2;
+  // Filled then stroked.
+  PATH_PAINT_MODE_FILL_STROKE = 3;
+  // Used only as a clipping path.
+  PATH_PAINT_MODE_CLIP = 4;
+}
+
+// The fill rule for filled paths.
+enum FillRule {
+  // Not reported.
+  FILL_RULE_UNSPECIFIED = 0;
+  // Nonzero winding number rule.
+  FILL_RULE_NONZERO = 1;
+  // Even-odd rule.
+  FILL_RULE_EVEN_ODD = 2;
+}
+
+// One vector path object on a page.
+message VectorShape {
+  // The path steps in drawing order.
+  repeated PathSegment segments = 1;
+  // How the path is painted.
+  PathPaintMode paint_mode = 2;
+  // The fill rule, meaningful when the path fills.
+  FillRule fill_rule = 3;
+  // Fill color, when reported.
+  optional Color fill_color = 4;
+  // Stroke color, when reported.
+  optional Color stroke_color = 5;
+  // Stroke line width in points, when reported.
+  optional double line_width = 6;
+  // Axis-aligned bounds of the whole path in page space.
+  BoundingBox bbox = 7;
+}
+
+// ---------------------------------------------------------------------------
+// Document metadata and encryption
+// ---------------------------------------------------------------------------
+
+// One nonstandard document information key. The standard keys are typed
+// fields on DocMeta; this carries only keys outside that set, preserving
+// the document's own dictionary faithfully.
+message CustomInfoEntry {
+  // The dictionary key as stored.
+  string key = 1;
+  // The value as stored.
+  string value = 2;
+}
+
+// Document-level metadata.
+message DocMeta {
+  // The /Title info key.
+  optional string title = 1;
+  // The /Author info key.
+  optional string author = 2;
+  // The /Subject info key.
+  optional string subject = 3;
+  // The /Keywords info key.
+  optional string keywords = 4;
+  // The /Creator info key (the authoring application).
+  optional string creator = 5;
+  // The /Producer info key (the converting application).
+  optional string producer = 6;
+  // The /CreationDate as the raw PDF date string.
+  optional string created_raw = 7;
+  // The /ModDate as the raw PDF date string.
+  optional string modified_raw = 8;
+  // The /Trapped value as stored.
+  optional string trapped = 9;
+  // Info keys outside the standard set, as stored.
+  repeated CustomInfoEntry custom = 10;
+  // The raw XMP metadata packet (XML), when the document carries one.
+  optional string xmp_xml = 11;
+  // The PDF version from the header or catalog, for example "1.7".
+  optional string pdf_version = 12;
+  // Whether the document declares itself tagged.
+  bool tagged = 13;
+  // Whether the document is linearized for progressive loading.
+  optional bool linearized = 14;
+}
+
+// Encryption scheme and permissions. Sent only for encrypted documents;
+// an unencrypted document declares the family absent.
+message EncryptionInfo {
+  // The security handler (/Filter), for example "Standard".
+  optional string filter = 1;
+  // The handler revision (/R).
+  optional uint32 revision = 2;
+  // The encryption key length in bits.
+  optional uint32 key_length_bits = 3;
+  // The raw /P permissions bitfield.
+  optional uint32 permissions_raw = 4;
+  // Printing allowed.
+  bool can_print = 5;
+  // High-resolution printing allowed.
+  bool can_print_high_res = 6;
+  // Content modification allowed.
+  bool can_modify = 7;
+  // Content copying allowed.
+  bool can_copy = 8;
+  // Copying for accessibility allowed.
+  bool can_copy_for_accessibility = 9;
+  // Adding annotations allowed.
+  bool can_annotate = 10;
+  // Filling form fields allowed.
+  bool can_fill_forms = 11;
+  // Page assembly allowed.
+  bool can_assemble = 12;
+}
+
+// ---------------------------------------------------------------------------
+// Deep graphics resources
+// ---------------------------------------------------------------------------
+
+// PDF colorspace families.
+enum ColorspaceFamily {
+  // Family not reported.
+  COLORSPACE_FAMILY_UNSPECIFIED = 0;
+  // DeviceGray.
+  COLORSPACE_FAMILY_DEVICE_GRAY = 1;
+  // DeviceRGB.
+  COLORSPACE_FAMILY_DEVICE_RGB = 2;
+  // DeviceCMYK.
+  COLORSPACE_FAMILY_DEVICE_CMYK = 3;
+  // CalGray.
+  COLORSPACE_FAMILY_CAL_GRAY = 4;
+  // CalRGB.
+  COLORSPACE_FAMILY_CAL_RGB = 5;
+  // Lab.
+  COLORSPACE_FAMILY_LAB = 6;
+  // ICCBased.
+  COLORSPACE_FAMILY_ICC_BASED = 7;
+  // Indexed.
+  COLORSPACE_FAMILY_INDEXED = 8;
+  // Separation.
+  COLORSPACE_FAMILY_SEPARATION = 9;
+  // DeviceN.
+  COLORSPACE_FAMILY_DEVICE_N = 10;
+  // Pattern.
+  COLORSPACE_FAMILY_PATTERN = 11;
+}
+
+// One colorspace resource on a page.
+message ResourceColorspace {
+  // The resource name in the page dictionary.
+  string name = 1;
+  // The colorspace family.
+  ColorspaceFamily family = 2;
+  // Number of color components.
+  optional uint32 component_count = 3;
+  // The ICC profile bytes for ICCBased colorspaces.
+  optional bytes icc_profile = 4;
+}
+
+// One shading resource on a page. shading_type is the PDF shading type
+// number 1 through 7 (function-based through tensor-product patch mesh).
+message ResourceShading {
+  // The resource name in the page dictionary.
+  string name = 1;
+  // The PDF shading type, 1 through 7.
+  uint32 shading_type = 2;
+}
+
+// Pattern kinds.
+enum PatternKind {
+  // Kind not reported.
+  PATTERN_KIND_UNSPECIFIED = 0;
+  // Tiling pattern (PatternType 1).
+  PATTERN_KIND_TILING = 1;
+  // Shading pattern (PatternType 2).
+  PATTERN_KIND_SHADING = 2;
+}
+
+// One pattern resource on a page.
+message ResourcePattern {
+  // The resource name in the page dictionary.
+  string name = 1;
+  // The pattern kind.
+  PatternKind kind = 2;
+}
+
+// XObject kinds.
+enum XObjectKind {
+  // Kind not reported.
+  X_OBJECT_KIND_UNSPECIFIED = 0;
+  // Image XObject.
+  X_OBJECT_KIND_IMAGE = 1;
+  // Form XObject.
+  X_OBJECT_KIND_FORM = 2;
+  // PostScript XObject.
+  X_OBJECT_KIND_POSTSCRIPT = 3;
+}
+
+// One XObject resource on a page.
+message ResourceXObject {
+  // The resource name in the page dictionary.
+  string name = 1;
+  // The XObject kind.
+  XObjectKind kind = 2;
+}
+
+// The typed graphics resource world of one page.
+message DeepResources {
+  // Colorspace resources.
+  repeated ResourceColorspace colorspaces = 1;
+  // Shading resources.
+  repeated ResourceShading shadings = 2;
+  // Pattern resources.
+  repeated ResourcePattern patterns = 3;
+  // XObject resources.
+  repeated ResourceXObject xobjects = 4;
+}
