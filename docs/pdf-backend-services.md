@@ -222,10 +222,17 @@ F1 1.000 where the CV path reads 0.286; and a bidirectional word
 alignment keeps consensus-offset to per-parser-offset maps with
 deviations annotated (order regressions, missing words, same-place text
 disagreements such as soft-hyphen artifacts), and rides the wire as
-PageData.reconciliation in consensus mode. Winners are labeled
-`protomolt` with per-parser values under their parser names in the
-prototype's JSON; wiring that into the typed claims/field_sources model
-is follow-up work, not landed. Consensus sections drive chunk
+PageData.reconciliation in consensus mode. The vote's winners and losers
+are typed claims now: a consensus document carries one `CollectorClaim`
+named `protomolt` (the winner's engine name as the model, the mean
+winning score as the raw score with kind `consensus_bigram_agreement` and
+the voted page count as its samples), and every text item whose words a
+losing leg deviated on names the vote and that leg in its
+`field_sources` (the losing words themselves stay on
+PageData.reconciliation). `protomolt` is registered in
+`document_claim_rank` at 4 on `application/pdf`: above every collector
+standing short of the service's own stamp, since the winner beat every
+leg it was voted against on the truth documents. Consensus sections drive chunk
 boundaries, the path toward centroid-ready chunking. The fold now
 trusts a clean vote: when every reconciliation leg matches the winner
 nearly word for word and nearly in the same order (95% matched, 5%
@@ -252,9 +259,6 @@ Still open, tracked here:
 - Consensus wire cost is unpriced: each page sends the full document bytes
   to each backend. Measure on a large PDF before consensus mode leaves
   localhost; a content-addressed handshake is the additive fix if it hurts.
-- Winners/losers into typed claims: the prototype's protomolt/per-parser
-  JSON is a sketch; the real wiring goes through CollectorClaim and
-  field_sources with registered rank names in document_merge.
 - Fleet housekeeping on the three services: default ports collide with
   gRParse/grPOIc/grpc-libreoffice and are unregistered; no UiInfo; no
   publish workflows; grpc-pdfium and grpc-qparse have no Dockerfile;

@@ -34,11 +34,11 @@ metrics, so a win here is a win on the production gate.
   cell F1 1.000 against the form truth, where the in-process CV path
   scores 0.286.
 - **Annotation model**: each outline node carries the winning value under
-  `protomolt` and every source's version under its own parser name. This
-  is a prototype-JSON sketch of the direction the platform's typed
-  claims/field_sources convention points; wiring these winners and losers
-  into CollectorClaim/field_sources (typed, not keyed strings) is its own
-  follow-up and has not been built.
+  `protomolt` and every source's version under its own parser name. The
+  production form of this sketch landed in gRParse: a consensus document
+  carries one `protomolt` CollectorClaim (winner engine, mean winning
+  score, voted page count) and deviating text items name the losing legs
+  in their `field_sources`. This JSON remains the per-node prototype view.
 
 ## Run
 
