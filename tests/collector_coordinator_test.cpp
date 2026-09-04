@@ -183,6 +183,84 @@ void verify_routing() {
           "explicit selection wins verbatim, deduplicated, order kept");
 }
 
+// The fan-out a routed office plan gains when the secondary office
+// collectors are configured: poi for its six formats, calamine for
+// workbooks, both after the libreoffice default. CSV, ODF text, and RTF
+// never fan out, however the claim ranks score those formats.
+void verify_office_fanout() {
+  require(grparse::poi_format("report.docx", ""), "docx is a poi format");
+  require(grparse::poi_format("ledger.xls", ""), "xls is a poi format");
+  require(grparse::poi_format("deck.PPTX", ""), "pptx is a poi format, case-insensitively");
+  require(grparse::poi_format("upload.bin", "application/msword"),
+          "the msword content type is a poi format without the extension");
+  require(!grparse::poi_format("notes.odt", ""), "odt is not a poi format");
+  require(!grparse::poi_format("sheet.ods", ""), "ods is not a poi format");
+  require(!grparse::poi_format("letter.rtf", ""), "rtf is not a poi format");
+  require(!grparse::poi_format("data.csv", ""), "csv is not a poi format");
+  require(!grparse::poi_format("macro.xlsm", ""), "xlsm is not one of poi's six");
+
+  require(grparse::calamine_workbook_format("book.xlsx", ""), "xlsx is a calamine workbook");
+  require(grparse::calamine_workbook_format("book.xlsb", ""), "xlsb is a calamine workbook");
+  require(grparse::calamine_workbook_format("book.xlsm", ""), "xlsm is a calamine workbook");
+  require(grparse::calamine_workbook_format("book.ods", ""), "ods is a calamine workbook");
+  require(grparse::calamine_workbook_format("upload.bin", "application/vnd.ms-excel"),
+          "the ms-excel content type names a calamine workbook");
+  require(!grparse::calamine_workbook_format("data.csv", ""),
+          "csv is not a calamine workbook, however the claim ranks score it");
+  require(!grparse::calamine_workbook_format("upload.bin", "text/csv"),
+          "the csv content type is not a calamine workbook either");
+  require(!grparse::calamine_workbook_format("report.docx", ""),
+          "docx is not a calamine workbook");
+  require(!grparse::calamine_workbook_format("slides.odp", ""),
+          "odp is not a calamine workbook");
+
+  std::vector<parsev1::Collector> plan = {parsev1::COLLECTOR_LIBREOFFICE};
+  grparse::append_office_fanout(&plan, "report.docx", "", true, true);
+  require(plan.size() == 2 && plan[0] == parsev1::COLLECTOR_LIBREOFFICE &&
+              plan[1] == parsev1::COLLECTOR_POI,
+          "docx with both configured fans out to poi only");
+
+  plan = {parsev1::COLLECTOR_LIBREOFFICE};
+  grparse::append_office_fanout(&plan, "book.xlsx", "", true, true);
+  require(plan.size() == 3 && plan[0] == parsev1::COLLECTOR_LIBREOFFICE &&
+              plan[1] == parsev1::COLLECTOR_POI &&
+              plan[2] == parsev1::COLLECTOR_CALAMINE,
+          "xlsx with both configured fans out to poi and calamine, in that order");
+
+  plan = {parsev1::COLLECTOR_LIBREOFFICE};
+  grparse::append_office_fanout(&plan, "data.csv", "", true, true);
+  require(plan.size() == 1 && plan[0] == parsev1::COLLECTOR_LIBREOFFICE,
+          "csv never fans out");
+
+  plan = {parsev1::COLLECTOR_LIBREOFFICE};
+  grparse::append_office_fanout(&plan, "notes.odt", "", true, true);
+  require(plan.size() == 1 && plan[0] == parsev1::COLLECTOR_LIBREOFFICE,
+          "odt never fans out");
+
+  plan = {parsev1::COLLECTOR_LIBREOFFICE};
+  grparse::append_office_fanout(&plan, "book.ods", "", true, true);
+  require(plan.size() == 2 && plan[1] == parsev1::COLLECTOR_CALAMINE,
+          "ods fans out to calamine only");
+
+  plan = {parsev1::COLLECTOR_LIBREOFFICE};
+  grparse::append_office_fanout(&plan, "report.docx", "", false, false);
+  require(plan.size() == 1, "unconfigured endpoints add no legs");
+
+  plan = {parsev1::COLLECTOR_LIBREOFFICE};
+  grparse::append_office_fanout(&plan, "book.xlsx", "", true, false);
+  require(plan.size() == 2 && plan[1] == parsev1::COLLECTOR_POI,
+          "poi alone configured adds only the poi leg");
+
+  plan = {parsev1::COLLECTOR_LIBREOFFICE, parsev1::COLLECTOR_POI};
+  grparse::append_office_fanout(&plan, "report.docx", "", true, true);
+  require(plan.size() == 2, "a leg already in the plan is never duplicated");
+
+  plan = {parsev1::COLLECTOR_POI};
+  grparse::append_office_fanout(&plan, "report.docx", "", true, true);
+  require(plan.size() == 1 && plan[0] == parsev1::COLLECTOR_POI,
+          "an explicit poi selection gains no duplicate");
+}
+
 void verify_scatter_gather_merges_additively() {
   std::vector<grparse::PlannedCollector> plan;
   plan.push_back({parsev1::COLLECTOR_GRPARSE_CV,
@@ -265,6 +343,7 @@ void verify_collector_deadline_caps_at_the_sooner_instant() {
 int main() {
   return grparse_test::run_test_main("collector-coordinator-test", {
       verify_routing,
+      verify_office_fanout,
       verify_scatter_gather_merges_additively,
       verify_failure_isolation,
       verify_collector_deadline_caps_at_the_sooner_instant,

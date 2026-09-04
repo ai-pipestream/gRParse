@@ -23,7 +23,9 @@
 #include "ai/pipestream/epub/v1/epub_service.grpc.pb.h"
 #include "ai/pipestream/markup/v1/markup_service.grpc.pb.h"
 #include "ai/pipestream/pdf/v1/pdf_service.grpc.pb.h"
+#include "ai/pipestream/poi/v1/poi_service.grpc.pb.h"
 #include "ai/pipestream/xml/v1/xml_service.grpc.pb.h"
+#include "calamine/v1/calamine_service.grpc.pb.h"
 #include "fastwarc/v1/warc_service.grpc.pb.h"
 #include "grparse/document_collectors.h"
 #include "grparse/document_parser_service.h"
@@ -31,6 +33,7 @@
 #include "support/check.h"
 
 namespace asrv1 = ai::pipestream::asr::v1;
+namespace calaminev1 = calamine::v1;
 namespace docv1 = ai::pipestream::document::v1;
 namespace ebcdicv1 = ai::pipestream::ebcdic::v1;
 namespace emailv1 = ai::pipestream::email::v1;
@@ -39,6 +42,7 @@ namespace lolv1 = lolhtml::v1;
 namespace markupv1 = ai::pipestream::markup::v1;
 namespace parsev1 = ai::pipestream::parse::v1;
 namespace pdfv1 = ai::pipestream::pdf::v1;
+namespace poiv1 = ai::pipestream::poi::v1;
 namespace warcv1 = fastwarc::v1;
 namespace xmlv1 = ai::pipestream::xml::v1;
 
@@ -1262,6 +1266,502 @@ void verify_fastwarc_truncates_payload_text() {
 
 }  // namespace
 
+// ---- poi --------------------------------------------------------------------
+
+namespace {
+
+// Serves one canned typed stream: document info with a title, paragraphs in
+// four styles, a body table, a sheet with a formula cell, a slide, an
+// embedded object, and the terminal status with one warning.
+class FakePoiService final : public poiv1::PoiParseService::Service {
+ public:
+  grpc::Status ParseDocument(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<poiv1::ParseEvent, poiv1::ParseRequestChunk>* stream)
+      override {
+    poiv1::ParseRequestChunk chunk;
+    std::string document_id;
+    std::string filename;
+    std::string bytes;
+    bool complete = false;
+    while (stream->Read(&chunk)) {
+      if (document_id.empty()) {
+        document_id = chunk.document_id();
+        filename = chunk.filename();
+      }
+      bytes += chunk.data();
+      complete = chunk.complete();
+    }
+    if (document_id.empty() || filename.empty() || !complete || bytes.empty()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          "fake poi expects a complete identified upload");
+    }
+
+    poiv1::ParseEvent event;
+    poiv1::DocumentInfo* info = event.mutable_document_info();
+    info->set_document_id(document_id);
+    info->set_format(poiv1::DOCUMENT_FORMAT_XLSX);
+    info->mutable_metadata()->set_title("Quarterly Report");
+    info->mutable_metadata()->set_author("Alice");
+    info->mutable_metadata()->set_last_modified_by("Bob");
+    stream->Write(event);
+
+    event.Clear();
+    event.mutable_paragraph()->set_text("Quarterly Report");
+    event.mutable_paragraph()->set_style("Title");
+    stream->Write(event);
+
+    event.Clear();
+    event.mutable_paragraph()->set_text("Overview");
+    event.mutable_paragraph()->set_style("Heading1");
+    stream->Write(event);
+
+    event.Clear();
+    event.mutable_paragraph()->set_text("body text");
+    stream->Write(event);
+
+    event.Clear();
+    event.mutable_paragraph()->set_text("first point");
+    event.mutable_paragraph()->set_style("ListParagraph");
+    stream->Write(event);
+
+    event.Clear();
+    poiv1::Table* table = event.mutable_table();
+    for (int row = 0; row < 2; ++row) {
+      poiv1::TableRow* table_row = table->add_rows();
+      table_row->add_cells()->set_text(row == 0 ? "h1" : "v1");
+      table_row->add_cells()->set_text(row == 0 ? "h2" : "v2");
+    }
+    stream->Write(event);
+
+    event.Clear();
+    poiv1::Sheet* sheet = event.mutable_sheet();
+    sheet->set_index(0);
+    sheet->set_name("Data");
+    poiv1::SheetRow* header = sheet->add_rows();
+    header->set_row_index(0);
+    header->add_cells()->set_text("Name");
+    poiv1::SheetCell* header_score = header->add_cells();
+    header_score->set_column_index(1);
+    header_score->set_text("Score");
+    poiv1::SheetRow* data = sheet->add_rows();
+    data->set_row_index(1);
+    poiv1::SheetCell* name = data->add_cells();
+    name->set_text("a");
+    poiv1::SheetCell* score = data->add_cells();
+    score->set_column_index(1);
+    score->set_formatted("84");
+    score->set_number(84);
+    score->set_formula("B1*2");
+    stream->Write(event);
+
+    event.Clear();
+    poiv1::Slide* slide = event.mutable_slide();
+    slide->set_index(0);
+    slide->set_title("Intro");
+    slide->add_texts("bullet");
+    slide->add_notes("speaker note");
+    stream->Write(event);
+
+    event.Clear();
+    poiv1::EmbeddedObject* object = event.mutable_embedded_object();
+    object->set_id("ole1");
+    object->set_filename("chart.xlsx");
+    object->set_content_type("application/vnd.ms-excel");
+    object->set_size_bytes(100);
+    stream->Write(event);
+
+    event.Clear();
+    event.mutable_status()->set_state(poiv1::ParseStatus::STATE_OK);
+    event.mutable_status()->add_warnings("header skipped");
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+};
+
+class RejectingPoiService final : public poiv1::PoiParseService::Service {
+ public:
+  grpc::Status ParseDocument(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<poiv1::ParseEvent, poiv1::ParseRequestChunk>* stream)
+      override {
+    poiv1::ParseRequestChunk chunk;
+    while (stream->Read(&chunk)) {
+    }
+    return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
+                        "document exceeds the 70 MiB cap");
+  }
+};
+
+// Ends the stream cleanly without the terminal ParseStatus.
+class TruncatingPoiService final : public poiv1::PoiParseService::Service {
+ public:
+  grpc::Status ParseDocument(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<poiv1::ParseEvent, poiv1::ParseRequestChunk>* stream)
+      override {
+    poiv1::ParseRequestChunk chunk;
+    while (stream->Read(&chunk)) {
+    }
+    poiv1::ParseEvent event;
+    event.mutable_paragraph()->set_text("orphan");
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+};
+
+void verify_poi_folds_typed_events() {
+  FakePoiService service;
+  ServerFixture server(&service);
+  // Large enough to prove multi-chunk uploads reassemble.
+  const std::string bytes(600U * 1024U, 'x');
+  const auto outcome = grparse::collect_poi_document(
+      server.channel(), "doc-7", "book.xlsx",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", bytes);
+  require(outcome.success, "poi collection succeeds: " + outcome.error);
+  require(outcome.warnings.size() == 1 && outcome.warnings[0] == "header skipped",
+          "poi status warnings surface verbatim");
+
+  const docv1::Document& document = outcome.document;
+  require(document.source_meta().title() == "Quarterly Report" &&
+              document.source_meta().authors_size() == 1 &&
+              document.source_meta().authors(0) == "Alice" &&
+              document.source_meta().modified_by() == "Bob",
+          "the document info folds into source_meta");
+
+  require(document.texts_size() == 7,
+          "title, heading, paragraph, list item, slide title, bullet, and note fold");
+  const docv1::TextItemBase& title = document.texts(0).title().base();
+  require(title.label() == docv1::DOC_ITEM_LABEL_TITLE &&
+              title.text() == "Quarterly Report" && title.style_name() == "Title",
+          "the Title style folds to a title item keeping the style name");
+  const auto& heading = document.texts(1).section_header();
+  require(heading.base().label() == docv1::DOC_ITEM_LABEL_SECTION_HEADER &&
+              heading.level() == 1 && heading.base().text() == "Overview",
+          "Heading1 folds to a level-1 section header");
+  require(document.texts(2).text().base().label() == docv1::DOC_ITEM_LABEL_PARAGRAPH,
+          "an unstyled paragraph folds to a paragraph item");
+  require(document.texts(3).list_item().base().label() == docv1::DOC_ITEM_LABEL_LIST_ITEM &&
+              document.texts(3).list_item().base().style_name() == "ListParagraph",
+          "a list style folds to a list item");
+  for (int i = 0; i < document.texts_size(); ++i) {
+    const auto& item = document.texts(i);
+    const docv1::TextItemBase* base = nullptr;
+    if (item.has_title()) base = &item.title().base();
+    if (item.has_section_header()) base = &item.section_header().base();
+    if (item.has_list_item()) base = &item.list_item().base();
+    if (item.has_text()) base = &item.text().base();
+    require(base != nullptr && base->source_size() == 1 &&
+                base->source(0).collector().collector() == "poi",
+            "every poi item carries the poi collector source");
+    require(base->self_ref() == "#/texts/" + std::to_string(i),
+            "item refs are dense and local");
+  }
+
+  require(document.tables_size() == 2, "the body table and the sheet fold into tables");
+  const docv1::TableData& body_table = document.tables(0).data();
+  require(body_table.num_rows() == 2 && body_table.num_cols() == 2 &&
+              body_table.table_cells_size() == 4 &&
+              body_table.table_cells(3).text() == "v2",
+          "the body table folds with its cells");
+  require(document.tables(0).parent().ref() == "#/body" &&
+              document.body().children(0).ref() == "#/texts/0",
+          "the body table hangs off the body beside the texts");
+
+  require(document.groups_size() == 2, "the sheet and the slide fold into groups");
+  const docv1::GroupItem& sheet_group = document.groups(0);
+  require(sheet_group.label() == docv1::GROUP_LABEL_SHEET &&
+              sheet_group.name() == "Data" && sheet_group.sheet().index() == 0,
+          "the sheet group carries the sheet identity");
+  const docv1::TableData& sheet_table = document.tables(1).data();
+  require(document.tables(1).parent().ref() == sheet_group.self_ref() &&
+              sheet_group.children(0).ref() == document.tables(1).self_ref(),
+          "the sheet table hangs off the sheet group, reciprocally");
+  require(sheet_table.num_rows() == 2 && sheet_table.num_cols() == 2,
+          "the sheet table sizes from the populated cells");
+  const docv1::TableCell* formula_cell = nullptr;
+  for (const auto& cell : sheet_table.table_cells()) {
+    if (cell.start_row_offset_idx() == 1 && cell.start_col_offset_idx() == 1) {
+      formula_cell = &cell;
+    }
+  }
+  require(formula_cell != nullptr && formula_cell->text() == "84" &&
+              formula_cell->value().formula() == "B1*2",
+          "a formula cell keeps the formula and the cached value's display");
+  require(sheet_table.row_prov_size() == 2 &&
+              sheet_table.row_prov(1).grid().sheet() == "Data" &&
+              sheet_table.row_prov(1).grid().row() == 1,
+          "sheet rows carry grid provenance");
+
+  const docv1::GroupItem& slide_group = document.groups(1);
+  require(slide_group.label() == docv1::GROUP_LABEL_SLIDE &&
+              slide_group.name() == "Intro",
+          "the slide folds into its own group");
+  const docv1::TextItemBase& slide_title = document.texts(4).section_header().base();
+  require(slide_title.parent().ref() == slide_group.self_ref() &&
+              slide_title.text() == "Intro",
+          "the slide title heads its group");
+  require(document.texts(6).text().base().content_layer() == docv1::CONTENT_LAYER_NOTES,
+          "speaker notes land on the notes layer");
+
+  require(document.attachments_size() == 1 &&
+              document.attachments(0).id() == "ole1" &&
+              document.attachments(0).name() == "chart.xlsx" &&
+              document.attachments(0).media_type() == "application/vnd.ms-excel" &&
+              document.attachments(0).size_bytes() == 100,
+          "an embedded object registers as an attachment descriptor");
+}
+
+void verify_poi_collector_failure_survives_its_code() {
+  RejectingPoiService service;
+  ServerFixture server(&service);
+  const auto outcome =
+      grparse::collect_poi_document(server.channel(), "d", "big.docx", "", "bytes");
+  require(!outcome.success && outcome.code == grpc::StatusCode::RESOURCE_EXHAUSTED,
+          "the collector's byte-cap rejection keeps its status class");
+  require(outcome.error.contains("70 MiB"), "the collector's message survives");
+}
+
+void verify_poi_truncated_stream_fails() {
+  TruncatingPoiService service;
+  ServerFixture server(&service);
+  const auto outcome =
+      grparse::collect_poi_document(server.channel(), "d", "cut.docx", "", "bytes");
+  require(!outcome.success && outcome.error.contains("terminal status"),
+          "a stream without ParseStatus is a failure, not an empty success");
+}
+
+void verify_poi_unreachable_endpoint_degrades() {
+  const auto channel = grpc::CreateChannel("127.0.0.1:1",
+                                           grpc::InsecureChannelCredentials());
+  const auto outcome =
+      grparse::collect_poi_document(channel, "d", "nowhere.docx", "", "bytes");
+  require(!outcome.success && outcome.code == grpc::StatusCode::UNAVAILABLE,
+          "an unreachable poi collector degrades to UNAVAILABLE");
+}
+
+}  // namespace
+
+// ---- calamine ---------------------------------------------------------------
+
+namespace {
+
+// The handle lifecycle: OpenWorkbook uploads and names two sheets,
+// StreamWorksheetRange serves typed cells per sheet index, CloseWorkbook
+// counts its calls so the tests can prove the handle is always released.
+class FakeCalamineService final : public calaminev1::CalamineService::Service {
+ public:
+  grpc::Status OpenWorkbook(
+      grpc::ServerContext*,
+      grpc::ServerReader<calaminev1::OpenWorkbookRequest>* reader,
+      calaminev1::OpenWorkbookResponse* response) override {
+    calaminev1::OpenWorkbookRequest frame;
+    bool options_seen = false;
+    std::string bytes;
+    while (reader->Read(&frame)) {
+      if (frame.has_options()) {
+        options_seen = true;
+      } else {
+        bytes += frame.chunk();
+      }
+    }
+    if (!options_seen || bytes.empty()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          "fake calamine expects options then bytes");
+    }
+    response->set_workbook_id("wb-1");
+    response->set_detected_format(calaminev1::WORKBOOK_FORMAT_XLSX);
+    calaminev1::Metadata* metadata = response->mutable_metadata();
+    calaminev1::Sheet* first = metadata->add_sheets();
+    first->set_name("First");
+    first->set_typ(calaminev1::SHEET_TYPE_WORKSHEET);
+    first->set_visible(calaminev1::SHEET_VISIBLE_VISIBLE);
+    calaminev1::Sheet* second = metadata->add_sheets();
+    second->set_name("Second");
+    second->set_typ(calaminev1::SHEET_TYPE_WORKSHEET);
+    second->set_visible(calaminev1::SHEET_VISIBLE_HIDDEN);
+    calaminev1::DefinedName* name = metadata->add_defined_names();
+    name->set_name("Answer");
+    name->set_definition("First!$B$2");
+    return grpc::Status::OK;
+  }
+
+  grpc::Status StreamWorksheetRange(
+      grpc::ServerContext*, const calaminev1::StreamWorksheetRangeRequest* request,
+      grpc::ServerWriter<calaminev1::StreamWorksheetRangeResponse>* writer) override {
+    if (request->workbook_id() != "wb-1") {
+      return grpc::Status(grpc::StatusCode::NOT_FOUND, "unknown handle");
+    }
+    calaminev1::StreamWorksheetRangeResponse event;
+    event.mutable_started()->set_sheet_name(
+        request->sheet().sheet_index() == 0 ? "First" : "Second");
+    writer->Write(event);
+    if (request->sheet().sheet_index() == 0) {
+      event.Clear();
+      calaminev1::WorksheetRowBatch* batch = event.mutable_rows();
+      calaminev1::WorksheetRow* header = batch->add_rows();
+      header->set_row_index(0);
+      header->add_values()->set_string_value("Name");
+      header->add_values()->set_string_value("Score");
+      // Row 1 is skipped entirely: the gap is the sheet's empty region.
+      calaminev1::WorksheetRow* data = batch->add_rows();
+      data->set_row_index(2);
+      data->add_values()->set_int_value(7);
+      data->add_values()->set_float_value(2.5);
+      data->add_values()->set_bool_value(true);
+      // 45943.5 is 2025-10-13 12:00:00 in the 1900 date system (the
+      // contract's own example); 45000 is 2023-03-15 with no time of day.
+      calaminev1::CellData* when = data->add_values();
+      when->mutable_date_time()->set_value(45943.5);
+      calaminev1::CellData* day = data->add_values();
+      day->mutable_date_time()->set_value(45000);
+      data->add_values()->set_error(calaminev1::CELL_ERROR_TYPE_DIV0);
+      data->add_values()->mutable_empty();
+      writer->Write(event);
+    }
+    return grpc::Status::OK;
+  }
+
+  grpc::Status CloseWorkbook(grpc::ServerContext*,
+                             const calaminev1::CloseWorkbookRequest* request,
+                             calaminev1::CloseWorkbookResponse* response) override {
+    if (request->workbook_id() == "wb-1") {
+      ++closed_;
+      response->set_closed(true);
+    }
+    return grpc::Status::OK;
+  }
+
+  int closed() const { return closed_; }
+
+ private:
+  int closed_ = 0;
+};
+
+// Opens the handle, then fails the only sheet's read.
+class FailingSheetCalamineService final : public calaminev1::CalamineService::Service {
+ public:
+  grpc::Status OpenWorkbook(
+      grpc::ServerContext*,
+      grpc::ServerReader<calaminev1::OpenWorkbookRequest>* reader,
+      calaminev1::OpenWorkbookResponse* response) override {
+    calaminev1::OpenWorkbookRequest frame;
+    while (reader->Read(&frame)) {
+    }
+    response->set_workbook_id("wb-9");
+    calaminev1::Sheet* sheet = response->mutable_metadata()->add_sheets();
+    sheet->set_name("Broken");
+    sheet->set_visible(calaminev1::SHEET_VISIBLE_VISIBLE);
+    return grpc::Status::OK;
+  }
+
+  grpc::Status StreamWorksheetRange(
+      grpc::ServerContext*, const calaminev1::StreamWorksheetRangeRequest*,
+      grpc::ServerWriter<calaminev1::StreamWorksheetRangeResponse>*) override {
+    return grpc::Status(grpc::StatusCode::INTERNAL, "sheet read blew up");
+  }
+
+  grpc::Status CloseWorkbook(grpc::ServerContext*,
+                             const calaminev1::CloseWorkbookRequest*,
+                             calaminev1::CloseWorkbookResponse* response) override {
+    ++closed_;
+    response->set_closed(true);
+    return grpc::Status::OK;
+  }
+
+  int closed() const { return closed_; }
+
+ private:
+  int closed_ = 0;
+};
+
+void verify_calamine_folds_sheets() {
+  FakeCalamineService service;
+  ServerFixture server(&service);
+  // Large enough to prove multi-chunk uploads reassemble.
+  const std::string bytes(600U * 1024U, 'c');
+  const auto outcome = grparse::collect_calamine_document(server.channel(), bytes);
+  require(outcome.success, "calamine collection succeeds: " + outcome.error);
+  require(service.closed() == 1, "the workbook handle is closed on success");
+
+  const docv1::Document& document = outcome.document;
+  require(document.groups_size() == 2 && document.tables_size() == 2,
+          "each sheet folds into a group holding one table");
+  require(document.groups(0).label() == docv1::GROUP_LABEL_SHEET &&
+              document.groups(0).name() == "First" &&
+              document.groups(0).content_layer() == docv1::CONTENT_LAYER_BODY,
+          "a visible sheet folds onto the body layer");
+  require(document.groups(1).name() == "Second" &&
+              document.groups(1).content_layer() == docv1::CONTENT_LAYER_INVISIBLE,
+          "a hidden sheet folds onto the invisible layer");
+  require(document.named_ranges_size() == 1 &&
+              document.named_ranges(0).name() == "Answer" &&
+              document.named_ranges(0).expression() == "First!$B$2" &&
+              document.named_ranges(0).kind() == "named",
+          "defined names fold into named ranges");
+
+  const docv1::TableData& data = document.tables(0).data();
+  require(document.tables(0).source(0).collector().collector() == "calamine",
+          "the sheet table carries the calamine collector source");
+  require(data.num_rows() == 3 && data.num_cols() == 6,
+          "the table sizes from the populated cells, gaps included");
+  require(data.table_cells_size() == 8, "empty cells fold to nothing");
+
+  const docv1::TableCell* cells[6] = {nullptr};
+  for (const auto& cell : data.table_cells()) {
+    if (cell.start_row_offset_idx() == 2 &&
+        cell.start_col_offset_idx() < 6) {
+      cells[cell.start_col_offset_idx()] = &cell;
+    }
+  }
+  require(cells[0] != nullptr && cells[0]->text() == "7" &&
+              cells[0]->value().number() == 7,
+          "an int cell folds as a number");
+  require(cells[1] != nullptr && cells[1]->text() == "2.5" &&
+              cells[1]->value().number() == 2.5,
+          "a float cell folds as a number with its shortest spelling");
+  require(cells[2] != nullptr && cells[2]->text() == "TRUE" &&
+              cells[2]->value().boolean(),
+          "a bool cell folds as a boolean");
+  require(cells[3] != nullptr && cells[3]->text() == "2025-10-13 12:00:00" &&
+              cells[3]->value().datetime().year() == 2025 &&
+              cells[3]->value().datetime().month() == 10 &&
+              cells[3]->value().datetime().day() == 13 &&
+              cells[3]->value().datetime().hour() == 12,
+          "a serial datetime folds as a civil datetime");
+  require(cells[4] != nullptr && cells[4]->text() == "2023-03-15" &&
+              cells[4]->value().datetime().year() == 2023 &&
+              cells[4]->value().datetime().month() == 3 &&
+              cells[4]->value().datetime().day() == 15,
+          "a whole-day serial folds as a date without a time");
+  require(cells[5] != nullptr && cells[5]->text() == "#DIV/0!" &&
+              cells[5]->value().error() == "#DIV/0!",
+          "an error cell folds as its error literal");
+  require(data.row_prov_size() == 2 && data.row_prov(1).grid().row() == 2 &&
+              data.row_prov(1).grid().sheet() == "First",
+          "rows carry grid provenance in the sheet's absolute addresses");
+}
+
+void verify_calamine_sheet_failure_still_closes() {
+  FailingSheetCalamineService service;
+  ServerFixture server(&service);
+  const auto outcome = grparse::collect_calamine_document(server.channel(), "bytes");
+  require(!outcome.success && outcome.error.contains("Broken"),
+          "a sheet that produced nothing fails the leg naming the sheet");
+  require(service.closed() == 1,
+          "the workbook handle is closed even when the read fails");
+}
+
+void verify_calamine_unreachable_endpoint_degrades() {
+  const auto channel = grpc::CreateChannel("127.0.0.1:1",
+                                           grpc::InsecureChannelCredentials());
+  const auto outcome = grparse::collect_calamine_document(channel, "bytes");
+  require(!outcome.success && outcome.code == grpc::StatusCode::UNAVAILABLE,
+          "an unreachable calamine collector degrades to UNAVAILABLE");
+}
+
+}  // namespace
+
 // ---- pdf --------------------------------------------------------------------
 
 namespace {
@@ -1538,6 +2038,13 @@ int main() {
       verify_fastwarc_framing_error_keeps_records,
       verify_fastwarc_transport_failure_without_records,
       verify_fastwarc_truncates_payload_text,
+      verify_poi_folds_typed_events,
+      verify_poi_collector_failure_survives_its_code,
+      verify_poi_truncated_stream_fails,
+      verify_poi_unreachable_endpoint_degrades,
+      verify_calamine_folds_sheets,
+      verify_calamine_sheet_failure_still_closes,
+      verify_calamine_unreachable_endpoint_degrades,
       verify_pdf_collects_document_classification_and_warnings,
       verify_pdf_scanned_reports_the_ocr_page_set,
       verify_pdf_routing_decision_logic,

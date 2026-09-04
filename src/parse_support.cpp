@@ -48,6 +48,9 @@ const char* collector_target_env(pipestream::parse::v1::Collector collector) {
     case pipestream::parse::v1::COLLECTOR_LOL_HTML: return "GRPARSE_LOL_HTML_TARGET";
     case pipestream::parse::v1::COLLECTOR_FASTWARC: return "GRPARSE_FASTWARC_TARGET";
     case pipestream::parse::v1::COLLECTOR_PDF: return "GRPARSE_PDF_TARGET";
+    // The POI spelling matches the enum name; the compose service is `poic`.
+    case pipestream::parse::v1::COLLECTOR_POI: return "GRPARSE_POI_TARGET";
+    case pipestream::parse::v1::COLLECTOR_CALAMINE: return "GRPARSE_CALAMINE_TARGET";
     default: return "";
   }
 }
@@ -169,6 +172,14 @@ CollectorOutcome run_remote_collector(
       // with other collectors: its Document is the contribution. The
       // classification-driven routing lives with the plan, not here.
       return collect_pdf_document(endpoints->channel(id), bytes, inbound_deadline);
+    case pipestream::parse::v1::COLLECTOR_POI:
+      // grPOIc's own byte cap (GRPOIC_MAX_DOCUMENT_MIB, default 70) sits
+      // below this server's intake: an oversized upload fails this leg with
+      // RESOURCE_EXHAUSTED and degrades per-collector like any other.
+      return collect_poi_document(endpoints->channel(id), document_id, filename,
+                                  content_type, bytes, inbound_deadline);
+    case pipestream::parse::v1::COLLECTOR_CALAMINE:
+      return collect_calamine_document(endpoints->channel(id), bytes, inbound_deadline);
     default:
       // Unreachable: the remote_collector guard admits only the ids the
       // switch handles.

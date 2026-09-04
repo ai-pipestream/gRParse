@@ -70,6 +70,13 @@ services:
       # path and the in-process CV/ONNX pipeline is skipped; scanned pages
       # fall through with OCR restricted to the pages the inspector names.
       GRPARSE_PDF_TARGET: "pdf-inspector:50067"
+      # The secondary office legs: a routed office upload fans out to poic
+      # (OOXML/OLE2) and calamine (workbooks) beside libreoffice, and the
+      # merge ranks their claims below its own. calamine's service sits in
+      # its opt-in `calamine` profile; with the profile down the workbook
+      # leg fails loudly (UNAVAILABLE), per the doctrine above.
+      GRPARSE_POI_TARGET: "poic:50052"
+      GRPARSE_CALAMINE_TARGET: "calamine:50062"
       # Raster charts: pictures the classifier calls a chart go to the enrich
       # service for a table (opt-in; unset turns the call off). The endpoint
       # is named per request because the enrich default (ENRICH_VLM_URL,

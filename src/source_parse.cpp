@@ -410,6 +410,14 @@ RoutedPlan route_plan(const google::protobuf::RepeatedField<int>& requested, boo
   }
   RoutedPlan plan;
   plan.ids = resolve_collectors(selected, routed);
+  // A routed office default fans out to the secondary office collectors when
+  // their endpoints are configured: a poi leg for the OOXML/OLE2 formats, a
+  // calamine leg for workbooks. An explicit selection stays verbatim.
+  if (selected.empty() && inputs.endpoints != nullptr) {
+    append_office_fanout(&plan.ids, inputs.filename.string(), inputs.content_type,
+                         inputs.endpoints->has(pipestream::parse::v1::COLLECTOR_POI),
+                         inputs.endpoints->has(pipestream::parse::v1::COLLECTOR_CALAMINE));
+  }
   // Classification routing applies when the pdf collector is the whole plan:
   // by the swap above or by explicit sole selection. Shared with other
   // collectors it is a plain Document-emitting leg.

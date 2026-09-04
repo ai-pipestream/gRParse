@@ -35,6 +35,12 @@ struct CollectorTargets {
   std::string lol_html;
   std::string fastwarc;
   std::string pdf;
+  // The secondary office legs: grPOIc over the OOXML and OLE2 formats and
+  // grpc-calamine over workbooks, appended to a routed office plan when
+  // configured (libreoffice stays the routed default). The env spelling is
+  // GRPARSE_POI_TARGET, matching the enum; the compose service is `poic`.
+  std::string poi;
+  std::string calamine;
   // The chart derender leg (grpc-enrich, GRPARSE_ENRICH_TARGET): not a
   // collector but a peer dialed after the merge; an empty target means the
   // leg does not exist in this deployment.

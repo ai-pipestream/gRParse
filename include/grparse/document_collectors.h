@@ -129,6 +129,31 @@ CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>&
                                            CollectorDeadline inbound_deadline =
                                                kNoCollectorDeadline);
 
+// grPOIc (the six OOXML/OLE2 office formats: doc/docx, xls/xlsx, ppt/pptx).
+// The wire carries no document event: the typed ParseEvent stream folds into
+// a Document here — paragraphs by their style names, tables and sheets into
+// TableItems, slides into groups, embedded objects as attachment descriptors.
+// Note the collector's own byte cap (GRPOIC_MAX_DOCUMENT_MIB, default 70) is
+// below this server's intake: an oversized upload fails this leg with
+// RESOURCE_EXHAUSTED and degrades like any other collector failure.
+CollectorOutcome collect_poi_document(const std::shared_ptr<grpc::Channel>& channel,
+                                      const std::string& document_id,
+                                      const std::string& filename,
+                                      const std::string& content_type,
+                                      const std::string& bytes,
+                                      CollectorDeadline inbound_deadline =
+                                          kNoCollectorDeadline);
+
+// grpc-calamine (workbooks: xls/xlsx/xlsm/xlsb/ods). The wire is
+// handle-based and carries no document event: OpenWorkbook uploads the
+// bytes, one StreamWorksheetRange per sheet streams the cells, and the fold
+// happens here — one sheet group and one TableItem per sheet. CloseWorkbook
+// runs on every path, success or failure.
+CollectorOutcome collect_calamine_document(const std::shared_ptr<grpc::Channel>& channel,
+                                           const std::string& bytes,
+                                           CollectorDeadline inbound_deadline =
+                                               kNoCollectorDeadline);
+
 // grpc-pdf-inspector's classification of one document, mapped off the wire
 // enum so the routing decision stays proto-free and unit-testable.
 // kUnknown also covers "the stream carried no info event at all".

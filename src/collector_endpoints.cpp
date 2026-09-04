@@ -48,6 +48,8 @@ const std::string& CollectorEndpoints::target(
     case pipestream::parse::v1::COLLECTOR_LOL_HTML: return targets_.lol_html;
     case pipestream::parse::v1::COLLECTOR_FASTWARC: return targets_.fastwarc;
     case pipestream::parse::v1::COLLECTOR_PDF: return targets_.pdf;
+    case pipestream::parse::v1::COLLECTOR_POI: return targets_.poi;
+    case pipestream::parse::v1::COLLECTOR_CALAMINE: return targets_.calamine;
     default: return kNone;
   }
 }

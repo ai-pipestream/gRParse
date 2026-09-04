@@ -1,0 +1,144 @@
+syntax = "proto3";
+
+package ai.pipestream.poi.v1;
+
+option java_package = "ai.pipestream.poi.v1";
+option java_multiple_files = true;
+option java_outer_classname = "PoiDocumentProto";
+
+import "google/protobuf/timestamp.proto";
+
+// The office formats this API models. LEGACY_* are the OLE2 binary formats.
+enum DocumentFormat {
+  DOCUMENT_FORMAT_UNSPECIFIED = 0;
+  DOCUMENT_FORMAT_DOCX = 1;
+  DOCUMENT_FORMAT_XLSX = 2;
+  DOCUMENT_FORMAT_PPTX = 3;
+  DOCUMENT_FORMAT_LEGACY_DOC = 4;
+  DOCUMENT_FORMAT_LEGACY_XLS = 5;
+  DOCUMENT_FORMAT_LEGACY_PPT = 6;
+}
+
+// One typed metadata value. Values keep the type the document declared;
+// nothing is guessed from string shapes.
+message MetadataValue {
+  oneof value {
+    string string_value = 1;
+    int64 int_value = 2;
+    double double_value = 3;
+    bool bool_value = 4;
+    google.protobuf.Timestamp timestamp_value = 5;
+  }
+}
+
+// One metadata key with its typed values. Multi-valued keys (for example a
+// keyword list) carry one MetadataValue per element, in document order.
+message MetadataEntry {
+  string key = 1;
+  repeated MetadataValue values = 2;
+}
+
+// Document-level metadata: the well-known core properties as first-class
+// fields, and every remaining property in the lossless tagged tail.
+message DocumentMetadata {
+  string title = 1;
+  string author = 2;
+  string last_modified_by = 3;
+  google.protobuf.Timestamp created = 4;
+  google.protobuf.Timestamp modified = 5;
+  // Everything the document carried that is not a first-class field above:
+  // extended properties, custom properties, application name, and so on.
+  repeated MetadataEntry tail = 6;
+}
+
+// One paragraph of body text, in document order.
+message Paragraph {
+  string text = 1;
+  // The document's style name for this paragraph ("Heading1", "Normal", ...);
+  // empty when the format carries no style.
+  string style = 2;
+}
+
+// One table cell. Spans cover merged regions; the anchor cell carries the
+// text and the span, covered positions are not repeated.
+message TableCell {
+  string text = 1;
+  uint32 row_span = 2;
+  uint32 col_span = 3;
+}
+
+message TableRow {
+  repeated TableCell cells = 1;
+}
+
+// One body table, rows in document order.
+message Table {
+  repeated TableRow rows = 1;
+}
+
+// One spreadsheet cell. `formatted` is the value as the workbook displays it;
+// the typed value keeps the underlying storage type. Formula cells carry the
+// formula source and their cached result as the typed value.
+message SheetCell {
+  uint32 column_index = 1;
+  string formatted = 2;
+  oneof value {
+    string text = 3;
+    double number = 4;
+    bool boolean = 5;
+    google.protobuf.Timestamp date = 6;
+  }
+  // The formula source without the leading '=', set only for formula cells.
+  string formula = 7;
+}
+
+// One populated spreadsheet row; empty rows are skipped.
+message SheetRow {
+  uint32 row_index = 1;
+  repeated SheetCell cells = 2;
+}
+
+// One worksheet, streamed as a unit.
+message Sheet {
+  uint32 index = 1;
+  string name = 2;
+  repeated SheetRow rows = 3;
+}
+
+// One presentation slide: title, remaining text frames in shape order, and
+// speaker notes.
+message Slide {
+  uint32 index = 1;
+  string title = 2;
+  repeated string texts = 3;
+  repeated string notes = 4;
+}
+
+// One embedded object the document carries: OLE packages, images, or nested
+// office documents. Descriptor only; bytes are not streamed in v1.
+message EmbeddedObject {
+  // The container's identifier for the part (an OPC part name or OLE stream name).
+  string id = 1;
+  string filename = 2;
+  string content_type = 3;
+  uint64 size_bytes = 4;
+}
+
+// Final accounting for a parse.
+message ParseStatus {
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    // Every block the parser understood was emitted.
+    STATE_OK = 1;
+    // The document parsed, but some content was skipped; see warnings.
+    STATE_PARTIAL = 2;
+  }
+  State state = 1;
+  // Human-readable notes about skipped or degraded content.
+  repeated string warnings = 2;
+  uint64 paragraphs = 3;
+  uint64 tables = 4;
+  uint64 sheets = 5;
+  uint64 slides = 6;
+  uint64 embedded_objects = 7;
+}

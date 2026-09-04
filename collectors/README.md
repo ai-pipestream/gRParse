@@ -15,6 +15,8 @@ re-copy the file and rebuild.
 | `lolhtml_types.proto`, `lolhtml_service.proto` | grpc-lol-html `proto/lolhtml/v1/` (`types.proto` is renamed here to stay unambiguous; it stages back to `lolhtml/v1/types.proto`) |
 | `warc.proto`, `warc_service.proto` | fastwarc-grpc `proto/fastwarc/v1/` (stages back to `fastwarc/v1/`) |
 | `pdf_types.proto`, `pdf_service.proto` | grpc-pdf-inspector `proto/ai/pipestream/pdf/v1/` (`types.proto` is renamed here to stay unambiguous; it stages back to `ai/pipestream/pdf/v1/types.proto`) |
+| `poi_document.proto`, `poi_service.proto` | grPOIc `grpoic-api/src/main/proto/ai/pipestream/poi/v1/` |
+| `calamine_types.proto`, `calamine_service.proto` | grpc-calamine `proto/calamine/v1/` (`types.proto` is renamed here to stay unambiguous; it stages back to `calamine/v1/types.proto`. The package is `calamine.v1`, not `ai.pipestream.*`. Copied from that repo's `development` branch, which carries the fleet port and the UiInfo block) |
 | `enrich_service.proto` | grpc-enrich `proto/ai/pipestream/enrich/v1/enrich_service.proto` (the chart derender leg, `GRPARSE_ENRICH_TARGET`; an enrichment peer rather than a collector, dialed after the merge) |
 
 A copy that is not byte-identical is worse than no copy: the tests dial fakes
@@ -23,9 +25,12 @@ itself all the way to production. `tests/warc_stub_wire_test.cpp` guards the
 fastwarc pair by decoding hand-written wire bytes; a pair that carries real
 traffic deserves the same.
 
-Every one of these except the lol-html and fastwarc pairs imports
-`ai/pipestream/document/v1/document.proto`, which
+Every one of these except the lol-html, fastwarc, poi, and calamine pairs
+imports `ai/pipestream/document/v1/document.proto`, which
 resolves to this repository's own `document.proto` — the fleet-wide source of
-truth the collectors vendored in the first place. If a copy stops compiling
+truth the collectors vendored in the first place. (The poi and calamine
+contracts carry no document event: their typed streams fold into a Document
+client-side, in `src/collectors/poi_collector.cpp` and
+`src/collectors/calamine_collector.cpp`.) If a copy stops compiling
 against it, the collector's vendored document.proto has drifted; fix that
 there, not here.
