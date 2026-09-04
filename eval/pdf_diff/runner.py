@@ -109,7 +109,7 @@ def poppler_leg(pdf: Path, dpi: float, raster_dir: Path) -> dict:
     return json.loads(proc.stdout.decode())
 
 
-def pdfium_leg(stub, svc, types, pdf: Path, dpi: float) -> dict:
+def service_leg(stub, svc, types, pdf: Path, dpi: float) -> dict:
     data = pdf.read_bytes()
     out: dict = {"pages": [], "fonts": [], "rasters": []}
     parse_req = svc.ParseRequest(document=types.PdfDocument(data=data))
@@ -134,7 +134,7 @@ def pdfium_leg(stub, svc, types, pdf: Path, dpi: float) -> dict:
                 page["text"].append(
                     {
                         "x": cell.bbox.x0,
-                        # pdfium boxes are bottom-left origin; normalize to
+                        # contract boxes are bottom-left origin; normalize to
                         # the top-left origin poppler uses.
                         "y": page["height_pts"] - cell.bbox.y1,
                         "w": cell.bbox.x1 - cell.bbox.x0,
@@ -161,6 +161,7 @@ def pdfium_leg(stub, svc, types, pdf: Path, dpi: float) -> dict:
                     "width": r.width_px,
                     "height": r.height_px,
                     "stride": r.stride_bytes,
+                    "format": types.PixelFormat.Name(r.pixel_format),
                     "pixels": r.pixels,
                 }
             )
@@ -195,8 +196,19 @@ def raster_metrics(ppm_path: Path, raster: dict) -> dict:
         return {"status": "no-poppler-raster"}
     stride, w, h = raster["stride"], raster["width"], raster["height"]
     buf = np.frombuffer(raster["pixels"], dtype=np.uint8).reshape(h, stride)
-    bgr = buf[:, : w * 3].reshape(h, w, 3)
-    rgb = bgr[:, :, ::-1]
+    fmt = raster.get("format", "PIXEL_FORMAT_BGR8")
+    if fmt == "PIXEL_FORMAT_BGR8":
+        rgb = buf[:, : w * 3].reshape(h, w, 3)[:, :, ::-1]
+    elif fmt == "PIXEL_FORMAT_RGB8":
+        rgb = buf[:, : w * 3].reshape(h, w, 3)
+    elif fmt == "PIXEL_FORMAT_RGBA8":
+        rgb = buf[:, : w * 4].reshape(h, w, 4)[:, :, :3]
+    elif fmt == "PIXEL_FORMAT_BGRA8":
+        rgb = buf[:, : w * 4].reshape(h, w, 4)[:, :, 2::-1]
+    elif fmt == "PIXEL_FORMAT_GRAY8":
+        rgb = np.repeat(buf[:, :w].reshape(h, w, 1), 3, axis=2)
+    else:
+        return {"status": f"unhandled pixel format {fmt}"}
     ch = min(ref.shape[0], h)
     cw = min(ref.shape[1], w)
     a = ref[:ch, :cw].astype(np.int16)
@@ -215,27 +227,27 @@ def raster_metrics(ppm_path: Path, raster: dict) -> dict:
     return {
         "status": "compared",
         "poppler_px": [int(ref.shape[1]), int(ref.shape[0])],
-        "pdfium_px": [int(w), int(h)],
+        "service_px": [int(w), int(h)],
         "mean_abs_diff": float(diff.mean()),
         "aligned_mean_abs_diff": aligned,
         "pct_pixels_off_gt16": float((diff.max(axis=2) > 16).mean() * 100.0),
     }
 
 
-def compare_doc(doc_id: str, pop: dict, pdfium: dict, raster_dir: Path) -> dict:
+def compare_doc(doc_id: str, pop: dict, svc_out: dict, raster_dir: Path) -> dict:
     result: dict = {"id": doc_id}
 
     pop_loaded = bool(pop.get("load_ok"))
-    pdfium_loaded = pdfium.get("load_status") == "LOAD_STATUS_OK"
+    service_loaded = svc_out.get("load_status") == "LOAD_STATUS_OK"
     result["load"] = {
         "poppler": "ok" if pop_loaded else "failed",
-        "pdfium": pdfium.get("load_status"),
-        "verdict": "AGREE" if pop_loaded == pdfium_loaded else "DIVERGE",
+        "service": svc_out.get("load_status"),
+        "verdict": "AGREE" if pop_loaded == service_loaded else "DIVERGE",
     }
-    if not (pop_loaded and pdfium_loaded):
+    if not (pop_loaded and service_loaded):
         return result
 
-    pp, fp = pop["pages"], pdfium["pages"]
+    pp, fp = pop["pages"], svc_out["pages"]
     dims_ok = len(pp) == len(fp)
     rot_notes = []
     for a, b in zip(pp, fp):
@@ -245,10 +257,10 @@ def compare_doc(doc_id: str, pop: dict, pdfium: dict, raster_dir: Path) -> dict:
             dims_ok = False
         quarter = b["rotation"] % 180 != 0
         if a["quarter_turn"] != quarter:
-            rot_notes.append(f"page {a['index']}: poppler quarter_turn={a['quarter_turn']} pdfium rotation={b['rotation']}")
+            rot_notes.append(f"page {a['index']}: poppler quarter_turn={a['quarter_turn']} service rotation={b['rotation']}")
     result["inventory"] = {
         "poppler_pages": len(pp),
-        "pdfium_pages": len(fp),
+        "service_pages": len(fp),
         "verdict": "AGREE" if dims_ok and not rot_notes else "DIVERGE",
         "rotation_notes": rot_notes,
     }
@@ -282,7 +294,7 @@ def compare_doc(doc_id: str, pop: dict, pdfium: dict, raster_dir: Path) -> dict:
         verdict = "DIVERGE"
     result["text"] = {
         "poppler_boxes": cells[0],
-        "pdfium_cells": cells[1],
+        "service_cells": cells[1],
         "min_page_similarity": round(text_ratio, 4),
         "mean_page_similarity": round(sum(ratios) / len(ratios), 4) if ratios else 1.0,
         "min_page_bag_similarity": round(bag_ratio, 4),
@@ -290,18 +302,18 @@ def compare_doc(doc_id: str, pop: dict, pdfium: dict, raster_dir: Path) -> dict:
     }
 
     pop_fonts = {strip_subset(t.get("font_name", "")) for p in pp for t in p["text"] if t.get("font_name")}
-    pdfium_fonts = {strip_subset(n) for n in pdfium["fonts"]}
-    union = pop_fonts | pdfium_fonts
-    jaccard = len(pop_fonts & pdfium_fonts) / len(union) if union else 1.0
+    service_fonts = {strip_subset(n) for n in svc_out["fonts"]}
+    union = pop_fonts | service_fonts
+    jaccard = len(pop_fonts & service_fonts) / len(union) if union else 1.0
     result["fonts"] = {
         "poppler": sorted(pop_fonts),
-        "pdfium": sorted(pdfium_fonts),
+        "service": sorted(service_fonts),
         "jaccard": round(jaccard, 3),
         "verdict": "AGREE" if jaccard >= 0.99 else ("CLOSE" if jaccard >= 0.5 else "DIVERGE"),
     }
 
     rmetrics = []
-    for raster in pdfium["rasters"]:
+    for raster in svc_out["rasters"]:
         ppm = raster_dir / f"page-{raster['index']}.ppm"
         rmetrics.append(raster_metrics(ppm, raster) if ppm.exists() else {"status": "no-poppler-raster"})
     compared = [m for m in rmetrics if m.get("status") == "compared"]
@@ -368,8 +380,8 @@ def main() -> int:
         for doc_id, path in corpus_pdfs():
             raster_dir = Path(tmp) / doc_id
             pop = poppler_leg(path, args.dpi, raster_dir)
-            pdfium = pdfium_leg(stub, svc, types, path, args.dpi)
-            results.append(compare_doc(doc_id, pop, pdfium, raster_dir))
+            svc_out = service_leg(stub, svc, types, path, args.dpi)
+            results.append(compare_doc(doc_id, pop, svc_out, raster_dir))
             print(f"  {doc_id}: load={results[-1]['load']['verdict']}", flush=True)
 
     # Non-PDF load-status cases.
@@ -388,7 +400,7 @@ def main() -> int:
                 {
                     "file": path.name,
                     "poppler": "ok" if pop.get("load_ok") else "failed",
-                    "pdfium": types.LoadStatus.Name(resp.capabilities.load_status),
+                    "service": types.LoadStatus.Name(resp.capabilities.load_status),
                     "verdict": "AGREE"
                     if bool(pop.get("load_ok"))
                     == (resp.capabilities.load_status == types.LOAD_STATUS_OK)
@@ -421,7 +433,7 @@ def main() -> int:
         f"image vendors its own poppler, so treat raster deltas as indicative). "
         f"DPI {args.dpi}.",
         "",
-        "| doc | load | inventory | text sim (min/mean/bag) | cells (pop/pdfium) | fonts | raster worst %px>16 | raster mean abs (raw/aligned) |",
+        "| doc | load | inventory | text sim (min/mean/bag) | cells (pop/service) | fonts | raster worst %px>16 | raster mean abs (raw/aligned) |",
         "|---|---|---|---|---|---|---|---|",
     ]
     for r in results:
@@ -432,7 +444,7 @@ def main() -> int:
         lines.append(
             f"| {r['id']} | {r['load']['verdict']} | {inv.get('verdict', '-')} "
             f"| {txt.get('min_page_similarity', '-')}/{txt.get('mean_page_similarity', '-')}/{txt.get('min_page_bag_similarity', '-')} ({txt.get('verdict', '-')}) "
-            f"| {txt.get('poppler_boxes', '-')}/{txt.get('pdfium_cells', '-')} "
+            f"| {txt.get('poppler_boxes', '-')}/{txt.get('service_cells', '-')} "
             f"| {fon.get('jaccard', '-')} ({fon.get('verdict', '-')}) "
             f"| {_fmt(ras.get('worst_pct_pixels_off_gt16'))} "
             f"| {_fmt(ras.get('mean_abs_diff_max'))}/{_fmt(ras.get('aligned_mean_abs_diff_max'))} |"
@@ -442,11 +454,11 @@ def main() -> int:
             "",
             "## Load-status cases (~/parser-failed-docs)",
             "",
-            "| file | poppler | pdfium | verdict |",
+            "| file | poppler | service | verdict |",
             "|---|---|---|---|",
         ]
         for c in load_cases:
-            lines.append(f"| {c['file']} | {c['poppler']} | {c['pdfium']} | {c['verdict']} |")
+            lines.append(f"| {c['file']} | {c['poppler']} | {c['service']} | {c['verdict']} |")
     (OUT / "report.md").write_text("\n".join(lines) + "\n")
     print(f"wrote {OUT / 'report.md'} and metrics.json")
     return 0

@@ -50,15 +50,15 @@ use the wider API, not just poppler-cpp).
 | embedded images as data | core yes (cpp no) | yes (bbox + decoded pixels; jpeg/jp2/jbig2) | yes (`fpdf_edit` page-object walk) |
 | vector paths as data | no (render only) | yes (page shapes) | yes (`fpdf_edit` path objects) |
 | fonts incl. embedded blobs | core partial | yes (font programs exposed) | yes |
-| outline / bookmarks | yes | not exposed | yes (`fpdf_doc`) |
+| outline / bookmarks | yes | yes (TOC json: titles and nesting, no destinations) | yes (`fpdf_doc`) |
 | hyperlinks | yes | yes | yes |
 | annotations | core/glib yes (cpp no) | partial (qpdf annots) | yes, rich (`fpdf_annot`) |
 | form fields | core/glib yes (cpp no) | yes (widgets) | yes incl. interactive (`fpdf_formfill`) |
 | attachments / embedded files | yes | via qpdf, not surfaced | yes (`fpdf_attachment`) |
 | digital signatures | no | no | yes (`fpdf_signature`) |
 | embedded JavaScript listing | core aware | no | yes (`fpdf_javascript`) |
-| document metadata / XMP | yes | partial | yes (`FPDF_GetMetaText`) |
-| encryption info / passwords | yes | yes (qpdf is strong here) | yes |
+| document metadata / XMP | yes | XMP packet only | info keys only: no XMP, no custom keys (`FPDF_GetMetaText`) |
+| encryption info / passwords | yes | qpdf is strong here but the public surface does not expose it yet | yes |
 | linearized / progressive load | no | no | yes (`fpdf_dataavail`) |
 | page thumbnails | no | no | yes (`fpdf_thumbnail`) |
 | thread model | concurrent per document (arm64 gate) | concurrent per instance | none: one global lock, process-wide |
@@ -72,6 +72,9 @@ Two matrix notes worth designing around:
 - qparse is the only engine that types out the graphics resource world
   (colorspaces, shadings, patterns, xobjects). That belongs in the contract as
   an optional deep-resources block; the other two declare it absent.
+  Implementation note (M3): the engine decodes these internally but its
+  public surface does not serialize them yet, so grpc-qparse declares the
+  family unsupported until an engine-side patch exposes it.
 
 ## The common contract
 
