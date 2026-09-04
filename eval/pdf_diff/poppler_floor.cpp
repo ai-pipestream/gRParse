@@ -57,10 +57,11 @@ bool IsQuarterTurn(const poppler::page& page) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc != 4) {
-    std::fprintf(stderr, "usage: %s <pdf> <dpi> <outdir>\n", argv[0]);
+  if (argc != 4 && argc != 5) {
+    std::fprintf(stderr, "usage: %s <pdf> <dpi> <outdir> [render-only]\n", argv[0]);
     return 2;
   }
+  const bool render_only = argc == 5 && std::string(argv[4]) == "render-only";
   const std::string pdf_path = argv[1];
   const double dpi = std::atof(argv[2]);
   const std::string outdir = argv[3];
@@ -95,7 +96,9 @@ int main(int argc, char** argv) {
             ", \"quarter_turn\": " + (quarter_turn ? "true" : "false") +
             ", \"text\": [";
 
-    const auto boxes = page->text_list(poppler::page::text_list_include_font);
+    const auto boxes = render_only
+        ? std::vector<poppler::text_box>{}
+        : page->text_list(poppler::page::text_list_include_font);
     bool first = true;
     for (const auto& box : boxes) {
       const auto b = box.bbox();
@@ -117,7 +120,8 @@ int main(int argc, char** argv) {
     json += "]}";
 
     const poppler::image image = renderer.render_page(page.get(), dpi, dpi);
-    if (image.is_valid()) {
+    // outdir "-" keeps the render in memory (timing runs without PPM IO).
+    if (image.is_valid() && outdir != "-") {
       const std::string ppm_path =
           outdir + "/page-" + std::to_string(i) + ".ppm";
       std::ofstream ppm(ppm_path, std::ios::binary);
