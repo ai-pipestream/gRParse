@@ -204,6 +204,28 @@ M1/M3/M4 are independent of each other after M0 and can run as parallel
 lanes; M2 can trail M1 while M3 starts. M5 needs any one service at tier 0.
 M6 is gated on evidence, not scheduled.
 
+## Cross-engine consensus (added 2026-09-04)
+
+Interchangeable backends made a new instrument possible: reading the same
+document through several engines and reconciling. `eval/consensus` is the
+measured prototype (truth-scored by the scorecard metrics) and
+`src/consensus_page_source.cpp` the production form
+(`GRPARSE_PDF_BACKEND` with a comma-separated target list; per-page
+bigram-agreement vote). Measured on the truth documents: the vote finds
+the truth-perfect reading order (in-process poppler alone: 0.800 on
+two-column); the merged outline (embedded outlines + numbering + font
+tiers) reads 1.000 on text, precision and levels; a table grid from the
+qpdf-based service's ruled lines filled with pdfium word cells reads cell
+F1 1.000 where the CV path reads 0.286; and a bidirectional word
+alignment keeps consensus-offset to per-parser-offset maps with
+deviations annotated (order breaks, missing words, same-place text
+disagreements such as soft-hyphen artifacts). Winners are labeled
+`protomolt`, per-parser values under their parser names, the shape the
+claims/field_sources convention wants. Consensus sections drive chunk
+boundaries, the path toward centroid-ready chunking. Next tuning target
+from the measurements: the fold's own reading-order pass, which is where
+two-column's residual 0.815 comes from once the source order is correct.
+
 ## License end state
 
 The milestones above ARE the migration: after M6 the default stack ships no
