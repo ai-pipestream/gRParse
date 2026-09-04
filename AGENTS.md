@@ -307,7 +307,10 @@ directory mounted, then `run.py --target localhost:<port>`.
 - **Docs-only commits carry `[ci skip]`** in the message. GitHub Actions
   honors the skip keywords natively on push triggers, so a README or
   `docs/` change does not need the 45-minute publish legs. Manual
-  `workflow_dispatch` still runs regardless.
+  `workflow_dispatch` still runs regardless. The skip marker is read from
+  the HEAD commit of the pushed ref, so a mixed push whose newest commit
+  says `[ci skip]` silences CI for the code commits beneath it: land docs
+  in their own push, or put the code commit on top.
 - **Commit messages carry no em dashes** (a commit-msg hook rejects them) and
   no tool or model attribution.
 - **Exit codes are the verdict.** Never pipe a build or test through a grep
