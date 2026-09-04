@@ -50,6 +50,8 @@ file under `collectors/` copied byte-identical from the sister repo.
 | `grpc-lol-html` | `master` | Rust (Cargo, buf) | 50057 | `lolhtml_types.proto`, `lolhtml_service.proto` | never by format; explicit `lol_html_options_json` only |
 | `grpc-asr` | `main` | C++ (CMake, buf, whisper.cpp) | 50055 | `asr_service.proto` | audio and video (`GRPARSE_ASR_MODEL` required) |
 | `fastwarc-grpc` | `main` | Rust (Cargo) | 50060 | `warc.proto`, `warc_service.proto` | `.warc*`; see the fastwarc caveat below |
+| `grPOIc` | `main` | Java/Kotlin (Gradle) | 50052 | `poi_document.proto`, `poi_service.proto` | never routed by itself; a routed office plan fans a poi leg out beside libreoffice for the six OOXML/OLE2 formats when configured, folded client-side (`src/collectors/poi_collector.cpp`) |
+| `grpc-calamine` | `main` on GitHub (`development` was the working branch; check) | Rust (Cargo, buf) | 50062 | `calamine_types.proto`, `calamine_service.proto` (package `calamine.v1`; vendored from `development`, which carries the fleet port and the UiInfo block) | never routed by itself; a routed workbook plan (never CSV) fans a calamine leg out beside libreoffice when configured, folded client-side through the OpenWorkbook/StreamWorksheetRange/CloseWorkbook handle lifecycle (`src/collectors/calamine_collector.cpp`). Meant to be hosted by an external project, so nothing in that repo may mention gRParse or the shell |
 
 Two collectors are compiled in and have no repo: the CV path
 (`COLLECTOR_GRPARSE_CV`) and the wiki storage XHTML handler
@@ -61,14 +63,14 @@ They run in the stack and get a tab in the demo shell
 (`examples/web-demo`), which dials them directly. gRParse never calls them
 as collectors; grpc-enrich is the exception below, dialed after the merge
 only when `GRPARSE_ENRICH_TARGET` names it.
-The merge already ranks `poi` and `calamine` claims below gRParse's own
-(`document_claim_rank` in `src/document_merge.cpp`), so wiring the first two
-in as collectors is the open item, not a schema change.
+The merge ranks `poi` and `calamine` claims below gRParse's own
+(`document_claim_rank` in `src/document_merge.cpp`), which is what makes
+their fan-out legs safe to add. grPOIc and grpc-calamine keep their shell
+tabs (`POIC_TARGET`, the opt-in `calamine` compose profile); what changed is
+that gRParse also dials them as collectors now.
 
 | Repo | Default branch | Language | Port | Shell env | Role |
 |---|---|---|---|---|---|
-| `grPOIc` | `main` | Java/Kotlin (Gradle) | 50052 | `POIC_TARGET` | Apache POI over office documents |
-| `grpc-calamine` | `main` on GitHub (`development` was the working branch; check) | Rust (Cargo, buf) | 50062 | opt-in `calamine` compose profile | spreadsheets; meant to be hosted by an external project, so nothing in that repo may mention gRParse or the shell |
 | `grpc-enrich` | `main` | Java (Gradle, buf) | 50056 gRPC, 50068 HTTP | `ENRICH_TARGET` | `Document` in, stream of `ItemAnnotation` out; needs `ENRICH_VLM_URL`. The one peer gRParse also dials, opt-in: `GRPARSE_ENRICH_TARGET` turns on the chart derender leg (raster charts' tables from the VLM, after the merge), contract vendored as `collectors/enrich_service.proto` |
 | `grpc-vlm-convert` | `main` | C++ (CMake, buf) | 50058 gRPC, 50059 HTTP | `VLM_CONVERT_TARGET` | calls an external VLM server; also hosts the open VLM serving stack under `serving/` used by `eval/` |
 

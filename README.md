@@ -349,6 +349,8 @@ unconfigured otherwise:
 | Collector | Target env | Routed by default for |
 |---|---|---|
 | `COLLECTOR_LIBREOFFICE` | `GRPARSE_LIBREOFFICE_TARGET` | office formats (doc/x, xls/x, ppt/x, odf, rtf, csv, ...) |
+| `COLLECTOR_POI` | `GRPARSE_POI_TARGET` | never the routed default; a routed office plan fans a poi leg out beside libreoffice for the six OOXML/OLE2 formats (doc/docx, xls/xlsx, ppt/pptx) when configured. The typed event stream folds client-side: paragraphs by style name, tables and sheets into `TableItem`s, slides into groups, embedded objects as attachment descriptors. grPOIc's own byte cap (`GRPOIC_MAX_DOCUMENT_MIB`, default 70 MiB) sits below gRParse's intake: an oversized upload fails the poi leg with `RESOURCE_EXHAUSTED` and degrades like any collector failure |
+| `COLLECTOR_CALAMINE` | `GRPARSE_CALAMINE_TARGET` | never the routed default; a routed workbook plan (xls/xlsx/xlsm/xlsb/ods, never CSV) fans a calamine leg out beside libreoffice when configured. The wire is handle-based (`OpenWorkbook`/`StreamWorksheetRange`/`CloseWorkbook`); each sheet folds client-side into a sheet group holding one `TableItem` in absolute cell offsets, and the handle closes on every path |
 | `COLLECTOR_ASR` | `GRPARSE_ASR_TARGET` (+ `GRPARSE_ASR_MODEL`, the whisper model name, required) | audio and video |
 | `COLLECTOR_EMAIL` | `GRPARSE_EMAIL_TARGET` | `.eml`, `.msg`, `message/rfc822` |
 | `COLLECTOR_XML` | `GRPARSE_XML_TARGET` | `.xml`, `.nxml`, `.xbrl`, `application/xml`, `text/xml` (never the `+xml` suffix family), plus the archive forms `.dclx` and `.tar.gz` (METS/GBS) |
@@ -370,19 +372,22 @@ The libreoffice collector streams typed events that gRParse folds into a
 typed chapter and resource events plus one markup leg per chapter
 (`src/epub_book.cpp`), and the lol-html collector's match stream is likewise
 folded client-side (its forward-only wire deliberately has no document
-event); every other remote collector projects its own typed stream into a
-source-tagged `Document` server-side (their `emit_document` option), so
-gRParse asks for the Document event, drains the typed events, and merges
-what the collector itself attributed. The vendored wire
+event); poi and calamine fold client-side too (their contracts carry no
+document event), while every other remote collector projects its own typed
+stream into a source-tagged `Document` server-side (their `emit_document`
+option), so gRParse asks for the Document event, drains the typed events,
+and merges what the collector itself attributed. The vendored wire
 contracts live in `collectors/` (see its README); each collector repo owns
 its contract.
 
-Four family members are *not* collectors, whatever `compose.stack.yaml` runs
-next to them: grPOIc, grpc-calamine, grpc-enrich and grpc-vlm-convert are
-dialed by the demo shell directly and never by gRParse. The merge already
-ranks `poi` and `calamine` claims below gRParse's own (see
-`document_claim_rank`), so folding their native wires in is the open item,
-not a schema change. fastwarc is the other way round: a collector here, but
+Two family members are *not* collectors, whatever `compose.stack.yaml` runs
+next to them: grpc-enrich and grpc-vlm-convert are dialed by the demo shell
+directly and never by gRParse as collectors (enrich is dialed after the
+merge for the chart derender leg when `GRPARSE_ENRICH_TARGET` names it).
+grPOIc and grpc-calamine stopped being shell-only when their legs were
+wired in above; the merge ranks `poi` and `calamine` claims below
+libreoffice's and gRParse's own (see `document_claim_rank`). fastwarc is
+the other way round: a collector here, but
 the stack leaves `GRPARSE_FASTWARC_TARGET` unset because the vendored
 `fastwarc.v1` dialect is not wire-compatible with the published image; the
 shell dials it itself.
