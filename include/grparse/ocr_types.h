@@ -143,6 +143,14 @@ struct OcrPage {
   // Multi-backend reconciliation, filled only by the consensus page
   // source. Wire slot: PageData.reconciliation.
   std::vector<SourceReconciliation> reconciliation = {};
+  // Set by the consensus page source when the vote's winner reconciled
+  // cleanly against every losing leg (nearly all words matched, nearly no
+  // order breaks; the thresholds live in consensus_page_source.cpp). It
+  // promises that the emission order of `lines` is already the page's
+  // reading order, so the fold keeps it instead of re-deriving one from
+  // geometry. Anything that re-sorts the lines (the digital+OCR merge)
+  // builds a fresh page and leaves this false.
+  bool source_order_trusted = false;
 };
 
 // Merge OCR lines into a digital page without duplicating geometry-overlapping text.

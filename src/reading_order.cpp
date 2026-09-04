@@ -121,7 +121,7 @@ std::vector<size_t> xy_cut_order(const std::vector<OrderBox>& boxes, const CutPo
   return ordered;
 }
 
-std::vector<size_t> reading_order(const OcrPage& page) {
+std::vector<size_t> reading_order(const OcrPage& page, bool trust_source_order) {
   std::vector<Unit> units;
   units.reserve(page.regions.size() + page.lines.size());
 
@@ -168,6 +168,24 @@ std::vector<size_t> reading_order(const OcrPage& page) {
 
   std::vector<size_t> result;
   result.reserve(page.lines.size());
+  if (trust_source_order) {
+    // The source's emission order is the reading order: units order by
+    // their first line's emission index, lines within a unit by emission
+    // index. The unit construction above (region binding included) is the
+    // same as the geometric path; only the sort key changes, so the result
+    // stays deterministic in the page's emission order.
+    std::vector<size_t> unit_order(with_lines.size());
+    for (size_t index = 0; index < with_lines.size(); ++index) unit_order[index] = index;
+    std::ranges::stable_sort(unit_order, [&with_lines](size_t a, size_t b) {
+      return with_lines[a]->line_indices.front() < with_lines[b]->line_indices.front();
+    });
+    for (const size_t unit_index : unit_order) {
+      std::vector<size_t> lines = with_lines[unit_index]->line_indices;
+      std::ranges::stable_sort(lines);
+      result.insert(result.end(), lines.begin(), lines.end());
+    }
+    return result;
+  }
   for (const size_t unit_index : xy_cut_order(boxes)) {
     std::vector<size_t> lines = with_lines[unit_index]->line_indices;
     std::ranges::stable_sort(lines, [&page](size_t a, size_t b) {

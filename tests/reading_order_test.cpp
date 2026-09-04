@@ -23,7 +23,8 @@ grparse::OcrLine line_at(std::string text, int left, int top, int width = 200, i
 
 std::vector<std::string> ordered_texts(const grparse::OcrPage& page) {
   std::vector<std::string> texts;
-  for (const size_t index : grparse::reading_order(page)) {
+  // Mirroring the assembly call: the page's own flag decides the order key.
+  for (const size_t index : grparse::reading_order(page, page.source_order_trusted)) {
     texts.push_back(page.lines[index].text);
   }
   return texts;
@@ -93,6 +94,52 @@ void verify_determinism() {
   for (int round = 0; round < 10; ++round) {
     require(ordered_texts(page) == first, "reading order must be deterministic");
   }
+}
+
+// A trusted page (the consensus vote promises its emission order is the
+// reading order) keeps that order even when geometry disagrees; untrusted,
+// the same page re-sorts geometrically.
+void verify_trusted_page_keeps_emission_order() {
+  grparse::OcrPage page{1000, 800, {}};
+  // Emitted right column first; geometry reads the left column first.
+  page.lines = {
+      line_at("B1", 550, 100), line_at("B2", 550, 200), line_at("B3", 550, 300),
+      line_at("A1", 50, 100),  line_at("A2", 50, 200),  line_at("A3", 50, 300),
+  };
+  const std::vector<std::string> geometric = {"A1", "A2", "A3", "B1", "B2", "B3"};
+  const std::vector<std::string> emitted = {"B1", "B2", "B3", "A1", "A2", "A3"};
+  require(ordered_texts(page) == geometric,
+          "without the trust flag geometry still decides");
+  page.source_order_trusted = true;
+  require(ordered_texts(page) == emitted,
+          "a trusted page keeps its emission order");
+  for (int round = 0; round < 10; ++round) {
+    require(ordered_texts(page) == emitted,
+            "the trusted order is deterministic in the emission order");
+  }
+}
+
+// Trusted with regions: each unit orders by the emission index of its first
+// line, and lines inside a unit keep emission order.
+void verify_trusted_units_order_by_first_emission() {
+  grparse::OcrPage page{1000, 800, {}};
+  // Columns interleaved in emission order; the right column's first line
+  // came first, so its unit leads.
+  page.lines = {
+      line_at("B1", 550, 100), line_at("A1", 50, 100),  line_at("B2", 550, 200),
+      line_at("A2", 50, 200),  line_at("B3", 550, 300), line_at("A3", 50, 300),
+  };
+  page.regions = {
+      {"text", 0.9F, 40, 90, 460, 330},
+      {"text", 0.85F, 540, 90, 960, 330},
+  };
+  const std::vector<std::string> geometric = {"A1", "A2", "A3", "B1", "B2", "B3"};
+  require(ordered_texts(page) == geometric,
+          "untrusted, the region units cut geometrically");
+  page.source_order_trusted = true;
+  const std::vector<std::string> expected = {"B1", "B2", "B3", "A1", "A2", "A3"};
+  require(ordered_texts(page) == expected,
+          "trusted units order by their first emitted line");
 }
 
 // Degenerate inputs must not crash or drop lines.
@@ -176,6 +223,8 @@ int main() {
       verify_title_band_reads_before_columns,
       verify_textless_regions_are_ignored,
       verify_determinism,
+      verify_trusted_page_keeps_emission_order,
+      verify_trusted_units_order_by_first_emission,
       verify_degenerate_inputs,
   });
 }

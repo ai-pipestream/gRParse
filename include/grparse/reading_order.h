@@ -51,6 +51,13 @@ std::vector<size_t> xy_cut_order(const std::vector<OrderBox>& boxes, const CutPo
 // Deterministic: the result depends only on line and region geometry.  With
 // no regions the lines themselves still XY-cut, so a clean two-column page
 // orders correctly even without a layout model.
-std::vector<size_t> reading_order(const OcrPage& page);
+//
+// When trust_source_order is set (the caller asserts the lines' emission
+// order already is the reading order; the consensus page source marks such
+// pages with OcrPage::source_order_trusted), the cut is skipped instead:
+// units order by their first line's emission index and lines within a unit
+// by emission index. Unit construction, including region binding, is
+// identical either way; only the sort key changes.
+std::vector<size_t> reading_order(const OcrPage& page, bool trust_source_order = false);
 
 }  // namespace grparse

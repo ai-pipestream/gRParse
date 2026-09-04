@@ -160,7 +160,9 @@ std::vector<TextBlock> build_text_blocks(const OcrPage& page) {
     if (region.label == "table") claims.emplace(&region, table_claimed_lines(page, region));
   }
   std::vector<TextBlock> blocks;
-  for (const size_t line_index : reading_order(page)) {
+  // A trusted page (consensus vote winner) keeps its emission order; every
+  // other page re-derives the order geometrically.
+  for (const size_t line_index : reading_order(page, page.source_order_trusted)) {
     const auto& line = page.lines[line_index];
     if (line.text.empty() || line.polygon.empty()) continue;
     const LayoutRegion* region = region_for_line(page, line);
@@ -416,9 +418,10 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
   }
 
   // Emission order defines text offsets, refs, and body order, so blocks are
-  // walked in reading order (multi-column aware) rather than input order,
-  // with floating items placed at their reading-order anchors instead of
-  // appended after the page's prose.
+  // walked in reading order (multi-column aware, or the trusted source order
+  // of a consensus-voted page) rather than raw input order, with floating
+  // items placed at their reading-order anchors instead of appended after
+  // the page's prose.
   const std::vector<TextBlock> blocks = build_text_blocks(source);
 
   struct Placed {

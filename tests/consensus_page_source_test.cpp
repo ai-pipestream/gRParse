@@ -172,6 +172,8 @@ int main() {
             "the scrambled stream's order breaks are annotated");
     require(agreeing_rec->order_breaks == 0 && agreeing_rec->matched == 12,
             "the agreeing stream links without breaks");
+    require(!page->source_order_trusted,
+            "a leg full of order breaks keeps the geometric re-order");
     const auto& first = scrambled_rec->links.front();
     require(first.consensus_index == 0 && first.consensus_utf_start == 0,
             "consensus side of the first link");
@@ -219,6 +221,33 @@ int main() {
     const auto page = source->extract_digital_page(1);
     require(page.has_value() && joined_text(*page) == expected,
             "continuity breaks the two-backend tie toward running text");
+    require(!page->source_order_trusted,
+            "the scrambled leg's break rate is far above the trust ceiling");
+  }
+
+  // A clean vote (every leg matched, no order breaks) trusts the winner's
+  // emission order and says so on the page.
+  {
+    const auto source = grparse::open_consensus_pdf_document(
+        bytes, {good_a.target, good_b.target}, 144.0);
+    const auto page = source->extract_digital_page(1);
+    require(page.has_value() && joined_text(*page) == expected,
+            "agreeing backends still vote");
+    require(page->reconciliation.size() == 1 &&
+                page->reconciliation.front().matched == 12 &&
+                page->reconciliation.front().order_breaks == 0,
+            "the clean leg reconciles completely");
+    require(page->source_order_trusted,
+            "a clean vote marks the page source-order-trusted");
+  }
+
+  // One healthy backend never votes, so nothing is trusted.
+  {
+    const auto source = grparse::open_consensus_pdf_document(
+        bytes, {good_a.target}, 144.0);
+    const auto page = source->extract_digital_page(1);
+    require(page.has_value() && !page->source_order_trusted,
+            "a single-candidate page is never trusted");
   }
 
   const auto targets =

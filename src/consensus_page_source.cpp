@@ -252,6 +252,30 @@ SourceReconciliation reconcile(const OcrPage& winner, const OcrPage& candidate,
   return out;
 }
 
+// Trust thresholds for the vote's emission order. When every losing leg
+// reconciles against the winner at least this completely and this
+// monotonically, the winner's line order is the page's reading order and
+// the fold keeps it (OcrPage::source_order_trusted) instead of re-deriving
+// one geometrically. Numbers from eval/consensus/RESULTS-2026-09-04.md:
+// pdf-two-column reconciles 0.998 matched with 1.6% order breaks and its
+// voted order is truth-perfect (passes); pdf-form reconciles 91/91 matched
+// with ~11% breaks (fails, so it falls back to geometry, which already
+// scores 1.000 there).
+constexpr double kTrustedMatchRateFloor = 0.95;
+constexpr double kTrustedOrderBreakRateCeiling = 0.05;
+
+bool reconciliation_supports_trust(const std::vector<SourceReconciliation>& legs) {
+  return !legs.empty() && std::ranges::all_of(legs, [](const SourceReconciliation& rec) {
+    const uint32_t seen = rec.matched + rec.missing;
+    const double match_rate =
+        seen == 0 ? 0.0 : static_cast<double>(rec.matched) / static_cast<double>(seen);
+    const double break_rate = rec.matched == 0
+                                  ? 1.0
+                                  : static_cast<double>(rec.order_breaks) / static_cast<double>(rec.matched);
+    return match_rate >= kTrustedMatchRateFloor && break_rate <= kTrustedOrderBreakRateCeiling;
+  });
+}
+
 class ConsensusPdfPageSource final : public PageSource {
  public:
   ConsensusPdfPageSource(std::shared_ptr<const std::string> bytes,
@@ -332,6 +356,10 @@ class ConsensusPdfPageSource final : public PageSource {
       page.reconciliation.push_back(reconcile(page, candidates[i], names[i],
                                               scores[i], tolerance_px));
     }
+    // A clean vote (every leg nearly complete, nearly monotone) means the
+    // winner's emission order is the reading order; the fold may skip its
+    // geometric re-order. The early returns above never set this.
+    page.source_order_trusted = reconciliation_supports_trust(page.reconciliation);
     return page;
   }
 
