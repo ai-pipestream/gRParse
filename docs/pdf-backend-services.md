@@ -224,9 +224,16 @@ PageData.reconciliation in consensus mode. Winners are labeled
 `protomolt` with per-parser values under their parser names in the
 prototype's JSON; wiring that into the typed claims/field_sources model
 is follow-up work, not landed. Consensus sections drive chunk
-boundaries, the path toward centroid-ready chunking. Next tuning target
-from the measurements: the fold's own reading-order pass, which is where
-two-column's residual 0.815 comes from once the source order is correct.
+boundaries, the path toward centroid-ready chunking. The fold now
+trusts a clean vote: when every reconciliation leg matches the winner
+nearly word for word and nearly in the same order (95% matched, 5%
+order-break ceiling, thresholds in `src/consensus_page_source.cpp`),
+the page is marked `OcrPage::source_order_trusted` and the page-level
+reading-order pass keeps the winner's emission order instead of
+re-deriving it geometrically. That is where two-column's residual 0.815
+came from once the source order was correct. A page whose legs disagree
+too much (the form's ~11% order breaks) falls back to the geometric
+order, which already scores 1.000 there.
 
 ## Open items (from the 2026-09-04 review)
 
