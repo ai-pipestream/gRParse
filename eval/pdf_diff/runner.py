@@ -421,7 +421,8 @@ def main() -> int:
         ).stdout.strip(),
         "grpcio": importlib.metadata.version("grpcio"),
     }
-    (OUT / "metrics.json").write_text(
+    suffix = backend or "backend"
+    (OUT / f"metrics-{suffix}.json").write_text(
         json.dumps({"meta": meta, "documents": results, "load_cases": load_cases}, indent=2)
     )
 
@@ -459,8 +460,8 @@ def main() -> int:
         ]
         for c in load_cases:
             lines.append(f"| {c['file']} | {c['poppler']} | {c['service']} | {c['verdict']} |")
-    (OUT / "report.md").write_text("\n".join(lines) + "\n")
-    print(f"wrote {OUT / 'report.md'} and metrics.json")
+    (OUT / f"report-{suffix}.md").write_text("\n".join(lines) + "\n")
+    print(f"wrote {OUT / f'report-{suffix}.md'} and metrics-{suffix}.json")
     return 0
 
 

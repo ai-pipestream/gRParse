@@ -101,11 +101,13 @@ int main(int argc, char** argv) {
       const auto b = box.bbox();
       if (!first) json += ",";
       first = false;
+      const auto text_bytes = box.text().to_utf8();
       json += "{\"x\": " + std::to_string(b.x()) +
               ", \"y\": " + std::to_string(b.y()) +
               ", \"w\": " + std::to_string(b.width()) +
               ", \"h\": " + std::to_string(b.height()) + ", \"text\": \"" +
-              JsonEscape(box.text().to_utf8().data()) + "\"";
+              JsonEscape(std::string(text_bytes.begin(), text_bytes.end())) +
+              "\"";
       if (box.has_font_info()) {
         json += ", \"font_name\": \"" + JsonEscape(box.get_font_name()) +
                 "\", \"font_size\": " + std::to_string(box.get_font_size());
