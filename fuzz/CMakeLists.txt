@@ -28,6 +28,9 @@ add_library(fuzz_flags INTERFACE)
 target_compile_options(fuzz_flags INTERFACE
   -g -O1 -fno-omit-frame-pointer -fsanitize=fuzzer,address,undefined)
 target_link_options(fuzz_flags INTERFACE -fsanitize=fuzzer,address,undefined)
+# Compile out the gRPC-backed PDF sources: a fuzzer must never dial a
+# backend, and this project deliberately skips the gRPC fetch.
+target_compile_definitions(fuzz_flags INTERFACE GRPARSE_FUZZ_STANDALONE)
 
 foreach(door pdf-source raster-source)
   string(REPLACE "-" "_" door_source "${door}")

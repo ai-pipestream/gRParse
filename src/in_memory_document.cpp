@@ -21,8 +21,13 @@
 #include <poppler-page.h>
 #include <poppler-page-renderer.h>
 
+// The standalone fuzz project compiles this file without the gRPC-backed
+// sources (fuzz/CMakeLists.txt); a fuzzer must never dial a backend, so
+// the whole remote dispatch compiles out there.
+#ifndef GRPARSE_FUZZ_STANDALONE
 #include "grparse/consensus_page_source.h"
 #include "grparse/remote_page_source.h"
+#endif
 #include "grparse/resource_pool.h"
 
 namespace grparse {
@@ -270,6 +275,7 @@ std::shared_ptr<PageSource> open_in_memory_document(std::shared_ptr<const std::s
   if (!bytes || bytes->empty()) throw InvalidDocument("Document bytes are empty");
   if (!(render_dpi > 0.0)) throw std::invalid_argument("Render DPI must be positive");
   if (pdf) {
+#ifndef GRPARSE_FUZZ_STANDALONE
     // GRPARSE_PDF_BACKEND selects PdfBackendService targets for the PDF
     // layer; unset or "inprocess" keeps the poppler path below. A single
     // target dials that backend; a comma-separated list reads the document
@@ -282,6 +288,7 @@ std::shared_ptr<PageSource> open_in_memory_document(std::shared_ptr<const std::s
       }
       return open_remote_pdf_document(std::move(bytes), *target, render_dpi);
     }
+#endif
     return std::make_shared<PdfPageSource>(std::move(bytes), pdf_parser_slots, render_dpi);
   }
   return std::make_shared<RasterPageSource>(std::move(bytes));
