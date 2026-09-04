@@ -1,7 +1,13 @@
 #include "token_counter.h"
 
 #include <cstddef>
+#include <cstdlib>
+#include <fstream>
+#include <iterator>
 #include <string>
+#include <utility>
+
+#include <tokenizers_cpp.h>
 
 namespace grparse::chunking {
 namespace {
@@ -186,6 +192,190 @@ int count_tokens(const char32_t* begin, const char32_t* end) {
 int count_tokens(std::string_view text) {
   const std::vector<char32_t> points = decode_utf8(text);
   return count_tokens(points.data(), points.data() + points.size());
+}
+
+// -- hf/1 -------------------------------------------------------------------
+
+std::string resolve_hf_tokenizer_path(std::string_view per_request_path) {
+  if (!per_request_path.empty()) return std::string(per_request_path);
+  if (const char* env = std::getenv("GRPARSE_CHUNK_TOKENIZER");
+      env != nullptr && *env != '\0') {
+    return env;
+  }
+  const char* models = std::getenv("GRPARSE_MODELS_DIR");
+  const std::string dir =
+      (models != nullptr && *models != '\0') ? models : "/models";
+  return dir + "/chunk/tokenizer.json";
+}
+
+namespace {
+
+// A minimal JSON reader, just strict enough to carve the top-level members
+// out of a tokenizer.json: strings with escapes, nested objects and arrays,
+// and primitive runs. The tokenizers crate parses the result again and
+// rejects anything this reader misjudges, so its job is member spans, not
+// schema validation.
+struct JsonCursor {
+  std::string_view text;
+  std::size_t pos = 0;
+
+  void skip_ws() {
+    while (pos < text.size() &&
+           (text[pos] == ' ' || text[pos] == '\t' || text[pos] == '\n' || text[pos] == '\r')) {
+      ++pos;
+    }
+  }
+
+  bool consume(char expected) {
+    skip_ws();
+    if (pos >= text.size() || text[pos] != expected) return false;
+    ++pos;
+    return true;
+  }
+
+  bool skip_string() {
+    skip_ws();
+    if (pos >= text.size() || text[pos] != '"') return false;
+    ++pos;
+    while (pos < text.size()) {
+      const char c = text[pos++];
+      if (c == '"') return true;
+      if (c == '\\') {
+        if (pos >= text.size()) return false;
+        ++pos;
+      }
+    }
+    return false;  // unterminated
+  }
+
+  bool skip_value() {
+    skip_ws();
+    if (pos >= text.size()) return false;
+    if (text[pos] == '"') return skip_string();
+    if (text[pos] == '{') {
+      ++pos;
+      if (consume('}')) return true;
+      while (true) {
+        if (!skip_string() || !consume(':') || !skip_value()) return false;
+        if (consume(',')) continue;
+        return consume('}');
+      }
+    }
+    if (text[pos] == '[') {
+      ++pos;
+      if (consume(']')) return true;
+      while (true) {
+        if (!skip_value()) return false;
+        if (consume(',')) continue;
+        return consume(']');
+      }
+    }
+    // A primitive: a run that ends at a structural character or whitespace.
+    const std::size_t start = pos;
+    while (pos < text.size() &&
+           std::string_view(" \t\r\n,]}").find(text[pos]) == std::string_view::npos) {
+      ++pos;
+    }
+    return pos > start;
+  }
+};
+
+grpc::Status invalid_tokenizer_json(std::string_view path, std::string_view why) {
+  return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                      "tokenizer file '" + std::string(path) +
+                          "' is not one well-formed JSON object: " + std::string(why));
+}
+
+}  // namespace
+
+grpc::Status load_hf_tokenizer_json(std::string_view path, std::string* json_out) {
+  std::ifstream in{std::string(path), std::ios::binary};
+  if (!in) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        "tokenizer file '" + std::string(path) + "' is not readable");
+  }
+  const std::string raw{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+  if (in.bad()) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        "tokenizer file '" + std::string(path) + "' failed while reading");
+  }
+
+  // The fixed-length padding some published tokenizer.json files ship would
+  // count pads instead of text, and an embedded truncation limit would cap
+  // every count at the model's window; a chunking counter measures the text
+  // it is handed, so both members are stripped before the load.
+  JsonCursor cursor{raw};
+  if (!cursor.consume('{')) return invalid_tokenizer_json(path, "expected '{'");
+  const std::string_view view = raw;  // substr() on the string would dangle
+  std::vector<std::string_view> kept;
+  if (!cursor.consume('}')) {
+    while (true) {
+      cursor.skip_ws();
+      const std::size_t member_start = cursor.pos;
+      if (!cursor.skip_string()) return invalid_tokenizer_json(path, "bad member name");
+      const std::size_t key_start = member_start + 1;
+      const std::size_t key_end = cursor.pos - 1;
+      if (!cursor.consume(':')) return invalid_tokenizer_json(path, "missing ':'");
+      if (!cursor.skip_value()) return invalid_tokenizer_json(path, "bad member value");
+      const std::string_view key = view.substr(key_start, key_end - key_start);
+      if (key != "padding" && key != "truncation") {
+        kept.push_back(view.substr(member_start, cursor.pos - member_start));
+      }
+      if (cursor.consume(',')) continue;
+      if (!cursor.consume('}')) return invalid_tokenizer_json(path, "missing ',' or '}'");
+      break;
+    }
+  }
+  cursor.skip_ws();
+  if (cursor.pos != raw.size()) {
+    return invalid_tokenizer_json(path, "trailing content after the object");
+  }
+
+  std::string out = "{";
+  for (std::size_t index = 0; index < kept.size(); ++index) {
+    if (index != 0) out.push_back(',');
+    out += kept[index];
+  }
+  out.push_back('}');
+  *json_out = std::move(out);
+  return grpc::Status::OK;
+}
+
+TokenCounter::TokenCounter() = default;
+TokenCounter::~TokenCounter() = default;
+TokenCounter::TokenCounter(TokenCounter&&) noexcept = default;
+TokenCounter& TokenCounter::operator=(TokenCounter&&) noexcept = default;
+
+grpc::Status TokenCounter::huggingface(std::string_view path, TokenCounter* out) {
+  std::string json;
+  grpc::Status load = load_hf_tokenizer_json(path, &json);
+  if (!load.ok()) return load;
+  std::unique_ptr<tokenizers::Tokenizer> tokenizer = tokenizers::Tokenizer::FromBlobJSON(json);
+  if (tokenizer == nullptr) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        "tokenizer file '" + std::string(path) +
+                            "' is not a HuggingFace tokenizer.json");
+  }
+  out->hf_ = std::move(tokenizer);
+  out->rules_ = kHfTokenizerRules;
+  return grpc::Status::OK;
+}
+
+int TokenCounter::count(std::string_view text) const {
+  if (hf_ == nullptr) return count_tokens(text);
+  // The Rust core unwraps a UTF-8 view of the input, so a malformed byte
+  // would panic across the FFI boundary and take the server down. Round-trip
+  // through this module's codec first: malformed bytes become U+FFFD, the
+  // same degradation wordish/1 gives them.
+  const std::vector<char32_t> points = decode_utf8(text);
+  const std::string clean = encode_utf8(points.data(), points.data() + points.size());
+  return static_cast<int>(hf_->Encode(clean).size());
+}
+
+int TokenCounter::count(const char32_t* begin, const char32_t* end) const {
+  if (hf_ == nullptr) return count_tokens(begin, end);
+  // encode_utf8 output is well-formed by construction, so no sanitize pass.
+  return static_cast<int>(hf_->Encode(encode_utf8(begin, end)).size());
 }
 
 }  // namespace grparse::chunking

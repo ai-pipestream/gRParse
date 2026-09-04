@@ -1,0 +1,40 @@
+diff --git a/rust/src/lib.rs b/rust/src/lib.rs
+index 2697ca1..8494a38 100644
+--- a/rust/src/lib.rs
++++ b/rust/src/lib.rs
+@@ -111,7 +111,17 @@ impl TokenizerWrapper {
+ extern "C" fn tokenizers_new_from_str(input_cstr: *const u8, len: usize) -> *mut TokenizerWrapper {
+     unsafe {
+         let json = &String::from_utf8_lossy(std::slice::from_raw_parts(input_cstr, len));
+-        return Box::into_raw(Box::new(TokenizerWrapper::from_str(json)));
++        // gRParse patch: report an unparseable tokenizer.json as a null handle.
++        // Upstream unwraps here, and a panic escaping an extern "C" fn aborts
++        // the host process, which no model file may do to a server.
++        return match Tokenizer::from_str(json.as_ref()) {
++            Ok(tokenizer) => Box::into_raw(Box::new(TokenizerWrapper {
++                tokenizer: tokenizer.into(),
++                decode_str: String::new(),
++                id_to_token_result: String::new(),
++            })),
++            Err(_) => std::ptr::null_mut(),
++        };
+     }
+ }
+ 
+diff --git a/src/huggingface_tokenizer.cc b/src/huggingface_tokenizer.cc
+index 6cbe0d8..e789ff6 100644
+--- a/src/huggingface_tokenizer.cc
++++ b/src/huggingface_tokenizer.cc
+@@ -109,7 +109,11 @@ class HFTokenizer : public Tokenizer {
+ };
+ 
+ std::unique_ptr<Tokenizer> Tokenizer::FromBlobJSON(const std::string& json) {
+-  return std::make_unique<HFTokenizer>(tokenizers_new_from_str(json.data(), json.length()));
++  // gRParse patch: a null handle is the patched load-failure signal; pass it
++  // on as a null Tokenizer instead of wrapping it into a crash on first use.
++  TokenizerHandle handle = tokenizers_new_from_str(json.data(), json.length());
++  if (handle == nullptr) return nullptr;
++  return std::make_unique<HFTokenizer>(handle);
+ }
+ 
+ std::unique_ptr<Tokenizer> Tokenizer::FromBlobByteLevelBPE(const std::string& vocab,

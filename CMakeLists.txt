@@ -179,6 +179,48 @@ FetchContent_Declare(simdutf
   GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(simdutf)
 
+# tokenizers-cpp loads a HuggingFace tokenizer.json for the hybrid chunker's
+# "hf/1" token counter. It wraps the Rust tokenizers crate behind a small C
+# ABI, so the build needs cargo on PATH (the Dockerfiles and the CI runner
+# images carry it; a local build needs a Rust toolchain). Pinned to a commit
+# because the project publishes no releases. Two patches ride on top:
+# hf-only-build drops the sentencepiece and msgpack subdirectories (this
+# counter never loads those formats, and sentencepiece vendors its own
+# abseil whose absl::* target names collide with the ones gRPC expects from
+# its own bundled abseil), and null-on-parse-error keeps a bad tokenizer file
+# from taking the server down: upstream unwraps the tokenizer.json parse
+# inside an extern "C" fn, and a panic across that boundary aborts the host
+# process, so the patched code returns a null handle that FromBlobJSON turns
+# into a null Tokenizer and the caller reports as INVALID_ARGUMENT.
+FetchContent_Declare(tokenizers_cpp
+  GIT_REPOSITORY https://github.com/mlc-ai/tokenizers-cpp.git
+  GIT_TAG c586c52f93f7b060753bd2388eb96a105cb7374d
+  # checkout first so the step is idempotent: FetchContent re-runs the patch
+  # step whenever the subbuild re-executes, including on cached trees.
+  PATCH_COMMAND git checkout -- CMakeLists.txt rust/src/lib.rs src/huggingface_tokenizer.cc
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/tokenizers-cpp-hf-only-build.patch"
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/tokenizers-cpp-null-on-parse-error.patch")
+FetchContent_MakeAvailable(tokenizers_cpp)
+# FetchContent only patches when it populates, so a dependency tree cached
+# before the patch existed would keep the panicking load. Fail the configure
+# instead, same guard as rapidocr above.
+file(READ "${tokenizers_cpp_SOURCE_DIR}/rust/src/lib.rs" GRPARSE_TOKENIZERS_C_SOURCE)
+string(FIND "${GRPARSE_TOKENIZERS_C_SOURCE}" "std::ptr::null_mut()" GRPARSE_TOKENIZERS_PATCH_AT)
+if(GRPARSE_TOKENIZERS_PATCH_AT EQUAL -1)
+  message(FATAL_ERROR "rust/src/lib.rs is unpatched: the tokenizers_cpp source tree predates "
+    "patches/tokenizers-cpp-null-on-parse-error.patch. Delete _deps/tokenizers_cpp-* from the "
+    "build directory (or the docker build cache) and re-run CMake.")
+endif()
+unset(GRPARSE_TOKENIZERS_C_SOURCE)
+file(READ "${tokenizers_cpp_SOURCE_DIR}/CMakeLists.txt" GRPARSE_TOKENIZERS_CMAKE)
+string(FIND "${GRPARSE_TOKENIZERS_CMAKE}" "gRParse: hf-only build" GRPARSE_TOKENIZERS_CMAKE_PATCH_AT)
+if(GRPARSE_TOKENIZERS_CMAKE_PATCH_AT EQUAL -1)
+  message(FATAL_ERROR "tokenizers_cpp CMakeLists.txt is unpatched: the source tree predates "
+    "patches/tokenizers-cpp-hf-only-build.patch. Delete _deps/tokenizers_cpp-* from the "
+    "build directory (or the docker build cache) and re-run CMake.")
+endif()
+unset(GRPARSE_TOKENIZERS_CMAKE)
+
 # miniz supplies the raw deflate compressor and the CRC-32 the ZIP target
 # writes its archives with; the ZIP container itself is written here, because
 # no stock archiver produces the byte-identical output a reproducible bundle
@@ -626,7 +668,7 @@ target_link_libraries(grparse_core
   # grparse_curl is PUBLIC for its link options alone: they belong to every
   # executable that ends up with both TLS stacks in its link closure.
   PUBLIC grparse_proto rapidocr PkgConfig::POPPLER_CPP Threads::Threads grparse_curl
-  PRIVATE ZXing::ZXing yaml-cpp::yaml-cpp simdutf::simdutf miniz grparse_flags)
+  PRIVATE ZXing::ZXing yaml-cpp::yaml-cpp simdutf::simdutf miniz tokenizers_cpp grparse_flags)
 
 add_executable(grparse-server src/main.cpp src/server_config.cpp)
 target_link_libraries(grparse-server PRIVATE grparse_core grparse_flags grpc++_reflection)
@@ -641,6 +683,8 @@ if(BUILD_TESTING)
     call-executor-test
     canonical-json-test
     chunking-test
+    chunk-hf-tokenizer-test
+    chunk-hf-model-test
     collector-coordinator-test
     confluence-storage-test
     docling-map-test
@@ -736,6 +780,16 @@ if(BUILD_TESTING)
     SKIP_RETURN_CODE 77
     ENVIRONMENT
       "GRPARSE_TEST_MODELS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/models;GRPARSE_TEST_DATA_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+  # Same gate for the hf/1 chunk tokenizer's real-model tier: the fixture
+  # tier (chunk-hf-tokenizer-test) always runs against the tiny committed
+  # tokenizer.json; the model tier skips without a deployment's
+  # models/chunk/tokenizer.json.
+  set_tests_properties(chunk-hf-model-test PROPERTIES
+    SKIP_RETURN_CODE 77
+    ENVIRONMENT
+      "GRPARSE_TEST_MODELS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/models;GRPARSE_TEST_DATA_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+  set_tests_properties(chunk-hf-tokenizer-test PROPERTIES
+    ENVIRONMENT "GRPARSE_TEST_DATA_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
   # ZXing is compiled in, so the barcode tests never skip; they only need the
   # committed QR fixture.  The scheduler test loads the same fixture to prove
   # the class-triggered decode end to end, and the office enrichment test

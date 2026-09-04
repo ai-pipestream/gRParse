@@ -178,3 +178,25 @@ the server disables layout under `GRPARSE_LAYOUT=auto` and fails startup under
 
   Requires layout; runs only on picture crops. When absent, pictures keep
   their bounding boxes and simply carry no class annotation.
+
+## Chunk tokenizer (optional; enables the `hf/1` chunk counter)
+
+- `chunk/tokenizer.json` — a HuggingFace tokenizer.json for the hybrid
+  chunker's `hf/1` tokenizer option, so `max_tokens` and `num_tokens` are
+  measured in the embedding model's own units. Docling's default is
+  all-MiniLM-L6-v2:
+
+  ```bash
+  mkdir -p chunk
+  curl -L -o chunk/tokenizer.json \
+    https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json
+  ```
+
+  The resolution order is the request's `tokenizer_path`, then
+  `$GRPARSE_CHUNK_TOKENIZER`, then this file. The file's own `padding` and
+  `truncation` settings are stripped on load: some published tokenizer.json
+  files ship fixed-length padding, which would count pads instead of text.
+  A request that asks for `hf/1` without a resolvable file fails with
+  `INVALID_ARGUMENT`; everything chunks under the built-in `wordish/1`
+  counter when the file is absent and `hf/1` is never requested.
+

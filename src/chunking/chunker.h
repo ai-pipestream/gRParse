@@ -13,7 +13,8 @@
 // The rule sets, in the exact spelling that reaches the wire:
 //
 //   "grparse-hier/1"   the hierarchical walk and the text serialization
-//   "wordish/1"        the token counter (token_counter.h)
+//   "wordish/1"        the built-in token counter (token_counter.h)
+//   "hf/1"             the HuggingFace tokenizer.json counter (token_counter.h)
 //   "sentence/1"       the sentence splitter (sentence_rules.h)
 //   "text/1"           the chunk text serialization, described below
 //
@@ -44,6 +45,7 @@
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "ai/pipestream/parse/v1/parse_stream.pb.h"
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
+#include "token_counter.h"
 
 namespace grparse::chunking {
 
@@ -74,9 +76,13 @@ inline constexpr std::string_view kHierarchicalRules = "grparse-hier/1";
 
 // The rules_digest a hybrid chunk carries: the hybrid rule set plus every
 // input that can move a boundary. Exactly
-// "grparse-hybrid/1;tok=wordish/1;sent=sentence/1;max_tokens=N;merge_peers=B"
-// with N in decimal and B spelled "true" or "false".
-std::string hybrid_rules_digest(int max_tokens, bool merge_peers);
+// "grparse-hybrid/1;tok=T;sent=sentence/1;max_tokens=N;merge_peers=B"
+// with T the counter's rules ("wordish/1" or "hf/1"), N in decimal, and B
+// spelled "true" or "false". Note the digest names the counter, not the
+// tokenizer.json hf/1 loaded; the file is a deployment's model, and two
+// deployments with different files chunk differently under the same digest.
+std::string hybrid_rules_digest(int max_tokens, bool merge_peers,
+                                std::string_view tokenizer = kTokenizerRules);
 
 // The serialization options both chunkers share.
 struct ChunkOptions {
@@ -98,18 +104,24 @@ std::vector<ai::pipestream::parse::v1::Chunk> chunk_hierarchical(
 
 // Rejects a hybrid request whose options cannot produce a deterministic
 // chunking: max_tokens is required, and the optional tokenizer field must
-// name the one tokenizer this service implements.
+// name one of the tokenizers this service implements ("wordish/1", the
+// default, or "hf/1"). hf/1 additionally resolves and loads its
+// tokenizer.json here (see token_counter.h for the resolution order), so a
+// request whose file is absent fails before any parsing work starts.
 grpc::Status validate_hybrid_options(
     const ai::pipestream::parse::v1::HybridChunkerOptions& options);
 
 // The hybrid chunker: the hierarchical chunks, then peer merging under the
 // token budget, then a sentence-wise split of anything still over it.
-// `options` must have passed validate_hybrid_options.
-std::vector<ai::pipestream::parse::v1::Chunk> chunk_hybrid(
+// `options` must have passed validate_hybrid_options; a counter that still
+// fails to load (its file changed after validation) is an INTERNAL error
+// rather than a silent fallback to wordish/1 counts.
+grpc::Status chunk_hybrid(
     const ai::pipestream::document::v1::Document& document,
     const OffsetTable& offsets,
     const ai::pipestream::parse::v1::HybridChunkerOptions& options,
-    std::string_view filename);
+    std::string_view filename,
+    std::vector<ai::pipestream::parse::v1::Chunk>* out);
 
 }  // namespace grparse::chunking
 

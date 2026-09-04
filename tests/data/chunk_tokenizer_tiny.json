@@ -1,0 +1,84 @@
+{
+  "version": "1.0",
+  "truncation": {
+    "direction": "Right",
+    "max_length": 8,
+    "strategy": "LongestFirst",
+    "stride": 0
+  },
+  "padding": {
+    "strategy": { "Fixed": 16 },
+    "direction": "Right",
+    "pad_to_multiple_of": null,
+    "pad_id": 0,
+    "pad_type_id": 0,
+    "pad_token": "[PAD]"
+  },
+  "added_tokens": [
+    {
+      "id": 0,
+      "content": "[PAD]",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    }
+  ],
+  "normalizer": null,
+  "pre_tokenizer": { "type": "Whitespace" },
+  "post_processor": null,
+  "decoder": null,
+  "model": {
+    "type": "BPE",
+    "dropout": null,
+    "unk_token": null,
+    "continuing_subword_prefix": null,
+    "end_of_word_suffix": null,
+    "fuse_unk": false,
+    "byte_fallback": false,
+    "ignore_merges": false,
+    "vocab": {
+      "[PAD]": 0,
+      "a": 1,
+      "b": 2,
+      "c": 3,
+      "d": 4,
+      "e": 5,
+      "h": 6,
+      "l": 7,
+      "o": 8,
+      "r": 9,
+      "w": 10,
+      "世": 11,
+      "界": 12,
+      ",": 13,
+      ".": 14,
+      "!": 15,
+      "ab": 16,
+      "abc": 17,
+      "he": 18,
+      "hel": 19,
+      "hell": 20,
+      "hello": 21,
+      "wo": 22,
+      "wor": 23,
+      "worl": 24,
+      "world": 25,
+      "世界": 26
+    },
+    "merges": [
+      "a b",
+      "ab c",
+      "h e",
+      "he l",
+      "hel l",
+      "hell o",
+      "w o",
+      "wo r",
+      "wor l",
+      "worl d",
+      "世 界"
+    ]
+  }
+}

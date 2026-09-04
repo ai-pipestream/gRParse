@@ -68,13 +68,13 @@ std::string contextualized(const WorkChunk& chunk) {
   return out;
 }
 
-int heading_tokens(const WorkChunk& chunk) {
+int heading_tokens(const WorkChunk& chunk, const TokenCounter& counter) {
   std::string block;
   for (const auto& heading : chunk.headings) {
     block += heading;
     block.push_back('\n');
   }
-  return count_tokens(block);
+  return counter.count(block);
 }
 
 // The item fields the chunkers fold regardless of which arena an item lives
@@ -543,13 +543,14 @@ class Chunker {
 // -- materialization --------------------------------------------------------
 
 parsev1::Chunk to_proto(const WorkChunk& work, int index, std::string_view filename,
-                        const ChunkOptions& options, const std::string& digest) {
+                        const ChunkOptions& options, const std::string& digest,
+                        const TokenCounter& counter) {
   parsev1::Chunk chunk;
   chunk.set_filename(std::string(filename));
   chunk.set_chunk_index(index);
   chunk.set_text(work.text);
   if (options.include_raw_text) chunk.set_raw_text(work.text);
-  chunk.set_num_tokens(count_tokens(contextualized(work)));
+  chunk.set_num_tokens(counter.count(contextualized(work)));
   for (const auto& heading : work.headings) chunk.add_headings(heading);
   for (const auto& caption : work.captions) chunk.add_captions(caption);
   for (const auto& item : work.doc_items) chunk.add_doc_items(item);
@@ -573,11 +574,13 @@ parsev1::Chunk to_proto(const WorkChunk& work, int index, std::string_view filen
 std::vector<parsev1::Chunk> materialize(const std::vector<WorkChunk>& work,
                                         std::string_view filename,
                                         const ChunkOptions& options,
-                                        const std::string& digest) {
+                                        const std::string& digest,
+                                        const TokenCounter& counter) {
   std::vector<parsev1::Chunk> chunks;
   chunks.reserve(work.size());
   for (std::size_t index = 0; index < work.size(); ++index) {
-    chunks.push_back(to_proto(work[index], static_cast<int>(index), filename, options, digest));
+    chunks.push_back(
+        to_proto(work[index], static_cast<int>(index), filename, options, digest, counter));
   }
   return chunks;
 }
@@ -608,7 +611,8 @@ void fold_peer(WorkChunk* into, WorkChunk&& next, std::string&& merged_text) {
 // Pass 2: consecutive chunks under the same heading trail join while their
 // contextualized text still fits the budget. A different trail always
 // breaks the run, whatever the budget allows.
-std::vector<WorkChunk> merge_peers(std::vector<WorkChunk>&& work, int max_tokens) {
+std::vector<WorkChunk> merge_peers(std::vector<WorkChunk>&& work, int max_tokens,
+                                   const TokenCounter& counter) {
   std::vector<WorkChunk> merged;
   for (auto& chunk : work) {
     if (!merged.empty() && merged.back().headings == chunk.headings) {
@@ -616,7 +620,7 @@ std::vector<WorkChunk> merge_peers(std::vector<WorkChunk>&& work, int max_tokens
       WorkChunk probe;
       probe.headings = chunk.headings;
       probe.text = candidate;
-      if (count_tokens(contextualized(probe)) <= max_tokens) {
+      if (counter.count(contextualized(probe)) <= max_tokens) {
         fold_peer(&merged.back(), std::move(chunk), std::move(candidate));
         continue;
       }
@@ -628,13 +632,18 @@ std::vector<WorkChunk> merge_peers(std::vector<WorkChunk>&& work, int max_tokens
 
 // Greedy packing of `points` into pieces of at most `budget` tokens each:
 // sentences first, then words inside a sentence that does not fit alone,
-// then a hard cut inside a word that does not fit alone. The hard cut is by
-// code point count, which bounds the token count because no token spans
-// fewer than one code point.
-std::vector<Span> pack_spans(const std::vector<char32_t>& points, int budget) {
+// then a hard cut inside a word that does not fit alone. Under wordish/1 the
+// hard cut is by code point count, which bounds the token count because no
+// token spans fewer than one code point. A byte-level hf/1 tokenizer breaks
+// that bound (one code point can cost several tokens), so the hf/1 cut grows
+// each piece one code point at a time and measures, always emitting at least
+// one code point so the loop makes progress even when a single code point
+// alone exceeds the budget.
+std::vector<Span> pack_spans(const std::vector<char32_t>& points, int budget,
+                             const TokenCounter& counter) {
   const char32_t* data = points.data();
-  const auto tokens_in = [data](const Span& span) {
-    return count_tokens(data + span.begin, data + span.end);
+  const auto tokens_in = [&data, &counter](const Span& span) {
+    return counter.count(data + span.begin, data + span.end);
   };
   const auto trim = [&points](Span span) {
     while (span.begin < span.end && is_wordish_whitespace(points[span.begin])) ++span.begin;
@@ -679,9 +688,21 @@ std::vector<Span> pack_spans(const std::vector<char32_t>& points, int budget) {
       index = word_end;
       if (tokens_in(word) > budget) {
         flush(pending);
-        for (std::size_t cut = word.begin; cut < word.end;
-             cut += static_cast<std::size_t>(budget)) {
-          pieces.push_back({cut, std::min(word.end, cut + static_cast<std::size_t>(budget))});
+        if (counter.codepoint_bounded()) {
+          for (std::size_t cut = word.begin; cut < word.end;
+               cut += static_cast<std::size_t>(budget)) {
+            pieces.push_back({cut, std::min(word.end, cut + static_cast<std::size_t>(budget))});
+          }
+        } else {
+          // Measured cut: quadratic in the word's length, which only a single
+          // word over the whole budget can trigger.
+          std::size_t cut = word.begin;
+          while (cut < word.end) {
+            std::size_t end = cut + 1;
+            while (end < word.end && tokens_in(Span{cut, end + 1}) <= budget) ++end;
+            pieces.push_back({cut, end});
+            cut = end;
+          }
         }
         continue;
       }
@@ -705,16 +726,17 @@ std::vector<Span> pack_spans(const std::vector<char32_t>& points, int budget) {
 // Pass 3: split what is still over budget. The pieces keep the headings and
 // the doc items of the chunk they came from; their offsets narrow only when
 // the chunk was exactly one offset-table entry's text.
-std::vector<WorkChunk> split_oversized(std::vector<WorkChunk>&& work, int max_tokens) {
+std::vector<WorkChunk> split_oversized(std::vector<WorkChunk>&& work, int max_tokens,
+                                       const TokenCounter& counter) {
   std::vector<WorkChunk> split;
   for (auto& chunk : work) {
-    if (count_tokens(contextualized(chunk)) <= max_tokens) {
+    if (counter.count(contextualized(chunk)) <= max_tokens) {
       split.push_back(std::move(chunk));
       continue;
     }
-    const int budget = std::max(1, max_tokens - heading_tokens(chunk));
+    const int budget = std::max(1, max_tokens - heading_tokens(chunk, counter));
     const std::vector<char32_t> points = decode_utf8(chunk.text);
-    const std::vector<Span> pieces = pack_spans(points, budget);
+    const std::vector<Span> pieces = pack_spans(points, budget, counter);
     if (pieces.size() <= 1) {
       split.push_back(std::move(chunk));
       continue;
@@ -744,8 +766,8 @@ void add_offsets(const google::protobuf::RepeatedPtrField<parsev1::TextOffset>& 
   }
 }
 
-std::string hybrid_rules_digest(int max_tokens, bool merge_peers) {
-  return "grparse-hybrid/1;tok=" + std::string(kTokenizerRules) +
+std::string hybrid_rules_digest(int max_tokens, bool merge_peers, std::string_view tokenizer) {
+  return "grparse-hybrid/1;tok=" + std::string(tokenizer) +
          ";sent=" + std::string(kSentenceRules) +
          ";max_tokens=" + std::to_string(max_tokens) +
          ";merge_peers=" + (merge_peers ? "true" : "false");
@@ -756,7 +778,10 @@ std::vector<parsev1::Chunk> chunk_hierarchical(const docv1::Document& document,
                                                const ChunkOptions& options,
                                                std::string_view filename) {
   Chunker chunker(document, offsets, options);
-  return materialize(chunker.run(), filename, options, std::string(kHierarchicalRules));
+  // The hierarchical chunker has no tokenizer option; its informational
+  // num_tokens is always the wordish/1 count.
+  const TokenCounter counter;
+  return materialize(chunker.run(), filename, options, std::string(kHierarchicalRules), counter);
 }
 
 grpc::Status validate_hybrid_options(const parsev1::HybridChunkerOptions& options) {
@@ -768,28 +793,69 @@ grpc::Status validate_hybrid_options(const parsev1::HybridChunkerOptions& option
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                         "chunking option 'max_tokens' must be positive");
   }
-  if (options.has_tokenizer() && options.tokenizer() != kTokenizerRules) {
+  const std::string_view tokenizer =
+      options.has_tokenizer() ? std::string_view(options.tokenizer()) : kTokenizerRules;
+  if (tokenizer != kTokenizerRules && tokenizer != kHfTokenizerRules) {
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                         "chunking option 'tokenizer' must be one of: " +
-                            std::string(kTokenizerRules));
+                            std::string(kTokenizerRules) + ", " + std::string(kHfTokenizerRules));
+  }
+  if (options.has_tokenizer_path() && !options.tokenizer_path().empty() &&
+      tokenizer != kHfTokenizerRules) {
+    return grpc::Status(
+        grpc::StatusCode::INVALID_ARGUMENT,
+        "chunking option 'tokenizer_path' is meaningful only with tokenizer \"hf/1\"");
+  }
+  if (tokenizer == kHfTokenizerRules) {
+    const std::string path = resolve_hf_tokenizer_path(
+        options.has_tokenizer_path() ? options.tokenizer_path() : std::string());
+    std::string json;
+    const grpc::Status load = load_hf_tokenizer_json(path, &json);
+    if (!load.ok()) {
+      return grpc::Status(
+          grpc::StatusCode::INVALID_ARGUMENT,
+          "chunking option 'tokenizer' requested hf/1 but its tokenizer.json did not "
+          "load: " +
+              load.error_message() +
+              " (resolution order: the request's tokenizer_path, then "
+              "$GRPARSE_CHUNK_TOKENIZER, then "
+              "$GRPARSE_MODELS_DIR/chunk/tokenizer.json with GRPARSE_MODELS_DIR "
+              "defaulting to /models; tried '" +
+              path + "')");
+    }
   }
   return grpc::Status::OK;
 }
 
-std::vector<parsev1::Chunk> chunk_hybrid(const docv1::Document& document,
-                                         const OffsetTable& offsets,
-                                         const parsev1::HybridChunkerOptions& options,
-                                         std::string_view filename) {
+grpc::Status chunk_hybrid(const docv1::Document& document, const OffsetTable& offsets,
+                          const parsev1::HybridChunkerOptions& options,
+                          std::string_view filename, std::vector<parsev1::Chunk>* out) {
   const ChunkOptions serialization{options.use_markdown_tables(), options.include_raw_text()};
   const int max_tokens = options.max_tokens();
   // The wire default of an unset merge_peers is on: peers merge unless the
   // caller says otherwise.
   const bool peers = !options.has_merge_peers() || options.merge_peers();
+  TokenCounter counter;
+  if (options.has_tokenizer() && options.tokenizer() == kHfTokenizerRules) {
+    const std::string path = resolve_hf_tokenizer_path(
+        options.has_tokenizer_path() ? options.tokenizer_path() : std::string());
+    const grpc::Status loaded = TokenCounter::huggingface(path, &counter);
+    if (!loaded.ok()) {
+      // validate_hybrid_options read the same file before the parse started;
+      // a failure here means it changed under the request, which is the
+      // deployment's problem, not the caller's.
+      return grpc::Status(grpc::StatusCode::INTERNAL,
+                          "hf/1 tokenizer.json failed to load after validation: " +
+                              loaded.error_message());
+    }
+  }
   Chunker chunker(document, offsets, serialization);
   std::vector<WorkChunk> work = chunker.run();
-  if (peers) work = merge_peers(std::move(work), max_tokens);
-  work = split_oversized(std::move(work), max_tokens);
-  return materialize(work, filename, serialization, hybrid_rules_digest(max_tokens, peers));
+  if (peers) work = merge_peers(std::move(work), max_tokens, counter);
+  work = split_oversized(std::move(work), max_tokens, counter);
+  *out = materialize(work, filename, serialization,
+                     hybrid_rules_digest(max_tokens, peers, counter.rules()), counter);
+  return grpc::Status::OK;
 }
 
 }  // namespace grparse::chunking

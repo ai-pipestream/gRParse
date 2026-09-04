@@ -229,6 +229,13 @@ std::string serialized(const std::vector<parsev1::Chunk>& chunks) {
   return bytes;
 }
 
+// The status-returning chunk_hybrid, unwrapped the way the wordish-only cases
+// use it: a failure is a test failure.
+std::vector<parsev1::Chunk> run_hybrid(const docv1::Document& document,
+                                       const OffsetTable& offsets,
+                                       const parsev1::HybridChunkerOptions& options,
+                                       const std::string& filename);
+
 // -- the fixture ------------------------------------------------------------
 
 // A document with every shape the walk has a rule for: a title, two heading
@@ -277,7 +284,7 @@ void verify_chunking_is_byte_identical_across_runs_and_threads() {
   hybrid.set_max_tokens(12);
   hybrid.set_include_raw_text(true);
   const std::string hybrid_reference =
-      serialized(chunk_hybrid(document, offsets, hybrid, "guide.pdf"));
+      serialized(run_hybrid(document, offsets, hybrid, "guide.pdf"));
 
   std::vector<std::string> hierarchical_results(4);
   std::vector<std::string> hybrid_results(4);
@@ -287,7 +294,7 @@ void verify_chunking_is_byte_identical_across_runs_and_threads() {
       hierarchical_results[static_cast<std::size_t>(worker)] =
           serialized(chunk_hierarchical(document, offsets, options, "guide.pdf"));
       hybrid_results[static_cast<std::size_t>(worker)] =
-          serialized(chunk_hybrid(document, offsets, hybrid, "guide.pdf"));
+          serialized(run_hybrid(document, offsets, hybrid, "guide.pdf"));
     });
   }
   for (auto& worker : workers) worker.join();
@@ -604,6 +611,18 @@ parsev1::HybridChunkerOptions hybrid_options(int max_tokens) {
   return options;
 }
 
+// The status-returning chunk_hybrid, unwrapped the way the wordish-only cases
+// use it: a failure is a test failure.
+std::vector<parsev1::Chunk> run_hybrid(const docv1::Document& document,
+                                       const OffsetTable& offsets,
+                                       const parsev1::HybridChunkerOptions& options,
+                                       const std::string& filename) {
+  std::vector<parsev1::Chunk> chunks;
+  const grpc::Status status = chunk_hybrid(document, offsets, options, filename, &chunks);
+  if (!status.ok()) throw std::runtime_error("chunk_hybrid failed: " + status.error_message());
+  return chunks;
+}
+
 void verify_hybrid_rejects_undecidable_options() {
   parsev1::HybridChunkerOptions missing;
   const grpc::Status no_budget = validate_hybrid_options(missing);
@@ -637,7 +656,7 @@ void verify_hybrid_merges_only_equal_heading_trails() {
   add_section(&document, "Beta", 1);
   add_paragraph(&document, "five six");
 
-  const auto merged = chunk_hybrid(document, {}, hybrid_options(64), "d.pdf");
+  const auto merged = run_hybrid(document, {}, hybrid_options(64), "d.pdf");
   require_eq(static_cast<int>(merged.size()), 2, "peers under one trail merge into one chunk");
   require_eq(merged.front().text(), "one two\nthree four", "merged peers join with a newline");
   require(headings_of(merged.front()) == std::vector<std::string>({"Alpha"}),
@@ -648,12 +667,12 @@ void verify_hybrid_merges_only_equal_heading_trails() {
              "the hybrid digest spells out every boundary input");
 
   // The budget, not the trail, is what stops a merge here.
-  const auto tight = chunk_hybrid(document, {}, hybrid_options(4), "d.pdf");
+  const auto tight = run_hybrid(document, {}, hybrid_options(4), "d.pdf");
   require_eq(static_cast<int>(tight.size()), 3, "a budget that fits no peer merges nothing");
 
   parsev1::HybridChunkerOptions no_merge = hybrid_options(64);
   no_merge.set_merge_peers(false);
-  const auto unmerged = chunk_hybrid(document, {}, no_merge, "d.pdf");
+  const auto unmerged = run_hybrid(document, {}, no_merge, "d.pdf");
   require_eq(static_cast<int>(unmerged.size()), 3, "merge_peers false keeps peers apart");
   require(unmerged.front().rules_digest().contains("merge_peers=false"),
           "the digest records the merge decision");
@@ -663,7 +682,7 @@ void verify_hybrid_splits_oversized_chunks() {
   docv1::Document document = new_document();
   add_paragraph(&document,
                 "Alpha beta gamma delta. Epsilon zeta eta theta. Iota kappa lambda mu.");
-  const auto chunks = chunk_hybrid(document, {}, hybrid_options(5), "d.pdf");
+  const auto chunks = run_hybrid(document, {}, hybrid_options(5), "d.pdf");
   require_eq(static_cast<int>(chunks.size()), 3, "one sentence per chunk at this budget");
   require_eq(chunks[0].text(), "Alpha beta gamma delta.", "the first sentence packs alone");
   require_eq(chunks[1].text(), "Epsilon zeta eta theta.", "the second sentence packs alone");
@@ -675,7 +694,7 @@ void verify_hybrid_splits_oversized_chunks() {
   }
 
   // Two sentences fit together, the third does not.
-  const auto packed = chunk_hybrid(document, {}, hybrid_options(11), "d.pdf");
+  const auto packed = run_hybrid(document, {}, hybrid_options(11), "d.pdf");
   require_eq(static_cast<int>(packed.size()), 2, "greedy packing fills to the budget");
   require_eq(packed[0].text(), "Alpha beta gamma delta. Epsilon zeta eta theta.",
              "packed sentences keep their original spacing");
@@ -684,7 +703,7 @@ void verify_hybrid_splits_oversized_chunks() {
 void verify_hybrid_falls_back_to_words_then_hard_cuts() {
   docv1::Document words = new_document();
   add_paragraph(&words, "alpha beta gamma delta epsilon zeta");
-  const auto word_chunks = chunk_hybrid(words, {}, hybrid_options(2), "d.pdf");
+  const auto word_chunks = run_hybrid(words, {}, hybrid_options(2), "d.pdf");
   require_eq(static_cast<int>(word_chunks.size()), 3,
              "a sentence over budget splits at word boundaries");
   require_eq(word_chunks[0].text(), "alpha beta", "words pack greedily");
@@ -692,7 +711,7 @@ void verify_hybrid_falls_back_to_words_then_hard_cuts() {
 
   docv1::Document glued = new_document();
   add_paragraph(&glued, "a,b,c,d,e,f,g");
-  const auto cut = chunk_hybrid(glued, {}, hybrid_options(4), "d.pdf");
+  const auto cut = run_hybrid(glued, {}, hybrid_options(4), "d.pdf");
   require_eq(static_cast<int>(cut.size()), 4,
              "a single word over budget hard-cuts at the code point limit");
   require_eq(cut[0].text(), "a,b,", "the cut is by code point count");
@@ -704,7 +723,7 @@ void verify_hybrid_headings_count_against_the_budget() {
   docv1::Document document = new_document();
   add_section(&document, "Heading words here", 1);
   add_paragraph(&document, "alpha beta gamma delta.");
-  const auto chunks = chunk_hybrid(document, {}, hybrid_options(6), "d.pdf");
+  const auto chunks = run_hybrid(document, {}, hybrid_options(6), "d.pdf");
   require(chunks.size() >= 2, "the heading block eats into the budget");
   for (const auto& chunk : chunks) {
     require(headings_of(chunk) == std::vector<std::string>({"Heading words here"}),
@@ -719,7 +738,7 @@ void verify_split_pieces_narrow_offsets_only_when_exact() {
   const std::string ref = add_paragraph(&document, "Alpha beta. Gamma delta.", 1);
   OffsetTable offsets;
   offsets[ref] = OffsetEntry{100, 124, parsev1::TEXT_SOURCE_OCR};
-  const auto chunks = chunk_hybrid(document, offsets, hybrid_options(3), "d.pdf");
+  const auto chunks = run_hybrid(document, offsets, hybrid_options(3), "d.pdf");
   require_eq(static_cast<int>(chunks.size()), 2, "the paragraph splits in two");
   require_eq(static_cast<int>(chunks[0].start_offset()), 100, "the first piece starts at the item");
   require_eq(static_cast<int>(chunks[0].end_offset()), 111, "the first piece ends at its own text");
@@ -733,7 +752,7 @@ void verify_split_pieces_narrow_offsets_only_when_exact() {
   OffsetTable list_offsets;
   list_offsets[items.at(0)] = OffsetEntry{0, 17, parsev1::TEXT_SOURCE_OCR};
   list_offsets[items.at(1)] = OffsetEntry{18, 37, parsev1::TEXT_SOURCE_OCR};
-  const auto list_chunks = chunk_hybrid(listed, list_offsets, hybrid_options(4), "d.pdf");
+  const auto list_chunks = run_hybrid(listed, list_offsets, hybrid_options(4), "d.pdf");
   require(list_chunks.size() >= 2, "the list chunk splits");
   for (const auto& chunk : list_chunks) {
     require(!chunk.has_start_offset(),

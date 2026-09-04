@@ -322,9 +322,13 @@ grpc::ServerUnaryReactor* DocumentParserService::ChunkHybridSource(
                      &parsed);
     if (!parse_status.ok()) return parse_status;
     auto* chunked = response->mutable_response();
-    for (auto& chunk :
-         chunking::chunk_hybrid(parsed.result.document, parsed.offsets,
-                                chunk_request.chunking_options(), parsed.filename.string())) {
+    std::vector<pipestream::parse::v1::Chunk> chunks;
+    const grpc::Status chunk_status =
+        chunking::chunk_hybrid(parsed.result.document, parsed.offsets,
+                               chunk_request.chunking_options(), parsed.filename.string(),
+                               &chunks);
+    if (!chunk_status.ok()) return chunk_status;
+    for (auto& chunk : chunks) {
       *chunked->add_chunks() = std::move(chunk);
     }
     if (chunk_request.include_converted_doc()) {

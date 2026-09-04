@@ -662,8 +662,18 @@ message HybridChunkerOptions {
   bool use_markdown_tables = 1;
   bool include_raw_text = 2;
   optional int32 max_tokens = 3;
+  // The token counter max_tokens and Chunk.num_tokens are measured with. One
+  // of:
+  //   "wordish/1"  the built-in deterministic rule set; the default
+  //   "hf/1"       a HuggingFace tokenizer.json loaded by the server
+  // Any other value is rejected with INVALID_ARGUMENT.
   optional string tokenizer = 4;
   optional bool merge_peers = 5;
+  // Explicit path of the tokenizer.json "hf/1" counts with. When unset the
+  // server tries $GRPARSE_CHUNK_TOKENIZER, then
+  // $GRPARSE_MODELS_DIR/chunk/tokenizer.json. Meaningful only together with
+  // tokenizer="hf/1".
+  optional string tokenizer_path = 6;
 }
 
 // HierarchicalChunkRequest mirrors POST /v1/chunk/hierarchical/source
@@ -710,12 +720,15 @@ message Chunk {
   optional int64 start_offset = 11;
   optional int64 end_offset = 12;
   // The exact boundary-rule version this chunk was produced under. Identical
-  // input bytes and an identical digest guarantee identical chunk bytes.
+  // input bytes and an identical digest guarantee identical chunk bytes (for
+  // "hf/1" that guarantee is per tokenizer.json: the digest names the
+  // counter, not the model file the deployment resolved it to).
   //
   //   hierarchical: "grparse-hier/1"
-  //   hybrid:       "grparse-hybrid/1;tok=wordish/1;sent=sentence/1;
+  //   hybrid:       "grparse-hybrid/1;tok=T;sent=sentence/1;
   //                  max_tokens=N;merge_peers=B"
-  //                 (one line on the wire, N decimal, B "true" or "false")
+  //                 (one line on the wire, T "wordish/1" or "hf/1",
+  //                  N decimal, B "true" or "false")
   string rules_digest = 13;
 }
 
