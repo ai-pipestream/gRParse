@@ -21,6 +21,7 @@
 #include <poppler-page.h>
 #include <poppler-page-renderer.h>
 
+#include "grparse/consensus_page_source.h"
 #include "grparse/remote_page_source.h"
 #include "grparse/resource_pool.h"
 
@@ -269,9 +270,16 @@ std::shared_ptr<PageSource> open_in_memory_document(std::shared_ptr<const std::s
   if (!bytes || bytes->empty()) throw InvalidDocument("Document bytes are empty");
   if (!(render_dpi > 0.0)) throw std::invalid_argument("Render DPI must be positive");
   if (pdf) {
-    // GRPARSE_PDF_BACKEND selects a PdfBackendService target for the PDF
-    // layer; unset or "inprocess" keeps the poppler path below.
+    // GRPARSE_PDF_BACKEND selects PdfBackendService targets for the PDF
+    // layer; unset or "inprocess" keeps the poppler path below. A single
+    // target dials that backend; a comma-separated list reads the document
+    // through every backend and takes each page from the one whose word
+    // order wins the consensus vote.
     if (const auto target = remote_pdf_backend_target()) {
+      const auto targets = split_backend_targets(*target);
+      if (targets.size() > 1) {
+        return open_consensus_pdf_document(std::move(bytes), targets, render_dpi);
+      }
       return open_remote_pdf_document(std::move(bytes), *target, render_dpi);
     }
     return std::make_shared<PdfPageSource>(std::move(bytes), pdf_parser_slots, render_dpi);

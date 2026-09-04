@@ -659,6 +659,7 @@ add_library(grparse_core STATIC
   src/figure_classifier.cpp
   src/document_assembly.cpp
   src/in_memory_document.cpp
+  src/consensus_page_source.cpp
   src/remote_page_source.cpp
   src/ocr_engine.cpp
   src/layout_decode.cpp
@@ -729,6 +730,7 @@ if(BUILD_TESTING)
     page-scheduler-test
     pdf-source-test
     remote-pdf-source-test
+    consensus-page-source-test
     prometheus-metrics-test
     pdf-source-concurrency-test
     raster-source-test
