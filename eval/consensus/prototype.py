@@ -340,6 +340,116 @@ def sections_and_chunks(words: list[str], outline: list[dict], chunk_chars: int 
 
 
 # ---------------------------------------------------------------------------
+# Bidirectional reconciliation
+# ---------------------------------------------------------------------------
+
+def word_cells(doc: dict) -> list[dict]:
+    """The document's cells flattened in emission order, with page, running
+    index, and character offset into that leg's own reading text."""
+    out = []
+    offset = 0
+    for page in sorted(doc["pages"]):
+        for cell in doc["pages"][page]["cells"]:
+            entry = dict(cell)
+            entry["page"] = page
+            entry["index"] = len(out)
+            entry["offset"] = offset
+            offset += len(cell["text"]) + 1
+            out.append(entry)
+    return out
+
+
+def reconcile(backends: dict[str, dict], base_name: str,
+              scores: dict[str, dict]) -> dict:
+    """Word-level alignment between the consensus base stream and every
+    other word-granularity leg, both directions at once: each base word
+    keeps its consensus index and offset next to the matched leg's index
+    and offset, so either side can look up the other. Deviations are
+    annotated: order breaks (the leg's adjacency differs from consensus),
+    missing words, and same-place text disagreements, which are the
+    correction sites. Each leg carries its vote score as the source
+    weight; a future structure source (a markdown converter, a language
+    model's outline) joins as one more weighted leg."""
+    base_cells = word_cells(backends[base_name])
+    parsers: dict = {}
+    full: dict = {}
+    for name, doc in backends.items():
+        if name == base_name:
+            continue
+        cells = word_cells(doc)
+        if not cells or len(cells) < len(base_cells) * 0.5:
+            continue  # line-granularity legs align by containment, not here
+        by_text: dict = {}
+        for cell in cells:
+            key = (cell["page"], truth_metrics.normalize(cell["text"]))
+            by_text.setdefault(key, []).append(cell)
+        used: set[int] = set()
+        alignment = []
+        text_deviations = []
+        missing = 0
+        for cell in base_cells:
+            key = (cell["page"], truth_metrics.normalize(cell["text"]))
+            candidates = [c for c in by_text.get(key, []) if c["index"] not in used]
+            match = None
+            deviation = None
+            if candidates:
+                match = min(
+                    candidates,
+                    key=lambda c: (c["x0"] - cell["x0"]) ** 2 + (c["y0"] - cell["y0"]) ** 2,
+                )
+            else:
+                nearby = [
+                    c
+                    for c in cells
+                    if c["page"] == cell["page"] and c["index"] not in used
+                    and abs(c["x0"] - cell["x0"]) < 3.0 and abs(c["y0"] - cell["y0"]) < 3.0
+                ]
+                if nearby:
+                    match = nearby[0]
+                    deviation = "text"
+                    text_deviations.append((cell, nearby[0]))
+                else:
+                    missing += 1
+                    deviation = "missing"
+            if match is not None:
+                used.add(match["index"])
+            alignment.append((cell, match, deviation))
+        order_breaks = 0
+        previous = None
+        for _, match, _ in alignment:
+            if match is None:
+                continue
+            if previous is not None and match["index"] != previous + 1:
+                order_breaks += 1
+            previous = match["index"]
+        parsers[name] = {
+            "weight": scores.get(name, {}).get("combined"),
+            "matched": len(base_cells) - missing,
+            "missing": missing,
+            "order_breaks": order_breaks,
+            "text_deviation_count": len(text_deviations),
+            "text_deviations": [
+                {
+                    "consensus": {"index": b["index"], "offset": b["offset"], "text": b["text"]},
+                    name: {"index": p["index"], "offset": p["offset"], "text": p["text"]},
+                }
+                for b, p in text_deviations[:20]
+            ],
+        }
+        full[name] = [
+            {
+                "c_index": b["index"],
+                "c_offset": b["offset"],
+                "p_index": None if p is None else p["index"],
+                "p_offset": None if p is None else p["offset"],
+                "dev": dev,
+            }
+            for b, p, dev in alignment
+        ]
+    return {"base": base_name, "words": len(base_cells), "parsers": parsers, "full": full}
+
+
+# ---------------------------------------------------------------------------
 # Table from ruled lines (the form fixture)
 # ---------------------------------------------------------------------------
 
@@ -471,6 +581,24 @@ def main() -> int:
                      f"chunks: {sum(s['chunks'] for s in sections)}")
         lines.append("")
 
+        # Reconciliation base: the winner when it has geometry, else the
+        # highest-scoring backend leg.
+        base = winner if winner in backends else max(
+            (n for n in backends), key=lambda n: scores[n]["combined"]
+        )
+        reconciliation = reconcile(backends, base, scores)
+        for name, summary in reconciliation["parsers"].items():
+            lines.append(
+                f"Reconciliation {base} <-> {name} (weight {summary['weight']}): "
+                f"{summary['matched']}/{reconciliation['words']} matched, "
+                f"{summary['missing']} missing, {summary['order_breaks']} order breaks, "
+                f"{summary['text_deviation_count']} text deviations"
+            )
+        lines.append("")
+        (OUT / f"{doc_id}.alignment.json").write_text(
+            json.dumps({"base": reconciliation["base"], "legs": reconciliation["full"]})
+        )
+
         table_report = None
         if truth.get("tables"):
             qparse_doc = backends.get("qparse")
@@ -506,6 +634,11 @@ def main() -> int:
                     },
                     "outline": outline,
                     "sections": sections,
+                    "reconciliation": {
+                        "base": reconciliation["base"],
+                        "words": reconciliation["words"],
+                        "parsers": reconciliation["parsers"],
+                    },
                     "table": None
                     if table_report is None
                     else {

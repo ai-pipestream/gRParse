@@ -59,3 +59,20 @@ measurements.
 
 Embeddings stayed out of scope: geometric matching reconciled locations
 on its own everywhere this corpus needed it.
+
+## Bidirectional reconciliation
+
+The correlations the vote computes are kept, not thrown away: for every
+word in the consensus base stream, the alignment stores its consensus
+index and character offset next to the matched index and offset in each
+other word-granularity source (`out/<doc>.alignment.json` holds the
+complete map, the per-document JSON the summary), so either side can look
+up the other. Deviations are annotated where sources disagree: order
+breaks (the source's adjacency differs from consensus; 335 on two-column,
+which are the column-order divergence sites), missing words, and
+same-place text disagreements (92 on two-column), which are correction
+sites: soft-hyphen artifacts, footnote markers fused to words,
+hyphenated-token splits. Each source's vote score rides along as its
+weight, which is the extension point for further structure sources: a
+markdown converter or a language model's perceived outline joins as one
+more weighted source with no change to the model.
