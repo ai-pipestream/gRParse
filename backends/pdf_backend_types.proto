@@ -1,11 +1,11 @@
 syntax = "proto3";
 
-package ai.pipestream.parse.pdf.v1;
+package ai.protomolt.parse.pdf.v1;
 
-option go_package = "pipestream.ai/protos/gen/parse/pdf/v1;pdfv1";
+option go_package = "protomolt.ai/protos/gen/parse/pdf/v1;pdfv1";
 option java_multiple_files = true;
 option java_outer_classname = "PdfBackendTypesProto";
-option java_package = "ai.pipestream.parse.pdf.v1";
+option java_package = "ai.protomolt.parse.pdf.v1";
 
 // PDF backend data types: the typed families every interchangeable PDF
 // backend service (grpc-pdfium, grpc-qparse, grpc-poppler) emits over the

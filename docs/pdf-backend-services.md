@@ -1,7 +1,9 @@
 # PDF backend services: capability matrix and service plan
 
 Status 2026-09-04: M0 through M5 landed. The contract is released
-(pipestream-protos v0.15.0, `pdf-backend` module), the three services are up
+(the parser-protos repo, package `ai.protomolt.parse.pdf.v1`; it briefly
+lived in pipestream-protos as a `pdf-backend` module and was moved out on
+2026-09-04), the three services are up
 (grpc-pdfium tiers 0-2, grpc-qparse, grpc-poppler), the differential runs
 three ways (`eval/pdf_diff`, RESULTS-2026-09-04), and gRParse has the
 `GRPARSE_PDF_BACKEND` client mode with the scorecard run both ways
@@ -85,8 +87,8 @@ Two matrix notes worth designing around:
 
 ## The common contract
 
-New proto package (lives in the protos repo per fleet convention, stubs from
-`pipestream-protos-stubs`):
+New proto package `ai.protomolt.parse.pdf.v1` (canonical home: the
+parser-protos repo; gRParse `backends/` carries identical working copies):
 
 - `PdfBackend` service, three RPCs:
   - `Probe(DocumentBytes) -> BackendCapabilities`: what this backend will

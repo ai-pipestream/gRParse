@@ -157,7 +157,7 @@ Device pools target **NVIDIA CUDA and Intel Arc B70 (OpenVINO EP)** — not CUDA
 |---|---|---|
 | I1 | Document JSON schema doc (**low priority** — gRPC toJSON is enough) | docs |
 | I2 | Compatibility fixtures (light; only what tests need) | C++/Java |
-| I3 | Protos home (`pipestream-protos` when ready) | ops |
+| I3 | Protos home (`parser-protos`, landed 2026-09-04) | ops |
 | I4 | README refresh (architecture + epic links; speed thesis; CUDA + Intel EP) | docs |
 | I5 | Keep docs/ARCHITECTURE.md and docs/EPICS.md in sync with issues | docs |
 

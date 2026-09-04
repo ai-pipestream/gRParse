@@ -298,7 +298,7 @@ file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/fastwarc/v1")
 file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/pdf/v1")
 file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/poi/v1")
 file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/calamine/v1")
-file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/parse/pdf/v1")
+file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/protomolt/parse/pdf/v1")
 configure_file(document.proto
   "${STAGED_PROTO_DIR}/ai/pipestream/document/v1/document.proto" COPYONLY)
 configure_file(parse_types.proto
@@ -354,12 +354,12 @@ configure_file(collectors/calamine_types.proto
   "${STAGED_PROTO_DIR}/calamine/v1/types.proto" COPYONLY)
 configure_file(collectors/calamine_service.proto
   "${STAGED_PROTO_DIR}/calamine/v1/calamine_service.proto" COPYONLY)
-# The PdfBackendService contract (backends/README.md): vendored from the
-# pipestream-protos release, staged under the package import path.
+# The PdfBackendService contract (backends/README.md; canonical home is the
+# parser-protos repo), staged under the package import path.
 configure_file(backends/pdf_backend_types.proto
-  "${STAGED_PROTO_DIR}/ai/pipestream/parse/pdf/v1/pdf_backend_types.proto" COPYONLY)
+  "${STAGED_PROTO_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_types.proto" COPYONLY)
 configure_file(backends/pdf_backend_service.proto
-  "${STAGED_PROTO_DIR}/ai/pipestream/parse/pdf/v1/pdf_backend_service.proto" COPYONLY)
+  "${STAGED_PROTO_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_service.proto" COPYONLY)
 
 set(DOCUMENT_PROTO "${STAGED_PROTO_DIR}/ai/pipestream/document/v1/document.proto")
 set(PARSE_TYPES_PROTO "${STAGED_PROTO_DIR}/ai/pipestream/parse/v1/parse_types.proto")
@@ -387,8 +387,8 @@ set(COLLECTOR_PROTOS
   "${STAGED_PROTO_DIR}/ai/pipestream/poi/v1/poi_service.proto"
   "${STAGED_PROTO_DIR}/calamine/v1/types.proto"
   "${STAGED_PROTO_DIR}/calamine/v1/calamine_service.proto"
-  "${STAGED_PROTO_DIR}/ai/pipestream/parse/pdf/v1/pdf_backend_types.proto"
-  "${STAGED_PROTO_DIR}/ai/pipestream/parse/pdf/v1/pdf_backend_service.proto")
+  "${STAGED_PROTO_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_types.proto"
+  "${STAGED_PROTO_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_service.proto")
 set(COLLECTOR_GENERATED
   "${GENERATED_DIR}/ai/pipestream/asr/v1/asr_service.pb.cc"
   "${GENERATED_DIR}/ai/pipestream/asr/v1/asr_service.pb.h"
@@ -470,14 +470,14 @@ set(COLLECTOR_GENERATED
   "${GENERATED_DIR}/calamine/v1/calamine_service.pb.h"
   "${GENERATED_DIR}/calamine/v1/calamine_service.grpc.pb.cc"
   "${GENERATED_DIR}/calamine/v1/calamine_service.grpc.pb.h"
-  "${GENERATED_DIR}/ai/pipestream/parse/pdf/v1/pdf_backend_types.pb.cc"
-  "${GENERATED_DIR}/ai/pipestream/parse/pdf/v1/pdf_backend_types.pb.h"
-  "${GENERATED_DIR}/ai/pipestream/parse/pdf/v1/pdf_backend_types.grpc.pb.cc"
-  "${GENERATED_DIR}/ai/pipestream/parse/pdf/v1/pdf_backend_types.grpc.pb.h"
-  "${GENERATED_DIR}/ai/pipestream/parse/pdf/v1/pdf_backend_service.pb.cc"
-  "${GENERATED_DIR}/ai/pipestream/parse/pdf/v1/pdf_backend_service.pb.h"
-  "${GENERATED_DIR}/ai/pipestream/parse/pdf/v1/pdf_backend_service.grpc.pb.cc"
-  "${GENERATED_DIR}/ai/pipestream/parse/pdf/v1/pdf_backend_service.grpc.pb.h")
+  "${GENERATED_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_types.pb.cc"
+  "${GENERATED_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_types.pb.h"
+  "${GENERATED_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_types.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_types.grpc.pb.h"
+  "${GENERATED_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_service.pb.cc"
+  "${GENERATED_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_service.pb.h"
+  "${GENERATED_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_service.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_service.grpc.pb.h")
 add_custom_command(
   OUTPUT "${GENERATED_DIR}/ai/pipestream/document/v1/document.pb.cc"
          "${GENERATED_DIR}/ai/pipestream/document/v1/document.pb.h"
@@ -568,10 +568,10 @@ add_library(grparse_proto STATIC
   "${GENERATED_DIR}/calamine/v1/types.grpc.pb.cc"
   "${GENERATED_DIR}/calamine/v1/calamine_service.pb.cc"
   "${GENERATED_DIR}/calamine/v1/calamine_service.grpc.pb.cc"
-  "${GENERATED_DIR}/ai/pipestream/parse/pdf/v1/pdf_backend_types.pb.cc"
-  "${GENERATED_DIR}/ai/pipestream/parse/pdf/v1/pdf_backend_types.grpc.pb.cc"
-  "${GENERATED_DIR}/ai/pipestream/parse/pdf/v1/pdf_backend_service.pb.cc"
-  "${GENERATED_DIR}/ai/pipestream/parse/pdf/v1/pdf_backend_service.grpc.pb.cc")
+  "${GENERATED_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_types.pb.cc"
+  "${GENERATED_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_types.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_service.pb.cc"
+  "${GENERATED_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_service.grpc.pb.cc")
 target_include_directories(grparse_proto PUBLIC "${GENERATED_DIR}")
 target_link_libraries(grparse_proto PUBLIC grpc++)
 

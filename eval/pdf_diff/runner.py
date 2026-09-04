@@ -3,10 +3,10 @@ PdfBackend service (grpc-pdfium first) and the in-process poppler path.
 
 The poppler leg is ``poppler_floor`` (built from this directory), which
 replays the exact poppler-cpp calls gRParse makes. The service leg dials a
-running backend over the ``ai.pipestream.parse.pdf.v1`` contract, with the
-python stubs generated from the sha256-pinned pipestream-protos release
-tarball. Corpus: the scorecard PDFs plus ``~/parser-failed-docs`` as
-load-status cases.
+running backend over the ``ai.protomolt.parse.pdf.v1`` contract, with the
+python stubs generated from this repo's vendored contract files in
+``backends/`` (canonical home: the parser-protos repo). Corpus: the
+scorecard PDFs plus ``~/parser-failed-docs`` as load-status cases.
 
 Run (backend listening on localhost:50051 by default)::
 
@@ -22,15 +22,12 @@ from __future__ import annotations
 
 import argparse
 import difflib
-import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
-import tarfile
 import tempfile
-import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -38,38 +35,33 @@ REPO = HERE.parents[1]
 CACHE = HERE / ".cache"
 OUT = HERE / "out"
 
-PROTOS_VERSION = "0.15.0"
-PROTOS_SHA256 = "558974e94c148b351f7dce74ac1189bd41e0433d5fa104cffa21c82c62c6db9b"
-PROTOS_URL = (
-    "https://git.rokkon.com/api/packages/ai-pipestream/generic/"
-    f"pipestream-protos/{PROTOS_VERSION}/pipestream-protos-{PROTOS_VERSION}.tgz"
-)
-PROTO_REL = "ai/pipestream/parse/pdf/v1"
+PROTO_REL = "ai/protomolt/parse/pdf/v1"
 
 FAILED_DOCS_DIR = Path.home() / "parser-failed-docs"
 
 
 def stage_stubs() -> Path:
-    """Fetches the pinned proto release and generates python stubs."""
+    """Generates python stubs from the repo's vendored contract files."""
     CACHE.mkdir(exist_ok=True)
-    tgz = CACHE / f"pipestream-protos-{PROTOS_VERSION}.tgz"
-    if not tgz.exists():
-        urllib.request.urlretrieve(PROTOS_URL, tgz)
-    digest = hashlib.sha256(tgz.read_bytes()).hexdigest()
-    if digest != PROTOS_SHA256:
-        tgz.unlink()
-        raise SystemExit(f"proto tarball sha256 mismatch: {digest}")
     proto_dir = CACHE / "protos"
     gen_dir = CACHE / "gen"
-    if not (gen_dir / "ai" / "pipestream").exists():
-        proto_dir.mkdir(exist_ok=True)
-        with tarfile.open(tgz) as tar:
-            members = [m for m in tar.getmembers() if m.name.startswith("pdf-backend/proto/")]
-            tar.extractall(proto_dir, members=members, filter="data")
+    root = proto_dir
+    staged = root / PROTO_REL
+    sources = [
+        REPO / "backends" / "pdf_backend_types.proto",
+        REPO / "backends" / "pdf_backend_service.proto",
+    ]
+    stale = not (gen_dir / "ai" / "protomolt").exists() or any(
+        not (staged / src.name).exists()
+        or (staged / src.name).read_bytes() != src.read_bytes()
+        for src in sources
+    )
+    if stale:
+        staged.mkdir(parents=True, exist_ok=True)
+        for src in sources:
+            (staged / src.name).write_bytes(src.read_bytes())
         gen_dir.mkdir(exist_ok=True)
         from grpc_tools import protoc
-
-        root = proto_dir / "pdf-backend" / "proto"
         args = [
             "protoc",
             f"-I{root}",
@@ -85,7 +77,7 @@ def stage_stubs() -> Path:
 
 def load_stubs(gen_dir: Path):
     sys.path.insert(0, str(gen_dir))
-    from ai.pipestream.parse.pdf.v1 import (  # noqa: E402
+    from ai.protomolt.parse.pdf.v1 import (  # noqa: E402
         pdf_backend_service_pb2 as svc,
         pdf_backend_service_pb2_grpc as svc_grpc,
         pdf_backend_types_pb2 as types,

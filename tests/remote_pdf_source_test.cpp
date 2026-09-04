@@ -11,7 +11,7 @@
 #include <grpcpp/grpcpp.h>
 #include <opencv2/core.hpp>
 
-#include "ai/pipestream/parse/pdf/v1/pdf_backend_service.grpc.pb.h"
+#include "ai/protomolt/parse/pdf/v1/pdf_backend_service.grpc.pb.h"
 #include "grparse/in_memory_document.h"
 #include "grparse/remote_page_source.h"
 #include "support/check.h"
@@ -19,7 +19,7 @@
 namespace {
 
 using grparse_test::require;
-namespace pdfv1 = ai::pipestream::parse::pdf::v1;
+namespace pdfv1 = ai::protomolt::parse::pdf::v1;
 
 constexpr double kPageWidthPts = 612.0;
 constexpr double kPageHeightPts = 792.0;

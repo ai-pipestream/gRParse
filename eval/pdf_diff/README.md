@@ -17,9 +17,9 @@ joins this table.
   `eval/`, off every release artifact. The host poppler version is recorded
   in the report; the gRParse image vendors its own, so treat raster deltas
   as indicative rather than exact.
-- **service**: dials a running backend over `ai.pipestream.parse.pdf.v1`,
-  with python stubs generated from the sha256-pinned pipestream-protos
-  release tarball.
+- **service**: dials a running backend over `ai.protomolt.parse.pdf.v1`,
+  with python stubs generated from the repo's vendored contract files in
+  `backends/`.
 
 ## Run
 

@@ -85,6 +85,20 @@ that gRParse also dials them as collectors now.
 - The `calamine` library fork and `distributed-search`: libraries and
   experiments, not services gRParse depends on.
 
+### The PDF backend fleet and its contract
+
+`grpc-pdfium`, `grpc-qparse`, and `grpc-poppler` are interchangeable PDF
+backend services speaking `PdfBackendService`
+(`ai.protomolt.parse.pdf.v1`); `GRPARSE_PDF_BACKEND` selects one (or a
+comma list for consensus mode) instead of the in-process poppler path.
+The contract's working copies live here in `backends/`; the standalone
+`parser-protos` repo publishes the same bytes for the backend services to
+pin (`PDF_PROTOS_COMMIT` in their CMake). A contract change lands in both
+with identical bytes. Additive only, forever. This has nothing to do with
+`/work/main/pipestream-ai` or the `pipestream-protos` repo; never put the
+contract there or pull their protos in (it briefly lived there and was
+reverted on 2026-09-04).
+
 ### The fastwarc caveat
 
 fastwarc is a collector on paper and a shell peer in the stack. The

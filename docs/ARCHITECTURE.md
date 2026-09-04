@@ -313,7 +313,7 @@ are the stable include paths; the units below sit behind them.
 - Policy on picture classes (PII, RAG filters)
 - Chunk/index pipelines
 
-Landing zones (org): OpenNLP research arm, Java gateway services, `pipestream-protos` when ready.
+Landing zones (org): OpenNLP research arm, Java gateway services, `parser-protos` (the PDF backend contract lives there).
 
 ## UI ownership (`area:ui`)
 

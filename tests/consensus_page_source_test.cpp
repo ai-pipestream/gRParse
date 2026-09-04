@@ -10,7 +10,7 @@
 
 #include <grpcpp/grpcpp.h>
 
-#include "ai/pipestream/parse/pdf/v1/pdf_backend_service.grpc.pb.h"
+#include "ai/protomolt/parse/pdf/v1/pdf_backend_service.grpc.pb.h"
 #include "grparse/consensus_page_source.h"
 #include "grparse/document_assembly.h"
 #include "grparse/in_memory_document.h"
@@ -19,7 +19,7 @@
 namespace {
 
 using grparse_test::require;
-namespace pdfv1 = ai::pipestream::parse::pdf::v1;
+namespace pdfv1 = ai::protomolt::parse::pdf::v1;
 
 constexpr double kPageWidthPts = 612.0;
 constexpr double kPageHeightPts = 792.0;

@@ -14,12 +14,12 @@
 #include <grpcpp/grpcpp.h>
 #include <opencv2/imgproc.hpp>
 
-#include "ai/pipestream/parse/pdf/v1/pdf_backend_service.grpc.pb.h"
+#include "ai/protomolt/parse/pdf/v1/pdf_backend_service.grpc.pb.h"
 
 namespace grparse {
 namespace {
 
-namespace pdfv1 = ai::pipestream::parse::pdf::v1;
+namespace pdfv1 = ai::protomolt::parse::pdf::v1;
 
 // Same limits as the collector channels: a page raster at model DPI must
 // fit in one message.
