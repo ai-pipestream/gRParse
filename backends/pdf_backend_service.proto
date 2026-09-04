@@ -17,24 +17,38 @@ option java_package = "ai.protomolt.parse.pdf.v1";
 // The contract is defined in full up front; what a given backend fills is a
 // runtime property declared through Probe, never a schema variation. Field
 // numbers are forever: changes to this package are additive only.
+//
+// Documents are content-addressed (PdfDocument.sha256): the client uploads
+// the bytes once and addresses them by hash on later calls, so a per-page
+// parse or render loop does not re-upload the document on every RPC. The
+// cache policy is server-private; the cache verdicts ride in the typed load
+// status of every response, never as bare gRPC errors.
 
 // The three operations every backend serves.
 service PdfBackendService {
   // Loads the document and reports what this backend will populate for it.
   // Capabilities are per-backend AND per-document. Load failures are typed
   // in the returned capabilities, not gRPC errors; transport and resource
-  // failures remain gRPC errors.
+  // failures remain gRPC errors. A probe by hash (data empty, sha256 set)
+  // lets a client learn capabilities without re-uploading bytes the server
+  // already holds; on a cache miss capabilities.load_status is
+  // LOAD_STATUS_BYTES_REQUIRED.
   rpc Probe(ProbeRequest) returns (ProbeResponse);
 
   // Parses the document into the typed family stream. The first message is
   // always the header (capabilities echo plus the page inventory); page
   // chunks follow in page order, document-level families arrive as their
   // own messages, and the trailer closes the stream with per-family counts.
+  // Addressing the document by hash skips the re-upload per page once the
+  // bytes are cached; on a cache miss the header carries
+  // LOAD_STATUS_BYTES_REQUIRED and the stream ends.
   rpc Parse(ParseRequest) returns (stream ParseResponse);
 
   // Rasterizes a page range at a DPI and pixel format. Separate from Parse
   // because rasters dominate bytes and callers often want text without
-  // pixels.
+  // pixels. Addressing the document by hash skips the re-upload per page
+  // once the bytes are cached; a load failure or cache miss arrives typed
+  // in a RenderResponse head, never as a bare gRPC error.
   rpc Render(RenderRequest) returns (stream RenderResponse);
 }
 
@@ -251,9 +265,27 @@ message PageRaster {
   bytes pixels = 7;
 }
 
+// The load verdict a Render stream carries when it needs saying. Render has
+// no capabilities echo like ParseHeader, so a load failure, including a
+// cache miss on a request addressed by hash, is typed here instead of
+// surfacing as a bare gRPC error.
+message RenderHeader {
+  // Outcome of loading the document.
+  LoadStatus load_status = 1;
+  // The engine's message when load_status is not LOAD_STATUS_OK.
+  optional string load_detail = 2;
+}
+
 // One Render stream message: pages arrive in page order, one raster per
 // message.
 message RenderResponse {
   // The rendered page.
   PageRaster raster = 1;
+  // The load verdict. Exactly one of raster and head is set per stream
+  // message. When the document fails to load, including a cache miss on a
+  // request addressed by hash, the stream carries exactly one message with
+  // head set to a load_status other than LOAD_STATUS_OK and then ends. On
+  // success a server may omit head entirely and send only rasters, so a
+  // message with raster set is the success signal.
+  RenderHeader head = 2;
 }

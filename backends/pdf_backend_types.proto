@@ -86,8 +86,13 @@ message Color {
 
 // The document to operate on. Backends load from memory only; no backend
 // ever touches a filesystem path.
+//
+// The document is content-addressed: a client that will call a backend many
+// times for one document sends the bytes once, then addresses the cached
+// bytes by sha256 on the following calls.
 message PdfDocument {
-  // The raw PDF bytes.
+  // The raw PDF bytes. May be empty only when sha256 names a document the
+  // server has cached from an earlier call.
   bytes data = 1;
   // Password to open the document with, when it is encrypted. Backends try
   // it as the user password first, then as the owner password.
@@ -95,6 +100,15 @@ message PdfDocument {
   // Caller-chosen correlation id echoed in logs and errors; never
   // interpreted by the backend.
   optional string doc_id = 3;
+  // Lowercase hex SHA-256 of data. When data is non-empty this is advisory:
+  // the server MAY cache the bytes under it after verifying the hash
+  // matches, and answers LOAD_STATUS_HASH_MISMATCH when it does not. When
+  // data is empty the request is a cache lookup by this hash, and a server
+  // that has never seen those bytes answers LOAD_STATUS_BYTES_REQUIRED.
+  // data empty with sha256 absent is invalid (INVALID_ARGUMENT). Cache
+  // bounds, eviction, and lifetime are server-private; the contract
+  // promises only the verdict.
+  optional string sha256 = 4;
 }
 
 // Typed outcome of loading the document bytes.
@@ -116,6 +130,14 @@ enum LoadStatus {
   // The engine failed for a reason other than the ones above;
   // BackendCapabilities.load_detail has the engine's message.
   LOAD_STATUS_ENGINE_ERROR = 7;
+  // The request named the document by hash (PdfDocument.sha256 with data
+  // empty) and the server does not have those bytes cached. A cache miss
+  // verdict, not a document defect: the client must retry exactly once with
+  // data populated before treating it as an error.
+  LOAD_STATUS_BYTES_REQUIRED = 8;
+  // data and sha256 were both present and the bytes do not hash to the
+  // given value.
+  LOAD_STATUS_HASH_MISMATCH = 9;
 }
 
 // The typed data families a backend can emit. Every family a document could
