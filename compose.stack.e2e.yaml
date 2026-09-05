@@ -18,7 +18,7 @@
 services:
   playwright:
     profiles: ["e2e"]
-    image: mcr.microsoft.com/playwright:v1.62.1-noble
+    image: mcr.microsoft.com/playwright:v1.63.0-noble
     # Run as the invoking host user so node_modules and out/ land in the
     # bind-mounted checkout with the right owner; scripts/stack-e2e.sh
     # exports these, the defaults cover the common single-user case.
