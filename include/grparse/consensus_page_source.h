@@ -11,6 +11,12 @@ namespace grparse {
 // Splits a GRPARSE_PDF_BACKEND value into targets ("a:1,b:2" -> two).
 std::vector<std::string> split_backend_targets(const std::string& value);
 
+// The word fold the consensus vote reconciles on: ASCII and Latin-1
+// case-folded, curly quotes and long dashes straightened, soft hyphens
+// dropped, common Latin ligatures expanded. Declared here so the unit
+// tests can pin the fold directly; not part of the PageSource surface.
+std::string fold_word(const std::string& word);
+
 // A PageSource over several PdfBackend targets: every backend reads the
 // same document, and each page's text comes from the backend whose word
 // order wins a bigram-agreement vote (adjacent word pairs the other

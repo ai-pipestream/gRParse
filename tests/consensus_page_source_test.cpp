@@ -316,6 +316,30 @@ int main() {
     require(!attributed, "no vote, no field sources");
   }
 
+  // The vote's word fold: ASCII case, curly quotes and dashes, soft
+  // hyphens, Latin ligatures, and Latin-1 uppercase all land on the same
+  // folded word the reconciliation keys on.
+  {
+    const std::vector<std::pair<std::string, std::string>> cases = {
+        {"PDF", "pdf"},
+        {"MixedCASE", "mixedcase"},
+        {"don\xE2\x80\x99t", "don't"},              // right single quote
+        {"\xE2\x80\x9Chello\xE2\x80\x9D", "\"hello\""},  // double curly quotes
+        {"a\xE2\x80\x93b", "a-b"},                  // en dash
+        {"a\xE2\x80\x94b", "a-b"},                  // em dash
+        {"hy\xC2\xADphen", "hyphen"},               // soft hyphen
+        {"\xEF\xAC\x81le", "file"},                 // fi ligature
+        {"\xEF\xAC\x80\xEF\xAC\x84", "ffffl"},      // ff + ffl ligatures
+        {"\xEF\xAC\x83ne", "ffine"},                // ffi ligature
+        {"\xEF\xAC\x85op", "stop"},                 // long s t ligature
+        {"CAF\xC3\x89", "caf\xC3\xA9"},             // Latin-1 uppercase E acute
+    };
+    for (const auto& [in, want] : cases) {
+      require(grparse::fold_word(in) == want,
+              "fold_word(\"" + in + "\") is \"" + want + "\"");
+    }
+  }
+
   const auto targets =
       grparse::split_backend_targets(" a:1 , b:2,c:3 ,, ");
   require(targets == std::vector<std::string>({"a:1", "b:2", "c:3"}),

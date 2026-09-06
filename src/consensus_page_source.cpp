@@ -14,57 +14,6 @@
 namespace grparse {
 namespace {
 
-// Folds a word the way the validated prototype normalizes: ASCII lowered,
-// curly quotes and long dashes straightened, soft hyphens and the
-// noncharacters some engines use as hyphenation marks removed. Without
-// this, ligature and hyphen artifacts depress bigram agreement.
-std::string fold_word(const std::string& word) {
-  std::string out;
-  out.reserve(word.size());
-  for (size_t i = 0; i < word.size();) {
-    const unsigned char byte = static_cast<unsigned char>(word[i]);
-    uint32_t code = byte;
-    size_t length = 1;
-    if ((byte & 0xE0) == 0xC0 && i + 1 < word.size()) {
-      code = ((byte & 0x1F) << 6) | (word[i + 1] & 0x3F);
-      length = 2;
-    } else if ((byte & 0xF0) == 0xE0 && i + 2 < word.size()) {
-      code = ((byte & 0x0F) << 12) | ((word[i + 1] & 0x3F) << 6) |
-             (word[i + 2] & 0x3F);
-      length = 3;
-    } else if ((byte & 0xF8) == 0xF0 && i + 3 < word.size()) {
-      length = 4;
-    }
-    i += length;
-    switch (code) {
-      case 0x00AD:  // soft hyphen
-      case 0xFFFE:  // noncharacter hyphenation mark
-      case 0xFFFF:
-        continue;
-      case 0x2018:
-      case 0x2019:
-        out.push_back('\'');
-        continue;
-      case 0x201C:
-      case 0x201D:
-        out.push_back('"');
-        continue;
-      case 0x2013:
-      case 0x2014:
-        out.push_back('-');
-        continue;
-      default:
-        break;
-    }
-    if (length == 1) {
-      out.push_back(static_cast<char>(std::tolower(byte)));
-    } else {
-      out.append(word, i - length, length);
-    }
-  }
-  return out;
-}
-
 // Word stream of a page in emission order, folded for voting.
 std::vector<std::string> page_words(const OcrPage& page) {
   std::vector<std::string> words;
@@ -437,6 +386,93 @@ class ConsensusPdfPageSource final : public PageSource {
 };
 
 }  // namespace
+
+// Folds a word the way the validated prototype normalizes: case-folded,
+// curly quotes and long dashes straightened, soft hyphens and the
+// noncharacters some engines use as hyphenation marks removed, and the
+// common Latin ligatures expanded. Without this, ligature and hyphen
+// artifacts depress bigram agreement.
+//
+// This is deliberately not full NFKC. The remaining delta is the rest of
+// the compatibility block (superscripts and subscripts, fullwidth and
+// halfwidth forms, composed accents, circled and squared forms, ...); the
+// vote only needs the folds real PDF text layers actually disagree on,
+// and every fold above is a plain compatibility expansion, so two words
+// that full NFKC would keep distinct never collide here. simdutf has no
+// case-folding API, so the small tables below are explicit.
+std::string fold_word(const std::string& word) {
+  std::string out;
+  out.reserve(word.size());
+  for (size_t i = 0; i < word.size();) {
+    const unsigned char byte = static_cast<unsigned char>(word[i]);
+    uint32_t code = byte;
+    size_t length = 1;
+    if ((byte & 0xE0) == 0xC0 && i + 1 < word.size()) {
+      code = ((byte & 0x1F) << 6) | (word[i + 1] & 0x3F);
+      length = 2;
+    } else if ((byte & 0xF0) == 0xE0 && i + 2 < word.size()) {
+      code = ((byte & 0x0F) << 12) | ((word[i + 1] & 0x3F) << 6) |
+             (word[i + 2] & 0x3F);
+      length = 3;
+    } else if ((byte & 0xF8) == 0xF0 && i + 3 < word.size()) {
+      length = 4;
+    }
+    i += length;
+    switch (code) {
+      case 0x00AD:  // soft hyphen
+      case 0xFFFE:  // noncharacter hyphenation mark
+      case 0xFFFF:
+        continue;
+      case 0x2018:
+      case 0x2019:
+        out.push_back('\'');
+        continue;
+      case 0x201C:
+      case 0x201D:
+        out.push_back('"');
+        continue;
+      case 0x2013:
+      case 0x2014:
+        out.push_back('-');
+        continue;
+      case 0xFB00:
+        out += "ff";
+        continue;
+      case 0xFB01:
+        out += "fi";
+        continue;
+      case 0xFB02:
+        out += "fl";
+        continue;
+      case 0xFB03:
+        out += "ffi";
+        continue;
+      case 0xFB04:
+        out += "ffl";
+        continue;
+      case 0xFB05:
+      case 0xFB06:
+        out += "st";
+        continue;
+      default:
+        break;
+    }
+    // Latin-1 uppercase to lowercase, the only non-ASCII case pairs the
+    // vote needs (A-Z above is handled by tolower). Multiplication sign
+    // stays as it is.
+    if (length == 2 && code >= 0xC0 && code <= 0xDE && code != 0xD7) {
+      out.push_back(static_cast<char>(0xC3));
+      out.push_back(static_cast<char>(((code + 0x20) & 0x3F) | 0x80));
+      continue;
+    }
+    if (length == 1) {
+      out.push_back(static_cast<char>(std::tolower(byte)));
+    } else {
+      out.append(word, i - length, length);
+    }
+  }
+  return out;
+}
 
 std::vector<std::string> split_backend_targets(const std::string& value) {
   std::vector<std::string> targets;
