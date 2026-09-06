@@ -24,7 +24,7 @@ option java_package = "ai.protomolt.parse.pdf.v1";
 // cache policy is server-private; the cache verdicts ride in the typed load
 // status of every response, never as bare gRPC errors.
 
-// The three operations every backend serves.
+// The operations every backend serves.
 service PdfBackendService {
   // Loads the document and reports what this backend will populate for it.
   // Capabilities are per-backend AND per-document. Load failures are typed
@@ -50,6 +50,14 @@ service PdfBackendService {
   // once the bytes are cached; a load failure or cache miss arrives typed
   // in a RenderResponse head, never as a bare gRPC error.
   rpc Render(RenderRequest) returns (stream RenderResponse);
+
+  // Reports the backend's identity and its UI advertisement for the demo
+  // shell. Document-free: it loads nothing and needs no bytes, so it is
+  // safe to call at any time, including before the first Probe. The
+  // backend_name and engine_version fields echo the values
+  // BackendCapabilities carries for any document, so an orchestrator can
+  // label a backend without loading one.
+  rpc GetServiceInfo(ServiceInfoRequest) returns (ServiceInfoResponse);
 }
 
 // A contiguous range of pages. Zero-based, half-open: begin is the first
@@ -288,4 +296,35 @@ message RenderResponse {
   // success a server may omit head entirely and send only rasters, so a
   // message with raster set is the success signal.
   RenderHeader head = 2;
+}
+
+// Request for GetServiceInfo. Empty: it exists so future options have a
+// place to land.
+message ServiceInfoRequest {}
+
+// Response for GetServiceInfo: the backend's identity, independent of any
+// document. backend_name and engine_version carry the same values
+// BackendCapabilities reports for every document.
+message ServiceInfoResponse {
+  // The backend service's stable name, for example "grpc-pdfium".
+  string backend_name = 1;
+  // The underlying engine and its exact pinned version, for example
+  // "pdfium 6721".
+  string engine_version = 2;
+  // The backend build version, for example the image tag the server was
+  // built from.
+  string build_version = 3;
+  // The UI advertisement for the shared demo shell.
+  UiInfo ui = 4;
+}
+
+// The UI advertisement every service in the family carries in its info
+// response, so a demo shell can mount the service's web UI under a tab.
+message UiInfo {
+  // Tab title, for example "PDFium".
+  string title = 1;
+  // Shell mount path, for example "/ui/pdfium".
+  string path = 2;
+  // One line, used as the tab tooltip.
+  string description = 3;
 }
