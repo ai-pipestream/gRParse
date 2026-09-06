@@ -252,6 +252,12 @@ SourceReconciliation reconcile(const OcrPage& winner, const OcrPage& candidate,
   return out;
 }
 
+// A leg that keeps failing a page adds its full per-RPC deadline to every
+// remaining page of the document. After this many consecutive per-page
+// failures the leg is dropped from the vote for the rest of the document,
+// the way a leg that failed Probe drops out at open.
+constexpr int kCircuitBreakerFailures = 3;
+
 // Trust thresholds for the vote's emission order. When every losing leg
 // reconciles against the winner at least this completely and this
 // monotonically, the winner's line order is the page's reading order and
@@ -305,9 +311,11 @@ class ConsensusPdfPageSource final : public PageSource {
     std::vector<OcrPage> candidates;
     std::vector<std::string> names;
     std::vector<std::string> engines;
-    for (const auto& entry : sources_) {
+    for (auto& entry : sources_) {
+      if (entry.disabled) continue;
       try {
         auto page = entry.source->extract_digital_page(page_number);
+        entry.consecutive_failures = 0;
         if (page.has_value() && !page->lines.empty()) {
           candidates.push_back(std::move(*page));
           names.push_back(entry.target);
@@ -316,9 +324,19 @@ class ConsensusPdfPageSource final : public PageSource {
       } catch (const InvalidDocument& error) {
         // A backend that fails mid-document leaves this page's vote; the
         // healthy backends still read it. Consensus must never be less
-        // dependable than the best configured backend.
-        std::cerr << "consensus: page " << page_number << " skipped on "
-                  << entry.target << ": " << error.what() << std::endl;
+        // dependable than the best configured backend. A leg that keeps
+        // failing is dropped for the rest of the document so its deadline
+        // never taxes the remaining pages.
+        ++entry.consecutive_failures;
+        if (entry.consecutive_failures >= kCircuitBreakerFailures) {
+          entry.disabled = true;
+          std::cerr << "consensus: dropping backend " << entry.target << ": "
+                    << entry.consecutive_failures
+                    << " consecutive page failures" << std::endl;
+        } else {
+          std::cerr << "consensus: page " << page_number << " skipped on "
+                    << entry.target << ": " << error.what() << std::endl;
+        }
       }
     }
     if (candidates.empty()) return std::nullopt;
@@ -380,14 +398,23 @@ class ConsensusPdfPageSource final : public PageSource {
     // isolation as the text path: a dead first target must not fail a page
     // another backend can render.
     std::string last_error = "no backend rendered the page";
-    for (const auto& entry : sources_) {
+    for (auto& entry : sources_) {
+      if (entry.disabled) continue;
       try {
         return entry.source->render_page(page_number);
       } catch (const InvalidDocument& error) {
         last_error = error.what();
-        std::cerr << "consensus: render of page " << page_number
-                  << " skipped on " << entry.target << ": " << error.what()
-                  << std::endl;
+        ++entry.consecutive_failures;
+        if (entry.consecutive_failures >= kCircuitBreakerFailures) {
+          entry.disabled = true;
+          std::cerr << "consensus: dropping backend " << entry.target << ": "
+                    << entry.consecutive_failures
+                    << " consecutive page failures" << std::endl;
+        } else {
+          std::cerr << "consensus: render of page " << page_number
+                    << " skipped on " << entry.target << ": " << error.what()
+                    << std::endl;
+        }
       }
     }
     throw InvalidDocument(last_error);
@@ -397,6 +424,12 @@ class ConsensusPdfPageSource final : public PageSource {
   struct Entry {
     std::string target;
     std::shared_ptr<PageSource> source;
+    // The vote runs through const PageSource handles, so the breaker state
+    // is mutable: a consecutive per-page failure count, and the switch that
+    // drops the leg for the rest of the document. Any page the leg serves
+    // (text or raster) resets the count.
+    mutable int consecutive_failures = 0;
+    mutable bool disabled = false;
   };
   std::vector<Entry> sources_;
   const double render_dpi_;
