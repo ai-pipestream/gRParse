@@ -17,12 +17,12 @@ opening more of the stack to the outside.
 
 ## Running without an NVIDIA GPU (macOS, plain Linux)
 
-Every published image in the stack is multi-arch (amd64 + arm64),
-including `pipestreamai/grparse:latest-cpu`, the Dockerfile.cpu build of
-gRParse against ONNX Runtime's plain CPU package (each architecture built
-and tested natively in CI, with provenance and SBOM attestations attached;
-see `docs/RELEASING.md`). The CPU overlay makes the stack run natively
-anywhere Docker does - Apple Silicon included, with no emulation:
+`pipestreamai/grparse:latest-cpu`, the Dockerfile.cpu build of gRParse
+against ONNX Runtime's plain CPU package, is multi-arch (amd64 + arm64,
+each architecture built and tested natively in CI, with provenance and
+SBOM attestations attached; see `docs/RELEASING.md`), and so is every
+Rust/Java image in the stack. The CPU overlay makes the stack run natively
+on any amd64 host Docker runs on:
 
 ```sh
 ./compose/clone-siblings.sh   # fresh machine: fetch the sibling checkouts
@@ -35,6 +35,34 @@ The overlay swaps gRParse to the CPU image, drops the `gpus: all`
 reservation, and sets `GRPARSE_ORT_EP=cpu` (a deliberate provider choice;
 the server never falls back silently). Inference is slower on CPU than on
 a GPU, but the whole demo works.
+
+### ARM64 hosts (Apple Silicon, ARM servers)
+
+The private C++ peers publish amd64 only (GitHub's free arm runners do not
+cover private repos and emulated C++ builds are too slow; the "Publishing
+images" section of the workspace AGENTS.md), so on an arm64 host the CPU
+overlay alone dies at the first `pipestreamai/grpc-libreoffice` pull. Layer
+`compose.stack.arm64.yaml` on top: it repeats the CPU swap and pins every
+amd64-only image (`libreoffice`, `libreoffice-ui`, `pdfium`, `qparse`,
+`poppler`, `vlm-convert`, `asr`) to `linux/amd64`, which runs them under
+the host's binfmt_misc QEMU handler:
+
+```sh
+docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml -f compose.stack.arm64.yaml up
+docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml -f compose.stack.arm64.yaml --profile parsers up
+```
+
+Docker Desktop (macOS) ships the QEMU handler; a bare Linux arm64 host
+needs it once (`docker run --privileged --rm tonistiigi/binfmt --install
+amd64`, or the qemu-user-static package) or the pinned containers fail at
+start with "exec format error". Expect emulation costs where they are
+pinned: libreoffice renders slowly (and its UNO bridge is flaky under
+emulation, so retry a failed render once), whisper in `asr` is 10x+ slower
+and impractical for real audio, and the `pdf-backends` profile's worker
+spawn can outrun gRParse's startup probe (start the profile first or
+restart `grparse`). Everything else - gRParse itself, the parsers
+profile, the shell, enrich - runs natively. Do not layer the openvino
+overlay on arm64; it is Intel-only by nature.
 
 gRParse's model files still need to exist in `models/` first:
 `scripts/fetch-models.sh` fetches and sha256-checks them (see

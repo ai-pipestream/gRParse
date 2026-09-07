@@ -1,0 +1,77 @@
+# ARM64 overlay: run the demo stack on arm64 hosts (Apple Silicon Macs, ARM
+# servers). Layer it last, after the CPU overlay:
+#
+#   docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml -f compose.stack.arm64.yaml up
+#   docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml -f compose.stack.arm64.yaml --profile parsers up
+#
+# Why a separate file: the Rust and Java images plus grparse's CPU image are
+# multi-arch and run natively, but the private C++ peers publish amd64 only
+# (GitHub's free arm runners do not cover private repos, and an emulated
+# C++ build takes hours; see the workspace AGENTS.md "Publishing images").
+# Those images have no arm64 manifest to pull, so this overlay pins each of
+# them to linux/amd64 and lets the host's binfmt_misc QEMU handler run them
+# under emulation. Docker Desktop ships that handler; on a bare Linux arm64
+# host install it once, e.g.
+#   docker run --privileged --rm tonistiigi/binfmt --install amd64
+# Without it the pinned containers fail at start with "exec format error".
+#
+# What it changes, and why:
+#   - swaps gRParse to the multi-arch CPU image (same three keys as
+#     compose.stack.cpu.yaml, repeated so this file suffices on its own;
+#     layering both is harmless, they agree),
+#   - pins each amd64-only service to linux/amd64:
+#       * libreoffice, libreoffice-ui - core services, and the office path
+#         fails a matching upload loudly (UNAVAILABLE) without libreoffice,
+#         so emulation is the least-bad way to keep it. Slow, and
+#         LibreOfficeKit's UNO bridge is flaky under emulation (workspace
+#         AGENTS.md): retry a failed render once before blaming the
+#         document,
+#       * pdfium, qparse, poppler - opt-in `pdf-backends` profile. gRParse
+#         probes each backend once at startup and permanently drops a slow
+#         or late one, and emulation makes the workers slower to spawn, so
+#         a cold `up` can outrun the probe (the race documented at the
+#         pdfium service); start the profile first or restart grparse.
+#         GRPARSE_PDF_BACKEND is unset in the stack, so not enabling the
+#         profile loses nothing: the in-process poppler path answers,
+#       * vlm-convert - `heavy` profile, shell tab only; a missing service
+#         just renders the amber tab, so the pin is convenience,
+#       * asr - `heavy` profile. Emulated whisper.cpp runs 10x+ slower;
+#         the tab boots but real transcription is impractical. Skip
+#         `heavy` on arm64 unless enrich is wanted.
+#   - the openvino overlay stays Intel-only (amd64 by nature); do not layer
+#     it on arm64.
+#
+# `up --build` on an arm64 host builds these services' Dockerfiles for amd64
+# under emulation - hours for the C++ ones. Run from the published images,
+# or build on an amd64 host and `docker save | ssh <host> docker load` (the
+# second-host recipe in AGENTS.md).
+services:
+  grparse:
+    image: pipestreamai/grparse:${STACK_TAG:-latest}-cpu
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
+    gpus: !reset null
+    environment:
+      GRPARSE_ORT_EP: cpu
+
+  libreoffice:
+    platform: linux/amd64
+
+  libreoffice-ui:
+    platform: linux/amd64
+
+  pdfium:
+    platform: linux/amd64
+
+  qparse:
+    platform: linux/amd64
+
+  poppler:
+    platform: linux/amd64
+
+  asr:
+    platform: linux/amd64
+
+  vlm-convert:
+    platform: linux/amd64

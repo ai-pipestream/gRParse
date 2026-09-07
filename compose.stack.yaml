@@ -27,6 +27,10 @@
 # On a host without an NVIDIA GPU (macOS included), layer the CPU overlay,
 # which drops the GPU reservation and runs gRParse on the CPU provider:
 #   docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml up
+# On an arm64 host layer compose.stack.arm64.yaml too; it repeats the CPU
+# swap and pins the amd64-only C++ images (libreoffice and its UI, the pdf
+# backends, asr, vlm-convert) to linux/amd64 under QEMU emulation (its
+# header lists the per-service costs and the binfmt prerequisite).
 # No ./models checkout? compose.stack.models.yaml fills a volume from the
 # pipestreamai/grparse-models image (put it after the cpu/openvino overlay).
 # Fresh machine? compose/clone-siblings.sh fetches the sibling checkouts

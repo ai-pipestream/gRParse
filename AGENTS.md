@@ -268,6 +268,7 @@ docker compose -f compose.stack.yaml --profile parsers --profile heavy up   # + 
 # overlays, stackable:
 #   -f compose.stack.expose-grpc.yaml   publish gRParse gRPC on the host (50051)
 #   -f compose.stack.cpu.yaml           CPU image
+#   -f compose.stack.arm64.yaml         arm64 hosts: CPU image + pin the amd64-only C++ peers to linux/amd64 emulation (libreoffice-ui included)
 #   -f compose.stack.openvino.yaml      Intel GPU image (OpenVINO, /dev/dri)
 ```
 
