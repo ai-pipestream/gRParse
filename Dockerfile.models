@@ -23,7 +23,7 @@
 ARG MODELS_LAYOUT=heron
 ARG MODELS_TOKENIZER=0
 
-FROM --platform=$BUILDPLATFORM python:3.13-slim AS fetch
+FROM --platform=$BUILDPLATFORM python:3.14-slim AS fetch
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 # onnx rewrites the figure classifier graph; onnxruntime and numpy let the
