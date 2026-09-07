@@ -867,8 +867,15 @@ void verify_get_service_info(TestServer* server) {
   const grpc::Status status =
       client->GetServiceInfo(&context, pipestream::parse::v1::GetServiceInfoRequest{}, &response);
   require(status.ok(), "GetServiceInfo failed: " + status.error_message());
-  require(response.name() == "gRParse" && !response.version().empty(),
-          "GetServiceInfo name/version");
+  require(response.name() == "gRParse", "GetServiceInfo name");
+  // The served version is "grparse-<CMake project version>-<ORT flavor>";
+  // both halves reach this test through the same compile definitions the
+  // server was built with, so a hand-edited version string cannot drift
+  // from the one release bump in CMakeLists.txt.
+  const std::string expected_version =
+      std::string("grparse-") + GRPARSE_VERSION + "-" + GRPARSE_ORT_PACKAGE_NAME;
+  require(response.version() == expected_version,
+          "GetServiceInfo version " + response.version() + " != " + expected_version);
   require(response.ui().title() == "gRParse" && response.ui().path() == "/ui/grparse" &&
               !response.ui().description().empty(),
           "GetServiceInfo ui advertisement");
