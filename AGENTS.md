@@ -116,7 +116,9 @@ every WARC upload.
 `compose.stack.yaml` builds every sister from `../<repo>` (for example
 `build: ../grpc-libreoffice`), and the worktree workflow below puts feature
 checkouts in `../worktrees/`. So the family must be checked out side by side
-under one directory, with gRParse one of the siblings:
+under one directory, with gRParse one of the siblings (running the stack
+from published images needs none of them: the shell carries every peer
+contract in its image, see step 3):
 
 ```
 <workspace>/
@@ -175,6 +177,17 @@ repos), commit and push each one to both remotes. The same rule runs the
 other way for `collectors/`: each collector owns its service contract, the
 copy here is never edited, and a copy that drifts is worse than none because
 the tests dial fakes built from the same stubs.
+
+The demo shell vendors a second set of copies: `examples/web-demo/peer-protos/
+<repo>/<include-root>/` holds each peer's whole proto include tree, byte-
+identical, listed by `examples/web-demo/peers.js` (the registry the shell dials
+with) and written by `examples/web-demo/sync-peer-protos.sh`. Any peer
+contract change, and the last leg of a `document.proto` sweep, ends with that
+script, a commit of `peer-protos/`, and a shell image rebuild;
+`sync-peer-protos.sh --check` exits 1 naming every drifted path, and the
+script notes any sibling whose `document.proto` copy differs from this one
+(the sibling's fix). The image build runs `node server.js --check-protos`, so
+a contract that fails to load fails the build rather than the tab.
 
 ### 4. Build and test gRParse
 
@@ -259,8 +272,11 @@ docker compose -f compose.stack.yaml --profile parsers --profile heavy up   # + 
 ```
 
 Only the nginx proxy publishes a port (8080); services reach each other by
-compose service name. The shell bakes the protos into its image: after any
-schema change, `build shell` and `up -d shell`, a restart is not enough.
+compose service name. The shell bakes the protos into its image, gRParse's
+four and every peer's include tree from `examples/web-demo/peer-protos`
+(no bind mounts): after any schema or peer contract change, run
+`examples/web-demo/sync-peer-protos.sh`, commit, then `build shell` and
+`up -d shell`; a restart is not enough.
 
 The stack has a browser-level gate: `scripts/stack-e2e.sh` brings it up and
 runs the Playwright suite in `e2e/` through the `e2e` profile
@@ -274,11 +290,13 @@ krick-1 (Arc GPU, no NVIDIA runtime) runs it from `~/parse-stack/`
 (`compose.stack.yaml`, `compose.stack.openvino.yaml`,
 `compose.stack.expose-grpc.yaml`, `compose.stack.standalone.yaml`,
 `compose/nginx.conf`, `.env` with the two VLM URLs, `models` linked to
-`~/grparse-models`, byte-identical to `models/`, and `protos/<repo>/...`
-holding the peers' proto trees and the whisper weights, see the standalone
-overlay's header; without it dockerd creates empty root-owned stubs for the
-`../<repo>` bind sources and the shell reports every peer unreachable). Images travel by `docker save <images> | zstd | ssh krick-1
-'zstd -d | docker load'`, never by a registry push from a workstation; the
+`~/grparse-models`, byte-identical to `models/`, and
+`protos/grpc-asr/models` holding the whisper weights, see the standalone
+overlay's header; the peers' proto trees ride in the shell image and need
+no host copy. Without the overlay dockerd creates an empty root-owned stub
+for the `../grpc-asr/models` bind source). Images travel by `docker save
+<images> | zstd | ssh krick-1 'zstd -d | docker load'`, never by a registry
+push from a workstation; the
 gRParse image is `pipestreamai/grparse:latest-openvino` from
 `Dockerfile.openvino`, built in a fresh cache scope like any acceptance
 build (the OpenVINO cache mount trips the same stale-object trap as the

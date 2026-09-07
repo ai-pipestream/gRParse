@@ -1,0 +1,1082 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// Shared types for the PDF inspector: the per-call options, the three event
+// payloads that make up the response stream, and the server's advertised
+// limits.
+//
+// A PDF is either cheap to read or expensive to read, and the difference is
+// whether its pages carry a real text layer. This service exists to answer
+// that question in tens of milliseconds (`info`), and to stream the text
+// layer out page by page when there is one (`page` events). Pages without a
+// usable text layer are *reported* (`pages_needing_ocr`) so a caller can
+// route only those to a heavy OCR path; this server never OCRs.
+
+syntax = "proto3";
+
+package ai.pipestream.pdf.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option java_multiple_files = true;
+option java_outer_classname = "PdfTypesProto";
+
+// ProcessMode selects how far the pipeline runs for one call.
+//
+// Detection is always performed and always reported in `info`; the mode only
+// governs what happens after it.
+enum ProcessMode {
+  // The server default: FULL.
+  PROCESS_MODE_UNSPECIFIED = 0;
+
+  // Classify only. The stream is `info`, then `status`; no page is
+  // extracted. This is the ~10-50ms routing answer.
+  PROCESS_MODE_DETECT_ONLY = 1;
+
+  // Classify and analyze the text layer (layout complexity, encoding
+  // issues) without producing markdown. The stream is `info`, then
+  // `status` carrying the analysis; no `page` events.
+  PROCESS_MODE_ANALYZE = 2;
+
+  // Classify and extract markdown per page. The stream is `info`, then one
+  // `page` event per extracted page, then `status`.
+  PROCESS_MODE_FULL = 3;
+}
+
+// PdfOptions configures a single ParsePdf call.
+message PdfOptions {
+  // How far the pipeline runs. Absent means FULL.
+  ProcessMode mode = 1;
+
+  // 1-indexed pages to process, empty meaning all pages. Page 0 is
+  // rejected with INVALID_ARGUMENT. Detection always covers the whole
+  // document; this selects which pages are analyzed or extracted.
+  //
+  // Note the indexing: PDF page numbers on this wire are 1-indexed, as
+  // they are in every viewer. (The underlying library's per-page
+  // extraction API is 0-indexed; the server converts.)
+  repeated uint32 pages = 2;
+
+  // Password for an encrypted PDF. Empty means none; an encrypted PDF
+  // without a working password fails with INVALID_ARGUMENT.
+  //
+  // With a password set, FULL mode falls back to whole-document extraction
+  // (the library's per-page API takes no password): the markdown arrives
+  // as a single `page` event with `page_no` 0 and the trailer carries a
+  // PARSE_WARNING_CODE_PASSWORD_FALLBACK warning.
+  string password = 3;
+
+  // Also fold this parse into one `ai.pipestream.document.v1.Document` and
+  // send it as a `document` event after the last `page` event and before
+  // `status`. Default false, which costs nothing: no fold is built and no
+  // markdown is retained.
+  //
+  // The event stream stays the primary, lossless wire; the Document is a
+  // structural projection of it, built so a coordinator can merge it
+  // additively with another collector's parse of the same document.
+  //
+  // The fold behind it consumes every event this parse produces, including
+  // the ones the flags below keep off the wire: setting `emit_document`
+  // alone still yields a Document with provenance boxes on its items,
+  // because the spans that carry them were folded on their way past.
+  bool emit_document = 4;
+
+  // Also stream the positioned text runs each page's markdown was rendered
+  // from, as one `spans` event per page immediately before that page's
+  // `page` event. Default false.
+  //
+  // The runs are what the extractor actually saw: text, box, font, size,
+  // the bold/italic/underline/strikeout flags, the marked-content id, and
+  // the link target for a link annotation. Markdown is a rendering of
+  // them, so this is the lossless half of a FULL stream and the only place
+  // a coordinate appears on this wire.
+  bool emit_spans = 5;
+
+  // Also read the document's own dictionaries and stream them as one
+  // `metadata` event, immediately after `info`. Default false.
+  //
+  // This is everything the file says about itself rather than about its
+  // text: the information dictionary, the XMP packet, the file-format
+  // version, the catalog language, the tagged flag, the encryption
+  // posture, the outline, embedded file attachments, per-page boxes and
+  // rotation, page labels, named destinations, and the link annotations
+  // with their targets resolved. It costs one read of the file, which is
+  // why it is opt-in.
+  bool emit_metadata = 6;
+
+  // Also read the document's tagged structure tree and stream one
+  // `structure` event per page, before that page's other events. Default
+  // false.
+  //
+  // These are the roles the document's author declared — H1 through H6, P,
+  // L, LI, Table, Figure, Caption, Code, Formula, TOC — joined to the
+  // positioned runs by marked-content id. They are what the markdown
+  // pipeline was guessing at from type size, and a document that declares
+  // them is a document that does not have to be guessed at. It costs one
+  // read of the file.
+  bool emit_structure = 7;
+
+  // Also stream the tables the detector found on each page, as one
+  // `tables` event per page carrying a page with any. Default false.
+  //
+  // The detector works from the same positioned runs the markdown is
+  // rendered from and reports the column and row boundaries in page
+  // points, which is the richest geometry available anywhere on this wire.
+  // Markdown can only render a table as pipe characters, so this is the
+  // only form in which a table survives as a table. It costs nothing
+  // beyond the extraction pass that is already running.
+  bool emit_tables = 8;
+
+  // Report the page's chrome on `PageMarkdown.furniture`, and the body
+  // runs the rendering left out on `PageMarkdown.dropped`. Default false.
+  //
+  // Headers, footers, folios and margin numbering are identified and
+  // deleted before anything sees them, and other runs are discarded by the
+  // layout pass for reasons no option reaches. Setting this names both,
+  // separately, so the removal is visible without the body having to carry
+  // its chrome and without its content being filed as chrome.
+  //
+  // It also decides what `markdown` is rendered from. The chrome verdict
+  // is taken over the whole document before any page is rendered, and the
+  // runs it convicts are held out of the rendering's input, so a margin
+  // line number cannot fuse into the line it stands beside. Without the
+  // verdict there is nothing to hold out: the renderer assembles a line
+  // from the runs sharing its baseline, a margin number shares one, and it
+  // arrives inside the sentence. The verdict costs a pass over the runs in
+  // memory, which is why it is asked for rather than always taken.
+  bool report_furniture = 9;
+
+  // Report the text the page drew invisibly, on `PageMarkdown.invisible`.
+  // Default false.
+  //
+  // Text drawn with rendering mode 3 is on the page and cannot be seen: an
+  // OCR layer sitting behind a scan, a watermark meant not to print, a
+  // template's hidden field labels. It stays out of the markdown, which is
+  // right, because it is not content a reader saw. Leaving it out silently
+  // is not: a document can carry text that nothing downstream ever hears
+  // about. Setting this streams those runs with their boxes, beside the
+  // visible ones rather than inside them.
+  //
+  // `ParseStatus.has_invisible_text` says whether there was any at all, in
+  // every FULL call and at no cost. This flag is what turns the runs
+  // themselves on, and it costs a second walk of the content streams,
+  // taken only for a document that actually drew invisible text.
+  bool report_invisible = 10;
+}
+
+// TableKind separates a real data table from a table of contents.
+//
+// They share row and column structure, which is why one detector finds
+// both, but a table of contents is a navigation aid rather than data and
+// belongs in a different place downstream.
+enum TableKind {
+  // Never sent. Present because proto3 requires a zero value.
+  TABLE_KIND_UNSPECIFIED = 0;
+
+  // A data table.
+  TABLE_KIND_DATA = 1;
+
+  // A table of contents.
+  TABLE_KIND_CONTENTS = 2;
+}
+
+// TableCells is one row of a detected table.
+message TableCells {
+  // The row's cells, left to right. A row shorter than the table's column
+  // count ends where the detector found it ending.
+  repeated string cells = 1;
+}
+
+// TableRegion is one detected table: its grid, its contents, and where its
+// lines fall on the page.
+message TableRegion {
+  // The table's extent, measured from the runs it claims. This is what
+  // closes the last column and the last row, whose far edges the
+  // boundaries below do not name.
+  Rect bbox = 1;
+
+  // Where the columns divide, as x positions in page points, ascending.
+  //
+  // These are the detector's own numbers and which detector found the
+  // table decides what they are: a table drawn with rules reports the
+  // ruled edges, so a two-column grid has three of them, while a table
+  // found from alignment alone reports where each column's text starts and
+  // has one per column. `bbox` closes the extent either way, which is what
+  // makes the last column's far edge knowable in both cases.
+  repeated double column_boundaries = 2;
+
+  // Where each row sits, as a y position in page points, descending —
+  // page space grows upwards and a table is read downwards. One per row: a
+  // row's band runs from its own value up to the previous row's, and the
+  // first row's top edge is `bbox`'s.
+  repeated double row_boundaries = 3;
+
+  // The cells, row by row, top to bottom.
+  repeated TableCells rows = 4;
+
+  // Whether this is data or a table of contents.
+  TableKind kind = 5;
+}
+
+// PageTables carries the tables found on one page.
+message PageTables {
+  // The 1-indexed page.
+  uint32 page_no = 1;
+
+  // The tables, in reading order.
+  repeated TableRegion tables = 2;
+}
+
+// Rect is an axis-aligned rectangle in PDF user space.
+//
+// The unit is the PDF point (1/72 inch) and the origin is the page's
+// bottom-left corner, with y increasing upwards — the space the file
+// itself is written in, unrotated and unscaled. A consumer that wants
+// top-left coordinates subtracts from the page box, which arrives on
+// `PageGeometry`.
+message Rect {
+  // Distance from the page's left edge to the rectangle's left edge.
+  double x = 1;
+
+  // Distance from the page's bottom edge to the rectangle's bottom edge.
+  // For a text run this is the baseline, not the descender.
+  double y = 2;
+
+  // Extent along x. Never negative.
+  double width = 3;
+
+  // Extent along y. Never negative.
+  double height = 4;
+}
+
+// SpanKind names what a positioned run actually is.
+//
+// The extractor emits more than glyphs: an image or form XObject
+// contributes its placement box, a link annotation contributes its
+// rectangle and target, and an AcroForm field contributes its value.
+enum SpanKind {
+  // Never sent. Present because proto3 requires a zero value.
+  SPAN_KIND_UNSPECIFIED = 0;
+
+  // Glyphs drawn by a text-showing operator.
+  SPAN_KIND_TEXT = 1;
+
+  // An image XObject's placement box. `text` is a placeholder, not
+  // content.
+  SPAN_KIND_IMAGE = 2;
+
+  // A link annotation's rectangle. `link_uri` carries its target.
+  SPAN_KIND_LINK = 3;
+
+  // An AcroForm field's value.
+  SPAN_KIND_FORM_FIELD = 4;
+
+  // A Form XObject's placement box: the form's own bounding box carried
+  // through its matrix and the transformation in force when the page
+  // invoked it. A vector figure included as a form draws no image
+  // XObject, and this is the only record of where it sits. `text` is a
+  // placeholder naming the resource, not content; the form's own text
+  // runs arrive as SPAN_KIND_TEXT in their own right.
+  SPAN_KIND_FORM = 5;
+}
+
+// TextSpan is one positioned run as the extractor saw it, before markdown.
+message TextSpan {
+  // The run's text. For an image span this is a placeholder.
+  string text = 1;
+
+  // Where the run sits on its page.
+  Rect bbox = 2;
+
+  // The `/BaseFont` family name, subset prefix included
+  // ("ABCDEF+CMMI10"). Empty for runs that no show operator produced.
+  string font_family = 3;
+
+  // The page-resource tag the show operator selected ("F2"). Its namespace
+  // is the enclosing page's resources, so the same tag on another page may
+  // name a different face; within one page it separates font programs that
+  // share a family name.
+  string font_tag = 4;
+
+  // Type size in points, 0 for runs that no show operator produced.
+  float font_size = 5;
+
+  // Whether the face is bold.
+  bool bold = 6;
+
+  // Whether the face is italic.
+  bool italic = 7;
+
+  // Whether a rule is drawn under the baseline. PDF has no underline flag,
+  // so this is geometric.
+  bool underline = 8;
+
+  // Whether a rule crosses the glyphs at mid x-height. Geometric, as
+  // above.
+  bool strikeout = 9;
+
+  // The marked-content id from the page's content stream, when the run
+  // sits inside a BDC/BMC pair. This is the join key to the tagged
+  // structure tree.
+  optional int64 mcid = 10;
+
+  // What kind of run this is.
+  SpanKind kind = 11;
+
+  // For SPAN_KIND_LINK, the annotation's target. Empty otherwise.
+  string link_uri = 12;
+
+  // Whether the run is page chrome: a running head, a folio, a margin line
+  // number. Chrome is taken out of the page before the markdown is rendered
+  // and is reported on the page event's `furniture` list, so a consumer
+  // joining the rendering back to the runs skips these. Set only when
+  // `report_furniture` was requested; otherwise nothing is chrome.
+  bool chrome = 13;
+}
+
+// PageSpans carries one page's positioned runs, in extraction order.
+//
+// Sent immediately before that page's `page` event, so a consumer that
+// wants both sees the runs first and the rendering they produced second.
+message PageSpans {
+  // The 1-indexed page these runs came from.
+  uint32 page_no = 1;
+
+  // The runs, in the order the extractor produced them.
+  repeated TextSpan spans = 2;
+}
+
+// PdfType is the routing answer: how the pages' content is stored.
+enum PdfType {
+  // Never sent by the server; the detection always reaches a conclusion or
+  // the call fails.
+  PDF_TYPE_UNSPECIFIED = 0;
+
+  // Pages carry a real text layer (text operators). Markdown extraction is
+  // cheap and reliable.
+  PDF_TYPE_TEXT_BASED = 1;
+
+  // Pages are raster scans with no text layer. Every page needs OCR.
+  PDF_TYPE_SCANNED = 2;
+
+  // Pages are mostly images with minimal or no text. Extraction is
+  // skipped; most pages need OCR.
+  PDF_TYPE_IMAGE_BASED = 3;
+
+  // Some pages have text, some are image-heavy. Text pages extract
+  // normally; `pages_needing_ocr` names the rest.
+  PDF_TYPE_MIXED = 4;
+}
+
+// OcrReason names why a page's text layer is unusable, when known.
+enum OcrReason {
+  // Never sent. Present because proto3 requires a zero value.
+  OCR_REASON_UNSPECIFIED = 0;
+
+  // The page has no extractable text and no image to OCR: blank, or
+  // content the parser cannot reach.
+  OCR_REASON_NO_TEXT = 1;
+
+  // The page is a scanned image (a full-page raster) with no usable text
+  // layer.
+  OCR_REASON_SCANNED = 2;
+
+  // The page has a text layer, but it decodes to mojibake (broken font
+  // encodings), so extraction cannot be trusted.
+  OCR_REASON_SUSPECTED_GARBLED = 3;
+
+  // The page's text is drawn as vector outlines (path operators) rather
+  // than real text operators, so there are no characters to extract.
+  OCR_REASON_VECTOR_TEXT = 4;
+}
+
+// PageOcrReasons lists the OCR reasons for one page.
+message PageOcrReasons {
+  // The 1-indexed page the reasons concern.
+  uint32 page = 1;
+
+  // Machine-readable reasons, in detection order.
+  repeated OcrReason reasons = 2;
+}
+
+// LayoutComplexity reports whether the text layer's layout is simple
+// enough for plain markdown to represent faithfully.
+//
+// It is computed from extracted text positions, which is why it arrives on
+// the `status` trailer rather than on `info`: detection alone does not
+// look at positions.
+message LayoutComplexity {
+  // True when any page has tables or multi-column text.
+  bool is_complex = 1;
+
+  // 1-indexed pages where table borders were detected.
+  repeated uint32 pages_with_tables = 2;
+
+  // 1-indexed pages where multi-column text was detected.
+  repeated uint32 pages_with_columns = 3;
+}
+
+// PdfInfo is the opening event of every successful stream.
+//
+// It is sent as soon as classification completes — tens of milliseconds
+// for a typical document, before a single page has been extracted — so a
+// caller can make its routing decision (fast local markdown versus the
+// OCR path) without waiting for the body of the stream.
+message PdfInfo {
+  // How the document's content is stored; the routing answer.
+  PdfType pdf_type = 1;
+
+  // Detection confidence, 0.0 to 1.0.
+  float confidence = 2;
+
+  // Total pages in the document.
+  uint32 page_count = 3;
+
+  // Title from the PDF metadata, empty when the document declares none.
+  string title = 4;
+
+  // 1-indexed pages whose text layer is unusable and which therefore need
+  // OCR. Empty for a fully text-based document. In FULL mode these pages
+  // still get a `page` event, with empty markdown.
+  repeated uint32 pages_needing_ocr = 5;
+
+  // Why each of those pages needs OCR, when the cause is known.
+  repeated PageOcrReasons ocr_reasons = 6;
+
+  // Milliseconds the classification itself took, so a caller can check
+  // that the cheap answer stayed cheap.
+  uint64 detection_time_ms = 7;
+}
+
+// PageMarkdown is one extracted page, in requested page order.
+//
+// Emitted only in FULL mode, and only for text-based and mixed documents;
+// scanned and image-based documents have nothing to extract and produce
+// none. With the password fallback (see PdfOptions.password) the whole
+// document's markdown arrives as one event with `page_no` 0.
+message PageMarkdown {
+  // The 1-indexed page this markdown came from, or 0 for the
+  // whole-document fallback.
+  uint32 page_no = 1;
+
+  // The page's text layer as markdown. Empty when the page needs OCR.
+  string markdown = 2;
+
+  // True when this page's own text layer is unreliable, as judged by the
+  // pass that read it rather than by the sampling detection on `info`.
+  //
+  // The two can disagree, and the disagreement is the point: detection
+  // samples pages and answers about the document, while this answers about
+  // this page after its glyphs were actually decoded. A page that decoded
+  // to mojibake shows up here even when the document as a whole looked
+  // fine.
+  bool needs_ocr = 3;
+
+  // Why, when the cause is known. UNSPECIFIED when `needs_ocr` is false.
+  OcrReason ocr_reason = 4;
+
+  // How many runs of U+FFFD REPLACEMENT CHARACTER the page's text decoded
+  // to, counting a consecutive run as one.
+  //
+  // This is the measurement behind `has_encoding_issues`, which is the
+  // same fact reduced to a boolean. Three failed glyphs and a page of
+  // cipher garble are the same boolean and very different numbers, and the
+  // difference is what decides whether re-routing to OCR is worth it.
+  uint32 replacement_runs = 5;
+
+  // The page's chrome: its running head, its footer, its folio, the line
+  // numbers ruled down its margin.
+  //
+  // Empty unless `PdfOptions.report_furniture` was set. Page chrome is
+  // identified and deleted by default and the deletion used to be silent,
+  // so it was neither visible nor auditable; this reports what went,
+  // without putting it back into the body.
+  //
+  // Every line here is named on chrome evidence: the parser's own header,
+  // footer and folio verdicts, repetition at the same page edge across
+  // pages, or a column of short numbers standing outside the text block. A
+  // run missing from `markdown` is not evidence of anything on its own,
+  // because the renderer reads a multi-column page column by column and
+  // leaves out genuine content; such runs are reported on `dropped`
+  // instead.
+  repeated string furniture = 6;
+
+  // The runs this page drew with text rendering mode 3, which paints no
+  // glyphs: an OCR layer behind a scan, a hidden watermark, a template's
+  // unfilled labels.
+  //
+  // Empty unless `PdfOptions.report_invisible` was set, and empty then too
+  // for a page that drew none. These runs are never in `markdown`, because
+  // they are not content a reader saw, and they carry their boxes, so a
+  // consumer can say where on the page the hidden text sits.
+  repeated TextSpan invisible = 7;
+
+  // How far this page's letter frequencies sit from natural language, 0.0
+  // for a page whose letters fall where a Latin-script language puts them
+  // and rising towards 1.0 as they do not.
+  //
+  // This is the evidence behind OCR_REASON_SUSPECTED_GARBLED: a broken
+  // ToUnicode CMap shifts every character by a per-range constant, so
+  // "Certificate" extracts as "8VceZWZTReV": printable ASCII, word-like
+  // token lengths, no replacement character anywhere, and a letter
+  // histogram that is a permutation of a natural one. Ordinary prose
+  // scores near 0.05; cipher garble scores near 0.47.
+  //
+  // Absent when the page carried too few letters for the statistic to mean
+  // anything, which is the honest answer rather than a reassuring zero.
+  optional double garble_score = 8;
+
+  // The runs the rendering left out that no chrome evidence convicts:
+  // body content, with the boxes the page drew it at.
+  //
+  // Empty unless `PdfOptions.report_furniture` was set, and empty then too
+  // for a page whose every run reached the markdown. The markdown renderer
+  // reads a page's columns one after another and does not always emit
+  // every run it read; what it leaves behind is text a reader saw, and it
+  // belongs in the body rather than in `furniture`. A consumer folding
+  // this stream into a document puts these back into reading order.
+  //
+  // A run is named here only when its letters appear nowhere in
+  // `markdown`. A run the renderer merely moved is not missing, and a run
+  // of one or two characters is not looked for at all: it would match
+  // somewhere by accident and the report would say it survived.
+  repeated TextSpan dropped = 9;
+}
+
+// StructureRole is one standard structure type from a tagged PDF.
+//
+// These are the roles the document's author declared, resolved through its
+// /RoleMap, not roles inferred from how the page looks. A document that
+// declares them is telling the truth about its own structure, which is
+// better evidence than a heading level guessed from type size.
+//
+// A custom tag with no standard mapping arrives as UNSPECIFIED with its
+// name in `role_raw`.
+enum StructureRole {
+  // The tag has no standard mapping. `role_raw` carries its name.
+  STRUCTURE_ROLE_UNSPECIFIED = 0;
+
+  // The whole document. (`Document`).
+  STRUCTURE_ROLE_DOCUMENT = 1;
+
+  // A large division of the document. (`Part`).
+  STRUCTURE_ROLE_PART = 2;
+
+  // A self-contained article. (`Art`).
+  STRUCTURE_ROLE_ART = 3;
+
+  // A section: a container of related content. (`Sect`).
+  STRUCTURE_ROLE_SECT = 4;
+
+  // A generic block container with no semantics of its own. (`Div`).
+  STRUCTURE_ROLE_DIV = 5;
+
+  // A quotation set off from the surrounding text. (`BlockQuote`).
+  STRUCTURE_ROLE_BLOCK_QUOTE = 6;
+
+  // A caption describing a figure or a table. (`Caption`).
+  STRUCTURE_ROLE_CAPTION = 7;
+
+  // A table of contents. (`TOC`).
+  STRUCTURE_ROLE_TOC = 8;
+
+  // One entry of a table of contents. (`TOCI`).
+  STRUCTURE_ROLE_TOCI = 9;
+
+  // An index of the document's terms. (`Index`).
+  STRUCTURE_ROLE_INDEX = 10;
+
+  // A grouping with no structural meaning. (`NonStruct`).
+  STRUCTURE_ROLE_NON_STRUCT = 11;
+
+  // Content private to the producing application. (`Private`).
+  STRUCTURE_ROLE_PRIVATE = 12;
+
+  // A heading whose depth the document does not state. (`H`).
+  STRUCTURE_ROLE_H = 13;
+
+  // A first-level heading. (`H1`).
+  STRUCTURE_ROLE_H1 = 14;
+
+  // A second-level heading. (`H2`).
+  STRUCTURE_ROLE_H2 = 15;
+
+  // A third-level heading. (`H3`).
+  STRUCTURE_ROLE_H3 = 16;
+
+  // A fourth-level heading. (`H4`).
+  STRUCTURE_ROLE_H4 = 17;
+
+  // A fifth-level heading. (`H5`).
+  STRUCTURE_ROLE_H5 = 18;
+
+  // A sixth-level heading. (`H6`).
+  STRUCTURE_ROLE_H6 = 19;
+
+  // A paragraph. (`P`).
+  STRUCTURE_ROLE_P = 20;
+
+  // A list. (`L`).
+  STRUCTURE_ROLE_L = 21;
+
+  // One item of a list. (`LI`).
+  STRUCTURE_ROLE_LI = 22;
+
+  // A list item's bullet or number. (`Lbl`).
+  STRUCTURE_ROLE_LBL = 23;
+
+  // A list item's content. (`LBody`).
+  STRUCTURE_ROLE_LBODY = 24;
+
+  // A table. (`Table`).
+  STRUCTURE_ROLE_TABLE = 25;
+
+  // A table row. (`TR`).
+  STRUCTURE_ROLE_TR = 26;
+
+  // A table header cell. (`TH`).
+  STRUCTURE_ROLE_TH = 27;
+
+  // A table data cell. (`TD`).
+  STRUCTURE_ROLE_TD = 28;
+
+  // A table's header row group. (`THead`).
+  STRUCTURE_ROLE_THEAD = 29;
+
+  // A table's body row group. (`TBody`).
+  STRUCTURE_ROLE_TBODY = 30;
+
+  // A table's footer row group. (`TFoot`).
+  STRUCTURE_ROLE_TFOOT = 31;
+
+  // An inline run with no semantics of its own. (`Span`).
+  STRUCTURE_ROLE_SPAN = 32;
+
+  // An inline quotation. (`Quote`).
+  STRUCTURE_ROLE_QUOTE = 33;
+
+  // A footnote or endnote. (`Note`).
+  STRUCTURE_ROLE_NOTE = 34;
+
+  // A reference to elsewhere in the document. (`Reference`).
+  STRUCTURE_ROLE_REFERENCE = 35;
+
+  // One entry of a bibliography. (`BibEntry`).
+  STRUCTURE_ROLE_BIB_ENTRY = 36;
+
+  // Program text. (`Code`).
+  STRUCTURE_ROLE_CODE = 37;
+
+  // A hyperlink's content. (`Link`).
+  STRUCTURE_ROLE_LINK = 38;
+
+  // An annotation's content. (`Annot`).
+  STRUCTURE_ROLE_ANNOT = 39;
+
+  // An illustration. (`Figure`).
+  STRUCTURE_ROLE_FIGURE = 40;
+
+  // A mathematical formula. (`Formula`).
+  STRUCTURE_ROLE_FORMULA = 41;
+
+  // A form field's content. (`Form`).
+  STRUCTURE_ROLE_FORM = 42;
+
+  // A ruby annotation, the East Asian pronunciation gloss. (`Ruby`).
+  STRUCTURE_ROLE_RUBY = 43;
+
+  // A ruby annotation's base text. (`RB`).
+  STRUCTURE_ROLE_RB = 44;
+
+  // A ruby annotation's gloss text. (`RT`).
+  STRUCTURE_ROLE_RT = 45;
+
+  // A ruby annotation's punctuation, for readers with no ruby support. (`RP`).
+  STRUCTURE_ROLE_RP = 46;
+
+  // A warichu, the East Asian inline note set in two half-size lines. (`Warichu`).
+  STRUCTURE_ROLE_WARICHU = 47;
+
+  // A warichu's text. (`WT`).
+  STRUCTURE_ROLE_WT = 48;
+
+  // A warichu's punctuation. (`WP`).
+  STRUCTURE_ROLE_WP = 49;
+}
+
+// StructureElement is one marked-content region and the role its author
+// gave it.
+message StructureElement {
+  // The marked-content id, which is the join key to `TextSpan.mcid`.
+  int64 mcid = 1;
+
+  // The standard role, or UNSPECIFIED for a custom tag.
+  StructureRole role = 2;
+
+  // The tag's own name, verbatim, exactly as the role map resolved it.
+  // Always set, so a consumer never has to reconstruct it from the enum.
+  string role_raw = 3;
+}
+
+// PageStructure carries one page's authored roles.
+//
+// Sent before that page's `spans` and `page` events, and only when
+// `PdfOptions.emit_structure` was set. A document that is not tagged
+// produces no elements, which is itself the answer.
+message PageStructure {
+  // The 1-indexed page these roles describe.
+  uint32 page_no = 1;
+
+  // The roles, sorted by marked-content id.
+  repeated StructureElement elements = 2;
+}
+
+// DocumentInfo is the document's information dictionary, field by field.
+//
+// Every value here is what the file says about itself. None of it is
+// verified: a producer writes its own name, and a date is whatever string
+// the writing application put there.
+message DocumentInfo {
+  // The document's title, empty when it declares none.
+  string title = 1;
+
+  // Authors, split on the usual separators when the single `/Author`
+  // string lists several. A file that names one author yields one entry.
+  repeated string authors = 2;
+
+  // The subject line.
+  string subject = 3;
+
+  // Keywords, split from the single `/Keywords` string.
+  repeated string keywords = 4;
+
+  // The application that authored the original document.
+  string creator_tool = 5;
+
+  // The application that converted it to PDF.
+  string producer = 6;
+
+  // When the document was created, as the file states it. Absent when the
+  // file states nothing or states something unparseable — `created_raw`
+  // still carries the string in that case.
+  google.protobuf.Timestamp created = 7;
+
+  // When the document was last modified, on the same terms.
+  google.protobuf.Timestamp modified = 8;
+
+  // The creation date exactly as written, PDF `D:` form included.
+  string created_raw = 9;
+
+  // The modification date exactly as written.
+  string modified_raw = 10;
+
+  // The `/Trapped` name exactly as the file spells it. Empty when the file
+  // declares none.
+  string trapped = 11;
+
+  // The same declaration, typed. UNSPECIFIED both when the file declares
+  // nothing and when it declares a name outside the three the format
+  // defines, which `trapped` above still carries verbatim.
+  Trapped trapped_state = 12;
+}
+
+// Trapped is a document's declaration about whether trapping — the
+// deliberate overlap of adjacent inks that hides press misregistration —
+// has been applied to it.
+//
+// Three-valued by definition: a prepress workflow needs to tell "trapping
+// was done", "trapping was not done" and "nobody has decided yet" apart,
+// and only the last of those is safe to guess at.
+enum Trapped {
+  // The document declares nothing, or declares a name the format does not
+  // define.
+  TRAPPED_UNSPECIFIED = 0;
+
+  // Trapping has been applied. The file is ready to print as it stands.
+  TRAPPED_TRUE = 1;
+
+  // Trapping has not been applied.
+  TRAPPED_FALSE = 2;
+
+  // The document says explicitly that it does not know, which is not the
+  // same as saying nothing.
+  TRAPPED_UNKNOWN = 3;
+}
+
+// EncryptionInfo describes how the document is protected, whether or not
+// the protection stopped this parse.
+//
+// A PDF can be readable with the empty password and still declare that
+// extraction is not permitted. That is a fact about the file that a
+// pipeline overriding it should at least be able to see.
+message EncryptionInfo {
+  // Whether the file carries an `/Encrypt` dictionary at all.
+  bool encrypted = 1;
+
+  // The security handler's name, normally "Standard".
+  string filter = 2;
+
+  // Algorithm version (`/V`).
+  uint32 version = 3;
+
+  // Handler revision (`/R`).
+  uint32 revision = 4;
+
+  // Key length in bits (`/Length`), 40 when the file omits it.
+  uint32 key_bits = 5;
+
+  // Whether the document opened without a password being supplied. True
+  // for a file that is not encrypted at all.
+  bool opened_with_empty_password = 6;
+
+  // Whether the permission bits allow text extraction. True when the file
+  // has no `/Encrypt` dictionary: no permission bits means no restriction.
+  bool allows_extraction = 7;
+
+  // Whether they allow printing, on the same terms.
+  bool allows_printing = 8;
+}
+
+// OutlineEntry is one bookmark of the document's own outline tree,
+// flattened into a list that keeps its depth.
+message OutlineEntry {
+  // The bookmark's label.
+  string title = 1;
+
+  // Depth, 1 for a top-level bookmark.
+  uint32 level = 2;
+
+  // The 1-indexed page it points at, 0 when the destination does not
+  // resolve to a page of this document.
+  uint32 page_no = 3;
+
+  // For a bookmark whose action is a URI rather than a destination, that
+  // URI. Empty otherwise.
+  string uri = 4;
+
+  // The named destination it points at, verbatim, when it points at one by
+  // name.
+  string dest_name = 5;
+}
+
+// EmbeddedFile is one file attachment the document carries.
+//
+// A PDF is a container: it can carry the spreadsheet a table was made
+// from, or a signed original. Without this the payload is invisible to the
+// whole pipeline.
+message EmbeddedFile {
+  // The attachment's file name, from `/UF` when present and `/F`
+  // otherwise.
+  string name = 1;
+
+  // The declared media type, empty when the file declares none.
+  string media_type = 2;
+
+  // Size in bytes, as the file declares it. 0 when it declares none.
+  uint64 size_bytes = 3;
+
+  // The attachment's description.
+  string description = 4;
+}
+
+// PageGeometry is one page's boxes, rotation and printed number.
+//
+// Without it no coordinate on this wire is interpretable: a box means
+// nothing until a reader knows where the page's edges are and how far the
+// page is turned.
+message PageGeometry {
+  // The 1-indexed page.
+  uint32 page_no = 1;
+
+  // The page's full extent, inherited down the page tree when the page
+  // itself declares none.
+  Rect media_box = 2;
+
+  // The visible extent. Equal to `media_box` when the page declares no
+  // crop box.
+  Rect crop_box = 3;
+
+  // Clockwise rotation applied when displaying, in degrees: 0, 90, 180 or
+  // 270.
+  uint32 rotation = 4;
+
+  // The scale factor for the page's user space, 1.0 unless the page says
+  // otherwise.
+  double user_unit = 5;
+
+  // The page's own printed number ("iv", "A-1"), when the document
+  // declares page labels. Empty otherwise, which means the page's index is
+  // its number.
+  string label = 6;
+}
+
+// LinkTarget is one `/Link` annotation with its destination resolved.
+//
+// External targets are a URI. Internal ones — a table of contents, a
+// cross-reference, a footnote jump — name a page, either directly or
+// through a named destination.
+message LinkTarget {
+  // The 1-indexed page the annotation is drawn on.
+  uint32 page_no = 1;
+
+  // Where on that page it is drawn.
+  Rect rect = 2;
+
+  // The external target, empty for an internal link.
+  string uri = 3;
+
+  // The 1-indexed page an internal link leads to, 0 when the destination
+  // does not resolve.
+  uint32 dest_page_no = 4;
+
+  // The named destination it goes through, verbatim. Empty when the link
+  // names a page directly.
+  string dest_name = 5;
+}
+
+// NamedDestination is one entry of the document's destination name tree:
+// a name other parts of the file use to point at a place in it.
+message NamedDestination {
+  // The destination's name.
+  string name = 1;
+
+  // The 1-indexed page it names, 0 when it does not resolve.
+  uint32 page_no = 2;
+}
+
+// PdfMetadata is everything the file says about itself.
+//
+// Sent once, immediately after `info`, and only when
+// `PdfOptions.emit_metadata` was set. It is read from the document's own
+// dictionaries rather than from its text, so it is the same in every
+// mode.
+message PdfMetadata {
+  // The information dictionary.
+  DocumentInfo info = 1;
+
+  // The XMP packet from `/Root /Metadata`, verbatim and undecoded, so no
+  // dialect is imposed on it here. Empty when the document carries none.
+  bytes xmp_packet = 2;
+
+  // The file-format version from the header, for example "1.7".
+  string pdf_version = 3;
+
+  // The document's language from `/Root /Lang`, a BCP 47 tag. Empty when
+  // it declares none.
+  string language = 4;
+
+  // Whether the document declares itself tagged (`/Root /MarkInfo
+  // /Marked`), which is what makes its structure tree trustworthy.
+  bool tagged = 5;
+
+  // The first half of the file identifier from the trailer's `/ID`, lower
+  // case hex. This identifies the document from inside the file, which is
+  // the only identity a byte stream carries.
+  string file_id = 6;
+
+  // How the document is protected.
+  EncryptionInfo encryption = 7;
+
+  // The document's own outline, depth-first.
+  repeated OutlineEntry outline = 8;
+
+  // File attachments the document carries.
+  repeated EmbeddedFile embedded_files = 9;
+
+  // Per-page boxes, rotation and printed numbers, in page order. Covers
+  // every page of the document, not only the ones a page filter selected.
+  repeated PageGeometry pages = 10;
+
+  // Every `/Link` annotation, with its destination resolved.
+  repeated LinkTarget links = 11;
+
+  // The document's named destinations.
+  repeated NamedDestination destinations = 12;
+}
+
+// ParseWarningCode names a condition that did not stop the parse.
+enum ParseWarningCode {
+  // Never sent. Present because proto3 requires a zero value.
+  PARSE_WARNING_CODE_UNSPECIFIED = 0;
+
+  // A password was supplied, so FULL mode used whole-document extraction:
+  // the markdown arrived as one `page` event with `page_no` 0 instead of
+  // one event per page.
+  PARSE_WARNING_CODE_PASSWORD_FALLBACK = 1;
+
+  // `emit_metadata` was set but the document's dictionaries could not be
+  // read, so no `metadata` event was sent. The text extraction is
+  // unaffected: this reports a gap, not a failure.
+  PARSE_WARNING_CODE_METADATA_UNAVAILABLE = 2;
+}
+
+// ParseWarning is one non-fatal observation, carried on ParseStatus.
+message ParseWarning {
+  // What happened.
+  ParseWarningCode code = 1;
+
+  // Human-readable detail, for logs. Not a stable contract; switch on
+  // `code`.
+  string message = 2;
+}
+
+// ParseStatus is the trailer that closes every successful stream.
+//
+// It is a receipt, not the payload: everything worth having has already
+// been delivered by the time it arrives. The layout analysis lives here
+// rather than on `info` because it is computed from extracted text
+// positions, after `info` has already gone out.
+message ParseStatus {
+  // How many `page` events were emitted. Equals the number of requested
+  // pages on a complete FULL stream; zero in DETECT_ONLY and ANALYZE.
+  uint32 pages_extracted = 1;
+
+  // Non-fatal observations, in the order they occurred.
+  repeated ParseWarning warnings = 2;
+
+  // Layout complexity of the text layer. Populated in ANALYZE and FULL for
+  // text-bearing documents; the zero value otherwise.
+  LayoutComplexity layout = 3;
+
+  // True when broken font encodings were detected in the text layer
+  // (garbled text, replacement characters). Extraction output should not
+  // be trusted; route to OCR. Meaningful in ANALYZE and FULL only.
+  bool has_encoding_issues = 4;
+
+  // Wall-clock milliseconds for the whole call, classification included.
+  uint64 processing_time_ms = 5;
+
+  // Per-page OCR reasons from the pass that read the text layer, as
+  // distinct from `PdfInfo.ocr_reasons`, which comes from the sampling
+  // detection. Populated in ANALYZE and FULL.
+  //
+  // `has_encoding_issues` above is these reasons collapsed to one boolean;
+  // it stays for callers that only want the routing bit.
+  repeated PageOcrReasons extraction_ocr_reasons = 6;
+
+  // True when some extracted page drew text with rendering mode 3, which
+  // paints no glyphs and therefore never reaches the markdown.
+  //
+  // Reported in FULL for text-bearing documents whether or not
+  // `PdfOptions.report_invisible` was set, because it is what the
+  // extraction pass already knows and a hidden text layer nobody is told
+  // about is the thing this field exists to prevent. Set the option to see
+  // the runs themselves on `PageMarkdown.invisible`.
+  bool has_invisible_text = 7;
+}
+
+// ServerLimits reports the ceilings a server actually enforces.
+message ServerLimits {
+  // Largest accepted upload in bytes, measured as it is received.
+  // Exceeding it fails the call with RESOURCE_EXHAUSTED before the
+  // document is parsed.
+  uint64 max_document_bytes = 1;
+
+  // Largest single `chunk` frame the server will accept on the request
+  // stream. A larger upload is legal; split it across more frames.
+  uint64 max_chunk_bytes = 2;
+
+  // How many ParsePdf calls may run concurrently. Further calls wait
+  // rather than being refused, because the bound exists to cap CPU and
+  // heap, not to shed load.
+  uint32 max_concurrent_parses = 3;
+}

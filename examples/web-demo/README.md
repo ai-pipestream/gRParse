@@ -102,14 +102,24 @@ Three pieces make a tab work:
   preserved — the frontends are started with `UI_BASE=/ui/<name>` and serve
   everything under that prefix. Proxying is raw `http` piping with no body
   buffering, so POST uploads and SSE/NDJSON streams flow through unchanged.
-- Proto resolution: a per-name map in `server.js` points each known service
-  at its sibling repo (`<repo>/proto/...`); the workspace keeps the repos
-  side by side, and the resolver probes both the plain checkout depth and
-  the one-level-deeper git worktree depth. Set `DEMO_PROTO_DIR` to a
-  directory holding one `<name>.proto` per entry to override the map
-  entirely — imports in those files resolve against the same directory. The
-  compose demo service instead bind-mounts the sibling proto dirs at
-  `/<repo>/proto`, which is where the resolver's probe lands in the image.
+- Proto resolution: the per-name registry in `peers.js` points each known
+  service at its sibling repo (`<repo>/proto/...`); the workspace keeps the
+  repos side by side, and the resolver probes the plain checkout depth, the
+  one-level-deeper git worktree depth, and last the vendored copies under
+  `peer-protos/` (so a checkout without siblings still works, while an
+  edited sibling proto is seen live). Set `DEMO_PROTO_DIR` to a directory
+  holding one `<name>.proto` per entry to override the map entirely —
+  imports in those files resolve against the same directory. The image
+  copies `peer-protos/` to `/`, which is where the resolver's first probe
+  lands there, so the compose services need no bind mounts; a bind mount at
+  `/<repo>/<include-root>` still overrides a baked tree.
+- `node server.js --check-protos` (also `npm run check-protos`) loads every
+  registry contract from disk without dialing anything and exits nonzero
+  naming the failures; the Dockerfile runs it as a build gate. Every
+  unreachable payload (`/api/uis` entries, the native `/api/<name>/status`
+  probes) carries an `error` string, so a tab that is down for want of its
+  contract (`proto unavailable: ...`) reads differently from one whose server
+  refused the dial (`14 UNAVAILABLE: ...`).
 
 With `DEMO_UIS` empty there are no tabs and the served page is
 byte-identical to the standalone demo. Shell mode and `UI_BASE` are
@@ -119,8 +129,26 @@ under its prefix, ready to be one tab inside another shell.
 A new service gets a tab by (1) advertising a `UiInfo` block
 (`title`/`path`/`description`) from its info RPC, (2) serving its web
 frontend under a `UI_BASE` prefix, and (3) adding one `name=grpc@ui` entry
-to `DEMO_UIS` — plus a proto map entry in `server.js` if it isn't one of
-the known services.
+to `DEMO_UIS` — plus a registry entry in `peers.js` and a
+`sync-peer-protos.sh` run if it isn't one of the known services.
+
+### Vendored peer contracts
+
+`peer-protos/<repo>/<include-root>/...` holds a byte-identical copy of each
+sibling's proto include tree, one per `peers.js` entry, so the shell and
+its image carry every contract they dial. The copies are never edited by
+hand; `sync-peer-protos.sh` writes them from the sibling checkouts
+(`../../../<repo>`, a worktree one level deeper, or `--workspace <dir>`),
+removes stale trees, and reloads every contract from the vendored copy.
+`sync-peer-protos.sh --check` diffs the copies against the siblings and
+exits 1 naming each drifted path. A peer contract change is therefore a
+three-step sweep here: run the sync, commit `peer-protos/`, rebuild the
+shell image (`docker compose -f compose.stack.yaml build shell`). The
+script also prints one note when a sibling's `document.proto` copy differs
+from gRParse's own (the fleet rule in `AGENTS.md`); that is the sibling's
+fix, not this repo's. `npm test` covers the registry, the vendored trees
+(every contract loads, the `document.proto` copies agree with each other),
+and the script's check mode against a throwaway workspace.
 
 ## Native Document tab
 
@@ -182,9 +210,9 @@ chunks, and relays the response stream as NDJSON: one `start` line per
 record, a `preview` line with the first 4 KiB of payload when it reads as
 text, an `end` line (with digest verification results when requested),
 `error` lines for record failures, and a final `done` summary. The contract
-resolves from the sibling `fastwarc-grpc` checkout through the same
-`KNOWN_UIS` proto map as the other native tabs (the compose stack
-bind-mounts it at `/fastwarc-grpc/proto`); the vendored
+resolves from the sibling `fastwarc-grpc` checkout (or the vendored
+`peer-protos/fastwarc-grpc/proto` copy the image carries) through the same
+`KNOWN_UIS` registry as the other native tabs; the vendored
 `collectors/warc*.proto` files speak the legacy chatnoir dialect and are
 used only by the C++ collector's own client, never by this bridge.
 
@@ -211,8 +239,8 @@ well-known metadata fields), one `preview` line per content element
 characters), an `end` line from the final `ParseStatus`, a `grpc-error`
 line on stream failure, and a final `done` summary. The contract is
 resolved from the sibling grPOIc checkout through the same
-`KNOWN_UIS`/`resolveServiceProto` map the `/api/uis` probes use, so it works
-in the plain workspace, a worktree, and the demo image's bind mounts.
+`KNOWN_UIS`/`resolveServiceProto` registry the `/api/uis` probes use, so it
+works in the plain workspace, a worktree, and the demo image.
 
 ## Native ASR, Enrich, and VLM Convert tabs
 

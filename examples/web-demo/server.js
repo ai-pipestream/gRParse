@@ -88,114 +88,23 @@ const streamClient = new parseV1.ParseStreamingService(TARGET, credentials, chan
 // frontend (started with UI_BASE=/ui/<name>) that /ui/<name>/* proxies to.
 // ---------------------------------------------------------------------------
 
-// The workspace keeps every repo side by side, so by default each service's
-// proto resolves against ../../../<repo>/. DEMO_PROTO_DIR overrides that:
-// point it at a directory holding one file per registry name
-// ("lol-html.proto", ...) and those are used instead of the repo paths.
+// The peer registry (which sibling repo owns each contract, and where its
+// service proto and include root sit) lives in peers.js so the vendoring
+// script reads the same list. DEMO_PROTO_DIR overrides the resolver: point
+// it at a directory holding one file per registry name ("lol-html.proto",
+// ...) and those are used instead of the repo paths.
 const DEMO_PROTO_DIR = process.env.DEMO_PROTO_DIR || "";
+const peers = require("./peers");
+const { KNOWN_UIS, resolveServiceProto, loadServiceCtor } = peers;
 
-const KNOWN_UIS = {
-  "lol-html": {
-    repo: "grpc-lol-html",
-    proto: "proto/lolhtml/v1/lolhtml_service.proto",
-    include: "proto",
-    service: "lolhtml.v1.LolHtmlService",
-    method: "GetServiceInfo",
-  },
-  libreoffice: {
-    repo: "grpc-libreoffice",
-    proto: "proto/ai/pipestream/office/v1/office_service.proto",
-    include: "proto",
-    service: "ai.pipestream.office.v1.OfficeRenderService",
-    method: "GetServiceInfo",
-  },
-  calamine: {
-    repo: "grpc-calamine",
-    proto: "proto/calamine/v1/calamine_service.proto",
-    include: "proto",
-    service: "calamine.v1.CalamineService",
-    // Calamine advertises its UiInfo on GetMetadataResponse instead of a
-    // dedicated info RPC.
-    method: "GetMetadata",
-  },
-  epub: {
-    repo: "grpc-epub",
-    proto: "proto/ai/pipestream/epub/v1/epub_service.proto",
-    include: "proto",
-    service: "ai.pipestream.epub.v1.EpubParseService",
-    method: "GetServiceInfo",
-  },
-  xml: {
-    repo: "grpc-xml",
-    proto: "proto/ai/pipestream/xml/v1/xml_service.proto",
-    include: "proto",
-    service: "ai.pipestream.xml.v1.XmlParseService",
-    method: "GetServiceInfo",
-  },
-  markup: {
-    repo: "grpc-markup",
-    proto: "proto/ai/pipestream/markup/v1/markup_service.proto",
-    include: "proto",
-    service: "ai.pipestream.markup.v1.MarkupParseService",
-    method: "GetServiceInfo",
-  },
-  ebcdic: {
-    repo: "grpc-ebcdic",
-    proto: "proto/ai/pipestream/ebcdic/v1/ebcdic_service.proto",
-    include: "proto",
-    service: "ai.pipestream.ebcdic.v1.EbcdicParseService",
-    method: "GetServiceInfo",
-  },
-  email: {
-    repo: "grpc-email",
-    proto: "proto/ai/pipestream/email/v1/email_service.proto",
-    include: "proto",
-    service: "ai.pipestream.email.v1.EmailParseService",
-    method: "GetServiceInfo",
-  },
-  enrich: {
-    repo: "grpc-enrich",
-    proto: "proto/ai/pipestream/enrich/v1/enrich_service.proto",
-    include: "proto",
-    service: "ai.pipestream.enrich.v1.EnrichService",
-    method: "GetServiceInfo",
-  },
-  asr: {
-    repo: "grpc-asr",
-    proto: "proto/ai/pipestream/asr/v1/asr_service.proto",
-    include: "proto",
-    service: "ai.pipestream.asr.v1.AsrService",
-    method: "GetServiceInfo",
-  },
-  "vlm-convert": {
-    repo: "grpc-vlm-convert",
-    proto: "proto/ai/pipestream/vlm/v1/vlm_convert.proto",
-    include: "proto",
-    service: "ai.pipestream.vlm.v1.VlmConvertService",
-    method: "GetServiceInfo",
-  },
-  poic: {
-    repo: "grPOIc",
-    proto: "grpoic-api/src/main/proto/ai/pipestream/poi/v1/poi_service.proto",
-    include: "grpoic-api/src/main/proto",
-    service: "ai.pipestream.poi.v1.PoiParseService",
-    method: "GetServiceInfo",
-  },
-  fastwarc: {
-    repo: "fastwarc-grpc",
-    proto: "proto/fastwarc/v1/warc_service.proto",
-    include: "proto",
-    service: "fastwarc.v1.WarcService",
-    method: "GetServiceInfo",
-  },
-  pdf: {
-    repo: "grpc-pdf-inspector",
-    proto: "proto/ai/pipestream/pdf/v1/pdf_service.proto",
-    include: "proto",
-    service: "ai.pipestream.pdf.v1.PdfParseService",
-    method: "GetServiceInfo",
-  },
-};
+// `node server.js --check-protos` loads the four gRParse contracts (already
+// staged above) and every peer contract in KNOWN_UIS without dialing
+// anything, then exits nonzero naming the failures. The Dockerfile runs it
+// as a build gate so an image that would answer "proto unavailable" for a
+// tab never ships.
+if (process.argv.includes("--check-protos")) {
+  process.exit(peers.reportCheck(peers.checkProtos()));
+}
 
 function parseRegistry(raw) {
   const entries = [];
@@ -220,57 +129,31 @@ function parseRegistry(raw) {
 
 const registry = parseRegistry(process.env.DEMO_UIS);
 
+// Every unreachable payload names why, so a tab that is down for want of
+// its contract ("proto unavailable: ...") reads differently from one whose
+// server refused the dial ("14 UNAVAILABLE: ..."); the pages ignore the
+// field and only follow `reachable`.
+function unreachable(fallback, error) {
+  const message = error && error.message ? error.message : String(error || "deadline");
+  return { ...fallback, error: message };
+}
+
 // Loads the info-RPC client for one registry entry. Resolved lazily on the
 // first /api/uis call so a missing proto file for a service nobody queries
 // never stops the demo from booting; failures are cached as unreachable.
 const infoClients = new Map();
 
-// Where the sibling repos live, relative to this file. A plain workspace
-// checkout is <ws>/gRParse/examples/web-demo (three levels up); a git
-// worktree adds one (worktrees/gRParse-shell/examples/web-demo); inside the
-// demo image both collapse to "/", where compose bind-mounts the sibling
-// proto dirs. First candidate that has the file wins.
-const WORKSPACE_CANDIDATES = [
-  path.resolve(__dirname, "..", "..", ".."),
-  path.resolve(__dirname, "..", "..", "..", ".."),
-];
-
-function resolveServiceProto(known) {
-  for (const workspace of WORKSPACE_CANDIDATES) {
-    const root = path.join(workspace, known.repo);
-    const file = path.join(root, known.proto);
-    if (fs.existsSync(file)) {
-      return { file, includeDirs: [path.join(root, known.include)] };
-    }
-  }
-  throw new Error(`${known.proto} not found under ${WORKSPACE_CANDIDATES.map((w) => path.join(w, known.repo)).join(" or ")}`);
-}
-
 function infoClientFor(entry) {
   if (infoClients.has(entry.name)) return infoClients.get(entry.name);
   let client = null;
   try {
-    let file;
-    let includeDirs;
-    if (DEMO_PROTO_DIR) {
-      file = path.join(DEMO_PROTO_DIR, `${entry.name}.proto`);
-      includeDirs = [DEMO_PROTO_DIR];
-    } else {
-      const known = KNOWN_UIS[entry.name];
-      if (!known) throw new Error(`no proto map entry for ${entry.name}; set DEMO_PROTO_DIR with ${entry.name}.proto`);
-      ({ file, includeDirs } = resolveServiceProto(known));
-    }
-    const loaded = protoLoader.loadSync(file, {
-      includeDirs, enums: String, longs: Number, defaults: true, oneofs: true,
-    });
-    const packageDefinition = grpc.loadPackageDefinition(loaded);
-    const known = KNOWN_UIS[entry.name] || {};
-    const serviceName = known.service;
-    const method = known.method || "GetServiceInfo";
-    if (!serviceName) throw new Error(`no service name known for ${entry.name}`);
-    const ctor = serviceName.split(".").reduce((node, part) => node && node[part], packageDefinition);
-    if (typeof ctor !== "function") throw new Error(`${serviceName} not found in ${file}`);
-    client = { rpc: new ctor(entry.grpcAddr, credentials), method };
+    const known = KNOWN_UIS[entry.name];
+    if (!known) throw new Error(`no proto map entry for ${entry.name}; set DEMO_PROTO_DIR with ${entry.name}.proto`);
+    const resolved = DEMO_PROTO_DIR
+      ? { file: path.join(DEMO_PROTO_DIR, `${entry.name}.proto`), includeDirs: [DEMO_PROTO_DIR] }
+      : resolveServiceProto(known);
+    const ctor = loadServiceCtor(entry.name, resolved);
+    client = { rpc: new ctor(entry.grpcAddr, credentials), method: known.method || "GetServiceInfo" };
   } catch (error) {
     console.warn(`DEMO_UIS: ${entry.name}: proto unavailable (${error.message})`);
     client = { error };
@@ -284,13 +167,13 @@ function infoClientFor(entry) {
 function fetchUi(entry) {
   const fallback = { name: entry.name, title: entry.name, path: `/ui/${entry.name}`, description: "", reachable: false };
   const loaded = infoClientFor(entry);
-  if (loaded.error) return Promise.resolve(fallback);
+  if (loaded.error) return Promise.resolve(unreachable(fallback, `proto unavailable: ${loaded.error.message}`));
   return new Promise((resolve) => {
     let settled = false;
     const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
     try {
       loaded.rpc[loaded.method]({}, { deadline: Date.now() + 1500 }, (error, response) => {
-        if (error) { finish(fallback); return; }
+        if (error) { finish(unreachable(fallback, error)); return; }
         const ui = (response && response.ui) || {};
         finish({
           name: entry.name,
@@ -300,10 +183,10 @@ function fetchUi(entry) {
           reachable: true,
         });
       });
-    } catch (_error) {
-      finish(fallback);
+    } catch (error) {
+      finish(unreachable(fallback, error));
     }
-    setTimeout(() => finish(fallback), 2000).unref();
+    setTimeout(() => finish(unreachable(fallback)), 2000).unref();
   });
 }
 
@@ -529,13 +412,13 @@ function probeDocumentService() {
     const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
     try {
       parseClient.Health({}, { deadline: Date.now() + 1500 }, (error, health) => {
-        if (error) { finish(fallback); return; }
+        if (error) { finish(unreachable(fallback, error)); return; }
         finish({ reachable: true, status: health.status, version: health.version });
       });
-    } catch (_error) {
-      finish(fallback);
+    } catch (error) {
+      finish(unreachable(fallback, error));
     }
-    setTimeout(() => finish(fallback), 2000).unref();
+    setTimeout(() => finish(unreachable(fallback)), 2000).unref();
   });
 }
 
@@ -584,8 +467,8 @@ message HealthCheckResponse {
 `;
 
 // The contract resolves from the sibling fastwarc-grpc checkout (or the
-// compose image's bind-mounted /fastwarc-grpc/proto) through the KNOWN_UIS
-// "fastwarc" entry; the grpc.health.v1 fallback probe is staged from the
+// vendored copy under peer-protos/, baked into the image) through the
+// KNOWN_UIS "fastwarc" entry; the grpc.health.v1 fallback probe is staged from the
 // inline copy above. Lazy (first /api/fastwarc call) so a missing contract
 // never stops the demo from booting.
 let fastwarcClientsCache = null;
@@ -625,18 +508,18 @@ const FASTWARC_STATUS_CACHE_MS = 5000;
 function probeFastwarc() {
   const fallback = { reachable: false };
   const clients = fastwarcClients();
-  if (clients.error) return Promise.resolve(fallback);
+  if (clients.error) return Promise.resolve(unreachable(fallback, `proto unavailable: ${clients.error.message}`));
   return new Promise((resolve) => {
     let settled = false;
     const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
     const healthCheck = () => {
       try {
         clients.health.Check({ service: "" }, { deadline: Date.now() + 1500 }, (error, health) => {
-          if (error) { finish(fallback); return; }
+          if (error) { finish(unreachable(fallback, error)); return; }
           finish({ reachable: health.status === "SERVING" });
         });
-      } catch (_error) {
-        finish(fallback);
+      } catch (error) {
+        finish(unreachable(fallback, error));
       }
     };
     try {
@@ -651,7 +534,7 @@ function probeFastwarc() {
     } catch (_error) {
       healthCheck();
     }
-    setTimeout(() => finish(fallback), 2000).unref();
+    setTimeout(() => finish(unreachable(fallback)), 2000).unref();
   });
 }
 
@@ -699,8 +582,8 @@ const POIC_CHUNK_BYTES = 1024 * 1024;
 const POIC_PREVIEW_CHARS = 512;
 
 // The contract lives in the sibling grPOIc checkout; resolveServiceProto
-// (against the KNOWN_UIS "poic" entry) covers both the workspace layout and
-// the demo image's bind-mounted proto dirs.
+// (against the KNOWN_UIS "poic" entry) covers the workspace layout, the
+// vendored peer-protos/ copy, and the demo image.
 let poicClientsCache = null;
 
 function poicClients() {
@@ -732,13 +615,13 @@ const POIC_STATUS_CACHE_MS = 5000;
 function probePoic() {
   const fallback = { reachable: false };
   const clients = poicClients();
-  if (clients.error) return Promise.resolve(fallback);
+  if (clients.error) return Promise.resolve(unreachable(fallback, `proto unavailable: ${clients.error.message}`));
   return new Promise((resolve) => {
     let settled = false;
     const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
     try {
       clients.poi.GetServiceInfo({}, { deadline: Date.now() + 1500 }, (error, info) => {
-        if (error) { finish(fallback); return; }
+        if (error) { finish(unreachable(fallback, error)); return; }
         finish({
           reachable: true,
           serviceVersion: info.serviceVersion,
@@ -747,10 +630,10 @@ function probePoic() {
           maxDocumentBytes: info.maxDocumentBytes,
         });
       });
-    } catch (_error) {
-      finish(fallback);
+    } catch (error) {
+      finish(unreachable(fallback, error));
     }
-    setTimeout(() => finish(fallback), 2000).unref();
+    setTimeout(() => finish(unreachable(fallback)), 2000).unref();
   });
 }
 
@@ -857,14 +740,7 @@ function nativeBridge(name, target, mapInfo) {
   const clients = () => {
     if (state.clients) return state.clients;
     try {
-      const known = KNOWN_UIS[name];
-      const resolved = resolveServiceProto(known);
-      const loaded = protoLoader.loadSync(resolved.file, {
-        includeDirs: resolved.includeDirs, enums: String, longs: Number, defaults: true, oneofs: true,
-      });
-      const definition = grpc.loadPackageDefinition(loaded);
-      const ctor = known.service.split(".").reduce((node, part) => node && node[part], definition);
-      if (typeof ctor !== "function") throw new Error(`${known.service} not found in ${resolved.file}`);
+      const ctor = loadServiceCtor(name, resolveServiceProto(KNOWN_UIS[name]));
       state.clients = { rpc: new ctor(target, credentials, channelOptions) };
     } catch (error) {
       console.warn(`${name}: proto unavailable (${error.message})`);
@@ -875,19 +751,19 @@ function nativeBridge(name, target, mapInfo) {
   const probe = () => {
     const fallback = { reachable: false };
     const loaded = clients();
-    if (loaded.error) return Promise.resolve(fallback);
+    if (loaded.error) return Promise.resolve(unreachable(fallback, `proto unavailable: ${loaded.error.message}`));
     return new Promise((resolve) => {
       let settled = false;
       const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
       try {
         loaded.rpc.GetServiceInfo({}, { deadline: Date.now() + 1500 }, (error, info) => {
-          if (error) { finish(fallback); return; }
+          if (error) { finish(unreachable(fallback, error)); return; }
           finish({ reachable: true, ...mapInfo(info) });
         });
-      } catch (_error) {
-        finish(fallback);
+      } catch (error) {
+        finish(unreachable(fallback, error));
       }
-      setTimeout(() => finish(fallback), 2000).unref();
+      setTimeout(() => finish(unreachable(fallback)), 2000).unref();
     });
   };
   const status = async () => {

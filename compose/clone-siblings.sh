@@ -1,9 +1,10 @@
 #!/usr/bin/env sh
-# compose.stack.yaml bind-mounts the sibling repos' proto directories into
-# the demo shell (and grpc-asr/models into the asr service), so the sibling
-# checkouts must exist next to this gRParse checkout. On a fresh machine
-# this script shallow-clones every sibling the stack references; existing
-# checkouts are left untouched.
+# compose.stack.yaml builds every sibling service from ../<repo> and mounts
+# grpc-asr/models into the asr service, so the sibling checkouts must exist
+# next to this gRParse checkout when building locally (the shell's peer
+# contracts ride in its image; see examples/web-demo/peer-protos). On a fresh
+# machine this script shallow-clones every sibling the stack references;
+# existing checkouts are left untouched.
 #
 #   ./compose/clone-siblings.sh            # clone from github.com/ai-pipestream
 #   GIT_BASE=git@git.example.com:org ./compose/clone-siblings.sh

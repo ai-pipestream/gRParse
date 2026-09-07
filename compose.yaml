@@ -40,12 +40,8 @@ services:
     environment:
       GRPARSE_TARGET: grparse:50051
       DEMO_UIS: "lol-html=host.docker.internal:50057@host.docker.internal:8083,libreoffice=host.docker.internal:50053@host.docker.internal:8084"
-    # The shell reads each service's info RPC through its proto contract; in
-    # this image the sibling checkouts do not exist, so bind-mount their
-    # proto dirs at the layout the resolver probes ("/<repo>/proto/...").
-    volumes:
-      - ../grpc-lol-html/proto:/grpc-lol-html/proto:ro
-      - ../grpc-libreoffice/proto:/grpc-libreoffice/proto:ro
+    # The shell reads each service's info RPC through its proto contract,
+    # baked into the image from examples/web-demo/peer-protos.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

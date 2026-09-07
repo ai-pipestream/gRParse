@@ -33,6 +33,26 @@ jobs:
       - name: Boot-proof the runtime image
         run: ./scripts/smoke-test.sh grparse-ci-openvino
 
+  # The demo shell image carries every peer's proto contract (vendored under
+  # examples/web-demo/peer-protos); the Dockerfile's own build gate loads
+  # them all, and the unit tests cover the registry, the vendored trees, and
+  # the sync script. CI has no sibling checkouts, so the sibling-vs-vendored
+  # diff (sync-peer-protos.sh --check) stays a developer-side step.
+  demo-shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Unit tests for the peer registry and vendored protos
+        # The runner's own Node (>= 20, which package.json requires) is enough.
+        working-directory: examples/web-demo
+        run: |
+          npm ci --omit=dev
+          npm test
+      - name: Build the shell image (runs node server.js --check-protos as a build gate)
+        run: docker build --progress=plain -f examples/web-demo/Dockerfile -t grparse-ci-demo-shell .
+      - name: Load every peer contract inside the built image
+        run: docker run --rm grparse-ci-demo-shell node server.js --check-protos
+
   # Short fuzz window on the two ingest doors (the only code that touches
   # attacker-controlled bytes before a model runs).  The fuzz project builds
   # standalone in seconds - no gRPC or ONNX Runtime fetch - so this fits in a

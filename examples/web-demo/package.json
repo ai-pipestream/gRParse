@@ -8,7 +8,9 @@
     "node": ">=20"
   },
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test",
+    "check-protos": "node server.js --check-protos"
   },
   "dependencies": {
     "@grpc/grpc-js": "^1.14.4",

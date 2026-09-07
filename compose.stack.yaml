@@ -28,7 +28,7 @@
 # which drops the GPU reservation and runs gRParse on the CPU provider:
 #   docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml up
 # Fresh machine? compose/clone-siblings.sh fetches the sibling checkouts
-# the shell's proto bind mounts below expect.
+# the `build:` lines below expect; the published images need none of them.
 # The project name differs from compose.yaml's, so both files can be up at
 # once without colliding.
 #
@@ -491,24 +491,10 @@ services:
       ASR_TARGET: "asr:50055"
       ENRICH_TARGET: "enrich:50056"
       VLM_CONVERT_TARGET: "vlm-convert:50058"
-    # The shell reads each service's info RPC through its proto contract; in
-    # this image the sibling checkouts do not exist, so bind-mount their
-    # proto dirs at the layout the resolver probes ("/<repo>/proto/...").
-    volumes:
-      - ../grpc-lol-html/proto:/grpc-lol-html/proto:ro
-      - ../grpc-libreoffice/proto:/grpc-libreoffice/proto:ro
-      - ../grpc-calamine/proto:/grpc-calamine/proto:ro
-      - ../grpc-pdf-inspector/proto:/grpc-pdf-inspector/proto:ro
-      - ../grpc-epub/proto:/grpc-epub/proto:ro
-      - ../grpc-xml/proto:/grpc-xml/proto:ro
-      - ../grpc-markup/proto:/grpc-markup/proto:ro
-      - ../grpc-ebcdic/proto:/grpc-ebcdic/proto:ro
-      - ../grpc-email/proto:/grpc-email/proto:ro
-      - ../grpc-enrich/proto:/grpc-enrich/proto:ro
-      - ../grpc-asr/proto:/grpc-asr/proto:ro
-      - ../grpc-vlm-convert/proto:/grpc-vlm-convert/proto:ro
-      - ../fastwarc-grpc/proto:/fastwarc-grpc/proto:ro
-      - ../grPOIc/grpoic-api/src/main/proto:/grPOIc/grpoic-api/src/main/proto:ro
+    # The peers' proto contracts are baked into the image from
+    # examples/web-demo/peer-protos (sync-peer-protos.sh keeps them
+    # byte-identical to the siblings); after a contract change, sync, commit,
+    # and `build shell` again. No bind mounts, so the stack runs from images.
     depends_on:
       - grparse
       - lol-html-ui
