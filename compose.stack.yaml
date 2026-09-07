@@ -77,6 +77,13 @@ services:
       # leg fails loudly (UNAVAILABLE), per the doctrine above.
       GRPARSE_POI_TARGET: "poic:50052"
       GRPARSE_CALAMINE_TARGET: "calamine:50062"
+      # The PDF backend services sit in the opt-in `pdf-backends` profile.
+      # GRPARSE_PDF_BACKEND stays unset on purpose: the in-process poppler
+      # path is the default until the M6 flip decision (see
+      # docs/pdf-backend-services.md). To run one backend, set it to its
+      # target ("pdfium:50069"); a comma list turns on the consensus vote
+      # ("pdfium:50069,qparse:50070,poppler:50071"). With the profile down,
+      # a configured target fails PDF uploads loudly (UNAVAILABLE).
       # Raster charts: pictures the classifier calls a chart go to the enrich
       # service for a table (opt-in; unset turns the call off). The endpoint
       # is named per request because the enrich default (ENRICH_VLM_URL,
@@ -126,6 +133,44 @@ services:
     build: ../grpc-calamine
     expose:
       - "50062"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  pdfium:
+    profiles: ["pdf-backends"]
+    image: pipestreamai/grpc-pdfium:latest
+    build: ../grpc-pdfium
+    expose:
+      - "50069"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  qparse:
+    profiles: ["pdf-backends"]
+    image: pipestreamai/grpc-qparse:latest
+    build: ../grpc-qparse
+    expose:
+      - "50070"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  # The GPL leg: poppler is the differential reference, not a release
+  # component. It joins consensus only when the profile is up.
+  poppler:
+    profiles: ["pdf-backends"]
+    image: pipestreamai/grpc-poppler:latest
+    build: ../grpc-poppler
+    expose:
+      - "50071"
     read_only: true
     cap_drop:
       - ALL
