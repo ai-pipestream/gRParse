@@ -10,6 +10,8 @@
 
 #include <grpcpp/grpcpp.h>
 
+#include <set>
+
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "ai/protomolt/parse/pdf/v1/pdf_backend_service.grpc.pb.h"
 #include "grparse/consensus_page_source.h"
@@ -25,12 +27,21 @@ namespace pdfv1 = ai::protomolt::parse::pdf::v1;
 constexpr double kPageWidthPts = 612.0;
 constexpr double kPageHeightPts = 792.0;
 
-// One page whose cells are the words handed to the constructor, one word
-// per cell, laid out left to right with uniform line-height boxes.
+// One page per entry, cells the words handed to the constructor, one word
+// per cell, laid out left to right with uniform line-height boxes. Parse
+// fails chosen pages with an RPC error, Render fails wholesale, and both
+// count their calls so the tests can assert exactly what was dialed.
 class FakeBackend final : public pdfv1::PdfBackendService::Service {
  public:
-  FakeBackend(std::string name, std::vector<std::string> words, bool loads)
-      : name_(std::move(name)), words_(std::move(words)), loads_(loads) {}
+  FakeBackend(std::string name, std::vector<std::vector<std::string>> pages,
+              bool loads)
+      : name_(std::move(name)), pages_(std::move(pages)), loads_(loads) {}
+
+  // Zero-based pages whose Parse answers with an RPC error.
+  std::set<uint32_t> parse_fail_pages;
+  bool fail_render = false;
+  int parse_calls = 0;
+  int render_calls = 0;
 
   grpc::Status Probe(grpc::ServerContext*, const pdfv1::ProbeRequest*,
                      pdfv1::ProbeResponse* response) override {
@@ -42,27 +53,35 @@ class FakeBackend final : public pdfv1::PdfBackendService::Service {
       return grpc::Status::OK;
     }
     caps->set_load_status(pdfv1::LOAD_STATUS_OK);
-    caps->set_page_count(1);
+    caps->set_page_count(static_cast<uint32_t>(pages_.size()));
     return grpc::Status::OK;
   }
 
-  grpc::Status Parse(grpc::ServerContext*, const pdfv1::ParseRequest*,
+  grpc::Status Parse(grpc::ServerContext*, const pdfv1::ParseRequest* request,
                      grpc::ServerWriter<pdfv1::ParseResponse>* writer) override {
+    ++parse_calls;
+    const uint32_t page_index = request->pages().begin();
+    if (parse_fail_pages.contains(page_index)) {
+      return grpc::Status(grpc::StatusCode::INTERNAL,
+                          "injected parse failure");
+    }
     pdfv1::ParseResponse header;
     auto* caps = header.mutable_header()->mutable_capabilities();
     caps->set_load_status(pdfv1::LOAD_STATUS_OK);
-    caps->set_page_count(1);
-    auto* info = header.mutable_header()->add_pages();
-    info->set_page_index(0);
-    info->set_width_pts(kPageWidthPts);
-    info->set_height_pts(kPageHeightPts);
+    caps->set_page_count(static_cast<uint32_t>(pages_.size()));
+    for (uint32_t i = 0; i < pages_.size(); ++i) {
+      auto* info = header.mutable_header()->add_pages();
+      info->set_page_index(i);
+      info->set_width_pts(kPageWidthPts);
+      info->set_height_pts(kPageHeightPts);
+    }
     writer->Write(header);
 
     pdfv1::ParseResponse page;
     auto* chunk = page.mutable_page();
-    chunk->set_page_index(0);
+    chunk->set_page_index(page_index);
     double x = 72.0;
-    for (const auto& word : words_) {
+    for (const auto& word : pages_[page_index]) {
       auto* cell = chunk->add_text_cells();
       cell->set_text(word);
       cell->mutable_bbox()->set_x0(x);
@@ -72,15 +91,19 @@ class FakeBackend final : public pdfv1::PdfBackendService::Service {
       x += 50.0;
     }
     writer->Write(page);
-    writer->Write(pdfv1::ParseResponse{});
     return grpc::Status::OK;
   }
 
   grpc::Status Render(grpc::ServerContext*, const pdfv1::RenderRequest* request,
                       grpc::ServerWriter<pdfv1::RenderResponse>* writer) override {
+    ++render_calls;
+    if (fail_render) {
+      return grpc::Status(grpc::StatusCode::INTERNAL,
+                          "injected render failure");
+    }
     pdfv1::RenderResponse msg;
     auto* raster = msg.mutable_raster();
-    raster->set_page_index(0);
+    raster->set_page_index(request->pages().begin());
     raster->set_width_px(10);
     raster->set_height_px(10);
     raster->set_stride_bytes(30);
@@ -93,7 +116,7 @@ class FakeBackend final : public pdfv1::PdfBackendService::Service {
 
  private:
   std::string name_;
-  std::vector<std::string> words_;
+  std::vector<std::vector<std::string>> pages_;
   bool loads_;
 };
 
@@ -103,10 +126,11 @@ struct Server {
   std::string target;
 };
 
-Server start(std::string name, std::vector<std::string> words, bool loads) {
+Server start(std::string name, std::vector<std::vector<std::string>> pages,
+             bool loads) {
   Server out;
-  out.service =
-      std::make_unique<FakeBackend>(std::move(name), std::move(words), loads);
+  out.service = std::make_unique<FakeBackend>(std::move(name),
+                                              std::move(pages), loads);
   grpc::ServerBuilder builder;
   int port = 0;
   builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(),
@@ -138,9 +162,9 @@ int main() {
     std::swap(scrambled[i], scrambled[i + 1]);
   }
 
-  Server good_a = start("good-a", reading, true);
-  Server good_b = start("good-b", reading, true);
-  Server bad = start("scrambled", scrambled, true);
+  Server good_a = start("good-a", {reading}, true);
+  Server good_b = start("good-b", {reading}, true);
+  Server bad = start("scrambled", {scrambled}, true);
   Server broken = start("broken", {}, false);
 
   const auto bytes = std::make_shared<const std::string>("%PDF-fake");
@@ -316,6 +340,117 @@ int main() {
     require(!attributed, "no vote, no field sources");
   }
 
+  // --- Multi-page failure paths ----------------------------------------
+  // A four-page story, two agreeing replicas per scenario. The pages are
+  // short on purpose: every word is one cell, so a page is one line per
+  // word and the vote's fold is fully exercised by the assertions.
+  const std::vector<std::vector<std::string>> story = {
+      {"The", "survey", "team", "returned"},
+      {"the", "equipment", "on", "time"},
+      {"and", "in", "good", "condition"},
+      {"before", "the", "afternoon", "deadline"},
+  };
+  const std::vector<std::string> story_text = {
+      "The survey team returned",
+      "the equipment on time",
+      "and in good condition",
+      "before the afternoon deadline",
+  };
+
+  // A backend that passes Probe but fails Parse on one page leaves that
+  // page's vote to the healthy legs; the document still completes and the
+  // leg is dialed for every page (one failure does not trip anything).
+  {
+    Server flaky = start("flaky", story, true);
+    Server replica_a = start("replica-a", story, true);
+    Server replica_b = start("replica-b", story, true);
+    flaky.service->parse_fail_pages = {1};  // zero-based: document page 2
+
+    const auto source = grparse::open_consensus_pdf_document(
+        bytes, {flaky.target, replica_a.target, replica_b.target}, 144.0);
+    require(source->page_count() == 4, "multi-page count from the first backend");
+    for (int page_number = 1; page_number <= 4; ++page_number) {
+      const auto page = source->extract_digital_page(page_number);
+      require(page.has_value() && joined_text(*page) == story_text[page_number - 1],
+              "every page completes with the majority reading");
+    }
+    require(flaky.service->parse_calls == 4,
+            "one failed page does not stop the leg being dialed");
+    const auto page2 = source->extract_digital_page(2);
+    require(page2->vote.has_value() && page2->vote->legs.size() == 2,
+            "the failed leg casts no vote on the page it missed");
+    require(page2->reconciliation.size() == 1,
+            "only the healthy losing leg reconciles on that page");
+  }
+
+  // The circuit breaker: three consecutive per-page failures drop the leg
+  // for the rest of the document, so page four costs two Parses, not
+  // three, and its vote runs without the dead leg.
+  {
+    Server tripping = start("tripping", story, true);
+    Server steady_a = start("steady-a", story, true);
+    Server steady_b = start("steady-b", story, true);
+    // Fails pages 1-3 (zero-based 0-2); page 4 would serve.
+    tripping.service->parse_fail_pages = {0, 1, 2};
+
+    const auto source = grparse::open_consensus_pdf_document(
+        bytes, {tripping.target, steady_a.target, steady_b.target}, 144.0);
+    for (int page_number = 1; page_number <= 4; ++page_number) {
+      const auto page = source->extract_digital_page(page_number);
+      require(page.has_value() && joined_text(*page) == story_text[page_number - 1],
+              "the vote carries every page while a leg fails");
+    }
+    require(tripping.service->parse_calls == 3,
+            "the tripped leg is never dialed for page four");
+    const auto page4 = source->extract_digital_page(4);
+    require(page4->vote.has_value() && page4->vote->legs.size() == 2,
+            "the disabled leg casts no vote once dropped");
+  }
+
+  // A page the leg serves resets the counter: failing pages 1, then
+  // serving page 2, then failing 3-5 trips the breaker only after the
+  // fifth page, so all five pages were dialed.
+  {
+    const std::vector<std::vector<std::string>> tale = {
+        story[0], story[1], story[2], story[3], {"with", "the", "truck", "idling"},
+    };
+    Server resetting = start("resetting", tale, true);
+    Server stable_a = start("stable-a", tale, true);
+    Server stable_b = start("stable-b", tale, true);
+    // Fails pages 1, 3, 4, 5 (zero-based 0, 2, 3, 4); page 2 serves.
+    resetting.service->parse_fail_pages = {0, 2, 3, 4};
+
+    const auto source = grparse::open_consensus_pdf_document(
+        bytes, {resetting.target, stable_a.target, stable_b.target}, 144.0);
+    require(source->page_count() == 5, "five-page count from the first backend");
+    for (int page_number = 1; page_number <= 4; ++page_number) {
+      const auto page = source->extract_digital_page(page_number);
+      require(page.has_value(),
+              "the healthy legs carry every page while the counter resets");
+    }
+    const auto page5 = source->extract_digital_page(5);
+    require(page5.has_value() && joined_text(*page5) == "with the truck idling",
+            "page five still reads through the healthy legs");
+    require(resetting.service->parse_calls == 5,
+            "the served page reset the counter, so every page was dialed");
+  }
+
+  // Render falls through: a backend whose Render fails never serves the
+  // raster, and the next target does.
+  {
+    Server render_bad = start("render-bad", story, true);
+    Server render_good = start("render-good", story, true);
+    render_bad.service->fail_render = true;
+
+    const auto source = grparse::open_consensus_pdf_document(
+        bytes, {render_bad.target, render_good.target}, 144.0);
+    const cv::Mat mat = source->render_page(1);
+    require(!mat.empty(), "the second backend serves the raster");
+    require(render_bad.service->render_calls == 1 &&
+                render_good.service->render_calls == 1,
+            "render is tried once per target, in order");
+  }
+
   // The vote's word fold: ASCII case, curly quotes and dashes, soft
   // hyphens, Latin ligatures, and Latin-1 uppercase all land on the same
   // folded word the reconciliation keys on.
@@ -325,8 +460,8 @@ int main() {
         {"MixedCASE", "mixedcase"},
         {"don\xE2\x80\x99t", "don't"},              // right single quote
         {"\xE2\x80\x9Chello\xE2\x80\x9D", "\"hello\""},  // double curly quotes
-        {"a\xE2\x80\x93b", "a-b"},                  // en dash
-        {"a\xE2\x80\x94b", "a-b"},                  // em dash
+        {"a\xE2\x80\x93" "b", "a-b"},                // en dash
+        {"a\xE2\x80\x94" "b", "a-b"},                // em dash
         {"hy\xC2\xADphen", "hyphen"},               // soft hyphen
         {"\xEF\xAC\x81le", "file"},                 // fi ligature
         {"\xEF\xAC\x80\xEF\xAC\x84", "ffffl"},      // ff + ffl ligatures
