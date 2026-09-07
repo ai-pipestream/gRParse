@@ -553,9 +553,14 @@ docker build -f Dockerfile.cpu -t grparse-cpu .
 docker run --rm -v /path/to/models:/models:ro -p 50051:50051 grparse-cpu
 ```
 
-The built image is published as `pipestreamai/grparse:latest-cpu` for
-linux/amd64 and linux/arm64. It defaults to `GRPARSE_ORT_EP=cpu`; the
-`compose.stack.cpu.yaml` overlay swaps the demo stack onto it.
+The built image is published as `pipestreamai/grparse:latest-cpu`, a
+manifest list of linux/amd64 and linux/arm64; each leg is built and tested
+natively on its own CI runner, never under emulation, and every release adds
+a `:<version>-cpu` tag beside it (see [docs/RELEASING.md](docs/RELEASING.md)).
+Every published gRParse image carries provenance and SBOM attestations. The
+image defaults to `GRPARSE_ORT_EP=cpu`; the `compose.stack.cpu.yaml` overlay
+swaps the demo stack onto it, and `STACK_TAG=<version>` pins the whole stack
+to a release.
 
 ## Intel GPUs (OpenVINO)
 
@@ -571,7 +576,8 @@ docker run --rm --device /dev/dri -v /path/to/models:/models:ro \
   -p 50051:50051 grparse-openvino
 ```
 
-The built image is published as `pipestreamai/grparse:latest-openvino`.
+The built image is published as `pipestreamai/grparse:latest-openvino`
+(linux/amd64; a release adds `:<version>-openvino`).
 If the container user cannot open the render node, pass the host's render
 GID explicitly (for example `--group-add 990`; a named `render` group does
 not exist inside the image).
@@ -649,9 +655,13 @@ docker compose build
 CI builds both images (CUDA and OpenVINO) and then boot-proofs each runtime
 stage with `scripts/smoke-test.sh`: library closure of the shipped binaries
 plus a boot-to-main check that needs no GPU and no models. The publish
-workflow runs the same gate before pushing any tag. With models present
-locally, `scripts/smoke-test.sh <image> --full` additionally boots the server
-on the CPU provider and streams a fixture through the bundled client.
+workflow runs the same gate on every leg (CUDA, CPU amd64, CPU arm64,
+OpenVINO) against the exact digest it pushed, before any tag exists; how a
+release is cut, which tags appear on Docker Hub and the Forgejo registry,
+and how the compose stack pins one are in
+[docs/RELEASING.md](docs/RELEASING.md). With models present locally,
+`scripts/smoke-test.sh <image> --full` additionally boots the server on the
+CPU provider and streams a fixture through the bundled client.
 
 Every push and PR also runs a short libFuzzer window over the two ingest
 doors (Poppler PDF open/extract and OpenCV raster decode) — see

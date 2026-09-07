@@ -19,9 +19,10 @@ opening more of the stack to the outside.
 
 Every published image in the stack is multi-arch (amd64 + arm64),
 including `pipestreamai/grparse:latest-cpu`, the Dockerfile.cpu build of
-gRParse against ONNX Runtime's plain CPU package. The CPU overlay makes
-the stack run natively anywhere Docker does - Apple Silicon included,
-with no emulation:
+gRParse against ONNX Runtime's plain CPU package (each architecture built
+and tested natively in CI, with provenance and SBOM attestations attached;
+see `docs/RELEASING.md`). The CPU overlay makes the stack run natively
+anywhere Docker does - Apple Silicon included, with no emulation:
 
 ```sh
 ./compose/clone-siblings.sh   # fresh machine: fetch the sibling checkouts
@@ -38,6 +39,23 @@ a GPU, but the whole demo works.
 gRParse's four ONNX models still need to exist in `models/` first (see
 `models/README.md`), and whisper weights go in `../grpc-asr/models` if the
 `heavy` profile's asr tab should do real work.
+
+## Pinning the stack to a release
+
+`STACK_TAG` (default `latest`) is the tag of every `pipestreamai/*` image in
+`compose.stack.yaml` and its overlays, variant suffixes included: the CPU
+overlay renders `pipestreamai/grparse:${STACK_TAG}-cpu`, the OpenVINO
+overlay `${STACK_TAG}-openvino`, asr `pipestreamai/grpc-asr:${STACK_TAG}-cpu`,
+everything else `${STACK_TAG}`.
+
+```sh
+STACK_TAG=0.2.0 docker compose -f compose.stack.yaml pull
+STACK_TAG=0.2.0 docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml up
+```
+
+Unset, the stack tracks `:latest` as before; `up --build` keeps building the
+sibling checkouts under the same names. The pin assumes the whole fleet cut
+that version (`docs/RELEASING.md`).
 
 ## TLS for the web frontend
 

@@ -317,7 +317,9 @@ directory mounted, then `run.py --target localhost:<port>`.
   are not document data.
 - **Push to both remotes** after every commit: `git push origin` and
   `git push github`. GitHub prints "Bypassed rule violations" for direct
-  pushes; that is expected.
+  pushes; that is expected. Release tags (`v<version>`) go to both as
+  well; the version is the `project()` line in `CMakeLists.txt` and
+  nothing else (`docs/RELEASING.md`).
 - **Docs-only commits carry `[ci skip]`** in the message. GitHub Actions
   honors the skip keywords natively on push triggers, so a README or
   `docs/` change does not need the 45-minute publish legs. Manual
