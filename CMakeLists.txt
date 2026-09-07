@@ -191,7 +191,12 @@ FetchContent_MakeAvailable(simdutf)
 # from taking the server down: upstream unwraps the tokenizer.json parse
 # inside an extern "C" fn, and a panic across that boundary aborts the host
 # process, so the patched code returns a null handle that FromBlobJSON turns
-# into a null Tokenizer and the caller reports as INVALID_ARGUMENT.
+# into a null Tokenizer and the caller reports as INVALID_ARGUMENT. A third
+# patch, native-aarch64, keeps upstream's aarch64 branch from naming a cross
+# toolchain (aarch64-unknown-linux-gnu-gcc) when the build host itself is
+# arm64: there the compiler is plain gcc, the prefixed name does not exist,
+# and the onig_sys crate's build script fails to find any C compiler. The
+# prefixed names are now set only under CMAKE_CROSSCOMPILING.
 FetchContent_Declare(tokenizers_cpp
   GIT_REPOSITORY https://github.com/mlc-ai/tokenizers-cpp.git
   GIT_TAG c586c52f93f7b060753bd2388eb96a105cb7374d
@@ -199,7 +204,8 @@ FetchContent_Declare(tokenizers_cpp
   # step whenever the subbuild re-executes, including on cached trees.
   PATCH_COMMAND git checkout -- CMakeLists.txt rust/src/lib.rs src/huggingface_tokenizer.cc
         COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/tokenizers-cpp-hf-only-build.patch"
-        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/tokenizers-cpp-null-on-parse-error.patch")
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/tokenizers-cpp-null-on-parse-error.patch"
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/tokenizers-cpp-native-aarch64.patch")
 FetchContent_MakeAvailable(tokenizers_cpp)
 # FetchContent only patches when it populates, so a dependency tree cached
 # before the patch existed would keep the panicking load. Fail the configure
@@ -217,6 +223,12 @@ string(FIND "${GRPARSE_TOKENIZERS_CMAKE}" "gRParse: hf-only build" GRPARSE_TOKEN
 if(GRPARSE_TOKENIZERS_CMAKE_PATCH_AT EQUAL -1)
   message(FATAL_ERROR "tokenizers_cpp CMakeLists.txt is unpatched: the source tree predates "
     "patches/tokenizers-cpp-hf-only-build.patch. Delete _deps/tokenizers_cpp-* from the "
+    "build directory (or the docker build cache) and re-run CMake.")
+endif()
+string(FIND "${GRPARSE_TOKENIZERS_CMAKE}" "gRParse: native aarch64" GRPARSE_TOKENIZERS_AARCH64_PATCH_AT)
+if(GRPARSE_TOKENIZERS_AARCH64_PATCH_AT EQUAL -1)
+  message(FATAL_ERROR "tokenizers_cpp CMakeLists.txt is unpatched: the source tree predates "
+    "patches/tokenizers-cpp-native-aarch64.patch. Delete _deps/tokenizers_cpp-* from the "
     "build directory (or the docker build cache) and re-run CMake.")
 endif()
 unset(GRPARSE_TOKENIZERS_CMAKE)
