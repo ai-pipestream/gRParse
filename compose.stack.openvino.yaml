@@ -16,7 +16,16 @@
 #     GPU plugin compiles a kernel set per input size, OCR crops and turned
 #     rasters add new sizes all the time, and a full tmpfs means truncated
 #     blobs that the next load cannot open (clCreateProgramWithBinary, exit
-#     139, krick-1 2026-09-01 after a handful of documents).
+#     139, krick-1 2026-09-01 after a handful of documents). The image owns
+#     that directory as 65532, so a fresh named volume comes up writable by
+#     the container user; a bind mount in its place needs a chown to 65532.
+#   - adds the host's render group to the container user: the image runs as
+#     the numeric non-root user 65532 and a render node that is 0660
+#     root:render on the host (Ubuntu's udev default) is closed to it
+#     otherwise. The group id is the host's, not the container's, and has no
+#     name inside the image; GRPARSE_RENDER_GID overrides the default when
+#     `stat -c %g /dev/dri/renderD128` says something else on the host
+#     (990 on the Intel host this stack runs on).
 services:
   grparse:
     image: pipestreamai/grparse:latest-openvino
@@ -26,6 +35,8 @@ services:
     gpus: !reset null
     devices:
       - /dev/dri:/dev/dri
+    group_add:
+      - "${GRPARSE_RENDER_GID:-990}"
     environment:
       GRPARSE_ORT_EP: openvino
       GRPARSE_OPENVINO_DEVICE: GPU

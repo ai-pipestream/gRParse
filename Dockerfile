@@ -139,8 +139,13 @@ COPY --from=build /out/onnxruntime-lib/ /usr/local/lib/
 # Fontconfig's configuration, the Liberation base-14 substitutes, and the
 # prebuilt font cache: PDFs with embedded fonts never needed any of this,
 # but non-embedded Helvetica/Times/Courier text would otherwise rasterize
-# blank — invisible to layout detection and page previews.
+# blank — invisible to layout detection and page previews. /etc/fonts/conf.d
+# holds symlinks into /usr/share/fontconfig/conf.avail (the metric-alias
+# rules that map Helvetica to Liberation Sans live there), so that tree
+# travels too; without it every link dangles and the substitution rules
+# silently do not apply.
 COPY --from=build /etc/fonts /etc/fonts
+COPY --from=build /usr/share/fontconfig /usr/share/fontconfig
 COPY --from=build /usr/share/fonts /usr/share/fonts
 COPY --from=build /var/cache/fontconfig /var/cache/fontconfig
 COPY --from=build /out/grparse-server /usr/local/bin/grparse-server

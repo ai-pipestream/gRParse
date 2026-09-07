@@ -169,21 +169,49 @@ the full parse result downloads as JSON when the stream completes:
 
 ### Runtime image
 
-The runtime stage is minimal-base compatible: it runs no package manager and
-no ldconfig, ships its complete non-CUDA shared-library closure from the
-build stage (cuDNN included), runs as the numeric non-root user 65532, and
-asks the base only for glibc and the CUDA runtime libraries. The default base
-is `nvidia/cuda:13.3.1-runtime-ubuntu26.04`; a hardened base such as a Docker
-Hardened Images `nvidia-cuda` mirror drops in without a Dockerfile change:
+All three images (CUDA, CPU, OpenVINO) share one runtime-stage pattern: the
+runtime stage is minimal-base compatible. It runs no package manager and no
+ldconfig, ships its complete shared-library closure from the build stage
+(`scripts/stage-runtime-closure.sh` walks `ldd` over the binaries and over
+every library they dlopen: ONNX Runtime's providers, cuDNN, the OpenVINO
+plugins, the Intel NEO compute runtime), copies the pinned fonts and the
+prebuilt fontconfig cache, runs as the numeric non-root user 65532, and asks
+the base only for glibc, plus the accelerator's own runtime libraries where
+there is one. `LD_LIBRARY_PATH=/usr/local/lib` stands in for ldconfig. Each
+Dockerfile exposes the base through a `GRPARSE_RUNTIME_IMAGE` build arg:
+
+| Image | Build stage | Default runtime base | Base requirement |
+|---|---|---|---|
+| `Dockerfile` (CUDA) | `nvidia/cuda:13.3.1-devel-ubuntu26.04` | `nvidia/cuda:13.3.1-runtime-ubuntu26.04` | CUDA 13 runtime libraries, glibc >= 2.43 (ubuntu 26.04) |
+| `Dockerfile.cpu` | `ubuntu:26.04` | `ubuntu:26.04` | glibc >= 2.43 |
+| `Dockerfile.openvino` | `ubuntu:26.04` | `ubuntu:26.04` | x86_64, glibc >= 2.43 |
 
 ```bash
 docker build --build-arg GRPARSE_RUNTIME_IMAGE=docker.io/<org>/dhi-nvidia-cuda:<tag> .
+docker build -f Dockerfile.cpu --build-arg GRPARSE_RUNTIME_IMAGE=<hardened base with glibc >= 2.43> .
 ```
 
-The tag's CUDA major version must match the build stage (CUDA 13) and its
-glibc must be at least ubuntu26.04's. The compose file runs the container
-read-only with a tmpfs `/tmp`, all capabilities dropped, and privilege
-escalation disabled.
+None of the defaults is a Docker Hardened Image yet, and the reason is
+glibc: dhi.io publishes Debian 13 (`debian-base:trixie-debian13`, glibc
+2.41) and no ubuntu or gcc image, a binary built on ubuntu 26.04 (glibc
+2.43) does not load there, and building on Debian 13's own toolchain fails
+because its gcc 14 libstdc++ lacks the C++23 `{:?}` format spec the sources
+use. The OpenVINO image has a second blocker: Debian 13 has no Intel NEO
+packages to stage the GPU compute runtime from. So all three keep a plain
+distribution base by default while the runtime stages already meet the
+hardened contract (no package manager, no ldconfig, non-root); a hardened
+base with glibc 2.43 or newer (or a Debian 14 base once dhi.io has one)
+drops in through the build arg. The CUDA image's base must also match the
+build stage's CUDA major (13).
+
+Running as 65532 means the models mount only has to be world-readable, and
+anything the server is meant to write (the OpenVINO kernel cache, see
+below) has to be writable by that uid. `scripts/smoke-test.sh` gates every
+image on the closure resolving inside the image, the server reaching its
+own `main`, and the image's user being 65532; it asks the dynamic loader
+directly, so it needs no shell in the image. The compose files run the
+container read-only with a tmpfs `/tmp`, all capabilities dropped, and
+privilege escalation disabled.
 
 ## Page-streaming OCR
 
@@ -557,6 +585,12 @@ The built image is published as `pipestreamai/grparse:latest-cpu` for
 linux/amd64 and linux/arm64. It defaults to `GRPARSE_ORT_EP=cpu`; the
 `compose.stack.cpu.yaml` overlay swaps the demo stack onto it.
 
+The runtime stage is minimal-base compatible and runs as the non-root user
+65532: everything the binaries load ships from the build stage, and the
+base (`ubuntu:26.04` by default, `GRPARSE_RUNTIME_IMAGE` to swap it) only
+has to provide glibc 2.43 or newer. See "Runtime image" above for the
+pattern and for why the default is not a hardened image yet.
+
 ## Intel GPUs (OpenVINO)
 
 `Dockerfile.openvino` builds an Intel variant with no CUDA anywhere: ONNX
@@ -567,14 +601,21 @@ integrated Xe graphics, CPUs, and NPUs:
 
 ```bash
 docker build -f Dockerfile.openvino -t grparse-openvino .
-docker run --rm --device /dev/dri -v /path/to/models:/models:ro \
-  -p 50051:50051 grparse-openvino
+docker run --rm --device /dev/dri --group-add "$(stat -c %g /dev/dri/renderD128)" \
+  -v /path/to/models:/models:ro -p 50051:50051 grparse-openvino
 ```
 
-The built image is published as `pipestreamai/grparse:latest-openvino`.
-If the container user cannot open the render node, pass the host's render
-GID explicitly (for example `--group-add 990`; a named `render` group does
-not exist inside the image).
+The built image is published as `pipestreamai/grparse:latest-openvino`. It
+runs as the non-root user 65532, and the render node is `0660 root:render`
+on Ubuntu hosts, so the container user needs the host's render group added
+(`--group-add` with the numeric gid; a named `render` group does not exist
+inside the image). The `compose.stack.openvino.yaml` overlay does this with
+`GRPARSE_RENDER_GID` (default 990; set it in `.env` when
+`stat -c %g /dev/dri/renderD128` differs). Without it OCR startup fails
+loudly with the device error rather than falling back to CPU. The image
+stages the NEO compute runtime, the OpenCL loader and the graphics compiler
+from the build stage; its runtime base is plain `ubuntu:26.04` behind the
+`GRPARSE_RUNTIME_IMAGE` build arg ("Runtime image" above says why).
 
 Verified on an Arc B70 (Battlemage): detection/recognition/classification,
 layout, and figure classification all compile and run on the GPU plugin.
@@ -594,6 +635,10 @@ it room: the GPU plugin compiles a kernel set per input size, so OCR crops
 and turned rasters add blobs continually (2400 files after a handful of
 documents); the compose overlay uses a named volume, because a small tmpfs
 fills up, and a truncated blob then makes the OpenCL loader abort. The
+directory has to be writable by uid 65532: the image ships
+`/var/cache/openvino` owned by that user, so a named volume mounted there
+inherits the ownership on first use, while a bind mount needs
+`chown 65532` on the host. The
 layout session asks for single precision explicitly; the GPU plugin's default
 half precision loses that detector real detections and drifts its boxes, while
 the OCR, table, and classifier nets keep the plugin's own choice. OCR startup
@@ -648,10 +693,13 @@ docker compose build
 
 CI builds both images (CUDA and OpenVINO) and then boot-proofs each runtime
 stage with `scripts/smoke-test.sh`: library closure of the shipped binaries
-plus a boot-to-main check that needs no GPU and no models. The publish
-workflow runs the same gate before pushing any tag. With models present
-locally, `scripts/smoke-test.sh <image> --full` additionally boots the server
-on the CPU provider and streams a fixture through the bundled client.
+(asked of the dynamic loader itself, so no shell is needed in the image), a
+boot-to-main check that needs no GPU and no models, and the image's user
+being the non-root 65532. The publish workflow runs the same gate before
+pushing any tag. With models present locally (or `SMOKE_MODELS_DIR` naming a
+directory that has them), `scripts/smoke-test.sh <image> --full`
+additionally boots the server on the CPU provider and streams a fixture
+through the bundled client.
 
 Every push and PR also runs a short libFuzzer window over the two ingest
 doors (Poppler PDF open/extract and OpenCV raster decode) — see
