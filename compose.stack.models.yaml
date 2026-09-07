@@ -23,7 +23,7 @@
 # `--build-arg MODELS_LAYOUT=all` (or MODELS_TOKENIZER=1) for more.
 services:
   models:
-    image: pipestreamai/grparse-models:latest
+    image: pipestreamai/grparse-models:${STACK_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile.models

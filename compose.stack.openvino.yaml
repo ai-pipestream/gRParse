@@ -6,7 +6,9 @@
 #
 # What it changes, and why:
 #   - swaps gRParse to the Intel image (pipestreamai/grparse:latest-openvino,
-#     built from Dockerfile.openvino), which carries no CUDA toolchain,
+#     built from Dockerfile.openvino, or ${STACK_TAG}-openvino when the
+#     release pin from compose.stack.yaml's header is set), which carries
+#     no CUDA toolchain,
 #   - drops `gpus: all` and passes the render device instead, which is how
 #     OpenVINO reaches the GPU,
 #   - sets GRPARSE_ORT_EP=openvino and names the OpenVINO device (GPU by
@@ -19,7 +21,7 @@
 #     139, krick-1 2026-09-01 after a handful of documents).
 services:
   grparse:
-    image: pipestreamai/grparse:latest-openvino
+    image: pipestreamai/grparse:${STACK_TAG:-latest}-openvino
     build:
       context: .
       dockerfile: Dockerfile.openvino

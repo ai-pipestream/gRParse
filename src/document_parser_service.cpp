@@ -23,12 +23,17 @@ namespace pipestream = ai::pipestream;
 namespace grparse {
 namespace {
 
-// The version every image reports names its own accelerator flavor; the
-// build injects it so the OpenVINO and CPU images stop claiming cuda.
+// The version every image reports is "grparse-<version>-<flavor>". Both
+// halves come from the build: the version from the project() line in
+// CMakeLists.txt, so a release bumps one place, and the flavor from the ONNX
+// Runtime package, so the OpenVINO and CPU images stop claiming cuda.
+#ifndef GRPARSE_VERSION
+#define GRPARSE_VERSION "unversioned"
+#endif
 #ifndef GRPARSE_ORT_PACKAGE_NAME
 #define GRPARSE_ORT_PACKAGE_NAME "unknown"
 #endif
-constexpr const char* kServiceVersion = "grparse-0.1.0-" GRPARSE_ORT_PACKAGE_NAME;
+constexpr const char* kServiceVersion = "grparse-" GRPARSE_VERSION "-" GRPARSE_ORT_PACKAGE_NAME;
 
 // The document's plain text export: its text items in arena order, which is
 // each collector's emission order.

@@ -21,10 +21,14 @@ namespace parsev1 = ai::pipestream::parse::v1;
 namespace grparse::targets {
 namespace {
 
-// What the manifest names as the producer of the bundle.  A literal rather
-// than anything derived at build time: the manifest is part of the bundle's
-// bytes, so two servers built from this source must stamp the same string.
-constexpr std::string_view kGenerator = "grparse/0.1.0";
+// What the manifest names as the producer of the bundle.  The version is the
+// project() line in CMakeLists.txt, which is source, not build environment:
+// the manifest is part of the bundle's bytes, so two servers built from this
+// source must stamp the same string, and they still do.
+#ifndef GRPARSE_VERSION
+#define GRPARSE_VERSION "unversioned"
+#endif
+constexpr std::string_view kGenerator = "grparse/" GRPARSE_VERSION;
 
 constexpr std::string_view kDataUriPrefix = "data:";
 constexpr std::string_view kBase64Marker = ";base64,";

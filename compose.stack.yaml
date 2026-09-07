@@ -36,11 +36,24 @@
 #
 # Every build carries a pipestreamai/<service> image tag so pushing the whole
 # stack later is just `docker compose -f compose.stack.yaml push`.
+#
+# One variable pins the whole fleet to a release: STACK_TAG (default
+# `latest`) is the tag of every pipestreamai/* image here and in the
+# overlays, variant suffixes included (grparse becomes
+# `${STACK_TAG}-cpu` / `${STACK_TAG}-openvino` under those overlays, asr is
+# `${STACK_TAG}-cpu`). Unset, the stack tracks :latest as before; set, it
+# pulls the versioned tags each repo's publish workflow cut
+# (docs/RELEASING.md):
+#   STACK_TAG=0.2.0 docker compose -f compose.stack.yaml pull
+#   STACK_TAG=0.2.0 docker compose -f compose.stack.yaml up
+# `up --build` still builds from the sibling checkouts and tags the result
+# with the same name, so a local build and a pulled release never collide
+# under different names.
 name: parse-stack
 
 services:
   grparse:
-    image: pipestreamai/grparse:latest
+    image: pipestreamai/grparse:${STACK_TAG:-latest}
     build: .
     expose:
       - "50051"
@@ -104,7 +117,7 @@ services:
       - no-new-privileges:true
 
   lol-html:
-    image: pipestreamai/grpc-lol-html:latest
+    image: pipestreamai/grpc-lol-html:${STACK_TAG:-latest}
     build: ../grpc-lol-html
     expose:
       - "50057"
@@ -115,7 +128,7 @@ services:
       - no-new-privileges:true
 
   libreoffice:
-    image: pipestreamai/grpc-libreoffice:latest
+    image: pipestreamai/grpc-libreoffice:${STACK_TAG:-latest}
     build: ../grpc-libreoffice
     expose:
       - "50053"
@@ -131,7 +144,7 @@ services:
 
   calamine:
     profiles: ["calamine"]
-    image: pipestreamai/grpc-calamine:latest
+    image: pipestreamai/grpc-calamine:${STACK_TAG:-latest}
     build: ../grpc-calamine
     expose:
       - "50062"
@@ -143,7 +156,7 @@ services:
 
   pdfium:
     profiles: ["pdf-backends"]
-    image: pipestreamai/grpc-pdfium:latest
+    image: pipestreamai/grpc-pdfium:${STACK_TAG:-latest}
     build: ../grpc-pdfium
     expose:
       - "50069"
@@ -155,7 +168,7 @@ services:
 
   qparse:
     profiles: ["pdf-backends"]
-    image: pipestreamai/grpc-qparse:latest
+    image: pipestreamai/grpc-qparse:${STACK_TAG:-latest}
     build: ../grpc-qparse
     expose:
       - "50070"
@@ -169,7 +182,7 @@ services:
   # component. It joins consensus only when the profile is up.
   poppler:
     profiles: ["pdf-backends"]
-    image: pipestreamai/grpc-poppler:latest
+    image: pipestreamai/grpc-poppler:${STACK_TAG:-latest}
     build: ../grpc-poppler
     expose:
       - "50071"
@@ -180,7 +193,7 @@ services:
       - no-new-privileges:true
 
   pdf-inspector:
-    image: pipestreamai/grpc-pdf-inspector:latest
+    image: pipestreamai/grpc-pdf-inspector:${STACK_TAG:-latest}
     build: ../grpc-pdf-inspector
     expose:
       - "50067"
@@ -192,7 +205,7 @@ services:
 
   epub:
     profiles: ["parsers"]
-    image: pipestreamai/grpc-epub:latest
+    image: pipestreamai/grpc-epub:${STACK_TAG:-latest}
     build: ../grpc-epub
     expose:
       - "50064"
@@ -204,7 +217,7 @@ services:
 
   xml:
     profiles: ["parsers"]
-    image: pipestreamai/grpc-xml:latest
+    image: pipestreamai/grpc-xml:${STACK_TAG:-latest}
     build: ../grpc-xml
     expose:
       - "50066"
@@ -216,7 +229,7 @@ services:
 
   markup:
     profiles: ["parsers"]
-    image: pipestreamai/grpc-markup:latest
+    image: pipestreamai/grpc-markup:${STACK_TAG:-latest}
     build: ../grpc-markup
     expose:
       - "50065"
@@ -228,7 +241,7 @@ services:
 
   ebcdic:
     profiles: ["parsers"]
-    image: pipestreamai/grpc-ebcdic:latest
+    image: pipestreamai/grpc-ebcdic:${STACK_TAG:-latest}
     build: ../grpc-ebcdic
     expose:
       - "50063"
@@ -240,7 +253,7 @@ services:
 
   email:
     profiles: ["parsers"]
-    image: pipestreamai/grpc-email:latest
+    image: pipestreamai/grpc-email:${STACK_TAG:-latest}
     build: ../grpc-email
     expose:
       - "50054"
@@ -254,7 +267,7 @@ services:
 
   poic:
     profiles: ["parsers"]
-    image: pipestreamai/grpoic:latest
+    image: pipestreamai/grpoic:${STACK_TAG:-latest}
     build: ../grPOIc
     expose:
       - "50052"
@@ -268,7 +281,7 @@ services:
 
   fastwarc:
     profiles: ["parsers"]
-    image: pipestreamai/fastwarc-grpc:latest
+    image: pipestreamai/fastwarc-grpc:${STACK_TAG:-latest}
     build: ../fastwarc-grpc
     expose:
       - "50060"
@@ -280,7 +293,7 @@ services:
 
   asr:
     profiles: ["heavy"]
-    image: pipestreamai/grpc-asr:latest-cpu
+    image: pipestreamai/grpc-asr:${STACK_TAG:-latest}-cpu
     build:
       context: ../grpc-asr
       dockerfile: Dockerfile.cpu
@@ -301,7 +314,7 @@ services:
 
   enrich:
     profiles: ["heavy"]
-    image: pipestreamai/grpc-enrich:latest
+    image: pipestreamai/grpc-enrich:${STACK_TAG:-latest}
     build: ../grpc-enrich
     expose:
       - "50056"   # gRPC; the HTTP shim on 50068 stays network-internal too
@@ -319,7 +332,7 @@ services:
 
   vlm-convert:
     profiles: ["heavy"]
-    image: pipestreamai/grpc-vlm-convert:latest
+    image: pipestreamai/grpc-vlm-convert:${STACK_TAG:-latest}
     build: ../grpc-vlm-convert
     expose:
       - "50058"   # gRPC
@@ -337,7 +350,7 @@ services:
       - no-new-privileges:true
 
   lol-html-ui:
-    image: pipestreamai/grpc-lol-html-ui:latest
+    image: pipestreamai/grpc-lol-html-ui:${STACK_TAG:-latest}
     build:
       context: ../grpc-lol-html
       dockerfile: demos/node-client/Dockerfile
@@ -350,7 +363,7 @@ services:
       - lol-html
 
   libreoffice-ui:
-    image: pipestreamai/grpc-libreoffice-ui:latest
+    image: pipestreamai/grpc-libreoffice-ui:${STACK_TAG:-latest}
     build:
       context: ../grpc-libreoffice
       dockerfile: frontend/Dockerfile
@@ -364,7 +377,7 @@ services:
 
   calamine-ui:
     profiles: ["calamine"]
-    image: pipestreamai/grpc-calamine-ui:latest
+    image: pipestreamai/grpc-calamine-ui:${STACK_TAG:-latest}
     build:
       context: ../grpc-calamine
       dockerfile: demos/node-client/Dockerfile
@@ -379,7 +392,7 @@ services:
   # The demo client lives on grpc-pdf-inspector's demo-client branch until
   # that merges; the build context is the repo checkout either way.
   pdf-inspector-ui:
-    image: pipestreamai/grpc-pdf-inspector-ui:latest
+    image: pipestreamai/grpc-pdf-inspector-ui:${STACK_TAG:-latest}
     build:
       context: ../grpc-pdf-inspector
       dockerfile: demos/node-client/Dockerfile
@@ -394,7 +407,7 @@ services:
 
   epub-ui:
     profiles: ["parsers"]
-    image: pipestreamai/grpc-epub-ui:latest
+    image: pipestreamai/grpc-epub-ui:${STACK_TAG:-latest}
     build:
       context: ../grpc-epub
       dockerfile: demos/node-client/Dockerfile
@@ -409,7 +422,7 @@ services:
 
   xml-ui:
     profiles: ["parsers"]
-    image: pipestreamai/grpc-xml-ui:latest
+    image: pipestreamai/grpc-xml-ui:${STACK_TAG:-latest}
     build:
       context: ../grpc-xml
       dockerfile: demos/node-client/Dockerfile
@@ -424,7 +437,7 @@ services:
 
   markup-ui:
     profiles: ["parsers"]
-    image: pipestreamai/grpc-markup-ui:latest
+    image: pipestreamai/grpc-markup-ui:${STACK_TAG:-latest}
     build:
       context: ../grpc-markup
       dockerfile: demos/node-client/Dockerfile
@@ -439,7 +452,7 @@ services:
 
   ebcdic-ui:
     profiles: ["parsers"]
-    image: pipestreamai/grpc-ebcdic-ui:latest
+    image: pipestreamai/grpc-ebcdic-ui:${STACK_TAG:-latest}
     build:
       context: ../grpc-ebcdic
       dockerfile: demos/node-client/Dockerfile
@@ -454,7 +467,7 @@ services:
 
   email-ui:
     profiles: ["parsers"]
-    image: pipestreamai/grpc-email-ui:latest
+    image: pipestreamai/grpc-email-ui:${STACK_TAG:-latest}
     build:
       context: ../grpc-email
       dockerfile: demos/node-client/Dockerfile
@@ -474,7 +487,7 @@ services:
   # (`,calamine=calamine:50062@calamine-ui:8080`, profile `calamine`).
   # Not published on the host; the nginx proxy in front of it is.
   shell:
-    image: pipestreamai/grparse-demo-shell:latest
+    image: pipestreamai/grparse-demo-shell:${STACK_TAG:-latest}
     build:
       context: .
       dockerfile: examples/web-demo/Dockerfile

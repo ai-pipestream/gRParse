@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(gRParse VERSION 0.1.0 LANGUAGES CXX C)
+project(gRParse VERSION 0.2.0 LANGUAGES CXX C)
 
 include(CTest)
 
@@ -685,9 +685,13 @@ add_library(grparse_core STATIC
   src/heading_hierarchy.cpp
   src/paragraph_split.cpp)
 target_include_directories(grparse_core PUBLIC include)
-# The served version string names the accelerator flavor this build carries.
+# The served version string is "grparse-<version>-<flavor>": the version is
+# the project() line at the top of this file (the one place a release bumps,
+# docs/RELEASING.md) and the flavor names the accelerator this build carries.
+# PUBLIC so the contract test asserts the exact string the server serves.
 target_compile_definitions(grparse_core
-  PRIVATE GRPARSE_ORT_PACKAGE_NAME="${GRPARSE_ORT_PACKAGE}")
+  PUBLIC GRPARSE_VERSION="${PROJECT_VERSION}"
+         GRPARSE_ORT_PACKAGE_NAME="${GRPARSE_ORT_PACKAGE}")
 target_link_libraries(grparse_core
   # grparse_curl is PUBLIC for its link options alone: they belong to every
   # executable that ends up with both TLS stacks in its link closure.
