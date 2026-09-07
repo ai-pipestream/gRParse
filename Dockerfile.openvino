@@ -3,9 +3,29 @@
 # Intel Arc GPUs (Battlemage/Alchemist), integrated graphics, CPUs, and NPUs.
 # No CUDA toolchain anywhere in this image.
 #
-# Run with the render device exposed:
-#   docker run --rm --device /dev/dri -v /path/to/models:/models:ro \
-#     -p 50051:50051 grparse-openvino
+# Run with the render device exposed, and the render node's group added when
+# the node is not world-writable on the host (the container runs as 65532):
+#   docker run --rm --device /dev/dri --group-add "$(stat -c %g /dev/dri/renderD128)" \
+#     -v /path/to/models:/models:ro -p 50051:50051 grparse-openvino
+#
+# The runtime base is swappable so a hardened base can slot in without a
+# Dockerfile change, for example:
+#   --build-arg GRPARSE_RUNTIME_IMAGE=<registry>/<hardened x86_64 base with glibc >= 2.43>
+# The runtime stage asks nothing of the base beyond glibc (matching or newer
+# than the build stage's ubuntu26.04, that is 2.43): no shell, no package
+# manager, and no ldconfig run. Every other shared library, the Intel NEO
+# OpenCL compute runtime included, ships from the build stage.
+#
+# Why the default stays ubuntu:26.04 while the CPU image runs on a Docker
+# Hardened Image (dhi.io/debian-base:trixie-debian13): Debian 13 carries no
+# NEO packages (intel-opencl-icd, libigc2, libigdfcl2 have no trixie
+# candidates, checked 2026-09-07), so a trixie build stage could not stage
+# the GPU compute runtime, and a binary built on ubuntu 26.04 (glibc 2.43)
+# does not load on trixie (glibc 2.41). dhi.io publishes no ubuntu base.
+# Intel's own Ubuntu .deb releases of NEO installed onto a trixie build
+# stage are the route to a hardened default; the ARG above is the seam.
+ARG GRPARSE_RUNTIME_IMAGE=ubuntu:26.04
+
 FROM ubuntu:26.04 AS build
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -90,35 +110,75 @@ RUN --mount=type=cache,id=grparse-openvino-ubuntu26-grpc1.83.1-ort1.24.1-poppler
  && cp /build/grparse-stream-client /out/grparse-stream-client \
  && cp -a /build/ort-openvino/onnxruntime/capi /out/ort-libs
 
-FROM ubuntu:26.04
-ENV GRPARSE_LISTEN_ADDRESS=0.0.0.0:50051 GRPARSE_MODELS_DIR=/models GRPARSE_PAGE_WORKERS=2 \
-    GRPARSE_ORT_EP=openvino GRPARSE_OPENVINO_DEVICE=GPU
-# intel-opencl-icd is the NEO compute runtime the OpenVINO GPU plugin drives.
-# OpenCV ships from the build stage's vendored install (no distro OpenCV, so
-# no GDAL and no second poppler; see the build stage note).
-# fonts-liberation gives poppler metric-compatible base-14 substitutes so
-# non-embedded Helvetica/Times/Courier text rasterizes instead of rendering
-# blank (layout detection and page previews read those pixels).
+# Stage the runtime library closure. The runtime base is assumed minimal
+# (hardened images carry no shell, no package manager, no ldconfig), so every
+# shared library the binaries need ships from this stage, except glibc,
+# which the base owns because the loader and its libraries are inseparable.
+# ONNX Runtime dlopens its provider bridge, the OpenVINO provider dlopens
+# the OpenVINO plugins, the GPU plugin dlopens the OpenCL loader, and the
+# loader dlopens NEO (libigdrcl, the Intel compute runtime), which in turn
+# dlopens the graphics compiler (libigc, libigdfcl). An ldd walk of the
+# server alone sees none of that, so the dlopened libraries are walked as
+# inputs of their own: the ORT/OpenVINO directory wholesale (and left out
+# of the staged set, since the runtime copies that directory as it is), and
+# the NEO libraries by SONAME from the packages that own them. NEO stays at
+# the path /etc/OpenCL/vendors/intel.icd names.
+# The Liberation fonts are poppler's base-14 substitutes: a PDF that uses
+# Helvetica/Times/Courier without embedding them renders blank text without
+# a metric-compatible substitute, which starves layout detection and page
+# previews of pixels. fc-cache prebuilds the fontconfig cache so the
+# read-only runtime never tries to write one.
 # The font set is pinned rather than inherited: fontconfig substitutes
 # whatever it happens to find, so an image that carries a different set
 # rasterizes non-embedded text to different pixels than its siblings, and a
-# page the images disagree about cannot be compared between them. The CUDA
-# image used to inherit DejaVu from its base while the others had Liberation
-# alone; all three now ask for the same fonts explicitly.
+# page the images disagree about cannot be compared between them. All three
+# images ask for the same fonts explicitly.
+# The last line holds this image to the invariant the vendored OpenCV
+# exists for: the staged closure contains exactly one libpoppler major.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libfreetype6 libfontconfig1 libjpeg8 libopenjp2-7 liblcms2-2 libcurl4t64 \
     ocl-icd-libopencl1 intel-opencl-icd fonts-liberation fonts-dejavu-core fontconfig \
-    && rm -rf /var/lib/apt/lists/* && fc-cache -f
+    && rm -rf /var/lib/apt/lists/* \
+    && fc-cache -f \
+    && neo_libs=$(dpkg -L intel-opencl-icd ocl-icd-libopencl1 libigc2 libigdfcl2 libigdgmm12 \
+                  | grep -E '\.so\.[0-9]+$') \
+    && LD_LIBRARY_PATH=/out/ort-libs:/opt/poppler/lib:/opt/opencv/lib \
+       STAGE_KEEP_ON_BASE='^/out/ort-libs/' \
+       sh scripts/stage-runtime-closure.sh /out/runtime-libs \
+         /out/grparse-server /out/grparse-stream-client /out/ort-libs/*.so* \
+         /usr/lib/x86_64-linux-gnu/intel-opencl/libigdrcl.so $neo_libs \
+    && for lib in $neo_libs; do cp -L "$lib" /out/runtime-libs/; done \
+    && mkdir -p /out/openvino-cache \
+    && test "$(ls /out/runtime-libs | grep -cE '^libpoppler\.so\.[0-9]+$')" = 1
+
+# LD_LIBRARY_PATH stands in for ldconfig, and the numeric USER works with or
+# without a passwd entry (65532 is the conventional nonroot uid in hardened
+# images).
+FROM ${GRPARSE_RUNTIME_IMAGE}
+ENV GRPARSE_LISTEN_ADDRESS=0.0.0.0:50051 GRPARSE_MODELS_DIR=/models GRPARSE_PAGE_WORKERS=2 \
+    GRPARSE_ORT_EP=openvino GRPARSE_OPENVINO_DEVICE=GPU \
+    LD_LIBRARY_PATH=/usr/local/lib
+COPY --from=build /out/runtime-libs/ /usr/local/lib/
+COPY --from=build /out/ort-libs/ /usr/local/lib/
+# NEO's OpenCL implementation at the path the ICD registration names.
+COPY --from=build /usr/lib/x86_64-linux-gnu/intel-opencl /usr/lib/x86_64-linux-gnu/intel-opencl
+COPY --from=build /etc/OpenCL /etc/OpenCL
+# Fontconfig's configuration (conf.d links into /usr/share/fontconfig, the
+# metric-alias rules included), the Liberation base-14 substitutes, and the
+# prebuilt font cache: PDFs with embedded fonts never needed any of this,
+# but non-embedded Helvetica/Times/Courier text would otherwise rasterize
+# blank, invisible to layout detection and page previews.
+COPY --from=build /etc/fonts /etc/fonts
+COPY --from=build /usr/share/fontconfig /usr/share/fontconfig
+COPY --from=build /usr/share/fonts /usr/share/fonts
+COPY --from=build /var/cache/fontconfig /var/cache/fontconfig
+# The compiled-kernel cache directory GRPARSE_OPENVINO_CACHE_DIR points at
+# in the compose overlay, owned by the runtime user so a named volume
+# mounted there inherits an ownership 65532 can write to (Docker seeds a
+# fresh named volume from the image's directory, owner included). A bind
+# mount does not inherit anything: chown it to 65532 on the host.
+COPY --from=build --chown=65532:65532 /out/openvino-cache /var/cache/openvino
 COPY --from=build /out/grparse-server /usr/local/bin/grparse-server
 COPY --from=build /out/grparse-stream-client /usr/local/bin/grparse-stream-client
-COPY --from=build /out/ort-libs/ /usr/local/lib/
-COPY --from=build /opt/poppler/lib/ /usr/local/lib/
-COPY --from=build /opt/opencv/lib/ /usr/local/lib/
-# ldconfig materializes the SONAME links (libonnxruntime, libopenvino,
-# libopencv*, libpoppler*). The gate then holds this image to the invariant
-# the vendored OpenCV exists for: the server's load set contains exactly one
-# libpoppler major.
-RUN ldconfig \
- && test "$(ldd /usr/local/bin/grparse-server | grep -c 'libpoppler\.so\.')" = 1
+USER 65532:65532
 EXPOSE 50051
 ENTRYPOINT ["/usr/local/bin/grparse-server"]

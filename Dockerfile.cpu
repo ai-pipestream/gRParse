@@ -5,6 +5,25 @@
 # Desktop included. No CUDA or OpenVINO anywhere in this image.
 #
 #   docker run --rm -v /path/to/models:/models:ro -p 50051:50051 grparse-cpu
+#
+# The runtime base is swappable so a hardened base can slot in without a
+# Dockerfile change, for example:
+#   --build-arg GRPARSE_RUNTIME_IMAGE=<registry>/<hardened base with glibc >= 2.43>
+# The runtime stage asks nothing of the base beyond glibc (matching or newer
+# than the build stage's ubuntu26.04, that is 2.43): no shell, no package
+# manager, and no ldconfig run. Every other shared library ships from the
+# build stage, and the container runs as the numeric non-root user 65532.
+#
+# Why the default is still ubuntu:26.04 and not a Docker Hardened Image:
+# dhi.io publishes Debian 13 (debian-base:trixie-debian13, glibc 2.41) and
+# no ubuntu or gcc image (dhi.io/ubuntu:26.04, debian-base:forky-*, dhi.io/gcc
+# do not exist, checked 2026-09-07). A binary built on ubuntu 26.04 does not
+# load on glibc 2.41, and building on Debian 13's own toolchain fails: its
+# gcc 14 libstdc++ lacks the C++23 "{:?}" format spec the sources use
+# (stream_pdf_client.cpp, krick-1 build 2026-09-07). A hardened default
+# therefore waits on a base with glibc 2.43 or newer, or on Debian 14.
+ARG GRPARSE_RUNTIME_IMAGE=ubuntu:26.04
+
 FROM ubuntu:26.04 AS build
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -94,7 +113,39 @@ RUN --mount=type=cache,id=grparse-cpu-ubuntu26-grpc1.83.1-ort1.29.0-poppler26.08
  && cp /build/grparse-stream-client /out/grparse-stream-client \
  && cp -a /build/_deps/onnxruntime-src/lib /out/ort-libs
 
-FROM ubuntu:26.04
+# Stage the runtime library closure. The runtime base is minimal (no shell
+# needed, no package manager, no ldconfig), so every shared library the
+# binaries need ships from this stage, except glibc, which the base owns
+# because the loader and its libraries are inseparable. ONNX Runtime's
+# provider bridge is dlopened, so it is walked as an input of its own; the
+# ONNX Runtime directory is copied wholesale below, so the walk leaves it
+# out instead of staging a second copy of each library under its SONAME.
+# The Liberation fonts are poppler's base-14 substitutes: a PDF that uses
+# Helvetica/Times/Courier without embedding them renders blank text without
+# a metric-compatible substitute, which starves layout detection and page
+# previews of pixels. fc-cache prebuilds the fontconfig cache so the
+# read-only runtime never tries to write one.
+# The font set is pinned rather than inherited: fontconfig substitutes
+# whatever it happens to find, so an image that carries a different set
+# rasterizes non-embedded text to different pixels than its siblings, and a
+# page the images disagree about cannot be compared between them. All three
+# images ask for the same fonts explicitly.
+# The last line holds this image to the invariant the vendored OpenCV
+# exists for: the staged closure contains exactly one libpoppler major.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    fonts-liberation fonts-dejavu-core fontconfig \
+    && rm -rf /var/lib/apt/lists/* \
+    && fc-cache -f \
+    && LD_LIBRARY_PATH=/out/ort-libs:/opt/poppler/lib:/opt/opencv/lib \
+       STAGE_KEEP_ON_BASE='^/out/ort-libs/' \
+       sh scripts/stage-runtime-closure.sh /out/runtime-libs \
+         /out/grparse-server /out/grparse-stream-client /out/ort-libs/*.so* \
+    && test "$(ls /out/runtime-libs | grep -cE '^libpoppler\.so\.[0-9]+$')" = 1
+
+# LD_LIBRARY_PATH stands in for ldconfig, and the numeric USER works with or
+# without a passwd entry (65532 is the conventional nonroot uid in hardened
+# images).
+FROM ${GRPARSE_RUNTIME_IMAGE}
 # The layout model is the same one the CUDA and OpenVINO images run, so a
 # document parses to the same items on every accelerator: measured on a real
 # corpus, the lighter picodet detector left a receipt as one word per
@@ -103,32 +154,21 @@ FROM ubuntu:26.04
 # parity is still one flip away: GRPARSE_LAYOUT_MODEL=picodet.
 ENV GRPARSE_LISTEN_ADDRESS=0.0.0.0:50051 GRPARSE_MODELS_DIR=/models GRPARSE_PAGE_WORKERS=2 \
     GRPARSE_ORT_EP=cpu \
-    GRPARSE_LAYOUT_MODEL=heron
-# fonts-liberation gives poppler metric-compatible base-14 substitutes so
-# non-embedded Helvetica/Times/Courier text rasterizes instead of rendering
-# blank (layout detection and page previews read those pixels). The
-# poppler runtime deps mirror the vendored build above; the distro
-# libpoppler is deliberately absent.
-# The font set is pinned rather than inherited: fontconfig substitutes
-# whatever it happens to find, so an image that carries a different set
-# rasterizes non-embedded text to different pixels than its siblings, and a
-# page the images disagree about cannot be compared between them. The CUDA
-# image used to inherit DejaVu from its base while the others had Liberation
-# alone; all three now ask for the same fonts explicitly.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libfreetype6 libfontconfig1 libjpeg8 libopenjp2-7 liblcms2-2 libcurl4t64 \
-    fonts-liberation fonts-dejavu-core fontconfig \
-    && rm -rf /var/lib/apt/lists/* && fc-cache -f
+    GRPARSE_LAYOUT_MODEL=heron \
+    LD_LIBRARY_PATH=/usr/local/lib
+COPY --from=build /out/runtime-libs/ /usr/local/lib/
+COPY --from=build /out/ort-libs/ /usr/local/lib/
+# Fontconfig's configuration (conf.d links into /usr/share/fontconfig, the
+# metric-alias rules included), the Liberation base-14 substitutes, and the
+# prebuilt font cache: PDFs with embedded fonts never needed any of this,
+# but non-embedded Helvetica/Times/Courier text would otherwise rasterize
+# blank, invisible to layout detection and page previews.
+COPY --from=build /etc/fonts /etc/fonts
+COPY --from=build /usr/share/fontconfig /usr/share/fontconfig
+COPY --from=build /usr/share/fonts /usr/share/fonts
+COPY --from=build /var/cache/fontconfig /var/cache/fontconfig
 COPY --from=build /out/grparse-server /usr/local/bin/grparse-server
 COPY --from=build /out/grparse-stream-client /usr/local/bin/grparse-stream-client
-COPY --from=build /out/ort-libs/ /usr/local/lib/
-COPY --from=build /opt/poppler/lib/ /usr/local/lib/
-COPY --from=build /opt/opencv/lib/ /usr/local/lib/
-# ldconfig materializes the SONAME links (libonnxruntime, libopencv*,
-# libpoppler*). The gate then holds this image to the invariant the vendored
-# OpenCV exists for: the server's load set contains exactly one libpoppler
-# major.
-RUN ldconfig \
- && test "$(ldd /usr/local/bin/grparse-server | grep -c 'libpoppler\.so\.')" = 1
+USER 65532:65532
 EXPOSE 50051
 ENTRYPOINT ["/usr/local/bin/grparse-server"]

@@ -14,6 +14,11 @@
 #   - sets GRPARSE_ORT_EP=cpu, matching the image's own default, so the
 #     provider choice is explicit in the compose config too.
 #
+# The image runs on a Docker Hardened Image base as the numeric non-root
+# user 65532 (no shell needed, no package manager); the models bind mount
+# from the base file only has to be world-readable, which downloaded model
+# files are.
+#
 # OCR and layout inference run slower on CPU, but the whole demo works.
 # The asr service in the `heavy` profile already uses the CPU whisper
 # image in the base file.

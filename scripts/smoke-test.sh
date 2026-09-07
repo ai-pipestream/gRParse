@@ -10,10 +10,19 @@
 #      "Required OCR model is missing" message, proving the loader, static
 #      initialization, and configuration parsing all ran — not a loader error.
 #
-# Full check (--full, needs models/ populated next to this repo; run
-# scripts/fetch-models.sh once): boots the server on the CPU provider and
-# streams a fixture through the bundled client, asserting a page event and
-# the terminal complete event.
+#   3. non-root: the image runs as the numeric user 65532 (every image is
+#      minimal-base compatible; a root default is a regression).
+#
+# Full check (--full, needs models/ populated next to this repo by
+# scripts/fetch-models.sh, or SMOKE_MODELS_DIR pointing at a populated
+# directory): boots the server on the CPU provider and streams a fixture
+# through the bundled client, asserting a page event and the terminal
+# complete event.
+#
+# Nothing here needs a shell inside the image: the closure check asks the
+# dynamic loader itself (LD_TRACE_LOADED_OBJECTS is what ldd does under the
+# hood), so a hardened runtime base without /bin/sh or ldd passes the same
+# gate as a full distribution base.
 set -euo pipefail
 
 usage() {
@@ -27,11 +36,24 @@ mode=${2:-}
 project_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 echo "== smoke: library closure of the shipped binaries"
-unresolved=$(docker run --rm --entrypoint /bin/sh "$image" -c \
-  'ldd /usr/local/bin/grparse-server /usr/local/bin/grparse-stream-client 2>&1 | grep "not found" || true')
-if [[ -n "$unresolved" ]]; then
-  echo "unresolved shared libraries in $image:" >&2
-  echo "$unresolved" >&2
+for binary in /usr/local/bin/grparse-server /usr/local/bin/grparse-stream-client; do
+  trace=$(docker run --rm -e LD_TRACE_LOADED_OBJECTS=1 --entrypoint "$binary" "$image" 2>&1 || true)
+  if ! grep -q '=>' <<<"$trace"; then
+    echo "the loader printed no dependency list for $binary in $image:" >&2
+    echo "$trace" >&2
+    exit 1
+  fi
+  if grep -q "not found" <<<"$trace"; then
+    echo "unresolved shared libraries for $binary in $image:" >&2
+    grep "not found" <<<"$trace" >&2
+    exit 1
+  fi
+done
+
+echo "== smoke: image runs as the non-root user 65532"
+image_user=$(docker inspect --format '{{.Config.User}}' "$image")
+if [[ "$image_user" != "65532:65532" ]]; then
+  echo "expected USER 65532:65532, image has '${image_user:-root}'" >&2
   exit 1
 fi
 
@@ -50,8 +72,9 @@ fi
 if [[ "$mode" == "--full" ]]; then
   echo "== smoke: CPU-provider boot and fixture stream"
   container="grparse-smoke-$$"
+  models_dir=${SMOKE_MODELS_DIR:-$project_root/models}
   docker run -d --rm --name "$container" -e GRPARSE_ORT_EP=cpu \
-    -v "$project_root/models:/models:ro" "$image" >/dev/null
+    -v "$models_dir:/models:ro" "$image" >/dev/null
   trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
   for _ in $(seq 1 60); do
     docker logs "$container" 2>&1 | grep -q "listening on" && break

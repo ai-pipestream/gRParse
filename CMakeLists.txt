@@ -768,6 +768,13 @@ if(BUILD_TESTING)
     target_link_libraries(${test_name} PRIVATE grparse_core grparse_flags)
     add_test(NAME ${test_name} COMMAND ${test_name})
   endforeach()
+  # The image builds stage the runtime library closure with
+  # scripts/stage-runtime-closure.sh (the runtime bases carry nothing but
+  # glibc). Its own check runs with the suite, so a build stage whose ldd
+  # walk would ship an incomplete closure fails at ctest, before staging.
+  add_test(NAME stage-runtime-closure-script
+    COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test/stage-runtime-closure-test.sh)
+  set_tests_properties(stage-runtime-closure-script PROPERTIES TIMEOUT 120 LABELS grparse)
   # Opt-in oracle battery (eval/README.md): skips (77) unless GRPARSE_TARGET,
   # VLM_ENDPOINT and EVAL_CORPUS are set in the environment, so a green
   # build never claims it ran.
