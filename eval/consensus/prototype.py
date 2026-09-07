@@ -413,7 +413,7 @@ def reconcile(backends: dict[str, dict], base_name: str,
                         key=lambda c: (c["x0"] - cell["x0"]) ** 2 + (c["y0"] - cell["y0"]) ** 2,
                     )
                     deviation = "text"
-                    text_deviations.append((cell, nearby[0]))
+                    text_deviations.append((cell, match))
                 else:
                     missing += 1
                     deviation = "missing"
