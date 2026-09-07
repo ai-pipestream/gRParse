@@ -1,17 +1,66 @@
 # Model files
 
-Place these files in this directory before starting the server.
+gRParse loads its models from `GRPARSE_MODELS_DIR` (`/models` in the images;
+`compose.yaml` and `compose.stack.yaml` bind-mount this directory there).
+Only `README.md` and `MANIFEST` are tracked; the model files are fetched.
+
+## Getting the files
+
+`MANIFEST` lists every file the server can load: sha256, byte size, group,
+license and upstream URL. `scripts/fetch-models.sh` reads it, downloads
+what is selected, derives the figure classifier from its published export,
+and keeps a file only when its sha256 matches. Files already in place with
+the right hash are skipped, so re-running is cheap and a stopped download
+resumes.
+
+```bash
+scripts/fetch-models.sh                        # into ./models: OCR set, heron layout, table, figure
+scripts/fetch-models.sh --layout all           # add the picodet layout detector
+scripts/fetch-models.sh --tokenizer            # add chunk/tokenizer.json for the hf/1 counter
+scripts/fetch-models.sh --dir /srv/models      # anywhere else
+scripts/fetch-models.sh --verify               # check a directory; exit 1 names every mismatch
+scripts/fetch-models-test.sh                   # offline self-test of the script (file:// stand-ins)
+```
+
+`--verify` touches nothing: it exits 0 when every present file matches the
+manifest and the four OCR files (the only ones the server refuses to start
+without) are present; an optional file that is absent is listed as such.
+The figure classifier patch step needs python with the `onnx` module; the
+script uses `uv run --with onnx --with onnxruntime --with numpy python`
+when `uv` is installed and plain `python3` otherwise (failing with the
+missing module's name), or whatever `FETCH_MODELS_PYTHON` names.
+
+The same files ship as an image, `pipestreamai/grparse-models`
+(`Dockerfile.models`, built by `.github/workflows/publish-models.yml`): the
+fetched, verified, patched set under `/models`, and an entrypoint that
+copies it into a volume passed as the target directory. The
+`compose.stack.models.yaml` overlay runs it as an init container that fills
+the `grparse-models` volume before gRParse starts; by hand:
+
+```bash
+docker run --rm -v grparse-models:/target pipestreamai/grparse-models:latest
+docker run --rm -v grparse-models:/models:ro -e GRPARSE_ORT_EP=cpu -p 50051:50051 pipestreamai/grparse:latest-cpu
+```
+
+The published image carries the heron layout detector; `--build-arg
+MODELS_LAYOUT=all` (or `picodet`) and `--build-arg MODELS_TOKENIZER=1`
+change what a local build bakes in.
+
+Upgrading a model means a new line in `MANIFEST` (hash the file you
+verified the server with, never a hash copied from a web page), the notes
+below, and the fixtures whose goldens it produced.
 
 ## OCR (required)
 
-RapidOcrOnnx-compatible files:
+RapidOcrOnnx-compatible PP-OCRv3 set, Apache-2.0, from the RapidOCR model
+zoo on HuggingFace (`SWHL/RapidOCR`); the dictionary is the one in the
+[RapidOcrOnnx](https://github.com/RapidAI/RapidOcrOnnx) repository. Keep
+the four matched: the recognizer's output indexes this dictionary.
 
-- `ch_PP-OCRv3_det_infer.onnx`
-- `ch_ppocr_mobile_v2.0_cls_infer.onnx`
-- `ch_PP-OCRv3_rec_infer.onnx`
-- `ppocr_keys_v1.txt`
-
-The model set and dictionary naming are documented by [RapidOcrOnnx](https://github.com/RapidAI/RapidOcrOnnx#模型下载). The dictionary is included in that repository; download the three ONNX model files from the corresponding RapidOCR model release and keep them matched to this dictionary.
+- `ch_PP-OCRv3_det_infer.onnx` (detection)
+- `ch_ppocr_mobile_v2.0_cls_infer.onnx` (angle classifier)
+- `ch_PP-OCRv3_rec_infer.onnx` (recognition)
+- `ppocr_keys_v1.txt` (dictionary)
 
 ## Layout (optional; enables region labels)
 
@@ -22,12 +71,8 @@ the server disables layout under `GRPARSE_LAYOUT=auto` and fails startup under
 
 - `layout_heron.onnx` — 17-label document layout detector, RT-DETR-v2
   architecture, published as ONNX at
-  [docling-project/docling-layout-heron-onnx](https://huggingface.co/docling-project/docling-layout-heron-onnx).
-
-  ```bash
-  curl -L -o layout_heron.onnx \
-    https://huggingface.co/docling-project/docling-layout-heron-onnx/resolve/main/model.onnx
-  ```
+  [docling-project/docling-layout-heron-onnx](https://huggingface.co/docling-project/docling-layout-heron-onnx)
+  (manifest group `layout-heron`, fetched by default).
 
   sha256: `59c81a3a2923042d85034ffc487f8f47e4854117e879aef89b2b9f728fb4922a`
   (171,220,471 bytes)
@@ -67,12 +112,8 @@ the server disables layout under `GRPARSE_LAYOUT=auto` and fails startup under
 
 - `layout_publaynet.onnx` — PicoDet layout detector from PaddleDetection's
   PP-StructureV2, trained on PubLayNet; ONNX export published by
-  [RapidLayout](https://github.com/RapidAI/RapidLayout).
-
-  ```bash
-  curl -L -o layout_publaynet.onnx \
-    https://github.com/RapidAI/RapidLayout/releases/download/v0.0.0/layout_publaynet.onnx
-  ```
+  [RapidLayout](https://github.com/RapidAI/RapidLayout) (manifest group
+  `layout-picodet`, fetched with `--layout picodet` or `--layout all`).
 
   sha256: `958aa6dcef1cc1a542d0a513b5976a3d5edbcc37d76460ec1e9f126358e4d100`
 
@@ -99,12 +140,8 @@ the server disables layout under `GRPARSE_LAYOUT=auto` and fails startup under
 
 - `slanet_plus.onnx` — SLANet-plus table structure recognition from
   PaddleOCR's PP-StructureV3 line, ONNX export published by
-  [RapidTable](https://github.com/RapidAI/RapidTable) on ModelScope.
-
-  ```bash
-  curl -L -o slanet_plus.onnx \
-    https://www.modelscope.cn/models/RapidAI/RapidTable/resolve/v2.0.0/slanet-plus.onnx
-  ```
+  [RapidTable](https://github.com/RapidAI/RapidTable) on ModelScope
+  (manifest group `table`, fetched by default).
 
   sha256: `d57a942af6a2f57d6a4a0372573c696a2379bf5857c45e2ac69993f3b334514b`
 
@@ -131,21 +168,23 @@ the server disables layout under `GRPARSE_LAYOUT=auto` and fails startup under
   MIT license), published as ONNX at
   [docling-project/DocumentFigureClassifier-v2.5](https://huggingface.co/docling-project/DocumentFigureClassifier-v2.5).
 
-  The published export needs one correction before it can be used, so it is
-  downloaded under its own name and patched into place:
+  The published export needs one correction before it can be used, so the
+  manifest carries two rows: `figure_classifier_upstream.onnx` (group
+  `figure-upstream`, the download, sha256
+  `27ffc48c27ae4e12c99b6f6de0dd730005245e47b70dd0c1339e62cbac3ec4c0`,
+  16,940,439 bytes) and `figure_classifier.onnx` (group `figure`, URL
+  `patch:figure_classifier_upstream.onnx`, sha256
+  `8f24abc627f0451aae9a4320af887fba4b6c0a82af0142f4c32c7b40cba27fbc`,
+  16,938,738 bytes). The fetch script downloads the first, runs
+  `scripts/patch_figure_classifier.py` on it to write the second, and checks
+  both hashes. Only `figure_classifier.onnx` has to stay on disk; the models
+  image drops the upstream file after patching. By hand:
 
   ```bash
-  curl -L -o figure_classifier_upstream.onnx \
-    https://huggingface.co/docling-project/DocumentFigureClassifier-v2.5/resolve/main/model.onnx
-  python ../scripts/patch_figure_classifier.py \
-    figure_classifier_upstream.onnx figure_classifier.onnx
+  uv run --with onnx --with onnxruntime --with numpy python \
+    scripts/patch_figure_classifier.py \
+    models/figure_classifier_upstream.onnx models/figure_classifier.onnx
   ```
-
-  The download has sha256
-  `27ffc48c27ae4e12c99b6f6de0dd730005245e47b70dd0c1339e62cbac3ec4c0`
-  (16,940,439 bytes); the corrected file this server loads has sha256
-  `8f24abc627f0451aae9a4320af887fba4b6c0a82af0142f4c32c7b40cba27fbc`
-  (16,938,738 bytes). Only `figure_classifier.onnx` has to stay on disk.
 
   **What the patch corrects.** The export's final pooling node is an
   `AveragePool` whose `kernel_shape` is the channel count (`[1280, 1280]`)
@@ -168,7 +207,7 @@ the server disables layout under `GRPARSE_LAYOUT=auto` and fails startup under
   **This file replaced a 16-class predecessor of the same name.** The class
   count is read from the graph at startup, so a stale file stops the server
   with both counts rather than failing on the first figure of the first
-  document; re-download it when upgrading.
+  document; `scripts/fetch-models.sh --verify` names a stale file too.
 
   Preprocess (opset 20, unchanged from the predecessor): RGB order (unlike the
   OCR-family models), resize 224x224, scale 1/255, normalize mean
@@ -183,14 +222,11 @@ the server disables layout under `GRPARSE_LAYOUT=auto` and fails startup under
 
 - `chunk/tokenizer.json` — a HuggingFace tokenizer.json for the hybrid
   chunker's `hf/1` tokenizer option, so `max_tokens` and `num_tokens` are
-  measured in the embedding model's own units. Docling's default is
-  all-MiniLM-L6-v2:
-
-  ```bash
-  mkdir -p chunk
-  curl -L -o chunk/tokenizer.json \
-    https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json
-  ```
+  measured in the embedding model's own units. The manifest row (group
+  `tokenizer`, fetched with `--tokenizer`) is all-MiniLM-L6-v2's, Apache-2.0,
+  sha256 `be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037`;
+  any other model's tokenizer.json works in its place, the file is not
+  checked at startup.
 
   The resolution order is the request's `tokenizer_path`, then
   `$GRPARSE_CHUNK_TOKENIZER`, then this file. The file's own `padding` and
@@ -199,4 +235,3 @@ the server disables layout under `GRPARSE_LAYOUT=auto` and fails startup under
   A request that asks for `hf/1` without a resolvable file fails with
   `INVALID_ARGUMENT`; everything chunks under the built-in `wordish/1`
   counter when the file is absent and `hf/1` is never requested.
-

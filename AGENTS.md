@@ -274,7 +274,9 @@ krick-1 (Arc GPU, no NVIDIA runtime) runs it from `~/parse-stack/`
 (`compose.stack.yaml`, `compose.stack.openvino.yaml`,
 `compose.stack.expose-grpc.yaml`, `compose.stack.standalone.yaml`,
 `compose/nginx.conf`, `.env` with the two VLM URLs, `models` linked to
-`~/grparse-models`, byte-identical to `models/`, and `protos/<repo>/...`
+`~/grparse-models`, filled by `scripts/fetch-models.sh` or by the
+`pipestreamai/grparse-models` image through `compose.stack.models.yaml`
+rather than rsync (both verify against `models/MANIFEST`), and `protos/<repo>/...`
 holding the peers' proto trees and the whisper weights, see the standalone
 overlay's header; without it dockerd creates empty root-owned stubs for the
 `../<repo>` bind sources and the shell reports every peer unreachable). Images travel by `docker save <images> | zstd | ssh krick-1

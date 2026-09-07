@@ -54,7 +54,10 @@ real paper. [Watch it here](docs/images/demo-shell-screencast.mp4).
 
 ## Run
 
-1. Download the model files listed in [models/README.md](models/README.md).
+1. Fetch the model files: `scripts/fetch-models.sh` downloads every file in
+   [models/MANIFEST](models/MANIFEST) into `models/`, sha256-checked
+   ([models/README.md](models/README.md) has the per-model notes and the
+   `pipestreamai/grparse-models` image alternative).
 2. Build and start the service:
 
    ```bash
