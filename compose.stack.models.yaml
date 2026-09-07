@@ -1,0 +1,42 @@
+# Models overlay: gRParse reads its model files from a named volume that the
+# pipestreamai/grparse-models init container fills, instead of the ./models
+# bind mount. For hosts that hold no checkout of the models directory (a
+# fresh machine, a second host like krick-1) and for anyone who would rather
+# pull 220 MB of verified models as an image than run scripts/fetch-models.sh.
+#
+#   docker compose -f compose.stack.yaml -f compose.stack.models.yaml up
+#   docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml -f compose.stack.models.yaml up
+#   docker compose -f compose.stack.yaml -f compose.stack.openvino.yaml -f compose.stack.models.yaml up
+#
+# Put this file after the cpu/openvino overlays: the openvino overlay names
+# ./models:/models itself, and the last file to name the /models mount wins.
+#
+# What it changes, and why:
+#   - adds a one-shot `models` service (Dockerfile.models) that copies its
+#     baked, sha256-verified files into the `grparse-models` volume and
+#     exits 0 only when the copy verifies; a second run copies nothing,
+#   - mounts that volume at /models in gRParse in place of ./models,
+#   - starts gRParse only after the copy completed successfully, so a
+#     failed or partial fill never boots a server with a missing model.
+#
+# The image carries the heron layout detector by default; build it with
+# `--build-arg MODELS_LAYOUT=all` (or MODELS_TOKENIZER=1) for more.
+services:
+  models:
+    image: pipestreamai/grparse-models:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.models
+    volumes:
+      - grparse-models:/target
+    restart: "no"
+
+  grparse:
+    depends_on:
+      models:
+        condition: service_completed_successfully
+    volumes:
+      - grparse-models:/models:ro
+
+volumes:
+  grparse-models:
