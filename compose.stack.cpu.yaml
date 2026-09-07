@@ -5,9 +5,10 @@
 #
 # What it changes, and why:
 #   - swaps gRParse to the multi-arch CPU image (pipestreamai/grparse:
-#     latest-cpu, built from Dockerfile.cpu), which links ONNX Runtime's
-#     plain CPU package and runs natively on amd64 and arm64 - no
-#     emulation anywhere in the stack,
+#     latest-cpu, built from Dockerfile.cpu, or ${STACK_TAG}-cpu when the
+#     release pin from compose.stack.yaml's header is set), which links
+#     ONNX Runtime's plain CPU package and runs natively on amd64 and
+#     arm64 - no emulation anywhere in the stack,
 #   - drops `gpus: all` (Docker Desktop on macOS has no NVIDIA runtime and
 #     errors out on the reservation),
 #   - sets GRPARSE_ORT_EP=cpu, matching the image's own default, so the
@@ -18,7 +19,7 @@
 # image in the base file.
 services:
   grparse:
-    image: pipestreamai/grparse:latest-cpu
+    image: pipestreamai/grparse:${STACK_TAG:-latest}-cpu
     build:
       context: .
       dockerfile: Dockerfile.cpu
