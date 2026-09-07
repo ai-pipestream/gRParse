@@ -151,7 +151,8 @@ joins the emit_document majority.
   JavaScript runs" is the common case rather than the exception. That
   routing change lands only after the collector has scorecard evidence
   that its output beats the static projection on the WARC corpus.
-- **Ports.** Next free gRPC port is **50069**; demo HTTP port **8091**
+- **Ports.** Next free gRPC port is **50072** (50069-50071 went to the
+  PDF backend services); demo HTTP port **8091**
   (8090 is taken by grpc-email's viewer). Per the workspace rule, the
   workspace `AGENTS.md` port tables are extended with the `grpc-chromium`
   rows when the service actually exists, not before.
