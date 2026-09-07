@@ -13,8 +13,11 @@
 # glibc into OUT_DIR, dereferencing symlinks so the copy carries the SONAME
 # file name the loader asks for. glibc stays with the base: the loader and
 # its libraries are inseparable. STAGE_KEEP_ON_BASE names, as an extended
-# regex on the resolved path, one more family the base is expected to own
-# (for example '^/usr/local/cuda' on a CUDA runtime image).
+# regex on the resolved path, one more family that must not be staged: one
+# the base is expected to own (for example '^/usr/local/cuda' on a CUDA
+# runtime image), or one the runtime stage copies wholesale by itself (the
+# ONNX Runtime directory), which a second copy under the SONAME would only
+# duplicate.
 #
 # The walk fails loudly on the mistakes that have shipped before:
 #   - an input whose dependency is unresolved ("not found") in the build

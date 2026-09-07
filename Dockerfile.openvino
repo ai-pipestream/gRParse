@@ -119,9 +119,10 @@ RUN --mount=type=cache,id=grparse-openvino-ubuntu26-grpc1.83.1-ort1.24.1-poppler
 # loader dlopens NEO (libigdrcl, the Intel compute runtime), which in turn
 # dlopens the graphics compiler (libigc, libigdfcl). An ldd walk of the
 # server alone sees none of that, so the dlopened libraries are walked as
-# inputs of their own: the ORT/OpenVINO directory wholesale, and the NEO
-# libraries by SONAME from the packages that own them. NEO stays at the
-# path /etc/OpenCL/vendors/intel.icd names.
+# inputs of their own: the ORT/OpenVINO directory wholesale (and left out
+# of the staged set, since the runtime copies that directory as it is), and
+# the NEO libraries by SONAME from the packages that own them. NEO stays at
+# the path /etc/OpenCL/vendors/intel.icd names.
 # The Liberation fonts are poppler's base-14 substitutes: a PDF that uses
 # Helvetica/Times/Courier without embedding them renders blank text without
 # a metric-compatible substitute, which starves layout detection and page
@@ -141,6 +142,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && neo_libs=$(dpkg -L intel-opencl-icd ocl-icd-libopencl1 libigc2 libigdfcl2 libigdgmm12 \
                   | grep -E '\.so\.[0-9]+$') \
     && LD_LIBRARY_PATH=/out/ort-libs:/opt/poppler/lib:/opt/opencv/lib \
+       STAGE_KEEP_ON_BASE='^/out/ort-libs/' \
        sh scripts/stage-runtime-closure.sh /out/runtime-libs \
          /out/grparse-server /out/grparse-stream-client /out/ort-libs/*.so* \
          /usr/lib/x86_64-linux-gnu/intel-opencl/libigdrcl.so $neo_libs \
