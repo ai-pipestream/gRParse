@@ -25,7 +25,7 @@ with no emulation:
 
 ```sh
 ./compose/clone-siblings.sh   # fresh machine: fetch the sibling checkouts
-                              # the shell's proto bind mounts expect
+                              # the build: lines expect (published images need none)
 docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml up
 docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml --profile parsers up
 ```

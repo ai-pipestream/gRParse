@@ -1,0 +1,93 @@
+syntax = "proto3";
+
+package ai.pipestream.poi.v1;
+
+option java_package = "ai.pipestream.poi.v1";
+option java_multiple_files = true;
+option java_outer_classname = "PoiServiceProto";
+
+import "ai/pipestream/poi/v1/poi_document.proto";
+
+// The v1 POI parse API: one bidirectional streaming RPC that turns office
+// document bytes into typed structure events, plus a capability-discovery RPC.
+//
+// The server is diskless by doctrine: document bytes live only in memory for
+// the duration of the parse, nothing is written to disk, and no external
+// process is executed.
+//
+// Error model: failures are reported as gRPC status codes. ParseDocument maps
+// errors to INVALID_ARGUMENT (no data, or the stream ended without a chunk
+// marked complete), RESOURCE_EXHAUSTED (the document exceeds the server's byte
+// cap; see GetServiceInfo limits), UNIMPLEMENTED (bytes are not a format this
+// server parses), and INTERNAL (unexpected parser fault). GetServiceInfo does
+// not validate input and completes with OK.
+service PoiParseService {
+  // Parses one document. The client streams the document as chunks, marking
+  // the last one complete; the server replies with a stream of typed events:
+  // first DocumentInfo, then content blocks in document order, then exactly
+  // one ParseStatus as the final event of a successful parse.
+  rpc ParseDocument(stream ParseRequestChunk) returns (stream ParseEvent);
+  // Reports server identity and capabilities: versions, the formats this
+  // server parses, and its operational limits. Intended for capability
+  // discovery by orchestrators and LLM tool facades.
+  rpc GetServiceInfo(GetServiceInfoRequest) returns (GetServiceInfoResponse);
+}
+
+// One slice of the document upload. Identity fields are read from the first
+// chunk; later chunks only need data, with complete=true on the last. A
+// single-chunk upload (all bytes plus complete=true) is the common case.
+message ParseRequestChunk {
+  // Caller-chosen identifier, echoed in DocumentInfo.
+  string document_id = 1;
+  string filename = 2;
+  // Advisory; the server detects the real format from the bytes.
+  string content_type = 3;
+  bytes data = 4;
+  bool complete = 5;
+}
+
+// One parse result event. Event order: document_info first, then content
+// blocks in document order, then status last.
+message ParseEvent {
+  oneof event {
+    DocumentInfo document_info = 1;
+    Paragraph paragraph = 2;
+    Table table = 3;
+    Sheet sheet = 4;
+    Slide slide = 5;
+    EmbeddedObject embedded_object = 6;
+    ParseStatus status = 7;
+  }
+}
+
+// First event of every parse: what the server detected and the document's
+// metadata.
+message DocumentInfo {
+  string document_id = 1;
+  DocumentFormat format = 2;
+  DocumentMetadata metadata = 3;
+}
+
+message GetServiceInfoRequest {}
+
+// Server identity and limits, for capability discovery.
+message GetServiceInfoResponse {
+  string service_version = 1;
+  string poi_version = 2;
+  string api_version = 3;
+  repeated DocumentFormat supported_formats = 4;
+  // The byte cap ParseDocument enforces (RESOURCE_EXHAUSTED above it).
+  uint64 max_document_bytes = 5;
+  // Documents parsed concurrently before new parses queue.
+  uint32 max_concurrent_parses = 6;
+  // Frontend advertisement for the shared demo shell.
+  UiInfo ui = 7;
+}
+
+// Frontend advertisement. Same shape in every ai-pipestream grpc service:
+// the demo shell reads it to build its tab bar.
+message UiInfo {
+  string title = 1;        // tab title, e.g. "EPUB"
+  string path = 2;         // shell mount path, e.g. "/ui/epub"
+  string description = 3;  // one line, used as the tab tooltip
+}
