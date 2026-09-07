@@ -274,11 +274,16 @@ Still open, tracked here:
 - Consensus wire cost: fixed by the content-addressed handshake above.
   Pages after the first go by hash; `GRPARSE_PDF_BACKEND_HANDSHAKE=off`
   keeps the old behavior if a backend predates the verdicts.
-- Fleet housekeeping on the three services: default ports collide with
-  gRParse/grPOIc/grpc-libreoffice and are unregistered; no UiInfo; no
-  publish workflows; grpc-pdfium and grpc-qparse have no Dockerfile;
-  grpc-poppler's image should move to the hardened base with a pinned
-  poppler.
+- Fleet housekeeping on the three services: landed 2026-09-06. Each owns
+  a fleet port (50069 pdfium, 50070 qparse, 50071 poppler, in the
+  workspace table), answers `GetServiceInfo` with a `UiInfo` block, has a
+  Dockerfile plus `ci.yml` and `publish.yml` (amd64, `pipestreamai/<repo>`
+  on Docker Hub, first images pushed 2026-09-07), and sits in the stack's
+  opt-in `pdf-backends` profile. What remains from that list: the runtime
+  stages still run on plain `ubuntu:26.04` / `debian:trixie-slim`, and
+  grpc-poppler runs as root on the distro poppler; the hardened-base pass
+  (staged library closure, numeric non-root user, poppler 26.08.0 from the
+  pinned tarball) is the open item.
 - Tier 0 TextCell union: only the qpdf-based backend fills direction,
   space width and rendering mode; grpc-pdfium and grpc-poppler leave them
   unset.
