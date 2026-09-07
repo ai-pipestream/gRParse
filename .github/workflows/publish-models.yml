@@ -1,0 +1,102 @@
+name: Publish Models Image
+
+# Builds pipestreamai/grparse-models (Dockerfile.models): every model file
+# gRParse loads, fetched from upstream and pinned by sha256 in
+# models/MANIFEST, under /models, as an init container that fills a volume.
+# Runs on a push to main that touches the manifest, the fetch or patch
+# scripts, or the Dockerfile; a manual dispatch with a version input also
+# tags that version. Multi-arch (amd64 + arm64) without emulation: the
+# fetch stage runs on the build platform and the final stage only copies.
+#
+# Same login and tag pattern as publish.yml: Docker Hub through the
+# DOCKER_USER / DOCKER_TOKEN org secrets, the Forgejo registry
+# (git.rokkon.com) only when its CICD_TOKEN secret exists.
+on:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile.models
+      - models/MANIFEST
+      - scripts/fetch-models.sh
+      - scripts/models-populate.sh
+      - scripts/patch_figure_classifier.py
+      - .github/workflows/publish-models.yml
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Image version tag (for example 0.1.0)'
+        required: true
+        type: string
+
+jobs:
+  publish-models:
+    runs-on: ubuntu-latest
+    env:
+      CICD_TOKEN: ${{ secrets.CICD_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Log in to Docker Hub (docker.io)
+        uses: docker/login-action@v4
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+      - name: Log in to Forgejo container registry
+        if: ${{ env.CICD_TOKEN != '' }}
+        uses: docker/login-action@v4
+        with:
+          registry: git.rokkon.com
+          username: ${{ github.actor }}
+          password: ${{ secrets.CICD_TOKEN }}
+      - name: Compute tags
+        id: tags
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          tags="docker.io/pipestreamai/grparse-models:latest"
+          if [ -n "$VERSION" ]; then
+            tags="$tags,docker.io/pipestreamai/grparse-models:${VERSION}"
+          fi
+          if [ -n "$CICD_TOKEN" ]; then
+            tags="$tags,git.rokkon.com/ai-pipestream/grparse-models:latest"
+            if [ -n "$VERSION" ]; then
+              tags="$tags,git.rokkon.com/ai-pipestream/grparse-models:${VERSION}"
+            fi
+          fi
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+      - name: Offline check of the fetch and populate scripts
+        run: ./scripts/fetch-models-test.sh
+      - name: Build the amd64 image locally (every download is sha256-gated in the build)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.models
+          platforms: linux/amd64
+          load: true
+          provenance: false
+          sbom: false
+          tags: grparse-models-check:local
+      - name: Fill an empty volume from the image and verify the copy
+        # The image is not done until it has populated a volume for real:
+        # the entrypoint copies /models into /target and exits nonzero on
+        # any hash that does not match the bundled manifest.
+        run: |
+          set -euo pipefail
+          docker volume create grparse-models-check >/dev/null
+          docker run --rm -v grparse-models-check:/target grparse-models-check:local
+          docker run --rm -v grparse-models-check:/target grparse-models-check:local \
+            | tee /dev/stderr | grep -q 'populate: 0 file(s) copied'
+          docker volume rm grparse-models-check >/dev/null
+      - name: Build and push the multi-arch image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.models
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          sbom: false
+          tags: ${{ steps.tags.outputs.tags }}

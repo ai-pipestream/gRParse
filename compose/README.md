@@ -35,9 +35,29 @@ reservation, and sets `GRPARSE_ORT_EP=cpu` (a deliberate provider choice;
 the server never falls back silently). Inference is slower on CPU than on
 a GPU, but the whole demo works.
 
-gRParse's four ONNX models still need to exist in `models/` first (see
-`models/README.md`), and whisper weights go in `../grpc-asr/models` if the
+gRParse's model files still need to exist in `models/` first:
+`scripts/fetch-models.sh` fetches and sha256-checks them (see
+`models/README.md`). Whisper weights go in `../grpc-asr/models` if the
 `heavy` profile's asr tab should do real work.
+
+## Models from an image instead of ./models
+
+`compose.stack.models.yaml` replaces the `./models` bind mount with a named
+volume that a one-shot `models` service fills from
+`pipestreamai/grparse-models` (built from `Dockerfile.models`: every file
+in `models/MANIFEST`, fetched, sha256-verified and patched at build time).
+gRParse waits for that copy to finish (`service_completed_successfully`)
+and a second `up` copies nothing. Layer it last, after the cpu or openvino
+overlay, because the openvino overlay names `./models:/models` itself:
+
+```sh
+docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml -f compose.stack.models.yaml up
+docker compose -f compose.stack.yaml -f compose.stack.openvino.yaml -f compose.stack.models.yaml up
+```
+
+The published image carries the heron layout detector; a local
+`docker compose ... build models` with `MODELS_LAYOUT=all` or
+`MODELS_TOKENIZER=1` as build args (see `Dockerfile.models`) bakes in more.
 
 ## TLS for the web frontend
 

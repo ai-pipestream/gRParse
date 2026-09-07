@@ -290,12 +290,14 @@ krick-1 (Arc GPU, no NVIDIA runtime) runs it from `~/parse-stack/`
 (`compose.stack.yaml`, `compose.stack.openvino.yaml`,
 `compose.stack.expose-grpc.yaml`, `compose.stack.standalone.yaml`,
 `compose/nginx.conf`, `.env` with the two VLM URLs, `models` linked to
-`~/grparse-models`, byte-identical to `models/`, and
-`protos/grpc-asr/models` holding the whisper weights, see the standalone
-overlay's header; the peers' proto trees ride in the shell image and need
-no host copy. Without the overlay dockerd creates an empty root-owned stub
-for the `../grpc-asr/models` bind source). Images travel by `docker save
-<images> | zstd | ssh krick-1 'zstd -d | docker load'`, never by a registry
+`~/grparse-models`, filled by `scripts/fetch-models.sh` or by the
+`pipestreamai/grparse-models` image through `compose.stack.models.yaml`
+instead of rsync (both check the files with `models/MANIFEST`), and
+`protos/grpc-asr/models` with the whisper weights, see the standalone
+overlay's header; the peers' proto trees are baked into the shell image and
+need no host copy. Without the overlay dockerd creates an empty root-owned
+stub for the `../grpc-asr/models` bind source). Images travel by `docker save
+<images> | zstd | ssh krick-1 'zstd -d | docker load'`, not by a registry
 push from a workstation; the
 gRParse image is `pipestreamai/grparse:latest-openvino` from
 `Dockerfile.openvino`, built in a fresh cache scope like any acceptance

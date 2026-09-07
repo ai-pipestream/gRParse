@@ -10,9 +10,10 @@
 #      "Required OCR model is missing" message, proving the loader, static
 #      initialization, and configuration parsing all ran — not a loader error.
 #
-# Full check (--full, needs models/ populated next to this repo): boots the
-# server on the CPU provider and streams a fixture through the bundled
-# client, asserting a page event and the terminal complete event.
+# Full check (--full, needs models/ populated next to this repo; run
+# scripts/fetch-models.sh once): boots the server on the CPU provider and
+# streams a fixture through the bundled client, asserting a page event and
+# the terminal complete event.
 set -euo pipefail
 
 usage() {

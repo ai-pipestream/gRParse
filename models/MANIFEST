@@ -1,0 +1,40 @@
+# Model files gRParse loads from GRPARSE_MODELS_DIR (/models in the images).
+# One entry per line, whitespace separated; # starts a comment.
+#
+#   path  sha256  size-in-bytes  group  license  url
+#
+# path   is relative to the models directory.
+# group  decides when scripts/fetch-models.sh fetches the file:
+#          ocr             always; the server refuses to start without them
+#          layout-heron    --layout heron (the default) or all
+#          layout-picodet  --layout picodet or all
+#          table           always (optional to the server)
+#          figure-upstream always; the published export, patched into `figure`
+#          figure          always; derived, never downloaded (url patch:<source>)
+#          tokenizer       --tokenizer only
+# url    is the upstream download, or patch:<path> for a file the script
+#        derives by running scripts/patch_figure_classifier.py on <path>.
+#
+# Every sha256 is the byte-exact file the server was verified with; a
+# download that hashes differently is a different model and is refused.
+# models/README.md carries each model's label map and preprocessing notes.
+
+# RapidOCR PP-OCRv3 set (detection, recognition, angle classifier, dictionary)
+ch_PP-OCRv3_det_infer.onnx           3439588c030faea393a54515f51e983d8e155b19a2e8aba7891934c1cf0de526  2432880    ocr             Apache-2.0  https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv3/ch_PP-OCRv3_det_infer.onnx
+ch_PP-OCRv3_rec_infer.onnx           897a3ededb38fee0dae2c1ccee38241f37df202c9509e3abca02e9217c5ee615  10690752   ocr             Apache-2.0  https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv3/ch_PP-OCRv3_rec_infer.onnx
+ch_ppocr_mobile_v2.0_cls_infer.onnx  e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c  585532     ocr             Apache-2.0  https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv1/ch_ppocr_mobile_v2.0_cls_infer.onnx
+ppocr_keys_v1.txt                    28b2362ad4ab2dc38769aa72feb535e3a9ddb3fd2a7585a05920e6393b1dc7f7  26249      ocr             Apache-2.0  https://raw.githubusercontent.com/RapidAI/RapidOcrOnnx/main/models/ppocr_keys_v1.txt
+
+# Layout detectors (GRPARSE_LAYOUT_MODEL=heron|picodet picks one)
+layout_heron.onnx                    59c81a3a2923042d85034ffc487f8f47e4854117e879aef89b2b9f728fb4922a  171220471  layout-heron    Apache-2.0  https://huggingface.co/docling-project/docling-layout-heron-onnx/resolve/main/model.onnx
+layout_publaynet.onnx                958aa6dcef1cc1a542d0a513b5976a3d5edbcc37d76460ec1e9f126358e4d100  7413151    layout-picodet  Apache-2.0  https://github.com/RapidAI/RapidLayout/releases/download/v0.0.0/layout_publaynet.onnx
+
+# Table structure
+slanet_plus.onnx                     d57a942af6a2f57d6a4a0372573c696a2379bf5857c45e2ac69993f3b334514b  7758305    table           Apache-2.0  https://www.modelscope.cn/models/RapidAI/RapidTable/resolve/v2.0.0/slanet-plus.onnx
+
+# Figure classifier: the published export, then the corrected graph the server loads
+figure_classifier_upstream.onnx      27ffc48c27ae4e12c99b6f6de0dd730005245e47b70dd0c1339e62cbac3ec4c0  16940439   figure-upstream MIT         https://huggingface.co/docling-project/DocumentFigureClassifier-v2.5/resolve/main/model.onnx
+figure_classifier.onnx               8f24abc627f0451aae9a4320af887fba4b6c0a82af0142f4c32c7b40cba27fbc  16938738   figure          MIT         patch:figure_classifier_upstream.onnx
+
+# Chunk tokenizer for the hf/1 counter (opt-in)
+chunk/tokenizer.json                 be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037  466247     tokenizer       Apache-2.0  https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json

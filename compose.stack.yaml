@@ -27,6 +27,8 @@
 # On a host without an NVIDIA GPU (macOS included), layer the CPU overlay,
 # which drops the GPU reservation and runs gRParse on the CPU provider:
 #   docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml up
+# No ./models checkout? compose.stack.models.yaml fills a volume from the
+# pipestreamai/grparse-models image (put it after the cpu/openvino overlay).
 # Fresh machine? compose/clone-siblings.sh fetches the sibling checkouts
 # the `build:` lines below expect; the published images need none of them.
 # The project name differs from compose.yaml's, so both files can be up at

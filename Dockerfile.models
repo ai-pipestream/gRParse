@@ -1,0 +1,60 @@
+# syntax=docker/dockerfile:1
+# pipestreamai/grparse-models: the model files gRParse loads, fetched from
+# their upstreams, pinned by sha256 (models/MANIFEST), the figure classifier
+# patched, all under /models. Used as an init container that fills a volume:
+#
+#   docker build -f Dockerfile.models -t pipestreamai/grparse-models .
+#   docker run --rm -v grparse-models:/target pipestreamai/grparse-models
+#   docker run -v grparse-models:/models:ro ... pipestreamai/grparse:latest-cpu
+#
+# compose.stack.models.yaml wires exactly that into the demo stack.
+#
+# Build args:
+#   MODELS_LAYOUT=heron|picodet|all   which layout detector(s) to include
+#   MODELS_TOKENIZER=0|1              add chunk/tokenizer.json (hf/1 counter)
+#
+# Multi-arch for free: the model bytes are the same on every architecture,
+# so the fetch stage runs on the build host's own platform and the final
+# stage only copies. Keep the final stage RUN-free: with no RUN there the
+# arm64 leg needs no emulation at all.
+#
+#   docker buildx build --platform linux/amd64,linux/arm64 -f Dockerfile.models .
+
+ARG MODELS_LAYOUT=heron
+ARG MODELS_TOKENIZER=0
+
+FROM --platform=$BUILDPLATFORM python:3.13-slim AS fetch
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+# onnx rewrites the figure classifier graph; onnxruntime and numpy let the
+# patch script score both graphs and refuse a non-identical result.
+RUN pip install --no-cache-dir onnx onnxruntime numpy
+WORKDIR /src
+COPY models/MANIFEST models/MANIFEST
+COPY scripts/fetch-models.sh scripts/patch_figure_classifier.py scripts/
+ARG MODELS_LAYOUT
+ARG MODELS_TOKENIZER
+# Every download is checked against the manifest's sha256 before it is kept;
+# the patched classifier is checked the same way, so a different onnx
+# serialization fails the build instead of shipping.
+RUN set -eu; \
+    tokenizer=""; [ "$MODELS_TOKENIZER" = 1 ] && tokenizer=--tokenizer; \
+    FETCH_MODELS_PYTHON=python3 scripts/fetch-models.sh --dir /models \
+      --layout "$MODELS_LAYOUT" $tokenizer \
+    && rm -f /models/figure_classifier_upstream.onnx \
+    && cp models/MANIFEST /models/MANIFEST \
+    && mkdir -p /target
+
+FROM dhi.io/debian-base:trixie-debian13
+LABEL org.opencontainers.image.title="grparse-models" \
+      org.opencontainers.image.description="Model files for pipestreamai/grparse under /models; run to copy them into a volume" \
+      org.opencontainers.image.source="https://github.com/ai-pipestream/gRParse"
+# COPY resets ownership to root unless told otherwise; the base runs as
+# nonroot (65532), and a named volume mounted at /target takes this
+# directory's owner when the container starts, which is what lets that user
+# write into it.
+COPY --from=fetch --chown=65532:65532 /models /models
+COPY --from=fetch --chown=65532:65532 /target /target
+COPY --chmod=755 scripts/fetch-models.sh scripts/models-populate.sh /usr/local/bin/
+ENTRYPOINT ["/usr/local/bin/models-populate.sh"]
+CMD ["/target"]
