@@ -384,7 +384,19 @@ std::optional<std::string> remote_pdf_backend_target() {
   const char* value = std::getenv("GRPARSE_PDF_BACKEND");
   if (value == nullptr) return std::nullopt;
   std::string target(value);
-  if (target.empty() || target == "inprocess") return std::nullopt;
+  const auto begin = target.find_first_not_of(" \t");
+  if (begin == std::string::npos) {
+    // The documented empty value keeps the in-process poppler path; a
+    // whitespace-only value is a typo that must fail loudly, not silently
+    // fall back or dial the literal string.
+    if (target.empty()) return std::nullopt;
+    throw std::invalid_argument(
+        "GRPARSE_PDF_BACKEND is whitespace-only; unset it or name a backend "
+        "target");
+  }
+  const auto end = target.find_last_not_of(" \t");
+  target = target.substr(begin, end - begin + 1);
+  if (target == "inprocess") return std::nullopt;
   return target;
 }
 

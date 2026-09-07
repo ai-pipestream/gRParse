@@ -283,10 +283,27 @@ std::shared_ptr<PageSource> open_in_memory_document(std::shared_ptr<const std::s
     // order wins the consensus vote.
     if (const auto target = remote_pdf_backend_target()) {
       const auto targets = split_backend_targets(*target);
+      // A set-but-contentless value names no backend at all; failing here
+      // beats dialing the literal string and waiting out a connect timeout.
+      if (targets.empty()) {
+        throw std::invalid_argument(
+            "GRPARSE_PDF_BACKEND names no backend targets");
+      }
+      // "inprocess" is only meaningful as the entire value (handled
+      // above); inside a list it reads like a target and would be
+      // silently dropped after a failed dial, so it is a config error.
+      for (const auto& entry : targets) {
+        if (entry == "inprocess") {
+          throw std::invalid_argument(
+              "GRPARSE_PDF_BACKEND lists 'inprocess' among backend targets; "
+              "use it alone for the in-process path");
+        }
+      }
       if (targets.size() > 1) {
         return open_consensus_pdf_document(std::move(bytes), targets, render_dpi);
       }
-      return open_remote_pdf_document(std::move(bytes), *target, render_dpi);
+      return open_remote_pdf_document(std::move(bytes), targets.front(),
+                                      render_dpi);
     }
 #endif
     return std::make_shared<PdfPageSource>(std::move(bytes), pdf_parser_slots, render_dpi);

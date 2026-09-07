@@ -11,7 +11,8 @@ namespace grparse {
 // The PDF backend target from GRPARSE_PDF_BACKEND. Unset, empty, or the
 // literal "inprocess" keep the in-process poppler path; anything else is a
 // gRPC target ("host:port") for a PdfBackendService
-// (ai.protomolt.parse.pdf.v1) such as grpc-pdfium.
+// (ai.protomolt.parse.pdf.v1) such as grpc-pdfium. Surrounding whitespace
+// is trimmed; a whitespace-only value is a config error.
 std::optional<std::string> remote_pdf_backend_target();
 
 // Opens a PageSource whose pages come from a PdfBackendService instead of

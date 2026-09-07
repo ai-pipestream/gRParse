@@ -525,6 +525,52 @@ int main() {
     never_cached_server->Shutdown();
   }
 
+  // --- Target configuration edge cases ------------------------------------
+  {
+    const auto config_bytes = std::make_shared<const std::string>("%PDF-fake");
+
+    // Whitespace around a single target is trimmed; the document still
+    // opens against the fake server above.
+    setenv("GRPARSE_PDF_BACKEND", ("  \t" + target + "  ").c_str(), 1);
+    const auto trimmed =
+        grparse::open_in_memory_document(config_bytes, true, 1, dpi);
+    require(trimmed->page_count() == 1, "a padded single target still opens");
+    unsetenv("GRPARSE_PDF_BACKEND");
+
+    // A target list naming no backend at all is a config error, not a dial
+    // of the literal string.
+    for (const char* value : {",", " , ", "   "}) {
+      setenv("GRPARSE_PDF_BACKEND", value, 1);
+      bool threw = false;
+      try {
+        grparse::open_in_memory_document(config_bytes, true, 1, dpi);
+      } catch (const std::invalid_argument&) {
+        threw = true;
+      }
+      require(threw, std::string("all-empty target list '") + value +
+                         "' fails as a config error");
+    }
+    unsetenv("GRPARSE_PDF_BACKEND");
+
+    // "inprocess" inside a list reads like a target and would be silently
+    // dropped after a failed dial; it is only meaningful as the whole
+    // value, so mixing it in is a config error.
+    setenv("GRPARSE_PDF_BACKEND", "inprocess,127.0.0.1:1", 1);
+    bool threw = false;
+    try {
+      grparse::open_in_memory_document(config_bytes, true, 1, dpi);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    require(threw, "a list containing inprocess fails as a config error");
+
+    // A lone inprocess, even padded, keeps the in-process poppler path.
+    setenv("GRPARSE_PDF_BACKEND", " inprocess ", 1);
+    require(!grparse::remote_pdf_backend_target().has_value(),
+            "a padded inprocess keeps the in-process path");
+    unsetenv("GRPARSE_PDF_BACKEND");
+  }
+
   server->Shutdown();
   std::println("remote-pdf-source-test: all checks passed");
   return 0;
