@@ -121,15 +121,26 @@ class CanonicalJsonParts {
     writer_.member_double("t", bbox.t());
     writer_.member_double("r", bbox.r());
     writer_.member_double("b", bbox.b());
-    writer_.member_string("coord_origin", coord_origin_string(bbox));
+    // The origin is written only when the producer claimed one. A box whose
+    // page rectangle never arrived stays originless on the wire; the export
+    // must not re-assert "TOPLEFT" over document-absolute numbers. (Docling
+    // defaults the member back to TOPLEFT on load, which the producer's
+    // warnings name as the approximation it is.)
+    if (bbox.has_coord_origin()) {
+      writer_.member_string("coord_origin", coord_origin_string(bbox));
+    }
     writer_.end_object();
   }
 
   void emit_prov(const docv1::ProvenanceItem& prov) {
     writer_.begin_object();
     writer_.member_int("page_no", prov.page_no());
-    writer_.key("bbox");
-    emit_bbox(prov.bbox());
+    // Geometry-less provenance (a sheet grid, an unplaced chart) omits the
+    // bbox entirely rather than presenting zeros as a real rectangle.
+    if (prov.has_bbox()) {
+      writer_.key("bbox");
+      emit_bbox(prov.bbox());
+    }
     writer_.key("charspan");
     emit_span(prov.charspan().start(), prov.charspan().end());
     writer_.end_object();

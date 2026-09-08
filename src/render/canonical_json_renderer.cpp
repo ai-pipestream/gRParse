@@ -422,8 +422,17 @@ class CanonicalJsonRenderer : public render::CanonicalJsonParts {
           emit_text_from_base(base, label,
                               [&] { writer_.member_string("kind", "read_only"); });
         } else {
-          emit_text_from_base(base, generic_text_label(label) ? label : "text",
-                              [] {});
+          // The generic arm is where an unrecognized label lands. A raw
+          // label a newer vocabulary coined rides through verbatim: docling
+          // exports its labels as strings, so parity keeps the spelling on
+          // the model's catch-all class instead of collapsing it to "text"
+          // and losing the word entirely.
+          if (base.has_label_raw()) {
+            emit_text_from_base(base, base.label_raw(), [] {});
+          } else {
+            emit_text_from_base(base, generic_text_label(label) ? label : "text",
+                                [] {});
+          }
         }
         return;
       }

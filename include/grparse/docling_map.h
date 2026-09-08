@@ -37,18 +37,39 @@ namespace grparse {
 // annotations, embedded objects) owns the pending state that plane needs,
 // and the anchor index owns the character-space resolution pass.
 //
-// The wire is the lossless boundary; this mapper is the lossy one. Fields
-// with no docling slot (chart bubble sizes, shape rotation) are dropped;
-// fields worth keeping but without a native node (Calc numeric values and
-// formulas, named ranges, chain names) ride custom_fields.
+// The wire is the lossless boundary; this mapper is the lossy one, and
+// every loss is either carried in a typed slot or named in warnings() in
+// the order it happened. The inventory, as of this header:
 //
-// Coordinates: office positions are twips. Writer anchors and LineBox
-// rectangles are document-absolute; the mapper subtracts the containing
-// page's origin (from DocumentInfo.page_rects) so every BoundingBox is
-// page-local with COORD_ORIGIN_TOPLEFT; a page whose rectangle never
-// arrived cannot be reduced that way, and warnings() names it. Draw,
-// Impress, and Calc positions are already page-local per part. All emitted
-// doubles stay in twips; unit policy beyond that is the consumer's.
+// Carried in typed fields the upstream dialect lacks (document.proto's
+// extension arms): chart bubble sizes on ChartPoint.size; sheet cell values,
+// formulas and number formats on CellValue and the column schema; named and
+// database ranges on Document.named_ranges; shape rotation and text-frame
+// chain links on ShapeMeta; provenance beyond {page, box} on the
+// grid/time/byte-span arms; version-skew label and language vocabularies on
+// the *_raw companion fields.
+//
+// Approximated, and named once per item in warnings(): series and category
+// labels the chart never declared are invented (positionally, or from the
+// value axis title for a lone series) because the bound table needs
+// addressable names; a sheet header row decided by the
+// labels-above-quantities heuristic without a declaring database range is
+// called a guess; a chart that carried no data binds an empty table; an
+// unknown layout region label falls back to TEXT with the raw spelling
+// kept on label_raw (that one is the CV assembly path, which reports
+// through its own warnings channel).
+//
+// Geometry honesty: Writer anchors and LineBox rectangles are document-
+// absolute; the mapper subtracts the containing page's origin (from
+// DocumentInfo.page_rects) and claims COORD_ORIGIN_TOPLEFT only when it
+// did. A page whose rectangle never arrived keeps its document-absolute
+// numbers with no origin claimed, so a consumer never reads them as
+// page-local; warnings() names the page once. Sources with no rectangle of
+// their own (sheets, pivot outputs, a chart no embedded object placed)
+// stamp page and grid only and name the absence; a zero-area box is never
+// presented as real geometry. Draw, Impress, and Calc positions arrive
+// page-local per part. All emitted doubles stay in twips; unit policy
+// beyond that is the consumer's.
 //
 // The office wire counts comments, tracked changes, bookmarks, and field
 // marks in one document-absolute character space. The mapper keeps an index

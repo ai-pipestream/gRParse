@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #include "render/renderer_base.h"
@@ -65,8 +66,12 @@ pipestream::parse::v1::TextSource text_source_for(const OcrPage& page, const Ocr
 // Region label -> document item label for the text lines inside it.  Covers
 // both detectors' vocabularies; lines inside table/picture regions keep TEXT,
 // because the region itself is emitted as a TableItem/PictureItem and
-// cell/caption structure is later work.
-pipestream::document::v1::DocItemLabel label_for_region(const std::string& label) {
+// cell/caption structure is later work. `recognized` false means the label
+// is outside both vocabularies and the deliberate structural set: the caller
+// keeps the raw spelling on label_raw and names the fallback, because a
+// forgotten label must never be invisible.
+pipestream::document::v1::DocItemLabel label_for_region(const std::string& label,
+                                                        bool* recognized) {
   namespace docv1 = pipestream::document::v1;
   static const std::unordered_map<std::string, docv1::DocItemLabel> kLabels = {
       {"caption", docv1::DOC_ITEM_LABEL_CAPTION},
@@ -86,7 +91,19 @@ pipestream::document::v1::DocItemLabel label_for_region(const std::string& label
       {"title", docv1::DOC_ITEM_LABEL_TITLE},
   };
   const auto found = kLabels.find(label);
-  return found == kLabels.end() ? docv1::DOC_ITEM_LABEL_TEXT : found->second;
+  if (found != kLabels.end()) {
+    *recognized = true;
+    return found->second;
+  }
+  // Structural and empty labels keeping TEXT by design, not by fallback.
+  static const std::unordered_set<std::string> kStructuralLabels = {
+      "table", "picture", "text", ""};
+  if (kStructuralLabels.contains(label)) {
+    *recognized = true;
+    return docv1::DOC_ITEM_LABEL_TEXT;
+  }
+  *recognized = false;
+  return docv1::DOC_ITEM_LABEL_TEXT;
 }
 
 // Running headers and footers are page furniture, not body prose: they carry
@@ -426,7 +443,8 @@ uint64_t utf8_codepoint_count(const std::string& text) {
 }
 
 void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cursor,
-                      pipestream::parse::v1::PageData* output) {
+                      pipestream::parse::v1::PageData* output,
+                      std::vector<std::string>* warnings) {
   if (cursor == nullptr || output == nullptr) throw std::invalid_argument("Page assembly output is required");
   output->set_page_number(page_number);
   output->mutable_page_meta()->set_page_no(page_number);
@@ -612,8 +630,10 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     }
 
     const std::string self_ref = "#/texts/" + std::to_string(cursor->text_index++);
-    const auto label = region == nullptr ? pipestream::document::v1::DOC_ITEM_LABEL_TEXT
-                                         : label_for_region(region->label);
+    bool recognized_label = true;
+    const auto label = region == nullptr
+                           ? pipestream::document::v1::DOC_ITEM_LABEL_TEXT
+                           : label_for_region(region->label, &recognized_label);
     auto* item = output->add_texts();
     // Each structural label takes its dedicated arm so the fields only that
     // arm carries (heading level, list marker, code language) can ever be
@@ -651,6 +671,19 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     base->set_content_layer(furniture ? pipestream::document::v1::CONTENT_LAYER_FURNITURE
                                       : pipestream::document::v1::CONTENT_LAYER_BODY);
     base->set_label(label);
+    // A label outside every known vocabulary falls back to TEXT, the
+    // model's catch-all; the raw spelling rides label_raw so version skew
+    // loses nothing, and the caller's warnings name the fallback instead
+    // of letting a forgotten label map invisibly.
+    if (region != nullptr && !recognized_label) {
+      base->set_label_raw(region->label);
+      if (warnings != nullptr) {
+        warnings->push_back("page " + std::to_string(page_number)
+                            + ": unknown region label '" + region->label
+                            + "' mapped to TEXT; the raw label is kept on "
+                              "label_raw");
+      }
+    }
     base->set_orig(merged);
     base->set_text(merged);
     // One provenance entry per member line: its own box, its own charspan
@@ -831,12 +864,13 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
 void append_page_to_document(
     const OcrPage& source, int page_number, AssemblyCursor* cursor,
     pipestream::document::v1::Document* document, std::string* plain_text,
-    google::protobuf::RepeatedPtrField<pipestream::parse::v1::TextOffset>* text_offsets) {
+    google::protobuf::RepeatedPtrField<pipestream::parse::v1::TextOffset>* text_offsets,
+    std::vector<std::string>* warnings) {
   if (document == nullptr || plain_text == nullptr) {
     throw std::invalid_argument("Document assembly output is required");
   }
   pipestream::parse::v1::PageData page;
-  append_page_data(source, page_number, cursor, &page);
+  append_page_data(source, page_number, cursor, &page, warnings);
   if (text_offsets != nullptr) {
     for (auto& offset : *page.mutable_text_offsets()) {
       *text_offsets->Add() = std::move(offset);

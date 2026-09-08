@@ -369,8 +369,10 @@ void verify_prov_charspan_and_coord_origins() {
                    "charspans dump as two-element arrays");
   require_contains(rendered, "\"coord_origin\": \"BOTTOMLEFT\"",
                    "explicit origin maps");
-  require_contains(rendered, "\"coord_origin\": \"TOPLEFT\"",
-                   "unset origin keeps the model default");
+  require_absent(rendered, "\"coord_origin\": \"TOPLEFT\"",
+                 "an unset origin writes no member: the exporter must not "
+                 "re-assert TOPLEFT over a box whose producer claimed no "
+                 "origin (docling's loader defaults it back on read)");
   require_contains(rendered, "\"l\": 1.5", "coordinates keep repr formatting");
   require_contains(rendered, "\"t\": 2.0", "integral coordinates keep .0");
 }
@@ -748,7 +750,55 @@ void verify_origin_and_raw_label_states() {
   require_absent(rendered, "hologram", "raw label strings never leak");
 }
 
-// -- load normalizations ----------------------------------------------------
+// -- honest absence: raw labels, geometry-less and origin-less provenance ---
+
+// A text item carrying label_raw exports the raw spelling as its label:
+// docling writes labels as strings, so parity keeps the word a newer
+// vocabulary coined instead of collapsing it to the "text" catch-all.
+void verify_text_label_raw_exports_verbatim() {
+  docv1::Document document = base_document("raw-label");
+  auto* base = text_base(&document, docv1::BaseTextItem::kText,
+                         docv1::DOC_ITEM_LABEL_TEXT, "aside body");
+  base->set_label_raw("aside");
+  const std::string rendered = grparse::render_canonical_json(document);
+  require_contains(rendered, "\"label\": \"aside\"",
+                   "the raw label rides the export verbatim");
+  require_absent(rendered, "\"label\": \"text\"\n",
+                 "the catch-all no longer hides the raw label");
+}
+
+// Provenance with no bbox (a sheet grid) omits the member instead of
+// writing zeros; a box whose producer claimed no coordinate origin omits
+// coord_origin rather than re-asserting TOPLEFT over numbers that are not
+// page-local.
+void verify_provenance_absence_stays_absent() {
+  docv1::Document document = base_document("honest-prov");
+  auto* table = document.add_tables();
+  table->set_self_ref("#/tables/0");
+  table->mutable_parent()->set_ref("#/body");
+  table->set_label(docv1::DOC_ITEM_LABEL_TABLE);
+  auto* grid_only = table->add_prov();
+  grid_only->set_page_no(1);
+  grid_only->mutable_grid()->set_sheet("Data");
+  document.mutable_body()->add_children()->set_ref("#/tables/0");
+
+  auto* base = text_base(&document, docv1::BaseTextItem::kText,
+                         docv1::DOC_ITEM_LABEL_TEXT, "unreduced");
+  auto* originless = base->add_prov();
+  originless->set_page_no(3);
+  originless->mutable_bbox()->set_l(21000);
+  originless->mutable_bbox()->set_t(1000);
+  originless->mutable_bbox()->set_r(21500);
+  originless->mutable_bbox()->set_b(1200);
+
+  const std::string rendered = grparse::render_canonical_json(document);
+  require_absent(rendered, "\"l\": 0.0",
+                 "no zero-area box is written for geometry-less provenance");
+  require_contains(rendered, "\"l\": 21000.0",
+                   "the unreduced box keeps its document-absolute numbers");
+  require_absent(rendered, "coord_origin",
+                 "no page-local origin is claimed anywhere in this document");
+}
 
 void verify_bboxes_clamp_to_their_page() {
   docv1::Document document = base_document("clamp");
@@ -1022,6 +1072,8 @@ int main() {
       verify_field_arenas_suppressed_when_empty,
       verify_pages_dump_in_numeric_order,
       verify_origin_and_raw_label_states,
+      verify_text_label_raw_exports_verbatim,
+      verify_provenance_absence_stays_absent,
       verify_bboxes_clamp_to_their_page,
       verify_typed_barcodes_project_into_meta,
       verify_ordered_list_groups_relabel_to_list,

@@ -204,9 +204,10 @@ void verify_line_prov_is_page_local_with_charspans() {
 }
 
 // A document-absolute box on a page whose rectangle never arrived cannot be
-// reduced to page-local, and the emitted box says page-local regardless. The
-// fold says so instead of leaving the consumer to trust it, and says it once
-// per page rather than once per box.
+// reduced to page-local. The item keeps its provenance (dropping it loses
+// the page number too), the numbers stay exactly as they came, and no
+// coordinate origin is claimed: a consumer must not read them as
+// page-local. The fold says so once per page rather than once per box.
 void verify_unknown_page_rect_warns_instead_of_stamping_silently() {
   grparse::DoclingMapper mapper;
   // No DocumentInfo, so no page rectangle is known for any page.
@@ -231,6 +232,8 @@ void verify_unknown_page_rect_warns_instead_of_stamping_silently() {
   require(base.prov_size() == 2, "the item keeps its provenance, page number included");
   require(base.prov(0).bbox().t() == 21000.0,
           "with no page rectangle the box is left exactly as it came");
+  require(!base.prov(0).bbox().has_coord_origin(),
+          "no page-local origin is claimed for an unreduced box");
   require(mapper.warnings().size() == 1,
           "one warning per unresolved page, not one per box");
   require(mapper.warnings()[0].contains("page 3") &&
@@ -1067,6 +1070,23 @@ void verify_sheet_chart_without_object_folds_the_sheet_cells() {
           "sheet values keep their typed value in the chart table");
   require(!document.pictures(0).has_image(), "no object, no image to carry");
   require(document.pictures(0).captions_size() == 0, "no title known, no caption minted");
+  require(document.pictures(0).prov_size() == 1 &&
+              !document.pictures(0).prov(0).has_bbox() &&
+              document.pictures(0).prov(0).page_no() == 1,
+          "a chart no object placed stamps no fabricated zero-area box");
+  require(document.tables(1).prov_size() == 1 &&
+              !document.tables(1).prov(0).has_bbox(),
+          "its bound table stamps no fabricated box either");
+  require(mapper.warnings().size() == 3 &&
+              mapper.warnings()[0].contains("has no geometry") &&
+              mapper.warnings()[1].contains("no laid-out geometry") &&
+              mapper.warnings()[2].contains("header row inferred"),
+          "the sheet's missing geometry, the guessed header row and the "
+          "chart's missing geometry are each named: "
+          + (mapper.warnings().size() == 3
+                 ? mapper.warnings()[0] + " | " + mapper.warnings()[1] + " | "
+                       + mapper.warnings()[2]
+                 : std::to_string(mapper.warnings().size()) + " warnings"));
   require(grparse::docling_integrity_errors(document).empty(), "the fallback stays well formed");
 }
 
@@ -1341,6 +1361,15 @@ void verify_sheet_header_rows_are_marked() {
   require(cell_at(names, 0, 0)->column_header() && cell_at(names, 0, 1)->column_header() &&
               !cell_at(names, 1, 0)->column_header(),
           "a database range with a header names the header row");
+  int inferred = 0;
+  int geometry_notes = 0;
+  for (const std::string& warning : mapper.warnings()) {
+    if (warning.contains("header row inferred")) ++inferred;
+    if (warning.contains("has no geometry")) ++geometry_notes;
+  }
+  require(inferred == 1, "the guessed header row is named once, for the sheet "
+                         "no database range declares");
+  require(geometry_notes == 3, "every sheet's absent geometry is named once");
   require(grparse::docling_integrity_errors(document).empty(), "header marking stays well formed");
 }
 

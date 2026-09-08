@@ -241,7 +241,7 @@ docv1::TextItemBase* DocumentArena::text_by_ref(const std::string& ref) {
   return nullptr;
 }
 
-void DocumentArena::to_page_local(int page_index, double* l, double* t,
+bool DocumentArena::to_page_local(int page_index, double* l, double* t,
                                   double* r, double* b) {
   if (page_index < static_cast<int>(page_rects_.size())) {
     const officev1::PageRect& page = page_rects_[page_index];
@@ -249,33 +249,41 @@ void DocumentArena::to_page_local(int page_index, double* l, double* t,
     *r -= static_cast<double>(page.x_twips());
     *t -= static_cast<double>(page.y_twips());
     *b -= static_cast<double>(page.y_twips());
-    return;
+    return true;
   }
-  if (!unresolved_prov_pages_.insert(page_index).second) return;
-  // No page rectangle to subtract, so the box stays document-absolute
-  // while every emitted box claims to be page-local. The item keeps its
-  // provenance (dropping it loses the page number too), but the fold
-  // says so once per page rather than letting the consumer trust a
-  // coordinate space that does not hold.
+  if (!unresolved_prov_pages_.insert(page_index).second) return false;
+  // No page rectangle to subtract, so the numbers stay document-absolute.
+  // The item keeps its provenance (dropping it loses the page number too),
+  // but no coordinate origin is claimed: a consumer must not read these
+  // numbers as page-local. Said once per page rather than once per box.
   warn("page " + std::to_string(page_index + 1)
-       + " has no known rectangle, so its provenance boxes stay "
-         "document-absolute despite the page-local coordinate origin");
+       + " has no known rectangle, so its provenance boxes keep "
+         "document-absolute coordinates with no coordinate origin claimed");
+  return false;
 }
 
 void DocumentArena::add_prov(ProvenanceItems* prov, int page_index,
                              bool page_local, double l, double t, double r,
                              double b, long long span_start,
-                             long long span_end) {
+                             long long span_end, bool has_geometry) {
   if (page_index < 0) return;
-  if (!page_local) to_page_local(page_index, &l, &t, &r, &b);
+  bool reduced = page_local;
+  if (has_geometry && !page_local) {
+    reduced = to_page_local(page_index, &l, &t, &r, &b);
+  }
   docv1::ProvenanceItem* item = prov->Add();
   item->set_page_no(page_index + 1);
-  docv1::BoundingBox* box = item->mutable_bbox();
-  box->set_l(l);
-  box->set_t(t);
-  box->set_r(r);
-  box->set_b(b);
-  box->set_coord_origin(docv1::COORD_ORIGIN_TOPLEFT);
+  if (has_geometry) {
+    docv1::BoundingBox* box = item->mutable_bbox();
+    box->set_l(l);
+    box->set_t(t);
+    box->set_r(r);
+    box->set_b(b);
+    // The origin is claimed only when the box actually is page-local; an
+    // unreduced box stays originless so document-absolute numbers are never
+    // presented as page-local (to_page_local warned once per page).
+    if (reduced) box->set_coord_origin(docv1::COORD_ORIGIN_TOPLEFT);
+  }
   item->mutable_charspan()->set_start(clamp32(span_start));
   item->mutable_charspan()->set_end(clamp32(span_end));
 }
@@ -346,20 +354,16 @@ bool DocumentArena::cell_bbox(const LineBoxes& lines,
     }
   }
   if (first) return false;
-  // Line rectangles are document-absolute like every LineBox; page-local
-  // like add_prov, but silently: a cell has no page slot to be wrong about.
-  if (page_index < static_cast<int>(page_rects_.size())) {
-    const officev1::PageRect& page = page_rects_[page_index];
-    l -= static_cast<double>(page.x_twips());
-    r -= static_cast<double>(page.x_twips());
-    t -= static_cast<double>(page.y_twips());
-    b -= static_cast<double>(page.y_twips());
-  }
+  // Line rectangles are document-absolute like every LineBox; reduced to
+  // page-local like add_prov, with the same honest fallback: a page whose
+  // rectangle never arrived keeps its numbers but claims no origin, and
+  // the fold says so once per page.
+  const bool reduced = to_page_local(page_index, &l, &t, &r, &b);
   box->set_l(l);
   box->set_t(t);
   box->set_r(r);
   box->set_b(b);
-  box->set_coord_origin(docv1::COORD_ORIGIN_TOPLEFT);
+  if (reduced) box->set_coord_origin(docv1::COORD_ORIGIN_TOPLEFT);
   return true;
 }
 

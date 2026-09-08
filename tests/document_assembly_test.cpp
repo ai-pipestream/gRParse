@@ -3,6 +3,7 @@
 #include <print>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include <google/protobuf/arena.h>
 
@@ -156,6 +157,38 @@ void verify_layout_regions_map_labels_and_emit_items() {
           "floats join the body graph at their reading-order anchors");
   require(plain_text == "Heading\nbody text",
           "table interior text lives in the table, not the text stream");
+}
+
+// A region label outside every known vocabulary falls back to TEXT, but
+// the raw spelling is kept on label_raw and the fallback is named in the
+// warnings channel; a structural label (table/picture/text) keeping TEXT
+// by design is neither a fallback nor a warning.
+void verify_unknown_region_label_falls_back_loudly() {
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1000, 1000, {line("mystery block", 10)}};
+  page.regions = {{"aside", 0.9F, 0, 0, 1000, 40}};
+
+  std::vector<std::string> warnings;
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(page, 1, &cursor, &data, &warnings);
+  require(data.texts_size() == 1, "one region, one block");
+  const auto& base = data.texts(0).text().base();
+  require(base.label() == ai::pipestream::document::v1::DOC_ITEM_LABEL_TEXT,
+          "an unknown label lands on the TEXT catch-all");
+  require(base.has_label_raw() && base.label_raw() == "aside",
+          "the raw spelling rides label_raw, so version skew loses nothing");
+  require(warnings.size() == 1 && warnings[0].contains("unknown region label") &&
+              warnings[0].contains("'aside'"),
+          "the fallback is named, once: "
+          + (warnings.empty() ? std::string("no warning") : warnings[0]));
+
+  grparse::OcrPage plain{1000, 1000, {line("inside", 10)}};
+  plain.regions = {{"text", 0.9F, 0, 0, 1000, 40}};
+  warnings.clear();
+  ai::pipestream::parse::v1::PageData second;
+  grparse::append_page_data(plain, 2, &cursor, &second, &warnings);
+  require(warnings.empty() && !second.texts(0).text().base().has_label_raw(),
+          "a structural label keeping TEXT by design is not a fallback");
 }
 
 // Model-structured cells override the geometry grid: spans and header flags
@@ -649,6 +682,7 @@ int main() {
       verify_contract_shape,
       verify_offsets_and_provenance,
       verify_layout_regions_map_labels_and_emit_items,
+      verify_unknown_region_label_falls_back_loudly,
       verify_every_region_label_reaches_the_document,
       verify_headers_and_footers_are_furniture,
       verify_structured_cells_override_geometry,

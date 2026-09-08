@@ -164,6 +164,46 @@ void verify_text_formulas_do_not_make_a_header() {
   require(!cell_at(data, 0, 0)->column_header(), "text formulas below do not make a header row");
 }
 
+// Sheets and pivots own no rectangle: their provenance names the sheet grid
+// and never presents a zero-area box as real geometry, and the absence is
+// named once per item.
+void verify_sheet_and_pivot_provenance_carry_no_fabricated_box() {
+  grparse::DoclingMapper mapper;
+  mapper.consume(info_event(1));
+  mapper.consume(sheet_event(0, "Data", true, 1, 1));
+  officev1::StreamPagesResponse row = row_event(0, 0);
+  text_cell(row.mutable_sheet_row(), 0, "only");
+  mapper.consume(row);
+  officev1::StreamPagesResponse pivot;
+  officev1::SheetPivotTable* table = pivot.mutable_sheet_pivot_table();
+  table->set_sheet_index(0);
+  table->set_name("Summary");
+  table->mutable_source_range()->set_start_row(0);
+  table->mutable_source_range()->set_start_column(0);
+  table->mutable_source_range()->set_end_row(1);
+  table->mutable_source_range()->set_end_column(1);
+  table->mutable_output_range()->set_start_row(5);
+  table->mutable_output_range()->set_start_column(0);
+  table->mutable_output_range()->set_end_row(6);
+  table->mutable_output_range()->set_end_column(1);
+  mapper.consume(pivot);
+  mapper.consume(status_event());
+
+  const docv1::Document& document = mapper.document();
+  const docv1::ProvenanceItem& sheet_prov = document.tables(0).prov(0);
+  require(sheet_prov.page_no() == 1 && !sheet_prov.has_bbox() &&
+              sheet_prov.grid().sheet() == "Data",
+          "a sheet's provenance is page and grid, no fabricated box");
+  const docv1::ProvenanceItem& pivot_prov = document.tables(1).prov(0);
+  require(pivot_prov.page_no() == 1 && !pivot_prov.has_bbox(),
+          "a pivot's provenance is the same honest shape");
+  require(mapper.warnings().size() == 2 &&
+              mapper.warnings()[0].contains("has no geometry") &&
+              mapper.warnings()[1].contains("has no geometry"),
+          "each geometry-less item names its absence once");
+  require(grparse::docling_integrity_errors(document).empty(), "the fold stays well formed");
+}
+
 }  // namespace
 
 int main() {
@@ -171,5 +211,6 @@ int main() {
       verify_empty_sheets_fold_to_empty_tables,
       verify_formula_display_counts_as_a_quantity,
       verify_text_formulas_do_not_make_a_header,
+      verify_sheet_and_pivot_provenance_carry_no_fabricated_box,
   });
 }

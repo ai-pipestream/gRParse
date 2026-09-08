@@ -26,6 +26,8 @@ using grparse_test::require;
 struct Series {
   std::string label;
   std::vector<double> values;
+  std::vector<double> sizes{};
+  std::vector<double> x_values{};
 };
 
 struct ChartShape {
@@ -151,6 +153,8 @@ officev1::StreamPagesResponse chart_object_event(int page_index, const std::stri
     officev1::EmbeddedChartSeries* series = chart->add_series();
     series->set_label(one.label);
     for (double value : one.values) series->add_values_y(value);
+    for (double size : one.sizes) series->add_sizes(size);
+    for (double x : one.x_values) series->add_values_x(x);
   }
   chart->mutable_tabular()->set_rows(static_cast<int>(shape.categories.size()) + 1);
   chart->mutable_tabular()->set_columns(static_cast<int>(shape.series.size()) + 1);
@@ -277,7 +281,11 @@ void verify_pie_without_title_names_corner_from_sheet_and_mints_no_caption() {
           "the materialized grid mirrors the corner");
   require(cell_at(data, 0, 1)->text() == "Share" && cell_at(data, 2, 1)->value().number() == 30,
           "the series label heads the value column and the slices stay numeric");
-  require(mapper.warnings().empty(), "an untitled chart is not a warning");
+  require(mapper.warnings().size() == 2 &&
+              mapper.warnings()[0].contains("has no geometry") &&
+              mapper.warnings()[1].contains("header row inferred"),
+          "an untitled chart is not a warning; the sheet's absent geometry "
+          "and its guessed header row are named instead");
   require(grparse::docling_integrity_errors(document).empty(), "the pie composite is well formed");
 }
 
@@ -352,6 +360,87 @@ void verify_unlabelled_series_get_positional_labels() {
           "series without labels are numbered in order");
   require(data.columns(1).name() == "Series 1" && data.columns(2).name() == "Series 2",
           "the schema uses the same positional names");
+  require(mapper.warnings().size() == 2 &&
+              mapper.warnings()[0].contains("series 1") &&
+              mapper.warnings()[0].contains("positional") &&
+              mapper.warnings()[1].contains("series 2"),
+          "every invented series name is named once per series: "
+          + (mapper.warnings().size() == 2
+                 ? mapper.warnings()[0] + " | " + mapper.warnings()[1]
+                 : std::to_string(mapper.warnings().size()) + " warnings"));
+}
+
+// Bubble sizes ride the wire's `sizes` arm into ChartPoint.size; a series
+// short on sizes keeps every point and names the unsized ones once.
+void verify_bubble_sizes_survive_the_fold() {
+  ChartShape shape{.kind = officev1::EMBEDDED_CHART_KIND_BUBBLE,
+                   .title = "Effort",
+                   .x_title = "Weeks",
+                   .y_title = "",
+                   .categories = {},
+                   .series = {{"Team", {10, 20, 30}, {5, 8}, {1, 2, 3}}}};
+  grparse::DoclingMapper mapper;
+  mapper.consume(info_event("presentation", "deck.pptx"));
+  mapper.consume(chart_object_event(0, "Chart 1", shape));
+  mapper.consume(slide_event(0, "Effort"));
+  mapper.consume(status_event());
+  bool scatter = false;
+  const docv1::PictureScatterChartData* found = nullptr;
+  for (const docv1::PictureAnnotation& annotation :
+       mapper.document().pictures(0).annotations()) {
+    if (annotation.has_scatter_chart()) {
+      scatter = true;
+      found = &annotation.scatter_chart();
+    }
+  }
+  require(scatter && found != nullptr && found->points_size() == 3,
+          "a bubble chart folds through the scatter annotation with every point");
+  require(found->points(0).has_size() && found->points(0).size() == 5 &&
+              found->points(1).has_size() && found->points(1).size() == 8,
+          "the wire's bubble sizes land on their points, typed");
+  require(!found->points(2).has_size(),
+          "a point with no size on the wire carries none, not a default");
+  require(found->points(2).value().first() == 3 && found->points(2).value().second() == 30,
+          "the point's coordinates still fold");
+  require(mapper.warnings().size() == 1 && mapper.warnings()[0].contains("sizes"),
+          "the short size vector is named once per series: "
+          + (mapper.warnings().empty() ? std::string("no warning")
+                                       : mapper.warnings()[0]));
+}
+
+// Categories the wire never labeled become positional numbers in the bar
+// annotation, the pie slices and the bound table alike, and every
+// invention is named once per chart, not once per point.
+void verify_missing_category_labels_are_named() {
+  ChartShape shape{.kind = officev1::EMBEDDED_CHART_KIND_PIE,
+                   .title = "Share",
+                   .x_title = "",
+                   .y_title = "",
+                   .categories = {"Alpha"},
+                   .series = {{"Share", {45, 30, 15, 10}}}};
+  grparse::DoclingMapper mapper;
+  mapper.consume(info_event("presentation", "deck.pptx"));
+  mapper.consume(chart_object_event(0, "Chart 1", shape));
+  mapper.consume(slide_event(0, "Share"));
+  mapper.consume(status_event());
+  const docv1::Document& document = mapper.document();
+  const docv1::TableData& data = document.tables(0).data();
+  require(cell_at(data, 2, 0)->text() == "2" && cell_at(data, 4, 0)->text() == "4",
+          "missing categories become positional numbers in the bound table");
+  bool pie = false;
+  for (const docv1::PictureAnnotation& annotation :
+       document.pictures(0).annotations()) {
+    if (annotation.has_pie_chart()) {
+      pie = annotation.pie_chart().slices(3).label() == "4";
+    }
+  }
+  require(pie, "the pie slices take the same positional labels");
+  int named = 0;
+  for (const std::string& warning : mapper.warnings()) {
+    if (warning.contains("missing on the wire")) ++named;
+  }
+  require(named == 2, "the inventions are named once for the slices and once "
+                      "for the bound table");
 }
 
 void verify_chart_without_data_binds_an_empty_table_and_warns() {
@@ -416,6 +505,8 @@ int main() {
       verify_presentation_pie_without_sheet_leaves_the_corner_blank,
       verify_numeric_categories_and_typed_cells,
       verify_unlabelled_series_get_positional_labels,
+      verify_bubble_sizes_survive_the_fold,
+      verify_missing_category_labels_are_named,
       verify_chart_without_data_binds_an_empty_table_and_warns,
       verify_repeat_runs_are_byte_identical,
   });

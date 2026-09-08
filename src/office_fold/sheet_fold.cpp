@@ -121,7 +121,14 @@ void SheetFold::on_sheet(const officev1::Sheet& sheet) {
     schema->set_name(column_name(column));
     schema->set_width(static_cast<double>(sheet.column_widths_twips(column)));
   }
-  arena_.add_prov(table->mutable_prov(), sheet.index(), true, 0, 0, 0, 0, 0, 0);
+  // A sheet has no rectangle of its own: the provenance names the sheet
+  // grid (page and sheet below) rather than stamping a zero-area box as
+  // if it were real page-local geometry.
+  arena_.add_prov(table->mutable_prov(), sheet.index(), true, 0, 0, 0, 0, 0, 0,
+                  false);
+  arena_.warn("sheet '" + sheet.name()
+              + "' has no geometry; its table provenance names the sheet "
+                "grid only");
   if (table->prov_size() > 0 && !sheet.name().empty()) {
     table->mutable_prov(0)->mutable_grid()->set_sheet(sheet.name());
   }
@@ -234,7 +241,7 @@ void SheetFold::on_chart(const officev1::SheetChart& chart, ChartFold& charts) {
     return;
   }
   charts.emit(nullptr, &chart, sheet_ref, content_layer, true,
-              chart.sheet_index(), 0, 0, 0, 0);
+              chart.sheet_index(), 0, 0, 0, 0, false);
 }
 
 void SheetFold::on_pivot_table(const officev1::SheetPivotTable& pivot) {
@@ -263,8 +270,12 @@ void SheetFold::on_pivot_table(const officev1::SheetPivotTable& pivot) {
   for (const std::string& name : pivot.page_fields()) {
     spec->add_page_fields(name);
   }
+  // Like a sheet table, a pivot output has no rectangle of its own; the
+  // provenance names the sheet only, never a fabricated zero-area box.
   arena_.add_prov(table->mutable_prov(), pivot.sheet_index(), true, 0, 0, 0, 0,
-                  0, 0);
+                  0, 0, false);
+  arena_.warn("pivot table '" + pivot.name()
+              + "' has no geometry; its provenance names the sheet only");
 }
 
 void SheetFold::size_empty_tables() {
@@ -350,7 +361,16 @@ void SheetFold::mark_header_rows() {
     if (rows.empty()) continue;
     int marked = 0;
     if (!mark_declared_headers(sheet_index, rows, &marked)) {
+      const int before = marked;
       mark_inferred_header(data, rows, &marked);
+      if (marked > before) {
+        // The heuristic decided something downstream treats as fact; a
+        // database range declaring the header would have made it one. The
+        // guess is kept, and named, per the no-silent-defaults rule.
+        arena_.warn("sheet '" + label(sheet_index)
+                    + "': header row inferred by the labels-above-quantities "
+                      "heuristic; no database range declares it");
+      }
     }
     if (marked > 0) {
       data_counters().sheet_header_rows.fetch_add(1, std::memory_order_relaxed);

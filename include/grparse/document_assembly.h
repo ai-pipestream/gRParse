@@ -23,17 +23,21 @@ uint64_t utf8_codepoint_count(const std::string& text);
 void set_picture_image(const std::vector<unsigned char>& png,
                        ai::pipestream::document::v1::ImageRef* image);
 void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cursor,
-                      ai::pipestream::parse::v1::PageData* output);
+                      ai::pipestream::parse::v1::PageData* output,
+                      std::vector<std::string>* warnings = nullptr);
 // Folds one page into the document. `text_offsets`, when given, collects the
 // page's offset rows: the same side table the streaming surface puts on the
 // wire, kept for the unary callers that need to locate an item in the
 // document's concatenated text stream. Passing nullptr discards them exactly
-// as before.
+// as before. `warnings`, when given, collects the fold's own approximation
+// notes (an unknown region label falling back to TEXT, for one); nullptr
+// discards them.
 void append_page_to_document(
     const OcrPage& source, int page_number, AssemblyCursor* cursor,
     ai::pipestream::document::v1::Document* document, std::string* plain_text,
     google::protobuf::RepeatedPtrField<ai::pipestream::parse::v1::TextOffset>* text_offsets =
-        nullptr);
+        nullptr,
+    std::vector<std::string>* warnings = nullptr);
 
 // Appends the consensus vote's document-level claim: one "protomolt"
 // CollectorClaim aggregating every page that voted (the winner's engine

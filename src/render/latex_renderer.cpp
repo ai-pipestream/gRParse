@@ -39,6 +39,9 @@ namespace {
 using namespace grparse::render;
 
 constexpr std::string_view kImagePlaceholder = "% image";
+// Verbatim docling-core: an undecoded formula exports as this literal
+// comment (docling_core/transforms/serializer/latex.py). It is parity, not
+// an invention of this renderer; do not reword it.
 constexpr std::string_view kFormulaPlaceholder = "% formula-not-decoded";
 constexpr std::string_view kMissingKeyValue = "% missing-key-value-item";
 constexpr std::string_view kMissingForm = "% missing-form-item";

@@ -197,6 +197,11 @@ message DocumentComplete {
   // emitted with the terminal event, is the authoritative assignment.
   // Consumers assembling a document from the page events apply it last.
   map<string, int32> section_header_levels = 3;
+  // The in-process (CV) collector's own extraction warnings: anything the
+  // page assembly had to approximate rather than map, in the order it
+  // happened. Collector documents carry their warnings beside their own
+  // document; this is the CV path's equivalent.
+  repeated string warnings = 4;
 }
 
 message StreamDocumentRequest {

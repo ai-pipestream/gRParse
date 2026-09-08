@@ -5,6 +5,14 @@
 // moves, this is the only line that changes, and the oracle harnesses
 // (scripts/validate_canonical_json.py against the reference checkout) are
 // the check that the mirror actually caught up.
+//
+// This is docling-core's CURRENT_VERSION (docling_core/types/doc/common/
+// constants.py), not a serializer or library version: docling stamps the
+// schema version its document conforms to, and so do we. The value was
+// verified equal to docling-core's CURRENT_VERSION ("1.10.0") at the time
+// of this comment; bump it only in lockstep with the upstream mirror, or
+// docling-core's check_version_is_compatible rejects the documents we
+// stamp.
 namespace grparse {
 
 inline constexpr const char* kUpstreamSchemaVersion = "1.10.0";

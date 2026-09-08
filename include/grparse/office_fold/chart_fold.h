@@ -38,12 +38,14 @@ class ChartFold {
   // event naming its source ranges (null off sheets). The table folds the
   // typed series when the object carries any, the sheet cells its ranges
   // cover otherwise. Geometry is the object's laid-out box on page_index,
-  // page-local or document-absolute as the caller says.
+  // page-local or document-absolute as the caller says; has_geometry false
+  // (a SheetChart with no embedded object) stamps page and sheet only,
+  // never a zero-area box, and names the absence in warnings().
   void emit(const officev1::EmbeddedObject* object,
             const officev1::SheetChart* sheet_chart,
             const std::string& parent_ref, docv1::ContentLayer layer,
             bool page_local, int page_index, double l, double t, double r,
-            double b);
+            double b, bool has_geometry = true);
 
   // Emits every chart still waiting once the stream ends, under the sheet
   // or slide group of its page when one was mapped, else under the body.
@@ -57,7 +59,8 @@ class ChartFold {
       const officev1::SheetChart* sheet_chart, const std::string& name,
       const std::string& sheet, const std::string& parent_ref,
       docv1::ContentLayer layer, bool page_local, int page_index, double l,
-      double t, double r, double b, std::string* picture_ref);
+      double t, double r, double b, std::string* picture_ref,
+      bool has_geometry);
   // The data table bound under the picture: typed series when the object
   // carries them, the folded tabular projection or the sheet cells the
   // ranges cover otherwise. False when the chart carried no data at all.

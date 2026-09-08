@@ -49,9 +49,13 @@ void set_chart_sources(const officev1::SheetChart& chart,
 // integer values only and would round the data). The axis labels stay the
 // chart's own axis titles on every annotation; the series names live on the
 // bound table's label row, in the same order. A typed multi-series slot is
-// a schema follow-on.
+// a schema follow-on. Missing category labels become positional numbers,
+// named once per chart in warnings() rather than silently.
 void add_bar_annotations(const officev1::EmbeddedChart& chart,
+                         const std::string& name, DocumentArena& arena,
                          docv1::PictureItem* picture) {
+  int missing_labels = 0;
+  int total_bars = 0;
   for (const officev1::EmbeddedChartSeries& one : chart.series()) {
     docv1::PictureBarChartData* bars =
         picture->add_annotations()->mutable_bar_chart();
@@ -63,8 +67,16 @@ void add_bar_annotations(const officev1::EmbeddedChart& chart,
       docv1::ChartBar* bar = bars->add_bars();
       bar->set_label(i < chart.categories_size() ? chart.categories(i)
                                                  : std::to_string(i + 1));
+      if (i >= chart.categories_size()) ++missing_labels;
+      ++total_bars;
       bar->set_values(one.values_y(i));
     }
+  }
+  if (missing_labels > 0) {
+    arena.warn("chart '" + name + "': " + std::to_string(missing_labels)
+               + " of " + std::to_string(total_bars)
+               + " bar labels were missing on the wire; positional numbers "
+                 "invented");
   }
 }
 
@@ -78,6 +90,9 @@ void add_line_annotation(const officev1::EmbeddedChart& chart,
   lines->set_y_axis_label(chart.y_axis_title());
   for (const officev1::EmbeddedChartSeries& one : chart.series()) {
     docv1::ChartLine* line = lines->add_lines();
+    // An unlabeled series keeps an empty label here: the annotation arm
+    // has no fabricated-name convention, and the bound table's label row
+    // is where the positional name lives.
     line->set_label(one.label());
     for (int i = 0; i < one.values_y_size(); i++) {
       docv1::FloatPair* pair = line->add_values();
@@ -89,6 +104,7 @@ void add_line_annotation(const officev1::EmbeddedChart& chart,
 }
 
 void add_pie_annotation(const officev1::EmbeddedChart& chart,
+                        const std::string& name, DocumentArena& arena,
                         docv1::PictureItem* picture) {
   const auto& series = chart.series();
   if (series.empty()) return;
@@ -96,16 +112,29 @@ void add_pie_annotation(const officev1::EmbeddedChart& chart,
       picture->add_annotations()->mutable_pie_chart();
   pie->set_kind("pie_chart_data");
   pie->set_title(chart.title());
+  int missing_labels = 0;
   for (int i = 0; i < series[0].values_y_size(); i++) {
     docv1::ChartSlice* slice = pie->add_slices();
     slice->set_label(i < chart.categories_size() ? chart.categories(i)
                                                  : std::to_string(i + 1));
+    if (i >= chart.categories_size()) ++missing_labels;
     slice->set_value(series[0].values_y(i));
+  }
+  if (missing_labels > 0) {
+    arena.warn("chart '" + name + "': " + std::to_string(missing_labels)
+               + " of " + std::to_string(series[0].values_y_size())
+               + " slice labels were missing on the wire; positional "
+                 "numbers invented");
   }
 }
 
+// Scatter and bubble share the scatter slot: bubble charts carry their
+// per-point sizes through to ChartPoint.size (the wire's `sizes` arm has
+// nowhere else to go). A bubble series short on sizes keeps its points and
+// names the loss once per series.
 void add_scatter_annotation(const officev1::EmbeddedChart& chart,
-                            docv1::PictureItem* picture) {
+                            const std::string& name, bool bubble,
+                            DocumentArena& arena, docv1::PictureItem* picture) {
   docv1::PictureScatterChartData* scatter =
       picture->add_annotations()->mutable_scatter_chart();
   scatter->set_kind("scatter_chart_data");
@@ -114,16 +143,29 @@ void add_scatter_annotation(const officev1::EmbeddedChart& chart,
   scatter->set_y_axis_label(chart.y_axis_title());
   for (const officev1::EmbeddedChartSeries& one : chart.series()) {
     int points = std::min(one.values_x_size(), one.values_y_size());
+    int sized = 0;
     for (int i = 0; i < points; i++) {
-      docv1::FloatPair* pair = scatter->add_points()->mutable_value();
+      docv1::ChartPoint* point = scatter->add_points();
+      docv1::FloatPair* pair = point->mutable_value();
       pair->set_first(one.values_x(i));
       pair->set_second(one.values_y(i));
+      if (bubble && i < one.sizes_size()) {
+        point->set_size(one.sizes(i));
+        ++sized;
+      }
+    }
+    if (bubble && sized < points) {
+      arena.warn("chart '" + name + "': bubble series '" + one.label()
+                 + "' carries " + std::to_string(sized) + " sizes for "
+                 + std::to_string(points)
+                 + " points; the unsized points fold without sizes");
     }
   }
 }
 
 // A series without a label is named by its position, in the schema and on
-// the label row alike, so the two never disagree.
+// the label row alike, so the two never disagree. Which name was invented,
+// and why, is named once per series in fold_series' warnings.
 std::string series_label(const officev1::EmbeddedChart& chart, int column) {
   std::string label = chart.series(column).label();
   if (!label.empty()) return label;
@@ -147,10 +189,14 @@ void add_series_columns(const officev1::EmbeddedChart& chart, bool scatter,
 }
 
 // The body: categories (or x values) down the first column, one series per
-// further column, numbers typed.
-void add_series_rows(const officev1::EmbeddedChart& chart, bool scatter,
-                     int body_rows, docv1::TableData* data) {
+// further column, numbers typed. A category the wire never labeled becomes
+// a positional number, named once per chart in warnings() rather than
+// silently.
+void add_series_rows(const officev1::EmbeddedChart& chart,
+                     const std::string& name, bool scatter, int body_rows,
+                     DocumentArena& arena, docv1::TableData* data) {
   const auto& series = chart.series();
+  int missing_labels = 0;
   for (int row = 0; row < body_rows; row++) {
     docv1::TableCell* head;
     if (row < chart.categories_size()) {
@@ -160,6 +206,7 @@ void add_series_rows(const officev1::EmbeddedChart& chart, bool scatter,
       head->mutable_value()->set_number(series[0].values_x(row));
     } else {
       head = place_cell(data, row + 1, 0, std::to_string(row + 1));
+      ++missing_labels;
     }
     head->set_row_header(true);
     for (int column = 0; column < series.size(); column++) {
@@ -169,6 +216,11 @@ void add_series_rows(const officev1::EmbeddedChart& chart, bool scatter,
           place_cell(data, row + 1, column + 1, double_text(one.values_y(row)));
       cell->mutable_value()->set_number(one.values_y(row));
     }
+  }
+  if (missing_labels > 0) {
+    arena.warn("chart '" + name + "': " + std::to_string(missing_labels)
+               + " category labels were missing on the wire; positional "
+                 "numbers invented for the bound table's row heads");
   }
 }
 
@@ -217,21 +269,24 @@ bool ChartFold::take_pending(int page_index, const officev1::TwipsPoint* at,
 
 void ChartFold::add_annotations(const officev1::EmbeddedChart& chart,
                                 docv1::PictureItem* picture) {
+  const std::string name = chart.title().empty() ? "untitled" : chart.title();
   switch (chart.kind()) {
     case officev1::EMBEDDED_CHART_KIND_BAR:
     case officev1::EMBEDDED_CHART_KIND_COLUMN:
-      add_bar_annotations(chart, picture);
+      add_bar_annotations(chart, name, arena_, picture);
       break;
     case officev1::EMBEDDED_CHART_KIND_LINE:
     case officev1::EMBEDDED_CHART_KIND_AREA:
       add_line_annotation(chart, picture);
       break;
     case officev1::EMBEDDED_CHART_KIND_PIE:
-      add_pie_annotation(chart, picture);
+      add_pie_annotation(chart, name, arena_, picture);
       break;
     case officev1::EMBEDDED_CHART_KIND_SCATTER:
+      add_scatter_annotation(chart, name, false, arena_, picture);
+      break;
     case officev1::EMBEDDED_CHART_KIND_BUBBLE:
-      add_scatter_annotation(chart, picture);
+      add_scatter_annotation(chart, name, true, arena_, picture);
       break;
     default:
       break;
@@ -249,6 +304,7 @@ void ChartFold::add_annotations(const officev1::EmbeddedChart& chart,
 
 void ChartFold::fold_series(const officev1::EmbeddedChart& chart,
                             docv1::TableData* data) {
+  const std::string name = chart.title().empty() ? "untitled" : chart.title();
   bool scatter = false;
   int body_rows = chart.categories_size();
   for (const officev1::EmbeddedChartSeries& one : chart.series()) {
@@ -262,10 +318,25 @@ void ChartFold::fold_series(const officev1::EmbeddedChart& chart,
   // each value column.
   place_cell(data, 0, 0, chart.x_axis_title())->set_column_header(true);
   for (int column = 0; column < chart.series_size(); column++) {
+    if (chart.series(column).label().empty()) {
+      // The structure needs some name and the invention is kept, but it is
+      // named: a single series borrows the value axis title, anything else
+      // is numbered by position.
+      if (chart.series_size() == 1 && !chart.y_axis_title().empty()) {
+        arena_.warn("chart '" + name + "': the unlabeled series is named '"
+                    + chart.y_axis_title()
+                    + "' from the value axis title, not from the chart");
+      } else {
+        arena_.warn("chart '" + name + "': series "
+                    + std::to_string(column + 1)
+                    + " had no label on the wire; a positional name was "
+                      "invented");
+      }
+    }
     place_cell(data, 0, column + 1, series_label(chart, column))
         ->set_column_header(true);
   }
-  add_series_rows(chart, scatter, body_rows, data);
+  add_series_rows(chart, name, scatter, body_rows, arena_, data);
   fill_grid_from_cells(data);
 }
 
@@ -348,7 +419,8 @@ docv1::PictureItem* ChartFold::add_chart_picture(
     const officev1::SheetChart* sheet_chart, const std::string& name,
     const std::string& sheet, const std::string& parent_ref,
     docv1::ContentLayer layer, bool page_local, int page_index, double l,
-    double t, double r, double b, std::string* picture_ref) {
+    double t, double r, double b, std::string* picture_ref,
+    bool has_geometry) {
   docv1::PictureItem* picture = arena_.add_picture(
       docv1::DOC_ITEM_LABEL_CHART, layer, parent_ref, picture_ref);
   if (!name.empty()) picture->mutable_shape()->set_name(name);
@@ -357,7 +429,7 @@ docv1::PictureItem* ChartFold::add_chart_picture(
     set_replacement_image(*object, picture);
   }
   arena_.add_prov(picture->mutable_prov(), page_index, page_local, l, t, r, b,
-                  0, 0);
+                  0, 0, has_geometry);
   if (sheet_chart != nullptr) {
     set_chart_sources(*sheet_chart, sheet, picture->mutable_chart());
   }
@@ -420,15 +492,21 @@ void ChartFold::emit(const officev1::EmbeddedObject* object,
                      const officev1::SheetChart* sheet_chart,
                      const std::string& parent_ref, docv1::ContentLayer layer,
                      bool page_local, int page_index, double l, double t,
-                     double r, double b) {
+                     double r, double b, bool has_geometry) {
   const std::string name = chart_name(object, sheet_chart);
   const std::string sheet = sheet_chart != nullptr
       ? sheets_.label(sheet_chart->sheet_index())
       : std::string();
+  if (!has_geometry) {
+    arena_.warn("chart " + (name.empty() ? "unnamed" : name)
+                + " has no laid-out geometry; its provenance names the sheet "
+                  "only");
+  }
   std::string picture_ref;
   docv1::PictureItem* picture =
       add_chart_picture(object, sheet_chart, name, sheet, parent_ref, layer,
-                        page_local, page_index, l, t, r, b, &picture_ref);
+                        page_local, page_index, l, t, r, b, &picture_ref,
+                        has_geometry);
   const bool typed = object != nullptr && object->has_chart();
   if (typed) add_annotations(object->chart(), picture);
 
@@ -437,7 +515,7 @@ void ChartFold::emit(const officev1::EmbeddedObject* object,
   docv1::TableItem* table = arena_.add_table(layer, picture_ref, &table_ref);
   const bool folded = bind_chart_data(object, sheet_chart, typed, table);
   arena_.add_prov(table->mutable_prov(), page_index, page_local, l, t, r, b, 0,
-                  0);
+                  0, has_geometry);
   if (sheet_chart != nullptr && sheet_chart->ranges_size() == 1) {
     add_row_provenance(*sheet_chart, sheet, table);
   }

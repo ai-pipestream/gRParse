@@ -519,7 +519,8 @@ class DocumentStreamReactor final
       auto event = std::make_unique<ArenaEvent>();
       event->message->set_document_id(document_id_);
       event->message->set_total_pages(total_pages_);
-      append_page_data(*page_it->second, next_page_, &assembly_cursor_, event->message->mutable_page());
+      append_page_data(*page_it->second, next_page_, &assembly_cursor_, event->message->mutable_page(),
+                       &assembly_warnings_);
       // Heading depth needs every page's heights; the terminal event ships
       // the clustered result for the level-0 headers streamed here.
       collect_header_heights(event->message->page(), &header_heights_);
@@ -636,6 +637,9 @@ class DocumentStreamReactor final
       auto levels = section_header_levels(std::move(header_heights_));
       complete->mutable_section_header_levels()->insert(levels.begin(), levels.end());
     }
+    for (std::string& warning : assembly_warnings_) {
+      complete->add_warnings(std::move(warning));
+    }
     events_.push_back(std::move(event));
     request_finish_locked(grpc::Status::OK);
   }
@@ -697,6 +701,9 @@ class DocumentStreamReactor final
   // Level-less section headers streamed so far, clustered into depths for
   // the terminal event.
   std::vector<HeaderHeight> header_heights_;
+  // What the page assembly had to approximate rather than map, shipped with
+  // the terminal event.
+  std::vector<std::string> assembly_warnings_;
   grpc::Status finish_status_;
   std::vector<pipestream::parse::v1::Collector> requested_collectors_;
   // Recognition fields resolved from the first chunk that set each one;

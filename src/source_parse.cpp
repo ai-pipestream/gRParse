@@ -277,7 +277,8 @@ class CvCollector {
         return outcome;
       }
       append_page_to_document(*page->second, page_number, &assembly_cursor,
-                              &outcome.document, &plain_text, &offsets);
+                              &outcome.document, &plain_text, &offsets,
+                              &outcome.warnings);
       assembled_pages.push_back(page->second.get());
     }
     // A PDF read through several backends claims its vote: one aggregate

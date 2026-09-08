@@ -98,11 +98,15 @@ class DocumentArena {
   // zero-based index; -1 appends nothing. page_local says whether l/t/r/b
   // are already page-local; document-absolute boxes have the page origin
   // subtracted when DocumentInfo carried the page rectangle. When it did
-  // not, the box is kept as it came and a warning names the page, so a
-  // consumer is told the coordinate space rather than left to trust it.
+  // not, the box keeps its document-absolute numbers but no coordinate
+  // origin is claimed, and a warning names the page once, so a consumer is
+  // told the coordinate space rather than left to trust it. has_geometry
+  // false stamps page and charspan only: sources with no rectangle of their
+  // own (a sheet grid, an unplaced chart) must not present a zero-area box
+  // as real geometry.
   void add_prov(ProvenanceItems* prov, int page_index, bool page_local,
                 double l, double t, double r, double b, long long span_start,
-                long long span_end);
+                long long span_end, bool has_geometry = true);
   // Appends one ProvenanceItem per LineBox, each on its line's page. A line
   // with measured character boundaries gets its exact charspan, offset from
   // span_start; unmeasured lines keep the full [span_start, span_end) item
@@ -135,8 +139,9 @@ class DocumentArena {
   bool link_into_item_arena(const std::string& parent_ref,
                             const std::string& child_ref);
   // Subtracts the page origin from a document-absolute box, or warns once
-  // per page when no rectangle for it ever arrived.
-  void to_page_local(int page_index, double* l, double* t, double* r,
+  // per page when no rectangle for it ever arrived. False when the box
+  // could not be reduced and no page-local origin may be claimed for it.
+  bool to_page_local(int page_index, double* l, double* t, double* r,
                      double* b);
 
   docv1::Document document_;
