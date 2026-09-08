@@ -366,10 +366,15 @@ void SheetFold::mark_header_rows() {
       if (marked > before) {
         // The heuristic decided something downstream treats as fact; a
         // database range declaring the header would have made it one. The
-        // guess is kept, and named, per the no-silent-defaults rule.
+        // guess is kept, and named, per the no-silent-defaults rule. Say
+        // which case holds: fully inferred, or inferred on top of a
+        // declaration that only partially covered the header rows.
         arena_.warn("sheet '" + label(sheet_index)
                     + "': header row inferred by the labels-above-quantities "
-                      "heuristic; no database range declares it");
+                      "heuristic; "
+                    + (before > 0
+                           ? "a database range declares only part of it"
+                           : "no database range declares it"));
       }
     }
     if (marked > 0) {

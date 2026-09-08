@@ -408,6 +408,64 @@ void verify_bubble_sizes_survive_the_fold() {
                                        : mapper.warnings()[0]));
 }
 
+// A scatter-kind series that nonetheless carries a populated sizes arm
+// keeps it too: the size rides the point that has it regardless of the
+// chart kind, and a complete sizes arm is not a warning on any kind.
+void verify_scatter_sizes_ride_regardless_of_kind() {
+  ChartShape shape{.kind = officev1::EMBEDDED_CHART_KIND_SCATTER,
+                   .title = "Effort",
+                   .x_title = "Weeks",
+                   .y_title = "",
+                   .categories = {},
+                   .series = {{"Team", {10, 20, 30}, {5, 8, 9}, {1, 2, 3}}}};
+  grparse::DoclingMapper mapper;
+  mapper.consume(info_event("presentation", "deck.pptx"));
+  mapper.consume(chart_object_event(0, "Chart 1", shape));
+  mapper.consume(slide_event(0, "Effort"));
+  mapper.consume(status_event());
+  const docv1::PictureScatterChartData* found = nullptr;
+  for (const docv1::PictureAnnotation& annotation :
+       mapper.document().pictures(0).annotations()) {
+    if (annotation.has_scatter_chart()) found = &annotation.scatter_chart();
+  }
+  require(found != nullptr && found->points_size() == 3 &&
+              found->points(0).size() == 5 && found->points(1).size() == 8 &&
+              found->points(2).size() == 9,
+          "a scatter-kind series keeps the sizes the wire gave it");
+  require(mapper.warnings().empty(),
+          "sizes the wire fully populated are not a warning on a scatter kind");
+}
+
+// A sizes arm longer than the point list is truncated to the points that
+// exist, and the truncation is named once per series, not silently
+// dropped.
+void verify_sizes_longer_than_the_point_list_are_named() {
+  ChartShape shape{.kind = officev1::EMBEDDED_CHART_KIND_BUBBLE,
+                   .title = "Effort",
+                   .x_title = "Weeks",
+                   .y_title = "",
+                   .categories = {},
+                   .series = {{"Team", {10, 20, 30}, {5, 8, 9, 12}, {1, 2, 3}}}};
+  grparse::DoclingMapper mapper;
+  mapper.consume(info_event("presentation", "deck.pptx"));
+  mapper.consume(chart_object_event(0, "Chart 1", shape));
+  mapper.consume(slide_event(0, "Effort"));
+  mapper.consume(status_event());
+  const docv1::PictureScatterChartData* found = nullptr;
+  for (const docv1::PictureAnnotation& annotation :
+       mapper.document().pictures(0).annotations()) {
+    if (annotation.has_scatter_chart()) found = &annotation.scatter_chart();
+  }
+  require(found != nullptr && found->points_size() == 3 &&
+              found->points(2).size() == 9,
+          "the points that exist keep their sizes; the list ends at the point list");
+  require(mapper.warnings().size() == 1 &&
+              mapper.warnings()[0].contains("extra sizes"),
+          "the truncated sizes are named once per series: "
+          + (mapper.warnings().empty() ? std::string("no warning")
+                                       : mapper.warnings()[0]));
+}
+
 // Categories the wire never labeled become positional numbers in the bar
 // annotation, the pie slices and the bound table alike, and every
 // invention is named once per chart, not once per point.
@@ -506,6 +564,8 @@ int main() {
       verify_numeric_categories_and_typed_cells,
       verify_unlabelled_series_get_positional_labels,
       verify_bubble_sizes_survive_the_fold,
+      verify_scatter_sizes_ride_regardless_of_kind,
+      verify_sizes_longer_than_the_point_list_are_named,
       verify_missing_category_labels_are_named,
       verify_chart_without_data_binds_an_empty_table_and_warns,
       verify_repeat_runs_are_byte_identical,

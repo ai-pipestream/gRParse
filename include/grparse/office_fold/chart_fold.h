@@ -72,10 +72,12 @@ class ChartFold {
   void add_row_provenance(const officev1::SheetChart& chart,
                           const std::string& sheet, docv1::TableItem* table);
   // The chart title as the composite's caption, bound to the picture.
+  // has_geometry travels with the chart's own provenance: a caption on a
+  // geometry-less chart stamps page only, never a fabricated box.
   void add_caption(const std::string& title, docv1::PictureItem* picture,
                    const std::string& picture_ref, docv1::ContentLayer layer,
                    bool page_local, int page_index, double l, double t,
-                   double r, double b);
+                   double r, double b, bool has_geometry);
 
   // The typed per-kind annotation plus the tabular projection on the chart
   // picture, for consumers of the upstream annotation vocabulary.

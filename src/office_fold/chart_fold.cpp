@@ -128,10 +128,11 @@ void add_pie_annotation(const officev1::EmbeddedChart& chart,
   }
 }
 
-// Scatter and bubble share the scatter slot: bubble charts carry their
-// per-point sizes through to ChartPoint.size (the wire's `sizes` arm has
-// nowhere else to go). A bubble series short on sizes keeps its points and
-// names the loss once per series.
+// Scatter and bubble share the scatter slot, and the wire's `sizes` arm
+// rides through on whichever kind carries it: a point with a size on the
+// wire keeps it, and a series short on sizes names the unsized points once
+// (bubble kinds declare sizes, so an empty arm is named too). A sizes arm
+// longer than the point list is truncated and the truncation is named.
 void add_scatter_annotation(const officev1::EmbeddedChart& chart,
                             const std::string& name, bool bubble,
                             DocumentArena& arena, docv1::PictureItem* picture) {
@@ -149,15 +150,20 @@ void add_scatter_annotation(const officev1::EmbeddedChart& chart,
       docv1::FloatPair* pair = point->mutable_value();
       pair->set_first(one.values_x(i));
       pair->set_second(one.values_y(i));
-      if (bubble && i < one.sizes_size()) {
+      if (i < one.sizes_size()) {
         point->set_size(one.sizes(i));
         ++sized;
       }
     }
-    if (bubble && sized < points) {
-      arena.warn("chart '" + name + "': bubble series '" + one.label()
-                 + "' carries " + std::to_string(sized) + " sizes for "
+    if (one.sizes_size() > points) {
+      arena.warn("chart '" + name + "': series '" + one.label() + "' carries "
+                 + std::to_string(one.sizes_size()) + " sizes for "
                  + std::to_string(points)
+                 + " points; the extra sizes are dropped");
+    }
+    if ((bubble || one.sizes_size() > 0) && sized < points) {
+      arena.warn("chart '" + name + "': series '" + one.label() + "' carries "
+                 + std::to_string(sized) + " sizes for " + std::to_string(points)
                  + " points; the unsized points fold without sizes");
     }
   }
@@ -477,13 +483,13 @@ void ChartFold::add_caption(const std::string& title,
                             const std::string& picture_ref,
                             docv1::ContentLayer layer, bool page_local,
                             int page_index, double l, double t, double r,
-                            double b) {
+                            double b, bool has_geometry) {
   TextHandle caption = arena_.add_text(
       TextKind::kText, docv1::DOC_ITEM_LABEL_CAPTION, layer, picture_ref);
   caption.base->set_text(title);
   caption.base->set_orig(title);
   arena_.add_prov(caption.base->mutable_prov(), page_index, page_local, l, t, r,
-                  b, 0, static_cast<long long>(title.size()));
+                  b, 0, static_cast<long long>(title.size()), has_geometry);
   picture->add_captions()->set_ref(caption.ref);
   data_counters().chart_captions.fetch_add(1, std::memory_order_relaxed);
 }
@@ -498,9 +504,9 @@ void ChartFold::emit(const officev1::EmbeddedObject* object,
       ? sheets_.label(sheet_chart->sheet_index())
       : std::string();
   if (!has_geometry) {
-    arena_.warn("chart " + (name.empty() ? "unnamed" : name)
-                + " has no laid-out geometry; its provenance names the sheet "
-                  "only");
+    arena_.warn("chart '" + (name.empty() ? "untitled" : name)
+                + "' has no laid-out geometry; its provenance names the "
+                  "sheet only");
   }
   std::string picture_ref;
   docv1::PictureItem* picture =
@@ -528,7 +534,7 @@ void ChartFold::emit(const officev1::EmbeddedObject* object,
   const std::string title = typed ? object->chart().title() : std::string();
   if (!title.empty()) {
     add_caption(title, picture, picture_ref, layer, page_local, page_index, l,
-                t, r, b);
+                t, r, b, has_geometry);
   }
   data_counters().charts_bound.fetch_add(1, std::memory_order_relaxed);
   data_log("chart " + (name.empty() ? picture_ref : name) + " bound to "

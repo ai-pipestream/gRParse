@@ -63,13 +63,15 @@ namespace grparse {
 // absolute; the mapper subtracts the containing page's origin (from
 // DocumentInfo.page_rects) and claims COORD_ORIGIN_TOPLEFT only when it
 // did. A page whose rectangle never arrived keeps its document-absolute
-// numbers with no origin claimed, so a consumer never reads them as
-// page-local; warnings() names the page once. Sources with no rectangle of
-// their own (sheets, pivot outputs, a chart no embedded object placed)
-// stamp page and grid only and name the absence; a zero-area box is never
-// presented as real geometry. Draw, Impress, and Calc positions arrive
-// page-local per part. All emitted doubles stay in twips; unit policy
-// beyond that is the consumer's.
+// numbers with no origin claimed; warnings() names the page once. That
+// honesty is scoped to the wire and the canonical JSON surface: gRParse's
+// own geometry passes branch only on BOTTOMLEFT, so an originless box is
+// read with the TOPLEFT convention inside this process today. Sources with
+// no rectangle of their own (sheets, pivot outputs, a chart no embedded
+// object placed) stamp page and grid only and name the absence; a zero-area
+// box is never presented as real geometry. Draw, Impress, and Calc
+// positions arrive page-local per part. All emitted doubles stay in twips;
+// unit policy beyond that is the consumer's.
 //
 // The office wire counts comments, tracked changes, bookmarks, and field
 // marks in one document-absolute character space. The mapper keeps an index
