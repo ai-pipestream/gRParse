@@ -1,27 +1,38 @@
 {
  "agreement": {
-  "agreed": 2,
+  "agreed": 6,
   "claimed_fields": {
    "grparse": 4,
-   "libreoffice": 19
+   "libreoffice": 19,
+   "poi": 5
   },
   "collectors": [
    "grparse",
-   "libreoffice"
+   "libreoffice",
+   "poi"
   ],
-  "conflicts": [],
-  "shared": 2,
+  "conflicts": [
+   {
+    "field": "source_meta.user_properties",
+    "values": {
+     "libreoffice": "[{\"name\": \"AppVersion\", \"text\": \"14.0000\"}, {\"name\": \"Company\", \"text\": \"State o",
+     "poi": "[{\"name\": \"revision\", \"text\": \"3\"}, {\"name\": \"application\", \"text\": \"Microsoft O"
+    },
+    "winner": ""
+   }
+  ],
+  "shared": 7,
   "winners": {
    "origin.binary_hash": "grparse",
    "origin.filename": "grparse",
    "origin.mimetype": "grparse",
    "origin.mimetype_evidence": "grparse",
-   "source_meta.created": "libreoffice",
+   "source_meta.created": "poi",
    "source_meta.editing_cycles": "libreoffice",
    "source_meta.editing_duration_seconds": "libreoffice",
    "source_meta.generator": "libreoffice",
-   "source_meta.modified": "libreoffice",
-   "source_meta.modified_by": "libreoffice",
+   "source_meta.modified": "poi",
+   "source_meta.modified_by": "poi",
    "source_meta.statistics.characters": "libreoffice",
    "source_meta.statistics.images": "libreoffice",
    "source_meta.statistics.objects": "libreoffice",
@@ -34,7 +45,8 @@
  },
  "collectors": [
   "grparse",
-  "libreoffice"
+  "libreoffice",
+  "poi"
  ],
  "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
  "counts": {

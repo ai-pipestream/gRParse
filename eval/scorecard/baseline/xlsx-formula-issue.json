@@ -1,30 +1,42 @@
 {
  "agreement": {
-  "agreed": 2,
+  "agreed": 6,
   "claimed_fields": {
    "grparse": 4,
-   "libreoffice": 8
+   "libreoffice": 8,
+   "poi": 5
   },
   "collectors": [
    "grparse",
-   "libreoffice"
+   "libreoffice",
+   "poi"
   ],
-  "conflicts": [],
-  "shared": 2,
+  "conflicts": [
+   {
+    "field": "source_meta.user_properties",
+    "values": {
+     "libreoffice": "[{\"name\": \"AppVersion\", \"text\": \"16.0300\"}]",
+     "poi": "[{\"name\": \"application\", \"text\": \"Microsoft Excel\"}, {\"name\": \"application_versi"
+    },
+    "winner": ""
+   }
+  ],
+  "shared": 7,
   "winners": {
    "origin.binary_hash": "grparse",
    "origin.filename": "grparse",
    "origin.mimetype": "grparse",
    "origin.mimetype_evidence": "grparse",
-   "source_meta.created": "libreoffice",
+   "source_meta.created": "poi",
    "source_meta.generator": "libreoffice",
-   "source_meta.modified": "libreoffice",
-   "source_meta.modified_by": "libreoffice"
+   "source_meta.modified": "poi",
+   "source_meta.modified_by": "poi"
   }
  },
  "collectors": [
   "grparse",
-  "libreoffice"
+  "libreoffice",
+  "poi"
  ],
  "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
  "counts": {
@@ -60,10 +72,10 @@
  ],
  "headings": [],
  "markdown": {
-  "chars": 839,
+  "chars": 923,
   "headings": 0,
   "images": 0,
-  "sha256": "3f9093ceada5be8e96b190ea8a100913507e43cae0f7df09ddeefa311cfa0b92",
+  "sha256": "6dbe63dda225b19d3119dd06c606d8b4d3d643cff9f1e705e04575d368033351",
   "table_rows": 15
  },
  "origin_mimetype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

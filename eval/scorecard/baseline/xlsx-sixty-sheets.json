@@ -1,29 +1,41 @@
 {
  "agreement": {
-  "agreed": 2,
+  "agreed": 4,
   "claimed_fields": {
    "grparse": 4,
-   "libreoffice": 6
+   "libreoffice": 6,
+   "poi": 3
   },
   "collectors": [
    "grparse",
-   "libreoffice"
+   "libreoffice",
+   "poi"
   ],
-  "conflicts": [],
-  "shared": 2,
+  "conflicts": [
+   {
+    "field": "source_meta.user_properties",
+    "values": {
+     "libreoffice": "[{\"name\": \"AppVersion\", \"text\": \"3.1\"}]",
+     "poi": "[{\"name\": \"application\", \"text\": \"Microsoft Excel Compatible / Openpyxl 3.1.5\"},"
+    },
+    "winner": ""
+   }
+  ],
+  "shared": 5,
   "winners": {
    "origin.binary_hash": "grparse",
    "origin.filename": "grparse",
    "origin.mimetype": "grparse",
    "origin.mimetype_evidence": "grparse",
-   "source_meta.created": "libreoffice",
+   "source_meta.created": "poi",
    "source_meta.generator": "libreoffice",
-   "source_meta.modified": "libreoffice"
+   "source_meta.modified": "poi"
   }
  },
  "collectors": [
   "grparse",
-  "libreoffice"
+  "libreoffice",
+  "poi"
  ],
  "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
  "counts": {
@@ -472,10 +484,10 @@
  ],
  "headings": [],
  "markdown": {
-  "chars": 16056,
+  "chars": 27752,
   "headings": 0,
   "images": 0,
-  "sha256": "73e9242d36859f5df6596d14e3766ee85fc937b644e0e65af70f253e14ad959c",
+  "sha256": "4592409f3c28aefae1af2d20e37963e88f42490fad40d83d412e2522e3088570",
   "table_rows": 312
  },
  "origin_mimetype": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

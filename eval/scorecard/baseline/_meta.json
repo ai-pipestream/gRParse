@@ -825,6 +825,32 @@
    "reason": "s3 eval: the merge attributes well-known value fields whole, so source_meta.created and source_meta.modified are the field_sources entries in place of created.seconds and modified.seconds; xlsx-sample3 additionally records its header row (a label row over formula cells that display numbers is now marked column_header); pdf-two-column keeps its committed summary with only the agreement section updated",
    "service": "gRParse grparse-0.1.0-cuda",
    "timestamp": "2026-09-01T07:20:14+00:00"
+  },
+  {
+   "documents": [
+    "pptx-charts"
+   ],
+   "partial": true,
+   "reason": "366c8ce: poi fan-out legs merge claims beside the primary body; agreement baseline gains poi claims",
+   "service": "gRParse grparse-0.2.0-cpu",
+   "timestamp": "2026-09-09T05:24:50+00:00"
+  },
+  {
+   "documents": [
+    "docx-sample3",
+    "xlsx-sample3",
+    "xlsx-formula-issue",
+    "pptx-sample1",
+    "pptx-notes",
+    "docx-figures",
+    "xlsx-sixty-sheets",
+    "docx-form",
+    "xlsx-charts"
+   ],
+   "partial": true,
+   "reason": "366c8ce: poi fan-out legs merge claims beside the primary body; agreement baseline gains poi claims",
+   "service": "gRParse grparse-0.2.0-cpu",
+   "timestamp": "2026-09-09T05:25:42+00:00"
   }
  ],
  "manifest": "eval/scorecard/corpus.json",
