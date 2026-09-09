@@ -50,7 +50,10 @@ the publish workflow runs first.
    the tag (leading `v` stripped), refuses to continue if it is not the
    CMake version, builds every leg with the test suite, boot-proofs each
    one, and only then creates the tags. About 45 minutes per leg; the legs
-   run in parallel.
+   run in parallel. Every leg's smoke test is CPU-only by design (no GPU
+   runner exists); before declaring an Intel-image release good, run the
+   structural scorecard against it on a render host with the GPU exposed
+   (AGENTS.md section 4; krick-1 is the fleet's).
 
 4. Verify what was published:
 

@@ -19,6 +19,12 @@
 # through the bundled client, asserting a page event and the terminal
 # complete event.
 #
+# Provider coverage, by design: this gate always boots GRPARSE_ORT_EP=cpu and
+# never touches a GPU. No GPU runner exists in CI, so the GPU path of the
+# CUDA and OpenVINO images is verified by the structural scorecard on a render
+# host (see docs/RELEASING.md), not by this script; a green smoke test says
+# nothing about the accelerator paths.
+#
 # Nothing here needs a shell inside the image: the closure check asks the
 # dynamic loader itself (LD_TRACE_LOADED_OBJECTS is what ldd does under the
 # hood), so a hardened runtime base without /bin/sh or ldd passes the same
