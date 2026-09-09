@@ -1,8 +1,11 @@
 #include "grparse/ocr_engine.h"
 
 #include <cstdlib>
+#include <optional>
 #include <stdexcept>
 #include <string>
+
+#include "grparse_session_ep.h"
 
 namespace grparse {
 namespace {
@@ -79,6 +82,10 @@ OcrEngine::OcrEngine(const std::filesystem::path& model_directory, int gpu_index
 }
 
 OcrEngine::Page OcrEngine::extract_page(const cv::Mat& image) {
+  // The first inference on a fresh session compiles the provider's kernels;
+  // serialize it process-wide (see grparse_session_ep.h).
+  std::optional<OvCompileGate> compile_gate;
+  if (!warmed_) compile_gate.emplace();
   if (image.empty()) {
     throw std::runtime_error("RapidOCR could not decode the in-memory image");
   }
@@ -100,6 +107,7 @@ OcrEngine::Page OcrEngine::extract_page(const cv::Mat& image) {
     line.flipped = block.angleIndex == 1;
     page.lines.push_back(std::move(line));
   }
+  warmed_ = true;
   return page;
 }
 

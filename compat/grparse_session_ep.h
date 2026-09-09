@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <mutex>
 #include <string>
 #include <string_view>
 
@@ -67,6 +68,13 @@ OrtEpSelection ort_ep_selection();
 // is active.
 uint64_t ep_hook_invocations();
 
+// How many sessions make_session has rebuilt on CPU after the selected
+// execution provider refused the graph or the device failed.  A monitoring
+// surface: every increment is also a stderr line, and a rising count on a
+// deployment that was promised GPU acceleration is the earliest signal that
+// the promise broke.
+uint64_t ep_fallback_count();
+
 // Called by the patched RapidOcrOnnx nets.  When no explicit selection was
 // made, legacy_gpu_index keeps upstream semantics: >= 0 appends CUDA for that
 // device, negative appends nothing (CPU).
@@ -80,6 +88,31 @@ uint64_t ep_hook_invocations();
 void append_execution_provider(Ort::SessionOptions& options, int legacy_gpu_index);
 void append_execution_provider(Ort::SessionOptions& options, int legacy_gpu_index,
                                OrtPrecision precision, int intra_op_threads);
+
+// Process-wide serialization for execution-provider work that compiles GPU
+// kernels.  The OpenVINO toolchain the Intel image ships (IGC through NEO)
+// is not safe under concurrent JIT compiles from a cold kernel cache: the
+// colliding compiles escape as heap corruption or an abort and take the whole
+// process down.  Two kinds of work therefore take this gate while the
+// OpenVINO provider is selected:
+//   - Ort::Session creation, because the OpenVINO provider compiles the
+//     model inside the Session constructor, and
+//   - each engine's first inference, because per-shape kernels compile on
+//     demand and every pooled worker can hit its cold cache at once.
+// A cold cache costs startup latency this way, never a crash; once the cache
+// is warm the gate is never contended, so steady-state throughput is
+// unchanged.  For any other provider (or no selection yet) the gate is a
+// no-op, and single-threaded behavior is untouched everywhere.
+class OvCompileGate final {
+ public:
+  OvCompileGate();
+  ~OvCompileGate();
+  OvCompileGate(const OvCompileGate&) = delete;
+  OvCompileGate& operator=(const OvCompileGate&) = delete;
+
+ private:
+  std::unique_lock<std::mutex> lock_;
+};
 
 // Builds one session for a model file on the configured provider.
 //

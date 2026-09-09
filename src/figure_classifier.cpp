@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -67,6 +68,10 @@ class FigureClassifierEngine::Impl {
   }
 
   std::vector<FigureClass> classify(const cv::Mat& crop) {
+    // The first inference on a fresh session compiles the provider's kernels;
+    // serialize it process-wide (see grparse_session_ep.h).
+    std::optional<OvCompileGate> compile_gate;
+    if (!warmed_) compile_gate.emplace();
     if (crop.empty() || crop.type() != CV_8UC3) {
       throw std::invalid_argument("Figure classification expects a non-empty BGR crop");
     }
@@ -121,6 +126,7 @@ class FigureClassifierEngine::Impl {
       if (a.confidence != b.confidence) return a.confidence > b.confidence;
       return a.label < b.label;
     });
+    warmed_ = true;
     return classes;
   }
 
@@ -129,6 +135,8 @@ class FigureClassifierEngine::Impl {
   Ort::Session session_{nullptr};
   std::string input_name_;
   std::string output_name_;
+  // First inference compiles provider kernels; see the gate in classify().
+  bool warmed_ = false;
 };
 
 FigureClassifierEngine::FigureClassifierEngine(const std::filesystem::path& model_path)

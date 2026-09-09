@@ -49,10 +49,10 @@ FetchContent_Declare(rapidocr SOURCE_SUBDIR disabled
   # patch below is written against these sources (it does not apply at
   # head). Re-pin only together with a patch rebase.
   GIT_TAG 9de89a6934cd962b80db6ab8ad5627e06a709764
-  # checkout -- src first so the step is idempotent: FetchContent re-runs the
-  # patch step whenever the subbuild re-executes, including on cached trees
-  # that are already patched.
-  PATCH_COMMAND git checkout -- src
+  # checkout -- src and include first so the step is idempotent: FetchContent
+  # re-runs the patch step whenever the subbuild re-executes, including on
+  # cached trees that are already patched.
+  PATCH_COMMAND git checkout -- src include
         COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-session-ep.patch")
 FetchContent_MakeAvailable(rapidocr)
 # FetchContent only patches when it populates, so a dependency tree cached
@@ -68,6 +68,18 @@ foreach(patched_net DbNet AngleNet CrnnNet)
   endif()
 endforeach()
 unset(GRPARSE_NET_SOURCE)
+# The patch also default-initializes the session pointers the destructors
+# delete; a tree cached before that hunk existed would pass the hook check
+# above and segfault in the destructor when a session build throws. Fail the
+# configure instead, same remedy.
+file(READ "${rapidocr_SOURCE_DIR}/include/CrnnNet.h" GRPARSE_CRNN_HEADER)
+string(FIND "${GRPARSE_CRNN_HEADER}" "session = nullptr" GRPARSE_CRNN_NULLPTR_AT)
+if(GRPARSE_CRNN_NULLPTR_AT EQUAL -1)
+  message(FATAL_ERROR "include/CrnnNet.h is unpatched: the rapidocr source tree predates the "
+    "session-nullptr hunk of patches/rapidocr-session-ep.patch. Delete _deps/rapidocr-* from "
+    "the build directory (or the docker build cache) and re-run CMake.")
+endif()
+unset(GRPARSE_CRNN_HEADER)
 
 # Which ONNX Runtime binary package to link.  `cuda` is Microsoft's NVIDIA GPU
 # release.  `openvino` takes headers from the matching official release and

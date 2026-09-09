@@ -14,7 +14,13 @@ std::mutex selection_mutex;
 OrtEpSelection current_selection;
 bool explicitly_selected = false;
 std::atomic<uint64_t> hook_invocations{0};
+std::atomic<uint64_t> ep_fallbacks{0};
 std::atomic<int> intra_op_threads{0};
+
+// The one lock OvCompileGate takes.  Deliberately not the selection mutex:
+// session builds read the selection, so holding this while building must
+// never block a caller that only wants to change or read it.
+std::mutex compile_mutex;
 
 void append_cuda(Ort::SessionOptions& options, int device) {
   // Same options upstream RapidOcrOnnx used, with the 2 GiB arena limit
@@ -68,6 +74,14 @@ OrtEpSelection ort_ep_selection() {
 }
 
 uint64_t ep_hook_invocations() { return hook_invocations.load(); }
+
+uint64_t ep_fallback_count() { return ep_fallbacks.load(); }
+
+OvCompileGate::OvCompileGate() {
+  if (ort_ep_selection().ep == OrtEp::kOpenVino) lock_ = std::unique_lock<std::mutex>(compile_mutex);
+}
+
+OvCompileGate::~OvCompileGate() = default;
 
 void set_ort_intra_op_threads(int threads) { intra_op_threads.store(threads > 0 ? threads : 0); }
 
@@ -126,11 +140,15 @@ Ort::Session make_session(Ort::Env& env, const std::filesystem::path& model_path
                           std::string_view what, OrtPrecision precision,
                           int intra_op_threads) {
   const OrtEp ep = ort_ep_selection().ep;
+  // The OpenVINO provider compiles the model inside the Session constructor;
+  // serialize those compiles process-wide (see OvCompileGate).
+  const OvCompileGate compile_gate;
   try {
     Ort::SessionOptions options = session_options(precision, intra_op_threads);
     return Ort::Session(env, model_path.c_str(), options);
   } catch (const std::exception& error) {
     if (ep == OrtEp::kCpu) throw;
+    ep_fallbacks.fetch_add(1);
     std::println(stderr,
                  "gRParse {}: the {} execution provider would not build {} ({}); this model "
                  "runs on CPU",

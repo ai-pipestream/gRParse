@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -173,6 +174,10 @@ class TableStructureEngine::Impl {
   }
 
   TableStructure recognize(const cv::Mat& crop) {
+    // The first inference on a fresh session compiles the provider's kernels;
+    // serialize it process-wide (see grparse_session_ep.h).
+    std::optional<OvCompileGate> compile_gate;
+    if (!warmed_) compile_gate.emplace();
     if (crop.empty() || crop.type() != CV_8UC3) {
       throw std::invalid_argument("Table structure expects a non-empty BGR crop");
     }
@@ -280,6 +285,7 @@ class TableStructureEngine::Impl {
     TableStructure structure = structure_from_tokens(tokens, cell_boxes);
     structure.score =
         score_count == 0 ? 0.0F : static_cast<float>(score_total / static_cast<double>(score_count));
+    warmed_ = true;
     return structure;
   }
 
@@ -290,6 +296,8 @@ class TableStructureEngine::Impl {
   std::vector<std::string> output_names_;
   std::vector<const char*> output_name_pointers_;
   std::vector<std::string> vocab_;
+  // First inference compiles provider kernels; see the gate in recognize().
+  bool warmed_ = false;
 };
 
 TableStructureEngine::TableStructureEngine(const std::filesystem::path& model_path)

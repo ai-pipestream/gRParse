@@ -36,6 +36,9 @@ class OcrEngine final {
 
  private:
   std::unique_ptr<OcrLite> engine_;
+  // First inference compiles provider kernels; see the gate in
+  // extract_page() (src/ocr_engine.cpp).
+  bool warmed_ = false;
 };
 
 class PageRecognizer {
