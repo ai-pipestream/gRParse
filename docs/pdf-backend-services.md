@@ -279,11 +279,12 @@ Still open, tracked here:
   workspace table), answers `GetServiceInfo` with a `UiInfo` block, has a
   Dockerfile plus `ci.yml` and `publish.yml` (amd64, `pipestreamai/<repo>`
   on Docker Hub, first images pushed 2026-09-07), and sits in the stack's
-  opt-in `pdf-backends` profile. What remains from that list: the runtime
-  stages still run on plain `ubuntu:26.04` / `debian:trixie-slim`, and
-  grpc-poppler runs as root on the distro poppler; the hardened-base pass
-  (staged library closure, numeric non-root user, poppler 26.08.0 from the
-  pinned tarball) is the open item.
+  opt-in `pdf-backends` profile. The hardened-base pass landed 2026-09-07:
+  all three run on `dhi.io/debian-base:trixie-debian13` as user 65532 with
+  a staged library closure and a boot smoke gate in ci and publish, and
+  grpc-poppler builds poppler 26.08.0 from the pinned tarball. Images are
+  amd64-only for now; the arm64 legs wait on self-hosted arm runners (the
+  `arm64-publish` branches in each repo carry the workflow legs).
 - Tier 0 TextCell union: only the qpdf-based backend fills direction,
   space width and rendering mode; grpc-pdfium and grpc-poppler leave them
   unset.
