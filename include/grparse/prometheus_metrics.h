@@ -31,13 +31,16 @@ namespace grparse {
 // process_resident_memory_bytes and process_cpu_seconds_total gauges the
 // standard client libraries export.  Execution-provider fallbacks export as
 // grparse_ort_ep_fallbacks_total: how many sessions were rebuilt on CPU after
-// their selected provider refused the graph or the device failed.  This
-// overload is pure in its inputs.
+// their selected provider refused the graph or the device failed, and
+// grparse_ort_ep_build_retries_total counts the session builds retried
+// after a transient OpenVINO provider failure.  This overload is pure in its
+// inputs.
 std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
                                       const OcrEnginePool::Stats& ocr_pool,
                                       const PageScheduler::Options& options,
                                       const RepairTotals& repairs, const DataTotals& data,
-                                      const OfficeCvTotals& office_cv, uint64_t ep_fallbacks);
+                                      const OfficeCvTotals& office_cv, uint64_t ep_fallbacks,
+                                      uint64_t ep_build_retries);
 
 // Same, with the execution-provider fallback count read from the live process
 // counter.

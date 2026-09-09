@@ -77,7 +77,10 @@ OcrEngine::OcrEngine(const std::filesystem::path& model_directory, int gpu_index
   engine_->setGpuIndex(gpu_index);
   engine_->setNumThread(1);
   if (!engine_->initModels(det.string(), cls.string(), rec.string(), keys.string())) {
-    throw std::runtime_error("RapidOCR failed to initialize its CUDA models");
+    // An execution-provider failure does not reach this line: the patched
+    // nets retry and then throw from initModel, failing startup loudly.  A
+    // false here means the model wiring itself failed.
+    throw std::runtime_error("RapidOCR failed to initialize its models");
   }
 }
 

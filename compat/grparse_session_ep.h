@@ -75,6 +75,18 @@ uint64_t ep_hook_invocations();
 // the promise broke.
 uint64_t ep_fallback_count();
 
+// How many session builds were retried after a transient OpenVINO
+// execution-provider failure before either succeeding or giving up: the
+// cost of the policy that keeps intermittent JIT compiler failures from
+// killing the process.
+uint64_t ep_build_retry_count();
+
+// Test-only: makes the next `failures` session builds throw a synthetic error
+// from inside the build, standing in for the OpenVINO toolchain's
+// intermittent IGC failures so the retry paths are testable without a GPU.
+// Only tests call this; production builds never inject.
+void ort_ep_test_inject_build_failures(int failures);
+
 // Called by the patched RapidOcrOnnx nets.  When no explicit selection was
 // made, legacy_gpu_index keeps upstream semantics: >= 0 appends CUDA for that
 // device, negative appends nothing (CPU).
@@ -117,14 +129,42 @@ class OvCompileGate final {
 // Builds one session for a model file on the configured provider.
 //
 // A provider that refuses the graph - an unsupported operator, a device that
-// will not initialize, an export the plugin rejects outright - costs that
-// model its acceleration, not the whole server: the session is rebuilt on CPU
-// and the reason is logged in full.  `what` names the model in that message.
-// A model file that does not parse at all still throws, on both attempts.
+// will not initialize, an export the plugin rejects outright, the OpenVINO
+// toolchain's JIT compiler failing intermittently - costs that model its
+// acceleration, not the whole server: an OpenVINO build retries a small
+// bounded number of times with short jittered backoff (the failures are
+// intermittent and usually pass on a later attempt, still on the GPU), then
+// the session is rebuilt on CPU with the error logged in full.  Other
+// providers keep their single-attempt behavior.  `what` names the model in
+// that message.  A model file that does not parse at all still throws, on
+// every attempt.  CPU selections build once, with no retries: a CPU failure
+// is deterministic.
+//
+// This fallback is pre-existing policy and applies to the models that build
+// through make_session (table structure, layout, figure classification).  The
+// OCR nets are deliberately different: they build through
+// make_rapidocr_session, which never retreats to CPU.
+//
+// The OpenVINO toolchain's other failure class - heap corruption or a
+// longjmp across the stack inside the compile - kills the process outright
+// and is out of scope here; no in-process policy can recover from it.
 Ort::Session make_session(Ort::Env& env, const std::filesystem::path& model_path,
                           std::string_view what,
                           OrtPrecision precision = OrtPrecision::kProviderDefault,
                           int intra_op_threads = kIntraOpProcessDefault);
+
+// Builds one Ort::Session for the patched RapidOcrOnnx nets.  On the
+// OpenVINO provider the build retries a bounded number of times with short
+// jittered backoff, exactly like make_session; unlike make_session it never
+// retreats to CPU: after the retries exhaust the exception propagates out of
+// the net's initModel and fails the engine loudly.  The openvino flavor must
+// never silently degrade an OCR model to CPU.  CPU selections build once and
+// throw on broken models.  `num_thread` is the net's own thread count (its
+// setNumThread value), `what` names the net in log lines.  Returns a heap
+// session the net owns; when this throws, the net's session pointer stays
+// null and its destructor is safe.
+Ort::Session* make_rapidocr_session(Ort::Env& env, const std::filesystem::path& model_path,
+                                    std::string_view what, int num_thread);
 
 // The CPU-only session make_session falls back to, exposed for callers that
 // must retreat AFTER creation: some provider failures only surface at the

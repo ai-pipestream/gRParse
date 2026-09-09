@@ -80,6 +80,18 @@ if(GRPARSE_CRNN_NULLPTR_AT EQUAL -1)
     "the build directory (or the docker build cache) and re-run CMake.")
 endif()
 unset(GRPARSE_CRNN_HEADER)
+# The patch also reroutes the nets' session construction through grparse's
+# retrying builder; a tree cached with only the older hunks would pass the
+# checks above and still build bare `new Ort::Session` calls that die on the
+# first provider failure.  Fail the configure instead, same remedy.
+file(READ "${rapidocr_SOURCE_DIR}/src/DbNet.cpp" GRPARSE_DBNET_SOURCE)
+string(FIND "${GRPARSE_DBNET_SOURCE}" "grparse::make_rapidocr_session" GRPARSE_DBNET_BUILDER_AT)
+if(GRPARSE_DBNET_BUILDER_AT EQUAL -1)
+  message(FATAL_ERROR "src/DbNet.cpp is unpatched: the rapidocr source tree predates the "
+    "retrying-builder hunk of patches/rapidocr-session-ep.patch. Delete _deps/rapidocr-* from "
+    "the build directory (or the docker build cache) and re-run CMake.")
+endif()
+unset(GRPARSE_DBNET_SOURCE)
 
 # Which ONNX Runtime binary package to link.  `cuda` is Microsoft's NVIDIA GPU
 # release.  `openvino` takes headers from the matching official release and

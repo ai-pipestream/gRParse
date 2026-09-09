@@ -50,8 +50,10 @@ and the Intel image (`Dockerfile.openvino`, ONNX Runtime with the OpenVINO
 execution provider and its GPU/CPU/NPU plugins). `GRPARSE_ORT_EP` selects the
 provider at startup from what the linked runtime actually offers, and the
 server fails loudly when the requested provider is absent or cannot
-initialize. Remaining B6 work is hardware qualification and pool-sizing
-guidance per device.
+initialize.  An OpenVINO session build retries with bounded backoff and then
+fails loudly; the OCR nets never degrade to CPU, and the one sanctioned CPU
+retreat is the table-structure model the plugin rejects on every device
+(README "Intel GPUs").
 
 | Target | Typical EP | Notes |
 |---|---|---|

@@ -100,14 +100,15 @@ std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
                                       const RepairTotals& repairs, const DataTotals& data,
                                       const OfficeCvTotals& office_cv) {
   return render_prometheus_metrics(metrics, ocr_pool, options, repairs, data, office_cv,
-                                   ep_fallback_count());
+                                   ep_fallback_count(), ep_build_retry_count());
 }
 
 std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
                                       const OcrEnginePool::Stats& ocr_pool,
                                       const PageScheduler::Options& options,
                                       const RepairTotals& repairs, const DataTotals& data,
-                                      const OfficeCvTotals& office_cv, uint64_t ep_fallbacks) {
+                                      const OfficeCvTotals& office_cv, uint64_t ep_fallbacks,
+                                      uint64_t ep_build_retries) {
   std::ostringstream out;
   out.precision(15);
 
@@ -234,6 +235,10 @@ std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
           "Sessions rebuilt on CPU after their selected execution provider refused the graph "
           "or the device failed.",
           ep_fallbacks);
+  counter(out, "grparse_ort_ep_build_retries_total",
+          "Session builds retried after a transient OpenVINO execution-provider failure "
+          "before either succeeding or failing.",
+          ep_build_retries);
   out << "# HELP grparse_ocr_pool_wait_seconds_total Seconds inference workers waited for a "
          "warm OCR session.\n"
          "# TYPE grparse_ocr_pool_wait_seconds_total counter\n"

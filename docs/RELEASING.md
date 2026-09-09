@@ -53,7 +53,14 @@ the publish workflow runs first.
    run in parallel. Every leg's smoke test is CPU-only by design (no GPU
    runner exists); before declaring an Intel-image release good, run the
    structural scorecard against it on a render host with the GPU exposed
-   (AGENTS.md section 4; krick-1 is the fleet's).
+   (AGENTS.md section 4; krick-1 is the fleet's), then scrape its `/metrics`:
+   `grparse_ort_ep_build_retries_total` may be non-zero on a contended host
+   (OpenVINO builds retry under pressure, see README "Intermittent IGC
+   failures and VRAM headroom"), and `grparse_ort_ep_fallbacks_total` must
+   reflect only the pre-decided table-structure retreat; the openvino flavor
+   never degrades OCR to CPU, so anything beyond the table pool is a failed
+   leg, not a fallback. Confirm the host has real VRAM headroom: a co-tenant
+   holding the card near-full turns kernel compiles into crashes (exit 139).
 
 4. Verify what was published:
 

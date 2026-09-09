@@ -628,7 +628,8 @@ on Ubuntu hosts, so the container user needs the host's render group added
 inside the image). The `compose.stack.openvino.yaml` overlay does this with
 `GRPARSE_RENDER_GID` (default 990; set it in `.env` when
 `stat -c %g /dev/dri/renderD128` differs). Without it OCR startup fails
-loudly with the device error rather than falling back to CPU. The image
+loudly with the device error: the session build retries and then throws, and
+the server refuses to boot rather than run OCR on CPU. The image
 stages the NEO compute runtime, the OpenCL loader and the graphics compiler
 from the build stage; its runtime base is plain `ubuntu:26.04` behind the
 `GRPARSE_RUNTIME_IMAGE` build arg ("Runtime image" above says why).
@@ -657,12 +658,43 @@ inherits the ownership on first use, while a bind mount needs
 `chown 65532` on the host. The
 layout session asks for single precision explicitly; the GPU plugin's default
 half precision loses that detector real detections and drifts its boxes, while
-the OCR, table, and classifier nets keep the plugin's own choice. OCR startup
-fails loudly if the device cannot initialize — the host needs `/dev/dri` passed through and a kernel new enough
-for the card. Provider selection is centralized in a small patch to the
+the OCR, table, and classifier nets keep the plugin's own choice.
+
+### Intermittent IGC failures and VRAM headroom
+
+The krick-1 evidence behind the "Program build failed" crashes turned out to
+be VRAM exhaustion, not a code defect: the Arc card reports 30.3 GiB, and a
+co-tenant vLLM container started with `--gpu-memory-utilization=0.98` held
+29,423 MiB of it (read from `/proc/<pid>/fdinfo` `drm-total-vram0`), leaving
+too little for the OpenVINO GPU plugin's on-demand kernel compiles. About
+half of service starts died in the JIT compiler (IGC `clBuildProgram`), and a
+warm-cache container crashed the same way when a new OCR input size forced a
+fresh compile. The openvino flavor therefore needs real VRAM headroom on the
+host; a GPU that is full is a configuration error, and no in-process policy
+makes room.
+
+What the code does own is the failure policy. Session builds on the
+OpenVINO provider retry up to three attempts with short jittered backoff,
+one attempt at a time under the process-wide compile gate, and the retries
+stay on the GPU. If the build still fails, the openvino flavor fails loudly:
+the OCR session build throws and takes startup down with a clear error, and
+no OCR model ever silently degrades to CPU. The one sanctioned CPU retreat
+is the pre-decided table-structure case (`slanet_plus.onnx`, rejected by the
+plugin on every device), which is logged in full and counted in
+`grparse_ort_ep_fallbacks_total`; `grparse_ort_ep_build_retries_total`
+counts the retried builds. A rising retry line is the earliest signal that
+the host is contended.
+
+The fatal class remains fatal: heap corruption or a `longjmp` across the
+stack inside the toolchain kills the process (exit 139) with no exception to
+catch. The mitigations for that class are the compile gate (concurrent JIT
+compiles from a cold cache are the trigger), a kernel cache on real disk,
+and VRAM headroom.
+
+Provider selection is centralized in a small patch to the
 RapidOcrOnnx session setup (`patches/rapidocr-session-ep.patch`); the server
 refuses to start if a stale dependency cache produced an unpatched build, so
-OCR can never silently degrade to CPU.
+OCR session builds always carry the same retry-and-fail-loudly policy.
 
 The image also includes `grparse-stream-client`, a bidirectional gRPC client
 that sends a PDF in chunks and prints each page event as it arrives:

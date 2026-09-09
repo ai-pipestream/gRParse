@@ -44,7 +44,7 @@ index e2b9a17..e654fc6 100644
      Ort::SessionOptions sessionOptions = Ort::SessionOptions();
      int numThread = 0;
 diff --git a/src/AngleNet.cpp b/src/AngleNet.cpp
-index 437fb86..5bbc9f7 100644
+index 437fb86..dc16b96 100644
 --- a/src/AngleNet.cpp
 +++ b/src/AngleNet.cpp
 @@ -1,24 +1,12 @@
@@ -76,19 +76,28 @@ index 437fb86..5bbc9f7 100644
  }
  
  AngleNet::~AngleNet() {
-@@ -49,6 +37,10 @@ void AngleNet::setNumThread(int numOfThread) {
+@@ -49,12 +37,17 @@ void AngleNet::setNumThread(int numOfThread) {
  }
  
  void AngleNet::initModel(const std::string &pathStr) {
-+    // gRParse: OpenVINO compiles the model inside the Session ctor, and the
-+    // toolchain's JIT compiler is not safe under concurrent compiles from a
-+    // cold kernel cache; the gate serializes session builds process-wide.
-+    grparse::OvCompileGate grparseCompileGate;
++    // gRParse: session construction goes through grparse's retrying
++    // builder: the OpenVINO toolchain fails intermittently, so the build
++    // retries a bounded number of times and then throws instead of dying
++    // or degrading to CPU; the builder also holds the process-wide
++    // compile gate per attempt (see grparse_session_ep.h).
  #ifdef _WIN32
      std::wstring clsPath = strToWstr(pathStr);
-     session = new Ort::Session(env, clsPath.c_str(), sessionOptions);
+-    session = new Ort::Session(env, clsPath.c_str(), sessionOptions);
+ #else
+-    session = new Ort::Session(env, pathStr.c_str(), sessionOptions);
++    std::string clsPath = pathStr;
+ #endif
++    session = grparse::make_rapidocr_session(env, clsPath, "OCR direction", numThread);
+     inputNamesPtr = getInputNames(session);
+     outputNamesPtr = getOutputNames(session);
+ }
 diff --git a/src/CrnnNet.cpp b/src/CrnnNet.cpp
-index a3a5d3a..1b2d782 100644
+index a3a5d3a..277d5f3 100644
 --- a/src/CrnnNet.cpp
 +++ b/src/CrnnNet.cpp
 @@ -1,25 +1,13 @@
@@ -121,19 +130,28 @@ index a3a5d3a..1b2d782 100644
  }
  
  CrnnNet::~CrnnNet() {
-@@ -50,6 +38,10 @@ void CrnnNet::setNumThread(int numOfThread) {
+@@ -50,12 +38,17 @@ void CrnnNet::setNumThread(int numOfThread) {
  }
  
  void CrnnNet::initModel(const std::string &pathStr, const std::string &keysPath) {
-+    // gRParse: OpenVINO compiles the model inside the Session ctor, and the
-+    // toolchain's JIT compiler is not safe under concurrent compiles from a
-+    // cold kernel cache; the gate serializes session builds process-wide.
-+    grparse::OvCompileGate grparseCompileGate;
++    // gRParse: session construction goes through grparse's retrying
++    // builder: the OpenVINO toolchain fails intermittently, so the build
++    // retries a bounded number of times and then throws instead of dying
++    // or degrading to CPU; the builder also holds the process-wide
++    // compile gate per attempt (see grparse_session_ep.h).
  #ifdef _WIN32
      std::wstring crnnPath = strToWstr(pathStr);
-     session = new Ort::Session(env, crnnPath.c_str(), sessionOptions);
+-    session = new Ort::Session(env, crnnPath.c_str(), sessionOptions);
+ #else
+-    session = new Ort::Session(env, pathStr.c_str(), sessionOptions);
++    std::string crnnPath = pathStr;
+ #endif
++    session = grparse::make_rapidocr_session(env, crnnPath, "OCR recognition", numThread);
+     inputNamesPtr = getInputNames(session);
+     outputNamesPtr = getOutputNames(session);
+ 
 diff --git a/src/DbNet.cpp b/src/DbNet.cpp
-index 74b93aa..cc92b7e 100644
+index 74b93aa..2bd440c 100644
 --- a/src/DbNet.cpp
 +++ b/src/DbNet.cpp
 @@ -1,23 +1,11 @@
@@ -164,14 +182,23 @@ index 74b93aa..cc92b7e 100644
  }
  
  DbNet::~DbNet() {
-@@ -48,6 +36,10 @@ void DbNet::setNumThread(int numOfThread) {
+@@ -48,12 +36,17 @@ void DbNet::setNumThread(int numOfThread) {
  }
  
  void DbNet::initModel(const std::string &pathStr) {
-+    // gRParse: OpenVINO compiles the model inside the Session ctor, and the
-+    // toolchain's JIT compiler is not safe under concurrent compiles from a
-+    // cold kernel cache; the gate serializes session builds process-wide.
-+    grparse::OvCompileGate grparseCompileGate;
++    // gRParse: session construction goes through grparse's retrying
++    // builder: the OpenVINO toolchain fails intermittently, so the build
++    // retries a bounded number of times and then throws instead of dying
++    // or degrading to CPU; the builder also holds the process-wide
++    // compile gate per attempt (see grparse_session_ep.h).
  #ifdef _WIN32
      std::wstring detPath = strToWstr(pathStr);
-     session = new Ort::Session(env, detPath.c_str(), sessionOptions);
+-    session = new Ort::Session(env, detPath.c_str(), sessionOptions);
+ #else
+-    session = new Ort::Session(env, pathStr.c_str(), sessionOptions);
++    std::string detPath = pathStr;
+ #endif
++    session = grparse::make_rapidocr_session(env, detPath, "OCR detection", numThread);
+     inputNamesPtr = getInputNames(session);
+     outputNamesPtr = getOutputNames(session);
+ }

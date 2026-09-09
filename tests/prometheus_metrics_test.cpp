@@ -142,9 +142,12 @@ void verify_render_ep_fallback_counter() {
   const std::string text = grparse::render_prometheus_metrics(
       grparse::PageScheduler::Metrics{}, grparse::OcrEnginePool::Stats{},
       grparse::PageScheduler::Options{}, grparse::RepairTotals{}, grparse::DataTotals{},
-      grparse::OfficeCvTotals{}, 3);
+      grparse::OfficeCvTotals{}, 3, 2);
   require_contains(text, "# TYPE grparse_ort_ep_fallbacks_total counter\n", "fallback type line");
   require_contains(text, "grparse_ort_ep_fallbacks_total 3\n", "fallback counter value");
+  require_contains(text, "# TYPE grparse_ort_ep_build_retries_total counter\n",
+                   "build retries type line");
+  require_contains(text, "grparse_ort_ep_build_retries_total 2\n", "build retries counter value");
 
   // The overloads that read the live process counter start at zero in a test
   // binary whose providers never refused anything.
@@ -152,6 +155,8 @@ void verify_render_ep_fallback_counter() {
       grparse::PageScheduler::Metrics{}, grparse::OcrEnginePool::Stats{},
       grparse::PageScheduler::Options{});
   require_contains(live, "grparse_ort_ep_fallbacks_total 0\n", "live fallback counter starts at zero");
+  require_contains(live, "grparse_ort_ep_build_retries_total 0\n",
+                   "live build-retry counter starts at zero");
 }
 
 // The orientation counters, every repair counter, and the office CV totals,
