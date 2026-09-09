@@ -45,7 +45,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # statically, so the binary's library closure holds exactly one poppler.
 ARG OPENCV_VERSION=4.14.0
 ARG OPENCV_SHA256=ee8fb9b30eb60850431b4656447080e3737b56e45719c92b67f245950609f86e
-RUN curl -fsSL -o /tmp/opencv.tar.gz "https://github.com/opencv/opencv/archive/refs/tags/${OPENCV_VERSION}.tar.gz" \
+RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/opencv.tar.gz "https://github.com/opencv/opencv/archive/refs/tags/${OPENCV_VERSION}.tar.gz" \
  && echo "${OPENCV_SHA256}  /tmp/opencv.tar.gz" | sha256sum -c - \
  && tar -xzf /tmp/opencv.tar.gz -C /tmp \
  && cmake -S "/tmp/opencv-${OPENCV_VERSION}" -B /tmp/opencv-build -G Ninja \
@@ -67,7 +67,7 @@ RUN curl -fsSL -o /tmp/opencv.tar.gz "https://github.com/opencv/opencv/archive/r
 # the cpp frontend and the splash renderer are built.
 ARG POPPLER_VERSION=26.08.0
 ARG POPPLER_SHA256=dc906e68cea698109706ac6aa3d2c9d4512fcfcac42d90b8afcda486d1b9abd0
-RUN curl -fsSL -o /tmp/poppler.tar.xz "https://poppler.freedesktop.org/poppler-${POPPLER_VERSION}.tar.xz" \
+RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/poppler.tar.xz "https://poppler.freedesktop.org/poppler-${POPPLER_VERSION}.tar.xz" \
  && echo "${POPPLER_SHA256}  /tmp/poppler.tar.xz" | sha256sum -c - \
  && tar -xJf /tmp/poppler.tar.xz -C /tmp \
  && cmake -S "/tmp/poppler-${POPPLER_VERSION}" -B /tmp/poppler-build -G Ninja \
