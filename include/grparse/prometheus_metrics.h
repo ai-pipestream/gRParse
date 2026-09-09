@@ -29,7 +29,18 @@ namespace grparse {
 // counter), the office CV enrichment totals as grparse_office_cv_total{kind=...}
 // and the data-plane totals as grparse_data_changes_total{kind=...}, plus the
 // process_resident_memory_bytes and process_cpu_seconds_total gauges the
-// standard client libraries export.  This overload is pure in its inputs.
+// standard client libraries export.  Execution-provider fallbacks export as
+// grparse_ort_ep_fallbacks_total: how many sessions were rebuilt on CPU after
+// their selected provider refused the graph or the device failed.  This
+// overload is pure in its inputs.
+std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
+                                      const OcrEnginePool::Stats& ocr_pool,
+                                      const PageScheduler::Options& options,
+                                      const RepairTotals& repairs, const DataTotals& data,
+                                      const OfficeCvTotals& office_cv, uint64_t ep_fallbacks);
+
+// Same, with the execution-provider fallback count read from the live process
+// counter.
 std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
                                       const OcrEnginePool::Stats& ocr_pool,
                                       const PageScheduler::Options& options,

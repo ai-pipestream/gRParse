@@ -138,6 +138,22 @@ void verify_render_counters_and_gauges() {
   require_contains(text, "# TYPE grparse_page_latency_seconds histogram\n", "histogram type");
 }
 
+void verify_render_ep_fallback_counter() {
+  const std::string text = grparse::render_prometheus_metrics(
+      grparse::PageScheduler::Metrics{}, grparse::OcrEnginePool::Stats{},
+      grparse::PageScheduler::Options{}, grparse::RepairTotals{}, grparse::DataTotals{},
+      grparse::OfficeCvTotals{}, 3);
+  require_contains(text, "# TYPE grparse_ort_ep_fallbacks_total counter\n", "fallback type line");
+  require_contains(text, "grparse_ort_ep_fallbacks_total 3\n", "fallback counter value");
+
+  // The overloads that read the live process counter start at zero in a test
+  // binary whose providers never refused anything.
+  const std::string live = grparse::render_prometheus_metrics(
+      grparse::PageScheduler::Metrics{}, grparse::OcrEnginePool::Stats{},
+      grparse::PageScheduler::Options{});
+  require_contains(live, "grparse_ort_ep_fallbacks_total 0\n", "live fallback counter starts at zero");
+}
+
 // The orientation counters, every repair counter, and the office CV totals,
 // as families a dashboard can select by label.
 void verify_render_rotation_repair_and_office_cv_families() {
@@ -263,6 +279,7 @@ int main() {
       verify_render_counters_and_gauges,
       verify_render_rotation_repair_and_office_cv_families,
       verify_render_histogram_is_cumulative,
+      verify_render_ep_fallback_counter,
       verify_http_listener,
       verify_renderer_exception_becomes_500,
   });

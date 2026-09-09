@@ -1,5 +1,7 @@
 #include "grparse/prometheus_metrics.h"
 
+#include "grparse_session_ep.h"
+
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/resource.h>
@@ -97,6 +99,15 @@ std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
                                       const PageScheduler::Options& options,
                                       const RepairTotals& repairs, const DataTotals& data,
                                       const OfficeCvTotals& office_cv) {
+  return render_prometheus_metrics(metrics, ocr_pool, options, repairs, data, office_cv,
+                                   ep_fallback_count());
+}
+
+std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
+                                      const OcrEnginePool::Stats& ocr_pool,
+                                      const PageScheduler::Options& options,
+                                      const RepairTotals& repairs, const DataTotals& data,
+                                      const OfficeCvTotals& office_cv, uint64_t ep_fallbacks) {
   std::ostringstream out;
   out.precision(15);
 
@@ -219,6 +230,10 @@ std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
           ocr_pool.acquires);
   counter(out, "grparse_ocr_pool_discards_total",
           "OCR sessions rebuilt after a device error.", ocr_pool.discards);
+  counter(out, "grparse_ort_ep_fallbacks_total",
+          "Sessions rebuilt on CPU after their selected execution provider refused the graph "
+          "or the device failed.",
+          ep_fallbacks);
   out << "# HELP grparse_ocr_pool_wait_seconds_total Seconds inference workers waited for a "
          "warm OCR session.\n"
          "# TYPE grparse_ocr_pool_wait_seconds_total counter\n"
