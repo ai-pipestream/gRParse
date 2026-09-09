@@ -399,6 +399,10 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
 struct RoutedPlan {
   std::vector<pipestream::parse::v1::Collector> ids;
   bool pdf_routing = false;
+  // True when the routed (not explicitly selected) plan fanned out to the
+  // secondary office collectors; the legs append_office_fanout adds are
+  // always poi or calamine, never the routed primary itself.
+  bool office_fanout = false;
 };
 
 // The default PDF route becomes the pdf inspector when one is configured:
@@ -421,6 +425,7 @@ RoutedPlan route_plan(const google::protobuf::RepeatedField<int>& requested, boo
   // their endpoints are configured: a poi leg for the OOXML/OLE2 formats, a
   // calamine leg for workbooks. An explicit selection stays verbatim.
   if (selected.empty() && inputs.endpoints != nullptr) {
+    plan.office_fanout = true;
     append_office_fanout(&plan.ids, inputs.filename.string(), inputs.content_type,
                          inputs.endpoints->has(pipestream::parse::v1::COLLECTOR_POI),
                          inputs.endpoints->has(pipestream::parse::v1::COLLECTOR_CALAMINE));
@@ -437,11 +442,18 @@ RoutedPlan route_plan(const google::protobuf::RepeatedField<int>& requested, boo
 // fold, the classification-routed pdf leg, or a dialed collector.
 std::vector<PlannedCollector> build_plan(
     const std::vector<pipestream::parse::v1::Collector>& plan_ids, bool pdf_routing,
-    const ParseInputs& inputs, const CvCollector& run_cv) {
+    bool office_fanout, const ParseInputs& inputs, const CvCollector& run_cv) {
   std::vector<PlannedCollector> plan;
   for (const auto id : plan_ids) {
     PlannedCollector collector;
     collector.id = id;
+    // The fan-out legs read the same bytes as the routed libreoffice
+    // default: beside a live primary their body readings drop and only
+    // their claims merge. An explicit selection stays verbatim, readings
+    // and all.
+    collector.office_fanout =
+        office_fanout && (id == pipestream::parse::v1::COLLECTOR_POI ||
+                          id == pipestream::parse::v1::COLLECTOR_CALAMINE);
     if (id == pipestream::parse::v1::COLLECTOR_GRPARSE_CV) {
       collector.run = [run_cv, tuning = inputs.tuning] { return run_cv(tuning); };
     } else if (local_collector(id)) {
@@ -540,7 +552,8 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
 
     const RoutedPlan routed = route_plan(request.options().collectors(), pdf, inputs);
     CoordinatorResult result = run_collectors(
-        build_plan(routed.ids, routed.pdf_routing, inputs, run_cv), std::move(base));
+        build_plan(routed.ids, routed.pdf_routing, routed.office_fanout, inputs, run_cv),
+        std::move(base));
     if (context->IsCancelled()) {
       return grpc::Status(grpc::StatusCode::CANCELLED, "request cancelled");
     }

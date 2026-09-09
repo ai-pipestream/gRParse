@@ -3,6 +3,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -420,6 +421,24 @@ void merge_arenas(docv1::Document&& source, docv1::Document* target) {
 void rewrite_references(const std::map<std::string, std::string>& renumbering,
                         google::protobuf::Message* message) {
   rewrite_refs(renumbering, message);
+}
+
+// The field names whose content forms a document-level account: exactly the
+// set claim_of carries onto Document.claims. Everything else a collector's
+// document can carry (arenas, body and furniture children, attachments,
+// named ranges, pages) is a reading of the body.
+bool is_claim_field(std::string_view name) {
+  return name == "source_meta" || name == "origin" || name == "page_styles" ||
+         name == "email" || name == "media";
+}
+
+void retain_claims_only(docv1::Document* source) {
+  const auto* descriptor = source->GetDescriptor();
+  const auto* reflection = source->GetReflection();
+  for (int index = 0; index < descriptor->field_count(); ++index) {
+    const auto* field = descriptor->field(index);
+    if (!is_claim_field(field->name())) reflection->ClearField(source, field);
+  }
 }
 
 void merge_documents(docv1::Document&& source, docv1::Document* target) {

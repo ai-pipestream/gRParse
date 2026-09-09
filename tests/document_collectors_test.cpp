@@ -27,7 +27,9 @@
 #include "ai/pipestream/xml/v1/xml_service.grpc.pb.h"
 #include "calamine/v1/calamine_service.grpc.pb.h"
 #include "fastwarc/v1/warc_service.grpc.pb.h"
+#include "grparse/collector_coordinator.h"
 #include "grparse/document_collectors.h"
+#include "grparse/document_merge.h"
 #include "grparse/document_parser_service.h"
 #include "lolhtml/v1/lolhtml_service.grpc.pb.h"
 #include "support/check.h"
@@ -1540,6 +1542,146 @@ void verify_poi_unreachable_endpoint_degrades() {
           "an unreachable poi collector degrades to UNAVAILABLE");
 }
 
+const docv1::FieldSource* meta_source_of(const docv1::DocumentMeta& meta,
+                                         const std::string& field) {
+  for (const auto& entry : meta.field_sources()) {
+    if (entry.field() == field) return &entry;
+  }
+  return nullptr;
+}
+
+// The base the service stamps before any collector runs, the way
+// parse_source does: the origin's mimetype is what the claim ranks score
+// against, and the stamp is attributed like any other claimant.
+docv1::Document stamped_base(const std::string& mimetype) {
+  docv1::Document base;
+  base.mutable_body()->set_self_ref("#/body");
+  base.mutable_body()->set_content_layer(docv1::CONTENT_LAYER_BODY);
+  base.mutable_furniture()->set_self_ref("#/furniture");
+  base.mutable_furniture()->set_content_layer(docv1::CONTENT_LAYER_FURNITURE);
+  base.mutable_origin()->set_filename("book.xlsx");
+  base.mutable_origin()->set_mimetype(mimetype);
+  docv1::CollectorSource stamp;
+  stamp.set_collector("grparse");
+  grparse::claim_fields(base.mutable_origin(), stamp);
+  return base;
+}
+
+// The routed libreoffice primary's reading of the same bytes: a title and a
+// paragraph in the body, plus its own idea of the document's title.
+grparse::CollectorOutcome office_outcome() {
+  grparse::CollectorOutcome outcome;
+  outcome.success = true;
+  outcome.document.mutable_body()->set_self_ref("#/body");
+  outcome.document.mutable_furniture()->set_self_ref("#/furniture");
+  outcome.document.mutable_source_meta()->set_title("Office Title");
+  auto* title = outcome.document.add_texts()->mutable_title()->mutable_base();
+  title->set_self_ref("#/texts/0");
+  title->mutable_parent()->set_ref("#/body");
+  title->set_label(docv1::DOC_ITEM_LABEL_TITLE);
+  title->set_text("Converted Title");
+  outcome.document.mutable_body()->add_children()->set_ref("#/texts/0");
+  auto* paragraph = outcome.document.add_texts()->mutable_text()->mutable_base();
+  paragraph->set_self_ref("#/texts/1");
+  paragraph->mutable_parent()->set_ref("#/body");
+  paragraph->set_label(docv1::DOC_ITEM_LABEL_PARAGRAPH);
+  paragraph->set_text("office paragraph");
+  outcome.document.mutable_body()->add_children()->set_ref("#/texts/1");
+  return outcome;
+}
+
+constexpr const char* kXlsxMimetype =
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+// A routed office plan with poi wired runs the leg beside the libreoffice
+// default. The leg reads the same bytes, so its body reading must not merge
+// on top of the primary's: the merged document carries the body once, and
+// the leg's contribution is its document-level claims, ranked per
+// document_claim_rank (poi above libreoffice, below the service's stamp).
+void verify_poi_fanout_merges_claims_without_a_second_body() {
+  FakePoiService service;
+  ServerFixture server(&service);
+
+  std::vector<grparse::PlannedCollector> plan;
+  plan.push_back({parsev1::COLLECTOR_LIBREOFFICE, [] { return office_outcome(); }});
+  grparse::PlannedCollector poi;
+  poi.id = parsev1::COLLECTOR_POI;
+  poi.office_fanout = true;
+  const std::string bytes(100, 'x');
+  poi.run = [channel = server.channel(), bytes] {
+    return grparse::collect_poi_document(channel, "doc-9", "book.xlsx", kXlsxMimetype,
+                                         bytes);
+  };
+  plan.push_back(std::move(poi));
+
+  auto result = grparse::run_collectors(std::move(plan), stamped_base(kXlsxMimetype));
+  require(result.succeeded == 2 && result.failures.empty(),
+          "both the primary and the fan-out leg contribute");
+  require(result.warnings.size() == 1 && result.warnings[0].second == "header skipped",
+          "the fan-out leg's warnings still surface");
+
+  require(result.document.texts_size() == 2 &&
+              result.document.texts(0).title().base().text() == "Converted Title" &&
+              result.document.texts(1).text().base().text() == "office paragraph",
+          "the body lands once: none of the fan-out leg's seven texts merge");
+  require(result.document.tables_size() == 0 && result.document.groups_size() == 0 &&
+              result.document.attachments_size() == 0,
+          "the fan-out leg's tables, sheet and slide groups, and attachment "
+          "descriptor drop with its body reading");
+
+  require(result.document.source_meta().title() == "Quarterly Report" &&
+              result.document.source_meta().authors_size() == 1 &&
+              result.document.source_meta().authors(0) == "Alice",
+          "the fan-out leg's metadata lands as the document's own");
+  require(meta_source_of(result.document.source_meta(), "title") != nullptr &&
+              meta_source_of(result.document.source_meta(), "title")->source().collector() == "poi",
+          "poi outranks the converter on OOXML, so its title wins and names poi");
+  require(meta_source_of(result.document.source_meta(), "modified_by") != nullptr &&
+              meta_source_of(result.document.source_meta(), "modified_by")->source().collector() == "poi",
+          "the field only the fan-out leg answered names it");
+  require(result.document.claims_size() == 2 &&
+              result.document.claims(0).source().collector() == "libreoffice" &&
+              result.document.claims(0).source_meta().title() == "Office Title" &&
+              result.document.claims(1).source().collector() == "poi" &&
+              result.document.claims(1).source_meta().title() == "Quarterly Report",
+          "both collectors' accounts stay on the wire whole under their collectors");
+}
+
+// A deployment with poi wired but libreoffice not still routes office
+// uploads to the libreoffice default; that leg fails to dial and the fan-out
+// leg is the only body the parse gets. Its full reading must land.
+void verify_poi_fanout_keeps_its_body_when_the_primary_failed() {
+  FakePoiService service;
+  ServerFixture server(&service);
+
+  std::vector<grparse::PlannedCollector> plan;
+  plan.push_back({parsev1::COLLECTOR_LIBREOFFICE, [] {
+                    grparse::CollectorOutcome outcome;
+                    outcome.error = "libreoffice collector is not configured";
+                    outcome.code = grpc::StatusCode::FAILED_PRECONDITION;
+                    return outcome;
+                  }});
+  grparse::PlannedCollector poi;
+  poi.id = parsev1::COLLECTOR_POI;
+  poi.office_fanout = true;
+  const std::string bytes(100, 'x');
+  poi.run = [channel = server.channel(), bytes] {
+    return grparse::collect_poi_document(channel, "doc-10", "book.xlsx", kXlsxMimetype,
+                                         bytes);
+  };
+  plan.push_back(std::move(poi));
+
+  auto result = grparse::run_collectors(std::move(plan), stamped_base(kXlsxMimetype));
+  require(result.succeeded == 1 && result.failures.size() == 1,
+          "the failed primary degrades and the fan-out leg survives");
+  require(result.document.texts_size() == 7 && result.document.tables_size() == 2 &&
+              result.document.groups_size() == 2 &&
+              result.document.attachments_size() == 1,
+          "with no primary body, the fan-out leg's full reading is the document");
+  require(result.document.source_meta().title() == "Quarterly Report",
+          "its metadata lands either way");
+}
+
 }  // namespace
 
 // ---- calamine ---------------------------------------------------------------
@@ -2042,6 +2184,8 @@ int main() {
       verify_poi_collector_failure_survives_its_code,
       verify_poi_truncated_stream_fails,
       verify_poi_unreachable_endpoint_degrades,
+      verify_poi_fanout_merges_claims_without_a_second_body,
+      verify_poi_fanout_keeps_its_body_when_the_primary_failed,
       verify_calamine_folds_sheets,
       verify_calamine_sheet_failure_still_closes,
       verify_calamine_unreachable_endpoint_degrades,

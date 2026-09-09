@@ -29,7 +29,10 @@ the inspector named. Office plans fan out: a routed office upload keeps
 libreoffice as its default and gains a poi leg (the six OOXML/OLE2 formats)
 or a calamine leg (workbooks, never CSV) whenever those endpoints are
 configured, so the merge sees three readings of the same file and the claim
-ranks decide conflicts. Two
+ranks decide conflicts: the primary's body is the document's body, and a
+fan-out leg whose primary lived merges only its document-level account, its
+own body reading dropped (`retain_claims_only`), while a fan-out leg whose
+primary failed keeps its full reading as the only body. Two
 collectors are never routed to — EBCDIC, because raw records carry no
 trustworthy format signal and a parse needs a caller-supplied layout, and
 lol-html, because it does targeted CSS-selector extraction rather than

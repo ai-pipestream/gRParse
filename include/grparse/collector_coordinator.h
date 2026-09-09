@@ -57,6 +57,12 @@ struct PlannedCollector {
   ai::pipestream::parse::v1::Collector id =
       ai::pipestream::parse::v1::COLLECTOR_UNSPECIFIED;
   std::function<CollectorOutcome()> run;
+  // A routed office fan-out leg (poi or calamine beside the libreoffice
+  // default): it reads the same bytes as the plan's primary, so once an
+  // earlier leg has contributed a body, its own body reading drops and only
+  // its document-level claims merge. Explicit selections never set this:
+  // they stay verbatim, body readings and all.
+  bool office_fanout = false;
 };
 
 // One collector that could not contribute to an otherwise surviving parse.
@@ -80,7 +86,9 @@ struct CoordinatorResult {
 // outputs additively into `base` in plan order, so the merged document is
 // deterministic regardless of finish order. A collector that fails becomes
 // a failure entry; it never sinks the parse while another collector
-// succeeds.
+// succeeds. A leg marked as an office fan-out drops its body reading once an
+// earlier leg has contributed one (see PlannedCollector::office_fanout);
+// its document-level claims still merge and rank.
 CoordinatorResult run_collectors(
     std::vector<PlannedCollector> collectors,
     ai::pipestream::document::v1::Document base);

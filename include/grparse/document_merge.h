@@ -39,6 +39,15 @@ void merge_documents(ai::pipestream::document::v1::Document&& source,
 // before rank.
 int document_claim_rank(const std::string& collector, const std::string& mimetype);
 
+// Reduces `source` to the document-level account the claims machinery keeps
+// (the same set claim_of carries onto Document.claims: source_meta, origin,
+// page_styles, email, media). Arenas, body and furniture children,
+// attachments, named ranges and pages drop. The coordinator applies it to a
+// routed office fan-out leg once the plan's primary has contributed a body:
+// the leg read the same bytes, and merging its reading would print the body
+// a second time, while its claims still merge and rank.
+void retain_claims_only(ai::pipestream::document::v1::Document* source);
+
 // Records `claimant` as the source of every singular field `tracked`
 // currently answers, for a message that carries a `field_sources` list.
 // The service uses it on the identity it stamps before any collector runs.

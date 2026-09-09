@@ -67,6 +67,14 @@ CoordinatorResult run_collectors(std::vector<PlannedCollector> collectors,
           {collectors[index].id, std::move(outcome.error), outcome.code});
       continue;
     }
+    // A fan-out leg reads the same bytes as the plan's primary, so once an
+    // earlier leg has contributed a body, the leg's own body reading would
+    // merge as a second copy of every item. It keeps its document-level
+    // account: that is the leg's claims, and the rank order decides the
+    // fields below.
+    if (collectors[index].office_fanout && result.succeeded > 0) {
+      retain_claims_only(&outcome.document);
+    }
     // The collector's document-level account is kept whole and its
     // answers are attributed, so a value another collector displaces is
     // still on the wire under the collector that gave it.

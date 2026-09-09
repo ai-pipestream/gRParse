@@ -536,6 +536,29 @@ void verify_unnamed_merge_records_nothing() {
   require(target.source_meta().title() == "plain", "and still carried");
 }
 
+// The fan-out reduction keeps exactly the document-level account the claims
+// machinery carries, and drops every reading of the body.
+void verify_retain_claims_only_keeps_the_document_account() {
+  docv1::Document source = collector_document();
+  source.mutable_source_meta()->set_title("from the fan-out leg");
+  source.mutable_origin()->set_filename("book.xlsx");
+  auto* attachment = source.add_attachments();
+  attachment->set_id("ole1");
+  attachment->set_name("chart.xlsx");
+  source.add_named_ranges()->set_name("R");
+
+  grparse::retain_claims_only(&source);
+
+  require(source.texts_size() == 0 && source.tables_size() == 0 &&
+              source.groups_size() == 0 && source.pages_size() == 0 &&
+              source.attachments_size() == 0 && source.named_ranges_size() == 0 &&
+              source.body().children_size() == 0,
+          "arenas, pages, attachments, named ranges and body children drop");
+  require(source.source_meta().title() == "from the fan-out leg" &&
+              source.origin().filename() == "book.xlsx",
+          "the document-level account survives whole");
+}
+
 }  // namespace
 
 int main() {
@@ -551,5 +574,6 @@ int main() {
       verify_standing_is_per_format,
       verify_protomolt_standing,
       verify_unnamed_merge_records_nothing,
+      verify_retain_claims_only_keeps_the_document_account,
   });
 }

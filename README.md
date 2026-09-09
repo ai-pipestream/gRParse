@@ -418,7 +418,14 @@ directly and never by gRParse as collectors (enrich is dialed after the
 merge for the chart derender leg when `GRPARSE_ENRICH_TARGET` names it).
 grPOIc and grpc-calamine stopped being shell-only when their legs were
 wired in above; the merge ranks `poi` and `calamine` claims below
-libreoffice's and gRParse's own (see `document_claim_rank`). fastwarc is
+libreoffice's and gRParse's own (see `document_claim_rank`). A fan-out leg
+reads the same bytes as the routed libreoffice default, so beside a live
+primary its body reading drops and only its document-level account merges
+(`retain_claims_only` in `src/document_merge.cpp`): the merged document
+carries the body once, and the leg's claims still rank. An explicit
+collector selection stays verbatim, readings and all, and a fan-out leg
+whose primary failed keeps its full reading, which is what keeps a
+poi-only deployment parsing. fastwarc is
 the other way round: a collector here, but
 the stack leaves `GRPARSE_FASTWARC_TARGET` unset because the vendored
 `fastwarc.v1` dialect is not wire-compatible with the published image; the
