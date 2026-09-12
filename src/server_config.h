@@ -89,6 +89,11 @@ void report_collector_targets(const CollectorTargets& targets, bool layout_activ
 // The unary executor's pool: GRPARSE_UNARY_WORKERS and GRPARSE_UNARY_QUEUE.
 CallExecutor::Options read_executor_options();
 
+// GRPARSE_EMBEDDING_BACKEND=off (default), cpu, openvino, or tensorrt. This
+// selection is independent of OCR's GRPARSE_ORT_EP. Model artifacts are read
+// only when explicitly enabled. See embedding.h for the backend factory.
+EmbeddingConfig read_embedding_config(const std::filesystem::path& models_dir);
+
 // GRPARSE_REPAIR: on (default) runs the post-merge repair pass on every
 // finished Document (running headers and footers demoted to furniture,
 // line-break hyphenation rejoined, paragraphs a page break split merged);

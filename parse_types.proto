@@ -651,6 +651,56 @@ message ConvertDocumentResponse {
   optional TargetResult target_result = 7;
 }
 
+// Embeddings are opt-in on the two implemented synchronous chunk RPCs.
+// Async/watch RPCs remain UNIMPLEMENTED, including for embedding requests.
+enum EmbeddingTextMode {
+  EMBEDDING_TEXT_MODE_UNSPECIFIED = 0; // Same as TEXT.
+  EMBEDDING_TEXT_MODE_TEXT = 1;        // Chunk.text verbatim.
+  EMBEDDING_TEXT_MODE_CONTEXTUALIZED = 2; // Each heading + "\n", then Chunk.text.
+}
+
+message EmbeddingOptions {
+  bool enabled = 1;
+  // Optional assertion against the server's loaded model, never a download
+  // instruction. Only sentence-transformers/all-MiniLM-L6-v2 is supported.
+  optional string model_id = 2;
+  EmbeddingTextMode text_mode = 3;
+  // Optional smaller batch bound; must be in [1, advertised max_batch_size].
+  optional uint32 batch_size = 4;
+  // With enabled=false, all other options must be absent/default.
+}
+
+message EmbeddingModel {
+  string model_id = 1;
+  // Immutable artifact revision covering weights and tokenizer.
+  string revision = 2;
+  string backend = 3; // cpu (ORT), openvino (native), tensorrt (native).
+  uint32 dimensions = 4; // 384 for all-MiniLM-L6-v2.
+  string pooling = 5; // attention-mask-mean
+  bool normalized = 6; // L2 normalization, always true for the supported model.
+  uint32 max_input_tokens = 7; // 256, including CLS/SEP.
+}
+
+message ChunkEmbedding {
+  repeated float values = 1 [packed = true];
+  EmbeddingModel model = 2;
+  // Exact UTF-8 input passed to the model tokenizer; no added model prefixes.
+  // Input exceeding max_input_tokens fails the RPC with INVALID_ARGUMENT;
+  // it is never silently truncated. Chunk.num_tokens uses the CHUNK tokenizer
+  // and is not a promise that this model's token budget will fit.
+  string embedded_text = 3;
+  EmbeddingTextMode text_mode = 4;
+}
+
+message EmbeddingCapabilities {
+  bool available = 1;
+  EmbeddingModel model = 2; // Populated only when an engine is loaded.
+  uint32 max_batch_size = 3;
+  uint64 max_batch_bytes = 4; // UTF-8 input bytes, including headings if selected.
+  uint64 max_response_bytes = 5; // Sum of serialized ChunkEmbedding messages.
+  repeated EmbeddingTextMode text_modes = 6;
+}
+
 // HierarchicalChunkerOptions configures the hierarchical chunker.
 message HierarchicalChunkerOptions {
   bool use_markdown_tables = 1;
@@ -683,6 +733,7 @@ message HierarchicalChunkRequest {
   optional Target target = 3;
   bool include_converted_doc = 4;
   HierarchicalChunkerOptions chunking_options = 5;
+  EmbeddingOptions embedding_options = 6;
 }
 
 // HybridChunkRequest mirrors POST /v1/chunk/hybrid/source
@@ -692,6 +743,7 @@ message HybridChunkRequest {
   optional Target target = 3;
   bool include_converted_doc = 4;
   HybridChunkerOptions chunking_options = 5;
+  EmbeddingOptions embedding_options = 6;
 }
 
 // Chunk represents a single document chunk in the response.
@@ -730,6 +782,8 @@ message Chunk {
   //                 (one line on the wire, T "wordish/1" or "hf/1",
   //                  N decimal, B "true" or "false")
   string rules_digest = 13;
+  // Absent unless explicitly requested and every embedding batch succeeded.
+  ChunkEmbedding embedding = 14;
 }
 
 // ChunkDocumentResponse mirrors the REST chunk response body.

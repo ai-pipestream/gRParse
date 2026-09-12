@@ -111,6 +111,60 @@ Determinism is the point: the same input bytes produce the same chunk bytes on e
 
 A chunk reports `start_offset` and `end_offset` as UTF-8 code point positions in the document's concatenated body text whenever the parse supplied an offset table for every text item the chunk consumed; otherwise both stay unset rather than being guessed.
 
+#### Optional local embeddings
+
+The two synchronous chunk RPCs accept `embedding_options.enabled=true` to attach
+`Chunk.embedding` after chunking. Without that opt-in, chunk output and model
+usage are unchanged. Async/watch chunk RPCs remain `UNIMPLEMENTED`, including
+requests with embedding options. Embeddings live in `parse_types.proto`; the
+fleet's `document.proto` is unchanged.
+
+The supported model is `sentence-transformers/all-MiniLM-L6-v2`, FP32 revision
+`826711e54e001c83835913827a843d8dd0a1def9`: 384 dimensions, attention-mask mean
+pooling, L2 normalization, no text prefixes, and at most 256 tokens including
+CLS/SEP. CPU uses ONNX Runtime CPU; Intel uses native OpenVINO on a GPU;
+NVIDIA uses native TensorRT. All three use the same tokenizer and pooling
+contract. Floating-point results can differ across runtimes; the chunk boundary
+determinism guarantee above applies to the preexisting chunk fields.
+
+Server configuration is independent of `GRPARSE_ORT_EP`:
+
+```bash
+GRPARSE_EMBEDDING_BACKEND=cpu          # off (default), cpu, openvino, tensorrt
+GRPARSE_EMBEDDING_MODEL_DIR=/models/embeddings # default: $GRPARSE_MODELS_DIR/embeddings
+GRPARSE_EMBEDDING_DEVICE=GPU           # OpenVINO: GPU or GPU.<index>
+GRPARSE_EMBEDDING_GPU_INDEX=0          # TensorRT GPU ordinal
+GRPARSE_EMBEDDING_BATCH_SIZE=32        # capped by the loaded engine's limit
+GRPARSE_EMBEDDING_BATCH_BYTES=1048576  # UTF-8 input bytes per batch
+GRPARSE_EMBEDDING_RESPONSE_BYTES=67108864 # sum of serialized embedding messages
+```
+
+Explicit backend selection fails startup if the backend or verified model files
+are unavailable; there is no backend fallback. `GetServiceInfo.embeddings`
+reports the loaded model and effective bounds, and is absent when disabled.
+Requests may assert `embedding_options.model_id` and choose a smaller positive
+`batch_size`. `text_mode=EMBEDDING_TEXT_MODE_TEXT` (also the default) embeds
+`Chunk.text` verbatim. `EMBEDDING_TEXT_MODE_CONTEXTUALIZED` prepends each heading
+followed by a newline. Every result carries that exact tokenizer input as
+`embedded_text`, plus the artifact revision, backend, dimensions and pooling
+identity. Other options alongside `enabled=false` are rejected.
+
+Invalid options fail before parsing. Oversized tokenized input fails with
+`INVALID_ARGUMENT`, never truncation; byte-budget exhaustion returns
+`RESOURCE_EXHAUSTED`. Requesting embeddings on a disabled server returns
+`FAILED_PRECONDITION`. Batches run in order, check cancellation before and
+after inference, and attach no embeddings unless every batch succeeds. Native
+device calls may finish before cancellation can be observed; their results are
+discarded when the request is cancelled. Inference failures fail the RPC rather
+than returning an apparently complete set of partially embedded chunks.
+
+For token-aware chunking, select hybrid `tokenizer="hf/1"`, point
+`tokenizer_path` at the same pinned embedding `tokenizer.json`, and use
+`max_tokens=254` to reserve CLS/SEP. The chunk counter includes headings and
+excludes special tokens. It is guidance rather than an acceptance guarantee:
+unsplittable content or an oversized heading trail can still exceed the model
+limit, which the embedding tokenizer checks independently.
+
 The `Health` RPC reports readiness. The server intentionally fails at startup if a required model is absent or the OCR sessions cannot initialize on the configured provider, instead of silently running CPU OCR. The optional layout, table, and figure models are the one exception: a provider that will not build one of those graphs costs that model its acceleration, not the whole server, and the session is rebuilt on CPU with the provider's own error logged. The `GetServiceInfo` RPC reports the service name, build version, and the shared-shell UI advertisement (`UiInfo`: tab title, mount path, tooltip).
 
 To stream a PDF with the supplied client, start the service and run:

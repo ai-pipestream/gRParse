@@ -104,6 +104,12 @@ std::string resolve_hf_tokenizer_path(std::string_view per_request_path);
 // INVALID_ARGUMENT naming the file.
 grpc::Status load_hf_tokenizer_json(std::string_view path, std::string* json_out);
 
+// Pure counterpart for already-verified bytes. `source_name` is used only in
+// diagnostics, with the same error wording as the file loader. Never opens a
+// path. json_out owns the stripped JSON on success and is unchanged on failure.
+grpc::Status strip_hf_tokenizer_json(std::string_view raw, std::string_view source_name,
+                                     std::string* json_out);
+
 // The boundary-deciding counter of the hybrid chunker. The default
 // constructor is wordish/1; TokenCounter::huggingface loads hf/1. Copies are
 // disabled because the hf/1 state is an FFI handle.
