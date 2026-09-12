@@ -1,0 +1,11 @@
+# sentence-transformers/all-MiniLM-L6-v2
+# Revision: 826711e54e001c83835913827a843d8dd0a1def9
+#
+# path  sha256  size-in-bytes  group  license  immutable-url
+# group is common, onnx, or openvino. The fetch script selects common plus
+# the requested backend. All artifacts are fp32 and come from the same revision.
+
+tokenizer.json       be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037 466247   common    Apache-2.0 https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/826711e54e001c83835913827a843d8dd0a1def9/tokenizer.json
+model.onnx           6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452 90405214 onnx      Apache-2.0 https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/826711e54e001c83835913827a843d8dd0a1def9/onnx/model.onnx
+openvino_model.xml   f87dd1482b2a745f8c699b81ddd9cbcad666a193be4693abcea44b7ac8c67c1e 211315   openvino  Apache-2.0 https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/826711e54e001c83835913827a843d8dd0a1def9/openvino/openvino_model.xml
+openvino_model.bin   8b86cab4722e2aefab310cf96d4d5a9eb3b187f7d9670a082afc55c7fa0d392a 90265744 openvino  Apache-2.0 https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/826711e54e001c83835913827a843d8dd0a1def9/openvino/openvino_model.bin

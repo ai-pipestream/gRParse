@@ -77,14 +77,16 @@ class FakeRecognizer final : public grparse::PageRecognizer {
 
 class TestServer final {
  public:
-  explicit TestServer(std::chrono::milliseconds inference_delay = 0ms, bool digital = false)
+  explicit TestServer(std::chrono::milliseconds inference_delay = 0ms, bool digital = false,
+                      std::shared_ptr<grparse::EmbeddingEngine> embeddings = {})
       : recognizer_(inference_delay),
         scheduler_(recognizer_, {2, 3, 2, 3, 2, 2, 2},
                    [this, digital](std::shared_ptr<const std::string>, bool, double render_dpi) {
                      last_render_dpi_.store(render_dpi);
                      return std::make_shared<FakeSource>(digital);
                    }),
-        parser_service_(scheduler_, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{})),
+        parser_service_(scheduler_, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{}),
+                        grparse::CallExecutor::Options{}, grparse::RepairOptions{}, std::move(embeddings)),
         streaming_service_(scheduler_, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{})) {
     grpc::ServerBuilder builder;
     builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port_);
@@ -1619,6 +1621,7 @@ void verify_hierarchical_chunk_rpc_carries_digest_and_offsets(TestServer* server
   for (int index = 0; index < chunks.size(); ++index) {
     const auto& chunk = chunks.Get(index);
     require(chunk.text() == expected.at(static_cast<size_t>(index)), "chunk text");
+    require(!chunk.has_embedding(), "embeddings remain absent by default");
     require(chunk.filename() == "image.png", "every chunk names its source file");
     require(chunk.chunk_index() == index, "chunk_index is the emission ordinal");
     require(chunk.rules_digest() == "grparse-hier/1", "the hierarchical rules digest rides out");
@@ -1689,6 +1692,180 @@ void verify_hybrid_chunk_rpc_merges_and_validates(TestServer* server) {
           "the rejection lists what is supported: " + tokenizer_status.error_message());
 }
 
+// These RPC tests exercise orchestration, not model quality. Native model
+// acceptance is a separate gate against the packaged artifacts.
+class RecordingEmbedder final : public grparse::EmbeddingEngine {
+ public:
+  grparse::EmbeddingModelIdentity identity() const override {
+    return {"sentence-transformers/all-MiniLM-L6-v2",
+            "826711e54e001c83835913827a843d8dd0a1def9", "cpu", "attention-mask-mean",
+            384, 256, true};
+  }
+  std::size_t max_batch_size() const override { return 2; }
+  grpc::Status embed(const std::vector<std::string>& texts,
+                     const grparse::EmbeddingCancelled& cancelled,
+                     grparse::EmbeddingBatchResult* result) override {
+    const auto call = calls.fetch_add(1) + 1;
+    if (wait_for_cancel.load()) {
+      while (!cancelled()) std::this_thread::sleep_for(5ms);
+      cancelled_seen.store(true);
+      return {grpc::StatusCode::CANCELLED, "embedding cancelled"};
+    }
+    if (fail_on_call.load() == call) return {grpc::StatusCode::INTERNAL, "inference failed"};
+    require(texts.size() <= max_batch_size(), "RPC exceeded engine batch bound");
+    result->model = identity();
+    for (const auto& text : texts) {
+      require(!text.empty(), "test source has nonempty embedding input");
+      std::vector<float> vector(384, 0.0f);
+      vector[0] = 1.0f;
+      result->vectors.push_back(std::move(vector));
+    }
+    return grpc::Status::OK;
+  }
+  std::atomic<int> calls{0};
+  std::atomic<int> fail_on_call{0};
+  std::atomic<bool> wait_for_cancel{false};
+  std::atomic<bool> cancelled_seen{false};
+};
+
+void verify_chunk_embeddings_rpc() {
+  namespace parsev1 = pipestream::parse::v1;
+  auto engine = std::make_shared<RecordingEmbedder>();
+  TestServer server(0ms, false, engine);
+  auto client = server.unary_stub();
+  parsev1::ChunkHierarchicalSourceRequest request;
+  auto* source = request.mutable_request()->add_sources()->mutable_file();
+  source->set_filename("image.png");
+  source->set_base64_string("bWVtb3J5");
+  parsev1::ChunkHierarchicalSourceResponse baseline;
+  grpc::ClientContext baseline_context;
+  require(client->ChunkHierarchicalSource(&baseline_context, request, &baseline).ok(),
+          "baseline chunk RPC failed");
+  require(engine->calls.load() == 0, "configured engine must stay idle without opt-in");
+
+  request.mutable_request()->mutable_embedding_options()->set_enabled(true);
+  parsev1::ChunkHierarchicalSourceResponse embedded;
+  grpc::ClientContext context;
+  require(client->ChunkHierarchicalSource(&context, request, &embedded).ok(),
+          "embedding hierarchical RPC failed");
+  require(engine->calls.load() == 2, "three chunks must respect engine batch size two");
+  require(embedded.response().chunks_size() == baseline.response().chunks_size(),
+          "embedding changed chunk boundaries");
+  for (int i = 0; i < embedded.response().chunks_size(); ++i) {
+    auto value = embedded.response().chunks(i);
+    require(value.embedding().values_size() == 384 &&
+                value.embedding().embedded_text() == value.text() &&
+                value.embedding().model().revision() == engine->identity().revision,
+            "embedding vectors, exact input and artifact provenance must ride out");
+    value.clear_embedding();
+    require(value.SerializeAsString() == baseline.response().chunks(i).SerializeAsString(),
+            "embedding must preserve every preexisting chunk field");
+  }
+  parsev1::ChunkHybridSourceRequest hybrid;
+  *hybrid.mutable_request()->mutable_sources() = request.request().sources();
+  hybrid.mutable_request()->mutable_chunking_options()->set_max_tokens(8);
+  hybrid.mutable_request()->mutable_embedding_options()->set_enabled(true);
+  parsev1::ChunkHybridSourceResponse hybrid_response;
+  grpc::ClientContext hybrid_context;
+  require(client->ChunkHybridSource(&hybrid_context, hybrid, &hybrid_response).ok(),
+          "embedding hybrid RPC failed");
+  require(hybrid_response.response().chunks_size() == 1 &&
+              hybrid_response.response().chunks(0).embedding().embedded_text() == "one\ntwo\nthree",
+          "hybrid must embed the final merged chunk");
+
+  const int parses = server.recognizer_calls();
+  request.mutable_request()->mutable_embedding_options()->set_batch_size(3);
+  grpc::ClientContext invalid_context;
+  parsev1::ChunkHierarchicalSourceResponse invalid;
+  require(client->ChunkHierarchicalSource(&invalid_context, request, &invalid).error_code() ==
+              grpc::StatusCode::INVALID_ARGUMENT && server.recognizer_calls() == parses,
+          "invalid embedding options must fail before parsing");
+  request.mutable_request()->mutable_embedding_options()->clear_batch_size();
+  hybrid.mutable_request()->mutable_embedding_options()->set_model_id("unknown-model");
+  grpc::ClientContext invalid_hybrid_context;
+  require(client->ChunkHybridSource(&invalid_hybrid_context, hybrid, &hybrid_response).error_code() ==
+              grpc::StatusCode::INVALID_ARGUMENT && server.recognizer_calls() == parses,
+          "hybrid embedding validation must also precede parsing");
+
+  engine->fail_on_call.store(engine->calls.load() + 2);
+  grpc::ClientContext failure_context;
+  parsev1::ChunkHierarchicalSourceResponse failure;
+  require(client->ChunkHierarchicalSource(&failure_context, request, &failure).error_code() ==
+              grpc::StatusCode::INTERNAL,
+          "a failed second embedding batch must fail the whole RPC");
+  require(failure.response().chunks().empty(), "a failed RPC must not return a successful prefix");
+
+  grpc::ClientContext info_context;
+  parsev1::GetServiceInfoResponse info;
+  require(client->GetServiceInfo(&info_context, {}, &info).ok() &&
+              info.embeddings().available() && info.embeddings().max_batch_size() == 2 &&
+              info.embeddings().model().dimensions() == 384,
+          "capabilities must report the loaded engine and its effective batch bound");
+
+  engine->wait_for_cancel.store(true);
+  grpc::ClientContext deadline_context;
+  deadline_context.set_deadline(std::chrono::system_clock::now() + 1s);
+  parsev1::ChunkHierarchicalSourceResponse deadline_response;
+  require(client->ChunkHierarchicalSource(&deadline_context, request, &deadline_response).error_code() ==
+              grpc::StatusCode::DEADLINE_EXCEEDED,
+          "deadline must cancel an in-flight embedding RPC");
+  for (int i = 0; i < 200 && !engine->cancelled_seen.load(); ++i) std::this_thread::sleep_for(5ms);
+  require(engine->cancelled_seen.load(), "embedding engine did not observe RPC cancellation");
+}
+
+void verify_disabled_embeddings_and_unimplemented_chunk_rpcs(TestServer* server) {
+  namespace parsev1 = pipestream::parse::v1;
+  auto client = server->unary_stub();
+  const int parses = server->recognizer_calls();
+  parsev1::ChunkHierarchicalSourceRequest request;
+  request.mutable_request()->mutable_embedding_options()->set_enabled(true);
+  grpc::ClientContext context;
+  parsev1::ChunkHierarchicalSourceResponse response;
+  require(client->ChunkHierarchicalSource(&context, request, &response).error_code() ==
+              grpc::StatusCode::FAILED_PRECONDITION && server->recognizer_calls() == parses,
+          "disabled embedding request must fail before source parsing");
+  parsev1::ChunkHybridSourceRequest hybrid;
+  hybrid.mutable_request()->mutable_chunking_options()->set_max_tokens(8);
+  hybrid.mutable_request()->mutable_embedding_options()->set_enabled(true);
+  grpc::ClientContext hybrid_context;
+  parsev1::ChunkHybridSourceResponse hybrid_response;
+  require(client->ChunkHybridSource(&hybrid_context, hybrid, &hybrid_response).error_code() ==
+              grpc::StatusCode::FAILED_PRECONDITION,
+          "hybrid must also refuse embeddings when disabled");
+  grpc::ClientContext info_context;
+  parsev1::GetServiceInfoResponse info;
+  require(client->GetServiceInfo(&info_context, {}, &info).ok() && !info.has_embeddings(),
+          "disabled service info must retain its old wire output");
+
+  parsev1::ChunkHierarchicalSourceAsyncRequest async_request;
+  *async_request.mutable_request() = request.request();
+  parsev1::ChunkHierarchicalSourceAsyncResponse async_response;
+  grpc::ClientContext async_context;
+  require(client->ChunkHierarchicalSourceAsync(&async_context, async_request, &async_response).error_code() ==
+              grpc::StatusCode::UNIMPLEMENTED, "async hierarchical remains unimplemented");
+  parsev1::ChunkHybridSourceAsyncRequest async_hybrid;
+  *async_hybrid.mutable_request() = hybrid.request();
+  parsev1::ChunkHybridSourceAsyncResponse async_hybrid_response;
+  grpc::ClientContext async_hybrid_context;
+  require(client->ChunkHybridSourceAsync(&async_hybrid_context, async_hybrid, &async_hybrid_response).error_code() ==
+              grpc::StatusCode::UNIMPLEMENTED, "async hybrid remains unimplemented");
+  parsev1::WatchChunkHierarchicalSourceRequest watch_request;
+  *watch_request.mutable_request() = request.request();
+  grpc::ClientContext watch_context;
+  auto watch = client->WatchChunkHierarchicalSource(&watch_context, watch_request);
+  parsev1::WatchChunkHierarchicalSourceResponse watch_response;
+  require(!watch->Read(&watch_response) && watch->Finish().error_code() == grpc::StatusCode::UNIMPLEMENTED,
+          "watch hierarchical remains unimplemented");
+  parsev1::WatchChunkHybridSourceRequest watch_hybrid;
+  *watch_hybrid.mutable_request() = hybrid.request();
+  grpc::ClientContext watch_hybrid_context;
+  auto hybrid_watch = client->WatchChunkHybridSource(&watch_hybrid_context, watch_hybrid);
+  parsev1::WatchChunkHybridSourceResponse watch_hybrid_response;
+  require(!hybrid_watch->Read(&watch_hybrid_response) &&
+              hybrid_watch->Finish().error_code() == grpc::StatusCode::UNIMPLEMENTED,
+          "watch hybrid remains unimplemented");
+}
+
 }  // namespace
 
 int main() {
@@ -1723,6 +1900,8 @@ int main() {
         verify_streaming_pdf_classification_restricts_recognition();
         verify_hierarchical_chunk_rpc_carries_digest_and_offsets(&server);
         verify_hybrid_chunk_rpc_merges_and_validates(&server);
+        verify_chunk_embeddings_rpc();
+        verify_disabled_embeddings_and_unimplemented_chunk_rpcs(&server);
       },
   });
 }

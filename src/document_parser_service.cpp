@@ -210,10 +210,13 @@ grpc::ServerUnaryReactor* finish_inline(grpc::CallbackServerContext* context,
 DocumentParserService::DocumentParserService(PageScheduler& scheduler,
                                              std::shared_ptr<CollectorEndpoints> endpoints,
                                              CallExecutor::Options executor_options,
-                                             std::optional<RepairOptions> repair)
+                                             std::optional<RepairOptions> repair,
+                                             std::shared_ptr<EmbeddingEngine> embedding_engine,
+                                             EmbeddingConfig embedding_config)
     : scheduler_(scheduler),
       endpoints_(std::move(endpoints)),
       repair_(std::move(repair)),
+      embedder_(std::move(embedding_engine), std::move(embedding_config)),
       executor_(executor_options) {}
 
 grpc::ServerUnaryReactor* DocumentParserService::ConvertSource(
@@ -281,6 +284,8 @@ grpc::ServerUnaryReactor* DocumentParserService::ChunkHierarchicalSource(
   return new ParseUnaryReactor(context, executor_, [this, context, request, response] {
     const auto started = std::chrono::steady_clock::now();
     const auto& chunk_request = request->request();
+    const auto embedding_status = embedder_.validate(chunk_request.embedding_options());
+    if (!embedding_status.ok()) return embedding_status;
     SourceParse parsed;
     pipestream::parse::v1::ConvertDocumentRequest convert;
     *convert.mutable_sources() = chunk_request.sources();
@@ -292,8 +297,12 @@ grpc::ServerUnaryReactor* DocumentParserService::ChunkHierarchicalSource(
     auto* chunked = response->mutable_response();
     const chunking::ChunkOptions options{chunk_request.chunking_options().use_markdown_tables(),
                                          chunk_request.chunking_options().include_raw_text()};
-    for (auto& chunk : chunking::chunk_hierarchical(parsed.result.document, parsed.offsets,
-                                                    options, parsed.filename.string())) {
+    auto chunks = chunking::chunk_hierarchical(parsed.result.document, parsed.offsets,
+                                              options, parsed.filename.string());
+    const auto embedded = embedder_.embed(chunk_request.embedding_options(),
+                                          [context] { return context->IsCancelled(); }, &chunks);
+    if (!embedded.ok()) return embedded;
+    for (auto& chunk : chunks) {
       *chunked->add_chunks() = std::move(chunk);
     }
     if (chunk_request.include_converted_doc()) {
@@ -318,6 +327,8 @@ grpc::ServerUnaryReactor* DocumentParserService::ChunkHybridSource(
     const grpc::Status option_status =
         chunking::validate_hybrid_options(chunk_request.chunking_options());
     if (!option_status.ok()) return option_status;
+    const auto embedding_status = embedder_.validate(chunk_request.embedding_options());
+    if (!embedding_status.ok()) return embedding_status;
     SourceParse parsed;
     pipestream::parse::v1::ConvertDocumentRequest convert;
     *convert.mutable_sources() = chunk_request.sources();
@@ -333,6 +344,9 @@ grpc::ServerUnaryReactor* DocumentParserService::ChunkHybridSource(
                                chunk_request.chunking_options(), parsed.filename.string(),
                                &chunks);
     if (!chunk_status.ok()) return chunk_status;
+    const auto embedded = embedder_.embed(chunk_request.embedding_options(),
+                                          [context] { return context->IsCancelled(); }, &chunks);
+    if (!embedded.ok()) return embedded;
     for (auto& chunk : chunks) {
       *chunked->add_chunks() = std::move(chunk);
     }
@@ -364,6 +378,8 @@ grpc::ServerUnaryReactor* DocumentParserService::GetServiceInfo(
   ui->set_title("gRParse");
   ui->set_path("/ui/grparse");
   ui->set_description("Diskless PDF/image to page-streamed protobuf with OCR and layout");
+  const auto embeddings = embedder_.capabilities();
+  if (embeddings.available()) *response->mutable_embeddings() = embeddings;
   return finish_inline(context, grpc::Status::OK);
 }
 

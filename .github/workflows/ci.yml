@@ -32,6 +32,22 @@ jobs:
         run: docker build --progress=plain -f Dockerfile.openvino -t grparse-ci-openvino .
       - name: Boot-proof the runtime image
         run: ./scripts/smoke-test.sh grparse-ci-openvino
+      - name: Verify model fetch and real CPU embeddings
+        # Exercise the CPU reference through the shipped executable. GPU
+        # inference still requires separate tests on physical hardware.
+        run: |
+          bash scripts/test/fetch-embedding-model-test.sh
+          scripts/fetch-embedding-model.sh --backend all --dir "$RUNNER_TEMP/embedding-model"
+          docker run --rm --read-only --tmpfs /tmp --cpus 2 --memory 2g \
+            -v "$RUNNER_TEMP/embedding-model:/embedding-models:ro" \
+            -e GRPARSE_EMBEDDING_TEST_MODELS=/embedding-models \
+            -e GRPARSE_EMBEDDING_TEST_REQUIRE=1 \
+            --entrypoint grparse-embedding-check grparse-ci-openvino
+          docker run --rm --read-only --tmpfs /tmp --cpus 2 --memory 2g \
+            -v "$RUNNER_TEMP/embedding-model:/embedding-models:ro" \
+            -e GRPARSE_EMBEDDING_TEST_MODELS=/embedding-models \
+            -e GRPARSE_EMBEDDING_TEST_REQUIRE=1 \
+            --entrypoint grparse-embedding-reference grparse-ci-openvino
 
   # The demo shell image carries every peer's proto contract (vendored under
   # examples/web-demo/peer-protos); the Dockerfile's own build gate loads

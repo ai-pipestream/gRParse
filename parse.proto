@@ -107,6 +107,7 @@ message GetServiceInfoResponse {
   string name = 1;     // repo name, e.g. "gRParse"
   string version = 2;  // build version
   UiInfo ui = 3;
+  EmbeddingCapabilities embeddings = 4;
 }
 
 // --- Convert ---

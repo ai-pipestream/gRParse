@@ -299,7 +299,10 @@ int main() {
     std::println("gRParse unary executor: {} workers, queue {}", executor_options.workers,
                  executor_options.queue_capacity);
     const std::optional<grparse::RepairOptions> repair = grparse::configure_repair();
-    grparse::DocumentParserService service(scheduler, endpoints, executor_options, repair);
+    const auto embedding_config = grparse::read_embedding_config(process.models_dir);
+    const auto embedding_engine = grparse::make_embedding_engine(embedding_config);
+    grparse::DocumentParserService service(scheduler, endpoints, executor_options, repair,
+                                          embedding_engine, embedding_config);
     grparse::DocumentStreamingService streaming_service(scheduler, endpoints, repair);
     const auto server = start_server(process.listen_address, service, streaming_service,
                                      grparse::read_grpc_limits());

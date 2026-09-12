@@ -1,0 +1,16 @@
+# Opt-in local embeddings for the gRParse stack. Populate the host directory
+# first with:
+#
+#   scripts/fetch-embedding-model.sh --backend onnx
+#
+# Layer this file after compose.stack.yaml and the execution-provider overlay,
+# if any. CPU is the default; select openvino or tensorrt explicitly with
+# GRPARSE_EMBEDDING_BACKEND. The server fails startup when the selected backend
+# or hash-verified artifacts are unavailable and never falls back.
+services:
+  grparse:
+    environment:
+      GRPARSE_EMBEDDING_BACKEND: "${GRPARSE_EMBEDDING_BACKEND:-cpu}"
+      GRPARSE_EMBEDDING_MODEL_DIR: /embedding-models
+    volumes:
+      - ./models/embeddings/all-MiniLM-L6-v2:/embedding-models:ro

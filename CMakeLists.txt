@@ -1054,3 +1054,5 @@ if(BUILD_TESTING)
     target_include_directories(${test_name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
   endforeach()
 endif()
+
+include(cmake/Embeddings.cmake)
