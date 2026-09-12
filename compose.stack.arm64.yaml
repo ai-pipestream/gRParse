@@ -1,0 +1,53 @@
+# ARM64 overlay: run the demo stack on arm64 hosts (Apple Silicon Macs, ARM
+# servers). Layer it last, after the CPU overlay:
+#
+#   docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml -f compose.stack.arm64.yaml up
+#   docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml -f compose.stack.arm64.yaml --profile parsers up
+#
+# Why a separate file: every published image in the stack is multi-arch and
+# runs natively on arm64, except the three PDF backend services. Those
+# repos are private, GitHub's free arm runners do not cover private repos,
+# and an emulated C++ build takes hours (workspace AGENTS.md, "Publishing
+# images"). Their images have no arm64 manifest to pull, so this overlay
+# pins each of them to linux/amd64 and lets the host's binfmt_misc QEMU
+# handler run them under emulation. Docker Desktop ships that handler; on a
+# bare Linux arm64 host install it once, e.g.
+#   docker run --privileged --rm tonistiigi/binfmt --install amd64
+# Without it the pinned containers fail at start with "exec format error".
+#
+# What it changes, and why:
+#   - swaps gRParse to the multi-arch CPU image (same three keys as
+#     compose.stack.cpu.yaml, repeated so this file suffices on its own;
+#     layering both is harmless, they agree),
+#   - pins pdfium, qparse, and poppler (the opt-in `pdf-backends` profile)
+#     to linux/amd64. gRParse probes each backend once at startup and
+#     permanently drops a slow or late one, and emulation makes the workers
+#     slower to spawn, so a cold `up` can outrun the probe (the race
+#     documented at the pdfium service); start the profile first or restart
+#     grparse. GRPARSE_PDF_BACKEND is unset in the stack, so not enabling
+#     the profile loses nothing: the in-process poppler path answers,
+#   - the openvino overlay stays Intel-only (amd64 by nature); do not layer
+#     it on arm64.
+#
+# `up --build` on an arm64 host builds the pinned services' Dockerfiles for
+# amd64 under emulation - hours for these C++ trees. Run from the published
+# images, or build on an amd64 host and `docker save | ssh <host> docker
+# load` (the second-host recipe in AGENTS.md).
+services:
+  grparse:
+    image: pipestreamai/grparse:${STACK_TAG:-latest}-cpu
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
+    gpus: !reset null
+    environment:
+      GRPARSE_ORT_EP: cpu
+
+  pdfium:
+    platform: linux/amd64
+
+  qparse:
+    platform: linux/amd64
+
+  poppler:
+    platform: linux/amd64

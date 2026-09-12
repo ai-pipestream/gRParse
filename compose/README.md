@@ -17,10 +17,11 @@ opening more of the stack to the outside.
 
 ## Running without an NVIDIA GPU (macOS, plain Linux)
 
-Every published image in the stack is multi-arch (amd64 + arm64),
-including `pipestreamai/grparse:latest-cpu`, the Dockerfile.cpu build of
-gRParse against ONNX Runtime's plain CPU package (each architecture built
-and tested natively in CI, with provenance and SBOM attestations attached;
+Every published image in the stack is multi-arch (amd64 + arm64) except
+the three PDF backend services (see the ARM64 note below). That includes
+`pipestreamai/grparse:latest-cpu`, the Dockerfile.cpu build of gRParse
+against ONNX Runtime's plain CPU package (each architecture built and
+tested natively in CI, with provenance and SBOM attestations attached;
 see `docs/RELEASING.md`). The CPU overlay makes the stack run natively
 anywhere Docker does - Apple Silicon included, with no emulation:
 
@@ -35,6 +36,31 @@ The overlay swaps gRParse to the CPU image, drops the `gpus: all`
 reservation, and sets `GRPARSE_ORT_EP=cpu` (a deliberate provider choice;
 the server never falls back silently). Inference is slower on CPU than on
 a GPU, but the whole demo works.
+
+### ARM64 hosts and the pdf-backends profile
+
+The three PDF backend services (`pdfium`, `qparse`, `poppler`, the opt-in
+`pdf-backends` profile) publish amd64 only: their repos are private, and
+GitHub's free arm runners cover public repos only. On an arm64 host the
+stack runs natively under the CPU overlay until that profile enters the
+picture; to use it, layer `compose.stack.arm64.yaml` last. It repeats the
+CPU swap and pins the three images to `linux/amd64`, which runs them under
+the host's binfmt_misc QEMU handler:
+
+```sh
+docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml -f compose.stack.arm64.yaml --profile pdf-backends up
+```
+
+Docker Desktop (macOS) ships the QEMU handler; a bare Linux arm64 host
+needs it once (`docker run --privileged --rm tonistiigi/binfmt --install
+amd64`, or the qemu-user-static package), or the pinned containers fail at
+start with "exec format error". Emulation makes the backend worker pools
+slower to spawn, and gRParse probes each backend once at ITS startup, so a
+cold `up` can outrun the probe: start the profile first or restart
+`grparse` after it (the race is documented at the pdfium service in
+`compose.stack.yaml`). `GRPARSE_PDF_BACKEND` is unset by default, so
+skipping the profile loses nothing: gRParse's in-process poppler path
+answers. Do not layer the openvino overlay on arm64; it is Intel-only.
 
 gRParse's model files still need to exist in `models/` first:
 `scripts/fetch-models.sh` fetches and sha256-checks them (see
