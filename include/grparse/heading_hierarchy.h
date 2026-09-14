@@ -22,11 +22,32 @@ namespace grparse {
 // section one level down.
 
 struct HeadingOptions {
+  // The whole pass. Off, assign_section_header_levels sets every undecided
+  // (level 0) header to level 1 and elects no title; infer_heading_hierarchy
+  // itself always runs, its callers consult this.
+  bool enabled = true;
   // Collectors whose heading levels are guesses from geometry, re-derived
   // here over the whole document; any other producer's nonzero level wins.
   std::vector<std::string> geometry_collectors{"pdf"};
   // Fold consecutive title lines on the first page into one item.
   bool merge_title_lines = true;
+  // Read numbering in the heading text ("1.1", "A.", "IV", "Appendix B")
+  // and the all-caps section words as depth. Off, every heading is
+  // unnumbered.
+  bool use_numbering = true;
+  // Decide by measured size what numbering did not: cluster heights, take
+  // the nearest numbered cluster, elect a title by size. Off, every
+  // undecided heading is depth 1 and no title is elected.
+  bool use_style = true;
+  // The deepest level assigned, 1..6.
+  int max_level = 6;
+  // How much smaller a heading must be than the current depth's founding
+  // height to found the next depth: below (1 - tolerance) of it. 0.15
+  // reproduces the CV path's original 85% rule.
+  double style_size_tolerance = 0.15;
+
+  // The size ratio the style pass compares by.
+  double deeper_below() const { return 1.0 - style_size_tolerance; }
 };
 
 struct HeadingReport {
@@ -62,16 +83,22 @@ bool is_section_word_heading(std::string_view text);
 // document without numbering clusters heights; title lines (see
 // title_lines) report level 1 here and become the TitleItem on a Document.
 // Heights compare within one unit only: declared font sizes when every
-// heading has one, else the median line heights, as before.
-std::map<std::string, int32_t> infer_heading_levels(std::vector<HeaderHeight> headers);
+// heading has one, else the median line heights, as before. The options'
+// use_numbering, use_style, max_level and style_size_tolerance select and
+// tune the signals (HeadingOptions).
+std::map<std::string, int32_t> infer_heading_levels(std::vector<HeaderHeight> headers,
+                                                    const HeadingOptions& options = {});
 
 // The self_refs of the headings that form the document's title, in reading
 // order: the heading block that opens the first page (lines of similar
 // height, each starting within a line height of the one before, none
 // numbered) when at least one other heading exists and every other heading
-// is visibly smaller than the block's tallest line (below 85%). Empty when
-// the first page's opening heading is no taller than the rest.
-std::vector<std::string> title_lines(const std::vector<HeaderHeight>& headers);
+// is visibly smaller than the block's tallest line (below the options'
+// deeper_below ratio, 85% by default). Empty when the first page's opening
+// heading is no taller than the rest, and when the options turn the style
+// signal off.
+std::vector<std::string> title_lines(const std::vector<HeaderHeight>& headers,
+                                     const HeadingOptions& options = {});
 
 // Runs the whole inference on a Document. Eligible section headers are
 // those with level zero or produced only by `options.geometry_collectors`.
@@ -84,5 +111,12 @@ std::vector<std::string> title_lines(const std::vector<HeaderHeight>& headers);
 // infer_heading_levels. Idempotent.
 HeadingReport infer_heading_hierarchy(ai::pipestream::document::v1::Document* document,
                                       const HeadingOptions& options = {});
+
+// The CV path's pass (document_assembly.h's assign_section_header_levels)
+// under a request's tuning: only level-0 headers are eligible, whatever
+// `options.geometry_collectors` says. With `options.enabled` false every
+// level-0 header becomes level 1 and nothing else changes.
+void assign_section_header_levels(ai::pipestream::document::v1::Document* document,
+                                  const HeadingOptions& options);
 
 }  // namespace grparse

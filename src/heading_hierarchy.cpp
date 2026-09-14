@@ -16,14 +16,18 @@ namespace docv1 = ai::pipestream::document::v1;
 
 namespace {
 
-// A heading below this share of the founding height of the current level
-// is one level deeper; the same ratio decides that a first-page heading
-// block is a title (every other heading below it) and that an unnumbered
-// heading is smaller than the smallest numbered cluster.
-constexpr double kDeeperBelow = 0.85;
+// The share of the founding height below which a heading is one level
+// deeper (the same ratio decides that a first-page heading block is a title
+// and that an unnumbered heading is smaller than the smallest numbered
+// cluster) is HeadingOptions::deeper_below(), 0.85 by default.
 // Lines of one title block are within this share of each other's height.
 constexpr double kTitleLineHeightShare = 0.7;
+// The deepest level the wire allows; options.max_level clamps within it.
 constexpr int kMaximumLevel = 6;
+
+int level_ceiling(const HeadingOptions& options) {
+  return std::clamp(options.max_level, 1, kMaximumLevel);
+}
 // The first numbering group of a heading; longer runs are years or ids.
 constexpr size_t kMaximumNumberDigits = 3;
 constexpr int kMaximumRomanValue = 40;
@@ -201,7 +205,7 @@ double median_of(std::vector<double> values) {
 
 // The legacy clustering: tallest first, a heading founds a deeper depth
 // when visibly smaller than the current depth's founding height.
-void cluster_by_height(const std::vector<const HeaderHeight*>& headers,
+void cluster_by_height(const std::vector<const HeaderHeight*>& headers, double deeper_below,
                        std::map<std::string, int>* depths) {
   std::vector<const HeaderHeight*> sorted = headers;
   std::ranges::stable_sort(sorted, [](const HeaderHeight* a, const HeaderHeight* b) {
@@ -214,7 +218,7 @@ void cluster_by_height(const std::vector<const HeaderHeight*>& headers,
       (*depths)[header->self_ref] = 1;
       continue;
     }
-    if (header->height < kDeeperBelow * founding) {
+    if (header->height < deeper_below * founding) {
       ++depth;
       founding = header->height;
     }
@@ -225,12 +229,13 @@ void cluster_by_height(const std::vector<const HeaderHeight*>& headers,
 // The depth an unnumbered heading takes from the numbered clusters'
 // median heights: the nearest one, one deeper than the deepest when it is
 // visibly smaller than every cluster, depth 1 when visibly taller than all.
-int depth_by_nearest_cluster(double height, const std::map<int, double>& medians) {
+int depth_by_nearest_cluster(double height, const std::map<int, double>& medians,
+                             double deeper_below) {
   if (height <= 0) return 1;
   const double largest = medians.begin()->second;
   const double smallest = medians.rbegin()->second;
-  if (height > largest / kDeeperBelow) return 1;
-  if (height < smallest * kDeeperBelow) return medians.rbegin()->first + 1;
+  if (height > largest / deeper_below) return 1;
+  if (height < smallest * deeper_below) return medians.rbegin()->first + 1;
   int best_depth = medians.begin()->first;
   double best_distance = std::numeric_limits<double>::infinity();
   for (const auto& [depth, median] : medians) {
@@ -442,7 +447,11 @@ bool is_section_word_heading(std::string_view text) {
   return words >= 1 && words <= kMaximumSectionWords && letters >= kMinimumSectionLetters;
 }
 
-std::vector<std::string> title_lines(const std::vector<HeaderHeight>& input) {
+std::vector<std::string> title_lines(const std::vector<HeaderHeight>& input,
+                                     const HeadingOptions& options) {
+  // A title is elected by size alone; without the style signal there is
+  // no basis for one.
+  if (!options.use_style) return {};
   const std::vector<HeaderHeight> headers = normalized(input);
   int first_page = 0;
   for (const auto& header : headers) {
@@ -458,7 +467,10 @@ std::vector<std::string> title_lines(const std::vector<HeaderHeight>& input) {
   });
   std::vector<const HeaderHeight*> block;
   for (const HeaderHeight* header : opening) {
-    if (heading_numbering_depth(header->text).has_value() || header->height <= 0) break;
+    if ((options.use_numbering && heading_numbering_depth(header->text).has_value()) ||
+        header->height <= 0) {
+      break;
+    }
     if (!block.empty()) {
       const HeaderHeight* previous = block.back();
       const double gap = header->top - previous->bottom;
@@ -479,7 +491,7 @@ std::vector<std::string> title_lines(const std::vector<HeaderHeight>& input) {
   for (const auto& header : headers) {
     if (members.contains(header.self_ref) || header.height <= 0) continue;
     others = true;
-    if (header.height >= kDeeperBelow * tallest) return {};
+    if (header.height >= options.deeper_below() * tallest) return {};
   }
   if (!others) return {};
   std::vector<std::string> lines;
@@ -487,20 +499,25 @@ std::vector<std::string> title_lines(const std::vector<HeaderHeight>& input) {
   return lines;
 }
 
-std::map<std::string, int32_t> infer_heading_levels(std::vector<HeaderHeight> input) {
+std::map<std::string, int32_t> infer_heading_levels(std::vector<HeaderHeight> input,
+                                                    const HeadingOptions& options) {
   std::map<std::string, int32_t> levels;
   if (input.empty()) return levels;
   const std::vector<HeaderHeight> headers = normalized(std::move(input));
-  const std::vector<std::string> title = title_lines(headers);
+  const std::vector<std::string> title = title_lines(headers, options);
   const std::set<std::string> title_set(title.begin(), title.end());
+  const double deeper_below = options.deeper_below();
 
   std::map<std::string, int> depths;
   std::map<int, std::vector<double>> cluster_heights;
   std::vector<const HeaderHeight*> unnumbered;
   for (const auto& header : headers) {
     if (title_set.contains(header.self_ref)) continue;
-    std::optional<int> depth = heading_numbering_depth(header.text);
-    if (!depth.has_value() && is_section_word_heading(header.text)) depth = 1;
+    std::optional<int> depth;
+    if (options.use_numbering) {
+      depth = heading_numbering_depth(header.text);
+      if (!depth.has_value() && is_section_word_heading(header.text)) depth = 1;
+    }
     if (!depth.has_value()) {
       unnumbered.push_back(&header);
       continue;
@@ -508,22 +525,27 @@ std::map<std::string, int32_t> infer_heading_levels(std::vector<HeaderHeight> in
     depths[header.self_ref] = *depth;
     if (header.height > 0) cluster_heights[*depth].push_back(header.height);
   }
-  if (cluster_heights.empty()) {
-    cluster_by_height(unnumbered, &depths);
+  if (!options.use_style) {
+    // Nothing decides an unnumbered heading's depth but its size; with the
+    // style signal off it stays at the top.
+    for (const HeaderHeight* header : unnumbered) depths[header->self_ref] = 1;
+  } else if (cluster_heights.empty()) {
+    cluster_by_height(unnumbered, deeper_below, &depths);
   } else {
     std::map<int, double> medians;
     for (const auto& [depth, heights] : cluster_heights) medians[depth] = median_of(heights);
     for (const HeaderHeight* header : unnumbered) {
-      depths[header->self_ref] = depth_by_nearest_cluster(header->height, medians);
+      depths[header->self_ref] = depth_by_nearest_cluster(header->height, medians, deeper_below);
     }
   }
+  const int ceiling = level_ceiling(options);
   for (const auto& header : headers) {
     if (title_set.contains(header.self_ref)) {
       levels[header.self_ref] = 1;
       continue;
     }
     const int depth = depths[header.self_ref];
-    levels[header.self_ref] = std::min(kMaximumLevel, std::max(depth, 1));
+    levels[header.self_ref] = std::min(ceiling, std::max(depth, 1));
   }
   return levels;
 }
@@ -550,12 +572,12 @@ HeadingReport infer_heading_hierarchy(docv1::Document* document, const HeadingOp
   // A document that already has a title (a structural producer's, or this
   // pass's on an earlier run) elects no second one.
   if (!has_title_item(*document)) {
-    std::vector<std::string> title = title_lines(headers_of(found));
+    std::vector<std::string> title = title_lines(headers_of(found), options);
     if (options.merge_title_lines && title.size() > 1) {
       report.titles_merged = merge_title_lines(document, found, title);
       if (report.titles_merged > 0) {
         found = candidates(*document, options);
-        title = title_lines(headers_of(found));
+        title = title_lines(headers_of(found), options);
       }
     }
     if (title.size() == 1) {
@@ -567,7 +589,7 @@ HeadingReport infer_heading_hierarchy(docv1::Document* document, const HeadingOp
       found = candidates(*document, options);
     }
   }
-  const auto levels = infer_heading_levels(headers_of(found));
+  const auto levels = infer_heading_levels(headers_of(found), options);
   for (const auto& candidate : found) {
     const auto level = levels.find(candidate.header.self_ref);
     if (level == levels.end()) continue;

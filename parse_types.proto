@@ -79,6 +79,7 @@ enum PdfBackend {
   PDF_BACKEND_DLPARSE_V4 = 3;
   PDF_BACKEND_PYPDFIUM2 = 4;
   PDF_BACKEND_DOCLING_PARSE = 5;
+  PDF_BACKEND_THREADED_DOCLING_PARSE = 6;
 }
 
 // Table structure extraction mode.
@@ -95,6 +96,10 @@ enum ProcessingPipeline {
   PROCESSING_PIPELINE_STANDARD = 2;
   PROCESSING_PIPELINE_VLM = 3;
   PROCESSING_PIPELINE_LEGACY = 4;
+  // Model-free extraction: the PDF text layer and embedded images only, no
+  // layout, OCR, or table-structure models. gRParse serves it from the pdf
+  // collector's own Document (see ConvertDocumentOptions.pipeline).
+  PROCESSING_PIPELINE_NATIVE = 5;
 }
 
 // Image reference mode for export.
@@ -161,6 +166,58 @@ enum TaskStatus {
   TASK_STATUS_STARTED = 2;
   TASK_STATUS_SUCCESS = 3;
   TASK_STATUS_FAILURE = 4;
+}
+
+// What an async task does. Mirrors the upstream TaskType enum.
+enum TaskType {
+  TASK_TYPE_UNSPECIFIED = 0;
+  TASK_TYPE_CONVERT = 1;
+  TASK_TYPE_CHUNK = 2;
+}
+
+// QualityGrade buckets a confidence score the way the upstream grader does:
+// below 0.5 POOR, below 0.8 FAIR, below 0.9 GOOD, otherwise EXCELLENT. A
+// score that is absent grades UNSPECIFIED.
+enum QualityGrade {
+  QUALITY_GRADE_UNSPECIFIED = 0;
+  QUALITY_GRADE_POOR = 1;
+  QUALITY_GRADE_FAIR = 2;
+  QUALITY_GRADE_GOOD = 3;
+  QUALITY_GRADE_EXCELLENT = 4;
+}
+
+// FailureCategory classifies why a conversion, a collector leg, or a task
+// failed. Mirrors the upstream FailureCategory vocabulary.
+enum FailureCategory {
+  FAILURE_CATEGORY_UNSPECIFIED = 0;
+  // The request itself was turned down (an option the surface does not
+  // implement, contradictory tuning, a disallowed target).
+  FAILURE_CATEGORY_POLICY = 1;
+  // The server or a collector had no room: queue full, RESOURCE_EXHAUSTED.
+  FAILURE_CATEGORY_CAPACITY = 2;
+  // The bytes could not be obtained (a URL fetch, a source store).
+  FAILURE_CATEGORY_SOURCE_UNAVAILABLE = 3;
+  // The delivery target refused or could not be reached.
+  FAILURE_CATEGORY_TARGET_UNAVAILABLE = 4;
+  // A deadline ran out: the call's own or a collector leg's cap.
+  FAILURE_CATEGORY_TIMEOUT = 5;
+  // A defect in the server's own code path.
+  FAILURE_CATEGORY_INTERNAL = 6;
+  // A parsing backend (a collector, the PDF reader) failed on the bytes.
+  FAILURE_CATEGORY_BACKEND_FAILURE = 7;
+  // A model call (layout, OCR, table structure, enrichment) failed.
+  FAILURE_CATEGORY_INFERENCE_FAILURE = 8;
+  FAILURE_CATEGORY_UNKNOWN = 9;
+}
+
+// FailurePhase names where in a task's life a failure happened. Mirrors the
+// upstream FailurePhase vocabulary.
+enum FailurePhase {
+  FAILURE_PHASE_UNSPECIFIED = 0;
+  FAILURE_PHASE_ADMISSION = 1;
+  FAILURE_PHASE_SOURCE_ENUMERATION = 2;
+  FAILURE_PHASE_EXECUTION = 3;
+  FAILURE_PHASE_ORCHESTRATION = 4;
 }
 
 // Collector names one parser that can contribute output to a parse. The
@@ -519,6 +576,62 @@ message ConvertDocumentOptions {
   // 2.78). The accepted range is [1.0, 8.0]; values outside it are rejected
   // by name. Raster image inputs are already pixels and ignore it.
   optional double render_scale = 47;
+  // Attach a rendered image of every page (PageItem.image) to the returned
+  // document. Unset defers to the server's GRPARSE_PAGE_IMAGES setting; true
+  // or false overrides it for this request. Costs a raster of each page on
+  // the collector-folded PDF path, where nothing else would render one.
+  optional bool include_page_images = 48;
+  // Render Markdown tables without column padding (docling-core's
+  // compact_tables). Unset or false keeps the padded reference layout.
+  optional bool md_compact_tables = 49;
+  // Derive section-header depth over the whole document (numbering, then
+  // measured size). Unset or true runs it; false leaves every geometry
+  // heading at depth 1 and no title promotion.
+  optional bool do_pdf_heading_hierarchy = 50;
+  // Tunables for the pass do_pdf_heading_hierarchy turns on.
+  optional HeadingHierarchyOptions pdf_heading_hierarchy_options = 51;
+}
+
+// HeadingHierarchyOptions mirrors the upstream PdfHeadingHierarchyOptions.
+// gRParse has no outline (bookmark) source, so the bookmark fields are
+// accepted and have no effect; the numbering and style passes are the ones
+// heading_hierarchy.cpp runs.
+message HeadingHierarchyOptions {
+  // Same switch as ConvertDocumentOptions.do_pdf_heading_hierarchy; when both
+  // are set they must agree or the request is rejected.
+  optional bool enabled = 1;
+  // Accepted for wire parity; gRParse reads no PDF outline.
+  optional bool use_bookmarks = 2;
+  // Read decimal, letter, roman, and Appendix numbering as depth.
+  optional bool use_numbering = 3;
+  // Cluster measured heading heights (font size, else box height) into
+  // depth when numbering does not decide.
+  optional bool use_style = 4;
+  // Accepted for wire parity; the numbering vocabulary is fixed.
+  repeated string numbering_schemes = 5;
+  // Deepest level assigned; 1..6, default 6.
+  optional int32 max_level = 6;
+  // Accepted for wire parity; no bookmarks to match.
+  optional double bookmark_match_threshold = 7;
+  // Accepted for wire parity; weight and slant are not read.
+  optional bool use_font_style = 8;
+  // Relative size tolerance for treating two heading heights as one level:
+  // a heading is one level deeper when its height falls below
+  // (1 - style_size_tolerance) of the founding height. Default 0.15.
+  optional double style_size_tolerance = 9;
+}
+
+// ScalarValue carries one typed scalar where the upstream model holds an
+// open dict[str, Any]: an integer stays an integer on the wire.
+message ScalarValue {
+  oneof kind {
+    string string_value = 1;
+    int64 int_value = 2;
+    double double_value = 3;
+    bool bool_value = 4;
+    // Integers above int64 range (e.g. DocumentOrigin.binary_hash).
+    uint64 uint_value = 5;
+  }
 }
 
 // ============================================================================
@@ -555,6 +668,55 @@ message ErrorItem {
   // upstream component vocabularies (populated when component_type is
   // COMPONENT_TYPE_UNSPECIFIED but the source had a value).
   optional string component_type_raw = 4;
+  // Why the component failed, classified; UNSPECIFIED when the producer
+  // could not tell.
+  FailureCategory category = 5;
+  // Raw category fallback for forward-compatibility with newer upstream
+  // category vocabularies.
+  optional string category_raw = 6;
+  // The 1-based page the error belongs to, when it is a page's and not the
+  // document's.
+  optional int32 page_no = 7;
+}
+
+// PublicFailureInfo is the client-facing account of a failed task or stream:
+// classified, with whether a retry can help and where in the task's life it
+// happened. `details` is free-form producer detail (a collector name, a
+// deadline), never a stringified structure.
+message PublicFailureInfo {
+  FailureCategory category = 1;
+  string message = 2;
+  bool retryable = 3;
+  FailurePhase phase = 4;
+  map<string, string> details = 5;
+  optional string category_raw = 6;
+  optional string phase_raw = 7;
+}
+
+// ConfidenceScores is the document-level read quality of a parse, on the
+// upstream ConfidenceReport's four axes. Each axis is absent when nothing
+// produced it (a collector-folded office document has no OCR score), so a
+// present score is always a measured one:
+//   parse_score   the PDF text-layer reading, the worst 10% of pages (here
+//                 the multi-backend vote's winning score; absent in
+//                 single-backend mode)
+//   layout_score  mean layout-region confidence over the pages
+//   table_score   mean table-structure score over the pages
+//   ocr_score     mean recognized-line confidence over the pages
+//   mean_score    mean over pages of each page's mean of its present axes
+//   low_score     mean over pages of each page's 5th-percentile axis
+// The grades bucket mean_score and low_score (see QualityGrade).
+message ConfidenceScores {
+  optional double parse_score = 1;
+  optional double layout_score = 2;
+  optional double table_score = 3;
+  optional double ocr_score = 4;
+  optional double mean_score = 5;
+  optional double low_score = 6;
+  QualityGrade mean_grade = 7;
+  QualityGrade low_grade = 8;
+  optional string mean_grade_raw = 9;
+  optional string low_grade_raw = 10;
 }
 
 // ============================================================================
@@ -623,6 +785,8 @@ message TaskStatusMetadata {
   int64 num_processed = 2;
   int64 num_succeeded = 3;
   int64 num_failed = 4;
+  // Documents that converted with error items (CONVERSION_STATUS_PARTIAL_SUCCESS).
+  int64 num_partially_succeeded = 5;
 }
 
 // ============================================================================
@@ -649,6 +813,9 @@ message ConvertDocumentResponse {
   // What the request's Target delivered, when it named one other than
   // inbody. `document` above stays populated either way.
   optional TargetResult target_result = 7;
+  // The read quality of the in-process CV collector's pages. Absent when no
+  // CV page was read (a collector-folded office document, a fast-path PDF).
+  optional ConfidenceScores confidence = 8;
 }
 
 // HierarchicalChunkerOptions configures the hierarchical chunker.
@@ -711,6 +878,8 @@ message Chunk {
   repeated string captions = 7;
   repeated string doc_items = 8;
   repeated int32 page_numbers = 9;
+  // Chunk metadata, stringified. Kept for existing readers; `typed_metadata`
+  // carries the same keys with their types.
   map<string, string> metadata = 10;
   // Half-open [start_offset, end_offset) span of the chunk in the document's
   // concatenated text stream (furniture included), counted in UTF-8 CODE
@@ -730,6 +899,13 @@ message Chunk {
   //                 (one line on the wire, T "wordish/1" or "hf/1",
   //                  N decimal, B "true" or "false")
   string rules_digest = 13;
+  // The same metadata as `metadata`, typed:
+  //   "min_confidence"  double, the weakest OCR confidence among the chunk's
+  //                     items (absent when no item carried one)
+  //   "text_source"     string, "digital" | "ocr" | "mixed"
+  //   "binary_hash"     uint, the source document's DocumentOrigin.binary_hash
+  //   "mimetype"        string, the source document's DocumentOrigin.mimetype
+  map<string, ScalarValue> typed_metadata = 14;
 }
 
 // ChunkDocumentResponse mirrors the REST chunk response body.
@@ -749,10 +925,17 @@ message TaskStatusPollRequest {
 // TaskStatusPollResponse mirrors the REST task status response.
 message TaskStatusPollResponse {
   string task_id = 1;
+  // The task's kind as the upstream REST body spells it ("convert",
+  // "chunk"); `task_kind` is the typed form.
   optional string task_type = 2;
   TaskStatus task_status = 3;
   optional int64 task_position = 4;
   optional TaskStatusMetadata task_meta = 5;
+  TaskType task_kind = 6;
+  // Set when task_status is TASK_STATUS_FAILURE: the failure's message and
+  // its classified account.
+  optional string error_message = 7;
+  optional PublicFailureInfo failure = 8;
 }
 
 // TaskResultRequest mirrors GET /v1/result/{taskId}

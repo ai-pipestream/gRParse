@@ -249,13 +249,92 @@ std::vector<MarkdownWalk::Part> MarkdownWalk::get_parts(const std::string& root,
   std::set<std::string> seen;
   collect_walk(root, &seen, &refs);
   std::vector<Part> parts;
+  // The reference's page-break bookkeeping runs over every node the walk
+  // yields, consumed or not, so an item a group already serialized still
+  // advances the page; only the break parts themselves are new.
+  std::optional<int> previous_page;
+  std::set<std::string> groups_checked;
   for (const auto& ref : refs) {
+    if (page_break_placeholder_.has_value()) {
+      if (is_list_group(ref) || is_inline_group(ref)) {
+        if (groups_checked.insert(ref).second) {
+          const std::optional<int> page = first_prov_page_within(ref);
+          if (page.has_value() && (!previous_page.has_value() || *page > *previous_page)) {
+            if (previous_page.has_value()) {
+              parts.push_back(Part{*page_break_placeholder_, std::string()});
+            }
+            // The reference yields the same break node again for the group's
+            // first provenanced child and de-duplicates it by reference;
+            // advancing the page here is the equivalent.
+            previous_page = page;
+          }
+        }
+      } else if (const std::optional<int> page = first_prov_page(ref)) {
+        if (!previous_page.has_value() || *page > *previous_page) {
+          if (previous_page.has_value()) {
+            parts.push_back(Part{*page_break_placeholder_, std::string()});
+          }
+          previous_page = page;
+        }
+      }
+    }
     if (!consume(ref)) continue;
     Part part;
     part.text = serialize(ref, list_level, inline_scope, &part.first_span);
     if (!part.text.empty()) parts.push_back(std::move(part));
   }
   return parts;
+}
+
+std::optional<int> MarkdownWalk::first_prov_page(const std::string& ref) const {
+  const auto page_of = [](const auto& item) -> std::optional<int> {
+    if (item.prov().empty()) return std::nullopt;
+    return item.prov(0).page_no();
+  };
+  if (group_at(ref) != nullptr) return std::nullopt;
+  if (const auto* text = text_at(ref)) {
+    if (text->item_case() == docv1::BaseTextItem::kCode) return page_of(text->code());
+    const auto* base = text_base(*text);
+    return base != nullptr ? page_of(*base) : std::nullopt;
+  }
+  if (const auto* table = table_at(ref)) return page_of(*table);
+  if (const auto* picture = picture_at(ref)) return page_of(*picture);
+  const ArenaRef parsed = parse_ref(ref);
+  switch (parsed.kind) {
+    case ArenaRef::kKeyValue:
+      if (parsed.index < document_.key_value_items_size()) {
+        return page_of(document_.key_value_items(parsed.index));
+      }
+      break;
+    case ArenaRef::kForm:
+      if (parsed.index < document_.form_items_size()) {
+        return page_of(document_.form_items(parsed.index));
+      }
+      break;
+    case ArenaRef::kFieldRegion:
+      if (parsed.index < document_.field_regions_size()) {
+        return page_of(document_.field_regions(parsed.index));
+      }
+      break;
+    case ArenaRef::kFieldItem:
+      if (parsed.index < document_.field_items_size()) {
+        return page_of(document_.field_items(parsed.index));
+      }
+      break;
+    default: break;
+  }
+  return std::nullopt;
+}
+
+std::optional<int> MarkdownWalk::first_prov_page_within(const std::string& ref) const {
+  std::vector<std::string> refs;
+  std::set<std::string> seen;
+  collect_walk(ref, &seen, &refs);
+  for (const auto& child : refs) {
+    if (child == ref) continue;
+    if (const std::optional<int> page = first_prov_page(child)) return page;
+  }
+  return std::nullopt;
 }
 
 std::string MarkdownWalk::parent_of(const std::string& ref) const {

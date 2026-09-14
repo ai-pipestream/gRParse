@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include "display_width.h"
@@ -34,17 +36,18 @@ std::string row_safe(const std::string& text) {
   return safe;
 }
 
-// The alignment of every column: right when the data below the header folds
-// to a number.
-std::vector<bool> column_alignments(
-    const std::vector<std::vector<std::string>>& rows, std::size_t columns) {
+using Rows = std::vector<std::vector<std::string>>;
+
+// The alignment of every column: right when the body cells below the header
+// fold to a number.
+std::vector<bool> column_alignments(const Rows& body, std::size_t columns) {
   std::vector<bool> right_aligned(columns, false);
-  if (rows.size() <= 1) return right_aligned;
+  if (body.empty()) return right_aligned;
   for (std::size_t col = 0; col < columns; ++col) {
     std::vector<std::string> values;
-    values.reserve(rows.size() - 1);
-    for (std::size_t row = 1; row < rows.size(); ++row) {
-      values.push_back(col < rows[row].size() ? rows[row][col] : std::string());
+    values.reserve(body.size());
+    for (const auto& row : body) {
+      values.push_back(col < row.size() ? row[col] : std::string());
     }
     right_aligned[col] = column_is_numeric(values);
   }
@@ -52,19 +55,83 @@ std::vector<bool> column_alignments(
 }
 
 // The width of every column: the header width plus the minimum padding, never
-// narrower than the widest stripped data cell.
-std::vector<int> column_widths(const std::vector<std::vector<std::string>>& rows,
+// narrower than the widest stripped body cell.
+std::vector<int> column_widths(const std::vector<std::string>& headers, const Rows& body,
                                std::size_t columns) {
-  const std::vector<std::string>& headers = rows.front();
   std::vector<int> widths(columns, 0);
   for (std::size_t col = 0; col < columns; ++col) {
     widths[col] = display_width(headers[col]) + kMinTablePadding;
-    for (std::size_t row = 1; row < rows.size(); ++row) {
-      if (col >= rows[row].size()) continue;
-      widths[col] = std::max(widths[col], display_width(stripped(rows[row][col])));
+    for (const auto& row : body) {
+      if (col >= row.size()) continue;
+      widths[col] = std::max(widths[col], display_width(stripped(row[col])));
     }
   }
   return widths;
+}
+
+// The reference's HEADER_ROW_SEPARATOR: what joins the cells of a stacked
+// column header into the one header row GFM allows.
+constexpr std::string_view kHeaderRowSeparator = " - ";
+
+// Per column, the header rows' texts joined top to bottom, an empty text
+// and a repeat of the text just above it (a row-spanning cell the grid
+// repeats into every row it covers) dropped.
+std::vector<std::string> flatten_header_rows(const Rows& header_rows, std::size_t columns) {
+  std::vector<std::string> flattened(columns);
+  if (header_rows.empty()) return flattened;
+  for (std::size_t col = 0; col < columns; ++col) {
+    std::vector<std::string> parts;
+    for (const auto& row : header_rows) {
+      const std::string text = col < row.size() ? row[col] : std::string();
+      if (!text.empty() && (parts.empty() || parts.back() != text)) parts.push_back(text);
+    }
+    std::string joined;
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+      if (i > 0) joined.append(kHeaderRowSeparator);
+      joined.append(parts[i]);
+    }
+    flattened[col] = std::move(joined);
+  }
+  return flattened;
+}
+
+// docling-core's _compact_table over the padded text: every cell stripped,
+// the rule row reduced to one dash per column with its alignment marks kept.
+std::string compact_table(const std::string& padded) {
+  std::vector<std::string> lines;
+  std::size_t start = 0;
+  std::size_t line_index = 0;
+  while (start <= padded.size()) {
+    const std::size_t end = padded.find('\n', start);
+    const std::string line =
+        padded.substr(start, end == std::string::npos ? std::string::npos : end - start);
+    const std::size_t index = line_index++;
+    start = end == std::string::npos ? padded.size() + 1 : end + 1;
+    if (line.empty()) continue;
+    // The cells between the outer pipes.
+    std::vector<std::string> cells;
+    std::size_t cell_start = line.find('|');
+    if (cell_start == std::string::npos) continue;
+    ++cell_start;
+    while (true) {
+      const std::size_t pipe = line.find('|', cell_start);
+      if (pipe == std::string::npos) break;
+      cells.push_back(line.substr(cell_start, pipe - cell_start));
+      cell_start = pipe + 1;
+    }
+    std::string compact = "|";
+    for (std::size_t i = 0; i < cells.size(); ++i) {
+      std::string cell = stripped(cells[i]);
+      if (index == 1) {
+        const bool left = cell.starts_with(':');
+        const bool right = cell.ends_with(':');
+        cell = left && right ? ":-:" : left ? ":-" : right ? "-:" : "-";
+      }
+      compact.append(" ").append(cell).append(" |");
+    }
+    lines.push_back(std::move(compact));
+  }
+  return join(lines, "\n");
 }
 
 std::string pad(const std::string& cell, int width, bool right) {
@@ -119,21 +186,54 @@ std::vector<std::vector<std::string>> table_rows(
   return out;
 }
 
+std::size_t count_header_rows(const std::vector<std::vector<const docv1::TableCell*>>& grid) {
+  const auto starts_header_on = [](const std::vector<const docv1::TableCell*>& row,
+                                   std::size_t row_idx) {
+    return std::ranges::any_of(row, [row_idx](const docv1::TableCell* cell) {
+      return cell != nullptr && cell->column_header() &&
+             cell->start_row_offset_idx() == static_cast<int>(row_idx);
+    });
+  };
+  const auto any_header_below_first = [&grid] {
+    for (std::size_t row_idx = 1; row_idx < grid.size(); ++row_idx) {
+      for (const docv1::TableCell* cell : grid[row_idx]) {
+        if (cell != nullptr && cell->column_header()) return true;
+      }
+    }
+    return false;
+  };
+  std::size_t num_headers = 0;
+  for (std::size_t row_idx = 0; row_idx < grid.size(); ++row_idx) {
+    if (starts_header_on(grid[row_idx], row_idx)) {
+      ++num_headers;
+      continue;
+    }
+    if (row_idx == 0 && !any_header_below_first()) return 1;
+    break;
+  }
+  return num_headers;
+}
+
 std::string table_markdown(const docv1::TableData& data,
-                           const CellTextResolver& resolve_ref) {
-  const auto rows = table_rows(data, resolve_ref);
+                           const CellTextResolver& resolve_ref, bool compact) {
+  const Rows rows = table_rows(data, resolve_ref);
   if (rows.empty()) return std::string();
   const std::size_t columns = rows.front().size();
-  const std::vector<bool> right_aligned = column_alignments(rows, columns);
-  const std::vector<int> widths = column_widths(rows, columns);
+  const std::size_t num_headers = std::min(count_header_rows(derived_table_grid(data)), rows.size());
+  const Rows header_rows(rows.begin(), rows.begin() + static_cast<std::ptrdiff_t>(num_headers));
+  const Rows body(rows.begin() + static_cast<std::ptrdiff_t>(num_headers), rows.end());
+  const std::vector<std::string> headers = flatten_header_rows(header_rows, columns);
+  const std::vector<bool> right_aligned = column_alignments(body, columns);
+  const std::vector<int> widths = column_widths(headers, body, columns);
 
   std::vector<std::string> lines;
-  lines.push_back(build_row(rows.front(), false, widths, right_aligned));
+  lines.push_back(build_row(headers, false, widths, right_aligned));
   lines.push_back(build_rule(widths));
-  for (std::size_t row = 1; row < rows.size(); ++row) {
-    lines.push_back(build_row(rows[row], true, widths, right_aligned));
+  for (const auto& row : body) {
+    lines.push_back(build_row(row, true, widths, right_aligned));
   }
-  return join(lines, "\n");
+  const std::string padded = join(lines, "\n");
+  return compact ? compact_table(padded) : padded;
 }
 
 }  // namespace grparse::render

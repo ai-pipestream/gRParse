@@ -45,11 +45,31 @@ void verify_specific_sniffs_still_outrank_the_name() {
                      "a declared type wins outright");
 }
 
+// The iWork rule mirrors the text one: "application/zip" is what the
+// container scan says when it places nothing, and a .pages / .numbers name
+// knows which app's document the archive is. A specific zip sniff (a docx)
+// still outranks an iWork name, and a non-Apple name does not lift a plain
+// zip.
+void verify_a_plain_zip_yields_to_an_iwork_name() {
+  const std::string plain_zip = std::string("PK\x03\x04") + std::string(26, '\0') + "Index/Document.iwa";
+  require_resolution("", plain_zip, "report.pages", "application/vnd.apple.pages", "extension",
+                     "a zip the scan cannot place is Pages by its name");
+  require_resolution("", plain_zip, "budget.numbers", "application/vnd.apple.numbers", "extension",
+                     "a zip the scan cannot place is Numbers by its name");
+  require_resolution("", plain_zip, "bundle.zip", "application/zip", "magic",
+                     "a plain zip under a zip name stays a zip");
+  const std::string docx = std::string("PK\x03\x04") + std::string(26, '\0') + "word/document.xml";
+  require_resolution("", docx, "misnamed.pages",
+                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "magic",
+                     "a docx sniff outranks an iWork name");
+}
+
 }  // namespace
 
 int main() {
   return grparse_test::run_test_main("content_sniff_precedence_test", "ok", {
       verify_generic_text_yields_to_a_specific_name,
       verify_specific_sniffs_still_outrank_the_name,
+      verify_a_plain_zip_yields_to_an_iwork_name,
   });
 }

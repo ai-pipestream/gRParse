@@ -322,6 +322,12 @@ class PageScheduler::Impl final {
   bool captures_page_images() const { return options_.capture_page_images; }
 
  private:
+  // The page-image decision for one document: its own tuning when it says,
+  // the server setting otherwise.
+  bool captures_page_images(const OcrTuning& tuning) const {
+    return tuning.capture_page_images.value_or(options_.capture_page_images);
+  }
+
   void stop() {
     documents_.close();
     {
@@ -554,7 +560,7 @@ class PageScheduler::Impl final {
                   ? ocr_pages.count(page->page_number) == 0
                   : mode == OcrTuning::Mode::kOff || digital->skip_ocr;
           if (embedded_settles && region_detector_ == nullptr &&
-              !options_.capture_page_images) {
+              !captures_page_images(page->request->tuning)) {
             enqueue_assembly(page, std::make_shared<const OcrPage>(std::move(*digital)));
             page.reset();
             continue;
@@ -659,6 +665,7 @@ class PageScheduler::Impl final {
               TableStructure structure = table_structurer_->recognize(job.image(roi));
               tables_structured_.fetch_add(1);
               region.structured_cells = std::move(structure.cells);
+              if (!region.structured_cells.empty()) region.structure_score = structure.score;
               for (auto& cell : region.structured_cells) {
                 cell.left += roi.x;
                 cell.right += roi.x;
@@ -683,7 +690,7 @@ class PageScheduler::Impl final {
             for (auto& region : regions) {
               if (region.label != "picture") continue;
               const cv::Mat crop = crop_region(job.image, region);
-              if (!crop.empty()) cv::imencode(".png", crop, region.image_png);
+              if (!crop.empty()) cv::imencode(".png", crop, region.image_png, kPngEncodeParams);
             }
           }
           // Barcode decode is pure CPU (ZXing), so like the PNG capture it
@@ -703,8 +710,8 @@ class PageScheduler::Impl final {
           }
           // The page preview encodes last, like the crops: after every device
           // call, before the raster drops.
-          if (options_.capture_page_images && !job.image.empty()) {
-            cv::imencode(".png", preview_of(job.image), assembled.preview_png);
+          if (captures_page_images(job.page->request->tuning) && !job.image.empty()) {
+            cv::imencode(".png", preview_of(job.image), assembled.preview_png, kPngEncodeParams);
           }
           // Drop the raster the moment the device stage is done with it (B5).
           job.image.release();

@@ -63,8 +63,12 @@ constexpr std::string_view kCaptionDelim = " ";
 
 class MarkdownRenderer : public MarkdownWalk {
  public:
-  explicit MarkdownRenderer(const docv1::Document& document)
-      : MarkdownWalk(document) {}
+  MarkdownRenderer(const docv1::Document& document, const MarkdownOptions& options)
+      : MarkdownWalk(document), compact_tables_(options.compact_tables) {
+    if (options.page_break_placeholder.has_value()) {
+      set_page_break_placeholder(*options.page_break_placeholder);
+    }
+  }
 
   std::string render() {
     std::vector<std::string> parts;
@@ -77,6 +81,8 @@ class MarkdownRenderer : public MarkdownWalk {
   }
 
  private:
+  const bool compact_tables_;
+
   // How the table formatter resolves a cell that points at another item.
   CellTextResolver cell_resolver() {
     return [this](const std::string& ref) { return rich_cell_text(ref); };
@@ -400,7 +406,7 @@ class MarkdownRenderer : public MarkdownWalk {
     parts.push_back(serialize_captions(table.captions(), &caption_span));
     if (!parts.back().empty() && first_span != nullptr) *first_span = caption_span;
     if (!excluded(ref)) {
-      parts.push_back(render::table_markdown(table.data(), cell_resolver()));
+      parts.push_back(render::table_markdown(table.data(), cell_resolver(), compact_tables_));
       if (!parts.back().empty() && first_span != nullptr && first_span->empty()) {
         *first_span = ref;
       }
@@ -496,7 +502,8 @@ class MarkdownRenderer : public MarkdownWalk {
     }
     if (meta.has_tabular_chart()) {
       const std::string table = stripped(
-          render::table_markdown(meta.tabular_chart().chart_data(), cell_resolver()));
+          render::table_markdown(meta.tabular_chart().chart_data(), cell_resolver(),
+                                 compact_tables_));
       if (!table.empty()) parts.push_back(table);
     }
     if (meta.has_code()) parts.push_back(code_meta_repr(meta.code()));
@@ -571,19 +578,23 @@ class MarkdownRenderer : public MarkdownWalk {
 }  // namespace
 
 std::string render_markdown(const docv1::Document& document) {
+  return render_markdown(document, MarkdownOptions{});
+}
+
+std::string render_markdown(const docv1::Document& document, const MarkdownOptions& options) {
   // Only the list-item migration can change the Markdown; the box clamping
   // the model also applies on load is invisible here, so the defensive copy
   // is taken only when a list item actually needs re-homing.
   if (!render::has_misplaced_list_items(document) &&
       !render::has_ordered_list_groups(document)) {
-    return MarkdownRenderer(document).render();
+    return MarkdownRenderer(document, options).render();
   }
   docv1::Document normalized = document;
   // Ordered-list groups relabel to plain list groups first, exactly like the
   // reference load; only then can the migration see them as list parents.
   render::relabel_ordered_list_groups(&normalized);
   render::migrate_misplaced_list_items(&normalized);
-  return MarkdownRenderer(normalized).render();
+  return MarkdownRenderer(normalized, options).render();
 }
 
 }  // namespace grparse

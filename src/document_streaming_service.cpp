@@ -18,6 +18,7 @@
 #include <google/protobuf/arena.h>
 
 #include "grparse/collector_coordinator.h"
+#include "grparse/confidence.h"
 #include "grparse/content_sniff.h"
 #include "grparse/data_totals.h"
 #include "grparse/document_assembly.h"
@@ -521,6 +522,7 @@ class DocumentStreamReactor final
       event->message->set_total_pages(total_pages_);
       append_page_data(*page_it->second, next_page_, &assembly_cursor_, event->message->mutable_page(),
                        &assembly_warnings_);
+      page_scores_.push_back(page_confidence(*page_it->second));
       // Heading depth needs every page's heights; the terminal event ships
       // the clustered result for the level-0 headers streamed here.
       collect_header_heights(event->message->page(), &header_heights_);
@@ -606,6 +608,7 @@ class DocumentStreamReactor final
     auto* failure = collector_failures_.Add();
     failure->set_collector(collector);
     failure->set_error(status.error_message());
+    failure->set_category(failure_category_for(status.error_code()));
     if (first_failure_status_.ok()) first_failure_status_ = std::move(status);
   }
 
@@ -639,6 +642,9 @@ class DocumentStreamReactor final
     }
     for (std::string& warning : assembly_warnings_) {
       complete->add_warnings(std::move(warning));
+    }
+    if (const auto confidence = document_confidence(page_scores_)) {
+      *complete->mutable_confidence() = *confidence;
     }
     events_.push_back(std::move(event));
     request_finish_locked(grpc::Status::OK);
@@ -701,6 +707,8 @@ class DocumentStreamReactor final
   // Level-less section headers streamed so far, clustered into depths for
   // the terminal event.
   std::vector<HeaderHeight> header_heights_;
+  // Each streamed CV page's read quality, folded into the terminal event.
+  std::vector<PageConfidence> page_scores_;
   // What the page assembly had to approximate rather than map, shipped with
   // the terminal event.
   std::vector<std::string> assembly_warnings_;

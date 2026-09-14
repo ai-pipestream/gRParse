@@ -310,6 +310,63 @@ void verify_markdown_multiline_cells_stay_single_line() {
           "cell newlines must collapse to spaces:\n" + markdown);
 }
 
+// docling-core 2.96's header-row rule: the header block is the leading run
+// of rows on which a column_header cell starts, flattened per column with
+// " - "; a header that spans two rows is not repeated into itself; a table
+// whose header flags start below row 0 keeps every row in the body.
+void verify_markdown_flattens_stacked_column_headers() {
+  docv1::Document document = base_document("stacked.pdf");
+  auto* table = add_table(&document, "#/body");
+  auto* data = table->mutable_data();
+  data->set_num_rows(3);
+  data->set_num_cols(2);
+  auto* first = data->add_grid();
+  grid_cell(data, first, "Engine", true, 0, 0, 2, 1);
+  grid_cell(data, first, "native backend", true, 0, 1);
+  auto* second = data->add_grid();
+  grid_cell(data, second, "TTS", true, 1, 1);
+  auto* third = data->add_grid();
+  grid_cell(data, third, "x", false, 2, 0);
+  grid_cell(data, third, "1", false, 2, 1);
+
+  const std::string markdown = grparse::render_markdown(document);
+  require(markdown == "| Engine   |   native backend - TTS |\n"
+                      "|----------|------------------------|\n"
+                      "| x        |                      1 |",
+          "stacked header flattening differs:\n" + markdown);
+
+  docv1::Document late = base_document("late.pdf");
+  auto* late_data = add_table(&late, "#/body")->mutable_data();
+  late_data->set_num_rows(2);
+  late_data->set_num_cols(1);
+  grid_cell(late_data, late_data->add_grid(), "note", false, 0, 0);
+  grid_cell(late_data, late_data->add_grid(), "Header", true, 1, 0);
+  const std::string late_markdown = grparse::render_markdown(late);
+  require(late_markdown == "|        |\n|--------|\n| note   |\n| Header |",
+          "header flags below row 0 must leave every row in the body:\n" + late_markdown);
+}
+
+void verify_markdown_compact_tables() {
+  docv1::Document document = base_document("compact.pdf");
+  auto* data = add_table(&document, "#/body")->mutable_data();
+  data->set_num_rows(2);
+  data->set_num_cols(2);
+  auto* head = data->add_grid();
+  grid_cell(data, head, "name", true, 0, 0);
+  grid_cell(data, head, "count", true, 0, 1);
+  auto* body = data->add_grid();
+  grid_cell(data, body, "alpha", false, 1, 0);
+  grid_cell(data, body, "42", false, 1, 1);
+  grparse::MarkdownOptions options;
+  options.compact_tables = true;
+  const std::string markdown = grparse::render_markdown(document, options);
+  require(markdown == "| name | count |\n| - | - |\n| alpha | 42 |",
+          "compact table differs:\n" + markdown);
+  require(grparse::render_markdown(document) ==
+              "| name   |   count |\n|--------|---------|\n| alpha  |      42 |",
+          "the padded layout is unchanged when compact is off");
+}
+
 // The rules with the least margin for error: what escapes, what the
 // formatting delimiters look like and in what order they nest, and how a list
 // picks its marker and its indent. Every expectation here is the reference
@@ -687,6 +744,32 @@ void add_prov_to_last_text(docv1::Document* document, int page_no, double l,
   bbox->set_coord_origin(docv1::COORD_ORIGIN_TOPLEFT);
 }
 
+// The reference's page_break_placeholder: a part between an item on one page
+// and the next item on a later page, placed before a list whose first item
+// opens the new page, and never inside the first page or between items of
+// one page.
+void verify_markdown_page_break_placeholder() {
+  docv1::Document document = base_document("pages.pdf");
+  add_text(&document, "#/body", docv1::BaseTextItem::kText, docv1::DOC_ITEM_LABEL_TEXT, "one");
+  add_prov_to_last_text(&document, 1, 0, 0, 10, 10);
+  add_text(&document, "#/body", docv1::BaseTextItem::kText, docv1::DOC_ITEM_LABEL_TEXT, "still one");
+  add_prov_to_last_text(&document, 1, 0, 20, 10, 30);
+  const std::string list = add_group(&document, "#/body", docv1::GROUP_LABEL_LIST);
+  add_text(&document, list, docv1::BaseTextItem::kListItem, docv1::DOC_ITEM_LABEL_LIST_ITEM,
+           "two");
+  add_prov_to_last_text(&document, 2, 0, 0, 10, 10);
+  add_text(&document, "#/body", docv1::BaseTextItem::kText, docv1::DOC_ITEM_LABEL_TEXT, "three");
+  add_prov_to_last_text(&document, 3, 0, 0, 10, 10);
+
+  grparse::MarkdownOptions options;
+  options.page_break_placeholder = "<!-- page break -->";
+  const std::string markdown = grparse::render_markdown(document, options);
+  require(markdown == "one\n\nstill one\n\n<!-- page break -->\n\n- two\n\n<!-- page break -->\n\nthree",
+          "page break placement differs:\n" + markdown);
+  require(grparse::render_markdown(document) == "one\n\nstill one\n\n- two\n\nthree",
+          "no placeholder, no page breaks");
+}
+
 void verify_doctags_renders_every_item_type() {
   const std::string doctags = grparse::render_doctags(rich_document());
   const std::string expected =
@@ -1021,6 +1104,9 @@ int main() {
       verify_markdown_renders_every_item_type,
       verify_markdown_reconstructs_grid_from_flat_cells,
       verify_markdown_multiline_cells_stay_single_line,
+      verify_markdown_flattens_stacked_column_headers,
+      verify_markdown_compact_tables,
+      verify_markdown_page_break_placeholder,
       verify_markdown_escaping_marker_and_formatting_rules,
       verify_markdown_custom_meta_field_order,
       verify_html_renders_structure_and_escapes,

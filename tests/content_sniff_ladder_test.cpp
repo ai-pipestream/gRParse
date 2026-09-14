@@ -80,6 +80,10 @@ void verify_every_container_signature() {
        "an epub without a mimetype entry is named by its container"},
       {zip_naming("some/other/entry.txt"), "application/zip",
        "a zip that names no known part is a plain archive"},
+      {zip_naming("Index/Document.iwa") + "Index/MasterSlide-1.iwa", "application/vnd.apple.keynote",
+       "an iWork container with slide archives is a Keynote deck"},
+      {zip_naming("Index/Document.iwa") + "Index/CalculationEngine.iwa", "application/zip",
+       "an iWork container without slides is Pages or Numbers, which only the name decides"},
   };
   for (const SniffCase& one : cases) {
     require_equal(grparse::sniff_mimetype(one.bytes), one.mimetype, one.what);
@@ -136,6 +140,11 @@ void verify_every_text_signature() {
       {"<svg viewBox=\"0 0 1 1\"/>", "image/svg+xml", "a leading svg tag"},
       {"<div><body>x</body></div>", "text/html", "a fragment that names a body tag"},
       {"From: a@b\r\nTo: c@d\r\n\r\nbody", "message/rfc822", "two RFC 822 header lines"},
+      {"From: <Saved by Blink>\r\nSubject: page\r\nMIME-Version: 1.0\r\n"
+       "Content-Type: multipart/related;\r\n\ttype=\"text/html\";\r\n\tboundary=\"----x\"\r\n\r\n",
+       "multipart/related", "a saved web archive is told from mail by its Content-Type"},
+      {"From: a@b\r\nSubject: s\r\nContent-Type: text/plain\r\n\r\nbody", "message/rfc822",
+       "a mail whose Content-Type is not multipart/related stays mail"},
       {"{\"a\": 1}", "application/json", "a bracketed object"},
       {"[1, 2, 3]\n", "application/json", "a bracketed array"},
       {"# Heading\n\ntext\n", "text/markdown", "a markdown heading"},
@@ -194,6 +203,12 @@ void verify_the_extension_table() {
       {"a.epub", "application/epub+zip"},
       {"a.eml", "message/rfc822"},
       {"a.msg", "application/vnd.ms-outlook"},
+      {"a.mht", "application/x-mimearchive"},
+      {"a.mhtml", "application/x-mimearchive"},
+      {"a.pages", "application/vnd.apple.pages"},
+      {"a.numbers", "application/vnd.apple.numbers"},
+      {"a.key", "application/vnd.apple.keynote"},
+      {"a.afp", "application/x-afp"},
       {"a.xml", "application/xml"},
       {"a.nxml", "application/xml"},
       {"a.xbrl", "application/xml"},

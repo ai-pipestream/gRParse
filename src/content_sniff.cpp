@@ -113,6 +113,15 @@ std::string sniff_zip(string_view bytes) {
   if (zip_names_entry(bytes, "META-INF/container.xml")) {
     return "application/epub+zip";
   }
+  // The iWork '13+ container: every app's document opens at
+  // Index/Document.iwa, and only a Keynote deck carries slide archives.
+  // Pages and Numbers cannot be told apart by entry names (both hold
+  // CalculationEngine.iwa and a Tables/ directory); the name decides them
+  // (resolve_mimetype).
+  if (zip_names_entry(bytes, "Index/Document.iwa") &&
+      (zip_names_entry(bytes, "Index/MasterSlide") || zip_names_entry(bytes, "Index/Slide"))) {
+    return "application/vnd.apple.keynote";
+  }
   return "application/zip";
 }
 
@@ -244,6 +253,22 @@ bool looks_like_mail(string_view probe) {
   return header_lines >= 2 && mail_headers >= 1;
 }
 
+// A saved web archive: an rfc822 header block whose Content-Type names the
+// multipart/related aggregate. Read before the mail rule, which the same
+// header block would otherwise satisfy.
+bool looks_like_mhtml(string_view probe) {
+  if (!looks_like_mail(probe)) return false;
+  for (string_view line : lines_of(probe, 40)) {
+    if (line.empty()) break;
+    if (!starts_with_nocase(line, "content-type:")) continue;
+    std::string value(line.substr(std::string_view("content-type:").size()));
+    std::ranges::transform(value, value.begin(),
+                           [](unsigned char c) { return std::tolower(c); });
+    return value.find("multipart/related") != std::string::npos;
+  }
+  return false;
+}
+
 bool markdown_heading(string_view line) {
   size_t hashes = 0;
   while (hashes < line.size() && line[hashes] == '#') hashes++;
@@ -320,6 +345,7 @@ std::string sniff_text(string_view bytes) {
   const string_view text = strip_bom_and_space(probe);
   if (text.empty()) return {};
   if (const std::string markup = sniff_markup(text); !markup.empty()) return markup;
+  if (looks_like_mhtml(text)) return "multipart/related";
   if (looks_like_mail(text)) return "message/rfc822";
   if (text.front() == '{' || text.front() == '[') {
     const string_view whole = strip_bom_and_space(bytes);
@@ -374,6 +400,12 @@ std::string extension_mimetype(const std::filesystem::path& filename) {
       {".epub", "application/epub+zip"},
       {".eml", "message/rfc822"},
       {".msg", "application/vnd.ms-outlook"},
+      {".mht", "application/x-mimearchive"},
+      {".mhtml", "application/x-mimearchive"},
+      {".pages", "application/vnd.apple.pages"},
+      {".numbers", "application/vnd.apple.numbers"},
+      {".key", "application/vnd.apple.keynote"},
+      {".afp", "application/x-afp"},
       {".xml", "application/xml"},
       {".nxml", "application/xml"},
       {".xbrl", "application/xml"},
@@ -434,6 +466,12 @@ MimetypeResolution resolve_mimetype(string_view declared_content_type,
   // a specific text format (.csv, .md, .vtt) knows more than that.
   if (sniffed == "text/plain" && by_name != kOctetStream && by_name != "text/plain" &&
       by_name.starts_with("text/")) {
+    return {std::move(by_name), "extension"};
+  }
+  // Likewise a zip the container scan could not place: an iWork name
+  // (.pages, .numbers) says which app's document it is, which the entries
+  // of a Pages and a Numbers container cannot (sniff_zip).
+  if (sniffed == "application/zip" && by_name.starts_with("application/vnd.apple.")) {
     return {std::move(by_name), "extension"};
   }
   if (!sniffed.empty()) return {std::move(sniffed), "magic"};

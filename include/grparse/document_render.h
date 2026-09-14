@@ -5,6 +5,7 @@
 #ifndef GRPARSE_DOCUMENT_RENDER_H
 #define GRPARSE_DOCUMENT_RENDER_H
 
+#include <optional>
 #include <string>
 
 #include "ai/pipestream/document/v1/document.pb.h"
@@ -23,6 +24,21 @@ namespace grparse {
 // instead of inventing syntax. Underscores and the HTML specials are escaped
 // in item text; a link target is not.
 std::string render_markdown(const ai::pipestream::document::v1::Document& document);
+
+// The two Markdown export parameters a request can move off the reference
+// defaults (ConvertDocumentOptions.md_page_break_placeholder and
+// md_compact_tables).
+struct MarkdownOptions {
+  // When set, a part carrying this text is emitted wherever the walk moves
+  // from an item on one page to an item on a later page (the reference's
+  // page_break_placeholder). Unset emits no page breaks.
+  std::optional<std::string> page_break_placeholder;
+  // Tables without column padding (the reference's compact_tables).
+  bool compact_tables = false;
+};
+
+std::string render_markdown(const ai::pipestream::document::v1::Document& document,
+                            const MarkdownOptions& options);
 
 // Renders the document as structural HTML mirroring docling-core's HTML
 // serializer: a "<!DOCTYPE html>" skeleton with a charset meta and the

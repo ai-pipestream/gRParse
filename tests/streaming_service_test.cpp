@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -66,7 +67,8 @@ class FakeRecognizer final : public grparse::PageRecognizer {
     std::this_thread::sleep_for(delay_);
     if (page == 1) std::this_thread::sleep_for(30ms);
     static const std::vector<std::string> text{"", "one", "two", "three"};
-    return {100, 200, {{text.at(page), {{1, 2}, {20, 2}, {20, 12}, {1, 12}}}}};
+    // A per-line score so the confidence report has an OCR axis to measure.
+    return {100, 200, {{text.at(page), {{1, 2}, {20, 2}, {20, 12}, {1, 12}}, 0.95F}}};
   }
 
   std::atomic<int> calls{0};
@@ -345,6 +347,79 @@ void verify_unsupported_options_are_rejected(TestServer* server) {
   require(unspecified_status.error_message().contains("OUTPUT_FORMAT_UNSPECIFIED"),
           "the rejection must name the unrenderable format: " +
               unspecified_status.error_message());
+}
+
+// The docling-serve parity options: the export and heading tunings are
+// accepted, a STANDARD pipeline is the default path, and the response carries
+// the CV leg's confidence report. Pipelines gRParse has no models for are
+// rejected by name; NATIVE on raster input, which has no text layer to take
+// as it is, is a precondition failure rather than a modelled document under
+// a model-free label; and disagreeing heading switches are rejected.
+void verify_parity_options_and_confidence(TestServer* server) {
+  auto client = server->unary_stub();
+  auto request = unary_request();
+  auto* options = request.mutable_request()->mutable_options();
+  options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_MARKDOWN);
+  options->set_pipeline(pipestream::parse::v1::PROCESSING_PIPELINE_STANDARD);
+  options->set_include_page_images(false);
+  options->set_md_page_break_placeholder("<!-- page -->");
+  options->set_md_compact_tables(true);
+  options->set_do_pdf_heading_hierarchy(true);
+  options->mutable_pdf_heading_hierarchy_options()->set_max_level(3);
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  pipestream::parse::v1::ConvertSourceResponse response;
+  const grpc::Status status = client->ConvertSource(&context, request, &response);
+  require(status.ok(), "the parity options must be accepted: " + status.error_message());
+  const auto& converted = response.response();
+  const auto& document = converted.document();
+  require(document.doc().pages_size() == 3, "the options do not change the parse itself");
+  require(converted.has_confidence(), "a CV conversion reports its confidence");
+  const auto& confidence = converted.confidence();
+  require(confidence.has_ocr_score() && std::abs(confidence.ocr_score() - 0.95) < 1e-6,
+          "the OCR axis is the mean of the recognizer's line scores");
+  require(!confidence.has_layout_score() && !confidence.has_table_score(),
+          "axes no model measured stay unset rather than reading as zero");
+  require(confidence.has_mean_score() && confidence.has_low_score(),
+          "the document-level scores are stated");
+  require(confidence.mean_grade() == pipestream::parse::v1::QUALITY_GRADE_EXCELLENT &&
+              confidence.low_grade() == pipestream::parse::v1::QUALITY_GRADE_EXCELLENT,
+          "0.95 grades as excellent on both aggregates");
+  require(document.exports().has_md(), "markdown was requested");
+
+  request = unary_request();
+  request.mutable_request()->mutable_options()->set_pipeline(
+      pipestream::parse::v1::PROCESSING_PIPELINE_VLM);
+  grpc::ClientContext vlm_context;
+  pipestream::parse::v1::ConvertSourceResponse vlm_response;
+  const grpc::Status vlm_status = client->ConvertSource(&vlm_context, request, &vlm_response);
+  require(vlm_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              vlm_status.error_message().contains("PROCESSING_PIPELINE_VLM"),
+          "a pipeline without models here is rejected by name: " + vlm_status.error_message());
+
+  request = unary_request();
+  request.mutable_request()->mutable_options()->set_pipeline(
+      pipestream::parse::v1::PROCESSING_PIPELINE_NATIVE);
+  grpc::ClientContext native_context;
+  pipestream::parse::v1::ConvertSourceResponse native_response;
+  const grpc::Status native_status =
+      client->ConvertSource(&native_context, request, &native_response);
+  require(native_status.error_code() == grpc::StatusCode::FAILED_PRECONDITION,
+          "NATIVE on raster input cannot be honoured: " + native_status.error_message());
+
+  request = unary_request();
+  request.mutable_request()->mutable_options()->set_do_pdf_heading_hierarchy(false);
+  request.mutable_request()
+      ->mutable_options()
+      ->mutable_pdf_heading_hierarchy_options()
+      ->set_enabled(true);
+  grpc::ClientContext heading_context;
+  pipestream::parse::v1::ConvertSourceResponse heading_response;
+  const grpc::Status heading_status =
+      client->ConvertSource(&heading_context, request, &heading_response);
+  require(heading_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              heading_status.error_message().contains("disagree"),
+          "contradictory heading switches are rejected: " + heading_status.error_message());
 }
 
 // The recognition options are accepted, validated by name, and steer the CV
@@ -1699,6 +1774,7 @@ int main() {
         verify_data_after_complete_is_rejected(&server);
         verify_unary_uses_scheduler_and_shared_assembly(&server);
         verify_unsupported_options_are_rejected(&server);
+        verify_parity_options_and_confidence(&server);
         verify_recognition_options_steer_the_cv_leg(&server);
         verify_unary_multi_format_exports(&server);
         verify_unary_zip_target_delivers_an_archive(&server);

@@ -7,6 +7,7 @@
 #include <exception>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -83,6 +84,10 @@ class PageScheduler final {
     // layer.  kForce and kOff ignore it: an explicit recognition override
     // outranks the classification.
     std::unordered_set<int> ocr_pages;
+    // Whether this document's pages carry a preview image
+    // (OcrPage::preview_png). Unset defers to Options::capture_page_images;
+    // a value overrides it for this document alone.
+    std::optional<bool> capture_page_images;
   };
 
   enum class DeliveryResult { kAccepted, kAcceptedAndRelease, kCancelled };

@@ -2,8 +2,10 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <opencv2/core.hpp>
+#include <opencv2/imgcodecs.hpp>
 
 #include "ai/pipestream/document/v1/document.pb.h"
 
@@ -13,6 +15,12 @@ namespace grparse {
 // letter page is ~1700x2200); previews exist to be painted under boxes, not
 // re-OCRed, so half that keeps events an order of magnitude smaller.
 inline constexpr int kPagePreviewMaxSide = 1100;
+
+// The PNG encoder setting every page and picture image is written with:
+// zlib level 6, the level PIL writes at and the level docling-core pins its
+// own OpenCV encodes to (2.96), so a preview's bytes match the reference
+// pipeline's for the same raster.
+inline const std::vector<int> kPngEncodeParams = {cv::IMWRITE_PNG_COMPRESSION, 6};
 
 // Downscaled copy of the raster for the page preview; the raster itself when
 // it is already within bounds. Never aliases past the encode that follows.

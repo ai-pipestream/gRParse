@@ -14,11 +14,13 @@
 
 #include "grparse/base64.h"
 #include "grparse/chart_derender.h"
+#include "grparse/confidence.h"
 #include "grparse/content_sniff.h"
 #include "grparse/data_totals.h"
 #include "grparse/document_assembly.h"
 #include "grparse/document_collectors.h"
 #include "grparse/document_merge.h"
+#include "grparse/heading_hierarchy.h"
 #include "grparse/page_previews.h"
 #include "grparse/schema_version.h"
 #include "parse_support.h"
@@ -87,6 +89,74 @@ bool renderable(pipestream::parse::v1::OutputFormat format) {
   }
 }
 
+// The options every conversion surface implements. Anything else populated
+// on the request is rejected by name (below): an option this server would
+// silently ignore is worse than one it turns down.
+bool implemented_option(std::string_view name) {
+  static constexpr std::string_view kImplemented[] = {
+      "to_formats",
+      "collectors",
+      "ebcdic_layout_json",
+      "lol_html_options_json",
+      "do_ocr",
+      "force_ocr",
+      "render_scale",
+      "pipeline",
+      "include_page_images",
+      "md_page_break_placeholder",
+      "md_compact_tables",
+      "do_pdf_heading_hierarchy",
+      "pdf_heading_hierarchy_options",
+  };
+  return std::ranges::find(kImplemented, name) != std::end(kImplemented);
+}
+
+// The pipelines this server runs: STANDARD is the default path, NATIVE the
+// model-free extraction the pdf collector's own Document provides. The
+// VLM, ASR and LEGACY pipelines name engines this server does not host.
+grpc::Status validate_pipeline(const pipestream::parse::v1::ConvertDocumentOptions& options,
+                               const std::string& surface) {
+  if (!options.has_pipeline()) return grpc::Status::OK;
+  switch (options.pipeline()) {
+    case pipestream::parse::v1::PROCESSING_PIPELINE_UNSPECIFIED:
+    case pipestream::parse::v1::PROCESSING_PIPELINE_STANDARD:
+    case pipestream::parse::v1::PROCESSING_PIPELINE_NATIVE:
+      return grpc::Status::OK;
+    default: {
+      std::string name = pipestream::parse::v1::ProcessingPipeline_Name(options.pipeline());
+      if (name.empty()) name = std::to_string(static_cast<int>(options.pipeline()));
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + " does not implement pipeline '" + name + "'");
+    }
+  }
+}
+
+// The heading pass's two switches must agree when both are given, and the
+// numeric tunables must be in range; the rest of the message is accepted as
+// documented on HeadingHierarchyOptions.
+grpc::Status validate_heading_options(
+    const pipestream::parse::v1::ConvertDocumentOptions& options, const std::string& surface) {
+  if (!options.has_pdf_heading_hierarchy_options()) return grpc::Status::OK;
+  const auto& heading = options.pdf_heading_hierarchy_options();
+  if (options.has_do_pdf_heading_hierarchy() && heading.has_enabled() &&
+      options.do_pdf_heading_hierarchy() != heading.enabled()) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        surface + ": do_pdf_heading_hierarchy and "
+                                  "pdf_heading_hierarchy_options.enabled disagree");
+  }
+  if (heading.has_max_level() && (heading.max_level() < 1 || heading.max_level() > 6)) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        surface + ": pdf_heading_hierarchy_options.max_level must be in [1, 6]");
+  }
+  if (heading.has_style_size_tolerance() &&
+      (heading.style_size_tolerance() < 0.0 || heading.style_size_tolerance() >= 1.0)) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        surface + ": pdf_heading_hierarchy_options.style_size_tolerance must "
+                                  "be in [0, 1)");
+  }
+  return grpc::Status::OK;
+}
+
 // `surface` names the RPC in the rejections so a caller learns which of the
 // conversion surfaces turned its request down.
 grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOptions& options,
@@ -94,10 +164,7 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
   std::vector<const google::protobuf::FieldDescriptor*> populated;
   options.GetReflection()->ListFields(options, &populated);
   for (const auto* field : populated) {
-    if (field->name() != "to_formats" && field->name() != "collectors" &&
-        field->name() != "ebcdic_layout_json" &&
-        field->name() != "lol_html_options_json" && field->name() != "do_ocr" &&
-        field->name() != "force_ocr" && field->name() != "render_scale") {
+    if (!implemented_option(field->name())) {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                           surface + " does not implement option '" + std::string(field->name()) + "'");
     }
@@ -106,6 +173,10 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
       validate_ocr_tuning(options.has_do_ocr(), options.do_ocr(), options.force_ocr(),
                           options.has_render_scale(), options.render_scale());
   if (!tuning_status.ok()) return tuning_status;
+  const grpc::Status pipeline_status = validate_pipeline(options, surface);
+  if (!pipeline_status.ok()) return pipeline_status;
+  const grpc::Status heading_status = validate_heading_options(options, surface);
+  if (!heading_status.ok()) return heading_status;
   for (const auto raw : options.to_formats()) {
     const auto format = static_cast<pipestream::parse::v1::OutputFormat>(raw);
     if (!renderable(format)) {
@@ -160,6 +231,9 @@ pipestream::document::v1::Document base_document(const std::string& bytes,
 // when that collector turns out to be the whole document.
 using CvOffsets =
     std::shared_ptr<google::protobuf::RepeatedPtrField<pipestream::parse::v1::TextOffset>>;
+// Likewise the only collector that measured its pages: its read quality is
+// kept here and published on the response whenever it read any page.
+using CvConfidence = std::shared_ptr<std::optional<pipestream::parse::v1::ConfidenceScores>>;
 
 // The in-process CV collector: the page scheduler's layout, OCR, and model
 // pipeline over rendered pages, assembled into a document fragment. Never
@@ -169,12 +243,15 @@ using CvOffsets =
 class CvCollector {
  public:
   CvCollector(grpc::CallbackServerContext* context, PageScheduler& scheduler,
-              std::shared_ptr<const std::string> bytes, bool pdf, CvOffsets offsets)
+              std::shared_ptr<const std::string> bytes, bool pdf, CvOffsets offsets,
+              CvConfidence confidence, HeadingOptions heading_options)
       : context_(context),
         scheduler_(scheduler),
         bytes_(std::move(bytes)),
         pdf_(pdf),
-        offsets_(std::move(offsets)) {}
+        offsets_(std::move(offsets)),
+        confidence_(std::move(confidence)),
+        heading_options_(std::move(heading_options)) {}
 
   CollectorOutcome operator()(const PageScheduler::OcrTuning& tuning) const {
     try {
@@ -286,7 +363,11 @@ class CvCollector {
     append_consensus_claim(assembled_pages, &outcome.document);
     // Heading depth clusters over the whole document's heights, so it can
     // only run after every page is in.
-    assign_section_header_levels(&outcome.document);
+    assign_section_header_levels(&outcome.document, heading_options_);
+    std::vector<PageConfidence> page_scores;
+    page_scores.reserve(assembled_pages.size());
+    for (const OcrPage* page : assembled_pages) page_scores.push_back(page_confidence(*page));
+    *confidence_ = document_confidence(page_scores);
     *offsets_ = std::move(offsets);
     outcome.success = true;
     return outcome;
@@ -297,6 +378,8 @@ class CvCollector {
   std::shared_ptr<const std::string> bytes_;
   bool pdf_;
   CvOffsets offsets_;
+  CvConfidence confidence_;
+  HeadingOptions heading_options_;
 };
 
 // Everything one parse's collector legs read: the request's bytes and
@@ -313,7 +396,28 @@ struct ParseInputs {
   PageScheduler::OcrTuning tuning;
   CollectorDeadline inbound_deadline = kNoCollectorDeadline;
   bool previews = false;
+  // PROCESSING_PIPELINE_NATIVE: the pdf collector's own model-free Document
+  // is the answer whatever its classification said.
+  bool native_pipeline = false;
+  HeadingOptions heading;
 };
+
+// The heading pass's tuning as the request states it; every unset field
+// keeps the pass's own default (HeadingOptions).
+HeadingOptions heading_options_from(const pipestream::parse::v1::ConvertDocumentOptions& options) {
+  HeadingOptions heading;
+  if (options.has_do_pdf_heading_hierarchy()) heading.enabled = options.do_pdf_heading_hierarchy();
+  if (!options.has_pdf_heading_hierarchy_options()) return heading;
+  const auto& requested = options.pdf_heading_hierarchy_options();
+  if (requested.has_enabled()) heading.enabled = requested.enabled();
+  if (requested.has_use_numbering()) heading.use_numbering = requested.use_numbering();
+  if (requested.has_use_style()) heading.use_style = requested.use_style();
+  if (requested.has_max_level()) heading.max_level = requested.max_level();
+  if (requested.has_style_size_tolerance()) {
+    heading.style_size_tolerance = requested.style_size_tolerance();
+  }
+  return heading;
+}
 
 // One parse's inputs, read off the request once. The mimetype is the
 // origin's own resolved type, so the routing and every dialed collector see
@@ -342,8 +446,18 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   // its own static cap exactly as before.
   inputs.inbound_deadline = context->deadline();
   // A collector-folded PDF never rasterized; when previews are on, it gets
-  // them rendered so the shell has a page to paint the boxes on.
-  inputs.previews = scheduler.captures_page_images();
+  // them rendered so the shell has a page to paint the boxes on. The request
+  // decides when it says; the server setting otherwise.
+  if (options.has_include_page_images()) {
+    inputs.tuning.capture_page_images = options.include_page_images();
+    inputs.previews = options.include_page_images();
+  } else {
+    inputs.previews = scheduler.captures_page_images();
+  }
+  inputs.native_pipeline =
+      options.has_pipeline() &&
+      options.pipeline() == pipestream::parse::v1::PROCESSING_PIPELINE_NATIVE;
+  inputs.heading = heading_options_from(options);
   return inputs;
 }
 
@@ -359,10 +473,30 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
       collect_pdf(inputs.endpoints->channel(pipestream::parse::v1::COLLECTOR_PDF),
                   *inputs.bytes, inputs.inbound_deadline);
   const PdfRouteDecision route = route_pdf_by_classification(parsed.classification);
-  if (parsed.outcome.success && route.fast_path) {
+  if (parsed.outcome.success && (route.fast_path || inputs.native_pipeline)) {
     PdfParseResult fast = parsed;
     if (inputs.previews) attach_page_previews(inputs.bytes, &fast.outcome.document);
+    if (!route.fast_path) {
+      // NATIVE asked for the text layer as it is; say what the models would
+      // have been run for, so a caller can tell a thin result from a thin
+      // document.
+      fast.outcome.warnings.push_back(
+          "pipeline NATIVE took the pdf collector's extraction although the inspector "
+          "classified the document as " +
+          std::string(pdf_class_name(parsed.classification.pdf_class)) +
+          (parsed.classification.encoding_issues ? " with encoding issues in the text layer"
+                                                 : "") +
+          "; no layout, OCR, or table-structure model ran");
+    }
     return fast.outcome;
+  }
+  if (!parsed.outcome.success && inputs.native_pipeline) {
+    // Degrading to the CV path would run the models NATIVE excludes.
+    CollectorOutcome outcome;
+    outcome.code = grpc::StatusCode::FAILED_PRECONDITION;
+    outcome.error = "pipeline NATIVE needs the pdf collector's extraction and it failed: " +
+                    parsed.outcome.error;
+    return outcome;
   }
   if (!parsed.outcome.success) {
     // Degrade, don't sink: an unreachable inspector leaves the parse on
@@ -547,10 +681,25 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
 
     const auto cv_offsets = std::make_shared<
         google::protobuf::RepeatedPtrField<pipestream::parse::v1::TextOffset>>();
+    const auto cv_confidence =
+        std::make_shared<std::optional<pipestream::parse::v1::ConfidenceScores>>();
     const bool pdf = is_pdf(*bytes, requested_name);
-    const CvCollector run_cv(context, scheduler, bytes, pdf, cv_offsets);
+    const CvCollector run_cv(context, scheduler, bytes, pdf, cv_offsets, cv_confidence,
+                             inputs.heading);
 
     const RoutedPlan routed = route_plan(request.options().collectors(), pdf, inputs);
+    // NATIVE is model-free by definition. A plan that would put the bytes
+    // through the CV models (a PDF with no inspector to read its text layer,
+    // a raster image) cannot honour it, and the caller must know rather
+    // than get a modelled document under a model-free label.
+    if (inputs.native_pipeline &&
+        std::ranges::find(routed.ids, pipestream::parse::v1::COLLECTOR_GRPARSE_CV) !=
+            routed.ids.end()) {
+      return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
+                          surface + ": pipeline NATIVE needs the pdf collector "
+                                    "(GRPARSE_COLLECTOR_PDF) for PDF input and does not "
+                                    "apply to raster input");
+    }
     CoordinatorResult result = run_collectors(
         build_plan(routed.ids, routed.pdf_routing, routed.office_fanout, inputs, run_cv),
         std::move(base));
@@ -579,6 +728,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     stamp_collector_warnings(&result);
     parsed->filename = requested_name;
     parsed->result = std::move(result);
+    parsed->confidence = std::move(*cv_confidence);
     return grpc::Status::OK;
   } catch (...) {
     return status_from_exception(std::current_exception());
