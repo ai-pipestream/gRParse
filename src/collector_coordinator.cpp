@@ -45,6 +45,28 @@ CollectorDeadline capped_collector_deadline(CollectorDeadline inbound,
   return std::min(inbound, std::chrono::system_clock::now() + cap);
 }
 
+pipestream::parse::v1::FailureCategory failure_category_for(grpc::StatusCode code) {
+  switch (code) {
+    case grpc::StatusCode::DEADLINE_EXCEEDED:
+      return pipestream::parse::v1::FAILURE_CATEGORY_TIMEOUT;
+    case grpc::StatusCode::RESOURCE_EXHAUSTED:
+      return pipestream::parse::v1::FAILURE_CATEGORY_CAPACITY;
+    case grpc::StatusCode::UNAVAILABLE:
+    case grpc::StatusCode::INVALID_ARGUMENT:
+    case grpc::StatusCode::FAILED_PRECONDITION:
+    case grpc::StatusCode::UNIMPLEMENTED:
+    case grpc::StatusCode::OUT_OF_RANGE:
+      return pipestream::parse::v1::FAILURE_CATEGORY_BACKEND_FAILURE;
+    case grpc::StatusCode::CANCELLED:
+    case grpc::StatusCode::INTERNAL:
+    case grpc::StatusCode::UNKNOWN:
+    case grpc::StatusCode::DATA_LOSS:
+      return pipestream::parse::v1::FAILURE_CATEGORY_INTERNAL;
+    default:
+      return pipestream::parse::v1::FAILURE_CATEGORY_UNKNOWN;
+  }
+}
+
 CoordinatorResult run_collectors(std::vector<PlannedCollector> collectors,
                                  pipestream::document::v1::Document base) {
   CoordinatorResult result;

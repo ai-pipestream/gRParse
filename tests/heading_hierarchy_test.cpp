@@ -139,6 +139,58 @@ void verify_legacy_clustering() {
   require(grparse::infer_heading_levels({}).empty(), "no headings, no levels");
 }
 
+// The request's tuning (HeadingHierarchyOptions): numbering off makes every
+// heading unnumbered, style off pins every undecided heading to 1 and elects
+// no title, max_level caps the depth, and the size tolerance moves the
+// clustering threshold.
+void verify_heading_options() {
+  const std::vector<grparse::HeaderHeight> numbered = {
+      header("#/texts/1", "1 Scope", 20, 1, 100),
+      header("#/texts/2", "1.1 Purpose", 14, 1, 200),
+      header("#/texts/3", "1.1.1 Detail", 10, 1, 300),
+      header("#/texts/4", "Overview", 19, 1, 400),
+  };
+  grparse::HeadingOptions no_numbering;
+  no_numbering.use_numbering = false;
+  const auto by_size = grparse::infer_heading_levels(numbered, no_numbering);
+  require(by_size.at("#/texts/1") == 1 && by_size.at("#/texts/4") == 1,
+          "numbering off: the tallest cluster is 1 whatever the text says");
+  require(by_size.at("#/texts/2") == 2 && by_size.at("#/texts/3") == 3,
+          "numbering off: the smaller headings cluster by size alone");
+
+  grparse::HeadingOptions no_style;
+  no_style.use_style = false;
+  const auto by_numbering = grparse::infer_heading_levels(numbered, no_style);
+  require(by_numbering.at("#/texts/3") == 3, "style off: numbering still decides");
+  require(by_numbering.at("#/texts/4") == 1, "style off: an unnumbered heading stays at 1");
+  const std::vector<grparse::HeaderHeight> titled = {
+      header("#/texts/0", "A Grand Title", 40, 1, 50),
+      header("#/texts/1", "1 Scope", 20, 1, 100),
+      header("#/texts/2", "2 Terms", 20, 2, 100),
+  };
+  require(!grparse::title_lines(titled).empty(), "by default the tall opener is the title");
+  require(grparse::title_lines(titled, no_style).empty(), "style off: no title is elected");
+
+  grparse::HeadingOptions capped;
+  capped.max_level = 2;
+  require(grparse::infer_heading_levels(numbered, capped).at("#/texts/3") == 2,
+          "max_level caps the numbered depth");
+
+  // A second 40 keeps the opener from being elected title under the strict
+  // tolerance, so the clustering rule is what the two runs compare.
+  const std::vector<grparse::HeaderHeight> near_sizes = {
+      header("#/texts/0", "Chapter", 40, 1, 100),
+      header("#/texts/1", "Section", 36, 1, 300),
+      header("#/texts/2", "Another chapter", 40, 1, 600),
+  };
+  require(grparse::infer_heading_levels(near_sizes).at("#/texts/1") == 1,
+          "36 is within 85% of 40: the same level by default");
+  grparse::HeadingOptions strict;
+  strict.style_size_tolerance = 0.05;
+  require(grparse::infer_heading_levels(near_sizes, strict).at("#/texts/1") == 2,
+          "a 5% tolerance makes 36 one level deeper than 40");
+}
+
 // Font sizes beat heights when every heading declares one.
 void verify_font_sizes_win_when_complete() {
   std::vector<grparse::HeaderHeight> headings = {
@@ -332,6 +384,7 @@ int main() {
       verify_paper_levels,
       verify_numbering_without_title,
       verify_legacy_clustering,
+      verify_heading_options,
       verify_font_sizes_win_when_complete,
       verify_document_title_merge_and_levels,
       verify_prose_headings_demoted,

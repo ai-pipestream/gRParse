@@ -81,6 +81,10 @@ struct LayoutRegion {
   // Model-recognized cell grid, filled only for table regions when a table
   // structure engine is active; empty means geometry fallback.
   std::vector<StructuredCell> structured_cells = {};
+  // The structure model's mean token probability for `structured_cells`,
+  // filled beside them; absent on geometry fallback. Feeds the document's
+  // ConfidenceScores.table_score (confidence.h).
+  std::optional<float> structure_score = std::nullopt;
   // Classifier output sorted by confidence, filled only for figure regions
   // when the figure classifier is active.
   std::vector<FigureClass> figure_classes = {};

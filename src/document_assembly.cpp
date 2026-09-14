@@ -1058,11 +1058,23 @@ void collect_header_heights(const pipestream::parse::v1::PageData& page,
 }
 
 void assign_section_header_levels(pipestream::document::v1::Document* document) {
+  assign_section_header_levels(document, HeadingOptions{});
+}
+
+void assign_section_header_levels(pipestream::document::v1::Document* document,
+                                  const HeadingOptions& requested) {
   if (document == nullptr) throw std::invalid_argument("Document is required");
   // Only headers without a level are eligible here: the CV path's own
   // output, before any collector's levels are in play.
-  HeadingOptions options;
+  HeadingOptions options = requested;
   options.geometry_collectors.clear();
+  if (!options.enabled) {
+    for (auto& text : *document->mutable_texts()) {
+      if (!text.has_section_header() || text.section_header().level() != 0) continue;
+      text.mutable_section_header()->set_level(1);
+    }
+    return;
+  }
   infer_heading_hierarchy(document, options);
 }
 

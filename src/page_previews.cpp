@@ -51,7 +51,7 @@ void attach_page_previews(std::shared_ptr<const std::string> bytes,
     }
     if (raster.empty()) continue;
     std::vector<unsigned char> png;
-    if (!cv::imencode(".png", preview_of(raster), png)) continue;
+    if (!cv::imencode(".png", preview_of(raster), png, kPngEncodeParams)) continue;
     auto& page = (*document->mutable_pages())[page_no];
     page.set_page_no(page_no);
     set_picture_image(png, page.mutable_image());

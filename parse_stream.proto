@@ -98,6 +98,11 @@ message CollectorDocument {
 message CollectorFailure {
   Collector collector = 1;
   string error = 2;
+  // Why the collector could not contribute, classified from its status:
+  // TIMEOUT for a deadline, CAPACITY for exhaustion, BACKEND_FAILURE for a
+  // collector that could not be reached or rejected the bytes, INTERNAL
+  // otherwise.
+  FailureCategory category = 3;
 }
 
 // PageData contains a page's complete extracted payload.
@@ -202,6 +207,10 @@ message DocumentComplete {
   // happened. Collector documents carry their warnings beside their own
   // document; this is the CV path's equivalent.
   repeated string warnings = 4;
+  // The read quality of the CV pages this stream emitted, aggregated the
+  // same way as ConvertDocumentResponse.confidence. Absent when no CV page
+  // was read.
+  optional ConfidenceScores confidence = 5;
 }
 
 message StreamDocumentRequest {
@@ -277,6 +286,7 @@ message StreamStatus {
 
   // Orchestrator queue position when known.
   optional uint32 queue_position = 8;
+  optional uint32 num_partially_succeeded = 9;
 }
 
 // DocumentNode wraps a single hydrated core item for live UI / embedding.
@@ -315,8 +325,24 @@ message StreamSourceResult {
   optional string document_name = 5;
 }
 
+// StreamErrorCode is the stable machine class of a StreamError.
+enum StreamErrorCode {
+  STREAM_ERROR_CODE_UNSPECIFIED = 0;
+  STREAM_ERROR_CODE_INVALID_ARGUMENT = 1;
+  STREAM_ERROR_CODE_NOT_FOUND = 2;
+  STREAM_ERROR_CODE_CONVERT_FAILED = 3;
+  STREAM_ERROR_CODE_RESOURCE_EXHAUSTED = 4;
+  STREAM_ERROR_CODE_INTERNAL = 5;
+}
+
 message StreamError {
-  string code = 1; // stable machine code, e.g. "INVALID_ARGUMENT", "CONVERT_FAILED"
+  // Tag 1 carried the code as a free string.
+  reserved 1;
+
   string message = 2;
   bool terminal = 3; // if true, no further envelopes will follow for this stream
+  StreamErrorCode code = 4;
+  // The classified account of the failure when the stream ended in
+  // CONVERT_FAILED.
+  optional PublicFailureInfo failure = 5;
 }

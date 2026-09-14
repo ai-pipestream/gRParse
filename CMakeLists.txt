@@ -694,6 +694,7 @@ add_library(grparse_core STATIC
   src/office_cv_enrichment.cpp
   src/figure_classifier.cpp
   src/document_assembly.cpp
+  src/confidence.cpp
   src/in_memory_document.cpp
   src/consensus_page_source.cpp
   src/remote_page_source.cpp
@@ -750,6 +751,7 @@ if(BUILD_TESTING)
     chunk-hf-tokenizer-test
     chunk-hf-model-test
     collector-coordinator-test
+    confidence-test
     confluence-storage-test
     docling-map-test
     document-assembly-test

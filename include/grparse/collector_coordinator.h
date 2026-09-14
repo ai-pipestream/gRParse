@@ -65,6 +65,13 @@ struct PlannedCollector {
   bool office_fanout = false;
 };
 
+// The wire classification of a collector's failure, from the status class it
+// failed with: DEADLINE_EXCEEDED is a timeout, RESOURCE_EXHAUSTED capacity,
+// UNAVAILABLE / INVALID_ARGUMENT / FAILED_PRECONDITION / UNIMPLEMENTED a
+// backend that could not be reached or would not take the bytes, CANCELLED /
+// INTERNAL / UNKNOWN internal, anything else UNKNOWN.
+ai::pipestream::parse::v1::FailureCategory failure_category_for(grpc::StatusCode code);
+
 // One collector that could not contribute to an otherwise surviving parse.
 struct CollectorFailureInfo {
   ai::pipestream::parse::v1::Collector id =

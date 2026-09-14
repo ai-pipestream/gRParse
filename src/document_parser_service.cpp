@@ -92,6 +92,7 @@ void report_failures(const std::vector<CollectorFailureInfo>& failures,
     error->set_component_type(pipestream::parse::v1::COMPONENT_TYPE_PIPELINE);
     error->set_module_name(std::string("collector:") + collector_name(failure.id));
     error->set_error_message(failure.error);
+    error->set_category(failure_category_for(failure.code));
   }
 }
 
@@ -103,7 +104,12 @@ void render_exports(const pipestream::parse::v1::ConvertDocumentOptions& options
     exports->set_text(document_plain_text(document));
   }
   if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_MARKDOWN)) {
-    exports->set_md(render_markdown(document));
+    MarkdownOptions markdown;
+    if (options.has_md_page_break_placeholder()) {
+      markdown.page_break_placeholder = options.md_page_break_placeholder();
+    }
+    markdown.compact_tables = options.md_compact_tables();
+    exports->set_md(render_markdown(document, markdown));
   }
   if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_HTML)) {
     exports->set_html(render_html(document));
@@ -233,6 +239,7 @@ grpc::ServerUnaryReactor* DocumentParserService::ConvertSource(
     auto* document = document_response->mutable_doc();
     *document = std::move(result.document);
     report_failures(result.failures, converted->mutable_errors());
+    if (parsed.confidence.has_value()) *converted->mutable_confidence() = *parsed.confidence;
     // Every requested output format renders from the same merged document;
     // TEXT keeps its arena-order line export, the rest fold the body tree.
     const auto& options = request->request().options();
@@ -262,6 +269,7 @@ grpc::ServerUnaryReactor* DocumentParserService::ConvertSource(
         error->set_component_type(pipestream::parse::v1::COMPONENT_TYPE_PIPELINE);
         error->set_module_name("target-delivery");
         error->set_error_message(delivered.error_message());
+        error->set_category(pipestream::parse::v1::FAILURE_CATEGORY_TARGET_UNAVAILABLE);
       }
     }
     converted->set_status(result.failures.empty() && !delivery_failed

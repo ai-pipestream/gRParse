@@ -7,8 +7,10 @@
 #ifndef GRPARSE_RENDER_MARKDOWN_WALK_H
 #define GRPARSE_RENDER_MARKDOWN_WALK_H
 
+#include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ai/pipestream/document/v1/document.pb.h"
@@ -53,6 +55,18 @@ class MarkdownWalk : protected RendererBase {
 
   // The child references of any node, in document order.
   std::vector<std::string> children_of(const std::string& ref) const;
+
+  // The page of a document item's first provenance entry; nothing for a
+  // group, an item without provenance, or an unknown reference.
+  std::optional<int> first_prov_page(const std::string& ref) const;
+
+  // Turns on the reference's page-break parts: whenever a walk moves from
+  // an item on one page to an item on a later page, a part carrying
+  // `placeholder` is yielded between them (before a list or inline group
+  // whose first item opens the new page). Off by default.
+  void set_page_break_placeholder(std::string placeholder) {
+    page_break_placeholder_ = std::move(placeholder);
+  }
 
   // The reference a node declares as its parent, or empty when it declares
   // none.
@@ -121,8 +135,13 @@ class MarkdownWalk : protected RendererBase {
   bool span_sits_in_inline_group(const std::string& span) const;
   bool first_item_is_enumerated(const std::string& group_ref) const;
 
+  // The page of the first provenance-bearing document item under `ref`, in
+  // pre-order; nothing when no item under it has provenance.
+  std::optional<int> first_prov_page_within(const std::string& ref) const;
+
   // The body-tree items the label vocabulary drops.
   std::set<std::string> excluded_refs_;
+  std::optional<std::string> page_break_placeholder_;
 };
 
 }  // namespace grparse::render

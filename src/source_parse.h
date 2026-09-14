@@ -29,6 +29,8 @@ struct SourceParse {
   std::filesystem::path filename;
   CoordinatorResult result;
   chunking::OffsetTable offsets;
+  // The CV collector's page read quality, when it read any page.
+  std::optional<ai::pipestream::parse::v1::ConfidenceScores> confidence;
 };
 
 // The parse every unary surface shares: decode the single FileSource, plan

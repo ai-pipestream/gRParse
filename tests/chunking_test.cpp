@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <print>
 #include <stdexcept>
@@ -483,6 +484,26 @@ void verify_pages_items_and_offsets_propagate() {
              "the lowest collector confidence rides as metadata");
   require_eq(sparrows->metadata().at("text_source"), "digital",
              "the offset table's source rides as metadata");
+  // The typed twin carries the same keys with their types, plus the source
+  // document's identity when the origin states it.
+  require(!sparrows->typed_metadata().contains("binary_hash") &&
+              !sparrows->typed_metadata().contains("mimetype"),
+          "an origin without a hash or mimetype stamps neither");
+  docv1::Document with_origin = document;
+  with_origin.mutable_origin()->set_binary_hash(0xFFFFFFFFFFFFFFF0ULL);
+  with_origin.mutable_origin()->set_mimetype("application/pdf");
+  const auto origin_chunks = chunk_hierarchical(with_origin, offsets, {}, "guide.pdf");
+  const auto* stamped = find_chunk(origin_chunks, "Sparrows are small");
+  require(stamped != nullptr, "the paragraph must chunk with an origin too");
+  const auto& typed = stamped->typed_metadata();
+  require(std::abs(typed.at("min_confidence").double_value() - 0.94) < 1e-6,
+          "typed min_confidence is the double the string spells");
+  require_eq(typed.at("text_source").string_value(), "digital",
+             "typed text_source matches the string form");
+  require(typed.at("binary_hash").uint_value() == 0xFFFFFFFFFFFFFFF0ULL,
+          "the chunk names its document's origin hash, above int64 range intact");
+  require_eq(typed.at("mimetype").string_value(), "application/pdf",
+             "the chunk names its document's mimetype");
 
   const auto* list = find_chunk(chunks, "- nests");
   require(list != nullptr, "the list must chunk");
