@@ -27,6 +27,8 @@
 ARG GRPARSE_RUNTIME_IMAGE=ubuntu:26.04
 
 FROM ubuntu:26.04 AS build
+ARG GRPARSE_BUILD_JOBS=2
+ENV CARGO_BUILD_JOBS=${GRPARSE_BUILD_JOBS}
 
 ENV DEBIAN_FRONTEND=noninteractive
 # cargo/rustc build the Rust tokenizers crate inside tokenizers-cpp, the
@@ -57,7 +59,7 @@ RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/opencv.tar.g
       -DWITH_WEBP=OFF -DWITH_JASPER=OFF -DWITH_AVIF=OFF \
       -DBUILD_JPEG=ON -DBUILD_PNG=ON -DBUILD_TIFF=ON -DBUILD_OPENJPEG=ON -DBUILD_ZLIB=ON \
       -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_opencv_apps=OFF \
- && cmake --build /tmp/opencv-build --parallel 4 \
+ && cmake --build /tmp/opencv-build --parallel ${GRPARSE_BUILD_JOBS} \
  && cmake --install /tmp/opencv-build \
  && rm -rf /tmp/opencv.tar.gz "/tmp/opencv-${OPENCV_VERSION}" /tmp/opencv-build
 
@@ -76,11 +78,20 @@ RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/poppler.tar.
       -DENABLE_BOOST=ON -DENABLE_NSS3=OFF -DENABLE_GPGME=OFF -DENABLE_LIBCURL=OFF \
       -DENABLE_LIBTIFF=OFF -DENABLE_LIBOPENJPEG=openjpeg2 -DBUILD_CPP_TESTS=OFF \
       -DBUILD_GTK_TESTS=OFF -DBUILD_QT5_TESTS=OFF -DBUILD_QT6_TESTS=OFF -DBUILD_MANUAL_TESTS=OFF \
- && cmake --build /tmp/poppler-build --parallel 4 \
+ && cmake --build /tmp/poppler-build --parallel ${GRPARSE_BUILD_JOBS} \
  && cmake --install /tmp/poppler-build \
  && rm -rf /tmp/poppler.tar.xz "/tmp/poppler-${POPPLER_VERSION}" /tmp/poppler-build
 
 WORKDIR /src
+# Headers and runtime from the same OpenVINO version used by the existing
+# ORT provider. The wheel is a ZIP archive; no Python interpreter is needed.
+RUN apt-get update && apt-get install -y --no-install-recommends unzip \
+ && curl -fsSL --retry 5 -o /tmp/openvino.whl \
+    https://files.pythonhosted.org/packages/8a/91/807f4e288969bc696dee2e56d7269abffb56626249642effb8ec2ab7d424/openvino-2025.4.1-20426-cp312-cp312-manylinux2014_x86_64.whl \
+ && echo "88f074286d420c1a1a95e7f2ba11109a899f2f3b3fd818cfe1e47ead22cc7e45  /tmp/openvino.whl" | sha256sum -c - \
+ && unzip -q /tmp/openvino.whl -d /opt/openvino-sdk \
+ && rm /tmp/openvino.whl \
+ && rm -rf /var/lib/apt/lists/*
 COPY . .
 # Separate cache from the CUDA image: different ONNX Runtime package and ABI.
 # Two builders that share this cache mount (a developer build and a local CI
@@ -102,13 +113,18 @@ RUN --mount=type=cache,id=grparse-openvino-ubuntu26-grpc1.83.1-ort1.24.1-poppler
  && sh scripts/stamp-sources.sh /build \
  && cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
       -DGRPARSE_WERROR=ON -DGRPARSE_ORT_PACKAGE=openvino \
+      -DGRPARSE_EMBED_OPENVINO=ON -DGRPARSE_OPENVINO_ROOT=/opt/openvino-sdk/openvino \
       -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv4 \
- && cmake --build /build --target grparse-server grparse-stream-client grparse-tests --parallel 4 \
+ && cmake --build /build --target grparse-server grparse-stream-client grparse-embed-text grparse-tests --parallel ${GRPARSE_BUILD_JOBS} \
  && LD_LIBRARY_PATH=/opt/poppler/lib:/opt/opencv/lib ctest --test-dir /build --output-on-failure -L grparse \
  && mkdir -p /out \
  && cp /build/grparse-server /out/grparse-server \
  && cp /build/grparse-stream-client /out/grparse-stream-client \
- && cp -a /build/ort-openvino/onnxruntime/capi /out/ort-libs
+ && cp /build/grparse-embed-text /out/grparse-embed-text \
+ && cp /build/embedding-model-test /out/grparse-embedding-check \
+ && cp /build/embedding-reference-test /out/grparse-embedding-reference \
+ && cp -a /build/ort-openvino/onnxruntime/capi /out/ort-libs \
+ && cp -a /opt/openvino-sdk/openvino/libs/*.so* /out/ort-libs/
 
 # Stage the runtime library closure. The runtime base is assumed minimal
 # (hardened images carry no shell, no package manager, no ldconfig), so every
@@ -144,7 +160,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && LD_LIBRARY_PATH=/out/ort-libs:/opt/poppler/lib:/opt/opencv/lib \
        STAGE_KEEP_ON_BASE='^/out/ort-libs/' \
        sh scripts/stage-runtime-closure.sh /out/runtime-libs \
-         /out/grparse-server /out/grparse-stream-client /out/ort-libs/*.so* \
+         /out/grparse-server /out/grparse-stream-client /out/grparse-embed-text /out/grparse-embedding-check /out/grparse-embedding-reference /out/ort-libs/*.so* \
          /usr/lib/x86_64-linux-gnu/intel-opencl/libigdrcl.so $neo_libs \
     && for lib in $neo_libs; do cp -L "$lib" /out/runtime-libs/; done \
     && mkdir -p /out/openvino-cache \
@@ -179,6 +195,9 @@ COPY --from=build /var/cache/fontconfig /var/cache/fontconfig
 COPY --from=build --chown=65532:65532 /out/openvino-cache /var/cache/openvino
 COPY --from=build /out/grparse-server /usr/local/bin/grparse-server
 COPY --from=build /out/grparse-stream-client /usr/local/bin/grparse-stream-client
+COPY --from=build /out/grparse-embed-text /usr/local/bin/grparse-embed-text
+COPY --from=build /out/grparse-embedding-check /usr/local/bin/grparse-embedding-check
+COPY --from=build /out/grparse-embedding-reference /usr/local/bin/grparse-embedding-reference
 USER 65532:65532
 EXPOSE 50051
 ENTRYPOINT ["/usr/local/bin/grparse-server"]

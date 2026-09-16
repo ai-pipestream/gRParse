@@ -9,6 +9,19 @@
 ARG GRPARSE_RUNTIME_IMAGE=nvidia/cuda:13.3.1-runtime-ubuntu26.04
 
 FROM nvidia/cuda:13.3.1-devel-ubuntu26.04 AS build
+ARG GRPARSE_BUILD_JOBS=2
+ENV CARGO_BUILD_JOBS=${GRPARSE_BUILD_JOBS}
+
+# Native embedding inference; keep the SDK aligned with this CUDA base.
+ARG GRPARSE_TENSORRT_VERSION=11.2.1.2-1+cuda13.3
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libnvinfer-dev=${GRPARSE_TENSORRT_VERSION} \
+    libnvinfer-headers-dev=${GRPARSE_TENSORRT_VERSION} \
+    libnvinfer-safe-headers-dev=${GRPARSE_TENSORRT_VERSION} \
+    libnvinfer11=${GRPARSE_TENSORRT_VERSION} \
+    libnvonnxparsers-dev=${GRPARSE_TENSORRT_VERSION} \
+    libnvonnxparsers11=${GRPARSE_TENSORRT_VERSION} \
+    && rm -rf /var/lib/apt/lists/*
 
 ENV DEBIAN_FRONTEND=noninteractive
 # cargo/rustc build the Rust tokenizers crate inside tokenizers-cpp, the
@@ -34,7 +47,7 @@ RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/poppler.tar.
       -DENABLE_BOOST=ON -DENABLE_NSS3=OFF -DENABLE_GPGME=OFF -DENABLE_LIBCURL=OFF \
       -DENABLE_LIBTIFF=OFF -DENABLE_LIBOPENJPEG=openjpeg2 -DBUILD_CPP_TESTS=OFF \
       -DBUILD_GTK_TESTS=OFF -DBUILD_QT5_TESTS=OFF -DBUILD_QT6_TESTS=OFF -DBUILD_MANUAL_TESTS=OFF \
- && cmake --build /tmp/poppler-build --parallel 4 \
+ && cmake --build /tmp/poppler-build --parallel ${GRPARSE_BUILD_JOBS} \
  && cmake --install /tmp/poppler-build \
  && rm -rf /tmp/poppler.tar.xz "/tmp/poppler-${POPPLER_VERSION}" /tmp/poppler-build
 
@@ -58,7 +71,7 @@ RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/opencv.tar.g
       -DWITH_WEBP=OFF -DWITH_JASPER=OFF -DWITH_AVIF=OFF \
       -DBUILD_JPEG=ON -DBUILD_PNG=ON -DBUILD_TIFF=ON -DBUILD_OPENJPEG=ON -DBUILD_ZLIB=ON \
       -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_opencv_apps=OFF \
- && cmake --build /tmp/opencv-build --parallel 4 \
+ && cmake --build /tmp/opencv-build --parallel ${GRPARSE_BUILD_JOBS} \
  && cmake --install /tmp/opencv-build \
  && rm -rf /tmp/opencv.tar.gz "/tmp/opencv-${OPENCV_VERSION}" /tmp/opencv-build
 
@@ -85,12 +98,15 @@ RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.83.1-ort1.29.0-poppler26
     fi \
  && sh scripts/stamp-sources.sh /build \
  && cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
-      -DGRPARSE_WERROR=ON -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv4 \
- && cmake --build /build --target grparse-server grparse-stream-client grparse-tests --parallel 4 \
+      -DGRPARSE_WERROR=ON -DGRPARSE_EMBED_TENSORRT=ON -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv4 \
+ && cmake --build /build --target grparse-server grparse-stream-client grparse-embed-text grparse-tests --parallel ${GRPARSE_BUILD_JOBS} \
  && LD_LIBRARY_PATH=/opt/poppler/lib:/opt/opencv/lib ctest --test-dir /build --output-on-failure -L grparse \
  && mkdir -p /out \
  && cp /build/grparse-server /out/grparse-server \
  && cp /build/grparse-stream-client /out/grparse-stream-client \
+ && cp /build/grparse-embed-text /out/grparse-embed-text \
+ && cp /build/embedding-model-test /out/grparse-embedding-check \
+ && cp /build/embedding-reference-test /out/grparse-embedding-reference \
  && cp -a /build/_deps/onnxruntime-src/lib /out/onnxruntime-lib
 
 # Stage the runtime library closure. The runtime base is assumed minimal
@@ -117,8 +133,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends libcudnn9-cuda-
     && fc-cache -f \
     && mkdir -p /out/runtime-libs \
     && cp -a /usr/lib/x86_64-linux-gnu/libcudnn* /out/runtime-libs/ \
-    && for f in /out/grparse-server /out/grparse-stream-client \
-                /out/onnxruntime-lib/*.so* /usr/lib/x86_64-linux-gnu/libcudnn*.so*; do \
+    && cp -a /usr/lib/x86_64-linux-gnu/libnvinfer*.so* /usr/lib/x86_64-linux-gnu/libnvonnxparser*.so* /out/runtime-libs/ \
+    && for f in /out/grparse-server /out/grparse-stream-client /out/grparse-embed-text /out/grparse-embedding-check /out/grparse-embedding-reference \
+                /out/onnxruntime-lib/*.so* /usr/lib/x86_64-linux-gnu/libcudnn*.so* \
+                /usr/lib/x86_64-linux-gnu/libnvinfer*.so* \
+                /usr/lib/x86_64-linux-gnu/libnvonnxparser*.so*; do \
          LD_LIBRARY_PATH=/out/onnxruntime-lib:/opt/poppler/lib:/opt/opencv/lib ldd "$f" 2>/dev/null; \
        done \
        | awk '/=> \// {print $3}' | sort -u \
@@ -150,6 +169,9 @@ COPY --from=build /usr/share/fonts /usr/share/fonts
 COPY --from=build /var/cache/fontconfig /var/cache/fontconfig
 COPY --from=build /out/grparse-server /usr/local/bin/grparse-server
 COPY --from=build /out/grparse-stream-client /usr/local/bin/grparse-stream-client
+COPY --from=build /out/grparse-embed-text /usr/local/bin/grparse-embed-text
+COPY --from=build /out/grparse-embedding-check /usr/local/bin/grparse-embedding-check
+COPY --from=build /out/grparse-embedding-reference /usr/local/bin/grparse-embedding-reference
 USER 65532:65532
 EXPOSE 50051
 ENTRYPOINT ["/usr/local/bin/grparse-server"]

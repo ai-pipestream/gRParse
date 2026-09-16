@@ -12,6 +12,7 @@
 #include "ai/pipestream/parse/v1/parse_stream.grpc.pb.h"
 #include "grparse/call_executor.h"
 #include "grparse/chart_derender.h"
+#include "grparse/chunk_embeddings.h"
 #include "grparse/document_repair.h"
 #include "grparse/office_cv_enrichment.h"
 #include "grparse/page_scheduler.h"
@@ -112,7 +113,9 @@ class DocumentParserService final
   DocumentParserService(PageScheduler& scheduler,
                         std::shared_ptr<CollectorEndpoints> endpoints,
                         CallExecutor::Options executor_options = {},
-                        std::optional<RepairOptions> repair = RepairOptions{});
+                        std::optional<RepairOptions> repair = RepairOptions{},
+                        std::shared_ptr<EmbeddingEngine> embedding_engine = {},
+                        EmbeddingConfig embedding_config = {});
 
   grpc::ServerUnaryReactor* ConvertSource(
       grpc::CallbackServerContext* context,
@@ -142,6 +145,7 @@ class DocumentParserService final
   PageScheduler& scheduler_;
   std::shared_ptr<CollectorEndpoints> endpoints_;
   std::optional<RepairOptions> repair_;
+  ChunkEmbedder embedder_;
   // Declared last so it is torn down first: joining the workers before the
   // endpoints and the scheduler reference go away is what keeps an in-flight
   // parse from outliving what it reads.

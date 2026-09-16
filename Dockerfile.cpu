@@ -25,6 +25,8 @@
 ARG GRPARSE_RUNTIME_IMAGE=ubuntu:26.04
 
 FROM ubuntu:26.04 AS build
+ARG GRPARSE_BUILD_JOBS=2
+ENV CARGO_BUILD_JOBS=${GRPARSE_BUILD_JOBS}
 
 ENV DEBIAN_FRONTEND=noninteractive
 # cargo/rustc build the Rust tokenizers crate inside tokenizers-cpp, the
@@ -50,7 +52,7 @@ RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/poppler.tar.
       -DENABLE_BOOST=ON -DENABLE_NSS3=OFF -DENABLE_GPGME=OFF -DENABLE_LIBCURL=OFF \
       -DENABLE_LIBTIFF=OFF -DENABLE_LIBOPENJPEG=openjpeg2 -DBUILD_CPP_TESTS=OFF \
       -DBUILD_GTK_TESTS=OFF -DBUILD_QT5_TESTS=OFF -DBUILD_QT6_TESTS=OFF -DBUILD_MANUAL_TESTS=OFF \
- && cmake --build /tmp/poppler-build --parallel 4 \
+ && cmake --build /tmp/poppler-build --parallel ${GRPARSE_BUILD_JOBS} \
  && cmake --install /tmp/poppler-build \
  && rm -rf /tmp/poppler.tar.xz "/tmp/poppler-${POPPLER_VERSION}" /tmp/poppler-build
 
@@ -74,7 +76,7 @@ RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/opencv.tar.g
       -DWITH_WEBP=OFF -DWITH_JASPER=OFF -DWITH_AVIF=OFF \
       -DBUILD_JPEG=ON -DBUILD_PNG=ON -DBUILD_TIFF=ON -DBUILD_OPENJPEG=ON -DBUILD_ZLIB=ON \
       -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_opencv_apps=OFF \
- && cmake --build /tmp/opencv-build --parallel 4 \
+ && cmake --build /tmp/opencv-build --parallel ${GRPARSE_BUILD_JOBS} \
  && cmake --install /tmp/opencv-build \
  && rm -rf /tmp/opencv.tar.gz "/tmp/opencv-${OPENCV_VERSION}" /tmp/opencv-build
 
@@ -106,11 +108,14 @@ RUN --mount=type=cache,id=grparse-cpu-ubuntu26-grpc1.83.1-ort1.29.0-poppler26.08
  && cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
       -DGRPARSE_WERROR=ON -DGRPARSE_ORT_PACKAGE=cpu -DGRPARSE_TEST_TIMEOUT=3000 \
       -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv4 \
- && cmake --build /build --target grparse-server grparse-stream-client grparse-tests --parallel 4 \
+ && cmake --build /build --target grparse-server grparse-stream-client grparse-embed-text grparse-tests --parallel ${GRPARSE_BUILD_JOBS} \
  && LD_LIBRARY_PATH=/opt/poppler/lib:/opt/opencv/lib ctest --test-dir /build --output-on-failure -L grparse \
  && mkdir -p /out \
  && cp /build/grparse-server /out/grparse-server \
  && cp /build/grparse-stream-client /out/grparse-stream-client \
+ && cp /build/grparse-embed-text /out/grparse-embed-text \
+ && cp /build/embedding-model-test /out/grparse-embedding-check \
+ && cp /build/embedding-reference-test /out/grparse-embedding-reference \
  && cp -a /build/_deps/onnxruntime-src/lib /out/ort-libs
 
 # Stage the runtime library closure. The runtime base is minimal (no shell
@@ -139,7 +144,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && LD_LIBRARY_PATH=/out/ort-libs:/opt/poppler/lib:/opt/opencv/lib \
        STAGE_KEEP_ON_BASE='^/out/ort-libs/' \
        sh scripts/stage-runtime-closure.sh /out/runtime-libs \
-         /out/grparse-server /out/grparse-stream-client /out/ort-libs/*.so* \
+         /out/grparse-server /out/grparse-stream-client /out/grparse-embed-text /out/grparse-embedding-check /out/grparse-embedding-reference /out/ort-libs/*.so* \
     && test "$(ls /out/runtime-libs | grep -cE '^libpoppler\.so\.[0-9]+$')" = 1
 
 # LD_LIBRARY_PATH stands in for ldconfig, and the numeric USER works with or
@@ -169,6 +174,9 @@ COPY --from=build /usr/share/fonts /usr/share/fonts
 COPY --from=build /var/cache/fontconfig /var/cache/fontconfig
 COPY --from=build /out/grparse-server /usr/local/bin/grparse-server
 COPY --from=build /out/grparse-stream-client /usr/local/bin/grparse-stream-client
+COPY --from=build /out/grparse-embed-text /usr/local/bin/grparse-embed-text
+COPY --from=build /out/grparse-embedding-check /usr/local/bin/grparse-embedding-check
+COPY --from=build /out/grparse-embedding-reference /usr/local/bin/grparse-embedding-reference
 USER 65532:65532
 EXPOSE 50051
 ENTRYPOINT ["/usr/local/bin/grparse-server"]

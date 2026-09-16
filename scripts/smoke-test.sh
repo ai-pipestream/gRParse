@@ -42,7 +42,8 @@ mode=${2:-}
 project_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 echo "== smoke: library closure of the shipped binaries"
-for binary in /usr/local/bin/grparse-server /usr/local/bin/grparse-stream-client; do
+for binary in /usr/local/bin/grparse-server /usr/local/bin/grparse-stream-client \
+              /usr/local/bin/grparse-embed-text /usr/local/bin/grparse-embedding-check /usr/local/bin/grparse-embedding-reference; do
   trace=$(docker run --rm -e LD_TRACE_LOADED_OBJECTS=1 --entrypoint "$binary" "$image" 2>&1 || true)
   if ! grep -q '=>' <<<"$trace"; then
     echo "the loader printed no dependency list for $binary in $image:" >&2

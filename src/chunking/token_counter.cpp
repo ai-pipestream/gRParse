@@ -299,14 +299,18 @@ grpc::Status load_hf_tokenizer_json(std::string_view path, std::string* json_out
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                         "tokenizer file '" + std::string(path) + "' failed while reading");
   }
+  return strip_hf_tokenizer_json(raw, path, json_out);
+}
 
+grpc::Status strip_hf_tokenizer_json(std::string_view raw, std::string_view path,
+                                     std::string* json_out) {
   // The fixed-length padding some published tokenizer.json files ship would
   // count pads instead of text, and an embedded truncation limit would cap
   // every count at the model's window; a chunking counter measures the text
   // it is handed, so both members are stripped before the load.
   JsonCursor cursor{raw};
   if (!cursor.consume('{')) return invalid_tokenizer_json(path, "expected '{'");
-  const std::string_view view = raw;  // substr() on the string would dangle
+  const std::string_view view = raw;
   std::vector<std::string_view> kept;
   if (!cursor.consume('}')) {
     while (true) {

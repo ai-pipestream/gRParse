@@ -204,6 +204,37 @@ bool configure_ocr_rotation() {
 
 }  // namespace
 
+EmbeddingConfig read_embedding_config(const std::filesystem::path& models_dir) {
+  EmbeddingConfig config;
+  const auto backend = configured_mode("GRPARSE_EMBEDDING_BACKEND", "off",
+                                       {"off", "cpu", "openvino", "tensorrt"});
+  if (backend == "off") return config;
+  if (backend == "cpu") config.backend = EmbeddingBackend::cpu;
+  if (backend == "openvino") config.backend = EmbeddingBackend::openvino;
+  if (backend == "tensorrt") config.backend = EmbeddingBackend::tensorrt;
+  const auto directory = collector_env("GRPARSE_EMBEDDING_MODEL_DIR");
+  config.model_dir = directory.empty() ? models_dir / "embeddings" : std::filesystem::path(directory);
+  const auto device = collector_env("GRPARSE_EMBEDDING_DEVICE");
+  if (!device.empty()) config.device = device;
+  // Require a native Intel GPU selection; AUTO/HETERO/MULTI could silently
+  // route the model to a different device and contradict reported provenance.
+  if (config.backend == EmbeddingBackend::openvino) {
+    const bool indexed_gpu = config.device.starts_with("GPU.") && config.device.size() > 4 &&
+        std::all_of(config.device.begin() + 4, config.device.end(),
+                    [](unsigned char c) { return c >= '0' && c <= '9'; });
+    if (config.device != "GPU" && !indexed_gpu) {
+      throw std::invalid_argument("GRPARSE_EMBEDDING_DEVICE must be GPU or GPU.<index>");
+    }
+  }
+  config.gpu_index = configured_index("GRPARSE_EMBEDDING_GPU_INDEX", 0);
+  config.max_batch_size = configured_size("GRPARSE_EMBEDDING_BATCH_SIZE", 32, 1024);
+  config.max_batch_bytes = configured_size("GRPARSE_EMBEDDING_BATCH_BYTES", 1024 * 1024,
+                                           64 * 1024 * 1024);
+  config.max_response_bytes = configured_size("GRPARSE_EMBEDDING_RESPONSE_BYTES", 64 * 1024 * 1024,
+                                              256 * 1024 * 1024);
+  return config;
+}
+
 ProcessConfig read_process_config() {
   const char* models = std::getenv("GRPARSE_MODELS_DIR");
   const char* address = std::getenv("GRPARSE_LISTEN_ADDRESS");
