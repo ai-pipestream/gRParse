@@ -384,6 +384,9 @@ void verify_parity_options_and_confidence(TestServer* server) {
   options->set_table_mode(pipestream::parse::v1::TABLE_FORMER_MODE_ACCURATE);
   options->set_do_picture_classification(true);
   options->add_ocr_lang("en");
+  options->set_pdf_backend(pipestream::parse::v1::PDF_BACKEND_DOCLING_PARSE);
+  options->set_table_cell_matching(true);
+  options->set_abort_on_error(false);
   grpc::ClientContext context;
   context.set_deadline(std::chrono::system_clock::now() + 10s);
   pipestream::parse::v1::ConvertSourceResponse response;

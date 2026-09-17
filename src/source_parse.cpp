@@ -119,6 +119,9 @@ bool implemented_option(std::string_view name) {
       "table_mode",
       "do_picture_classification",
       "ocr_lang",
+      "pdf_backend",
+      "table_cell_matching",
+      "abort_on_error",
   };
   return std::ranges::find(kImplemented, name) != std::end(kImplemented);
 }
@@ -176,6 +179,19 @@ grpc::Status validate_table_mode(const pipestream::parse::v1::ConvertDocumentOpt
                       surface + " table_mode value is not a known TableFormerMode");
 }
 
+// PDF rasterization here is poppler (or an optional remote pdf backend), not
+// Docling's Python backends. Named PdfBackend values are accepted so clients
+// that always set the field are not turned away; the engine stays poppler.
+grpc::Status validate_pdf_backend(const pipestream::parse::v1::ConvertDocumentOptions& options,
+                                  const std::string& surface) {
+  if (!options.has_pdf_backend()) return grpc::Status::OK;
+  if (pipestream::parse::v1::PdfBackend_IsValid(options.pdf_backend())) {
+    return grpc::Status::OK;
+  }
+  return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                      surface + " pdf_backend value is not a known PdfBackend");
+}
+
 // The heading pass's two switches must agree when both are given, and the
 // numeric tunables must be in range; the rest of the message is accepted as
 // documented on HeadingHierarchyOptions.
@@ -224,6 +240,8 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
   if (!ocr_engine_status.ok()) return ocr_engine_status;
   const grpc::Status table_mode_status = validate_table_mode(options, surface);
   if (!table_mode_status.ok()) return table_mode_status;
+  const grpc::Status pdf_backend_status = validate_pdf_backend(options, surface);
+  if (!pdf_backend_status.ok()) return pdf_backend_status;
   const grpc::Status heading_status = validate_heading_options(options, surface);
   if (!heading_status.ok()) return heading_status;
   for (const auto raw : options.to_formats()) {
