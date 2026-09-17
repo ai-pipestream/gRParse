@@ -38,6 +38,9 @@ void verify_common_mime_mappings() {
   require_format("text/csv", "a.csv", parsev1::INPUT_FORMAT_CSV, "csv");
   require_format("audio/mpeg", "a.mp3", parsev1::INPUT_FORMAT_AUDIO, "mp3");
   require_format("video/mp4", "a.mp4", parsev1::INPUT_FORMAT_VIDEO, "mp4");
+  require_format("application/x-afp", "a.afp", parsev1::INPUT_FORMAT_AFP, "afp");
+  require_format("application/vnd.ibm.modcap", "a.afp", parsev1::INPUT_FORMAT_AFP,
+                 "modcap");
 }
 
 void verify_allowlist() {
