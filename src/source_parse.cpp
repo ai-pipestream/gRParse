@@ -21,6 +21,7 @@
 #include "grparse/document_collectors.h"
 #include "grparse/document_merge.h"
 #include "grparse/heading_hierarchy.h"
+#include "grparse/input_format.h"
 #include "grparse/page_previews.h"
 #include "grparse/schema_version.h"
 #include "parse_support.h"
@@ -94,6 +95,7 @@ bool renderable(pipestream::parse::v1::OutputFormat format) {
 // silently ignore is worse than one it turns down.
 bool implemented_option(std::string_view name) {
   static constexpr std::string_view kImplemented[] = {
+      "from_formats",
       "to_formats",
       "collectors",
       "ebcdic_layout_json",
@@ -186,6 +188,16 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
       if (name.empty()) name = std::to_string(raw);
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                           surface + " does not implement output format '" + name + "'");
+    }
+  }
+  for (const auto raw : options.from_formats()) {
+    const auto format = static_cast<pipestream::parse::v1::InputFormat>(raw);
+    if (format == pipestream::parse::v1::INPUT_FORMAT_UNSPECIFIED ||
+        !pipestream::parse::v1::InputFormat_IsValid(raw)) {
+      std::string name = pipestream::parse::v1::InputFormat_Name(format);
+      if (name.empty()) name = std::to_string(raw);
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + " from_formats contains invalid value '" + name + "'");
     }
   }
   return grpc::Status::OK;
@@ -674,6 +686,23 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     auto bytes = std::make_shared<const std::string>(decode_base64(source.base64_string()));
     const fs::path requested_name = source.filename().empty() ? "document.pdf" : fs::path(source.filename()).filename();
     pipestream::document::v1::Document base = base_document(*bytes, requested_name);
+
+    if (!request.options().from_formats().empty()) {
+      const auto detected =
+          input_format_for(base.origin().mimetype(), requested_name);
+      if (!detected.has_value()) {
+        return grpc::Status(
+            grpc::StatusCode::INVALID_ARGUMENT,
+            surface + ": from_formats is set but the input type '" +
+                base.origin().mimetype() + "' does not map to a known InputFormat");
+      }
+      if (!from_formats_allows(request.options().from_formats(), *detected)) {
+        return grpc::Status(
+            grpc::StatusCode::INVALID_ARGUMENT,
+            surface + ": from_formats does not allow " +
+                pipestream::parse::v1::InputFormat_Name(*detected));
+      }
+    }
 
     const ParseInputs inputs =
         parse_inputs(context, request, scheduler, collectors, bytes, requested_name,

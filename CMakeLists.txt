@@ -703,6 +703,7 @@ add_library(grparse_core STATIC
   src/collectors/xml_collector.cpp
   src/collector_endpoints.cpp
   src/parse_support.cpp
+  src/input_format.cpp
   src/source_parse.cpp
   src/document_parser_service.cpp
   src/document_streaming_service.cpp
@@ -803,6 +804,7 @@ if(BUILD_TESTING)
     warc-stub-wire-test
     document-reading-order-test
     heading-hierarchy-test
+    input-format-test
     paragraph-split-test)
   foreach(test_name IN LISTS GRPARSE_TESTS)
     string(REPLACE "-" "_" test_source "${test_name}")
