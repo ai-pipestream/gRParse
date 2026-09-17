@@ -270,7 +270,9 @@ FetchContent_MakeAvailable(miniz)
 add_library(miniz STATIC "${miniz_SOURCE_DIR}/miniz.c")
 target_include_directories(miniz PUBLIC "${miniz_SOURCE_DIR}")
 
-find_package(OpenCV 5.0 REQUIRED COMPONENTS core imgcodecs imgproc)
+# OpenCV 5 moved the 2D contour functions RapidOcrOnnx uses (minAreaRect,
+# boxPoints, getPerspectiveTransform) out of imgproc into the geometry module.
+find_package(OpenCV 5.0 REQUIRED COMPONENTS core imgcodecs imgproc geometry)
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
 # libcurl carries the S3 target's signed PUTs.  The distribution's own, not a
