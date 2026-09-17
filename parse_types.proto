@@ -33,6 +33,12 @@ enum InputFormat {
   INPUT_FORMAT_LATEX = 15;
   INPUT_FORMAT_VTT = 16;
   INPUT_FORMAT_XML_XBRL = 17;
+  // Numbers 18–31 match docling-serve's InputFormat tags for the
+  // collector-backed formats (DOC…EBCDIC). Reserved here so a future
+  // sync can fill them without renumbering.
+  reserved 18 to 31;
+  INPUT_FORMAT_RTF = 32;
+  INPUT_FORMAT_MHTML = 33;
 }
 
 // Output format types for converted documents.
@@ -872,6 +878,9 @@ message EmbeddingCapabilities {
 message HierarchicalChunkerOptions {
   bool use_markdown_tables = 1;
   bool include_raw_text = 2;
+  // Parity with docling-serve HierarchicalChunkerOptions / export knobs.
+  optional bool use_markdown_images = 3;
+  optional string image_placeholder = 4;
 }
 
 // HybridChunkerOptions configures the hybrid chunker.
@@ -891,6 +900,9 @@ message HybridChunkerOptions {
   // $GRPARSE_MODELS_DIR/chunk/tokenizer.json. Meaningful only together with
   // tokenizer="hf/1".
   optional string tokenizer_path = 6;
+  // Parity with docling-serve HybridChunkerOptions.
+  optional bool use_markdown_images = 7;
+  optional string image_placeholder = 8;
 }
 
 // HierarchicalChunkRequest mirrors POST /v1/chunk/hierarchical/source

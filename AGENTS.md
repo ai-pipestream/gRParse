@@ -22,6 +22,22 @@ build, the tests and the compose stack find them.
    brings up
 6. `eval/README.md` only when touching parse quality (the VLM oracle harness)
 
+## Recurring parity duty
+
+Docling feature catch-up is a fixed pipeline, not a one-off:
+
+1. Sync `docling-core` / `docling-serve` upstream into our gRPC branches and
+   extend protos + tests for new REST/Pydantic surface.
+2. Port the same observed features into this C++ parser (typed wire fields,
+   not string bags).
+3. **Always** sweep open Forgejo dependency PRs on this repo and the sister
+   collectors under `https://git.rokkon.com/ai-pipestream/` (auth:
+   `FORGEJO_PAT`). Merge green, non-major bumps after CI/local gate; hold
+   majors / lockfile / ABI / Renovate artifact failures. Do not skip the
+   dep sweep because “this run was only about Docling features.”
+
+Workspace rule: `/work/.cursor/rules/docling-parity-duty.mdc`.
+
 ## The family
 
 All repositories live under the GitHub organisation
