@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include <google/protobuf/util/message_differencer.h>
 #include <grpcpp/grpcpp.h>
 
 #include "ai/pipestream/parse/v1/parse_stream.grpc.pb.h"
@@ -33,6 +34,14 @@ namespace pdfv1 = ai::pipestream::pdf::v1;
 namespace pipestream = ai::pipestream;
 
 using grparse_test::require;
+
+// Field-wise message equality. Serialized bytes are not a stable identity:
+// protobuf map fields (Chunk.metadata, Chunk.typed_metadata) iterate in a
+// per-instance randomized order, so two equal messages built separately can
+// serialize differently.
+bool same_message(const google::protobuf::Message& a, const google::protobuf::Message& b) {
+  return google::protobuf::util::MessageDifferencer::Equals(a, b);
+}
 
 class FakeSource final : public grparse::PageSource {
  public:
@@ -691,8 +700,7 @@ void verify_unary_digital_path_bypasses_ocr() {
     const auto& streamed_page = events.at(page_index).page();
     require(streamed_page.texts_size() == 1 && streamed_page.text_offsets_size() == 1,
             "digital stream page payload");
-    require(streamed_page.texts(0).SerializeAsString() ==
-                unary_document.texts(page_index).SerializeAsString(),
+    require(same_message(streamed_page.texts(0), unary_document.texts(page_index)),
             "unary and stream core text fidelity differs");
     const auto& offset = streamed_page.text_offsets(0);
     require(offset.utf_start() == expected_offset, "digital stream offset start");
@@ -1833,7 +1841,7 @@ void verify_chunk_embeddings_rpc() {
                 value.embedding().model().revision() == engine->identity().revision,
             "embedding vectors, exact input and artifact provenance must ride out");
     value.clear_embedding();
-    require(value.SerializeAsString() == baseline.response().chunks(i).SerializeAsString(),
+    require(same_message(value, baseline.response().chunks(i)),
             "embedding must preserve every preexisting chunk field");
   }
   parsev1::ChunkHybridSourceRequest hybrid;
