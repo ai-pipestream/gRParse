@@ -53,7 +53,11 @@ FetchContent_Declare(rapidocr SOURCE_SUBDIR disabled
   # re-runs the patch step whenever the subbuild re-executes, including on
   # cached trees that are already patched.
   PATCH_COMMAND git checkout -- src include
-        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-session-ep.patch")
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-session-ep.patch"
+        # OpenCV 5 moved minAreaRect and getPerspectiveTransform into the
+        # geometry module, and the opencv.hpp umbrella does not include that
+        # module, so the sources that call them include it themselves.
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-opencv5-geometry.patch")
 FetchContent_MakeAvailable(rapidocr)
 # FetchContent only patches when it populates, so a dependency tree cached
 # before the patch existed would build the upstream provider wiring and the
@@ -92,6 +96,16 @@ if(GRPARSE_DBNET_BUILDER_AT EQUAL -1)
     "the build directory (or the docker build cache) and re-run CMake.")
 endif()
 unset(GRPARSE_DBNET_SOURCE)
+# The geometry include is a separate patch; a tree cached before it existed
+# fails to compile DbNet.cpp with OpenCV 5.  Fail the configure instead.
+file(READ "${rapidocr_SOURCE_DIR}/include/DbNet.h" GRPARSE_DBNET_HEADER)
+string(FIND "${GRPARSE_DBNET_HEADER}" "opencv2/geometry.hpp" GRPARSE_DBNET_GEOMETRY_AT)
+if(GRPARSE_DBNET_GEOMETRY_AT EQUAL -1)
+  message(FATAL_ERROR "include/DbNet.h is unpatched: the rapidocr source tree is older "
+    "than patches/rapidocr-opencv5-geometry.patch. Delete _deps/rapidocr-* from the build "
+    "directory (or the docker build cache) and re-run CMake.")
+endif()
+unset(GRPARSE_DBNET_HEADER)
 
 # Which ONNX Runtime binary package to link.  `cuda` is Microsoft's NVIDIA GPU
 # release.  `openvino` takes headers from the matching official release and
@@ -270,7 +284,9 @@ FetchContent_MakeAvailable(miniz)
 add_library(miniz STATIC "${miniz_SOURCE_DIR}/miniz.c")
 target_include_directories(miniz PUBLIC "${miniz_SOURCE_DIR}")
 
-find_package(OpenCV 4.5 REQUIRED COMPONENTS core imgcodecs imgproc)
+# OpenCV 5 moved the 2D contour functions RapidOcrOnnx uses (minAreaRect,
+# boxPoints, getPerspectiveTransform) out of imgproc into the geometry module.
+find_package(OpenCV 5.0 REQUIRED COMPONENTS core imgcodecs imgproc geometry)
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
 # libcurl carries the S3 target's signed PUTs.  The distribution's own, not a

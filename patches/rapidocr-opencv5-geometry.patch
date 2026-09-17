@@ -1,0 +1,28 @@
+diff --git a/include/DbNet.h b/include/DbNet.h
+index e654fc6..a9da912 100644
+--- a/include/DbNet.h
++++ b/include/DbNet.h
+@@ -4,6 +4,10 @@
+ #include "OcrStruct.h"
+ #include <onnxruntime/core/session/onnxruntime_cxx_api.h>
+ #include <opencv2/opencv.hpp>
++// gRParse: OpenCV 5 moved minAreaRect, boxPoints and getPerspectiveTransform
++// into the geometry module, and opencv.hpp does not include it
++// (patches/rapidocr-opencv5-geometry.patch).
++#include <opencv2/geometry.hpp>
+ 
+ class DbNet {
+ public:
+diff --git a/src/OcrUtils.cpp b/src/OcrUtils.cpp
+index 7c3ea3f..8c590ec 100755
+--- a/src/OcrUtils.cpp
++++ b/src/OcrUtils.cpp
+@@ -1,4 +1,8 @@
+ #include <opencv2/imgproc.hpp>
++// gRParse: OpenCV 5 moved minAreaRect, boxPoints and getPerspectiveTransform
++// into the geometry module, and opencv.hpp does not include it
++// (patches/rapidocr-opencv5-geometry.patch).
++#include <opencv2/geometry.hpp>
+ #include <opencv2/imgcodecs.hpp>
+ #include <numeric>
+ #include "OcrUtils.h"
