@@ -157,6 +157,9 @@ void render_exports(const pipestream::parse::v1::ConvertDocumentOptions& options
   if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_LATEX)) {
     exports->set_latex(render_latex(document));
   }
+  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_DCLX)) {
+    exports->set_dclx(render_dclx(document));
+  }
 }
 
 // The converted document a chunk response carries when the caller asked for

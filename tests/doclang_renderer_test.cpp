@@ -334,6 +334,19 @@ void verify_a_transparent_group_adds_no_element_and_no_indent() {
                 "a chapter group is transparent, so its child keeps the body's indent");
 }
 
+void verify_dclx_is_a_zip_with_document_xml() {
+  const docv1::Document document = base_document("archive.pdf");
+  const std::string archive = grparse::render_dclx(document);
+  require(archive.size() >= 4 && archive[0] == 'P' && archive[1] == 'K',
+          "render_dclx must produce a ZIP");
+  require(archive.find("document.xml") != std::string::npos,
+          "the ZIP local headers must name document.xml");
+  require(archive.find("[Content_Types].xml") != std::string::npos,
+          "the ZIP must carry OPC Content_Types furniture");
+  const std::string again = grparse::render_dclx(document);
+  require_equal(archive, again, "render_dclx must be deterministic");
+}
+
 }  // namespace
 
 int main() {
@@ -353,5 +366,6 @@ int main() {
       verify_the_unserved_arenas_leave_a_comment,
       verify_content_and_attributes_are_xml_escaped,
       verify_a_transparent_group_adds_no_element_and_no_indent,
+      verify_dclx_is_a_zip_with_document_xml,
   });
 }

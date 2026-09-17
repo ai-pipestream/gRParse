@@ -89,6 +89,7 @@ bool renderable(pipestream::parse::v1::OutputFormat format) {
     case pipestream::parse::v1::OUTPUT_FORMAT_GDOCS_JSON:
     case pipestream::parse::v1::OUTPUT_FORMAT_LATEX:
     case pipestream::parse::v1::OUTPUT_FORMAT_CHUNKS:
+    case pipestream::parse::v1::OUTPUT_FORMAT_DCLX:
       return true;
     default:
       return false;

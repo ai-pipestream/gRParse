@@ -684,6 +684,7 @@ add_library(grparse_core STATIC
   src/render/gdocs_renderer.cpp
   src/render/doctags_renderer.cpp
   src/render/doclang_renderer.cpp
+  src/render/dclx_renderer.cpp
   src/render/vtt_renderer.cpp
   src/render/latex_renderer.cpp
   src/chunking/token_counter.cpp

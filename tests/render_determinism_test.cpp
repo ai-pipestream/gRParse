@@ -50,6 +50,7 @@ const std::vector<std::pair<std::string, Renderer>>& renderers() {
       {"doclang", grparse::render_doclang},
       {"vtt", grparse::render_vtt},
       {"latex", grparse::render_latex},
+      {"dclx", grparse::render_dclx},
   };
   return all;
 }

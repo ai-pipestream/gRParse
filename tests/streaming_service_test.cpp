@@ -578,6 +578,25 @@ void verify_parity_options_and_confidence(TestServer* server) {
           "ConvertSource must populate chunks when OUTPUT_FORMAT_CHUNKS is set");
 
   request = unary_request();
+  request.mutable_request()->mutable_options()->clear_to_formats();
+  request.mutable_request()->mutable_options()->add_to_formats(
+      pipestream::parse::v1::OUTPUT_FORMAT_DCLX);
+  grpc::ClientContext dclx_context;
+  pipestream::parse::v1::ConvertSourceResponse dclx_response;
+  const grpc::Status dclx_status =
+      client->ConvertSource(&dclx_context, request, &dclx_response);
+  require(dclx_status.ok(),
+          "OUTPUT_FORMAT_DCLX must succeed: " + dclx_status.error_message());
+  require(dclx_response.response().document().has_exports() &&
+              dclx_response.response().document().exports().has_dclx(),
+          "ConvertSource must populate exports.dclx when OUTPUT_FORMAT_DCLX is set");
+  {
+    const auto& archive = dclx_response.response().document().exports().dclx();
+    require(archive.size() >= 4 && archive[0] == 'P' && archive[1] == 'K',
+            "exports.dclx must be a ZIP archive");
+  }
+
+  request = unary_request();
   request.mutable_request()->mutable_options()->set_chunking_preset("granite_embedding_278m");
   grpc::ClientContext preset_without_chunks;
   pipestream::parse::v1::ConvertSourceResponse preset_response;

@@ -152,6 +152,11 @@ std::string render_yaml(const ai::pipestream::document::v1::Document& document);
 // failing the export.
 std::string render_latex(const ai::pipestream::document::v1::Document& document);
 
+// Packs a DocLang OPC archive (`.dclx`): deterministic ZIP with OPC stubs
+// (`[Content_Types].xml`, `_rels/.rels`) and root `document.xml` holding
+// render_doclang output. Readable by COLLECTOR_XML / grpc-xml.
+std::string render_dclx(const ai::pipestream::document::v1::Document& document);
+
 }  // namespace grparse
 
 #endif

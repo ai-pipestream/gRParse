@@ -165,6 +165,9 @@ void add_exports(const parsev1::DocumentExports& exports, std::vector<BundleFile
   for (const auto& [path, value] : members) {
     if (value != nullptr) files->push_back({std::string(path), *value});
   }
+  if (exports.has_dclx()) {
+    files->push_back({"exports/document.dclx", exports.dclx()});
+  }
 }
 
 }  // namespace
