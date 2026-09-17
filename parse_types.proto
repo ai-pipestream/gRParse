@@ -33,10 +33,22 @@ enum InputFormat {
   INPUT_FORMAT_LATEX = 15;
   INPUT_FORMAT_VTT = 16;
   INPUT_FORMAT_XML_XBRL = 17;
-  // Numbers 18–31 match docling-serve's InputFormat tags for the
-  // collector-backed formats (DOC…EBCDIC). Reserved here so a future
-  // sync can fill them without renumbering.
-  reserved 18 to 31;
+  // Tags 18–33 match docling-serve InputFormat for from_formats filtering
+  // and collector-backed formats. Numbers stay aligned across the forks.
+  INPUT_FORMAT_DOC = 18;
+  INPUT_FORMAT_PPT = 19;
+  INPUT_FORMAT_XLS = 20;
+  INPUT_FORMAT_ODT = 21;
+  INPUT_FORMAT_ODS = 22;
+  INPUT_FORMAT_ODP = 23;
+  INPUT_FORMAT_XML_DOCLANG = 24;
+  INPUT_FORMAT_DCLX = 25;
+  INPUT_FORMAT_EMAIL = 26;
+  INPUT_FORMAT_EPUB = 27;
+  INPUT_FORMAT_VIDEO = 28;
+  INPUT_FORMAT_BOXNOTE = 29;
+  INPUT_FORMAT_IWORK_PAGES = 30;
+  INPUT_FORMAT_EBCDIC = 31;
   INPUT_FORMAT_RTF = 32;
   INPUT_FORMAT_MHTML = 33;
 }
