@@ -104,8 +104,8 @@ set(GRPARSE_ORT_PACKAGE "cuda" CACHE STRING
   "ONNX Runtime package to link: cuda, openvino, or cpu")
 if(GRPARSE_ORT_PACKAGE STREQUAL "cuda")
   FetchContent_Declare(onnxruntime
-    URL https://github.com/microsoft/onnxruntime/releases/download/v1.29.0/onnxruntime-linux-x64-gpu_cuda13-1.29.0.tgz
-    URL_HASH SHA256=844c64acfc43ab9423215c26493055ea229268e28283146cc644ecef0bdae048
+    URL https://github.com/microsoft/onnxruntime/releases/download/v1.30.0/onnxruntime-linux-x64-gpu_cuda13-1.30.0.tgz
+    URL_HASH SHA256=382d79133112388cf94ce5855789b7c9bef12bef76a08b6b277e5a317213adcd
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
   FetchContent_MakeAvailable(onnxruntime)
   set(GRPARSE_ORT_LIBRARY "${onnxruntime_SOURCE_DIR}/lib/libonnxruntime.so")
@@ -136,17 +136,17 @@ elseif(GRPARSE_ORT_PACKAGE STREQUAL "cpu")
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
     set(GRPARSE_ORT_CPU_ARCH "aarch64")
     set(GRPARSE_ORT_CPU_SHA256
-      "e1799098ebc054b370f6176a450f158720f297818c613e5dc99b92e2ec82346f")
+      "e16a27a8ed330bbc698df7330b0cf56e722f354e3bcc92118682c74ef3c3e3da")
   elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
     set(GRPARSE_ORT_CPU_ARCH "x64")
     set(GRPARSE_ORT_CPU_SHA256
-      "c3fddc4f139a045b0c4902c57410f0694f1c2fdf9b6939fbe38b1aeae7cd14ba")
+      "a5ed5a3cac51fbb2e90da632ae43d19212faaa20e76484e62bcb7c23ddb3b3fd")
   else()
     message(FATAL_ERROR "GRPARSE_ORT_PACKAGE=cpu: no ONNX Runtime CPU release "
       "for ${CMAKE_SYSTEM_PROCESSOR} (x86_64 and aarch64 only)")
   endif()
   FetchContent_Declare(onnxruntime
-    URL https://github.com/microsoft/onnxruntime/releases/download/v1.29.0/onnxruntime-linux-${GRPARSE_ORT_CPU_ARCH}-1.29.0.tgz
+    URL https://github.com/microsoft/onnxruntime/releases/download/v1.30.0/onnxruntime-linux-${GRPARSE_ORT_CPU_ARCH}-1.30.0.tgz
     URL_HASH SHA256=${GRPARSE_ORT_CPU_SHA256}
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
   FetchContent_MakeAvailable(onnxruntime)
@@ -199,7 +199,7 @@ set(SIMDUTF_BENCHMARKS OFF CACHE BOOL "" FORCE)
 set(SIMDUTF_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(simdutf
   GIT_REPOSITORY https://github.com/simdutf/simdutf.git
-  GIT_TAG v9.1.0
+  GIT_TAG v9.2.0
   GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(simdutf)
 
@@ -312,7 +312,7 @@ set(protobuf_INSTALL OFF CACHE BOOL "" FORCE)
 set(ABSL_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(grpc
   GIT_REPOSITORY https://github.com/grpc/grpc.git
-  GIT_TAG v1.83.1
+  GIT_TAG v1.84.0
   GIT_SHALLOW TRUE
   GIT_SUBMODULES_RECURSE TRUE)
 FetchContent_MakeAvailable(grpc)

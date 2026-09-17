@@ -785,9 +785,9 @@ tests are in [`e2e/README.md`](e2e/README.md).
 ## Development
 
 The container is the supported build environment. It runs Ubuntu 26.04
-with CUDA 13.3.1, cuDNN 9, ONNX Runtime GPU 1.29.0 for CUDA 13, poppler 26.08.0, OpenCV 4.14.0,
-RapidOcrOnnx 1.2.3 C++ sources, and gRPC 1.83.1. These are the newest applicable
-upstream versions as of 2026-09-01. RapidOCR 3.9.2 is the current Python package
+with CUDA 13.3.1, cuDNN 9, ONNX Runtime GPU 1.30.0 for CUDA 13, poppler 26.09.0, OpenCV 4.14.0,
+RapidOcrOnnx 1.2.3 C++ sources, and gRPC 1.84.0. These are the newest applicable
+upstream versions as of 2026-09-16. RapidOCR 3.9.2 is the current Python package
 release; its C++ entry point still directs users to RapidOcrOnnx, whose newest
 C++ tag is 1.2.3. The container needs an NVIDIA Container Toolkit-enabled
 Docker installation. A CUDA-capable ONNX Runtime build is required for the
