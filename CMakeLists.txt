@@ -983,6 +983,49 @@ if(BUILD_TESTING)
     TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
 endif()
 
+# ---- VLM convert leg: grpc-vlm-convert contract, module, and tests ----------
+# Appended as one block, mirroring the enrich chart derender leg. The contract
+# is vendored under collectors/ and compiled by its own protoc step; the stubs
+# join grparse_proto, the leg joins grparse_core, and the tests join the suite.
+file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/vlm/v1")
+configure_file(collectors/vlm_convert.proto
+  "${STAGED_PROTO_DIR}/ai/pipestream/vlm/v1/vlm_convert.proto" COPYONLY)
+set(VLM_CONVERT_PROTO "${STAGED_PROTO_DIR}/ai/pipestream/vlm/v1/vlm_convert.proto")
+set(VLM_CONVERT_GENERATED
+  "${GENERATED_DIR}/ai/pipestream/vlm/v1/vlm_convert.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/vlm/v1/vlm_convert.pb.h"
+  "${GENERATED_DIR}/ai/pipestream/vlm/v1/vlm_convert.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/vlm/v1/vlm_convert.grpc.pb.h")
+add_custom_command(
+  OUTPUT ${VLM_CONVERT_GENERATED}
+  COMMAND $<TARGET_FILE:protoc>
+  ARGS --proto_path=${STAGED_PROTO_DIR}
+       --proto_path=${protobuf_SOURCE_DIR}/src
+       --cpp_out=${GENERATED_DIR}
+       --grpc_out=${GENERATED_DIR}
+       --plugin=protoc-gen-grpc=$<TARGET_FILE:grpc_cpp_plugin>
+       ${VLM_CONVERT_PROTO}
+  DEPENDS collectors/vlm_convert.proto document.proto
+          "${GENERATED_DIR}/ai/pipestream/document/v1/document.pb.h"
+          protoc grpc_cpp_plugin
+  VERBATIM)
+target_sources(grparse_proto PRIVATE
+  "${GENERATED_DIR}/ai/pipestream/vlm/v1/vlm_convert.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/vlm/v1/vlm_convert.grpc.pb.cc")
+target_sources(grparse_core PRIVATE src/vlm_convert.cpp)
+if(BUILD_TESTING)
+  set(GRPARSE_VLM_TESTS vlm-convert-test)
+  foreach(test_name IN LISTS GRPARSE_VLM_TESTS)
+    string(REPLACE "-" "_" test_source "${test_name}")
+    add_executable(${test_name} "tests/${test_source}.cpp")
+    target_link_libraries(${test_name} PRIVATE grparse_core grparse_flags)
+    add_test(NAME ${test_name} COMMAND ${test_name})
+  endforeach()
+  add_dependencies(grparse-tests ${GRPARSE_VLM_TESTS})
+  set_tests_properties(${GRPARSE_VLM_TESTS} PROPERTIES
+    TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
+endif()
+
 # ---- orientation recovery: turned scans re-read upright -----------------------
 # Appended as one block, like the data plane above: the source joins
 # grparse_core and the test joins the grparse suite with the same timeout and

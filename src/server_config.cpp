@@ -10,6 +10,7 @@
 #include <thread>
 
 #include "grparse/chart_derender.h"
+#include "grparse/vlm_convert.h"
 #include "grparse_session_ep.h"
 
 namespace grparse {
@@ -316,6 +317,11 @@ CollectorTargets read_collector_targets() {
   derender.timeout = std::chrono::milliseconds(
       configured_size("GRPARSE_ENRICH_TIMEOUT_MS", 5000, 600000));
   derender.vlm_endpoint = collector_env("GRPARSE_ENRICH_VLM_ENDPOINT");
+  VlmConvertOptions vlm;
+  vlm.target = collector_env("GRPARSE_VLM_CONVERT_TARGET");
+  vlm.timeout = std::chrono::milliseconds(
+      configured_size("GRPARSE_VLM_CONVERT_TIMEOUT_MS", 120000, 600000));
+  vlm.endpoint = collector_env("GRPARSE_VLM_CONVERT_ENDPOINT");
   return CollectorTargets{
       .libreoffice = collector_env("GRPARSE_LIBREOFFICE_TARGET"),
       .asr = collector_env("GRPARSE_ASR_TARGET"),
@@ -333,6 +339,9 @@ CollectorTargets read_collector_targets() {
       // The chart derender leg through grpc-enrich: off unless a target
       // is named; the timeout bounds the whole leg per parse.
       .derender = std::move(derender),
+      // The VLM convert leg through grpc-vlm-convert: off unless a target
+      // is named; PROCESSING_PIPELINE_VLM requires it.
+      .vlm = std::move(vlm),
   };
 }
 
@@ -367,6 +376,14 @@ void report_collector_targets(const CollectorTargets& targets, bool layout_activ
                      : ", vlm " + targets.derender.vlm_endpoint);
   } else {
     std::println("gRParse chart derender (enrich): not configured");
+  }
+  if (targets.vlm.enabled()) {
+    std::println("gRParse vlm convert: {} ({} ms{})", targets.vlm.target,
+                 targets.vlm.timeout.count(),
+                 targets.vlm.endpoint.empty() ? std::string()
+                                              : ", endpoint " + targets.vlm.endpoint);
+  } else {
+    std::println("gRParse vlm convert: not configured");
   }
   if (!targets.libreoffice.empty()) {
     std::println("gRParse office CV enrichment: {}",

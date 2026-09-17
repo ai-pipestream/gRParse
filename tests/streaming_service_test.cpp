@@ -481,9 +481,9 @@ void verify_parity_options_and_confidence(TestServer* server) {
   grpc::ClientContext vlm_context;
   pipestream::parse::v1::ConvertSourceResponse vlm_response;
   const grpc::Status vlm_status = client->ConvertSource(&vlm_context, request, &vlm_response);
-  require(vlm_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
-              vlm_status.error_message().contains("PROCESSING_PIPELINE_VLM"),
-          "a pipeline without models here is rejected by name: " + vlm_status.error_message());
+  require(vlm_status.error_code() == grpc::StatusCode::FAILED_PRECONDITION &&
+              vlm_status.error_message().contains("GRPARSE_VLM_CONVERT_TARGET"),
+          "VLM without a convert peer is rejected by name: " + vlm_status.error_message());
 
   request = unary_request();
   request.mutable_request()->mutable_options()->set_pipeline(

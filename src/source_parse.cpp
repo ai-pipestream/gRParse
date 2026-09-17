@@ -26,6 +26,7 @@
 #include "grparse/input_format.h"
 #include "grparse/page_previews.h"
 #include "grparse/schema_version.h"
+#include "grparse/vlm_convert.h"
 #include "parse_support.h"
 
 namespace fs = std::filesystem;
@@ -158,8 +159,10 @@ bool implemented_option(std::string_view name) {
 }
 
 // The pipelines this server runs: STANDARD is the default path, NATIVE the
-// model-free extraction the pdf collector's own Document provides. The
-// VLM, ASR and LEGACY pipelines name engines this server does not host.
+// model-free extraction the pdf collector's own Document provides, VLM the
+// grpc-vlm-convert leg (availability checked at parse time against
+// GRPARSE_VLM_CONVERT_TARGET). ASR and LEGACY name engines this server does
+// not host.
 grpc::Status validate_pipeline(const pipestream::parse::v1::ConvertDocumentOptions& options,
                                const std::string& surface) {
   if (!options.has_pipeline()) return grpc::Status::OK;
@@ -167,6 +170,7 @@ grpc::Status validate_pipeline(const pipestream::parse::v1::ConvertDocumentOptio
     case pipestream::parse::v1::PROCESSING_PIPELINE_UNSPECIFIED:
     case pipestream::parse::v1::PROCESSING_PIPELINE_STANDARD:
     case pipestream::parse::v1::PROCESSING_PIPELINE_NATIVE:
+    case pipestream::parse::v1::PROCESSING_PIPELINE_VLM:
       return grpc::Status::OK;
     default: {
       std::string name = pipestream::parse::v1::ProcessingPipeline_Name(options.pipeline());
@@ -689,6 +693,8 @@ struct ParseInputs {
   // PROCESSING_PIPELINE_NATIVE: the pdf collector's own model-free Document
   // is the answer whatever its classification said.
   bool native_pipeline = false;
+  // PROCESSING_PIPELINE_VLM: grpc-vlm-convert produces the body.
+  bool vlm_pipeline = false;
   HeadingOptions heading;
   // Docling enrichment switches for the post-parse enrich dial. Unset chart
   // extraction keeps the env opt-in (run when GRPARSE_ENRICH_TARGET is set);
@@ -817,6 +823,9 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   inputs.native_pipeline =
       options.has_pipeline() &&
       options.pipeline() == pipestream::parse::v1::PROCESSING_PIPELINE_NATIVE;
+  inputs.vlm_pipeline =
+      options.has_pipeline() &&
+      options.pipeline() == pipestream::parse::v1::PROCESSING_PIPELINE_VLM;
   inputs.heading = heading_options_from(options);
   return inputs;
 }
@@ -1083,6 +1092,48 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     const auto cv_confidence =
         std::make_shared<std::optional<pipestream::parse::v1::ConfidenceScores>>();
     const bool pdf = is_pdf(*bytes, requested_name);
+    if (inputs.vlm_pipeline) {
+      if (collectors == nullptr || !collectors->has_vlm()) {
+        return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
+                            surface + ": pipeline VLM needs grpc-vlm-convert "
+                                      "(GRPARSE_VLM_CONVERT_TARGET)");
+      }
+      VlmConvertOptions vlm = collectors->vlm();
+      apply_vlm_convert_options(request.options(), &vlm);
+      if (inputs.tuning.render_dpi > 0.0 && vlm.render_dpi <= 0.0) {
+        vlm.render_dpi = inputs.tuning.render_dpi;
+      }
+      if (inputs.tuning.page_range.has_value() && !vlm.page_range.has_value()) {
+        vlm.page_range = inputs.tuning.page_range;
+      }
+      CoordinatorResult result;
+      result.document = std::move(base);
+      const VlmConvertReport report =
+          convert_vlm_pages(collectors->vlm_channel(), vlm, bytes, pdf, &result.document,
+                            inputs.inbound_deadline);
+      for (const std::string& warning : report.warnings) {
+        result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, warning);
+      }
+      if (!report.success) {
+        return grpc::Status(report.code, report.error.empty()
+                                             ? surface + ": pipeline VLM failed"
+                                             : report.error);
+      }
+      result.succeeded = 1;
+      if (context->IsCancelled()) {
+        return grpc::Status(grpc::StatusCode::CANCELLED, "request cancelled");
+      }
+      const bool repaired_text =
+          repair.has_value() &&
+          run_repair_pass(&result.document, *repair).changed_text_or_arenas();
+      (void)repaired_text;
+      derender_charts_if_configured(collectors, context, inputs.inbound_deadline, inputs,
+                                    &result);
+      stamp_collector_warnings(&result);
+      parsed->filename = requested_name;
+      parsed->result = std::move(result);
+      return grpc::Status::OK;
+    }
     const CvCollector run_cv(context, scheduler, bytes, pdf, cv_offsets, cv_confidence,
                              inputs.heading);
 

@@ -112,6 +112,9 @@ services:
       GRPARSE_ENRICH_TARGET: "enrich:50056"
       GRPARSE_ENRICH_TIMEOUT_MS: "5000"
       GRPARSE_ENRICH_VLM_ENDPOINT: "${GRPARSE_ENRICH_VLM_ENDPOINT:-http://krick-1.taild24b1c.ts.net:8086}"
+      # PROCESSING_PIPELINE_VLM dials grpc-vlm-convert with full-page PNGs.
+      GRPARSE_VLM_CONVERT_TARGET: "vlm-convert:50058"
+      GRPARSE_VLM_CONVERT_TIMEOUT_MS: "120000"
     gpus: all
     read_only: true
     tmpfs:

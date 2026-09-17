@@ -85,4 +85,15 @@ std::shared_ptr<grpc::Channel> CollectorEndpoints::enrich_channel() {
   return enrich_channel_;
 }
 
+std::shared_ptr<grpc::Channel> CollectorEndpoints::vlm_channel() {
+  if (!has_vlm()) return nullptr;
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (vlm_channel_ == nullptr) {
+    vlm_channel_ = grpc::CreateCustomChannel(targets_.vlm.target,
+                                             grpc::InsecureChannelCredentials(),
+                                             collector_channel_arguments());
+  }
+  return vlm_channel_;
+}
+
 }  // namespace grparse

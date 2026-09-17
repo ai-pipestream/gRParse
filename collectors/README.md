@@ -18,6 +18,7 @@ re-copy the file and rebuild.
 | `poi_document.proto`, `poi_service.proto` | grPOIc `grpoic-api/src/main/proto/ai/pipestream/poi/v1/` |
 | `calamine_types.proto`, `calamine_service.proto` | grpc-calamine `proto/calamine/v1/` (`types.proto` is renamed here to stay unambiguous; it stages back to `calamine/v1/types.proto`. The package is `calamine.v1`, not `ai.pipestream.*`. Copied from that repo's `development` branch, which carries the fleet port and the UiInfo block) |
 | `enrich_service.proto` | grpc-enrich `proto/ai/pipestream/enrich/v1/enrich_service.proto` (the chart derender leg, `GRPARSE_ENRICH_TARGET`; an enrichment peer rather than a collector, dialed after the merge) |
+| `vlm_convert.proto` | grpc-vlm-convert `proto/ai/pipestream/vlm/v1/vlm_convert.proto` (the `PROCESSING_PIPELINE_VLM` body producer, `GRPARSE_VLM_CONVERT_TARGET`; a peer dialed instead of the CV path) |
 
 A copy that is not byte-identical is worse than no copy: the tests dial fakes
 built from these same generated stubs, so a skewed field number agrees with

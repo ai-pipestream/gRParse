@@ -16,6 +16,7 @@
 #include "grparse/document_repair.h"
 #include "grparse/office_cv_enrichment.h"
 #include "grparse/page_scheduler.h"
+#include "grparse/vlm_convert.h"
 
 namespace grparse {
 
@@ -46,6 +47,10 @@ struct CollectorTargets {
   // collector but a peer dialed after the merge; an empty target means the
   // leg does not exist in this deployment.
   ChartDerenderOptions derender;
+  // The VLM convert leg (grpc-vlm-convert, GRPARSE_VLM_CONVERT_TARGET): the
+  // PROCESSING_PIPELINE_VLM body producer. Empty target means that pipeline
+  // is unavailable.
+  VlmConvertOptions vlm;
 };
 
 // The largest message this server accepts on its own port and the largest
@@ -85,6 +90,12 @@ class CollectorEndpoints {
   bool has_derender() const { return targets_.derender.enabled(); }
   std::shared_ptr<grpc::Channel> enrich_channel();
 
+  // The VLM convert leg's options and its lazily created channel; null when
+  // GRPARSE_VLM_CONVERT_TARGET is unset.
+  const VlmConvertOptions& vlm() const { return targets_.vlm; }
+  bool has_vlm() const { return targets_.vlm.enabled(); }
+  std::shared_ptr<grpc::Channel> vlm_channel();
+
   // The CV engines the office collector runs over LibreOffice page renders;
   // an all-null enrichment disables the hybrid leg.
   const OfficeCvEnrichment& cv_enrichment() const { return cv_enrichment_; }
@@ -96,6 +107,7 @@ class CollectorEndpoints {
   std::map<ai::pipestream::parse::v1::Collector, std::shared_ptr<grpc::Channel>>
       channels_;
   std::shared_ptr<grpc::Channel> enrich_channel_;
+  std::shared_ptr<grpc::Channel> vlm_channel_;
 };
 
 // Every unary surface runs on gRPC's callback API. The parsing surfaces block
