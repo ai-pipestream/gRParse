@@ -1945,6 +1945,12 @@ void verify_hierarchical_chunk_rpc_carries_digest_and_offsets(TestServer* server
   require(response.response().documents().empty(),
           "the converted document rides along only when it is asked for");
   require(response.response().processing_time() >= 0.0, "processing time is reported");
+  const auto& info = response.response().chunking_info();
+  require(info.contains("chunker") && info.at("chunker").string_value() == "hierarchical",
+          "chunking_info names the hierarchical chunker");
+  require(info.contains("use_markdown_tables") &&
+              !info.at("use_markdown_tables").bool_value(),
+          "chunking_info carries use_markdown_tables");
 }
 
 void verify_hybrid_chunk_rpc_merges_and_validates(TestServer* server) {
@@ -1974,6 +1980,15 @@ void verify_hybrid_chunk_rpc_merges_and_validates(TestServer* server) {
   require(response.response().documents_size() == 1 &&
               response.response().documents(0).content().doc().texts_size() == 3,
           "include_converted_doc returns the parsed document too");
+  const auto& info = response.response().chunking_info();
+  require(info.contains("chunker") && info.at("chunker").string_value() == "hybrid",
+          "chunking_info names the hybrid chunker");
+  require(info.contains("max_tokens") && info.at("max_tokens").int_value() == 8,
+          "chunking_info carries the request budget");
+  require(info.contains("merge_peers") && info.at("merge_peers").bool_value(),
+          "chunking_info defaults merge_peers to true");
+  require(info.contains("tokenizer") && info.at("tokenizer").string_value() == "wordish/1",
+          "chunking_info defaults the tokenizer to wordish/1");
 
   pipestream::parse::v1::ChunkHybridSourceRequest without_budget;
   *without_budget.mutable_request()->add_sources() = request.request().sources(0);

@@ -112,6 +112,15 @@ ChunkOptions chunk_options_from(
 ChunkOptions chunk_options_from(
     const ai::pipestream::parse::v1::HybridChunkerOptions& options);
 
+// Fill ChunkDocumentResponse.chunking_info from the active chunker options
+// (parity with jobkit ChunkedDocumentResult.chunking_info = options.model_dump).
+void fill_chunking_info(
+    const ai::pipestream::parse::v1::HierarchicalChunkerOptions& options,
+    google::protobuf::Map<std::string, ai::pipestream::parse::v1::ScalarValue>* out);
+void fill_chunking_info(
+    const ai::pipestream::parse::v1::HybridChunkerOptions& options,
+    google::protobuf::Map<std::string, ai::pipestream::parse::v1::ScalarValue>* out);
+
 // The hierarchical chunker: one chunk per emitted unit in body-tree walk
 // order, each carrying the heading trail in force where it was emitted.
 std::vector<ai::pipestream::parse::v1::Chunk> chunk_hierarchical(

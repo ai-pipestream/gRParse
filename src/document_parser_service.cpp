@@ -369,6 +369,8 @@ grpc::ServerUnaryReactor* DocumentParserService::ChunkHierarchicalSource(
       attach_converted_document(chunk_request.convert_options(), parsed.filename,
                                 &parsed.result, chunked);
     }
+    chunking::fill_chunking_info(chunk_request.chunking_options(),
+                                 chunked->mutable_chunking_info());
     chunked->set_processing_time(
         std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
     return grpc::Status::OK;
@@ -414,6 +416,8 @@ grpc::ServerUnaryReactor* DocumentParserService::ChunkHybridSource(
       attach_converted_document(chunk_request.convert_options(), parsed.filename,
                                 &parsed.result, chunked);
     }
+    chunking::fill_chunking_info(chunk_request.chunking_options(),
+                                 chunked->mutable_chunking_info());
     chunked->set_processing_time(
         std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
     return grpc::Status::OK;

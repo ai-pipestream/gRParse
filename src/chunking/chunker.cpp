@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <set>
 #include <string>
@@ -813,6 +814,62 @@ ChunkOptions chunk_options_from(const parsev1::HybridChunkerOptions& options) {
     out.image_placeholder_set = true;
   }
   return out;
+}
+
+namespace {
+
+void put_string(google::protobuf::Map<std::string, parsev1::ScalarValue>* out,
+                const std::string& key, const std::string& value) {
+  (*out)[key].set_string_value(value);
+}
+
+void put_bool(google::protobuf::Map<std::string, parsev1::ScalarValue>* out,
+              const std::string& key, bool value) {
+  (*out)[key].set_bool_value(value);
+}
+
+void put_int(google::protobuf::Map<std::string, parsev1::ScalarValue>* out,
+             const std::string& key, std::int64_t value) {
+  (*out)[key].set_int_value(value);
+}
+
+}  // namespace
+
+void fill_chunking_info(
+    const parsev1::HierarchicalChunkerOptions& options,
+    google::protobuf::Map<std::string, parsev1::ScalarValue>* out) {
+  if (out == nullptr) return;
+  put_string(out, "chunker", "hierarchical");
+  put_bool(out, "use_markdown_tables", options.use_markdown_tables());
+  put_bool(out, "include_raw_text", options.include_raw_text());
+  // Match jobkit model_dump defaults when the optional wire fields are unset.
+  put_bool(out, "use_markdown_images",
+           options.has_use_markdown_images() ? options.use_markdown_images() : false);
+  put_string(out, "image_placeholder",
+             options.has_image_placeholder() ? options.image_placeholder() : "![IMAGE]");
+}
+
+void fill_chunking_info(const parsev1::HybridChunkerOptions& options,
+                        google::protobuf::Map<std::string, parsev1::ScalarValue>* out) {
+  if (out == nullptr) return;
+  put_string(out, "chunker", "hybrid");
+  put_bool(out, "use_markdown_tables", options.use_markdown_tables());
+  put_bool(out, "include_raw_text", options.include_raw_text());
+  put_bool(out, "use_markdown_images",
+           options.has_use_markdown_images() ? options.use_markdown_images() : false);
+  put_string(out, "image_placeholder",
+             options.has_image_placeholder() ? options.image_placeholder() : "![IMAGE]");
+  if (options.has_max_tokens()) {
+    put_int(out, "max_tokens", options.max_tokens());
+  }
+  // jobkit default tokenizer when unset; gRParse defaults the counter to wordish/1.
+  put_string(out, "tokenizer",
+             options.has_tokenizer() ? options.tokenizer() : "wordish/1");
+  put_bool(out, "merge_peers",
+           options.has_merge_peers() ? options.merge_peers() : true);
+  if (options.has_tokenizer_path()) {
+    put_string(out, "tokenizer_path", options.tokenizer_path());
+  }
 }
 
 void add_offsets(const google::protobuf::RepeatedPtrField<parsev1::TextOffset>& rows,

@@ -1188,10 +1188,14 @@ message Chunk {
 }
 
 // ChunkDocumentResponse mirrors the REST chunk response body.
+// chunking_info is the jobkit ChunkedDocumentResult dump of the active
+// chunker options (Optional[dict] on the Python side). REST omits it;
+// ScalarValue leaves match docling-serve.
 message ChunkDocumentResponse {
   repeated Chunk chunks = 1;
   repeated Document documents = 2;
   double processing_time = 3;
+  map<string, ScalarValue> chunking_info = 4;
 }
 
 // TaskStatusPollRequest mirrors GET /v1/status/poll/{taskId}
