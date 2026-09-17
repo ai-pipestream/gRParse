@@ -1,5 +1,6 @@
 #include "grparse/document_parser_service.h"
 
+#include <algorithm>
 #include <chrono>
 #include <exception>
 #include <filesystem>
@@ -262,6 +263,33 @@ grpc::ServerUnaryReactor* DocumentParserService::ConvertSource(
     // TEXT keeps its arena-order line export, the rest fold the body tree.
     const auto& options = request->request().options();
     render_exports(options, *document, document_response->mutable_exports());
+    const bool wants_chunks =
+        std::ranges::find(options.to_formats(), pipestream::parse::v1::OUTPUT_FORMAT_CHUNKS) !=
+        options.to_formats().end();
+    if (wants_chunks) {
+      std::vector<pipestream::parse::v1::Chunk> chunks;
+      if (options.chunking_options_case() ==
+          pipestream::parse::v1::ConvertDocumentOptions::kHybridChunking) {
+        const grpc::Status chunked = chunking::chunk_hybrid(
+            *document, parsed.offsets, options.hybrid_chunking(), parsed.filename.string(),
+            &chunks);
+        if (!chunked.ok()) return chunked;
+      } else {
+        // hierarchical_chunking, chunking_preset, or CHUNKS with no config:
+        // hierarchical defaults (presets are accepted names without a local catalog).
+        pipestream::parse::v1::HierarchicalChunkerOptions hierarchical;
+        if (options.chunking_options_case() ==
+            pipestream::parse::v1::ConvertDocumentOptions::kHierarchicalChunking) {
+          hierarchical = options.hierarchical_chunking();
+        }
+        const chunking::ChunkOptions chunk_opts = chunking::chunk_options_from(hierarchical);
+        chunks = chunking::chunk_hierarchical(*document, parsed.offsets, chunk_opts,
+                                              parsed.filename.string());
+      }
+      for (auto& chunk : chunks) {
+        *converted->add_chunks() = std::move(chunk);
+      }
+    }
     // The target delivers the same conversion somewhere else; the response
     // body above keeps everything it already carries either way. It runs
     // here on the conversion's own worker because it compresses and uploads,

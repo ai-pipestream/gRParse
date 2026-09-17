@@ -76,6 +76,10 @@ enum OutputFormat {
   // the title hoisted into it, and the body as sections, lists, tables, and
   // floats.
   OUTPUT_FORMAT_LATEX = 12;
+  // Chunk list on ConvertDocumentResponse (serve OUTPUT_FORMAT_CHUNKS parity).
+  // Enum value differs from serve (11) because gRParse already uses 11 for
+  // GDOCS_JSON; the name and Convert behavior match.
+  OUTPUT_FORMAT_CHUNKS = 13;
 }
 
 // OCR engine selection.
@@ -768,6 +772,16 @@ message ConvertDocumentOptions {
   optional bool do_pdf_heading_hierarchy = 50;
   // Tunables for the pass do_pdf_heading_hierarchy turns on.
   optional HeadingHierarchyOptions pdf_heading_hierarchy_options = 51;
+  // Preset id when OUTPUT_FORMAT_CHUNKS is requested (mutually exclusive with
+  // chunking_options). gRParse field tags start at 52 because 44–51 are fleet
+  // collectors / render / heading fields; serve places these at 48–50.
+  optional string chunking_preset = 52;
+  // Chunker configuration for OUTPUT_FORMAT_CHUNKS; mutually exclusive with
+  // chunking_preset.
+  oneof chunking_options {
+    HierarchicalChunkerOptions hierarchical_chunking = 53;
+    HybridChunkerOptions hybrid_chunking = 54;
+  }
 }
 
 // HeadingHierarchyOptions mirrors the upstream PdfHeadingHierarchyOptions.
@@ -981,6 +995,8 @@ message ConvertDocumentResponse {
   // The read quality of the in-process CV collector's pages. Absent when no
   // CV page was read (a collector-folded office document, a fast-path PDF).
   optional ConfidenceScores confidence = 8;
+  // Populated when to_formats includes OUTPUT_FORMAT_CHUNKS.
+  repeated Chunk chunks = 9;
 }
 
 // Embeddings are opt-in on the two implemented synchronous chunk RPCs.

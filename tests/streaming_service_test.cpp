@@ -562,6 +562,33 @@ void verify_parity_options_and_confidence(TestServer* server) {
               mixed_vlm_status.error_message());
 
   request = unary_request();
+  request.mutable_request()->mutable_options()->clear_to_formats();
+  request.mutable_request()->mutable_options()->add_to_formats(
+      pipestream::parse::v1::OUTPUT_FORMAT_CHUNKS);
+  request.mutable_request()->mutable_options()->mutable_hierarchical_chunking()->set_include_raw_text(
+      true);
+  grpc::ClientContext chunks_context;
+  pipestream::parse::v1::ConvertSourceResponse chunks_response;
+  const grpc::Status chunks_status =
+      client->ConvertSource(&chunks_context, request, &chunks_response);
+  require(chunks_status.ok(),
+          "OUTPUT_FORMAT_CHUNKS with hierarchical_chunking must succeed: " +
+              chunks_status.error_message());
+  require(chunks_response.response().chunks_size() > 0,
+          "ConvertSource must populate chunks when OUTPUT_FORMAT_CHUNKS is set");
+
+  request = unary_request();
+  request.mutable_request()->mutable_options()->set_chunking_preset("granite_embedding_278m");
+  grpc::ClientContext preset_without_chunks;
+  pipestream::parse::v1::ConvertSourceResponse preset_response;
+  const grpc::Status preset_status =
+      client->ConvertSource(&preset_without_chunks, request, &preset_response);
+  require(preset_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              preset_status.error_message().contains("OUTPUT_FORMAT_CHUNKS"),
+          "chunking_preset without CHUNKS format is rejected: " +
+              preset_status.error_message());
+
+  request = unary_request();
   request.mutable_request()->mutable_options()->set_pipeline(
       pipestream::parse::v1::PROCESSING_PIPELINE_NATIVE);
   grpc::ClientContext native_context;

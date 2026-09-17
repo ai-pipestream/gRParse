@@ -88,6 +88,7 @@ bool renderable(pipestream::parse::v1::OutputFormat format) {
     case pipestream::parse::v1::OUTPUT_FORMAT_CANONICAL_JSON:
     case pipestream::parse::v1::OUTPUT_FORMAT_GDOCS_JSON:
     case pipestream::parse::v1::OUTPUT_FORMAT_LATEX:
+    case pipestream::parse::v1::OUTPUT_FORMAT_CHUNKS:
       return true;
     default:
       return false;
@@ -113,6 +114,9 @@ bool implemented_option(std::string_view name) {
       "md_compact_tables",
       "do_pdf_heading_hierarchy",
       "pdf_heading_hierarchy_options",
+      "chunking_preset",
+      "hierarchical_chunking",
+      "hybrid_chunking",
       "document_timeout",
       "page_range",
       "include_images",
@@ -489,6 +493,27 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                         surface + ": COLLECTOR_VLM must be the only collector "
                                   "(it maps to PROCESSING_PIPELINE_VLM)");
+  }
+  const bool has_chunking_preset =
+      options.has_chunking_preset() && !options.chunking_preset().empty();
+  const bool has_chunking_options = options.chunking_options_case() !=
+                                    pipestream::parse::v1::ConvertDocumentOptions::CHUNKING_OPTIONS_NOT_SET;
+  if (has_chunking_preset && has_chunking_options) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        surface + ": chunking_preset and chunking_options are mutually exclusive");
+  }
+  bool wants_chunks = false;
+  for (const auto raw : options.to_formats()) {
+    if (static_cast<pipestream::parse::v1::OutputFormat>(raw) ==
+        pipestream::parse::v1::OUTPUT_FORMAT_CHUNKS) {
+      wants_chunks = true;
+      break;
+    }
+  }
+  if ((has_chunking_preset || has_chunking_options) && !wants_chunks) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        surface + ": chunking_preset/chunking_options require "
+                                  "OUTPUT_FORMAT_CHUNKS in to_formats");
   }
   for (const auto raw : options.to_formats()) {
     const auto format = static_cast<pipestream::parse::v1::OutputFormat>(raw);
