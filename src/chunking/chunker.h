@@ -27,7 +27,8 @@
 //                     "rowLabel, colLabel = value" triplets joined with ". ";
 //                     a table with no headers, a single column, or nothing
 //                     but headers degrades to its cell texts joined ". "
-//   picture           its caption texts only, never a placeholder
+//   picture           its caption texts; with use_markdown_images, a
+//                     placeholder line as well (default "![IMAGE]")
 //   code              its text, verbatim
 //
 // An emitted unit whose serialization is blank produces no chunk at all.
@@ -93,7 +94,23 @@ struct ChunkOptions {
   // Populate Chunk.raw_text. It repeats Chunk.text today and is reserved for
   // a future richer serialization of the same chunk.
   bool include_raw_text = false;
+  // When true, picture chunks include an image placeholder line (parity with
+  // docling-jobkit MarkdownChunkingSerializerProvider.use_markdown_images).
+  // Uncaptioned pictures then still emit a chunk.
+  bool use_markdown_images = false;
+  // Placeholder text for pictures when use_markdown_images is set. Empty
+  // means the jobkit default "![IMAGE]" unless image_placeholder_set is true
+  // (explicit empty string from the wire).
+  std::string image_placeholder;
+  bool image_placeholder_set = false;
 };
+
+// Build shared serialization options from the hierarchical / hybrid wire
+// messages (markdown tables/images + raw_text).
+ChunkOptions chunk_options_from(
+    const ai::pipestream::parse::v1::HierarchicalChunkerOptions& options);
+ChunkOptions chunk_options_from(
+    const ai::pipestream::parse::v1::HybridChunkerOptions& options);
 
 // The hierarchical chunker: one chunk per emitted unit in body-tree walk
 // order, each carrying the heading trail in force where it was emitted.

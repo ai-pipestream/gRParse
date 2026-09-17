@@ -303,8 +303,8 @@ grpc::ServerUnaryReactor* DocumentParserService::ChunkHierarchicalSource(
                      &parsed);
     if (!parse_status.ok()) return parse_status;
     auto* chunked = response->mutable_response();
-    const chunking::ChunkOptions options{chunk_request.chunking_options().use_markdown_tables(),
-                                         chunk_request.chunking_options().include_raw_text()};
+    const chunking::ChunkOptions options =
+        chunking::chunk_options_from(chunk_request.chunking_options());
     auto chunks = chunking::chunk_hierarchical(parsed.result.document, parsed.offsets,
                                               options, parsed.filename.string());
     const auto embedded = embedder_.embed(chunk_request.embedding_options(),

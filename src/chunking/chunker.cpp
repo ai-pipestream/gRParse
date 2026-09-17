@@ -534,7 +534,17 @@ class Chunker {
     chunk.headings = trail_texts();
     absorb(&chunk, ref);
     chunk.captions = caption_texts(picture.captions(), &chunk);
-    chunk.text = join(chunk.captions, "\n");
+    std::vector<std::string> lines;
+    if (options_.use_markdown_images) {
+      // Jobkit default when the field is unset; an explicit empty wire value
+      // stays empty so callers can suppress the placeholder while still
+      // opting into image-aware serialization.
+      const std::string placeholder =
+          options_.image_placeholder_set ? options_.image_placeholder : "![IMAGE]";
+      if (!placeholder.empty()) lines.push_back(placeholder);
+    }
+    lines.insert(lines.end(), chunk.captions.begin(), chunk.captions.end());
+    chunk.text = join(lines, "\n");
     if (trimmed(chunk.text).empty()) return;
     chunks_.push_back(std::move(chunk));
   }
@@ -777,6 +787,34 @@ std::vector<WorkChunk> split_oversized(std::vector<WorkChunk>&& work, int max_to
 
 }  // namespace
 
+ChunkOptions chunk_options_from(const parsev1::HierarchicalChunkerOptions& options) {
+  ChunkOptions out;
+  out.use_markdown_tables = options.use_markdown_tables();
+  out.include_raw_text = options.include_raw_text();
+  if (options.has_use_markdown_images()) {
+    out.use_markdown_images = options.use_markdown_images();
+  }
+  if (options.has_image_placeholder()) {
+    out.image_placeholder = options.image_placeholder();
+    out.image_placeholder_set = true;
+  }
+  return out;
+}
+
+ChunkOptions chunk_options_from(const parsev1::HybridChunkerOptions& options) {
+  ChunkOptions out;
+  out.use_markdown_tables = options.use_markdown_tables();
+  out.include_raw_text = options.include_raw_text();
+  if (options.has_use_markdown_images()) {
+    out.use_markdown_images = options.use_markdown_images();
+  }
+  if (options.has_image_placeholder()) {
+    out.image_placeholder = options.image_placeholder();
+    out.image_placeholder_set = true;
+  }
+  return out;
+}
+
 void add_offsets(const google::protobuf::RepeatedPtrField<parsev1::TextOffset>& rows,
                  OffsetTable* table) {
   if (table == nullptr) return;
@@ -850,7 +888,7 @@ grpc::Status validate_hybrid_options(const parsev1::HybridChunkerOptions& option
 grpc::Status chunk_hybrid(const docv1::Document& document, const OffsetTable& offsets,
                           const parsev1::HybridChunkerOptions& options,
                           std::string_view filename, std::vector<parsev1::Chunk>* out) {
-  const ChunkOptions serialization{options.use_markdown_tables(), options.include_raw_text()};
+  const ChunkOptions serialization = chunk_options_from(options);
   const int max_tokens = options.max_tokens();
   // The wire default of an unset merge_peers is on: peers merge unless the
   // caller says otherwise.

@@ -23,6 +23,7 @@ namespace parsev1 = ai::pipestream::parse::v1;
 using grparse::chunking::ChunkOptions;
 using grparse::chunking::chunk_hierarchical;
 using grparse::chunking::chunk_hybrid;
+using grparse::chunking::chunk_options_from;
 using grparse::chunking::count_tokens;
 using grparse::chunking::hybrid_rules_digest;
 using grparse::chunking::OffsetEntry;
@@ -416,6 +417,34 @@ void verify_picture_chunks_carry_captions_only() {
   add_picture(&bare, {});
   require(chunk_hierarchical(bare, {}, {}, "p.pdf").empty(),
           "an uncaptioned picture emits no placeholder chunk");
+}
+
+void verify_picture_chunks_emit_markdown_image_placeholder() {
+  docv1::Document bare = new_document();
+  add_picture(&bare, {});
+  const ChunkOptions with_images{false, false, true};
+  const auto chunks = chunk_hierarchical(bare, {}, with_images, "p.pdf");
+  require_eq(static_cast<int>(chunks.size()), 1, "uncaptioned picture emits with images on");
+  require_eq(chunks.front().text(), "![IMAGE]", "default image placeholder matches jobkit");
+
+  const ChunkOptions custom{false, false, true, "[img]", true};
+  require_eq(chunk_hierarchical(bare, {}, custom, "p.pdf").front().text(), "[img]",
+             "explicit image_placeholder is used");
+
+  docv1::Document captioned = new_document();
+  const std::string caption = add_paragraph(&captioned, "Figure 1. A crow.", 1);
+  add_picture(&captioned, {caption}, 1);
+  require_eq(chunk_hierarchical(captioned, {}, with_images, "c.pdf").front().text(),
+             "![IMAGE]\nFigure 1. A crow.",
+             "placeholder precedes captions when both are present");
+
+  parsev1::HierarchicalChunkerOptions wire;
+  wire.set_use_markdown_images(true);
+  wire.set_image_placeholder("<!-- image -->");
+  const ChunkOptions from_wire = chunk_options_from(wire);
+  require(from_wire.use_markdown_images, "wire use_markdown_images maps through");
+  require(from_wire.image_placeholder_set, "wire image_placeholder maps through");
+  require_eq(from_wire.image_placeholder, "<!-- image -->", "wire placeholder text");
 }
 
 // A caption reference two tables both name belongs to the first of them.
@@ -835,6 +864,7 @@ const Case kCases[] = {
     {"list group consumption", verify_list_group_consumes_its_items},
     {"table serialization", verify_table_serialization_and_its_degradations},
     {"picture captions", verify_picture_chunks_carry_captions_only},
+    {"picture markdown images", verify_picture_chunks_emit_markdown_image_placeholder},
     {"shared caption claiming", verify_a_shared_caption_is_claimed_once},
     {"pages, items and offsets", verify_pages_items_and_offsets_propagate},
     {"text source metadata", verify_mixed_text_source_is_reported},
