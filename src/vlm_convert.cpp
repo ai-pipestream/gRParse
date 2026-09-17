@@ -69,17 +69,28 @@ void apply_vlm_convert_options(const parsev1::ConvertDocumentOptions& convert,
       options->preset_raw = raw_name_for(convert.vlm_pipeline_model());
     }
   }
-  if (convert.has_vlm_pipeline_model_local() && !convert.vlm_pipeline_model_local().empty()) {
-    options->preset = vlmv1::VLM_PRESET_RAW;
-    options->preset_raw = convert.vlm_pipeline_model_local();
-  }
-  if (convert.has_vlm_pipeline_model_api() && !convert.vlm_pipeline_model_api().empty()) {
-    const std::string& api = convert.vlm_pipeline_model_api();
-    if (api.starts_with("http://") || api.starts_with("https://")) {
-      options->endpoint = api;
-    } else {
+  if (convert.has_vlm_pipeline_model_local()) {
+    const auto& local = convert.vlm_pipeline_model_local();
+    if (local.has_repo_id() && !local.repo_id().empty()) {
       options->preset = vlmv1::VLM_PRESET_RAW;
-      options->preset_raw = api;
+      options->preset_raw = local.repo_id();
+    }
+    if (local.has_scale() && local.scale() > 0.0) {
+      options->scale = local.scale();
+    }
+  }
+  if (convert.has_vlm_pipeline_model_api()) {
+    const auto& api = convert.vlm_pipeline_model_api();
+    if (api.has_url() && !api.url().empty()) {
+      if (api.url().starts_with("http://") || api.url().starts_with("https://")) {
+        options->endpoint = api.url();
+      } else {
+        options->preset = vlmv1::VLM_PRESET_RAW;
+        options->preset_raw = api.url();
+      }
+    }
+    if (api.has_scale() && api.scale() > 0.0 && options->scale <= 0.0) {
+      options->scale = api.scale();
     }
   }
   if (convert.has_vlm_pipeline_preset() && !convert.vlm_pipeline_preset().empty()) {

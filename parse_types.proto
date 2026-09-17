@@ -499,8 +499,8 @@ message PictureDescriptionLocal {
   string repo_id = 1;
   // Optional prompt for the model
   optional string prompt = 2;
-  // Optional generation config parameters
-  map<string, google.protobuf.Value> generation_config = 3;
+  // Optional generation config parameters (open scalar map; serve parity)
+  map<string, ScalarValue> generation_config = 3;
   // Only describe pictures whose top classifier class is in this list.
   repeated PictureClassificationLabel classification_allow = 4;
   // Skip pictures whose top classifier class is in this list.
@@ -515,8 +515,8 @@ message PictureDescriptionApi {
   string url = 1;
   // Optional HTTP headers
   map<string, string> headers = 2;
-  // Optional model parameters
-  map<string, google.protobuf.Value> params = 3;
+  // Optional model parameters (open scalar map; serve parity)
+  map<string, ScalarValue> params = 3;
   // Timeout in seconds
   optional double timeout = 4;
   // Max concurrent requests
@@ -532,23 +532,25 @@ message PictureDescriptionApi {
 message VlmModelLocal {
   optional string repo_id = 1;
   optional string prompt = 2;
-  optional int32 scale = 3;
+  optional double scale = 3;
   optional ResponseFormat response_format = 4;
   optional InferenceFramework inference_framework = 5;
   optional TransformersModelType transformers_model_type = 6;
-  map<string, google.protobuf.Value> extra_generation_config = 7;
+  map<string, ScalarValue> extra_generation_config = 7;
+  optional double temperature = 8;
 }
 
 // VlmModelApi configures an API-based vision-language model for the VLM pipeline.
 message VlmModelApi {
   optional string url = 1;
   map<string, string> headers = 2;
-  map<string, google.protobuf.Value> params = 3;
+  map<string, ScalarValue> params = 3;
   optional double timeout = 4;
   optional int32 concurrency = 5;
   optional string prompt = 6;
-  optional int32 scale = 7;
+  optional double scale = 7;
   optional ResponseFormat response_format = 8;
+  optional double temperature = 9;
 }
 
 message BaseVlmEngineOptions {
@@ -684,10 +686,10 @@ message ConvertDocumentOptions {
   optional PictureDescriptionApi picture_description_api = 25;
   // Preset VLM model (mutually exclusive with local/api)
   optional VlmModelType vlm_pipeline_model = 26;
-  // Local VLM model string (mutually exclusive with api/preset)
-  optional string vlm_pipeline_model_local = 27;
-  // API VLM model string (mutually exclusive with local/preset)
-  optional string vlm_pipeline_model_api = 28;
+  // Local VLM model (mutually exclusive with api/preset)
+  optional VlmModelLocal vlm_pipeline_model_local = 27;
+  // API VLM model (mutually exclusive with local/preset)
+  optional VlmModelApi vlm_pipeline_model_api = 28;
   // Enable chart extraction
   optional bool do_chart_extraction = 29;
   // Preset for VLM pipeline configuration

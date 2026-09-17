@@ -228,9 +228,10 @@ grpc::Status validate_pdf_backend(const pipestream::parse::v1::ConvertDocumentOp
 }
 
 // Nested picture-description engines map onto enrich fields this binary can
-// forward (repo_id / url / timeout / concurrency). Local and API are
-// mutually exclusive. Prompt, headers, params, and generation_config have no
-// enrich wire and are rejected when set.
+// forward (repo_id / url / timeout / concurrency / classification_*). Local
+// and API are mutually exclusive. Prompt, headers, params, and
+// generation_config are accepted for Docling clients (ScalarValue maps) even
+// when the enrich dial does not forward every key yet.
 grpc::Status validate_picture_description_engines(
     const pipestream::parse::v1::ConvertDocumentOptions& options, const std::string& surface) {
   if (options.has_picture_description_local() && options.has_picture_description_api()) {
@@ -244,33 +245,12 @@ grpc::Status validate_picture_description_engines(
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                           surface + ": picture_description_local.repo_id is required");
     }
-    if (local.has_prompt()) {
-      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                          surface + " does not implement picture_description_local.prompt");
-    }
-    if (!local.generation_config().empty()) {
-      return grpc::Status(
-          grpc::StatusCode::INVALID_ARGUMENT,
-          surface + " does not implement picture_description_local.generation_config");
-    }
   }
   if (options.has_picture_description_api()) {
     const auto& api = options.picture_description_api();
     if (api.url().empty()) {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                           surface + ": picture_description_api.url is required");
-    }
-    if (!api.headers().empty()) {
-      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                          surface + " does not implement picture_description_api.headers");
-    }
-    if (!api.params().empty()) {
-      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                          surface + " does not implement picture_description_api.params");
-    }
-    if (api.has_prompt()) {
-      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                          surface + " does not implement picture_description_api.prompt");
     }
     if (api.has_timeout() && api.timeout() <= 0.0) {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
@@ -286,8 +266,7 @@ grpc::Status validate_picture_description_engines(
 
 // VLM selection fields are accepted so Docling clients that always set them
 // are not turned away. They are mutually exclusive (preset / enum / local /
-// api string). PROCESSING_PIPELINE_VLM uses them when the convert peer is
-// configured.
+// api). PROCESSING_PIPELINE_VLM uses them when the convert peer is configured.
 grpc::Status validate_vlm_selection(const pipestream::parse::v1::ConvertDocumentOptions& options,
                                     const std::string& surface) {
   int engines = 0;
@@ -295,10 +274,10 @@ grpc::Status validate_vlm_selection(const pipestream::parse::v1::ConvertDocument
       options.vlm_pipeline_model() != pipestream::parse::v1::VLM_MODEL_TYPE_UNSPECIFIED) {
     ++engines;
   }
-  if (options.has_vlm_pipeline_model_local() && !options.vlm_pipeline_model_local().empty()) {
+  if (options.has_vlm_pipeline_model_local()) {
     ++engines;
   }
-  if (options.has_vlm_pipeline_model_api() && !options.vlm_pipeline_model_api().empty()) {
+  if (options.has_vlm_pipeline_model_api()) {
     ++engines;
   }
   if (options.has_vlm_pipeline_preset() && !options.vlm_pipeline_preset().empty()) {
@@ -315,12 +294,34 @@ grpc::Status validate_vlm_selection(const pipestream::parse::v1::ConvertDocument
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                         surface + " vlm_pipeline_model value is not a known VlmModelType");
   }
+  if (options.has_vlm_pipeline_model_local()) {
+    const auto& local = options.vlm_pipeline_model_local();
+    if (!local.has_repo_id() || local.repo_id().empty()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + ": vlm_pipeline_model_local.repo_id is required");
+    }
+  }
+  if (options.has_vlm_pipeline_model_api()) {
+    const auto& api = options.vlm_pipeline_model_api();
+    if (!api.has_url() || api.url().empty()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + ": vlm_pipeline_model_api.url is required");
+    }
+    if (api.has_timeout() && api.timeout() <= 0.0) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + ": vlm_pipeline_model_api.timeout must be positive");
+    }
+    if (api.has_concurrency() && api.concurrency() < 1) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + ": vlm_pipeline_model_api.concurrency must be >= 1");
+    }
+  }
   return grpc::Status::OK;
 }
 
-// Custom-config Structs mirror Docling's open dict bags. Known keys are
-// applied; any other key is rejected by name (never silently dropped). Empty
-// Structs are accepted.
+// Custom-config fields mirror Docling: typed VLM option messages plus open
+// ScalarValue maps for dict[str, Any]. Known keys are soft-validated; empty
+// maps are a no-op.
 grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumentOptions& options,
                                      const std::string& surface) {
   const auto scalar_number =

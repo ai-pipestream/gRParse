@@ -497,20 +497,33 @@ void verify_parity_options_and_confidence(TestServer* server) {
               both_status.error_message());
 
   request = unary_request();
-  request.mutable_request()->mutable_options()->mutable_picture_description_api()->set_url(
-      "http://vlm.test:8085");
-  (*request.mutable_request()
-        ->mutable_options()
-        ->mutable_picture_description_api()
-        ->mutable_headers())["Authorization"] = "secret";
+  request = unary_request();
+  auto* api_opts =
+      request.mutable_request()->mutable_options()->mutable_picture_description_api();
+  api_opts->set_url("http://vlm.test:8085");
+  (*api_opts->mutable_headers())["Authorization"] = "secret";
+  (*api_opts->mutable_params())["model"].set_string_value("gpt");
+  api_opts->set_prompt("describe");
   grpc::ClientContext headers_context;
   pipestream::parse::v1::ConvertSourceResponse headers_response;
   const grpc::Status headers_status =
       client->ConvertSource(&headers_context, request, &headers_response);
-  require(headers_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
-              headers_status.error_message().contains("picture_description_api.headers"),
-          "unsupported api headers must be rejected by name: " +
+  require(headers_status.ok(),
+          "picture_description_api headers/params/prompt must be accepted: " +
               headers_status.error_message());
+
+  request = unary_request();
+  auto* local_opts =
+      request.mutable_request()->mutable_options()->mutable_picture_description_local();
+  local_opts->set_repo_id("ibm-granite/granite-vision");
+  local_opts->set_prompt("describe");
+  (*local_opts->mutable_generation_config())["max_new_tokens"].set_int_value(64);
+  grpc::ClientContext gen_context;
+  pipestream::parse::v1::ConvertSourceResponse gen_response;
+  const grpc::Status gen_status = client->ConvertSource(&gen_context, request, &gen_response);
+  require(gen_status.ok(),
+          "picture_description_local generation_config must be accepted: " +
+              gen_status.error_message());
 
   request = unary_request();
   request.mutable_request()->mutable_options()->set_pipeline(

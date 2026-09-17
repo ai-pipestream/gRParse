@@ -129,10 +129,20 @@ void verify_apply_maps_granite_docling_and_raw_api_url() {
           "abort and page_range copy");
 
   parsev1::ConvertDocumentOptions api;
-  api.set_vlm_pipeline_model_api("http://vlm.example:8080/v1");
+  api.mutable_vlm_pipeline_model_api()->set_url("http://vlm.example:8080/v1");
   grparse::VlmConvertOptions api_options;
   grparse::apply_vlm_convert_options(api, &api_options);
-  require(api_options.endpoint == "http://vlm.example:8080/v1", "http api string is endpoint");
+  require(api_options.endpoint == "http://vlm.example:8080/v1", "http api url is endpoint");
+
+  parsev1::ConvertDocumentOptions local;
+  local.mutable_vlm_pipeline_model_local()->set_repo_id("ibm-granite/granite-vision");
+  local.mutable_vlm_pipeline_model_local()->set_scale(1.5);
+  grparse::VlmConvertOptions local_options;
+  grparse::apply_vlm_convert_options(local, &local_options);
+  require(local_options.preset == vlmv1::VLM_PRESET_RAW &&
+              local_options.preset_raw == "ibm-granite/granite-vision" &&
+              local_options.scale == 1.5,
+          "typed local model maps repo_id and scale");
 }
 
 void verify_convert_rasters_dials_and_merges() {
