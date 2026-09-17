@@ -33,6 +33,17 @@ inline constexpr CollectorDeadline kNoCollectorDeadline = CollectorDeadline::max
 CollectorDeadline capped_collector_deadline(CollectorDeadline inbound,
                                             std::chrono::system_clock::duration cap);
 
+// Docling ConvertDocumentsOptions.document_timeout (seconds): when set and
+// positive, the inbound collector ceiling is the sooner of the gRPC deadline
+// and now+timeout. Zero/negative are rejected by validate_document_timeout.
+CollectorDeadline deadline_with_document_timeout(CollectorDeadline inbound,
+                                                 bool has_timeout,
+                                                 double timeout_seconds);
+
+// INVALID_ARGUMENT when document_timeout is set but not positive.
+grpc::Status validate_document_timeout(bool has_timeout, double timeout_seconds,
+                                       std::string_view surface);
+
 // One collector's complete output: its projected Document (source-tagged by
 // the collector itself) or the reason it could not contribute.
 struct CollectorOutcome {

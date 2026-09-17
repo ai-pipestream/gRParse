@@ -338,6 +338,31 @@ void verify_collector_deadline_caps_at_the_sooner_instant() {
           "the leg's context carries the capped instant");
 }
 
+void verify_document_timeout_caps_inbound_deadline() {
+  using std::chrono::system_clock;
+  require(grparse::validate_document_timeout(false, 0.0, "ConvertSource").ok(),
+          "unset document_timeout is accepted");
+  require(grparse::validate_document_timeout(true, 30.0, "ConvertSource").ok(),
+          "positive document_timeout is accepted");
+  require(grparse::validate_document_timeout(true, 0.0, "ConvertSource").error_code() ==
+              grpc::StatusCode::INVALID_ARGUMENT,
+          "zero document_timeout is rejected");
+  require(grparse::validate_document_timeout(true, -1.0, "ConvertSource").error_code() ==
+              grpc::StatusCode::INVALID_ARGUMENT,
+          "negative document_timeout is rejected");
+
+  const auto patient = system_clock::now() + std::chrono::hours{2};
+  const auto capped =
+      grparse::deadline_with_document_timeout(patient, true, 5.0);
+  require(capped < patient && capped <= system_clock::now() + std::chrono::seconds{6},
+          "document_timeout shortens a patient inbound deadline");
+  require(grparse::deadline_with_document_timeout(patient, false, 5.0) == patient,
+          "unset document_timeout leaves the inbound deadline alone");
+  const auto impatient = system_clock::now() + std::chrono::seconds{1};
+  require(grparse::deadline_with_document_timeout(impatient, true, 60.0) == impatient,
+          "an already-impatient inbound deadline wins over a looser document_timeout");
+}
+
 }  // namespace
 
 int main() {
@@ -347,5 +372,6 @@ int main() {
       verify_scatter_gather_merges_additively,
       verify_failure_isolation,
       verify_collector_deadline_caps_at_the_sooner_instant,
+      verify_document_timeout_caps_inbound_deadline,
   });
 }

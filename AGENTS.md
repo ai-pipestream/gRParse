@@ -37,6 +37,7 @@ Docling feature catch-up is a fixed pipeline, not a one-off:
    dep sweep because “this run was only about Docling features.”
 
 Workspace rule: `/work/.cursor/rules/docling-parity-duty.mdc`.
+Local Monday Forgejo sweep: `~/.local/bin/parity-duty-weekly` (cron `0 9 * * 1`); script at `/work/docling-research/scripts/parity_duty_weekly.sh`.
 
 ## The family
 

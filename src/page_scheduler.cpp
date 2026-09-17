@@ -501,14 +501,33 @@ class PageScheduler::Impl final {
         if (!source) throw InvalidDocument("Document source could not be opened");
         const int pages = source->page_count();
         if (pages <= 0) throw InvalidDocument("Document does not contain a page");
-        document.request->remaining_pages.store(pages);
+        // Docling page_range: inclusive 1-indexed span. Clamp the end to the
+        // document; reject an empty or inverted span and a start past the end.
+        int first_page = 1;
+        int last_page = pages;
+        if (document.request->tuning.page_range.has_value()) {
+          first_page = document.request->tuning.page_range->first;
+          last_page = document.request->tuning.page_range->second;
+          if (first_page < 1 || last_page < first_page) {
+            throw InvalidDocument("page_range must be a 1-indexed inclusive span");
+          }
+          if (first_page > pages) {
+            throw InvalidDocument("page_range start is past the end of the document");
+          }
+          if (last_page > pages) last_page = pages;
+        }
+        const int page_count = last_page - first_page + 1;
+        document.request->remaining_pages.store(page_count);
         {
           std::lock_guard<std::mutex> lock(document.request->schedule_mutex);
           document.request->source = std::move(source);
-          document.request->total_pages = pages;
+          document.request->total_pages = last_page;
+          document.request->next_page_to_schedule = first_page;
           document.request->available_slots = document.request->page_window;
         }
-        document.request->callbacks.on_document(pages);
+        // Callers wait on the number of pages that will arrive, not the last
+        // page index (which may be higher when the span does not start at 1).
+        document.request->callbacks.on_document(page_count);
         queue_reschedule(document.request);
       } catch (...) {
         document.request->fail(std::current_exception());

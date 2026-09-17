@@ -1,4 +1,5 @@
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -1282,6 +1283,32 @@ void verify_digital_layer_and_disabled_recovery_never_rerecognize() {
   }
 }
 
+// Docling page_range: only the inclusive span is scheduled; original page
+// numbers are preserved on the delivered pages.
+void verify_page_range_restricts_scheduled_pages() {
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 3, 2, 3, 1, 1, 1},
+      [](std::shared_ptr<const std::string>, bool, double) {
+        return std::make_shared<FakeSource>(5);
+      });
+  grparse::PageScheduler::OcrTuning tuning;
+  tuning.page_range = std::make_pair(2, 4);
+  Result result;
+  scheduler.submit(std::make_shared<const std::string>("memory"), true, tuning,
+                   callbacks_for(&result));
+  wait_until_finished(&result);
+
+  require(!result.failure, "page_range document failed");
+  require(result.total_pages == 3, "on_document reports the span length");
+  require(result.completed_pages.size() == 3, "exactly the span is delivered");
+  std::sort(result.completed_pages.begin(), result.completed_pages.end());
+  require(result.completed_pages[0] == 2 && result.completed_pages[1] == 3 &&
+              result.completed_pages[2] == 4,
+          "delivered pages keep their original 1-indexed numbers");
+  require(recognizer.calls.load() == 3, "recognition runs only for the span");
+}
+
 int main() {
   return grparse_test::run_test_main("page-scheduler-test", {
       verify_pipeline_and_metrics,
@@ -1307,5 +1334,6 @@ int main() {
       verify_turned_scan_is_rerecognized_upright,
       verify_upside_down_scan_takes_one_extra_pass,
       verify_digital_layer_and_disabled_recovery_never_rerecognize,
+      verify_page_range_restricts_scheduled_pages,
   });
 }

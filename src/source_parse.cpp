@@ -109,6 +109,8 @@ bool implemented_option(std::string_view name) {
       "md_compact_tables",
       "do_pdf_heading_hierarchy",
       "pdf_heading_hierarchy_options",
+      "document_timeout",
+      "page_range",
   };
   return std::ranges::find(kImplemented, name) != std::end(kImplemented);
 }
@@ -200,7 +202,22 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
                           surface + " from_formats contains invalid value '" + name + "'");
     }
   }
-  return grpc::Status::OK;
+  // Docling page_range is a (start, end) tuple; on this wire that is exactly
+  // two 1-indexed ints. Empty means the whole document.
+  if (options.page_range_size() != 0 && options.page_range_size() != 2) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        surface + " page_range must be empty or [start, end]");
+  }
+  if (options.page_range_size() == 2) {
+    const int start = options.page_range(0);
+    const int end = options.page_range(1);
+    if (start < 1 || end < start) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + " page_range must be a 1-indexed inclusive span");
+    }
+  }
+  return validate_document_timeout(options.has_document_timeout(), options.document_timeout(),
+                                   surface);
 }
 
 // The document every collector's output merges into, additively and in plan
@@ -359,16 +376,11 @@ class CvCollector {
     google::protobuf::RepeatedPtrField<pipestream::parse::v1::TextOffset> offsets;
     std::vector<const OcrPage*> assembled_pages;
     assembled_pages.reserve(collected.pages.size());
-    for (int page_number = 1; page_number <= collected.total_pages; ++page_number) {
-      const auto page = collected.pages.find(page_number);
-      if (page == collected.pages.end()) {
-        outcome.error = "scheduler omitted a document page";
-        return outcome;
-      }
-      append_page_to_document(*page->second, page_number, &assembly_cursor,
+    for (const auto& [page_number, page] : collected.pages) {
+      append_page_to_document(*page, page_number, &assembly_cursor,
                               &outcome.document, &plain_text, &offsets,
                               &outcome.warnings);
-      assembled_pages.push_back(page->second.get());
+      assembled_pages.push_back(page.get());
     }
     // A PDF read through several backends claims its vote: one aggregate
     // "protomolt" claim for the document, no-op when nothing voted.
@@ -452,11 +464,16 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   inputs.content_type = std::move(content_type);
   inputs.tuning = ocr_tuning(options.has_do_ocr(), options.do_ocr(), options.force_ocr(),
                              options.has_render_scale(), options.render_scale());
+  if (options.page_range_size() == 2) {
+    inputs.tuning.page_range = std::make_pair(options.page_range(0), options.page_range(1));
+  }
   // Every dialed leg inherits this call's own ceiling, so no collector is
   // waited on past the patience of the client that asked for the parse. A
   // call with no deadline yields time_point::max(), which leaves each leg on
-  // its own static cap exactly as before.
-  inputs.inbound_deadline = context->deadline();
+  // its own static cap exactly as before. document_timeout (seconds) further
+  // caps that ceiling when set — parity with Docling Convert options.
+  inputs.inbound_deadline = deadline_with_document_timeout(
+      context->deadline(), options.has_document_timeout(), options.document_timeout());
   // A collector-folded PDF never rasterized; when previews are on, it gets
   // them rendered so the shell has a page to paint the boxes on. The request
   // decides when it says; the server setting otherwise.

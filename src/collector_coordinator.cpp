@@ -45,6 +45,26 @@ CollectorDeadline capped_collector_deadline(CollectorDeadline inbound,
   return std::min(inbound, std::chrono::system_clock::now() + cap);
 }
 
+CollectorDeadline deadline_with_document_timeout(CollectorDeadline inbound, bool has_timeout,
+                                                 double timeout_seconds) {
+  if (!has_timeout) return inbound;
+  const auto doc_cap =
+      std::chrono::system_clock::now() +
+      std::chrono::duration_cast<std::chrono::system_clock::duration>(
+          std::chrono::duration<double>(timeout_seconds));
+  return std::min(inbound, doc_cap);
+}
+
+grpc::Status validate_document_timeout(bool has_timeout, double timeout_seconds,
+                                       std::string_view surface) {
+  if (has_timeout && !(timeout_seconds > 0.0)) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        std::string(surface) +
+                            " document_timeout must be positive (seconds)");
+  }
+  return grpc::Status::OK;
+}
+
 pipestream::parse::v1::FailureCategory failure_category_for(grpc::StatusCode code) {
   switch (code) {
     case grpc::StatusCode::DEADLINE_EXCEEDED:
