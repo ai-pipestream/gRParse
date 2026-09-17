@@ -24,6 +24,8 @@ struct S3Config {
   std::string bucket;
   std::string key_prefix;
   bool verify_ssl = true;
+  // When non-empty, used for SigV4 instead of inferring from the endpoint.
+  std::string region;
 };
 
 // The region named by an endpoint host ("s3.eu-west-1.amazonaws.com" ->
@@ -39,6 +41,9 @@ std::string region_for_endpoint(const std::string& endpoint);
 class S3Client final {
  public:
   explicit S3Client(S3Config config);
+
+  // Region used for SigV4 (explicit config.region or inferred from endpoint).
+  const std::string& signing_region() const { return region_; }
 
   std::string put_object(const std::string& key, const std::string& body) const;
 

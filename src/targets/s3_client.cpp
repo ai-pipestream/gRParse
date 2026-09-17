@@ -166,7 +166,7 @@ S3Client::S3Client(S3Config config) : config_(std::move(config)) {
   split_endpoint(config_.endpoint, &scheme_, &authority_, &base_path_);
   if (authority_.empty()) throw std::invalid_argument("S3Target endpoint names no host");
   host_header_ = host_header_for(scheme_, authority_);
-  region_ = region_for_endpoint(config_.endpoint);
+  region_ = config_.region.empty() ? region_for_endpoint(config_.endpoint) : config_.region;
 }
 
 std::string S3Client::key_for(const std::string& path) const {

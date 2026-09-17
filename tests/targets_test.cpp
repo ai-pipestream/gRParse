@@ -262,6 +262,18 @@ void verify_region_comes_from_the_endpoint() {
           "a store that encodes no region defaults");
 }
 
+void verify_explicit_region_overrides_endpoint() {
+  targets::S3Config config;
+  config.endpoint = "https://s3.amazonaws.com";
+  config.access_key = "AKID";
+  config.secret_key = "SECRET";
+  config.bucket = "bucket";
+  config.region = "us-east-2";
+  targets::S3Client client(config);
+  require(client.signing_region() == "us-east-2",
+          "an explicit S3Target.region wins over endpoint inference");
+}
+
 // A single-threaded HTTP/1.1 origin that accepts PUTs, remembers them, and
 // answers with an ETag. Enough of a store to prove the client's wire shape;
 // it verifies no signature, which is what the known-answer test above is for.
@@ -521,6 +533,7 @@ int main() {
       verify_manifest_describes_every_member,
       verify_sigv4_matches_the_published_vector,
       verify_region_comes_from_the_endpoint,
+      verify_explicit_region_overrides_endpoint,
       verify_uploads_land_as_objects,
       verify_a_refused_upload_fails_without_leaking,
       verify_incomplete_targets_are_rejected,

@@ -39,6 +39,9 @@ grpc::Status deliver_s3(const parsev1::S3Target& target, const docv1::Document& 
   // Verification stays on unless the caller explicitly turned it off; an
   // absent field must never mean insecure.
   config.verify_ssl = target.has_verify_ssl() ? target.verify_ssl() : true;
+  if (target.has_region()) {
+    config.region = target.region();
+  }
 
   std::vector<UploadedObject> objects;
   try {
