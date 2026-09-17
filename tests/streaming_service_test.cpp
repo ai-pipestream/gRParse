@@ -394,6 +394,9 @@ void verify_parity_options_and_confidence(TestServer* server) {
   options->mutable_picture_description_api()->set_url("http://vlm.test:8085");
   options->mutable_picture_description_api()->set_concurrency(2);
   options->mutable_picture_description_api()->set_timeout(3.0);
+  options->set_vlm_pipeline_model(pipestream::parse::v1::VLM_MODEL_TYPE_GRANITEDOCLING);
+  options->set_ocr_preset("rapidocr");
+  options->mutable_ocr_custom_config();  // empty Struct accepted
   grpc::ClientContext context;
   context.set_deadline(std::chrono::system_clock::now() + 10s);
   pipestream::parse::v1::ConvertSourceResponse response;
@@ -414,6 +417,33 @@ void verify_parity_options_and_confidence(TestServer* server) {
               confidence.low_grade() == pipestream::parse::v1::QUALITY_GRADE_EXCELLENT,
           "0.95 grades as excellent on both aggregates");
   require(document.exports().has_md(), "markdown was requested");
+
+  request = unary_request();
+  (*request.mutable_request()
+        ->mutable_options()
+        ->mutable_ocr_custom_config()
+        ->mutable_fields())["lang"]
+      .set_string_value("eng");
+  grpc::ClientContext nonempty_custom;
+  pipestream::parse::v1::ConvertSourceResponse nonempty_response;
+  const grpc::Status nonempty_status =
+      client->ConvertSource(&nonempty_custom, request, &nonempty_response);
+  require(nonempty_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              nonempty_status.error_message().contains("ocr_custom_config"),
+          "non-empty custom config Structs must be rejected by name: " +
+              nonempty_status.error_message());
+
+  request = unary_request();
+  request.mutable_request()->mutable_options()->set_vlm_pipeline_model(
+      pipestream::parse::v1::VLM_MODEL_TYPE_GRANITEDOCLING);
+  request.mutable_request()->mutable_options()->set_vlm_pipeline_preset("vlm-default");
+  grpc::ClientContext both_vlm;
+  pipestream::parse::v1::ConvertSourceResponse both_vlm_response;
+  const grpc::Status both_vlm_status =
+      client->ConvertSource(&both_vlm, request, &both_vlm_response);
+  require(both_vlm_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              both_vlm_status.error_message().contains("mutually exclusive"),
+          "VLM selection fields must not both be set: " + both_vlm_status.error_message());
 
   request = unary_request();
   request.mutable_request()->mutable_options()->mutable_picture_description_local()->set_repo_id(

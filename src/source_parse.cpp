@@ -133,6 +133,26 @@ bool implemented_option(std::string_view name) {
       "do_code_enrichment",
       "do_formula_enrichment",
       "code_formula_preset",
+      // Accepted for Docling clients that always populate them. The STANDARD /
+      // NATIVE path does not host a VLM convert leg yet (PROCESSING_PIPELINE_VLM
+      // is still rejected); these fields are validated and ignored until that
+      // dial exists. Empty *_custom_config Structs are accepted the same way;
+      // a Struct with any key is rejected by name.
+      "vlm_pipeline_model",
+      "vlm_pipeline_model_local",
+      "vlm_pipeline_model_api",
+      "vlm_pipeline_preset",
+      "ocr_preset",
+      "table_structure_preset",
+      "layout_preset",
+      "picture_classification_preset",
+      "vlm_pipeline_custom_config",
+      "picture_description_custom_config",
+      "code_formula_custom_config",
+      "table_structure_custom_config",
+      "layout_custom_config",
+      "ocr_custom_config",
+      "picture_classification_custom_config",
   };
   return std::ranges::find(kImplemented, name) != std::end(kImplemented);
 }
@@ -260,6 +280,94 @@ grpc::Status validate_picture_description_engines(
   return grpc::Status::OK;
 }
 
+// VLM selection fields are accepted so Docling clients that always set them
+// are not turned away. They are mutually exclusive (preset / enum / local /
+// api string). The VLM convert pipeline itself remains rejected until the
+// grpc-vlm-convert dial lands.
+grpc::Status validate_vlm_selection(const pipestream::parse::v1::ConvertDocumentOptions& options,
+                                    const std::string& surface) {
+  int engines = 0;
+  if (options.has_vlm_pipeline_model() &&
+      options.vlm_pipeline_model() != pipestream::parse::v1::VLM_MODEL_TYPE_UNSPECIFIED) {
+    ++engines;
+  }
+  if (options.has_vlm_pipeline_model_local() && !options.vlm_pipeline_model_local().empty()) {
+    ++engines;
+  }
+  if (options.has_vlm_pipeline_model_api() && !options.vlm_pipeline_model_api().empty()) {
+    ++engines;
+  }
+  if (options.has_vlm_pipeline_preset() && !options.vlm_pipeline_preset().empty()) {
+    ++engines;
+  }
+  if (engines > 1) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        surface + ": vlm_pipeline_model, vlm_pipeline_model_local, "
+                                  "vlm_pipeline_model_api, and vlm_pipeline_preset "
+                                  "are mutually exclusive");
+  }
+  if (options.has_vlm_pipeline_model() &&
+      !pipestream::parse::v1::VlmModelType_IsValid(options.vlm_pipeline_model())) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        surface + " vlm_pipeline_model value is not a known VlmModelType");
+  }
+  return grpc::Status::OK;
+}
+
+// Custom-config Structs mirror Docling's open dict bags. This binary has no
+// consumer for nested keys yet, so an empty Struct is accepted and a Struct
+// with any field is rejected by name (never silently dropped).
+grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumentOptions& options,
+                                     const std::string& surface) {
+  const auto reject_nonempty = [&](bool present, const google::protobuf::Struct& config,
+                                   const char* name) -> grpc::Status {
+    if (!present) return grpc::Status::OK;
+    if (config.fields().empty()) return grpc::Status::OK;
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        surface + " does not implement keys in '" + std::string(name) + "'");
+  };
+  if (auto s = reject_nonempty(options.has_vlm_pipeline_custom_config(),
+                               options.vlm_pipeline_custom_config(),
+                               "vlm_pipeline_custom_config");
+      !s.ok()) {
+    return s;
+  }
+  if (auto s = reject_nonempty(options.has_picture_description_custom_config(),
+                               options.picture_description_custom_config(),
+                               "picture_description_custom_config");
+      !s.ok()) {
+    return s;
+  }
+  if (auto s = reject_nonempty(options.has_code_formula_custom_config(),
+                               options.code_formula_custom_config(), "code_formula_custom_config");
+      !s.ok()) {
+    return s;
+  }
+  if (auto s = reject_nonempty(options.has_table_structure_custom_config(),
+                               options.table_structure_custom_config(),
+                               "table_structure_custom_config");
+      !s.ok()) {
+    return s;
+  }
+  if (auto s = reject_nonempty(options.has_layout_custom_config(), options.layout_custom_config(),
+                               "layout_custom_config");
+      !s.ok()) {
+    return s;
+  }
+  if (auto s = reject_nonempty(options.has_ocr_custom_config(), options.ocr_custom_config(),
+                               "ocr_custom_config");
+      !s.ok()) {
+    return s;
+  }
+  if (auto s = reject_nonempty(options.has_picture_classification_custom_config(),
+                               options.picture_classification_custom_config(),
+                               "picture_classification_custom_config");
+      !s.ok()) {
+    return s;
+  }
+  return grpc::Status::OK;
+}
+
 // The heading pass's two switches must agree when both are given, and the
 // numeric tunables must be in range; the rest of the message is accepted as
 // documented on HeadingHierarchyOptions.
@@ -313,6 +421,10 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
   const grpc::Status picture_engine_status =
       validate_picture_description_engines(options, surface);
   if (!picture_engine_status.ok()) return picture_engine_status;
+  const grpc::Status vlm_selection_status = validate_vlm_selection(options, surface);
+  if (!vlm_selection_status.ok()) return vlm_selection_status;
+  const grpc::Status custom_config_status = validate_custom_configs(options, surface);
+  if (!custom_config_status.ok()) return custom_config_status;
   const grpc::Status heading_status = validate_heading_options(options, surface);
   if (!heading_status.ok()) return heading_status;
   for (const auto raw : options.to_formats()) {
