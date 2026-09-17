@@ -331,6 +331,17 @@ void verify_unary_uses_scheduler_and_shared_assembly(TestServer* server) {
               result.doc().texts(2).text().base().self_ref() == "#/texts/2",
           "unary stable references");
   require(result.exports().text() == "one\ntwo\nthree", "unary text export");
+  require(response.response().timings().count("total") == 1,
+          "unary timings carry the wall-clock total");
+  require(response.response().profiling().count("total") == 1,
+          "unary profiling carries the matching ProfilingItem");
+  const auto& profile = response.response().profiling().at("total");
+  require(profile.scope() == pipestream::parse::v1::PROFILING_SCOPE_DOCUMENT,
+          "profiling total is document-scoped");
+  require(profile.count() == 1 && profile.times_size() == 1,
+          "profiling total has one sample");
+  require(profile.times(0) == response.response().timings().at("total"),
+          "profiling sample matches the timings total");
 }
 
 void verify_unsupported_options_are_rejected(TestServer* server) {

@@ -327,6 +327,12 @@ grpc::ServerUnaryReactor* DocumentParserService::ConvertSource(
     converted->set_processing_time(
         std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
     (*converted->mutable_timings())["total"] = converted->processing_time();
+    // Full ProfilingItem sample matching serve's additive profiling map; totals
+    // stay on timings for older clients.
+    auto& profile = (*converted->mutable_profiling())["total"];
+    profile.set_scope(pipestream::parse::v1::PROFILING_SCOPE_DOCUMENT);
+    profile.set_count(1);
+    profile.add_times(converted->processing_time());
     return grpc::Status::OK;
   });
 }
