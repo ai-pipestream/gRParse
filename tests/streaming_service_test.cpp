@@ -424,14 +424,39 @@ void verify_parity_options_and_confidence(TestServer* server) {
         ->mutable_ocr_custom_config()
         ->mutable_fields())["lang"]
       .set_string_value("eng");
+  grpc::ClientContext lang_custom;
+  pipestream::parse::v1::ConvertSourceResponse lang_response;
+  const grpc::Status lang_status =
+      client->ConvertSource(&lang_custom, request, &lang_response);
+  require(lang_status.ok(), "ocr_custom_config.lang must be accepted: " + lang_status.error_message());
+
+  request = unary_request();
+  (*request.mutable_request()
+        ->mutable_options()
+        ->mutable_ocr_custom_config()
+        ->mutable_fields())["unknown_key"]
+      .set_string_value("x");
   grpc::ClientContext nonempty_custom;
   pipestream::parse::v1::ConvertSourceResponse nonempty_response;
   const grpc::Status nonempty_status =
       client->ConvertSource(&nonempty_custom, request, &nonempty_response);
   require(nonempty_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
-              nonempty_status.error_message().contains("ocr_custom_config"),
-          "non-empty custom config Structs must be rejected by name: " +
+              nonempty_status.error_message().contains("ocr_custom_config.unknown_key"),
+          "unknown custom config keys must be rejected by name: " +
               nonempty_status.error_message());
+
+  request = unary_request();
+  auto* local = request.mutable_request()->mutable_options()->mutable_picture_description_local();
+  local->set_repo_id("ibm-granite/granite-vision");
+  local->add_classification_allow(pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_PHOTOGRAPH);
+  local->set_classification_min_confidence(0.5);
+  grpc::ClientContext class_filter;
+  pipestream::parse::v1::ConvertSourceResponse class_response;
+  const grpc::Status class_status =
+      client->ConvertSource(&class_filter, request, &class_response);
+  require(class_status.ok(),
+          "picture_description_local class filters must be accepted: " +
+              class_status.error_message());
 
   request = unary_request();
   request.mutable_request()->mutable_options()->set_vlm_pipeline_model(

@@ -168,6 +168,52 @@ enum InferenceFramework {
   INFERENCE_FRAMEWORK_VLLM = 3;
 }
 
+// Picture-classifier labels (Docling PictureClassificationLabel values).
+// Wire class_name strings match the enum's snake value (bar_chart, …).
+enum PictureClassificationLabel {
+  PICTURE_CLASSIFICATION_LABEL_UNSPECIFIED = 0;
+  PICTURE_CLASSIFICATION_LABEL_BAR_CHART = 1;
+  PICTURE_CLASSIFICATION_LABEL_BOX_PLOT = 2;
+  PICTURE_CLASSIFICATION_LABEL_FLOW_CHART = 3;
+  PICTURE_CLASSIFICATION_LABEL_LINE_CHART = 4;
+  PICTURE_CLASSIFICATION_LABEL_PIE_CHART = 5;
+  PICTURE_CLASSIFICATION_LABEL_SCATTER_PLOT = 6;
+  PICTURE_CLASSIFICATION_LABEL_TABLE = 7;
+  PICTURE_CLASSIFICATION_LABEL_OTHER_CHART = 8;
+  PICTURE_CLASSIFICATION_LABEL_FULL_PAGE_IMAGE = 9;
+  PICTURE_CLASSIFICATION_LABEL_PAGE_THUMBNAIL = 10;
+  PICTURE_CLASSIFICATION_LABEL_PHOTOGRAPH = 11;
+  PICTURE_CLASSIFICATION_LABEL_CHEMISTRY_STRUCTURE = 12;
+  PICTURE_CLASSIFICATION_LABEL_BAR_CODE = 13;
+  PICTURE_CLASSIFICATION_LABEL_ICON = 14;
+  PICTURE_CLASSIFICATION_LABEL_LOGO = 15;
+  PICTURE_CLASSIFICATION_LABEL_QR_CODE = 16;
+  PICTURE_CLASSIFICATION_LABEL_SIGNATURE = 17;
+  PICTURE_CLASSIFICATION_LABEL_STAMP = 18;
+  PICTURE_CLASSIFICATION_LABEL_ENGINEERING_DRAWING = 19;
+  PICTURE_CLASSIFICATION_LABEL_SCREENSHOT_FROM_COMPUTER = 20;
+  PICTURE_CLASSIFICATION_LABEL_SCREENSHOT_FROM_MANUAL = 21;
+  PICTURE_CLASSIFICATION_LABEL_GEOGRAPHICAL_MAP = 22;
+  PICTURE_CLASSIFICATION_LABEL_TOPOGRAPHICAL_MAP = 23;
+  PICTURE_CLASSIFICATION_LABEL_CALENDAR = 24;
+  PICTURE_CLASSIFICATION_LABEL_CROSSWORD_PUZZLE = 25;
+  PICTURE_CLASSIFICATION_LABEL_MUSIC = 26;
+  PICTURE_CLASSIFICATION_LABEL_OTHER = 27;
+  PICTURE_CLASSIFICATION_LABEL_CAD_DRAWING = 28;
+  PICTURE_CLASSIFICATION_LABEL_ELECTRICAL_DIAGRAM = 29;
+  PICTURE_CLASSIFICATION_LABEL_GEOGRAPHIC_MAP = 30;
+  PICTURE_CLASSIFICATION_LABEL_HEATMAP = 31;
+  PICTURE_CLASSIFICATION_LABEL_MARKUSH_STRUCTURE = 32;
+  PICTURE_CLASSIFICATION_LABEL_MOLECULAR_STRUCTURE = 33;
+  PICTURE_CLASSIFICATION_LABEL_NATURAL_IMAGE = 34;
+  PICTURE_CLASSIFICATION_LABEL_PICTURE_GROUP = 35;
+  PICTURE_CLASSIFICATION_LABEL_REMOTE_SENSING = 36;
+  PICTURE_CLASSIFICATION_LABEL_SCATTER_CHART = 37;
+  PICTURE_CLASSIFICATION_LABEL_SCREENSHOT = 38;
+  PICTURE_CLASSIFICATION_LABEL_STACKED_BAR_CHART = 39;
+  PICTURE_CLASSIFICATION_LABEL_STRATIGRAPHIC_CHART = 40;
+}
+
 // Type of transformers auto-model to use. Names mirror the upstream
 // the upstream TransformersModelType enum.
 enum TransformersModelType {
@@ -429,6 +475,12 @@ message PictureDescriptionLocal {
   optional string prompt = 2;
   // Optional generation config parameters
   map<string, google.protobuf.Value> generation_config = 3;
+  // Only describe pictures whose top classifier class is in this list.
+  repeated PictureClassificationLabel classification_allow = 4;
+  // Skip pictures whose top classifier class is in this list.
+  repeated PictureClassificationLabel classification_deny = 5;
+  // Minimum top-class confidence required to describe; unset keeps no floor.
+  optional double classification_min_confidence = 6;
 }
 
 // PictureDescriptionApi configures an API-based VLM for picture descriptions.
@@ -445,6 +497,9 @@ message PictureDescriptionApi {
   optional int32 concurrency = 5;
   // Optional prompt
   optional string prompt = 6;
+  repeated PictureClassificationLabel classification_allow = 7;
+  repeated PictureClassificationLabel classification_deny = 8;
+  optional double classification_min_confidence = 9;
 }
 
 // VlmModelLocal configures a local vision-language model for the VLM pipeline.

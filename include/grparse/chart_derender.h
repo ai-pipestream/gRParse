@@ -51,6 +51,12 @@ struct ChartDerenderOptions {
   std::string code_formula_preset_raw;
   // Per-request enrich concurrency; 0 leaves the enrich service default.
   uint32_t concurrency = 0;
+  // Picture-description class filters (from picture_description_local/api).
+  // Empty allow means no allow restriction; deny always excludes; min
+  // confidence 0 means no floor.
+  std::vector<std::string> picture_description_allow;
+  std::vector<std::string> picture_description_deny;
+  double picture_description_min_confidence = 0.0;
 
   bool enabled() const { return !target.empty(); }
   bool any_job() const {

@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "ai/pipestream/enrich/v1/enrich_service.grpc.pb.h"
+#include "ai/pipestream/parse/v1/parse_types.pb.h"
 #include "grparse/base64.h"
 #include "grparse/data_totals.h"
 
@@ -42,6 +43,39 @@ std::string top_class(const docv1::PictureItem& picture) {
     return picture.meta().classification().predictions(0).class_name();
   }
   return std::string();
+}
+
+double top_confidence(const docv1::PictureItem& picture) {
+  for (const docv1::PictureAnnotation& annotation : picture.annotations()) {
+    if (annotation.has_classification() &&
+        annotation.classification().predicted_classes_size() > 0) {
+      return annotation.classification().predicted_classes(0).confidence();
+    }
+  }
+  if (picture.has_meta() && picture.meta().has_classification() &&
+      picture.meta().classification().predictions_size() > 0) {
+    return picture.meta().classification().predictions(0).confidence();
+  }
+  return 0.0;
+}
+
+bool class_allowed(const std::string& name, const ChartDerenderOptions& options) {
+  if (name.empty()) {
+    // No classifier verdict: allow lists require a named class; with only a
+    // deny list or no filters, keep the picture.
+    return options.picture_description_allow.empty();
+  }
+  if (!options.picture_description_allow.empty()) {
+    if (std::ranges::find(options.picture_description_allow, name) ==
+        options.picture_description_allow.end()) {
+      return false;
+    }
+  }
+  if (std::ranges::find(options.picture_description_deny, name) !=
+      options.picture_description_deny.end()) {
+    return false;
+  }
+  return true;
 }
 
 bool has_tabular_chart(const docv1::PictureItem& picture) {
@@ -265,14 +299,21 @@ bool fold_formula_annotation(const enrichv1::ItemAnnotation& annotation,
   return true;
 }
 
-// Pictures that still need a description: inline pixels, no meta description.
-std::vector<ChartCandidate> picture_description_candidates(const docv1::Document& document) {
+// Pictures that still need a description: inline pixels, no meta description,
+// and matching the optional class allow/deny / min-confidence filters.
+std::vector<ChartCandidate> picture_description_candidates(
+    const docv1::Document& document, const ChartDerenderOptions& options) {
   std::vector<ChartCandidate> candidates;
   for (int index = 0; index < document.pictures_size(); index++) {
     const docv1::PictureItem& picture = document.pictures(index);
     if (!picture.has_image()) continue;
     if (picture.has_meta() && picture.meta().has_description() &&
         !picture.meta().description().text().empty()) {
+      continue;
+    }
+    if (!class_allowed(top_class(picture), options)) continue;
+    if (options.picture_description_min_confidence > 0.0 &&
+        top_confidence(picture) < options.picture_description_min_confidence) {
       continue;
     }
     ChartCandidate candidate;
@@ -300,7 +341,7 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
   }
   std::vector<ChartCandidate> describe_candidates;
   if (options.do_picture_description) {
-    describe_candidates = picture_description_candidates(*document);
+    describe_candidates = picture_description_candidates(*document, options);
   }
   // Deduplicate ItemImage uploads by self_ref (a chart may also be described).
   std::vector<ChartCandidate> images;

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <exception>
+#include <initializer_list>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -286,8 +287,8 @@ grpc::Status validate_picture_description_engines(
 
 // VLM selection fields are accepted so Docling clients that always set them
 // are not turned away. They are mutually exclusive (preset / enum / local /
-// api string). The VLM convert pipeline itself remains rejected until the
-// grpc-vlm-convert dial lands.
+// api string). PROCESSING_PIPELINE_VLM uses them when the convert peer is
+// configured.
 grpc::Status validate_vlm_selection(const pipestream::parse::v1::ConvertDocumentOptions& options,
                                     const std::string& surface) {
   int engines = 0;
@@ -318,15 +319,66 @@ grpc::Status validate_vlm_selection(const pipestream::parse::v1::ConvertDocument
   return grpc::Status::OK;
 }
 
-// Custom-config Structs mirror Docling's open dict bags. This binary has no
-// consumer for nested keys yet, so an empty Struct is accepted and a Struct
-// with any field is rejected by name (never silently dropped).
+// Custom-config Structs mirror Docling's open dict bags. Known keys are
+// applied; any other key is rejected by name (never silently dropped). Empty
+// Structs are accepted.
 grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumentOptions& options,
                                      const std::string& surface) {
+  const auto only_keys = [&](bool present, const google::protobuf::Struct& config,
+                             const char* name,
+                             std::initializer_list<const char*> allowed) -> grpc::Status {
+    if (!present || config.fields().empty()) return grpc::Status::OK;
+    for (const auto& [key, value] : config.fields()) {
+      bool ok = false;
+      for (const char* allowed_key : allowed) {
+        if (key == allowed_key) {
+          ok = true;
+          break;
+        }
+      }
+      if (!ok) {
+        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                            surface + " does not implement '" + std::string(name) + "." + key +
+                                "'");
+      }
+      (void)value;
+    }
+    return grpc::Status::OK;
+  };
+  if (auto s = only_keys(options.has_ocr_custom_config(), options.ocr_custom_config(),
+                         "ocr_custom_config", {"lang"});
+      !s.ok()) {
+    return s;
+  }
+  if (options.has_ocr_custom_config()) {
+    const auto& fields = options.ocr_custom_config().fields();
+    if (auto it = fields.find("lang"); it != fields.end()) {
+      if (!it->second.has_string_value() || it->second.string_value().empty()) {
+        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                            surface + ": ocr_custom_config.lang must be a non-empty string");
+      }
+    }
+  }
+  if (auto s = only_keys(options.has_picture_classification_custom_config(),
+                         options.picture_classification_custom_config(),
+                         "picture_classification_custom_config", {"threshold"});
+      !s.ok()) {
+    return s;
+  }
+  if (options.has_picture_classification_custom_config()) {
+    const auto& fields = options.picture_classification_custom_config().fields();
+    if (auto it = fields.find("threshold"); it != fields.end()) {
+      if (!it->second.has_number_value() || it->second.number_value() < 0.0 ||
+          it->second.number_value() > 1.0) {
+        return grpc::Status(
+            grpc::StatusCode::INVALID_ARGUMENT,
+            surface + ": picture_classification_custom_config.threshold must be in [0, 1]");
+      }
+    }
+  }
   const auto reject_nonempty = [&](bool present, const google::protobuf::Struct& config,
                                    const char* name) -> grpc::Status {
-    if (!present) return grpc::Status::OK;
-    if (config.fields().empty()) return grpc::Status::OK;
+    if (!present || config.fields().empty()) return grpc::Status::OK;
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                         surface + " does not implement keys in '" + std::string(name) + "'");
   };
@@ -355,17 +407,6 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
   }
   if (auto s = reject_nonempty(options.has_layout_custom_config(), options.layout_custom_config(),
                                "layout_custom_config");
-      !s.ok()) {
-    return s;
-  }
-  if (auto s = reject_nonempty(options.has_ocr_custom_config(), options.ocr_custom_config(),
-                               "ocr_custom_config");
-      !s.ok()) {
-    return s;
-  }
-  if (auto s = reject_nonempty(options.has_picture_classification_custom_config(),
-                               options.picture_classification_custom_config(),
-                               "picture_classification_custom_config");
       !s.ok()) {
     return s;
   }
@@ -712,7 +753,84 @@ struct ParseInputs {
   std::string picture_description_vlm_endpoint;
   std::optional<uint32_t> enrich_concurrency;
   std::optional<std::chrono::milliseconds> enrich_timeout;
+  std::vector<std::string> picture_description_allow;
+  std::vector<std::string> picture_description_deny;
+  double picture_description_min_confidence = 0.0;
 };
+
+// Docling PictureClassificationLabel → figure-classifier class_name strings.
+std::string classification_class_name(pipestream::parse::v1::PictureClassificationLabel label) {
+  switch (label) {
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_BAR_CHART: return "bar_chart";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_BOX_PLOT: return "box_plot";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_FLOW_CHART: return "flow_chart";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_LINE_CHART: return "line_chart";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_PIE_CHART: return "pie_chart";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_SCATTER_PLOT: return "scatter_plot";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_TABLE: return "table";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_OTHER_CHART: return "other_chart";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_FULL_PAGE_IMAGE:
+      return "full_page_image";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_PAGE_THUMBNAIL:
+      return "page_thumbnail";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_PHOTOGRAPH: return "photograph";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_CHEMISTRY_STRUCTURE:
+      return "chemistry_structure";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_BAR_CODE: return "bar_code";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_ICON: return "icon";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_LOGO: return "logo";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_QR_CODE: return "qr_code";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_SIGNATURE: return "signature";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_STAMP: return "stamp";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_ENGINEERING_DRAWING:
+      return "engineering_drawing";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_SCREENSHOT_FROM_COMPUTER:
+      return "screenshot_from_computer";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_SCREENSHOT_FROM_MANUAL:
+      return "screenshot_from_manual";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_GEOGRAPHICAL_MAP:
+      return "geographical_map";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_TOPOGRAPHICAL_MAP:
+      return "topographical_map";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_CALENDAR: return "calendar";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_CROSSWORD_PUZZLE:
+      return "crossword_puzzle";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_MUSIC: return "music";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_OTHER: return "other";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_CAD_DRAWING: return "cad_drawing";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_ELECTRICAL_DIAGRAM:
+      return "electrical_diagram";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_GEOGRAPHIC_MAP: return "map";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_HEATMAP: return "heatmap";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_MARKUSH_STRUCTURE:
+      return "chemistry_markush_structure";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_MOLECULAR_STRUCTURE:
+      return "chemistry_molecular_structure";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_NATURAL_IMAGE: return "natural_image";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_PICTURE_GROUP: return "picture_group";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_REMOTE_SENSING: return "remote_sensing";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_SCATTER_CHART: return "scatter_chart";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_SCREENSHOT: return "screenshot";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_STACKED_BAR_CHART:
+      return "stacked_bar_chart";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_STRATIGRAPHIC_CHART:
+      return "stratigraphic_chart";
+    case pipestream::parse::v1::PICTURE_CLASSIFICATION_LABEL_UNSPECIFIED:
+    default:
+      return std::string();
+  }
+}
+
+std::vector<std::string> classification_class_names(
+    const google::protobuf::RepeatedField<int>& labels) {
+  std::vector<std::string> names;
+  for (const int raw : labels) {
+    const auto label = static_cast<pipestream::parse::v1::PictureClassificationLabel>(raw);
+    std::string name = classification_class_name(label);
+    if (!name.empty()) names.push_back(std::move(name));
+  }
+  return names;
+}
 
 // The heading pass's tuning as the request states it; every unset field
 // keeps the pass's own default (HeadingOptions).
@@ -791,7 +909,13 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   if (options.has_picture_description_local()) {
     // repo_id is the enrich raw preset name; presence of local does not force
     // do_picture_description — the Convert bool still gates the job.
-    inputs.picture_description_preset = options.picture_description_local().repo_id();
+    const auto& local = options.picture_description_local();
+    inputs.picture_description_preset = local.repo_id();
+    inputs.picture_description_allow = classification_class_names(local.classification_allow());
+    inputs.picture_description_deny = classification_class_names(local.classification_deny());
+    if (local.has_classification_min_confidence()) {
+      inputs.picture_description_min_confidence = local.classification_min_confidence();
+    }
   }
   if (options.has_picture_description_api()) {
     const auto& api = options.picture_description_api();
@@ -803,7 +927,22 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
       inputs.enrich_timeout = std::chrono::milliseconds(
           static_cast<int64_t>(std::ceil(api.timeout() * 1000.0)));
     }
+    inputs.picture_description_allow = classification_class_names(api.classification_allow());
+    inputs.picture_description_deny = classification_class_names(api.classification_deny());
+    if (api.has_classification_min_confidence()) {
+      inputs.picture_description_min_confidence = api.classification_min_confidence();
+    }
   }
+  if (options.has_picture_classification_custom_config()) {
+    const auto& fields = options.picture_classification_custom_config().fields();
+    if (auto it = fields.find("threshold"); it != fields.end() &&
+        inputs.picture_description_min_confidence <= 0.0) {
+      inputs.picture_description_min_confidence = it->second.number_value();
+    }
+  }
+  // ocr_custom_config.lang is accepted (validated) for Docling clients that
+  // put languages there; RapidOCR here already accepts ocr_lang and does not
+  // need a second path.
   // Every dialed leg inherits this call's own ceiling, so no collector is
   // waited on past the patience of the client that asked for the parse. A
   // call with no deadline yields time_point::max(), which leaves each leg on
@@ -1024,6 +1163,9 @@ void derender_charts_if_configured(const std::shared_ptr<CollectorEndpoints>& co
   if (inputs.enrich_timeout.has_value()) {
     enrich.timeout = *inputs.enrich_timeout;
   }
+  enrich.picture_description_allow = inputs.picture_description_allow;
+  enrich.picture_description_deny = inputs.picture_description_deny;
+  enrich.picture_description_min_confidence = inputs.picture_description_min_confidence;
   if (!enrich.any_job()) return;
   const ChartDerenderReport derendered =
       derender_charts(collectors->enrich_channel(), enrich, &result->document, inbound_deadline);

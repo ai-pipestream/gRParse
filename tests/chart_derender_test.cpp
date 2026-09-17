@@ -384,6 +384,36 @@ void verify_picture_description_engine_fields_reach_enrich() {
           "local repo_id and api url/concurrency/timeout reach enrich options");
 }
 
+void verify_picture_description_class_filters() {
+  docv1::Document document = sample_document();
+  // sample_document picture 0 is bar_chart with pixels; others vary.
+  grparse::ChartDerenderOptions options;
+  options.do_picture_description = true;
+  options.do_chart_extraction = false;
+  options.picture_description_allow = {"photograph"};
+  // Force a path that builds candidates without dialing: empty target.
+  const grparse::ChartDerenderReport denied =
+      grparse::derender_charts(nullptr, options, &document);
+  require(denied.candidates == 0 && denied.warnings.empty(),
+          "allow=photograph excludes bar_chart candidates before dial");
+
+  options.picture_description_allow = {"bar_chart"};
+  options.picture_description_min_confidence = 0.99;
+  // sample top confidence is 0.9 — below the floor.
+  const grparse::ChartDerenderReport low =
+      grparse::derender_charts(nullptr, options, &document);
+  require(low.candidates == 0,
+          "min confidence above the top class score excludes the picture");
+
+  options.picture_description_min_confidence = 0.5;
+  options.target = "enrich:unused";
+  const grparse::ChartDerenderReport ready =
+      grparse::derender_charts(nullptr, options, &document);
+  require(ready.candidates == 0 && ready.warnings.size() == 1 &&
+              ready.warnings[0].contains("GRPARSE_ENRICH_TARGET"),
+          "allow=bar_chart at 0.5 selects the chart but skips without a channel");
+}
+
 void verify_skip_events_and_empty_tables_count_as_skipped() {
   for (FakeMode mode : {FakeMode::kSkip, FakeMode::kEmptyTable}) {
     FakeEnrichService fake(mode);
@@ -545,6 +575,7 @@ int main() {
       verify_fold_picture_description_and_code,
       verify_leg_dials_folds_and_counts,
       verify_picture_description_engine_fields_reach_enrich,
+      verify_picture_description_class_filters,
       verify_skip_events_and_empty_tables_count_as_skipped,
       verify_deadline_bounds_the_leg_and_never_fails_the_document,
       verify_unreachable_peer_is_a_warning,
