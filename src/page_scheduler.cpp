@@ -710,8 +710,8 @@ class PageScheduler::Impl final {
           }
           // Crops encode after OCR so the device work is never delayed, but
           // before the raster drops; the crop is a view, the PNG is owned.
-          if (captures_picture_images(page->request->tuning) && !job.image.empty()) {
-            const double scale = page->request->tuning.images_scale.value_or(1.0);
+          if (captures_picture_images(job.page->request->tuning) && !job.image.empty()) {
+            const double scale = job.page->request->tuning.images_scale.value_or(1.0);
             for (auto& region : regions) {
               if (region.label != "picture") continue;
               cv::Mat crop = crop_region(job.image, region);
