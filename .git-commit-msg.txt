@@ -1,0 +1,8 @@
+Build OpenCV 5.0.0 instead of 4.14.0
+
+OpenCV 5.0.0 (2026-06-06) is the current major. The server uses core,
+imgproc, and imgcodecs through a small, stable surface (cv::Mat, imread,
+imdecode, imencode, cvtColor, resize, rotate), and the module list the
+Dockerfiles build is unchanged. find_package now names 5.0 because the
+OpenCV config-version file rejects a major mismatch. The build-cache ids
+move to ocv500 so no 4.x tree is reused.

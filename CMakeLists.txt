@@ -270,7 +270,7 @@ FetchContent_MakeAvailable(miniz)
 add_library(miniz STATIC "${miniz_SOURCE_DIR}/miniz.c")
 target_include_directories(miniz PUBLIC "${miniz_SOURCE_DIR}")
 
-find_package(OpenCV 4.5 REQUIRED COMPONENTS core imgcodecs imgproc)
+find_package(OpenCV 5.0 REQUIRED COMPONENTS core imgcodecs imgproc)
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
 # libcurl carries the S3 target's signed PUTs.  The distribution's own, not a
