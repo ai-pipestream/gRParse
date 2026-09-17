@@ -95,8 +95,12 @@ enum OcrEngine {
   OCR_ENGINE_EASYOCR = 2;
   OCR_ENGINE_OCRMAC = 3;
   OCR_ENGINE_RAPIDOCR = 4;
+  // Legacy kind string "tesserocr". Prefer OCR_ENGINE_TESSERACT for Docling's
+  // OcrEngine.TESSERACT ("tesseract").
   OCR_ENGINE_TESSEROCR = 5;
   OCR_ENGINE_TESSERACT = 6;
+  // Docling OcrEngine.TESSERACT_CLI ("tesseract_cli"); serve tag 7.
+  OCR_ENGINE_TESSERACT_CLI = 7;
 }
 
 // PDF processing backend.

@@ -348,6 +348,19 @@ void verify_unsupported_options_are_rejected(TestServer* server) {
           "the rejection must name the unimplemented engine: " + status.error_message());
 
   request = unary_request();
+  request.mutable_request()->mutable_options()->set_ocr_engine(
+      pipestream::parse::v1::OCR_ENGINE_TESSERACT_CLI);
+  grpc::ClientContext tesseract_cli_context;
+  pipestream::parse::v1::ConvertSourceResponse tesseract_cli_response;
+  const grpc::Status tesseract_cli_status =
+      client->ConvertSource(&tesseract_cli_context, request, &tesseract_cli_response);
+  require(tesseract_cli_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
+          "OCR_ENGINE_TESSERACT_CLI must be rejected until hosted");
+  require(tesseract_cli_status.error_message().contains("OCR_ENGINE_TESSERACT_CLI"),
+          "the rejection must name OCR_ENGINE_TESSERACT_CLI: " +
+              tesseract_cli_status.error_message());
+
+  request = unary_request();
   request.mutable_request()->mutable_options()->clear_to_formats();
   request.mutable_request()->mutable_options()->add_to_formats(
       pipestream::parse::v1::OUTPUT_FORMAT_UNSPECIFIED);
