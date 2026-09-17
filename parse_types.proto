@@ -914,6 +914,23 @@ message ConfidenceScores {
   optional string low_grade_raw = 10;
 }
 
+// ProfilingScope mirrors docling.utils.profiling.ProfilingScope.
+enum ProfilingScope {
+  PROFILING_SCOPE_UNSPECIFIED = 0;
+  PROFILING_SCOPE_PAGE = 1;
+  PROFILING_SCOPE_DOCUMENT = 2;
+}
+
+// ProfilingItem mirrors docling.utils.profiling.ProfilingItem. Serve keeps
+// map<string, double> timings for totals and adds this map for full samples.
+message ProfilingItem {
+  ProfilingScope scope = 1;
+  optional string scope_raw = 2;
+  int32 count = 3;
+  repeated double times = 4;
+  repeated string start_timestamps = 5;
+}
+
 // ============================================================================
 // Document response types
 // ============================================================================
@@ -1015,6 +1032,9 @@ message ConvertDocumentResponse {
   optional ConfidenceScores confidence = 8;
   // Populated when to_formats includes OUTPUT_FORMAT_CHUNKS.
   repeated Chunk chunks = 9;
+  // Full ProfilingItem samples (serve ConvertDocumentResponse.profiling).
+  // Totals stay on timings when present.
+  map<string, ProfilingItem> profiling = 10;
 }
 
 // Embeddings are opt-in on the two implemented synchronous chunk RPCs.
