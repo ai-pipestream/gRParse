@@ -114,6 +114,8 @@ bool implemented_option(std::string_view name) {
       "include_images",
       "images_scale",
       "image_export_mode",
+      "ocr_engine",
+      "do_table_structure",
   };
   return std::ranges::find(kImplemented, name) != std::end(kImplemented);
 }
@@ -134,6 +136,26 @@ grpc::Status validate_pipeline(const pipestream::parse::v1::ConvertDocumentOptio
       if (name.empty()) name = std::to_string(static_cast<int>(options.pipeline()));
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                           surface + " does not implement pipeline '" + name + "'");
+    }
+  }
+}
+
+// RapidOCR is the only recognizer this binary hosts. AUTO and UNSPECIFIED
+// resolve to it; every other named engine is rejected so a caller asking for
+// EasyOCR/Tesseract does not silently get a different stack.
+grpc::Status validate_ocr_engine(const pipestream::parse::v1::ConvertDocumentOptions& options,
+                                 const std::string& surface) {
+  if (!options.has_ocr_engine()) return grpc::Status::OK;
+  switch (options.ocr_engine()) {
+    case pipestream::parse::v1::OCR_ENGINE_UNSPECIFIED:
+    case pipestream::parse::v1::OCR_ENGINE_AUTO:
+    case pipestream::parse::v1::OCR_ENGINE_RAPIDOCR:
+      return grpc::Status::OK;
+    default: {
+      std::string name = pipestream::parse::v1::OcrEngine_Name(options.ocr_engine());
+      if (name.empty()) name = std::to_string(static_cast<int>(options.ocr_engine()));
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + " does not implement ocr_engine '" + name + "'");
     }
   }
 }
@@ -182,6 +204,8 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
   if (!tuning_status.ok()) return tuning_status;
   const grpc::Status pipeline_status = validate_pipeline(options, surface);
   if (!pipeline_status.ok()) return pipeline_status;
+  const grpc::Status ocr_engine_status = validate_ocr_engine(options, surface);
+  if (!ocr_engine_status.ok()) return ocr_engine_status;
   const grpc::Status heading_status = validate_heading_options(options, surface);
   if (!heading_status.ok()) return heading_status;
   for (const auto raw : options.to_formats()) {
@@ -495,6 +519,9 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   }
   if (options.has_images_scale()) {
     inputs.tuning.images_scale = options.images_scale();
+  }
+  if (options.has_do_table_structure()) {
+    inputs.tuning.do_table_structure = options.do_table_structure();
   }
   // Every dialed leg inherits this call's own ceiling, so no collector is
   // waited on past the patience of the client that asked for the parse. A

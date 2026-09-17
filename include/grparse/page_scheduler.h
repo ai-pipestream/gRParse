@@ -101,6 +101,10 @@ class PageScheduler final {
     // 1.0 / unset leaves the crop at native raster size; other positive
     // values resize before PNG encode.
     std::optional<double> images_scale;
+    // Whether table regions run structure recognition (Docling
+    // do_table_structure). Unset keeps the scheduler default (run when a
+    // TableStructurer is installed). false skips; true runs when available.
+    std::optional<bool> do_table_structure;
   };
 
   enum class DeliveryResult { kAccepted, kAcceptedAndRelease, kCancelled };

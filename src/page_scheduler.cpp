@@ -680,8 +680,12 @@ class PageScheduler::Impl final {
           }
           // Structure runs on table crops only, grouped with the other device
           // calls while the raster is alive; cells shift into page coordinates
-          // so assembly and text binding share one space.
-          if (table_structurer_ != nullptr) {
+          // so assembly and text binding share one space. Docling
+          // do_table_structure=false skips this pass for the document.
+          const bool run_tables =
+              table_structurer_ != nullptr &&
+              job.page->request->tuning.do_table_structure.value_or(true);
+          if (run_tables) {
             for (auto& region : regions) {
               if (region.label != "table") continue;
               const cv::Rect roi = clip_region(region, job.image.cols, job.image.rows);

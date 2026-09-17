@@ -343,8 +343,9 @@ void verify_unsupported_options_are_rejected(TestServer* server) {
   const grpc::Status status = client->ConvertSource(&context, request, &response);
   require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
           "unsupported conversion options must be rejected");
-  require(status.error_message().contains("ocr_engine"),
-          "the rejection must name the unimplemented option: " + status.error_message());
+  require(status.error_message().contains("ocr_engine") &&
+              status.error_message().contains("OCR_ENGINE_EASYOCR"),
+          "the rejection must name the unimplemented engine: " + status.error_message());
 
   request = unary_request();
   request.mutable_request()->mutable_options()->clear_to_formats();
@@ -378,6 +379,8 @@ void verify_parity_options_and_confidence(TestServer* server) {
   options->set_md_compact_tables(true);
   options->set_do_pdf_heading_hierarchy(true);
   options->mutable_pdf_heading_hierarchy_options()->set_max_level(3);
+  options->set_ocr_engine(pipestream::parse::v1::OCR_ENGINE_RAPIDOCR);
+  options->set_do_table_structure(true);
   grpc::ClientContext context;
   context.set_deadline(std::chrono::system_clock::now() + 10s);
   pipestream::parse::v1::ConvertSourceResponse response;

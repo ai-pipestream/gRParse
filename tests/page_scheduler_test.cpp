@@ -307,6 +307,31 @@ void verify_table_structure_runs_on_crops() {
   require(scheduler.metrics().tables_structured == 2, "structure metric must count table crops");
 }
 
+// Docling do_table_structure=false skips the structurer even when one is
+// installed on the scheduler.
+void verify_do_table_structure_false_skips_structure() {
+  FakeRecognizer recognizer;
+  FakeDetector detector;
+  detector.regions = {grparse::LayoutRegion{"table", 0.8F, 1, 1, 3, 3}};
+  FakeStructurer structurer;
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 2, 2, 2, 1, 1, 1},
+      [](std::shared_ptr<const std::string>, bool, double) {
+        return std::make_shared<RenderableDigitalSource>();
+      },
+      &detector, &structurer);
+  grparse::PageScheduler::OcrTuning tuning;
+  tuning.do_table_structure = false;
+  Result result;
+  scheduler.submit(std::make_shared<const std::string>("memory"), true, tuning,
+                   callbacks_for(&result));
+  wait_until_finished(&result);
+
+  require(!result.failure, "do_table_structure=false document failed");
+  require(structurer.calls.load() == 0, "structure must not run when the option is false");
+  require(scheduler.metrics().tables_structured == 0, "structure metric stays at zero");
+}
+
 class FakeClassifier final : public grparse::FigureClassifierBase {
  public:
   std::vector<grparse::FigureClass> classify(const cv::Mat& crop) override {
@@ -1316,6 +1341,7 @@ int main() {
       verify_digital_pages_bypass_render_and_inference,
       verify_layout_labels_digital_pages_without_ocr,
       verify_table_structure_runs_on_crops,
+      verify_do_table_structure_false_skips_structure,
       verify_figure_classification_runs_on_crops,
       verify_picture_capture_encodes_figure_crops,
       verify_page_capture_encodes_previews,
