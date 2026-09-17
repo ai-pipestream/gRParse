@@ -124,6 +124,12 @@ bool implemented_option(std::string_view name) {
       "table_cell_matching",
       "abort_on_error",
       "do_chart_extraction",
+      "do_picture_description",
+      "picture_description_area_threshold",
+      "picture_description_preset",
+      "do_code_enrichment",
+      "do_formula_enrichment",
+      "code_formula_preset",
   };
   return std::ranges::find(kImplemented, name) != std::end(kImplemented);
 }
@@ -509,9 +515,17 @@ struct ParseInputs {
   // is the answer whatever its classification said.
   bool native_pipeline = false;
   HeadingOptions heading;
-  // Docling do_chart_extraction: unset keeps the env opt-in (run when
-  // GRPARSE_ENRICH_TARGET is set); false skips; true runs when configured.
+  // Docling enrichment switches for the post-parse enrich dial. Unset chart
+  // extraction keeps the env opt-in (run when GRPARSE_ENRICH_TARGET is set);
+  // false skips; true runs when configured. Picture/code/formula default off
+  // unless the request sets them true.
   std::optional<bool> do_chart_extraction;
+  bool do_picture_description = false;
+  bool do_code_enrichment = false;
+  bool do_formula_enrichment = false;
+  double picture_description_area_threshold = 0.0;
+  std::string picture_description_preset;
+  std::string code_formula_preset;
 };
 
 // The heading pass's tuning as the request states it; every unset field
@@ -569,6 +583,24 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   }
   if (options.has_do_chart_extraction()) {
     inputs.do_chart_extraction = options.do_chart_extraction();
+  }
+  if (options.has_do_picture_description()) {
+    inputs.do_picture_description = options.do_picture_description();
+  }
+  if (options.has_do_code_enrichment()) {
+    inputs.do_code_enrichment = options.do_code_enrichment();
+  }
+  if (options.has_do_formula_enrichment()) {
+    inputs.do_formula_enrichment = options.do_formula_enrichment();
+  }
+  if (options.has_picture_description_area_threshold()) {
+    inputs.picture_description_area_threshold = options.picture_description_area_threshold();
+  }
+  if (options.has_picture_description_preset()) {
+    inputs.picture_description_preset = options.picture_description_preset();
+  }
+  if (options.has_code_formula_preset()) {
+    inputs.code_formula_preset = options.code_formula_preset();
   }
   // Every dialed leg inherits this call's own ceiling, so no collector is
   // waited on past the patience of the client that asked for the parse. A
@@ -763,14 +795,24 @@ grpc::Status all_failed_status(const CoordinatorResult& result) {
 void derender_charts_if_configured(const std::shared_ptr<CollectorEndpoints>& collectors,
                                    grpc::CallbackServerContext* context,
                                    CollectorDeadline inbound_deadline,
-                                   std::optional<bool> do_chart_extraction,
-                                   CoordinatorResult* result) {
+                                   const ParseInputs& inputs, CoordinatorResult* result) {
   if (collectors == nullptr || !collectors->has_derender() || context->IsCancelled()) return;
-  // Explicit false on the request turns the leg off even when enrich is wired.
-  if (do_chart_extraction.has_value() && !*do_chart_extraction) return;
+  ChartDerenderOptions enrich = collectors->derender();
+  // Explicit false on the request turns chart extraction off even when enrich
+  // is wired. Unset keeps the historical env opt-in (do_chart_extraction true
+  // on ChartDerenderOptions).
+  if (inputs.do_chart_extraction.has_value()) {
+    enrich.do_chart_extraction = *inputs.do_chart_extraction;
+  }
+  enrich.do_picture_description = inputs.do_picture_description;
+  enrich.do_code_enrichment = inputs.do_code_enrichment;
+  enrich.do_formula_enrichment = inputs.do_formula_enrichment;
+  enrich.picture_description_area_threshold = inputs.picture_description_area_threshold;
+  enrich.picture_description_preset_raw = inputs.picture_description_preset;
+  enrich.code_formula_preset_raw = inputs.code_formula_preset;
+  if (!enrich.any_job()) return;
   const ChartDerenderReport derendered =
-      derender_charts(collectors->enrich_channel(), collectors->derender(), &result->document,
-                      inbound_deadline);
+      derender_charts(collectors->enrich_channel(), enrich, &result->document, inbound_deadline);
   for (const std::string& warning : derendered.warnings) {
     result->warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, warning);
   }
@@ -867,8 +909,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     const bool repaired_text =
         repair.has_value() &&
         run_repair_pass(&result.document, *repair).changed_text_or_arenas();
-    derender_charts_if_configured(collectors, context, inputs.inbound_deadline,
-                                  inputs.do_chart_extraction, &result);
+    derender_charts_if_configured(collectors, context, inputs.inbound_deadline, inputs, &result);
     // The offset table describes the CV collector's own text stream. It is
     // published only when that collector is the entire document and the
     // repair pass left its text and arena alone: a merge renumbers arena

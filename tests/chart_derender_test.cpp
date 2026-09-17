@@ -292,6 +292,42 @@ void verify_fold_attributes_the_table_to_the_model() {
           "an empty table folds nothing and leaves the picture untouched");
 }
 
+void verify_fold_picture_description_and_code() {
+  docv1::Document document = sample_document();
+  enrichv1::ItemAnnotation description;
+  description.set_self_ref("#/pictures/1");
+  description.set_model("granite-vision");
+  description.mutable_description()->set_text("A photo of a circuit board");
+  require(grparse::fold_picture_description(description, "http://vlm.test:8085", &document),
+          "a description for a known picture folds");
+  require(document.pictures(1).meta().description().text() == "A photo of a circuit board" &&
+              document.pictures(1).meta().description().created_by() == "granite-vision",
+          "meta description names the model");
+  require(!grparse::fold_picture_description(description, "", &document),
+          "a second description does not overwrite");
+
+  auto* code = document.add_texts()->mutable_code();
+  code->set_self_ref("#/texts/0");
+  code->set_text("print(1)");
+  enrichv1::ItemAnnotation code_ann;
+  code_ann.set_self_ref("#/texts/0");
+  code_ann.mutable_code()->set_text("print(42)");
+  code_ann.mutable_code()->set_language(docv1::CODE_LANGUAGE_LABEL_PYTHON);
+  require(grparse::fold_code_annotation(code_ann, &document), "code enrichment folds");
+  require(document.texts(0).code().text() == "print(42)" &&
+              document.texts(0).code().code_language() == docv1::CODE_LANGUAGE_LABEL_PYTHON,
+          "code text and language update");
+
+  auto* formula = document.add_texts()->mutable_formula();
+  formula->mutable_base()->set_self_ref("#/texts/1");
+  formula->mutable_base()->set_text("x");
+  enrichv1::ItemAnnotation formula_ann;
+  formula_ann.set_self_ref("#/texts/1");
+  formula_ann.mutable_formula()->set_text("x^2");
+  require(grparse::fold_formula_annotation(formula_ann, &document), "formula enrichment folds");
+  require(document.texts(1).formula().base().text() == "x^2", "formula text updates");
+}
+
 void verify_leg_dials_folds_and_counts() {
   FakeEnrichService fake(FakeMode::kAnswer);
   ServerFixture server(&fake);
@@ -484,6 +520,7 @@ int main() {
   return grparse_test::run_test_main("chart-derender-test", "all checks passed", {
       verify_candidates_need_a_chart_verdict_pixels_and_no_typed_table,
       verify_fold_attributes_the_table_to_the_model,
+      verify_fold_picture_description_and_code,
       verify_leg_dials_folds_and_counts,
       verify_skip_events_and_empty_tables_count_as_skipped,
       verify_deadline_bounds_the_leg_and_never_fails_the_document,

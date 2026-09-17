@@ -35,8 +35,24 @@ struct ChartDerenderOptions {
   // Optional per-request VLM endpoint override (GRPARSE_ENRICH_VLM_ENDPOINT);
   // empty leaves the enrich service on its configured default.
   std::string vlm_endpoint;
+  // Docling Convert enrichment switches. Chart extraction defaults on when
+  // this options object is used via derender_charts (legacy env opt-in);
+  // callers that dial enrich for other jobs set these explicitly.
+  bool do_chart_extraction = true;
+  bool do_picture_description = false;
+  bool do_code_enrichment = false;
+  bool do_formula_enrichment = false;
+  // Forwarded when do_picture_description is set; 0 leaves the enrich default.
+  double picture_description_area_threshold = 0.0;
+  // Raw preset names when the Convert option carries a string preset.
+  std::string picture_description_preset_raw;
+  std::string code_formula_preset_raw;
 
   bool enabled() const { return !target.empty(); }
+  bool any_job() const {
+    return do_chart_extraction || do_picture_description || do_code_enrichment ||
+           do_formula_enrichment;
+  }
 };
 
 // One picture the leg would send: its arena index and self_ref plus the
@@ -76,17 +92,36 @@ bool fold_chart_table(const ai::pipestream::enrich::v1::ItemAnnotation& annotati
                       const std::string& endpoint,
                       ai::pipestream::document::v1::Document* document);
 
+// Folds a PictureDescription into the picture's meta.description (and a
+// description annotation) with created_by = model. False when the picture is
+// missing or already carries a non-empty meta description.
+bool fold_picture_description(const ai::pipestream::enrich::v1::ItemAnnotation& annotation,
+                              const std::string& endpoint,
+                              ai::pipestream::document::v1::Document* document);
+
+// Replaces CodeItem / FormulaItem text (and language when known) for the
+// text item named by self_ref. False when no matching code/formula item.
+bool fold_code_annotation(const ai::pipestream::enrich::v1::ItemAnnotation& annotation,
+                          ai::pipestream::document::v1::Document* document);
+bool fold_formula_annotation(const ai::pipestream::enrich::v1::ItemAnnotation& annotation,
+                             ai::pipestream::document::v1::Document* document);
+
 struct ChartDerenderReport {
   int candidates = 0;
   int derendered = 0;
   int skipped = 0;
+  int pictures_described = 0;
+  int codes_enriched = 0;
+  int formulas_enriched = 0;
   std::vector<std::string> warnings;
 };
 
-// Runs the leg over `document` through `channel`: selects, dials, folds,
-// counts. Blocks for at most min(inbound_deadline, now + options.timeout).
+// Runs the enrich leg over `document` through `channel`: selects, dials,
+// folds, counts. Blocks for at most min(inbound_deadline, now + options.timeout).
 // Never throws; a channel that is null or a target that fails to answer is
-// reported as skipped candidates with one warning.
+// reported as skipped candidates with one warning. Chart-only requests keep
+// the slim candidate document; picture/code/formula jobs send the full
+// document so enrich can select every matching item.
 ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channel,
                                     const ChartDerenderOptions& options,
                                     ai::pipestream::document::v1::Document* document,

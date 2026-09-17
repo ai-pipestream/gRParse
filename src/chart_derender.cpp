@@ -200,46 +200,167 @@ bool fold_chart_table(const enrichv1::ItemAnnotation& annotation, const std::str
   return true;
 }
 
+bool fold_picture_description(const enrichv1::ItemAnnotation& annotation,
+                              const std::string& endpoint, docv1::Document* document) {
+  if (!annotation.has_description() || annotation.description().text().empty()) return false;
+  docv1::PictureItem* target = picture_for(annotation.self_ref(), document);
+  if (target == nullptr) return false;
+  if (target->has_meta() && target->meta().has_description() &&
+      !target->meta().description().text().empty()) {
+    return false;
+  }
+  docv1::DescriptionMetaField* meta = target->mutable_meta()->mutable_description();
+  meta->set_text(annotation.description().text());
+  if (!annotation.model().empty()) meta->set_created_by(annotation.model());
+  auto* note = target->add_annotations()->mutable_description();
+  note->set_kind("description");
+  note->set_text(annotation.description().text());
+  docv1::GenerationSource* generation = target->add_source()->mutable_generation();
+  generation->set_model(annotation.model());
+  if (!endpoint.empty()) generation->set_endpoint(endpoint);
+  return true;
+}
+
+docv1::BaseTextItem* text_item_for(const std::string& self_ref, docv1::Document* document) {
+  for (docv1::BaseTextItem& item : *document->mutable_texts()) {
+    if (item.has_code() && item.code().self_ref() == self_ref) return &item;
+    if (item.has_formula() && item.formula().base().self_ref() == self_ref) return &item;
+    if (item.has_text() && item.text().base().self_ref() == self_ref) return &item;
+    if (item.has_section_header() && item.section_header().base().self_ref() == self_ref) {
+      return &item;
+    }
+  }
+  constexpr std::string_view kPrefix = "#/texts/";
+  if (!self_ref.starts_with(kPrefix)) return nullptr;
+  const std::string_view digits(self_ref.data() + kPrefix.size(),
+                                self_ref.size() - kPrefix.size());
+  int index = 0;
+  const auto [end, error] = std::from_chars(digits.data(), digits.data() + digits.size(), index);
+  if (error != std::errc() || end != digits.data() + digits.size()) return nullptr;
+  if (index < 0 || index >= document->texts_size()) return nullptr;
+  return document->mutable_texts(index);
+}
+
+bool fold_code_annotation(const enrichv1::ItemAnnotation& annotation,
+                          docv1::Document* document) {
+  if (!annotation.has_code() || annotation.code().text().empty()) return false;
+  docv1::BaseTextItem* item = text_item_for(annotation.self_ref(), document);
+  if (item == nullptr || !item->has_code()) return false;
+  item->mutable_code()->set_text(annotation.code().text());
+  if (annotation.code().language() != docv1::CODE_LANGUAGE_LABEL_UNSPECIFIED) {
+    item->mutable_code()->set_code_language(annotation.code().language());
+  }
+  if (!annotation.code().language_raw().empty()) {
+    item->mutable_code()->set_code_language_raw(annotation.code().language_raw());
+  }
+  return true;
+}
+
+bool fold_formula_annotation(const enrichv1::ItemAnnotation& annotation,
+                             docv1::Document* document) {
+  if (!annotation.has_formula() || annotation.formula().text().empty()) return false;
+  docv1::BaseTextItem* item = text_item_for(annotation.self_ref(), document);
+  if (item == nullptr || !item->has_formula()) return false;
+  item->mutable_formula()->mutable_base()->set_text(annotation.formula().text());
+  return true;
+}
+
+// Pictures that still need a description: inline pixels, no meta description.
+std::vector<ChartCandidate> picture_description_candidates(const docv1::Document& document) {
+  std::vector<ChartCandidate> candidates;
+  for (int index = 0; index < document.pictures_size(); index++) {
+    const docv1::PictureItem& picture = document.pictures(index);
+    if (!picture.has_image()) continue;
+    if (picture.has_meta() && picture.meta().has_description() &&
+        !picture.meta().description().text().empty()) {
+      continue;
+    }
+    ChartCandidate candidate;
+    if (!decode_data_uri(picture.image().uri(), &candidate.mimetype, &candidate.bytes)) continue;
+    candidate.picture_index = index;
+    candidate.self_ref = picture.self_ref().empty()
+                             ? "#/pictures/" + std::to_string(index)
+                             : picture.self_ref();
+    if (candidate.mimetype.empty()) candidate.mimetype = picture.image().mimetype();
+    candidates.push_back(std::move(candidate));
+  }
+  return candidates;
+}
+
 ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channel,
                                     const ChartDerenderOptions& options,
                                     docv1::Document* document,
                                     CollectorDeadline inbound_deadline) {
   ChartDerenderReport report;
-  const std::vector<ChartCandidate> candidates = chart_derender_candidates(*document);
-  report.candidates = static_cast<int>(candidates.size());
-  if (candidates.empty()) return report;
+  if (!options.any_job()) return report;
+
+  std::vector<ChartCandidate> chart_candidates;
+  if (options.do_chart_extraction) {
+    chart_candidates = chart_derender_candidates(*document);
+  }
+  std::vector<ChartCandidate> describe_candidates;
+  if (options.do_picture_description) {
+    describe_candidates = picture_description_candidates(*document);
+  }
+  // Deduplicate ItemImage uploads by self_ref (a chart may also be described).
+  std::vector<ChartCandidate> images;
+  std::set<std::string> image_refs;
+  const auto add_images = [&](const std::vector<ChartCandidate>& list) {
+    for (const ChartCandidate& one : list) {
+      if (image_refs.insert(one.self_ref).second) images.push_back(one);
+    }
+  };
+  add_images(chart_candidates);
+  add_images(describe_candidates);
+
+  const bool needs_full_document =
+      options.do_picture_description || options.do_code_enrichment ||
+      options.do_formula_enrichment;
+  report.candidates = static_cast<int>(chart_candidates.size());
+  if (chart_candidates.empty() && describe_candidates.empty() &&
+      !options.do_code_enrichment && !options.do_formula_enrichment) {
+    return report;
+  }
+
   const auto count_skipped = [&report](int count) {
     report.skipped += count;
     data_counters().chart_derender_skipped.fetch_add(static_cast<uint64_t>(count),
                                                      std::memory_order_relaxed);
   };
   if (channel == nullptr || !options.enabled()) {
-    report.warnings.push_back("chart derender: enrich service is not configured "
+    report.warnings.push_back("document enrich: enrich service is not configured "
                               "(GRPARSE_ENRICH_TARGET)");
-    count_skipped(report.candidates);
+    count_skipped(std::max(1, report.candidates));
     return report;
   }
 
   auto stub = enrichv1::EnrichService::NewStub(channel);
   grpc::ClientContext context;
   context.set_deadline(capped_collector_deadline(inbound_deadline, options.timeout));
-  // Fail fast when the peer is down rather than queue the RPC until the
-  // deadline: the leg is advisory and the parse is waiting on it.
   context.set_wait_for_ready(false);
   auto stream = stub->EnrichDocument(&context);
 
-  // Options first without the document, then every crop, then the document
-  // as the completing chunk: the peer starts enriching when the completing
-  // chunk lands, which is the one ordering that guarantees it has the crops
-  // by then.
   enrichv1::EnrichDocumentRequest frame;
   enrichv1::EnrichOptions* request_options = frame.mutable_options();
-  request_options->set_do_chart_extraction(true);
+  request_options->set_do_chart_extraction(options.do_chart_extraction);
+  request_options->set_do_picture_description(options.do_picture_description);
+  request_options->set_do_code_enrichment(options.do_code_enrichment);
+  request_options->set_do_formula_enrichment(options.do_formula_enrichment);
+  if (options.picture_description_area_threshold != 0.0) {
+    request_options->set_picture_description_area_threshold(
+        options.picture_description_area_threshold);
+  }
+  if (!options.picture_description_preset_raw.empty()) {
+    request_options->set_picture_description_preset_raw(options.picture_description_preset_raw);
+  }
+  if (!options.code_formula_preset_raw.empty()) {
+    request_options->set_code_formula_preset_raw(options.code_formula_preset_raw);
+  }
   const auto seconds = std::chrono::ceil<std::chrono::seconds>(options.timeout).count();
   request_options->set_timeout_seconds(static_cast<uint32_t>(std::max<long long>(1, seconds)));
   if (!options.vlm_endpoint.empty()) request_options->set_vlm_endpoint(options.vlm_endpoint);
   bool written = stream->Write(frame);
-  for (const ChartCandidate& candidate : candidates) {
+  for (const ChartCandidate& candidate : images) {
     if (!written) break;
     frame.Clear();
     enrichv1::ItemImage* image = frame.mutable_image();
@@ -251,7 +372,19 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
   if (written) {
     frame.Clear();
     enrichv1::DocumentChunk* chunk = frame.mutable_chunk();
-    chunk->set_data(chart_derender_request_document(*document, candidates).SerializeAsString());
+    if (needs_full_document) {
+      // Full document so code/formula/description selectors see every item;
+      // picture uris stay (ItemImage still supplies bytes when stripped peers
+      // prefer crops, and inline data URIs remain readable).
+      docv1::Document request_doc = *document;
+      for (docv1::PictureItem& picture : *request_doc.mutable_pictures()) {
+        if (picture.has_image()) picture.mutable_image()->clear_uri();
+      }
+      chunk->set_data(request_doc.SerializeAsString());
+    } else {
+      chunk->set_data(
+          chart_derender_request_document(*document, chart_candidates).SerializeAsString());
+    }
     chunk->set_complete(true);
     written = stream->Write(frame);
   }
@@ -259,51 +392,65 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
 
   int folded = 0;
   int skipped_events = 0;
-  // Every self_ref a table already landed on: a peer that answers one
-  // picture twice adds nothing the second time, and the count of pictures
-  // still waiting for a table never drops below zero.
   std::set<std::string> answered;
   enrichv1::EnrichDocumentResponse event;
   while (stream->Read(&event)) {
     if (event.has_annotation()) {
       const enrichv1::ItemAnnotation& annotation = event.annotation();
-      if (annotation.has_chart_table() && answered.contains(annotation.self_ref())) {
-        report.warnings.push_back("chart derender: " + annotation.self_ref() +
-                                  " returned a duplicate table, ignored");
-      } else if (fold_chart_table(annotation, options.vlm_endpoint, document)) {
-        ++folded;
-        answered.insert(annotation.self_ref());
-        data_log("chart " + annotation.self_ref() + " derendered by " + annotation.model() +
-                 " (" + std::to_string(annotation.chart_table().table().num_rows()) + "x" +
-                 std::to_string(annotation.chart_table().table().num_cols()) + ")");
-      } else if (annotation.has_chart_table()) {
-        ++skipped_events;
-        report.warnings.push_back("chart derender: " + annotation.self_ref() +
-                                  " returned an empty table");
+      if (annotation.has_chart_table()) {
+        if (answered.contains(annotation.self_ref() + "#chart")) {
+          report.warnings.push_back("chart derender: " + annotation.self_ref() +
+                                    " returned a duplicate table, ignored");
+        } else if (fold_chart_table(annotation, options.vlm_endpoint, document)) {
+          ++folded;
+          answered.insert(annotation.self_ref() + "#chart");
+          data_log("chart " + annotation.self_ref() + " derendered by " + annotation.model() +
+                   " (" + std::to_string(annotation.chart_table().table().num_rows()) + "x" +
+                   std::to_string(annotation.chart_table().table().num_cols()) + ")");
+        } else {
+          ++skipped_events;
+          report.warnings.push_back("chart derender: " + annotation.self_ref() +
+                                    " returned an empty table");
+        }
+      } else if (annotation.has_description()) {
+        if (fold_picture_description(annotation, options.vlm_endpoint, document)) {
+          ++report.pictures_described;
+          answered.insert(annotation.self_ref() + "#desc");
+        } else {
+          ++skipped_events;
+        }
+      } else if (annotation.has_code()) {
+        if (fold_code_annotation(annotation, document)) {
+          ++report.codes_enriched;
+        } else {
+          ++skipped_events;
+        }
+      } else if (annotation.has_formula()) {
+        if (fold_formula_annotation(annotation, document)) {
+          ++report.formulas_enriched;
+        } else {
+          ++skipped_events;
+        }
       }
     } else if (event.has_skipped()) {
       ++skipped_events;
-      report.warnings.push_back("chart derender: " + event.skipped().self_ref() +
+      report.warnings.push_back("document enrich: " + event.skipped().self_ref() +
                                 " skipped (" + skip_reason_text(event.skipped()) + ")");
     }
     event.Clear();
   }
   const grpc::Status status = stream->Finish();
   if (!status.ok()) {
-    report.warnings.push_back("chart derender: enrich service " +
+    report.warnings.push_back("document enrich: enrich service " +
                               status_code_name(status.error_code()) +
                               (status.error_message().empty() ? "" : ": " + status.error_message()));
   }
   report.derendered = folded;
   data_counters().charts_derendered.fetch_add(static_cast<uint64_t>(folded),
                                               std::memory_order_relaxed);
-  // Every candidate that came back without a table, whatever the cause, is
-  // one skip: a skip event, an empty table, a stream cut short by the
-  // deadline or the transport. Never below zero: the skip counter is
-  // unsigned and a wrapped total would outlive the parse.
   const int unanswered = std::max(0, report.candidates - folded);
   count_skipped(unanswered);
-  if (unanswered > skipped_events && status.ok()) {
+  if (unanswered > skipped_events && status.ok() && options.do_chart_extraction) {
     report.warnings.push_back("chart derender: " + std::to_string(unanswered - skipped_events) +
                               " chart(s) received no event before the stream ended");
   }

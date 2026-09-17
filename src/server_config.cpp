@@ -311,6 +311,11 @@ PageScheduler::Options read_scheduler_options(const WorkerConfig& workers, bool 
 }
 
 CollectorTargets read_collector_targets() {
+  ChartDerenderOptions derender;
+  derender.target = collector_env("GRPARSE_ENRICH_TARGET");
+  derender.timeout = std::chrono::milliseconds(
+      configured_size("GRPARSE_ENRICH_TIMEOUT_MS", 5000, 600000));
+  derender.vlm_endpoint = collector_env("GRPARSE_ENRICH_VLM_ENDPOINT");
   return CollectorTargets{
       .libreoffice = collector_env("GRPARSE_LIBREOFFICE_TARGET"),
       .asr = collector_env("GRPARSE_ASR_TARGET"),
@@ -327,12 +332,7 @@ CollectorTargets read_collector_targets() {
       .calamine = collector_env("GRPARSE_CALAMINE_TARGET"),
       // The chart derender leg through grpc-enrich: off unless a target
       // is named; the timeout bounds the whole leg per parse.
-      .derender = ChartDerenderOptions{
-          .target = collector_env("GRPARSE_ENRICH_TARGET"),
-          .timeout = std::chrono::milliseconds(
-              configured_size("GRPARSE_ENRICH_TIMEOUT_MS", 5000, 600000)),
-          .vlm_endpoint = collector_env("GRPARSE_ENRICH_VLM_ENDPOINT"),
-      },
+      .derender = std::move(derender),
   };
 }
 

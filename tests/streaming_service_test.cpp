@@ -388,6 +388,9 @@ void verify_parity_options_and_confidence(TestServer* server) {
   options->set_table_cell_matching(true);
   options->set_abort_on_error(false);
   options->set_do_chart_extraction(false);
+  options->set_do_picture_description(false);
+  options->set_do_code_enrichment(false);
+  options->set_do_formula_enrichment(false);
   grpc::ClientContext context;
   context.set_deadline(std::chrono::system_clock::now() + 10s);
   pipestream::parse::v1::ConvertSourceResponse response;
