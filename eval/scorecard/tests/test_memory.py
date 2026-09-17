@@ -73,6 +73,25 @@ def test_real_docker_call_never_raises() -> None:
     assert ip is None
 
 
+def test_invalid_ip_from_docker_means_not_sampled(monkeypatch) -> None:
+    # docker 29 prints "invalid IP" for a stopped container; it is not an
+    # address and must not become a metrics URL.
+    import subprocess
+
+    class Completed:
+        returncode = 0
+        stdout = "invalid IP\n"
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Completed())
+    assert docker_container_ip(CONTAINER) is None
+
+
+def test_unopenable_url_is_a_note_not_an_exception() -> None:
+    rss, note = sample_rss("http://invalid IP:9464/metrics")
+    assert rss is None
+    assert note.startswith("metrics endpoint http://invalid IP:9464/metrics unreachable:")
+
+
 def test_target_host_forms() -> None:
     assert target_host("localhost:50051") == "localhost"
     assert target_host("127.0.0.1:1") == "127.0.0.1"

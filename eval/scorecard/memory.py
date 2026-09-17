@@ -12,6 +12,8 @@ and any failure there (no docker, no container, no network) silently means
 
 from __future__ import annotations
 
+import http.client
+import ipaddress
 import os
 import subprocess
 import urllib.request
@@ -55,7 +57,13 @@ def docker_container_ip(container: str) -> str | None:
     if completed.returncode != 0:
         return None
     ip = completed.stdout.strip()
-    return ip or None
+    # A stopped container has no address; docker 29 prints "invalid IP" for
+    # it and older releases print nothing. Only a real address is an answer.
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+    return ip
 
 
 def target_host(target: str) -> str:
@@ -86,7 +94,9 @@ def sample_rss(url: str | None) -> tuple[int | None, str]:
     try:
         with urllib.request.urlopen(url, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310
             text = response.read().decode("utf-8", errors="replace")
-    except OSError as error:
+    except (OSError, ValueError, http.client.HTTPException) as error:
+        # OSError covers refused and timed-out connections; ValueError and
+        # HTTPException cover a URL the client refuses to open at all.
         return None, f"metrics endpoint {url} unreachable: {error}"
     rss = parse_rss(text)
     if rss is None:
