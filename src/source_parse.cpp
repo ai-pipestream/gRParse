@@ -6,6 +6,7 @@
 #include <exception>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -122,6 +123,7 @@ bool implemented_option(std::string_view name) {
       "pdf_backend",
       "table_cell_matching",
       "abort_on_error",
+      "do_chart_extraction",
   };
   return std::ranges::find(kImplemented, name) != std::end(kImplemented);
 }
@@ -507,6 +509,9 @@ struct ParseInputs {
   // is the answer whatever its classification said.
   bool native_pipeline = false;
   HeadingOptions heading;
+  // Docling do_chart_extraction: unset keeps the env opt-in (run when
+  // GRPARSE_ENRICH_TARGET is set); false skips; true runs when configured.
+  std::optional<bool> do_chart_extraction;
 };
 
 // The heading pass's tuning as the request states it; every unset field
@@ -561,6 +566,9 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   }
   if (options.has_do_picture_classification()) {
     inputs.tuning.do_picture_classification = options.do_picture_classification();
+  }
+  if (options.has_do_chart_extraction()) {
+    inputs.do_chart_extraction = options.do_chart_extraction();
   }
   // Every dialed leg inherits this call's own ceiling, so no collector is
   // waited on past the patience of the client that asked for the parse. A
@@ -755,8 +763,11 @@ grpc::Status all_failed_status(const CoordinatorResult& result) {
 void derender_charts_if_configured(const std::shared_ptr<CollectorEndpoints>& collectors,
                                    grpc::CallbackServerContext* context,
                                    CollectorDeadline inbound_deadline,
+                                   std::optional<bool> do_chart_extraction,
                                    CoordinatorResult* result) {
   if (collectors == nullptr || !collectors->has_derender() || context->IsCancelled()) return;
+  // Explicit false on the request turns the leg off even when enrich is wired.
+  if (do_chart_extraction.has_value() && !*do_chart_extraction) return;
   const ChartDerenderReport derendered =
       derender_charts(collectors->enrich_channel(), collectors->derender(), &result->document,
                       inbound_deadline);
@@ -856,7 +867,8 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     const bool repaired_text =
         repair.has_value() &&
         run_repair_pass(&result.document, *repair).changed_text_or_arenas();
-    derender_charts_if_configured(collectors, context, inputs.inbound_deadline, &result);
+    derender_charts_if_configured(collectors, context, inputs.inbound_deadline,
+                                  inputs.do_chart_extraction, &result);
     // The offset table describes the CV collector's own text stream. It is
     // published only when that collector is the entire document and the
     // repair pass left its text and arena alone: a merge renumbers arena
