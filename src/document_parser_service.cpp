@@ -109,6 +109,21 @@ void render_exports(const pipestream::parse::v1::ConvertDocumentOptions& options
       markdown.page_break_placeholder = options.md_page_break_placeholder();
     }
     markdown.compact_tables = options.md_compact_tables();
+    if (options.has_image_export_mode()) {
+      switch (options.image_export_mode()) {
+        case pipestream::parse::v1::IMAGE_REF_MODE_EMBEDDED:
+          markdown.image_export_mode = MarkdownOptions::ImageExportMode::kEmbedded;
+          break;
+        case pipestream::parse::v1::IMAGE_REF_MODE_REFERENCED:
+          markdown.image_export_mode = MarkdownOptions::ImageExportMode::kReferenced;
+          break;
+        case pipestream::parse::v1::IMAGE_REF_MODE_PLACEHOLDER:
+        case pipestream::parse::v1::IMAGE_REF_MODE_UNSPECIFIED:
+        default:
+          markdown.image_export_mode = MarkdownOptions::ImageExportMode::kPlaceholder;
+          break;
+      }
+    }
     exports->set_md(render_markdown(document, markdown));
   }
   if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_HTML)) {

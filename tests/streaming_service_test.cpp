@@ -336,13 +336,14 @@ void verify_unary_uses_scheduler_and_shared_assembly(TestServer* server) {
 void verify_unsupported_options_are_rejected(TestServer* server) {
   auto client = server->unary_stub();
   auto request = unary_request();
-  request.mutable_request()->mutable_options()->set_images_scale(2.0);
+  request.mutable_request()->mutable_options()->set_ocr_engine(
+      pipestream::parse::v1::OCR_ENGINE_EASYOCR);
   grpc::ClientContext context;
   pipestream::parse::v1::ConvertSourceResponse response;
   const grpc::Status status = client->ConvertSource(&context, request, &response);
   require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
           "unsupported conversion options must be rejected");
-  require(status.error_message().contains("images_scale"),
+  require(status.error_message().contains("ocr_engine"),
           "the rejection must name the unimplemented option: " + status.error_message());
 
   request = unary_request();

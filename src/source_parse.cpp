@@ -111,6 +111,9 @@ bool implemented_option(std::string_view name) {
       "pdf_heading_hierarchy_options",
       "document_timeout",
       "page_range",
+      "include_images",
+      "images_scale",
+      "image_export_mode",
   };
   return std::ranges::find(kImplemented, name) != std::end(kImplemented);
 }
@@ -214,6 +217,26 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
     if (start < 1 || end < start) {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                           surface + " page_range must be a 1-indexed inclusive span");
+    }
+  }
+  if (options.has_images_scale() && !(options.images_scale() > 0.0)) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        surface + " images_scale must be positive");
+  }
+  if (options.has_image_export_mode()) {
+    switch (options.image_export_mode()) {
+      case pipestream::parse::v1::IMAGE_REF_MODE_UNSPECIFIED:
+      case pipestream::parse::v1::IMAGE_REF_MODE_EMBEDDED:
+      case pipestream::parse::v1::IMAGE_REF_MODE_PLACEHOLDER:
+      case pipestream::parse::v1::IMAGE_REF_MODE_REFERENCED:
+        break;
+      default: {
+        std::string name =
+            pipestream::parse::v1::ImageRefMode_Name(options.image_export_mode());
+        if (name.empty()) name = std::to_string(static_cast<int>(options.image_export_mode()));
+        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                            surface + " does not implement image_export_mode '" + name + "'");
+      }
     }
   }
   return validate_document_timeout(options.has_document_timeout(), options.document_timeout(),
@@ -466,6 +489,12 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
                              options.has_render_scale(), options.render_scale());
   if (options.page_range_size() == 2) {
     inputs.tuning.page_range = std::make_pair(options.page_range(0), options.page_range(1));
+  }
+  if (options.has_include_images()) {
+    inputs.tuning.capture_picture_images = options.include_images();
+  }
+  if (options.has_images_scale()) {
+    inputs.tuning.images_scale = options.images_scale();
   }
   // Every dialed leg inherits this call's own ceiling, so no collector is
   // waited on past the patience of the client that asked for the parse. A

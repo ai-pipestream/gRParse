@@ -19,15 +19,16 @@ namespace grparse {
 // to a common width (a pipe inside a cell becomes a character reference),
 // fenced code blocks with no info string, "$$...$$" formula blocks, captions
 // and item metadata as plain paragraphs beside their item, and every picture
-// as the "<!-- image -->" placeholder, whatever image it carries. Items with
+// as the "<!-- image -->" placeholder by default (image_export_mode can
+// emit a Markdown image from the item's uri instead). Items with
 // no Markdown counterpart degrade to the reference's comment placeholders
 // instead of inventing syntax. Underscores and the HTML specials are escaped
 // in item text; a link target is not.
 std::string render_markdown(const ai::pipestream::document::v1::Document& document);
 
-// The two Markdown export parameters a request can move off the reference
-// defaults (ConvertDocumentOptions.md_page_break_placeholder and
-// md_compact_tables).
+// The Markdown export parameters a request can move off the reference
+// defaults (ConvertDocumentOptions.md_page_break_placeholder,
+// md_compact_tables, and image_export_mode).
 struct MarkdownOptions {
   // When set, a part carrying this text is emitted wherever the walk moves
   // from an item on one page to an item on a later page (the reference's
@@ -35,6 +36,11 @@ struct MarkdownOptions {
   std::optional<std::string> page_break_placeholder;
   // Tables without column padding (the reference's compact_tables).
   bool compact_tables = false;
+  // How picture ImageRefs appear in Markdown (Docling image_export_mode).
+  // PLACEHOLDER (default) keeps "<!-- image -->"; EMBEDDED and REFERENCED
+  // emit a Markdown image using the item's uri when present.
+  enum class ImageExportMode { kPlaceholder, kEmbedded, kReferenced };
+  ImageExportMode image_export_mode = ImageExportMode::kPlaceholder;
 };
 
 std::string render_markdown(const ai::pipestream::document::v1::Document& document,

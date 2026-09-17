@@ -718,6 +718,31 @@ void verify_picture_descriptions_surface_in_exports() {
                    "markdown keeps the description under the placeholder");
 }
 
+void verify_markdown_image_export_modes() {
+  docv1::Document document = base_document("images.pdf");
+  add_picture(&document, "#/body", "data:image/png;base64,abc");
+
+  require_contains(grparse::render_markdown(document), "<!-- image -->",
+                   "default export mode keeps the placeholder");
+
+  grparse::MarkdownOptions embedded;
+  embedded.image_export_mode = grparse::MarkdownOptions::ImageExportMode::kEmbedded;
+  require_contains(grparse::render_markdown(document, embedded),
+                   "![](data:image/png;base64,abc)",
+                   "embedded mode emits the ImageRef uri");
+
+  grparse::MarkdownOptions referenced;
+  referenced.image_export_mode = grparse::MarkdownOptions::ImageExportMode::kReferenced;
+  require_contains(grparse::render_markdown(document, referenced),
+                   "![](data:image/png;base64,abc)",
+                   "referenced mode emits the ImageRef uri when no sidecar path exists");
+
+  docv1::Document bare = base_document("bare.pdf");
+  add_picture(&bare, "#/body", "");
+  require_contains(grparse::render_markdown(bare, embedded), "<!-- image -->",
+                   "embedded mode falls back to the placeholder without a uri");
+}
+
 // Appends one provenance entry to the most recently added text item.
 void add_prov_to_last_text(docv1::Document* document, int page_no, double l,
                            double t, double r, double b) {
@@ -1113,6 +1138,7 @@ int main() {
       verify_non_body_layers_are_excluded,
       verify_captions_render_once,
       verify_picture_descriptions_surface_in_exports,
+      verify_markdown_image_export_modes,
       verify_doctags_renders_every_item_type,
       verify_doctags_otsl_spans_and_locations,
       verify_doclang_renders_grpc_xml_vocabulary,

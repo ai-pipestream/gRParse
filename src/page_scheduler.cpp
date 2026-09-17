@@ -2,6 +2,7 @@
 #include "grparse/page_previews.h"
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
@@ -326,6 +327,10 @@ class PageScheduler::Impl final {
   // the server setting otherwise.
   bool captures_page_images(const OcrTuning& tuning) const {
     return tuning.capture_page_images.value_or(options_.capture_page_images);
+  }
+
+  bool captures_picture_images(const OcrTuning& tuning) const {
+    return tuning.capture_picture_images.value_or(options_.capture_picture_images);
   }
 
   void stop() {
@@ -705,11 +710,18 @@ class PageScheduler::Impl final {
           }
           // Crops encode after OCR so the device work is never delayed, but
           // before the raster drops; the crop is a view, the PNG is owned.
-          if (options_.capture_picture_images && !job.image.empty()) {
+          if (captures_picture_images(page->request->tuning) && !job.image.empty()) {
+            const double scale = page->request->tuning.images_scale.value_or(1.0);
             for (auto& region : regions) {
               if (region.label != "picture") continue;
-              const cv::Mat crop = crop_region(job.image, region);
-              if (!crop.empty()) cv::imencode(".png", crop, region.image_png, kPngEncodeParams);
+              cv::Mat crop = crop_region(job.image, region);
+              if (crop.empty()) continue;
+              if (scale > 0.0 && std::fabs(scale - 1.0) > 1e-9) {
+                cv::Mat resized;
+                cv::resize(crop, resized, cv::Size(), scale, scale, cv::INTER_AREA);
+                crop = std::move(resized);
+              }
+              cv::imencode(".png", crop, region.image_png, kPngEncodeParams);
             }
           }
           // Barcode decode is pure CPU (ZXing), so like the PNG capture it

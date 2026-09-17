@@ -64,7 +64,9 @@ constexpr std::string_view kCaptionDelim = " ";
 class MarkdownRenderer : public MarkdownWalk {
  public:
   MarkdownRenderer(const docv1::Document& document, const MarkdownOptions& options)
-      : MarkdownWalk(document), compact_tables_(options.compact_tables) {
+      : MarkdownWalk(document),
+        compact_tables_(options.compact_tables),
+        image_export_mode_(options.image_export_mode) {
     if (options.page_break_placeholder.has_value()) {
       set_page_break_placeholder(*options.page_break_placeholder);
     }
@@ -82,6 +84,7 @@ class MarkdownRenderer : public MarkdownWalk {
 
  private:
   const bool compact_tables_;
+  const MarkdownOptions::ImageExportMode image_export_mode_;
 
   // How the table formatter resolves a cell that points at another item.
   CellTextResolver cell_resolver() {
@@ -459,13 +462,25 @@ class MarkdownRenderer : public MarkdownWalk {
     std::string caption_span;
     parts.push_back(serialize_captions(picture.captions(), &caption_span));
     if (!parts.back().empty()) *first_span = caption_span;
-    // The default image mode positions every picture with a placeholder,
-    // whatever image the item carries.
+    // Docling image_export_mode: PLACEHOLDER always emits the HTML comment;
+    // EMBEDDED / REFERENCED emit a Markdown image when the item carries a
+    // uri (data URI or path). Missing image falls back to the placeholder.
     if (!excluded(ref)) {
-      parts.emplace_back(kImagePlaceholder);
+      parts.emplace_back(picture_image_markdown(picture));
       if (first_span->empty()) *first_span = ref;
     }
     return join(parts, "\n\n");
+  }
+
+  std::string picture_image_markdown(const docv1::PictureItem& picture) const {
+    if (image_export_mode_ == MarkdownOptions::ImageExportMode::kPlaceholder ||
+        !picture.has_image() || picture.image().uri().empty()) {
+      return std::string(kImagePlaceholder);
+    }
+    // Both EMBEDDED and REFERENCED use the ImageRef uri: ConvertSource has
+    // no sidecar file tree for referenced paths, so a data URI is the
+    // honest embedded form and a path uri is the referenced form.
+    return "![](" + picture.image().uri() + ")";
   }
 
   // -- meta -----------------------------------------------------------------

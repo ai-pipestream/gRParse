@@ -93,6 +93,14 @@ class PageScheduler final {
     // (OcrPage::preview_png). Unset defers to Options::capture_page_images;
     // a value overrides it for this document alone.
     std::optional<bool> capture_page_images;
+    // Whether figure crops are PNG-encoded onto picture regions (Docling
+    // include_images → generate_picture_images). Unset defers to
+    // Options::capture_picture_images.
+    std::optional<bool> capture_picture_images;
+    // Scale applied when encoding picture crops (Docling images_scale).
+    // 1.0 / unset leaves the crop at native raster size; other positive
+    // values resize before PNG encode.
+    std::optional<double> images_scale;
   };
 
   enum class DeliveryResult { kAccepted, kAcceptedAndRelease, kCancelled };
