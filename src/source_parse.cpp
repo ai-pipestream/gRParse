@@ -116,6 +116,9 @@ bool implemented_option(std::string_view name) {
       "image_export_mode",
       "ocr_engine",
       "do_table_structure",
+      "table_mode",
+      "do_picture_classification",
+      "ocr_lang",
   };
   return std::ranges::find(kImplemented, name) != std::end(kImplemented);
 }
@@ -158,6 +161,19 @@ grpc::Status validate_ocr_engine(const pipestream::parse::v1::ConvertDocumentOpt
                           surface + " does not implement ocr_engine '" + name + "'");
     }
   }
+}
+
+// One RapidTable model is installed; FAST and ACCURATE both use it. The
+// field is accepted so Docling clients that always set table_mode are not
+// turned away for a distinction this binary does not host.
+grpc::Status validate_table_mode(const pipestream::parse::v1::ConvertDocumentOptions& options,
+                                 const std::string& surface) {
+  if (!options.has_table_mode()) return grpc::Status::OK;
+  if (pipestream::parse::v1::TableFormerMode_IsValid(options.table_mode())) {
+    return grpc::Status::OK;
+  }
+  return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                      surface + " table_mode value is not a known TableFormerMode");
 }
 
 // The heading pass's two switches must agree when both are given, and the
@@ -206,6 +222,8 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
   if (!pipeline_status.ok()) return pipeline_status;
   const grpc::Status ocr_engine_status = validate_ocr_engine(options, surface);
   if (!ocr_engine_status.ok()) return ocr_engine_status;
+  const grpc::Status table_mode_status = validate_table_mode(options, surface);
+  if (!table_mode_status.ok()) return table_mode_status;
   const grpc::Status heading_status = validate_heading_options(options, surface);
   if (!heading_status.ok()) return heading_status;
   for (const auto raw : options.to_formats()) {
@@ -522,6 +540,9 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   }
   if (options.has_do_table_structure()) {
     inputs.tuning.do_table_structure = options.do_table_structure();
+  }
+  if (options.has_do_picture_classification()) {
+    inputs.tuning.do_picture_classification = options.do_picture_classification();
   }
   // Every dialed leg inherits this call's own ceiling, so no collector is
   // waited on past the patience of the client that asked for the parse. A

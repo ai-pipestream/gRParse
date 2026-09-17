@@ -381,6 +381,9 @@ void verify_parity_options_and_confidence(TestServer* server) {
   options->mutable_pdf_heading_hierarchy_options()->set_max_level(3);
   options->set_ocr_engine(pipestream::parse::v1::OCR_ENGINE_RAPIDOCR);
   options->set_do_table_structure(true);
+  options->set_table_mode(pipestream::parse::v1::TABLE_FORMER_MODE_ACCURATE);
+  options->set_do_picture_classification(true);
+  options->add_ocr_lang("en");
   grpc::ClientContext context;
   context.set_deadline(std::chrono::system_clock::now() + 10s);
   pipestream::parse::v1::ConvertSourceResponse response;

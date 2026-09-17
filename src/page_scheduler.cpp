@@ -703,7 +703,11 @@ class PageScheduler::Impl final {
             }
           }
           // Classification also runs on picture crops only, same grouping.
-          if (figure_classifier_ != nullptr) {
+          // Docling do_picture_classification=false skips this pass.
+          const bool run_figures =
+              figure_classifier_ != nullptr &&
+              job.page->request->tuning.do_picture_classification.value_or(true);
+          if (run_figures) {
             for (auto& region : regions) {
               if (region.label != "picture") continue;
               const cv::Mat crop = crop_region(job.image, region);

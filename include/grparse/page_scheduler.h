@@ -105,6 +105,10 @@ class PageScheduler final {
     // do_table_structure). Unset keeps the scheduler default (run when a
     // TableStructurer is installed). false skips; true runs when available.
     std::optional<bool> do_table_structure;
+    // Whether picture regions run classification (Docling
+    // do_picture_classification). Unset keeps the scheduler default (run when
+    // a FigureClassifier is installed). false skips; true runs when available.
+    std::optional<bool> do_picture_classification;
   };
 
   enum class DeliveryResult { kAccepted, kAcceptedAndRelease, kCancelled };

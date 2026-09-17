@@ -393,6 +393,31 @@ void verify_figure_classification_runs_on_crops() {
           "classification metric must count figure crops");
 }
 
+// Docling do_picture_classification=false skips the classifier even when one
+// is installed on the scheduler.
+void verify_do_picture_classification_false_skips() {
+  FakeRecognizer recognizer;
+  FakeDetector detector;
+  detector.regions = {grparse::LayoutRegion{"picture", 0.8F, 1, 1, 3, 3}};
+  FakeClassifier classifier;
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 2, 2, 2, 1, 1, 1},
+      [](std::shared_ptr<const std::string>, bool, double) {
+        return std::make_shared<RenderableDigitalSource>();
+      },
+      &detector, nullptr, &classifier);
+  grparse::PageScheduler::OcrTuning tuning;
+  tuning.do_picture_classification = false;
+  Result result;
+  scheduler.submit(std::make_shared<const std::string>("memory"), true, tuning,
+                   callbacks_for(&result));
+  wait_until_finished(&result);
+
+  require(!result.failure, "do_picture_classification=false document failed");
+  require(classifier.calls.load() == 0, "classifier must not run when the option is false");
+  require(scheduler.metrics().figures_classified == 0, "classification metric stays at zero");
+}
+
 // With picture capture enabled, figure regions arrive carrying a PNG crop of
 // the raster while other regions stay byte-free.
 void verify_picture_capture_encodes_figure_crops() {
@@ -1343,6 +1368,7 @@ int main() {
       verify_table_structure_runs_on_crops,
       verify_do_table_structure_false_skips_structure,
       verify_figure_classification_runs_on_crops,
+      verify_do_picture_classification_false_skips,
       verify_picture_capture_encodes_figure_crops,
       verify_page_capture_encodes_previews,
       verify_barcode_decode_triggers_on_class,
