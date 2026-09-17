@@ -32,8 +32,9 @@ struct ChartDerenderOptions {
   // the enrich service as its per-VLM-call timeout too, rounded up to whole
   // seconds, so the peer gives up when this side does.
   std::chrono::milliseconds timeout{5000};
-  // Optional per-request VLM endpoint override (GRPARSE_ENRICH_VLM_ENDPOINT);
-  // empty leaves the enrich service on its configured default.
+  // Optional per-request VLM endpoint override (GRPARSE_ENRICH_VLM_ENDPOINT
+  // or Convert picture_description_api.url); empty leaves the enrich service
+  // on its configured default.
   std::string vlm_endpoint;
   // Docling Convert enrichment switches. Chart extraction defaults on when
   // this options object is used via derender_charts (legacy env opt-in);
@@ -44,9 +45,12 @@ struct ChartDerenderOptions {
   bool do_formula_enrichment = false;
   // Forwarded when do_picture_description is set; 0 leaves the enrich default.
   double picture_description_area_threshold = 0.0;
-  // Raw preset names when the Convert option carries a string preset.
+  // Raw preset names when the Convert option carries a string preset or a
+  // picture_description_local.repo_id.
   std::string picture_description_preset_raw;
   std::string code_formula_preset_raw;
+  // Per-request enrich concurrency; 0 leaves the enrich service default.
+  uint32_t concurrency = 0;
 
   bool enabled() const { return !target.empty(); }
   bool any_job() const {

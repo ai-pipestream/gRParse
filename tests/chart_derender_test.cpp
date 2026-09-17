@@ -362,6 +362,28 @@ void verify_leg_dials_folds_and_counts() {
           "the leg adds annotations only, never items");
 }
 
+void verify_picture_description_engine_fields_reach_enrich() {
+  FakeEnrichService fake(FakeMode::kAnswer);
+  ServerFixture server(&fake);
+  docv1::Document document = sample_document();
+  grparse::ChartDerenderOptions options = options_for(server.target());
+  options.do_chart_extraction = false;
+  options.do_picture_description = true;
+  options.picture_description_preset_raw = "ibm-granite/granite-vision";
+  options.vlm_endpoint = "http://api.vlm:9000/v1";
+  options.concurrency = 3;
+  options.timeout = std::chrono::milliseconds(2500);
+  const grparse::ChartDerenderReport report =
+      grparse::derender_charts(server.channel(), options, &document);
+  require(report.warnings.size() <= 1, "description-only dial may warn on empty describe set");
+  const FakeEnrichService::Seen seen = fake.seen();
+  require(seen.options.do_picture_description() && !seen.options.do_chart_extraction() &&
+              seen.options.picture_description_preset_raw() == "ibm-granite/granite-vision" &&
+              seen.options.vlm_endpoint() == "http://api.vlm:9000/v1" &&
+              seen.options.concurrency() == 3 && seen.options.timeout_seconds() == 3,
+          "local repo_id and api url/concurrency/timeout reach enrich options");
+}
+
 void verify_skip_events_and_empty_tables_count_as_skipped() {
   for (FakeMode mode : {FakeMode::kSkip, FakeMode::kEmptyTable}) {
     FakeEnrichService fake(mode);
@@ -522,6 +544,7 @@ int main() {
       verify_fold_attributes_the_table_to_the_model,
       verify_fold_picture_description_and_code,
       verify_leg_dials_folds_and_counts,
+      verify_picture_description_engine_fields_reach_enrich,
       verify_skip_events_and_empty_tables_count_as_skipped,
       verify_deadline_bounds_the_leg_and_never_fails_the_document,
       verify_unreachable_peer_is_a_warning,

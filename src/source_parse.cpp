@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <exception>
 #include <map>
@@ -127,6 +128,8 @@ bool implemented_option(std::string_view name) {
       "do_picture_description",
       "picture_description_area_threshold",
       "picture_description_preset",
+      "picture_description_local",
+      "picture_description_api",
       "do_code_enrichment",
       "do_formula_enrichment",
       "code_formula_preset",
@@ -200,6 +203,63 @@ grpc::Status validate_pdf_backend(const pipestream::parse::v1::ConvertDocumentOp
                       surface + " pdf_backend value is not a known PdfBackend");
 }
 
+// Nested picture-description engines map onto enrich fields this binary can
+// forward (repo_id / url / timeout / concurrency). Local and API are
+// mutually exclusive. Prompt, headers, params, and generation_config have no
+// enrich wire and are rejected when set.
+grpc::Status validate_picture_description_engines(
+    const pipestream::parse::v1::ConvertDocumentOptions& options, const std::string& surface) {
+  if (options.has_picture_description_local() && options.has_picture_description_api()) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        surface + ": picture_description_local and "
+                                  "picture_description_api are mutually exclusive");
+  }
+  if (options.has_picture_description_local()) {
+    const auto& local = options.picture_description_local();
+    if (local.repo_id().empty()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + ": picture_description_local.repo_id is required");
+    }
+    if (local.has_prompt()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + " does not implement picture_description_local.prompt");
+    }
+    if (!local.generation_config().empty()) {
+      return grpc::Status(
+          grpc::StatusCode::INVALID_ARGUMENT,
+          surface + " does not implement picture_description_local.generation_config");
+    }
+  }
+  if (options.has_picture_description_api()) {
+    const auto& api = options.picture_description_api();
+    if (api.url().empty()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + ": picture_description_api.url is required");
+    }
+    if (!api.headers().empty()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + " does not implement picture_description_api.headers");
+    }
+    if (!api.params().empty()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + " does not implement picture_description_api.params");
+    }
+    if (api.has_prompt()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + " does not implement picture_description_api.prompt");
+    }
+    if (api.has_timeout() && api.timeout() <= 0.0) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + ": picture_description_api.timeout must be positive");
+    }
+    if (api.has_concurrency() && api.concurrency() < 1) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + ": picture_description_api.concurrency must be >= 1");
+    }
+  }
+  return grpc::Status::OK;
+}
+
 // The heading pass's two switches must agree when both are given, and the
 // numeric tunables must be in range; the rest of the message is accepted as
 // documented on HeadingHierarchyOptions.
@@ -250,6 +310,9 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
   if (!table_mode_status.ok()) return table_mode_status;
   const grpc::Status pdf_backend_status = validate_pdf_backend(options, surface);
   if (!pdf_backend_status.ok()) return pdf_backend_status;
+  const grpc::Status picture_engine_status =
+      validate_picture_description_engines(options, surface);
+  if (!picture_engine_status.ok()) return picture_engine_status;
   const grpc::Status heading_status = validate_heading_options(options, surface);
   if (!heading_status.ok()) return heading_status;
   for (const auto raw : options.to_formats()) {
@@ -526,6 +589,11 @@ struct ParseInputs {
   double picture_description_area_threshold = 0.0;
   std::string picture_description_preset;
   std::string code_formula_preset;
+  // From picture_description_api.url / local.repo_id when set; empty means keep
+  // the enrich service (or env) default.
+  std::string picture_description_vlm_endpoint;
+  std::optional<uint32_t> enrich_concurrency;
+  std::optional<std::chrono::milliseconds> enrich_timeout;
 };
 
 // The heading pass's tuning as the request states it; every unset field
@@ -601,6 +669,22 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   }
   if (options.has_code_formula_preset()) {
     inputs.code_formula_preset = options.code_formula_preset();
+  }
+  if (options.has_picture_description_local()) {
+    // repo_id is the enrich raw preset name; presence of local does not force
+    // do_picture_description — the Convert bool still gates the job.
+    inputs.picture_description_preset = options.picture_description_local().repo_id();
+  }
+  if (options.has_picture_description_api()) {
+    const auto& api = options.picture_description_api();
+    inputs.picture_description_vlm_endpoint = api.url();
+    if (api.has_concurrency()) {
+      inputs.enrich_concurrency = static_cast<uint32_t>(api.concurrency());
+    }
+    if (api.has_timeout()) {
+      inputs.enrich_timeout = std::chrono::milliseconds(
+          static_cast<int64_t>(std::ceil(api.timeout() * 1000.0)));
+    }
   }
   // Every dialed leg inherits this call's own ceiling, so no collector is
   // waited on past the patience of the client that asked for the parse. A
@@ -810,6 +894,15 @@ void derender_charts_if_configured(const std::shared_ptr<CollectorEndpoints>& co
   enrich.picture_description_area_threshold = inputs.picture_description_area_threshold;
   enrich.picture_description_preset_raw = inputs.picture_description_preset;
   enrich.code_formula_preset_raw = inputs.code_formula_preset;
+  if (!inputs.picture_description_vlm_endpoint.empty()) {
+    enrich.vlm_endpoint = inputs.picture_description_vlm_endpoint;
+  }
+  if (inputs.enrich_concurrency.has_value()) {
+    enrich.concurrency = *inputs.enrich_concurrency;
+  }
+  if (inputs.enrich_timeout.has_value()) {
+    enrich.timeout = *inputs.enrich_timeout;
+  }
   if (!enrich.any_job()) return;
   const ChartDerenderReport derendered =
       derender_charts(collectors->enrich_channel(), enrich, &result->document, inbound_deadline);

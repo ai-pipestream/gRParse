@@ -391,6 +391,9 @@ void verify_parity_options_and_confidence(TestServer* server) {
   options->set_do_picture_description(false);
   options->set_do_code_enrichment(false);
   options->set_do_formula_enrichment(false);
+  options->mutable_picture_description_api()->set_url("http://vlm.test:8085");
+  options->mutable_picture_description_api()->set_concurrency(2);
+  options->mutable_picture_description_api()->set_timeout(3.0);
   grpc::ClientContext context;
   context.set_deadline(std::chrono::system_clock::now() + 10s);
   pipestream::parse::v1::ConvertSourceResponse response;
@@ -411,6 +414,36 @@ void verify_parity_options_and_confidence(TestServer* server) {
               confidence.low_grade() == pipestream::parse::v1::QUALITY_GRADE_EXCELLENT,
           "0.95 grades as excellent on both aggregates");
   require(document.exports().has_md(), "markdown was requested");
+
+  request = unary_request();
+  request.mutable_request()->mutable_options()->mutable_picture_description_local()->set_repo_id(
+      "ibm-granite/granite-vision");
+  request.mutable_request()->mutable_options()->mutable_picture_description_api()->set_url(
+      "http://vlm.test:8085");
+  grpc::ClientContext both_engines;
+  pipestream::parse::v1::ConvertSourceResponse both_response;
+  const grpc::Status both_status =
+      client->ConvertSource(&both_engines, request, &both_response);
+  require(both_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              both_status.error_message().contains("mutually exclusive"),
+          "local and api picture description engines must not both be set: " +
+              both_status.error_message());
+
+  request = unary_request();
+  request.mutable_request()->mutable_options()->mutable_picture_description_api()->set_url(
+      "http://vlm.test:8085");
+  (*request.mutable_request()
+        ->mutable_options()
+        ->mutable_picture_description_api()
+        ->mutable_headers())["Authorization"] = "secret";
+  grpc::ClientContext headers_context;
+  pipestream::parse::v1::ConvertSourceResponse headers_response;
+  const grpc::Status headers_status =
+      client->ConvertSource(&headers_context, request, &headers_response);
+  require(headers_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              headers_status.error_message().contains("picture_description_api.headers"),
+          "unsupported api headers must be rejected by name: " +
+              headers_status.error_message());
 
   request = unary_request();
   request.mutable_request()->mutable_options()->set_pipeline(
