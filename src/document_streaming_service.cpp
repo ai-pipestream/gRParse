@@ -261,6 +261,22 @@ class DocumentStreamReactor final
     plan.bytes = std::make_shared<const std::string>(std::move(bytes_));
     plan.pdf = content_type_ == "application/pdf" || is_pdf(*plan.bytes, filename_);
     pdf_ = plan.pdf;
+    if (requested_collectors_.size() == 1 &&
+        requested_collectors_[0] == pipestream::parse::v1::COLLECTOR_VLM) {
+      request_finish_locked(grpc::Status(
+          grpc::StatusCode::FAILED_PRECONDITION,
+          "COLLECTOR_VLM on streaming ParseDocument needs ConvertSource "
+          "(PROCESSING_PIPELINE_VLM / GRPARSE_VLM_CONVERT_TARGET)"));
+      return plan;
+    }
+    if (std::ranges::find(requested_collectors_, pipestream::parse::v1::COLLECTOR_VLM) !=
+        requested_collectors_.end()) {
+      request_finish_locked(grpc::Status(
+          grpc::StatusCode::INVALID_ARGUMENT,
+          "COLLECTOR_VLM must be the only collector "
+          "(it maps to PROCESSING_PIPELINE_VLM on ConvertSource)"));
+      return plan;
+    }
     auto routed = route_document(filename_.string(), content_type_, *plan.bytes);
     if (requested_collectors_.empty() && plan.pdf &&
         routed == pipestream::parse::v1::COLLECTOR_GRPARSE_CV && endpoints_ != nullptr &&

@@ -30,6 +30,7 @@ const char* collector_name(pipestream::parse::v1::Collector collector) {
     case pipestream::parse::v1::COLLECTOR_FASTWARC: return "fastwarc";
     case pipestream::parse::v1::COLLECTOR_PDF: return "pdf";
     case pipestream::parse::v1::COLLECTOR_CONFLUENCE: return "confluence-storage";
+    case pipestream::parse::v1::COLLECTOR_VLM: return "vlm-convert";
     default: return "unspecified";
   }
 }

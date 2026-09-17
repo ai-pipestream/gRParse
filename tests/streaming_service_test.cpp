@@ -536,6 +536,32 @@ void verify_parity_options_and_confidence(TestServer* server) {
           "VLM without a convert peer is rejected by name: " + vlm_status.error_message());
 
   request = unary_request();
+  request.mutable_request()->mutable_options()->add_collectors(
+      pipestream::parse::v1::COLLECTOR_VLM);
+  grpc::ClientContext vlm_collector_context;
+  pipestream::parse::v1::ConvertSourceResponse vlm_collector_response;
+  const grpc::Status vlm_collector_status =
+      client->ConvertSource(&vlm_collector_context, request, &vlm_collector_response);
+  require(vlm_collector_status.error_code() == grpc::StatusCode::FAILED_PRECONDITION &&
+              vlm_collector_status.error_message().contains("GRPARSE_VLM_CONVERT_TARGET"),
+          "COLLECTOR_VLM without a convert peer is rejected by name: " +
+              vlm_collector_status.error_message());
+
+  request = unary_request();
+  request.mutable_request()->mutable_options()->add_collectors(
+      pipestream::parse::v1::COLLECTOR_VLM);
+  request.mutable_request()->mutable_options()->add_collectors(
+      pipestream::parse::v1::COLLECTOR_PDF);
+  grpc::ClientContext mixed_vlm;
+  pipestream::parse::v1::ConvertSourceResponse mixed_vlm_response;
+  const grpc::Status mixed_vlm_status =
+      client->ConvertSource(&mixed_vlm, request, &mixed_vlm_response);
+  require(mixed_vlm_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              mixed_vlm_status.error_message().contains("COLLECTOR_VLM"),
+          "COLLECTOR_VLM mixed with other collectors is rejected: " +
+              mixed_vlm_status.error_message());
+
+  request = unary_request();
   request.mutable_request()->mutable_options()->set_pipeline(
       pipestream::parse::v1::PROCESSING_PIPELINE_NATIVE);
   grpc::ClientContext native_context;

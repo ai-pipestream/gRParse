@@ -471,6 +471,25 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
   if (!custom_config_status.ok()) return custom_config_status;
   const grpc::Status heading_status = validate_heading_options(options, surface);
   if (!heading_status.ok()) return heading_status;
+  // COLLECTOR_VLM selects the VLM convert pipeline rather than a fan-out leg.
+  // By itself it runs grpc-vlm-convert; mixed with other collectors is rejected.
+  bool wants_vlm_collector = false;
+  for (const int raw : options.collectors()) {
+    if (!pipestream::parse::v1::Collector_IsValid(raw) ||
+        raw == pipestream::parse::v1::COLLECTOR_UNSPECIFIED) {
+      std::string name = pipestream::parse::v1::Collector_Name(
+          static_cast<pipestream::parse::v1::Collector>(raw));
+      if (name.empty()) name = std::to_string(raw);
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + " collectors contains invalid value '" + name + "'");
+    }
+    if (raw == pipestream::parse::v1::COLLECTOR_VLM) wants_vlm_collector = true;
+  }
+  if (wants_vlm_collector && options.collectors_size() != 1) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        surface + ": COLLECTOR_VLM must be the only collector "
+                                  "(it maps to PROCESSING_PIPELINE_VLM)");
+  }
   for (const auto raw : options.to_formats()) {
     const auto format = static_cast<pipestream::parse::v1::OutputFormat>(raw);
     if (!renderable(format)) {
@@ -973,9 +992,13 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   inputs.native_pipeline =
       options.has_pipeline() &&
       options.pipeline() == pipestream::parse::v1::PROCESSING_PIPELINE_NATIVE;
+  const bool vlm_collector =
+      options.collectors_size() == 1 &&
+      options.collectors(0) == pipestream::parse::v1::COLLECTOR_VLM;
   inputs.vlm_pipeline =
-      options.has_pipeline() &&
-      options.pipeline() == pipestream::parse::v1::PROCESSING_PIPELINE_VLM;
+      (options.has_pipeline() &&
+       options.pipeline() == pipestream::parse::v1::PROCESSING_PIPELINE_VLM) ||
+      vlm_collector;
   inputs.heading = heading_options_from(options);
   return inputs;
 }
@@ -1265,7 +1288,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
           convert_vlm_pages(collectors->vlm_channel(), vlm, bytes, pdf, &result.document,
                             inputs.inbound_deadline);
       for (const std::string& warning : report.warnings) {
-        result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, warning);
+        result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_VLM, warning);
       }
       if (!report.success) {
         return grpc::Status(report.code, report.error.empty()

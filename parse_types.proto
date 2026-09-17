@@ -367,6 +367,11 @@ enum Collector {
   // the storage content type and for the .confluence / .storage.xhtml
   // suffixes; plain XHTML with no macro layer stays with COLLECTOR_MARKUP.
   COLLECTOR_CONFLUENCE = 14;
+  // Route through grpc-vlm-convert for the body (same path as
+  // PROCESSING_PIPELINE_VLM). Not a Document-emitting fan-out leg: when it is
+  // the only collector listed it selects the VLM convert pipeline. Must not
+  // be mixed with other collectors.
+  COLLECTOR_VLM = 15;
 }
 
 // ============================================================================
