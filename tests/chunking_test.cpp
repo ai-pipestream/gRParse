@@ -273,7 +273,7 @@ docv1::Document field_guide() {
 void verify_chunking_is_byte_identical_across_runs_and_threads() {
   const docv1::Document document = field_guide();
   const OffsetTable offsets = offsets_for(document);
-  const ChunkOptions options{false, true};
+  const ChunkOptions options{.include_raw_text = true};
   const std::string reference =
       serialized(chunk_hierarchical(document, offsets, options, "guide.pdf"));
   require(!reference.empty(), "the fixture must chunk to something");
@@ -398,7 +398,7 @@ void verify_table_serialization_and_its_degradations() {
   docv1::Document markdown = new_document();
   add_table(&markdown, {{{"Name", true, false}, {"No|te", true, false}},
                         {{"Crow", false, true}, {"loud", false, false}}});
-  const ChunkOptions pipes{true, false};
+  const ChunkOptions pipes{.use_markdown_tables = true};
   require_eq(chunk_hierarchical(markdown, {}, pipes, "t.pdf").front().text(),
              "| Name | No\\|te |\n| --- | --- |\n| Crow | loud |",
              "use_markdown_tables serializes pipe tables with escaped pipes");
@@ -422,12 +422,14 @@ void verify_picture_chunks_carry_captions_only() {
 void verify_picture_chunks_emit_markdown_image_placeholder() {
   docv1::Document bare = new_document();
   add_picture(&bare, {});
-  const ChunkOptions with_images{false, false, true};
+  const ChunkOptions with_images{.use_markdown_images = true};
   const auto chunks = chunk_hierarchical(bare, {}, with_images, "p.pdf");
   require_eq(static_cast<int>(chunks.size()), 1, "uncaptioned picture emits with images on");
   require_eq(chunks.front().text(), "![IMAGE]", "default image placeholder matches jobkit");
 
-  const ChunkOptions custom{false, false, true, "[img]", true};
+  const ChunkOptions custom{.use_markdown_images = true,
+                            .image_placeholder = "[img]",
+                            .image_placeholder_set = true};
   require_eq(chunk_hierarchical(bare, {}, custom, "p.pdf").front().text(), "[img]",
              "explicit image_placeholder is used");
 
@@ -815,7 +817,8 @@ void verify_raw_text_mirrors_text_when_requested() {
   add_paragraph(&document, "alpha beta");
   const auto plain = chunk_hierarchical(document, {}, {}, "d.pdf");
   require(!plain.front().has_raw_text(), "raw_text stays unset by default");
-  const auto raw = chunk_hierarchical(document, {}, ChunkOptions{false, true}, "d.pdf");
+  const auto raw =
+      chunk_hierarchical(document, {}, ChunkOptions{.include_raw_text = true}, "d.pdf");
   require(raw.front().has_raw_text() && raw.front().raw_text() == raw.front().text(),
           "include_raw_text repeats the chunk text");
   require_eq(raw.front().filename(), "d.pdf", "every chunk names its source file");
