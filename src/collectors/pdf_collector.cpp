@@ -49,7 +49,8 @@ PdfRouteDecision route_pdf_by_classification(const PdfClassification& classifica
 
 PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
                            const std::string& bytes,
-                           CollectorDeadline inbound_deadline) {
+                           CollectorDeadline inbound_deadline,
+                           std::optional<std::pair<int, int>> page_range) {
   PdfParseResult result;
   if (channel == nullptr) {
     result.outcome.error = "pdf collector is not configured (GRPARSE_PDF_TARGET)";
@@ -66,6 +67,12 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
   // needs only the info event, but a text-based document's fast path needs
   // the fold, and the fold is built from the page stream.
   request.mutable_options()->set_emit_document(true);
+  // Docling page_range → collector options.pages (1-indexed inclusive span).
+  if (page_range.has_value()) {
+    for (int page = page_range->first; page <= page_range->second; ++page) {
+      if (page >= 1) request.mutable_options()->add_pages(static_cast<uint32_t>(page));
+    }
+  }
   upload_stream(*stream, request, bytes, /*always_send_chunk=*/false,
                 [&bytes](pdfv1::ParsePdfRequest& frame, size_t offset,
                          size_t length, bool /*last*/) {

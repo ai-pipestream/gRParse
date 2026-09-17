@@ -1,7 +1,9 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <grpcpp/grpcpp.h>
@@ -203,10 +205,12 @@ struct PdfParseResult {
 
 // grpc-pdf-inspector, dialed for routing: FULL mode with emit_document, so
 // a text-based document's own Document is the fast-path result while every
-// classification reports its OCR page set in the info event.
-PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
-                           const std::string& bytes,
-                           CollectorDeadline inbound_deadline = kNoCollectorDeadline);
+// classification reports its OCR page set in the info event. page_range
+// (inclusive 1-indexed) selects which pages the collector extracts when set.
+PdfParseResult collect_pdf(
+    const std::shared_ptr<grpc::Channel>& channel, const std::string& bytes,
+    CollectorDeadline inbound_deadline = kNoCollectorDeadline,
+    std::optional<std::pair<int, int>> page_range = std::nullopt);
 
 // The plain collector leg for a selection the pdf collector shares with
 // other collectors: the collector's Document is the contribution, whatever

@@ -529,7 +529,7 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
   if (inputs.context->IsCancelled()) return cancelled_outcome();
   const PdfParseResult parsed =
       collect_pdf(inputs.endpoints->channel(pipestream::parse::v1::COLLECTOR_PDF),
-                  *inputs.bytes, inputs.inbound_deadline);
+                  *inputs.bytes, inputs.inbound_deadline, inputs.tuning.page_range);
   const PdfRouteDecision route = route_pdf_by_classification(parsed.classification);
   if (parsed.outcome.success && (route.fast_path || inputs.native_pipeline)) {
     PdfParseResult fast = parsed;

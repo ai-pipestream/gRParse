@@ -392,7 +392,7 @@ class DocumentStreamReactor final
           endpoints == nullptr
               ? nullptr
               : endpoints->channel(pipestream::parse::v1::COLLECTOR_PDF),
-          *bytes, inbound_deadline);
+          *bytes, inbound_deadline, tuning.page_range);
       const PdfRouteDecision route = route_pdf_by_classification(parsed.classification);
       if (parsed.outcome.success && route.fast_path) {
         // Rendered before the reactor sees the document, on this thread,

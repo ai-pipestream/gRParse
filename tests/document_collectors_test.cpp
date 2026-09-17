@@ -1919,6 +1919,10 @@ class FakePdfService final : public pdfv1::PdfParseService::Service {
         pages_needing_ocr_(std::move(pages_needing_ocr)),
         encoding_issues_(encoding_issues) {}
 
+  // Pages the last dial asked for (PdfOptions.pages). Empty means the
+  // client left the field unset and the collector extracts every page.
+  std::vector<uint32_t> last_pages() const { return last_pages_; }
+
   grpc::Status ParsePdf(
       grpc::ServerContext*,
       grpc::ServerReaderWriter<pdfv1::ParsePdfResponse, pdfv1::ParsePdfRequest>* stream)
@@ -1926,9 +1930,12 @@ class FakePdfService final : public pdfv1::PdfParseService::Service {
     pdfv1::ParsePdfRequest request;
     bool emit_document = false;
     std::string bytes;
+    last_pages_.clear();
     while (stream->Read(&request)) {
       if (request.has_options()) {
         emit_document = request.options().emit_document();
+        last_pages_.assign(request.options().pages().begin(),
+                           request.options().pages().end());
       } else {
         bytes += request.chunk();
       }
@@ -1969,6 +1976,7 @@ class FakePdfService final : public pdfv1::PdfParseService::Service {
   pdfv1::PdfType type_;
   std::vector<uint32_t> pages_needing_ocr_;
   bool encoding_issues_;
+  std::vector<uint32_t> last_pages_;
 };
 
 class FailingPdfService final : public pdfv1::PdfParseService::Service {
@@ -2124,6 +2132,25 @@ void verify_pdf_plain_leg_returns_the_document() {
           "the plain leg returns the collector's document whatever the class");
 }
 
+// Docling page_range → PdfOptions.pages: inclusive 1-indexed span expands
+// into the collector's page list; unset leaves pages empty (all pages).
+void verify_pdf_page_range_forwards_as_pages() {
+  FakePdfService service(pdfv1::PDF_TYPE_TEXT_BASED, {});
+  ServerFixture server(&service);
+  const auto unset =
+      grparse::collect_pdf(server.channel(), "%PDF-fake", grparse::kNoCollectorDeadline);
+  require(unset.outcome.success, "unset page_range still collects: " + unset.outcome.error);
+  require(service.last_pages().empty(),
+          "without page_range the collector leaves PdfOptions.pages empty");
+
+  const auto ranged = grparse::collect_pdf(server.channel(), "%PDF-fake",
+                                           grparse::kNoCollectorDeadline,
+                                           std::make_pair(2, 4));
+  require(ranged.outcome.success, "page_range collect succeeds: " + ranged.outcome.error);
+  require(service.last_pages() == std::vector<uint32_t>({2, 3, 4}),
+          "page_range expands to the inclusive PdfOptions.pages list");
+}
+
 }  // namespace
 
 void verify_source_title_promotes_to_a_title_item() {
@@ -2196,5 +2223,6 @@ int main() {
       verify_pdf_collector_failure_is_an_outcome,
       verify_pdf_endpoint_configuration,
       verify_pdf_plain_leg_returns_the_document,
+      verify_pdf_page_range_forwards_as_pages,
   });
 }
