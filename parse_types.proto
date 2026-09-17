@@ -168,6 +168,19 @@ enum InferenceFramework {
   INFERENCE_FRAMEWORK_VLLM = 3;
 }
 
+// VLM engine backends for typed custom VLM option messages (serve parity).
+enum VlmEngineType {
+  VLM_ENGINE_TYPE_UNSPECIFIED = 0;
+  VLM_ENGINE_TYPE_TRANSFORMERS = 1;
+  VLM_ENGINE_TYPE_MLX = 2;
+  VLM_ENGINE_TYPE_VLLM = 3;
+  VLM_ENGINE_TYPE_API = 4;
+  VLM_ENGINE_TYPE_API_OLLAMA = 5;
+  VLM_ENGINE_TYPE_API_LMSTUDIO = 6;
+  VLM_ENGINE_TYPE_API_OPENAI = 7;
+  VLM_ENGINE_TYPE_AUTO_INLINE = 8;
+}
+
 // Picture-classifier labels (Docling PictureClassificationLabel values).
 // Wire class_name strings match the enum's snake value (bar_chart, …).
 enum PictureClassificationLabel {
@@ -467,6 +480,19 @@ message TargetResult {
 // Convert Options
 // ============================================================================
 
+// ScalarValue carries one typed scalar where the upstream model holds an
+// open dict[str, Any]: an integer stays an integer on the wire.
+message ScalarValue {
+  oneof kind {
+    string string_value = 1;
+    int64 int_value = 2;
+    double double_value = 3;
+    bool bool_value = 4;
+    // Integers above int64 range (e.g. DocumentOrigin.binary_hash).
+    uint64 uint_value = 5;
+  }
+}
+
 // PictureDescriptionLocal configures a local VLM for picture descriptions.
 message PictureDescriptionLocal {
   // Hugging Face repository ID
@@ -523,6 +549,78 @@ message VlmModelApi {
   optional string prompt = 6;
   optional int32 scale = 7;
   optional ResponseFormat response_format = 8;
+}
+
+message BaseVlmEngineOptions {
+  VlmEngineType engine_type = 1;
+}
+
+message EngineModelConfig {
+  optional string repo_id = 1;
+  optional string revision = 2;
+  optional string torch_dtype = 3;
+  map<string, ScalarValue> extra_config = 4;
+}
+
+message ApiModelConfig {
+  map<string, ScalarValue> params = 1;
+}
+
+message EngineModelConfigEntry {
+  VlmEngineType engine_type = 1;
+  EngineModelConfig config = 2;
+}
+
+message ApiModelConfigEntry {
+  VlmEngineType engine_type = 1;
+  ApiModelConfig config = 2;
+}
+
+message VlmModelSpec {
+  string name = 1;
+  string default_repo_id = 2;
+  optional string revision = 3;
+  optional string prompt = 4;
+  optional ResponseFormat response_format = 5;
+  repeated VlmEngineType supported_engines = 6;
+  repeated EngineModelConfigEntry engine_overrides = 7;
+  repeated ApiModelConfigEntry api_overrides = 8;
+  optional bool trust_remote_code = 9;
+  repeated string stop_strings = 10;
+  optional double temperature = 11;
+  optional int32 max_new_tokens = 12;
+  map<string, ScalarValue> extra_generation_config = 13;
+}
+
+message VlmConvertOptions {
+  BaseVlmEngineOptions engine_options = 1;
+  VlmModelSpec model_spec = 2;
+  optional double scale = 3;
+  optional int32 max_size = 4;
+  optional int32 batch_size = 5;
+  optional bool force_backend_text = 6;
+}
+
+message PictureDescriptionVlmEngineOptions {
+  optional int32 batch_size = 1;
+  optional double scale = 2;
+  optional double picture_area_threshold = 3;
+  repeated PictureClassificationLabel classification_allow = 4;
+  repeated PictureClassificationLabel classification_deny = 5;
+  optional double classification_min_confidence = 6;
+  BaseVlmEngineOptions engine_options = 7;
+  VlmModelSpec model_spec = 8;
+  optional string prompt = 9;
+  map<string, ScalarValue> generation_config = 10;
+}
+
+message CodeFormulaVlmOptions {
+  BaseVlmEngineOptions engine_options = 1;
+  VlmModelSpec model_spec = 2;
+  optional double scale = 3;
+  optional int32 max_size = 4;
+  optional bool extract_code = 5;
+  optional bool extract_formulas = 6;
 }
 
 // ConvertDocumentOptions mirrors all conversion settings from the REST API.
@@ -598,28 +696,28 @@ message ConvertDocumentOptions {
   optional string picture_description_preset = 31;
   // Preset for code/formula enrichment configuration
   optional string code_formula_preset = 32;
-  // Custom VLM pipeline configuration
-  optional google.protobuf.Struct vlm_pipeline_custom_config = 33;
-  // Custom picture description configuration
-  optional google.protobuf.Struct picture_description_custom_config = 34;
-  // Custom code/formula enrichment configuration
-  optional google.protobuf.Struct code_formula_custom_config = 35;
-  // Custom table structure extraction configuration
-  optional google.protobuf.Struct table_structure_custom_config = 36;
-  // Custom layout configuration
-  optional google.protobuf.Struct layout_custom_config = 37;
+  // Custom VLM pipeline configuration (typed; serve parity)
+  optional VlmConvertOptions vlm_pipeline_custom_config = 33;
+  // Custom picture description configuration (typed; serve parity)
+  optional PictureDescriptionVlmEngineOptions picture_description_custom_config = 34;
+  // Custom code/formula enrichment configuration (typed; serve parity)
+  optional CodeFormulaVlmOptions code_formula_custom_config = 35;
+  // Custom table structure extraction configuration (open scalar map)
+  map<string, ScalarValue> table_structure_custom_config = 36;
+  // Custom layout configuration (open scalar map)
+  map<string, ScalarValue> layout_custom_config = 37;
   // Preset for OCR configuration
   optional string ocr_preset = 38;
-  // Custom OCR configuration
-  optional google.protobuf.Struct ocr_custom_config = 39;
+  // Custom OCR configuration (open scalar map)
+  map<string, ScalarValue> ocr_custom_config = 39;
   // Preset for table structure extraction configuration
   optional string table_structure_preset = 40;
   // Preset for layout configuration
   optional string layout_preset = 41;
   // Preset for picture classification configuration
   optional string picture_classification_preset = 42;
-  // Custom picture classification configuration
-  optional google.protobuf.Struct picture_classification_custom_config = 43;
+  // Custom picture classification configuration (open scalar map)
+  map<string, ScalarValue> picture_classification_custom_config = 43;
   // The collectors to run for this parse. Empty routes by format: office
   // formats to COLLECTOR_LIBREOFFICE, WARC archives to COLLECTOR_FASTWARC,
   // audio and video to COLLECTOR_ASR,
@@ -692,19 +790,6 @@ message HeadingHierarchyOptions {
   // a heading is one level deeper when its height falls below
   // (1 - style_size_tolerance) of the founding height. Default 0.15.
   optional double style_size_tolerance = 9;
-}
-
-// ScalarValue carries one typed scalar where the upstream model holds an
-// open dict[str, Any]: an integer stays an integer on the wire.
-message ScalarValue {
-  oneof kind {
-    string string_value = 1;
-    int64 int_value = 2;
-    double double_value = 3;
-    bool bool_value = 4;
-    // Integers above int64 range (e.g. DocumentOrigin.binary_hash).
-    uint64 uint_value = 5;
-  }
 }
 
 // ============================================================================

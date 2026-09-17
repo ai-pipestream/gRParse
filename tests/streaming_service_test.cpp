@@ -396,7 +396,7 @@ void verify_parity_options_and_confidence(TestServer* server) {
   options->mutable_picture_description_api()->set_timeout(3.0);
   options->set_vlm_pipeline_model(pipestream::parse::v1::VLM_MODEL_TYPE_GRANITEDOCLING);
   options->set_ocr_preset("rapidocr");
-  options->mutable_ocr_custom_config();  // empty Struct accepted
+  // empty ScalarValue map is a no-op; presence of keys is accepted below
   grpc::ClientContext context;
   context.set_deadline(std::chrono::system_clock::now() + 10s);
   pipestream::parse::v1::ConvertSourceResponse response;
@@ -419,10 +419,7 @@ void verify_parity_options_and_confidence(TestServer* server) {
   require(document.exports().has_md(), "markdown was requested");
 
   request = unary_request();
-  (*request.mutable_request()
-        ->mutable_options()
-        ->mutable_ocr_custom_config()
-        ->mutable_fields())["lang"]
+  (*request.mutable_request()->mutable_options()->mutable_ocr_custom_config())["lang"]
       .set_string_value("eng");
   grpc::ClientContext lang_custom;
   pipestream::parse::v1::ConvertSourceResponse lang_response;
@@ -431,19 +428,34 @@ void verify_parity_options_and_confidence(TestServer* server) {
   require(lang_status.ok(), "ocr_custom_config.lang must be accepted: " + lang_status.error_message());
 
   request = unary_request();
-  (*request.mutable_request()
-        ->mutable_options()
-        ->mutable_ocr_custom_config()
-        ->mutable_fields())["unknown_key"]
-      .set_string_value("x");
-  grpc::ClientContext nonempty_custom;
-  pipestream::parse::v1::ConvertSourceResponse nonempty_response;
-  const grpc::Status nonempty_status =
-      client->ConvertSource(&nonempty_custom, request, &nonempty_response);
-  require(nonempty_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
-              nonempty_status.error_message().contains("ocr_custom_config.unknown_key"),
-          "unknown custom config keys must be rejected by name: " +
-              nonempty_status.error_message());
+  (*request.mutable_request()->mutable_options()->mutable_ocr_custom_config())["bitmap_area_threshold"]
+      .set_double_value(0.05);
+  (*request.mutable_request()->mutable_options()->mutable_table_structure_custom_config())["mode"]
+      .set_string_value("accurate");
+  (*request.mutable_request()->mutable_options()->mutable_layout_custom_config())["labels"]
+      .set_string_value("title,table");
+  grpc::ClientContext scalar_maps;
+  pipestream::parse::v1::ConvertSourceResponse scalar_response;
+  const grpc::Status scalar_status =
+      client->ConvertSource(&scalar_maps, request, &scalar_response);
+  require(scalar_status.ok(),
+          "open ScalarValue custom_config maps must be accepted: " +
+              scalar_status.error_message());
+
+  request = unary_request();
+  auto* vlm_custom =
+      request.mutable_request()->mutable_options()->mutable_vlm_pipeline_custom_config();
+  vlm_custom->mutable_engine_options()->set_engine_type(
+      pipestream::parse::v1::VLM_ENGINE_TYPE_TRANSFORMERS);
+  vlm_custom->mutable_model_spec()->set_name("granite");
+  vlm_custom->mutable_model_spec()->set_default_repo_id("ibm-granite/granite-vision");
+  grpc::ClientContext typed_vlm;
+  pipestream::parse::v1::ConvertSourceResponse typed_vlm_response;
+  const grpc::Status typed_vlm_status =
+      client->ConvertSource(&typed_vlm, request, &typed_vlm_response);
+  require(typed_vlm_status.ok(),
+          "typed vlm_pipeline_custom_config must be accepted: " +
+              typed_vlm_status.error_message());
 
   request = unary_request();
   auto* local = request.mutable_request()->mutable_options()->mutable_picture_description_local();

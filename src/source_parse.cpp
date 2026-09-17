@@ -135,11 +135,10 @@ bool implemented_option(std::string_view name) {
       "do_code_enrichment",
       "do_formula_enrichment",
       "code_formula_preset",
-      // Accepted for Docling clients that always populate them. The STANDARD /
-      // NATIVE path does not host a VLM convert leg yet (PROCESSING_PIPELINE_VLM
-      // is still rejected); these fields are validated and ignored until that
-      // dial exists. Empty *_custom_config Structs are accepted the same way;
-      // a Struct with any key is rejected by name.
+      // Accepted for Docling clients that always populate them. PROCESSING_PIPELINE_VLM
+      // dials grpc-vlm-convert when GRPARSE_VLM_CONVERT_TARGET is set. Typed
+      // *_custom_config messages and open ScalarValue maps are accepted; values
+      // are applied where a local dial exists (e.g. classification threshold).
       "vlm_pipeline_model",
       "vlm_pipeline_model_local",
       "vlm_pipeline_model_api",
@@ -324,92 +323,91 @@ grpc::Status validate_vlm_selection(const pipestream::parse::v1::ConvertDocument
 // Structs are accepted.
 grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumentOptions& options,
                                      const std::string& surface) {
-  const auto only_keys = [&](bool present, const google::protobuf::Struct& config,
-                             const char* name,
-                             std::initializer_list<const char*> allowed) -> grpc::Status {
-    if (!present || config.fields().empty()) return grpc::Status::OK;
-    for (const auto& [key, value] : config.fields()) {
-      bool ok = false;
-      for (const char* allowed_key : allowed) {
-        if (key == allowed_key) {
-          ok = true;
-          break;
-        }
-      }
-      if (!ok) {
-        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                            surface + " does not implement '" + std::string(name) + "." + key +
-                                "'");
-      }
-      (void)value;
+  const auto scalar_number =
+      [](const pipestream::parse::v1::ScalarValue& value) -> std::optional<double> {
+    if (value.has_double_value()) return value.double_value();
+    if (value.has_int_value()) return static_cast<double>(value.int_value());
+    if (value.has_uint_value()) return static_cast<double>(value.uint_value());
+    return std::nullopt;
+  };
+  const auto require_engine = [&](pipestream::parse::v1::VlmEngineType engine_type,
+                                  const char* name) -> grpc::Status {
+    if (engine_type == pipestream::parse::v1::VLM_ENGINE_TYPE_UNSPECIFIED) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + ": " + std::string(name) +
+                              ".engine_options.engine_type is required");
     }
     return grpc::Status::OK;
   };
-  if (auto s = only_keys(options.has_ocr_custom_config(), options.ocr_custom_config(),
-                         "ocr_custom_config", {"lang"});
-      !s.ok()) {
-    return s;
-  }
-  if (options.has_ocr_custom_config()) {
-    const auto& fields = options.ocr_custom_config().fields();
-    if (auto it = fields.find("lang"); it != fields.end()) {
-      if (!it->second.has_string_value() || it->second.string_value().empty()) {
-        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                            surface + ": ocr_custom_config.lang must be a non-empty string");
-      }
+  const auto require_model_spec = [&](const pipestream::parse::v1::VlmModelSpec& spec,
+                                      const char* name) -> grpc::Status {
+    if (spec.name().empty() || spec.default_repo_id().empty()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + ": " + std::string(name) +
+                              ".model_spec requires name and default_repo_id");
     }
-  }
-  if (auto s = only_keys(options.has_picture_classification_custom_config(),
-                         options.picture_classification_custom_config(),
-                         "picture_classification_custom_config", {"threshold"});
-      !s.ok()) {
-    return s;
-  }
-  if (options.has_picture_classification_custom_config()) {
-    const auto& fields = options.picture_classification_custom_config().fields();
-    if (auto it = fields.find("threshold"); it != fields.end()) {
-      if (!it->second.has_number_value() || it->second.number_value() < 0.0 ||
-          it->second.number_value() > 1.0) {
-        return grpc::Status(
-            grpc::StatusCode::INVALID_ARGUMENT,
-            surface + ": picture_classification_custom_config.threshold must be in [0, 1]");
-      }
-    }
-  }
-  const auto reject_nonempty = [&](bool present, const google::protobuf::Struct& config,
-                                   const char* name) -> grpc::Status {
-    if (!present || config.fields().empty()) return grpc::Status::OK;
-    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                        surface + " does not implement keys in '" + std::string(name) + "'");
+    return grpc::Status::OK;
   };
-  if (auto s = reject_nonempty(options.has_vlm_pipeline_custom_config(),
-                               options.vlm_pipeline_custom_config(),
-                               "vlm_pipeline_custom_config");
-      !s.ok()) {
-    return s;
+
+  if (options.has_vlm_pipeline_custom_config()) {
+    const auto& cfg = options.vlm_pipeline_custom_config();
+    if (auto s = require_engine(cfg.engine_options().engine_type(), "vlm_pipeline_custom_config");
+        !s.ok()) {
+      return s;
+    }
+    if (auto s = require_model_spec(cfg.model_spec(), "vlm_pipeline_custom_config"); !s.ok()) {
+      return s;
+    }
   }
-  if (auto s = reject_nonempty(options.has_picture_description_custom_config(),
-                               options.picture_description_custom_config(),
-                               "picture_description_custom_config");
-      !s.ok()) {
-    return s;
+  if (options.has_picture_description_custom_config()) {
+    const auto& cfg = options.picture_description_custom_config();
+    if (auto s =
+            require_engine(cfg.engine_options().engine_type(), "picture_description_custom_config");
+        !s.ok()) {
+      return s;
+    }
+    if (auto s = require_model_spec(cfg.model_spec(), "picture_description_custom_config");
+        !s.ok()) {
+      return s;
+    }
+    if (cfg.has_classification_min_confidence() &&
+        (cfg.classification_min_confidence() < 0.0 || cfg.classification_min_confidence() > 1.0)) {
+      return grpc::Status(
+          grpc::StatusCode::INVALID_ARGUMENT,
+          surface +
+              ": picture_description_custom_config.classification_min_confidence must be in [0, 1]");
+    }
   }
-  if (auto s = reject_nonempty(options.has_code_formula_custom_config(),
-                               options.code_formula_custom_config(), "code_formula_custom_config");
-      !s.ok()) {
-    return s;
+  if (options.has_code_formula_custom_config()) {
+    const auto& cfg = options.code_formula_custom_config();
+    if (auto s = require_engine(cfg.engine_options().engine_type(), "code_formula_custom_config");
+        !s.ok()) {
+      return s;
+    }
+    if (auto s = require_model_spec(cfg.model_spec(), "code_formula_custom_config"); !s.ok()) {
+      return s;
+    }
   }
-  if (auto s = reject_nonempty(options.has_table_structure_custom_config(),
-                               options.table_structure_custom_config(),
-                               "table_structure_custom_config");
-      !s.ok()) {
-    return s;
+
+  // Open ScalarValue maps: any key is accepted (Docling dict[str, Any] parity).
+  // Soft-validate well-known keys when present.
+  if (auto it = options.ocr_custom_config().find("lang"); it != options.ocr_custom_config().end()) {
+    if (!it->second.has_string_value() || it->second.string_value().empty()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + ": ocr_custom_config.lang must be a non-empty string");
+    }
   }
-  if (auto s = reject_nonempty(options.has_layout_custom_config(), options.layout_custom_config(),
-                               "layout_custom_config");
-      !s.ok()) {
-    return s;
+  if (auto it = options.picture_classification_custom_config().find("threshold");
+      it != options.picture_classification_custom_config().end()) {
+    const auto number = scalar_number(it->second);
+    if (!number.has_value() || *number < 0.0 || *number > 1.0) {
+      return grpc::Status(
+          grpc::StatusCode::INVALID_ARGUMENT,
+          surface + ": picture_classification_custom_config.threshold must be in [0, 1]");
+    }
   }
+  (void)options.table_structure_custom_config();
+  (void)options.layout_custom_config();
   return grpc::Status::OK;
 }
 
@@ -933,11 +931,26 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
       inputs.picture_description_min_confidence = api.classification_min_confidence();
     }
   }
-  if (options.has_picture_classification_custom_config()) {
-    const auto& fields = options.picture_classification_custom_config().fields();
-    if (auto it = fields.find("threshold"); it != fields.end() &&
+  if (auto it = options.picture_classification_custom_config().find("threshold");
+      it != options.picture_classification_custom_config().end() &&
+      inputs.picture_description_min_confidence <= 0.0) {
+    if (it->second.has_double_value()) {
+      inputs.picture_description_min_confidence = it->second.double_value();
+    } else if (it->second.has_int_value()) {
+      inputs.picture_description_min_confidence = static_cast<double>(it->second.int_value());
+    }
+  }
+  if (options.has_picture_description_custom_config()) {
+    const auto& cfg = options.picture_description_custom_config();
+    if (inputs.picture_description_allow.empty()) {
+      inputs.picture_description_allow = classification_class_names(cfg.classification_allow());
+    }
+    if (inputs.picture_description_deny.empty()) {
+      inputs.picture_description_deny = classification_class_names(cfg.classification_deny());
+    }
+    if (cfg.has_classification_min_confidence() &&
         inputs.picture_description_min_confidence <= 0.0) {
-      inputs.picture_description_min_confidence = it->second.number_value();
+      inputs.picture_description_min_confidence = cfg.classification_min_confidence();
     }
   }
   // ocr_custom_config.lang is accepted (validated) for Docling clients that
