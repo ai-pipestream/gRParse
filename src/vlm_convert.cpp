@@ -105,8 +105,9 @@ void apply_vlm_convert_options(const parsev1::ConvertDocumentOptions& convert,
     if (options->scale <= 0.0) options->scale = convert.render_scale();
   }
   if (convert.has_abort_on_error()) options->abort_on_error = convert.abort_on_error();
-  if (convert.page_range_size() == 2) {
-    options->page_range = std::make_pair(convert.page_range(0), convert.page_range(1));
+  if (convert.has_page_range()) {
+    options->page_range =
+        std::make_pair(convert.page_range().start(), convert.page_range().end());
   }
 }
 

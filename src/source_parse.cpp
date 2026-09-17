@@ -492,15 +492,11 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
                           surface + " from_formats contains invalid value '" + name + "'");
     }
   }
-  // Docling page_range is a (start, end) tuple; on this wire that is exactly
-  // two 1-indexed ints. Empty means the whole document.
-  if (options.page_range_size() != 0 && options.page_range_size() != 2) {
-    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                        surface + " page_range must be empty or [start, end]");
-  }
-  if (options.page_range_size() == 2) {
-    const int start = options.page_range(0);
-    const int end = options.page_range(1);
+  // Docling page_range is an inclusive (start, end) pair; on the wire that is
+  // IntSpan (same shape as serve). Unset means the whole document.
+  if (options.has_page_range()) {
+    const int start = options.page_range().start();
+    const int end = options.page_range().end();
     if (start < 1 || end < start) {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                           surface + " page_range must be a 1-indexed inclusive span");
@@ -869,8 +865,9 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   inputs.content_type = std::move(content_type);
   inputs.tuning = ocr_tuning(options.has_do_ocr(), options.do_ocr(), options.force_ocr(),
                              options.has_render_scale(), options.render_scale());
-  if (options.page_range_size() == 2) {
-    inputs.tuning.page_range = std::make_pair(options.page_range(0), options.page_range(1));
+  if (options.has_page_range()) {
+    inputs.tuning.page_range =
+        std::make_pair(options.page_range().start(), options.page_range().end());
   }
   if (options.has_include_images()) {
     inputs.tuning.capture_picture_images = options.include_images();

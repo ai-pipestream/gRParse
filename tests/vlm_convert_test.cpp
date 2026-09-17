@@ -118,8 +118,8 @@ void verify_apply_maps_granite_docling_and_raw_api_url() {
   convert.set_vlm_pipeline_model(parsev1::VLM_MODEL_TYPE_GRANITEDOCLING);
   convert.set_render_scale(2.0);
   convert.set_abort_on_error(true);
-  convert.add_page_range(1);
-  convert.add_page_range(2);
+  convert.mutable_page_range()->set_start(1);
+  convert.mutable_page_range()->set_end(2);
   grparse::VlmConvertOptions options;
   grparse::apply_vlm_convert_options(convert, &options);
   require(options.preset == vlmv1::VLM_PRESET_GRANITE_DOCLING, "granite-docling preset");

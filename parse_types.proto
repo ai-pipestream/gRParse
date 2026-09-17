@@ -656,8 +656,8 @@ message ConvertDocumentOptions {
   optional bool table_cell_matching = 10;
   // Processing pipeline
   optional ProcessingPipeline pipeline = 11;
-  // Page range to process (1-indexed)
-  repeated int32 page_range = 12;
+  // Page range to process (1-indexed inclusive start/end; serve IntSpan parity)
+  optional ai.pipestream.document.v1.IntSpan page_range = 12;
   // Per-document timeout in seconds
   optional double document_timeout = 13;
   // Abort on first error
