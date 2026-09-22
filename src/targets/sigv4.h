@@ -1,6 +1,7 @@
 // AWS Signature Version 4 for the S3 target.  Only what an object PUT needs:
 // header-signed requests with an already-hashed payload, no query signing, no
-// chunked upload signing, no session tokens.  The signer is pure so it can be
+// chunked upload signing. A session token is an ordinary signed header when
+// the caller puts x-amz-security-token on the request. The signer is pure so it can be
 // held to the published test vectors; nothing here opens a socket.
 //
 // Secrets never leave this boundary.  The functions take the secret key,

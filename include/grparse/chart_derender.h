@@ -49,6 +49,9 @@ struct ChartDerenderOptions {
   // picture_description_local.repo_id.
   std::string picture_description_preset_raw;
   std::string code_formula_preset_raw;
+  // Chart-extraction preset name forwarded as EnrichOptions.chart_preset_raw.
+  // Empty leaves the enrich service on its configured chart preset.
+  std::string chart_preset_raw;
   // Per-request enrich concurrency; 0 leaves the enrich service default.
   uint32_t concurrency = 0;
   // Picture-description class filters (from picture_description_local/api).

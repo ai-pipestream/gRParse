@@ -155,6 +155,9 @@ bool implemented_option(std::string_view name) {
       "vlm_pipeline_custom_config",
       "picture_description_custom_config",
       "code_formula_custom_config",
+      "caption_placement",
+      "chart_extraction_preset",
+      "chart_extraction_custom_config",
       "table_structure_custom_config",
       "layout_custom_config",
       "ocr_custom_config",
@@ -414,6 +417,84 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
   }
   (void)options.table_structure_custom_config();
   (void)options.layout_custom_config();
+
+  const bool has_chart_preset = options.has_chart_extraction_preset();
+  const bool has_chart_config = options.has_chart_extraction_custom_config();
+  if (has_chart_preset && has_chart_config) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        surface + ": chart_extraction_preset and "
+                                  "chart_extraction_custom_config are mutually exclusive");
+  }
+  if (has_chart_preset && options.chart_extraction_preset().empty()) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        surface + ": chart_extraction_preset is empty");
+  }
+  if (has_chart_config) {
+    const auto& cfg = options.chart_extraction_custom_config();
+    if (auto s = require_engine(cfg.engine_options().engine_type(),
+                                "chart_extraction_custom_config");
+        !s.ok()) {
+      return s;
+    }
+    if (!pipestream::parse::v1::VlmEngineType_IsValid(cfg.engine_options().engine_type())) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + ": chart_extraction_custom_config.engine_options."
+                                    "engine_type is not a known engine");
+    }
+    if (auto s = require_model_spec(cfg.model_spec(), "chart_extraction_custom_config");
+        !s.ok()) {
+      return s;
+    }
+    const bool chart2csv = !cfg.has_chart2csv() || cfg.chart2csv();
+    const bool chart2summary = cfg.has_chart2summary() && cfg.chart2summary();
+    const bool chart2code = cfg.has_chart2code() && cfg.chart2code();
+    const bool natural_language =
+        cfg.has_use_natural_language_prompts() && cfg.use_natural_language_prompts();
+    if (!chart2csv || chart2summary || chart2code || natural_language) {
+      return grpc::Status(
+          grpc::StatusCode::INVALID_ARGUMENT,
+          surface +
+              ": chart_extraction_custom_config asks for chart output this "
+              "service cannot forward (only chart2csv is carried, as the model name)");
+    }
+    if (cfg.has_output_format()) {
+      const auto format = cfg.output_format();
+      if (format == pipestream::parse::v1::CHART_EXTRACTION_OUTPUT_FORMAT_UNSPECIFIED &&
+          cfg.output_format_raw().empty()) {
+        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                            surface + ": chart_extraction_custom_config.output_format "
+                                      "is unspecified");
+      }
+      if (format != pipestream::parse::v1::CHART_EXTRACTION_OUTPUT_FORMAT_UNSPECIFIED &&
+          format != pipestream::parse::v1::
+                        CHART_EXTRACTION_OUTPUT_FORMAT_GRANITE_VISION_CHARTS) {
+        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                            surface + ": chart_extraction_custom_config.output_format "
+                                      "is not a known format");
+      }
+      if (!cfg.output_format_raw().empty() &&
+          cfg.output_format_raw() != "granite_vision_charts") {
+        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                            surface + ": chart_extraction_custom_config.output_format and "
+                                      "output_format_raw disagree");
+      }
+    } else if (!cfg.output_format_raw().empty() &&
+               cfg.output_format_raw() != "granite_vision_charts") {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + ": chart_extraction_custom_config.output_format_raw "
+                                    "is not a known format");
+    }
+  }
+  if (options.has_caption_placement()) {
+    switch (options.caption_placement()) {
+      case pipestream::parse::v1::CAPTION_PLACEMENT_STANDARD:
+      case pipestream::parse::v1::CAPTION_PLACEMENT_LAYOUT:
+        break;
+      default:
+        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                            surface + ": caption_placement is unspecified or unknown");
+    }
+  }
   return grpc::Status::OK;
 }
 
@@ -442,6 +523,8 @@ grpc::Status validate_heading_options(
   }
   return grpc::Status::OK;
 }
+
+}  // namespace
 
 // `surface` names the RPC in the rejections so a caller learns which of the
 // conversion surfaces turned its request down.
@@ -570,6 +653,8 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
   return validate_document_timeout(options.has_document_timeout(), options.document_timeout(),
                                    surface);
 }
+
+namespace {
 
 // The document every collector's output merges into, additively and in plan
 // order. It carries identity and nothing else: the schema name and version
@@ -788,6 +873,7 @@ struct ParseInputs {
   double picture_description_area_threshold = 0.0;
   std::string picture_description_preset;
   std::string code_formula_preset;
+  std::string chart_extraction_preset;
   // From picture_description_api.url / local.repo_id when set; empty means keep
   // the enrich service (or env) default.
   std::string picture_description_vlm_endpoint;
@@ -946,6 +1032,12 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   }
   if (options.has_code_formula_preset()) {
     inputs.code_formula_preset = options.code_formula_preset();
+  }
+  if (options.has_chart_extraction_preset()) {
+    inputs.chart_extraction_preset = options.chart_extraction_preset();
+  } else if (options.has_chart_extraction_custom_config()) {
+    inputs.chart_extraction_preset =
+        options.chart_extraction_custom_config().model_spec().name();
   }
   if (options.has_picture_description_local()) {
     // repo_id is the enrich raw preset name; presence of local does not force
@@ -1214,6 +1306,7 @@ void derender_charts_if_configured(const std::shared_ptr<CollectorEndpoints>& co
   enrich.picture_description_area_threshold = inputs.picture_description_area_threshold;
   enrich.picture_description_preset_raw = inputs.picture_description_preset;
   enrich.code_formula_preset_raw = inputs.code_formula_preset;
+  enrich.chart_preset_raw = inputs.chart_extraction_preset;
   if (!inputs.picture_description_vlm_endpoint.empty()) {
     enrich.vlm_endpoint = inputs.picture_description_vlm_endpoint;
   }

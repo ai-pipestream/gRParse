@@ -1,5 +1,6 @@
 #include "target_step.h"
 
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -27,13 +28,44 @@ grpc::Status deliver_zip(const docv1::Document& document,
   return grpc::Status::OK;
 }
 
+grpc::Status resolve_s3_credentials(const parsev1::S3Target& target, S3Config* config) {
+  const bool has_access = target.has_access_key();
+  const bool has_secret = target.has_secret_key();
+  if (has_access != has_secret) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        "S3Target: access_key and secret_key must be provided together");
+  }
+  if (has_access) {
+    if (target.access_key().empty() || target.secret_key().empty()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          "S3Target: access_key and secret_key must be non-empty when set");
+    }
+    config->access_key = target.access_key();
+    config->secret_key = target.secret_key();
+    return grpc::Status::OK;
+  }
+  const char* access = std::getenv("AWS_ACCESS_KEY_ID");
+  const char* secret = std::getenv("AWS_SECRET_ACCESS_KEY");
+  if (access == nullptr || access[0] == '\0' || secret == nullptr || secret[0] == '\0') {
+    return grpc::Status(
+        grpc::StatusCode::INVALID_ARGUMENT,
+        "S3Target omitted credentials and AWS_ACCESS_KEY_ID and "
+        "AWS_SECRET_ACCESS_KEY are not both set");
+  }
+  config->access_key = access;
+  config->secret_key = secret;
+  if (const char* token = std::getenv("AWS_SESSION_TOKEN");
+      token != nullptr && token[0] != '\0') {
+    config->session_token = token;
+  }
+  return grpc::Status::OK;
+}
+
 grpc::Status deliver_s3(const parsev1::S3Target& target, const docv1::Document& document,
                         const parsev1::DocumentExports& exports,
                         parsev1::TargetResult* result) {
   S3Config config;
   config.endpoint = target.endpoint();
-  config.access_key = target.access_key();
-  config.secret_key = target.secret_key();
   config.bucket = target.bucket();
   config.key_prefix = target.key_prefix();
   // Verification stays on unless the caller explicitly turned it off; an
@@ -42,6 +74,8 @@ grpc::Status deliver_s3(const parsev1::S3Target& target, const docv1::Document& 
   if (target.has_region()) {
     config.region = target.region();
   }
+  const grpc::Status credentials = resolve_s3_credentials(target, &config);
+  if (!credentials.ok()) return credentials;
 
   std::vector<UploadedObject> objects;
   try {

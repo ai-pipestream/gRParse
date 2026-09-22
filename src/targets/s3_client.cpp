@@ -200,6 +200,9 @@ std::string S3Client::put_object(const std::string& key, const std::string& body
                       {"content-type", std::string(kContentType)},
                       {"x-amz-content-sha256", payload_hash},
                       {"x-amz-date", timestamp}};
+  if (!config_.session_token.empty()) {
+    signable.headers.emplace_back("x-amz-security-token", config_.session_token);
+  }
   const std::string authorization =
       authorization_header(config_.access_key, config_.secret_key, signable);
 
@@ -216,6 +219,9 @@ std::string S3Client::put_object(const std::string& key, const std::string& body
     add_header("Content-Type: " + std::string(kContentType));
     add_header("x-amz-content-sha256: " + payload_hash);
     add_header("x-amz-date: " + timestamp);
+    if (!config_.session_token.empty()) {
+      add_header("x-amz-security-token: " + config_.session_token);
+    }
     add_header("Authorization: " + authorization);
     // libcurl would otherwise negotiate a 100-continue on every body past a
     // kilobyte, which costs a round trip against stores that ignore it.

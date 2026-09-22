@@ -41,6 +41,9 @@ struct SourceParse {
 //
 // `surface` names the RPC in every rejection, so a caller learns which of
 // the conversion surfaces turned its request down.
+grpc::Status validate_options(const ai::pipestream::parse::v1::ConvertDocumentOptions& options,
+                              const std::string& surface);
+
 grpc::Status parse_source(grpc::CallbackServerContext* context,
                           const ai::pipestream::parse::v1::ConvertDocumentRequest& request,
                           PageScheduler& scheduler,

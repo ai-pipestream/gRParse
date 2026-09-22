@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <exception>
+#include <stdexcept>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -110,6 +111,18 @@ void render_exports(const pipestream::parse::v1::ConvertDocumentOptions& options
       markdown.page_break_placeholder = options.md_page_break_placeholder();
     }
     markdown.compact_tables = options.md_compact_tables();
+    if (options.has_caption_placement()) {
+      switch (options.caption_placement()) {
+        case pipestream::parse::v1::CAPTION_PLACEMENT_LAYOUT:
+          markdown.caption_placement = MarkdownOptions::CaptionPlacement::kLayout;
+          break;
+        case pipestream::parse::v1::CAPTION_PLACEMENT_STANDARD:
+          markdown.caption_placement = MarkdownOptions::CaptionPlacement::kStandard;
+          break;
+        default:
+          throw std::invalid_argument("caption_placement is unspecified or unknown");
+      }
+    }
     if (options.has_image_export_mode()) {
       switch (options.image_export_mode()) {
         case pipestream::parse::v1::IMAGE_REF_MODE_EMBEDDED:

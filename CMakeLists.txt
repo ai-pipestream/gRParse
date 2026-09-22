@@ -773,6 +773,7 @@ if(BUILD_TESTING)
     confluence-storage-test
     docling-map-test
     document-assembly-test
+    convert-options-test
     document-collectors-test
     document-merge-test
     document-render-test

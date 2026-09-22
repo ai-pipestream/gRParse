@@ -3,6 +3,8 @@
 // are incomplete answers.  The bundle, the signer, and a live store are
 // covered by targets_test.cpp; this file pins the step that dispatches them.
 
+#include <cstdlib>
+#include <optional>
 #include <string>
 
 #include <grpcpp/grpcpp.h>
@@ -123,6 +125,14 @@ void verify_the_declared_but_unserved_targets_are_refused_by_name() {
 }
 
 void verify_an_incomplete_store_target_is_the_callers_fault() {
+  const char* saved_access = std::getenv("AWS_ACCESS_KEY_ID");
+  const std::string access_copy = saved_access ? saved_access : "";
+  const bool had_access = saved_access != nullptr;
+  const char* saved_secret = std::getenv("AWS_SECRET_ACCESS_KEY");
+  const std::string secret_copy = saved_secret ? saved_secret : "";
+  const bool had_secret = saved_secret != nullptr;
+  unsetenv("AWS_ACCESS_KEY_ID");
+  unsetenv("AWS_SECRET_ACCESS_KEY");
   const struct {
     void (*set)(parsev1::S3Target*);
     std::string what;
@@ -157,6 +167,78 @@ void verify_an_incomplete_store_target_is_the_callers_fault() {
     require(!status.error_message().empty(), one.what + " says what is missing");
     require_equal(result.objects_size(), 0, one.what + " writes no objects");
   }
+  if (had_access) setenv("AWS_ACCESS_KEY_ID", access_copy.c_str(), 1);
+  if (had_secret) setenv("AWS_SECRET_ACCESS_KEY", secret_copy.c_str(), 1);
+}
+
+void verify_s3_credentials_are_paired() {
+  struct EnvSlot {
+    const char* name;
+    std::optional<std::string> previous;
+    explicit EnvSlot(const char* name) : name(name) {
+      if (const char* current = std::getenv(name)) previous = current;
+      unsetenv(name);
+    }
+    ~EnvSlot() {
+      if (previous.has_value()) setenv(name, previous->c_str(), 1);
+      else unsetenv(name);
+    }
+  };
+  EnvSlot access("AWS_ACCESS_KEY_ID");
+  EnvSlot secret("AWS_SECRET_ACCESS_KEY");
+  EnvSlot token("AWS_SESSION_TOKEN");
+
+  auto deliver_s3 = [](void (*fill)(parsev1::S3Target*)) {
+    parsev1::Target target;
+    fill(target.mutable_s3());
+    parsev1::TargetResult result;
+    return targets::deliver(target, sample_document(), sample_exports(), &result);
+  };
+
+  const grpc::Status one_key = deliver_s3([](parsev1::S3Target* s3) {
+    s3->set_endpoint("https://127.0.0.1:9");
+    s3->set_bucket("bucket");
+    s3->set_access_key("only-access");
+  });
+  require_equal(static_cast<int>(one_key.error_code()),
+                static_cast<int>(grpc::StatusCode::INVALID_ARGUMENT),
+                "one S3 key without the other is INVALID_ARGUMENT");
+  require(one_key.error_message().contains("provided together"),
+          one_key.error_message());
+
+  const grpc::Status empty = deliver_s3([](parsev1::S3Target* s3) {
+    s3->set_endpoint("https://127.0.0.1:9");
+    s3->set_bucket("bucket");
+    s3->set_access_key("");
+    s3->set_secret_key("");
+  });
+  require_equal(static_cast<int>(empty.error_code()),
+                static_cast<int>(grpc::StatusCode::INVALID_ARGUMENT),
+                "empty S3 keys are INVALID_ARGUMENT");
+
+  const grpc::Status missing_env = deliver_s3([](parsev1::S3Target* s3) {
+    s3->set_endpoint("https://127.0.0.1:9");
+    s3->set_bucket("bucket");
+  });
+  require_equal(static_cast<int>(missing_env.error_code()),
+                static_cast<int>(grpc::StatusCode::INVALID_ARGUMENT),
+                "omitted S3 keys without the environment pair are INVALID_ARGUMENT");
+  require(missing_env.error_message().contains("AWS_ACCESS_KEY_ID"),
+          missing_env.error_message());
+
+  setenv("AWS_ACCESS_KEY_ID", "AKIAEXAMPLEKEY", 1);
+  setenv("AWS_SECRET_ACCESS_KEY", "s3cr3t-value-that-must-never-print", 1);
+  const grpc::Status from_env = deliver_s3([](parsev1::S3Target* s3) {
+    s3->set_endpoint("https://127.0.0.1:9");
+    s3->set_bucket("bucket");
+  });
+  require(from_env.error_code() != grpc::StatusCode::INVALID_ARGUMENT,
+          "a complete environment pair is accepted as credentials: " +
+              from_env.error_message());
+  require(!from_env.error_message().contains("s3cr3t-value-that-must-never-print"),
+          "the failure must not carry the secret key: " + from_env.error_message());
+  require(!from_env.error_message().contains("AKIAEXAMPLEKEY"),
+          "the failure must not carry the access key: " + from_env.error_message());
 }
 
 void verify_a_failed_delivery_leaks_no_credentials() {
@@ -185,6 +267,7 @@ int main() {
       verify_the_archive_is_a_pure_function_of_its_input,
       verify_the_declared_but_unserved_targets_are_refused_by_name,
       verify_an_incomplete_store_target_is_the_callers_fault,
+      verify_s3_credentials_are_paired,
       verify_a_failed_delivery_leaks_no_credentials,
   });
 }

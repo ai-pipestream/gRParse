@@ -397,6 +397,9 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
   if (!options.code_formula_preset_raw.empty()) {
     request_options->set_code_formula_preset_raw(options.code_formula_preset_raw);
   }
+  if (!options.chart_preset_raw.empty()) {
+    request_options->set_chart_preset_raw(options.chart_preset_raw);
+  }
   const auto seconds = std::chrono::ceil<std::chrono::seconds>(options.timeout).count();
   request_options->set_timeout_seconds(static_cast<uint32_t>(std::max<long long>(1, seconds)));
   if (!options.vlm_endpoint.empty()) request_options->set_vlm_endpoint(options.vlm_endpoint);

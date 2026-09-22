@@ -38,8 +38,7 @@ Docling feature catch-up is a fixed pipeline, not a one-off:
 
 Workspace rule: `/work/.cursor/rules/docling-parity-duty.mdc`.
 Local Monday Forgejo sweep: `~/.local/bin/parity-duty-weekly` (cron `0 9 * * 1`); script at `/work/docling-research/scripts/parity_duty_weekly.sh`.
-After the Cursor Monday Automation is Saved/Enabled in Glass, run
-`parity-duty-mark-automation-verified` so the duty status file records it.
+Cursor Monday Automation (enabled): `4163836e-b285-11f1-a3d8-362438fd9788` — marker at `~/.local/share/docling-parity-duty/automation-verified`.
 
 ## The family
 

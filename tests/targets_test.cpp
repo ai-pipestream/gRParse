@@ -284,6 +284,7 @@ class FakeStore final {
     std::string path;
     std::string authorization;
     std::string content_sha;
+    std::string session_token;
     std::string body;
   };
 
@@ -360,6 +361,7 @@ class FakeStore final {
     request.path = line.substr(method_end + 1, path_end - method_end - 1);
     request.authorization = header_value(head, "authorization");
     request.content_sha = header_value(head, "x-amz-content-sha256");
+    request.session_token = header_value(head, "x-amz-security-token");
     const std::string length = header_value(head, "content-length");
     const size_t expected = length.empty() ? 0 : std::stoul(length);
 
@@ -506,6 +508,37 @@ void verify_a_refused_upload_fails_without_leaking() {
   require(refused, "an unreachable store must fail the delivery");
 }
 
+// A session token is a signed header on the PUT, and it is not the secret.
+void verify_session_token_is_signed() {
+  const docv1::Document document = sample_document("session");
+  const auto files = targets::build_bundle(document, sample_exports(document));
+
+  FakeStore store;
+  targets::S3Config config;
+  config.endpoint = store.endpoint();
+  config.access_key = "AKIAIOSFODNN7EXAMPLE";
+  config.secret_key = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
+  config.bucket = "conversions";
+  config.verify_ssl = false;
+  config.session_token = "session-token-that-must-be-signed";
+
+  const auto objects = targets::upload_bundle(config, files);
+  require(objects.size() == files.size(), "a session token does not change which objects land");
+  const auto received = store.received();
+  require(received.size() == files.size(), "the store saw one request per member");
+  for (const auto& request : received) {
+    require(request.session_token == config.session_token,
+            "the session token is the x-amz-security-token header: " + request.session_token);
+    require(request.authorization.contains("x-amz-security-token"),
+            "the session token is one of the signed headers: " + request.authorization);
+    require(!request.authorization.contains(config.secret_key),
+            "the secret key must never appear on the wire");
+    require(!request.session_token.empty() &&
+                request.authorization.find(config.session_token) == std::string::npos,
+            "the authorization value must not repeat the session token");
+  }
+}
+
 void verify_incomplete_targets_are_rejected() {
   const docv1::Document document = sample_document("incomplete");
   const auto files = targets::build_bundle(document, sample_exports(document));
@@ -535,6 +568,7 @@ int main() {
       verify_region_comes_from_the_endpoint,
       verify_explicit_region_overrides_endpoint,
       verify_uploads_land_as_objects,
+      verify_session_token_is_signed,
       verify_a_refused_upload_fails_without_leaking,
       verify_incomplete_targets_are_rejected,
   });

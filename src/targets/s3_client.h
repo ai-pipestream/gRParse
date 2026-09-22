@@ -1,8 +1,10 @@
 // A minimal S3 object writer over libcurl: one signed PUT per object, path
 // style, against any S3-compatible endpoint.  No AWS SDK, because a PUT with
-// a Signature V4 header is the whole of what the S3 target needs, and no
-// vendored credential chain either: the credentials arrive in the request and
-// live no longer than the call.
+// a Signature V4 header is the whole of what the S3 target needs. Credentials
+// are concrete strings on S3Config for the length of the call: the request
+// supplies both keys, or the caller resolved AWS_ACCESS_KEY_ID and
+// AWS_SECRET_ACCESS_KEY (and AWS_SESSION_TOKEN when that pair includes one)
+// before constructing the client.
 //
 // Nothing here ever renders a credential.  Errors name the object key and the
 // transport failure and stop there, because an error message travels: it goes
@@ -21,6 +23,8 @@ struct S3Config {
   std::string endpoint;
   std::string access_key;
   std::string secret_key;
+  // Signed as x-amz-security-token when non-empty.
+  std::string session_token;
   std::string bucket;
   std::string key_prefix;
   bool verify_ssl = true;

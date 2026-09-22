@@ -41,6 +41,12 @@ struct MarkdownOptions {
   // emit a Markdown image using the item's uri when present.
   enum class ImageExportMode { kPlaceholder, kEmbedded, kReferenced };
   ImageExportMode image_export_mode = ImageExportMode::kPlaceholder;
+  // Caption order (docling-core CaptionPlacement). kStandard keeps each
+  // item type's order. kLayout places a caption after the item when every
+  // caption center is lower than the item in top-left page space, and keeps
+  // the standard order when the position cannot be determined.
+  enum class CaptionPlacement { kStandard, kLayout };
+  CaptionPlacement caption_placement = CaptionPlacement::kStandard;
 };
 
 std::string render_markdown(const ai::pipestream::document::v1::Document& document,

@@ -346,6 +346,49 @@ void verify_markdown_flattens_stacked_column_headers() {
           "header flags below row 0 must leave every row in the body:\n" + late_markdown);
 }
 
+void verify_markdown_caption_placement() {
+  auto with_page = [](docv1::Document* document) {
+    auto* page = &(*document->mutable_pages())[1];
+    page->set_page_no(1);
+    page->mutable_size()->set_width(100);
+    page->mutable_size()->set_height(200);
+  };
+  auto box = [](docv1::ProvenanceItem* prov, double t, double b, docv1::CoordOrigin origin) {
+    prov->set_page_no(1);
+    auto* bbox = prov->mutable_bbox();
+    bbox->set_l(0);
+    bbox->set_r(10);
+    bbox->set_t(t);
+    bbox->set_b(b);
+    bbox->set_coord_origin(origin);
+  };
+
+  docv1::Document below = base_document("caption-below.pdf");
+  with_page(&below);
+  auto* figure = add_picture(&below, "#/body", "fig.png");
+  const std::string caption = add_caption(&below, figure->self_ref(), "THE CAPTION");
+  figure->add_captions()->set_ref(caption);
+  box(figure->add_prov(), 50, 100, docv1::COORD_ORIGIN_TOPLEFT);
+  box(below.mutable_texts(below.texts_size() - 1)->mutable_text()->mutable_base()->add_prov(),
+      150, 170, docv1::COORD_ORIGIN_TOPLEFT);
+
+  grparse::MarkdownOptions layout;
+  layout.caption_placement = grparse::MarkdownOptions::CaptionPlacement::kLayout;
+  const std::string laid_out = grparse::render_markdown(below, layout);
+  require(laid_out.find("<!-- image -->") < laid_out.find("THE CAPTION"),
+          "a caption centered below the picture follows it:\n" + laid_out);
+  const std::string standard = grparse::render_markdown(below);
+  require(standard.find("THE CAPTION") < standard.find("<!-- image -->"),
+          "standard order keeps the picture caption first:\n" + standard);
+
+  docv1::Document unplaced = base_document("caption-unplaced.pdf");
+  auto* bare = add_picture(&unplaced, "#/body", "fig.png");
+  bare->add_captions()->set_ref(add_caption(&unplaced, bare->self_ref(), "THE CAPTION"));
+  const std::string fallback = grparse::render_markdown(unplaced, layout);
+  require(fallback.find("THE CAPTION") < fallback.find("<!-- image -->"),
+          "layout without boxes keeps the standard picture order:\n" + fallback);
+}
+
 void verify_markdown_compact_tables() {
   docv1::Document document = base_document("compact.pdf");
   auto* data = add_table(&document, "#/body")->mutable_data();
@@ -1131,6 +1174,7 @@ int main() {
       verify_markdown_multiline_cells_stay_single_line,
       verify_markdown_flattens_stacked_column_headers,
       verify_markdown_compact_tables,
+      verify_markdown_caption_placement,
       verify_markdown_page_break_placeholder,
       verify_markdown_escaping_marker_and_formatting_rules,
       verify_markdown_custom_meta_field_order,

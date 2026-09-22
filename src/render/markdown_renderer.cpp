@@ -30,6 +30,7 @@
 // projections are therefore not read here.
 #include <algorithm>
 #include <cstddef>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -66,7 +67,8 @@ class MarkdownRenderer : public MarkdownWalk {
   MarkdownRenderer(const docv1::Document& document, const MarkdownOptions& options)
       : MarkdownWalk(document),
         compact_tables_(options.compact_tables),
-        image_export_mode_(options.image_export_mode) {
+        image_export_mode_(options.image_export_mode),
+        caption_placement_(options.caption_placement) {
     if (options.page_break_placeholder.has_value()) {
       set_page_break_placeholder(*options.page_break_placeholder);
     }
@@ -85,6 +87,7 @@ class MarkdownRenderer : public MarkdownWalk {
  private:
   const bool compact_tables_;
   const MarkdownOptions::ImageExportMode image_export_mode_;
+  const MarkdownOptions::CaptionPlacement caption_placement_;
 
   // How the table formatter resolves a cell that points at another item.
   CellTextResolver cell_resolver() {
@@ -364,13 +367,103 @@ class MarkdownRenderer : public MarkdownWalk {
     *first_span = ref;
     if (own_variant) {
       const std::string captions = serialize_captions(item.code().captions());
-      if (!captions.empty()) res_parts.push_back(captions);
+      if (!captions.empty()) {
+        if (caption_goes_after(item.code().prov(), item.code().captions(), true)) {
+          res_parts.push_back(captions);
+        } else {
+          res_parts.insert(res_parts.begin(), captions);
+        }
+      }
     }
     return post_process(join(res_parts, inline_scope ? " " : "\n\n"), false, false,
                         formatting, hyperlink);
   }
 
   // -- captions -------------------------------------------------------------
+
+  // Vertical center in top-left page space. Unset origin with no raw label
+  // is top-left, matching the document model's default. An origin this
+  // renderer cannot place returns nullopt so the caller keeps standard order.
+  std::optional<double> center_y(const docv1::ProvenanceItem& prov) const {
+    if (!prov.has_bbox()) return std::nullopt;
+    const docv1::BoundingBox& bbox = prov.bbox();
+    const std::string& raw = bbox.coord_origin_raw();
+    const auto origin = bbox.coord_origin();
+    bool top_left = false;
+    bool bottom_left = false;
+    if (origin == docv1::COORD_ORIGIN_TOPLEFT) {
+      top_left = raw.empty() || raw == "TOPLEFT";
+    } else if (origin == docv1::COORD_ORIGIN_BOTTOMLEFT) {
+      bottom_left = raw.empty() || raw == "BOTTOMLEFT";
+    } else if (origin == docv1::COORD_ORIGIN_UNSPECIFIED) {
+      if (raw.empty() || raw == "TOPLEFT") top_left = true;
+      else if (raw == "BOTTOMLEFT") bottom_left = true;
+    }
+    if (!top_left && !bottom_left) return std::nullopt;
+    double t = bbox.t();
+    double b = bbox.b();
+    if (bottom_left) {
+      const auto page = document_.pages().find(prov.page_no());
+      if (page == document_.pages().end() || !page->second.has_size()) {
+        return std::nullopt;
+      }
+      const double height = page->second.size().height();
+      t = height - t;
+      b = height - b;
+    }
+    return (t + b) / 2.0;
+  }
+
+  const google::protobuf::RepeatedPtrField<docv1::ProvenanceItem>* text_prov(
+      const docv1::BaseTextItem& item) const {
+    if (item.item_case() == docv1::BaseTextItem::kCode) return &item.code().prov();
+    const auto* base = text_base(item);
+    if (base == nullptr) return nullptr;
+    return &base->prov();
+  }
+
+  // True when every caption is centered strictly below the item. nullopt
+  // when the position cannot be determined.
+  std::optional<bool> captions_below(
+      const google::protobuf::RepeatedPtrField<docv1::ProvenanceItem>& item_prov,
+      const google::protobuf::RepeatedPtrField<docv1::RefItem>& captions) const {
+    if (item_prov.empty() || captions.empty()) return std::nullopt;
+    const auto item_y = center_y(item_prov.Get(0));
+    if (!item_y.has_value()) return std::nullopt;
+    bool any = false;
+    bool all_below = true;
+    for (const auto& ref : captions) {
+      const auto* text = text_at(ref.ref());
+      if (text == nullptr) continue;
+      const auto* provs = text_prov(*text);
+      if (provs == nullptr) return std::nullopt;
+      const docv1::ProvenanceItem* match = nullptr;
+      for (const auto& prov : *provs) {
+        if (prov.page_no() == item_prov.Get(0).page_no()) {
+          match = &prov;
+          break;
+        }
+      }
+      if (match == nullptr) return std::nullopt;
+      const auto caption_y = center_y(*match);
+      if (!caption_y.has_value()) return std::nullopt;
+      any = true;
+      if (!(*caption_y > *item_y)) all_below = false;
+    }
+    if (!any) return std::nullopt;
+    return all_below;
+  }
+
+  bool caption_goes_after(
+      const google::protobuf::RepeatedPtrField<docv1::ProvenanceItem>& item_prov,
+      const google::protobuf::RepeatedPtrField<docv1::RefItem>& captions,
+      bool standard_after) const {
+    if (caption_placement_ == MarkdownOptions::CaptionPlacement::kLayout) {
+      const auto below = captions_below(item_prov, captions);
+      if (below.has_value()) return *below;
+    }
+    return standard_after;
+  }
 
   std::string serialize_captions(
       const google::protobuf::RepeatedPtrField<docv1::RefItem>& captions,
@@ -406,14 +499,19 @@ class MarkdownRenderer : public MarkdownWalk {
     }
     std::vector<std::string> parts;
     std::string caption_span;
-    parts.push_back(serialize_captions(table.captions(), &caption_span));
-    if (!parts.back().empty() && first_span != nullptr) *first_span = caption_span;
+    const std::string captions = serialize_captions(table.captions(), &caption_span);
+    const bool after = caption_goes_after(table.prov(), table.captions(), false);
+    if (!after) {
+      parts.push_back(captions);
+      if (!parts.back().empty() && first_span != nullptr) *first_span = caption_span;
+    }
     if (!excluded(ref)) {
       parts.push_back(render::table_markdown(table.data(), cell_resolver(), compact_tables_));
       if (!parts.back().empty() && first_span != nullptr && first_span->empty()) {
         *first_span = ref;
       }
     }
+    if (after && !captions.empty()) parts.push_back(captions);
     return join(parts, "\n\n");
   }
 
@@ -460,15 +558,17 @@ class MarkdownRenderer : public MarkdownWalk {
                                 std::string* first_span) {
     std::vector<std::string> parts;
     std::string caption_span;
-    parts.push_back(serialize_captions(picture.captions(), &caption_span));
-    if (!parts.back().empty()) *first_span = caption_span;
-    // Docling image_export_mode: PLACEHOLDER always emits the HTML comment;
-    // EMBEDDED / REFERENCED emit a Markdown image when the item carries a
-    // uri (data URI or path). Missing image falls back to the placeholder.
+    const std::string captions = serialize_captions(picture.captions(), &caption_span);
+    const bool after = caption_goes_after(picture.prov(), picture.captions(), false);
+    if (!after && !captions.empty()) {
+      parts.push_back(captions);
+      *first_span = caption_span;
+    }
     if (!excluded(ref)) {
       parts.emplace_back(picture_image_markdown(picture));
       if (first_span->empty()) *first_span = ref;
     }
+    if (after && !captions.empty()) parts.push_back(captions);
     return join(parts, "\n\n");
   }
 
