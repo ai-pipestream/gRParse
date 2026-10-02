@@ -4,6 +4,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <grpcpp/grpcpp.h>
@@ -177,6 +178,86 @@ void verify_convert_rasters_dials_and_merges() {
           "options lead and one full-page PNG is sent");
 }
 
+// Answers the first page with page_raw, then keeps the stream open until the
+// client cancels it (or ten seconds pass), standing in for a peer still busy
+// with the rest of the document.
+class StallingVlmConvertService final : public vlmv1::VlmConvertService::Service {
+ public:
+  grpc::Status ConvertPages(
+      grpc::ServerContext* context,
+      grpc::ServerReaderWriter<vlmv1::ConvertPagesResponse, vlmv1::ConvertPagesRequest>*
+          stream) override {
+    vlmv1::ConvertPagesRequest request;
+    while (stream->Read(&request)) {
+    }
+    vlmv1::ConvertPagesResponse event;
+    event.mutable_page_raw()->set_page_no(1);
+    event.mutable_page_raw()->set_error("model refused the page");
+    stream->Write(event);
+    const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!context->IsCancelled() && std::chrono::steady_clock::now() < give_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return grpc::Status::OK;
+  }
+};
+
+std::shared_ptr<const std::string> one_page_png() {
+  cv::Mat image(16, 12, CV_8UC3, cv::Scalar(1, 2, 3));
+  std::vector<unsigned char> png;
+  require(cv::imencode(".png", image, png, grparse::kPngEncodeParams), "encode fixture");
+  return std::make_shared<const std::string>(reinterpret_cast<const char*>(png.data()),
+                                             png.size());
+}
+
+// abort_on_error on a page_raw event cancels the call before Finish, so the
+// abort returns at once instead of waiting out a peer that is still working.
+void verify_abort_cancels_the_stream() {
+  StallingVlmConvertService stalling;
+  ServerFixture server(&stalling);
+  grparse::VlmConvertOptions options;
+  options.target = server.target();
+  options.timeout = std::chrono::milliseconds(30000);
+  options.abort_on_error = true;
+  docv1::Document document;
+  document.mutable_body()->set_self_ref("#/body");
+  const auto started = std::chrono::steady_clock::now();
+  const grparse::VlmConvertReport report = grparse::convert_vlm_pages(
+      server.channel(), options, one_page_png(), /*pdf=*/false, &document);
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  require(!report.success && report.code == grpc::StatusCode::INTERNAL &&
+              report.error.contains("model refused the page"),
+          "the page_raw event aborts the convert: " + report.error);
+  require(elapsed < std::chrono::seconds(5), "the abort does not wait for the peer to finish");
+}
+
+// A cancelled request or a passed deadline stops before the next page: nothing
+// is rasterized further and the peer is never dialed for it.
+void verify_cancel_and_deadline_stop_before_rendering() {
+  FakeVlmConvertService fake;
+  ServerFixture server(&fake);
+  grparse::VlmConvertOptions options;
+  options.target = server.target();
+  options.timeout = std::chrono::milliseconds(5000);
+  docv1::Document document;
+  document.mutable_body()->set_self_ref("#/body");
+
+  const grparse::VlmConvertReport cancelled = grparse::convert_vlm_pages(
+      server.channel(), options, one_page_png(), /*pdf=*/false, &document,
+      grparse::kNoCollectorDeadline, [] { return true; });
+  require(!cancelled.success && cancelled.code == grpc::StatusCode::CANCELLED &&
+              cancelled.pages_sent == 0,
+          "a cancelled request sends nothing: " + cancelled.error);
+
+  const grparse::VlmConvertReport expired = grparse::convert_vlm_pages(
+      server.channel(), options, one_page_png(), /*pdf=*/false, &document,
+      std::chrono::system_clock::now() - std::chrono::seconds(1));
+  require(!expired.success && expired.code == grpc::StatusCode::DEADLINE_EXCEEDED &&
+              expired.pages_sent == 0,
+          "a passed deadline sends nothing: " + expired.error);
+  require(fake.calls() == 0, "neither stopped request dialed the peer");
+}
+
 void verify_missing_target_is_failed_precondition() {
   docv1::Document document;
   document.mutable_body()->set_self_ref("#/body");
@@ -207,6 +288,8 @@ int main() {
       verify_apply_maps_granite_docling_and_raw_api_url,
       verify_convert_rasters_dials_and_merges,
       verify_missing_target_is_failed_precondition,
+      verify_abort_cancels_the_stream,
+      verify_cancel_and_deadline_stop_before_rendering,
       verify_endpoints_lazy_channel,
   });
 }

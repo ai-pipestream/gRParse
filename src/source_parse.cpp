@@ -1519,7 +1519,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
       result.document = std::move(base);
       const VlmConvertReport report =
           convert_vlm_pages(collectors->vlm_channel(), vlm, bytes, pdf, &result.document,
-                            inputs.inbound_deadline);
+                            inputs.inbound_deadline, [context] { return context->IsCancelled(); });
       for (const std::string& warning : report.warnings) {
         result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_VLM, warning);
       }

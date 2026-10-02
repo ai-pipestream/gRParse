@@ -1,7 +1,10 @@
 #include "grparse/vlm_convert.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <functional>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -115,7 +118,8 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
                                    const VlmConvertOptions& options,
                                    std::shared_ptr<const std::string> bytes, bool pdf,
                                    docv1::Document* document,
-                                   CollectorDeadline inbound_deadline) {
+                                   CollectorDeadline inbound_deadline,
+                                   const std::function<bool()>& cancelled) {
   VlmConvertReport report;
   if (document == nullptr || bytes == nullptr) {
     report.error = "vlm convert: missing document or bytes";
@@ -162,15 +166,36 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
     if (last > source->page_count()) last = source->page_count();
   }
 
-  struct PagePng {
-    uint32_t page_no = 0;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    std::string png;
+  // Pages render, encode and go out one at a time, so memory holds one page's
+  // raster and PNG, not the whole document's. The stream opens on the first
+  // page that encodes: a document with nothing to send never dials the peer.
+  auto stub = vlmv1::VlmConvertService::NewStub(channel);
+  grpc::ClientContext context;
+  std::unique_ptr<grpc::ClientReaderWriter<vlmv1::ConvertPagesRequest,
+                                           vlmv1::ConvertPagesResponse>>
+      stream;
+  vlmv1::ConvertPagesRequest frame;
+  bool written = true;
+  // Ends the dial early: the peer is told to stop before Finish, which would
+  // otherwise wait for it to finish streaming.
+  const auto abandon = [&](grpc::StatusCode code, std::string error) {
+    report.error = std::move(error);
+    report.code = code;
+    if (stream) {
+      context.TryCancel();
+      const grpc::Status ignored = stream->Finish();
+      (void)ignored;
+    }
+    return report;
   };
-  std::vector<PagePng> pages;
-  pages.reserve(static_cast<size_t>(last - first + 1));
-  for (int page_no = first; page_no <= last; ++page_no) {
+  for (int page_no = first; page_no <= last && written; ++page_no) {
+    if (cancelled && cancelled()) {
+      return abandon(grpc::StatusCode::CANCELLED, "vlm convert: request cancelled");
+    }
+    if (std::chrono::system_clock::now() >= inbound_deadline) {
+      return abandon(grpc::StatusCode::DEADLINE_EXCEEDED,
+                     "vlm convert: deadline exceeded before page " + std::to_string(page_no));
+    }
     cv::Mat raster;
     try {
       raster = source->render_page(page_no);
@@ -178,9 +203,7 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
       report.warnings.push_back("vlm convert: page " + std::to_string(page_no) +
                                 " render failed: " + ex.what());
       if (options.abort_on_error) {
-        report.error = report.warnings.back();
-        report.code = grpc::StatusCode::INTERNAL;
-        return report;
+        return abandon(grpc::StatusCode::INTERNAL, report.warnings.back());
       }
       continue;
     }
@@ -188,9 +211,7 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
       report.warnings.push_back("vlm convert: page " + std::to_string(page_no) +
                                 " rendered empty");
       if (options.abort_on_error) {
-        report.error = report.warnings.back();
-        report.code = grpc::StatusCode::INTERNAL;
-        return report;
+        return abandon(grpc::StatusCode::INTERNAL, report.warnings.back());
       }
       continue;
     }
@@ -199,52 +220,39 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
       report.warnings.push_back("vlm convert: page " + std::to_string(page_no) +
                                 " PNG encode failed");
       if (options.abort_on_error) {
-        report.error = report.warnings.back();
-        report.code = grpc::StatusCode::INTERNAL;
-        return report;
+        return abandon(grpc::StatusCode::INTERNAL, report.warnings.back());
       }
       continue;
     }
-    PagePng page;
-    page.page_no = static_cast<uint32_t>(page_no);
-    page.width = static_cast<uint32_t>(raster.cols);
-    page.height = static_cast<uint32_t>(raster.rows);
-    page.png.assign(reinterpret_cast<const char*>(png.data()), png.size());
-    pages.push_back(std::move(page));
+    if (!stream) {
+      context.set_deadline(capped_collector_deadline(inbound_deadline, options.timeout));
+      context.set_wait_for_ready(false);
+      stream = stub->ConvertPages(&context);
+      vlmv1::ConvertOptions* request_options = frame.mutable_options();
+      request_options->set_preset(options.preset);
+      if (!options.preset_raw.empty()) request_options->set_preset_raw(options.preset_raw);
+      request_options->set_response_format(options.response_format);
+      if (!options.prompt.empty()) request_options->set_prompt(options.prompt);
+      if (options.scale > 0.0) request_options->set_scale(options.scale);
+      if (!options.endpoint.empty()) request_options->set_endpoint(options.endpoint);
+      if (options.concurrency != 0) request_options->set_concurrency(options.concurrency);
+      request_options->set_abort_on_error(options.abort_on_error);
+      written = stream->Write(frame);
+      if (!written) break;
+    }
+    frame.Clear();
+    vlmv1::PageImage* image = frame.mutable_page_image();
+    image->set_png(reinterpret_cast<const char*>(png.data()), png.size());
+    image->set_page_no(static_cast<uint32_t>(page_no));
+    image->set_width(static_cast<uint32_t>(raster.cols));
+    image->set_height(static_cast<uint32_t>(raster.rows));
+    written = stream->Write(frame);
+    if (written) ++report.pages_sent;
   }
-  if (pages.empty()) {
+  if (!stream) {
     report.error = "vlm convert: no pages could be rasterized";
     report.code = grpc::StatusCode::INTERNAL;
     return report;
-  }
-  report.pages_sent = static_cast<int>(pages.size());
-
-  auto stub = vlmv1::VlmConvertService::NewStub(channel);
-  grpc::ClientContext context;
-  context.set_deadline(capped_collector_deadline(inbound_deadline, options.timeout));
-  context.set_wait_for_ready(false);
-  auto stream = stub->ConvertPages(&context);
-
-  vlmv1::ConvertPagesRequest frame;
-  vlmv1::ConvertOptions* request_options = frame.mutable_options();
-  request_options->set_preset(options.preset);
-  if (!options.preset_raw.empty()) request_options->set_preset_raw(options.preset_raw);
-  request_options->set_response_format(options.response_format);
-  if (!options.prompt.empty()) request_options->set_prompt(options.prompt);
-  if (options.scale > 0.0) request_options->set_scale(options.scale);
-  if (!options.endpoint.empty()) request_options->set_endpoint(options.endpoint);
-  if (options.concurrency != 0) request_options->set_concurrency(options.concurrency);
-  request_options->set_abort_on_error(options.abort_on_error);
-  bool written = stream->Write(frame);
-  for (const PagePng& page : pages) {
-    if (!written) break;
-    frame.Clear();
-    vlmv1::PageImage* image = frame.mutable_page_image();
-    image->set_png(page.png);
-    image->set_page_no(page.page_no);
-    image->set_width(page.width);
-    image->set_height(page.height);
-    written = stream->Write(frame);
   }
   stream->WritesDone();
   if (!written) {
@@ -270,11 +278,7 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
       else if (!event.page_raw().text().empty()) detail += " (unmapped text)";
       report.warnings.push_back(std::move(detail));
       if (options.abort_on_error) {
-        report.error = report.warnings.back();
-        report.code = grpc::StatusCode::INTERNAL;
-        const grpc::Status ignored = stream->Finish();
-        (void)ignored;
-        return report;
+        return abandon(grpc::StatusCode::INTERNAL, report.warnings.back());
       }
     }
   }
