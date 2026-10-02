@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <unordered_map>
@@ -240,8 +241,9 @@ class ConsensusPdfPageSource final : public PageSource {
     std::string last_error = "no backend targets";
     for (const std::string& target : targets) {
       try {
-        sources_.push_back(
-            {target, open_remote_pdf_document(bytes, target, render_dpi)});
+        auto source = open_remote_pdf_document(bytes, target, render_dpi);
+        const int pages = source->page_count();
+        sources_.push_back({target, std::move(source), pages});
       } catch (const InvalidDocument& error) {
         // A backend that cannot load this document leaves the vote; the
         // others still read it.
@@ -251,7 +253,17 @@ class ConsensusPdfPageSource final : public PageSource {
       }
     }
     if (sources_.empty()) throw InvalidDocument(last_error);
-    pages_ = sources_.front().source->page_count();
+    // Legs can disagree on the count (a repaired xref, an engine that skips
+    // broken pages). The document is the longest reading; a page past a
+    // leg's own count is simply not that leg's to vote on.
+    for (const Entry& entry : sources_) {
+      if (entry.pages != sources_.front().pages) {
+        std::cerr << "consensus: backend " << entry.target << " reports "
+                  << entry.pages << " pages, " << sources_.front().target
+                  << " reports " << sources_.front().pages << std::endl;
+      }
+      pages_ = std::max(pages_, entry.pages);
+    }
   }
 
   int page_count() const override { return pages_; }
@@ -260,11 +272,11 @@ class ConsensusPdfPageSource final : public PageSource {
     std::vector<OcrPage> candidates;
     std::vector<std::string> names;
     std::vector<std::string> engines;
-    for (auto& entry : sources_) {
-      if (entry.disabled) continue;
+    for (const auto& entry : sources_) {
+      if (page_number > entry.pages || leg_disabled(entry)) continue;
       try {
         auto page = entry.source->extract_digital_page(page_number);
-        entry.consecutive_failures = 0;
+        record_leg_success(entry);
         if (page.has_value() && !page->lines.empty()) {
           candidates.push_back(std::move(*page));
           names.push_back(entry.target);
@@ -276,13 +288,7 @@ class ConsensusPdfPageSource final : public PageSource {
         // dependable than the best configured backend. A leg that keeps
         // failing is dropped for the rest of the document so its deadline
         // never taxes the remaining pages.
-        ++entry.consecutive_failures;
-        if (entry.consecutive_failures >= kCircuitBreakerFailures) {
-          entry.disabled = true;
-          std::cerr << "consensus: dropping backend " << entry.target << ": "
-                    << entry.consecutive_failures
-                    << " consecutive page failures" << std::endl;
-        } else {
+        if (!record_leg_failure(entry)) {
           std::cerr << "consensus: page " << page_number << " skipped on "
                     << entry.target << ": " << error.what() << std::endl;
         }
@@ -347,19 +353,15 @@ class ConsensusPdfPageSource final : public PageSource {
     // isolation as the text path: a dead first target must not fail a page
     // another backend can render.
     std::string last_error = "no backend rendered the page";
-    for (auto& entry : sources_) {
-      if (entry.disabled) continue;
+    for (const auto& entry : sources_) {
+      if (page_number > entry.pages || leg_disabled(entry)) continue;
       try {
-        return entry.source->render_page(page_number);
+        cv::Mat raster = entry.source->render_page(page_number);
+        record_leg_success(entry);
+        return raster;
       } catch (const InvalidDocument& error) {
         last_error = error.what();
-        ++entry.consecutive_failures;
-        if (entry.consecutive_failures >= kCircuitBreakerFailures) {
-          entry.disabled = true;
-          std::cerr << "consensus: dropping backend " << entry.target << ": "
-                    << entry.consecutive_failures
-                    << " consecutive page failures" << std::endl;
-        } else {
+        if (!record_leg_failure(entry)) {
           std::cerr << "consensus: render of page " << page_number
                     << " skipped on " << entry.target << ": " << error.what()
                     << std::endl;
@@ -373,14 +375,42 @@ class ConsensusPdfPageSource final : public PageSource {
   struct Entry {
     std::string target;
     std::shared_ptr<PageSource> source;
+    int pages = 0;
     // The vote runs through const PageSource handles, so the breaker state
     // is mutable: a consecutive per-page failure count, and the switch that
     // drops the leg for the rest of the document. Any page the leg serves
-    // (text or raster) resets the count.
+    // (text or raster) resets the count. Guarded by breaker_mutex_: render
+    // workers call into one source from several threads at once.
     mutable int consecutive_failures = 0;
     mutable bool disabled = false;
   };
+
+  bool leg_disabled(const Entry& entry) const {
+    const std::lock_guard lock(breaker_mutex_);
+    return entry.disabled;
+  }
+
+  void record_leg_success(const Entry& entry) const {
+    const std::lock_guard lock(breaker_mutex_);
+    entry.consecutive_failures = 0;
+  }
+
+  // Counts one page failure; returns true (and logs) when it drops the leg.
+  bool record_leg_failure(const Entry& entry) const {
+    const std::lock_guard lock(breaker_mutex_);
+    ++entry.consecutive_failures;
+    if (entry.disabled || entry.consecutive_failures < kCircuitBreakerFailures) {
+      return entry.disabled;
+    }
+    entry.disabled = true;
+    std::cerr << "consensus: dropping backend " << entry.target << ": "
+              << entry.consecutive_failures << " consecutive page failures"
+              << std::endl;
+    return true;
+  }
+
   std::vector<Entry> sources_;
+  mutable std::mutex breaker_mutex_;
   const double render_dpi_;
   int pages_ = 0;
 };
