@@ -10,6 +10,7 @@
 #include <thread>
 
 #include "grparse/chart_derender.h"
+#include "grparse/chart_extraction_policy.h"
 #include "grparse/vlm_convert.h"
 #include "grparse_session_ep.h"
 
@@ -339,6 +340,10 @@ CollectorTargets read_collector_targets() {
       // The chart derender leg through grpc-enrich: off unless a target
       // is named; the timeout bounds the whole leg per parse.
       .derender = std::move(derender),
+      // Which chart-extraction presets, engines and custom configs a
+      // Convert request may use (docling-serve's five chart settings).
+      .chart_policy = chart_extraction_policy_from_env(
+          [](const char* name) -> const char* { return std::getenv(name); }),
       // The VLM convert leg through grpc-vlm-convert: off unless a target
       // is named; PROCESSING_PIPELINE_VLM requires it.
       .vlm = std::move(vlm),
@@ -376,6 +381,26 @@ void report_collector_targets(const CollectorTargets& targets, bool layout_activ
                      : ", vlm " + targets.derender.vlm_endpoint);
   } else {
     std::println("gRParse chart derender (enrich): not configured");
+  }
+  {
+    const ChartExtractionPolicy& policy = targets.chart_policy;
+    std::string presets;
+    for (const std::string& id : policy.preset_ids()) {
+      presets += (presets.empty() ? "" : ", ") + id;
+    }
+    const auto default_preset = policy.resolve("default");
+    std::println("gRParse chart extraction policy: default {} ({}{}), presets [{}], engines {}, "
+                 "custom config {}",
+                 policy.settings().default_preset,
+                 default_preset.has_value() && !default_preset->model.empty()
+                     ? default_preset->model
+                     : "endpoint default model",
+                 default_preset.has_value() && !default_preset->vlm_endpoint.empty()
+                     ? ", vlm " + default_preset->vlm_endpoint
+                     : std::string(),
+                 presets,
+                 policy.settings().allowed_engines.has_value() ? "restricted" : "any",
+                 policy.settings().allow_custom_config ? "allowed" : "disabled");
   }
   if (targets.vlm.enabled()) {
     std::println("gRParse vlm convert: {} ({} ms{})", targets.vlm.target,

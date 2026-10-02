@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -9,6 +10,7 @@
 
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "ai/pipestream/enrich/v1/enrich_service.pb.h"
+#include "grparse/chart_extraction_policy.h"
 #include "grparse/collector_coordinator.h"
 
 namespace grparse {
@@ -17,9 +19,11 @@ namespace grparse {
 // their data table from grpc-enrich, the fleet's VLM face. gRParse never
 // talks to a VLM itself; it sends the chart pictures (self_ref, verdict,
 // pixels) to EnrichService.EnrichDocument with do_chart_extraction and folds
-// each ChartTable that comes back into that picture's tabular-chart
-// annotation, attributed to the model as a GenerationSource. Office charts
-// already carry a typed table from their live model and are never sent.
+// what comes back into the picture: a ChartTable into its tabular-chart
+// annotation and meta.tabular_chart, a ChartSummary into meta.description,
+// a ChartCode into meta.code, each attributed to the model (created_by and
+// a GenerationSource). Office charts already carry a typed table from their
+// live model and are never sent.
 //
 // The leg is opt-in (GRPARSE_ENRICH_TARGET unset means it does not exist),
 // bounded (the sooner of the inbound call's deadline and `timeout`), and
@@ -49,9 +53,11 @@ struct ChartDerenderOptions {
   // picture_description_local.repo_id.
   std::string picture_description_preset_raw;
   std::string code_formula_preset_raw;
-  // Chart-extraction preset name forwarded as EnrichOptions.chart_preset_raw.
-  // Empty leaves the enrich service on its configured chart preset.
-  std::string chart_preset_raw;
+  // The chart-extraction preset the server policy resolved for this request
+  // (outputs, prompt dialect, model, endpoint), sent as
+  // EnrichOptions.chart_extraction. Unset sends no chart_extraction message,
+  // which leaves the enrich service on its original single CSV call.
+  std::optional<ChartExtractionPreset> chart_extraction;
   // Per-request enrich concurrency; 0 leaves the enrich service default.
   uint32_t concurrency = 0;
   // Picture-description class filters (from picture_description_local/api).
@@ -105,6 +111,23 @@ bool fold_chart_table(const ai::pipestream::enrich::v1::ItemAnnotation& annotati
                       const std::string& endpoint,
                       ai::pipestream::document::v1::Document* document);
 
+// Folds a ChartSummary (Docling chart2summary) into the picture's
+// meta.description with created_by = model, plus a description annotation
+// and a GenerationSource, the way fold_picture_description does. False when
+// the picture is missing, the summary is empty, or the picture already
+// carries a non-empty meta description.
+bool fold_chart_summary(const ai::pipestream::enrich::v1::ItemAnnotation& annotation,
+                        const std::string& endpoint,
+                        ai::pipestream::document::v1::Document* document);
+
+// Folds a ChartCode (Docling chart2code) into the picture's meta.code (text,
+// language, created_by = model) plus a GenerationSource. False when the
+// picture is missing, the code is empty, or the picture already carries
+// meta code.
+bool fold_chart_code(const ai::pipestream::enrich::v1::ItemAnnotation& annotation,
+                     const std::string& endpoint,
+                     ai::pipestream::document::v1::Document* document);
+
 // Folds a PictureDescription into the picture's meta.description (and a
 // description annotation) with created_by = model. False when the picture is
 // missing or already carries a non-empty meta description.
@@ -121,7 +144,11 @@ bool fold_formula_annotation(const ai::pipestream::enrich::v1::ItemAnnotation& a
 
 struct ChartDerenderReport {
   int candidates = 0;
+  // Charts that received at least one chart output (table, summary, code).
   int derendered = 0;
+  int chart_tables = 0;
+  int chart_summaries = 0;
+  int chart_codes = 0;
   int skipped = 0;
   int pictures_described = 0;
   int codes_enriched = 0;

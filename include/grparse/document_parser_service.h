@@ -12,6 +12,7 @@
 #include "ai/pipestream/parse/v1/parse_stream.grpc.pb.h"
 #include "grparse/call_executor.h"
 #include "grparse/chart_derender.h"
+#include "grparse/chart_extraction_policy.h"
 #include "grparse/chunk_embeddings.h"
 #include "grparse/document_repair.h"
 #include "grparse/office_cv_enrichment.h"
@@ -47,6 +48,11 @@ struct CollectorTargets {
   // collector but a peer dialed after the merge; an empty target means the
   // leg does not exist in this deployment.
   ChartDerenderOptions derender;
+  // The server-side chart-extraction policy (GRPARSE_*CHART_EXTRACTION*):
+  // which presets and engines a Convert request may use and whether it may
+  // carry its own chart_extraction_custom_config. Checked when the options
+  // are validated, whether or not the enrich leg is configured.
+  ChartExtractionPolicy chart_policy = default_chart_extraction_policy();
   // The VLM convert leg (grpc-vlm-convert, GRPARSE_VLM_CONVERT_TARGET): the
   // PROCESSING_PIPELINE_VLM body producer. Empty target means that pipeline
   // is unavailable.
@@ -89,6 +95,7 @@ class CollectorEndpoints {
   const ChartDerenderOptions& derender() const { return targets_.derender; }
   bool has_derender() const { return targets_.derender.enabled(); }
   std::shared_ptr<grpc::Channel> enrich_channel();
+  const ChartExtractionPolicy& chart_policy() const { return targets_.chart_policy; }
 
   // The VLM convert leg's options and its lazily created channel; null when
   // GRPARSE_VLM_CONVERT_TARGET is unset.
