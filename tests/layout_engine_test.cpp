@@ -18,8 +18,6 @@ namespace {
 
 namespace fs = std::filesystem;
 
-constexpr int kSkipExitCode = 77;
-
 using grparse_test::require;
 
 void verify_missing_model_fails_loudly() {
@@ -159,6 +157,8 @@ bool run_model(grparse::LayoutModel selection, const fs::path& models_dir, const
                const ExpectedRegion* expected, size_t expected_count) {
   const fs::path model = models_dir / grparse::layout_model_file(selection);
   if (!fs::exists(model)) {
+    require(!grparse_test::models_required(),
+            "GRPARSE_TEST_REQUIRE_MODELS=1 but the model is missing: " + model.string());
     std::println(stderr, "layout-engine-test: {} leg skipped, no {}",
                  grparse::layout_model_name(selection), model.string());
     return false;
@@ -195,7 +195,7 @@ int main() {
     if (!heron && !picodet) {
       std::println(stderr, "layout-engine-test: skipped, no layout model present in {:?}",
                    models_dir.string());
-      return kSkipExitCode;
+      return grparse_test::missing_model_exit_code();
     }
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {

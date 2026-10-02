@@ -894,6 +894,8 @@ if(BUILD_TESTING)
   # The layout golden needs the real model file; without it the test skips
   # (exit 77) so environments that never download models stay green while any
   # environment with models proves the decode against the reference output.
+  # GRPARSE_TEST_REQUIRE_MODELS=1 in the environment turns that skip into a
+  # failure; the CI cpu-image job provides the models and sets it.
   set_tests_properties(figure-classifier-test layout-engine-test table-structure-engine-test PROPERTIES
     SKIP_RETURN_CODE 77
     ENVIRONMENT

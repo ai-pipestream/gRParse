@@ -49,6 +49,32 @@ jobs:
             -e GRPARSE_EMBEDDING_TEST_REQUIRE=1 \
             --entrypoint grparse-embedding-reference grparse-ci-openvino
 
+  # Dockerfile.cpu is the multi-arch :latest-cpu image; publish.yml would
+  # otherwise build it first on push to main. amd64 is enough to gate a PR.
+  # This job also runs the model-backed goldens (layout, table structure,
+  # figure classifier, hf/1 tokenizer): the grparse-models fetch stage
+  # downloads the pinned files, sha-checked against models/MANIFEST, into
+  # the build context's models/, and GRPARSE_TEST_REQUIRE_MODELS=1 makes a
+  # missing model fail the in-build ctest instead of skipping.
+  cpu-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Provide the pinned model files
+        run: |
+          docker build --progress=plain -f Dockerfile.models \
+            --build-arg MODELS_LAYOUT=all --build-arg MODELS_TOKENIZER=1 -t grparse-ci-models .
+          id=$(docker create grparse-ci-models)
+          docker cp "$id:/models/." models/
+          docker rm "$id"
+          scripts/fetch-models.sh --verify --dir models --layout all --tokenizer
+      - name: Build CPU image and run the tests, model goldens included
+        run: |
+          docker build --progress=plain -f Dockerfile.cpu \
+            --build-arg GRPARSE_TEST_REQUIRE_MODELS=1 -t grparse-ci-cpu .
+      - name: Boot-proof the runtime image
+        run: ./scripts/smoke-test.sh grparse-ci-cpu
+
   # The demo shell image carries every peer's proto contract (vendored under
   # examples/web-demo/peer-protos); the Dockerfile's own build gate loads
   # them all, and the unit tests cover the registry, the vendored trees, and

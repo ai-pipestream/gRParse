@@ -88,6 +88,9 @@ RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/opencv.tar.g
 
 FROM deps AS build
 ARG GRPARSE_BUILD_JOBS=2
+# CI fills models/ in the build context and passes 1, so the in-build ctest
+# fails on a missing model instead of skipping the model-backed goldens.
+ARG GRPARSE_TEST_REQUIRE_MODELS=0
 WORKDIR /src
 COPY . .
 # Separate cache from the CUDA and OpenVINO images: different ONNX Runtime
