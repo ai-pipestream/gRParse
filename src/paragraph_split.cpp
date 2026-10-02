@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <map>
+#include <optional>
 
 #include "grparse/document_geometry.h"
 
@@ -134,10 +135,45 @@ docv1::BoundingBox strip_of(const docv1::BoundingBox& box, double page_height, d
   return strip;
 }
 
-// The children list that names `ref`, and its position there: the body,
-// the furniture, or a group.
+// The arena index after `prefix` in a reference such as "#/texts/3".
+std::optional<int> index_after(std::string_view ref, std::string_view prefix) {
+  if (!ref.starts_with(prefix) || ref.size() == prefix.size() || ref.size() - prefix.size() > 9) {
+    return std::nullopt;
+  }
+  int value = 0;
+  for (const char c : ref.substr(prefix.size())) {
+    if (!is_digit(c)) return std::nullopt;
+    value = value * 10 + (c - '0');
+  }
+  return value;
+}
+
+// The children list of the text, table or picture `parent` names; nullptr
+// for anything else (the trees and the groups are searched apart).
+google::protobuf::RepeatedPtrField<docv1::RefItem>* item_children(docv1::Document* document,
+                                                                 std::string_view parent) {
+  if (const auto index = index_after(parent, "#/texts/"); index && *index < document->texts_size()) {
+    auto* item = document->mutable_texts(*index);
+    if (item->item_case() == docv1::BaseTextItem::kCode) return item->mutable_code()->mutable_children();
+    auto* base = mutable_text_base_of(item);
+    return base == nullptr ? nullptr : base->mutable_children();
+  }
+  if (const auto index = index_after(parent, "#/tables/"); index && *index < document->tables_size()) {
+    return document->mutable_tables(*index)->mutable_children();
+  }
+  if (const auto index = index_after(parent, "#/pictures/");
+      index && *index < document->pictures_size()) {
+    return document->mutable_pictures(*index)->mutable_children();
+  }
+  return nullptr;
+}
+
+// The children list that names `ref`, and its position there: the item
+// `parent` names when that is a text, table or picture, else the body, the
+// furniture, or a group.
 google::protobuf::RepeatedPtrField<docv1::RefItem>* children_holding(docv1::Document* document,
                                                                     const std::string& ref,
+                                                                    const std::string& parent,
                                                                     int* position) {
   const auto find = [&](google::protobuf::RepeatedPtrField<docv1::RefItem>* children) {
     for (int index = 0; index < children->size(); ++index) {
@@ -148,6 +184,9 @@ google::protobuf::RepeatedPtrField<docv1::RefItem>* children_holding(docv1::Docu
     }
     return false;
   };
+  if (auto* children = item_children(document, parent); children != nullptr && find(children)) {
+    return children;
+  }
   if (find(document->mutable_body()->mutable_children())) {
     return document->mutable_body()->mutable_children();
   }
@@ -221,7 +260,10 @@ std::vector<std::string> split_text_item(docv1::Document* document, int arena_in
   if (cuts.empty()) return created;
   cuts.insert(cuts.begin(), 0);
   cuts.push_back(text.size());
-  const double total = static_cast<double>(std::max<size_t>(text.size(), 1));
+  // Span ranges and charspans count code points; the cuts are bytes.
+  std::vector<size_t> cut_points;
+  for (const size_t cut : cuts) cut_points.push_back(codepoints(std::string_view(text).substr(0, cut)));
+  const double total = static_cast<double>(std::max<size_t>(cut_points.back(), 1));
   const std::map<int, double> heights = document_page_heights(*document);
 
   const std::string self_ref = original->self_ref().empty() ? "#/texts/" + std::to_string(arena_index)
@@ -230,8 +272,12 @@ std::vector<std::string> split_text_item(docv1::Document* document, int arena_in
   std::vector<std::string> new_refs;
   for (size_t piece = 0; piece + 1 < cuts.size(); ++piece) {
     const std::string_view slice = trimmed(std::string_view(text).substr(cuts[piece], cuts[piece + 1] - cuts[piece]));
-    const double start_share = static_cast<double>(cuts[piece]) / total;
-    const double end_share = static_cast<double>(cuts[piece + 1]) / total;
+    const double start_share = static_cast<double>(cut_points[piece]) / total;
+    const double end_share = static_cast<double>(cut_points[piece + 1]) / total;
+    // Where the trimmed slice starts, in code points of the original text.
+    const size_t slice_start = codepoints(std::string_view(text).substr(
+        0, slice.empty() ? cuts[piece] : static_cast<size_t>(slice.data() - text.data())));
+    const auto slice_points = static_cast<int64_t>(codepoints(slice));
     docv1::TextItemBase* target = nullptr;
     if (piece == 0) {
       target = mutable_text_base_of(document->mutable_texts(arena_index));
@@ -259,22 +305,24 @@ std::vector<std::string> split_text_item(docv1::Document* document, int arena_in
       }
       if (entry.has_charspan()) {
         strip->mutable_charspan()->set_start(0);
-        strip->mutable_charspan()->set_end(static_cast<int32_t>(codepoints(slice)));
+        strip->mutable_charspan()->set_end(static_cast<int32_t>(slice_points));
       }
     }
     for (const auto& span : pristine.spans()) {
       const size_t start = static_cast<size_t>(std::max(0, span.range().start()));
-      if (start < cuts[piece] || start >= cuts[piece + 1]) continue;
+      if (start < cut_points[piece] || start >= cut_points[piece + 1]) continue;
       auto* moved = target->add_spans();
       *moved = span;
-      const int64_t shift = static_cast<int64_t>(cuts[piece]);
-      moved->mutable_range()->set_start(static_cast<int32_t>(span.range().start() - shift));
-      moved->mutable_range()->set_end(static_cast<int32_t>(
-          std::min<int64_t>(span.range().end() - shift, static_cast<int64_t>(slice.size()))));
+      const auto shift = static_cast<int64_t>(slice_start);
+      moved->mutable_range()->set_start(
+          static_cast<int32_t>(std::max<int64_t>(span.range().start() - shift, 0)));
+      moved->mutable_range()->set_end(
+          static_cast<int32_t>(std::clamp<int64_t>(span.range().end() - shift, 0, slice_points)));
     }
   }
   int position = 0;
-  if (auto* children = children_holding(document, self_ref, &position); children != nullptr) {
+  if (auto* children = children_holding(document, self_ref, pristine.parent().ref(), &position);
+      children != nullptr) {
     for (size_t index = 0; index < new_refs.size(); ++index) {
       auto* added = children->Add();
       added->set_ref(new_refs[index]);

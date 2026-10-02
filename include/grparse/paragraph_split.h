@@ -30,10 +30,12 @@ std::vector<size_t> form_row_starts(std::string_view text);
 // Splits the text item at `arena_index` at the given byte offsets: the item
 // keeps the first piece, each further piece becomes a new TEXT item of the
 // same layer, parent and sources appended to the texts arena and inserted
-// after the item in its parent's children. Each provenance box is cut into
-// vertical strips proportional to the pieces' character shares, so every
-// piece's box lies inside the original's; spans follow the piece that holds
-// their start. Returns the new items' references in order.
+// after the item in the children list that holds it (its parent text,
+// table or picture, else the body, the furniture or a group). Each
+// provenance box is cut into vertical strips proportional to the pieces'
+// code-point shares, so every piece's box lies inside the original's; spans
+// (code points) follow the piece that holds their start. Returns the new
+// items' references in order.
 std::vector<std::string> split_text_item(ai::pipestream::document::v1::Document* document,
                                          int arena_index, const std::vector<size_t>& offsets);
 
