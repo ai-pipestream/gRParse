@@ -1631,6 +1631,63 @@ void verify_document_timeout_bounds_the_cv_leg() {
           "document_timeout must stop the CV leg: " + status.error_message());
 }
 
+// The chunk RPCs have nowhere to report a delivery, so a target is refused
+// rather than skipped; and a collector that failed beside a surviving one
+// shows up even when the converted document was not asked for.
+void verify_chunk_rpcs_refuse_targets_and_surface_failures(TestServer* server) {
+  auto client = server->unary_stub();
+  const auto source_request = [] {
+    pipestream::parse::v1::ChunkHierarchicalSourceRequest request;
+    auto* source = request.mutable_request()->add_sources()->mutable_file();
+    source->set_filename("image.png");
+    source->set_base64_string("bWVtb3J5");
+    return request;
+  };
+  {
+    auto request = source_request();
+    request.mutable_request()->mutable_target()->mutable_zip();
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ChunkHierarchicalSourceResponse response;
+    const grpc::Status status = client->ChunkHierarchicalSource(&context, request, &response);
+    require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+                status.error_message().contains("target"),
+            "a hierarchical chunk target is refused: " + status.error_message());
+  }
+  {
+    pipestream::parse::v1::ChunkHybridSourceRequest request;
+    *request.mutable_request()->mutable_sources() = source_request().request().sources();
+    request.mutable_request()->mutable_chunking_options()->set_max_tokens(64);
+    request.mutable_request()->mutable_target()->mutable_zip();
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ChunkHybridSourceResponse response;
+    const grpc::Status status = client->ChunkHybridSource(&context, request, &response);
+    require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+                status.error_message().contains("target"),
+            "a hybrid chunk target is refused: " + status.error_message());
+  }
+  {
+    // The email collector is not configured here, so it fails beside CV.
+    auto request = source_request();
+    auto* options = request.mutable_request()->mutable_convert_options();
+    options->add_collectors(pipestream::parse::v1::COLLECTOR_GRPARSE_CV);
+    options->add_collectors(pipestream::parse::v1::COLLECTOR_EMAIL);
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ChunkHierarchicalSourceResponse response;
+    const grpc::Status status = client->ChunkHierarchicalSource(&context, request, &response);
+    require(status.ok(), "a partial parse still chunks: " + status.error_message());
+    require(response.response().chunks_size() == 3, "the surviving collector's chunks");
+    require(response.response().documents_size() == 1, "the failures ride a documents entry");
+    const auto& entry = response.response().documents(0);
+    require(entry.status() == pipestream::parse::v1::CONVERSION_STATUS_PARTIAL_SUCCESS &&
+                !entry.has_content() && entry.errors_size() == 1 &&
+                entry.errors(0).module_name() == "collector:email",
+            "the entry names the failed collector without a document");
+  }
+}
+
 struct StreamPdfRun {
   grpc::Status status;
   std::vector<pipestream::parse::v1::DocumentStreamEvent> events;
@@ -2314,6 +2371,7 @@ int main() {
         verify_streaming_pdf_classification_restricts_recognition();
         verify_hierarchical_chunk_rpc_carries_digest_and_offsets(&server);
         verify_hybrid_chunk_rpc_merges_and_validates(&server);
+        verify_chunk_rpcs_refuse_targets_and_surface_failures(&server);
         verify_chunk_embeddings_rpc();
         verify_disabled_embeddings_and_unimplemented_chunk_rpcs(&server);
       },
