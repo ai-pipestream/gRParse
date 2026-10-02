@@ -60,7 +60,9 @@ std::string code_fence_language(const ai::pipestream::document::v1::CodeItem& co
 // The table's cell layout as a row-major pointer grid. The grid field wins
 // when populated; otherwise the flat cell list is placed by its offsets.
 // A spanned cell appears at every position it covers; nullptr marks a
-// position no cell reaches.
+// position no cell reaches. The declared dimensions are untrusted: a grid
+// above a fixed position budget keeps only its leading rows and columns, and
+// a warning goes to stderr (derived_table_grid caps the same way).
 std::vector<std::vector<const ai::pipestream::document::v1::TableCell*>> table_grid(
     const ai::pipestream::document::v1::TableData& data);
 

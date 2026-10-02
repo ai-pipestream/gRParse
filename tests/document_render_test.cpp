@@ -1,8 +1,10 @@
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <print>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <google/protobuf/util/json_util.h>
@@ -298,6 +300,42 @@ void verify_markdown_reconstructs_grid_from_flat_cells() {
   const std::string markdown = grparse::render_markdown(document);
   require(markdown == "| a   | b   |\n|-----|-----|\n|     | d   |",
           "flat-cell table reconstruction differs:\n" + markdown);
+}
+
+// Declared dimensions are untrusted: one value at XFD1048576 makes a sheet
+// fold declare 1,048,576 x 16,384. The grid exports render a bounded leading
+// block of such a table instead of allocating the whole rectangle.
+void verify_oversized_table_dimensions_are_bounded() {
+  docv1::Document document = base_document("huge.xlsx");
+  auto* table = add_table(&document, "#/body");
+  auto* data = table->mutable_data();
+  data->set_num_rows(1048576);
+  data->set_num_cols(16384);
+  auto* first = data->add_table_cells();
+  first->set_text("first");
+  first->set_end_row_offset_idx(1);
+  first->set_end_col_offset_idx(1);
+  auto* last = data->add_table_cells();
+  last->set_text("last");
+  last->set_start_row_offset_idx(1048575);
+  last->set_end_row_offset_idx(1048576);
+  last->set_start_col_offset_idx(16383);
+  last->set_end_col_offset_idx(16384);
+  auto* wrapped = data->add_table_cells();
+  wrapped->set_text("wrapped");
+  wrapped->set_start_row_offset_idx(-1);
+  wrapped->set_end_row_offset_idx(0);
+  wrapped->set_end_col_offset_idx(1);
+  for (const auto& [format, rendered] :
+       {std::pair{"markdown", grparse::render_markdown(document)},
+        std::pair{"html", grparse::render_html(document)},
+        std::pair{"doclang", grparse::render_doclang(document)}}) {
+    require(rendered.contains("first") && !rendered.contains("last") &&
+                !rendered.contains("wrapped"),
+            std::string(format) + " renders the leading block of an oversized table");
+    require(rendered.size() < (std::size_t{256} << 20),
+            std::string(format) + " output stays bounded: " + std::to_string(rendered.size()));
+  }
 }
 
 void verify_markdown_multiline_cells_stay_single_line() {
@@ -1201,6 +1239,7 @@ int main() {
   return grparse_test::run_test_main("document-render-test", {
       verify_markdown_renders_every_item_type,
       verify_markdown_reconstructs_grid_from_flat_cells,
+      verify_oversized_table_dimensions_are_bounded,
       verify_markdown_multiline_cells_stay_single_line,
       verify_markdown_flattens_stacked_column_headers,
       verify_markdown_compact_tables,

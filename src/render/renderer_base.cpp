@@ -3,7 +3,10 @@
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
+#include <cstdint>
+#include <cstdio>
 #include <optional>
+#include <print>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -83,6 +86,28 @@ std::string code_fence_language(const docv1::CodeItem& code) {
   return name;
 }
 
+namespace {
+
+// The most positions a dense grid may hold (32 MiB of pointers). Table
+// dimensions are untrusted: a sheet whose used range ends at XFD1048576
+// declares 1,048,576 x 16,384, a grid of about 137 GB. Above the budget the
+// grid keeps its leading rows and columns and drops the rest, with a warning.
+constexpr std::int64_t kMaxGridPositions = std::int64_t{1} << 22;
+
+// The grid rows and columns kept for a declared rows x cols table.
+std::pair<int, int> kept_dimensions(int rows, int cols) {
+  if (static_cast<std::int64_t>(rows) * cols <= kMaxGridPositions) return {rows, cols};
+  const int kept_cols = static_cast<int>(std::min<std::int64_t>(cols, kMaxGridPositions));
+  const int kept_rows = static_cast<int>(kMaxGridPositions / kept_cols);
+  std::println(stderr,
+               "grparse: table of {} x {} positions exceeds the render budget of {}; "
+               "rendering the first {} x {}",
+               rows, cols, kMaxGridPositions, kept_rows, kept_cols);
+  return {kept_rows, kept_cols};
+}
+
+}  // namespace
+
 std::vector<std::vector<const docv1::TableCell*>> table_grid(
     const docv1::TableData& data) {
   std::vector<std::vector<const docv1::TableCell*>> grid;
@@ -96,9 +121,8 @@ std::vector<std::vector<const docv1::TableCell*>> table_grid(
     }
     return grid;
   }
-  const int rows = data.num_rows();
-  const int cols = data.num_cols();
-  if (rows <= 0 || cols <= 0) return grid;
+  if (data.num_rows() <= 0 || data.num_cols() <= 0) return grid;
+  const auto [rows, cols] = kept_dimensions(data.num_rows(), data.num_cols());
   grid.assign(static_cast<size_t>(rows),
               std::vector<const docv1::TableCell*>(static_cast<size_t>(cols), nullptr));
   for (const auto& cell : data.table_cells()) {
@@ -119,24 +143,30 @@ std::vector<std::vector<const docv1::TableCell*>> derived_table_grid(
     const docv1::TableData& data) {
   const int rows = std::max(data.num_rows(), 0);
   const int cols = std::max(data.num_cols(), 0);
+  const auto [kept_rows, kept_cols] = kept_dimensions(rows, cols);
   std::vector<std::vector<const docv1::TableCell*>> grid(
-      static_cast<std::size_t>(rows),
-      std::vector<const docv1::TableCell*>(static_cast<std::size_t>(cols), nullptr));
-  const auto wrapped = [](int index, int size) {
-    return index < 0 ? index + size : index;
+      static_cast<std::size_t>(kept_rows),
+      std::vector<const docv1::TableCell*>(static_cast<std::size_t>(kept_cols), nullptr));
+  // Visits, in index order, the kept positions an offset range [begin, end)
+  // reaches: a negative offset counts back from the declared size, and one
+  // that falls off the front reaches nothing.
+  const auto each_position = [](int begin, int end, int size, int kept, const auto& visit) {
+    end = std::min(end, size);
+    begin = std::min(begin, size);
+    for (int index = std::max(begin, -size); index < std::min({end, 0, kept - size}); ++index) {
+      visit(index + size);
+    }
+    for (int index = std::max(begin, 0); index < std::min(end, kept); ++index) visit(index);
   };
   for (const auto& cell : data.table_cells()) {
-    const int row_end = std::min(cell.end_row_offset_idx(), rows);
-    const int col_end = std::min(cell.end_col_offset_idx(), cols);
-    for (int row = std::min(cell.start_row_offset_idx(), rows); row < row_end; ++row) {
-      const int row_at = wrapped(row, rows);
-      if (row_at < 0) continue;
-      for (int col = std::min(cell.start_col_offset_idx(), cols); col < col_end; ++col) {
-        const int col_at = wrapped(col, cols);
-        if (col_at < 0) continue;
-        grid[static_cast<std::size_t>(row_at)][static_cast<std::size_t>(col_at)] = &cell;
-      }
-    }
+    each_position(cell.start_row_offset_idx(), cell.end_row_offset_idx(), rows, kept_rows,
+                  [&](int row_at) {
+                    each_position(cell.start_col_offset_idx(), cell.end_col_offset_idx(),
+                                  cols, kept_cols, [&](int col_at) {
+                                    grid[static_cast<std::size_t>(row_at)]
+                                        [static_cast<std::size_t>(col_at)] = &cell;
+                                  });
+                  });
   }
   return grid;
 }
