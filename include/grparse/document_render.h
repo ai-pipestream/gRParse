@@ -137,7 +137,9 @@ std::string render_html_split_page(const ai::pipestream::document::v1::Document&
 
 // Renders the document as block-style YAML with exactly the structure of
 // render_json (proto field names preserved), by re-emitting that JSON
-// through yaml-cpp. Throws std::runtime_error on emitter failure.
+// through yaml-cpp. Every JSON string is written double-quoted, so text such
+// as "2024", "true" or "off" stays a string under YAML 1.1 and 1.2 loaders.
+// Throws std::runtime_error on emitter failure.
 std::string render_yaml(const ai::pipestream::document::v1::Document& document);
 
 // Renders docling-core's LaTeXDocSerializer output with its defaults: the

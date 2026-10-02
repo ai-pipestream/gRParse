@@ -3,8 +3,10 @@
 #include <print>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include <google/protobuf/util/json_util.h>
+#include <yaml-cpp/yaml.h>
 
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "grparse/document_render.h"
@@ -1098,13 +1100,41 @@ void verify_split_page_without_provenance_is_one_page() {
 
 void verify_yaml_matches_json_structure() {
   const std::string yaml = grparse::render_yaml(rich_document());
-  require_contains(yaml, "name: report.pdf", "yaml keeps the document name");
+  require_contains(yaml, "name: \"report.pdf\"", "yaml keeps the document name");
   require_contains(yaml, "texts:", "yaml keeps the text arena");
   require_contains(yaml, "#/body", "yaml keeps reference strings");
   require_contains(yaml, "self_ref:", "yaml preserves proto field names");
   require(!yaml.contains("selfRef"),
           "yaml must not use camelCase field names");
   require(!yaml.starts_with('{'), "yaml renders block style, not flow JSON");
+}
+
+// Strings a YAML 1.1 loader would otherwise resolve to an int, a bool, a
+// float, a timestamp or null must come out quoted, so the export keeps the
+// JSON's string type (a pydantic str field rejects the typed scalar).
+void verify_yaml_keeps_string_scalars() {
+  docv1::Document document = base_document("types.pdf");
+  const std::vector<std::string> texts = {"true", "0123", "null", "2024", "1.5",
+                                          "Yes", "off", "~", "2024-01-02", "0x1F"};
+  for (const auto& text : texts) {
+    add_text(&document, "#/body", docv1::BaseTextItem::kText,
+             docv1::DOC_ITEM_LABEL_TEXT, text);
+  }
+  const std::string yaml = grparse::render_yaml(document);
+  for (const auto& text : texts) {
+    require_contains(yaml, "text: \"" + text + "\"",
+                     "yaml quotes the string scalar " + text);
+  }
+  const YAML::Node parsed = YAML::Load(yaml);
+  require(parsed["texts"].IsSequence() && parsed["texts"].size() == texts.size(),
+          "yaml round-trips the text arena:\n" + yaml);
+  std::size_t index = 0;
+  for (const auto& item : parsed["texts"]) {
+    const YAML::Node text = item["text"]["base"]["text"];
+    require(text.IsScalar() && text.Tag() == "!" && text.Scalar() == texts[index],
+            "yaml round-trips " + texts[index] + " as a quoted string");
+    ++index;
+  }
 }
 
 void verify_empty_document_renders() {
@@ -1191,6 +1221,7 @@ int main() {
       verify_split_page_assigns_by_provenance,
       verify_split_page_without_provenance_is_one_page,
       verify_yaml_matches_json_structure,
+      verify_yaml_keeps_string_scalars,
       verify_empty_document_renders,
       verify_json_preserves_field_names_and_round_trips,
   });

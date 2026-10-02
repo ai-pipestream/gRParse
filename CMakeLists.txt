@@ -814,6 +814,8 @@ if(BUILD_TESTING)
     target_link_libraries(${test_name} PRIVATE grparse_core grparse_flags)
     add_test(NAME ${test_name} COMMAND ${test_name})
   endforeach()
+  # The YAML export test loads its output back to check the scalar tags.
+  target_link_libraries(document-render-test PRIVATE yaml-cpp::yaml-cpp)
   # The image builds stage the runtime library closure with
   # scripts/stage-runtime-closure.sh (the runtime bases carry nothing but
   # glibc). Its own check runs with the suite, so a build stage whose ldd
