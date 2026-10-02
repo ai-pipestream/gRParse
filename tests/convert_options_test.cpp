@@ -1,5 +1,6 @@
 #include <string>
 
+#include "../src/parse_support.h"
 #include "../src/source_parse.h"
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
 #include "support/check.h"
@@ -111,10 +112,29 @@ void verify_chart_and_caption_options() {
   }
 }
 
+// Every thrown failure maps to a status, including one that is not a
+// std::exception, and a scheduler shutdown is UNAVAILABLE, not a full queue.
+void verify_status_from_exception_covers_every_throw() {
+  require_equal(static_cast<int>(grparse::status_from_exception(std::make_exception_ptr(42))
+                                     .error_code()),
+                static_cast<int>(grpc::StatusCode::UNKNOWN), "a non-standard throw");
+  require_equal(
+      static_cast<int>(grparse::status_from_exception(
+                           std::make_exception_ptr(grparse::SchedulerShuttingDown("stopping")))
+                           .error_code()),
+      static_cast<int>(grpc::StatusCode::UNAVAILABLE), "a scheduler shutdown");
+  require_equal(
+      static_cast<int>(grparse::status_from_exception(
+                           std::make_exception_ptr(grparse::SchedulerSaturated("full")))
+                           .error_code()),
+      static_cast<int>(grpc::StatusCode::RESOURCE_EXHAUSTED), "a saturated scheduler");
+}
+
 }  // namespace
 
 int main() {
   return grparse_test::run_test_main("convert-options-test", "ok", {
       verify_chart_and_caption_options,
+      verify_status_from_exception_covers_every_throw,
   });
 }

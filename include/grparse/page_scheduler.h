@@ -27,6 +27,13 @@ class SchedulerSaturated final : public std::runtime_error {
   using std::runtime_error::runtime_error;
 };
 
+// The scheduler stopped with the document still in flight: the server is
+// going away, which is UNAVAILABLE to a caller, not a full queue.
+class SchedulerShuttingDown final : public std::runtime_error {
+ public:
+  using std::runtime_error::runtime_error;
+};
+
 class PageScheduler final {
  public:
   // What sends a figure crop through barcode decoding.  kClassTriggered

@@ -363,7 +363,7 @@ class PageScheduler::Impl final {
       abandoned.assign(active_requests_.begin(), active_requests_.end());
     }
     for (const auto& request : abandoned) {
-      request->fail(std::make_exception_ptr(SchedulerSaturated("Scheduler is shutting down")));
+      request->fail(std::make_exception_ptr(SchedulerShuttingDown("Scheduler is shutting down")));
       finish_request(request);
     }
   }

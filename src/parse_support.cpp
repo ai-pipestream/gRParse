@@ -222,12 +222,18 @@ grpc::Status status_from_exception(std::exception_ptr failure) {
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, error.what());
   } catch (const SchedulerSaturated& error) {
     return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED, error.what());
+  } catch (const SchedulerShuttingDown& error) {
+    return grpc::Status(grpc::StatusCode::UNAVAILABLE, error.what());
   } catch (const std::bad_alloc& error) {
     return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED, error.what());
   } catch (const std::invalid_argument& error) {
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, error.what());
   } catch (const std::exception& error) {
     return grpc::Status(grpc::StatusCode::INTERNAL, error.what());
+  } catch (...) {
+    // Every caller sits in a catch block that must still finish its call,
+    // so nothing may escape from here.
+    return grpc::Status(grpc::StatusCode::UNKNOWN, "non-standard exception");
   }
   return grpc::Status::OK;
 }
