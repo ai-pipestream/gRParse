@@ -273,6 +273,33 @@ grpc::Status validate_picture_description_engines(
   return grpc::Status::OK;
 }
 
+// A request that names its own remote model endpoint has a peer call that
+// address on the caller's behalf, so it is refused unless the operator set
+// GRPARSE_ENABLE_REMOTE_SERVICES=on (docling-serve's
+// DOCLING_SERVE_ENABLE_REMOTE_SERVICES). A vlm_pipeline_model_api.url that
+// is not an http(s) URL is a preset name, never dialed, and stays allowed.
+grpc::Status validate_remote_services(const pipestream::parse::v1::ConvertDocumentOptions& options,
+                                      const CollectorEndpoints* collectors,
+                                      const std::string& surface) {
+  if (collectors != nullptr && collectors->remote_services_enabled()) return grpc::Status::OK;
+  const auto refused = [&surface](const std::string& field) {
+    return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
+                        surface + ": " + field +
+                            " names a remote service, which this server does not call on a "
+                            "request's behalf unless GRPARSE_ENABLE_REMOTE_SERVICES=on");
+  };
+  if (options.has_picture_description_api() && !options.picture_description_api().url().empty()) {
+    return refused("picture_description_api.url");
+  }
+  if (options.has_vlm_pipeline_model_api()) {
+    const std::string& url = options.vlm_pipeline_model_api().url();
+    if (url.starts_with("http://") || url.starts_with("https://")) {
+      return refused("vlm_pipeline_model_api.url");
+    }
+  }
+  return grpc::Status::OK;
+}
+
 // VLM selection fields are accepted so Docling clients that always set them
 // are not turned away. They are mutually exclusive (preset / enum / local /
 // api). PROCESSING_PIPELINE_VLM uses them when the convert peer is configured.
@@ -1475,6 +1502,10 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
   }
   const grpc::Status option_status = validate_options(request.options(), surface);
   if (!option_status.ok()) return option_status;
+  if (auto remote = validate_remote_services(request.options(), collectors.get(), surface);
+      !remote.ok()) {
+    return remote;
+  }
   try {
     const auto& source = sources.Get(0).file();
     auto bytes = std::make_shared<const std::string>(decode_base64(source.base64_string()));

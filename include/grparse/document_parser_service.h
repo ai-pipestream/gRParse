@@ -52,6 +52,15 @@ struct CollectorTargets {
   // PROCESSING_PIPELINE_VLM body producer. Empty target means that pipeline
   // is unavailable.
   VlmConvertOptions vlm;
+  // GRPARSE_ENABLE_REMOTE_SERVICES: whether a request may name its own
+  // remote model endpoint (picture_description_api.url, an http(s)
+  // vlm_pipeline_model_api.url), which a peer then calls on the caller's
+  // behalf. Off by default, as docling-serve's
+  // DOCLING_SERVE_ENABLE_REMOTE_SERVICES is: an open endpoint field lets any
+  // caller point a peer at an internal address. The operator's own
+  // endpoints (GRPARSE_ENRICH_VLM_ENDPOINT, GRPARSE_VLM_CONVERT_ENDPOINT)
+  // are not requests and are unaffected.
+  bool enable_remote_services = false;
 };
 
 // The largest message this server accepts on its own port and the largest
@@ -96,6 +105,10 @@ class CollectorEndpoints {
   const VlmConvertOptions& vlm() const { return targets_.vlm; }
   bool has_vlm() const { return targets_.vlm.enabled(); }
   std::shared_ptr<grpc::Channel> vlm_channel();
+
+  // Whether requests may name their own remote model endpoints
+  // (GRPARSE_ENABLE_REMOTE_SERVICES).
+  bool remote_services_enabled() const { return targets_.enable_remote_services; }
 
   // The CV engines the office collector runs over LibreOffice page renders;
   // an all-null enrichment disables the hybrid leg.

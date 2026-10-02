@@ -74,6 +74,18 @@ A CV conversion reports its read quality on `ConvertDocumentResponse.confidence`
 
 Options Docling clients populate that no leg here reads pass only at their Docling defaults, and any other value is rejected by name with `INVALID_ARGUMENT` rather than silently ignored: `ocr_lang` may name only the languages the installed PP-OCRv3 models read (`en`, `english`, `ch`, `chinese`, `zh`); `table_cell_matching = false`; `abort_on_error = true` outside the VLM pipeline (the standard path always degrades to a partial result); `ocr_preset`, `table_structure_preset`, `layout_preset`, and `picture_classification_preset` other than `default` (`rapidocr` is also accepted for OCR); a `chunking_preset` other than `default` or `hierarchical` (there is no preset catalog, and every chunking preset falls back to the hierarchical defaults); a non-empty `table_structure_custom_config` or `layout_custom_config`; and `picture_description_api` `headers`, `params`, or a non-default `prompt`, none of which the enrich dial forwards (a keyed API would otherwise be called without its key). `table_mode` and `pdf_backend` are accepted at every value: one table model and the deployment's own PDF backend serve them all. `document_timeout` (seconds) caps every leg of the parse, the in-process CV pipeline included, which cancels its remaining pages and fails with `DEADLINE_EXCEEDED` once it passes. A `FileSource` without a filename is named `document`, with no extension, so its bytes rather than an assumed `.pdf` decide its type and route; likewise a PDF is recognized by a `%PDF-` header in its first kilobyte before its name is consulted.
 
+A request may not name its own remote model endpoint unless the operator
+allows it, which matches docling-serve's
+`DOCLING_SERVE_ENABLE_REMOTE_SERVICES`: `picture_description_api.url`
+(forwarded to grpc-enrich as its VLM endpoint) and an `http(s)`
+`vlm_pipeline_model_api.url` (forwarded to grpc-vlm-convert) would have a
+peer call whatever address the caller chose, internal ones included, so
+they are refused with `FAILED_PRECONDITION` naming
+`GRPARSE_ENABLE_REMOTE_SERVICES` unless that variable is `on` (default
+`off`; the startup log states it). The operator's own endpoints
+(`GRPARSE_ENRICH_VLM_ENDPOINT`, `GRPARSE_VLM_CONVERT_ENDPOINT`) are
+configuration, not requests, and are unaffected.
+
 Scanned pages fed in sideways or upside down are read upright. After a
 layerless page's first recognition pass the scheduler judges the read: line
 boxes that are tall rather than wide vote a quarter turn, the angle

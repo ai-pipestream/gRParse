@@ -368,6 +368,9 @@ CollectorTargets read_collector_targets() {
       // The VLM convert leg through grpc-vlm-convert: off unless a target
       // is named; PROCESSING_PIPELINE_VLM requires it.
       .vlm = std::move(vlm),
+      // Request-named model endpoints: off unless the operator opts in.
+      .enable_remote_services =
+          configured_mode("GRPARSE_ENABLE_REMOTE_SERVICES", "off", {"on", "off"}) == "on",
   };
 }
 
@@ -412,6 +415,11 @@ void report_collector_targets(const CollectorTargets& targets, bool layout_activ
   } else {
     std::println("gRParse vlm convert: not configured");
   }
+  std::println("gRParse request-named remote services: {}",
+               targets.enable_remote_services
+                   ? "enabled (GRPARSE_ENABLE_REMOTE_SERVICES=on)"
+                   : "disabled (picture_description_api.url and an http(s) "
+                     "vlm_pipeline_model_api.url are refused)");
   if (!targets.libreoffice.empty()) {
     std::println("gRParse office CV enrichment: {}",
                  layout_active ? "enabled (layout"

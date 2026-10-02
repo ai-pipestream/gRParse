@@ -87,17 +87,26 @@ class FakeRecognizer final : public grparse::PageRecognizer {
   std::chrono::milliseconds delay_;
 };
 
+grparse::CollectorTargets targets_with_remote_services(bool enabled) {
+  grparse::CollectorTargets targets;
+  targets.enable_remote_services = enabled;
+  return targets;
+}
+
 class TestServer final {
  public:
   explicit TestServer(std::chrono::milliseconds inference_delay = 0ms, bool digital = false,
-                      std::shared_ptr<grparse::EmbeddingEngine> embeddings = {})
+                      std::shared_ptr<grparse::EmbeddingEngine> embeddings = {},
+                      bool remote_services = false)
       : recognizer_(inference_delay),
         scheduler_(recognizer_, {2, 3, 2, 3, 2, 2, 2},
                    [this, digital](std::shared_ptr<const std::string>, bool, double render_dpi) {
                      last_render_dpi_.store(render_dpi);
                      return std::make_shared<FakeSource>(digital);
                    }),
-        parser_service_(scheduler_, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{}),
+        parser_service_(scheduler_,
+                        std::make_shared<grparse::CollectorEndpoints>(
+                            targets_with_remote_services(remote_services)),
                         grparse::CallExecutor::Options{}, grparse::RepairOptions{}, std::move(embeddings)),
         streaming_service_(scheduler_, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{})) {
     grpc::ServerBuilder builder;
@@ -393,6 +402,34 @@ void verify_unsupported_options_are_rejected(TestServer* server) {
 // rejected by name; NATIVE on raster input, which has no text layer to take
 // as it is, is a precondition failure rather than a modelled document under
 // a model-free label; and disagreeing heading switches are rejected.
+// A request-named model endpoint is a peer calling an address the caller
+// chose, so it is refused until the operator opts in; the refusal names
+// the variable that would allow it.
+void verify_remote_services_are_opt_in() {
+  TestServer server;
+  auto client = server.unary_stub();
+  const auto refused = [&client](const pipestream::parse::v1::ConvertSourceRequest& request,
+                                 const std::string& field) {
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ConvertSourceResponse response;
+    const grpc::Status status = client->ConvertSource(&context, request, &response);
+    require(status.error_code() == grpc::StatusCode::FAILED_PRECONDITION &&
+                status.error_message().contains(field) &&
+                status.error_message().contains("GRPARSE_ENABLE_REMOTE_SERVICES"),
+            field + " must be refused while remote services are off: " +
+                status.error_message());
+  };
+  auto request = unary_request();
+  request.mutable_request()->mutable_options()->mutable_picture_description_api()->set_url(
+      "http://169.254.169.254/latest/meta-data");
+  refused(request, "picture_description_api.url");
+  request = unary_request();
+  request.mutable_request()->mutable_options()->mutable_vlm_pipeline_model_api()->set_url(
+      "http://internal.example:8080/v1");
+  refused(request, "vlm_pipeline_model_api.url");
+}
+
 void verify_parity_options_and_confidence(TestServer* server) {
   auto client = server->unary_stub();
   auto request = unary_request();
@@ -2556,12 +2593,15 @@ void verify_disabled_embeddings_and_unimplemented_chunk_rpcs(TestServer* server)
 int main() {
   return grparse_test::run_test_main("streaming-service-test", {
       [] {
-        TestServer server;
+        // Remote services on: the parity checks send Docling's
+        // picture_description_api; the default-off gate has its own server.
+        TestServer server(0ms, false, {}, /*remote_services=*/true);
         verify_ordered_page_stream(&server);
         verify_data_after_complete_is_rejected(&server);
         verify_unary_uses_scheduler_and_shared_assembly(&server);
         verify_unsupported_options_are_rejected(&server);
         verify_parity_options_and_confidence(&server);
+        verify_remote_services_are_opt_in();
         verify_recognition_options_steer_the_cv_leg(&server);
         verify_unary_multi_format_exports(&server);
         verify_unary_zip_target_delivers_an_archive(&server);
