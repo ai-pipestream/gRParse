@@ -68,11 +68,11 @@ message ParseEmailOptions {
   // format is detected from the bytes.
   string content_type = 3;
 
-  // When true, every attachment the message carries is emitted as its own
-  // Attachment event (filename, content type, size, content id). Matches
-  // Docling's EmailBackendOptions.list_attachments. When false, attachments
-  // are still counted in ParseStatus but no Attachment event is emitted
-  // unless include_attachment_bytes asks for one.
+  // Historical opt-in for the attachment listing, kept for clients built
+  // before listing became the default. Setting it is now redundant but never
+  // wrong: an explicit true re-enables the listing even when
+  // omit_attachment_list asked for silence, because an explicit request beats
+  // an opt-out.
   bool list_attachments = 4;
 
   // When true, Attachment events carry the attachment payload in
@@ -96,6 +96,17 @@ message ParseEmailOptions {
   // Document plane does not have to reimplement the mapping. When false the
   // fold never runs and nothing about the stream changes.
   bool emit_document = 7;
+
+  // When true, attachments are counted in ParseStatus but no Attachment
+  // event is emitted and the Document registers no attachment.
+  //
+  // The polarity is inverted on purpose. Listing is the default, because a
+  // Document that silently omits the three PDFs a message carried is worse
+  // than one that names them, and proto3 has no way to say "unset means
+  // true" on a bool. Payload bytes are a separate decision and stay opt-in
+  // through include_attachment_bytes, which overrides this field: a client
+  // that asked for the bytes asked for the listing.
+  bool omit_attachment_list = 8;
 }
 
 // One slice of the message upload, in file order.
@@ -204,9 +215,13 @@ message EmailInfo {
   google.protobuf.Timestamp received_date = 6;
   // Message-ID with angle brackets stripped. Empty when absent.
   string message_id = 7;
-  // In-Reply-To with angle brackets stripped. Empty when absent.
+  // First In-Reply-To msg-id with angle brackets stripped, empty when
+  // absent. RFC 5322 permits more than one; read in_reply_to_ids for the
+  // whole list.
   string in_reply_to = 8;
-  // References chain, oldest first, angle brackets stripped.
+  // References chain, oldest first, angle brackets stripped. Every
+  // References header instance the message carried contributes, in order:
+  // a chain folded across two instances keeps both halves.
   repeated string references = 9;
   // Content-Type of the root part as declared, for example
   // "multipart/mixed; boundary=...". Empty when the message declared none.
@@ -215,6 +230,22 @@ message EmailInfo {
   // .msg this is the transport header block when the message kept one, and
   // is otherwise empty: MAPI properties are not invented as headers.
   repeated Header headers = 11;
+
+  // Every In-Reply-To msg-id, in header order, angle brackets stripped. A
+  // reply to a merged thread legitimately carries several; in_reply_to is
+  // the first of these.
+  repeated string in_reply_to_ids = 12;
+
+  // PidTagConversationTopic: Outlook's normalized thread subject, the
+  // subject with reply and forward prefixes removed. Empty for .eml and for
+  // a .msg that did not store it.
+  string conversation_topic = 13;
+
+  // PidTagConversationIndex as lowercase hex, verbatim. Outlook's native
+  // threading key: the first 22 bytes identify the conversation and each
+  // 5-byte suffix is one reply, so a prefix match orders a thread even when
+  // the message kept no transport headers. Empty for .eml.
+  string conversation_index = 14;
 }
 
 // The body media types this collector emits. HTML is passed through opaque
@@ -248,8 +279,8 @@ message BodyPart {
   string source_property = 6;
 }
 
-// One attachment the message carries. Emitted when list_attachments or
-// include_attachment_bytes is set. Payload bytes ride along only when
+// One attachment the message carries. Emitted unless omit_attachment_list
+// asked for silence. Payload bytes ride along only when
 // include_attachment_bytes is set and the payload fits the server's
 // per-attachment cap.
 message Attachment {
@@ -327,4 +358,17 @@ message GetServiceInfoResponse {
   uint64 max_attachment_bytes = 7;
   // Messages parsed concurrently before further parses queue.
   uint32 max_concurrent_parses = 8;
+  // Frontend advertisement. The demo shell reads it to build its tab bar.
+  UiInfo ui = 9;
+}
+
+// Frontend advertisement. Same shape in every ai-pipestream grpc service:
+// the demo shell reads it to build its tab bar.
+message UiInfo {
+  // Tab title, for example "Email".
+  string title = 1;
+  // Shell mount path, for example "/ui/email".
+  string path = 2;
+  // One line, used as the tab tooltip.
+  string description = 3;
 }
