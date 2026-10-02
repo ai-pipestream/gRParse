@@ -833,10 +833,15 @@ Every push and PR also runs a short libFuzzer window over the two ingest
 doors (Poppler PDF open/extract and OpenCV raster decode) — see
 [fuzz/README.md](fuzz/README.md) for the standalone fuzz project and longer
 campaigns. A weekly `sanitize.yml` workflow (also manually dispatchable)
-builds the whole test battery with `-DGRPARSE_SANITIZE=address,undefined` on
-the runner host — not inside `docker build`, whose seccomp profile breaks
-LeakSanitizer — and runs it leak-checked under the `tests/lsan.supp`
-suppressions.
+builds the whole test battery with `-DGRPARSE_SANITIZE=address,undefined` in
+the image toolchain (the `deps` stage of `Dockerfile.cpu`) under
+`docker run --cap-add SYS_PTRACE`, not inside `docker build`, whose seccomp
+profile breaks LeakSanitizer, and runs it leak-checked under the
+`tests/lsan.supp` suppressions. The `cpu-image` CI job also fetches the
+pinned models (the `grparse-models` fetch stage) and builds with
+`GRPARSE_TEST_REQUIRE_MODELS=1`, so the layout, table-structure,
+figure-classifier and hf/1 tokenizer goldens run on every PR instead of
+skipping.
 
 The build compiles with `-DGRPARSE_WERROR=ON` and runs the full `grparse`-labelled
 CTest set: barcode decoder (QR fixture payload, stride-safe region views),
@@ -877,10 +882,15 @@ start under `docker build`, which does not allow disabling ASLR; build the test
 binaries there and run them with
 `docker run --security-opt seccomp=unconfined`. The scheduler, resource pool,
 and PDF page source tests are the concurrency-carrying ones and are expected to
-be ThreadSanitizer-clean and, with
-`LSAN_OPTIONS=suppressions=tests/lsan.supp`, AddressSanitizer- and
-UndefinedBehaviorSanitizer-clean. The suppression file covers fontconfig's
-one-time global config cache, which Poppler reaches when it substitutes a
-base-14 font; it is not a per-page allocation. Generated protobuf and
+be ThreadSanitizer-clean. The whole `grparse` suite is AddressSanitizer- and
+UndefinedBehaviorSanitizer-clean with
+`LSAN_OPTIONS=suppressions=tests/lsan.supp` (checked locally in the
+sanitize.yml setup). The suppression file covers one-time process-global
+allocations in third-party code: fontconfig's config cache, which Poppler
+reaches when it substitutes a base-14 font, ONNX Runtime's 14-byte global,
+and the OpenSSL state curl_global_init leaves; none is per page or per
+request. Under `undefined`, the tests that include protobuf's
+MessageDifferencer header build without the null and nonnull checks, which
+GCC otherwise rejects in abseil's constexpr code. Generated protobuf and
 gRPC sources stay inside the build directory and are not committed; the
 document messages live in a single canonical `document.proto`.
