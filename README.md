@@ -97,7 +97,7 @@ Prometheus exposition (`grparse_pages_rerecognized_total`,
 `GRPARSE_DATA_LOG=on` prints one line per re-read page with what was tried
 and kept.
 
-`ConvertSource` returns the contract's `ConvertDocumentResponse`, populated with a native `Document`. Each OCR line becomes a `TextItem`, with its page and bounding box in `provenance`; pages, `TableItem`/`PictureItem` entries from layout, and the `#/body` reference graph are also populated. It deliberately leaves asynchronous jobs and remote sources unimplemented.
+`ConvertSource` returns the contract's `ConvertDocumentResponse`, populated with a native `Document`. Each OCR line becomes a `TextItem`, with its page and bounding box in `provenance`; pages, `TableItem`/`PictureItem` entries from layout, and the `#/body` reference graph are also populated. It deliberately leaves asynchronous jobs and remote sources unimplemented: `ConvertSourceAsync`, the chunk `*Async` RPCs, `PollTaskStatus`, `GetConvertResult`, `GetChunkResult`, `ClearConverters`, `ClearResults`, `ConvertSourceStream`, and the `Watch*` RPCs all return `UNIMPLEMENTED`.
 
 ### Chunking
 

@@ -1,9 +1,13 @@
 #pragma once
 
-// Every environment variable the server reads, grouped by the concern that
-// owns it. Each group is read where the startup sequence needs it, so a
-// value the server refuses still stops the process at the point that value
-// would have mattered, and the process prints what it had already settled.
+// Every environment variable the server reads at startup, grouped by the
+// concern that owns it. Each group is read where the startup sequence needs
+// it, so a value the server refuses still stops the process at the point
+// that value would have mattered, and the process prints what it had already
+// settled. Two are not read here: GRPARSE_PDF_BACKEND and
+// GRPARSE_PDF_BACKEND_HANDSHAKE are read per document by the PDF page source
+// (remote_page_source.cpp, in_memory_document.cpp), so they are neither
+// validated nor reported at startup.
 //
 // Nothing here is silently defaulted past a bad value: a variable that is
 // set but unusable throws std::invalid_argument naming the variable and the

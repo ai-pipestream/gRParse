@@ -45,6 +45,23 @@ int configured_index(const char* name, int fallback, int maximum = 63) {
   return static_cast<int>(parsed);
 }
 
+// An endpoint as the startup log may show it: VLM endpoints commonly carry
+// credentials as userinfo (https://user:key@host) or in the query
+// (?api_key=...), and container logs are no place for either.
+std::string redacted_endpoint(std::string endpoint) {
+  if (const size_t query = endpoint.find_first_of("?#"); query != std::string::npos) {
+    endpoint.erase(query);
+  }
+  const size_t scheme = endpoint.find("://");
+  const size_t authority = scheme == std::string::npos ? 0 : scheme + 3;
+  const size_t path = endpoint.find('/', authority);
+  const size_t at = endpoint.substr(0, path).rfind('@');
+  if (at != std::string::npos && at >= authority) {
+    endpoint.replace(authority, at + 1 - authority, "<redacted>@");
+  }
+  return endpoint;
+}
+
 // The accepted words of a mode variable, written the way the rejection has
 // always read them out: "on or off" for a pair, "auto, on, or off" for more.
 std::string spell_out(std::initializer_list<const char*> allowed) {
@@ -382,15 +399,16 @@ void report_collector_targets(const CollectorTargets& targets, bool layout_activ
                  targets.derender.timeout.count(),
                  targets.derender.vlm_endpoint.empty()
                      ? std::string()
-                     : ", vlm " + targets.derender.vlm_endpoint);
+                     : ", vlm " + redacted_endpoint(targets.derender.vlm_endpoint));
   } else {
     std::println("gRParse chart derender (enrich): not configured");
   }
   if (targets.vlm.enabled()) {
     std::println("gRParse vlm convert: {} ({} ms{})", targets.vlm.target,
                  targets.vlm.timeout.count(),
-                 targets.vlm.endpoint.empty() ? std::string()
-                                              : ", endpoint " + targets.vlm.endpoint);
+                 targets.vlm.endpoint.empty()
+                     ? std::string()
+                     : ", endpoint " + redacted_endpoint(targets.vlm.endpoint));
   } else {
     std::println("gRParse vlm convert: not configured");
   }
