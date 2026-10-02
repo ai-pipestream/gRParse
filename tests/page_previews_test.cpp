@@ -3,6 +3,7 @@
 #include <print>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "grparse/page_previews.h"
@@ -82,11 +83,36 @@ void verify_unopenable_bytes_change_nothing() {
   require(document.SerializeAsString() == before, "an unopenable source is not a failure");
 }
 
+// A request trimmed to a page span renders only that span: no entry, and no
+// render, for a page the returned document does not hold.
+void verify_previews_honor_page_range() {
+  docv1::Document document;
+  grparse::attach_page_previews(std::make_shared<const std::string>(two_page_pdf()), &document,
+                                std::make_pair(2, 5));
+  require(document.pages_size() == 1 && document.pages().contains(2) &&
+              document.pages().at(2).has_image(),
+          "only the page inside the range carries a preview");
+}
+
+// A stopped request (cancelled, past its deadline) renders nothing further;
+// the pages already rendered stay.
+void verify_previews_stop_when_asked() {
+  docv1::Document document;
+  int polls = 0;
+  grparse::attach_page_previews(std::make_shared<const std::string>(two_page_pdf()), &document,
+                                std::nullopt, [&polls] { return ++polls > 1; });
+  require(polls == 2, "the stop predicate is polled before each page");
+  require(document.pages_size() == 1 && document.pages().contains(1),
+          "the page rendered before the stop keeps its preview, the rest are skipped");
+}
+
 }  // namespace
 
 int main() {
   return grparse_test::run_test_main("page-previews-test", {
       verify_previews_attach_to_every_page,
       verify_unopenable_bytes_change_nothing,
+      verify_previews_honor_page_range,
+      verify_previews_stop_when_asked,
   });
 }

@@ -1241,7 +1241,13 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
   const PdfRouteDecision route = route_pdf_by_classification(parsed.classification);
   if (parsed.outcome.success && (route.fast_path || inputs.native_pipeline)) {
     PdfParseResult fast = parsed;
-    if (inputs.previews) attach_page_previews(inputs.bytes, &fast.outcome.document);
+    if (inputs.previews) {
+      attach_page_previews(inputs.bytes, &fast.outcome.document, inputs.tuning.page_range,
+                           [&inputs] {
+                             return inputs.context->IsCancelled() ||
+                                    std::chrono::system_clock::now() >= inputs.inbound_deadline;
+                           });
+    }
     if (!route.fast_path) {
       // NATIVE asked for the text layer as it is; say what the models would
       // have been run for, so a caller can tell a thin result from a thin

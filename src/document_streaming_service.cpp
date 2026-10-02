@@ -1,6 +1,7 @@
 #include "grparse/document_parser_service.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <exception>
@@ -470,7 +471,20 @@ class DocumentStreamReactor final
       if (parsed.outcome.success && route.fast_path) {
         // Rendered before the reactor sees the document, on this thread,
         // where the blocking work already is.
-        if (previews) attach_page_previews(bytes, &parsed.outcome.document);
+        if (previews) {
+          // Stops once the call is gone (the reactor is torn down on cancel
+          // or finish) or its deadline has passed.
+          attach_page_previews(bytes, &parsed.outcome.document, tuning.page_range,
+                               [&weak_gate, inbound_deadline] {
+                                 if (std::chrono::system_clock::now() >= inbound_deadline) {
+                                   return true;
+                                 }
+                                 const auto gate = weak_gate.lock();
+                                 if (gate == nullptr) return true;
+                                 std::lock_guard<std::mutex> lock(gate->mutex);
+                                 return gate->reactor == nullptr;
+                               });
+        }
         if (const auto gate = weak_gate.lock()) {
           std::lock_guard<std::mutex> lock(gate->mutex);
           if (gate->reactor != nullptr) {
