@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <string>
@@ -141,20 +142,38 @@ struct HyphenationCounts {
   int soft_hyphens_removed = 0;
 };
 
-// Repair 2, on one string: a lowercase letter, a hyphen, a line break (or
-// the single space a line join left), and a lowercase letter become the
-// joined word when both fragments are alphabetic and the pair is not a
-// known hyphenated compound ("self-", "well-", "non-" always; "pre-",
-// "post-", "co-", "re-" before a vowel). The tail's first token must be a
-// word of two letters or more, letters only up to a trailing punctuation
-// mark: "hyper-" followed by a stray "t" (a subscript line folded into the
-// paragraph) or by "x2" is not a broken word and keeps its hyphen. Soft
-// hyphens (U+00AD) are removed everywhere. Counts accumulate into `counts`
-// when given.
-std::string rejoin_hyphenated_words(std::string_view text, HyphenationCounts* counts = nullptr);
+// A run of a text the hyphen rejoin removed, half-open, in code points of
+// the text it was given.
+struct RemovedRun {
+  size_t start = 0;
+  size_t end = 0;
+};
 
-// Repair 2 over every TEXT or PARAGRAPH item of the document.
-HyphenationCounts rejoin_hyphenation(ai::pipestream::document::v1::Document* document);
+// Repair 2, on one string: a lowercase letter, a hyphen, a line break and a
+// lowercase letter become the joined word when both fragments are
+// alphabetic and the pair is not a known hyphenated compound ("self-",
+// "well-", "non-" always; "pre-", "post-", "co-", "re-" before a vowel).
+// A line break is a newline; the single space a line join left counts as
+// one only when `space_is_break` (text a geometry collector joined from
+// lines), so "short- and" in authored prose is never a break. The tail's
+// first token must be a word of two letters or more, letters only up to a
+// trailing punctuation mark: "hyper-" followed by a stray "t" (a subscript
+// line folded into the paragraph) or by "x2" is not a broken word and
+// keeps its hyphen. A suspended hyphen keeps its hyphen too: a tail token
+// that is a conjunction ("and", "or", "to", "und", ...) with another word
+// after it ("short-\nand long-term"). Soft hyphens (U+00AD) are removed
+// everywhere. Counts accumulate into `counts` and the removed runs, in
+// order, append to `removed` when given.
+std::string rejoin_hyphenated_words(std::string_view text, HyphenationCounts* counts = nullptr,
+                                    bool space_is_break = false,
+                                    std::vector<RemovedRun>* removed = nullptr);
+
+// Repair 2 over every TEXT or PARAGRAPH item of the document, group
+// members included. A single space is a line break only in items produced
+// by `geometry_collectors`. Inline span ranges and provenance charspans
+// move with the text past every removed run.
+HyphenationCounts rejoin_hyphenation(ai::pipestream::document::v1::Document* document,
+                                     const std::vector<std::string>& geometry_collectors = {});
 
 // The word two fragments make when a hyphen sat between them at a line
 // end: kept hyphenated for a known compound, concatenated otherwise.

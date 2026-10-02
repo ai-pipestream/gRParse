@@ -339,11 +339,25 @@ void verify_hyphen_rejoin() {
   grparse::HyphenationCounts counts;
   require(grparse::rejoin_hyphenated_words("infor-\nmation", &counts) == "information",
           "a line-break hyphen inside a word is rejoined");
-  require(grparse::rejoin_hyphenated_words("infor- mation") == "information",
-          "the single space a line join left counts as the break");
+  require(grparse::rejoin_hyphenated_words("infor- mation", nullptr, true) == "information",
+          "the single space a line join left counts as the break in joined lines");
+  require(grparse::rejoin_hyphenated_words("infor- mation") == "infor- mation",
+          "a single space is not a break in authored text");
+  require(grparse::rejoin_hyphenated_words("short- and long-term") == "short- and long-term",
+          "a suspended hyphen in authored prose stays");
+  require(grparse::rejoin_hyphenated_words("short- and long-term", nullptr, true) ==
+              "short- and long-term",
+          "a suspended hyphen stays even where a space is a break");
+  require(grparse::rejoin_hyphenated_words("pre- and post-war", nullptr, true) ==
+              "pre- and post-war",
+          "a suspended known prefix stays");
+  require(grparse::rejoin_hyphenated_words("Vor-\nund Nachteile") == "Vor-\nund Nachteile",
+          "a suspended hyphen at a line end stays");
+  require(grparse::rejoin_hyphenated_words("pota-\nto") == "potato",
+          "a conjunction-shaped tail closing the text is the rest of a word");
   require(grparse::rejoin_hyphenated_words("well-\nknown") == "well-known",
           "a known compound keeps its hyphen");
-  require(grparse::rejoin_hyphenated_words("self- aware") == "self-aware",
+  require(grparse::rejoin_hyphenated_words("self- aware", nullptr, true) == "self-aware",
           "self- keeps its hyphen before any letter");
   require(grparse::rejoin_hyphenated_words("re-\nenter") == "re-enter",
           "re- keeps its hyphen before a vowel");
@@ -389,6 +403,53 @@ void verify_hyphen_rejoin() {
           "the paragraph reads as words");
   require(base_at(document, header).text() == "Intro-\nduction",
           "a section header is not prose and is left alone");
+}
+
+void verify_hyphen_rejoin_by_producer() {
+  docv1::Document document = base_document();
+  add_pages(&document, 1);
+  const std::string joined = add_prose(&document, "The infor- mation flows.", 1, 100.0, 120.0);
+  document.mutable_texts(0)->mutable_text()->mutable_base()->add_source()->mutable_collector()
+      ->set_collector("pdf");
+  const std::string authored = add_prose(&document, "Plan for infor- mation and short- and "
+                                         "long-term goals.", 1, 200.0, 220.0);
+  document.mutable_texts(1)->mutable_text()->mutable_base()->add_source()->mutable_collector()
+      ->set_collector("docx");
+  const grparse::HyphenationCounts counts = grparse::rejoin_hyphenation(&document, {"pdf"});
+  require(counts.rejoined == 1, "only the geometry collector's joined line rejoins");
+  require(base_at(document, joined).text() == "The information flows.",
+          "a pdf item's space after a hyphen is a line join");
+  require(base_at(document, authored).text() ==
+              "Plan for infor- mation and short- and long-term goals.",
+          "an authored item's spaced hyphens are text");
+}
+
+void verify_hyphen_rejoin_moves_spans() {
+  docv1::Document document = base_document();
+  add_pages(&document, 1);
+  // "\xC3\xBC" is one code point: span ranges count code points, not bytes.
+  const std::string ref =
+      add_prose(&document, "\xC3\xBC infor-\nmation and exam\xC2\xADple link", 1, 100.0, 120.0);
+  auto* base = document.mutable_texts(0)->mutable_text()->mutable_base();
+  auto* link = base->add_spans();
+  link->mutable_range()->set_start(29);  // "link"
+  link->mutable_range()->set_end(33);
+  link->set_hyperlink("https://example.com/");
+  auto* word = base->add_spans();
+  word->mutable_range()->set_start(2);  // "infor-\nmation"
+  word->mutable_range()->set_end(15);
+  base->mutable_prov(0)->mutable_charspan()->set_start(0);
+  base->mutable_prov(0)->mutable_charspan()->set_end(33);
+  const grparse::HyphenationCounts counts = grparse::rejoin_hyphenation(&document);
+  require(counts.rejoined == 1 && counts.soft_hyphens_removed == 1, "both repairs apply");
+  const auto& repaired = base_at(document, ref);
+  require(repaired.text() == "\xC3\xBC information and example link", "the text is repaired");
+  require(repaired.spans(0).range().start() == 26 && repaired.spans(0).range().end() == 30,
+          "a span after the removals moves left by what was removed");
+  require(repaired.spans(1).range().start() == 2 && repaired.spans(1).range().end() == 13,
+          "a span around a rejoin shrinks to the joined word");
+  require(repaired.prov(0).charspan().start() == 0 && repaired.prov(0).charspan().end() == 30,
+          "the charspan covers the repaired text");
 }
 
 void verify_continuation_merged_across_pages() {
@@ -445,6 +506,37 @@ void verify_continuation_applies_hyphen_rule() {
           "a hyphen at the break joins the word");
   require(base_at(document, "#/texts/1").text() == "It is well-known here.",
           "a known compound keeps its hyphen across the break");
+}
+
+// The tail's spans shift by code points, past the leading whitespace the
+// join trimmed; and a survivor without a self_ref is named by its body
+// reference, so references into the tail follow it there.
+void verify_continuation_shifts_spans_by_code_points() {
+  docv1::Document document = base_document();
+  add_pages(&document, 2);
+  const std::string head = add_prose(&document, "Die Pr\xC3\xBC" "fung \xC3\xBC" "ber die", 1, 900.0, 920.0);
+  add_prose(&document, "  weiteren Schritte folgen.", 2, 100.0, 120.0);
+  auto* tail = document.mutable_texts(1)->mutable_text()->mutable_base();
+  auto* span = tail->add_spans();
+  span->mutable_range()->set_start(2);  // "weiteren"
+  span->mutable_range()->set_end(10);
+  document.mutable_texts(0)->mutable_text()->mutable_base()->clear_self_ref();
+  tail->clear_self_ref();
+  auto* table = document.add_tables();
+  table->set_self_ref("#/tables/0");
+  table->mutable_parent()->set_ref("#/body");
+  table->add_comments()->set_ref("#/texts/1");
+  document.mutable_body()->add_children()->set_ref("#/tables/0");
+
+  require(grparse::merge_continuations(&document, {}) == 1, "the continuation merges");
+  const auto& merged = document.texts(0).text().base();
+  require(merged.text() == "Die Pr\xC3\xBC" "fung \xC3\xBC" "ber die weiteren Schritte folgen.",
+          "texts join with one space");
+  require(merged.spans_size() == 1 && merged.spans(0).range().start() == 21 &&
+              merged.spans(0).range().end() == 29,
+          "the tail's span lands on its word in code points");
+  require(document.tables(0).comments(0).ref() == head,
+          "a reference into the tail follows it to the survivor's body reference");
 }
 
 void set_column(docv1::Document* document, int index, double left, double right) {
@@ -673,8 +765,11 @@ int main() {
       verify_normalization_and_page_number_shapes,
       verify_reference_years_are_not_page_numbers,
       verify_hyphen_rejoin,
+      verify_hyphen_rejoin_by_producer,
+      verify_hyphen_rejoin_moves_spans,
       verify_continuation_merged_across_pages,
       verify_continuation_applies_hyphen_rule,
+      verify_continuation_shifts_spans_by_code_points,
       verify_continuation_merges_within_a_page,
       verify_side_by_side_captions_do_not_merge,
       verify_next_page_caption_does_not_merge,

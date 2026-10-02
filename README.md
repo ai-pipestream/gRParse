@@ -552,12 +552,17 @@ format-agnostic and works on the model alone: a body text item whose text
 repeats in the top or bottom band of enough pages, or that is nothing but a
 page number, is relabelled `PAGE_HEADER` / `PAGE_FOOTER` and moved to the
 furniture tree; a word a line break hyphenated is rejoined inside its item
-(known compounds such as `well-known` and `re-enter` keep their hyphen, soft
-hyphens go); and a paragraph a page or column break split, where the first
-part ends without terminal punctuation and the next body sibling starts
-lowercase, is merged with its provenance appended and every reference
-renumbered. Section headers, list items, captions, code and anything inside
-a group are never touched. `GRPARSE_REPAIR=off` disables the pass at
+(known compounds such as `well-known` and `re-enter` keep their hyphen, a
+suspended hyphen such as `short- and long-term` keeps its own, soft hyphens
+go, and inline spans move with the text); and a paragraph a page or column
+break split, where the first part ends without terminal punctuation and the
+next body sibling starts lowercase, is merged with its provenance appended
+and every reference renumbered. The line break is a newline, or in text a
+geometry collector (`pdf`) joined from lines, also the single space the join
+left. Section headers, list items, captions and code are never touched; the
+demotion and the merge only take direct body children, while the rejoin
+visits every `TEXT` or `PARAGRAPH` item, group members included.
+`GRPARSE_REPAIR=off` disables the pass at
 startup, `GRPARSE_REPAIR=debug` prints one line per document it changed, and
 the Prometheus exposition counts what it did under
 `grparse_repair_changes_total{kind=...}`, one series per `RepairTotals`
