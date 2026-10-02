@@ -152,7 +152,7 @@ contract in its image, see step 3):
   grpc-email/  grpc-xml/  grpc-epub/  grpc-markup/  grpc-ebcdic/
   grpc-lol-html/  grpc-asr/  fastwarc-grpc/
   grPOIc/  grpc-calamine/  grpc-enrich/  grpc-vlm-convert/
-  grpc-pdfium/             the core stack's PDF backend (private repo, public image)
+  grpc-pdfium/             the core stack's PDF backend
   worktrees/               feature worktrees, one per repo-feature
 ```
 
@@ -293,7 +293,6 @@ docker compose -f compose.stack.yaml --profile parsers --profile heavy up   # + 
 # overlays, stackable:
 #   -f compose.stack.expose-grpc.yaml   publish gRParse gRPC on the host (50051)
 #   -f compose.stack.cpu.yaml           CPU image
-#   -f compose.stack.arm64.yaml         arm64 hosts: CPU image + pin the amd64-only pdf backends (pdfium in core, qparse/poppler in profiles) to linux/amd64 emulation
 #   -f compose.stack.openvino.yaml      Intel GPU image (OpenVINO, /dev/dri)
 ```
 

@@ -33,11 +33,8 @@
 # On a host without an NVIDIA GPU (macOS included), layer the CPU overlay,
 # which drops the GPU reservation and runs gRParse on the CPU provider:
 #   docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml up
-# On an arm64 host layer compose.stack.arm64.yaml too; it repeats the CPU
-# swap and pins the three amd64-only PDF backend images (pdfium in the core,
-# qparse and poppler in their profiles) to linux/amd64 under QEMU emulation
-# (its header lists the costs and the binfmt prerequisite). The rest of the
-# stack is multi-arch and runs natively.
+# The CPU overlay is also the arm64 recipe: every image in the stack,
+# the PDF backends included, is multi-arch and runs natively.
 # No ./models checkout? compose.stack.models.yaml fills a volume from the
 # pipestreamai/grparse-models image (put it after the cpu/openvino overlay).
 # Fresh machine? compose/clone-siblings.sh fetches the sibling checkouts
@@ -175,8 +172,7 @@ services:
       - no-new-privileges:true
 
   # The PDF backend (Apache-2.0, PDFium): page inventory, text cells and
-  # rasters for every PDF gRParse's CV path reads. The published image is
-  # linux/amd64 only (see compose.stack.arm64.yaml).
+  # rasters for every PDF gRParse's CV path reads.
   pdfium:
     image: pipestreamai/grpc-pdfium:${STACK_TAG:-latest}
     build: ../grpc-pdfium

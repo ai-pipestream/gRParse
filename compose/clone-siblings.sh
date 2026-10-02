@@ -16,7 +16,8 @@ parent="$(dirname -- "$here")"
 
 repos="grpc-lol-html grpc-libreoffice grpc-calamine grpc-pdf-inspector \
 grpc-epub grpc-xml grpc-markup grpc-ebcdic grpc-email grpc-enrich \
-grpc-asr grpc-vlm-convert fastwarc-grpc grPOIc"
+grpc-asr grpc-vlm-convert fastwarc-grpc grPOIc grpc-pdfium grpc-qparse \
+grpc-poppler"
 
 for repo in $repos; do
   if [ -e "$parent/$repo" ]; then
@@ -26,18 +27,6 @@ for repo in $repos; do
     git clone --depth 1 "$GIT_BASE/$repo.git" "$parent/$repo"
   fi
 done
-
-# grpc-pdfium is the core stack's PDF backend. Its repository is private
-# while its image (pipestreamai/grpc-pdfium) is public, so a clone without
-# access is not fatal: `docker compose -f compose.stack.yaml pull pdfium`
-# fetches the image, and `up` without --build uses it.
-if [ -e "$parent/grpc-pdfium" ]; then
-  echo "exists   $parent/grpc-pdfium"
-else
-  echo "cloning  $GIT_BASE/grpc-pdfium"
-  git clone --depth 1 "$GIT_BASE/grpc-pdfium.git" "$parent/grpc-pdfium" ||
-    echo "skipped  grpc-pdfium (private): pull pipestreamai/grpc-pdfium instead"
-fi
 
 # The asr service mounts grpc-asr/models read-only; compose refuses to
 # start when a bind-mount source is missing, so make sure it exists even

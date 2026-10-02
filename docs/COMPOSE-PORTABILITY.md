@@ -57,7 +57,7 @@ requesting a format whose profile is down fails loudly.
 
 | Host | Overlay order and expected accelerator | Status |
 | --- | --- | --- |
-| macOS, Apple Silicon | `base`, `cpu`, `arm64`, `standalone`, `models` | Native arm64 CPU; the core's pdfium (and the optional `pdf-backends`/`poppler` profiles) run under amd64 emulation. Do not add OpenVINO. |
+| macOS, Apple Silicon | `base`, `cpu`, `standalone`, `models` | Native arm64 CPU, PDF backends included. Do not add OpenVINO. |
 | macOS, Intel | `base`, `cpu`, `standalone`, `models` | CPU only. Docker Desktop supports both Mac architectures, but this stack has no macOS GPU overlay. |
 | Linux amd64, CPU | `base`, `cpu`, `standalone`, `models` | CPU. |
 | Linux amd64, NVIDIA | `base`, `standalone`, `models` | CUDA image, existing `gpus: all` setting. Validate the host NVIDIA container runtime before startup. |
@@ -65,12 +65,6 @@ requesting a format whose profile is down fails loudly.
 | Windows Docker Desktop/WSL2, CPU | Run from a WSL2 distribution: `base`, `cpu`, `standalone`, `models` | CPU. |
 | Windows Docker Desktop/WSL2, NVIDIA | Run from WSL2: `base`, `standalone`, `models` | CUDA when Docker's NVIDIA GPU-PV prerequisites pass. |
 | Windows Docker Desktop/WSL2, Intel GPU | No recipe | **Not run and unsupported by this Compose overlay.** It passes `/dev/dri`, while Intel's WSL2 container guidance uses `/dev/dxg` and `/usr/lib/wsl`; do not infer support from Linux OpenVINO settings. |
-
-On macOS arm64 the arm64 overlay is required: the three PDF backend images
-(pdfium in the core, qparse and poppler in their profiles) are amd64-only and
-start more slowly under emulation. gRParse dials the backend per document, so
-a PDF sent while pdfium's workers are still spawning fails UNAVAILABLE and
-the next one goes through.
 
 The Windows NVIDIA path is limited to Docker Desktop's WSL2 backend and an
 NVIDIA GPU with a WSL-capable driver. Docker documents that GPU support there

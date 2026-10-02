@@ -298,14 +298,14 @@ Still open, tracked here:
 - Fleet housekeeping on the three services: landed 2026-09-06. Each owns
   a fleet port (50069 pdfium, 50070 qparse, 50071 poppler, in the
   workspace table), answers `GetServiceInfo` with a `UiInfo` block, has a
-  Dockerfile plus `ci.yml` and `publish.yml` (amd64, `pipestreamai/<repo>`
+  Dockerfile plus `ci.yml` and `publish.yml` (`pipestreamai/<repo>`
   on Docker Hub, first images pushed 2026-09-07). Since M6 pdfium is in the
   stack's core profile, qparse in `pdf-backends` and poppler in `poppler`. The hardened-base pass landed 2026-09-07:
   all three run on `dhi.io/debian-base:trixie-debian13` as user 65532 with
   a staged library closure and a boot smoke gate in ci and publish, and
-  grpc-poppler builds poppler 26.08.0 from the pinned tarball. Images are
-  amd64-only for now; the arm64 legs wait on self-hosted arm runners (the
-  `arm64-publish` branches in each repo carry the workflow legs).
+  grpc-poppler builds poppler 26.08.0 from the pinned tarball. The repos went
+  public on 2026-10-02, and each image is an amd64 + arm64 manifest list
+  built natively on GitHub's hosted runners.
 - Tier 0 TextCell union: only the qpdf-based backend fills direction,
   space width and rendering mode; grpc-pdfium and grpc-poppler leave them
   unset.

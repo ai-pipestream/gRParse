@@ -42,25 +42,14 @@ a GPU, but the whole demo works.
 gRParse links no PDF engine; it reads every PDF through a PDF backend
 service, and the core stack starts `pdfium` for that (`qparse` rides in the
 opt-in `pdf-backends` profile, the GPL `poppler` in its own `poppler`
-profile). The three backend images publish amd64 only: their repos are
-private, and GitHub's free arm runners cover public repos only. On an
-arm64 host layer `compose.stack.arm64.yaml` last. It repeats the CPU swap
-and pins the three images to `linux/amd64`, which runs them under the
-host's binfmt_misc QEMU handler:
+profile). All three backend images are amd64 + arm64 manifest lists, so
+an arm64 host needs only the CPU overlay:
 
 ```sh
-docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml -f compose.stack.arm64.yaml up
+docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml up
 ```
 
-Docker Desktop (macOS) ships the QEMU handler; a bare Linux arm64 host
-needs it once (`docker run --privileged --rm tonistiigi/binfmt --install
-amd64`, or the qemu-user-static package), or the pinned containers fail at
-start with "exec format error", and with `pdfium` down every PDF upload
-fails while rasters and the other formats still parse. Emulation makes the
-backend worker pools slower to spawn; gRParse dials the backend per
-document, so a PDF sent in the first seconds of a cold `up` can fail
-UNAVAILABLE and the next one goes through. Do not layer the openvino
-overlay on arm64; it is Intel-only.
+Do not layer the openvino overlay on arm64; it is Intel-only.
 
 gRParse's model files still need to exist in `models/` first:
 `scripts/fetch-models.sh` fetches and sha256-checks them (see
