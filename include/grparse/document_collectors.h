@@ -181,7 +181,12 @@ struct PdfClassification {
   PdfClass pdf_class = PdfClass::kUnknown;
   // 1-indexed pages the inspector reported as needing OCR — the same
   // indexing the wire and the page scheduler both use, so the numbers pass
-  // straight through.
+  // straight through. Sorted and unique: the sampling detection's set on
+  // info, widened by what the extraction pass found (the trailer's
+  // extraction_ocr_reasons, each page event's needs_ocr) and by every page
+  // that extracted no markdown although it drew a picture or the trailer
+  // reported invisible text, which is how a scanned page reads when the
+  // detection's sample missed it or an OCR layer sits behind it.
   std::vector<int> pages_needing_ocr;
   // The status trailer's has_encoding_issues flag: broken font encodings in
   // the text layer, whose extraction the wire contract says not to trust.
@@ -189,6 +194,14 @@ struct PdfClassification {
   // inspector knows the layer is garbled without knowing which pages), so
   // the routing consults it independently.
   bool encoding_issues = false;
+  // The trailer's has_invisible_text flag: some page drew text in rendering
+  // mode 3 (typically an OCR layer behind a scan), which never reaches the
+  // markdown or the folded body.
+  bool invisible_text = false;
+  // The folded Document of a document with pages carries no body text or
+  // table at all: whatever the classification, the extraction produced
+  // nothing, so it is not a parse result to take as is.
+  bool empty_body = false;
 };
 
 // The routing answer for one classified PDF. The fast path takes the

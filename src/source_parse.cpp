@@ -1259,6 +1259,7 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
           std::string(pdf_class_name(parsed.classification.pdf_class)) +
           (parsed.classification.encoding_issues ? " with encoding issues in the text layer"
                                                  : "") +
+          (parsed.classification.empty_body ? " and its extraction carried no body text" : "") +
           "; no layout, OCR, or table-structure model ran");
     }
     return fast.outcome;
@@ -1290,6 +1291,9 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
       std::string(pdf_class_name(parsed.classification.pdf_class)) +
       (parsed.classification.encoding_issues
            ? " with encoding issues in the text layer, so its extraction was not taken"
+           : "") +
+      (parsed.classification.empty_body
+           ? "; its extraction carried no body text, so it was not taken"
            : "") +
       (forced
            ? "; recognition was forced on every page in place of the "

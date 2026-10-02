@@ -1399,10 +1399,13 @@ class RoutableDigitalSource final : public grparse::PageSource {
 // one folded document, then the status trailer.
 class FakePdfInspector final : public pdfv1::PdfParseService::Service {
  public:
+  // searchable_scan serves what an OCRmyPDF-style scan looks like on the
+  // wire: TEXT_BASED, every page's markdown empty, the fold's only text in
+  // the invisible layer, and has_invisible_text on the trailer.
   FakePdfInspector(pdfv1::PdfType type, std::vector<uint32_t> pages_needing_ocr,
-                   bool paged_document = false)
+                   bool paged_document = false, bool searchable_scan = false)
       : type_(type), pages_needing_ocr_(std::move(pages_needing_ocr)),
-        paged_document_(paged_document) {}
+        paged_document_(paged_document), searchable_scan_(searchable_scan) {}
 
   // Counts every dial, so a test can prove a parse that must not happen did
   // not reach the collector.
@@ -1434,6 +1437,13 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
     for (const uint32_t page : pages_needing_ocr_) info->add_pages_needing_ocr(page);
     stream->Write(event);
     event.Clear();
+    if (searchable_scan_) {
+      for (const uint32_t page_no : {1U, 2U, 3U}) {
+        event.mutable_page()->set_page_no(page_no);
+        stream->Write(event);
+        event.Clear();
+      }
+    }
     docv1::Document document;
     document.mutable_body()->set_self_ref("#/body");
     document.mutable_furniture()->set_self_ref("#/furniture");
@@ -1478,10 +1488,12 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
         page.mutable_size()->set_height(792);
       }
     }
+    if (searchable_scan_) base->set_content_layer(docv1::CONTENT_LAYER_INVISIBLE);
     *event.mutable_document() = std::move(document);
     stream->Write(event);
     event.Clear();
-    event.mutable_status()->set_pages_extracted(0);
+    event.mutable_status()->set_pages_extracted(searchable_scan_ ? 3 : 0);
+    event.mutable_status()->set_has_invisible_text(searchable_scan_);
     stream->Write(event);
     return grpc::Status::OK;
   }
@@ -1490,6 +1502,7 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
   pdfv1::PdfType type_;
   std::vector<uint32_t> pages_needing_ocr_;
   bool paged_document_;
+  bool searchable_scan_;
   std::atomic<int> dials_{0};
 };
 
@@ -1929,6 +1942,30 @@ void verify_pdf_fast_path_skips_the_cv_pipeline() {
           "the collector's folded document is the parse result");
   require(document.texts(0).text().base().source(0).collector().collector() == "pdf",
           "the fast-path document keeps the collector's source tag");
+}
+
+void verify_pdf_searchable_scan_takes_the_cv_path() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {}, /*paged_document=*/false,
+                             /*searchable_scan=*/true);
+  PdfInspectorServer inspector_server(&inspector);
+  const UnaryPdfRun run = run_unary_pdf(inspector_server.target());
+  require(run.status.ok(), "searchable-scan parse failed: " + run.status.error_message());
+  require(run.recognizer_calls == 3,
+          "every page whose markdown came back empty beside invisible text is recognized, "
+          "got " + std::to_string(run.recognizer_calls));
+  const auto& document = run.response.response().document().doc();
+  for (const auto& item : document.texts()) {
+    require(item.text().base().text() != "from pdf inspector",
+            "the empty fast-path fold is not the parse result");
+  }
+  const auto& fields = document.body().meta().custom_fields();
+  bool recorded = false;
+  if (fields.count("collector_warnings:pdf") == 1) {
+    for (const auto& value : fields.at("collector_warnings:pdf").list_value().values()) {
+      recorded = recorded || value.string_value().contains("no body text");
+    }
+  }
+  require(recorded, "the refused fast path is recorded as a collector warning");
 }
 
 void verify_pdf_classification_restricts_recognition() {
@@ -2539,6 +2576,7 @@ int main() {
         verify_unary_callback_path_admits_concurrent_conversions();
         verify_unary_cancellation_finishes_without_wedging();
         verify_pdf_fast_path_skips_the_cv_pipeline();
+        verify_pdf_searchable_scan_takes_the_cv_path();
         verify_pdf_classification_restricts_recognition();
         verify_pdf_collector_failure_degrades_to_the_cv_path();
         verify_queued_then_cancelled_call_never_dials_a_collector();

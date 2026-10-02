@@ -2295,6 +2295,11 @@ void verify_pdf_routing_decision_logic() {
               !mixed_decision.force_ocr,
           "without encoding issues nothing escalates to forced recognition");
 
+  grparse::PdfClassification empty_fold = text_based;
+  empty_fold.empty_body = true;
+  require(!grparse::route_pdf_by_classification(empty_fold).fast_path,
+          "a text-based document whose fold carried no body is not the fast path");
+
   grparse::PdfClassification garbled_mixed = mixed;
   garbled_mixed.encoding_issues = true;
   require(grparse::route_pdf_by_classification(garbled_mixed).force_ocr,
@@ -2321,6 +2326,140 @@ void verify_pdf_encoding_issues_defeat_the_fast_path() {
   require(route.force_ocr,
           "the declined fast path escalates to forced recognition, skipping "
           "the digital extraction of the flagged layer");
+}
+
+// Serves a scripted FULL stream for the routing guards: TEXT_BASED with no
+// OCR pages on info, then the given page events, the given fold, and a
+// trailer carrying the given extraction verdicts and invisible-text flag.
+class ScriptedPdfService final : public pdfv1::PdfParseService::Service {
+ public:
+  ScriptedPdfService(std::vector<pdfv1::PageMarkdown> pages, docv1::Document document,
+                     std::vector<uint32_t> extraction_ocr_pages, bool invisible_text)
+      : pages_(std::move(pages)),
+        document_(std::move(document)),
+        extraction_ocr_pages_(std::move(extraction_ocr_pages)),
+        invisible_text_(invisible_text) {}
+
+  grpc::Status ParsePdf(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<pdfv1::ParsePdfResponse, pdfv1::ParsePdfRequest>* stream)
+      override {
+    pdfv1::ParsePdfRequest request;
+    while (stream->Read(&request)) {
+    }
+    pdfv1::ParsePdfResponse event;
+    event.mutable_info()->set_pdf_type(pdfv1::PDF_TYPE_TEXT_BASED);
+    event.mutable_info()->set_confidence(1.0F);
+    event.mutable_info()->set_page_count(static_cast<uint32_t>(pages_.size()));
+    stream->Write(event);
+    for (const auto& page : pages_) {
+      event.Clear();
+      *event.mutable_page() = page;
+      stream->Write(event);
+    }
+    event.Clear();
+    *event.mutable_document() = document_;
+    stream->Write(event);
+    event.Clear();
+    auto* status = event.mutable_status();
+    status->set_pages_extracted(static_cast<uint32_t>(pages_.size()));
+    for (const uint32_t page : extraction_ocr_pages_) {
+      auto* reasons = status->add_extraction_ocr_reasons();
+      reasons->set_page(page);
+      reasons->add_reasons(pdfv1::OCR_REASON_SUSPECTED_GARBLED);
+    }
+    status->set_has_invisible_text(invisible_text_);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+
+ private:
+  std::vector<pdfv1::PageMarkdown> pages_;
+  docv1::Document document_;
+  std::vector<uint32_t> extraction_ocr_pages_;
+  bool invisible_text_;
+};
+
+pdfv1::PageMarkdown pdf_page(uint32_t page_no, const std::string& markdown,
+                             bool needs_ocr = false) {
+  pdfv1::PageMarkdown page;
+  page.set_page_no(page_no);
+  page.set_markdown(markdown);
+  page.set_needs_ocr(needs_ocr);
+  return page;
+}
+
+// The OCRmyPDF shape: a page image behind an invisible OCR layer on every
+// page. Detection counts the hidden text and says TEXT_BASED with no OCR
+// pages; extraction leaves the hidden layer out, so every page is empty and
+// the fold's only text sits in the invisible layer.
+void verify_pdf_searchable_scan_refuses_the_fast_path() {
+  docv1::Document document;
+  document.mutable_body()->set_self_ref("#/body");
+  auto* hidden = document.add_texts()->mutable_text()->mutable_base();
+  hidden->set_self_ref("#/texts/0");
+  hidden->set_content_layer(docv1::CONTENT_LAYER_INVISIBLE);
+  hidden->set_text("the scanned contract's OCR layer");
+  ScriptedPdfService service({pdf_page(1, ""), pdf_page(2, "  \n")}, document, {},
+                             /*invisible_text=*/true);
+  ServerFixture server(&service);
+  const auto result = grparse::collect_pdf(server.channel(), "%PDF-fake");
+  require(result.outcome.success, "pdf collection succeeds: " + result.outcome.error);
+  require(result.classification.invisible_text,
+          "the trailer's has_invisible_text rides the classification");
+  require(result.classification.empty_body,
+          "a fold whose only text is invisible has no body");
+  require(result.classification.pages_needing_ocr == std::vector<int>({1, 2}),
+          "every empty page of a document that drew invisible text needs OCR");
+  bool warned = false;
+  for (const auto& warning : result.outcome.warnings) {
+    if (warning.contains("invisible text")) warned = true;
+  }
+  require(warned, "the invisible text layer is warned about");
+  const auto route = grparse::route_pdf_by_classification(result.classification);
+  require(!route.fast_path && route.ocr_pages == std::vector<int>({1, 2}),
+          "a searchable scan routes its pages to recognition instead of fast-pathing");
+}
+
+// A mostly-text document whose scanned page the 8-page detection sample
+// missed: the empty page drew a picture, a garbled page is convicted by the
+// pass that read it, and a blank page that is neither stays out.
+void verify_pdf_extraction_verdicts_name_ocr_pages() {
+  docv1::Document document = canned_document("pdf");
+  auto* picture = document.add_pictures();
+  picture->set_self_ref("#/pictures/0");
+  picture->mutable_parent()->set_ref("#/body");
+  picture->add_prov()->set_page_no(2);
+  ScriptedPdfService service(
+      {pdf_page(1, "# report"), pdf_page(2, ""), pdf_page(3, "8VceZWZTReV", /*needs_ocr=*/true),
+       pdf_page(4, "body"), pdf_page(5, "")},
+      document, /*extraction_ocr_pages=*/{4}, /*invisible_text=*/false);
+  ServerFixture server(&service);
+  const auto result = grparse::collect_pdf(server.channel(), "%PDF-fake");
+  require(result.outcome.success, "pdf collection succeeds: " + result.outcome.error);
+  require(!result.classification.empty_body && !result.classification.invisible_text,
+          "a fold with body text is not empty");
+  require(result.classification.pages_needing_ocr == std::vector<int>({2, 3, 4}),
+          "the pictured empty page, the needs_ocr page, and the trailer's verdict page "
+          "need OCR; the blank page does not");
+  require(!grparse::route_pdf_by_classification(result.classification).fast_path,
+          "a text-based document with extraction verdicts does not fast-path");
+}
+
+// No OCR verdict anywhere, but the fold came back with nothing in it: an
+// empty Document for a document with pages is not a parse result.
+void verify_pdf_empty_fold_refuses_the_fast_path() {
+  docv1::Document document;
+  document.mutable_body()->set_self_ref("#/body");
+  ScriptedPdfService service({pdf_page(1, "")}, document, {}, /*invisible_text=*/false);
+  ServerFixture server(&service);
+  const auto result = grparse::collect_pdf(server.channel(), "%PDF-fake");
+  require(result.outcome.success, "pdf collection succeeds: " + result.outcome.error);
+  require(result.classification.empty_body && result.classification.pages_needing_ocr.empty(),
+          "an empty fold is flagged without inventing OCR pages");
+  const auto route = grparse::route_pdf_by_classification(result.classification);
+  require(!route.fast_path && route.ocr_pages.empty(),
+          "an empty fold leaves the CV path's own heuristic in charge");
 }
 
 void verify_pdf_collector_failure_is_an_outcome() {
@@ -2466,6 +2605,9 @@ int main() {
       verify_pdf_scanned_reports_the_ocr_page_set,
       verify_pdf_routing_decision_logic,
       verify_pdf_encoding_issues_defeat_the_fast_path,
+      verify_pdf_searchable_scan_refuses_the_fast_path,
+      verify_pdf_extraction_verdicts_name_ocr_pages,
+      verify_pdf_empty_fold_refuses_the_fast_path,
       verify_pdf_collector_failure_is_an_outcome,
       verify_pdf_endpoint_configuration,
       verify_pdf_plain_leg_returns_the_document,

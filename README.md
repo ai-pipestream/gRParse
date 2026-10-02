@@ -524,7 +524,13 @@ text-based document takes the fast path — the collector's own folded
 skipped entirely. A scanned, image-based, or mixed document falls through
 to the CV pipeline with recognition restricted to the inspector's
 `pages_needing_ocr` (1-indexed, the same numbering the page scheduler
-uses, so the set passes through verbatim): exactly those pages hit the OCR
+uses, so the set passes through verbatim), widened by what its extraction
+pass found: the trailer's `extraction_ocr_reasons`, each page's
+`needs_ocr`, and every page whose markdown came back empty although it drew
+a picture or the document drew invisible text (a searchable scan's OCR
+layer, which extraction leaves out). A text-based document that names any
+such page, or whose fold carries no body text at all, takes the CV path
+too rather than returning an empty Document: exactly those pages hit the OCR
 engines, and every other page trusts its embedded text layer instead of
 the per-page coverage heuristic deciding. Explicit `do_ocr`/`force_ocr`
 request options still outrank the classification. If the inspector is
