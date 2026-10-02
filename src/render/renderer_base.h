@@ -112,6 +112,15 @@ std::string escape_html_text(const std::string& text);
 
 std::string escape_html_attribute(const std::string& text);
 
+// XML 1.0 escaping for the DocLang exports: & < > (and " plus TAB, LF, CR as
+// character references in an attribute), with every byte that is not valid
+// UTF-8 and every code point outside the XML Char production (C0 controls
+// other than TAB, LF, CR; U+FFFE; U+FFFF) replaced by U+FFFD, so a strict XML
+// parser accepts the output whatever the source text held.
+std::string escape_xml_text(std::string_view text);
+
+std::string escape_xml_attribute(std::string_view text);
+
 // The picture's description text. The meta field wins; the annotation list
 // is the fallback for producers that still write description annotations.
 // Empty when the picture carries no description.

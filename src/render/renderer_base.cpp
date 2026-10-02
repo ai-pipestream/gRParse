@@ -12,6 +12,8 @@
 #include <utility>
 #include <vector>
 
+#include <simdutf.h>
+
 namespace docv1 = ai::pipestream::document::v1;
 
 namespace grparse::render {
@@ -405,6 +407,60 @@ std::string escape_html_attribute(const std::string& text) {
   }
   return safe;
 }
+
+namespace {
+
+constexpr std::string_view kReplacementCharacter = "\xEF\xBF\xBD";
+
+// Escapes text simdutf has already validated as UTF-8.
+void append_xml_escaped(std::string& safe, std::string_view text, bool attribute) {
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    const char c = text[i];
+    switch (c) {
+      case '&': safe.append("&amp;"); continue;
+      case '<': safe.append("&lt;"); continue;
+      case '>': safe.append("&gt;"); continue;
+      case '"': safe.append(attribute ? "&quot;" : "\""); continue;
+      case '\t': safe.append(attribute ? "&#9;" : "\t"); continue;
+      case '\n': safe.append(attribute ? "&#10;" : "\n"); continue;
+      case '\r': safe.append(attribute ? "&#13;" : "\r"); continue;
+      default: break;
+    }
+    if (static_cast<unsigned char>(c) < 0x20) {
+      safe.append(kReplacementCharacter);
+    } else if (text.substr(i, 2) == "\xEF\xBF" && i + 2 < text.size() &&
+               (text[i + 2] == '\xBE' || text[i + 2] == '\xBF')) {
+      // U+FFFE and U+FFFF are valid UTF-8 but not XML characters.
+      safe.append(kReplacementCharacter);
+      i += 2;
+    } else {
+      safe.push_back(c);
+    }
+  }
+}
+
+std::string escape_xml(std::string_view text, bool attribute) {
+  std::string safe;
+  safe.reserve(text.size());
+  while (true) {
+    const simdutf::result valid = simdutf::validate_utf8_with_errors(text.data(), text.size());
+    if (valid.error == simdutf::error_code::SUCCESS) {
+      append_xml_escaped(safe, text, attribute);
+      return safe;
+    }
+    // count is the offset of the first byte that starts no valid sequence;
+    // that byte degrades to U+FFFD and validation resumes after it.
+    append_xml_escaped(safe, text.substr(0, valid.count), attribute);
+    safe.append(kReplacementCharacter);
+    text.remove_prefix(valid.count + 1);
+  }
+}
+
+}  // namespace
+
+std::string escape_xml_text(std::string_view text) { return escape_xml(text, false); }
+
+std::string escape_xml_attribute(std::string_view text) { return escape_xml(text, true); }
 
 std::string picture_description(const docv1::PictureItem& picture) {
   if (picture.has_meta() && picture.meta().has_description()) {

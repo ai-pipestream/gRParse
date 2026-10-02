@@ -1017,6 +1017,24 @@ void verify_doclang_escapes_xml_content() {
           "quotes in element text need no escaping:\n" + doclang);
 }
 
+// XML 1.0 has no C0 controls other than TAB, LF and CR, no U+FFFE/U+FFFF and
+// no malformed UTF-8: each degrades to U+FFFD, so a Word soft break or a stray
+// BEL from an office cell cannot make the DocLang document ill-formed.
+void verify_doclang_replaces_non_xml_characters() {
+  docv1::Document document = base_document("controls.docx");
+  add_text(&document, "#/body", docv1::BaseTextItem::kText,
+           docv1::DOC_ITEM_LABEL_TEXT,
+           "soft\x0b" "break\x07" "bell\x0c" "feed\xff" "byte\xEF\xBF\xBF" "end\t\xC3\xA9");
+  add_code(&document, "#/body", "x", docv1::CODE_LANGUAGE_LABEL_UNKNOWN);
+  document.mutable_texts(1)->mutable_code()->set_code_language_raw("c\x01\"\n");
+  require_contains(grparse::render_doclang(document),
+                   "<paragraph>soft\uFFFDbreak\uFFFDbell\uFFFDfeed\uFFFDbyte\uFFFDend\t\u00E9"
+                   "</paragraph>",
+                   "doclang replaces characters outside the XML Char production");
+  require_contains(grparse::render_doclang(document), "<code language=\"c\uFFFD&quot;&#10;\">",
+                   "doclang attributes replace controls and keep LF as a reference");
+}
+
 // Appends one track-timed text item; extra_collector_source prepends a
 // CollectorSource entry to prove the renderer scans past attribution.
 void add_timed_text(docv1::Document* document, const std::string& text,
@@ -1256,6 +1274,7 @@ int main() {
       verify_doctags_otsl_spans_and_locations,
       verify_doclang_renders_grpc_xml_vocabulary,
       verify_doclang_escapes_xml_content,
+      verify_doclang_replaces_non_xml_characters,
       verify_vtt_renders_timed_cues,
       verify_split_page_assigns_by_provenance,
       verify_split_page_without_provenance_is_one_page,
