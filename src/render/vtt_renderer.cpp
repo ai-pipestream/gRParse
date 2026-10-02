@@ -32,6 +32,28 @@ std::string vtt_timestamp(double seconds) {
   return std::string(buffer);
 }
 
+// Cue text safe for a WebVTT payload: & < > become character references (so
+// text cannot open a cue span or form "-->"), and line terminators collapse
+// so no blank line ends the cue early and lets the rest parse as cue timing.
+std::string vtt_cue_text(const std::string& text) {
+  std::string safe;
+  safe.reserve(text.size());
+  for (const char c : text) {
+    switch (c) {
+      case '&': safe.append("&amp;"); break;
+      case '<': safe.append("&lt;"); break;
+      case '>': safe.append("&gt;"); break;
+      case '\r':
+      case '\n':
+        if (!safe.empty() && safe.back() != '\n') safe.push_back('\n');
+        break;
+      default: safe.push_back(c);
+    }
+  }
+  while (!safe.empty() && safe.back() == '\n') safe.pop_back();
+  return safe;
+}
+
 class VttRenderer : RendererBase {
  public:
   explicit VttRenderer(const docv1::Document& document) : RendererBase(document) {}
@@ -105,9 +127,10 @@ class VttRenderer : RendererBase {
     const docv1::TrackSource* track = track_source(*base);
     if (track == nullptr) return;
 
-    std::string text = base->text();
+    std::string text = vtt_cue_text(base->text());
+    if (text.empty()) return;
     if (track->has_voice() && !track->voice().empty()) {
-      text = "<v " + track->voice() + ">" + text + "</v>";
+      text = "<v " + vtt_cue_text(track->voice()) + ">" + text + "</v>";
     }
     const std::string identifier = track->has_identifier() ? track->identifier() : "";
     if (cue_open_ && identifier == cue_identifier_ && track->start_time() == cue_start_ &&
