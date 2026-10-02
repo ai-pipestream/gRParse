@@ -24,7 +24,10 @@
 # therefore waits on a base with glibc 2.43 or newer, or on Debian 14.
 ARG GRPARSE_RUNTIME_IMAGE=ubuntu:26.04
 
-FROM ubuntu:26.04 AS build
+# The deps stage holds the toolchain and the vendored libraries and nothing
+# of this repo, so the weekly sanitizer job (.github/workflows/sanitize.yml)
+# builds the sources in exactly the image toolchain.
+FROM ubuntu:26.04 AS deps
 ARG GRPARSE_BUILD_JOBS=2
 ENV CARGO_BUILD_JOBS=${GRPARSE_BUILD_JOBS}
 
@@ -83,6 +86,8 @@ RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/opencv.tar.g
  && cmake --install /tmp/opencv-build \
  && rm -rf /tmp/opencv.tar.gz "/tmp/opencv-${OPENCV_VERSION}" /tmp/opencv-build
 
+FROM deps AS build
+ARG GRPARSE_BUILD_JOBS=2
 WORKDIR /src
 COPY . .
 # Separate cache from the CUDA and OpenVINO images: different ONNX Runtime
