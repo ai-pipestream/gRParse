@@ -1,6 +1,7 @@
 #include "source_parse.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -709,14 +710,16 @@ class CvCollector {
  public:
   CvCollector(grpc::CallbackServerContext* context, PageScheduler& scheduler,
               std::shared_ptr<const std::string> bytes, bool pdf, CvOffsets offsets,
-              CvConfidence confidence, HeadingOptions heading_options)
+              CvConfidence confidence, HeadingOptions heading_options,
+              CollectorDeadline deadline)
       : context_(context),
         scheduler_(scheduler),
         bytes_(std::move(bytes)),
         pdf_(pdf),
         offsets_(std::move(offsets)),
         confidence_(std::move(confidence)),
-        heading_options_(std::move(heading_options)) {}
+        heading_options_(std::move(heading_options)),
+        deadline_(deadline) {}
 
   CollectorOutcome operator()(const PageScheduler::OcrTuning& tuning) const {
     try {
@@ -753,8 +756,9 @@ class CvCollector {
   };
 
   // Submits the document and waits for the scheduler to finish with it,
-  // cancelling the ticket as soon as the call goes away. Returns the outcome
-  // that ended the run, or nothing when every page arrived.
+  // cancelling the ticket as soon as the call goes away or the parse's
+  // deadline (document_timeout, or the call's own) passes. Returns the
+  // outcome that ended the run, or nothing when every page arrived.
   std::optional<CollectorOutcome> collect_pages(const PageScheduler::OcrTuning& tuning,
                                                 PageSet* collected) const {
     Run state;
@@ -781,11 +785,19 @@ class CvCollector {
             }});
 
     std::unique_lock<std::mutex> lock(state.mutex);
+    bool expired = false;
     while (!state.finished) {
       state.changed.wait_for(lock, std::chrono::milliseconds(25));
-      if (context_->IsCancelled()) ticket.cancel();
+      if (!expired && std::chrono::system_clock::now() >= deadline_) expired = true;
+      if (context_->IsCancelled() || expired) ticket.cancel();
     }
     if (context_->IsCancelled()) return cancelled_outcome();
+    if (expired) {
+      CollectorOutcome outcome;
+      outcome.error = "document deadline exceeded before every page was read";
+      outcome.code = grpc::StatusCode::DEADLINE_EXCEEDED;
+      return outcome;
+    }
     const grpc::Status scheduler_status = status_from_exception(state.failure);
     if (!scheduler_status.ok()) {
       CollectorOutcome outcome;
@@ -840,6 +852,7 @@ class CvCollector {
   CvOffsets offsets_;
   CvConfidence confidence_;
   HeadingOptions heading_options_;
+  CollectorDeadline deadline_;
 };
 
 // Everything one parse's collector legs read: the request's bytes and
@@ -852,6 +865,10 @@ struct ParseInputs {
   std::shared_ptr<const std::string> ebcdic_layout_json;
   std::shared_ptr<const std::string> lol_html_options_json;
   fs::path filename;
+  // What the dialed collectors log and correlate this parse by: the name
+  // plus a per-call sequence, so two concurrent uploads of one filename
+  // stay apart.
+  std::string document_id;
   std::string content_type;
   PageScheduler::OcrTuning tuning;
   CollectorDeadline inbound_deadline = kNoCollectorDeadline;
@@ -993,6 +1010,9 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   inputs.lol_html_options_json =
       std::make_shared<const std::string>(options.lol_html_options_json());
   inputs.filename = requested_name;
+  static std::atomic<uint64_t> call_sequence{0};
+  inputs.document_id = requested_name.string() + "#" +
+                       std::to_string(call_sequence.fetch_add(1, std::memory_order_relaxed) + 1);
   inputs.content_type = std::move(content_type);
   inputs.tuning = ocr_tuning(options.has_do_ocr(), options.do_ocr(), options.force_ocr(),
                              options.has_render_scale(), options.render_scale());
@@ -1260,7 +1280,7 @@ std::vector<PlannedCollector> build_plan(
         // started; a cancel can land any time after. Ask again before
         // dialing so a dead call costs no collector leg.
         if (inputs.context->IsCancelled()) return cancelled_outcome();
-        return run_remote_collector(id, inputs.endpoints, inputs.filename.string(),
+        return run_remote_collector(id, inputs.endpoints, inputs.document_id,
                                     inputs.filename.string(), inputs.content_type,
                                     *inputs.bytes, *inputs.ebcdic_layout_json,
                                     *inputs.lol_html_options_json, inputs.inbound_deadline);
@@ -1432,7 +1452,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
       return grpc::Status::OK;
     }
     const CvCollector run_cv(context, scheduler, bytes, pdf, cv_offsets, cv_confidence,
-                             inputs.heading);
+                             inputs.heading, inputs.inbound_deadline);
 
     const RoutedPlan routed = route_plan(request.options().collectors(), pdf, inputs);
     // NATIVE is model-free by definition. A plan that would put the bytes

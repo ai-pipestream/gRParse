@@ -17,6 +17,7 @@
 #include <google/protobuf/util/message_differencer.h>
 #include <grpcpp/grpcpp.h>
 
+#include "ai/pipestream/email/v1/email_service.grpc.pb.h"
 #include "ai/pipestream/parse/v1/parse_stream.grpc.pb.h"
 #include "ai/pipestream/pdf/v1/pdf_service.grpc.pb.h"
 #include "grparse/base64.h"
@@ -1541,6 +1542,95 @@ UnaryPdfRun run_unary_pdf(const std::string& pdf_target) {
   return run;
 }
 
+// Records the document_id each upload names, then fails the leg; the ids
+// are what a collector's logs correlate a parse by.
+class RecordingEmailService final : public ai::pipestream::email::v1::EmailParseService::Service {
+ public:
+  grpc::Status ParseEmail(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<ai::pipestream::email::v1::ParseEmailResponse,
+                               ai::pipestream::email::v1::ParseEmailRequest>* stream) override {
+    ai::pipestream::email::v1::ParseEmailRequest request;
+    while (stream->Read(&request)) {
+      if (request.has_options()) {
+        std::lock_guard<std::mutex> lock(mutex);
+        document_ids.push_back(request.options().document_id());
+      }
+    }
+    return grpc::Status(grpc::StatusCode::UNAVAILABLE, "recording email fake");
+  }
+
+  std::mutex mutex;
+  std::vector<std::string> document_ids;
+};
+
+// Two uploads of one filename reach a collector under distinct ids, each
+// still naming the file.
+void verify_remote_legs_get_a_per_call_document_id() {
+  RecordingEmailService email;
+  grpc::ServerBuilder email_builder;
+  int email_port = 0;
+  email_builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &email_port);
+  email_builder.RegisterService(&email);
+  auto email_server = email_builder.BuildAndStart();
+  require(email_server && email_port != 0, "fake email collector failed to start");
+
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
+                                   [](std::shared_ptr<const std::string>, bool, double) {
+                                     return std::make_shared<FakeSource>();
+                                   });
+  grparse::CollectorTargets targets;
+  targets.email = "127.0.0.1:" + std::to_string(email_port);
+  grparse::DocumentParserService parser_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(targets));
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&parser_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "document id test server failed to start");
+  auto client = pipestream::parse::v1::ParseService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+  for (int call = 0; call < 2; ++call) {
+    pipestream::parse::v1::ConvertSourceRequest request;
+    auto* source = request.mutable_request()->add_sources()->mutable_file();
+    source->set_filename("mail.eml");
+    const std::string bytes = "From: a@example.test\r\nSubject: hi\r\n\r\nbody\r\n";
+    source->set_base64_string(grparse::encode_base64(bytes.data(), bytes.size()));
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ConvertSourceResponse response;
+    const grpc::Status status = client->ConvertSource(&context, request, &response);
+    require(!status.ok(), "the failing email leg fails the parse");
+  }
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+  email_server->Shutdown(std::chrono::system_clock::now() + 2s);
+  email_server->Wait();
+  std::lock_guard<std::mutex> lock(email.mutex);
+  require(email.document_ids.size() == 2, "both uploads reached the email collector");
+  require(email.document_ids[0] != email.document_ids[1],
+          "two calls must not share a document_id: " + email.document_ids[0]);
+  for (const auto& id : email.document_ids) {
+    require(id.starts_with("mail.eml#"), "the id still names the file: " + id);
+  }
+}
+
+// document_timeout bounds the in-process CV leg too, not only dialed legs.
+void verify_document_timeout_bounds_the_cv_leg() {
+  TestServer server(500ms);
+  auto client = server.unary_stub();
+  auto request = unary_request();
+  request.mutable_request()->mutable_options()->set_document_timeout(0.1);
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 20s);
+  pipestream::parse::v1::ConvertSourceResponse response;
+  const grpc::Status status = client->ConvertSource(&context, request, &response);
+  require(status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED,
+          "document_timeout must stop the CV leg: " + status.error_message());
+}
+
 struct StreamPdfRun {
   grpc::Status status;
   std::vector<pipestream::parse::v1::DocumentStreamEvent> events;
@@ -2215,6 +2305,8 @@ int main() {
         verify_pdf_classification_restricts_recognition();
         verify_pdf_collector_failure_degrades_to_the_cv_path();
         verify_queued_then_cancelled_call_never_dials_a_collector();
+        verify_remote_legs_get_a_per_call_document_id();
+        verify_document_timeout_bounds_the_cv_leg();
         verify_streaming_pdf_fast_path_emits_the_collector_document();
         verify_streaming_pdf_fast_path_projects_pages();
         verify_streaming_pdf_fast_path_renders_previews();
