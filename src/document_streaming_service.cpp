@@ -57,7 +57,8 @@ class DocumentStreamReactor final
  public:
   DocumentStreamReactor(grpc::CallbackServerContext* context, PageScheduler& scheduler,
                         std::shared_ptr<CollectorEndpoints> endpoints,
-                        std::optional<RepairOptions> repair)
+                        std::optional<RepairOptions> repair,
+                        std::shared_ptr<InflightBytes> inflight)
       : context_(context),
         scheduler_(scheduler),
         endpoints_(std::move(endpoints)),
@@ -67,9 +68,16 @@ class DocumentStreamReactor final
         // exact buffer bound; any smaller cap would fail well-behaved
         // clients with RESOURCE_EXHAUSTED under a raised GRPARSE_PAGE_WINDOW.
         maximum_buffered_pages_(scheduler.page_window()),
-        callback_gate_(std::make_shared<CallbackGate>()) {
+        callback_gate_(std::make_shared<CallbackGate>()),
+        inflight_(std::move(inflight)) {
     callback_gate_->reactor = this;
     StartRead(&incoming_);
+  }
+
+  // The upload's charge goes back with the call; the legs still reading
+  // the bytes are bounded by this call's deadline.
+  ~DocumentStreamReactor() override {
+    if (inflight_ != nullptr) inflight_->release(charged_bytes_);
   }
 
   void OnReadDone(bool ok) override {
@@ -159,6 +167,15 @@ class DocumentStreamReactor final
       request_finish_locked(grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
                                          "document exceeds 500 MiB streaming limit"));
       return;
+    }
+    if (inflight_ != nullptr) {
+      if (!inflight_->try_acquire(incoming_.data().size())) {
+        request_finish_locked(grpc::Status(
+            grpc::StatusCode::RESOURCE_EXHAUSTED,
+            "in-flight document bytes would exceed GRPARSE_MAX_INFLIGHT_BYTES"));
+        return;
+      }
+      charged_bytes_ += incoming_.data().size();
     }
     bytes_.append(incoming_.data());
     complete_seen_ = incoming_.complete();
@@ -747,6 +764,9 @@ class DocumentStreamReactor final
   const std::optional<RepairOptions> repair_;
   const size_t maximum_buffered_pages_;
   std::shared_ptr<CallbackGate> callback_gate_;
+  std::shared_ptr<InflightBytes> inflight_;
+  // What this stream's chunks charged to inflight_, returned on teardown.
+  uint64_t charged_bytes_ = 0;
   std::mutex mutex_;
   pipestream::parse::v1::DocumentChunk incoming_;
   std::string document_id_;
@@ -797,12 +817,16 @@ class DocumentStreamReactor final
 
 DocumentStreamingService::DocumentStreamingService(PageScheduler& scheduler,
                                                    std::shared_ptr<CollectorEndpoints> endpoints,
-                                                   std::optional<RepairOptions> repair)
-    : scheduler_(scheduler), endpoints_(std::move(endpoints)), repair_(std::move(repair)) {}
+                                                   std::optional<RepairOptions> repair,
+                                                   std::shared_ptr<InflightBytes> inflight)
+    : scheduler_(scheduler),
+      endpoints_(std::move(endpoints)),
+      repair_(std::move(repair)),
+      inflight_(std::move(inflight)) {}
 
 grpc::ServerBidiReactor<pipestream::parse::v1::DocumentChunk, pipestream::parse::v1::DocumentStreamEvent>*
 DocumentStreamingService::StreamProcessDocument(grpc::CallbackServerContext* context) {
-  return new DocumentStreamReactor(context, scheduler_, endpoints_, repair_);
+  return new DocumentStreamReactor(context, scheduler_, endpoints_, repair_, inflight_);
 }
 
 }  // namespace grparse

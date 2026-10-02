@@ -277,6 +277,15 @@ GrpcLimits read_grpc_limits() {
   };
 }
 
+uint64_t read_inflight_byte_budget() {
+  // Four of the largest uploads a stream accepts at once, or a few dozen
+  // ordinary ones: room for the configured concurrency without letting a
+  // burst of large requests outgrow the container.
+  constexpr size_t kDefaultBytes = size_t{4} * 1024 * 1024 * 1024;
+  constexpr size_t kMaximumBytes = size_t{1} << 40;
+  return configured_size("GRPARSE_MAX_INFLIGHT_BYTES", kDefaultBytes, kMaximumBytes);
+}
+
 MetricsConfig read_metrics_config() {
   MetricsConfig metrics;
   // GRPARSE_METRICS_PORT exposes the scheduler counters in Prometheus text

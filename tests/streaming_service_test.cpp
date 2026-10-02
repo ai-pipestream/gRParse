@@ -1740,6 +1740,77 @@ void verify_document_timeout_bounds_the_cv_leg() {
           "document_timeout must stop the CV leg: " + status.error_message());
 }
 
+// The in-flight byte budget refuses a unary request or a stream chunk that
+// would pass it, admits what fits, and gets every charge back.
+void verify_inflight_byte_budget() {
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
+                                   [](std::shared_ptr<const std::string>, bool, double) {
+                                     return std::make_shared<FakeSource>();
+                                   });
+  const auto endpoints = std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{});
+  const auto request = unary_request();
+  // Room for one request, not for one stream chunk of 64 bytes.
+  const auto inflight = std::make_shared<grparse::InflightBytes>(request.ByteSizeLong());
+  grparse::DocumentParserService parser_service(scheduler, endpoints, grparse::CallExecutor::Options{},
+                                                grparse::RepairOptions{}, {}, {}, inflight);
+  grparse::DocumentStreamingService streaming_service(scheduler, endpoints,
+                                                      grparse::RepairOptions{}, inflight);
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&parser_service);
+  builder.RegisterService(&streaming_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "budget test server failed to start");
+  const auto channel =
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials());
+  auto unary = pipestream::parse::v1::ParseService::NewStub(channel);
+  {
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ConvertSourceResponse response;
+    const grpc::Status status = unary->ConvertSource(&context, request, &response);
+    require(status.ok(), "a request within the budget is admitted: " + status.error_message());
+  }
+  {
+    auto larger = request;
+    larger.mutable_request()->mutable_sources(0)->mutable_file()->set_filename("larger-image.png");
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ConvertSourceResponse response;
+    const grpc::Status status = unary->ConvertSource(&context, larger, &response);
+    require(status.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED &&
+                status.error_message().contains("GRPARSE_MAX_INFLIGHT_BYTES"),
+            "a request past the budget is refused: " + status.error_message());
+  }
+  {
+    auto stream_client = pipestream::parse::v1::ParseStreamingService::NewStub(channel);
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    auto stream = stream_client->StreamProcessDocument(&context);
+    auto source = chunk(true);
+    source.set_data(std::string(request.ByteSizeLong() + 1, 'x'));
+    stream->Write(source);
+    stream->WritesDone();
+    pipestream::parse::v1::DocumentStreamEvent ignored;
+    while (stream->Read(&ignored)) {
+    }
+    const grpc::Status status = stream->Finish();
+    require(status.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED &&
+                status.error_message().contains("GRPARSE_MAX_INFLIGHT_BYTES"),
+            "a stream chunk past the budget is refused: " + status.error_message());
+  }
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+  // A unary charge goes back when the worker drops the finished task, a
+  // moment after the call itself completes.
+  for (int attempt = 0; attempt < 100 && inflight->in_use() != 0; ++attempt) {
+    std::this_thread::sleep_for(10ms);
+  }
+  require(inflight->in_use() == 0, "every charge is returned");
+}
+
 // The chunk RPCs have nowhere to report a delivery, so a target is refused
 // rather than skipped; and a collector that failed beside a surviving one
 // shows up even when the converted document was not asked for.
@@ -2479,6 +2550,7 @@ int main() {
         }
         verify_stream_rejects_invalid_collectors(&server);
         verify_document_timeout_bounds_the_cv_leg();
+        verify_inflight_byte_budget();
         verify_streaming_pdf_fast_path_emits_the_collector_document();
         verify_streaming_pdf_fast_path_projects_pages();
         verify_streaming_pdf_fast_path_renders_previews();

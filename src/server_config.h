@@ -10,6 +10,7 @@
 // range it accepts, which main reports as "Startup failed: ...".
 
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -57,6 +58,10 @@ struct GrpcLimits {
 };
 
 GrpcLimits read_grpc_limits();
+
+// GRPARSE_MAX_INFLIGHT_BYTES (default 4 GiB): the process-wide ceiling on
+// document bytes the parsing surfaces hold at once (see InflightBytes).
+uint64_t read_inflight_byte_budget();
 
 // GRPARSE_METRICS_PORT (0 keeps the Prometheus listener off) and
 // GRPARSE_METRICS_INTERVAL_SECONDS (0 keeps the stdout line off).

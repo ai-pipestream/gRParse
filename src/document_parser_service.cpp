@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <exception>
 #include <stdexcept>
 #include <filesystem>
@@ -220,11 +221,27 @@ grpc::Status refuse_target(const pipestream::parse::v1::Target& target,
 // bound, so finishing from either thread is safe whichever wins the race.
 // Cancellation needs no OnCancel here: the work polls the context, which is
 // where it can act on the answer.
+//
+// The request's bytes are charged to the in-flight budget before anything
+// queues, and returned when the task that owns the call is gone (run, or
+// refused by the executor); a charge past the budget is refused outright.
 class ParseUnaryReactor final : public grpc::ServerUnaryReactor {
  public:
   ParseUnaryReactor(grpc::CallbackServerContext* context, CallExecutor& executor,
+                    const std::shared_ptr<InflightBytes>& inflight, uint64_t request_bytes,
                     std::function<grpc::Status()> work) {
-    const bool queued = executor.submit([this, context, work = std::move(work)] {
+    if (inflight != nullptr && !inflight->try_acquire(request_bytes)) {
+      Finish(grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
+                          "in-flight document bytes would exceed GRPARSE_MAX_INFLIGHT_BYTES"));
+      return;
+    }
+    // Shared because std::function must stay copyable; the last copy of the
+    // task going away is what returns the charge.
+    std::shared_ptr<void> charge(nullptr, [inflight, request_bytes](void*) {
+      if (inflight != nullptr) inflight->release(request_bytes);
+    });
+    const bool queued = executor.submit([this, context, work = std::move(work),
+                                         charge = std::move(charge)] {
       // A call can wait in the queue behind every conversion ahead of it, so
       // the first thing a worker does is ask whether anyone is still
       // listening. The answer costs one atomic read and saves the whole
@@ -271,18 +288,21 @@ DocumentParserService::DocumentParserService(PageScheduler& scheduler,
                                              CallExecutor::Options executor_options,
                                              std::optional<RepairOptions> repair,
                                              std::shared_ptr<EmbeddingEngine> embedding_engine,
-                                             EmbeddingConfig embedding_config)
+                                             EmbeddingConfig embedding_config,
+                                             std::shared_ptr<InflightBytes> inflight)
     : scheduler_(scheduler),
       endpoints_(std::move(endpoints)),
       repair_(std::move(repair)),
       embedder_(std::move(embedding_engine), std::move(embedding_config)),
+      inflight_(std::move(inflight)),
       executor_(executor_options) {}
 
 grpc::ServerUnaryReactor* DocumentParserService::ConvertSource(
     grpc::CallbackServerContext* context,
     const pipestream::parse::v1::ConvertSourceRequest* request,
     pipestream::parse::v1::ConvertSourceResponse* response) {
-  return new ParseUnaryReactor(context, executor_, [this, context, request, response] {
+  return new ParseUnaryReactor(context, executor_, inflight_, request->ByteSizeLong(),
+                               [this, context, request, response] {
     const auto started = std::chrono::steady_clock::now();
     SourceParse parsed;
     const grpc::Status parse_status = parse_source(context, request->request(), scheduler_,
@@ -375,7 +395,8 @@ grpc::ServerUnaryReactor* DocumentParserService::ChunkHierarchicalSource(
     grpc::CallbackServerContext* context,
     const pipestream::parse::v1::ChunkHierarchicalSourceRequest* request,
     pipestream::parse::v1::ChunkHierarchicalSourceResponse* response) {
-  return new ParseUnaryReactor(context, executor_, [this, context, request, response] {
+  return new ParseUnaryReactor(context, executor_, inflight_, request->ByteSizeLong(),
+                               [this, context, request, response] {
     const auto started = std::chrono::steady_clock::now();
     const auto& chunk_request = request->request();
     const grpc::Status target_status =
@@ -420,7 +441,8 @@ grpc::ServerUnaryReactor* DocumentParserService::ChunkHybridSource(
     grpc::CallbackServerContext* context,
     const pipestream::parse::v1::ChunkHybridSourceRequest* request,
     pipestream::parse::v1::ChunkHybridSourceResponse* response) {
-  return new ParseUnaryReactor(context, executor_, [this, context, request, response] {
+  return new ParseUnaryReactor(context, executor_, inflight_, request->ByteSizeLong(),
+                               [this, context, request, response] {
     const auto started = std::chrono::steady_clock::now();
     const auto& chunk_request = request->request();
     const grpc::Status target_status = refuse_target(chunk_request.target(), "ChunkHybridSource");

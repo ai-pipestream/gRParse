@@ -343,7 +343,12 @@ staying in the pool poisoned. Optional RapidOCR detect knobs:
 once at startup: a malformed or out-of-range value fails the server immediately
 rather than being silently ignored per page. gRPC memory, thread,
 and stream limits use `GRPARSE_GRPC_MEMORY_MIB`, `GRPARSE_GRPC_MAX_THREADS`,
-and `GRPARSE_MAX_CONCURRENT_STREAMS`.
+and `GRPARSE_MAX_CONCURRENT_STREAMS`. Those bound transport buffers and calls,
+not the documents behind them, so `GRPARSE_MAX_INFLIGHT_BYTES` (default 4 GiB,
+printed at startup) caps the document bytes every parse holds at once across
+the process: a unary call is charged its request message on admission and a
+stream each chunk as it arrives, and a call that would pass the cap is refused
+with `RESOURCE_EXHAUSTED`.
 
 Every RPC is served on gRPC's callback API. A unary conversion blocks for as
 long as the document takes, so it never runs on the thread that reacted to the
