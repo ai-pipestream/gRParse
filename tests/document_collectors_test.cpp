@@ -1761,6 +1761,13 @@ class FakeCalamineService final : public calaminev1::CalamineService::Service {
       data->add_values()->set_error(calaminev1::CELL_ERROR_TYPE_DIV0);
       data->add_values()->mutable_empty();
       writer->Write(event);
+    } else {
+      // 45000.999999 rounds up to midnight: 2023-03-16 00:00:00.
+      event.Clear();
+      calaminev1::WorksheetRow* row = event.mutable_rows()->add_rows();
+      row->set_row_index(0);
+      row->add_values()->mutable_date_time()->set_value(45000.999999);
+      writer->Write(event);
     }
     return grpc::Status::OK;
   }
@@ -1883,6 +1890,66 @@ void verify_calamine_folds_sheets() {
   require(data.row_prov_size() == 2 && data.row_prov(1).grid().row() == 2 &&
               data.row_prov(1).grid().sheet() == "First",
           "rows carry grid provenance in the sheet's absolute addresses");
+  const docv1::TableData& second = document.tables(1).data();
+  require(second.table_cells_size() == 1 &&
+              second.table_cells(0).text() == "2023-03-16 00:00:00" &&
+              second.table_cells(0).value().datetime().day() == 16 &&
+              second.table_cells(0).value().datetime().hour() == 0,
+          "a time that rounds up to midnight lands on the next day");
+}
+
+// A terminal in-band sheet error, then a server that keeps the stream open:
+// the client must cancel the call rather than wait in Finish for messages
+// it will never read.
+class TerminalErrorCalamineService final : public calaminev1::CalamineService::Service {
+ public:
+  grpc::Status OpenWorkbook(
+      grpc::ServerContext*,
+      grpc::ServerReader<calaminev1::OpenWorkbookRequest>* reader,
+      calaminev1::OpenWorkbookResponse* response) override {
+    calaminev1::OpenWorkbookRequest frame;
+    while (reader->Read(&frame)) {
+    }
+    response->set_workbook_id("wb-7");
+    calaminev1::Sheet* sheet = response->mutable_metadata()->add_sheets();
+    sheet->set_name("Poisoned");
+    sheet->set_visible(calaminev1::SHEET_VISIBLE_VISIBLE);
+    return grpc::Status::OK;
+  }
+
+  grpc::Status StreamWorksheetRange(
+      grpc::ServerContext* context, const calaminev1::StreamWorksheetRangeRequest*,
+      grpc::ServerWriter<calaminev1::StreamWorksheetRangeResponse>* writer) override {
+    calaminev1::StreamWorksheetRangeResponse event;
+    event.mutable_error()->set_terminal(true);
+    event.mutable_error()->mutable_error()->set_message("cell table corrupt");
+    writer->Write(event);
+    while (!context->IsCancelled()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    return grpc::Status::OK;
+  }
+
+  grpc::Status CloseWorkbook(grpc::ServerContext*,
+                             const calaminev1::CloseWorkbookRequest*,
+                             calaminev1::CloseWorkbookResponse* response) override {
+    response->set_closed(true);
+    return grpc::Status::OK;
+  }
+};
+
+void verify_calamine_terminal_error_does_not_wait_out_the_deadline() {
+  TerminalErrorCalamineService service;
+  ServerFixture server(&service);
+  const auto started = std::chrono::steady_clock::now();
+  const auto outcome = grparse::collect_calamine_document(
+      server.channel(), "bytes", std::chrono::system_clock::now() + std::chrono::seconds{60});
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  require(!outcome.success && outcome.error.contains("cell table corrupt") &&
+              outcome.code == grpc::StatusCode::INVALID_ARGUMENT,
+          "the terminal in-band error is the outcome: " + outcome.error);
+  require(elapsed < std::chrono::seconds{30},
+          "the leg cancels the sheet call instead of waiting on its deadline");
 }
 
 void verify_calamine_sheet_failure_still_closes() {
@@ -2232,6 +2299,7 @@ int main() {
       verify_poi_fanout_keeps_its_body_when_the_primary_failed,
       verify_calamine_folds_sheets,
       verify_calamine_sheet_failure_still_closes,
+      verify_calamine_terminal_error_does_not_wait_out_the_deadline,
       verify_calamine_unreachable_endpoint_degrades,
       verify_pdf_collects_document_classification_and_warnings,
       verify_pdf_scanned_reports_the_ocr_page_set,

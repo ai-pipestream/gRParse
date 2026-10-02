@@ -59,15 +59,21 @@ void excel_serial_civil(const calaminev1::ExcelDateTime& serial,
   const int64_t base = serial.is_1904() ? days_from_civil(1904, 1, 1)
                                         : days_from_civil(1899, 12, 30);
   const double whole_days = std::floor(serial.value());
+  int64_t days = static_cast<int64_t>(whole_days);
+  int64_t seconds =
+      static_cast<int64_t>(std::llround((serial.value() - whole_days) * 86400.0));
+  // A time that rounds up to midnight is the next day's 00:00:00.
+  if (seconds >= 86400) {
+    seconds -= 86400;
+    ++days;
+  }
   int64_t year = 0;
   unsigned month = 0;
   unsigned day = 0;
-  civil_from_days(base + static_cast<int64_t>(whole_days), &year, &month, &day);
+  civil_from_days(base + days, &year, &month, &day);
   when->set_year(static_cast<int32_t>(year));
   when->set_month(static_cast<int32_t>(month));
   when->set_day(static_cast<int32_t>(day));
-  const int64_t seconds =
-      static_cast<int64_t>(std::llround((serial.value() - whole_days) * 86400.0));
   when->set_hour(static_cast<int32_t>((seconds / 3600) % 24));
   when->set_minute(static_cast<int32_t>((seconds / 60) % 60));
   when->set_second(static_cast<int32_t>(seconds % 60));
@@ -357,6 +363,9 @@ CollectorOutcome collect_calamine_document(const std::shared_ptr<grpc::Channel>&
       if (terminal_error) break;
     }
     fold.end_sheet();
+    // A terminal error left the stream unread: Finish would wait on the
+    // messages still in flight, so the call is cancelled first.
+    if (terminal_error) sheet_context.TryCancel();
     const grpc::Status status = stream->Finish();
     ++sheet_index;
     if (status.ok() && !terminal_error) continue;
