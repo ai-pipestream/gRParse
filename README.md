@@ -281,13 +281,20 @@ privilege escalation disabled.
 `ai.pipestream.parse.v1.ParseStreamingService/StreamProcessDocument` accepts a
 stream of `DocumentChunk` messages. Send the same `document_id`, filename, and
 content type with the chunks, then set `complete = true` on the last one. The
-server accepts PDFs and single raster images, up to 500 MiB. The chunk fields
+server accepts any format the collector routing does (below), up to 500 MiB;
+the same service's `StreamDocument` RPC is not implemented and returns
+`UNIMPLEMENTED`, whatever `parse_stream.proto` says of it. `collectors`
+values validate like the unary options: an unknown value fails the stream
+with `INVALID_ARGUMENT` naming it. The chunk fields
 `do_ocr`, `force_ocr`, and `render_scale` carry the same recognition mode and
 rasterization scale as the unary options, each resolved from the first chunk
 that sets it (the same doctrine as `collectors`); an invalid value fails the
 stream with `INVALID_ARGUMENT` naming the offender.
 
-It emits one `DocumentStreamEvent.page` per page in page-number order, followed by one
+The CV pipeline emits one `DocumentStreamEvent.page` per page in page-number
+order. Each other collector's finished document arrives as page events
+projected from it, interleaved with the CV pages, and then whole as one
+`DocumentStreamEvent.collector_document`. The stream ends with one
 `DocumentStreamEvent.complete`. A page event contains the supplied
 `PageItem` and the page's supplied `BaseTextItem` records. `TextOffset` carries
 append-only UTF offsets, source type, and OCR confidence when available. The original

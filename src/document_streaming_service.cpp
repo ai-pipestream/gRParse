@@ -11,6 +11,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -44,6 +45,10 @@ class ArenaEvent final {
 
   google::protobuf::Arena arena;
   pipestream::parse::v1::DocumentStreamEvent* message;
+  // True for a CV page the scheduler delivered against a window credit:
+  // writing it is what hands that credit back. Collector-projected page
+  // events never took one.
+  bool scheduler_credit = false;
 };
 
 class DocumentStreamReactor final
@@ -69,7 +74,7 @@ class DocumentStreamReactor final
 
   void OnReadDone(bool ok) override {
     if (!ok) {
-      if (ready_to_parse()) begin_processing();
+      if (ready_to_parse()) start_processing();
       return;
     }
     std::lock_guard<std::mutex> lock(mutex_);
@@ -82,7 +87,7 @@ class DocumentStreamReactor final
       request_finish_locked(grpc::Status(grpc::StatusCode::INTERNAL, "write completed without an event"));
       return;
     }
-    const bool page_written = events_.front()->message->has_page();
+    const bool page_written = events_.front()->scheduler_credit;
     if (page_written && buffered_pages_ > 0) --buffered_pages_;
     events_.pop_front();
     write_in_flight_ = false;
@@ -219,6 +224,28 @@ class DocumentStreamReactor final
     bool started = false;
   };
 
+  // begin_processing hashes, sniffs and routes the whole upload (up to
+  // 500 MiB) and spawns the legs, which is not work a gRPC event-manager
+  // thread may be handed: every call multiplexed on it, Health included,
+  // would stall behind it. It runs on its own thread, through the gate like
+  // every other off-reactor callback.
+  void start_processing() {
+    const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
+    try {
+      std::thread([weak_gate] {
+        if (const auto gate = weak_gate.lock()) {
+          std::lock_guard<std::mutex> lock(gate->mutex);
+          if (gate->reactor != nullptr) gate->reactor->begin_processing();
+        }
+      }).detach();
+    } catch (const std::system_error& error) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      request_finish_locked(grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
+                                         std::string("could not start the parse: ") +
+                                             error.what()));
+    }
+  }
+
   void begin_processing() {
     const StreamPlan plan = resolve_plan();
     if (!plan.started) return;
@@ -261,11 +288,24 @@ class DocumentStreamReactor final
     plan.bytes = std::make_shared<const std::string>(std::move(bytes_));
     plan.pdf = content_type_ == "application/pdf" || is_pdf(*plan.bytes, filename_);
     pdf_ = plan.pdf;
+    // The selection validates like the unary options: a value outside the
+    // enum is the caller's mistake, not a collector that failed.
+    for (const auto id : requested_collectors_) {
+      if (!pipestream::parse::v1::Collector_IsValid(id) ||
+          id == pipestream::parse::v1::COLLECTOR_UNSPECIFIED) {
+        std::string name = pipestream::parse::v1::Collector_Name(id);
+        if (name.empty()) name = std::to_string(static_cast<int>(id));
+        request_finish_locked(grpc::Status(
+            grpc::StatusCode::INVALID_ARGUMENT,
+            "StreamProcessDocument collectors contains invalid value '" + name + "'"));
+        return plan;
+      }
+    }
     if (requested_collectors_.size() == 1 &&
         requested_collectors_[0] == pipestream::parse::v1::COLLECTOR_VLM) {
       request_finish_locked(grpc::Status(
           grpc::StatusCode::FAILED_PRECONDITION,
-          "COLLECTOR_VLM on streaming ParseDocument needs ConvertSource "
+          "COLLECTOR_VLM on StreamProcessDocument needs ConvertSource "
           "(PROCESSING_PIPELINE_VLM / GRPARSE_VLM_CONVERT_TARGET)"));
       return plan;
     }
@@ -518,7 +558,7 @@ class DocumentStreamReactor final
       completed_pages_.clear();
       if (write_in_flight_ && !events_.empty()) {
         events_.erase(std::next(events_.begin()), events_.end());
-        buffered_pages_ = events_.front()->message->has_page() ? 1 : 0;
+        buffered_pages_ = events_.front()->scheduler_credit ? 1 : 0;
       } else {
         events_.clear();
         buffered_pages_ = 0;
@@ -543,6 +583,7 @@ class DocumentStreamReactor final
       // the clustered result for the level-0 headers streamed here.
       collect_header_heights(event->message->page(), &header_heights_);
       completed_pages_.erase(page_it);
+      event->scheduler_credit = true;
       events_.push_back(std::move(event));
       ++next_page_;
     }

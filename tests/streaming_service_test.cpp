@@ -1642,6 +1642,90 @@ void verify_remote_legs_get_a_per_call_document_id() {
   }
 }
 
+// A collector's projected page events never took a scheduler credit, so
+// writing them must not hand one back: beside a held head-of-line CV page,
+// stray credits would let the scheduler run past the page window and trip
+// the stream's buffer bound on a client that reads everything.
+void verify_collector_pages_return_no_scheduler_credit(const std::string& pdf_target) {
+  constexpr int kPages = 8;
+  grparse::PageScheduler::Options options{
+      .document_queue_capacity = 4,
+      .render_queue_capacity = 16,
+      .inference_queue_capacity = 16,
+      .assembly_queue_capacity = 16,
+      .render_workers = 4,
+      .inference_workers = 4,
+      .assembly_workers = 2,
+      .page_window = 2,
+  };
+  HeadOfLineRecognizer recognizer;
+  grparse::PageScheduler scheduler(recognizer, options,
+                                   [pages = kPages](std::shared_ptr<const std::string>, bool,
+                                                    double) {
+                                     return std::make_shared<WideSource>(pages);
+                                   });
+  grparse::CollectorTargets targets;
+  targets.pdf = pdf_target;
+  grparse::DocumentStreamingService streaming_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(targets));
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&streaming_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "credit test server failed to start");
+  auto client = pipestream::parse::v1::ParseStreamingService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 20s);
+  auto stream = client->StreamProcessDocument(&context);
+  pipestream::parse::v1::DocumentChunk source;
+  source.set_document_id("mixed-plan");
+  source.set_filename("mixed.pdf");
+  source.set_content_type("application/pdf");
+  source.set_data("%PDF-in-memory");
+  source.add_collectors(pipestream::parse::v1::COLLECTOR_GRPARSE_CV);
+  source.add_collectors(pipestream::parse::v1::COLLECTOR_PDF);
+  source.set_complete(true);
+  require(stream->Write(source), "credit test client could not write the source chunk");
+  stream->WritesDone();
+  int cv_pages = 0;
+  int collector_documents = 0;
+  pipestream::parse::v1::DocumentStreamEvent event;
+  while (stream->Read(&event)) {
+    if (event.has_page() && event.page().texts_size() > 0 &&
+        event.page().texts(0).text().base().text().starts_with("page-")) {
+      ++cv_pages;
+    }
+    if (event.has_collector_document()) ++collector_documents;
+  }
+  const grpc::Status status = stream->Finish();
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+  require(status.ok(), "a mixed plan must not overrun the page window: " + status.error_message());
+  require(cv_pages == kPages, "every CV page streams beside the collector's pages");
+  require(collector_documents == 1, "the pdf collector's document streams once");
+}
+
+// Collector values validate like the unary options do.
+void verify_stream_rejects_invalid_collectors(TestServer* server) {
+  auto client = server->stub();
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  auto stream = client->StreamProcessDocument(&context);
+  auto source = chunk(true);
+  source.add_collectors(static_cast<pipestream::parse::v1::Collector>(999));
+  require(stream->Write(source), "client could not write source chunk");
+  stream->WritesDone();
+  pipestream::parse::v1::DocumentStreamEvent ignored;
+  while (stream->Read(&ignored)) {
+  }
+  const grpc::Status status = stream->Finish();
+  require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              status.error_message().contains("999"),
+          "an unknown collector value is INVALID_ARGUMENT naming it: " + status.error_message());
+}
+
 // document_timeout bounds the in-process CV leg too, not only dialed legs.
 void verify_document_timeout_bounds_the_cv_leg() {
   TestServer server(500ms);
@@ -2388,6 +2472,12 @@ int main() {
         verify_pdf_collector_failure_degrades_to_the_cv_path();
         verify_queued_then_cancelled_call_never_dials_a_collector();
         verify_remote_legs_get_a_per_call_document_id();
+        {
+          FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {}, /*paged_document=*/true);
+          PdfInspectorServer inspector_server(&inspector);
+          verify_collector_pages_return_no_scheduler_credit(inspector_server.target());
+        }
+        verify_stream_rejects_invalid_collectors(&server);
         verify_document_timeout_bounds_the_cv_leg();
         verify_streaming_pdf_fast_path_emits_the_collector_document();
         verify_streaming_pdf_fast_path_projects_pages();
