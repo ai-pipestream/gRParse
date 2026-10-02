@@ -307,6 +307,8 @@ PageScheduler::Options read_scheduler_options(const WorkerConfig& workers, bool 
   options.capture_page_images = configure_page_images();
   options.barcode_mode = configure_barcode_mode(layout_active, classifier_active);
   options.orientation.enabled = configure_ocr_rotation();
+  // Read per image input; read here too so a malformed value fails startup.
+  max_image_pixels();
   return options;
 }
 

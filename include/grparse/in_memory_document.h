@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -37,6 +38,15 @@ class PageSource {
   // rasters. Consensus mode names its vote legs with it.
   virtual std::string backend_name() const { return {}; }
 };
+
+// The largest raster page, in pixels, an image input may decode to:
+// GRPARSE_MAX_IMAGE_PIXELS, default 200 megapixels (about 600 MB of BGR).
+// Checked against the image header before any decoder allocates, so a
+// small compressed file cannot inflate to gigabytes. Read per image; a
+// malformed value raises std::invalid_argument, and the server also reads
+// it at startup so the mistake fails there.
+inline constexpr uint64_t kDefaultMaxImagePixels = 200'000'000;
+uint64_t max_image_pixels();
 
 // The rasterization DPI a source uses when no per-document value arrives.
 inline constexpr double kDefaultRenderDpi = 200.0;

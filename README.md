@@ -312,7 +312,10 @@ The server has two CUDA RapidOCR sessions by default. Tune concurrency and
 queue memory with `GRPARSE_PAGE_WORKERS`, `GRPARSE_RENDER_WORKERS`,
 `GRPARSE_ASSEMBLY_WORKERS`, `GRPARSE_DOCUMENT_QUEUE`, `GRPARSE_RENDER_QUEUE`,
 `GRPARSE_INFERENCE_QUEUE`, `GRPARSE_ASSEMBLY_QUEUE`, `GRPARSE_PAGE_WINDOW`,
-and `GRPARSE_MAX_ACTIVE_DOCUMENTS`. `GRPARSE_INTRA_OP_THREADS` caps how many threads
+and `GRPARSE_MAX_ACTIVE_DOCUMENTS`. `GRPARSE_MAX_IMAGE_PIXELS` (default
+200000000) caps one PNG, JPEG, or TIFF page's pixel count, checked against
+the image header before decode; a multi-page TIFF reads as one page per
+image. `GRPARSE_INTRA_OP_THREADS` caps how many threads
 one pooled ONNX Runtime session uses inside a single operator; it defaults to
 cores divided by `GRPARSE_PAGE_WORKERS`, because ONNX Runtime's own default is
 every core per session and a pool of those is oversubscribed by exactly the

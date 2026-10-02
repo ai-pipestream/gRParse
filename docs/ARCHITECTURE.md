@@ -174,7 +174,10 @@ in one shared space:
   on it rather than assume.
 
 Raster image inputs (PNG/JPEG/TIFF) use their native pixel grid unscaled —
-one page whose size is the decoded image size.
+one page whose size is the decoded image size, and one page per image of a
+multi-page TIFF. Each page's header size is checked against
+`GRPARSE_MAX_IMAGE_PIXELS` (default 200 megapixels) before it decodes; a
+larger page fails the document as `INVALID_ARGUMENT`.
 
 ## Geometry bridge contract (for Java / UI)
 
