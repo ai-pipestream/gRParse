@@ -716,6 +716,7 @@ add_library(grparse_core STATIC
   src/in_memory_document.cpp
   src/consensus_page_source.cpp
   src/remote_page_source.cpp
+  src/pdf_form_widgets.cpp
   src/ocr_engine.cpp
   src/layout_decode.cpp
   src/layout_engine.cpp
@@ -1097,6 +1098,7 @@ if(BUILD_TESTING)
     json-key-order-test
     latex-renderer-test
     load-normalization-test
+    pdf-form-widgets-test
     render-determinism-test
     render-map-order-test
     renderer-base-test
