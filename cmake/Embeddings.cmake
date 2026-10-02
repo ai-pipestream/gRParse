@@ -24,8 +24,18 @@ if(GRPARSE_EMBED_OPENVINO)
     unset(GRPARSE_OPENVINO_C_LIBRARY)
     find_path(GRPARSE_OPENVINO_INCLUDE openvino/c/openvino.h
       PATHS "${GRPARSE_OPENVINO_ROOT}/include" NO_DEFAULT_PATH REQUIRED)
+    # Under the OpenVINO ORT package the process already loads the runtime
+    # the ORT wheel bundles (C++11 ABI, plugins included), and the PyPI
+    # OpenVINO wheel's libraries carry the same SONAMEs with the old ABI, so
+    # only one set may ship. Link the C API, which is ABI-neutral, against
+    # the ORT wheel's copy and take only the headers from the root.
+    if(DEFINED GRPARSE_ORT_OPENVINO_LIB_DIR)
+      set(GRPARSE_OPENVINO_LIB_DIR "${GRPARSE_ORT_OPENVINO_LIB_DIR}")
+    else()
+      set(GRPARSE_OPENVINO_LIB_DIR "${GRPARSE_OPENVINO_ROOT}/libs")
+    endif()
     find_library(GRPARSE_OPENVINO_C_LIBRARY NAMES openvino_c libopenvino_c.so.2541
-      PATHS "${GRPARSE_OPENVINO_ROOT}/libs" NO_DEFAULT_PATH REQUIRED)
+      PATHS "${GRPARSE_OPENVINO_LIB_DIR}" NO_DEFAULT_PATH REQUIRED)
   else()
     find_path(GRPARSE_OPENVINO_INCLUDE openvino/c/openvino.h REQUIRED)
     find_library(GRPARSE_OPENVINO_C_LIBRARY NAMES openvino_c libopenvino_c.so.2541 REQUIRED)
