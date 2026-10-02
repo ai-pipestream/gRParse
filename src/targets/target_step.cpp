@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "bundle.h"
@@ -44,6 +45,17 @@ grpc::Status resolve_s3_credentials(const parsev1::S3Target& target, S3Config* c
     config->secret_key = target.secret_key();
     return grpc::Status::OK;
   }
+  // The server's own identity signs for a caller-chosen endpoint and bucket
+  // only when the deployment opted in: otherwise any caller could write
+  // wherever that identity reaches, or point the endpoint at itself and
+  // collect the access key ID and session token from the headers.
+  const char* ambient = std::getenv("GRPARSE_S3_AMBIENT_CREDENTIALS");
+  if (ambient == nullptr || std::string_view(ambient) != "1") {
+    return grpc::Status(
+        grpc::StatusCode::INVALID_ARGUMENT,
+        "S3Target omitted credentials and ambient credentials are disabled "
+        "(GRPARSE_S3_AMBIENT_CREDENTIALS=1 enables them)");
+  }
   const char* access = std::getenv("AWS_ACCESS_KEY_ID");
   const char* secret = std::getenv("AWS_SECRET_ACCESS_KEY");
   if (access == nullptr || access[0] == '\0' || secret == nullptr || secret[0] == '\0') {
@@ -77,22 +89,28 @@ grpc::Status deliver_s3(const parsev1::S3Target& target, const docv1::Document& 
   const grpc::Status credentials = resolve_s3_credentials(target, &config);
   if (!credentials.ok()) return credentials;
 
-  std::vector<UploadedObject> objects;
+  const auto report = [result](const std::vector<UploadedObject>& objects) {
+    for (const auto& object : objects) {
+      auto* stored = result->add_objects();
+      stored->set_key(object.key);
+      stored->set_etag(object.etag);
+      stored->set_size_bytes(object.size_bytes);
+    }
+  };
   try {
-    objects = upload_bundle(config, build_bundle(document, exports));
+    report(upload_bundle(config, build_bundle(document, exports)));
   } catch (const std::invalid_argument& incomplete) {
     // The target's own fields, not the store: a caller can fix these.
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, incomplete.what());
+  } catch (const UploadFailure& refused) {
+    // The members written before the refusal are in the store regardless:
+    // they are reported, so the caller can clean up or retry.
+    report(refused.written());
+    return grpc::Status(grpc::StatusCode::UNAVAILABLE, refused.what());
   } catch (const std::exception& refused) {
     // Whatever the store did, the message carries the key that failed and
     // nothing that was signed with.
     return grpc::Status(grpc::StatusCode::UNAVAILABLE, refused.what());
-  }
-  for (const auto& object : objects) {
-    auto* stored = result->add_objects();
-    stored->set_key(object.key);
-    stored->set_etag(object.etag);
-    stored->set_size_bytes(object.size_bytes);
   }
   return grpc::Status::OK;
 }

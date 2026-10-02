@@ -75,8 +75,10 @@ Compressed deflate(const std::string& data) {
   return result;
 }
 
+// 0xFFFFFFFF and 0xFFFF are ZIP64 sentinels, not values: a reader that
+// meets one looks for a ZIP64 record this writer never emits.
 uint32_t checked_size(size_t size, const char* what) {
-  if (size > std::numeric_limits<uint32_t>::max()) {
+  if (size >= std::numeric_limits<uint32_t>::max()) {
     throw std::runtime_error(std::string("zip writer would need ZIP64: ") + what);
   }
   return static_cast<uint32_t>(size);
@@ -85,7 +87,7 @@ uint32_t checked_size(size_t size, const char* what) {
 }  // namespace
 
 std::string write_zip(const std::vector<BundleFile>& files) {
-  if (files.size() > std::numeric_limits<uint16_t>::max()) {
+  if (files.size() >= std::numeric_limits<uint16_t>::max()) {
     throw std::runtime_error("zip writer would need ZIP64: too many members");
   }
 

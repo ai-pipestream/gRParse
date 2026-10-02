@@ -15,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "../src/targets/bundle.h"
@@ -260,6 +261,15 @@ void verify_region_comes_from_the_endpoint() {
           "the regionless AWS endpoint defaults");
   require(targets::region_for_endpoint("http://127.0.0.1:9000") == "us-east-1",
           "a store that encodes no region defaults");
+  require(targets::region_for_endpoint("https://s3-us-west-2.amazonaws.com") == "us-west-2",
+          "the legacy dash-style endpoint names its region inside the label");
+  require(targets::region_for_endpoint("bucket.s3.dualstack.us-east-2.amazonaws.com") ==
+              "us-east-2",
+          "the dualstack qualifier is not a region");
+  require(targets::region_for_endpoint("s3-fips.us-gov-west-1.amazonaws.com") == "us-gov-west-1",
+          "the fips qualifier is not a region either");
+  require(targets::region_for_endpoint("s3-external-1.amazonaws.com") == "us-east-1",
+          "s3-external-1 is the us-east-1 default");
 }
 
 void verify_explicit_region_overrides_endpoint() {
@@ -286,9 +296,12 @@ class FakeStore final {
     std::string content_sha;
     std::string session_token;
     std::string body;
+    bool accepted = true;
   };
 
-  FakeStore() {
+  // `refuse_suffix`, when set, answers 403 to every path ending in it.
+  explicit FakeStore(std::string refuse_suffix = {}) : refuse_suffix_(std::move(refuse_suffix)) {
+
     listener_ = ::socket(AF_INET, SOCK_STREAM, 0);
     require(listener_ >= 0, "fake store could not open a socket");
     const int reuse = 1;
@@ -373,8 +386,13 @@ class FakeStore final {
     }
     request.body = body.substr(0, expected);
 
-    const std::string response = "HTTP/1.1 200 OK\r\nETag: " + etag_for(request.body) +
-                                 "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    request.accepted = refuse_suffix_.empty() || !request.path.ends_with(refuse_suffix_);
+    const std::string response =
+        request.accepted
+            ? "HTTP/1.1 200 OK\r\nETag: " + etag_for(request.body) +
+                  "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            : std::string("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n"
+                          "Connection: close\r\n\r\n");
     // Recorded before the answer goes out: a client that has its response is
     // free to finish, and the test reads this list the moment the last one
     // does.
@@ -414,6 +432,7 @@ class FakeStore final {
     return std::string(found);
   }
 
+  std::string refuse_suffix_;
   mutable std::mutex mutex_;
   std::vector<Request> received_;
   std::atomic<bool> stopping_{false};
@@ -508,8 +527,48 @@ void verify_a_refused_upload_fails_without_leaking() {
   require(refused, "an unreachable store must fail the delivery");
 }
 
-// A session token is a signed header on the PUT, and it is not the secret.
-void verify_session_token_is_signed() {
+// A batch that fails partway still reports what it wrote: those objects are
+// in the store whatever became of the rest.
+void verify_a_partial_failure_reports_the_written_objects() {
+  const docv1::Document document = sample_document("partial");
+  const auto files = targets::build_bundle(document, sample_exports(document));
+
+  FakeStore store("/manifest.json");
+  targets::S3Config config;
+  config.endpoint = store.endpoint();
+  config.access_key = "AKIAIOSFODNN7EXAMPLE";
+  config.secret_key = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
+  config.bucket = "conversions";
+  config.verify_ssl = false;
+
+  bool failed = false;
+  try {
+    targets::upload_bundle(config, files);
+  } catch (const targets::UploadFailure& failure) {
+    failed = true;
+    require(std::string(failure.what()).contains("manifest.json"),
+            "the failure names the refused key: " + std::string(failure.what()));
+    const auto received = store.received();
+    size_t accepted = 0;
+    for (const auto& request : received) accepted += request.accepted ? 1 : 0;
+    require(failure.written().size() == accepted,
+            "every object the store accepted is reported, and nothing else");
+    for (const auto& object : failure.written()) {
+      require(object.key != "manifest.json", "the refused member is not reported");
+      require(std::ranges::any_of(received,
+                                  [&object](const FakeStore::Request& request) {
+                                    return request.accepted &&
+                                           request.path == "/conversions/" + object.key;
+                                  }),
+              "a reported object is one the store accepted: " + object.key);
+    }
+  }
+  require(failed, "a refused member fails the batch");
+}
+
+// A session token never crosses the wire in cleartext: an http endpoint is
+// refused before any request is made.
+void verify_session_token_is_refused_over_http() {
   const docv1::Document document = sample_document("session");
   const auto files = targets::build_bundle(document, sample_exports(document));
 
@@ -520,23 +579,18 @@ void verify_session_token_is_signed() {
   config.secret_key = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
   config.bucket = "conversions";
   config.verify_ssl = false;
-  config.session_token = "session-token-that-must-be-signed";
+  config.session_token = "session-token-that-must-not-leak";
 
-  const auto objects = targets::upload_bundle(config, files);
-  require(objects.size() == files.size(), "a session token does not change which objects land");
-  const auto received = store.received();
-  require(received.size() == files.size(), "the store saw one request per member");
-  for (const auto& request : received) {
-    require(request.session_token == config.session_token,
-            "the session token is the x-amz-security-token header: " + request.session_token);
-    require(request.authorization.contains("x-amz-security-token"),
-            "the session token is one of the signed headers: " + request.authorization);
-    require(!request.authorization.contains(config.secret_key),
-            "the secret key must never appear on the wire");
-    require(!request.session_token.empty() &&
-                request.authorization.find(config.session_token) == std::string::npos,
-            "the authorization value must not repeat the session token");
+  bool refused = false;
+  try {
+    targets::upload_bundle(config, files);
+  } catch (const std::invalid_argument& cleartext) {
+    refused = true;
+    require(!std::string(cleartext.what()).contains(config.session_token),
+            "the refusal must not quote the token");
   }
+  require(refused, "a session token over http must be refused");
+  require(store.received().empty(), "the store saw no request at all");
 }
 
 void verify_incomplete_targets_are_rejected() {
@@ -568,7 +622,8 @@ int main() {
       verify_region_comes_from_the_endpoint,
       verify_explicit_region_overrides_endpoint,
       verify_uploads_land_as_objects,
-      verify_session_token_is_signed,
+      verify_session_token_is_refused_over_http,
+      verify_a_partial_failure_reports_the_written_objects,
       verify_a_refused_upload_fails_without_leaking,
       verify_incomplete_targets_are_rejected,
   });

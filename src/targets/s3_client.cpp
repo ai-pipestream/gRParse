@@ -126,8 +126,10 @@ std::string region_for_endpoint(const std::string& endpoint) {
   const std::string host = colon == std::string::npos ? authority : authority.substr(0, colon);
 
   // "s3.<region>.amazonaws.com" and "<bucket>.s3.<region>.amazonaws.com" both
-  // name the region in the label after "s3".  Anything else is a store that
-  // does not encode one, and us-east-1 is what those accept.
+  // name the region in the label after "s3", possibly behind a "dualstack"
+  // or "fips" qualifier; the legacy dash style "s3-<region>.amazonaws.com"
+  // names it inside the label.  Anything else is a store that does not
+  // encode one, and us-east-1 is what those accept.
   std::vector<std::string_view> labels;
   std::string_view rest(host);
   while (!rest.empty()) {
@@ -139,17 +141,30 @@ std::string region_for_endpoint(const std::string& endpoint) {
     labels.push_back(rest.substr(0, dot));
     rest.remove_prefix(dot + 1);
   }
+  // A region is lowercase letters, digits, and hyphens ending in its number
+  // ("us-west-2"), which no qualifier ("dualstack", "accelerate") and not
+  // the registry suffix of a regionless "s3.amazonaws.com" is.  The legacy
+  // "s3-external-1" is the us-east-1 default spelled another way.
+  const auto region_shaped = [](std::string_view candidate) {
+    return !candidate.empty() && candidate.contains('-') &&
+           std::isdigit(static_cast<unsigned char>(candidate.back())) != 0 &&
+           candidate != "external-1" &&
+           std::ranges::all_of(candidate, [](unsigned char character) {
+             return (character >= 'a' && character <= 'z') ||
+                    (character >= '0' && character <= '9') || character == '-';
+           });
+  };
   for (size_t index = 0; index + 1 < labels.size(); ++index) {
-    if (labels[index] != "s3" && !labels[index].starts_with("s3-")) continue;
-    const std::string_view candidate = labels[index + 1];
-    // A region label is lowercase letters, digits, and hyphens, and is never
-    // the registry suffix that follows a regionless "s3.amazonaws.com".
-    if (candidate == "amazonaws" || candidate.empty()) break;
-    const bool region_shaped = std::ranges::all_of(candidate, [](unsigned char character) {
-      return (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') ||
-             character == '-';
-    });
-    if (region_shaped) return std::string(candidate);
+    const std::string_view label = labels[index];
+    if (label != "s3" && !label.starts_with("s3-")) continue;
+    if (label.starts_with("s3-") && region_shaped(label.substr(3))) {
+      return std::string(label.substr(3));
+    }
+    for (size_t next = index + 1; next < labels.size(); ++next) {
+      if (labels[next] == "dualstack" || labels[next] == "fips") continue;
+      if (region_shaped(labels[next])) return std::string(labels[next]);
+      break;
+    }
     break;
   }
   return std::string(kDefaultRegion);
@@ -165,6 +180,12 @@ S3Client::S3Client(S3Config config) : config_(std::move(config)) {
   }
   split_endpoint(config_.endpoint, &scheme_, &authority_, &base_path_);
   if (authority_.empty()) throw std::invalid_argument("S3Target endpoint names no host");
+  // A session token is a bearer credential on its own: it never crosses the
+  // wire in cleartext, whatever the endpoint asks for.
+  if (!config_.session_token.empty() && scheme_ != "https") {
+    throw std::invalid_argument(
+        "S3Target endpoint is not https, and a session token is never sent in cleartext");
+  }
   host_header_ = host_header_for(scheme_, authority_);
   region_ = config_.region.empty() ? region_for_endpoint(config_.endpoint) : config_.region;
 }
