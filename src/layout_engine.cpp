@@ -28,6 +28,8 @@ class LayoutStrategy {
   virtual ~LayoutStrategy() = default;
   // Validates the graph against what the decode expects and caches its
   // input/output names.  Throws when the file is not the model it claims.
+  // Rebinding to another session replaces the cache: the CPU fallback binds
+  // the same strategy twice.
   virtual void bind(Ort::Session& session) = 0;
   virtual std::vector<LayoutRegion> detect(Ort::Session& session, const cv::Mat& image) const = 0;
 };
@@ -46,6 +48,11 @@ class QueryDetectorStrategy final : public LayoutStrategy {
  public:
   void bind(Ort::Session& session) override {
     Ort::AllocatorWithDefaultOptions allocator;
+    // The pointers alias the name strings, so both lists start over together.
+    input_names_.clear();
+    output_names_.clear();
+    input_pointers_.clear();
+    output_pointers_.clear();
     if (session.GetInputCount() != 2 || session.GetOutputCount() != 3) {
       throw std::runtime_error(
           "Layout model does not look like the query-based detector (expected 2 inputs and 3 "
@@ -193,6 +200,9 @@ class AnchorFreeStrategy final : public LayoutStrategy {
  public:
   void bind(Ort::Session& session) override {
     Ort::AllocatorWithDefaultOptions allocator;
+    // The pointers alias the name strings, so both lists start over together.
+    output_names_.clear();
+    output_pointers_.clear();
     input_name_ = session.GetInputNameAllocated(0, allocator).get();
     const size_t output_count = session.GetOutputCount();
     if (output_count != kStrides.size() * 2) {
@@ -327,12 +337,18 @@ class AnchorFreeStrategy final : public LayoutStrategy {
   std::vector<const char*> output_pointers_;
 };
 
+std::atomic<int> injected_probe_failures{0};
+
 std::unique_ptr<LayoutStrategy> make_strategy(LayoutModel model) {
   if (model == LayoutModel::kHeron) return std::make_unique<QueryDetectorStrategy>();
   return std::make_unique<AnchorFreeStrategy>();
 }
 
 }  // namespace
+
+void layout_engine_test_inject_probe_failures(int failures) {
+  injected_probe_failures.store(failures < 0 ? 0 : failures);
+}
 
 const std::vector<std::string>& LayoutEngine::labels(LayoutModel model) {
   return layout_labels(model);
@@ -364,9 +380,16 @@ class LayoutEngine::Impl {
     // Some provider failures only surface at the first inference (a runtime
     // kernel compile, not session creation), which would otherwise leave a
     // running server failing every page. Probe once; on failure retreat to
-    // CPU exactly like a creation failure would have.
+    // CPU exactly like a creation failure would have.  The probe is this
+    // engine's cold first inference, so it takes the compile gate like every
+    // other engine's first inference does (see grparse_session_ep.h).
     const cv::Mat probe(64, 64, CV_8UC3, cv::Scalar(255, 255, 255));
     try {
+      const OvCompileGate compile_gate;
+      if (injected_probe_failures.load() > 0) {
+        injected_probe_failures.fetch_sub(1);
+        throw std::runtime_error("injected layout probe failure");
+      }
       (void)strategy_->detect(session_, probe);
     } catch (const std::exception& error) {
       std::println(stderr,

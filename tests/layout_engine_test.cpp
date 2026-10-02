@@ -139,6 +139,20 @@ void verify_rejects_empty_image(const fs::path& model, grparse::LayoutModel sele
   require(threw, "an empty image must be rejected");
 }
 
+// A provider whose first inference fails retreats to CPU and binds the same
+// strategy to the new session.  That rebind must replace the cached names, not
+// append to them: appending reallocated the name storage under the pointers
+// handed to Run, so the fallback engine read freed memory.
+void verify_cpu_fallback_after_failed_probe(const fs::path& model,
+                                            grparse::LayoutModel selection, const cv::Mat& image,
+                                            const ExpectedRegion* expected,
+                                            size_t expected_count) {
+  grparse::layout_engine_test_inject_probe_failures(1);
+  grparse::LayoutEngine engine(model, selection);
+  grparse::layout_engine_test_inject_probe_failures(0);
+  verify_matches_reference(engine, engine.detect_regions(image), expected, expected_count);
+}
+
 // One model's whole leg: skipped when its file is not provisioned, so a host
 // that fetched only one of the two still proves that one.
 bool run_model(grparse::LayoutModel selection, const fs::path& models_dir, const cv::Mat& image,
@@ -155,6 +169,7 @@ bool run_model(grparse::LayoutModel selection, const fs::path& models_dir, const
   const auto regions = engine.detect_regions(image);
   verify_matches_reference(engine, regions, expected, expected_count);
   verify_shared_session_serves_repeat_calls(engine, image, regions);
+  verify_cpu_fallback_after_failed_probe(model, selection, image, expected, expected_count);
   return true;
 }
 
