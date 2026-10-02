@@ -111,10 +111,56 @@ void verify_chart_and_caption_options() {
   }
 }
 
+// image_export_mode and doclang_include_namespace reach the DocLang exports;
+// EMBEDDED is refused only where the archive is asked for.
+void verify_doclang_export_options() {
+  using Mode = grparse::DoclangOptions::ImageMode;
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.add_to_formats(parsev1::OUTPUT_FORMAT_DCLX);
+    options.set_image_export_mode(parsev1::IMAGE_REF_MODE_EMBEDDED);
+    require_invalid(grparse::validate_options(options, kSurface), "OUTPUT_FORMAT_DCLX");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.add_to_formats(parsev1::OUTPUT_FORMAT_DOCLANG);
+    options.add_to_formats(parsev1::OUTPUT_FORMAT_MARKDOWN);
+    options.set_image_export_mode(parsev1::IMAGE_REF_MODE_EMBEDDED);
+    options.set_doclang_include_namespace(false);
+    const grpc::Status status = grparse::validate_options(options, kSurface);
+    require(status.ok(), "EMBEDDED without the archive and the namespace switch are accepted: " +
+                             status.error_message());
+    const grparse::DoclangOptions doclang = grparse::doclang_options(options);
+    require(doclang.image_mode == Mode::kEmbedded, "EMBEDDED maps to kEmbedded");
+    require(!doclang.include_namespace, "doclang_include_namespace=false reaches the renderer");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.add_to_formats(parsev1::OUTPUT_FORMAT_DCLX);
+    options.set_image_export_mode(parsev1::IMAGE_REF_MODE_PLACEHOLDER);
+    require(grparse::validate_options(options, kSurface).ok(), "PLACEHOLDER suits the archive");
+    require(grparse::doclang_options(options).image_mode == Mode::kPlaceholder,
+            "PLACEHOLDER maps to kPlaceholder");
+    options.set_image_export_mode(parsev1::IMAGE_REF_MODE_REFERENCED);
+    require(grparse::doclang_options(options).image_mode == Mode::kReferenced,
+            "REFERENCED maps to kReferenced");
+  }
+  {
+    parsev1::ConvertDocumentOptions unset;
+    const grparse::DoclangOptions doclang = grparse::doclang_options(unset);
+    require(!doclang.image_mode.has_value() && doclang.include_namespace,
+            "unset options leave each format's default and the namespace on");
+    unset.set_image_export_mode(parsev1::IMAGE_REF_MODE_UNSPECIFIED);
+    require(!grparse::doclang_options(unset).image_mode.has_value(),
+            "UNSPECIFIED is the same as unset");
+  }
+}
+
 }  // namespace
 
 int main() {
   return grparse_test::run_test_main("convert-options-test", "ok", {
       verify_chart_and_caption_options,
+      verify_doclang_export_options,
   });
 }

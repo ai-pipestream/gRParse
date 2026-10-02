@@ -156,7 +156,7 @@ void render_exports(const pipestream::parse::v1::ConvertDocumentOptions& options
     exports->set_doctags(render_doctags(document));
   }
   if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_DOCLANG)) {
-    exports->set_doclang(render_doclang(document));
+    exports->set_doclang(render_doclang(document, doclang_options(options)));
   }
   if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_VTT)) {
     exports->set_vtt(render_vtt(document));
@@ -171,7 +171,7 @@ void render_exports(const pipestream::parse::v1::ConvertDocumentOptions& options
     exports->set_latex(render_latex(document));
   }
   if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_DCLX)) {
-    exports->set_dclx(render_dclx(document));
+    exports->set_dclx(render_dclx(document, doclang_options(options)));
   }
 }
 
