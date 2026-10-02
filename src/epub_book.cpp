@@ -308,6 +308,11 @@ void inline_images(const std::vector<EpubResource>& resources, docv1::Document* 
     if (warnings == nullptr || !reported.insert(href).second) return;
     warnings->push_back(std::move(text));
   };
+  // Each image is inlined once, on its first picture: a later picture of the
+  // same image keeps its reference rather than a second copy of the bytes.
+  // The book's inlined bytes stop at kEpubInlineTotalCap.
+  std::map<std::string, std::string> inlined_on;
+  size_t inlined_bytes = 0;
   for (auto& picture : *book->mutable_pictures()) {
     if (!picture.has_image()) continue;
     const auto href = epub_href_of(picture.image().uri());
@@ -323,6 +328,18 @@ void inline_images(const std::vector<EpubResource>& resources, docv1::Document* 
                            " bytes) exceeds the inline cap; kept as a reference");
       continue;
     }
+    if (const auto first = inlined_on.find(*href); first != inlined_on.end()) {
+      warn_once(*href, "image '" + *href + "' is inlined once, on " + first->second +
+                           "; its other pictures keep the reference");
+      continue;
+    }
+    if (inlined_bytes + resource.content.size() > kEpubInlineTotalCap) {
+      warn_once(*href, "image '" + *href + "' (" + std::to_string(resource.content.size()) +
+                           " bytes) would pass the book's inline budget; kept as a reference");
+      continue;
+    }
+    inlined_bytes += resource.content.size();
+    inlined_on.emplace(*href, picture.self_ref());
     auto* image = picture.mutable_image();
     if (!resource.media_type.empty()) image->set_mimetype(resource.media_type);
     image->set_uri(data_uri(image->mimetype(), resource.content));
