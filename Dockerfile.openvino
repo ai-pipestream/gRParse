@@ -86,21 +86,23 @@ RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/poppler.tar.
  && rm -rf /tmp/poppler.tar.xz "/tmp/poppler-${POPPLER_VERSION}" /tmp/poppler-build
 
 WORKDIR /src
-# Headers for the native embedding engine's OpenVINO C API, from the same
-# OpenVINO version the ORT provider bundles. Only the headers are used: its
-# libraries are built with the old C++ ABI under the same SONAMEs as the ORT
-# wheel's runtime, and shipping both broke the OpenVINO provider at load
-# (undefined symbol ov::Any::Base::to_string[abi:cxx11]) and replaced its
-# GPU/CPU plugins. The C API links against the ORT wheel's copy instead
-# (cmake/Embeddings.cmake). The wheel is a ZIP archive; no Python
-# interpreter is needed.
-RUN apt-get update && apt-get install -y --no-install-recommends unzip \
- && curl -fsSL --retry 5 -o /tmp/openvino.whl \
-    https://files.pythonhosted.org/packages/8a/91/807f4e288969bc696dee2e56d7269abffb56626249642effb8ec2ab7d424/openvino-2025.4.1-20426-cp312-cp312-manylinux2014_x86_64.whl \
- && echo "88f074286d420c1a1a95e7f2ba11109a899f2f3b3fd818cfe1e47ead22cc7e45  /tmp/openvino.whl" | sha256sum -c - \
- && unzip -q /tmp/openvino.whl -d /opt/openvino-sdk \
- && rm /tmp/openvino.whl \
- && rm -rf /var/lib/apt/lists/*
+# Headers for the native embedding engine's OpenVINO C API, plus the IR
+# frontend, from Intel's archive of the same OpenVINO release the ORT
+# provider bundles. The C API links against the ORT wheel's runtime
+# (cmake/Embeddings.cmake), and only one runtime may ship: a second copy
+# under the same SONAMEs replaced the provider's GPU/CPU plugins, and the
+# PyPI wheel's old-C++-ABI build broke the provider at load (undefined
+# symbol ov::Any::Base::to_string[abi:cxx11]). The ORT wheel carries no IR
+# frontend, which the embedding reference check needs to read
+# openvino_model.xml; the archive's copy is built with the C++11 ABI and
+# loads against the ORT wheel's runtime.
+RUN curl -fsSL --retry 5 -o /tmp/openvino.tgz \
+    https://storage.openvinotoolkit.org/repositories/openvino/packages/2025.4.1/linux/openvino_toolkit_ubuntu24_2025.4.1.20426.82bbf0292c5_x86_64.tgz \
+ && echo "21527afce98e57f9febe77bdf2b69ec97c1be4828c3f8803c07f7d580cd28600  /tmp/openvino.tgz" | sha256sum -c - \
+ && mkdir -p /opt/openvino-sdk \
+ && tar -xzf /tmp/openvino.tgz -C /opt/openvino-sdk --strip-components=1 \
+      --wildcards '*/runtime/include/*' '*/runtime/lib/intel64/libopenvino_ir_frontend.so*' \
+ && rm /tmp/openvino.tgz
 COPY . .
 # Separate cache from the CUDA image: different ONNX Runtime package and ABI.
 # Two builders that share this cache mount (a developer build and a local CI
@@ -122,7 +124,7 @@ RUN --mount=type=cache,id=grparse-openvino-ubuntu26-grpc1.84.0-ort1.24.1-poppler
  && sh scripts/stamp-sources.sh /build \
  && cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
       -DGRPARSE_WERROR=ON -DGRPARSE_ORT_PACKAGE=openvino \
-      -DGRPARSE_EMBED_OPENVINO=ON -DGRPARSE_OPENVINO_ROOT=/opt/openvino-sdk/openvino \
+      -DGRPARSE_EMBED_OPENVINO=ON -DGRPARSE_OPENVINO_ROOT=/opt/openvino-sdk/runtime \
       -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv5 \
  && cmake --build /build --target grparse-server grparse-stream-client grparse-embed-text grparse-tests --parallel ${GRPARSE_BUILD_JOBS} \
  && LD_LIBRARY_PATH=/opt/poppler/lib:/opt/opencv/lib ctest --test-dir /build --output-on-failure -L grparse \
@@ -132,7 +134,8 @@ RUN --mount=type=cache,id=grparse-openvino-ubuntu26-grpc1.84.0-ort1.24.1-poppler
  && cp /build/grparse-embed-text /out/grparse-embed-text \
  && cp /build/embedding-model-test /out/grparse-embedding-check \
  && cp /build/embedding-reference-test /out/grparse-embedding-reference \
- && cp -a /build/ort-openvino/onnxruntime/capi /out/ort-libs
+ && cp -a /build/ort-openvino/onnxruntime/capi /out/ort-libs \
+ && cp -a /opt/openvino-sdk/runtime/lib/intel64/libopenvino_ir_frontend.so* /out/ort-libs/
 
 # Stage the runtime library closure. The runtime base is assumed minimal
 # (hardened images carry no shell, no package manager, no ldconfig), so every
