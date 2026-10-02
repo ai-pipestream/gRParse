@@ -303,7 +303,6 @@ PageScheduler::Options read_scheduler_options(const WorkerConfig& workers, bool 
   options.assembly_workers = configured_size("GRPARSE_ASSEMBLY_WORKERS", 2, 64);
   options.page_window = configured_size("GRPARSE_PAGE_WINDOW", 4, 64);
   options.max_active_documents = configured_size("GRPARSE_MAX_ACTIVE_DOCUMENTS", 32, 1024);
-  options.pdf_parsers = configured_size("GRPARSE_PDF_PARSERS", workers.render_workers, 256);
   options.capture_picture_images = configure_picture_images(layout_active);
   options.capture_page_images = configure_page_images();
   options.barcode_mode = configure_barcode_mode(layout_active, classifier_active);

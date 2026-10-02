@@ -1,12 +1,14 @@
 #include "grparse/remote_page_source.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <chrono>
 #include <cstdlib>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -49,13 +51,72 @@ bool handshake_enabled() {
   return configured == nullptr || std::string_view(configured) != "off";
 }
 
-// Born-digital coverage gate, kept numerically identical to the in-process
-// path in in_memory_document.cpp so flipping the backend never changes the
-// OCR-skip decision for the same text layer.
+// Born-digital coverage gate: skip OCR only when the native text layer
+// looks real.
 constexpr size_t kMinDigitalNonWhitespace = 32;
 constexpr size_t kMinDigitalLines = 4;
 constexpr double kMinDigitalVerticalCoverage = 0.12;
 constexpr size_t kStrongDigitalNonWhitespace = 128;
+
+// Maps contract page space into the top-left frame of the page as rendered.
+// The contract's boxes are PDF user space, bottom-left origin, before the
+// page's /Rotate; the rendered page is the CropBox with /Rotate applied, so
+// a box shifts by the CropBox origin, flips to a top-left origin, and turns
+// clockwise with the page.
+class PageFrame {
+ public:
+  explicit PageFrame(const pdfv1::PageInfo& info)
+      : rotation_(((info.rotation_degrees() % 360) + 360) % 360) {
+    const bool quarter_turn = rotation_ == 90 || rotation_ == 270;
+    // Unrotated extent: the CropBox when the backend reports one, otherwise
+    // the rendered size turned back.
+    if (info.has_crop_box() && info.crop_box().x1() > info.crop_box().x0() &&
+        info.crop_box().y1() > info.crop_box().y0()) {
+      origin_x_ = info.crop_box().x0();
+      origin_y_ = info.crop_box().y0();
+      width_ = info.crop_box().x1() - info.crop_box().x0();
+      height_ = info.crop_box().y1() - info.crop_box().y0();
+    } else {
+      width_ = quarter_turn ? info.height_pts() : info.width_pts();
+      height_ = quarter_turn ? info.width_pts() : info.height_pts();
+    }
+  }
+
+  // Width and height of the rendered page, in points.
+  double display_width() const { return rotation_ % 180 == 0 ? width_ : height_; }
+  double display_height() const { return rotation_ % 180 == 0 ? height_ : width_; }
+
+  // The axis-aligned box in the rendered top-left frame: {left, top, right,
+  // bottom} in points.
+  std::array<double, 4> place(const pdfv1::BoundingBox& box) const {
+    const auto a = to_display(box.x0(), box.y0());
+    const auto b = to_display(box.x1(), box.y1());
+    return {std::min(a[0], b[0]), std::min(a[1], b[1]), std::max(a[0], b[0]),
+            std::max(a[1], b[1])};
+  }
+
+ private:
+  std::array<double, 2> to_display(double x, double y) const {
+    const double u = x - origin_x_;
+    const double down = height_ - (y - origin_y_);
+    switch (rotation_) {
+      case 90:
+        return {height_ - down, u};
+      case 180:
+        return {width_ - u, height_ - down};
+      case 270:
+        return {down, width_ - u};
+      default:
+        return {u, down};
+    }
+  }
+
+  int rotation_;
+  double origin_x_ = 0.0;
+  double origin_y_ = 0.0;
+  double width_ = 0.0;
+  double height_ = 0.0;
+};
 
 // One channel per backend target per process; channels multiplex.
 std::shared_ptr<grpc::Channel> channel_for(const std::string& target) {
@@ -142,8 +203,7 @@ class RemotePdfPageSource final : public PageSource {
       auto reader = stub_->Parse(&context, request);
 
       pdfv1::ParseResponse message;
-      double page_width_pts = 0.0;
-      double page_height_pts = 0.0;
+      std::optional<PageFrame> frame;
       std::optional<pdfv1::LoadStatus> header_load_status;
       std::string header_load_detail;
       std::map<uint32_t, std::string> font_names;
@@ -155,8 +215,7 @@ class RemotePdfPageSource final : public PageSource {
             header_load_detail = message.header().capabilities().load_detail();
             for (const auto& info : message.header().pages()) {
               if (info.page_index() == static_cast<uint32_t>(page_number - 1)) {
-                page_width_pts = info.width_pts();
-                page_height_pts = info.height_pts();
+                frame.emplace(info);
               }
             }
             break;
@@ -194,14 +253,14 @@ class RemotePdfPageSource final : public PageSource {
             pdfv1::LoadStatus_Name(*header_load_status) +
             (header_load_detail.empty() ? "" : " (" + header_load_detail + ")"));
       }
-      if (page_height_pts <= 0.0) return std::nullopt;
+      if (!frame.has_value() || frame->display_height() <= 0.0) return std::nullopt;
 
       OcrPage result;
-      result.width = scaled(page_width_pts);
-      result.height = scaled(page_height_pts);
+      result.width = scaled(frame->display_width());
+      result.height = scaled(frame->display_height());
       result.source = OcrPage::Source::kDigitalPdf;
       size_t non_whitespace_bytes = 0;
-      double text_top = page_height_pts;
+      double text_top = frame->display_height();
       double text_bottom = 0.0;
       result.lines.reserve(cells.size());
       for (const auto& cell : cells) {
@@ -209,15 +268,13 @@ class RemotePdfPageSource final : public PageSource {
         for (const unsigned char byte : cell.text()) {
           if (std::isspace(byte) == 0) ++non_whitespace_bytes;
         }
-        // Contract boxes are bottom-left origin; the fold works in the
-        // top-left raster frame.
-        const double top_pts = page_height_pts - cell.bbox().y1();
-        const double bottom_pts = page_height_pts - cell.bbox().y0();
+        // The fold works in the top-left frame of the rendered page.
+        const auto [left_pts, top_pts, right_pts, bottom_pts] = frame->place(cell.bbox());
         text_top = std::min(text_top, top_pts);
         text_bottom = std::max(text_bottom, bottom_pts);
-        const int left = scaled(cell.bbox().x0());
+        const int left = scaled(left_pts);
         const int top = scaled(top_pts);
-        const int right = scaled(cell.bbox().x1());
+        const int right = scaled(right_pts);
         const int bottom = scaled(bottom_pts);
         OcrLine line{cell.text(),
                      {{left, top}, {right, top}, {right, bottom}, {left, bottom}},
@@ -243,7 +300,7 @@ class RemotePdfPageSource final : public PageSource {
       if (result.lines.empty()) return std::nullopt;
 
       const double vertical_coverage =
-          page_height_pts > 0.0 ? (text_bottom - text_top) / page_height_pts : 0.0;
+          (text_bottom - text_top) / frame->display_height();
       result.skip_ocr = non_whitespace_bytes >= kMinDigitalNonWhitespace &&
                         result.lines.size() >= kMinDigitalLines &&
                         (vertical_coverage >= kMinDigitalVerticalCoverage ||
@@ -344,7 +401,7 @@ class RemotePdfPageSource final : public PageSource {
                    raster.stride_bytes());
   }
 
-  // The fold consumes BGR (what the in-process path produces); backends may
+  // The fold consumes BGR (what the raster path decodes to); backends may
   // answer in their native layout.
   static cv::Mat to_bgr(const cv::Mat& view, pdfv1::PixelFormat format) {
     cv::Mat out;
@@ -386,9 +443,8 @@ std::optional<std::string> remote_pdf_backend_target() {
   std::string target(value);
   const auto begin = target.find_first_not_of(" \t");
   if (begin == std::string::npos) {
-    // The documented empty value keeps the in-process poppler path; a
-    // whitespace-only value is a typo that must fail loudly, not silently
-    // fall back or dial the literal string.
+    // The empty value means no backend is configured; a whitespace-only
+    // value is a typo that must fail loudly, not dial the literal string.
     if (target.empty()) return std::nullopt;
     throw std::invalid_argument(
         "GRPARSE_PDF_BACKEND is whitespace-only; unset it or name a backend "
@@ -396,7 +452,6 @@ std::optional<std::string> remote_pdf_backend_target() {
   }
   const auto end = target.find_last_not_of(" \t");
   target = target.substr(begin, end - begin + 1);
-  if (target == "inprocess") return std::nullopt;
   return target;
 }
 

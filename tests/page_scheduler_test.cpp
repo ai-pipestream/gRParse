@@ -1028,7 +1028,7 @@ class WeakDigitalSource final : public grparse::PageSource {
 // The pdf inspector's page set replaces the embedded-layer heuristic in
 // kSelective mode: exactly the named pages recognize, every other page
 // trusts its embedded layer even when that layer is weak, and a page the
-// inspector cleared but Poppler reads as layerless still recognizes (an
+// inspector cleared but the PDF backend reads as layerless still recognizes (an
 // empty page is a worse answer than the two extractors disagreeing).
 void verify_inspector_page_set_restricts_ocr() {
   FakeRecognizer recognizer;

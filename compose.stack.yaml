@@ -1,8 +1,9 @@
 # Full demo stack on one compose network: the gRParse parser, the lol-html
 # and libreoffice collectors, the pdf inspector as gRParse's PDF routing
-# oracle, their web UIs, and the demo shell that ties them together. The
-# calamine server and viewer ride along under the `calamine` profile,
-# decoupled from the shell by default.
+# oracle, grpc-pdfium as the PDF backend gRParse reads every PDF through,
+# their web UIs, and the demo shell that ties them together. The calamine
+# server and viewer ride along under the `calamine` profile, decoupled from
+# the shell by default.
 #
 # Profiles beyond the default core:
 #   parsers  - the remaining parser services and their viewer UIs: epub,
@@ -14,6 +15,11 @@
 #              ENRICH_VLM_URL / VLM_ENDPOINT to do real work; their tabs
 #              show an amber "no VLM endpoint" state otherwise).
 #   calamine - existing opt-in, unchanged.
+#   pdf-backends - grpc-qparse, a second Apache-2.0 PDF backend for the
+#              consensus vote (set GRPARSE_PDF_BACKEND to a comma list).
+#   poppler  - grpc-poppler, the GPL-3.0 PDF backend: an optional
+#              differential and consensus leg, never part of the default
+#              stack, so its license stays inside its own container.
 #
 #   docker compose -f compose.stack.yaml up --build
 #   docker compose -f compose.stack.yaml --profile parsers up --build
@@ -27,11 +33,11 @@
 # On a host without an NVIDIA GPU (macOS included), layer the CPU overlay,
 # which drops the GPU reservation and runs gRParse on the CPU provider:
 #   docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml up
-# On an arm64 host layer compose.stack.arm64.yaml too if the pdf-backends
-# profile is wanted; it repeats the CPU swap and pins the three amd64-only
-# PDF backend images to linux/amd64 under QEMU emulation (its header lists
-# the costs and the binfmt prerequisite). The rest of the stack is
-# multi-arch and runs natively.
+# On an arm64 host layer compose.stack.arm64.yaml too; it repeats the CPU
+# swap and pins the three amd64-only PDF backend images (pdfium in the core,
+# qparse and poppler in their profiles) to linux/amd64 under QEMU emulation
+# (its header lists the costs and the binfmt prerequisite). The rest of the
+# stack is multi-arch and runs natively.
 # No ./models checkout? compose.stack.models.yaml fills a volume from the
 # pipestreamai/grparse-models image (put it after the cpu/openvino overlay).
 # Fresh machine? compose/clone-siblings.sh fetches the sibling checkouts
@@ -97,13 +103,14 @@ services:
       # leg fails loudly (UNAVAILABLE), per the doctrine above.
       GRPARSE_POI_TARGET: "poic:50052"
       GRPARSE_CALAMINE_TARGET: "calamine:50062"
-      # The PDF backend services sit in the opt-in `pdf-backends` profile.
-      # GRPARSE_PDF_BACKEND stays unset on purpose: the in-process poppler
-      # path is the default until the M6 flip decision (see
-      # docs/pdf-backend-services.md). To run one backend, set it to its
-      # target ("pdfium:50069"); a comma list turns on the consensus vote
-      # ("pdfium:50069,qparse:50070,poppler:50071"). With the profile down,
-      # a configured target fails PDF uploads loudly (UNAVAILABLE).
+      # gRParse links no PDF engine: every PDF the CV path reads goes to the
+      # PdfBackendService named here (docs/pdf-backend-services.md). pdfium
+      # is in the core profile; a comma list turns on the consensus vote,
+      # e.g. GRPARSE_PDF_BACKEND=pdfium:50069,qparse:50070 with the
+      # `pdf-backends` profile up (add poppler:50071 with the `poppler`
+      # profile). A target whose service is down fails PDF uploads loudly
+      # (UNAVAILABLE); unset, PDFs fail FAILED_PRECONDITION.
+      GRPARSE_PDF_BACKEND: "${GRPARSE_PDF_BACKEND:-pdfium:50069}"
       # Raster charts: pictures the classifier calls a chart go to the enrich
       # service for a table (opt-in; unset turns the call off). The endpoint
       # is named per request because the enrich default (ENRICH_VLM_URL,
@@ -115,6 +122,11 @@ services:
       # PROCESSING_PIPELINE_VLM dials grpc-vlm-convert with full-page PNGs.
       GRPARSE_VLM_CONVERT_TARGET: "vlm-convert:50058"
       GRPARSE_VLM_CONVERT_TIMEOUT_MS: "120000"
+    # Start order only: the backend is dialed per document, so a PDF that
+    # arrives before pdfium's worker pool is up fails UNAVAILABLE and the
+    # next one goes through.
+    depends_on:
+      - pdfium
     gpus: all
     read_only: true
     tmpfs:
@@ -162,17 +174,16 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  # The PDF backend (Apache-2.0, PDFium): page inventory, text cells and
+  # rasters for every PDF gRParse's CV path reads. The published image is
+  # linux/amd64 only (see compose.stack.arm64.yaml).
   pdfium:
-    profiles: ["pdf-backends"]
     image: pipestreamai/grpc-pdfium:${STACK_TAG:-latest}
     build: ../grpc-pdfium
     expose:
       - "50069"
     # The front process spawns its worker pool over Unix sockets under /tmp,
     # so a read-only container needs a tmpfs there or it exits at boot.
-    # gRParse probes each backend once at ITS startup and drops a target that
-    # does not answer; the workers take a few seconds to spawn, so start this
-    # profile before gRParse (or restart grparse after it) on a cold `up`.
     read_only: true
     tmpfs:
       - /tmp:size=64m
@@ -194,9 +205,10 @@ services:
       - no-new-privileges:true
 
   # The GPL leg: poppler is the differential reference, not a release
-  # component. It joins consensus only when the profile is up.
+  # component. It joins consensus only when its profile is up and
+  # GRPARSE_PDF_BACKEND lists it.
   poppler:
-    profiles: ["pdf-backends"]
+    profiles: ["poppler"]
     image: pipestreamai/grpc-poppler:${STACK_TAG:-latest}
     build: ../grpc-poppler
     expose:

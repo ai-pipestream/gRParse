@@ -5,10 +5,12 @@
 #   docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml -f compose.stack.arm64.yaml --profile parsers up
 #
 # Why a separate file: every published image in the stack is multi-arch and
-# runs natively on arm64, except the three PDF backend services. Those
-# repos are private, GitHub's free arm runners do not cover private repos,
-# and an emulated C++ build takes hours (workspace AGENTS.md, "Publishing
-# images"). Their images have no arm64 manifest to pull, so this overlay
+# runs natively on arm64, except the three PDF backend services, and one of
+# them (pdfium) is in the core profile because gRParse reads every PDF
+# through it. Those repos are private, GitHub's free arm runners do not
+# cover private repos, and an emulated C++ build takes hours (workspace
+# AGENTS.md, "Publishing images"). Their images have no arm64 manifest to
+# pull, so this overlay
 # pins each of them to linux/amd64 and lets the host's binfmt_misc QEMU
 # handler run them under emulation. Docker Desktop ships that handler; on a
 # bare Linux arm64 host install it once, e.g.
@@ -19,13 +21,12 @@
 #   - swaps gRParse to the multi-arch CPU image (same three keys as
 #     compose.stack.cpu.yaml, repeated so this file suffices on its own;
 #     layering both is harmless, they agree),
-#   - pins pdfium, qparse, and poppler (the opt-in `pdf-backends` profile)
-#     to linux/amd64. gRParse probes each backend once at startup and
-#     permanently drops a slow or late one, and emulation makes the workers
-#     slower to spawn, so a cold `up` can outrun the probe (the race
-#     documented at the pdfium service); start the profile first or restart
-#     grparse. GRPARSE_PDF_BACKEND is unset in the stack, so not enabling
-#     the profile loses nothing: the in-process poppler path answers,
+#   - pins pdfium (core), qparse (`pdf-backends`) and poppler (`poppler`)
+#     to linux/amd64. Emulation makes pdfium's workers slower to spawn, and
+#     gRParse dials the backend per document, so a PDF sent in the first
+#     seconds of a cold `up` can fail UNAVAILABLE; the next one goes
+#     through. Without the binfmt handler pdfium cannot start and every PDF
+#     upload fails, while rasters and the other formats still parse,
 #   - the openvino overlay stays Intel-only (amd64 by nature); do not layer
 #     it on arm64.
 #

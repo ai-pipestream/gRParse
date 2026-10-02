@@ -220,6 +220,8 @@ grpc::Status status_from_exception(std::exception_ptr failure) {
     if (failure) std::rethrow_exception(failure);
   } catch (const InvalidDocument& error) {
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, error.what());
+  } catch (const PdfBackendNotConfigured& error) {
+    return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION, error.what());
   } catch (const SchedulerSaturated& error) {
     return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED, error.what());
   } catch (const std::bad_alloc& error) {

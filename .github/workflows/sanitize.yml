@@ -30,7 +30,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            cmake g++ git make ninja-build pkg-config libopencv-dev libpoppler-cpp-dev
+            cmake g++ git make ninja-build pkg-config libopencv-dev
       - name: Configure with AddressSanitizer and UBSan
         run: |
           cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \

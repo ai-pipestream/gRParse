@@ -10,8 +10,9 @@ joins this table.
 ## Legs
 
 - **poppler**: `poppler_floor` (built here by `build_floor.sh` against the
-  host's libpoppler-cpp) replays the exact poppler-cpp calls
-  `src/in_memory_document.cpp` makes: `load_from_raw_data`,
+  host's libpoppler-cpp) replays the exact poppler-cpp calls gRParse's
+  in-process path made before it was removed (gRParse now reads PDFs only
+  through a backend service; grpc-poppler serves the same calls): `load_from_raw_data`,
   `text_list(text_list_include_font)`, `page_renderer` BGR24 at a DPI, and
   the quarter-turn orientation handling. It links GPL poppler and stays in
   `eval/`, off every release artifact. The host poppler version is recorded

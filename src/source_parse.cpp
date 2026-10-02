@@ -222,9 +222,10 @@ grpc::Status validate_table_mode(const pipestream::parse::v1::ConvertDocumentOpt
                       surface + " table_mode value is not a known TableFormerMode");
 }
 
-// PDF rasterization here is poppler (or an optional remote pdf backend), not
-// Docling's Python backends. Named PdfBackend values are accepted so clients
-// that always set the field are not turned away; the engine stays poppler.
+// PDFs are read here by the PdfBackendService GRPARSE_PDF_BACKEND names, not
+// by Docling's Python backends. Named PdfBackend values are accepted so
+// clients that always set the field are not turned away; the deployment's
+// configured backend reads the document either way.
 grpc::Status validate_pdf_backend(const pipestream::parse::v1::ConvertDocumentOptions& options,
                                   const std::string& surface) {
   if (!options.has_pdf_backend()) return grpc::Status::OK;

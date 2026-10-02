@@ -231,10 +231,8 @@ class PageScheduler::Impl final {
       throw std::invalid_argument("Scheduler worker counts, page window, and document limit must be positive");
     }
     if (!source_factory_) {
-      const size_t parsers = options_.pdf_parsers > 0 ? options_.pdf_parsers : options_.render_workers;
-      source_factory_ = [parsers](std::shared_ptr<const std::string> bytes, bool pdf,
-                                  double render_dpi) {
-        return open_in_memory_document(std::move(bytes), pdf, parsers, render_dpi);
+      source_factory_ = [](std::shared_ptr<const std::string> bytes, bool pdf, double render_dpi) {
+        return open_in_memory_document(std::move(bytes), pdf, render_dpi);
       };
     }
     // Any thread that fails to start must not leave the already-started ones
@@ -591,9 +589,10 @@ class PageScheduler::Impl final {
           }
         }
         // Inspector-routed pages recognize exactly the named set; a page the
-        // inspector called text-bearing but Poppler reads as layerless still
-        // recognizes, because an empty page is a worse answer than the two
-        // extractors disagreeing.  Otherwise the mode decides as always.
+        // inspector called text-bearing but the PDF backend reads as
+        // layerless still recognizes, because an empty page is a worse
+        // answer than the two extractors disagreeing.  Otherwise the mode
+        // decides as always.
         const bool run_ocr =
             inspector_routed
                 ? ocr_pages.count(page->page_number) != 0 || !digital.has_value()

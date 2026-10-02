@@ -533,7 +533,7 @@ int main() {
     // opens against the fake server above.
     setenv("GRPARSE_PDF_BACKEND", ("  \t" + target + "  ").c_str(), 1);
     const auto trimmed =
-        grparse::open_in_memory_document(config_bytes, true, 1, dpi);
+        grparse::open_in_memory_document(config_bytes, true, dpi);
     require(trimmed->page_count() == 1, "a padded single target still opens");
     unsetenv("GRPARSE_PDF_BACKEND");
 
@@ -543,31 +543,13 @@ int main() {
       setenv("GRPARSE_PDF_BACKEND", value, 1);
       bool threw = false;
       try {
-        grparse::open_in_memory_document(config_bytes, true, 1, dpi);
+        grparse::open_in_memory_document(config_bytes, true, dpi);
       } catch (const std::invalid_argument&) {
         threw = true;
       }
       require(threw, std::string("all-empty target list '") + value +
                          "' fails as a config error");
     }
-    unsetenv("GRPARSE_PDF_BACKEND");
-
-    // "inprocess" inside a list reads like a target and would be silently
-    // dropped after a failed dial; it is only meaningful as the whole
-    // value, so mixing it in is a config error.
-    setenv("GRPARSE_PDF_BACKEND", "inprocess,127.0.0.1:1", 1);
-    bool threw = false;
-    try {
-      grparse::open_in_memory_document(config_bytes, true, 1, dpi);
-    } catch (const std::invalid_argument&) {
-      threw = true;
-    }
-    require(threw, "a list containing inprocess fails as a config error");
-
-    // A lone inprocess, even padded, keeps the in-process poppler path.
-    setenv("GRPARSE_PDF_BACKEND", " inprocess ", 1);
-    require(!grparse::remote_pdf_backend_target().has_value(),
-            "a padded inprocess keeps the in-process path");
     unsetenv("GRPARSE_PDF_BACKEND");
   }
 

@@ -44,9 +44,6 @@ class PageScheduler final {
     size_t assembly_workers = 2;
     size_t page_window = 4;
     size_t max_active_documents = 32;
-    // Concurrent Poppler parsers per PDF for the built-in page source.
-    // 0 tracks render_workers, which is what keeps render fan-out real.
-    size_t pdf_parsers = 0;
     // PNG-encode figure crops onto their regions in the inference stage.
     // Off by default: image bytes inflate every page event that has figures.
     bool capture_picture_images = false;
