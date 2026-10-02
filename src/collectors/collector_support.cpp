@@ -7,6 +7,29 @@
 
 namespace grparse {
 
+CancelWatch::CancelWatch(grpc::ClientContext& context, CollectorCancelled cancelled) {
+  if (!cancelled) return;
+  thread_ = std::thread([this, &context, cancelled = std::move(cancelled)] {
+    std::unique_lock<std::mutex> lock(mutex_);
+    while (!stop_.wait_for(lock, kCancelPoll, [this] { return stopping_; })) {
+      if (cancelled()) {
+        context.TryCancel();
+        return;
+      }
+    }
+  });
+}
+
+CancelWatch::~CancelWatch() {
+  if (!thread_.joinable()) return;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    stopping_ = true;
+  }
+  stop_.notify_all();
+  thread_.join();
+}
+
 grpc::StatusCode map_code(grpc::StatusCode code) {
   switch (code) {
     case grpc::StatusCode::INVALID_ARGUMENT:

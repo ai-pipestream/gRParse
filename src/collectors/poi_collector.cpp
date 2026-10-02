@@ -321,10 +321,12 @@ CollectorOutcome collect_poi_document(const std::shared_ptr<grpc::Channel>& chan
                                       const std::string& filename,
                                       const std::string& content_type,
                                       const std::string& bytes,
-                                      CollectorDeadline inbound_deadline) {
+                                      CollectorDeadline inbound_deadline,
+                                      CollectorCancelled cancelled) {
   auto stub = poiv1::PoiParseService::NewStub(channel);
   grpc::ClientContext context;
   context.set_deadline(capped_collector_deadline(inbound_deadline, kDeadline));
+  const CancelWatch watch(context, std::move(cancelled));
   auto stream = stub->ParseDocument(&context);
 
   // The wire reads identity from the first chunk and wants the last chunk
@@ -333,12 +335,12 @@ CollectorOutcome collect_poi_document(const std::shared_ptr<grpc::Channel>& chan
   request.set_document_id(document_id);
   request.set_filename(filename);
   request.set_content_type(content_type);
-  upload_stream(*stream, request, bytes, /*always_send_chunk=*/true,
-                [&bytes](poiv1::ParseRequestChunk& frame, size_t offset,
-                         size_t length, bool last) {
-                  frame.set_data(bytes.data() + offset, length);
-                  frame.set_complete(last);
-                });
+  ConcurrentUpload upload(
+      context, *stream, request, bytes, /*always_send_chunk=*/true,
+      [&bytes](poiv1::ParseRequestChunk& frame, size_t offset, size_t length, bool last) {
+        frame.set_data(bytes.data() + offset, length);
+        frame.set_complete(last);
+      });
 
   CollectorOutcome outcome;
   PoiFold fold(outcome.document);
@@ -376,6 +378,7 @@ CollectorOutcome collect_poi_document(const std::shared_ptr<grpc::Channel>& chan
     event.Clear();
   }
 
+  upload.join();
   const grpc::Status status = stream->Finish();
   if (!status.ok()) {
     outcome.error = collector_status_text("poi", status);

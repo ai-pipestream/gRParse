@@ -110,7 +110,7 @@ CollectorOutcome run_remote_collector(
     const std::string& content_type, const std::string& bytes,
     const std::string& ebcdic_layout_json,
     const std::string& lol_html_options_json,
-    CollectorDeadline inbound_deadline) {
+    CollectorDeadline inbound_deadline, CollectorCancelled cancelled) {
   CollectorOutcome outcome;
   if (!remote_collector(id)) {
     outcome.error = std::string("collector '") + collector_name(id) +
@@ -135,7 +135,7 @@ CollectorOutcome run_remote_collector(
                                      filename, content_type, bytes,
                                      spreadsheet ? OfficeCvEnrichment{}
                                                  : endpoints->cv_enrichment(),
-                                     inbound_deadline);
+                                     inbound_deadline, cancelled);
     }
     case pipestream::parse::v1::COLLECTOR_ASR:
       if (endpoints->asr_model().empty()) {
@@ -144,15 +144,15 @@ CollectorOutcome run_remote_collector(
         return outcome;
       }
       return collect_asr_document(endpoints->channel(id), endpoints->asr_model(), filename, bytes,
-                                  inbound_deadline);
+                                  inbound_deadline, cancelled);
     case pipestream::parse::v1::COLLECTOR_EMAIL:
       return collect_email_document(endpoints->channel(id), document_id, filename,
-                                    content_type, bytes, inbound_deadline);
+                                    content_type, bytes, inbound_deadline, cancelled);
     case pipestream::parse::v1::COLLECTOR_XML:
-      return collect_xml_document(endpoints->channel(id), bytes, inbound_deadline);
+      return collect_xml_document(endpoints->channel(id), bytes, inbound_deadline, cancelled);
     case pipestream::parse::v1::COLLECTOR_EBCDIC:
       return collect_ebcdic_document(endpoints->channel(id), ebcdic_layout_json, bytes,
-                                     inbound_deadline);
+                                     inbound_deadline, cancelled);
     case pipestream::parse::v1::COLLECTOR_EPUB:
       // The book, not the skeleton: the chapters fold through the markup
       // collector when one is configured, and the leg says so when not.
@@ -161,10 +161,10 @@ CollectorOutcome run_remote_collector(
           endpoints->has(pipestream::parse::v1::COLLECTOR_MARKUP)
               ? endpoints->channel(pipestream::parse::v1::COLLECTOR_MARKUP)
               : nullptr,
-          bytes, inbound_deadline);
+          bytes, inbound_deadline, cancelled);
     case pipestream::parse::v1::COLLECTOR_MARKUP: {
       CollectorOutcome outcome = collect_markup_document(
-          endpoints->channel(id), filename, content_type, bytes, inbound_deadline);
+          endpoints->channel(id), filename, content_type, bytes, inbound_deadline, cancelled);
       // An HTML page's <title> is the document's title; the collector
       // records it as metadata only. Whole pages only: an epub chapter's
       // title is the chapter's, and the book folds those on its own.
@@ -176,22 +176,22 @@ CollectorOutcome run_remote_collector(
     }
     case pipestream::parse::v1::COLLECTOR_LOL_HTML:
       return collect_lol_html_document(endpoints->channel(id),
-                                       lol_html_options_json, bytes, inbound_deadline);
+                                       lol_html_options_json, bytes, inbound_deadline, cancelled);
     case pipestream::parse::v1::COLLECTOR_FASTWARC:
-      return collect_fastwarc_document(endpoints->channel(id), bytes, inbound_deadline);
+      return collect_fastwarc_document(endpoints->channel(id), bytes, inbound_deadline, cancelled);
     case pipestream::parse::v1::COLLECTOR_PDF:
       // The plain leg, reached when the pdf collector shares a selection
       // with other collectors: its Document is the contribution. The
       // classification-driven routing lives with the plan, not here.
-      return collect_pdf_document(endpoints->channel(id), bytes, inbound_deadline);
+      return collect_pdf_document(endpoints->channel(id), bytes, inbound_deadline, cancelled);
     case pipestream::parse::v1::COLLECTOR_POI:
       // grPOIc's own byte cap (GRPOIC_MAX_DOCUMENT_MIB, default 70) sits
       // below this server's intake: an oversized upload fails this leg with
       // RESOURCE_EXHAUSTED and degrades per-collector like any other.
       return collect_poi_document(endpoints->channel(id), document_id, filename,
-                                  content_type, bytes, inbound_deadline);
+                                  content_type, bytes, inbound_deadline, cancelled);
     case pipestream::parse::v1::COLLECTOR_CALAMINE:
-      return collect_calamine_document(endpoints->channel(id), bytes, inbound_deadline);
+      return collect_calamine_document(endpoints->channel(id), bytes, inbound_deadline, cancelled);
     default:
       // Unreachable: the remote_collector guard admits only the ids the
       // switch handles.

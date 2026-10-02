@@ -59,7 +59,8 @@ PdfRouteDecision route_pdf_by_classification(const PdfClassification& classifica
 PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
                            const std::string& bytes,
                            CollectorDeadline inbound_deadline,
-                           std::optional<std::pair<int, int>> page_range) {
+                           std::optional<std::pair<int, int>> page_range,
+                           CollectorCancelled cancelled) {
   PdfParseResult result;
   if (channel == nullptr) {
     result.outcome.error = "pdf collector is not configured (GRPARSE_PDF_TARGET)";
@@ -69,6 +70,7 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
   auto stub = pdfv1::PdfParseService::NewStub(channel);
   grpc::ClientContext context;
   context.set_deadline(capped_collector_deadline(inbound_deadline, kDeadline));
+  const CancelWatch watch(context, std::move(cancelled));
   auto stream = stub->ParsePdf(&context);
 
   pdfv1::ParsePdfRequest request;
@@ -89,11 +91,11 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
       request.mutable_options()->add_pages(static_cast<uint32_t>(page));
     }
   }
-  upload_stream(*stream, request, bytes, /*always_send_chunk=*/false,
-                [&bytes](pdfv1::ParsePdfRequest& frame, size_t offset,
-                         size_t length, bool /*last*/) {
-                  frame.set_chunk(bytes.data() + offset, length);
-                });
+  ConcurrentUpload upload(
+      context, *stream, request, bytes, /*always_send_chunk=*/false,
+      [&bytes](pdfv1::ParsePdfRequest& frame, size_t offset, size_t length, bool /*last*/) {
+        frame.set_chunk(bytes.data() + offset, length);
+      });
 
   bool trailer_seen = false;
   bool document_seen = false;
@@ -145,6 +147,7 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
     }
     event.Clear();
   }
+  upload.join();
   result.outcome = finish_outcome("pdf", stream->Finish(), trailer_seen, document_seen,
                                   std::move(result.outcome));
   return result;
@@ -152,7 +155,9 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
 
 CollectorOutcome collect_pdf_document(const std::shared_ptr<grpc::Channel>& channel,
                                       const std::string& bytes,
-                                      CollectorDeadline inbound_deadline) {
-  return collect_pdf(channel, bytes, inbound_deadline).outcome;
+                                      CollectorDeadline inbound_deadline,
+                                      CollectorCancelled cancelled) {
+  return collect_pdf(channel, bytes, inbound_deadline, std::nullopt, std::move(cancelled))
+      .outcome;
 }
 }  // namespace grparse

@@ -1,6 +1,7 @@
 #include "grparse/document_collectors.h"
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ai/pipestream/ebcdic/v1/ebcdic_service.grpc.pb.h"
@@ -13,7 +14,8 @@ namespace grparse {
 CollectorOutcome collect_ebcdic_document(const std::shared_ptr<grpc::Channel>& channel,
                                          const std::string& layout_json,
                                          const std::string& bytes,
-                                         CollectorDeadline inbound_deadline) {
+                                         CollectorDeadline inbound_deadline,
+                                         CollectorCancelled cancelled) {
   if (layout_json.empty()) {
     // Nothing to dial: the collector cannot decode a byte without a layout,
     // and this client never invents one.
@@ -25,18 +27,19 @@ CollectorOutcome collect_ebcdic_document(const std::shared_ptr<grpc::Channel>& c
   auto stub = ebcdicv1::EbcdicParseService::NewStub(channel);
   grpc::ClientContext context;
   context.set_deadline(capped_collector_deadline(inbound_deadline, kDeadline));
+  const CancelWatch watch(context, std::move(cancelled));
   auto stream = stub->ParseEbcdic(&context);
 
   ebcdicv1::ParseEbcdicRequest request;
   request.mutable_options()->set_layout_json(layout_json);
   request.mutable_options()->set_emit_document(true);
-  upload_stream(*stream, request, bytes, /*always_send_chunk=*/false,
-                [&bytes](ebcdicv1::ParseEbcdicRequest& frame, size_t offset,
-                         size_t length, bool /*last*/) {
-                  frame.set_chunk(bytes.data() + offset, length);
-                });
+  ConcurrentUpload upload(
+      context, *stream, request, bytes, /*always_send_chunk=*/false,
+      [&bytes](ebcdicv1::ParseEbcdicRequest& frame, size_t offset, size_t length, bool /*last*/) {
+        frame.set_chunk(bytes.data() + offset, length);
+      });
   return drain_stream<ebcdicv1::ParseEbcdicResponse>(
-      "ebcdic", *stream,
+      "ebcdic", *stream, upload,
       [](const ebcdicv1::ParseEbcdicResponse& event,
          std::vector<std::string>& warnings) {
         if (!event.has_status()) return false;

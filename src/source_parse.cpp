@@ -1237,7 +1237,8 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
   if (inputs.context->IsCancelled()) return cancelled_outcome();
   const PdfParseResult parsed =
       collect_pdf(inputs.endpoints->channel(pipestream::parse::v1::COLLECTOR_PDF),
-                  *inputs.bytes, inputs.inbound_deadline, inputs.tuning.page_range);
+                  *inputs.bytes, inputs.inbound_deadline, inputs.tuning.page_range,
+                  [context = inputs.context] { return context->IsCancelled(); });
   const PdfRouteDecision route = route_pdf_by_classification(parsed.classification);
   if (parsed.outcome.success && (route.fast_path || inputs.native_pipeline)) {
     PdfParseResult fast = parsed;
@@ -1372,10 +1373,13 @@ std::vector<PlannedCollector> build_plan(
         // started; a cancel can land any time after. Ask again before
         // dialing so a dead call costs no collector leg.
         if (inputs.context->IsCancelled()) return cancelled_outcome();
+        // The leg's own call ends with this one: a client that cancels
+        // mid-leg leaves no collector working for nobody.
         return run_remote_collector(id, inputs.endpoints, inputs.document_id,
                                     inputs.filename.string(), inputs.content_type,
                                     *inputs.bytes, *inputs.ebcdic_layout_json,
-                                    *inputs.lol_html_options_json, inputs.inbound_deadline);
+                                    *inputs.lol_html_options_json, inputs.inbound_deadline,
+                                    [context = inputs.context] { return context->IsCancelled(); });
       };
     }
     plan.push_back(std::move(collector));

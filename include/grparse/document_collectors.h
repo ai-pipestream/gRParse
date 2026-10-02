@@ -24,7 +24,9 @@ namespace grparse {
 // that asked for the parse. Each leg runs until the sooner of that and its
 // own static cap, so a client that gave up or ran out of time is never
 // waited on past its own patience; kNoCollectorDeadline (the default) means
-// the call carried none and the leg keeps its cap alone.
+// the call carried none and the leg keeps its cap alone. Every client also
+// takes `cancelled` (CollectorCancelled), which cancels the leg's own call
+// once the inbound call is gone; empty (the default) watches nothing.
 
 // The text a failed collector leg reports: the collector's name, then the
 // status message, or the status code's name when the message is empty, so
@@ -38,7 +40,8 @@ CollectorOutcome collect_asr_document(const std::shared_ptr<grpc::Channel>& chan
                                       const std::string& filename,
                                       const std::string& bytes,
                                       CollectorDeadline inbound_deadline =
-                                          kNoCollectorDeadline);
+                                          kNoCollectorDeadline,
+                                      CollectorCancelled cancelled = {});
 
 // grpc-email (.eml / .msg bytes).
 CollectorOutcome collect_email_document(const std::shared_ptr<grpc::Channel>& channel,
@@ -47,7 +50,8 @@ CollectorOutcome collect_email_document(const std::shared_ptr<grpc::Channel>& ch
                                         const std::string& content_type,
                                         const std::string& bytes,
                                         CollectorDeadline inbound_deadline =
-                                            kNoCollectorDeadline);
+                                            kNoCollectorDeadline,
+                                        CollectorCancelled cancelled = {});
 
 // Gives a document whose collector recorded the source's own title only as
 // metadata (an HTML <title>) a TITLE item at the head of the body, so the
@@ -63,7 +67,8 @@ bool promote_source_title(ai::pipestream::document::v1::Document* document);
 CollectorOutcome collect_xml_document(const std::shared_ptr<grpc::Channel>& channel,
                                       const std::string& bytes,
                                       CollectorDeadline inbound_deadline =
-                                          kNoCollectorDeadline);
+                                          kNoCollectorDeadline,
+                                      CollectorCancelled cancelled = {});
 
 // grpc-ebcdic. `layout_json` is the JSON serialization of Docling's
 // EbcdicLayout, forwarded verbatim; empty is a caller error surfaced as an
@@ -72,21 +77,25 @@ CollectorOutcome collect_ebcdic_document(const std::shared_ptr<grpc::Channel>& c
                                          const std::string& layout_json,
                                          const std::string& bytes,
                                          CollectorDeadline inbound_deadline =
-                                             kNoCollectorDeadline);
+                                             kNoCollectorDeadline,
+                                         CollectorCancelled cancelled = {});
 
 // grpc-epub (.epub archive bytes): the collector's own Document, which is
 // a skeleton by contract (empty chapter groups, pictures by reference).
 CollectorOutcome collect_epub_document(const std::shared_ptr<grpc::Channel>& channel,
                                        const std::string& bytes,
                                        CollectorDeadline inbound_deadline =
-                                           kNoCollectorDeadline);
+                                           kNoCollectorDeadline,
+                                       CollectorCancelled cancelled = {});
 
 // grpc-epub, then grpc-markup once per chapter: the whole book. The epub
 // stream's chapter XHTML and image bytes are kept instead of dropped, each
 // chapter is dialed through `markup` with the HTML hint, and the chapters'
 // Documents and the images plug into the skeleton (see epub_book.h). A
 // chapter the markup collector cannot parse leaves its group empty and
-// says so in a warning; the book never fails for one chapter. With no
+// says so in a warning; the book never fails for one chapter. The chapter
+// dials share one ceiling (the leg's cap from when they start), not a cap
+// each; chapters past it stay empty, with a warning. With no
 // markup channel (`GRPARSE_MARKUP_TARGET` unset) the skeleton is the
 // outcome, with a warning naming the variable, so the degradation is
 // visible rather than silent.
@@ -94,7 +103,8 @@ CollectorOutcome collect_epub_book(const std::shared_ptr<grpc::Channel>& epub,
                                    const std::shared_ptr<grpc::Channel>& markup,
                                    const std::string& bytes,
                                    CollectorDeadline inbound_deadline =
-                                       kNoCollectorDeadline);
+                                       kNoCollectorDeadline,
+                                   CollectorCancelled cancelled = {});
 
 // grpc-markup (Markdown, HTML, AsciiDoc, LaTeX, WebVTT, BoxNote, Docling
 // JSON). The format is hinted from the filename and content type via
@@ -104,7 +114,8 @@ CollectorOutcome collect_markup_document(const std::shared_ptr<grpc::Channel>& c
                                          const std::string& content_type,
                                          const std::string& bytes,
                                          CollectorDeadline inbound_deadline =
-                                             kNoCollectorDeadline);
+                                             kNoCollectorDeadline,
+                                         CollectorCancelled cancelled = {});
 
 // grpc-lol-html, the one collector whose stream carries no document event:
 // it reports CSS selector matches as they happen, so this client folds the
@@ -117,7 +128,8 @@ CollectorOutcome collect_lol_html_document(const std::shared_ptr<grpc::Channel>&
                                            const std::string& options_json,
                                            const std::string& bytes,
                                            CollectorDeadline inbound_deadline =
-                                               kNoCollectorDeadline);
+                                               kNoCollectorDeadline,
+                                           CollectorCancelled cancelled = {});
 
 // fastwarc-grpc, the second collector whose stream carries no document
 // event: it reports WARC records as they parse, so this client folds the
@@ -125,11 +137,13 @@ CollectorOutcome collect_lol_html_document(const std::shared_ptr<grpc::Channel>&
 // order, the record's metadata and (when it reads as text) its payload as
 // source-tagged text items. A non-recoverable framing error ends the fold
 // but keeps the records already collected: a clipped archive is a partial
-// success, not a failure.
+// success, not a failure. A leg cut off by its deadline or cancelled is a
+// failure: nothing says where its archive really ended.
 CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>& channel,
                                            const std::string& bytes,
                                            CollectorDeadline inbound_deadline =
-                                               kNoCollectorDeadline);
+                                               kNoCollectorDeadline,
+                                           CollectorCancelled cancelled = {});
 
 // grPOIc (the six OOXML/OLE2 office formats: doc/docx, xls/xlsx, ppt/pptx).
 // The wire carries no document event: the typed ParseEvent stream folds into
@@ -144,7 +158,8 @@ CollectorOutcome collect_poi_document(const std::shared_ptr<grpc::Channel>& chan
                                       const std::string& content_type,
                                       const std::string& bytes,
                                       CollectorDeadline inbound_deadline =
-                                          kNoCollectorDeadline);
+                                          kNoCollectorDeadline,
+                                      CollectorCancelled cancelled = {});
 
 // grpc-calamine (workbooks: xls/xlsx/xlsm/xlsb/ods). The wire is
 // handle-based and carries no document event: OpenWorkbook uploads the
@@ -154,7 +169,8 @@ CollectorOutcome collect_poi_document(const std::shared_ptr<grpc::Channel>& chan
 CollectorOutcome collect_calamine_document(const std::shared_ptr<grpc::Channel>& channel,
                                            const std::string& bytes,
                                            CollectorDeadline inbound_deadline =
-                                               kNoCollectorDeadline);
+                                               kNoCollectorDeadline,
+                                           CollectorCancelled cancelled = {});
 
 // grpc-pdf-inspector's classification of one document, mapped off the wire
 // enum so the routing decision stays proto-free and unit-testable.
@@ -210,7 +226,8 @@ struct PdfParseResult {
 PdfParseResult collect_pdf(
     const std::shared_ptr<grpc::Channel>& channel, const std::string& bytes,
     CollectorDeadline inbound_deadline = kNoCollectorDeadline,
-    std::optional<std::pair<int, int>> page_range = std::nullopt);
+    std::optional<std::pair<int, int>> page_range = std::nullopt,
+    CollectorCancelled cancelled = {});
 
 // The plain collector leg for a selection the pdf collector shares with
 // other collectors: the collector's Document is the contribution, whatever
@@ -218,6 +235,7 @@ PdfParseResult collect_pdf(
 CollectorOutcome collect_pdf_document(const std::shared_ptr<grpc::Channel>& channel,
                                       const std::string& bytes,
                                       CollectorDeadline inbound_deadline =
-                                          kNoCollectorDeadline);
+                                          kNoCollectorDeadline,
+                                      CollectorCancelled cancelled = {});
 
 }  // namespace grparse

@@ -296,12 +296,14 @@ class WorkbookGuard {
 
 CollectorOutcome collect_calamine_document(const std::shared_ptr<grpc::Channel>& channel,
                                            const std::string& bytes,
-                                           CollectorDeadline inbound_deadline) {
+                                           CollectorDeadline inbound_deadline,
+                                           CollectorCancelled cancelled) {
   CollectorOutcome outcome;
   auto stub = calaminev1::CalamineService::NewStub(channel);
 
   grpc::ClientContext open_context;
   open_context.set_deadline(capped_collector_deadline(inbound_deadline, kDeadline));
+  const CancelWatch open_watch(open_context, cancelled);
   calaminev1::OpenWorkbookResponse opened;
   auto upload = stub->OpenWorkbook(&open_context, &opened);
   calaminev1::OpenWorkbookRequest frame;
@@ -328,6 +330,7 @@ CollectorOutcome collect_calamine_document(const std::shared_ptr<grpc::Channel>&
   for (const calaminev1::Sheet& sheet : opened.metadata().sheets()) {
     grpc::ClientContext sheet_context;
     sheet_context.set_deadline(capped_collector_deadline(inbound_deadline, kDeadline));
+    const CancelWatch sheet_watch(sheet_context, cancelled);
     calaminev1::StreamWorksheetRangeRequest request;
     request.set_workbook_id(opened.workbook_id());
     request.mutable_sheet()->set_sheet_index(static_cast<uint32_t>(sheet_index));

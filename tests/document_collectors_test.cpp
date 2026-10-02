@@ -355,6 +355,23 @@ void verify_inbound_deadline_bounds_a_hanging_collector() {
           "the leg answers on the inbound deadline, not on its own ceiling");
 }
 
+// A cancelled inbound call cancels the leg it started: against a collector
+// that never answers, the leg ends once the hook says the caller is gone,
+// not on its own five-minute ceiling.
+void verify_cancellation_ends_a_hanging_collector() {
+  HangingXmlService service;
+  ServerFixture server(&service);
+  const auto started = std::chrono::steady_clock::now();
+  const auto outcome = grparse::collect_xml_document(
+      server.channel(), "<a/>", grparse::kNoCollectorDeadline, [started] {
+        return std::chrono::steady_clock::now() - started > std::chrono::milliseconds{200};
+      });
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  require(!outcome.success, "a cancelled leg is not a success");
+  require(elapsed < std::chrono::seconds{30},
+          "the leg ends on the cancellation, not on its own ceiling");
+}
+
 // ---- ebcdic ----------------------------------------------------------------
 
 class FakeEbcdicService final : public ebcdicv1::EbcdicParseService::Service {
@@ -1145,6 +1162,92 @@ class FakeWarcService final : public warcv1::WarcService::Service {
 
   Mode mode_;
 };
+
+// Answers while it reads, the way fastwarc-grpc does: every request chunk is
+// echoed back as payload chunks before the next one is read, so a client
+// that uploads everything before reading anything fills both directions'
+// flow-control windows and stalls until the deadline.
+class EchoingWarcService final : public warcv1::WarcService::Service {
+ public:
+  grpc::Status ParseWarc(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<warcv1::ParseWarcResponse, warcv1::ParseWarcRequest>*
+          stream) override {
+    warcv1::ParseWarcRequest request;
+    warcv1::ParseWarcResponse event;
+    auto* start = event.mutable_record_start()->mutable_metadata();
+    start->set_record_type(warcv1::WARC_RECORD_TYPE_RESOURCE);
+    start->set_stream_pos(0);
+    if (!stream->Write(event)) return grpc::Status::OK;
+    uint64_t offset = 0;
+    while (stream->Read(&request)) {
+      if (request.has_config()) continue;
+      // Echo in 64 KiB payload chunks, like the real server's.
+      for (size_t at = 0; at < request.chunk().size(); at += 65536) {
+        event.Clear();
+        auto* chunk = event.mutable_payload_chunk();
+        chunk->set_offset(offset);
+        chunk->set_data(request.chunk().substr(at, 65536));
+        offset += chunk->data().size();
+        if (!stream->Write(event)) return grpc::Status::OK;
+      }
+    }
+    event.Clear();
+    event.mutable_record_end()->set_payload_length(offset);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+};
+
+void verify_fastwarc_streams_both_ways_without_deadlock() {
+  EchoingWarcService service;
+  ServerFixture server(&service);
+  const std::string archive(48U * 1024U * 1024U, 'w');
+  const auto started = std::chrono::steady_clock::now();
+  const auto outcome = grparse::collect_fastwarc_document(
+      server.channel(), archive, std::chrono::system_clock::now() + std::chrono::seconds{120});
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  require(outcome.success, "an echoing collector completes: " + outcome.error);
+  require(outcome.document.groups_size() == 1, "the echoed record folds");
+  require(elapsed < std::chrono::seconds{60},
+          "the upload interleaves with the reads instead of waiting on the deadline");
+}
+
+// One record, then silence until the leg gives up.
+class StallingWarcService final : public warcv1::WarcService::Service {
+ public:
+  grpc::Status ParseWarc(
+      grpc::ServerContext* context,
+      grpc::ServerReaderWriter<warcv1::ParseWarcResponse, warcv1::ParseWarcRequest>*
+          stream) override {
+    warcv1::ParseWarcRequest request;
+    while (stream->Read(&request)) {
+    }
+    warcv1::ParseWarcResponse event;
+    event.mutable_record_start()->mutable_metadata()->set_record_type(
+        warcv1::WARC_RECORD_TYPE_WARCINFO);
+    stream->Write(event);
+    event.Clear();
+    event.mutable_record_end()->set_payload_length(0);
+    stream->Write(event);
+    while (!context->IsCancelled()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    return grpc::Status::OK;
+  }
+};
+
+// A leg cut off by its deadline is a failure, not a clipped archive: the
+// records that made it are not known to be the whole archive.
+void verify_fastwarc_deadline_is_a_failure() {
+  StallingWarcService service;
+  ServerFixture server(&service);
+  const auto outcome = grparse::collect_fastwarc_document(
+      server.channel(), "WARC/1.0 fake bytes",
+      std::chrono::system_clock::now() + std::chrono::milliseconds{500});
+  require(!outcome.success && outcome.code == grpc::StatusCode::DEADLINE_EXCEEDED,
+          "a deadline after some records fails the leg: " + outcome.error);
+}
 
 void verify_fastwarc_folds_records_and_warnings() {
   FakeWarcService service(FakeWarcService::Mode::kOk);
@@ -2273,6 +2376,7 @@ int main() {
       verify_xml_collects_document_and_formats_warnings,
       verify_caller_status_classes_survive,
       verify_inbound_deadline_bounds_a_hanging_collector,
+      verify_cancellation_ends_a_hanging_collector,
       verify_ebcdic_forwards_layout_and_collects,
       verify_ebcdic_without_layout_never_dials,
       verify_epub_collects_document,
@@ -2291,6 +2395,8 @@ int main() {
       verify_fastwarc_framing_error_keeps_records,
       verify_fastwarc_transport_failure_without_records,
       verify_fastwarc_truncates_payload_text,
+      verify_fastwarc_streams_both_ways_without_deadlock,
+      verify_fastwarc_deadline_is_a_failure,
       verify_poi_folds_typed_events,
       verify_poi_collector_failure_survives_its_code,
       verify_poi_truncated_stream_fails,

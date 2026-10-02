@@ -1,6 +1,7 @@
 #include "grparse/document_collectors.h"
 
 #include <cctype>
+#include <chrono>
 #include <string>
 #include <utility>
 #include <vector>
@@ -24,21 +25,23 @@ struct EpubStream {
 };
 
 EpubStream read_epub_stream(const std::shared_ptr<grpc::Channel>& channel,
-                            const std::string& bytes, CollectorDeadline inbound_deadline) {
+                            const std::string& bytes, CollectorDeadline inbound_deadline,
+                            CollectorCancelled cancelled) {
   EpubStream result;
   auto stub = epubv1::EpubParseService::NewStub(channel);
   grpc::ClientContext context;
   context.set_deadline(capped_collector_deadline(inbound_deadline, kDeadline));
+  const CancelWatch watch(context, std::move(cancelled));
   auto stream = stub->ParseEpub(&context);
 
   epubv1::ParseEpubRequest request;
   request.mutable_options()->set_emit_document(true);
   request.mutable_options()->set_include_images(true);
-  upload_stream(*stream, request, bytes, /*always_send_chunk=*/false,
-                [&bytes](epubv1::ParseEpubRequest& frame, size_t offset,
-                         size_t length, bool /*last*/) {
-                  frame.set_chunk(bytes.data() + offset, length);
-                });
+  ConcurrentUpload upload(
+      context, *stream, request, bytes, /*always_send_chunk=*/false,
+      [&bytes](epubv1::ParseEpubRequest& frame, size_t offset, size_t length, bool /*last*/) {
+        frame.set_chunk(bytes.data() + offset, length);
+      });
 
   bool trailer_seen = false;
   bool document_seen = false;
@@ -68,6 +71,7 @@ EpubStream read_epub_stream(const std::shared_ptr<grpc::Channel>& channel,
     }
     event.Clear();
   }
+  upload.join();
   result.outcome = finish_outcome("epub", stream->Finish(), trailer_seen, document_seen,
                                   std::move(result.outcome));
   return result;
@@ -92,15 +96,18 @@ bool html_chapter(const EpubChapter& chapter) {
 
 CollectorOutcome collect_epub_document(const std::shared_ptr<grpc::Channel>& channel,
                                        const std::string& bytes,
-                                       CollectorDeadline inbound_deadline) {
-  return std::move(read_epub_stream(channel, bytes, inbound_deadline).outcome);
+                                       CollectorDeadline inbound_deadline,
+                                       CollectorCancelled cancelled) {
+  return std::move(
+      read_epub_stream(channel, bytes, inbound_deadline, std::move(cancelled)).outcome);
 }
 
 CollectorOutcome collect_epub_book(const std::shared_ptr<grpc::Channel>& epub,
                                    const std::shared_ptr<grpc::Channel>& markup,
                                    const std::string& bytes,
-                                   CollectorDeadline inbound_deadline) {
-  EpubStream stream = read_epub_stream(epub, bytes, inbound_deadline);
+                                   CollectorDeadline inbound_deadline,
+                                   CollectorCancelled cancelled) {
+  EpubStream stream = read_epub_stream(epub, bytes, inbound_deadline, cancelled);
   CollectorOutcome& outcome = stream.outcome;
   if (!outcome.success) return std::move(outcome);
   if (markup == nullptr) {
@@ -110,16 +117,27 @@ CollectorOutcome collect_epub_book(const std::shared_ptr<grpc::Channel>& epub,
     return std::move(outcome);
   }
 
+  // One ceiling for every chapter dial together: a fresh cap per chapter
+  // would let a long book against a slow markup service run for hours.
+  const CollectorDeadline chapters_deadline =
+      capped_collector_deadline(inbound_deadline, kDeadline);
   std::vector<ParsedChapter> chapters;
   chapters.reserve(stream.chapters.size());
   for (auto& chapter : stream.chapters) {
+    if ((cancelled && cancelled()) || std::chrono::system_clock::now() >= chapters_deadline) {
+      outcome.warnings.push_back("chapter '" + chapter.href +
+                                 "' and the ones after it were not parsed: the book's "
+                                 "chapter deadline passed or the call was cancelled");
+      break;
+    }
     if (!html_chapter(chapter)) {
       outcome.warnings.push_back("chapter '" + chapter.href + "' (" + chapter.media_type +
                                  ") is not XHTML; its group stays empty");
       continue;
     }
-    CollectorOutcome parsed = collect_markup_document(
-        markup, chapter.href, "application/xhtml+xml", chapter.content, inbound_deadline);
+    CollectorOutcome parsed =
+        collect_markup_document(markup, chapter.href, "application/xhtml+xml", chapter.content,
+                                chapters_deadline, cancelled);
     for (auto& warning : parsed.warnings) {
       outcome.warnings.push_back(chapter.href + ": " + warning);
     }

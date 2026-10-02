@@ -58,6 +58,8 @@ CollectorOutcome run_local_collector(ai::pipestream::parse::v1::Collector id,
 // threaded down so no leg outlives the client waiting on it; each leg still
 // caps itself at its own ceiling, and kNoCollectorDeadline (an inbound call
 // with no deadline of its own) leaves every leg on that ceiling alone.
+// `cancelled` reaches the collector client, which cancels its call once the
+// inbound call is gone.
 CollectorOutcome run_remote_collector(
     ai::pipestream::parse::v1::Collector id,
     const std::shared_ptr<CollectorEndpoints>& endpoints,
@@ -65,7 +67,7 @@ CollectorOutcome run_remote_collector(
     const std::string& content_type, const std::string& bytes,
     const std::string& ebcdic_layout_json,
     const std::string& lol_html_options_json,
-    CollectorDeadline inbound_deadline);
+    CollectorDeadline inbound_deadline, CollectorCancelled cancelled = {});
 
 // Validation both surfaces share: the unary options message and the
 // streaming chunk carry the same recognition fields with the same rules.

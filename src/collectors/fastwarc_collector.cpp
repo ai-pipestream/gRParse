@@ -287,10 +287,12 @@ class WarcFold {
 
 CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>& channel,
                                            const std::string& bytes,
-                                           CollectorDeadline inbound_deadline) {
+                                           CollectorDeadline inbound_deadline,
+                                           CollectorCancelled cancelled) {
   auto stub = warcv1::WarcService::NewStub(channel);
   grpc::ClientContext context;
   context.set_deadline(capped_collector_deadline(inbound_deadline, kDeadline));
+  const CancelWatch watch(context, std::move(cancelled));
   auto stream = stub->ParseWarc(&context);
 
   warcv1::ParseWarcRequest request;
@@ -300,11 +302,11 @@ CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>&
   // message; ask for it explicitly. Compression detection stays unset, which
   // enables magic-byte sniffing of gzip/zstd/lz4 streams.
   config->set_parse_http(true);
-  upload_stream(*stream, request, bytes, /*always_send_chunk=*/false,
-                [&bytes](warcv1::ParseWarcRequest& frame, size_t offset,
-                         size_t length, bool /*last*/) {
-                  frame.set_chunk(bytes.data() + offset, length);
-                });
+  ConcurrentUpload upload(
+      context, *stream, request, bytes, /*always_send_chunk=*/false,
+      [&bytes](warcv1::ParseWarcRequest& frame, size_t offset, size_t length, bool /*last*/) {
+        frame.set_chunk(bytes.data() + offset, length);
+      });
 
   CollectorOutcome outcome;
   WarcFold fold(outcome);
@@ -315,10 +317,15 @@ CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>&
   }
   fold.close();
 
+  upload.join();
   const grpc::Status status = stream->Finish();
   if (!status.ok()) {
-    if (fold.records() == 0) {
-      // Nothing parsed at all: the transport failure is the outcome.
+    // A leg cut off by its deadline or by cancellation is not a clipped
+    // archive: the server never got to say where the archive ended, and the
+    // records folded so far are whatever arrived before the cut.
+    if (fold.records() == 0 || status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED ||
+        status.error_code() == grpc::StatusCode::CANCELLED) {
+      // Nothing parsed at all, or a cut-off leg: the failure is the outcome.
       outcome.error = std::string("fastwarc collector: ") + status.error_message();
       outcome.code = map_code(status.error_code());
       return outcome;

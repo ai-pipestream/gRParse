@@ -541,14 +541,21 @@ class DocumentStreamReactor final
     }).detach();
   }
 
+  // True once the client is gone: it cancelled or stopped reading.
+  bool client_gone() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return client_cancelled_ || context_->IsCancelled();
+  }
+
   // A remote collector runs on its own thread: it is a blocking client
   // stream, not a gRPC reaction. The gate keeps its completion safe against
   // reactor teardown exactly like the scheduler callbacks. A client cancel
-  // abandons the result; the leg's deadline, the sooner of this call's own
-  // and the collector's cap, bounds the orphaned call, so a client that
-  // walked away is not waited on past the deadline it set. The streaming
-  // wire carries no ebcdic layout and no lol-html rules, so selecting either
-  // collector here degrades to that collector's own INVALID_ARGUMENT.
+  // abandons the result and cancels the leg's own call (polled through the
+  // gate, so a torn-down reactor reads as gone); the leg's deadline, the
+  // sooner of this call's own and the collector's cap, still bounds it. The
+  // streaming wire carries no ebcdic layout and no lol-html rules, so
+  // selecting either collector here degrades to that collector's own
+  // INVALID_ARGUMENT.
   void spawn_remote_collector(pipestream::parse::v1::Collector id,
                               std::shared_ptr<const std::string> bytes) {
     std::string document_id;
@@ -567,7 +574,12 @@ class DocumentStreamReactor final
                  inbound_deadline]() {
       CollectorOutcome outcome = run_remote_collector(
           id, endpoints, document_id, filename, content_type, *bytes,
-          std::string(), std::string(), inbound_deadline);
+          std::string(), std::string(), inbound_deadline, [weak_gate] {
+            const auto gate = weak_gate.lock();
+            if (gate == nullptr) return true;
+            std::lock_guard<std::mutex> lock(gate->mutex);
+            return gate->reactor == nullptr || gate->reactor->client_gone();
+          });
       if (const auto gate = weak_gate.lock()) {
         std::lock_guard<std::mutex> lock(gate->mutex);
         if (gate->reactor != nullptr) {

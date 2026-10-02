@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "ai/pipestream/asr/v1/asr_service.grpc.pb.h"
@@ -16,10 +17,12 @@ CollectorOutcome collect_asr_document(const std::shared_ptr<grpc::Channel>& chan
                                       const std::string& model,
                                       const std::string& filename,
                                       const std::string& bytes,
-                                      CollectorDeadline inbound_deadline) {
+                                      CollectorDeadline inbound_deadline,
+                                      CollectorCancelled cancelled) {
   auto stub = asrv1::AsrService::NewStub(channel);
   grpc::ClientContext context;
   context.set_deadline(capped_collector_deadline(inbound_deadline, kAsrDeadline));
+  const CancelWatch watch(context, std::move(cancelled));
   auto stream = stub->Transcribe(&context);
 
   asrv1::TranscribeRequest request;
@@ -34,13 +37,13 @@ CollectorOutcome collect_asr_document(const std::shared_ptr<grpc::Channel>& chan
     return value == nullptr || std::string_view(value) != "0";
   }();
   request.mutable_options()->set_diarize(diarize);
-  upload_stream(*stream, request, bytes, /*always_send_chunk=*/false,
-                [&bytes](asrv1::TranscribeRequest& frame, size_t offset,
-                         size_t length, bool /*last*/) {
-                  frame.mutable_chunk()->set_data(bytes.data() + offset, length);
-                });
+  ConcurrentUpload upload(
+      context, *stream, request, bytes, /*always_send_chunk=*/false,
+      [&bytes](asrv1::TranscribeRequest& frame, size_t offset, size_t length, bool /*last*/) {
+        frame.mutable_chunk()->set_data(bytes.data() + offset, length);
+      });
   return drain_stream<asrv1::TranscribeResponse>(
-      "asr", *stream,
+      "asr", *stream, upload,
       [](const asrv1::TranscribeResponse& event, std::vector<std::string>&) {
         return event.has_complete();
       });

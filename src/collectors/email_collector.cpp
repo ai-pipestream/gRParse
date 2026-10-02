@@ -1,6 +1,7 @@
 #include "grparse/document_collectors.h"
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ai/pipestream/email/v1/email_service.grpc.pb.h"
@@ -15,10 +16,12 @@ CollectorOutcome collect_email_document(const std::shared_ptr<grpc::Channel>& ch
                                         const std::string& filename,
                                         const std::string& content_type,
                                         const std::string& bytes,
-                                        CollectorDeadline inbound_deadline) {
+                                        CollectorDeadline inbound_deadline,
+                                        CollectorCancelled cancelled) {
   auto stub = emailv1::EmailParseService::NewStub(channel);
   grpc::ClientContext context;
   context.set_deadline(capped_collector_deadline(inbound_deadline, kDeadline));
+  const CancelWatch watch(context, std::move(cancelled));
   auto stream = stub->ParseEmail(&context);
 
   emailv1::ParseEmailRequest request;
@@ -30,15 +33,15 @@ CollectorOutcome collect_email_document(const std::shared_ptr<grpc::Channel>& ch
   // The email wire requires the final frame to declare itself: a half-close
   // without a complete-marked chunk is a truncated upload by contract, so
   // even an empty payload sends one frame.
-  upload_stream(*stream, request, bytes, /*always_send_chunk=*/true,
-                [&bytes](emailv1::ParseEmailRequest& frame, size_t offset,
-                         size_t length, bool last) {
-                  emailv1::EmailChunk* chunk = frame.mutable_chunk();
-                  chunk->set_data(bytes.data() + offset, length);
-                  chunk->set_complete(last);
-                });
+  ConcurrentUpload upload(
+      context, *stream, request, bytes, /*always_send_chunk=*/true,
+      [&bytes](emailv1::ParseEmailRequest& frame, size_t offset, size_t length, bool last) {
+        emailv1::EmailChunk* chunk = frame.mutable_chunk();
+        chunk->set_data(bytes.data() + offset, length);
+        chunk->set_complete(last);
+      });
   return drain_stream<emailv1::ParseEmailResponse>(
-      "email", *stream,
+      "email", *stream, upload,
       [](const emailv1::ParseEmailResponse& event,
          std::vector<std::string>& warnings) {
         if (!event.has_status()) return false;
