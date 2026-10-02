@@ -7,6 +7,14 @@ include(CTest)
 # zxing-cpp 3.x requires at least C++20 in its public headers.
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# The sources use <print> (absent from GCC 13's libstdc++) and the "{:?}"
+# debug format spec (absent before GCC 15's); fail here rather than forty
+# minutes into the build.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 15)
+  message(FATAL_ERROR
+    "gRParse needs GCC 15 or newer (found ${CMAKE_CXX_COMPILER_VERSION}); "
+    "build in the image toolchain (Dockerfile.cpu --target deps)")
+endif()
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # Everything links statically into the two binaries; the only shared libraries
 # the runtime image stages are ONNX Runtime's (imported below).  Pinned OFF
