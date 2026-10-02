@@ -107,8 +107,8 @@ Determinism is the point: the same input bytes produce the same chunk bytes on e
 
 | Rule set | Digest | What it decides |
 |---|---|---|
-| hierarchical walk | `grparse-hier/1` | one chunk per item or list group in body-tree order, with the heading trail in force |
-| hybrid | `grparse-hybrid/1;tok=T;sent=sentence/1;max_tokens=N;merge_peers=B` | the walk, then peer merging under the budget, then a sentence-wise split; T is the tokenizer in force |
+| hierarchical walk | `grparse-hier/2` | one chunk per item or list group in body-tree order, with the heading trail in force; a list chunk carries what its items hold (nested lists, paragraphs) |
+| hybrid | `grparse-hybrid/2;tok=T;sent=sentence/1;max_tokens=N;merge_peers=B` | the walk, then peer merging under the budget, then a sentence-wise split; T is the tokenizer in force. A chunk whose heading trail alone reaches the budget goes out unsplit, with a log line |
 | tokenizer (default) | `wordish/1` | one token per run of alphanumeric code points, per CJK or kana code point, and per punctuation or symbol code point; needs no files |
 | tokenizer (opt-in) | `hf/1` | a real HuggingFace tokenizer.json (for example all-MiniLM-L6-v2), so the budget is measured in the embedding model's own units |
 | sentences | `sentence/1` | a boundary after `.`, `!`, `?`, or `…` plus any closing quotes, when whitespace or the end follows; no abbreviation handling by design |

@@ -265,7 +265,7 @@ void verify_hybrid_chunks_use_the_hf_counter() {
     require_eq(chunk.num_tokens(), counter.count(chunk.text()),
                "num_tokens is the hf/1 count");
     require(chunk.rules_digest() ==
-                "grparse-hybrid/1;tok=hf/1;sent=sentence/1;max_tokens=2;merge_peers=true",
+                "grparse-hybrid/2;tok=hf/1;sent=sentence/1;max_tokens=2;merge_peers=true",
             "the digest names the hf/1 counter: " + chunk.rules_digest());
   }
 
@@ -285,8 +285,8 @@ void verify_hybrid_chunks_use_the_hf_counter() {
 
 void verify_the_hard_cut_measures_under_hf() {
   // One pretoken over budget: wordish/1 would cut by code point count, which
-  // says nothing about a merge-heavy tokenizer, so hf/1 grows each piece one
-  // code point at a time and measures.
+  // says nothing about a merge-heavy tokenizer, so hf/1 measures each piece
+  // (doubling, then a binary search for the longest piece that fits).
   docv1::Document document = new_document();
   add_paragraph(&document, "helloworld");
   const auto chunks = hybrid_or_throw(document, hf_options(1, fixture_path()));

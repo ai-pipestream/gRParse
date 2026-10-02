@@ -2257,7 +2257,7 @@ void verify_hierarchical_chunk_rpc_carries_digest_and_offsets(TestServer* server
     require(!chunk.has_embedding(), "embeddings remain absent by default");
     require(chunk.filename() == "image.png", "every chunk names its source file");
     require(chunk.chunk_index() == index, "chunk_index is the emission ordinal");
-    require(chunk.rules_digest() == "grparse-hier/1", "the hierarchical rules digest rides out");
+    require(chunk.rules_digest() == "grparse-hier/2", "the hierarchical rules digest rides out");
     require(chunk.num_tokens() == 1, "one word, one token");
     require(chunk.has_start_offset() && chunk.has_end_offset(),
             "a parse with an offset table gives its chunks spans");
@@ -2299,7 +2299,7 @@ void verify_hybrid_chunk_rpc_merges_and_validates(TestServer* server) {
   const auto& chunk = response.response().chunks(0);
   require(chunk.text() == "one\ntwo\nthree", "merged peers join with a newline");
   require(chunk.rules_digest() ==
-              "grparse-hybrid/1;tok=wordish/1;sent=sentence/1;max_tokens=8;merge_peers=true",
+              "grparse-hybrid/2;tok=wordish/1;sent=sentence/1;max_tokens=8;merge_peers=true",
           "the hybrid rules digest spells out the budget: " + chunk.rules_digest());
   require(chunk.start_offset() == 0 && chunk.end_offset() == 13,
           "the merged span is the union of the merged chunks' spans");
