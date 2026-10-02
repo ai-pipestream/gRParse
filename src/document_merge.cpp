@@ -435,6 +435,18 @@ bool is_claim_field(std::string_view name) {
          name == "email" || name == "media";
 }
 
+void strip_document_identity(docv1::Document* fragment) {
+  fragment->clear_name();
+  fragment->clear_origin();
+  fragment->clear_source_meta();
+  fragment->clear_claims();
+  fragment->clear_media();
+  fragment->clear_email();
+  fragment->clear_page_styles();
+  fragment->clear_meta_tags();
+  fragment->clear_changes();
+}
+
 void retain_claims_only(docv1::Document* source) {
   const auto* descriptor = source->GetDescriptor();
   const auto* reflection = source->GetReflection();

@@ -229,7 +229,7 @@ void verify_email_collects_document_and_warnings() {
   FakeEmailService service;
   ServerFixture server(&service);
   const auto outcome = grparse::collect_email_document(
-      server.channel(), "doc-9", "thread.eml", "message/rfc822",
+      server.channel(), nullptr, "doc-9", "thread.eml", "message/rfc822",
       std::string(300U * 1024U, 'e'));
   require(outcome.success, "email collection succeeds: " + outcome.error);
   require(outcome.document.texts(0).text().base().text() == "from email",
@@ -242,7 +242,7 @@ void verify_missing_trailer_fails() {
   TruncatingEmailService service;
   ServerFixture server(&service);
   const auto outcome =
-      grparse::collect_email_document(server.channel(), "d", "f.eml", "", "abc");
+      grparse::collect_email_document(server.channel(), nullptr, "d", "f.eml", "", "abc");
   require(!outcome.success && outcome.code == grpc::StatusCode::UNAVAILABLE,
           "a stream without a terminal status fails the collector");
   require(outcome.error.contains("terminal status"),
@@ -704,6 +704,121 @@ void verify_epub_book_without_markup_keeps_the_skeleton() {
     if (warning.contains("GRPARSE_MARKUP_TARGET")) named = true;
   }
   require(named, "the degradation names the variable that would fix it");
+}
+
+// ---- email HTML bodies -------------------------------------------------------
+
+// Serves what grpc-email sends for a message whose body is HTML: the body
+// part events, then a fold that maps the subject and the attachment list but
+// no HTML (the fold leaves HTML to the HTML collector), then the trailer.
+class HtmlEmailService final : public emailv1::EmailParseService::Service {
+ public:
+  explicit HtmlEmailService(bool plain_alternative) : plain_alternative_(plain_alternative) {}
+
+  grpc::Status ParseEmail(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<emailv1::ParseEmailResponse, emailv1::ParseEmailRequest>*
+          stream) override {
+    emailv1::ParseEmailRequest request;
+    while (stream->Read(&request)) {
+    }
+    emailv1::ParseEmailResponse event;
+    if (plain_alternative_) {
+      auto* plain = event.mutable_body_part();
+      plain->set_part_id("1.1");
+      plain->set_media_type(emailv1::BODY_MEDIA_TYPE_PLAIN);
+      plain->set_text("Quarterly numbers");
+      stream->Write(event);
+      event.Clear();
+    }
+    auto* html = event.mutable_body_part();
+    html->set_part_id(plain_alternative_ ? "1.2" : "1");
+    html->set_media_type(emailv1::BODY_MEDIA_TYPE_HTML);
+    html->set_text("<html><body><h1>Quarterly numbers</h1></body></html>");
+    stream->Write(event);
+    event.Clear();
+
+    docv1::Document document;
+    document.set_name("Q3 update");
+    document.mutable_source_meta()->set_title("Q3 update");
+    document.mutable_body()->set_self_ref("#/body");
+    document.mutable_furniture()->set_self_ref("#/furniture");
+    auto* title = document.add_texts()->mutable_title()->mutable_base();
+    title->set_self_ref("#/texts/0");
+    title->mutable_parent()->set_ref("#/body");
+    title->set_label(docv1::DOC_ITEM_LABEL_TITLE);
+    title->set_text("Q3 update");
+    document.mutable_body()->add_children()->set_ref("#/texts/0");
+    auto* attachments = document.add_groups();
+    attachments->set_self_ref("#/groups/0");
+    attachments->mutable_parent()->set_ref("#/body");
+    attachments->set_name("attachments");
+    attachments->set_label(docv1::GROUP_LABEL_LIST);
+    document.mutable_body()->add_children()->set_ref("#/groups/0");
+    *event.mutable_document() = document;
+    stream->Write(event);
+    event.Clear();
+    event.mutable_status()->set_state(emailv1::ParseStatus::STATE_OK);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+
+ private:
+  bool plain_alternative_;
+};
+
+void verify_email_html_body_folds_through_markup() {
+  HtmlEmailService email(/*plain_alternative=*/false);
+  ServerFixture email_server(&email);
+  HtmlMarkupService markup;
+  ServerFixture markup_server(&markup);
+  const auto outcome = grparse::collect_email_document(
+      email_server.channel(), markup_server.channel(), "d", "news.eml", "message/rfc822",
+      "From: a@example.com\r\n");
+  require(outcome.success, "the html-only message collects: " + outcome.error);
+  require(markup.dials().size() == 1 && markup.dials()[0].contains("<h1>Quarterly numbers"),
+          "the HTML body part is dialed through the markup collector");
+  const auto& document = outcome.document;
+  require(document.texts_size() == 2 &&
+              document.texts(1).section_header().base().text() == "Quarterly numbers" &&
+              document.texts(1).section_header().base().parent().ref() == "#/body",
+          "the HTML body's heading joins the message body");
+  require(document.body().children_size() == 3 &&
+              document.body().children(0).ref() == "#/texts/0" &&
+              document.body().children(1).ref() == "#/texts/1" &&
+              document.body().children(2).ref() == "#/groups/0",
+          "the body reads title, HTML body, attachments");
+  require(document.name() == "Q3 update" && document.source_meta().title() == "Q3 update",
+          "the HTML page's title never overrides the message's");
+}
+
+void verify_email_plain_body_skips_markup() {
+  HtmlEmailService email(/*plain_alternative=*/true);
+  ServerFixture email_server(&email);
+  HtmlMarkupService markup;
+  ServerFixture markup_server(&markup);
+  const auto outcome = grparse::collect_email_document(
+      email_server.channel(), markup_server.channel(), "d", "news.eml", "message/rfc822",
+      "From: a@example.com\r\n");
+  require(outcome.success, "the alternative message collects: " + outcome.error);
+  require(markup.dials().empty(),
+          "a message with a text/plain body keeps the fold's mapping of it");
+  require(outcome.document.texts_size() == 1, "the fold arrives unchanged");
+}
+
+void verify_email_html_body_without_markup_warns() {
+  HtmlEmailService email(/*plain_alternative=*/false);
+  ServerFixture email_server(&email);
+  const auto outcome = grparse::collect_email_document(
+      email_server.channel(), nullptr, "d", "news.eml", "message/rfc822",
+      "From: a@example.com\r\n");
+  require(outcome.success, "the fold still collects without markup: " + outcome.error);
+  require(outcome.document.texts_size() == 1, "the fold arrives unchanged");
+  bool named = false;
+  for (const auto& warning : outcome.warnings) {
+    if (warning.contains("GRPARSE_MARKUP_TARGET")) named = true;
+  }
+  require(named, "the missing HTML body names the variable that would fix it");
 }
 
 // ---- markup ----------------------------------------------------------------
@@ -2566,6 +2681,9 @@ int main() {
       verify_transport_class_collapses_to_unavailable,
       verify_email_collects_document_and_warnings,
       verify_missing_trailer_fails,
+      verify_email_html_body_folds_through_markup,
+      verify_email_plain_body_skips_markup,
+      verify_email_html_body_without_markup_warns,
       verify_xml_collects_document_and_formats_warnings,
       verify_caller_status_classes_survive,
       verify_inbound_deadline_bounds_a_hanging_collector,

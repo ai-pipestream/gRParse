@@ -146,8 +146,14 @@ CollectorOutcome run_remote_collector(
       return collect_asr_document(endpoints->channel(id), endpoints->asr_model(), filename, bytes,
                                   inbound_deadline, cancelled);
     case pipestream::parse::v1::COLLECTOR_EMAIL:
-      return collect_email_document(endpoints->channel(id), document_id, filename,
-                                    content_type, bytes, inbound_deadline, cancelled);
+      // An HTML-only message's body folds through the markup collector
+      // when one is configured, and the leg says so when not.
+      return collect_email_document(
+          endpoints->channel(id),
+          endpoints->has(pipestream::parse::v1::COLLECTOR_MARKUP)
+              ? endpoints->channel(pipestream::parse::v1::COLLECTOR_MARKUP)
+              : nullptr,
+          document_id, filename, content_type, bytes, inbound_deadline, cancelled);
     case pipestream::parse::v1::COLLECTOR_XML:
       return collect_xml_document(endpoints->channel(id), bytes, inbound_deadline, cancelled);
     case pipestream::parse::v1::COLLECTOR_EBCDIC:

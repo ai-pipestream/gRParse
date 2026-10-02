@@ -158,21 +158,6 @@ docv1::RefItem* mutable_parent_of(docv1::Document* document, const std::string& 
   return nullptr;
 }
 
-// A chapter Document's document-level identity is the chapter's, not the
-// book's: its <title> is not the book's title and its origin is a
-// fragment's. Only content survives into the book.
-void strip_chapter_identity(docv1::Document* chapter) {
-  chapter->clear_name();
-  chapter->clear_origin();
-  chapter->clear_source_meta();
-  chapter->clear_claims();
-  chapter->clear_media();
-  chapter->clear_email();
-  chapter->clear_page_styles();
-  chapter->clear_meta_tags();
-  chapter->clear_changes();
-}
-
 // Re-points every chapter picture whose `src` names an archive entry at
 // `epub:<href>`, and returns the hrefs so referenced. The raw attribute
 // value survives as a custom field for anyone who needs the author's text.
@@ -376,7 +361,9 @@ void fold_epub_book(std::vector<ParsedChapter> chapters,
 
   std::set<std::string> placed;
   for (auto& chapter : chapters) {
-    strip_chapter_identity(&chapter.document);
+    // A chapter Document's document-level identity is the chapter's, not
+    // the book's: only content survives into the book.
+    strip_document_identity(&chapter.document);
     placed.merge(localize_chapter_pictures(chapter.href, &chapter.document));
   }
   const auto manifest_facts = retire_placed_pictures(placed, book);

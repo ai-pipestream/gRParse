@@ -43,8 +43,17 @@ CollectorOutcome collect_asr_document(const std::shared_ptr<grpc::Channel>& chan
                                           kNoCollectorDeadline,
                                       CollectorCancelled cancelled = {});
 
-// grpc-email (.eml / .msg bytes).
+// grpc-email (.eml / .msg bytes). The email fold maps text/plain bodies
+// only and leaves HTML to the HTML collector, so a message with no plain
+// body has its HTML body parts dialed through `markup` (the HTML hint, one
+// shared ceiling) and their items folded into the message body ahead of the
+// attachments list, the way an epub chapter folds into its book. A part the
+// markup collector cannot parse is reported and skipped. With no markup
+// channel (`GRPARSE_MARKUP_TARGET` unset) the fold is the outcome, with a
+// warning naming the variable. Attachments stay listed by name: their bytes
+// are not requested and nothing recurses into them.
 CollectorOutcome collect_email_document(const std::shared_ptr<grpc::Channel>& channel,
+                                        const std::shared_ptr<grpc::Channel>& markup,
                                         const std::string& document_id,
                                         const std::string& filename,
                                         const std::string& content_type,
