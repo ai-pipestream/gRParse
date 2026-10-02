@@ -20,8 +20,10 @@ namespace grparse {
 // Document.pages when the collector filled it, otherwise only the number.
 //
 // A document that places nothing on a page projects to no pages at all, and
-// the caller keeps its single collector-document event; page numbering in
-// the result is dense from 1 to the highest page the document names.
+// the caller keeps its single collector-document event. The result holds the
+// pages the document names (an item placed on it, or a Document.pages
+// entry), in page order; a page nothing names is not emitted, so a single
+// bogus page number costs one page rather than a run of empty ones up to it.
 std::vector<ai::pipestream::parse::v1::PageData> project_page_data(
     const ai::pipestream::document::v1::Document& document,
     ai::pipestream::parse::v1::TextSource text_source);

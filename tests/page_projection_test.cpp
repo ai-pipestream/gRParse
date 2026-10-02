@@ -38,7 +38,7 @@ void verify_pageless_document_projects_nothing() {
 
 // Reading order is the body tree, groups included; furniture follows the
 // body on its page; a page-less item rides the page of its predecessor;
-// pages nobody placed an item on still exist, empty, so numbering is dense.
+// a page nothing names is not emitted.
 void verify_tree_order_and_page_inheritance() {
   docv1::Document document;
   document.mutable_body()->set_self_ref("#/body");
@@ -67,13 +67,10 @@ void verify_tree_order_and_page_inheritance() {
   document.mutable_body()->add_children()->set_ref("#/pictures/0");
 
   const auto pages = project_page_data(document, parsev1::TEXT_SOURCE_DIGITAL_PDF);
-  require(pages.size() == 3, "pages run densely from 1 to the highest page named");
-  require(pages.at(0).page_number() == 1 && pages.at(1).page_number() == 2 &&
-              pages.at(2).page_number() == 3,
-          "page numbers are ordinal");
+  require(pages.size() == 2, "only the pages the document names are emitted");
+  require(pages.at(0).page_number() == 1 && pages.at(1).page_number() == 3,
+          "page numbers are the document's own, in order");
   require(pages.at(0).page_meta().page_no() == 1, "page metadata names its page");
-  require(pages.at(1).texts_size() == 0 && pages.at(1).pictures_size() == 0,
-          "an unplaced page is empty, not missing");
   const auto& one = pages.at(0);
   require(one.texts_size() == 3, "page 1 holds the body items and then the furniture");
   require(one.texts(0).text().base().self_ref() == "#/texts/1" &&
@@ -88,7 +85,7 @@ void verify_tree_order_and_page_inheritance() {
               one.text_offsets(1).utf_end() == 11 &&
               one.text_offsets(0).source() == parsev1::TEXT_SOURCE_DIGITAL_PDF,
           "offsets accumulate in emission order with the caller's source");
-  const auto& three = pages.at(2);
+  const auto& three = pages.at(1);
   require(three.texts_size() == 1 && three.pictures_size() == 1 &&
               three.pictures(0).self_ref() == "#/pictures/0",
           "the page-less picture rides the page of the item before it");
@@ -105,9 +102,10 @@ void verify_page_map_metadata_is_carried() {
   page.mutable_size()->set_height(842);
   page.set_unit("pt");
   const auto pages = project_page_data(document, parsev1::TEXT_SOURCE_UNSPECIFIED);
-  require(pages.size() == 2, "page 1 exists empty before the placed page 2");
-  require(pages.at(1).page_meta().size().height() == 842 && pages.at(1).page_meta().unit() == "pt" &&
-              pages.at(1).page_meta().page_no() == 2,
+  require(pages.size() == 1 && pages.at(0).page_number() == 2,
+          "only the placed page 2 is emitted");
+  require(pages.at(0).page_meta().size().height() == 842 && pages.at(0).page_meta().unit() == "pt" &&
+              pages.at(0).page_meta().page_no() == 2,
           "the collector's page item rides the event untouched");
 }
 
@@ -128,6 +126,20 @@ void verify_orphans_are_placed() {
           "the orphan lands on its page after the reachable items");
 }
 
+// A bogus page number (a hallucinated fragment, a misbehaving collector)
+// costs one page, not a dense run of empty pages up to it.
+void verify_bogus_page_number_is_bounded() {
+  docv1::Document document;
+  add_text(&document, "#/texts/0", "real", 1);
+  add_text(&document, "#/texts/1", "bogus", 2147483647);
+  (*document.mutable_pages())[2147483646].set_page_no(2147483646);
+  const auto pages = project_page_data(document, parsev1::TEXT_SOURCE_UNSPECIFIED);
+  require(pages.size() == 3 && pages.at(0).page_number() == 1 &&
+              pages.at(1).page_number() == 2147483646 &&
+              pages.at(2).page_number() == 2147483647,
+          "only the named pages are emitted, in order");
+}
+
 }  // namespace
 
 int main() {
@@ -136,5 +148,6 @@ int main() {
       verify_tree_order_and_page_inheritance,
       verify_page_map_metadata_is_carried,
       verify_orphans_are_placed,
+      verify_bogus_page_number_is_bounded,
   });
 }
