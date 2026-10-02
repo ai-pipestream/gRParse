@@ -55,7 +55,7 @@ void claim_fields(google::protobuf::Message* tracked,
                   const ai::pipestream::document::v1::CollectorSource& claimant);
 
 // Rewrites every item reference (RefItem.ref, FineRef.ref, an item's own
-// self_ref) that `renumbering` maps, anywhere under `message`; values it
+// self_ref, SubDocumentRef.item_ref) that `renumbering` maps, anywhere under `message`; values it
 // does not map pass through. The merge uses it to renumber appended arenas,
 // and anything else that removes or reorders arena items owes the same
 // rewrite to every reference into them.
