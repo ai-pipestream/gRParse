@@ -1485,6 +1485,60 @@ class FakePoiService final : public poiv1::PoiParseService::Service {
   }
 };
 
+// One Word table whose first cell spans two rows: per the contract the
+// covered position is not repeated, so row 2 carries only B2 and C2.
+class MergedTablePoiService final : public poiv1::PoiParseService::Service {
+ public:
+  grpc::Status ParseDocument(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<poiv1::ParseEvent, poiv1::ParseRequestChunk>* stream)
+      override {
+    poiv1::ParseRequestChunk chunk;
+    while (stream->Read(&chunk)) {
+    }
+    poiv1::ParseEvent event;
+    poiv1::Table* table = event.mutable_table();
+    poiv1::TableRow* first = table->add_rows();
+    poiv1::TableCell* merged = first->add_cells();
+    merged->set_text("A1");
+    merged->set_row_span(2);
+    first->add_cells()->set_text("B1");
+    first->add_cells()->set_text("C1");
+    poiv1::TableRow* second = table->add_rows();
+    second->add_cells()->set_text("B2");
+    second->add_cells()->set_text("C2");
+    stream->Write(event);
+    event.Clear();
+    event.mutable_status();
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+};
+
+// A cell spanning rows from above keeps its columns in the rows below: the
+// next row's cells start past it instead of overlapping it.
+void verify_poi_vertical_merge_keeps_columns() {
+  MergedTablePoiService service;
+  ServerFixture server(&service);
+  const auto outcome = grparse::collect_poi_document(server.channel(), "doc-merge",
+                                                     "merge.docx", "", "bytes");
+  require(outcome.success, "poi collection succeeds: " + outcome.error);
+  const docv1::TableData& data = outcome.document.tables(0).data();
+  require(data.num_rows() == 2 && data.num_cols() == 3 && data.table_cells_size() == 5,
+          "the merged table keeps its three columns");
+  const docv1::TableCell& a1 = data.table_cells(0);
+  require(a1.text() == "A1" && a1.start_row_offset_idx() == 0 &&
+              a1.end_row_offset_idx() == 2 && a1.start_col_offset_idx() == 0,
+          "the merged cell spans both rows of the first column");
+  const docv1::TableCell& b2 = data.table_cells(3);
+  const docv1::TableCell& c2 = data.table_cells(4);
+  require(b2.text() == "B2" && b2.start_row_offset_idx() == 1 &&
+              b2.start_col_offset_idx() == 1 && b2.end_col_offset_idx() == 2,
+          "the second row's first cell lands in column B, past the merge");
+  require(c2.text() == "C2" && c2.start_col_offset_idx() == 2,
+          "and the cell after it in column C");
+}
+
 class RejectingPoiService final : public poiv1::PoiParseService::Service {
  public:
   grpc::Status ParseDocument(
@@ -2400,6 +2454,7 @@ int main() {
       verify_poi_folds_typed_events,
       verify_poi_collector_failure_survives_its_code,
       verify_poi_truncated_stream_fails,
+      verify_poi_vertical_merge_keeps_columns,
       verify_poi_unreachable_endpoint_degrades,
       verify_poi_fanout_merges_claims_without_a_second_body,
       verify_poi_fanout_keeps_its_body_when_the_primary_failed,

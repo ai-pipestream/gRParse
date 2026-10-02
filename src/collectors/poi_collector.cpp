@@ -123,12 +123,27 @@ class PoiFold {
     docv1::TableData* data = item->mutable_data();
     data->set_num_rows(table.rows_size());
     int num_cols = 0;
+    // The wire does not repeat the positions a merged cell covers, so a cell
+    // spanning rows from above still holds its columns in the rows below:
+    // each column remembers the first row it is free again, and a row's
+    // cells skip the columns still held.
+    std::vector<int> occupied_until;
     for (int row = 0; row < table.rows_size(); ++row) {
       int column = 0;
       for (const poiv1::TableCell& cell : table.rows(row).cells()) {
+        while (column < static_cast<int>(occupied_until.size()) &&
+               occupied_until[static_cast<size_t>(column)] > row) {
+          ++column;
+        }
         docv1::TableCell* out = data->add_table_cells();
         const int row_span = std::max(1U, cell.row_span());
         const int col_span = std::max(1U, cell.col_span());
+        if (occupied_until.size() < static_cast<size_t>(column + col_span)) {
+          occupied_until.resize(static_cast<size_t>(column + col_span), 0);
+        }
+        for (int held = column; held < column + col_span; ++held) {
+          occupied_until[static_cast<size_t>(held)] = row + row_span;
+        }
         out->set_start_row_offset_idx(row);
         out->set_end_row_offset_idx(row + row_span);
         out->set_start_col_offset_idx(column);
@@ -140,7 +155,8 @@ class PoiFold {
       }
       num_cols = std::max(num_cols, column);
     }
-    data->set_num_cols(num_cols);
+    // A column held only by a merge from above still counts.
+    data->set_num_cols(std::max(num_cols, static_cast<int>(occupied_until.size())));
   }
 
   // One worksheet folds into a sheet group holding one TableItem in
