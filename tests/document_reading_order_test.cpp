@@ -7,6 +7,8 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
+#include <map>
 #include <print>
 #include <stdexcept>
 #include <string>
@@ -14,6 +16,7 @@
 
 #include <google/protobuf/util/message_differencer.h>
 
+#include "grparse/document_geometry.h"
 #include "grparse/document_reading_order.h"
 #include "support/check.h"
 
@@ -351,6 +354,42 @@ void verify_picture_anchoring() {
   require(build(true) == forward, "the detector's report order does not matter");
 }
 
+// Pictures that tie on placement (here: none has one) keep their body
+// order, not the string order of their references ("#/pictures/10" before
+// "#/pictures/2").
+void verify_unplaced_pictures_keep_body_order() {
+  docv1::Document document = base_document(1, 800, 1000);
+  add_text(&document, "text", 1, 50, 100, 750, 140);
+  std::vector<std::string> pictures;
+  for (int index = 0; index < 12; ++index) pictures.push_back(add_picture(&document, 0, 0, 0, 0, 0));
+  const grparse::PictureAnchorReport report =
+      grparse::anchor_pictures_by_provenance(&document, pictures);
+  require(report.appended == 12, "every picture is appended");
+  std::vector<std::string> expected{"#/texts/0"};
+  expected.insert(expected.end(), pictures.begin(), pictures.end());
+  require(body_refs(document) == expected, "appended pictures keep body order; got " +
+                                               joined(body_refs(document)));
+}
+
+// A NaN box counts as no box: the item has no placement, and the body
+// order pass neither crashes nor loses it.
+void verify_non_finite_boxes_have_no_placement() {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  docv1::Document document = base_document(1, 800, 1000);
+  for (int index = 0; index < 40; ++index) {
+    const double top = 900.0 - 20.0 * index;
+    add_text(&document, "line " + std::to_string(index), 1, index % 4 == 0 ? nan : 50, top, 750,
+             top + 10);
+  }
+  const std::map<int, double> heights = grparse::document_page_heights(document);
+  require(!grparse::item_placement(document, "#/texts/0", heights).has_value(),
+          "a NaN edge leaves the item unplaced");
+  require(grparse::item_placement(document, "#/texts/1", heights).has_value(),
+          "a finite box places its item");
+  grparse::order_body_by_geometry(&document);
+  require(document.body().children_size() == 40, "the body keeps every item");
+}
+
 }  // namespace
 
 int main() {
@@ -362,5 +401,7 @@ int main() {
       verify_coverage_gate_and_aside_attachment,
       verify_paper_page_two_anchors,
       verify_picture_anchoring,
+      verify_unplaced_pictures_keep_body_order,
+      verify_non_finite_boxes_have_no_placement,
   });
 }
