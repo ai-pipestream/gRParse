@@ -1021,9 +1021,25 @@ grpc::Status validate_hybrid_options(const parsev1::HybridChunkerOptions& option
         grpc::StatusCode::INVALID_ARGUMENT,
         "chunking option 'tokenizer_path' is meaningful only with tokenizer \"hf/1\"");
   }
-  if (tokenizer == kHfTokenizerRules) {
-    const std::string path = resolve_hf_tokenizer_path(
-        options.has_tokenizer_path() ? options.tokenizer_path() : std::string());
+  if (tokenizer == kHfTokenizerRules && options.has_tokenizer_path() &&
+      !options.tokenizer_path().empty()) {
+    // A request's own path: confined to the tokenizer directory, and every
+    // way it can fail reads the same, so the option is no probe of the
+    // server's filesystem.
+    const std::optional<std::string> path = confine_request_tokenizer_path(options.tokenizer_path());
+    std::string json;
+    if (!path.has_value() || !load_hf_tokenizer_json(*path, &json).ok()) {
+      return grpc::Status(
+          grpc::StatusCode::INVALID_ARGUMENT,
+          "chunking option 'tokenizer_path' must name a well-formed tokenizer.json, a regular "
+          "file of at most " +
+              std::to_string(kMaximumTokenizerBytes >> 20) +
+              " MiB, inside the tokenizer directory ($GRPARSE_TOKENIZER_DIR, defaulting to "
+              "$GRPARSE_MODELS_DIR); '" +
+              options.tokenizer_path() + "' does not");
+    }
+  } else if (tokenizer == kHfTokenizerRules) {
+    const std::string path = resolve_hf_tokenizer_path(std::string());
     std::string json;
     const grpc::Status load = load_hf_tokenizer_json(path, &json);
     if (!load.ok()) {
@@ -1032,8 +1048,8 @@ grpc::Status validate_hybrid_options(const parsev1::HybridChunkerOptions& option
           "chunking option 'tokenizer' requested hf/1 but its tokenizer.json did not "
           "load: " +
               load.error_message() +
-              " (resolution order: the request's tokenizer_path, then "
-              "$GRPARSE_CHUNK_TOKENIZER, then "
+              " (resolution order: the request's tokenizer_path inside "
+              "$GRPARSE_TOKENIZER_DIR, then $GRPARSE_CHUNK_TOKENIZER, then "
               "$GRPARSE_MODELS_DIR/chunk/tokenizer.json with GRPARSE_MODELS_DIR "
               "defaulting to /models; tried '" +
               path + "')");
@@ -1052,9 +1068,15 @@ grpc::Status chunk_hybrid(const docv1::Document& document, const OffsetTable& of
   const bool peers = !options.has_merge_peers() || options.merge_peers();
   TokenCounter counter;
   if (options.has_tokenizer() && options.tokenizer() == kHfTokenizerRules) {
-    const std::string path = resolve_hf_tokenizer_path(
-        options.has_tokenizer_path() ? options.tokenizer_path() : std::string());
-    const grpc::Status loaded = TokenCounter::huggingface(path, &counter);
+    const bool requested = options.has_tokenizer_path() && !options.tokenizer_path().empty();
+    const std::optional<std::string> path =
+        requested ? confine_request_tokenizer_path(options.tokenizer_path())
+                  : std::optional<std::string>(resolve_hf_tokenizer_path(std::string()));
+    const grpc::Status loaded =
+        path.has_value() ? TokenCounter::huggingface(*path, &counter)
+                         : grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                                        "tokenizer_path no longer names a file inside the "
+                                        "tokenizer directory");
     if (!loaded.ok()) {
       // validate_hybrid_options read the same file before the parse started;
       // a failure here means it changed under the request, which is the
