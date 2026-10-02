@@ -229,7 +229,7 @@ FetchContent_MakeAvailable(simdutf)
 # "hf/1" token counter. It wraps the Rust tokenizers crate behind a small C
 # ABI, so the build needs cargo on PATH (the Dockerfiles and the CI runner
 # images carry it; a local build needs a Rust toolchain). Pinned to a commit
-# because the project publishes no releases. Two patches ride on top:
+# because the project publishes no releases. Four patches ride on top:
 # hf-only-build drops the sentencepiece and msgpack subdirectories (this
 # counter never loads those formats, and sentencepiece vendors its own
 # abseil whose absl::* target names collide with the ones gRPC expects from
@@ -242,16 +242,23 @@ FetchContent_MakeAvailable(simdutf)
 # toolchain (aarch64-unknown-linux-gnu-gcc) when the build host itself is
 # arm64: there the compiler is plain gcc, the prefixed name does not exist,
 # and the onig_sys crate's build script fails to find any C compiler. The
-# prefixed names are now set only under CMAKE_CROSSCOMPILING.
+# prefixed names are now set only under CMAKE_CROSSCOMPILING. A fourth,
+# cargo-lock, adds rust/Cargo.lock (upstream ships none) and builds with
+# --locked, so the crate graph linked into the server is the reviewed one,
+# checksums included, rather than whatever crates.io resolves that day. To
+# move it, regenerate the lock with `cargo update` in rust/ and refresh the
+# patch.
 FetchContent_Declare(tokenizers_cpp
   GIT_REPOSITORY https://github.com/mlc-ai/tokenizers-cpp.git
   GIT_TAG c586c52f93f7b060753bd2388eb96a105cb7374d
   # checkout first so the step is idempotent: FetchContent re-runs the patch
   # step whenever the subbuild re-executes, including on cached trees.
   PATCH_COMMAND git checkout -- CMakeLists.txt rust/src/lib.rs src/huggingface_tokenizer.cc
+        COMMAND ${CMAKE_COMMAND} -E rm -f rust/Cargo.lock
         COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/tokenizers-cpp-hf-only-build.patch"
         COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/tokenizers-cpp-null-on-parse-error.patch"
-        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/tokenizers-cpp-native-aarch64.patch")
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/tokenizers-cpp-native-aarch64.patch"
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/tokenizers-cpp-cargo-lock.patch")
 FetchContent_MakeAvailable(tokenizers_cpp)
 # FetchContent only patches when it populates, so a dependency tree cached
 # before the patch existed would keep the panicking load. Fail the configure
@@ -275,6 +282,12 @@ string(FIND "${GRPARSE_TOKENIZERS_CMAKE}" "gRParse: native aarch64" GRPARSE_TOKE
 if(GRPARSE_TOKENIZERS_AARCH64_PATCH_AT EQUAL -1)
   message(FATAL_ERROR "tokenizers_cpp CMakeLists.txt is unpatched: the source tree predates "
     "patches/tokenizers-cpp-native-aarch64.patch. Delete _deps/tokenizers_cpp-* from the "
+    "build directory (or the docker build cache) and re-run CMake.")
+endif()
+string(FIND "${GRPARSE_TOKENIZERS_CMAKE}" "build --locked" GRPARSE_TOKENIZERS_LOCK_PATCH_AT)
+if(GRPARSE_TOKENIZERS_LOCK_PATCH_AT EQUAL -1)
+  message(FATAL_ERROR "tokenizers_cpp CMakeLists.txt is unpatched: the source tree predates "
+    "patches/tokenizers-cpp-cargo-lock.patch. Delete _deps/tokenizers_cpp-* from the "
     "build directory (or the docker build cache) and re-run CMake.")
 endif()
 unset(GRPARSE_TOKENIZERS_CMAKE)
