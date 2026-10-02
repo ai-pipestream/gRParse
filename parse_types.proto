@@ -142,6 +142,44 @@ enum ImageRefMode {
   IMAGE_REF_MODE_REFERENCED = 3;
 }
 
+// Structural validation of the converted Document against the docling-core
+// rules (DoclingDocument._validate_rules, docling-core #810). OFF (and
+// UNSPECIFIED) skips the check, so a request that never sets it gets the
+// output it always got. REPORT returns the typed findings on
+// ConvertDocumentResponse.structure_findings and still succeeds. ENFORCE
+// fails the request with FAILED_PRECONDITION listing the findings, the
+// counterpart of docling-core's raise_on_error.
+enum StructureValidation {
+  STRUCTURE_VALIDATION_UNSPECIFIED = 0;
+  STRUCTURE_VALIDATION_OFF = 1;
+  STRUCTURE_VALIDATION_REPORT = 2;
+  STRUCTURE_VALIDATION_ENFORCE = 3;
+}
+
+// One structural rule. docling-core raises a ValueError with a message per
+// rule; here the rule is a typed id so a client filters and counts without
+// parsing text.
+enum StructureRule {
+  STRUCTURE_RULE_UNSPECIFIED = 0;
+  // The deprecated furniture tree (#/furniture) lists children; docling-core
+  // marks furniture with content_layer instead.
+  STRUCTURE_RULE_DEPRECATED_FURNITURE_TREE = 1;
+  // A key_value_items or form_items entry; docling-core migrates both to
+  // field regions.
+  STRUCTURE_RULE_KEY_VALUE_OR_FORM_ITEM = 2;
+  // A list group (LIST or ORDERED_LIST) lists a child that is not a list
+  // item.
+  STRUCTURE_RULE_LIST_GROUP_NON_LIST_ITEM_CHILD = 3;
+  // A list item whose parent is missing or is not a list group.
+  STRUCTURE_RULE_LIST_ITEM_OUTSIDE_LIST_GROUP = 4;
+  // A group other than the two roots with no children.
+  STRUCTURE_RULE_EMPTY_GROUP = 5;
+  // An item whose parent reference resolves to nothing (an orphan).
+  STRUCTURE_RULE_PARENT_MISSING = 6;
+  // An item whose parent does not list it among its children (an orphan).
+  STRUCTURE_RULE_NOT_LISTED_BY_PARENT = 7;
+}
+
 // Where captions sit relative to the item they caption (docling-core
 // CaptionPlacement). STANDARD is the per-type order; LAYOUT uses bbox centers.
 enum CaptionPlacement {
@@ -681,6 +719,41 @@ message ChartExtractionVlmEngineOptions {
   optional bool use_natural_language_prompts = 8;
 }
 
+// One rule a converted Document breaks, at one item.
+message StructureFinding {
+  StructureRule rule = 1;
+  // The item the finding is about (#/furniture for the furniture tree rule).
+  string self_ref = 2;
+  // The other end of the finding when it has one: the parent of an orphan
+  // or of a misplaced list item, the offending child of a list group.
+  optional string related_ref = 3;
+  // The docling-core wording of the finding, for logs and people.
+  string message = 4;
+}
+
+// The structural repairs docling-core #810 adds (each opt-in there too).
+// Each switch unset or false leaves the Document as converted; each repair
+// is idempotent, and they run after the post-merge repair pass in this
+// order.
+message StructureRepairs {
+  // Move the deprecated furniture tree's children into the body, marked
+  // with the furniture content layer (_migrate_furniture_to_body). gRParse
+  // places a located header before the first body item of its page and a
+  // footer after the last one, rather than every header before the whole
+  // body and every footer after it.
+  optional bool migrate_furniture_tree = 1;
+  // Add a caption, footnote or reference that names a floating item as its
+  // parent, and that the item lists, to the item's children
+  // (_repair_referenced_orphans).
+  optional bool repair_referenced_orphans = 2;
+  // Wrap each list group child that is not a list item in a new empty list
+  // item at the same position (_migrate_non_list_item_list_children).
+  optional bool wrap_list_children = 3;
+  // Remove groups other than the roots that have no children and that no
+  // item claims as its parent, repeatedly (_remove_empty_groups).
+  optional bool remove_empty_groups = 4;
+}
+
 // ConvertDocumentOptions mirrors all conversion settings from the REST API.
 message ConvertDocumentOptions {
   // Input format(s) to convert from
@@ -836,6 +909,15 @@ message ConvertDocumentOptions {
   // chart_extraction_custom_config.
   optional string chart_extraction_preset = 56;
   optional ChartExtractionVlmEngineOptions chart_extraction_custom_config = 57;
+  // Validate the converted Document against the docling-core structural
+  // rules. Unset is OFF: the check does not run and the response is
+  // unchanged.
+  optional StructureValidation structure_validation = 60;
+  // The rules structure_validation checks; empty checks every rule. Setting
+  // it while structure_validation is OFF is rejected as contradictory.
+  repeated StructureRule structure_validation_rules = 61;
+  // Opt-in structural repairs, applied before structure_validation runs.
+  optional StructureRepairs structure_repairs = 62;
 }
 
 // HeadingHierarchyOptions mirrors the upstream PdfHeadingHierarchyOptions.
@@ -1073,6 +1155,10 @@ message ConvertDocumentResponse {
   // Full ProfilingItem samples (serve ConvertDocumentResponse.profiling).
   // Totals stay on timings when present.
   map<string, ProfilingItem> profiling = 10;
+  // What ConvertDocumentOptions.structure_validation REPORT found, in
+  // document order. Empty when validation is OFF or the document breaks no
+  // checked rule.
+  repeated StructureFinding structure_findings = 11;
 }
 
 // Embeddings are opt-in on the two implemented synchronous chunk RPCs.

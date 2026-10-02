@@ -549,7 +549,52 @@ the Prometheus exposition counts what it did under
 `grparse_repair_changes_total{kind=...}`, one series per `RepairTotals`
 counter (`furniture_demoted`, `hyphens_rejoined`, `paragraphs_merged`,
 `titles_merged`, `heading_levels_assigned`, `body_items_reordered`,
-`headings_split`, `headings_demoted`, `form_rows_split`).
+`headings_split`, `headings_demoted`, `form_rows_split`, and the structural
+`furniture_tree_migrated`, `orphans_repaired`, `list_children_wrapped`,
+`empty_groups_removed` below).
+
+The docling-core structural rules (docling-core #810,
+`DoclingDocument._validate_rules`) are an opt-in check on the finished
+`Document`. `ConvertDocumentOptions.structure_validation` is `OFF` when
+unset, so existing output does not change; `REPORT` returns one typed
+`StructureFinding` per broken rule and item (`rule`, `self_ref`,
+`related_ref`, docling-core's message) on
+`ConvertDocumentResponse.structure_findings`, and `ENFORCE` fails the
+request with `FAILED_PRECONDITION` listing them (docling-core's
+`raise_on_error`). `structure_validation_rules` narrows the check to the
+named rules (a list with validation off is rejected). The rules: the
+deprecated furniture tree lists children; a key-value or form item exists
+(docling-core migrates both to field regions); a list group (`LIST` or
+`ORDERED_LIST`) lists a child that is not a list item; a list item's parent
+is not a list group; a non-root group has no children; an item's parent
+does not exist, or does not list it. The two orphan rules are the parent-link
+findings of `docling_integrity_errors`, read from the same walk and typed
+(`include/grparse/structure_rules.h`); unlike docling-core, the list rules
+check every arena item, not only those reachable from the body. Two of the
+rules fire on gRParse's own default output today: the furniture demotion
+and the CV assembly write the furniture tree, and the office form fold
+emits a `FormItem` beside its field region. `structure_repairs` turns on
+the matching repairs per request, after the repair pass and before the
+check (each idempotent, counted in `RepairReport`): `migrate_furniture_tree`
+moves the tree's children into the body with the furniture content layer,
+a located header before the first body item of its page and a footer after
+the last (docling-core puts every header before the whole body and every
+footer after it, which it still does here when no body item names a page;
+with the migration on, the furniture demotion and the continuation merge
+look past furniture-layer body items, so the migration moves references
+and nothing else); `repair_referenced_orphans` lists a caption, footnote or
+reference under the floating item that names it and that it names as
+parent; `wrap_list_children` wraps a list group's non-list-item child in a
+new empty list item at its position (enumerated like its siblings, where
+docling-core always leaves it unenumerated); `remove_empty_groups` removes
+unclaimed empty groups until none is left, renumbering the arena and
+sending any remaining reference into a removed group to its parent. With
+`GRPARSE_REPAIR=off` a request's structural repairs still run, alone. The
+streaming `DocumentChunk` carries the same three fields; `REPORT` findings
+ride each `CollectorDocument`, `ENFORCE` fails the stream at the first
+collector document that breaks a rule, and the CV page events carry no
+tree to check. The chunk surfaces honour `ENFORCE` and the repairs; their
+responses have no findings field.
 
 The same pass owns the document's shape where the producer had only
 geometry to go on. A body that came entirely from the PDF text layer is

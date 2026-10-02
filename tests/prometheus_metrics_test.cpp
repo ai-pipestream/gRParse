@@ -177,6 +177,10 @@ void verify_render_rotation_repair_and_office_cv_families() {
   repairs.headings_split = 17;
   repairs.headings_demoted = 18;
   repairs.form_rows_split = 19;
+  repairs.furniture_tree_migrated = 22;
+  repairs.orphans_repaired = 23;
+  repairs.list_children_wrapped = 24;
+  repairs.empty_groups_removed = 25;
 
   grparse::OfficeCvTotals office_cv;
   office_cv.pictures_added = 21;
@@ -198,7 +202,9 @@ void verify_render_rotation_repair_and_office_cv_families() {
   const std::vector<std::pair<const char*, int>> kinds = {
       {"furniture_demoted", 11}, {"hyphens_rejoined", 12},       {"paragraphs_merged", 13},
       {"titles_merged", 14},     {"heading_levels_assigned", 15}, {"body_items_reordered", 16},
-      {"headings_split", 17},    {"headings_demoted", 18},        {"form_rows_split", 19}};
+      {"headings_split", 17},    {"headings_demoted", 18},        {"form_rows_split", 19},
+      {"furniture_tree_migrated", 22}, {"orphans_repaired", 23},
+      {"list_children_wrapped", 24},   {"empty_groups_removed", 25}};
   for (const auto& [kind, value] : kinds) {
     require_contains(text,
                      "grparse_repair_changes_total{kind=\"" + std::string(kind) + "\"} " +

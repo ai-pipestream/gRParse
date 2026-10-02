@@ -2,10 +2,13 @@
 // own contract check: every reference an item makes has to resolve, and
 // every parent link has to be matched by the parent's children list.
 #include "grparse/docling_map.h"
+#include "grparse/structure_rules.h"
 
+#include <algorithm>
 #include <map>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -62,6 +65,16 @@ class ReferenceWalk {
 
   std::vector<std::string> take_errors() { return std::move(errors_); }
 
+  // A parent link check_links found broken: the parent resolves to nothing
+  // (`missing`), or it does not list the child. The structural rules read
+  // these typed instead of re-walking the arenas.
+  struct ParentProblem {
+    std::string child;
+    std::string parent;
+    bool missing = false;
+  };
+  const std::vector<ParentProblem>& parent_problems() const { return parent_problems_; }
+
  private:
   void collect(const std::string& self_ref, const ChildRefs& child_refs,
                bool has_parent, const std::string& parent_ref);
@@ -90,6 +103,7 @@ class ReferenceWalk {
   std::vector<std::pair<std::string, std::string>> parents_;
   std::map<std::string, std::set<std::string>> children_;
   std::vector<std::pair<std::string, std::string>> graph_item_refs_;
+  std::vector<ParentProblem> parent_problems_;
 };
 
 void ReferenceWalk::collect(const std::string& self_ref,
@@ -231,6 +245,7 @@ void ReferenceWalk::check_links() {
     if (refs_.find(parent_ref) == refs_.end()) {
       errors_.push_back("parent " + parent_ref + " of " + child_ref
                         + " does not resolve");
+      parent_problems_.push_back({child_ref, parent_ref, true});
       continue;
     }
     if (auto listed = children_.find(parent_ref);
@@ -238,6 +253,7 @@ void ReferenceWalk::check_links() {
         || listed->second.find(child_ref) == listed->second.end()) {
       errors_.push_back("parent " + parent_ref + " does not list "
                         + child_ref + " as a child");
+      parent_problems_.push_back({child_ref, parent_ref, false});
     }
   }
 }
@@ -296,6 +312,180 @@ std::vector<std::string> docling_integrity_errors(
   walk.check_links();
   walk.check_anchored(document);
   return walk.take_errors();
+}
+
+namespace {
+
+// What the structural rules need to know about one node, read once.
+struct NodeView {
+  std::string ref;
+  // docling-core's class names, for the messages.
+  std::string_view kind;
+  bool group = false;
+  bool list_group = false;
+  bool list_item = false;
+  bool has_parent = false;
+  std::string parent;
+  std::vector<std::string> children;
+};
+
+bool is_list_group_label(docv1::GroupLabel label) {
+  // ORDERED_LIST is docling-core's legacy label for the same ListGroup
+  // (its deserializer builds a ListGroup for both), so both count.
+  return label == docv1::GROUP_LABEL_LIST || label == docv1::GROUP_LABEL_ORDERED_LIST;
+}
+
+template <typename Item>
+NodeView view_of(const Item& item, std::string_view kind) {
+  NodeView view;
+  view.ref = item.self_ref();
+  view.kind = kind;
+  view.has_parent = item.has_parent();
+  view.parent = item.parent().ref();
+  for (const docv1::RefItem& child : item.children()) view.children.push_back(child.ref());
+  return view;
+}
+
+// Every node in arena order: the two roots, then each arena. Items with an
+// empty self_ref are the integrity check's finding and are skipped here.
+std::vector<NodeView> node_views(const docv1::Document& document) {
+  std::vector<NodeView> views;
+  NodeView body = view_of(document.body(), "GroupItem");
+  body.ref = "#/body";
+  body.group = true;
+  views.push_back(std::move(body));
+  NodeView furniture = view_of(document.furniture(), "GroupItem");
+  furniture.ref = "#/furniture";
+  furniture.group = true;
+  views.push_back(std::move(furniture));
+  for (const docv1::GroupItem& group : document.groups()) {
+    NodeView view = view_of(group, is_list_group_label(group.label()) ? "ListGroup" : "GroupItem");
+    view.group = true;
+    view.list_group = is_list_group_label(group.label());
+    views.push_back(std::move(view));
+  }
+  for (const docv1::BaseTextItem& item : document.texts()) {
+    if (item.item_case() == docv1::BaseTextItem::kCode) {
+      views.push_back(view_of(item.code(), "CodeItem"));
+      continue;
+    }
+    const docv1::TextItemBase* base = text_base(item);
+    if (base == nullptr) continue;
+    const bool list_item = item.item_case() == docv1::BaseTextItem::kListItem
+        || base->label() == docv1::DOC_ITEM_LABEL_LIST_ITEM;
+    NodeView view = view_of(*base, list_item ? "ListItem" : "TextItem");
+    view.list_item = list_item;
+    views.push_back(std::move(view));
+  }
+  for (const auto& item : document.pictures()) views.push_back(view_of(item, "PictureItem"));
+  for (const auto& item : document.tables()) views.push_back(view_of(item, "TableItem"));
+  for (const auto& item : document.key_value_items()) {
+    views.push_back(view_of(item, "KeyValueItem"));
+  }
+  for (const auto& item : document.form_items()) views.push_back(view_of(item, "FormItem"));
+  for (const auto& item : document.field_regions()) {
+    views.push_back(view_of(item, "FieldRegionItem"));
+  }
+  for (const auto& item : document.field_items()) views.push_back(view_of(item, "FieldItem"));
+  std::erase_if(views, [](const NodeView& view) { return view.ref.empty(); });
+  return views;
+}
+
+}  // namespace
+
+std::string_view structure_rule_name(StructureRule rule) {
+  switch (rule) {
+    case StructureRule::kDeprecatedFurnitureTree: return "deprecated_furniture_tree";
+    case StructureRule::kKeyValueOrFormItem: return "key_value_or_form_item";
+    case StructureRule::kListGroupNonListItemChild: return "list_group_non_list_item_child";
+    case StructureRule::kListItemOutsideListGroup: return "list_item_outside_list_group";
+    case StructureRule::kEmptyGroup: return "empty_group";
+    case StructureRule::kParentMissing: return "parent_missing";
+    case StructureRule::kNotListedByParent: return "not_listed_by_parent";
+  }
+  return "unknown";
+}
+
+std::vector<StructureFinding> docling_structure_findings(
+    const docv1::Document& document, const std::set<StructureRule>& rules) {
+  const auto checked = [&rules](StructureRule rule) {
+    return rules.empty() || rules.contains(rule);
+  };
+  std::vector<StructureFinding> findings;
+  const auto add = [&findings](StructureRule rule, std::string self_ref,
+                               std::string related_ref, std::string message) {
+    findings.push_back(
+        {rule, std::move(self_ref), std::move(related_ref), std::move(message)});
+  };
+
+  if (checked(StructureRule::kDeprecatedFurnitureTree)
+      && document.furniture().children_size() > 0) {
+    add(StructureRule::kDeprecatedFurnitureTree, "#/furniture", "",
+        "Deprecated furniture node #/furniture has children");
+  }
+  if (checked(StructureRule::kKeyValueOrFormItem)) {
+    for (const docv1::KeyValueItem& item : document.key_value_items()) {
+      add(StructureRule::kKeyValueOrFormItem, item.self_ref(), "",
+          "Key-value item " + item.self_ref() + " is to be migrated to a field region");
+    }
+    for (const docv1::FormItem& item : document.form_items()) {
+      add(StructureRule::kKeyValueOrFormItem, item.self_ref(), "",
+          "Form item " + item.self_ref() + " is to be migrated to a field region");
+    }
+  }
+
+  const std::vector<NodeView> views = node_views(document);
+  std::map<std::string, const NodeView*> by_ref;
+  for (const NodeView& view : views) by_ref.emplace(view.ref, &view);
+
+  // The orphan rules are the integrity walk's parent-link findings, typed.
+  ReferenceWalk walk(document);
+  walk.check_links();
+  std::map<std::string, std::vector<const ReferenceWalk::ParentProblem*>> problems;
+  for (const auto& problem : walk.parent_problems()) {
+    problems[problem.child].push_back(&problem);
+  }
+
+  for (const NodeView& view : views) {
+    if (view.list_group && checked(StructureRule::kListGroupNonListItemChild)) {
+      for (const std::string& child_ref : view.children) {
+        const auto child = by_ref.find(child_ref);
+        // A child that resolves to nothing is the integrity check's finding.
+        if (child == by_ref.end() || child->second->list_item) continue;
+        add(StructureRule::kListGroupNonListItemChild, view.ref, child_ref,
+            "ListGroup " + view.ref + " contains non-ListItem " + child_ref + " ("
+                + std::string(child->second->kind) + ")");
+      }
+    }
+    if (view.list_item && checked(StructureRule::kListItemOutsideListGroup)) {
+      if (!view.has_parent) {
+        add(StructureRule::kListItemOutsideListGroup, view.ref, "",
+            "ListItem " + view.ref + " has no parent");
+      } else if (const auto parent = by_ref.find(view.parent);
+                 parent != by_ref.end() && !parent->second->list_group) {
+        add(StructureRule::kListItemOutsideListGroup, view.ref, view.parent,
+            "ListItem " + view.ref + " has non-ListGroup parent: " + view.parent);
+      }
+    }
+    if (const auto found = problems.find(view.ref); found != problems.end()) {
+      for (const auto* problem : found->second) {
+        const StructureRule rule = problem->missing ? StructureRule::kParentMissing
+                                                    : StructureRule::kNotListedByParent;
+        if (!checked(rule)) continue;
+        add(rule, view.ref, problem->parent,
+            problem->missing
+                ? view.ref + " has non-existent parent " + problem->parent
+                : view.ref + " is not a child of its parent " + problem->parent);
+      }
+    }
+    // The roots have no parent and may be empty (an empty body is a valid
+    // empty document); every other group must hold something.
+    if (view.group && view.has_parent && view.children.empty()
+        && checked(StructureRule::kEmptyGroup)) {
+      add(StructureRule::kEmptyGroup, view.ref, "", "Group " + view.ref + " has no children");
+    }
+  }
+  return findings;
 }
 
 }  // namespace grparse

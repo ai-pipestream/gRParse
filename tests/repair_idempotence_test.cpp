@@ -309,6 +309,49 @@ void verify_each_pass_is_idempotent_on_its_own() {
           "a second split pass changed the document");
 }
 
+// The opt-in structural repairs join the same fixed point. With the
+// furniture tree migrated, the report's running headers and page numbers
+// sit in the body on the furniture layer, the text repairs look past them,
+// and the body ordering puts them where it puts every furniture item; read
+// without the furniture layer the body is exactly the pinned one, and one
+// pass still settles it.
+void verify_the_structural_repairs_join_the_fixed_point() {
+  grparse::RepairOptions options;
+  options.migrate_furniture_tree = true;
+  options.repair_referenced_orphans = true;
+  options.wrap_list_children = true;
+  options.remove_empty_groups = true;
+
+  docv1::Document plain = build_report(report_items());
+  grparse::repair_document(&plain);
+  docv1::Document document = build_report(report_items());
+  const grparse::RepairReport report = grparse::repair_document(&document, options);
+  require(report.furniture_tree_migrated == 8, "the eight demoted items leave the tree");
+  require(report.paragraphs_merged == 1 && report.headings_split == 1 &&
+              report.form_rows_split == 3,
+          "the text repairs do what they do without the migration");
+  require(document.furniture().children_size() == 0, "the furniture tree is empty");
+
+  std::vector<std::string> body;
+  for (const auto& child : document.body().children()) {
+    const int index = std::stoi(child.ref().substr(std::string("#/texts/").size()));
+    const docv1::TextItemBase& base = base_of(document.texts(index));
+    if (base.content_layer() != docv1::CONTENT_LAYER_FURNITURE) body.push_back(base.text());
+  }
+  require(body == body_texts(plain),
+          "the body layer reads as without the migration; got " + joined(body));
+
+  const std::string once = grparse::render_canonical_json(document);
+  const docv1::Document settled = document;
+  const grparse::RepairReport second = grparse::repair_document(&document, options);
+  require(!second.changed_anything(), "a second structural pass found work");
+  require(google::protobuf::util::MessageDifferencer::Equals(settled, document),
+          "a second structural pass changed the document");
+  grparse::repair_document(&document, options);
+  require(grparse::render_canonical_json(document) == once,
+          "a third structural pass moved the canonical bytes");
+}
+
 }  // namespace
 
 int main() {
@@ -317,5 +360,6 @@ int main() {
       verify_the_pass_settles_in_one_run,
       verify_the_fixed_point_is_report_order_independent,
       verify_each_pass_is_idempotent_on_its_own,
+      verify_the_structural_repairs_join_the_fixed_point,
   });
 }

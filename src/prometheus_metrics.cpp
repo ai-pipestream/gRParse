@@ -167,7 +167,15 @@ std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
       << "grparse_repair_changes_total{kind=\"headings_demoted\"} " << repairs.headings_demoted
       << '\n'
       << "grparse_repair_changes_total{kind=\"form_rows_split\"} " << repairs.form_rows_split
-      << '\n';
+      << '\n'
+      << "grparse_repair_changes_total{kind=\"furniture_tree_migrated\"} "
+      << repairs.furniture_tree_migrated << '\n'
+      << "grparse_repair_changes_total{kind=\"orphans_repaired\"} " << repairs.orphans_repaired
+      << '\n'
+      << "grparse_repair_changes_total{kind=\"list_children_wrapped\"} "
+      << repairs.list_children_wrapped << '\n'
+      << "grparse_repair_changes_total{kind=\"empty_groups_removed\"} "
+      << repairs.empty_groups_removed << '\n';
 
   out << "# HELP grparse_office_cv_total Figures the office CV enrichment added to mapped "
          "office documents, by kind.\n"

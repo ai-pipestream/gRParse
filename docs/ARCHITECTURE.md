@@ -28,6 +28,15 @@ labels, tree membership and text only; it never invents items, touches
 geometry, or reads anything but the `Document`, which keeps it identical for
 the CV path and every collector. `GRPARSE_REPAIR=off` removes it entirely.
 
+The opt-in structural repairs (`src/structure_repair.cpp`, docling-core
+#810) run at the end of the same pass when a request's `structure_repairs`
+asks for them, even with `GRPARSE_REPAIR=off`: furniture tree to body,
+orphaned captions back under their item, list children wrapped, empty
+groups removed. The structural rules (`include/grparse/structure_rules.h`,
+implemented beside `integrity_check`, whose parent-link walk they reuse)
+then check the final `Document` when `structure_validation` asks; the
+request plumbing for both is `src/structure_validation.{h,cpp}`.
+
 ## Boundary tests
 
 | Question | Layer |
@@ -288,7 +297,8 @@ are the stable include paths; the units below sit behind them.
   events to `src/office_fold/`: `arena` (the growing Document and its append
   primitives), one fold per plane (`page_fold`, `writer_fold`, `shape_fold`,
   `sheet_fold`, `chart_fold`, `form_fold`, `annotation_fold`, `object_fold`),
-  `anchor_index` (the character-space resolution pass), `integrity_check`.
+  `anchor_index` (the character-space resolution pass), `integrity_check`
+  (also the docling-core structural rules of `structure_rules.h`).
 - Exports: `src/render/`, one renderer per format over `renderer_base`;
   markdown is `markdown_renderer` (per-item emission) over `markdown_walk`
   (structure) with `value_repr`, `meta_repr`, `text_class`, `table_markdown`,

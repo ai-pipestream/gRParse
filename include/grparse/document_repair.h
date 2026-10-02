@@ -55,6 +55,25 @@ struct RepairOptions {
   int maximum_continuation_merges = 256;
   // Print one stdout line per document the pass changed.
   bool log_report = false;
+
+  // The structural repairs docling-core #810 adds (structure_repair.cpp).
+  // All off by default, so the pass output is unchanged unless a caller
+  // asks; ConvertDocumentOptions.structure_repairs turns them on per
+  // request. They run after every repair above, in this order.
+  //
+  // Move the furniture tree's children into the body with the furniture
+  // content layer. While on, the furniture demotion and the continuation
+  // merge look past furniture-layer body items, as they did when those
+  // items sat in the furniture tree, so the migration changes where the
+  // references live and nothing else, and a second pass is a no-op.
+  bool migrate_furniture_tree = false;
+  // List an orphaned caption, footnote or reference under the floating
+  // item that names it and that it names as its parent.
+  bool repair_referenced_orphans = false;
+  // Wrap each list group child that is not a list item in a new list item.
+  bool wrap_list_children = false;
+  // Remove non-root groups without children that nothing claims as parent.
+  bool remove_empty_groups = false;
 };
 
 struct RepairReport {
@@ -85,6 +104,13 @@ struct RepairReport {
   // them.
   int body_items_reordered = 0;
   int pages_reordered = 0;
+  // The structural repairs: furniture tree children moved into the body,
+  // orphans listed by their parent, list children wrapped in a new list
+  // item, empty groups removed.
+  int furniture_tree_migrated = 0;
+  int orphans_repaired = 0;
+  int list_children_wrapped = 0;
+  int empty_groups_removed = 0;
 
   // Whether the arenas or any item's text changed: everything but a
   // demotion, a level, or a body order change, which only relabel and
@@ -92,11 +118,13 @@ struct RepairReport {
   // offset table) is stale when this is true.
   bool changed_text_or_arenas() const {
     return hyphens_rejoined > 0 || soft_hyphens_removed > 0 || paragraphs_merged > 0 ||
-           titles_merged > 0 || headings_split > 0 || form_rows_split > 0;
+           titles_merged > 0 || headings_split > 0 || form_rows_split > 0 ||
+           list_children_wrapped > 0 || empty_groups_removed > 0;
   }
   bool changed_anything() const {
     return furniture_demoted > 0 || heading_levels_assigned > 0 || body_items_reordered > 0 ||
-           titles_promoted > 0 || headings_demoted > 0 || changed_text_or_arenas();
+           titles_promoted > 0 || headings_demoted > 0 || furniture_tree_migrated > 0 ||
+           orphans_repaired > 0 || changed_text_or_arenas();
   }
 };
 
@@ -104,8 +132,11 @@ struct RepairReport {
 // (so paragraphs a page break split become body neighbours), the run-in
 // heading and form row splits, heading hierarchy, body order (so
 // continuations meet their real neighbours), continuation merging,
-// hyphenation rejoin last. Idempotent: a second run over the result
-// changes nothing.
+// hyphenation rejoin, then the opt-in structural repairs (furniture tree
+// migration, referenced orphans, list children, empty groups), and the
+// body order once more when the migration moved furniture into a body the
+// order pass owns. Idempotent: a second run over the result changes
+// nothing.
 RepairReport repair_document(ai::pipestream::document::v1::Document* document,
                              const RepairOptions& options = {});
 
@@ -182,11 +213,53 @@ int merge_continuations(ai::pipestream::document::v1::Document* document,
 
 // Removes the retired text items (the keys of `absorbed_by`, each mapped
 // to the item that absorbed it) from the texts arena, renumbers what
-// remains, prunes them from every group, and points every reference at
-// its new name; a reference into a retired item follows it to the item
-// that absorbed it. Shared by every repair that folds two items into one.
+// remains, prunes them from every group's children and from the children
+// of the item (table, picture, text) that is a retired item's parent,
+// hands a retired item's own children to its survivor,
+// and points every reference anywhere in the Document at its new name:
+// orphans no parent lists and graph cells' item_refs included. A reference
+// into a retired item follows it to the item that absorbed it. Shared by
+// every repair that folds two items into one.
 void retire_text_items(ai::pipestream::document::v1::Document* document,
                        const std::map<std::string, std::string>& absorbed_by);
+
+// The structural repairs, each usable alone. Every one is idempotent: a
+// second call on its own result returns 0 and changes nothing.
+//
+// Moves the deprecated furniture tree's children into the body
+// (docling-core _migrate_furniture_to_body): each moved item and its
+// descendants on the body layer take the furniture layer, and its parent
+// becomes #/body. A header (PAGE_HEADER, or a box centred in the upper
+// half of its page) goes before the first body item on its page, a footer
+// after the last; within a page they keep docling-core's visual order
+// (12-point line band, left edge, source order). Unlocated headers lead
+// the body and unlocated footers trail it. When no body item names a page
+// the placement is docling-core's: every header before the body, every
+// footer after it. Returns the number of furniture children moved.
+int migrate_furniture_tree(ai::pipestream::document::v1::Document* document);
+
+// Lists each caption, footnote or reference a floating item (picture,
+// table, code, key-value or form item) names, and whose parent is that
+// item, among the item's children when it is missing there
+// (docling-core _repair_referenced_orphans). Returns the number added.
+int repair_referenced_orphans(ai::pipestream::document::v1::Document* document);
+
+// Wraps each child of a LIST or ORDERED_LIST group that is not a list item,
+// and whose parent is that group, in a new empty ListItem at the same
+// position (docling-core _migrate_non_list_item_list_children); the child
+// keeps its arena slot and becomes the new item's only child. The new item
+// is appended to the texts arena, takes the child's content layer, and is
+// enumerated like its list item siblings (or, with none, when the group is
+// ORDERED_LIST). Returns the number wrapped.
+int wrap_list_children(ai::pipestream::document::v1::Document* document);
+
+// Removes every group other than the roots that has a parent, no children,
+// and that no item names as its parent, repeating until none is left
+// (docling-core _remove_empty_groups). The groups arena is renumbered with
+// every reference rewritten; a remaining reference into a removed group
+// (an anchor, a span target) follows it to its parent. Returns the number
+// removed.
+int remove_empty_groups(ai::pipestream::document::v1::Document* document);
 
 // Process-wide totals of what the pass changed since startup, for the
 // metrics exposition beside the pipeline counters.
@@ -200,6 +273,10 @@ struct RepairTotals {
   uint64_t headings_split = 0;
   uint64_t headings_demoted = 0;
   uint64_t form_rows_split = 0;
+  uint64_t furniture_tree_migrated = 0;
+  uint64_t orphans_repaired = 0;
+  uint64_t list_children_wrapped = 0;
+  uint64_t empty_groups_removed = 0;
 };
 
 // The pass as the service runs it: repair_document, the report added to

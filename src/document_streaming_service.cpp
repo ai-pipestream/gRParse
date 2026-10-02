@@ -27,6 +27,7 @@
 #include "grparse/page_previews.h"
 #include "grparse/page_projection.h"
 #include "parse_support.h"
+#include "structure_validation.h"
 
 namespace fs = std::filesystem;
 namespace pipestream = ai::pipestream;
@@ -37,6 +38,8 @@ namespace {
 // The largest document the streaming surface accepts, summed over the
 // chunks of one stream.
 constexpr size_t kMaximumDocumentBytes = 500U * 1024U * 1024U;
+// The surface the structural option rejections name.
+constexpr const char* kStreamSurface = "StreamProcessDocument";
 
 class ArenaEvent final {
  public:
@@ -56,7 +59,8 @@ class DocumentStreamReactor final
       : context_(context),
         scheduler_(scheduler),
         endpoints_(std::move(endpoints)),
-        repair_(std::move(repair)),
+        server_repair_(std::move(repair)),
+        repair_(server_repair_),
         // The scheduler never delivers more than one page window ahead of
         // the credits this reactor returns, so the configured window is the
         // exact buffer bound; any smaller cap would fail well-behaved
@@ -203,6 +207,15 @@ class DocumentStreamReactor final
     if (!render_scale_.has_value() && incoming_.has_render_scale()) {
       render_scale_ = incoming_.render_scale();
     }
+    if (!structure_validation_.has_value() && incoming_.has_structure_validation()) {
+      structure_validation_ = incoming_.structure_validation();
+    }
+    if (structure_.rules.empty() && !incoming_.structure_validation_rules().empty()) {
+      structure_.rules = incoming_.structure_validation_rules();
+    }
+    if (!structure_.repairs.has_value() && incoming_.has_structure_repairs()) {
+      structure_.repairs = incoming_.structure_repairs();
+    }
   }
 
   // The plan one stream resolves to: the legs that will run and what the CV
@@ -255,6 +268,17 @@ class DocumentStreamReactor final
       request_finish_locked(tuning_status);
       return plan;
     }
+    // The structural options validate like the unary ones; once the plan
+    // starts they are fixed, so the collector callbacks read them unlocked.
+    structure_.validation = structure_validation_.value_or(
+        pipestream::parse::v1::STRUCTURE_VALIDATION_UNSPECIFIED);
+    const grpc::Status structure_status =
+        validate_structure_request(structure_, kStreamSurface);
+    if (!structure_status.ok()) {
+      request_finish_locked(structure_status);
+      return plan;
+    }
+    repair_ = repair_for_request(server_repair_, structure_);
     plan.tuning = ocr_tuning(do_ocr_.has_value(), do_ocr_.value_or(true),
                              force_ocr_.value_or(false), render_scale_.has_value(),
                              render_scale_.value_or(0.0));
@@ -576,8 +600,18 @@ class DocumentStreamReactor final
     // first, on the caller's thread and outside the reactor lock: it is
     // straight-line work on the outcome alone.
     if (outcome.success && repair_.has_value()) run_repair_pass(&outcome.document, *repair_);
+    google::protobuf::RepeatedPtrField<pipestream::parse::v1::StructureFinding> findings;
+    const grpc::Status structure_status =
+        outcome.success ? check_structure(outcome.document, structure_, kStreamSurface, &findings)
+                        : grpc::Status::OK;
     std::lock_guard<std::mutex> lock(mutex_);
-    if (client_cancelled_) return;
+    if (client_cancelled_ || finish_requested_) return;
+    if (!structure_status.ok()) {
+      // ENFORCE: the first collector Document that breaks a rule fails the
+      // stream, the way the unary surfaces fail the request.
+      request_finish_locked(structure_status);
+      return;
+    }
     if (outcome.success) {
       // A collector's finished document reaches the stream as page events
       // first, the same shape the CV pipeline emits page by page, so a
@@ -609,6 +643,7 @@ class DocumentStreamReactor final
       for (auto& warning : outcome.warnings) {
         collector_document->add_warnings(std::move(warning));
       }
+      collector_document->mutable_structure_findings()->Swap(&findings);
       events_.push_back(std::move(event));
       ++succeeded_parts_;
     } else {
@@ -703,7 +738,14 @@ class DocumentStreamReactor final
   grpc::CallbackServerContext* context_;
   PageScheduler& scheduler_;
   std::shared_ptr<CollectorEndpoints> endpoints_;
-  const std::optional<RepairOptions> repair_;
+  // The server's repair pass, and the one this stream runs once its
+  // structural options resolve (fixed before any collector starts).
+  const std::optional<RepairOptions> server_repair_;
+  std::optional<RepairOptions> repair_;
+  // The structural validation and repairs, resolved from the chunks like
+  // the recognition fields.
+  std::optional<pipestream::parse::v1::StructureValidation> structure_validation_;
+  StructureRequest structure_;
   const size_t maximum_buffered_pages_;
   std::shared_ptr<CallbackGate> callback_gate_;
   std::mutex mutex_;

@@ -275,6 +275,7 @@ grpc::ServerUnaryReactor* DocumentParserService::ConvertSource(
     *document = std::move(result.document);
     report_failures(result.failures, converted->mutable_errors());
     if (parsed.confidence.has_value()) *converted->mutable_confidence() = *parsed.confidence;
+    converted->mutable_structure_findings()->Swap(&parsed.structure_findings);
     // Every requested output format renders from the same merged document;
     // TEXT keeps its arena-order line export, the rest fold the body tree.
     const auto& options = request->request().options();
