@@ -1358,7 +1358,9 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
   try {
     const auto& source = sources.Get(0).file();
     auto bytes = std::make_shared<const std::string>(decode_base64(source.base64_string()));
-    const fs::path requested_name = source.filename().empty() ? "document.pdf" : fs::path(source.filename()).filename();
+    // A nameless upload gets a name that declares nothing, so the bytes
+    // decide its type and route rather than a made-up extension.
+    const fs::path requested_name = source.filename().empty() ? "document" : fs::path(source.filename()).filename();
     pipestream::document::v1::Document base = base_document(*bytes, requested_name);
 
     if (!request.options().from_formats().empty()) {

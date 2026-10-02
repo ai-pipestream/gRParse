@@ -6,9 +6,11 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "grparse/confluence_storage.h"
+#include "grparse/content_sniff.h"
 #include "grparse/document_collectors.h"
 #include "grparse/in_memory_document.h"
 #include "grparse/data_totals.h"
@@ -67,7 +69,17 @@ uint64_t content_hash(const std::string& document) {
 }
 
 bool is_pdf(const std::string& content, const fs::path& filename) {
-  return filename.extension() == ".pdf" || content.starts_with("%PDF-");
+  // Readers accept the header anywhere in the first kilobyte.
+  if (std::string_view(content).substr(0, 1024 + 4).find("%PDF-") != std::string_view::npos) {
+    return true;
+  }
+  // Bytes that sniff as something else outrank the name: a PNG called
+  // x.pdf is a PNG.
+  if (!sniff_mimetype(content).empty()) return false;
+  std::string extension = filename.extension().string();
+  std::ranges::transform(extension, extension.begin(),
+                         [](unsigned char c) { return std::tolower(c); });
+  return extension == ".pdf";
 }
 
 bool remote_collector(pipestream::parse::v1::Collector id) {

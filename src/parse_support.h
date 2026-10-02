@@ -29,7 +29,10 @@ namespace grparse {
 uint64_t content_hash(const std::string& document);
 
 // True when the bytes or the name say PDF. The bytes are asked first
-// because a name is a claim and a signature is evidence.
+// because a name is a claim and a signature is evidence: a %PDF- header in
+// the first kilobyte is a PDF whatever its name, bytes that sniff as any
+// other type are not one, and only bytes that say nothing leave it to a
+// case-insensitive .pdf extension.
 bool is_pdf(const std::string& content, const std::filesystem::path& filename);
 
 // True for every collector run_remote_collector can dial.

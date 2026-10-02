@@ -112,6 +112,21 @@ void verify_chart_and_caption_options() {
   }
 }
 
+// The PDF signature outranks the name: a header in the first kilobyte is a
+// PDF whatever it is called, bytes that sniff as anything else are not one,
+// and only bytes that say nothing fall back to the extension.
+void verify_is_pdf_prefers_the_signature() {
+  require(grparse::is_pdf("%PDF-1.7\n", "upload"), "a signature needs no name");
+  require(grparse::is_pdf(std::string(512, ' ') + "%PDF-1.4\n", "x.bin"),
+          "a signature within the first kilobyte counts");
+  require(!grparse::is_pdf(std::string(2048, ' ') + "%PDF-1.4\n", "x.bin"),
+          "a signature past the first kilobyte does not");
+  const std::string png("\x89PNG\r\n\x1a\n\0\0\0\rIHDR", 16);
+  require(!grparse::is_pdf(png, "scan.pdf"), "a PNG named .pdf is a PNG");
+  require(grparse::is_pdf(std::string("\0\x01\x02\x03", 4), "REPORT.PDF"),
+          "bytes that say nothing fall back to a case-insensitive extension");
+}
+
 // Every thrown failure maps to a status, including one that is not a
 // std::exception, and a scheduler shutdown is UNAVAILABLE, not a full queue.
 void verify_status_from_exception_covers_every_throw() {
@@ -135,6 +150,7 @@ void verify_status_from_exception_covers_every_throw() {
 int main() {
   return grparse_test::run_test_main("convert-options-test", "ok", {
       verify_chart_and_caption_options,
+      verify_is_pdf_prefers_the_signature,
       verify_status_from_exception_covers_every_throw,
   });
 }
