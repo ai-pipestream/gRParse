@@ -455,10 +455,6 @@ void verify_parity_options_and_confidence(TestServer* server) {
   request = unary_request();
   (*request.mutable_request()->mutable_options()->mutable_ocr_custom_config())["bitmap_area_threshold"]
       .set_double_value(0.05);
-  (*request.mutable_request()->mutable_options()->mutable_table_structure_custom_config())["mode"]
-      .set_string_value("accurate");
-  (*request.mutable_request()->mutable_options()->mutable_layout_custom_config())["labels"]
-      .set_string_value("title,table");
   grpc::ClientContext scalar_maps;
   pipestream::parse::v1::ConvertSourceResponse scalar_response;
   const grpc::Status scalar_status =
@@ -466,6 +462,23 @@ void verify_parity_options_and_confidence(TestServer* server) {
   require(scalar_status.ok(),
           "open ScalarValue custom_config maps must be accepted: " +
               scalar_status.error_message());
+
+  // The maps no leg reads are turned down by name rather than ignored.
+  for (const char* unread : {"table_structure_custom_config", "layout_custom_config"}) {
+    request = unary_request();
+    auto* unread_options = request.mutable_request()->mutable_options();
+    auto& map = std::string(unread) == "layout_custom_config"
+                    ? *unread_options->mutable_layout_custom_config()
+                    : *unread_options->mutable_table_structure_custom_config();
+    map["mode"].set_string_value("accurate");
+    grpc::ClientContext unread_context;
+    pipestream::parse::v1::ConvertSourceResponse unread_response;
+    const grpc::Status unread_status =
+        client->ConvertSource(&unread_context, request, &unread_response);
+    require(unread_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+                unread_status.error_message().contains(unread),
+            std::string(unread) + " must be rejected by name: " + unread_status.error_message());
+  }
 
   request = unary_request();
   auto* vlm_custom =
@@ -521,21 +534,33 @@ void verify_parity_options_and_confidence(TestServer* server) {
           "local and api picture description engines must not both be set: " +
               both_status.error_message());
 
-  request = unary_request();
+  // The enrich dial forwards none of the api's headers, params or prompt,
+  // so a keyed API is refused rather than called without its key.
   request = unary_request();
   auto* api_opts =
       request.mutable_request()->mutable_options()->mutable_picture_description_api();
   api_opts->set_url("http://vlm.test:8085");
   (*api_opts->mutable_headers())["Authorization"] = "secret";
-  (*api_opts->mutable_params())["model"].set_string_value("gpt");
-  api_opts->set_prompt("describe");
   grpc::ClientContext headers_context;
   pipestream::parse::v1::ConvertSourceResponse headers_response;
   const grpc::Status headers_status =
       client->ConvertSource(&headers_context, request, &headers_response);
-  require(headers_status.ok(),
-          "picture_description_api headers/params/prompt must be accepted: " +
+  require(headers_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              headers_status.error_message().contains("picture_description_api.headers"),
+          "picture_description_api headers must be rejected by name: " +
               headers_status.error_message());
+  request = unary_request();
+  api_opts = request.mutable_request()->mutable_options()->mutable_picture_description_api();
+  api_opts->set_url("http://vlm.test:8085");
+  api_opts->set_prompt("describe");
+  grpc::ClientContext prompt_context;
+  pipestream::parse::v1::ConvertSourceResponse prompt_response;
+  const grpc::Status prompt_status =
+      client->ConvertSource(&prompt_context, request, &prompt_response);
+  require(prompt_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              prompt_status.error_message().contains("picture_description_api.prompt"),
+          "a non-default picture_description_api prompt must be rejected by name: " +
+              prompt_status.error_message());
 
   request = unary_request();
   auto* local_opts =
@@ -622,7 +647,7 @@ void verify_parity_options_and_confidence(TestServer* server) {
   }
 
   request = unary_request();
-  request.mutable_request()->mutable_options()->set_chunking_preset("granite_embedding_278m");
+  request.mutable_request()->mutable_options()->set_chunking_preset("hierarchical");
   grpc::ClientContext preset_without_chunks;
   pipestream::parse::v1::ConvertSourceResponse preset_response;
   const grpc::Status preset_status =

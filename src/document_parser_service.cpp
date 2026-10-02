@@ -313,7 +313,7 @@ grpc::ServerUnaryReactor* DocumentParserService::ConvertSource(
         if (!chunked.ok()) return chunked;
       } else {
         // hierarchical_chunking, chunking_preset, or CHUNKS with no config:
-        // hierarchical defaults (presets are accepted names without a local catalog).
+        // hierarchical defaults (validate_options admits no other preset).
         pipestream::parse::v1::HierarchicalChunkerOptions hierarchical;
         if (options.chunking_options_case() ==
             pipestream::parse::v1::ConvertDocumentOptions::kHierarchicalChunking) {

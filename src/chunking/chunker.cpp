@@ -902,7 +902,7 @@ std::vector<parsev1::Chunk> chunk_hierarchical(const docv1::Document& document,
 grpc::Status validate_hybrid_options(const parsev1::HybridChunkerOptions& options) {
   if (!options.has_max_tokens()) {
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                        "ChunkHybridSource requires chunking option 'max_tokens'");
+                        "hybrid chunking requires chunking option 'max_tokens'");
   }
   if (options.max_tokens() <= 0) {
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
