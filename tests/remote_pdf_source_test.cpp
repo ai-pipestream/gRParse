@@ -3,12 +3,15 @@
 // top-left pixels, font table joins, subset stripping, the OCR-skip gate,
 // raster format conversion, typed load failures) is covered without a
 // real backend running.
+#include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <print>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <grpcpp/grpcpp.h>
@@ -350,6 +353,68 @@ class NeverCachedBackend final : public pdfv1::PdfBackendService::Service {
   }
 };
 
+// A one-page backend whose Render answers with whatever raster the test
+// shapes, and whose Parse and Render can hang until the client gives up.
+class QuirkBackend final : public pdfv1::PdfBackendService::Service {
+ public:
+  enum class Raster { kGood, kShortPixels, kNarrowStride, kUnknownFormat, kHalfDpi };
+  Raster raster = Raster::kGood;
+  bool hang = false;
+  std::atomic<int> calls_seen{0};
+  std::atomic<int> calls_abandoned{0};
+
+  grpc::Status Probe(grpc::ServerContext*, const pdfv1::ProbeRequest*,
+                     pdfv1::ProbeResponse* response) override {
+    auto* caps = response->mutable_capabilities();
+    caps->set_backend_name("quirk-fake");
+    caps->set_load_status(pdfv1::LOAD_STATUS_OK);
+    caps->set_page_count(1);
+    return grpc::Status::OK;
+  }
+
+  grpc::Status Parse(grpc::ServerContext* context, const pdfv1::ParseRequest*,
+                     grpc::ServerWriter<pdfv1::ParseResponse>* writer) override {
+    if (hang) return wait_for_client(context);
+    pdfv1::ParseResponse header;
+    header.mutable_header()->mutable_capabilities()->set_load_status(pdfv1::LOAD_STATUS_OK);
+    writer->Write(header);
+    return grpc::Status::OK;
+  }
+
+  grpc::Status Render(grpc::ServerContext* context, const pdfv1::RenderRequest* request,
+                      grpc::ServerWriter<pdfv1::RenderResponse>* writer) override {
+    if (hang) return wait_for_client(context);
+    const double dpi = raster == Raster::kHalfDpi ? request->dpi() / 2.0 : request->dpi();
+    const auto width = static_cast<uint32_t>(kPageWidthPts * dpi / 72.0);
+    const auto height = static_cast<uint32_t>(kPageHeightPts * dpi / 72.0);
+    pdfv1::RenderResponse msg;
+    auto* out = msg.mutable_raster();
+    out->set_width_px(width);
+    out->set_height_px(height);
+    out->set_stride_bytes(raster == Raster::kNarrowStride ? width * 3 - 1 : width * 3);
+    out->set_pixel_format(raster == Raster::kUnknownFormat
+                              ? static_cast<pdfv1::PixelFormat>(99)
+                              : pdfv1::PIXEL_FORMAT_BGR8);
+    out->set_dpi(dpi);
+    const size_t size = static_cast<size_t>(width) * height * 3;
+    out->set_pixels(std::string(raster == Raster::kShortPixels ? size - 1 : size, '\xFF'));
+    writer->Write(msg);
+    return grpc::Status::OK;
+  }
+
+ private:
+  // Holds the call until the client cancels it or its deadline passes.
+  grpc::Status wait_for_client(grpc::ServerContext* context) {
+    calls_seen.fetch_add(1);
+    const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (!context->IsCancelled() && std::chrono::steady_clock::now() < give_up) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    if (context->IsCancelled()) calls_abandoned.fetch_add(1);
+    return grpc::Status(grpc::StatusCode::UNAVAILABLE, "fixture hung");
+  }
+};
+
 // Starts a fake backend on its own port; returns the target. The server
 // outlives the caller's scope by reference.
 template <typename Service>
@@ -523,6 +588,91 @@ int main() {
             "a second BYTES_REQUIRED on Probe fails the open");
     require(never_cached.probe_calls == 3, "the Probe retry happens exactly once");
     never_cached_server->Shutdown();
+  }
+
+  // --- Raster validation --------------------------------------------------
+  // A raster the backend shapes wrongly fails the page as InvalidDocument
+  // (so consensus falls over) instead of reading out of bounds.
+  {
+    QuirkBackend quirk;
+    std::unique_ptr<grpc::Server> quirk_server;
+    const std::string quirk_target = serve(quirk, quirk_server);
+    const auto source = grparse::open_remote_pdf_document(doc, quirk_target, dpi);
+    for (const auto shape : {QuirkBackend::Raster::kShortPixels,
+                             QuirkBackend::Raster::kNarrowStride,
+                             QuirkBackend::Raster::kUnknownFormat}) {
+      quirk.raster = shape;
+      bool threw = false;
+      try {
+        static_cast<void>(source->render_page(1));
+      } catch (const grparse::InvalidDocument&) {
+        threw = true;
+      }
+      require(threw, "a malformed raster raises InvalidDocument");
+    }
+
+    // A backend that renders at another DPI than asked (a clamp) has its
+    // raster resized, so pixels and the dpi/72-scaled text boxes agree.
+    quirk.raster = QuirkBackend::Raster::kHalfDpi;
+    const cv::Mat resized = source->render_page(1);
+    require(resized.cols == 1224 && resized.rows == 1584,
+            "a raster at half the DPI is resized to the requested one");
+    quirk_server->Shutdown();
+  }
+
+  // --- Cancellation and the request deadline ------------------------------
+  {
+    QuirkBackend quirk;
+    quirk.hang = true;
+    std::unique_ptr<grpc::Server> quirk_server;
+    const std::string quirk_target = serve(quirk, quirk_server);
+
+    // The request's deadline bounds a call well inside its own budget.
+    const auto bounded = grparse::open_remote_pdf_document(doc, quirk_target, dpi);
+    bounded->set_deadline(std::chrono::system_clock::now() + std::chrono::milliseconds(300));
+    auto started = std::chrono::steady_clock::now();
+    bool threw = false;
+    try {
+      static_cast<void>(bounded->extract_digital_page(1));
+    } catch (const grparse::InvalidDocument&) {
+      threw = true;
+    }
+    require(threw && std::chrono::steady_clock::now() - started < std::chrono::seconds(10),
+            "a Parse past the request deadline fails fast");
+
+    // cancel() from another thread aborts a Render in flight.
+    const auto cancelled = grparse::open_remote_pdf_document(doc, quirk_target, dpi);
+    const int seen_before = quirk.calls_seen.load();
+    std::thread canceller([&] {
+      const auto wait_until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+      while (quirk.calls_seen.load() == seen_before &&
+             std::chrono::steady_clock::now() < wait_until) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      }
+      cancelled->cancel();
+    });
+    started = std::chrono::steady_clock::now();
+    threw = false;
+    try {
+      static_cast<void>(cancelled->render_page(1));
+    } catch (const grparse::InvalidDocument&) {
+      threw = true;
+    }
+    canceller.join();
+    require(threw && std::chrono::steady_clock::now() - started < std::chrono::seconds(10),
+            "cancel aborts the Render in flight");
+
+    // After cancel no call goes out at all.
+    const int seen_after = quirk.calls_seen.load();
+    threw = false;
+    try {
+      static_cast<void>(cancelled->extract_digital_page(1));
+    } catch (const grparse::InvalidDocument&) {
+      threw = true;
+    }
+    require(threw && quirk.calls_seen.load() == seen_after,
+            "a cancelled source fails later calls without dialing");
+    quirk_server->Shutdown();
   }
 
   // --- Target configuration edge cases ------------------------------------

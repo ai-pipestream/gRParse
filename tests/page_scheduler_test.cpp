@@ -1121,6 +1121,75 @@ void verify_recognition_modes_outrank_the_page_set() {
 
 // The per-document render DPI reaches the source factory: unset resolves to
 // the scheduler default, a tuned value passes through untouched.
+// A source whose render blocks the way a hung backend call does, until the
+// source is cancelled; it records the deadline the scheduler handed it.
+class BlockingSource final : public grparse::PageSource {
+ public:
+  int page_count() const override { return 4; }
+
+  cv::Mat render_page(int) const override {
+    std::unique_lock<std::mutex> lock(mutex_);
+    ++blocked_;
+    changed_.notify_all();
+    if (!changed_.wait_for(lock, 30s, [this] { return cancelled_; })) {
+      throw std::runtime_error("render was never cancelled");
+    }
+    throw grparse::InvalidDocument("backend call cancelled");
+  }
+
+  void set_deadline(std::chrono::system_clock::time_point deadline) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    deadline_ = deadline;
+  }
+
+  void cancel() override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    cancelled_ = true;
+    changed_.notify_all();
+  }
+
+  bool wait_for_blocked_render() const {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return changed_.wait_for(lock, 5s, [this] { return blocked_ > 0; });
+  }
+
+  std::chrono::system_clock::time_point deadline() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return deadline_;
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  mutable std::condition_variable changed_;
+  mutable int blocked_ = 0;
+  bool cancelled_ = false;
+  std::chrono::system_clock::time_point deadline_{};
+};
+
+// Cancelling a ticket reaches the source's calls in flight, so a hung
+// backend call does not hold a render worker; the request deadline reaches
+// the source before any page call.
+void verify_cancel_and_deadline_reach_the_source() {
+  FakeRecognizer recognizer;
+  const auto source = std::make_shared<BlockingSource>();
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 3, 2, 3, 2, 2, 2},
+      [source](std::shared_ptr<const std::string>, bool, double) { return source; });
+  grparse::PageScheduler::OcrTuning tuning;
+  tuning.deadline = std::chrono::system_clock::now() + 1h;
+  Result result;
+  const auto ticket = scheduler.submit(std::make_shared<const std::string>("memory"), false,
+                                       tuning, callbacks_for(&result));
+  require(source->wait_for_blocked_render(), "a render must start");
+  require(source->deadline() == tuning.deadline, "the request deadline must reach the source");
+  const auto cancelled_at = std::chrono::steady_clock::now();
+  ticket.cancel();
+  wait_until_finished(&result);
+  require(std::chrono::steady_clock::now() - cancelled_at < 5s,
+          "cancel must abort the blocked render, not wait it out");
+  require(result.finish_calls == 1, "a cancelled document finishes exactly once");
+}
+
 void verify_render_dpi_reaches_source_factory() {
   FakeRecognizer recognizer;
   std::atomic<double> factory_dpi{0.0};
@@ -1380,6 +1449,7 @@ int main() {
       verify_ocr_off_still_runs_layout,
       verify_force_ocr_replaces_the_embedded_layer,
       verify_render_dpi_reaches_source_factory,
+      verify_cancel_and_deadline_reach_the_source,
       verify_delivery_cancellation_drains_queued_work,
       verify_page_credits_bound_a_document,
       verify_uncredited_document_survives_later_submissions,

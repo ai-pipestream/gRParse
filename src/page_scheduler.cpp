@@ -138,7 +138,17 @@ class BusyTimer final {
 struct PageScheduler::Ticket::State {
   explicit State(Callbacks value) : callbacks(std::move(value)) {}
 
-  void cancel() { cancelled.store(true); }
+  // Also aborts the source's backend calls in flight, so a cancelled or
+  // failed document does not hold a render worker until a backend answers.
+  void cancel() {
+    cancelled.store(true);
+    std::shared_ptr<PageSource> open_source;
+    {
+      std::lock_guard<std::mutex> lock(schedule_mutex);
+      open_source = source;
+    }
+    if (open_source) open_source->cancel();
+  }
 
   void fail(std::exception_ptr value) {
     {
@@ -502,6 +512,7 @@ class PageScheduler::Impl final {
                                       : kDefaultRenderDpi;
         auto source = source_factory_(document.bytes, document.pdf, render_dpi);
         if (!source) throw InvalidDocument("Document source could not be opened");
+        source->set_deadline(document.request->tuning.deadline);
         const int pages = source->page_count();
         if (pages <= 0) throw InvalidDocument("Document does not contain a page");
         // Docling page_range: inclusive 1-indexed span. Clamp the end to the
@@ -528,6 +539,9 @@ class PageScheduler::Impl final {
           document.request->next_page_to_schedule = first_page;
           document.request->available_slots = document.request->page_window;
         }
+        // A cancel that landed while the source was opening found no source
+        // to abort; this one reaches it.
+        if (document.request->cancelled.load()) document.request->source->cancel();
         // Callers wait on the number of pages that will arrive, not the last
         // page index (which may be higher when the span does not start at 1).
         document.request->callbacks.on_document(page_count);

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <iostream>
 #include <optional>
 #include <sstream>
@@ -255,6 +256,14 @@ class ConsensusPdfPageSource final : public PageSource {
   }
 
   int page_count() const override { return pages_; }
+
+  void set_deadline(std::chrono::system_clock::time_point deadline) override {
+    for (auto& entry : sources_) entry.source->set_deadline(deadline);
+  }
+
+  void cancel() override {
+    for (auto& entry : sources_) entry.source->cancel();
+  }
 
   std::optional<OcrPage> extract_digital_page(int page_number) const override {
     std::vector<OcrPage> candidates;

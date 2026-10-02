@@ -268,6 +268,18 @@ per-page fan-out no longer re-ships the document to each leg.
 `GRPARSE_PDF_BACKEND_HANDSHAKE=off` pins the old always-send-bytes
 behavior.
 
+Each Probe/Parse/Render call's deadline is the sooner of its own budget
+(30 s / 300 s / 600 s) and the inbound request's deadline (with
+`document_timeout` applied), and cancelling the request, or a page failing
+the document, aborts the page calls in flight (`TryCancel`) and fails later
+ones without dialing. A Render raster is validated before use: a known
+pixel format, `stride_bytes >= width_px * channels`, and at least
+`height_px * stride_bytes` bytes of pixels; a malformed raster fails that
+leg as `InvalidDocument`, so consensus mode takes the raster from the next
+target. A raster whose reported `dpi` differs from the requested one is
+resized to the requested DPI, so it stays in the frame the text boxes are
+scaled to.
+
 ## Open items (from the 2026-09-04 review)
 
 Fixed the same day: consensus failure isolation (a backend dying

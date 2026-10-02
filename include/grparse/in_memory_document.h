@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -37,6 +38,12 @@ class PageSource {
   // The engine name a PDF backend reported through Probe; empty for
   // rasters. Consensus mode names its vote legs with it.
   virtual std::string backend_name() const { return {}; }
+  // Ties the source's backend calls to the request reading the document: no
+  // call runs past `deadline`, and cancel() aborts the calls in flight and
+  // fails every later one fast. Safe from any thread. Sources that make no
+  // remote calls ignore both.
+  virtual void set_deadline(std::chrono::system_clock::time_point) {}
+  virtual void cancel() {}
 };
 
 // The largest raster page, in pixels, an image input may decode to:

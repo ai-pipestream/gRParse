@@ -1099,6 +1099,7 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   // caps that ceiling when set — parity with Docling Convert options.
   inputs.inbound_deadline = deadline_with_document_timeout(
       context->deadline(), options.has_document_timeout(), options.document_timeout());
+  inputs.tuning.deadline = inputs.inbound_deadline;
   // A collector-folded PDF never rasterized; when previews are on, it gets
   // them rendered so the shell has a page to paint the boxes on. The request
   // decides when it says; the server setting otherwise.

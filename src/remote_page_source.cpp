@@ -5,10 +5,13 @@
 #include <cctype>
 #include <cmath>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -31,14 +34,11 @@ constexpr int kMaxMessageBytes = 520 * 1024 * 1024;
 constexpr double kPdfUserSpaceDpi = 72.0;
 
 // A hung backend must not hang the document; consensus mode multiplies
-// the exposure, so each RPC carries a deadline sized to its work.
+// the exposure, so each RPC carries a deadline sized to its work, or the
+// request's own deadline when that comes sooner.
 constexpr auto kProbeDeadline = std::chrono::seconds(30);
 constexpr auto kParseDeadline = std::chrono::seconds(300);
 constexpr auto kRenderDeadline = std::chrono::seconds(600);
-
-void set_deadline(grpc::ClientContext* context, std::chrono::seconds budget) {
-  context->set_deadline(std::chrono::system_clock::now() + budget);
-}
 
 // The content-addressed handshake: calls go out with PdfDocument.sha256 set
 // and data empty (a cache lookup), and only a LOAD_STATUS_BYTES_REQUIRED
@@ -149,12 +149,11 @@ class RemotePdfPageSource final : public PageSource {
     pdfv1::ProbeResponse response;
     bool sent_bytes = !handshake_;
     for (;;) {
-      grpc::ClientContext context;
-      set_deadline(&context, kProbeDeadline);
+      Call call(*this, kProbeDeadline);
       pdfv1::ProbeRequest request;
       fill_document(request.mutable_document(), sent_bytes);
       response.Clear();
-      const grpc::Status status = stub_->Probe(&context, request, &response);
+      const grpc::Status status = stub_->Probe(call.context(), request, &response);
       if (!status.ok()) {
         throw InvalidDocument("PDF backend unreachable: " +
                               status.error_message());
@@ -191,8 +190,7 @@ class RemotePdfPageSource final : public PageSource {
     check_page(page_number);
     bool sent_bytes = !handshake_;
     for (;;) {
-      grpc::ClientContext context;
-      set_deadline(&context, kParseDeadline);
+      Call call(*this, kParseDeadline);
       pdfv1::ParseRequest request;
       fill_document(request.mutable_document(), sent_bytes);
       request.add_families(pdfv1::PDF_FAMILY_TEXT_CELLS);
@@ -200,7 +198,7 @@ class RemotePdfPageSource final : public PageSource {
       auto* range = request.mutable_pages();
       range->set_begin(static_cast<uint32_t>(page_number - 1));
       range->set_end(static_cast<uint32_t>(page_number));
-      auto reader = stub_->Parse(&context, request);
+      auto reader = stub_->Parse(call.context(), request);
 
       pdfv1::ParseResponse message;
       std::optional<PageFrame> frame;
@@ -309,12 +307,22 @@ class RemotePdfPageSource final : public PageSource {
     }
   }
 
+  void set_deadline(std::chrono::system_clock::time_point deadline) override {
+    const std::lock_guard<std::mutex> lock(calls_mutex_);
+    deadline_ = deadline;
+  }
+
+  void cancel() override {
+    const std::lock_guard<std::mutex> lock(calls_mutex_);
+    cancelled_ = true;
+    for (grpc::ClientContext* context : calls_) context->TryCancel();
+  }
+
   cv::Mat render_page(int page_number) const override {
     check_page(page_number);
     bool sent_bytes = !handshake_;
     for (;;) {
-      grpc::ClientContext context;
-      set_deadline(&context, kRenderDeadline);
+      Call call(*this, kRenderDeadline);
       pdfv1::RenderRequest request;
       fill_document(request.mutable_document(), sent_bytes);
       request.set_dpi(render_dpi_);
@@ -322,7 +330,7 @@ class RemotePdfPageSource final : public PageSource {
       auto* range = request.mutable_pages();
       range->set_begin(static_cast<uint32_t>(page_number - 1));
       range->set_end(static_cast<uint32_t>(page_number));
-      auto reader = stub_->Render(&context, request);
+      auto reader = stub_->Render(call.context(), request);
 
       pdfv1::RenderResponse message;
       cv::Mat rendered;
@@ -338,8 +346,8 @@ class RemotePdfPageSource final : public PageSource {
         }
         const auto& raster = message.raster();
         if (raster.width_px() == 0 || raster.height_px() == 0) continue;
-        const cv::Mat view = raster_view(raster);
-        rendered = to_bgr(view, raster.pixel_format());
+        rendered = at_render_dpi(to_bgr(raster_view(raster), raster.pixel_format()),
+                                 raster.dpi());
       }
       const grpc::Status status = reader->Finish();
       if (!status.ok()) {
@@ -370,6 +378,30 @@ class RemotePdfPageSource final : public PageSource {
   }
 
  private:
+  // One backend call's context, registered with the source so cancel()
+  // reaches it in flight. Its deadline is the sooner of the call's own
+  // budget and the request's; after cancel() no new call goes out.
+  class Call {
+   public:
+    Call(const RemotePdfPageSource& source, std::chrono::seconds budget) : source_(source) {
+      const std::lock_guard<std::mutex> lock(source_.calls_mutex_);
+      if (source_.cancelled_) throw InvalidDocument("PDF backend call cancelled");
+      context_.set_deadline(std::min(source_.deadline_, std::chrono::system_clock::now() + budget));
+      source_.calls_.insert(&context_);
+    }
+    Call(const Call&) = delete;
+    Call& operator=(const Call&) = delete;
+    ~Call() {
+      const std::lock_guard<std::mutex> lock(source_.calls_mutex_);
+      source_.calls_.erase(&context_);
+    }
+    grpc::ClientContext* context() { return &context_; }
+
+   private:
+    const RemotePdfPageSource& source_;
+    grpc::ClientContext context_;
+  };
+
   void check_page(int page_number) const {
     if (page_number < 1 || page_number > pages_) {
       throw InvalidDocument("PDF page number is out of range");
@@ -388,17 +420,59 @@ class RemotePdfPageSource final : public PageSource {
     return static_cast<int>(std::lround(user_space_units * render_scale_));
   }
 
+  // The raster is the backend's word on its own layout; a short or
+  // inconsistent one is a failed page (InvalidDocument, so consensus falls
+  // over to the next leg), never an out-of-bounds read.
   static cv::Mat raster_view(const pdfv1::PageRaster& raster) {
-    const int channels =
-        raster.pixel_format() == pdfv1::PIXEL_FORMAT_GRAY8 ? 1
-        : raster.pixel_format() == pdfv1::PIXEL_FORMAT_RGBA8 ||
-                raster.pixel_format() == pdfv1::PIXEL_FORMAT_BGRA8
-            ? 4
-            : 3;
-    return cv::Mat(static_cast<int>(raster.height_px()),
-                   static_cast<int>(raster.width_px()), CV_8UC(channels),
-                   const_cast<char*>(raster.pixels().data()),
-                   raster.stride_bytes());
+    int channels = 0;
+    switch (raster.pixel_format()) {
+      case pdfv1::PIXEL_FORMAT_GRAY8:
+        channels = 1;
+        break;
+      case pdfv1::PIXEL_FORMAT_RGB8:
+      case pdfv1::PIXEL_FORMAT_BGR8:
+        channels = 3;
+        break;
+      case pdfv1::PIXEL_FORMAT_RGBA8:
+      case pdfv1::PIXEL_FORMAT_BGRA8:
+        channels = 4;
+        break;
+      default:
+        throw InvalidDocument("PDF backend answered with an unknown pixel format");
+    }
+    constexpr uint64_t kMaxDim = static_cast<uint64_t>(std::numeric_limits<int>::max());
+    const uint64_t width = raster.width_px();
+    const uint64_t height = raster.height_px();
+    const uint64_t stride = raster.stride_bytes();
+    if (width > kMaxDim || height > kMaxDim || stride < width * channels ||
+        raster.pixels().size() < height * stride) {
+      throw InvalidDocument("PDF backend answered with a malformed raster (" +
+                            std::to_string(width) + "x" + std::to_string(height) + ", stride " +
+                            std::to_string(stride) + ", " +
+                            std::to_string(raster.pixels().size()) + " bytes)");
+    }
+    return cv::Mat(static_cast<int>(height), static_cast<int>(width), CV_8UC(channels),
+                   const_cast<char*>(raster.pixels().data()), stride);
+  }
+
+  // Digital-text boxes scale by render_dpi/72, so a raster a backend
+  // rendered at another DPI (one that clamps it, say) is resized to the
+  // requested one; boxes and pixels then share one frame. A raster without
+  // a stated DPI is taken as rendered at the requested one.
+  cv::Mat at_render_dpi(cv::Mat image, double raster_dpi) const {
+    if (!(raster_dpi > 0.0) || !std::isfinite(raster_dpi)) return image;
+    const double factor = render_dpi_ / raster_dpi;
+    const double width = std::round(image.cols * factor);
+    const double height = std::round(image.rows * factor);
+    if (std::abs(width - image.cols) <= 1.0 && std::abs(height - image.rows) <= 1.0) return image;
+    if (width < 1.0 || height < 1.0 || width > std::numeric_limits<int>::max() ||
+        height > std::numeric_limits<int>::max()) {
+      throw InvalidDocument("PDF backend raster DPI is out of range");
+    }
+    cv::Mat resized;
+    cv::resize(image, resized, cv::Size(static_cast<int>(width), static_cast<int>(height)), 0, 0,
+               factor < 1.0 ? cv::INTER_AREA : cv::INTER_LINEAR);
+    return resized;
   }
 
   // The fold consumes BGR (what the raster path decodes to); backends may
@@ -433,6 +507,12 @@ class RemotePdfPageSource final : public PageSource {
   std::unique_ptr<pdfv1::PdfBackendService::Stub> stub_;
   int pages_ = 0;
   std::string backend_name_;
+  // Guards the request ties: set_deadline() and cancel() arrive from other
+  // threads than the page calls.
+  mutable std::mutex calls_mutex_;
+  std::chrono::system_clock::time_point deadline_ = std::chrono::system_clock::time_point::max();
+  bool cancelled_ = false;
+  mutable std::set<grpc::ClientContext*> calls_;
 };
 
 }  // namespace

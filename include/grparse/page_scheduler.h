@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -106,6 +107,10 @@ class PageScheduler final {
     // do_picture_classification). Unset keeps the scheduler default (run when
     // a FigureClassifier is installed). false skips; true runs when available.
     std::optional<bool> do_picture_classification;
+    // The absolute ceiling of the call that asked for this document: no PDF
+    // backend call made for it runs past it. max() means the call carried
+    // none, and each backend call keeps its own cap.
+    std::chrono::system_clock::time_point deadline = std::chrono::system_clock::time_point::max();
   };
 
   enum class DeliveryResult { kAccepted, kAcceptedAndRelease, kCancelled };
