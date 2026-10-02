@@ -5,6 +5,7 @@
 #include <charconv>
 #include <chrono>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -112,7 +113,11 @@ bool decode_data_uri(const std::string& uri, std::string* mimetype, std::string*
   const size_t marker = uri.find(kBase64);
   if (marker == std::string::npos) return false;
   *mimetype = uri.substr(kScheme.size(), marker - kScheme.size());
-  *bytes = decode_base64(uri.substr(marker + kBase64.size()));
+  try {
+    *bytes = decode_base64(uri.substr(marker + kBase64.size()));
+  } catch (const std::invalid_argument&) {
+    return false;  // Malformed base64 is no pixels: the picture is skipped.
+  }
   return !bytes->empty();
 }
 

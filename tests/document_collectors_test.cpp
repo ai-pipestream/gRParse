@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <print>
@@ -2149,6 +2150,22 @@ void verify_pdf_page_range_forwards_as_pages() {
   require(ranged.outcome.success, "page_range collect succeeds: " + ranged.outcome.error);
   require(service.last_pages() == std::vector<uint32_t>({2, 3, 4}),
           "page_range expands to the inclusive PdfOptions.pages list");
+
+  // Docling's "to the end" span, (1, sys.maxsize) clamped to INT32_MAX on
+  // this wire, is the whole document: no list, no overflow, no allocation.
+  const auto open_ended = grparse::collect_pdf(
+      server.channel(), "%PDF-fake", grparse::kNoCollectorDeadline,
+      std::make_pair(1, std::numeric_limits<int>::max()));
+  require(open_ended.outcome.success, "open-ended page_range collects: " + open_ended.outcome.error);
+  require(service.last_pages().empty(),
+          "an open-ended span from page 1 sends no page list");
+
+  const auto tail = grparse::collect_pdf(server.channel(), "%PDF-fake",
+                                         grparse::kNoCollectorDeadline,
+                                         std::make_pair(99999, std::numeric_limits<int>::max()));
+  require(tail.outcome.success, "an open-ended tail collects: " + tail.outcome.error);
+  require(service.last_pages() == std::vector<uint32_t>({99999, 100000}),
+          "an open-ended span from a later page stops at the listed-page ceiling");
 }
 
 }  // namespace

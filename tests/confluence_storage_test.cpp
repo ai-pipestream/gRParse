@@ -514,6 +514,36 @@ void verify_malformed_markup_recovers() {
   require(!stray.warnings.empty(), "and is reported");
 }
 
+// Hostile nesting must neither overflow the stack (the fold and the node
+// destructor both recurse) nor turn the end-tag search quadratic: elements
+// past the depth cap flatten into their ancestor, with one warning.
+void verify_deep_nesting_is_bounded() {
+  constexpr int kLevels = 200000;
+  std::string storage;
+  for (int level = 0; level < kLevels; ++level) storage += "<div>";
+  storage += "<p>deep text</p>";
+  for (int level = 0; level < kLevels; ++level) storage += "</x>";
+  const auto outcome = parse(storage);
+  require(outcome.document.texts_size() == 1 &&
+              base_of(outcome.document.texts(0)).text() == "deep text",
+          "the text under a hostile nest survives the flattening");
+  int depth_warnings = 0;
+  for (const auto& warning : outcome.warnings) {
+    if (warning.contains("nested deeper than")) ++depth_warnings;
+  }
+  require(depth_warnings == 1, "the flattening is reported once");
+}
+
+// A long run of bare ampersands stays linear: the entity scan looks only a
+// short way ahead for its semicolon.
+void verify_bare_ampersand_run_is_linear() {
+  const std::string run(4U * 1024U * 1024U, '&');
+  const auto outcome = parse("<p>" + run + ";</p>");
+  require(outcome.document.texts_size() == 1 &&
+              base_of(outcome.document.texts(0)).text().size() == run.size() + 1,
+          "every bare ampersand is kept as text");
+}
+
 void verify_empty_body_is_rejected() {
   const auto outcome = grparse::parse_confluence_storage("   just words   ");
   require(!outcome.success, "a body with no markup is not a storage document");
@@ -639,6 +669,8 @@ int main() {
       verify_page_link_pointer,
       verify_unknown_tags_descend_transparently,
       verify_malformed_markup_recovers,
+      verify_deep_nesting_is_bounded,
+      verify_bare_ampersand_run_is_linear,
       verify_empty_body_is_rejected,
       verify_real_page_fixture_shape,
   });

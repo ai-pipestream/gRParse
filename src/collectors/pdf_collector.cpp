@@ -1,5 +1,6 @@
 #include "grparse/document_collectors.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -12,6 +13,14 @@
 namespace pdfv1 = ai::pipestream::pdf::v1;
 
 namespace grparse {
+
+namespace {
+
+// Past any real document's page count; a page_range end beyond it means
+// "to the end", not a list of pages to spell out.
+constexpr int64_t kMaxListedPage = 100000;
+
+}  // namespace
 
 PdfRouteDecision route_pdf_by_classification(const PdfClassification& classification) {
   PdfRouteDecision decision;
@@ -68,9 +77,16 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
   // the fold, and the fold is built from the page stream.
   request.mutable_options()->set_emit_document(true);
   // Docling page_range → collector options.pages (1-indexed inclusive span).
-  if (page_range.has_value()) {
-    for (int page = page_range->first; page <= page_range->second; ++page) {
-      if (page >= 1) request.mutable_options()->add_pages(static_cast<uint32_t>(page));
+  // Docling spells "to the end" as (start, sys.maxsize), which reaches this
+  // wire as INT32_MAX: the listed span stops at kMaxListedPage, and an
+  // open-ended span from page 1 is the whole document, which the wire
+  // spells as no list at all.
+  if (page_range.has_value() &&
+      !(page_range->first <= 1 && page_range->second >= kMaxListedPage)) {
+    const int64_t first = std::max<int64_t>(page_range->first, 1);
+    const int64_t last = std::min<int64_t>(page_range->second, kMaxListedPage);
+    for (int64_t page = first; page <= last; ++page) {
+      request.mutable_options()->add_pages(static_cast<uint32_t>(page));
     }
   }
   upload_stream(*stream, request, bytes, /*always_send_chunk=*/false,
