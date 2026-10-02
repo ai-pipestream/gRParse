@@ -40,6 +40,21 @@ if(GRPARSE_SANITIZE)
   target_compile_options(grparse_flags INTERFACE
     -fsanitize=${GRPARSE_SANITIZE} -fno-omit-frame-pointer -g)
   target_link_options(grparse_flags INTERFACE -fsanitize=${GRPARSE_SANITIZE})
+  # GCC's null, nonnull-attribute and returns-nonnull-attribute checks imply
+  # -fno-delete-null-pointer-checks, under which abseil's constexpr
+  # function-pointer comparisons are "not a constant expression"; protobuf's
+  # MessageDifferencer header instantiates them. Only tests include that
+  # header, so those tests alone build without the three checks.
+  if(GRPARSE_SANITIZE MATCHES "undefined")
+    file(GLOB GRPARSE_TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp")
+    foreach(source IN LISTS GRPARSE_TEST_SOURCES)
+      file(STRINGS "${source}" uses_differencer REGEX "message_differencer\\.h")
+      if(uses_differencer)
+        set_source_files_properties("${source}" PROPERTIES COMPILE_OPTIONS
+          "-fno-sanitize=null,nonnull-attribute,returns-nonnull-attribute")
+      endif()
+    endforeach()
+  endif()
 endif()
 
 include(FetchContent)
