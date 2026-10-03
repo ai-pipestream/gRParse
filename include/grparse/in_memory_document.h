@@ -8,7 +8,6 @@
 #include <stdexcept>
 #include <string>
 
-#include <grpcpp/support/status.h>
 #include <opencv2/core.hpp>
 
 #include "grparse/ocr_types.h"
@@ -20,20 +19,25 @@ class InvalidDocument : public std::runtime_error {
   using std::runtime_error::runtime_error;
 };
 
+// Why a PDF backend call failed when the document is not at fault. This
+// header stays free of gRPC (the fuzz build compiles it without one); the
+// service maps each reason to its gRPC code.
+enum class PdfBackendFailure { kUnavailable, kDeadlineExceeded, kCancelled, kResourceExhausted };
+
 // A PDF backend call failed for a reason that is not the document's fault:
 // the backend was unreachable, the request's deadline passed, or the call
 // was cancelled. It is still an InvalidDocument so consensus falls over to
-// the next leg, but the service answers with the transport's own code
+// the next leg, but the service answers with the matching transport code
 // instead of INVALID_ARGUMENT, so clients and dashboards can tell an outage
 // from a bad file.
 class PdfBackendUnavailable final : public InvalidDocument {
  public:
-  PdfBackendUnavailable(const std::string& what, grpc::StatusCode code)
-      : InvalidDocument(what), code_(code) {}
-  grpc::StatusCode code() const { return code_; }
+  PdfBackendUnavailable(const std::string& what, PdfBackendFailure reason)
+      : InvalidDocument(what), reason_(reason) {}
+  PdfBackendFailure reason() const { return reason_; }
 
  private:
-  grpc::StatusCode code_;
+  PdfBackendFailure reason_;
 };
 
 // A PDF arrived and GRPARSE_PDF_BACKEND names no PdfBackendService. gRParse

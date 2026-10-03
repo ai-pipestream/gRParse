@@ -500,7 +500,7 @@ int main() {
   try {
     grparse::open_remote_pdf_document(bytes, "127.0.0.1:1", dpi);
   } catch (const grparse::PdfBackendUnavailable& error) {
-    outage = error.code() == grpc::StatusCode::UNAVAILABLE;
+    outage = error.reason() == grparse::PdfBackendFailure::kUnavailable;
   }
   require(outage, "an unreachable backend raises PdfBackendUnavailable with UNAVAILABLE");
 

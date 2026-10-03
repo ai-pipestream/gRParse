@@ -65,10 +65,13 @@ constexpr size_t kStrongDigitalNonWhitespace = 128;
   const std::string message = what + ": " + status.error_message();
   switch (status.error_code()) {
     case grpc::StatusCode::UNAVAILABLE:
+      throw PdfBackendUnavailable(message, PdfBackendFailure::kUnavailable);
     case grpc::StatusCode::DEADLINE_EXCEEDED:
+      throw PdfBackendUnavailable(message, PdfBackendFailure::kDeadlineExceeded);
     case grpc::StatusCode::CANCELLED:
+      throw PdfBackendUnavailable(message, PdfBackendFailure::kCancelled);
     case grpc::StatusCode::RESOURCE_EXHAUSTED:
-      throw PdfBackendUnavailable(message, status.error_code());
+      throw PdfBackendUnavailable(message, PdfBackendFailure::kResourceExhausted);
     default:
       throw InvalidDocument(message);
   }
@@ -421,7 +424,7 @@ class RemotePdfPageSource final : public PageSource {
     Call(const RemotePdfPageSource& source, std::chrono::seconds budget) : source_(source) {
       const std::lock_guard<std::mutex> lock(source_.calls_mutex_);
       if (source_.cancelled_) {
-        throw PdfBackendUnavailable("PDF backend call cancelled", grpc::StatusCode::CANCELLED);
+        throw PdfBackendUnavailable("PDF backend call cancelled", PdfBackendFailure::kCancelled);
       }
       context_.set_deadline(std::min(source_.deadline_, std::chrono::system_clock::now() + budget));
       source_.calls_.insert(&context_);
