@@ -40,6 +40,11 @@ struct RepairOptions {
   // Collectors whose order and heading levels are guesses from geometry
   // rather than document structure; every other producer's choices win.
   std::vector<std::string> geometry_collectors{"pdf"};
+  // Collectors that build a prose item by joining its lines with one
+  // space, so a space after a hyphen may be where a line broke: the pdf
+  // text layer, grparse's own OCR and layout assembly, and the VLM convert
+  // leg's transcriptions. Every other producer's spaces are text.
+  std::vector<std::string> line_joined_collectors{"pdf", "grparse", "vlm-convert"};
   // A body item is running furniture when its normalized text recurs on at
   // least this many distinct pages and on at least this share of the
   // document's pages (the larger of the two applies).
@@ -154,8 +159,7 @@ struct RemovedRun {
 // alphabetic and the pair is not a known hyphenated compound ("self-",
 // "well-", "non-" always; "pre-", "post-", "co-", "re-" before a vowel).
 // A line break is a newline; the single space a line join left counts as
-// one only when `space_is_break` (text a geometry collector joined from
-// lines), so "short- and" in authored prose is never a break. The tail's
+// one only when `space_is_break` (text a collector joined from lines), so "short- and" in authored prose is never a break. The tail's
 // first token must be a word of two letters or more, letters only up to a
 // trailing punctuation mark: "hyper-" followed by a stray "t" (a subscript
 // line folded into the paragraph) or by "x2" is not a broken word and
@@ -170,10 +174,10 @@ std::string rejoin_hyphenated_words(std::string_view text, HyphenationCounts* co
 
 // Repair 2 over every TEXT or PARAGRAPH item of the document, group
 // members included. A single space is a line break only in items produced
-// by `geometry_collectors`. Inline span ranges and provenance charspans
+// by `line_joined_collectors`. Inline span ranges and provenance charspans
 // move with the text past every removed run.
 HyphenationCounts rejoin_hyphenation(ai::pipestream::document::v1::Document* document,
-                                     const std::vector<std::string>& geometry_collectors = {});
+                                     const std::vector<std::string>& line_joined_collectors = {});
 
 // The word two fragments make when a hyphen sat between them at a line
 // end: kept hyphenated for a known compound, concatenated otherwise.

@@ -670,7 +670,7 @@ std::string rejoin_hyphenated_words(std::string_view text, HyphenationCounts* co
 }
 
 HyphenationCounts rejoin_hyphenation(docv1::Document* document,
-                                     const std::vector<std::string>& geometry_collectors) {
+                                     const std::vector<std::string>& line_joined_collectors) {
   HyphenationCounts counts;
   for (auto& item : *document->mutable_texts()) {
     if (!is_prose(item)) continue;
@@ -682,7 +682,7 @@ HyphenationCounts rejoin_hyphenation(docv1::Document* document,
     HyphenationCounts before = counts;
     std::vector<RemovedRun> removed;
     std::string repaired = rejoin_hyphenated_words(
-        base->text(), &counts, from_collectors(*base, geometry_collectors), &removed);
+        base->text(), &counts, from_collectors(*base, line_joined_collectors), &removed);
     if (counts.rejoined == before.rejoined &&
         counts.soft_hyphens_removed == before.soft_hyphens_removed) {
       continue;
@@ -971,7 +971,7 @@ RepairReport repair_document(docv1::Document* document, const RepairOptions& opt
     report.paragraphs_merged = merge_continuations(document, options);
   }
   if (options.rejoin_hyphenation) {
-    const HyphenationCounts counts = rejoin_hyphenation(document, options.geometry_collectors);
+    const HyphenationCounts counts = rejoin_hyphenation(document, options.line_joined_collectors);
     report.hyphens_rejoined = counts.rejoined;
     report.soft_hyphens_removed = counts.soft_hyphens_removed;
   }

@@ -576,8 +576,8 @@ go, and inline spans move with the text); and a paragraph a page or column
 break split, where the first part ends without terminal punctuation and the
 next body sibling starts lowercase, is merged with its provenance appended
 and every reference renumbered. The line break is a newline, or in text a
-geometry collector (`pdf`) joined from lines, also the single space the join
-left. Section headers, list items, captions and code are never touched; the
+collector joined from lines (the `pdf` text layer, grparse's own OCR and
+layout assembly, `vlm-convert`), also the single space the join left. Section headers, list items, captions and code are never touched; the
 demotion and the merge only take direct body children, while the rejoin
 visits every `TEXT` or `PARAGRAPH` item, group members included.
 `GRPARSE_REPAIR=off` disables the pass at

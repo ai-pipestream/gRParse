@@ -14,6 +14,7 @@
 
 #include <google/protobuf/util/message_differencer.h>
 
+#include "grparse/document_assembly.h"
 #include "grparse/document_repair.h"
 #include "support/check.h"
 
@@ -415,13 +416,52 @@ void verify_hyphen_rejoin_by_producer() {
                                          "long-term goals.", 1, 200.0, 220.0);
   document.mutable_texts(1)->mutable_text()->mutable_base()->add_source()->mutable_collector()
       ->set_collector("docx");
-  const grparse::HyphenationCounts counts = grparse::rejoin_hyphenation(&document, {"pdf"});
-  require(counts.rejoined == 1, "only the geometry collector's joined line rejoins");
+  const std::string transcribed = add_prose(&document, "A tran- scribed line.", 1, 300.0, 320.0);
+  document.mutable_texts(2)->mutable_text()->mutable_base()->add_source()->mutable_collector()
+      ->set_collector("vlm-convert");
+  const grparse::HyphenationCounts counts =
+      grparse::rejoin_hyphenation(&document, grparse::RepairOptions{}.line_joined_collectors);
+  require(counts.rejoined == 2, "only the line-joined collectors' items rejoin");
   require(base_at(document, joined).text() == "The information flows.",
           "a pdf item's space after a hyphen is a line join");
   require(base_at(document, authored).text() ==
               "Plan for infor- mation and short- and long-term goals.",
           "an authored item's spaced hyphens are text");
+  require(base_at(document, transcribed).text() == "A transcribed line.",
+          "a VLM transcription's space after a hyphen is a line join");
+}
+
+// grparse's own OCR and layout assembly joins a prose region's lines with
+// one space, so a hyphen a scanned line ended on reaches the pass as
+// "infor- mation": the default options rejoin it there too, and each
+// member line's charspan follows the text.
+void verify_hyphen_rejoin_in_cv_assembly() {
+  grparse::OcrPage page{1000, 1000, {
+      {"Scanned infor-", {{60, 100}, {700, 100}, {700, 120}, {60, 120}}, 0.9F},
+      {"mation reads as one word.", {{60, 124}, {700, 124}, {700, 144}, {60, 144}}, 0.9F},
+  }};
+  page.regions = {{"text", 0.9F, 50, 90, 750, 150}};
+  docv1::Document document = base_document();
+  grparse::AssemblyCursor cursor;
+  std::string plain_text;
+  grparse::append_page_to_document(page, 1, &cursor, &document, &plain_text);
+  require(document.texts_size() == 1, "one region, one item");
+  const std::string ref = "#/texts/0";
+  const auto& assembled = base_at(document, ref);
+  require(assembled.text() == "Scanned infor- mation reads as one word.",
+          "assembly joins the region's lines with one space");
+  require(assembled.source_size() == 1 && assembled.source(0).collector().collector() == "grparse",
+          "the item names the grparse collector");
+
+  const grparse::RepairReport report = grparse::repair_document(&document);
+  require(report.hyphens_rejoined == 1, "the scanned line-break hyphen rejoins");
+  const auto& repaired = base_at(document, ref);
+  require(repaired.text() == "Scanned information reads as one word.",
+          "the paragraph reads as words");
+  require(repaired.prov_size() == 2 && repaired.prov(0).charspan().end() == 13 &&
+              repaired.prov(1).charspan().start() == 13 &&
+              repaired.prov(1).charspan().end() == 38,
+          "the member charspans meet at the joined word");
 }
 
 void verify_hyphen_rejoin_moves_spans() {
@@ -766,6 +806,7 @@ int main() {
       verify_reference_years_are_not_page_numbers,
       verify_hyphen_rejoin,
       verify_hyphen_rejoin_by_producer,
+      verify_hyphen_rejoin_in_cv_assembly,
       verify_hyphen_rejoin_moves_spans,
       verify_continuation_merged_across_pages,
       verify_continuation_applies_hyphen_rule,
