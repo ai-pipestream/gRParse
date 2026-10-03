@@ -1340,7 +1340,8 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
                            [&inputs] {
                              return inputs.context->IsCancelled() ||
                                     std::chrono::system_clock::now() >= inputs.inbound_deadline;
-                           });
+                           },
+                           inputs.inbound_deadline);
     }
     if (!route.fast_path) {
       // NATIVE asked for the text layer as it is; say what the models would
@@ -1534,7 +1535,8 @@ void derender_charts_if_configured(const std::shared_ptr<CollectorEndpoints>& co
   enrich.picture_description_min_confidence = inputs.picture_description_min_confidence;
   if (!enrich.any_job()) return;
   const ChartDerenderReport derendered =
-      derender_charts(collectors->enrich_channel(), enrich, &result->document, inbound_deadline);
+      derender_charts(collectors->enrich_channel(), enrich, &result->document, inbound_deadline,
+                      [context] { return context->IsCancelled(); });
   for (const std::string& warning : derendered.warnings) {
     result->warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, warning);
   }

@@ -8,11 +8,13 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include "ai/pipestream/enrich/v1/enrich_service.grpc.pb.h"
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
+#include "collectors/collector_support.h"
 #include "grparse/base64.h"
 #include "grparse/data_totals.h"
 
@@ -392,7 +394,8 @@ std::vector<ChartCandidate> picture_description_candidates(
 ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channel,
                                     const ChartDerenderOptions& options,
                                     docv1::Document* document,
-                                    CollectorDeadline inbound_deadline) {
+                                    CollectorDeadline inbound_deadline,
+                                    CollectorCancelled cancelled) {
   ChartDerenderReport report;
   if (!options.any_job()) return report;
 
@@ -438,6 +441,9 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
 
   auto stub = enrichv1::EnrichService::NewStub(channel);
   grpc::ClientContext context;
+  // The leg ends with the inbound call that asked for it, like every
+  // collector leg, instead of running out its own cap.
+  const CancelWatch watch(context, std::move(cancelled));
   context.set_deadline(capped_collector_deadline(inbound_deadline, options.timeout));
   context.set_wait_for_ready(false);
   auto stream = stub->EnrichDocument(&context);
@@ -480,36 +486,57 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
   request_options->set_timeout_seconds(static_cast<uint32_t>(std::max<long long>(1, seconds)));
   if (!options.vlm_endpoint.empty()) request_options->set_vlm_endpoint(options.vlm_endpoint);
   if (options.concurrency != 0) request_options->set_concurrency(options.concurrency);
-  bool written = stream->Write(frame);
-  for (const ChartCandidate& candidate : images) {
-    if (!written) break;
-    frame.Clear();
-    enrichv1::ItemImage* image = frame.mutable_image();
-    image->set_self_ref(candidate.self_ref);
-    image->set_mimetype(candidate.mimetype);
-    image->set_data(candidate.bytes);
-    written = stream->Write(frame);
-  }
-  if (written) {
-    frame.Clear();
-    enrichv1::DocumentChunk* chunk = frame.mutable_chunk();
-    if (needs_full_document) {
-      // Full document so code/formula/description selectors see every item;
-      // picture uris stay (ItemImage still supplies bytes when stripped peers
-      // prefer crops, and inline data URIs remain readable).
-      docv1::Document request_doc = *document;
-      for (docv1::PictureItem& picture : *request_doc.mutable_pictures()) {
-        if (picture.has_image()) picture.mutable_image()->clear_uri();
-      }
-      chunk->set_data(request_doc.SerializeAsString());
-    } else {
-      chunk->set_data(
-          chart_derender_request_document(*document, chart_candidates).SerializeAsString());
+  // The document chunk is serialized before the writer starts: the read loop
+  // below folds answers into `document` while frames still go out.
+  std::string document_chunk;
+  if (needs_full_document) {
+    // Full document so code/formula/description selectors see every item;
+    // picture uris stay (ItemImage still supplies bytes when stripped peers
+    // prefer crops, and inline data URIs remain readable).
+    docv1::Document request_doc = *document;
+    for (docv1::PictureItem& picture : *request_doc.mutable_pictures()) {
+      if (picture.has_image()) picture.mutable_image()->clear_uri();
     }
-    chunk->set_complete(true);
-    written = stream->Write(frame);
+    document_chunk = request_doc.SerializeAsString();
+  } else {
+    document_chunk =
+        chart_derender_request_document(*document, chart_candidates).SerializeAsString();
   }
-  stream->WritesDone();
+  // The frames go out on their own thread while this one reads: enrich
+  // answers as it works, and once its response channel and this client's
+  // receive window are full it stops reading, so an upload that sent every
+  // image before reading would stall against it until the deadline.
+  std::thread writer([&stream, &frame, &images, &document_chunk] {
+    bool written = stream->Write(frame);
+    for (const ChartCandidate& candidate : images) {
+      if (!written) break;
+      frame.Clear();
+      enrichv1::ItemImage* image = frame.mutable_image();
+      image->set_self_ref(candidate.self_ref);
+      image->set_mimetype(candidate.mimetype);
+      image->set_data(candidate.bytes);
+      written = stream->Write(frame);
+    }
+    if (written) {
+      frame.Clear();
+      enrichv1::DocumentChunk* chunk = frame.mutable_chunk();
+      chunk->set_data(std::move(document_chunk));
+      chunk->set_complete(true);
+      written = stream->Write(frame);
+    }
+    stream->WritesDone();
+  });
+  // A read loop that leaves early (an exception) cancels the call so the
+  // writer cannot stay blocked; Finish must not race a Write either way.
+  struct WriterGuard {
+    grpc::ClientContext& context;
+    std::thread& writer;
+    ~WriterGuard() {
+      if (!writer.joinable()) return;
+      context.TryCancel();
+      writer.join();
+    }
+  } writer_guard{context, writer};
 
   int skipped_events = 0;
   int chart_skips = 0;
@@ -587,6 +614,7 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
     }
     event.Clear();
   }
+  writer.join();
   const grpc::Status status = stream->Finish();
   if (!status.ok()) {
     report.warnings.push_back("document enrich: enrich service " +
