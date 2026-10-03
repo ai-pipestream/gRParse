@@ -64,6 +64,9 @@ class CanonicalJsonRenderer : public render::CanonicalJsonParts {
   }
 
  private:
+  // Every table grid this document's render builds spends from it.
+  render::GridBudget grid_budget_;
+
   // The typed barcode annotations project into the dialect as one
   // namespaced custom field; the wire itself never carries the untyped
   // copy. The reference-side importer synthesizes the identical entry, so
@@ -207,7 +210,7 @@ class CanonicalJsonRenderer : public render::CanonicalJsonParts {
     // and is ignored. Spanned cells repeat at every position they cover, and
     // grid entries render as plain cells (no ref, matching the computed
     // field's type).
-    const auto grid = derived_table_grid(data);
+    const auto grid = derived_table_grid(data, grid_budget_);
     writer_.key("grid");
     writer_.begin_array();
     for (std::size_t row = 0; row < grid.size(); ++row) {

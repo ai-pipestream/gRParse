@@ -2,8 +2,13 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <optional>
+#include <print>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -167,19 +172,47 @@ std::string build_rule(const std::vector<int>& widths) {
 }  // namespace
 
 std::vector<std::vector<std::string>> table_rows(
-    const docv1::TableData& data, const CellTextResolver& resolve_ref) {
-  const auto grid = derived_table_grid(data);
+    const std::vector<std::vector<const docv1::TableCell*>>& grid,
+    const CellTextResolver& resolve_ref, GridBudget& budget) {
+  // A cell that points at another item resolves at its first position and
+  // once more at its second, and that second text stands for every later
+  // repeat. The two can differ: the first resolution consumes the item's
+  // subtree, so a group renders its children only once. The grid charged
+  // the repeats by the cell's own text, which says nothing of what the
+  // reference serializes to, so each repeat is charged again by its
+  // resolved length and renders empty once that no longer fits.
+  std::unordered_map<const docv1::TableCell*, std::optional<std::string>> repeats;
   std::vector<std::vector<std::string>> out;
   out.reserve(grid.size());
   for (const auto& row : grid) {
     std::vector<std::string> texts;
     texts.reserve(row.size());
     for (const auto* cell : row) {
-      std::string text;
-      if (cell != nullptr) {
-        text = cell->has_ref() ? resolve_ref(cell->ref().ref()) : cell->text();
+      if (cell == nullptr) {
+        texts.emplace_back();
+        continue;
       }
-      texts.push_back(row_safe(text));
+      if (!cell->has_ref()) {
+        texts.push_back(row_safe(cell->text()));
+        continue;
+      }
+      auto [entry, first] = repeats.try_emplace(cell);
+      if (first) {
+        texts.push_back(row_safe(resolve_ref(cell->ref().ref())));
+        continue;
+      }
+      if (!entry->second.has_value()) entry->second = row_safe(resolve_ref(cell->ref().ref()));
+      if (budget.spend_repeats(1, static_cast<std::int64_t>(entry->second->size()))) {
+        texts.push_back(*entry->second);
+        continue;
+      }
+      if (budget.first_truncation()) {
+        std::println(stderr,
+                     "grparse: a spanned table cell's reference exceeds the document's "
+                     "span budget; its later positions render empty, and later "
+                     "truncations in this document are not logged");
+      }
+      texts.emplace_back();
     }
     out.push_back(std::move(texts));
   }
@@ -215,11 +248,13 @@ std::size_t count_header_rows(const std::vector<std::vector<const docv1::TableCe
 }
 
 std::string table_markdown(const docv1::TableData& data,
-                           const CellTextResolver& resolve_ref, bool compact) {
-  const Rows rows = table_rows(data, resolve_ref);
+                           const CellTextResolver& resolve_ref, GridBudget& budget,
+                           bool compact) {
+  const auto grid = derived_table_grid(data, budget);
+  const Rows rows = table_rows(grid, resolve_ref, budget);
   if (rows.empty()) return std::string();
   const std::size_t columns = rows.front().size();
-  const std::size_t num_headers = std::min(count_header_rows(derived_table_grid(data)), rows.size());
+  const std::size_t num_headers = std::min(count_header_rows(grid), rows.size());
   const Rows header_rows(rows.begin(), rows.begin() + static_cast<std::ptrdiff_t>(num_headers));
   const Rows body(rows.begin() + static_cast<std::ptrdiff_t>(num_headers), rows.end());
   const std::vector<std::string> headers = flatten_header_rows(header_rows, columns);

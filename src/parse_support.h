@@ -13,14 +13,17 @@
 #include <exception>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include <grpcpp/grpcpp.h>
 
+#include "ai/pipestream/ebcdic/v1/ebcdic.pb.h"
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
 #include "grparse/collector_coordinator.h"
 #include "grparse/document_parser_service.h"
 #include "grparse/page_scheduler.h"
+#include "lolhtml/v1/lolhtml_service.pb.h"
 
 namespace grparse {
 
@@ -49,6 +52,15 @@ bool local_collector(ai::pipestream::parse::v1::Collector id);
 CollectorOutcome run_local_collector(ai::pipestream::parse::v1::Collector id,
                                      const std::string& bytes);
 
+// The rules a request carries for the collectors that cannot run without
+// them, in each collector's own typed form. The ebcdic options hold no
+// layout and lol_html is empty when the request gave none; that collector's
+// leg then fails before dialing.
+struct CollectorRules {
+  ai::pipestream::ebcdic::v1::ParseOptions ebcdic;
+  std::optional<lolhtml::v1::ExtractOptions> lol_html;
+};
+
 // Dials one Document-emitting remote collector and returns its outcome.
 // Configuration failures are outcomes too, so the parse degrades collector
 // by collector no matter where the failure sits. The office collector keeps
@@ -64,9 +76,7 @@ CollectorOutcome run_remote_collector(
     ai::pipestream::parse::v1::Collector id,
     const std::shared_ptr<CollectorEndpoints>& endpoints,
     const std::string& document_id, const std::string& filename,
-    const std::string& content_type, const std::string& bytes,
-    const std::string& ebcdic_layout_json,
-    const std::string& lol_html_options_json,
+    const std::string& content_type, const std::string& bytes, const CollectorRules& rules,
     CollectorDeadline inbound_deadline, CollectorCancelled cancelled = {});
 
 // Validation both surfaces share: the unary options message and the

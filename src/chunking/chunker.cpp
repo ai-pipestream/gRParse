@@ -121,8 +121,9 @@ std::vector<std::string> flattened_cells(
   return texts;
 }
 
-std::string serialize_table_triplets(const docv1::TableData& data) {
-  const auto grid = table_grid(data);
+std::string serialize_table_triplets(const docv1::TableData& data,
+                                     render::GridBudget& budget) {
+  const auto grid = table_grid(data, budget);
   if (grid.empty()) return std::string();
   std::size_t columns = 0;
   for (const auto& row : grid) columns = std::max(columns, row.size());
@@ -186,8 +187,9 @@ std::string serialize_table_triplets(const docv1::TableData& data) {
   return join(entries, ". ");
 }
 
-std::string serialize_table_markdown(const docv1::TableData& data) {
-  const auto grid = table_grid(data);
+std::string serialize_table_markdown(const docv1::TableData& data,
+                                     render::GridBudget& budget) {
+  const auto grid = table_grid(data, budget);
   if (grid.empty()) return std::string();
   std::size_t columns = 0;
   for (const auto& row : grid) columns = std::max(columns, row.size());
@@ -254,6 +256,8 @@ class Chunker {
   const ChunkOptions& options_;
   std::set<std::string> visited_;
   std::set<std::string> caption_refs_;
+  // Every table this document's chunks serialize spends from it.
+  render::GridBudget grid_budget_;
   // Caption references already taken by a floating item, so a reference two
   // of them name is serialized once.
   std::set<std::string> claimed_;
@@ -588,8 +592,8 @@ class Chunker {
     chunk.captions = caption_texts(table.captions(), &chunk);
     std::vector<std::string> lines = chunk.captions;
     const std::string body = options_.use_markdown_tables
-                                 ? serialize_table_markdown(table.data())
-                                 : serialize_table_triplets(table.data());
+                                 ? serialize_table_markdown(table.data(), grid_budget_)
+                                 : serialize_table_triplets(table.data(), grid_budget_);
     if (!body.empty()) lines.push_back(body);
     chunk.text = join(lines, "\n");
     if (trimmed(chunk.text).empty()) return;

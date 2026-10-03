@@ -10,8 +10,10 @@ namespace grparse {
 // few hundred-megabyte requests per worker, or a handful of clients each
 // streaming on 32 streams, outgrow the container; gRPC's own ResourceQuota
 // covers transport buffers only, never a deserialized request or a stream's
-// accumulated upload. A unary call is charged its request message on
-// admission, a stream each chunk as it arrives, and either is refused with
+// accumulated upload. A unary call is charged on admission for its request
+// message plus the copy its base64 source decodes to (and, on the chunk
+// surfaces, the sources they copy into the parse request); a stream is
+// charged each chunk as it arrives. Either is refused with
 // RESOURCE_EXHAUSTED the moment the charge would pass the ceiling.
 class InflightBytes final {
  public:

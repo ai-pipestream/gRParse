@@ -290,7 +290,7 @@ class DocTagsRenderer : RendererBase {
   // followed by the trimmed text, empty starts emit <ecel>, continuations
   // emit <ucel>/<lcel>/<xcel> by span direction, and <nl> closes each row.
   std::string otsl_cells(const docv1::TableData& data) const {
-    const auto grid = table_grid(data);
+    const auto grid = table_grid(data, grid_budget_);
     if (grid.empty()) return std::string();
     size_t columns = 0;
     for (const auto& row : grid) columns = std::max(columns, row.size());

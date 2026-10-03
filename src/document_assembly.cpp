@@ -1,11 +1,15 @@
 #include "grparse/document_assembly.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -937,6 +941,55 @@ void append_page_to_document(
   for (const auto& ref : page.body_order()) {
     document->mutable_body()->add_children()->set_ref(ref.ref());
   }
+}
+
+int group_list_items(pipestream::document::v1::Document* document) {
+  if (document == nullptr) throw std::invalid_argument("Document assembly output is required");
+  // The texts index of a body child that is a list item parented to the
+  // body itself, or nothing.
+  const auto body_list_item = [document](const std::string& ref) -> std::optional<int> {
+    constexpr std::string_view kTexts = "#/texts/";
+    if (!ref.starts_with(kTexts)) return std::nullopt;
+    int index = 0;
+    const char* last = ref.data() + ref.size();
+    const auto [end, error] = std::from_chars(ref.data() + kTexts.size(), last, index);
+    if (error != std::errc() || end != last || index < 0 || index >= document->texts_size()) {
+      return std::nullopt;
+    }
+    const auto& text = document->texts(index);
+    if (text.item_case() != pipestream::document::v1::BaseTextItem::kListItem ||
+        text.list_item().base().parent().ref() != "#/body") {
+      return std::nullopt;
+    }
+    return index;
+  };
+  google::protobuf::RepeatedPtrField<pipestream::document::v1::RefItem> children;
+  int made = 0;
+  const auto& body = document->body().children();
+  for (int at = 0; at < body.size();) {
+    if (!body_list_item(body[at].ref()).has_value()) {
+      *children.Add() = body[at++];
+      continue;
+    }
+    const std::string group_ref = "#/groups/" + std::to_string(document->groups_size());
+    auto* group = document->add_groups();
+    group->set_self_ref(group_ref);
+    group->mutable_parent()->set_ref("#/body");
+    group->set_content_layer(pipestream::document::v1::CONTENT_LAYER_BODY);
+    group->set_label(pipestream::document::v1::GROUP_LABEL_LIST);
+    group->set_name("list");
+    for (; at < body.size(); ++at) {
+      const std::optional<int> index = body_list_item(body[at].ref());
+      if (!index.has_value()) break;
+      document->mutable_texts(*index)->mutable_list_item()->mutable_base()->mutable_parent()->set_ref(
+          group_ref);
+      group->add_children()->set_ref(body[at].ref());
+    }
+    children.Add()->set_ref(group_ref);
+    ++made;
+  }
+  document->mutable_body()->mutable_children()->Swap(&children);
+  return made;
 }
 
 void append_consensus_claim(const std::vector<const OcrPage*>& pages,

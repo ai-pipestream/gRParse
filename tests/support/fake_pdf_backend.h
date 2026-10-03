@@ -26,6 +26,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -90,6 +91,13 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
   int render_calls() const {
     const std::lock_guard<std::mutex> lock(mutex_);
     return render_calls_;
+  }
+
+  // Holds every Render this long before answering, unless the client
+  // cancels the call first: a backend stuck on a page.
+  void stall_renders(std::chrono::milliseconds stall) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    render_stall_ = stall;
   }
 
   // The frame Parse reports geometry in; PAGE_SPACE_UNSPECIFIED (the
@@ -237,13 +245,20 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
     return grpc::Status::OK;
   }
 
-  grpc::Status Render(grpc::ServerContext*, const pdfv1::RenderRequest* request,
+  grpc::Status Render(grpc::ServerContext* context, const pdfv1::RenderRequest* request,
                       grpc::ServerWriter<pdfv1::RenderResponse>* writer) override {
     const auto [status, pages] = load(request->document());
+    std::chrono::milliseconds stall{0};
     {
       const std::lock_guard<std::mutex> lock(mutex_);
       ++render_calls_;
+      stall = render_stall_;
     }
+    const auto release = std::chrono::steady_clock::now() + stall;
+    while (std::chrono::steady_clock::now() < release && !context->IsCancelled()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    if (context->IsCancelled()) return grpc::Status(grpc::StatusCode::CANCELLED, "cancelled");
     if (status != pdfv1::LOAD_STATUS_OK) {
       pdfv1::RenderResponse head;
       head.mutable_head()->set_load_status(status);
@@ -307,6 +322,7 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
   std::map<std::string, std::vector<FakePdfPage>> known_;
   std::map<std::string, std::vector<FakePdfPage>> by_hash_;
   int render_calls_ = 0;
+  std::chrono::milliseconds render_stall_{0};
   pdfv1::PageSpace page_space_ = pdfv1::PAGE_SPACE_UNSPECIFIED;
   std::set<std::string> blocked_;
   int held_probes_ = 0;

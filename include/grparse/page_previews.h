@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -45,10 +46,14 @@ cv::Mat preview_of(const cv::Mat& raster);
 // limits the pages rendered, so a document trimmed to a span gains no entries
 // outside it. `stop` is polled before each page (a cancelled request, a
 // passed deadline); once it answers true the pages rendered so far stay and
-// the rest are skipped.
-void attach_page_previews(std::shared_ptr<const std::string> bytes,
-                          ai::pipestream::document::v1::Document* document,
-                          std::optional<std::pair<int, int>> page_range = std::nullopt,
-                          const std::function<bool()>& stop = {});
+// the rest are skipped. The source's backend calls also run no later than
+// `deadline`, and a render in flight is cancelled once `stop` answers true:
+// a helper thread polls `stop` while pages render, so it must be safe to
+// call from another thread.
+void attach_page_previews(
+    std::shared_ptr<const std::string> bytes, ai::pipestream::document::v1::Document* document,
+    std::optional<std::pair<int, int>> page_range = std::nullopt,
+    const std::function<bool()>& stop = {},
+    std::chrono::system_clock::time_point deadline = std::chrono::system_clock::time_point::max());
 
 }  // namespace grparse

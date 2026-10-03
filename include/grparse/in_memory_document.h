@@ -78,6 +78,12 @@ inline constexpr uint64_t kDefaultMaxImagePixels = 200'000'000;
 inline constexpr size_t kMaxRasterPages = 4096;
 uint64_t max_image_pixels();
 
+// Whether an encoded image's own header (PNG, JPEG, TIFF, GIF, BMP, or
+// WebP) states a size within max_image_pixels() on every page. False when
+// the header cannot be read, so a caller decoding embedded or collector
+// images refuses what it cannot bound before cv::imdecode allocates.
+bool encoded_image_within_pixel_cap(const std::string& bytes);
+
 // The rasterization DPI a source uses when no per-document value arrives.
 inline constexpr double kDefaultRenderDpi = 200.0;
 

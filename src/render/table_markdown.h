@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "ai/pipestream/document/v1/document.pb.h"
+#include "renderer_base.h"
 
 namespace grparse::render {
 
@@ -18,11 +19,13 @@ namespace grparse::render {
 // that carries its text inline never reaches it.
 using CellTextResolver = std::function<std::string(const std::string& ref)>;
 
-// The cell text of the model's computed grid, with the two characters a
-// Markdown row cannot carry rewritten.
+// The cell text of the model's computed grid (derived_table_grid), with the
+// two characters a Markdown row cannot carry rewritten. A cell with a
+// reference resolves once; its repeats at the other positions it spans
+// spend their resolved length from `budget` and render empty past it.
 std::vector<std::vector<std::string>> table_rows(
-    const ai::pipestream::document::v1::TableData& data,
-    const CellTextResolver& resolve_ref);
+    const std::vector<std::vector<const ai::pipestream::document::v1::TableCell*>>& grid,
+    const CellTextResolver& resolve_ref, GridBudget& budget);
 
 // The number of leading grid rows that form the column header, the way the
 // reference resolves a spanned header to the one row GFM allows: rows on
@@ -38,9 +41,11 @@ std::size_t count_header_rows(
 // the header row. Stacked header rows flatten per column, joined with
 // " - " with consecutive duplicates (a row-spanning cell) dropped. With
 // `compact` the padding goes: every cell stripped, the rule one dash per
-// column (docling-core's compact_tables).
+// column (docling-core's compact_tables). The grid spends from `budget`, the
+// rendering document's grid budget.
 std::string table_markdown(const ai::pipestream::document::v1::TableData& data,
-                           const CellTextResolver& resolve_ref, bool compact = false);
+                           const CellTextResolver& resolve_ref, GridBudget& budget,
+                           bool compact = false);
 
 }  // namespace grparse::render
 

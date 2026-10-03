@@ -642,7 +642,8 @@ class DocumentStreamReactor final
     attach_page_previews(leg.bytes, document, leg.tuning.page_range,
                          [&gone, deadline = leg.deadline] {
                            return std::chrono::system_clock::now() >= deadline || gone();
-                         });
+                         },
+                         leg.deadline);
   }
 
   void note_pdf_fallback(const CollectorOutcome& outcome) {
@@ -694,7 +695,7 @@ class DocumentStreamReactor final
                       const std::weak_ptr<CallbackGate>& weak_gate) {
       deliver(weak_gate, id,
               run_remote_collector(id, endpoints, document_id, filename, content_type,
-                                   *bytes, std::string(), std::string(), inbound_deadline,
+                                   *bytes, CollectorRules{}, inbound_deadline,
                                    leg_cancelled(weak_gate)));
     });
   }

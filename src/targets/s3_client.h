@@ -38,6 +38,16 @@ struct S3Config {
 // S3-compatible store that does not care about regions accepts.
 std::string region_for_endpoint(const std::string& endpoint);
 
+// The parts of an endpoint as the client dials it: the scheme ("https" when
+// the endpoint names none), the authority (host and any port), and any path
+// ahead of the bucket, without trailing slashes.
+struct S3Endpoint {
+  std::string scheme;
+  std::string authority;
+  std::string path;
+};
+S3Endpoint parse_s3_endpoint(const std::string& endpoint);
+
 // One object PUT.  Returns the store's ETag for the written object, or an
 // empty string when the store returned none.  Throws std::runtime_error
 // naming the key on any transport or HTTP failure; the store's response body

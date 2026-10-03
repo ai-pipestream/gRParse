@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -14,6 +15,7 @@
 
 #include "grparse/base64.h"
 #include "grparse/document_geometry.h"
+#include "grparse/in_memory_document.h"
 #include "grparse/page_previews.h"
 
 namespace docv1 = ai::pipestream::document::v1;
@@ -36,7 +38,12 @@ std::string extension_for(std::string_view mimetype) {
 }
 
 cv::Mat decode(const std::string& bytes, int flags) {
-  if (bytes.empty()) return {};
+  // Embedded images are held to the raster input's pixel cap before any
+  // decoder allocates: a few KB of PNG can otherwise inflate to gigabytes.
+  if (bytes.empty() || bytes.size() > static_cast<size_t>(std::numeric_limits<int>::max()) ||
+      !encoded_image_within_pixel_cap(bytes)) {
+    return {};
+  }
   const cv::Mat buffer(1, static_cast<int>(bytes.size()), CV_8UC1,
                        const_cast<char*>(bytes.data()));
   try {

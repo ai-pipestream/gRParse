@@ -164,6 +164,7 @@ void verify_unread_options_are_rejected_unless_default() {
     options.mutable_picture_description_api()->set_url("http://vlm.test");
     options.mutable_picture_description_api()->set_prompt(
         "Describe this image in a few sentences.");
+    (*options.mutable_ocr_custom_config())["lang"].set_string_value("en");
     const grpc::Status status = grparse::validate_options(options, kSurface);
     require(status.ok(), "Docling defaults must pass: " + status.error_message());
   }
@@ -192,6 +193,21 @@ void verify_unread_options_are_rejected_unless_default() {
     o->mutable_picture_description_api()->set_url("http://vlm.test");
     (*o->mutable_picture_description_api()->mutable_params())["model"].set_string_value("x");
   });
+  rejects("vlm_pipeline_model_api.headers", [](parsev1::ConvertDocumentOptions* o) {
+    o->mutable_vlm_pipeline_model_api()->set_url("granite-docling");
+    (*o->mutable_vlm_pipeline_model_api()->mutable_headers())["Authorization"] = "Bearer x";
+  });
+  rejects("vlm_pipeline_model_api.params", [](parsev1::ConvertDocumentOptions* o) {
+    o->mutable_vlm_pipeline_model_api()->set_url("granite-docling");
+    (*o->mutable_vlm_pipeline_model_api()->mutable_params())["model"].set_string_value("x");
+  });
+  rejects("ocr_custom_config.lang", [](parsev1::ConvertDocumentOptions* o) {
+    (*o->mutable_ocr_custom_config())["lang"].set_string_value("fr");
+  });
+  rejects("ocr_custom_config.det_limit_side_len", [](parsev1::ConvertDocumentOptions* o) {
+    (*o->mutable_ocr_custom_config())["lang"].set_string_value("en");
+    (*o->mutable_ocr_custom_config())["det_limit_side_len"].set_int_value(960);
+  });
   {
     // The VLM pipeline does stop at the first failed page.
     parsev1::ConvertDocumentOptions options;
@@ -206,6 +222,45 @@ void verify_unread_options_are_rejected_unless_default() {
     options.set_chunking_preset("hierarchical");
     const grpc::Status status = grparse::validate_options(options, kSurface);
     require(status.ok(), status.error_message());
+  }
+}
+
+// The per-collector rules travel typed; the deprecated JSON forms still work
+// alone, a request that sets both forms of one is refused, and lol-html JSON
+// that does not parse is refused up front instead of failing the leg.
+void verify_collector_rules_are_typed() {
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.mutable_ebcdic_layout()->add_records()->set_name("CUSTOMER");
+    options.mutable_lol_html_options()->add_rules()->set_id("links");
+    const grpc::Status status = grparse::validate_options(options, kSurface);
+    require(status.ok(), "the typed rules pass: " + status.error_message());
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.set_ebcdic_layout_json(R"({"records": []})");
+    options.set_lol_html_options_json(R"({"rules":[{"id":"links","selector":"a"}]})");
+    const grpc::Status status = grparse::validate_options(options, kSurface);
+    require(status.ok(), "the deprecated JSON forms still pass alone: " + status.error_message());
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.mutable_ebcdic_layout()->add_records()->set_name("CUSTOMER");
+    options.set_ebcdic_layout_json(R"({"records": []})");
+    require_invalid(grparse::validate_options(options, kSurface),
+                    "ebcdic_layout and the deprecated ebcdic_layout_json");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.mutable_lol_html_options()->add_rules()->set_id("links");
+    options.set_lol_html_options_json(R"({"rules":[]})");
+    require_invalid(grparse::validate_options(options, kSurface),
+                    "lol_html_options and the deprecated lol_html_options_json");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.set_lol_html_options_json("not json");
+    require_invalid(grparse::validate_options(options, kSurface), "lolhtml.v1.ExtractOptions");
   }
 }
 
@@ -433,6 +488,7 @@ int main() {
       verify_chart_and_caption_options,
       verify_hybrid_chunking_is_validated,
       verify_unread_options_are_rejected_unless_default,
+      verify_collector_rules_are_typed,
       verify_is_pdf_prefers_the_signature,
       verify_status_from_exception_covers_every_throw,
       verify_outcome_from_exception_is_a_failure,
