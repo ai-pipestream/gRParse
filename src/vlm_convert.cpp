@@ -5,6 +5,7 @@
 #include <cmath>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -12,6 +13,7 @@
 #include <opencv2/imgcodecs.hpp>
 
 #include "ai/pipestream/vlm/v1/vlm_convert.grpc.pb.h"
+#include "collectors/collector_support.h"
 #include "grparse/document_merge.h"
 #include "grparse/in_memory_document.h"
 #include "grparse/page_previews.h"
@@ -174,6 +176,9 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
   std::unique_ptr<grpc::ClientReaderWriter<vlmv1::ConvertPagesRequest,
                                            vlmv1::ConvertPagesResponse>>
       stream;
+  // Cancels the open stream once the caller is gone, through the write
+  // phase and the read loop alike, like every other collector's call.
+  std::optional<CancelWatch> watch;
   vlmv1::ConvertPagesRequest frame;
   bool written = true;
   // Ends the dial early: the peer is told to stop before Finish, which would
@@ -228,6 +233,7 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
       context.set_deadline(capped_collector_deadline(inbound_deadline, options.timeout));
       context.set_wait_for_ready(false);
       stream = stub->ConvertPages(&context);
+      watch.emplace(context, cancelled);
       vlmv1::ConvertOptions* request_options = frame.mutable_options();
       request_options->set_preset(options.preset);
       if (!options.preset_raw.empty()) request_options->set_preset_raw(options.preset_raw);

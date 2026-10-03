@@ -258,6 +258,30 @@ void verify_cancel_and_deadline_stop_before_rendering() {
   require(fake.calls() == 0, "neither stopped request dialed the peer");
 }
 
+// A caller that goes away after the pages are sent cancels the stream while
+// the client waits on the peer's events, instead of waiting out the peer.
+void verify_cancel_after_upload_ends_the_read() {
+  StallingVlmConvertService stalling;
+  ServerFixture server(&stalling);
+  grparse::VlmConvertOptions options;
+  options.target = server.target();
+  options.timeout = std::chrono::milliseconds(30000);
+  docv1::Document document;
+  document.mutable_body()->set_self_ref("#/body");
+  const auto started = std::chrono::steady_clock::now();
+  // Still present for the page loop's own check, gone once the read waits.
+  const auto gone_at = started + std::chrono::milliseconds(300);
+  const grparse::VlmConvertReport report = grparse::convert_vlm_pages(
+      server.channel(), options, one_page_png(), /*pdf=*/false, &document,
+      grparse::kNoCollectorDeadline,
+      [gone_at] { return std::chrono::steady_clock::now() >= gone_at; });
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  require(report.pages_sent == 1, "the page goes out before the caller leaves");
+  require(!report.success && report.code == grpc::StatusCode::CANCELLED,
+          "the read ends cancelled: " + report.error);
+  require(elapsed < std::chrono::seconds(5), "the read does not wait out the peer");
+}
+
 void verify_missing_target_is_failed_precondition() {
   docv1::Document document;
   document.mutable_body()->set_self_ref("#/body");
@@ -290,6 +314,7 @@ int main() {
       verify_missing_target_is_failed_precondition,
       verify_abort_cancels_the_stream,
       verify_cancel_and_deadline_stop_before_rendering,
+      verify_cancel_after_upload_ends_the_read,
       verify_endpoints_lazy_channel,
   });
 }
