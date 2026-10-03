@@ -141,7 +141,9 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
   const double dpi = options.render_dpi > 0.0 ? options.render_dpi : kDefaultRenderDpi;
   std::shared_ptr<PageSource> source;
   try {
-    source = open_in_memory_document(std::move(bytes), pdf, dpi);
+    // A PDF makes its opening backend call on first use, after the watch
+    // below has tied the source to this request.
+    source = open_in_memory_document(std::move(bytes), pdf, dpi, SourceOpening::kOnFirstUse);
   } catch (const PdfBackendNotConfigured& ex) {
     report.error = std::string("vlm convert: ") + ex.what();
     report.code = grpc::StatusCode::FAILED_PRECONDITION;
@@ -151,14 +153,43 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
     report.code = grpc::StatusCode::INVALID_ARGUMENT;
     return report;
   }
-  if (!source || source->page_count() <= 0) {
+  if (!source) {
+    report.error = "vlm convert: document has no pages";
+    report.code = grpc::StatusCode::INVALID_ARGUMENT;
+    return report;
+  }
+
+  // The source's backend calls end with the request: they run no later than
+  // its deadline, and a call in flight (the opening Probe included) is
+  // cancelled once the caller goes.
+  const PageSourceWatch source_watch(source, inbound_deadline, [&cancelled, inbound_deadline] {
+    return (cancelled && cancelled()) || std::chrono::system_clock::now() >= inbound_deadline;
+  });
+
+  int page_count = 0;
+  try {
+    page_count = source->page_count();
+  } catch (const std::exception& ex) {
+    if (cancelled && cancelled()) {
+      report.error = "vlm convert: request cancelled";
+      report.code = grpc::StatusCode::CANCELLED;
+    } else if (std::chrono::system_clock::now() >= inbound_deadline) {
+      report.error = "vlm convert: deadline exceeded while opening the document";
+      report.code = grpc::StatusCode::DEADLINE_EXCEEDED;
+    } else {
+      report.error = std::string("vlm convert: could not open document: ") + ex.what();
+      report.code = grpc::StatusCode::INVALID_ARGUMENT;
+    }
+    return report;
+  }
+  if (page_count <= 0) {
     report.error = "vlm convert: document has no pages";
     report.code = grpc::StatusCode::INVALID_ARGUMENT;
     return report;
   }
 
   int first = 1;
-  int last = source->page_count();
+  int last = page_count;
   if (options.page_range.has_value()) {
     first = options.page_range->first;
     last = options.page_range->second;
@@ -167,19 +198,13 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
       report.code = grpc::StatusCode::INVALID_ARGUMENT;
       return report;
     }
-    if (first > source->page_count()) {
+    if (first > page_count) {
       report.error = "vlm convert: page_range start is past the end of the document";
       report.code = grpc::StatusCode::INVALID_ARGUMENT;
       return report;
     }
-    if (last > source->page_count()) last = source->page_count();
+    if (last > page_count) last = page_count;
   }
-
-  // The source's backend calls end with the request: they run no later than
-  // its deadline, and a render in flight is cancelled once the caller goes.
-  const PageSourceWatch source_watch(source, inbound_deadline, [&cancelled, inbound_deadline] {
-    return (cancelled && cancelled()) || std::chrono::system_clock::now() >= inbound_deadline;
-  });
 
   // Pages render, encode and go out one at a time, so memory holds one page's
   // raster and PNG, not the whole document's. The stream opens on the first

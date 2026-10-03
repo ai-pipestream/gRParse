@@ -370,6 +370,32 @@ void verify_cancel_reaches_a_stalled_render() {
           "the convert ends cancelled: " + report.error);
 }
 
+// The opening Probe runs after the source is tied to the request: a PDF
+// backend that hangs while loading the document ends with the caller.
+void verify_cancel_reaches_a_hung_open() {
+  grparse_test::ScopedPdfBackend pdf_backend;
+  const std::string pdf = "%PDF-vlm-hung-open";
+  pdf_backend.backend().add_document(pdf, {grparse_test::text_page({"one"})});
+  pdf_backend.backend().block_probe(pdf);
+  FakeVlmConvertService fake;
+  ServerFixture server(&fake);
+  grparse::VlmConvertOptions options;
+  options.target = server.target();
+  options.timeout = std::chrono::milliseconds(30000);
+  docv1::Document document;
+  document.mutable_body()->set_self_ref("#/body");
+  const auto started = std::chrono::steady_clock::now();
+  const grparse::VlmConvertReport report = grparse::convert_vlm_pages(
+      server.channel(), options, std::make_shared<const std::string>(pdf), /*pdf=*/true,
+      &document, grparse::kNoCollectorDeadline, [started] {
+        return std::chrono::steady_clock::now() - started > std::chrono::milliseconds(300);
+      });
+  require(std::chrono::steady_clock::now() - started < std::chrono::seconds(5),
+          "the hung Probe is cancelled, not waited out");
+  require(!report.success && report.code == grpc::StatusCode::CANCELLED,
+          "the convert ends cancelled: " + report.error);
+}
+
 void verify_missing_target_is_failed_precondition() {
   docv1::Document document;
   document.mutable_body()->set_self_ref("#/body");
@@ -405,6 +431,7 @@ int main() {
       verify_cancel_after_upload_ends_the_read,
       verify_answers_are_read_while_pages_go_out,
       verify_cancel_reaches_a_stalled_render,
+      verify_cancel_reaches_a_hung_open,
       verify_endpoints_lazy_channel,
   });
 }

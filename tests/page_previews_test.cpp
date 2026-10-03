@@ -124,6 +124,23 @@ void verify_stop_cancels_a_render_in_flight() {
   require(document.pages_size() == 0, "the cancelled page keeps no preview");
 }
 
+
+// The opening Probe is tied to the request too: a backend that hangs while
+// loading the document is cancelled once `stop` answers true.
+void verify_stop_cancels_a_hung_open() {
+  grparse_test::ScopedPdfBackend pdf_backend;
+  pdf_backend.backend().add_document(kTwoPagePdf, {grparse_test::text_page({"Hello"})});
+  pdf_backend.backend().block_probe(kTwoPagePdf);
+  docv1::Document document;
+  const auto started = std::chrono::steady_clock::now();
+  grparse::attach_page_previews(
+      std::make_shared<const std::string>(kTwoPagePdf), &document, std::nullopt,
+      [started] { return std::chrono::steady_clock::now() - started > std::chrono::milliseconds(300); });
+  require(std::chrono::steady_clock::now() - started < std::chrono::seconds(5),
+          "the hung Probe is cancelled, not waited out");
+  require(document.pages_size() == 0, "a document that never opened keeps no previews");
+}
+
 }  // namespace
 
 int main() {
@@ -134,5 +151,6 @@ int main() {
       verify_previews_honor_page_range,
       verify_previews_stop_when_asked,
       verify_stop_cancels_a_render_in_flight,
+      verify_stop_cancels_a_hung_open,
   });
 }
