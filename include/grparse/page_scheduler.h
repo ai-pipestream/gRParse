@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -44,9 +45,6 @@ class PageScheduler final {
     size_t assembly_workers = 2;
     size_t page_window = 4;
     size_t max_active_documents = 32;
-    // Concurrent Poppler parsers per PDF for the built-in page source.
-    // 0 tracks render_workers, which is what keeps render fan-out real.
-    size_t pdf_parsers = 0;
     // PNG-encode figure crops onto their regions in the inference stage.
     // Off by default: image bytes inflate every page event that has figures.
     bool capture_picture_images = false;
@@ -109,6 +107,10 @@ class PageScheduler final {
     // do_picture_classification). Unset keeps the scheduler default (run when
     // a FigureClassifier is installed). false skips; true runs when available.
     std::optional<bool> do_picture_classification;
+    // The absolute ceiling of the call that asked for this document: no PDF
+    // backend call made for it runs past it. max() means the call carried
+    // none, and each backend call keeps its own cap.
+    std::chrono::system_clock::time_point deadline = std::chrono::system_clock::time_point::max();
   };
 
   enum class DeliveryResult { kAccepted, kAcceptedAndRelease, kCancelled };

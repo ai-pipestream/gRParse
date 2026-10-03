@@ -258,6 +258,7 @@ class DocumentStreamReactor final
     plan.tuning = ocr_tuning(do_ocr_.has_value(), do_ocr_.value_or(true),
                              force_ocr_.value_or(false), render_scale_.has_value(),
                              render_scale_.value_or(0.0));
+    plan.tuning.deadline = context_->deadline();
     plan.bytes = std::make_shared<const std::string>(std::move(bytes_));
     plan.pdf = content_type_ == "application/pdf" || is_pdf(*plan.bytes, filename_);
     pdf_ = plan.pdf;

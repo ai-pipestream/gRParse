@@ -40,6 +40,8 @@ class FakeBackend final : public pdfv1::PdfBackendService::Service {
   // Zero-based pages whose Parse answers with an RPC error.
   std::set<uint32_t> parse_fail_pages;
   bool fail_render = false;
+  // Answers Render with a raster whose pixels are short of height * stride.
+  bool short_raster = false;
   int parse_calls = 0;
   int render_calls = 0;
 
@@ -109,7 +111,7 @@ class FakeBackend final : public pdfv1::PdfBackendService::Service {
     raster->set_stride_bytes(30);
     raster->set_pixel_format(pdfv1::PIXEL_FORMAT_BGR8);
     raster->set_dpi(request->dpi());
-    raster->set_pixels(std::string(300, '\x7f'));
+    raster->set_pixels(std::string(short_raster ? 290 : 300, '\x7f'));
     writer->Write(msg);
     return grpc::Status::OK;
   }
@@ -449,6 +451,42 @@ int main() {
     require(render_bad.service->render_calls == 1 &&
                 render_good.service->render_calls == 1,
             "render is tried once per target, in order");
+  }
+
+  // A malformed raster is a failed leg, not a failed page: the client
+  // rejects it as InvalidDocument and the next target serves the raster.
+  {
+    Server short_leg = start("short-raster", story, true);
+    Server render_good = start("render-good", story, true);
+    short_leg.service->short_raster = true;
+
+    const auto source = grparse::open_consensus_pdf_document(
+        bytes, {short_leg.target, render_good.target}, 144.0);
+    const cv::Mat mat = source->render_page(1);
+    require(!mat.empty() && render_good.service->render_calls == 1,
+            "the next backend serves the raster after a short one");
+  }
+
+  // Cancelling the consensus source cancels every leg: no later page call
+  // reaches a backend.
+  {
+    Server leg_a = start("leg-a", story, true);
+    Server leg_b = start("leg-b", story, true);
+    const auto source = grparse::open_consensus_pdf_document(
+        bytes, {leg_a.target, leg_b.target}, 144.0);
+    source->cancel();
+    require(!source->extract_digital_page(1).has_value(),
+            "a cancelled source yields no text candidates");
+    bool threw = false;
+    try {
+      static_cast<void>(source->render_page(1));
+    } catch (const grparse::InvalidDocument&) {
+      threw = true;
+    }
+    require(threw, "a cancelled source fails the raster");
+    require(leg_a.service->parse_calls == 0 && leg_b.service->parse_calls == 0 &&
+                leg_a.service->render_calls == 0 && leg_b.service->render_calls == 0,
+            "no backend is dialed after cancel");
   }
 
   // The vote's word fold: ASCII case, curly quotes and dashes, soft

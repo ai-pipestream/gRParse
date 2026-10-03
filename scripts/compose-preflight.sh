@@ -62,7 +62,6 @@ if [[ "$mode" == preflight ]]; then
     "base|compose.stack.yaml"
     "cpu|compose.stack.yaml compose.stack.cpu.yaml"
     "openvino|compose.stack.yaml compose.stack.openvino.yaml"
-    "arm64-cpu|compose.stack.yaml compose.stack.cpu.yaml compose.stack.arm64.yaml"
     "cpu-models|compose.stack.yaml compose.stack.cpu.yaml compose.stack.models.yaml"
     "openvino-models|compose.stack.yaml compose.stack.openvino.yaml compose.stack.models.yaml"
     "standalone-cpu-models|compose.stack.yaml compose.stack.cpu.yaml compose.stack.standalone.yaml compose.stack.models.yaml"

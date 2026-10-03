@@ -31,3 +31,7 @@ services:
   pdf-inspector:
     ports:
       - "50067:50067"
+
+  pdfium:
+    ports:
+      - "50069:50069"
