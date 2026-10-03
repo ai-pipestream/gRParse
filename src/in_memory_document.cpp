@@ -223,6 +223,46 @@ class RasterPageSource final : public PageSource {
 
 std::optional<OcrPage> PageSource::extract_digital_page(int) const { return std::nullopt; }
 
+bool encoded_image_within_pixel_cap(const std::string& bytes) {
+  std::optional<std::vector<RasterDims>> pages;
+  const auto at_least = [&bytes](size_t size) { return bytes.size() >= size; };
+  if (is_tiff(bytes)) {
+    pages = tiff_dims(bytes);
+  } else if (at_least(8) && bytes.compare(0, 8, "\x89PNG\r\n\x1a\n", 8) == 0) {
+    if (const auto dims = png_dims(bytes)) pages.emplace(1, *dims);
+  } else if (at_least(3) && bytes.compare(0, 3, "\xFF\xD8\xFF", 3) == 0) {
+    if (const auto dims = jpeg_dims(bytes)) pages.emplace(1, *dims);
+  } else if (at_least(10) &&
+             (bytes.compare(0, 6, "GIF87a") == 0 || bytes.compare(0, 6, "GIF89a") == 0)) {
+    // The logical screen, which every frame is decoded into.
+    pages.emplace(1, RasterDims{read_uint(bytes, 6, 2, true), read_uint(bytes, 8, 2, true)});
+  } else if (at_least(26) && bytes.compare(0, 2, "BM") == 0) {
+    // BITMAPINFOHEADER: signed width and height; a negative height means
+    // top-down rows.
+    const auto width = static_cast<int32_t>(read_uint(bytes, 18, 4, true));
+    const auto height = static_cast<int32_t>(read_uint(bytes, 22, 4, true));
+    pages.emplace(1, RasterDims{static_cast<uint64_t>(std::abs(static_cast<int64_t>(width))),
+                                static_cast<uint64_t>(std::abs(static_cast<int64_t>(height)))});
+  } else if (at_least(30) && bytes.compare(0, 4, "RIFF") == 0 &&
+             bytes.compare(8, 4, "WEBP") == 0) {
+    if (bytes.compare(12, 4, "VP8X") == 0) {
+      pages.emplace(1, RasterDims{read_uint(bytes, 24, 3, true) + 1ULL,
+                                  read_uint(bytes, 27, 3, true) + 1ULL});
+    } else if (bytes.compare(12, 4, "VP8 ") == 0) {
+      pages.emplace(1, RasterDims{read_uint(bytes, 26, 2, true) & 0x3FFFU,
+                                  read_uint(bytes, 28, 2, true) & 0x3FFFU});
+    } else if (bytes.compare(12, 4, "VP8L") == 0) {
+      const uint32_t bits = read_uint(bytes, 21, 4, true);
+      pages.emplace(1, RasterDims{(bits & 0x3FFFU) + 1ULL, ((bits >> 14) & 0x3FFFU) + 1ULL});
+    }
+  }
+  if (!pages.has_value()) return false;
+  const uint64_t limit = max_image_pixels();
+  return std::ranges::all_of(*pages, [limit](const RasterDims& dims) {
+    return dims.width != 0 && dims.height != 0 && dims.width * dims.height <= limit;
+  });
+}
+
 uint64_t max_image_pixels() {
   const char* configured = std::getenv("GRPARSE_MAX_IMAGE_PIXELS");
   if (configured == nullptr) return kDefaultMaxImagePixels;

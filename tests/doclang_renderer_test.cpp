@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdlib>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -466,6 +467,19 @@ void verify_doclang_image_modes() {
           "the crop is the provenance box scaled from page units to image pixels");
 }
 
+// A page image over GRPARSE_MAX_IMAGE_PIXELS is never decoded for a crop:
+// its header is checked first, and the picture is written without a source.
+void verify_embedded_crop_honors_pixel_cap() {
+  const Fixture fixture = image_fixture();
+  setenv("GRPARSE_MAX_IMAGE_PIXELS", "100", 1);
+  const std::string embedded =
+      render_doclang(fixture.document, with_mode(DoclangOptions::ImageMode::kEmbedded));
+  unsetenv("GRPARSE_MAX_IMAGE_PIXELS");
+  const std::string own_uri = data_uri("image/png", fixture.own_png);
+  require(embedded.contains("<picture uri=\"" + own_uri + "\"/>\n  <picture/>\n"),
+          "the over-cap page image yields no crop:\n" + embedded);
+}
+
 void verify_doclang_namespace_switch() {
   const docv1::Document document = base_document("ns.pdf");
   require_equal(render_doclang(document), kRoot + "</doclang>",
@@ -616,5 +630,6 @@ int main() {
       verify_dclx_rejects_embedded,
       verify_dclx_namespace_switch,
       verify_dclx_transcodes_other_formats_to_png,
+      verify_embedded_crop_honors_pixel_cap,
   });
 }
