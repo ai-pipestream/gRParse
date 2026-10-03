@@ -27,6 +27,7 @@
 #include "grparse/heading_hierarchy.h"
 #include "grparse/input_format.h"
 #include "grparse/page_previews.h"
+#include "grparse/pdf_form_widgets.h"
 #include "grparse/schema_version.h"
 #include "grparse/vlm_convert.h"
 #include "parse_support.h"
@@ -1626,6 +1627,17 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
         repair.has_value() &&
         run_repair_pass(&result.document, *repair).changed_text_or_arenas();
     derender_charts_if_configured(collectors, context, inputs.inbound_deadline, inputs, &result);
+    // AcroForm widgets join the finished body as field items, whichever
+    // path produced it; the backend that owns the PDF layer supplies them
+    // (pdf_form_widgets.h). Appending to the arenas leaves the offset table
+    // below describing the same items.
+    if (pdf && !context->IsCancelled()) {
+      if (auto warning = fold_pdf_form_widgets_from_backend(*bytes, inputs.inbound_deadline,
+                                                            &result.document)) {
+        result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
+                                     std::move(*warning));
+      }
+    }
     // The document is final here: every surface renders, chunks or delivers
     // exactly this, so the structural rules check this.
     const grpc::Status structure_status =

@@ -280,6 +280,29 @@ target. A raster whose reported `dpi` differs from the requested one is
 resized to the requested DPI, so it stays in the frame the text boxes are
 scaled to.
 
+## AcroForm widgets (added 2026-10-02)
+
+With `GRPARSE_PDF_BACKEND` set, a PDF parse ends with one more Parse call
+for `PDF_FAMILY_FORM_FIELDS` alone (`src/pdf_form_widgets.cpp`), after the
+body is final, so it works for the CV path, the inspector's fast path and
+a collector merge alike. Each widget becomes a `FieldItem` under one
+`FieldRegionItem` per page (placed in the body after that page's
+content), with a `field_key` text (the tooltip, else the field name) and
+a value child (`field_value` with kind `fillable` or `read_only`, or a
+`checkbox_selected`/`checkbox_unselected` text for check boxes and radio
+buttons). The raw widget state that docling-core keeps on `PdfWidget`
+(#733) is on the item as typed fields: `field_kind`, `value`,
+`default_value`, `field_flags` (the inherited `/Ff`), `appearance_state`
+(the widget `/AS` with the slash), `read_only`, `description` (`/TU`).
+The canonical JSON renders the region, items and texts and leaves those
+typed fields out. Boxes land in the page's space (raster pixels top-left
+on the CV path, points bottom-left on the inspector path). In consensus
+mode the first target that answers wins; there is nothing to vote on. A
+backend that marks the family absent (grpc-pdfium does for a document
+without a form) ends the call at the header. The streaming page events
+(`StreamProcessDocument`) do not include field items yet; `PageData` has
+no slot for them.
+
 ## Open items (from the 2026-09-04 review)
 
 Fixed the same day: consensus failure isolation (a backend dying
@@ -309,8 +332,9 @@ Still open, tracked here:
 - Tier 0 TextCell union: only the qpdf-based backend fills direction,
   space width and rendering mode; grpc-pdfium and grpc-poppler leave them
   unset.
-- grpc-poppler still speaks poppler-cpp only; the core/glib surface for
-  annotations, forms and the struct tree is design intent, not built.
+- grpc-poppler reads AcroForm widgets through poppler's core API (its
+  own build installs the core headers); annotations and the struct tree
+  through the core/glib surface are still design intent, not built.
 - Page-space frame (measured 2026-10-02 against the published images with
   a one-word page at /Rotate 0, 90, 180, 270 and with an offset CropBox):
   grpc-pdfium follows the contract (user space before /Rotate, the stored
