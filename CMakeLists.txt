@@ -698,6 +698,7 @@ add_library(grparse_core STATIC
   src/office_fold/writer_fold.cpp
   src/document_merge.cpp
   src/document_repair.cpp
+  src/structure_repair.cpp
   src/epub_book.cpp
   src/document_render.cpp
   src/render/renderer_base.cpp
@@ -741,6 +742,7 @@ add_library(grparse_core STATIC
   src/parse_support.cpp
   src/input_format.cpp
   src/source_parse.cpp
+  src/structure_validation.cpp
   src/document_parser_service.cpp
   src/document_streaming_service.cpp
   src/office_collector.cpp
@@ -814,6 +816,8 @@ if(BUILD_TESTING)
     document-merge-test
     document-render-test
     document-repair-test
+    structure-rules-test
+    structure-repair-test
     epub-book-test
     figure-classifier-test
     gdocs-renderer-test

@@ -80,7 +80,10 @@ std::string format_metrics(const grparse::PageScheduler::Metrics& current,
        << ",titles=" << repairs.titles_merged << ",levels=" << repairs.heading_levels_assigned
        << ",reordered=" << repairs.body_items_reordered << ",splits=" << repairs.headings_split
        << ",demoted=" << repairs.headings_demoted << ",form_rows=" << repairs.form_rows_split
-       << "}"
+       << ",furniture_tree=" << repairs.furniture_tree_migrated
+       << ",orphans=" << repairs.orphans_repaired
+       << ",list_wraps=" << repairs.list_children_wrapped
+       << ",empty_groups=" << repairs.empty_groups_removed << "}"
        << " office_cv{added=" << office_cv.pictures_added
        << ",anchored=" << office_cv.pictures_anchored << "}"
        << " queues{render=" << current.pages_waiting_for_render

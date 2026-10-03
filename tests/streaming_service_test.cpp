@@ -25,6 +25,7 @@
 #include "grparse/document_assembly.h"
 #include "grparse/document_parser_service.h"
 #include "grparse/page_scheduler.h"
+#include "grparse/structure_rules.h"
 #include "support/check.h"
 #include "support/fake_pdf_backend.h"
 
@@ -1229,6 +1230,92 @@ void verify_stream_storage_content_type_routes_in_process(TestServer* server) {
               docv1::DOC_ITEM_LABEL_CHECKBOX_SELECTED,
           "the completed task survived the stream");
   require(events.at(1).has_complete(), "terminal metadata event");
+}
+
+// The structural rules reach the wire on both surfaces: REPORT returns
+// exactly the findings the library computes on the returned document,
+// ENFORCE fails exactly when there are any, the default leaves the response
+// without findings, and a contradictory option is refused by name.
+std::vector<std::pair<int, std::string>> local_findings(const docv1::Document& document) {
+  std::vector<std::pair<int, std::string>> out;
+  for (const auto& finding : grparse::docling_structure_findings(document)) {
+    out.emplace_back(static_cast<int>(finding.rule), finding.self_ref);
+  }
+  return out;
+}
+
+std::vector<std::pair<int, std::string>> wire_findings(
+    const google::protobuf::RepeatedPtrField<pipestream::parse::v1::StructureFinding>& findings) {
+  std::vector<std::pair<int, std::string>> out;
+  for (const auto& finding : findings) out.emplace_back(finding.rule(), finding.self_ref());
+  return out;
+}
+
+grpc::Status convert_storage(TestServer* server,
+                             const pipestream::parse::v1::ConvertDocumentOptions& options,
+                             pipestream::parse::v1::ConvertSourceResponse* response) {
+  auto client = server->unary_stub();
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  pipestream::parse::v1::ConvertSourceRequest request;
+  auto* source = request.mutable_request()->add_sources()->mutable_file();
+  source->set_filename("handbook.confluence");
+  source->set_base64_string(grparse::encode_base64(kStorageBody, sizeof(kStorageBody) - 1));
+  *request.mutable_request()->mutable_options() = options;
+  return client->ConvertSource(&context, request, response);
+}
+
+void verify_structure_validation_on_the_wire(TestServer* server) {
+  pipestream::parse::v1::ConvertSourceResponse plain;
+  require(convert_storage(server, {}, &plain).ok(), "the plain conversion succeeds");
+  require(plain.response().structure_findings().empty(), "validation is off by default");
+
+  pipestream::parse::v1::ConvertDocumentOptions report;
+  report.set_structure_validation(pipestream::parse::v1::STRUCTURE_VALIDATION_REPORT);
+  pipestream::parse::v1::ConvertSourceResponse reported;
+  require(convert_storage(server, report, &reported).ok(), "REPORT succeeds");
+  const auto expected = local_findings(reported.response().document().doc());
+  require(wire_findings(reported.response().structure_findings()) == expected,
+          "REPORT returns the findings of the returned document");
+
+  pipestream::parse::v1::ConvertDocumentOptions enforce;
+  enforce.set_structure_validation(pipestream::parse::v1::STRUCTURE_VALIDATION_ENFORCE);
+  pipestream::parse::v1::ConvertSourceResponse enforced;
+  const grpc::Status status = convert_storage(server, enforce, &enforced);
+  require(expected.empty() ? status.ok()
+                           : status.error_code() == grpc::StatusCode::FAILED_PRECONDITION,
+          "ENFORCE fails exactly when the document breaks a rule: " + status.error_message());
+
+  pipestream::parse::v1::ConvertDocumentOptions contradictory;
+  contradictory.add_structure_validation_rules(pipestream::parse::v1::STRUCTURE_RULE_EMPTY_GROUP);
+  pipestream::parse::v1::ConvertSourceResponse refused;
+  const grpc::Status rejected = convert_storage(server, contradictory, &refused);
+  require(rejected.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              rejected.error_message().contains("structure_validation_rules"),
+          "a rule filter without validation is refused: " + rejected.error_message());
+
+  // The stream attaches REPORT findings to each collector document.
+  auto client = server->stub();
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  auto stream = client->StreamProcessDocument(&context);
+  pipestream::parse::v1::DocumentChunk source;
+  source.set_document_id("structure-test");
+  source.set_filename("page.bin");
+  source.set_content_type(grparse::kConfluenceStorageMimetype);
+  source.set_data(kStorageBody);
+  source.set_complete(true);
+  source.set_structure_validation(pipestream::parse::v1::STRUCTURE_VALIDATION_REPORT);
+  require(stream->Write(source), "could not write the structure chunk");
+  stream->WritesDone();
+  std::vector<pipestream::parse::v1::DocumentStreamEvent> events;
+  pipestream::parse::v1::DocumentStreamEvent event;
+  while (stream->Read(&event)) events.push_back(event);
+  require(stream->Finish().ok(), "the REPORT stream succeeds");
+  require(!events.empty() && events.at(0).has_collector_document(), "a collector document");
+  const auto& streamed = events.at(0).collector_document();
+  require(wire_findings(streamed.structure_findings()) == local_findings(streamed.document()),
+          "the stream reports the findings of the document it emits");
 }
 
 void verify_get_service_info(TestServer* server) {
@@ -2779,6 +2866,7 @@ int main() {
         verify_deadline_cancels_scheduler_work();
         verify_unary_storage_suffix_routes_in_process(&server);
         verify_stream_storage_content_type_routes_in_process(&server);
+        verify_structure_validation_on_the_wire(&server);
         verify_get_service_info(&server);
         verify_unary_callback_path_admits_concurrent_conversions();
         verify_unary_cancellation_finishes_without_wedging();

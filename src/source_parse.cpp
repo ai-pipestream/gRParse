@@ -31,6 +31,7 @@
 #include "grparse/schema_version.h"
 #include "grparse/vlm_convert.h"
 #include "parse_support.h"
+#include "structure_validation.h"
 
 namespace fs = std::filesystem;
 namespace pipestream = ai::pipestream;
@@ -165,6 +166,9 @@ bool implemented_option(std::string_view name) {
       "ocr_custom_config",
       "picture_classification_custom_config",
       "doclang_include_namespace",
+      "structure_validation",
+      "structure_validation_rules",
+      "structure_repairs",
   };
   return std::ranges::find(kImplemented, name) != std::end(kImplemented);
 }
@@ -665,6 +669,9 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
   if (!custom_config_status.ok()) return custom_config_status;
   const grpc::Status heading_status = validate_heading_options(options, surface);
   if (!heading_status.ok()) return heading_status;
+  const grpc::Status structure_status =
+      validate_structure_request(StructureRequest::from(options), surface);
+  if (!structure_status.ok()) return structure_status;
   // COLLECTOR_VLM selects the VLM convert pipeline rather than a fan-out leg.
   // By itself it runs grpc-vlm-convert; mixed with other collectors is rejected.
   bool wants_vlm_collector = false;
@@ -1552,7 +1559,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
                           const pipestream::parse::v1::ConvertDocumentRequest& request,
                           PageScheduler& scheduler,
                           const std::shared_ptr<CollectorEndpoints>& collectors,
-                          const std::optional<RepairOptions>& repair,
+                          const std::optional<RepairOptions>& server_repair,
                           const std::string& surface, SourceParse* parsed) {
   const auto& sources = request.sources();
   if (sources.size() != 1 || !sources.Get(0).has_file()) {
@@ -1570,6 +1577,10 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
       request.options(), collectors != nullptr ? collectors->chart_policy() : kDefaultChartPolicy,
       surface);
   if (!chart_extraction.has_value()) return chart_extraction.error();
+  // The structural repairs a request opts into join the server's repair
+  // pass; the validation runs once the document is final.
+  const StructureRequest structure = StructureRequest::from(request.options());
+  const std::optional<RepairOptions> repair = repair_for_request(server_repair, structure);
   try {
     const auto& source = sources.Get(0).file();
     auto bytes = std::make_shared<const std::string>(decode_base64(source.base64_string()));
@@ -1641,6 +1652,9 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
       (void)repaired_text;
       derender_charts_if_configured(collectors, context, inputs.inbound_deadline, inputs,
                                     &result);
+      const grpc::Status structure_status = check_structure(
+          result.document, structure, surface, &parsed->structure_findings);
+      if (!structure_status.ok()) return structure_status;
       stamp_collector_warnings(&result);
       parsed->filename = requested_name;
       parsed->result = std::move(result);
@@ -1689,6 +1703,11 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
                                      std::move(*warning));
       }
     }
+    // The document is final here: every surface renders, chunks or delivers
+    // exactly this, so the structural rules check this.
+    const grpc::Status structure_status =
+        check_structure(result.document, structure, surface, &parsed->structure_findings);
+    if (!structure_status.ok()) return structure_status;
     // The offset table describes the CV collector's own text stream. It is
     // published only when that collector is the entire document and the
     // repair pass left its text and arena alone: a merge renumbers arena

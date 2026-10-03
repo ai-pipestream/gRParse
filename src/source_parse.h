@@ -34,6 +34,9 @@ struct SourceParse {
   chunking::OffsetTable offsets;
   // The CV collector's page read quality, when it read any page.
   std::optional<ai::pipestream::parse::v1::ConfidenceScores> confidence;
+  // The structural rule findings, when the request asked for a REPORT.
+  google::protobuf::RepeatedPtrField<ai::pipestream::parse::v1::StructureFinding>
+      structure_findings;
 };
 
 // The parse every unary surface shares: decode the single FileSource, plan
@@ -69,7 +72,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
                           const ai::pipestream::parse::v1::ConvertDocumentRequest& request,
                           PageScheduler& scheduler,
                           const std::shared_ptr<CollectorEndpoints>& collectors,
-                          const std::optional<RepairOptions>& repair,
+                          const std::optional<RepairOptions>& server_repair,
                           const std::string& surface, SourceParse* parsed);
 
 }  // namespace grparse

@@ -105,6 +105,37 @@ docv1::TextItemBase* prose_base(docv1::Document* document, const docv1::RefItem&
   return item->mutable_text()->mutable_base();
 }
 
+// The content layer of the text, table, picture or group a body child
+// names; BODY for anything unresolvable.
+docv1::ContentLayer item_layer(const docv1::Document& document, const docv1::RefItem& child) {
+  const std::string& ref = child.ref();
+  const auto index_after = [&ref](std::string_view prefix) -> std::optional<int> {
+    if (!ref.starts_with(prefix)) return std::nullopt;
+    int value = 0;
+    for (const char c : std::string_view(ref).substr(prefix.size())) {
+      if (!is_ascii_digit(c)) return std::nullopt;
+      value = value * 10 + (c - '0');
+    }
+    return value;
+  };
+  if (const auto index = index_after(kTextsPrefix); index && *index < document.texts_size()) {
+    const auto& item = document.texts(*index);
+    if (item.item_case() == docv1::BaseTextItem::kCode) return item.code().content_layer();
+    const auto* base = base_of(item);
+    return base == nullptr ? docv1::CONTENT_LAYER_BODY : base->content_layer();
+  }
+  if (const auto index = index_after("#/tables/"); index && *index < document.tables_size()) {
+    return document.tables(*index).content_layer();
+  }
+  if (const auto index = index_after("#/pictures/"); index && *index < document.pictures_size()) {
+    return document.pictures(*index).content_layer();
+  }
+  if (const auto index = index_after("#/groups/"); index && *index < document.groups_size()) {
+    return document.groups(*index).content_layer();
+  }
+  return docv1::CONTENT_LAYER_BODY;
+}
+
 int first_page(const google::protobuf::RepeatedPtrField<docv1::ProvenanceItem>& prov) {
   return first_page_of(prov);
 }
@@ -414,6 +445,12 @@ int demote_running_furniture(docv1::Document* document, const RepairOptions& opt
   for (int index = 0; index < body->children_size(); ++index) {
     const auto* base = prose_base(document, body->children(index));
     if (base == nullptr || base->children_size() > 0) continue;
+    // With the furniture tree migrated, furniture lives in the body: an
+    // item already on the furniture layer is not demoted again.
+    if (options.migrate_furniture_tree &&
+        base->content_layer() == docv1::CONTENT_LAYER_FURNITURE) {
+      continue;
+    }
     const auto placement = provenance_placement(base->prov(), heights);
     if (!placement.has_value()) continue;
     placed_by_page[placement->page].push_back(
@@ -932,13 +969,83 @@ void absorb(docv1::TextItemBase* head, docv1::TextItemBase* tail) {
   }
 }
 
-void prune_children(docv1::GroupItem* group, const std::set<std::string>& retired) {
-  auto* children = group->mutable_children();
+template <typename Node>
+void prune_children(Node* node, const std::set<std::string>& retired) {
+  auto* children = node->mutable_children();
   children->erase(std::remove_if(children->begin(), children->end(),
                                  [&retired](const docv1::RefItem& child) {
                                    return retired.contains(child.ref());
                                  }),
                   children->end());
+}
+
+// The children list of a text item, whichever arm carries it.
+google::protobuf::RepeatedPtrField<docv1::RefItem>* text_children(docv1::BaseTextItem* item) {
+  if (item->item_case() == docv1::BaseTextItem::kCode) {
+    return item->mutable_code()->mutable_children();
+  }
+  docv1::TextItemBase* base = mutable_text_base_of(item);
+  return base == nullptr ? nullptr : base->mutable_children();
+}
+
+// The groups and the roots drop a retired reference wherever it sits, as
+// they always did. An item arena node (a table, a picture, a text) drops
+// it only where it is the retired item's own parent: a caption a table
+// lists is gone with the caption, while any other reference an item holds
+// follows the retired item to its survivor like every reference does.
+template <typename Node>
+void prune_if_parent(Node* node, const std::set<std::string>& parents,
+                     const std::set<std::string>& retired) {
+  if (parents.contains(node->self_ref())) prune_children(node, retired);
+}
+
+void prune_retired(docv1::Document* document, const std::set<std::string>& retired,
+                   const std::set<std::string>& parents) {
+  prune_children(document->mutable_body(), retired);
+  prune_children(document->mutable_furniture(), retired);
+  for (auto& item : *document->mutable_groups()) prune_children(&item, retired);
+  for (auto& item : *document->mutable_texts()) {
+    if (item.item_case() == docv1::BaseTextItem::kCode) {
+      prune_if_parent(item.mutable_code(), parents, retired);
+    } else if (docv1::TextItemBase* base = mutable_text_base_of(&item); base != nullptr) {
+      prune_if_parent(base, parents, retired);
+    }
+  }
+  for (auto& item : *document->mutable_pictures()) prune_if_parent(&item, parents, retired);
+  for (auto& item : *document->mutable_tables()) prune_if_parent(&item, parents, retired);
+  for (auto& item : *document->mutable_key_value_items()) prune_if_parent(&item, parents, retired);
+  for (auto& item : *document->mutable_form_items()) prune_if_parent(&item, parents, retired);
+  for (auto& item : *document->mutable_field_regions()) prune_if_parent(&item, parents, retired);
+  for (auto& item : *document->mutable_field_items()) prune_if_parent(&item, parents, retired);
+}
+
+// A retired item's own children move to the item that absorbed it: the
+// renumbering below points their parent links at the survivor, so the
+// survivor must list them or they would be orphans.
+void adopt_children(docv1::Document* document,
+                    const std::map<std::string, std::string>& absorbed_by) {
+  std::map<std::string, int> position;
+  for (int index = 0; index < document->texts_size(); ++index) {
+    position.emplace(self_ref_of(document->texts(index), index), index);
+  }
+  for (const auto& [ref, absorber] : absorbed_by) {
+    std::string survivor = absorber;
+    for (int hops = 0; absorbed_by.contains(survivor) && hops < document->texts_size(); ++hops) {
+      survivor = absorbed_by.at(survivor);
+    }
+    const auto from = position.find(ref);
+    const auto to = position.find(survivor);
+    if (from == position.end() || to == position.end() || from->second == to->second) continue;
+    auto* moving = text_children(document->mutable_texts(from->second));
+    auto* adopting = text_children(document->mutable_texts(to->second));
+    if (moving == nullptr || adopting == nullptr) continue;
+    for (const docv1::RefItem& child : *moving) {
+      const bool listed = std::ranges::any_of(
+          *adopting, [&child](const docv1::RefItem& have) { return have.ref() == child.ref(); });
+      if (!listed) *adopting->Add() = child;
+    }
+    moving->Clear();
+  }
 }
 
 }  // namespace
@@ -947,6 +1054,19 @@ void retire_text_items(docv1::Document* document,
                        const std::map<std::string, std::string>& absorbed_by) {
   std::set<std::string> retired;
   for (const auto& [ref, _] : absorbed_by) retired.insert(ref);
+  std::set<std::string> parents;
+  for (int index = 0; index < document->texts_size(); ++index) {
+    const docv1::BaseTextItem& item = document->texts(index);
+    if (!retired.contains(self_ref_of(item, index))) continue;
+    const docv1::RefItem* parent = nullptr;
+    if (item.item_case() == docv1::BaseTextItem::kCode) {
+      if (item.code().has_parent()) parent = &item.code().parent();
+    } else if (const auto* base = base_of(item); base != nullptr && base->has_parent()) {
+      parent = &base->parent();
+    }
+    if (parent != nullptr) parents.insert(parent->ref());
+  }
+  adopt_children(document, absorbed_by);
   std::map<std::string, std::string> renumbering;
   google::protobuf::RepeatedPtrField<docv1::BaseTextItem> kept;
   int next = 0;
@@ -963,9 +1083,14 @@ void retire_text_items(docv1::Document* document,
     const auto renamed = renumbering.find(survivor);
     renumbering[ref] = renamed == renumbering.end() ? survivor : renamed->second;
   }
-  prune_children(document->mutable_body(), retired);
-  prune_children(document->mutable_furniture(), retired);
-  for (auto& group : *document->mutable_groups()) prune_children(&group, retired);
+  prune_retired(document, retired, parents);
+  // The rewrite walks the whole Document by reflection, not the tree, so
+  // orphans (items no parent lists), graph cells' item_refs, captions,
+  // anchors and span targets are renumbered as well; a reference into a
+  // retired item follows it to its survivor. docling-core's delete_items
+  // only walked the body tree until #810, and clears a graph cell whose
+  // item is deleted; here the item's content lives on in the survivor, so
+  // the cell follows it.
   if (!renumbering.empty()) rewrite_references(renumbering, document);
 }
 
@@ -978,6 +1103,13 @@ int merge_continuations(docv1::Document* document, const RepairOptions& options)
   int merges = 0;
   for (int index = 0; index < body->children_size(); ++index) {
     auto* base = prose_base(document, body->children(index));
+    // With the furniture tree migrated, a running header or footer sits in
+    // the body between the two halves of a page-split paragraph; the merge
+    // looks past it exactly as it did while it sat in the furniture tree.
+    if (options.migrate_furniture_tree && item_layer(*document, body->children(index)) ==
+                                              docv1::CONTENT_LAYER_FURNITURE) {
+      continue;
+    }
     if (base == nullptr) {
       anchor = nullptr;
       continue;
@@ -1033,6 +1165,31 @@ RepairReport repair_document(docv1::Document* document, const RepairOptions& opt
     report.hyphens_rejoined = counts.rejoined;
     report.soft_hyphens_removed = counts.soft_hyphens_removed;
   }
+  // The structural repairs run last: they move references between trees
+  // and arenas, and every text repair above reads the tree as producers
+  // and the demotion left it.
+  if (options.migrate_furniture_tree) {
+    report.furniture_tree_migrated = migrate_furniture_tree(document);
+  }
+  if (options.repair_referenced_orphans) {
+    report.orphans_repaired = repair_referenced_orphans(document);
+  }
+  if (options.wrap_list_children) {
+    report.list_children_wrapped = wrap_list_children(document);
+  }
+  if (options.remove_empty_groups) {
+    report.empty_groups_removed = remove_empty_groups(document);
+  }
+  // The migration places furniture by page; a body whose order the geometry
+  // pass owns puts it where that pass puts every furniture item, so the
+  // next run finds the order already settled.
+  if (report.furniture_tree_migrated > 0 && options.order_body_by_geometry) {
+    BodyOrderOptions order;
+    order.geometry_collectors = options.geometry_collectors;
+    const BodyOrderReport outcome = grparse::order_body_by_geometry(document, order);
+    report.body_items_reordered += outcome.items_moved;
+    report.pages_reordered = std::max(report.pages_reordered, outcome.pages_reordered);
+  }
   return report;
 }
 
@@ -1048,6 +1205,10 @@ struct RepairCounters {
   std::atomic<uint64_t> headings_split{0};
   std::atomic<uint64_t> headings_demoted{0};
   std::atomic<uint64_t> form_rows_split{0};
+  std::atomic<uint64_t> furniture_tree_migrated{0};
+  std::atomic<uint64_t> orphans_repaired{0};
+  std::atomic<uint64_t> list_children_wrapped{0};
+  std::atomic<uint64_t> empty_groups_removed{0};
 };
 
 RepairCounters& counters() {
@@ -1079,6 +1240,14 @@ RepairReport run_repair_pass(docv1::Document* document, const RepairOptions& opt
                                     std::memory_order_relaxed);
   totals.form_rows_split.fetch_add(static_cast<uint64_t>(report.form_rows_split),
                                    std::memory_order_relaxed);
+  totals.furniture_tree_migrated.fetch_add(static_cast<uint64_t>(report.furniture_tree_migrated),
+                                           std::memory_order_relaxed);
+  totals.orphans_repaired.fetch_add(static_cast<uint64_t>(report.orphans_repaired),
+                                    std::memory_order_relaxed);
+  totals.list_children_wrapped.fetch_add(static_cast<uint64_t>(report.list_children_wrapped),
+                                         std::memory_order_relaxed);
+  totals.empty_groups_removed.fetch_add(static_cast<uint64_t>(report.empty_groups_removed),
+                                        std::memory_order_relaxed);
   if (options.log_report && report.changed_anything()) {
     std::string patterns;
     for (const auto& pattern : report.furniture_patterns) {
@@ -1088,12 +1257,15 @@ RepairReport run_repair_pass(docv1::Document* document, const RepairOptions& opt
     std::println("gRParse repair: {} furniture demoted [{}], {} hyphens rejoined, {} soft hyphens "
                  "removed, {} paragraphs merged, {} title lines merged, {} titles promoted, {} "
                  "heading levels assigned, {} headings demoted, {} run-in headings split, {} form "
-                 "rows split, {} body items reordered on {} pages ({})",
+                 "rows split, {} body items reordered on {} pages, {} furniture tree children "
+                 "migrated, {} orphans repaired, {} list children wrapped, {} empty groups "
+                 "removed ({})",
                  report.furniture_demoted, patterns, report.hyphens_rejoined,
                  report.soft_hyphens_removed, report.paragraphs_merged, report.titles_merged,
                  report.titles_promoted, report.heading_levels_assigned, report.headings_demoted,
                  report.headings_split, report.form_rows_split, report.body_items_reordered,
-                 report.pages_reordered, document->name());
+                 report.pages_reordered, report.furniture_tree_migrated, report.orphans_repaired,
+                 report.list_children_wrapped, report.empty_groups_removed, document->name());
   }
   return report;
 }
@@ -1110,6 +1282,10 @@ RepairTotals repair_totals() {
       .headings_split = totals.headings_split.load(std::memory_order_relaxed),
       .headings_demoted = totals.headings_demoted.load(std::memory_order_relaxed),
       .form_rows_split = totals.form_rows_split.load(std::memory_order_relaxed),
+      .furniture_tree_migrated = totals.furniture_tree_migrated.load(std::memory_order_relaxed),
+      .orphans_repaired = totals.orphans_repaired.load(std::memory_order_relaxed),
+      .list_children_wrapped = totals.list_children_wrapped.load(std::memory_order_relaxed),
+      .empty_groups_removed = totals.empty_groups_removed.load(std::memory_order_relaxed),
   };
 }
 
