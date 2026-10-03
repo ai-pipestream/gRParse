@@ -603,17 +603,57 @@ size_t codepoint_at(std::string_view text, size_t byte) {
   return count;
 }
 
-// A code-point position of the original text, moved past every removed
-// run before it.
-int32_t remap_position(int32_t position, const std::vector<RemovedRun>& removed) {
-  int64_t shift = 0;
-  for (const RemovedRun& run : removed) {
-    if (static_cast<int64_t>(run.start) >= position) break;
-    shift += std::min<int64_t>(position, static_cast<int64_t>(run.end)) -
-             static_cast<int64_t>(run.start);
+// Code-point positions of byte offsets that only ever move forward: each
+// byte is counted once however many positions are asked for.
+class CodePointCursor {
+ public:
+  explicit CodePointCursor(std::string_view text) : text_(text) {}
+
+  size_t at(size_t byte) {
+    for (; byte_ < byte && byte_ < text_.size(); ++byte_) {
+      if ((static_cast<unsigned char>(text_[byte_]) & 0xC0U) != 0x80U) ++code_points_;
+    }
+    return code_points_;
   }
-  return static_cast<int32_t>(position - shift);
-}
+
+ private:
+  std::string_view text_;
+  size_t byte_ = 0;
+  size_t code_points_ = 0;
+};
+
+// Moves code-point positions of the original text past every removed run
+// before them; a position inside a run lands where the run was. The runs
+// are in order and disjoint, so a prefix sum of their lengths and a binary
+// search place each position in O(log runs).
+class PositionRemap {
+ public:
+  explicit PositionRemap(const std::vector<RemovedRun>& removed) : removed_(removed) {
+    removed_before_.reserve(removed.size());
+    int64_t total = 0;
+    for (const RemovedRun& run : removed) {
+      removed_before_.push_back(total);
+      total += static_cast<int64_t>(run.end - run.start);
+    }
+  }
+
+  int32_t operator()(int32_t position) const {
+    const auto next = std::ranges::lower_bound(
+        removed_, static_cast<int64_t>(position), {},
+        [](const RemovedRun& run) { return static_cast<int64_t>(run.start); });
+    if (next == removed_.begin()) return position;
+    const auto index = static_cast<size_t>(std::distance(removed_.begin(), next) - 1);
+    const RemovedRun& run = removed_[index];
+    const int64_t shift = removed_before_[index] +
+                          std::min<int64_t>(position, static_cast<int64_t>(run.end)) -
+                          static_cast<int64_t>(run.start);
+    return static_cast<int32_t>(position - shift);
+  }
+
+ private:
+  const std::vector<RemovedRun>& removed_;
+  std::vector<int64_t> removed_before_;
+};
 
 bool from_collectors(const docv1::TextItemBase& base, const std::vector<std::string>& collectors) {
   if (base.source().empty()) return false;
@@ -636,7 +676,12 @@ std::string rejoin_hyphenated_words(std::string_view text, HyphenationCounts* co
                                     bool space_is_break, std::vector<RemovedRun>* removed) {
   std::string out;
   out.reserve(text.size());
-  std::vector<std::pair<size_t, size_t>> removed_bytes;
+  // Removed runs are recorded in code points as they happen; they only
+  // move forward, so one cursor counts the text once.
+  CodePointCursor code_points(text);
+  const auto record = [&](size_t first, size_t last) {
+    if (removed != nullptr) removed->push_back({code_points.at(first), code_points.at(last)});
+  };
   size_t i = 0;
   while (i < text.size()) {
     const bool soft = text.substr(i).starts_with(kSoftHyphen);
@@ -653,7 +698,7 @@ std::string rejoin_hyphenated_words(std::string_view text, HyphenationCounts* co
       // sat on goes with it when a word continues past it.
       if (counts != nullptr) ++counts->soft_hyphens_removed;
       const size_t next = tail.empty() ? after : after + gap;
-      removed_bytes.emplace_back(i, next);
+      record(i, next);
       i = next;
       continue;
     }
@@ -670,17 +715,11 @@ std::string rejoin_hyphenated_words(std::string_view text, HyphenationCounts* co
     const std::string head_word(head);
     const std::string joined = join_hyphenated_fragments(head_word, tail);
     // A known compound keeps its hyphen and loses only the break.
-    removed_bytes.emplace_back(joined.size() > head_word.size() + tail.size() ? after : i,
-                               after + gap);
+    record(joined.size() > head_word.size() + tail.size() ? after : i, after + gap);
     out.erase(out.size() - head_word.size());
     out += joined;
     i = after + gap + tail.size();
     if (counts != nullptr) ++counts->rejoined;
-  }
-  if (removed != nullptr) {
-    for (const auto& [first, last] : removed_bytes) {
-      removed->push_back({codepoint_at(text, first), codepoint_at(text, last)});
-    }
   }
   return out;
 }
@@ -706,16 +745,17 @@ HyphenationCounts rejoin_hyphenation(docv1::Document* document,
     base->set_text(std::move(repaired));
     // Spans and charspans count code points of the text; they follow it
     // past every run the rejoin removed.
+    const PositionRemap remap(removed);
     for (auto& span : *base->mutable_spans()) {
       auto* range = span.mutable_range();
-      range->set_start(remap_position(range->start(), removed));
-      range->set_end(remap_position(range->end(), removed));
+      range->set_start(remap(range->start()));
+      range->set_end(remap(range->end()));
     }
     for (auto& entry : *base->mutable_prov()) {
       if (!entry.has_charspan()) continue;
       auto* charspan = entry.mutable_charspan();
-      charspan->set_start(remap_position(charspan->start(), removed));
-      charspan->set_end(remap_position(charspan->end(), removed));
+      charspan->set_start(remap(charspan->start()));
+      charspan->set_end(remap(charspan->end()));
     }
   }
   return counts;

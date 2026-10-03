@@ -508,6 +508,41 @@ void verify_hyphen_rejoin_moves_spans() {
           "the charspan covers the repaired text");
 }
 
+// Many rejoins in one item, with a multi-byte character before each: the
+// removed runs come back in code points, and every span still lands on its
+// word after the remap.
+void verify_hyphen_rejoin_remaps_many_runs() {
+  constexpr int kWords = 2000;
+  // "\xC3\xA9 wo-\nrd " is 9 code points; "wo-\nrd" starts at 2 within it.
+  constexpr int kChunk = 9;
+  std::string text;
+  for (int index = 0; index < kWords; ++index) text += "\xC3\xA9 wo-\nrd ";
+  std::vector<grparse::RemovedRun> removed;
+  const std::string repaired = grparse::rejoin_hyphenated_words(text, nullptr, false, &removed);
+  require(removed.size() == static_cast<size_t>(kWords), "one removed run per rejoin");
+  require(removed[1].start == kChunk + 4 && removed[1].end == kChunk + 6,
+          "a removed run is measured in code points");
+
+  docv1::Document document = base_document();
+  add_pages(&document, 1);
+  const std::string ref = add_prose(&document, text, 1, 100.0, 120.0);
+  auto* base = document.mutable_texts(0)->mutable_text()->mutable_base();
+  for (int index = 0; index < kWords; ++index) {
+    auto* range = base->add_spans()->mutable_range();
+    range->set_start(index * kChunk + 2);
+    range->set_end(index * kChunk + 8);
+  }
+  require(grparse::rejoin_hyphenation(&document).rejoined == kWords, "every word rejoins");
+  const auto& result = base_at(document, ref);
+  require(result.text() == repaired, "the item matches the string repair");
+  // "\xC3\xA9 word " is 7 code points.
+  for (int index = 0; index < kWords; ++index) {
+    const auto& range = result.spans(index).range();
+    require(range.start() == index * 7 + 2 && range.end() == index * 7 + 6,
+            "span " + std::to_string(index) + " lands on its word");
+  }
+}
+
 void verify_continuation_merged_across_pages() {
   docv1::Document document = base_document();
   add_pages(&document, 2);
@@ -841,6 +876,7 @@ int main() {
       verify_hyphen_rejoin_by_producer,
       verify_hyphen_rejoin_in_cv_assembly,
       verify_hyphen_rejoin_moves_spans,
+      verify_hyphen_rejoin_remaps_many_runs,
       verify_continuation_merged_across_pages,
       verify_continuation_applies_hyphen_rule,
       verify_continuation_keeps_suspended_hyphen,
