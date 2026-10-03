@@ -16,11 +16,15 @@ import "ai/pipestream/poi/v1/poi_document.proto";
 // process is executed.
 //
 // Error model: failures are reported as gRPC status codes. ParseDocument maps
-// errors to INVALID_ARGUMENT (no data, or the stream ended without a chunk
-// marked complete), RESOURCE_EXHAUSTED (the document exceeds the server's byte
-// cap; see GetServiceInfo limits), UNIMPLEMENTED (bytes are not a format this
-// server parses), and INTERNAL (unexpected parser fault). GetServiceInfo does
-// not validate input and completes with OK.
+// errors to INVALID_ARGUMENT (no data, the stream ended without a chunk marked
+// complete, or the bytes claim a supported format but are corrupt),
+// FAILED_PRECONDITION (the document is encrypted), RESOURCE_EXHAUSTED (the
+// document exceeds the server's byte cap, see GetServiceInfo limits, or its
+// parse ran out of memory or stack), UNIMPLEMENTED (bytes are not a format
+// this server parses), and INTERNAL (unexpected parser fault). Every failure
+// closes the call. Damage confined to one element skips that element and is
+// reported in ParseStatus warnings instead. GetServiceInfo does not validate
+// input and completes with OK.
 service PoiParseService {
   // Parses one document. The client streams the document as chunks, marking
   // the last one complete; the server replies with a stream of typed events:
@@ -33,9 +37,10 @@ service PoiParseService {
   rpc GetServiceInfo(GetServiceInfoRequest) returns (GetServiceInfoResponse);
 }
 
-// One slice of the document upload. Identity fields are read from the first
-// chunk; later chunks only need data, with complete=true on the last. A
-// single-chunk upload (all bytes plus complete=true) is the common case.
+// One slice of the document upload. Identity fields and options are read
+// from the first chunk; later chunks only need data, with complete=true on
+// the last. A single-chunk upload (all bytes plus complete=true) is the
+// common case.
 message ParseRequestChunk {
   // Caller-chosen identifier, echoed in DocumentInfo.
   string document_id = 1;
@@ -44,6 +49,10 @@ message ParseRequestChunk {
   string content_type = 3;
   bytes data = 4;
   bool complete = 5;
+  // Opt in to receiving a large worksheet as several consecutive Sheet
+  // events (see Sheet.more_rows) instead of one message that grows with the
+  // sheet. Off by default: every worksheet is exactly one Sheet event.
+  bool sheet_batches = 6;
 }
 
 // One parse result event. Event order: document_info first, then content
@@ -78,7 +87,7 @@ message GetServiceInfoResponse {
   repeated DocumentFormat supported_formats = 4;
   // The byte cap ParseDocument enforces (RESOURCE_EXHAUSTED above it).
   uint64 max_document_bytes = 5;
-  // Documents parsed concurrently before new parses queue.
+  // Documents in flight, uploading or parsing, before new calls queue.
   uint32 max_concurrent_parses = 6;
   // Frontend advertisement for the shared demo shell.
   UiInfo ui = 7;
