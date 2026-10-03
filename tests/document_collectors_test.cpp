@@ -1746,6 +1746,182 @@ void verify_poi_hostile_span_is_clamped() {
           "the clamp surfaces as a warning");
 }
 
+// Plays grPOIc's batched sheet stream. A client that did not ask for
+// sheet_batches gets RESOURCE_EXHAUSTED, the way the real server refuses an
+// unbatched sheet over 256 MiB. Otherwise: a slide and its native table, a
+// hidden sheet in three batches (the last one carrying the merged regions),
+// and, when `truncate` is set, a second sheet whose batches stop with
+// more_rows still set before the trailer.
+class BatchedSheetPoiService final : public poiv1::PoiParseService::Service {
+ public:
+  explicit BatchedSheetPoiService(bool truncate = false) : truncate_(truncate) {}
+
+  grpc::Status ParseDocument(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<poiv1::ParseEvent, poiv1::ParseRequestChunk>* stream)
+      override {
+    poiv1::ParseRequestChunk chunk;
+    bool first = true;
+    bool batches = false;
+    while (stream->Read(&chunk)) {
+      if (first) batches = chunk.sheet_batches();
+      first = false;
+    }
+    if (!batches) {
+      return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
+                          "sheet 'Big' passed 256 MiB unbatched; set sheet_batches");
+    }
+    poiv1::ParseEvent event;
+    poiv1::Slide* slide = event.mutable_slide();
+    slide->set_index(3);
+    slide->set_title("Numbers");
+    stream->Write(event);
+
+    event.Clear();
+    poiv1::Table* slide_table = event.mutable_table();
+    slide_table->set_slide_index(3);
+    slide_table->add_rows()->add_cells()->set_text("on the slide");
+    stream->Write(event);
+
+    event.Clear();
+    poiv1::Table* stray = event.mutable_table();
+    stray->set_slide_index(9);
+    stray->add_rows()->add_cells()->set_text("no such slide");
+    stream->Write(event);
+
+    // Rows 0..5 in three batches of two; rows 0 and 1 hold A and B.
+    for (uint32_t batch = 0; batch < 3; ++batch) {
+      event.Clear();
+      poiv1::Sheet* sheet = event.mutable_sheet();
+      sheet->set_index(0);
+      sheet->set_name("Big");
+      sheet->set_hidden(true);
+      for (uint32_t row = batch * 2; row < batch * 2 + 2; ++row) {
+        poiv1::SheetRow* out = sheet->add_rows();
+        out->set_row_index(row);
+        out->add_cells()->set_text("a" + std::to_string(row));
+        poiv1::SheetCell* second = out->add_cells();
+        second->set_column_index(1);
+        second->set_text("b" + std::to_string(row));
+      }
+      sheet->set_more_rows(batch < 2);
+      if (batch == 2) {
+        // A1:C2 merged (anchor A1), a range anchored on a blank cell, and
+        // a hostile range running backwards.
+        poiv1::CellRange* merged = sheet->add_merged_regions();
+        merged->set_first_row(0);
+        merged->set_last_row(1);
+        merged->set_first_column(0);
+        merged->set_last_column(2);
+        poiv1::CellRange* blank = sheet->add_merged_regions();
+        blank->set_first_row(4);
+        blank->set_last_row(4);
+        blank->set_first_column(5);
+        blank->set_last_column(6);
+        poiv1::CellRange* backwards = sheet->add_merged_regions();
+        backwards->set_first_row(3);
+        backwards->set_last_row(2);
+      }
+      stream->Write(event);
+    }
+
+    if (truncate_) {
+      event.Clear();
+      poiv1::Sheet* cut = event.mutable_sheet();
+      cut->set_index(1);
+      cut->set_name("Cut");
+      poiv1::SheetRow* row = cut->add_rows();
+      row->set_row_index(0);
+      row->add_cells()->set_text("only batch");
+      cut->set_more_rows(true);
+      stream->Write(event);
+    }
+
+    event.Clear();
+    event.mutable_status()->set_state(poiv1::ParseStatus::STATE_OK);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+
+ private:
+  bool truncate_;
+};
+
+void verify_poi_sheet_batches_fold_into_one_table() {
+  BatchedSheetPoiService service;
+  ServerFixture server(&service);
+  const auto outcome = grparse::collect_poi_document(server.channel(), "doc-batches",
+                                                     "big.xlsx", "", "bytes");
+  require(outcome.success, "the client asks for sheet batches: " + outcome.error);
+  const docv1::Document& document = outcome.document;
+
+  // groups: the slide, then the one sheet; tables: slide table, stray, sheet.
+  require(document.groups_size() == 2, "three batches open one sheet group, not three");
+  require(document.tables_size() == 3, "three batches fold into one sheet table");
+  const docv1::GroupItem& sheet_group = document.groups(1);
+  require(sheet_group.label() == docv1::GROUP_LABEL_SHEET && sheet_group.name() == "Big" &&
+              !sheet_group.sheet().visible() &&
+              sheet_group.content_layer() == docv1::CONTENT_LAYER_INVISIBLE,
+          "a hidden sheet folds onto the invisible layer, as the office fold does");
+  const docv1::TableItem& sheet_table = document.tables(2);
+  require(sheet_table.parent().ref() == sheet_group.self_ref() &&
+              sheet_group.children_size() == 1 &&
+              sheet_table.content_layer() == docv1::CONTENT_LAYER_INVISIBLE,
+          "the one table hangs off the sheet group on the sheet's layer");
+  const docv1::TableData& data = sheet_table.data();
+  require(data.table_cells_size() == 12 && data.row_prov_size() == 6,
+          "every batch's rows land in the table, in order");
+  require(data.table_cells(11).text() == "b5" && data.table_cells(11).start_row_offset_idx() == 5,
+          "the last batch's cells keep their absolute rows");
+  require(data.num_rows() == 6 && data.num_cols() == 3,
+          "the table sizes across every batch and the merged region");
+  const docv1::TableCell& anchor = data.table_cells(0);
+  require(anchor.text() == "a0" && anchor.row_span() == 2 && anchor.col_span() == 3 &&
+              anchor.end_row_offset_idx() == 2 && anchor.end_col_offset_idx() == 3,
+          "the merged region's spans land on its anchor cell");
+  for (int index = 1; index < data.table_cells_size(); ++index) {
+    require(data.table_cells(index).row_span() == 1 && data.table_cells(index).col_span() == 1,
+            "only the anchor cell spans");
+  }
+
+  const docv1::GroupItem& slide_group = document.groups(0);
+  require(slide_group.label() == docv1::GROUP_LABEL_SLIDE &&
+              document.tables(0).parent().ref() == slide_group.self_ref(),
+          "a slide table hangs off its slide's group, not the body");
+  bool listed = false;
+  for (const auto& child : slide_group.children()) {
+    if (child.ref() == document.tables(0).self_ref()) listed = true;
+  }
+  require(listed, "the slide group lists its table");
+  require(document.tables(1).parent().ref() == "#/body",
+          "a table naming an unannounced slide stays in the body");
+
+  bool stray_warned = false;
+  bool merge_warned = false;
+  for (const std::string& warning : outcome.warnings) {
+    if (warning.contains("slide 9")) stray_warned = true;
+    if (warning.contains("merged region")) merge_warned = true;
+  }
+  require(stray_warned, "the unannounced slide is reported");
+  require(merge_warned, "the backwards merged region is reported");
+  require(outcome.warnings.size() == 2, "nothing else is reported");
+}
+
+void verify_poi_cut_sheet_batches_warn() {
+  BatchedSheetPoiService service(/*truncate=*/true);
+  ServerFixture server(&service);
+  const auto outcome = grparse::collect_poi_document(server.channel(), "doc-cut",
+                                                     "cut.xlsx", "", "bytes");
+  require(outcome.success, "a cut batch stream still collects: " + outcome.error);
+  require(outcome.document.groups_size() == 3 && outcome.document.groups(2).name() == "Cut",
+          "the cut sheet keeps the rows that arrived");
+  bool cut_warned = false;
+  for (const std::string& warning : outcome.warnings) {
+    if (warning.contains("'Cut'") && warning.contains("missing")) cut_warned = true;
+  }
+  require(cut_warned, "a sheet whose batches stop with more_rows set is reported");
+}
+
 class RejectingPoiService final : public poiv1::PoiParseService::Service {
  public:
   grpc::Status ParseDocument(
@@ -2806,6 +2982,8 @@ int main() {
       verify_poi_truncated_stream_fails,
       verify_poi_vertical_merge_keeps_columns,
       verify_poi_hostile_span_is_clamped,
+      verify_poi_sheet_batches_fold_into_one_table,
+      verify_poi_cut_sheet_batches_warn,
       verify_poi_unreachable_endpoint_degrades,
       verify_poi_fanout_merges_claims_without_a_second_body,
       verify_poi_fanout_keeps_its_body_when_the_primary_failed,
