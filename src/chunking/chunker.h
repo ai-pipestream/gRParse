@@ -58,10 +58,10 @@
 namespace grparse::chunking {
 
 // One text item's place in the document's concatenated text stream
-// (furniture included), in UTF-8 code points. This is the parse's own side
-// table (PageData.text_offsets), not something the chunker can derive: a
-// document that arrives without one yields chunks with no offsets rather
-// than invented ones.
+// (furniture included), in UTF-8 code points. The CV path records it while
+// it assembles pages (PageData.text_offsets); every other document gets it
+// from derive_offsets. A table that does not name an item leaves the chunks
+// holding that item without offsets rather than with invented ones.
 struct OffsetEntry {
   std::uint64_t start = 0;
   std::uint64_t end = 0;
@@ -78,6 +78,26 @@ using OffsetTable = std::map<std::string, OffsetEntry>;
 void add_offsets(const google::protobuf::RepeatedPtrField<
                      ai::pipestream::parse::v1::TextOffset>& rows,
                  OffsetTable* table);
+
+// The offset table of a finished document's text stream: every text item in
+// arena order, each joined to the one before it by a single newline, which
+// is exactly the plain-text export (OUTPUT_FORMAT_TEXT). An item with no
+// text arm set has no row and adds no separator. Rows carry
+// TEXT_SOURCE_UNSPECIFIED: only the CV path knows how its text was read.
+OffsetTable derive_offsets(const ai::pipestream::document::v1::Document& document);
+
+// Copies how the CV path read each item (digital or OCR) from its own rows onto the derived table. A row lands only where the table names
+// the same item with the same span; any other row describes text the
+// document no longer holds and is ignored, so a mismatch costs the label,
+// never the offsets.
+void overlay_sources(const google::protobuf::RepeatedPtrField<
+                         ai::pipestream::parse::v1::TextOffset>& rows,
+                     OffsetTable* table);
+
+// The table's rows in stream order (ascending start, then self_ref), the
+// wire form a response carries.
+google::protobuf::RepeatedPtrField<ai::pipestream::parse::v1::TextOffset> offset_rows(
+    const OffsetTable& table);
 
 // The rules_digest a hierarchical chunk carries.
 inline constexpr std::string_view kHierarchicalRules = "grparse-hier/2";

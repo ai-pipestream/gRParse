@@ -9,6 +9,7 @@
 
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "ai/pipestream/parse/v1/parse_stream.pb.h"
+#include "../src/chunking/chunker.h"
 #include "grparse/document_assembly.h"
 #include "support/check.h"
 
@@ -713,6 +714,45 @@ void verify_list_items_join_a_list_group() {
   require(grparse::group_list_items(&document) == 0, "a grouped document is left as it is");
 }
 
+// The table the parse derives from a finished document is the one the CV
+// path records while it assembles pages: same items, same spans, furniture
+// included, across page boundaries. The CV rows only add how each item was
+// read.
+void verify_derived_offsets_match_the_assembled_rows() {
+  grparse::OcrPage first{1000, 1000,
+                         {line("running header", 10), line("café body", 500),
+                          line("page 1", 950)}};
+  first.regions = {
+      {"page_header", 0.9F, 0, 0, 1000, 40},
+      {"text", 0.9F, 0, 480, 1000, 540},
+      {"page_footer", 0.9F, 0, 930, 1000, 1000},
+  };
+  grparse::OcrPage second{1000, 1000, {line("second page", 100), line("ends here", 300)}};
+
+  ai::pipestream::document::v1::Document document;
+  grparse::AssemblyCursor cursor;
+  std::string plain_text;
+  google::protobuf::RepeatedPtrField<ai::pipestream::parse::v1::TextOffset> rows;
+  grparse::append_page_to_document(first, 1, &cursor, &document, &plain_text, &rows);
+  grparse::append_page_to_document(second, 2, &cursor, &document, &plain_text, &rows);
+  require(rows.size() == document.texts_size() && rows.size() == 5,
+          "the CV path records one row per text item");
+
+  auto derived = grparse::chunking::derive_offsets(document);
+  require(static_cast<int>(derived.size()) == rows.size(), "one derived row per text item");
+  for (const auto& row : rows) {
+    const auto entry = derived.find(row.self_ref());
+    require(entry != derived.end() && entry->second.start == row.utf_start() &&
+                entry->second.end == row.utf_end(),
+            "the derived span equals the assembled span for " + row.self_ref());
+  }
+  grparse::chunking::overlay_sources(rows, &derived);
+  for (const auto& row : rows) {
+    require(derived.at(row.self_ref()).source == row.source(),
+            "every assembled row lends its source to the derived table");
+  }
+}
+
 int main() {
   return grparse_test::run_test_main("document-assembly-test", {
       verify_contract_shape,
@@ -735,5 +775,6 @@ int main() {
       verify_body_order_and_column_anchoring,
       verify_recovered_rotation_reaches_page_quality,
       verify_list_items_join_a_list_group,
+      verify_derived_offsets_match_the_assembled_rows,
   });
 }
