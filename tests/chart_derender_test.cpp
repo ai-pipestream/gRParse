@@ -107,7 +107,16 @@ enrichv1::ChartTable canned_table(const std::string& title) {
   return chart;
 }
 
-enum class FakeMode { kAnswer, kSkip, kEmptyTable, kSlow, kDuplicate, kOutputs, kSummarySkipped };
+enum class FakeMode {
+  kAnswer,
+  kSkip,
+  kRefused,
+  kEmptyTable,
+  kSlow,
+  kDuplicate,
+  kOutputs,
+  kSummarySkipped
+};
 
 class FakeEnrichService final : public enrichv1::EnrichService::Service {
  public:
@@ -188,6 +197,11 @@ class FakeEnrichService final : public enrichv1::EnrichService::Service {
         event.mutable_skipped()->set_self_ref(picture.self_ref());
         event.mutable_skipped()->set_reason(enrichv1::SKIP_REASON_VLM_ERROR);
         event.mutable_skipped()->set_detail("endpoint answered 503");
+      } else if (mode_ == FakeMode::kRefused) {
+        // grpc-enrich's endpoint policy refused the request's endpoint.
+        event.mutable_skipped()->set_self_ref(picture.self_ref());
+        event.mutable_skipped()->set_reason(enrichv1::SKIP_REASON_ENDPOINT_REFUSED);
+        event.mutable_skipped()->set_detail("endpoint host is not public");
       } else {
         enrichv1::ItemAnnotation* annotation = event.mutable_annotation();
         annotation->set_self_ref(picture.self_ref());
@@ -561,7 +575,7 @@ void verify_picture_description_api_call_reaches_enrich() {
 }
 
 void verify_skip_events_and_empty_tables_count_as_skipped() {
-  for (FakeMode mode : {FakeMode::kSkip, FakeMode::kEmptyTable}) {
+  for (FakeMode mode : {FakeMode::kSkip, FakeMode::kRefused, FakeMode::kEmptyTable}) {
     FakeEnrichService fake(mode);
     ServerFixture server(&fake);
     docv1::Document document = sample_document();
@@ -578,6 +592,11 @@ void verify_skip_events_and_empty_tables_count_as_skipped() {
       require(report.warnings[0].contains("SKIP_REASON_VLM_ERROR") &&
                   report.warnings[0].contains("503"),
               "the peer's reason and detail survive");
+    }
+    if (mode == FakeMode::kRefused) {
+      require(report.warnings[0].contains("SKIP_REASON_ENDPOINT_REFUSED") &&
+                  report.warnings[0].contains("not public"),
+              "an endpoint the enrich policy refused is reported by name: " + report.warnings[0]);
     }
     require(grparse::data_totals().chart_derender_skipped == skipped_before + 1,
             "the skipped counter moves by one");
