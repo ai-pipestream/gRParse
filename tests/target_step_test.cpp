@@ -188,6 +188,7 @@ void verify_s3_credentials_are_paired() {
   EnvSlot secret("AWS_SECRET_ACCESS_KEY");
   EnvSlot token("AWS_SESSION_TOKEN");
   EnvSlot ambient("GRPARSE_S3_AMBIENT_CREDENTIALS");
+  EnvSlot ambient_endpoints("GRPARSE_S3_AMBIENT_ENDPOINTS");
 
   auto deliver_s3 = [](void (*fill)(parsev1::S3Target*)) {
     parsev1::Target target;
@@ -232,6 +233,33 @@ void verify_s3_credentials_are_paired() {
   unsetenv("AWS_SECRET_ACCESS_KEY");
 
   setenv("GRPARSE_S3_AMBIENT_CREDENTIALS", "1", 1);
+  // The opt-in alone signs for no endpoint: only the listed ones, and only
+  // over https.
+  const grpc::Status unlisted = deliver_s3([](parsev1::S3Target* s3) {
+    s3->set_endpoint("https://127.0.0.1:9");
+    s3->set_bucket("bucket");
+  });
+  require_equal(static_cast<int>(unlisted.error_code()),
+                static_cast<int>(grpc::StatusCode::INVALID_ARGUMENT),
+                "ambient credentials never sign for an unlisted endpoint");
+  require(unlisted.error_message().contains("GRPARSE_S3_AMBIENT_ENDPOINTS"),
+          unlisted.error_message());
+  setenv("GRPARSE_S3_AMBIENT_ENDPOINTS", "s3.example.test, HTTPS://127.0.0.1:9 ,", 1);
+  const grpc::Status other_port = deliver_s3([](parsev1::S3Target* s3) {
+    s3->set_endpoint("https://127.0.0.1:10");
+    s3->set_bucket("bucket");
+  });
+  require(other_port.error_message().contains("GRPARSE_S3_AMBIENT_ENDPOINTS"),
+          "a listed host on another port is not listed: " + other_port.error_message());
+  const grpc::Status plain_http = deliver_s3([](parsev1::S3Target* s3) {
+    s3->set_endpoint("http://127.0.0.1:9");
+    s3->set_bucket("bucket");
+  });
+  require_equal(static_cast<int>(plain_http.error_code()),
+                static_cast<int>(grpc::StatusCode::INVALID_ARGUMENT),
+                "ambient credentials never sign a cleartext request");
+  require(plain_http.error_message().contains("not https"), plain_http.error_message());
+
   const grpc::Status missing_env = deliver_s3([](parsev1::S3Target* s3) {
     s3->set_endpoint("https://127.0.0.1:9");
     s3->set_bucket("bucket");

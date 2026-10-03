@@ -716,14 +716,45 @@ void verify_ambient_credentials_need_verification() {
           "the refusal names the setting: " + refused.error_message());
   require(store.received().empty(), "the store saw no request at all");
 
-  // The control: an http endpoint carries no certificate to skip, and with
-  // no session token the ambient identity signs as before.
+  // Nor over cleartext, even to a listed endpoint with verification on:
+  // the access key ID would cross the wire readable and replayable.
+  const ScopedEnv listed("GRPARSE_S3_AMBIENT_ENDPOINTS", store.endpoint().c_str());
   target.mutable_s3()->clear_verify_ssl();
   parsev1::TargetResult result;
+  const grpc::Status cleartext = targets::deliver(target, document, exports, &result);
+  require(cleartext.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              cleartext.error_message().contains("not https"),
+          "ambient credentials over http are refused: " + cleartext.error_message());
+  require(store.received().empty(), "the store still saw no request");
+
+  // The control: the request's own credentials still sign for the same
+  // http store.
+  target.mutable_s3()->set_access_key("AKIAIOSFODNN7EXAMPLE");
+  target.mutable_s3()->set_secret_key("wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY");
   const grpc::Status delivered = targets::deliver(target, document, exports, &result);
-  require(delivered.ok(), "the same target with verification on is delivered: " +
+  require(delivered.ok(), "request credentials still deliver over http: " +
                               delivered.error_message());
   require(!store.received().empty(), "the store saw the upload");
+}
+
+// The endpoint goes into the URL and the signed Host header: userinfo and
+// control characters are refused before any request.
+void verify_endpoint_hygiene() {
+  const docv1::Document document = sample_document("hygiene");
+  const parsev1::DocumentExports exports = sample_exports(document);
+  for (const char* endpoint : {"https://user:pw@s3.example.test", "https://s3.example.test\r\nX: y",
+                               "https://s3.example .test"}) {
+    parsev1::Target target;
+    target.mutable_s3()->set_endpoint(endpoint);
+    target.mutable_s3()->set_bucket("conversions");
+    target.mutable_s3()->set_access_key("AKIAIOSFODNN7EXAMPLE");
+    target.mutable_s3()->set_secret_key("wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY");
+    parsev1::TargetResult result;
+    const grpc::Status refused = targets::deliver(target, document, exports, &result);
+    require(refused.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
+            std::string("an endpoint with userinfo or a control character is refused: ") +
+                refused.error_message());
+  }
 }
 
 void verify_incomplete_targets_are_rejected() {
@@ -759,6 +790,7 @@ int main() {
       verify_session_token_is_refused_over_http,
       verify_session_token_is_refused_without_verification,
       verify_ambient_credentials_need_verification,
+      verify_endpoint_hygiene,
       verify_a_partial_failure_reports_the_written_objects,
       verify_a_refused_upload_fails_without_leaking,
       verify_incomplete_targets_are_rejected,
