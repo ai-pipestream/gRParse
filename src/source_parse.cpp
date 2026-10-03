@@ -2,15 +2,18 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <exception>
 #include <initializer_list>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -244,10 +247,11 @@ grpc::Status validate_pdf_backend(const pipestream::parse::v1::ConvertDocumentOp
 }
 
 // Nested picture-description engines map onto enrich fields this binary can
-// forward (repo_id / url / timeout / concurrency / classification_*). Local
-// and API are mutually exclusive. Prompt, headers, params, and
+// forward (repo_id / url / timeout / concurrency / classification_*, and the
+// api's prompt, params and headers in the enrich service's typed form).
+// Local and API are mutually exclusive. The local engine's prompt and
 // generation_config are accepted for Docling clients (ScalarValue maps) even
-// when the enrich dial does not forward every key yet.
+// though the enrich dial does not forward them.
 grpc::Status validate_picture_description_engines(
     const pipestream::parse::v1::ConvertDocumentOptions& options, const std::string& surface) {
   if (options.has_picture_description_local() && options.has_picture_description_api()) {
@@ -276,6 +280,9 @@ grpc::Status validate_picture_description_engines(
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                           surface + ": picture_description_api.concurrency must be >= 1");
     }
+    PictureDescriptionCall call;
+    const grpc::Status call_status = picture_description_call(api, surface, &call);
+    if (!call_status.ok()) return call_status;
   }
   return grpc::Status::OK;
 }
@@ -618,17 +625,6 @@ grpc::Status validate_unread_options(const pipestream::parse::v1::ConvertDocumen
     return rejected("table_structure_custom_config");
   }
   if (!options.layout_custom_config().empty()) return rejected("layout_custom_config");
-  // The enrich dial carries the endpoint, timeout and concurrency only: a
-  // keyed API's auth headers would be dropped, not sent.
-  if (options.has_picture_description_api()) {
-    const auto& api = options.picture_description_api();
-    if (!api.headers().empty()) return rejected("picture_description_api.headers");
-    if (!api.params().empty()) return rejected("picture_description_api.params");
-    if (api.has_prompt() && !api.prompt().empty() &&
-        api.prompt() != "Describe this image in a few sentences.") {
-      return rejected("picture_description_api.prompt");
-    }
-  }
   return grpc::Status::OK;
 }
 
@@ -836,6 +832,113 @@ DoclangOptions doclang_options(const pipestream::parse::v1::ConvertDocumentOptio
     doclang.include_namespace = options.doclang_include_namespace();
   }
   return doclang;
+}
+
+grpc::Status picture_description_call(const pipestream::parse::v1::PictureDescriptionApi& api,
+                                      const std::string& surface, PictureDescriptionCall* call) {
+  const auto invalid = [&surface](const std::string& what) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        surface + ": picture_description_api." + what);
+  };
+  if (api.has_prompt()) call->prompt = api.prompt();
+
+  // The params map is Docling's free-form dict; only the names the enrich
+  // service has a typed field for travel, in name order so the refusal of
+  // an unknown one is deterministic.
+  std::vector<std::string> names;
+  for (const auto& entry : api.params()) names.push_back(entry.first);
+  std::ranges::sort(names);
+  ai::pipestream::enrich::v1::VlmGenerationParams params;
+  std::optional<std::string> token_cap_name;
+  for (const std::string& name : names) {
+    const pipestream::parse::v1::ScalarValue& value = api.params().at(name);
+    const std::optional<double> number =
+        value.has_double_value() ? std::optional<double>(value.double_value())
+        : value.has_int_value()  ? std::optional<double>(static_cast<double>(value.int_value()))
+        : value.has_uint_value() ? std::optional<double>(static_cast<double>(value.uint_value()))
+                                 : std::nullopt;
+    if (name == "model") {
+      if (!value.has_string_value() || value.string_value().empty()) {
+        return invalid("params.model must be a non-empty string");
+      }
+      params.set_model(value.string_value());
+    } else if (name == "max_tokens" || name == "max_completion_tokens") {
+      // The two names are one generation cap (OpenAI renamed it); a request
+      // naming both is ambiguous.
+      if (token_cap_name.has_value()) {
+        return invalid("params." + *token_cap_name + " and params." + name +
+                       " are the same generation cap; set one");
+      }
+      token_cap_name = name;
+      const bool whole = (value.has_int_value() && value.int_value() > 0 &&
+                          value.int_value() <= std::numeric_limits<uint32_t>::max()) ||
+                         (value.has_uint_value() && value.uint_value() > 0 &&
+                          value.uint_value() <= std::numeric_limits<uint32_t>::max());
+      if (!whole) return invalid("params." + name + " must be a positive integer");
+      params.set_max_tokens(static_cast<uint32_t>(*number));
+    } else if (name == "temperature") {
+      if (!number.has_value() || !std::isfinite(*number) || *number < 0.0) {
+        return invalid("params.temperature must be a finite number, not negative");
+      }
+      params.set_temperature(*number);
+    } else if (name == "top_p") {
+      if (!number.has_value() || !(*number >= 0.0 && *number <= 1.0)) {
+        return invalid("params.top_p must be a number between 0 and 1");
+      }
+      params.set_top_p(*number);
+    } else if (name == "seed") {
+      if (value.has_int_value()) {
+        params.set_seed(value.int_value());
+      } else if (value.has_uint_value() &&
+                 value.uint_value() <=
+                     static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+        params.set_seed(static_cast<int64_t>(value.uint_value()));
+      } else {
+        return invalid("params.seed must be an integer");
+      }
+    } else {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + " does not implement option 'picture_description_api.params." +
+                              name + "'");
+    }
+  }
+  if (!names.empty()) call->params = std::move(params);
+
+  // Headers go to the per-request endpoint as they are, so a name or value
+  // HTTP does not allow is refused here, naming the header and never its
+  // value: a header value is a credential.
+  std::vector<std::string> header_names;
+  for (const auto& entry : api.headers()) header_names.push_back(entry.first);
+  std::ranges::sort(header_names);
+  for (const std::string& name : header_names) {
+    const auto token_char = [](unsigned char c) {
+      return std::isalnum(c) != 0 || std::string_view("!#$%&'*+-.^_`|~").contains(c);
+    };
+    if (name.empty() || !std::ranges::all_of(name, token_char)) {
+      return invalid("headers name '" + name + "' is not an HTTP header name");
+    }
+    std::string lowered = name;
+    std::ranges::transform(lowered, lowered.begin(),
+                           [](unsigned char c) { return std::tolower(c); });
+    static constexpr std::string_view kReserved[] = {
+        "host",    "content-type", "content-length", "expect",
+        "connection", "keep-alive", "te",             "trailer",
+        "transfer-encoding", "upgrade"};
+    if (std::ranges::find(kReserved, lowered) != std::end(kReserved) ||
+        lowered.starts_with("proxy-")) {
+      return invalid("headers '" + name + "' is set by the HTTP client, not the request");
+    }
+    const std::string& value = api.headers().at(name);
+    if (std::ranges::any_of(value, [](unsigned char c) {
+          return (c < 0x20 && c != '\t') || c == 0x7f;
+        })) {
+      return invalid("headers '" + name + "' value holds a control character");
+    }
+    ai::pipestream::enrich::v1::VlmHeader* header = &call->headers.emplace_back();
+    header->set_name(name);
+    header->set_value(value);
+  }
+  return grpc::Status::OK;
 }
 
 namespace {
@@ -1076,6 +1179,8 @@ struct ParseInputs {
   // From picture_description_api.url / local.repo_id when set; empty means keep
   // the enrich service (or env) default.
   std::string picture_description_vlm_endpoint;
+  // picture_description_api's prompt, params and headers, typed for enrich.
+  PictureDescriptionCall picture_description_call;
   std::optional<uint32_t> enrich_concurrency;
   std::optional<std::chrono::milliseconds> enrich_timeout;
   std::vector<std::string> picture_description_allow;
@@ -1251,6 +1356,8 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   if (options.has_picture_description_api()) {
     const auto& api = options.picture_description_api();
     inputs.picture_description_vlm_endpoint = api.url();
+    // validate_options already refused a call that does not resolve.
+    static_cast<void>(picture_description_call(api, std::string(), &inputs.picture_description_call));
     if (api.has_concurrency()) {
       inputs.enrich_concurrency = static_cast<uint32_t>(api.concurrency());
     }
@@ -1520,6 +1627,7 @@ void derender_charts_if_configured(const std::shared_ptr<CollectorEndpoints>& co
   enrich.picture_description_preset_raw = inputs.picture_description_preset;
   enrich.code_formula_preset_raw = inputs.code_formula_preset;
   enrich.chart_extraction = inputs.chart_extraction;
+  enrich.picture_description_call = inputs.picture_description_call;
   if (!inputs.picture_description_vlm_endpoint.empty()) {
     enrich.vlm_endpoint = inputs.picture_description_vlm_endpoint;
   }

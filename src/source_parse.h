@@ -17,6 +17,7 @@
 
 #include "ai/pipestream/parse/v1/parse.pb.h"
 #include "chunking/chunker.h"
+#include "grparse/chart_derender.h"
 #include "grparse/chart_extraction_policy.h"
 #include "grparse/collector_coordinator.h"
 #include "grparse/document_parser_service.h"
@@ -67,6 +68,17 @@ std::expected<std::optional<ChartExtractionPreset>, grpc::Status> resolve_chart_
 // doclang_include_namespace. validate_options has already turned down the
 // combinations the renderers reject.
 DoclangOptions doclang_options(const ai::pipestream::parse::v1::ConvertDocumentOptions& options);
+
+// Docling's picture_description_api prompt, params and headers in the
+// enrich service's typed form. The params map's names that have a typed
+// field travel as one (model; max_tokens or its alias max_completion_tokens;
+// temperature; top_p; seed), each checked for its type and range; any other
+// name is refused by name. Headers become VlmHeader entries in name order;
+// a name HTTP does not allow, one the HTTP client sets itself, or a value
+// holding a control character is refused naming the header, never its
+// value. INVALID_ARGUMENT on any refusal, with `call` partly filled.
+grpc::Status picture_description_call(const ai::pipestream::parse::v1::PictureDescriptionApi& api,
+                                      const std::string& surface, PictureDescriptionCall* call);
 
 grpc::Status parse_source(grpc::CallbackServerContext* context,
                           const ai::pipestream::parse::v1::ConvertDocumentRequest& request,

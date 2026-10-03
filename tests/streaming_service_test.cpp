@@ -573,33 +573,34 @@ void verify_parity_options_and_confidence(TestServer* server) {
           "local and api picture description engines must not both be set: " +
               both_status.error_message());
 
-  // The enrich dial forwards none of the api's headers, params or prompt,
-  // so a keyed API is refused rather than called without its key.
+  // The enrich dial forwards the api's headers, typed params and prompt, so
+  // a keyed API is accepted; an untyped param is still refused by name.
   request = unary_request();
   auto* api_opts =
       request.mutable_request()->mutable_options()->mutable_picture_description_api();
   api_opts->set_url("http://vlm.test:8085");
+  api_opts->set_prompt("describe");
   (*api_opts->mutable_headers())["Authorization"] = "secret";
-  grpc::ClientContext headers_context;
-  pipestream::parse::v1::ConvertSourceResponse headers_response;
-  const grpc::Status headers_status =
-      client->ConvertSource(&headers_context, request, &headers_response);
-  require(headers_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
-              headers_status.error_message().contains("picture_description_api.headers"),
-          "picture_description_api headers must be rejected by name: " +
-              headers_status.error_message());
+  (*api_opts->mutable_params())["model"].set_string_value("granite-vision");
+  grpc::ClientContext keyed_context;
+  pipestream::parse::v1::ConvertSourceResponse keyed_response;
+  const grpc::Status keyed_status =
+      client->ConvertSource(&keyed_context, request, &keyed_response);
+  require(keyed_status.ok(), "picture_description_api headers, params and prompt must be "
+                             "accepted: " + keyed_status.error_message());
   request = unary_request();
   api_opts = request.mutable_request()->mutable_options()->mutable_picture_description_api();
   api_opts->set_url("http://vlm.test:8085");
-  api_opts->set_prompt("describe");
-  grpc::ClientContext prompt_context;
-  pipestream::parse::v1::ConvertSourceResponse prompt_response;
-  const grpc::Status prompt_status =
-      client->ConvertSource(&prompt_context, request, &prompt_response);
-  require(prompt_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
-              prompt_status.error_message().contains("picture_description_api.prompt"),
-          "a non-default picture_description_api prompt must be rejected by name: " +
-              prompt_status.error_message());
+  (*api_opts->mutable_params())["frequency_penalty"].set_double_value(0.5);
+  grpc::ClientContext params_context;
+  pipestream::parse::v1::ConvertSourceResponse params_response;
+  const grpc::Status params_status =
+      client->ConvertSource(&params_context, request, &params_response);
+  require(params_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              params_status.error_message().contains(
+                  "picture_description_api.params.frequency_penalty"),
+          "an untyped picture_description_api param must be rejected by name: " +
+              params_status.error_message());
 
   request = unary_request();
   auto* local_opts =
