@@ -358,6 +358,15 @@ message EntityMention {
   string text = 3;
   optional string orig = 4;
   optional string label = 5;
+  // Where the mention sits in its item's own text, half-open [start, end),
+  // counted in Unicode code points like every other span here (not UTF-8
+  // bytes, not UTF-16 code units; a Java producer such as OpenNLP converts
+  // with String.codePointCount). A zero-width span (start == end) is valid
+  // and marks a position, such as an elided subject. A producer that
+  // analyzed a normalized copy of the text may report a span widened to
+  // whole normalized units; readers keep such a span and clamp it to the
+  // text rather than drop the mention. gRParse never rejects a mention for
+  // its span.
   optional IntSpan charspan = 6;
   map<string, google.protobuf.Value> custom_fields = 100;
 }

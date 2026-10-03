@@ -1,12 +1,18 @@
 #include "chunker.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <format>
+#include <limits>
 #include <optional>
 #include <print>
 #include <set>
 #include <string>
+#include <string_view>
+#include <system_error>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -988,15 +994,16 @@ OffsetTable derive_offsets(const docv1::Document& document) {
   OffsetTable table;
   std::uint64_t cursor = 0;
   bool has_text = false;
-  for (const auto& item : document.texts()) {
+  // Rows are keyed by arena position, the ref the chunker looks items up
+  // by, not by each item's own self_ref: an empty or duplicated self_ref
+  // would otherwise fold two items into one row.
+  for (int index = 0; index < document.texts_size(); ++index) {
+    const auto& item = document.texts(index);
     const std::string* text = nullptr;
-    const std::string* self_ref = nullptr;
     if (item.item_case() == docv1::BaseTextItem::kCode) {
       text = &item.code().text();
-      self_ref = &item.code().self_ref();
     } else if (const auto* base = text_base(item)) {
       text = &base->text();
-      self_ref = &base->self_ref();
     }
     if (text == nullptr) continue;
     // The plain-text export separates on what it has written so far, so a
@@ -1005,7 +1012,8 @@ OffsetTable derive_offsets(const docv1::Document& document) {
     const std::uint64_t start = cursor;
     cursor += codepoint_length(*text);
     if (!text->empty()) has_text = true;
-    table.emplace(*self_ref, OffsetEntry{start, cursor, parsev1::TEXT_SOURCE_UNSPECIFIED});
+    table.emplace(std::format("#/texts/{}", index),
+                  OffsetEntry{start, cursor, parsev1::TEXT_SOURCE_UNSPECIFIED});
   }
   return table;
 }
@@ -1027,11 +1035,26 @@ google::protobuf::RepeatedPtrField<parsev1::TextOffset> offset_rows(const Offset
   std::vector<const OffsetTable::value_type*> ordered;
   ordered.reserve(table.size());
   for (const auto& row : table) ordered.push_back(&row);
-  std::ranges::sort(ordered, [](const auto* left, const auto* right) {
-    if (left->second.start != right->second.start) {
-      return left->second.start < right->second.start;
+  // Stream order is arena order: equal starts (a leading run of empty
+  // items) break on the arena position, so "#/texts/9" precedes
+  // "#/texts/10". A ref that names no text arena slot sorts after them.
+  const auto position = [](const std::string& ref) {
+    constexpr std::string_view kPrefix = "#/texts/";
+    std::size_t index = std::numeric_limits<std::size_t>::max();
+    if (ref.starts_with(kPrefix)) {
+      const char* first = ref.data() + kPrefix.size();
+      const char* last = ref.data() + ref.size();
+      std::size_t parsed = 0;
+      const auto [end, error] = std::from_chars(first, last, parsed);
+      if (error == std::errc() && end == last && first != last) index = parsed;
     }
-    return left->first < right->first;
+    return index;
+  };
+  std::ranges::sort(ordered, [&position](const auto* left, const auto* right) {
+    const std::size_t left_position = position(left->first);
+    const std::size_t right_position = position(right->first);
+    return std::tie(left->second.start, left_position, left->first) <
+           std::tie(right->second.start, right_position, right->first);
   });
   google::protobuf::RepeatedPtrField<parsev1::TextOffset> rows;
   rows.Reserve(static_cast<int>(ordered.size()));
