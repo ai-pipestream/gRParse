@@ -90,7 +90,7 @@ that gRParse also dials them as collectors now.
 | Repo | Default branch | Language | Port | Shell env | Role |
 |---|---|---|---|---|---|
 | `grpc-enrich` | `main` | Java (Gradle, buf) | 50056 gRPC, 50068 HTTP | `ENRICH_TARGET` | `Document` in, stream of `ItemAnnotation` out; needs `ENRICH_VLM_URL`. The one peer gRParse also dials, opt-in: `GRPARSE_ENRICH_TARGET` turns on the chart derender leg (raster charts' tables from the VLM, after the merge), contract vendored as `collectors/enrich_service.proto` |
-| `grpc-vlm-convert` | `main` | C++ (CMake, buf) | 50058 gRPC, 50059 HTTP | `VLM_CONVERT_TARGET` | calls an external VLM server; also hosts the open VLM serving stack under `serving/` used by `eval/` |
+| `grpc-vlm-convert` | `main` | C++ (CMake, buf) | 50058 gRPC, 50059 HTTP (loopback inside the container) | `VLM_CONVERT_TARGET` | calls an external VLM server; also hosts the open VLM serving stack under `serving/` used by `eval/` |
 
 ### Adjacent, not family
 

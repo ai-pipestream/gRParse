@@ -369,7 +369,6 @@ services:
     build: ../grpc-vlm-convert
     expose:
       - "50058"   # gRPC
-      - "50059"   # HTTP/JSON front end
     environment:
       # External VLM server; conversion fails cleanly (and the shell tab
       # warns) until this points somewhere real.

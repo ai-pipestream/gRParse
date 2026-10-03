@@ -100,6 +100,7 @@ const streamClient = new parseV1.ParseStreamingService(TARGET, credentials, chan
 // ...) and those are used instead of the repo paths.
 const DEMO_PROTO_DIR = process.env.DEMO_PROTO_DIR || "";
 const peers = require("./peers");
+const { createSheetFolder } = require("./poic-sheets");
 const { KNOWN_UIS, resolveServiceProto, loadServiceCtor } = peers;
 
 // `node server.js --check-protos` loads the four gRParse contracts (already
@@ -668,7 +669,8 @@ function mapPoicTimestamp(value) {
 
 // Reduce one streamed content element to a compact preview line. Full text
 // stays on the server side; the page gets the shape and the first few
-// hundred characters.
+// hundred characters. Sheets are not here: their batches fold through
+// createSheetFolder (poic-sheets.js) into one line per worksheet.
 function mapPoicElement(event) {
   if (event.paragraph) {
     const paragraph = event.paragraph;
@@ -686,18 +688,6 @@ function mapPoicElement(event) {
       kind: "table",
       rows: rows.length,
       cols: rows.reduce((widest, row) => Math.max(widest, (row.cells || []).length), 0),
-      text: capPreview(firstRow),
-    };
-  }
-  if (event.sheet) {
-    const sheet = event.sheet;
-    const rows = sheet.rows || [];
-    const firstRow = rows.length > 0 ? (rows[0].cells || []).map((cell) => cell.formatted).join(" | ") : "";
-    return {
-      kind: "sheet",
-      index: sheet.index,
-      name: sheet.name,
-      rows: rows.length,
       text: capPreview(firstRow),
     };
   }
@@ -1278,7 +1268,8 @@ surface.get("/api/poic/status", (_request, response) => {
 
 // Raw office bytes in (same 500 MiB cap as /api/parse; body-parser answers
 // 413 past the limit), one NDJSON line per parse event out: a start line
-// from DocumentInfo, one preview line per content element, an end line from
+// from DocumentInfo, one preview line per content element (one per
+// worksheet, however many batches grPOIc split it into), an end line from
 // ParseStatus, grpc-error on failure, done last. The page sends the
 // filename and content type as query params.
 surface.post(
@@ -1305,10 +1296,18 @@ surface.post(
     let elements = 0;
     let finished = false;
     const send = (value) => response.write(`${JSON.stringify(value)}\n`);
+    const sheets = createSheetFolder(capPreview);
+    const sendPreview = (element) => {
+      if (!element) return;
+      elements += 1;
+      send({ type: "preview", ...element });
+    };
     // grpc-js can emit end after error; the done line goes out exactly once.
     const finish = () => {
       if (finished) return;
       finished = true;
+      // A sheet still waiting for its last batch goes out marked incomplete.
+      sendPreview(sheets.flush());
       send({ type: "done", elements, elapsedMs: Date.now() - startedAt });
       response.end();
     };
@@ -1317,6 +1316,12 @@ surface.post(
     const call = clients.poi.ParseDocument({ deadline });
 
     call.on("data", (event) => {
+      if (event.sheet) {
+        for (const preview of sheets.add(event.sheet)) sendPreview(preview);
+        return;
+      }
+      // Batches of one sheet are consecutive, so any other event ends it.
+      sendPreview(sheets.flush());
       if (event.documentInfo) {
         const metadata = event.documentInfo.metadata || {};
         send({
@@ -1345,26 +1350,25 @@ surface.post(
         });
         return;
       }
-      const element = mapPoicElement(event);
-      if (element) {
-        elements += 1;
-        send({ type: "preview", ...element });
-      }
+      sendPreview(mapPoicElement(event));
     });
     call.on("end", finish);
     call.on("error", (error) => {
+      sendPreview(sheets.flush());
       send({ type: "grpc-error", code: error.code, message: error.message });
       finish();
     });
     response.on("close", () => call.cancel());
 
-    // Identity fields ride the first chunk only; the last chunk is marked
-    // complete (a single-chunk upload is the common case).
+    // Identity fields and options ride the first chunk only; the last chunk
+    // is marked complete (a single-chunk upload is the common case). Sheet
+    // batches are always requested: grPOIc refuses a worksheet sent as one
+    // event once it would pass 256 MiB.
     const totalChunks = Math.ceil(body.length / POIC_CHUNK_BYTES);
     for (let index = 0; index < totalChunks; index += 1) {
       const first = index === 0;
       call.write({
-        ...(first ? { documentId: filename, filename, contentType } : {}),
+        ...(first ? { documentId: filename, filename, contentType, sheetBatches: true } : {}),
         data: body.subarray(index * POIC_CHUNK_BYTES, (index + 1) * POIC_CHUNK_BYTES),
         complete: index === totalChunks - 1,
       });

@@ -216,6 +216,13 @@ struct PdfClassification {
   // inspector knows the layer is garbled without knowing which pages), so
   // the routing consults it independently.
   bool encoding_issues = false;
+  // The info event's ocr_recommended flag: detection judged that OCR reads
+  // this document better than its text layer does (images carry essential
+  // context, or a dense newspaper layout whose reading order the layer
+  // cannot be trusted to keep). It is a document-wide answer and can be set
+  // on a TEXT_BASED document that names no OCR page, so the routing
+  // consults it independently of pages_needing_ocr.
+  bool ocr_recommended = false;
   // The trailer's has_invisible_text flag: some page drew text in rendering
   // mode 3 (typically an OCR layer behind a scan), which never reaches the
   // markdown or the folded body.
@@ -235,12 +242,14 @@ struct PdfClassification {
 struct PdfRouteDecision {
   bool fast_path = false;
   std::vector<int> ocr_pages;
-  // True when the classification carried encoding issues: the embedded text
-  // layer is untrustworthy document-wide, so the CV path should recognize
-  // every page and let the recognized text replace that layer (kForce)
-  // instead of reading it — reading a layer the contract says to distrust
-  // at best folds mojibake into the result. An explicit kOff request still
-  // outranks this, as it outranks every classification hint.
+  // True when the classification carried encoding issues or recommended
+  // OCR: the embedded text layer is not to be read document-wide, so the CV
+  // path should recognize every page and let the recognized text replace
+  // that layer (kForce) instead of reading it. Reading a layer the contract
+  // says to distrust at best folds mojibake into the result, and reading one
+  // the detection judged OCR to beat keeps the reading it judged worse. An
+  // explicit kOff request still outranks this, as it outranks every
+  // classification hint.
   bool force_ocr = false;
 };
 

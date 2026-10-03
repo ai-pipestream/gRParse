@@ -2674,6 +2674,9 @@ class FakePdfService final : public pdfv1::PdfParseService::Service {
         pages_needing_ocr_(std::move(pages_needing_ocr)),
         encoding_issues_(encoding_issues) {}
 
+  // Sets PdfInfo.ocr_recommended on the info event.
+  void set_ocr_recommended(bool recommended) { ocr_recommended_ = recommended; }
+
   // Pages the last dial asked for (PdfOptions.pages). Empty means the
   // client left the field unset and the collector extracts every page.
   std::vector<uint32_t> last_pages() const { return last_pages_; }
@@ -2712,6 +2715,7 @@ class FakePdfService final : public pdfv1::PdfParseService::Service {
     info->set_pdf_type(type_);
     info->set_confidence(0.95F);
     info->set_page_count(3);
+    info->set_ocr_recommended(ocr_recommended_);
     for (const uint32_t page : pages_needing_ocr_) info->add_pages_needing_ocr(page);
     stream->Write(event);
     event.Clear();
@@ -2739,6 +2743,7 @@ class FakePdfService final : public pdfv1::PdfParseService::Service {
   pdfv1::PdfType type_;
   std::vector<uint32_t> pages_needing_ocr_;
   bool encoding_issues_;
+  bool ocr_recommended_ = false;
   std::vector<uint32_t> last_pages_;
   std::optional<uint32_t> first_page_;
   std::optional<uint32_t> last_page_;
@@ -2844,6 +2849,37 @@ void verify_pdf_routing_decision_logic() {
   garbled_mixed.encoding_issues = true;
   require(grparse::route_pdf_by_classification(garbled_mixed).force_ocr,
           "encoding issues force recognition for every classification");
+}
+
+// PdfInfo.ocr_recommended answers about the whole document, so it refuses
+// the fast path and forces recognition on every page, whether or not any
+// page is named and whatever the classification.
+void verify_pdf_ocr_recommendation_routing() {
+  grparse::PdfClassification newspaper;
+  newspaper.pdf_class = grparse::PdfClass::kTextBased;
+  newspaper.ocr_recommended = true;
+  const auto declined = grparse::route_pdf_by_classification(newspaper);
+  require(!declined.fast_path && declined.ocr_pages.empty() && declined.force_ocr,
+          "a text-based document recommended for OCR is not the fast path and forces "
+          "recognition on every page");
+
+  grparse::PdfClassification template_form;
+  template_form.pdf_class = grparse::PdfClass::kMixed;
+  template_form.pages_needing_ocr = {2};
+  template_form.ocr_recommended = true;
+  const auto mixed = grparse::route_pdf_by_classification(template_form);
+  require(!mixed.fast_path && mixed.force_ocr && mixed.ocr_pages == std::vector<int>({2}),
+          "the document-wide recommendation widens a named page set to every page");
+
+  FakePdfService service(pdfv1::PDF_TYPE_TEXT_BASED, {});
+  service.set_ocr_recommended(true);
+  ServerFixture server(&service);
+  const auto result = grparse::collect_pdf(server.channel(), "%PDF-fake");
+  require(result.outcome.success, "pdf collection succeeds: " + result.outcome.error);
+  require(result.classification.ocr_recommended && result.classification.pages_needing_ocr.empty(),
+          "the info event's ocr_recommended rides the classification without naming pages");
+  require(!grparse::route_pdf_by_classification(result.classification).fast_path,
+          "the collected recommendation refuses the fast path");
 }
 
 void verify_pdf_encoding_issues_defeat_the_fast_path() {
@@ -3202,6 +3238,7 @@ int main() {
       verify_pdf_collects_document_classification_and_warnings,
       verify_pdf_scanned_reports_the_ocr_page_set,
       verify_pdf_routing_decision_logic,
+      verify_pdf_ocr_recommendation_routing,
       verify_pdf_encoding_issues_defeat_the_fast_path,
       verify_pdf_searchable_scan_refuses_the_fast_path,
       verify_pdf_extraction_verdicts_name_ocr_pages,
