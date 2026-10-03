@@ -3,13 +3,16 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <format>
 #include <memory>
 #include <mutex>
 #include <print>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -2680,6 +2683,24 @@ void verify_hierarchical_chunk_rpc_carries_digest_and_offsets(TestServer* server
             "the chunk carries the page it came from");
     require(chunk.metadata().at("text_source") == "ocr",
             "the recognized-text source rides as metadata");
+    const std::string producer =
+        std::string("grparse-") + GRPARSE_VERSION + "-" + GRPARSE_ORT_PACKAGE_NAME;
+    require(chunk.producer() == producer, "every chunk names the build that produced it");
+    const std::vector<std::string> parts = [&chunk] {
+      std::vector<std::string> out;
+      std::string_view key = chunk.chunk_key();
+      for (std::size_t bar = key.find('|'); bar != std::string_view::npos; bar = key.find('|')) {
+        out.emplace_back(key.substr(0, bar));
+        key.remove_prefix(bar + 1);
+      }
+      out.emplace_back(key);
+      return out;
+    }();
+    require(parts.size() == 5 && parts[0].size() == 16 && parts[1].size() == 16 &&
+                parts[2] == producer && parts[3] == "grparse-hier/2" &&
+                parts[4] == std::to_string(index),
+            "the chunk key spells bytes, options, build, rules and position: " +
+                chunk.chunk_key());
   }
   require(response.response().documents().empty(),
           "the converted document rides along only when it is asked for");
@@ -2719,6 +2740,14 @@ void verify_hybrid_chunk_rpc_merges_and_validates(TestServer* server) {
   require(response.response().documents_size() == 1 &&
               response.response().documents(0).content().doc().texts_size() == 3,
           "include_converted_doc returns the parsed document too");
+  const auto& identity = response.response().documents(0).content().doc().parse();
+  require(identity.producer() == chunk.producer() && identity.options_digest().size() == 16,
+          "the document names the build and the options that produced it");
+  require(chunk.chunk_key().starts_with(
+              std::format("{:016x}|{}|", response.response().documents(0).content().doc()
+                                             .origin().binary_hash(),
+                          identity.options_digest())),
+          "the chunk key starts from the document's bytes and options");
   const auto& info = response.response().chunking_info();
   require(info.contains("chunker") && info.at("chunker").string_value() == "hybrid",
           "chunking_info names the hybrid chunker");

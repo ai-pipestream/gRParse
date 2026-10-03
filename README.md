@@ -132,6 +132,8 @@ Determinism is the point: the same input bytes produce the same chunk bytes on e
 
 A chunk reports `start_offset` and `end_offset` as UTF-8 code point positions in the document's concatenated body text whenever the parse supplied an offset table for every text item the chunk consumed; otherwise both stay unset rather than being guessed.
 
+Every parsed `Document` names the parse that produced it in `parse`: `producer` is the service version `GetServiceInfo` reports (`grparse-<version>-<flavor>`), and `options_digest` is a 64-bit FNV-1a hash of the request's conversion options. Each chunk repeats the `producer` and carries a `chunk_key`, `<binary_hash as 16 hex>|<options_digest>|<producer>|<rules_digest>|<chunk_index>`. Equal keys mean the same bytes, options, build, chunk rules and position, and so byte-identical chunk text. A vector or annotation stored under a key that a fresh chunking no longer produces is stale. Item `self_ref`s are positions (`#/texts/12`) and can shift between builds, so store derived data against `chunk_key`, not `self_ref` alone.
+
 #### Optional local embeddings
 
 The two synchronous chunk RPCs accept `embedding_options.enabled=true` to attach

@@ -7,17 +7,21 @@
 #include <cmath>
 #include <condition_variable>
 #include <exception>
+#include <format>
 #include <initializer_list>
 #include <limits>
 #include <map>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
 #include <google/protobuf/descriptor.h>
+#include <google/protobuf/io/coded_stream.h>
+#include <google/protobuf/io/zero_copy_stream_impl_lite.h>
 #include <google/protobuf/util/json_util.h>
 
 #include "grparse/base64.h"
@@ -33,6 +37,7 @@
 #include "grparse/page_previews.h"
 #include "grparse/pdf_form_widgets.h"
 #include "grparse/schema_version.h"
+#include "grparse/service_version.h"
 #include "grparse/vlm_convert.h"
 #include "parse_support.h"
 #include "structure_validation.h"
@@ -1089,6 +1094,21 @@ std::expected<PictureDescriptionCall, grpc::Status> request_picture_description_
 
 namespace {
 
+// The options digest a ParseIdentity carries: FNV-1a 64 over the options'
+// deterministic serialization, as sixteen lowercase hex digits.
+std::string options_digest(const pipestream::parse::v1::ConvertDocumentOptions& options) {
+  std::string bytes;
+  {
+    google::protobuf::io::StringOutputStream stream(&bytes);
+    google::protobuf::io::CodedOutputStream coded(&stream);
+    coded.SetSerializationDeterministic(true);
+    if (!options.SerializeToCodedStream(&coded)) {
+      throw std::runtime_error("conversion options did not serialize for the parse identity");
+    }
+  }
+  return std::format("{:016x}", content_hash(bytes));
+}
+
 // The document every collector's output merges into, additively and in plan
 // order. It carries identity and nothing else: the schema name and version
 // name the wire schema minor this repo currently mirrors, and must match
@@ -1968,6 +1988,11 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
                                      std::move(*warning));
       }
     }
+    // Which build and options produced this document, so anything stored
+    // against its items can tell a re-parse that would renumber them.
+    auto* identity = result.document.mutable_parse();
+    identity->set_producer(std::string(kServiceVersion));
+    identity->set_options_digest(options_digest(request.options()));
     // The document is final here: every surface renders, chunks or delivers
     // exactly this, so the structural rules check this.
     const grpc::Status structure_status =

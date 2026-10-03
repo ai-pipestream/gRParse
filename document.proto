@@ -140,6 +140,25 @@ message Document {
   // the loser's answer is here, under its collector, not lost. Extension
   // beyond the upstream dialect.
   repeated CollectorClaim claims = 28;
+
+  // Which build produced this document from these bytes, and under which
+  // options. A stored artifact keyed on this document (an item's self_ref,
+  // a chunk, a vector) is current only while a re-parse would carry the
+  // same identity: a new build or different options may renumber items.
+  // Extension beyond the upstream dialect.
+  optional ParseIdentity parse = 29;
+}
+
+// ParseIdentity names the parse that produced a document.
+message ParseIdentity {
+  // The producing service's version string, as its GetServiceInfo reports
+  // it (for gRParse "grparse-<version>-<flavor>").
+  string producer = 1;
+  // Sixteen lowercase hex digits: the 64-bit FNV-1a hash of the request's
+  // conversion options in deterministic protobuf serialization. Equal
+  // digests mean equal options; it says nothing about which options were
+  // set.
+  string options_digest = 2;
 }
 
 // DocumentOrigin contains metadata about the source document file.

@@ -952,6 +952,39 @@ void verify_sentence_rule_boundaries() {
           "text with no terminator is one sentence");
 }
 
+void verify_chunk_key_names_bytes_options_build_rules_and_position() {
+  docv1::Document document = new_document();
+  add_paragraph(&document, "first");
+  add_paragraph(&document, "second");
+  const auto anonymous = chunk_hierarchical(document, {}, {}, "d.txt");
+  require(anonymous.front().producer().empty() && anonymous.front().chunk_key().empty(),
+          "a document with no parse identity gets no producer and no key");
+
+  document.mutable_origin()->set_binary_hash(0xabcULL);
+  auto* identity = document.mutable_parse();
+  identity->set_producer("grparse-9.9.9-cpu");
+  identity->set_options_digest("0123456789abcdef");
+  const auto chunks = chunk_hierarchical(document, {}, {}, "d.txt");
+  require(chunks.size() == 2, "one chunk per paragraph");
+  require_eq(chunks[0].producer(), "grparse-9.9.9-cpu", "the chunk names the producing build");
+  require_eq(chunks[0].chunk_key(),
+             "0000000000000abc|0123456789abcdef|grparse-9.9.9-cpu|grparse-hier/2|0",
+             "the key spells bytes, options, build, rules and position");
+  require_eq(chunks[1].chunk_key(),
+             "0000000000000abc|0123456789abcdef|grparse-9.9.9-cpu|grparse-hier/2|1",
+             "the position tells sibling chunks apart");
+
+  std::vector<parsev1::Chunk> hybrid;
+  require(chunk_hybrid(document, {}, hybrid_options(64), "d.txt", &hybrid).ok(),
+          "hybrid chunking succeeds");
+  require(hybrid.front().chunk_key().ends_with("|" + hybrid.front().rules_digest() + "|0"),
+          "the hybrid key carries the hybrid rules, budget included");
+
+  document.mutable_origin()->set_binary_hash(0);
+  require(chunk_hierarchical(document, {}, {}, "d.txt").front().chunk_key().empty(),
+          "without the source bytes' hash there is no key");
+}
+
 struct Case {
   const char* name;
   void (*run)();
@@ -982,6 +1015,7 @@ const Case kCases[] = {
     {"hybrid offset narrowing", verify_split_pieces_narrow_offsets_only_when_exact},
     {"raw text option", verify_raw_text_mirrors_text_when_requested},
     {"hybrid digest", verify_hybrid_digest_reports_the_budget},
+    {"chunk key", verify_chunk_key_names_bytes_options_build_rules_and_position},
 };
 
 }  // namespace

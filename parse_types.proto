@@ -1342,6 +1342,17 @@ message Chunk {
   map<string, ScalarValue> typed_metadata = 14;
   // Absent unless explicitly requested and every embedding batch succeeded.
   ChunkEmbedding embedding = 15;
+  // The build that produced the chunk's document (Document.parse.producer);
+  // empty when the document names none.
+  string producer = 16;
+  // A key for storing what is derived from this chunk (a vector, an
+  // annotation): equal keys mean the same source bytes, conversion options,
+  // producing build, chunk rules and position, so the chunk text is
+  // byte-identical. Spelled
+  //   <binary_hash, 16 lowercase hex>|<options_digest>|<producer>|<rules_digest>|<chunk_index>
+  // Empty when the document lacks its binary_hash or parse identity. A
+  // stored vector whose key a fresh chunking no longer produces is stale.
+  string chunk_key = 17;
 }
 
 // ChunkDocumentResponse mirrors the REST chunk response body.
