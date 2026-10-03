@@ -24,14 +24,17 @@ option java_package = "ai.pipestream.parse.v1";
 // envelope only wraps core messages, it does not duplicate them.
 //
 // Emission honesty:
-//   Phase 1 (implemented): status + source_result + final_document
+//   Phase 1 (planned; StreamDocument answers UNIMPLEMENTED today): status +
+//     source_result + final_document
 //   Phase 2 (orchestrator hooks): per-source fan-out as documents complete
 //   Phase 3 (pipeline hooks): DocumentNode parts as items hydrate
 // Do not emit DocumentNode until the converter can produce partial items.
 // Faking page yields from a completed Document is not streaming.
 
-// StreamDocument converts sources and streams StreamDocumentResponse events
-// (the DocumentStreamEnvelope) until finals are emitted and the stream closes.
+// StreamDocument is to convert sources and stream StreamDocumentResponse
+// events (the DocumentStreamEnvelope) until finals are emitted and the
+// stream closes. It is not implemented yet and answers UNIMPLEMENTED;
+// StreamProcessDocument is the streaming surface this server serves.
 service ParseStreamingService {
   rpc StreamDocument(StreamDocumentRequest) returns (stream StreamDocumentResponse);
 
