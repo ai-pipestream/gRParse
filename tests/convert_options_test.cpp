@@ -549,6 +549,48 @@ void verify_picture_description_api_call_is_typed() {
           [](parsev1::PictureDescriptionApi* api) {
             (*api->mutable_headers())["Authorization"] = "sk-never-echoed\r\nX-Injected: 1";
           });
+  invalid("'Authorization' and 'authorization' name the same header",
+          [](parsev1::PictureDescriptionApi* api) {
+            (*api->mutable_headers())["Authorization"] = "sk-never-echoed";
+            (*api->mutable_headers())["authorization"] = "sk-never-echoed";
+          });
+}
+
+// The caller's headers are for its own endpoint. grpc-enrich sends them to
+// every per-request endpoint of the job, so a chart preset naming another
+// endpoint is refused while the chart leg is on, naming the preset and not
+// its endpoint; the same endpoint, no headers, or charts off all pass.
+void verify_picture_description_headers_stay_on_their_endpoint() {
+  parsev1::ConvertDocumentOptions options;
+  auto* api = options.mutable_picture_description_api();
+  api->set_url("http://vlm.test");
+  (*api->mutable_headers())["Authorization"] = "sk-never-echoed";
+  grparse::ChartExtractionPreset preset;
+  preset.id = "granite";
+  preset.vlm_endpoint = "http://charts.internal:8000/v1";
+  const auto refused = grparse::request_picture_description_call(options, preset, kSurface);
+  require(!refused.has_value(), "headers beside another chart endpoint are refused");
+  require_invalid(refused.error(), "chart extraction preset 'granite'");
+  require(!refused.error().error_message().contains("charts.internal") &&
+              !refused.error().error_message().contains("sk-never-echoed"),
+          "the refusal names neither the preset's endpoint nor the header value");
+
+  preset.vlm_endpoint = "http://vlm.test";
+  const auto same = grparse::request_picture_description_call(options, preset, kSurface);
+  require(same.has_value() && same->headers.size() == 1,
+          "a chart preset on the request's own endpoint keeps the headers");
+  preset.vlm_endpoint = "http://charts.internal:8000/v1";
+  options.set_do_chart_extraction(false);
+  require(grparse::request_picture_description_call(options, preset, kSurface).has_value(),
+          "with the chart leg off the preset's endpoint gets no call");
+  options.clear_do_chart_extraction();
+  api->clear_headers();
+  require(grparse::request_picture_description_call(options, preset, kSurface).has_value(),
+          "without headers nothing travels to the preset's endpoint");
+  require(grparse::request_picture_description_call(parsev1::ConvertDocumentOptions(), preset,
+                                                    kSurface)
+              .has_value(),
+          "a request without picture_description_api resolves to an empty call");
 }
 
 }  // namespace
@@ -565,5 +607,6 @@ int main() {
       verify_chart_policy_resolution,
       verify_doclang_export_options,
       verify_picture_description_api_call_is_typed,
+      verify_picture_description_headers_stay_on_their_endpoint,
   });
 }

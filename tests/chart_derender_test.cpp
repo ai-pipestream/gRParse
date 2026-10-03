@@ -454,25 +454,39 @@ void verify_picture_description_class_filters() {
 }
 
 // Everything the process writes to stdout and stderr while `body` runs.
+// A redirect that fails throws, so the no-leak checks never pass on an
+// empty capture; the streams are restored even when `body` throws.
 template <typename Body>
 std::string captured_output(Body body) {
+  const auto checked = [](int result, const char* what) {
+    if (result < 0) throw std::runtime_error(std::string(what) + " failed");
+    return result;
+  };
   std::fflush(stdout);
   std::fflush(stderr);
   char path[] = "/tmp/chart-derender-output-XXXXXX";
-  const int file = mkstemp(path);
-  if (file < 0) throw std::runtime_error("mkstemp failed");
-  const int saved_out = dup(STDOUT_FILENO);
-  const int saved_err = dup(STDERR_FILENO);
-  dup2(file, STDOUT_FILENO);
-  dup2(file, STDERR_FILENO);
-  body();
-  std::fflush(stdout);
-  std::fflush(stderr);
-  dup2(saved_out, STDOUT_FILENO);
-  dup2(saved_err, STDERR_FILENO);
-  close(saved_out);
-  close(saved_err);
-  close(file);
+  const int file = checked(mkstemp(path), "mkstemp");
+  const int saved_out = checked(dup(STDOUT_FILENO), "dup stdout");
+  const int saved_err = checked(dup(STDERR_FILENO), "dup stderr");
+  const auto restore = [&] {
+    std::fflush(stdout);
+    std::fflush(stderr);
+    checked(dup2(saved_out, STDOUT_FILENO), "restore stdout");
+    checked(dup2(saved_err, STDERR_FILENO), "restore stderr");
+    close(saved_out);
+    close(saved_err);
+    close(file);
+  };
+  try {
+    checked(dup2(file, STDOUT_FILENO), "redirect stdout");
+    checked(dup2(file, STDERR_FILENO), "redirect stderr");
+    body();
+  } catch (...) {
+    restore();
+    std::remove(path);
+    throw;
+  }
+  restore();
   std::ifstream in(path);
   std::stringstream text;
   text << in.rdbuf();
@@ -505,9 +519,11 @@ void verify_picture_description_api_call_reaches_enrich() {
   options.do_chart_extraction = false;
   options.do_picture_description = true;
   options.vlm_endpoint = api.url();
-  const grpc::Status status =
-      grparse::picture_description_call(api, "ConvertSource", &options.picture_description_call);
-  require(status.ok(), "the api's prompt, params and headers resolve: " + status.error_message());
+  auto call = grparse::picture_description_call(api, "ConvertSource");
+  require(call.has_value(),
+          "the api's prompt, params and headers resolve: " +
+              (call.has_value() ? std::string() : call.error().error_message()));
+  options.picture_description_call = std::move(*call);
   grparse::ChartDerenderReport report;
   const std::string output = captured_output(
       [&] { report = grparse::derender_charts(server.channel(), options, &document); });
@@ -536,11 +552,11 @@ void verify_picture_description_api_call_reaches_enrich() {
 
   // No params and no headers send no message and no entries, so the enrich
   // preset's model and budget stay in place.
-  grparse::PictureDescriptionCall plain;
   parsev1::PictureDescriptionApi bare;
   bare.set_url("http://api.vlm:9000/v1");
-  require(grparse::picture_description_call(bare, "ConvertSource", &plain).ok() &&
-              plain.prompt.empty() && !plain.params.has_value() && plain.headers.empty(),
+  const auto plain = grparse::picture_description_call(bare, "ConvertSource");
+  require(plain.has_value() && plain->prompt.empty() && !plain->params.has_value() &&
+              plain->headers.empty(),
           "an api without prompt, params or headers adds nothing");
 }
 
