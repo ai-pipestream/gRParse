@@ -613,9 +613,13 @@ enum FormFieldKind {
   FORM_FIELD_KIND_SIGNATURE = 7;
 }
 
-// One form field widget on a page.
+// One form field widget on a page. One message per /Widget annotation, in
+// the page's /Annots order; a field with several widgets (a radio group, a
+// field shown on two pages) yields one message per widget, each carrying
+// the field's shared state and its own widget-local state.
 message FormField {
-  // The field type.
+  // The field type (/FT, inherited from parent fields when the widget does
+  // not carry it).
   FormFieldKind kind = 1;
   // The fully-qualified field name.
   string name = 2;
@@ -625,7 +629,8 @@ message FormField {
   optional string default_value = 4;
   // Choice options for combo and list boxes, in stored order.
   repeated string options = 5;
-  // The /Ff field flags bitfield.
+  // The /Ff field flags bitfield, inherited from parent fields when the
+  // terminal field does not carry it (ISO 32000-1, 12.7.3.1).
   optional uint32 flags = 6;
   // The widget rectangle in page space.
   BoundingBox rect = 7;
@@ -633,6 +638,11 @@ message FormField {
   bool read_only = 8;
   // The alternate (tooltip) name (/TU), when set.
   optional string alternate_name = 9;
+  // The widget's own appearance state (/AS) as the PDF name it is,
+  // including its leading slash ("/Yes", "/Off"). Local to the widget
+  // annotation and never inherited; absent when the widget has none. For
+  // check boxes and radio buttons it is the state the page displays.
+  optional string appearance_state = 10;
 }
 
 // ---------------------------------------------------------------------------
