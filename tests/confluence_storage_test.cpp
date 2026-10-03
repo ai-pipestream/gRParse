@@ -544,6 +544,26 @@ void verify_bare_ampersand_run_is_linear() {
           "every bare ampersand is kept as text");
 }
 
+// Many bracketless declarations ahead of a lone '[' stay linear: each
+// declaration scan stops at whichever of '[' or '>' comes first instead of
+// searching the rest of the body for a bracket. A doctype with an internal
+// subset is still skipped whole.
+void verify_declaration_run_is_linear() {
+  std::string storage;
+  for (int index = 0; index < 400000; ++index) storage += "<!x>";
+  storage += "<p>after [</p>";
+  const auto outcome = parse(storage);
+  require(outcome.document.texts_size() == 1 &&
+              base_of(outcome.document.texts(0)).text() == "after [",
+          "the paragraph after the declarations survives");
+
+  const auto subset =
+      parse("<!DOCTYPE html [<!ENTITY a \"x>y\">]><p>kept</p>");
+  require(subset.document.texts_size() == 1 &&
+              base_of(subset.document.texts(0)).text() == "kept",
+          "a doctype's internal subset is skipped up to its own close");
+}
+
 void verify_empty_body_is_rejected() {
   const auto outcome = grparse::parse_confluence_storage("   just words   ");
   require(!outcome.success, "a body with no markup is not a storage document");
@@ -671,6 +691,7 @@ int main() {
       verify_malformed_markup_recovers,
       verify_deep_nesting_is_bounded,
       verify_bare_ampersand_run_is_linear,
+      verify_declaration_run_is_linear,
       verify_empty_body_is_rejected,
       verify_real_page_fixture_shape,
   });

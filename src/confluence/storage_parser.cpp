@@ -139,11 +139,12 @@ void StorageParser::skip_instruction() {
 void StorageParser::skip_doctype() {
   // A doctype, internal subset included: the subset is bracketed, so the
   // scan ends at the bracket's own close when there is one.
-  size_t end = input_.find('>', position_ + 2);
-  const size_t bracket = input_.find('[', position_ + 2);
-  if (bracket != std::string_view::npos &&
-      (end == std::string_view::npos || bracket < end)) {
-    const size_t close = input_.find(']', bracket + 1);
+  // One scan for whichever comes first, so a body of many bracketless
+  // "<!...>" declarations stays linear instead of searching for '[' to the
+  // end of the input each time.
+  size_t end = input_.find_first_of("[>", position_ + 2);
+  if (end != std::string_view::npos && input_[end] == '[') {
+    const size_t close = input_.find(']', end + 1);
     end = close == std::string_view::npos ? std::string_view::npos
                                           : input_.find('>', close + 1);
   }
