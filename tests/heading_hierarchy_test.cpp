@@ -308,6 +308,28 @@ void verify_document_title_merge_and_levels() {
           "a second run changes nothing");
 }
 
+// Span ranges count code points: a folded line's spans shift by the
+// head's code points, not its bytes, and past whitespace trimmed from the
+// tail.
+void verify_title_merge_shifts_spans_by_code_points() {
+  docv1::Document document = base_document();
+  add_header(&document, "CODE DIFFUSION M\xC3\x96" "DELS", 1, 76, 17.2, "pdf");
+  add_header(&document, "  NOISE OPERATORS", 2, 100, 13.8, "pdf", 108, 243);
+  auto* tail_span = document.mutable_texts(1)->mutable_section_header()->mutable_base()->mutable_spans(0);
+  tail_span->mutable_range()->set_start(2);  // "NOISE OPERATORS"
+  add_header(&document, "Anonymous authors", 4, 135, 10.0, "pdf", 114, 200);
+  add_prose(&document, "Paper under double-blind review", 146);
+  add_header(&document, "ABSTRACT", 3, 185, 12.0, "pdf", 278, 334);
+  add_prose(&document, "Diffusion for code generates code", 210);
+  const grparse::HeadingReport report = grparse::infer_heading_hierarchy(&document);
+  require(report.titles_merged == 1, "the title lines fold");
+  const auto& title = document.texts(0).title().base();
+  require(title.text() == "CODE DIFFUSION M\xC3\x96" "DELS NOISE OPERATORS", "title text joins");
+  require(title.spans_size() == 2 && title.spans(1).range().start() == 22 &&
+              title.spans(1).range().end() == 37,
+          "the second line's span lands on its words in code points");
+}
+
 // A geometry collector's headings that read as prose go back to being
 // text; a structural producer's stay whatever they say.
 void verify_prose_headings_demoted() {
@@ -387,6 +409,7 @@ int main() {
       verify_heading_options,
       verify_font_sizes_win_when_complete,
       verify_document_title_merge_and_levels,
+      verify_title_merge_shifts_spans_by_code_points,
       verify_prose_headings_demoted,
       verify_producer_levels_win,
   });

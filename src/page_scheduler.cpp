@@ -138,7 +138,17 @@ class BusyTimer final {
 struct PageScheduler::Ticket::State {
   explicit State(Callbacks value) : callbacks(std::move(value)) {}
 
-  void cancel() { cancelled.store(true); }
+  // Also aborts the source's backend calls in flight, so a cancelled or
+  // failed document does not hold a render worker until a backend answers.
+  void cancel() {
+    cancelled.store(true);
+    std::shared_ptr<PageSource> open_source;
+    {
+      std::lock_guard<std::mutex> lock(schedule_mutex);
+      open_source = source;
+    }
+    if (open_source) open_source->cancel();
+  }
 
   void fail(std::exception_ptr value) {
     {
@@ -231,10 +241,8 @@ class PageScheduler::Impl final {
       throw std::invalid_argument("Scheduler worker counts, page window, and document limit must be positive");
     }
     if (!source_factory_) {
-      const size_t parsers = options_.pdf_parsers > 0 ? options_.pdf_parsers : options_.render_workers;
-      source_factory_ = [parsers](std::shared_ptr<const std::string> bytes, bool pdf,
-                                  double render_dpi) {
-        return open_in_memory_document(std::move(bytes), pdf, parsers, render_dpi);
+      source_factory_ = [](std::shared_ptr<const std::string> bytes, bool pdf, double render_dpi) {
+        return open_in_memory_document(std::move(bytes), pdf, render_dpi);
       };
     }
     // Any thread that fails to start must not leave the already-started ones
@@ -311,6 +319,7 @@ class PageScheduler::Impl final {
     for (size_t bucket = 0; bucket < latency_buckets_.size(); ++bucket) {
       snapshot.page_latency[bucket] = latency_buckets_[bucket].load();
     }
+    snapshot.page_latency_ns = latency_sum_ns_.load();
     snapshot.pages_rerecognized = pages_rerecognized_.load();
     snapshot.rerecognition_passes = rerecognition_passes_.load();
     for (size_t turn = 0; turn < rotations_applied_.size(); ++turn) {
@@ -363,7 +372,7 @@ class PageScheduler::Impl final {
       abandoned.assign(active_requests_.begin(), active_requests_.end());
     }
     for (const auto& request : abandoned) {
-      request->fail(std::make_exception_ptr(SchedulerSaturated("Scheduler is shutting down")));
+      request->fail(std::make_exception_ptr(SchedulerShuttingDown("Scheduler is shutting down")));
       finish_request(request);
     }
   }
@@ -445,9 +454,11 @@ class PageScheduler::Impl final {
   }
 
   void record_page_latency(std::chrono::steady_clock::time_point scheduled_at) {
-    const auto elapsed_ms = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                      std::chrono::steady_clock::now() - scheduled_at)
-                                                      .count());
+    const auto elapsed = std::chrono::steady_clock::now() - scheduled_at;
+    const auto elapsed_ms =
+        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
+    latency_sum_ns_.fetch_add(static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()));
     size_t bucket = 0;
     while (bucket < kPageLatencyBoundsMs.size() && elapsed_ms > kPageLatencyBoundsMs[bucket]) {
       ++bucket;
@@ -504,6 +515,7 @@ class PageScheduler::Impl final {
                                       : kDefaultRenderDpi;
         auto source = source_factory_(document.bytes, document.pdf, render_dpi);
         if (!source) throw InvalidDocument("Document source could not be opened");
+        source->set_deadline(document.request->tuning.deadline);
         const int pages = source->page_count();
         if (pages <= 0) throw InvalidDocument("Document does not contain a page");
         // Docling page_range: inclusive 1-indexed span. Clamp the end to the
@@ -530,6 +542,9 @@ class PageScheduler::Impl final {
           document.request->next_page_to_schedule = first_page;
           document.request->available_slots = document.request->page_window;
         }
+        // A cancel that landed while the source was opening found no source
+        // to abort; this one reaches it.
+        if (document.request->cancelled.load()) document.request->source->cancel();
         // Callers wait on the number of pages that will arrive, not the last
         // page index (which may be higher when the span does not start at 1).
         document.request->callbacks.on_document(page_count);
@@ -591,9 +606,10 @@ class PageScheduler::Impl final {
           }
         }
         // Inspector-routed pages recognize exactly the named set; a page the
-        // inspector called text-bearing but Poppler reads as layerless still
-        // recognizes, because an empty page is a worse answer than the two
-        // extractors disagreeing.  Otherwise the mode decides as always.
+        // inspector called text-bearing but the PDF backend reads as
+        // layerless still recognizes, because an empty page is a worse
+        // answer than the two extractors disagreeing.  Otherwise the mode
+        // decides as always.
         const bool run_ocr =
             inspector_routed
                 ? ocr_pages.count(page->page_number) != 0 || !digital.has_value()
@@ -836,6 +852,7 @@ class PageScheduler::Impl final {
   std::atomic<uint64_t> inference_busy_ns_{0};
   std::atomic<uint64_t> assembly_busy_ns_{0};
   std::array<std::atomic<uint64_t>, kPageLatencyBoundsMs.size() + 1> latency_buckets_{};
+  std::atomic<uint64_t> latency_sum_ns_{0};
   std::atomic<uint64_t> pages_rerecognized_{0};
   std::atomic<uint64_t> rerecognition_passes_{0};
   std::array<std::atomic<uint64_t>, kRotationDegrees.size()> rotations_applied_{};

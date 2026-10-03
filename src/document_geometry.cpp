@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <set>
 #include <string>
 
@@ -50,6 +51,13 @@ std::optional<TopDownBox> union_on_page(
   for (const auto& entry : prov) {
     if (entry.page_no() != page || !entry.has_bbox()) continue;
     const TopDownBox candidate = top_down_box(entry.bbox(), page_height);
+    // A NaN edge passes the area test (every comparison with it is false)
+    // and would break the strict weak ordering the reading-order sorts
+    // need, so a box that is not finite does not count either.
+    if (!std::isfinite(candidate.left) || !std::isfinite(candidate.top) ||
+        !std::isfinite(candidate.right) || !std::isfinite(candidate.bottom)) {
+      continue;
+    }
     if (candidate.width() <= 0 || candidate.height() <= 0) continue;
     grow(&box, candidate, &any);
   }

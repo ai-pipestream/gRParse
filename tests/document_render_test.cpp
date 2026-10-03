@@ -1,10 +1,14 @@
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <print>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <google/protobuf/util/json_util.h>
+#include <yaml-cpp/yaml.h>
 
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "grparse/document_render.h"
@@ -304,6 +308,42 @@ void verify_markdown_reconstructs_grid_from_flat_cells() {
   const std::string markdown = grparse::render_markdown(document);
   require(markdown == "| a   | b   |\n|-----|-----|\n|     | d   |",
           "flat-cell table reconstruction differs:\n" + markdown);
+}
+
+// Declared dimensions are untrusted: one value at XFD1048576 makes a sheet
+// fold declare 1,048,576 x 16,384. The grid exports render a bounded leading
+// block of such a table instead of allocating the whole rectangle.
+void verify_oversized_table_dimensions_are_bounded() {
+  docv1::Document document = base_document("huge.xlsx");
+  auto* table = add_table(&document, "#/body");
+  auto* data = table->mutable_data();
+  data->set_num_rows(1048576);
+  data->set_num_cols(16384);
+  auto* first = data->add_table_cells();
+  first->set_text("first");
+  first->set_end_row_offset_idx(1);
+  first->set_end_col_offset_idx(1);
+  auto* last = data->add_table_cells();
+  last->set_text("last");
+  last->set_start_row_offset_idx(1048575);
+  last->set_end_row_offset_idx(1048576);
+  last->set_start_col_offset_idx(16383);
+  last->set_end_col_offset_idx(16384);
+  auto* wrapped = data->add_table_cells();
+  wrapped->set_text("wrapped");
+  wrapped->set_start_row_offset_idx(-1);
+  wrapped->set_end_row_offset_idx(0);
+  wrapped->set_end_col_offset_idx(1);
+  for (const auto& [format, rendered] :
+       {std::pair{"markdown", grparse::render_markdown(document)},
+        std::pair{"html", grparse::render_html(document)},
+        std::pair{"doclang", grparse::render_doclang(document)}}) {
+    require(rendered.contains("first") && !rendered.contains("last") &&
+                !rendered.contains("wrapped"),
+            std::string(format) + " renders the leading block of an oversized table");
+    require(rendered.size() < (std::size_t{256} << 20),
+            std::string(format) + " output stays bounded: " + std::to_string(rendered.size()));
+  }
 }
 
 void verify_markdown_multiline_cells_stay_single_line() {
@@ -985,6 +1025,24 @@ void verify_doclang_escapes_xml_content() {
           "quotes in element text need no escaping:\n" + doclang);
 }
 
+// XML 1.0 has no C0 controls other than TAB, LF and CR, no U+FFFE/U+FFFF and
+// no malformed UTF-8: each degrades to U+FFFD, so a Word soft break or a stray
+// BEL from an office cell cannot make the DocLang document ill-formed.
+void verify_doclang_replaces_non_xml_characters() {
+  docv1::Document document = base_document("controls.docx");
+  add_text(&document, "#/body", docv1::BaseTextItem::kText,
+           docv1::DOC_ITEM_LABEL_TEXT,
+           "soft\x0b" "break\x07" "bell\x0c" "feed\xff" "byte\xEF\xBF\xBF" "end\t\xC3\xA9");
+  add_code(&document, "#/body", "x", docv1::CODE_LANGUAGE_LABEL_UNKNOWN);
+  document.mutable_texts(1)->mutable_code()->set_code_language_raw("c\x01\"\n");
+  require_contains(grparse::render_doclang(document),
+                   "<paragraph>soft\uFFFDbreak\uFFFDbell\uFFFDfeed\uFFFDbyte\uFFFDend\t\u00E9"
+                   "</paragraph>",
+                   "doclang replaces characters outside the XML Char production");
+  require_contains(grparse::render_doclang(document), "<code language=\"c\uFFFD&quot;&#10;\">",
+                   "doclang attributes replace controls and keep LF as a reference");
+}
+
 // Appends one track-timed text item; extra_collector_source prepends a
 // CollectorSource entry to prove the renderer scans past attribution.
 void add_timed_text(docv1::Document* document, const std::string& text,
@@ -1106,13 +1164,41 @@ void verify_split_page_without_provenance_is_one_page() {
 
 void verify_yaml_matches_json_structure() {
   const std::string yaml = grparse::render_yaml(rich_document());
-  require_contains(yaml, "name: report.pdf", "yaml keeps the document name");
+  require_contains(yaml, "name: \"report.pdf\"", "yaml keeps the document name");
   require_contains(yaml, "texts:", "yaml keeps the text arena");
   require_contains(yaml, "#/body", "yaml keeps reference strings");
   require_contains(yaml, "self_ref:", "yaml preserves proto field names");
   require(!yaml.contains("selfRef"),
           "yaml must not use camelCase field names");
   require(!yaml.starts_with('{'), "yaml renders block style, not flow JSON");
+}
+
+// Strings a YAML 1.1 loader would otherwise resolve to an int, a bool, a
+// float, a timestamp or null must come out quoted, so the export keeps the
+// JSON's string type (a pydantic str field rejects the typed scalar).
+void verify_yaml_keeps_string_scalars() {
+  docv1::Document document = base_document("types.pdf");
+  const std::vector<std::string> texts = {"true", "0123", "null", "2024", "1.5",
+                                          "Yes", "off", "~", "2024-01-02", "0x1F"};
+  for (const auto& text : texts) {
+    add_text(&document, "#/body", docv1::BaseTextItem::kText,
+             docv1::DOC_ITEM_LABEL_TEXT, text);
+  }
+  const std::string yaml = grparse::render_yaml(document);
+  for (const auto& text : texts) {
+    require_contains(yaml, "text: \"" + text + "\"",
+                     "yaml quotes the string scalar " + text);
+  }
+  const YAML::Node parsed = YAML::Load(yaml);
+  require(parsed["texts"].IsSequence() && parsed["texts"].size() == texts.size(),
+          "yaml round-trips the text arena:\n" + yaml);
+  std::size_t index = 0;
+  for (const auto& item : parsed["texts"]) {
+    const YAML::Node text = item["text"]["base"]["text"];
+    require(text.IsScalar() && text.Tag() == "!" && text.Scalar() == texts[index],
+            "yaml round-trips " + texts[index] + " as a quoted string");
+    ++index;
+  }
 }
 
 void verify_empty_document_renders() {
@@ -1179,6 +1265,7 @@ int main() {
   return grparse_test::run_test_main("document-render-test", {
       verify_markdown_renders_every_item_type,
       verify_markdown_reconstructs_grid_from_flat_cells,
+      verify_oversized_table_dimensions_are_bounded,
       verify_markdown_multiline_cells_stay_single_line,
       verify_markdown_flattens_stacked_column_headers,
       verify_markdown_compact_tables,
@@ -1195,10 +1282,12 @@ int main() {
       verify_doctags_otsl_spans_and_locations,
       verify_doclang_renders_grpc_xml_vocabulary,
       verify_doclang_escapes_xml_content,
+      verify_doclang_replaces_non_xml_characters,
       verify_vtt_renders_timed_cues,
       verify_split_page_assigns_by_provenance,
       verify_split_page_without_provenance_is_one_page,
       verify_yaml_matches_json_structure,
+      verify_yaml_keeps_string_scalars,
       verify_empty_document_renders,
       verify_json_preserves_field_names_and_round_trips,
   });

@@ -7,9 +7,11 @@ documents, whisper.cpp for audio, quick-xml for XML, calamine-style row
 readers for EBCDIC records, and so on. Every one of those services speaks
 its own typed, streaming protobuf contract and ships on its own schedule.
 gRParse itself is one more service in that fleet: its in-process contribution
-is the CV path (PDF and raster images through Poppler, ONNX Runtime OCR, and
-layout). The rule is that a parser lives in exactly one place, and everything
-else reaches it over the wire.
+is the CV path (ONNX Runtime OCR and layout over raster images and PDF pages).
+PDF pages themselves come over the wire from a PDF backend service
+(`GRPARSE_PDF_BACKEND`, grpc-pdfium by default in the stack; see
+`docs/pdf-backend-services.md`). The rule is that a parser lives in exactly
+one place, and everything else reaches it over the wire.
 
 The coordinator's side of that deal is small and uniform. gRParse vendors
 each collector's `.proto` files byte-identical into `collectors/` and never

@@ -48,6 +48,13 @@ int document_claim_rank(const std::string& collector, const std::string& mimetyp
 // a second time, while its claims still merge and rank.
 void retain_claims_only(ai::pipestream::document::v1::Document* source);
 
+// Clears the document-level identity of a fragment that is about to merge
+// into a host document as content: its name, origin, source metadata,
+// claims, media, email envelope, page styles, meta tags and changes. An epub
+// chapter's <title> is not the book's title, and an email's HTML body is not
+// the message: only the fragment's content belongs in the host.
+void strip_document_identity(ai::pipestream::document::v1::Document* fragment);
+
 // Records `claimant` as the source of every singular field `tracked`
 // currently answers, for a message that carries a `field_sources` list.
 // The service uses it on the identity it stamps before any collector runs.
@@ -55,7 +62,7 @@ void claim_fields(google::protobuf::Message* tracked,
                   const ai::pipestream::document::v1::CollectorSource& claimant);
 
 // Rewrites every item reference (RefItem.ref, FineRef.ref, an item's own
-// self_ref) that `renumbering` maps, anywhere under `message`; values it
+// self_ref, SubDocumentRef.item_ref) that `renumbering` maps, anywhere under `message`; values it
 // does not map pass through. The merge uses it to renumber appended arenas,
 // and anything else that removes or reorders arena items owes the same
 // rewrite to every reference into them.

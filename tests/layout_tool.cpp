@@ -186,13 +186,13 @@ int main(int argc, char** argv) {
 
     const std::string bytes = read_file(document);
     const bool pdf = document.extension() == ".pdf" || document.extension() == ".PDF";
-    auto source = grparse::open_in_memory_document(
-        std::make_shared<const std::string>(bytes), pdf, threads);
+    // PDFs rasterize through the backend GRPARSE_PDF_BACKEND names.
+    auto source = grparse::open_in_memory_document(std::make_shared<const std::string>(bytes), pdf);
     const int pages = source->page_count();
     std::println("document={} pages={} threads={} repeats={}", document.string(), pages, threads,
                  repeats);
 
-    // Rasterize once: the measurement is the device call, not Poppler.
+    // Rasterize once: the measurement is the device call, not the rasterizer.
     std::vector<cv::Mat> rasters;
     rasters.reserve(static_cast<size_t>(pages));
     for (int page = 1; page <= pages; ++page) rasters.push_back(source->render_page(page));

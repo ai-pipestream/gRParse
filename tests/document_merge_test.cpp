@@ -3,6 +3,7 @@
 #include <print>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #include <google/protobuf/descriptor.h>
 #include <google/protobuf/message.h>
@@ -89,8 +90,14 @@ void verify_merge_renumbers_and_rewrites() {
   target.mutable_body()->add_children()->set_ref("#/tables/0");
   (*target.mutable_pages())[1].set_page_no(1);
 
-  grparse::merge_documents(collector_document(), &target);
+  docv1::Document source = collector_document();
+  auto* attachment = source.add_attachments();
+  attachment->set_id("part:1");
+  attachment->set_item_ref("#/tables/0");
+  grparse::merge_documents(std::move(source), &target);
 
+  require(target.attachments_size() == 1 && target.attachments(0).item_ref() == "#/tables/1",
+          "an attachment's item_ref follows the renumbering");
   require(target.schema_name() == "docling_document_v2" &&
               target.version() == "1.10.0",
           "the merged document keeps the base identity");
@@ -326,7 +333,8 @@ void strip_refs(google::protobuf::Message* message) {
   for (int index = 0; index < descriptor->field_count(); ++index) {
     const auto* field = descriptor->field(index);
     if (field->cpp_type() == FieldDescriptor::CPPTYPE_STRING && !field->is_repeated() &&
-        (field->name() == "ref" || field->name() == "self_ref")) {
+        (field->name() == "ref" || field->name() == "self_ref" ||
+         field->name() == "item_ref")) {
       reflection->ClearField(message, field);
       continue;
     }

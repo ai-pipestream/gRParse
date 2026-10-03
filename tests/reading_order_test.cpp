@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <print>
 #include <stdexcept>
 #include <string>
@@ -186,6 +187,25 @@ void verify_box_cut_fallback_is_stable() {
   require(grparse::xy_cut_order(boxes) == expected, "overlapping boxes sort by top, left, input");
 }
 
+// A NaN edge would break the sorts' strict weak ordering; such boxes stay
+// out of them and follow the rest in input order.
+void verify_box_cut_sets_non_finite_boxes_aside() {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  std::vector<grparse::OrderBox> boxes;
+  for (int index = 0; index < 40; ++index) {
+    const double top = 1000.0 - 20.0 * index;
+    boxes.push_back(index % 3 == 0 ? grparse::OrderBox{nan, top, nan, top + 10}
+                                   : grparse::OrderBox{10, top, 100, top + 10});
+  }
+  const std::vector<size_t> order = grparse::xy_cut_order(boxes);
+  require(order.size() == boxes.size(), "every box is ordered once");
+  std::vector<size_t> tail(order.end() - 14, order.end());
+  std::vector<size_t> expected;
+  for (size_t index = 0; index < 40; index += 3) expected.push_back(index);
+  require(tail == expected, "the non-finite boxes come last, in input order");
+  require(order.front() == 38, "the finite boxes read top down");
+}
+
 // The item-level policy: a paragraph gap wider than the gutter no longer
 // splits rows first, and a gap beside a short label is not a gutter.
 void verify_box_cut_policy() {
@@ -218,6 +238,7 @@ int main() {
       verify_box_cut_reads_bands_then_columns,
       verify_box_cut_fallback_is_stable,
       verify_box_cut_policy,
+      verify_box_cut_sets_non_finite_boxes_aside,
       verify_two_columns_without_regions,
       verify_two_columns_with_regions,
       verify_title_band_reads_before_columns,

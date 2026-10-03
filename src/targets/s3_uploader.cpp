@@ -6,6 +6,8 @@
 #include <exception>
 #include <mutex>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 #include "grparse/call_executor.h"
 
@@ -63,6 +65,9 @@ std::vector<UploadedObject> upload_bundle(const S3Config& config,
   const S3Client client(config);
   std::vector<UploadedObject> written(files.size());
   if (files.empty()) return written;
+  // Which members reached the store; each slot is written by its own task
+  // only, and read after the latch.
+  std::vector<char> stored(files.size(), 0);
 
   std::atomic<bool> failed{false};
   std::mutex failure_mutex;
@@ -79,6 +84,7 @@ std::vector<UploadedObject> upload_bundle(const S3Config& config,
         object.key = client.key_for(files[index].path);
         object.size_bytes = files[index].bytes.size();
         object.etag = client.put_object(object.key, files[index].bytes);
+        stored[index] = 1;
       } catch (const std::exception& error) {
         if (!failed.exchange(true, std::memory_order_acq_rel)) {
           std::lock_guard<std::mutex> lock(failure_mutex);
@@ -102,8 +108,12 @@ std::vector<UploadedObject> upload_bundle(const S3Config& config,
   completion.wait();
 
   if (failed.load(std::memory_order_acquire)) {
+    std::vector<UploadedObject> partial;
+    for (size_t index = 0; index < files.size(); ++index) {
+      if (stored[index] != 0) partial.push_back(std::move(written[index]));
+    }
     std::lock_guard<std::mutex> lock(failure_mutex);
-    throw std::runtime_error(failure);
+    throw UploadFailure(failure, std::move(partial));
   }
   return written;
 }

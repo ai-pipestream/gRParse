@@ -1,6 +1,7 @@
 #include "grparse/reading_order.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <optional>
 #include <utility>
@@ -113,11 +114,22 @@ struct Unit {
 }  // namespace
 
 std::vector<size_t> xy_cut_order(const std::vector<OrderBox>& boxes, const CutPolicy& policy) {
-  std::vector<size_t> members(boxes.size());
-  for (size_t index = 0; index < boxes.size(); ++index) members[index] = index;
+  // A box with a non-finite edge never enters the sorts, whose comparators
+  // need a strict weak ordering that NaN breaks; such boxes follow the rest
+  // in input order.
+  std::vector<size_t> members;
+  std::vector<size_t> unplaced;
+  members.reserve(boxes.size());
+  for (size_t index = 0; index < boxes.size(); ++index) {
+    const OrderBox& box = boxes[index];
+    const bool finite = std::isfinite(box.left) && std::isfinite(box.top) &&
+                        std::isfinite(box.right) && std::isfinite(box.bottom);
+    (finite ? members : unplaced).push_back(index);
+  }
   std::vector<size_t> ordered;
   ordered.reserve(boxes.size());
   order_members(boxes, members, policy, &ordered);
+  ordered.insert(ordered.end(), unplaced.begin(), unplaced.end());
   return ordered;
 }
 

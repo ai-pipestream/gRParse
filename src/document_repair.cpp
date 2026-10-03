@@ -153,35 +153,44 @@ struct PlacedProse {
   TopDownBox box;
 };
 
-// The vertical extent of the text block an item belongs to: the item plus
-// every body prose item on the page reachable through neighbours that
+// The vertical extent of the text block each item belongs to: the item
+// plus every body prose item on the page reachable through neighbours that
 // overlap it horizontally and sit within one line height (the shorter of
 // the two boxes) above or below. A running header stands apart from the
 // body by more than a line; the first line of a repeated paragraph does
-// not, and neither does a line inside one.
-std::pair<double, double> block_extent(const std::vector<PlacedProse>& page_items, size_t seed) {
+// not, and neither does a line inside one. The relation is symmetric, so
+// each block is walked once and its extent shared by all its members.
+std::vector<std::pair<double, double>> block_extents(const std::vector<PlacedProse>& page_items) {
+  std::vector<std::pair<double, double>> extents(page_items.size());
   std::vector<bool> visited(page_items.size(), false);
-  std::vector<size_t> pending{seed};
-  visited[seed] = true;
-  double top = page_items[seed].box.top;
-  double bottom = page_items[seed].box.bottom;
-  while (!pending.empty()) {
-    const TopDownBox current = page_items[pending.back()].box;
-    pending.pop_back();
-    for (size_t index = 0; index < page_items.size(); ++index) {
-      if (visited[index]) continue;
-      const TopDownBox& other = page_items[index].box;
-      const double overlap = std::min(current.right, other.right) - std::max(current.left, other.left);
-      if (overlap <= 0) continue;
-      const double gap = std::max({0.0, other.top - current.bottom, current.top - other.bottom});
-      if (gap > std::min(current.height(), other.height())) continue;
-      visited[index] = true;
-      pending.push_back(index);
-      top = std::min(top, other.top);
-      bottom = std::max(bottom, other.bottom);
+  for (size_t seed = 0; seed < page_items.size(); ++seed) {
+    if (visited[seed]) continue;
+    std::vector<size_t> members{seed};
+    std::vector<size_t> pending{seed};
+    visited[seed] = true;
+    double top = page_items[seed].box.top;
+    double bottom = page_items[seed].box.bottom;
+    while (!pending.empty()) {
+      const TopDownBox current = page_items[pending.back()].box;
+      pending.pop_back();
+      for (size_t index = 0; index < page_items.size(); ++index) {
+        if (visited[index]) continue;
+        const TopDownBox& other = page_items[index].box;
+        const double overlap =
+            std::min(current.right, other.right) - std::max(current.left, other.left);
+        if (overlap <= 0) continue;
+        const double gap = std::max({0.0, other.top - current.bottom, current.top - other.bottom});
+        if (gap > std::min(current.height(), other.height())) continue;
+        visited[index] = true;
+        pending.push_back(index);
+        members.push_back(index);
+        top = std::min(top, other.top);
+        bottom = std::max(bottom, other.bottom);
+      }
     }
+    for (const size_t member : members) extents[member] = {top, bottom};
   }
-  return {top, bottom};
+  return extents;
 }
 
 int page_count(const docv1::Document& document) {
@@ -413,8 +422,9 @@ int demote_running_furniture(docv1::Document* document, const RepairOptions& opt
   std::vector<FurnitureCandidate> candidates;
   for (const auto& [page, page_items] : placed_by_page) {
     const double height = heights.at(page);
+    const std::vector<std::pair<double, double>> extents = block_extents(page_items);
     for (size_t item = 0; item < page_items.size(); ++item) {
-      const auto [block_top, block_bottom] = block_extent(page_items, item);
+      const auto [block_top, block_bottom] = extents[item];
       const Band band = band_of_extent(block_top, block_bottom, height, options.band_fraction);
       if (band == Band::kNone) continue;
       const auto& placed = page_items[item];
@@ -525,13 +535,21 @@ bool is_known_compound(std::string_view head, std::string_view tail) {
   });
 }
 
-// The line break a hyphen may be followed by: a newline (either flavour)
-// or the single space a line join left behind. Zero when none.
-size_t break_after(std::string_view text, size_t position) {
+// The line break a hyphen may be followed by: a newline (either flavour),
+// or, when `space_is_break`, the single space a line join left behind.
+// Zero when none.
+size_t break_after(std::string_view text, size_t position, bool space_is_break) {
   if (position >= text.size()) return 0;
-  if (text[position] == '\n' || text[position] == ' ') return 1;
+  if (text[position] == '\n' || (space_is_break && text[position] == ' ')) return 1;
   if (text[position] == '\r' && position + 1 < text.size() && text[position + 1] == '\n') return 2;
   return 0;
+}
+
+// The run of non-space characters that starts `text`.
+std::string_view first_token(std::string_view text) {
+  size_t end = 0;
+  while (end < text.size() && !is_ascii_space(text[end])) ++end;
+  return text.substr(0, end);
 }
 
 // The tail's first token must be a word: two letters or more, letters only
@@ -542,11 +560,107 @@ constexpr size_t kMinimumTailWord = 2;
 constexpr std::string_view kTokenPunctuation = ".,;:!?)]}'\"";
 
 bool tail_token_is_word(std::string_view after_break) {
-  size_t end = 0;
-  while (end < after_break.size() && !is_ascii_space(after_break[end])) ++end;
-  std::string_view token = after_break.substr(0, end);
+  std::string_view token = first_token(after_break);
   while (!token.empty() && kTokenPunctuation.contains(token.back())) token.remove_suffix(1);
   return token.size() >= kMinimumTailWord && std::ranges::all_of(token, is_ascii_alpha);
+}
+
+// A suspended hyphen ("short- and long-term", "pre- or post-war", "Vor- und
+// Nachteile") is not a broken word: the tail token is a conjunction and the
+// word after it finishes the pair, hyphenated itself or, after a German
+// conjunction, a capitalized noun. A word split whose second half happens
+// to spell a conjunction ("tick-\net office", "thous-\nand people") has
+// neither and rejoins.
+struct SuspendingConjunction {
+  std::string_view word;
+  bool german = false;
+};
+
+constexpr std::array<SuspendingConjunction, 9> kSuspendingConjunctions = {{
+    {"and"}, {"or"}, {"nor"}, {"to"}, {"et"}, {"ou"},
+    {"und", true}, {"oder", true}, {"bis", true},
+}};
+
+bool suspended_hyphen(std::string_view after_break) {
+  const std::string_view token = first_token(after_break);
+  std::string folded(token);
+  std::ranges::transform(folded, folded.begin(), ascii_lower);
+  const auto conjunction =
+      std::ranges::find(kSuspendingConjunctions, folded, &SuspendingConjunction::word);
+  if (conjunction == kSuspendingConjunctions.end()) return false;
+  const std::string_view next = first_token(trim_left(after_break.substr(token.size())));
+  if (next.empty()) return false;
+  if (next.find('-', 1) != std::string_view::npos) return true;
+  return conjunction->german && std::isupper(static_cast<unsigned char>(next.front())) != 0;
+}
+
+// The code-point position of byte `byte` in `text`.
+size_t codepoint_at(std::string_view text, size_t byte) {
+  size_t count = 0;
+  for (size_t index = 0; index < byte && index < text.size(); ++index) {
+    if ((static_cast<unsigned char>(text[index]) & 0xC0U) != 0x80U) ++count;
+  }
+  return count;
+}
+
+// Code-point positions of byte offsets that only ever move forward: each
+// byte is counted once however many positions are asked for.
+class CodePointCursor {
+ public:
+  explicit CodePointCursor(std::string_view text) : text_(text) {}
+
+  size_t at(size_t byte) {
+    for (; byte_ < byte && byte_ < text_.size(); ++byte_) {
+      if ((static_cast<unsigned char>(text_[byte_]) & 0xC0U) != 0x80U) ++code_points_;
+    }
+    return code_points_;
+  }
+
+ private:
+  std::string_view text_;
+  size_t byte_ = 0;
+  size_t code_points_ = 0;
+};
+
+// Moves code-point positions of the original text past every removed run
+// before them; a position inside a run lands where the run was. The runs
+// are in order and disjoint, so a prefix sum of their lengths and a binary
+// search place each position in O(log runs).
+class PositionRemap {
+ public:
+  explicit PositionRemap(const std::vector<RemovedRun>& removed) : removed_(removed) {
+    removed_before_.reserve(removed.size());
+    int64_t total = 0;
+    for (const RemovedRun& run : removed) {
+      removed_before_.push_back(total);
+      total += static_cast<int64_t>(run.end - run.start);
+    }
+  }
+
+  int32_t operator()(int32_t position) const {
+    const auto next = std::ranges::lower_bound(
+        removed_, static_cast<int64_t>(position), {},
+        [](const RemovedRun& run) { return static_cast<int64_t>(run.start); });
+    if (next == removed_.begin()) return position;
+    const auto index = static_cast<size_t>(std::distance(removed_.begin(), next) - 1);
+    const RemovedRun& run = removed_[index];
+    const int64_t shift = removed_before_[index] +
+                          std::min<int64_t>(position, static_cast<int64_t>(run.end)) -
+                          static_cast<int64_t>(run.start);
+    return static_cast<int32_t>(position - shift);
+  }
+
+ private:
+  const std::vector<RemovedRun>& removed_;
+  std::vector<int64_t> removed_before_;
+};
+
+bool from_collectors(const docv1::TextItemBase& base, const std::vector<std::string>& collectors) {
+  if (base.source().empty()) return false;
+  return std::ranges::all_of(base.source(), [&collectors](const docv1::SourceType& source) {
+    return source.has_collector() &&
+           std::ranges::find(collectors, source.collector().collector()) != collectors.end();
+  });
 }
 
 }  // namespace
@@ -558,9 +672,16 @@ std::string join_hyphenated_fragments(std::string_view head, std::string_view ta
   return joined;
 }
 
-std::string rejoin_hyphenated_words(std::string_view text, HyphenationCounts* counts) {
+std::string rejoin_hyphenated_words(std::string_view text, HyphenationCounts* counts,
+                                    bool space_is_break, std::vector<RemovedRun>* removed) {
   std::string out;
   out.reserve(text.size());
+  // Removed runs are recorded in code points as they happen; they only
+  // move forward, so one cursor counts the text once.
+  CodePointCursor code_points(text);
+  const auto record = [&](size_t first, size_t last) {
+    if (removed != nullptr) removed->push_back({code_points.at(first), code_points.at(last)});
+  };
   size_t i = 0;
   while (i < text.size()) {
     const bool soft = text.substr(i).starts_with(kSoftHyphen);
@@ -570,34 +691,41 @@ std::string rejoin_hyphenated_words(std::string_view text, HyphenationCounts* co
       continue;
     }
     const size_t after = i + (soft ? kSoftHyphen.size() : 1);
-    const size_t gap = break_after(text, after);
+    const size_t gap = break_after(text, after, space_is_break);
     const std::string_view tail = leading_word(text.substr(after + gap));
     if (soft) {
       // A discretionary hyphen is never text: it goes, and the break it
       // sat on goes with it when a word continues past it.
       if (counts != nullptr) ++counts->soft_hyphens_removed;
-      i = tail.empty() ? after : after + gap;
+      const size_t next = tail.empty() ? after : after + gap;
+      record(i, next);
+      i = next;
       continue;
     }
     const std::string_view head = trailing_word(out);
     const bool joinable = gap > 0 && !head.empty() && !tail.empty() &&
                           is_ascii_lower(head.back()) && is_ascii_lower(tail.front()) &&
-                          tail_token_is_word(text.substr(after + gap));
+                          tail_token_is_word(text.substr(after + gap)) &&
+                          !suspended_hyphen(text.substr(after + gap));
     if (!joinable) {
       out.push_back('-');
       ++i;
       continue;
     }
     const std::string head_word(head);
+    const std::string joined = join_hyphenated_fragments(head_word, tail);
+    // A known compound keeps its hyphen and loses only the break.
+    record(joined.size() > head_word.size() + tail.size() ? after : i, after + gap);
     out.erase(out.size() - head_word.size());
-    out += join_hyphenated_fragments(head_word, tail);
+    out += joined;
     i = after + gap + tail.size();
     if (counts != nullptr) ++counts->rejoined;
   }
   return out;
 }
 
-HyphenationCounts rejoin_hyphenation(docv1::Document* document) {
+HyphenationCounts rejoin_hyphenation(docv1::Document* document,
+                                     const std::vector<std::string>& line_joined_collectors) {
   HyphenationCounts counts;
   for (auto& item : *document->mutable_texts()) {
     if (!is_prose(item)) continue;
@@ -607,10 +735,27 @@ HyphenationCounts rejoin_hyphenation(docv1::Document* document) {
       continue;
     }
     HyphenationCounts before = counts;
-    std::string repaired = rejoin_hyphenated_words(base->text(), &counts);
-    if (counts.rejoined != before.rejoined ||
-        counts.soft_hyphens_removed != before.soft_hyphens_removed) {
-      base->set_text(std::move(repaired));
+    std::vector<RemovedRun> removed;
+    std::string repaired = rejoin_hyphenated_words(
+        base->text(), &counts, from_collectors(*base, line_joined_collectors), &removed);
+    if (counts.rejoined == before.rejoined &&
+        counts.soft_hyphens_removed == before.soft_hyphens_removed) {
+      continue;
+    }
+    base->set_text(std::move(repaired));
+    // Spans and charspans count code points of the text; they follow it
+    // past every run the rejoin removed.
+    const PositionRemap remap(removed);
+    for (auto& span : *base->mutable_spans()) {
+      auto* range = span.mutable_range();
+      range->set_start(remap(range->start()));
+      range->set_end(remap(range->end()));
+    }
+    for (auto& entry : *base->mutable_prov()) {
+      if (!entry.has_charspan()) continue;
+      auto* charspan = entry.mutable_charspan();
+      charspan->set_start(remap(charspan->start()));
+      charspan->set_end(remap(charspan->end()));
     }
   }
   return counts;
@@ -730,11 +875,13 @@ bool continues(const docv1::TextItemBase& head, const docv1::TextItemBase& tail,
 }
 
 // The two texts as one: by the hyphen rule when the head ends on a
-// hyphenated word, with one space otherwise.
+// hyphenated word that is not suspended, with one space otherwise.
 std::string joined_text(std::string_view head, std::string_view tail) {
   const std::string_view head_trimmed = trim_right(head);
   const std::string_view tail_trimmed = trim_left(tail);
-  if (head_trimmed.ends_with('-')) {
+  // A suspended hyphen at the break ("short-" then "and long-term") keeps
+  // its hyphen and takes the space.
+  if (head_trimmed.ends_with('-') && !suspended_hyphen(tail_trimmed)) {
     const std::string_view head_word = trailing_word(head_trimmed.substr(0, head_trimmed.size() - 1));
     const std::string_view tail_word = leading_word(tail_trimmed);
     if (!head_word.empty() && !tail_word.empty()) {
@@ -753,10 +900,11 @@ std::string joined_text(std::string_view head, std::string_view tail) {
 void absorb(docv1::TextItemBase* head, docv1::TextItemBase* tail) {
   const std::string head_text = head->text();
   const std::string joined = joined_text(head_text, tail->text());
-  // Spans measure from the item's own start; the tail's move by however
-  // much text now precedes what was its first character.
-  const int64_t shift = static_cast<int64_t>(joined.size()) -
-                        static_cast<int64_t>(trim_left(tail->text()).size());
+  // Spans measure code points from the item's own start; the tail's move
+  // by however much text now precedes what was its first character, less
+  // the leading whitespace the join trimmed from it.
+  const int64_t shift = static_cast<int64_t>(codepoint_at(joined, joined.size())) -
+                        static_cast<int64_t>(codepoint_at(tail->text(), tail->text().size()));
   head->set_text(joined);
   if (!head->orig().empty() || !tail->orig().empty()) {
     head->set_orig(joined_text(head->orig().empty() ? head_text : head->orig(),
@@ -826,6 +974,7 @@ int merge_continuations(docv1::Document* document, const RepairOptions& options)
   const std::map<int, double> heights = page_heights(*document);
   std::map<std::string, std::string> absorbed_by;
   docv1::TextItemBase* anchor = nullptr;
+  std::string anchor_ref;
   int merges = 0;
   for (int index = 0; index < body->children_size(); ++index) {
     auto* base = prose_base(document, body->children(index));
@@ -837,11 +986,12 @@ int merge_continuations(docv1::Document* document, const RepairOptions& options)
         continues(*anchor, *base, heights)) {
       absorb(anchor, base);
       absorbed_by[base->self_ref().empty() ? body->children(index).ref() : base->self_ref()] =
-          anchor->self_ref();
+          anchor_ref;
       ++merges;
       continue;
     }
     anchor = base;
+    anchor_ref = base->self_ref().empty() ? body->children(index).ref() : base->self_ref();
   }
   if (merges > 0) retire_text_items(document, absorbed_by);
   return merges;
@@ -879,7 +1029,7 @@ RepairReport repair_document(docv1::Document* document, const RepairOptions& opt
     report.paragraphs_merged = merge_continuations(document, options);
   }
   if (options.rejoin_hyphenation) {
-    const HyphenationCounts counts = rejoin_hyphenation(document);
+    const HyphenationCounts counts = rejoin_hyphenation(document, options.line_joined_collectors);
     report.hyphens_rejoined = counts.rejoined;
     report.soft_hyphens_removed = counts.soft_hyphens_removed;
   }

@@ -447,8 +447,8 @@ void verify_items_carry_collector_sources() {
               ocr_source.has_confidence() && ocr_source.confidence() > 0.87,
           "OCR text names rapidocr with its line confidence");
   const auto& digital_source = data.texts(1).text().base().source(0).collector();
-  require(digital_source.model() == "poppler-text",
-          "digital text names the poppler extractor");
+  require(digital_source.model() == "pdf-text",
+          "digital text names the PDF text layer");
   require(data.tables(0).source(0).collector().model() == "geometry" &&
               data.tables(1).source(0).collector().model() == "slanet-plus",
           "tables name geometry or the structure model by cell origin");

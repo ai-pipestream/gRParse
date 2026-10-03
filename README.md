@@ -20,8 +20,9 @@ merges additively into one page-streamed `Document`:
 ```mermaid
 flowchart LR
     in["document bytes<br/>(gRPC stream, diskless)"] --> route["format routing<br/>+ optional PDF inspector oracle"]
-    route --> cv["CV collector (in-process)<br/>Poppler render / OpenCV decode<br/>RapidOCR + layout detection<br/>SLANet tables, figure classes, ZXing barcodes"]
+    route --> cv["CV collector (in-process)<br/>PDF pages from the PDF backend / OpenCV decode<br/>RapidOCR + layout detection<br/>SLANet tables, figure classes, ZXing barcodes"]
     cv --- ort["ONNX Runtime<br/>CUDA or OpenVINO"]
+    cv --- pdfb["PDF backend service<br/>(PdfBackendService: grpc-pdfium,<br/>grpc-qparse, grpc-poppler)"]
     route --> lo["libreoffice collector<br/>(office formats; typed events<br/>folded client-side, renders re-enter CV)"]
     route --> lol["lol-html collector<br/>(explicit CSS-selector extraction,<br/>folded client-side)"]
     route --> fw["fastwarc collector<br/>(WARC archives,<br/>folded client-side)"]
@@ -66,11 +67,25 @@ real paper. [Watch it here](docs/images/demo-shell-screencast.mp4).
 
 The service listens on `localhost:50051` and implements `ai.pipestream.parse.v1.ParseService` from the local `parse.proto` contract. `ConvertSource` currently accepts one `FileSource` containing base64-encoded PDF, PNG, JPEG, or TIFF bytes. It renders every `OutputFormat` the wire declares from the merged document: TEXT, MARKDOWN, HTML, HTML_SPLIT_PAGE, JSON, CANONICAL_JSON, GDOCS_JSON, YAML, DOCTAGS, DOCLANG, DCLX (the DocLang archive), VTT, and LATEX (an empty `to_formats` keeps the plain-text default alone), and returns `INVALID_ARGUMENT`, naming the offender, for populated options it does not implement and for unrenderable format values.
 
-Each PDF request opens a small pool of Poppler documents directly from the request bytes, so render and digital-text extraction for different pages of the same document proceed in parallel. Recognition is selective by default: full native-text pages skip raster OCR, while weak/partial digital layers keep their native boxes and still run OCR, and geometry merge drops overlapping OCR duplicates so headers and scan body can coexist. Two `ConvertDocumentOptions` fields override the default per request: `do_ocr = false` disables recognition entirely, so only the embedded text layer is read and a page with no text layer yields no text; `force_ocr = true` recognizes every page at full-page scope and the recognized text replaces the embedded layer. `do_ocr = false` with `force_ocr = true` is contradictory and rejected by name. Pages rasterize at 200 DPI by default; `render_scale` sets a per-request scale in multiples of 72 DPI (accepted range [1.0, 8.0], rejected outside it by name), and all digital-line geometry scales with it so downstream boxes stay consistent. Raster inputs decode with OpenCV from request memory and are already pixels, so they ignore `render_scale`. Nothing is written to disk on the hot path.
+gRParse links no PDF engine. Every PDF is read through the PDF backend service `GRPARSE_PDF_BACKEND` names (a `PdfBackendService` target such as grpc-pdfium, which the compose stacks start; a comma list of targets runs the consensus vote across them, see [docs/pdf-backend-services.md](docs/pdf-backend-services.md)). The engines run as separate services so their licenses stay with their own containers: the default stack is Apache-2.0 throughout, and the GPL grpc-poppler is an opt-in compose profile. The client probes each document once, then addresses it by content hash for every page's text cells and raster, so render and digital-text extraction for different pages of the same document proceed in parallel. With no backend configured a PDF fails with `FAILED_PRECONDITION` naming `GRPARSE_PDF_BACKEND`, the way an unconfigured collector fails; raster input never needs a backend. Recognition is selective by default: full native-text pages skip raster OCR, while weak/partial digital layers keep their native boxes and still run OCR, and geometry merge drops overlapping OCR duplicates so headers and scan body can coexist. Two `ConvertDocumentOptions` fields override the default per request: `do_ocr = false` disables recognition entirely, so only the embedded text layer is read and a page with no text layer yields no text; `force_ocr = true` recognizes every page at full-page scope and the recognized text replaces the embedded layer. `do_ocr = false` with `force_ocr = true` is contradictory and rejected by name. Pages rasterize at 200 DPI by default; `render_scale` sets a per-request scale in multiples of 72 DPI (accepted range [1.0, 8.0], rejected outside it by name), and all digital-line geometry scales with it so downstream boxes stay consistent. Raster inputs decode with OpenCV from request memory and are already pixels, so they ignore `render_scale`. Nothing is written to disk on the hot path.
 
 The rest of the accepted `ConvertDocumentOptions` mirror the reference converter's (docling-serve) semantics. `pipeline` accepts `STANDARD` (the default routing) and `NATIVE`, which takes the pdf collector's model-free text-layer extraction whatever the inspector classified (a warning names the pages the models would have run for), fails with `FAILED_PRECONDITION` when that extraction fails or when the input is raster, and never runs the CV models; `VLM` and `ASR` are rejected by name. `include_page_images` overrides the server's `GRPARSE_PAGE_IMAGES` default per request, attaching a level-6 PNG of each page raster to its `PageItem` (`false` suppresses the previews a server has on). `md_page_break_placeholder` and `md_compact_tables` steer the Markdown export exactly as the reference serializer's parameters do: a placeholder part between items whose first provenance moves to a later page (before a list or inline group whose first provenanced item opens a page), and tables without column padding with a bare `| - |` rule. `image_export_mode` also steers the two DocLang exports, with docling-core's per-format defaults: `DOCLANG` writes no picture source by default (`PLACEHOLDER`), the picture's existing image uri with `REFERENCED`, and that uri or else a PNG data URI cropped from the page image with `EMBEDDED`; the `DCLX` archive defaults to `REFERENCED`, storing each picture's image (its own data-URI bytes, or a crop of its page image) as `assets/image_<NNNNNN>_<sha256>.<ext>` and pointing the picture at it, stores none with `PLACEHOLDER`, and rejects `EMBEDDED` with `INVALID_ARGUMENT`; page images go under `pages/<page_no>.<ext>` in either mode. The archive is built in memory and packs deterministically (fixed timestamps, members in path order). `doclang_include_namespace` (default true, where docling-core defaults to off) declares the DocLang namespace on the root of both; false writes a bare `<doclang>` root for byte parity with docling. `do_pdf_heading_hierarchy` and `pdf_heading_hierarchy_options` tune the section-header level pass: `enabled` (off, every undecided header is level 1 and no title is elected), `use_numbering` (read `1.1`, `A.`, `IV`, `Appendix B`, and all-caps section words as depth), `use_style` (cluster measured sizes for what numbering did not decide, and elect a title by size), `max_level` (1..6), and `style_size_tolerance` (a heading founds the next depth below `1 - tolerance` of the current depth's founding size; 0.15 is the historical 85% rule). Contradictory switches (`do_pdf_heading_hierarchy` against `pdf_heading_hierarchy_options.enabled`) are rejected by name, as is any populated option the service does not implement.
 
 A CV conversion reports its read quality on `ConvertDocumentResponse.confidence` (and `DocumentComplete.confidence` on the live stream) as the reference's `ConfidenceReport`: per axis, `ocr_score` is the mean recognizer line score over recognized lines, `layout_score` the mean layout-region score, `table_score` the mean table-structure score, and `parse_score` the consensus vote's winner score, each absent when nothing measured it; `mean_score` averages the per-page means and `low_score` the per-page minima, and both are bucketed into `QualityGrade` (`POOR < 0.5 <= FAIR < 0.8 <= GOOD < 0.9 <= EXCELLENT`). Collector failures on `errors[]` and `collector_failures[]` carry a `FailureCategory` derived from the leg's gRPC status (`TIMEOUT` for a deadline, `CAPACITY` for `RESOURCE_EXHAUSTED`, `BACKEND_FAILURE` for a collector that was unavailable or refused the input, `INTERNAL` for the rest; target delivery reports `TARGET_UNAVAILABLE`) beside the message. Each `Chunk` carries `typed_metadata` (`map<string, ScalarValue>`) beside the string `metadata`: `min_confidence` as a double, `text_source`, and the source document's `binary_hash` (uint64) and `mimetype`.
+
+Options Docling clients populate that no leg here reads pass only at their Docling defaults, and any other value is rejected by name with `INVALID_ARGUMENT` rather than silently ignored: `ocr_lang` may name only the languages the installed PP-OCRv3 models read (`en`, `english`, `ch`, `chinese`, `zh`); `table_cell_matching = false`; `abort_on_error = true` outside the VLM pipeline (the standard path always degrades to a partial result); `ocr_preset`, `table_structure_preset`, `layout_preset`, and `picture_classification_preset` other than `default` (`rapidocr` is also accepted for OCR); a `chunking_preset` other than `default` or `hierarchical` (there is no preset catalog, and every chunking preset falls back to the hierarchical defaults); a non-empty `table_structure_custom_config` or `layout_custom_config`; and `picture_description_api` `headers`, `params`, or a non-default `prompt`, none of which the enrich dial forwards (a keyed API would otherwise be called without its key). `table_mode` and `pdf_backend` are accepted at every value: one table model and the deployment's own PDF backend serve them all. `document_timeout` (seconds) caps every leg of the parse, the in-process CV pipeline included, which cancels its remaining pages and fails with `DEADLINE_EXCEEDED` once it passes. A `FileSource` without a filename is named `document`, with no extension, so its bytes rather than an assumed `.pdf` decide its type and route; likewise a PDF is recognized by a `%PDF-` header in its first kilobyte before its name is consulted.
+
+A request may not name its own remote model endpoint unless the operator
+allows it, which matches docling-serve's
+`DOCLING_SERVE_ENABLE_REMOTE_SERVICES`: `picture_description_api.url`
+(forwarded to grpc-enrich as its VLM endpoint) and an `http(s)`
+`vlm_pipeline_model_api.url` (forwarded to grpc-vlm-convert) would have a
+peer call whatever address the caller chose, internal ones included, so
+they are refused with `FAILED_PRECONDITION` naming
+`GRPARSE_ENABLE_REMOTE_SERVICES` unless that variable is `on` (default
+`off`; the startup log states it). The operator's own endpoints
+(`GRPARSE_ENRICH_VLM_ENDPOINT`, `GRPARSE_VLM_CONVERT_ENDPOINT`) are
+configuration, not requests, and are unaffected.
 
 Scanned pages fed in sideways or upside down are read upright. After a
 layerless page's first recognition pass the scheduler judges the read: line
@@ -95,7 +110,7 @@ Prometheus exposition (`grparse_pages_rerecognized_total`,
 `GRPARSE_DATA_LOG=on` prints one line per re-read page with what was tried
 and kept.
 
-`ConvertSource` returns the contract's `ConvertDocumentResponse`, populated with a native `Document`. Each OCR line becomes a `TextItem`, with its page and bounding box in `provenance`; pages, `TableItem`/`PictureItem` entries from layout, and the `#/body` reference graph are also populated. It deliberately leaves asynchronous jobs and remote sources unimplemented.
+`ConvertSource` returns the contract's `ConvertDocumentResponse`, populated with a native `Document`. Each OCR line becomes a `TextItem`, with its page and bounding box in `provenance`; pages, `TableItem`/`PictureItem` entries from layout, and the `#/body` reference graph are also populated. It deliberately leaves asynchronous jobs and remote sources unimplemented: `ConvertSourceAsync`, the chunk `*Async` RPCs, `PollTaskStatus`, `GetConvertResult`, `GetChunkResult`, `ClearConverters`, `ClearResults`, `ConvertSourceStream`, and the `Watch*` RPCs all return `UNIMPLEMENTED`.
 
 ### Chunking
 
@@ -105,13 +120,13 @@ Determinism is the point: the same input bytes produce the same chunk bytes on e
 
 | Rule set | Digest | What it decides |
 |---|---|---|
-| hierarchical walk | `grparse-hier/1` | one chunk per item or list group in body-tree order, with the heading trail in force |
-| hybrid | `grparse-hybrid/1;tok=T;sent=sentence/1;max_tokens=N;merge_peers=B` | the walk, then peer merging under the budget, then a sentence-wise split; T is the tokenizer in force |
+| hierarchical walk | `grparse-hier/2` | one chunk per item or list group in body-tree order, with the heading trail in force; a list chunk carries what its items hold (nested lists, paragraphs) |
+| hybrid | `grparse-hybrid/2;tok=T;sent=sentence/1;max_tokens=N;merge_peers=B` | the walk, then peer merging under the budget, then a sentence-wise split; T is the tokenizer in force. A chunk whose heading trail alone reaches the budget goes out unsplit, with a log line |
 | tokenizer (default) | `wordish/1` | one token per run of alphanumeric code points, per CJK or kana code point, and per punctuation or symbol code point; needs no files |
 | tokenizer (opt-in) | `hf/1` | a real HuggingFace tokenizer.json (for example all-MiniLM-L6-v2), so the budget is measured in the embedding model's own units |
 | sentences | `sentence/1` | a boundary after `.`, `!`, `?`, or `…` plus any closing quotes, when whitespace or the end follows; no abbreviation handling by design |
 
-`ChunkHybridSource` requires `max_tokens` and returns `INVALID_ARGUMENT` naming the field when it is absent; an explicit `tokenizer` must be `wordish/1` or `hf/1`. `hf/1` resolves its tokenizer.json in this order: the request's `tokenizer_path`, then `$GRPARSE_CHUNK_TOKENIZER`, then `$GRPARSE_MODELS_DIR/chunk/tokenizer.json`; a file that does not resolve and load fails the request with `INVALID_ARGUMENT` before any parsing starts. The file's own `padding` and `truncation` settings are stripped on load (a chunking counter measures the text it is given, and the fixed-length padding some published tokenizer.json files ship would count pads), and special tokens are never added to the count. The `rules_digest` names the counter but not the resolved file, so two deployments with different tokenizer.json files chunk differently under the same digest. Both RPCs accept `use_markdown_tables` (pipe tables instead of the default `rowLabel, colLabel = value` flattening) and `include_raw_text`. `include_converted_doc` returns the parsed document alongside the chunks.
+`ChunkHybridSource`, and `ConvertSource`'s `hybrid_chunking` with `OUTPUT_FORMAT_CHUNKS`, require `max_tokens` and return `INVALID_ARGUMENT` naming the field when it is absent; an explicit `tokenizer` must be `wordish/1` or `hf/1`. `hf/1` resolves its tokenizer.json in this order: the request's `tokenizer_path`, then `$GRPARSE_CHUNK_TOKENIZER`, then `$GRPARSE_MODELS_DIR/chunk/tokenizer.json`; a file that does not resolve and load fails the request with `INVALID_ARGUMENT` before any parsing starts. A request's `tokenizer_path` must name a regular file inside the tokenizer directory, `$GRPARSE_TOKENIZER_DIR` (default: `$GRPARSE_MODELS_DIR`, itself `/models` by default); a relative path resolves against that directory, and symlinks or `..` that lead outside it are refused. Every refusal of a request's path reads the same, whether the file is missing, outside the directory, not a regular file, or malformed, so the option cannot probe the server's filesystem. Only regular files of at most 64 MiB are read, from any source. The file's own `padding` and `truncation` settings are stripped on load (a chunking counter measures the text it is given, and the fixed-length padding some published tokenizer.json files ship would count pads), and special tokens are never added to the count. The `rules_digest` names the counter but not the resolved file, so two deployments with different tokenizer.json files chunk differently under the same digest. Both RPCs accept `use_markdown_tables` (pipe tables instead of the default `rowLabel, colLabel = value` flattening) and `include_raw_text`. `include_converted_doc` returns the parsed document alongside the chunks; without it, a parse in which some collector failed still adds one `documents` entry with `CONVERSION_STATUS_PARTIAL_SUCCESS` and the failures in `errors`, but no content. The chunk responses have no target result, so a `target` asking for delivery (anything but unset or `inbody`) is rejected with `INVALID_ARGUMENT`.
 
 A chunk reports `start_offset` and `end_offset` as UTF-8 code point positions in the document's concatenated body text whenever the parse supplied an offset table for every text item the chunk consumed; otherwise both stay unset rather than being guessed.
 
@@ -206,7 +221,7 @@ The bundle is one canonical file set, identical whichever target delivers it:
 
 Determinism is the point here too: members are sorted by path, archive timestamps are fixed at the MS-DOS epoch, the compressor is held to one setting, and the manifest carries no whitespace, no clock, and sorted keys. The same document and the same requested formats produce a byte-identical archive on every machine and every run.
 
-`S3Target` signs each PUT with AWS Signature V4 over libcurl; path style, no SDK, no ambient credential chain. The credentials come only from the request, are never logged, and never appear in an error message. `endpoint` may name any S3-compatible store (with or without a scheme, defaulting to https), and the region is read from the endpoint host or defaults to `us-east-1`. TLS peer and hostname verification is ON unless the request explicitly sets `verify_ssl: false` for a self-signed internal store; an absent field means verify. Uploads run on their own pool, sized by `GRPARSE_UPLOAD_WORKERS` (default 4) and `GRPARSE_UPLOAD_QUEUE` (default 32). A store that refuses an upload does not cost the caller the conversion: the response keeps its full `DocumentResponse`, the failure lands as an error item, and the status reports partial success; only a misconfigured target itself (missing bucket, unusable endpoint) fails the RPC, as `INVALID_ARGUMENT`.
+`S3Target` signs each PUT with AWS Signature V4 over libcurl; path style, no SDK, no ambient credential chain by default. The credentials come from the request, are never logged, and never appear in an error message. A request that omits both keys is rejected unless the deployment sets `GRPARSE_S3_AMBIENT_CREDENTIALS=1`; only then do the server's own `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN`) sign for the caller's endpoint and bucket, so enable it only where every caller may write wherever that identity can. A session token is never sent over `http://` or with `verify_ssl: false`, and ambient credentials are never used with `verify_ssl: false`: such a target is refused as `INVALID_ARGUMENT`. `endpoint` may name any S3-compatible store (with or without a scheme, defaulting to https), and the region is read from the endpoint host (`s3.<region>`, `s3-<region>`, past a `dualstack` or `fips` qualifier) or defaults to `us-east-1`; `region` on the target overrides both. TLS peer and hostname verification is ON unless the request explicitly sets `verify_ssl: false` for a self-signed internal store; an absent field means verify. Uploads run on their own pool, sized by `GRPARSE_UPLOAD_WORKERS` (default 4) and `GRPARSE_UPLOAD_QUEUE` (default 32). A store that refuses an upload does not cost the caller the conversion: the response keeps its full `DocumentResponse`, the failure lands as an error item, the objects already written before the refusal are still listed in `target_result.objects` so the caller can clean up or retry, and the status reports partial success; only a misconfigured target itself (missing bucket, unusable endpoint) fails the RPC, as `INVALID_ARGUMENT`.
 
 Security posture: the target's endpoint and credentials are caller-supplied, which makes `ConvertSource` an egress writer to wherever the caller points it. That is the intended shape for the trusted-internal deployments this server assumes (the same trust the request's source URLs already get); an internet-facing deployment must put an endpoint policy in front of this RPC or keep the target surface disabled.
 
@@ -279,13 +294,20 @@ privilege escalation disabled.
 `ai.pipestream.parse.v1.ParseStreamingService/StreamProcessDocument` accepts a
 stream of `DocumentChunk` messages. Send the same `document_id`, filename, and
 content type with the chunks, then set `complete = true` on the last one. The
-server accepts PDFs and single raster images, up to 500 MiB. The chunk fields
+server accepts any format the collector routing does (below), up to 500 MiB;
+the same service's `StreamDocument` RPC is not implemented and returns
+`UNIMPLEMENTED`, whatever `parse_stream.proto` says of it. `collectors`
+values validate like the unary options: an unknown value fails the stream
+with `INVALID_ARGUMENT` naming it. The chunk fields
 `do_ocr`, `force_ocr`, and `render_scale` carry the same recognition mode and
 rasterization scale as the unary options, each resolved from the first chunk
 that sets it (the same doctrine as `collectors`); an invalid value fails the
 stream with `INVALID_ARGUMENT` naming the offender.
 
-It emits one `DocumentStreamEvent.page` per page in page-number order, followed by one
+The CV pipeline emits one `DocumentStreamEvent.page` per page in page-number
+order. Each other collector's finished document arrives as page events
+projected from it, interleaved with the CV pages, and then whole as one
+`DocumentStreamEvent.collector_document`. The stream ends with one
 `DocumentStreamEvent.complete`. A page event contains the supplied
 `PageItem` and the page's supplied `BaseTextItem` records. `TextOffset` carries
 append-only UTF offsets, source type, and OCR confidence when available. The original
@@ -294,7 +316,7 @@ incremental delivery.
 
 Each outbound event and its nested protobuf messages are allocated in a
 short-lived `google::protobuf::Arena`. The arena stays alive until the
-asynchronous gRPC write completes. Protobuf Arena does not own Poppler, OpenCV, or ONNX Runtime buffers;
+asynchronous gRPC write completes. Protobuf Arena does not own OpenCV or ONNX Runtime buffers;
 those libraries release their own in-memory buffers at the page boundary. The
 server never writes input documents, rendered pages, OCR intermediates, or
 results to disk. It only reads the installed binaries and OCR model files. The
@@ -311,10 +333,10 @@ The server has two CUDA RapidOCR sessions by default. Tune concurrency and
 queue memory with `GRPARSE_PAGE_WORKERS`, `GRPARSE_RENDER_WORKERS`,
 `GRPARSE_ASSEMBLY_WORKERS`, `GRPARSE_DOCUMENT_QUEUE`, `GRPARSE_RENDER_QUEUE`,
 `GRPARSE_INFERENCE_QUEUE`, `GRPARSE_ASSEMBLY_QUEUE`, `GRPARSE_PAGE_WINDOW`,
-`GRPARSE_PDF_PARSERS`, and `GRPARSE_MAX_ACTIVE_DOCUMENTS`.
-`GRPARSE_PDF_PARSERS` sets how many Poppler documents a single PDF request may
-open concurrently; it defaults to `GRPARSE_RENDER_WORKERS` and costs one parsed
-document structure per slot. `GRPARSE_INTRA_OP_THREADS` caps how many threads
+and `GRPARSE_MAX_ACTIVE_DOCUMENTS`. `GRPARSE_MAX_IMAGE_PIXELS` (default
+200000000) caps one PNG, JPEG, or TIFF page's pixel count, checked against
+the image header before decode; a multi-page TIFF reads as one page per
+image. `GRPARSE_INTRA_OP_THREADS` caps how many threads
 one pooled ONNX Runtime session uses inside a single operator; it defaults to
 cores divided by `GRPARSE_PAGE_WORKERS`, because ONNX Runtime's own default is
 every core per session and a pool of those is oversubscribed by exactly the
@@ -334,7 +356,12 @@ staying in the pool poisoned. Optional RapidOCR detect knobs:
 once at startup: a malformed or out-of-range value fails the server immediately
 rather than being silently ignored per page. gRPC memory, thread,
 and stream limits use `GRPARSE_GRPC_MEMORY_MIB`, `GRPARSE_GRPC_MAX_THREADS`,
-and `GRPARSE_MAX_CONCURRENT_STREAMS`.
+and `GRPARSE_MAX_CONCURRENT_STREAMS`. Those bound transport buffers and calls,
+not the documents behind them, so `GRPARSE_MAX_INFLIGHT_BYTES` (default 4 GiB,
+printed at startup) caps the document bytes every parse holds at once across
+the process: a unary call is charged its request message on admission and a
+stream each chunk as it arrives, and a call that would pass the cap is refused
+with `RESOURCE_EXHAUSTED`.
 
 Every RPC is served on gRPC's callback API. A unary conversion blocks for as
 long as the document takes, so it never runs on the thread that reacted to the
@@ -442,7 +469,7 @@ unconfigured otherwise:
 | `COLLECTOR_POI` | `GRPARSE_POI_TARGET` | never the routed default; a routed office plan fans a poi leg out beside libreoffice for the six OOXML/OLE2 formats (doc/docx, xls/xlsx, ppt/pptx) when configured. The typed event stream folds client-side: paragraphs by style name, tables and sheets into `TableItem`s, slides into groups, embedded objects as attachment descriptors. grPOIc's own byte cap (`GRPOIC_MAX_DOCUMENT_MIB`, default 70 MiB) sits below gRParse's intake: an oversized upload fails the poi leg with `RESOURCE_EXHAUSTED` and degrades like any collector failure |
 | `COLLECTOR_CALAMINE` | `GRPARSE_CALAMINE_TARGET` | never the routed default; a routed workbook plan (xls/xlsx/xlsm/xlsb/ods, never CSV) fans a calamine leg out beside libreoffice when configured. The wire is handle-based (`OpenWorkbook`/`StreamWorksheetRange`/`CloseWorkbook`); each sheet folds client-side into a sheet group holding one `TableItem` in absolute cell offsets, and the handle closes on every path |
 | `COLLECTOR_ASR` | `GRPARSE_ASR_TARGET` (+ `GRPARSE_ASR_MODEL`, the whisper model name, required) | audio and video |
-| `COLLECTOR_EMAIL` | `GRPARSE_EMAIL_TARGET` | `.eml`, `.msg`, `message/rfc822` |
+| `COLLECTOR_EMAIL` | `GRPARSE_EMAIL_TARGET` (+ `GRPARSE_MARKUP_TARGET` for HTML bodies) | `.eml`, `.msg`, `message/rfc822`. The email fold maps `text/plain` bodies only; for a message with no plain body gRParse dials the markup collector with each HTML body part and folds its items into the message body ahead of the attachment list. Without a markup target such a message has no body text and a warning names the variable. Attachments are listed by name; their content is not parsed |
 | `COLLECTOR_XML` | `GRPARSE_XML_TARGET` | `.xml`, `.nxml`, `.xbrl`, `application/xml`, `text/xml` (never the `+xml` suffix family), plus the archive forms `.dclx` and `.tar.gz` (METS/GBS) |
 | `COLLECTOR_EBCDIC` | `GRPARSE_EBCDIC_TARGET` | never routed; explicit selection with `ConvertDocumentOptions.ebcdic_layout_json` only |
 | `COLLECTOR_EPUB` | `GRPARSE_EPUB_TARGET` (+ `GRPARSE_MARKUP_TARGET` for the chapters) | `.epub`. The epub collector returns the book's skeleton by contract (metadata, outline, one empty chapter group per spine item, pictures by `epub:<href>` reference); gRParse keeps the chapter XHTML and image bytes its stream carries, dials the markup collector once per XHTML chapter, plugs each chapter's items under its group in spine order, and inlines the images as `data:` URIs (manifest media type wins; above 16 MiB an image keeps its reference). Without a markup target the skeleton is the result and a warning names the variable |
@@ -510,7 +537,13 @@ text-based document takes the fast path — the collector's own folded
 skipped entirely. A scanned, image-based, or mixed document falls through
 to the CV pipeline with recognition restricted to the inspector's
 `pages_needing_ocr` (1-indexed, the same numbering the page scheduler
-uses, so the set passes through verbatim): exactly those pages hit the OCR
+uses, so the set passes through verbatim), widened by what its extraction
+pass found: the trailer's `extraction_ocr_reasons`, each page's
+`needs_ocr`, and every page whose markdown came back empty although it drew
+a picture or the document drew invisible text (a searchable scan's OCR
+layer, which extraction leaves out). A text-based document that names any
+such page, or whose fold carries no body text at all, takes the CV path
+too rather than returning an empty Document: exactly those pages hit the OCR
 engines, and every other page trusts its embedded text layer instead of
 the per-page coverage heuristic deciding. Explicit `do_ocr`/`force_ocr`
 request options still outrank the classification. If the inspector is
@@ -538,12 +571,17 @@ format-agnostic and works on the model alone: a body text item whose text
 repeats in the top or bottom band of enough pages, or that is nothing but a
 page number, is relabelled `PAGE_HEADER` / `PAGE_FOOTER` and moved to the
 furniture tree; a word a line break hyphenated is rejoined inside its item
-(known compounds such as `well-known` and `re-enter` keep their hyphen, soft
-hyphens go); and a paragraph a page or column break split, where the first
-part ends without terminal punctuation and the next body sibling starts
-lowercase, is merged with its provenance appended and every reference
-renumbered. Section headers, list items, captions, code and anything inside
-a group are never touched. `GRPARSE_REPAIR=off` disables the pass at
+(known compounds such as `well-known` and `re-enter` keep their hyphen, a
+suspended hyphen such as `short- and long-term` keeps its own, soft hyphens
+go, and inline spans move with the text); and a paragraph a page or column
+break split, where the first part ends without terminal punctuation and the
+next body sibling starts lowercase, is merged with its provenance appended
+and every reference renumbered. The line break is a newline, or in text a
+collector joined from lines (the `pdf` text layer, grparse's own OCR and
+layout assembly, `vlm-convert`), also the single space the join left. Section headers, list items, captions and code are never touched; the
+demotion and the merge only take direct body children, while the rejoin
+visits every `TEXT` or `PARAGRAPH` item, group members included.
+`GRPARSE_REPAIR=off` disables the pass at
 startup, `GRPARSE_REPAIR=debug` prints one line per document it changed, and
 the Prometheus exposition counts what it did under
 `grparse_repair_changes_total{kind=...}`, one series per `RepairTotals`
@@ -785,7 +823,7 @@ tests are in [`e2e/README.md`](e2e/README.md).
 ## Development
 
 The container is the supported build environment. It runs Ubuntu 26.04
-with CUDA 13.3.1, cuDNN 9, ONNX Runtime GPU 1.30.0 for CUDA 13, poppler 26.09.0, OpenCV 5.0.0,
+with CUDA 13.3.1, cuDNN 9, ONNX Runtime GPU 1.30.0 for CUDA 13, OpenCV 5.0.0,
 RapidOcrOnnx 1.2.3 C++ sources, and gRPC 1.84.0. These are the newest applicable
 upstream versions as of 2026-09-16. RapidOCR 3.9.2 is the current Python package
 release; its C++ entry point still directs users to RapidOcrOnnx, whose newest
@@ -810,14 +848,19 @@ in [docs/RELEASING.md](docs/RELEASING.md). With models present locally (or
 `scripts/smoke-test.sh <image> --full` additionally boots the server on the
 CPU provider and streams a fixture through the bundled client.
 
-Every push and PR also runs a short libFuzzer window over the two ingest
-doors (Poppler PDF open/extract and OpenCV raster decode) — see
+Every push and PR also runs a short libFuzzer window over the in-process
+ingest door (OpenCV raster decode; PDFs parse in the backend service) — see
 [fuzz/README.md](fuzz/README.md) for the standalone fuzz project and longer
 campaigns. A weekly `sanitize.yml` workflow (also manually dispatchable)
-builds the whole test battery with `-DGRPARSE_SANITIZE=address,undefined` on
-the runner host — not inside `docker build`, whose seccomp profile breaks
-LeakSanitizer — and runs it leak-checked under the `tests/lsan.supp`
-suppressions.
+builds the whole test battery with `-DGRPARSE_SANITIZE=address,undefined` in
+the image toolchain (the `deps` stage of `Dockerfile.cpu`) under
+`docker run --cap-add SYS_PTRACE`, not inside `docker build`, whose seccomp
+profile breaks LeakSanitizer, and runs it leak-checked under the
+`tests/lsan.supp` suppressions. The `cpu-image` CI job also fetches the
+pinned models (the `grparse-models` fetch stage) and builds with
+`GRPARSE_TEST_REQUIRE_MODELS=1`, so the layout, table-structure,
+figure-classifier and hf/1 tokenizer goldens run on every PR instead of
+skipping.
 
 The build compiles with `-DGRPARSE_WERROR=ON` and runs the full `grparse`-labelled
 CTest set: barcode decoder (QR fixture payload, stride-safe region views),
@@ -829,8 +872,9 @@ mapped page renders), scheduler (page
 credits, backpressure, partial digital→OCR merge, layout labelling, page
 previews, turned scans re-read upright), orientation recovery (the turn
 decision and its cost bound against a fake recognizer), PDF page
-source (Poppler text/raster geometry, `/Rotate`, concurrent access, two-column
-reading order), Prometheus exporter (exact text rendering, cumulative
+source (against a fake PDF backend: contract boxes to raster pixels under
+`/Rotate` and CropBox offsets, the OCR-skip gate, the missing-backend
+precondition, concurrent access, two-column reading order), Prometheus exporter (exact text rendering, cumulative
 histogram, live loopback scrapes with the 404/405/500 doors), raster page
 source (in-memory PNG/JPEG decode, BGR
 normalization, decode-failure surfacing), reading order (XY-cut multi-column,
@@ -858,10 +902,13 @@ start under `docker build`, which does not allow disabling ASLR; build the test
 binaries there and run them with
 `docker run --security-opt seccomp=unconfined`. The scheduler, resource pool,
 and PDF page source tests are the concurrency-carrying ones and are expected to
-be ThreadSanitizer-clean and, with
-`LSAN_OPTIONS=suppressions=tests/lsan.supp`, AddressSanitizer- and
-UndefinedBehaviorSanitizer-clean. The suppression file covers fontconfig's
-one-time global config cache, which Poppler reaches when it substitutes a
-base-14 font; it is not a per-page allocation. Generated protobuf and
+be ThreadSanitizer-clean. The whole `grparse` suite is AddressSanitizer- and
+UndefinedBehaviorSanitizer-clean with
+`LSAN_OPTIONS=suppressions=tests/lsan.supp` (checked locally in the
+sanitize.yml setup). The suppression file covers one-time process-global
+allocations in third-party code: ONNX Runtime's 14-byte global and the
+OpenSSL state curl_global_init leaves; none is per page or per request. Under `undefined`, the tests that include protobuf's
+MessageDifferencer header build without the null and nonnull checks, which
+GCC otherwise rejects in abseil's constexpr code. Generated protobuf and
 gRPC sources stay inside the build directory and are not committed; the
 document messages live in a single canonical `document.proto`.

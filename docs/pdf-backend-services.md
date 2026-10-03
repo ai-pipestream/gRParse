@@ -10,8 +10,15 @@ three ways (`eval/pdf_diff`, RESULTS-2026-09-04), and gRParse has the
 (SCORECARD-LEGS-2026-09-04) and the raster wire cost recorded
 (RASTER-COST-2026-09-04). M6 remains evidence-gated: reading order on
 long-text and two-column and the digital+OCR merge on the mixed rotated
-scan are the open gaps, and the latency verdict awaits acceptance. The
-in-process poppler path remains the default until then.
+scan are the open gaps, and the latency verdict awaits acceptance.
+
+Update 2026-10-02: M6 landed as a licensing decision. gRParse no longer
+links poppler: its build and images carry no PDF engine, every PDF goes
+through `GRPARSE_PDF_BACKEND`, and an unset variable fails a PDF with
+`FAILED_PRECONDITION`. The compose stacks start grpc-pdfium in the core
+profile; grpc-qparse sits in `pdf-backends` and grpc-poppler in its own
+opt-in `poppler` profile. The scorecard moves this caused are recorded in
+`eval/scorecard/baseline` with the commit's reason.
 
 ## Goal
 
@@ -28,9 +35,10 @@ Apache-2.0 once its PDF layer dials a backend service (or directly links one of
 the two permissive engines). grpc-poppler remains an optional, clearly labeled
 GPL container used for differential evaluation, off the default release path.
 
-## What gRParse consumes today (the floor for the contract)
+## What gRParse consumed from poppler (the floor for the contract)
 
-From `src/in_memory_document.cpp` (poppler-cpp):
+From the in-process path `src/in_memory_document.cpp` had until M6
+(poppler-cpp):
 
 - `document::load_from_raw_data` (in-memory bytes, diskless)
 - per page: dimensions, orientation quarter-turn detection
@@ -38,8 +46,9 @@ From `src/in_memory_document.cpp` (poppler-cpp):
 - `page_renderer.render_page(dpi)`: BGR24 raster at a chosen DPI
 - calls are serialized behind `PopplerGate` on arm64 (crash-driven), concurrent elsewhere
 
-Any backend that can serve those four families at parity can replace the
-in-process path. Everything else in the matrix is additional surface the
+Any backend that can serve those four families at parity replaces the
+in-process path; the client in `src/remote_page_source.cpp` maps contract
+boxes (user space, before `/Rotate`) into the rendered page's frame. Everything else in the matrix is additional surface the
 common shape should carry so no backend's data is dropped.
 
 ## Capability matrix
@@ -259,6 +268,18 @@ per-page fan-out no longer re-ships the document to each leg.
 `GRPARSE_PDF_BACKEND_HANDSHAKE=off` pins the old always-send-bytes
 behavior.
 
+Each Probe/Parse/Render call's deadline is the sooner of its own budget
+(30 s / 300 s / 600 s) and the inbound request's deadline (with
+`document_timeout` applied), and cancelling the request, or a page failing
+the document, aborts the page calls in flight (`TryCancel`) and fails later
+ones without dialing. A Render raster is validated before use: a known
+pixel format, `stride_bytes >= width_px * channels`, and at least
+`height_px * stride_bytes` bytes of pixels; a malformed raster fails that
+leg as `InvalidDocument`, so consensus mode takes the raster from the next
+target. A raster whose reported `dpi` differs from the requested one is
+resized to the requested DPI, so it stays in the frame the text boxes are
+scaled to.
+
 ## Open items (from the 2026-09-04 review)
 
 Fixed the same day: consensus failure isolation (a backend dying
@@ -277,26 +298,35 @@ Still open, tracked here:
 - Fleet housekeeping on the three services: landed 2026-09-06. Each owns
   a fleet port (50069 pdfium, 50070 qparse, 50071 poppler, in the
   workspace table), answers `GetServiceInfo` with a `UiInfo` block, has a
-  Dockerfile plus `ci.yml` and `publish.yml` (amd64, `pipestreamai/<repo>`
-  on Docker Hub, first images pushed 2026-09-07), and sits in the stack's
-  opt-in `pdf-backends` profile. The hardened-base pass landed 2026-09-07:
+  Dockerfile plus `ci.yml` and `publish.yml` (`pipestreamai/<repo>`
+  on Docker Hub, first images pushed 2026-09-07). Since M6 pdfium is in the
+  stack's core profile, qparse in `pdf-backends` and poppler in `poppler`. The hardened-base pass landed 2026-09-07:
   all three run on `dhi.io/debian-base:trixie-debian13` as user 65532 with
   a staged library closure and a boot smoke gate in ci and publish, and
-  grpc-poppler builds poppler 26.08.0 from the pinned tarball. Images are
-  amd64-only for now; the arm64 legs wait on self-hosted arm runners (the
-  `arm64-publish` branches in each repo carry the workflow legs).
+  grpc-poppler builds poppler 26.08.0 from the pinned tarball. The repos went
+  public on 2026-10-02, and each image is an amd64 + arm64 manifest list
+  built natively on GitHub's hosted runners.
 - Tier 0 TextCell union: only the qpdf-based backend fills direction,
   space width and rendering mode; grpc-pdfium and grpc-poppler leave them
   unset.
 - grpc-poppler still speaks poppler-cpp only; the core/glib surface for
   annotations, forms and the struct tree is design intent, not built.
+- Page-space frame (measured 2026-10-02 against the published images with
+  a one-word page at /Rotate 0, 90, 180, 270 and with an offset CropBox):
+  grpc-pdfium follows the contract (user space before /Rotate, the stored
+  CropBox, the real /Rotate), which is what gRParse's client maps. grpc-poppler
+  and grpc-qparse emit boxes already in the rotated, CropBox-relative
+  frame; grpc-poppler reports `rotation_degrees` 90 for both quarter turns
+  and 0 for 180, grpc-qparse reports 0 for every page. Their text lands
+  correctly on upright pages whose CropBox starts at the origin and is
+  misplaced otherwise, until each service moves to the contract frame.
 
 ## License end state
 
-The milestones above ARE the migration: after M6 the default stack ships no
-GPL, gRParse's image is Apache-only, and grpc-poppler survives as an optional,
-labeled differential instrument off the release path. Until M6, nothing in
-gRParse changes and the in-process poppler path remains the baseline truth.
+The milestones above ARE the migration, and M6 has landed: the default stack
+ships no GPL, gRParse's image is Apache-only (each image build asserts no
+libpoppler in its staged library closure), and grpc-poppler survives as an
+optional, labeled differential instrument off the release path.
 
 Open questions
 

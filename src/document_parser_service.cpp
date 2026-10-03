@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <exception>
 #include <stdexcept>
 #include <filesystem>
@@ -192,6 +193,27 @@ void attach_converted_document(const pipestream::parse::v1::ConvertDocumentOptio
   report_failures(result->failures, entry->mutable_errors());
 }
 
+// Without the converted document, a parse some collector failed still says
+// so: the failures ride a documents entry with no content, the one place a
+// chunk response can carry a status and errors.
+void attach_failures(const std::vector<CollectorFailureInfo>& failures,
+                     pipestream::parse::v1::ChunkDocumentResponse* response) {
+  auto* entry = response->add_documents();
+  entry->set_kind("document");
+  entry->set_status(pipestream::parse::v1::CONVERSION_STATUS_PARTIAL_SUCCESS);
+  report_failures(failures, entry->mutable_errors());
+}
+
+// The chunk responses have no target result to report a delivery in, so a
+// target that asks for one is turned down rather than silently skipped.
+grpc::Status refuse_target(const pipestream::parse::v1::Target& target,
+                           const std::string& surface) {
+  if (!targets::needs_delivery(target)) return grpc::Status::OK;
+  return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                      surface + " does not deliver to a target; its chunks return in the "
+                                "response body only");
+}
+
 // The reactor the blocking unary surfaces finish through. Construction hands
 // `work` to the executor and returns immediately, so the event-manager thread
 // that reacted to the call is free the moment the handler returns; the worker
@@ -199,11 +221,27 @@ void attach_converted_document(const pipestream::parse::v1::ConvertDocumentOptio
 // bound, so finishing from either thread is safe whichever wins the race.
 // Cancellation needs no OnCancel here: the work polls the context, which is
 // where it can act on the answer.
+//
+// The request's bytes are charged to the in-flight budget before anything
+// queues, and returned when the task that owns the call is gone (run, or
+// refused by the executor); a charge past the budget is refused outright.
 class ParseUnaryReactor final : public grpc::ServerUnaryReactor {
  public:
   ParseUnaryReactor(grpc::CallbackServerContext* context, CallExecutor& executor,
+                    const std::shared_ptr<InflightBytes>& inflight, uint64_t request_bytes,
                     std::function<grpc::Status()> work) {
-    const bool queued = executor.submit([this, context, work = std::move(work)] {
+    if (inflight != nullptr && !inflight->try_acquire(request_bytes)) {
+      Finish(grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
+                          "in-flight document bytes would exceed GRPARSE_MAX_INFLIGHT_BYTES"));
+      return;
+    }
+    // Shared because std::function must stay copyable; the last copy of the
+    // task going away is what returns the charge.
+    std::shared_ptr<void> charge(nullptr, [inflight, request_bytes](void*) {
+      if (inflight != nullptr) inflight->release(request_bytes);
+    });
+    const bool queued = executor.submit([this, context, work = std::move(work),
+                                         charge = std::move(charge)] {
       // A call can wait in the queue behind every conversion ahead of it, so
       // the first thing a worker does is ask whether anyone is still
       // listening. The answer costs one atomic read and saves the whole
@@ -250,18 +288,21 @@ DocumentParserService::DocumentParserService(PageScheduler& scheduler,
                                              CallExecutor::Options executor_options,
                                              std::optional<RepairOptions> repair,
                                              std::shared_ptr<EmbeddingEngine> embedding_engine,
-                                             EmbeddingConfig embedding_config)
+                                             EmbeddingConfig embedding_config,
+                                             std::shared_ptr<InflightBytes> inflight)
     : scheduler_(scheduler),
       endpoints_(std::move(endpoints)),
       repair_(std::move(repair)),
       embedder_(std::move(embedding_engine), std::move(embedding_config)),
+      inflight_(std::move(inflight)),
       executor_(executor_options) {}
 
 grpc::ServerUnaryReactor* DocumentParserService::ConvertSource(
     grpc::CallbackServerContext* context,
     const pipestream::parse::v1::ConvertSourceRequest* request,
     pipestream::parse::v1::ConvertSourceResponse* response) {
-  return new ParseUnaryReactor(context, executor_, [this, context, request, response] {
+  return new ParseUnaryReactor(context, executor_, inflight_, request->ByteSizeLong(),
+                               [this, context, request, response] {
     const auto started = std::chrono::steady_clock::now();
     SourceParse parsed;
     const grpc::Status parse_status = parse_source(context, request->request(), scheduler_,
@@ -292,7 +333,7 @@ grpc::ServerUnaryReactor* DocumentParserService::ConvertSource(
         if (!chunked.ok()) return chunked;
       } else {
         // hierarchical_chunking, chunking_preset, or CHUNKS with no config:
-        // hierarchical defaults (presets are accepted names without a local catalog).
+        // hierarchical defaults (validate_options admits no other preset).
         pipestream::parse::v1::HierarchicalChunkerOptions hierarchical;
         if (options.chunking_options_case() ==
             pipestream::parse::v1::ConvertDocumentOptions::kHierarchicalChunking) {
@@ -354,9 +395,13 @@ grpc::ServerUnaryReactor* DocumentParserService::ChunkHierarchicalSource(
     grpc::CallbackServerContext* context,
     const pipestream::parse::v1::ChunkHierarchicalSourceRequest* request,
     pipestream::parse::v1::ChunkHierarchicalSourceResponse* response) {
-  return new ParseUnaryReactor(context, executor_, [this, context, request, response] {
+  return new ParseUnaryReactor(context, executor_, inflight_, request->ByteSizeLong(),
+                               [this, context, request, response] {
     const auto started = std::chrono::steady_clock::now();
     const auto& chunk_request = request->request();
+    const grpc::Status target_status =
+        refuse_target(chunk_request.target(), "ChunkHierarchicalSource");
+    if (!target_status.ok()) return target_status;
     const auto embedding_status = embedder_.validate(chunk_request.embedding_options());
     if (!embedding_status.ok()) return embedding_status;
     SourceParse parsed;
@@ -381,6 +426,8 @@ grpc::ServerUnaryReactor* DocumentParserService::ChunkHierarchicalSource(
     if (chunk_request.include_converted_doc()) {
       attach_converted_document(chunk_request.convert_options(), parsed.filename,
                                 &parsed.result, chunked);
+    } else if (!parsed.result.failures.empty()) {
+      attach_failures(parsed.result.failures, chunked);
     }
     chunking::fill_chunking_info(chunk_request.chunking_options(),
                                  chunked->mutable_chunking_info());
@@ -394,9 +441,12 @@ grpc::ServerUnaryReactor* DocumentParserService::ChunkHybridSource(
     grpc::CallbackServerContext* context,
     const pipestream::parse::v1::ChunkHybridSourceRequest* request,
     pipestream::parse::v1::ChunkHybridSourceResponse* response) {
-  return new ParseUnaryReactor(context, executor_, [this, context, request, response] {
+  return new ParseUnaryReactor(context, executor_, inflight_, request->ByteSizeLong(),
+                               [this, context, request, response] {
     const auto started = std::chrono::steady_clock::now();
     const auto& chunk_request = request->request();
+    const grpc::Status target_status = refuse_target(chunk_request.target(), "ChunkHybridSource");
+    if (!target_status.ok()) return target_status;
     // The budget decides every boundary, so it is validated before any work
     // starts rather than defaulted to a number nobody asked for.
     const grpc::Status option_status =
@@ -428,6 +478,8 @@ grpc::ServerUnaryReactor* DocumentParserService::ChunkHybridSource(
     if (chunk_request.include_converted_doc()) {
       attach_converted_document(chunk_request.convert_options(), parsed.filename,
                                 &parsed.result, chunked);
+    } else if (!parsed.result.failures.empty()) {
+      attach_failures(parsed.result.failures, chunked);
     }
     chunking::fill_chunking_info(chunk_request.chunking_options(),
                                  chunked->mutable_chunking_info());

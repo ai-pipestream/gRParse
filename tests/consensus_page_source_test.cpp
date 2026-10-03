@@ -40,6 +40,8 @@ class FakeBackend final : public pdfv1::PdfBackendService::Service {
   // Zero-based pages whose Parse answers with an RPC error.
   std::set<uint32_t> parse_fail_pages;
   bool fail_render = false;
+  // Answers Render with a raster whose pixels are short of height * stride.
+  bool short_raster = false;
   int parse_calls = 0;
   int render_calls = 0;
 
@@ -109,7 +111,7 @@ class FakeBackend final : public pdfv1::PdfBackendService::Service {
     raster->set_stride_bytes(30);
     raster->set_pixel_format(pdfv1::PIXEL_FORMAT_BGR8);
     raster->set_dpi(request->dpi());
-    raster->set_pixels(std::string(300, '\x7f'));
+    raster->set_pixels(std::string(short_raster ? 290 : 300, '\x7f'));
     writer->Write(msg);
     return grpc::Status::OK;
   }
@@ -435,6 +437,60 @@ int main() {
             "the served page reset the counter, so every page was dialed");
   }
 
+  // A raster the leg serves resets the counter too: two failed Parses, a
+  // served Render, then two more failed Parses leave the leg one failure
+  // short of the breaker, so page five is still dialed.
+  {
+    const std::vector<std::vector<std::string>> tale = {
+        story[0], story[1], story[2], story[3], {"with", "the", "truck", "idling"},
+    };
+    Server mixed = start("mixed", tale, true);
+    Server sound_a = start("sound-a", tale, true);
+    Server sound_b = start("sound-b", tale, true);
+    mixed.service->parse_fail_pages = {0, 1, 2, 3};
+
+    const auto source = grparse::open_consensus_pdf_document(
+        bytes, {mixed.target, sound_a.target, sound_b.target}, 144.0);
+    require(source->extract_digital_page(1).has_value() &&
+                source->extract_digital_page(2).has_value(),
+            "the healthy legs carry the failed pages");
+    require(!source->render_page(2).empty() && mixed.service->render_calls == 1,
+            "the failing-text leg still serves the raster");
+    for (int page_number = 3; page_number <= 5; ++page_number) {
+      require(source->extract_digital_page(page_number).has_value(),
+              "the healthy legs carry every page");
+    }
+    require(mixed.service->parse_calls == 5,
+            "the served raster reset the counter, so every page was dialed");
+  }
+
+  // Legs that disagree on the page count: the document is the longest
+  // reading, and a page past a shorter leg's end is no candidate from that
+  // leg rather than a failure that would trip its breaker.
+  {
+    const std::vector<std::vector<std::string>> half = {story[0], story[1]};
+    Server short_leg = start("short", half, true);
+    Server long_a = start("long-a", story, true);
+    Server long_b = start("long-b", story, true);
+
+    const auto source = grparse::open_consensus_pdf_document(
+        bytes, {short_leg.target, long_a.target, long_b.target}, 144.0);
+    require(source->page_count() == 4, "page count is the longest leg's");
+    for (int page_number = 4; page_number >= 1; --page_number) {
+      const auto page = source->extract_digital_page(page_number);
+      require(page.has_value() && joined_text(*page) == story_text[page_number - 1],
+              "every page reads, past the short leg's end too");
+    }
+    require(short_leg.service->parse_calls == 2,
+            "the short leg is never dialed past its own end");
+    const auto page2 = source->extract_digital_page(2);
+    require(page2->vote.has_value() && page2->vote->legs.size() == 3,
+            "pages past its end do not trip the short leg's breaker");
+    require(!source->render_page(4).empty() && short_leg.service->render_calls == 0 &&
+                long_a.service->render_calls == 1,
+            "the raster past the short leg's end comes from the next leg");
+  }
+
   // Render falls through: a backend whose Render fails never serves the
   // raster, and the next target does.
   {
@@ -449,6 +505,42 @@ int main() {
     require(render_bad.service->render_calls == 1 &&
                 render_good.service->render_calls == 1,
             "render is tried once per target, in order");
+  }
+
+  // A malformed raster is a failed leg, not a failed page: the client
+  // rejects it as InvalidDocument and the next target serves the raster.
+  {
+    Server short_leg = start("short-raster", story, true);
+    Server render_good = start("render-good", story, true);
+    short_leg.service->short_raster = true;
+
+    const auto source = grparse::open_consensus_pdf_document(
+        bytes, {short_leg.target, render_good.target}, 144.0);
+    const cv::Mat mat = source->render_page(1);
+    require(!mat.empty() && render_good.service->render_calls == 1,
+            "the next backend serves the raster after a short one");
+  }
+
+  // Cancelling the consensus source cancels every leg: no later page call
+  // reaches a backend.
+  {
+    Server leg_a = start("leg-a", story, true);
+    Server leg_b = start("leg-b", story, true);
+    const auto source = grparse::open_consensus_pdf_document(
+        bytes, {leg_a.target, leg_b.target}, 144.0);
+    source->cancel();
+    require(!source->extract_digital_page(1).has_value(),
+            "a cancelled source yields no text candidates");
+    bool threw = false;
+    try {
+      static_cast<void>(source->render_page(1));
+    } catch (const grparse::InvalidDocument&) {
+      threw = true;
+    }
+    require(threw, "a cancelled source fails the raster");
+    require(leg_a.service->parse_calls == 0 && leg_b.service->parse_calls == 0 &&
+                leg_a.service->render_calls == 0 && leg_b.service->render_calls == 0,
+            "no backend is dialed after cancel");
   }
 
   // The vote's word fold: ASCII case, curly quotes and dashes, soft

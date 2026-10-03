@@ -32,10 +32,17 @@
 // a model, and models are this repo's sanctioned on-disk exception; it is
 // resolved in this order:
 //
-//   1. the request's tokenizer_path option,
+//   1. the request's tokenizer_path option, which must name a regular file
+//      inside $GRPARSE_TOKENIZER_DIR (default: the models directory below);
+//      a relative path resolves against that directory,
 //   2. $GRPARSE_CHUNK_TOKENIZER,
 //   3. $GRPARSE_MODELS_DIR/chunk/tokenizer.json ("/models" when the variable
 //      is unset, the same default server_config applies).
+//
+// Whatever the source, only a regular file of at most 64 MiB is read. A
+// request's path that fails for any reason (outside the directory, missing,
+// not a regular file, too large, unreadable, malformed) is rejected with one
+// message, so the option cannot probe the server's filesystem.
 //
 // The file's own "padding" and "truncation" members are stripped before the
 // load: a chunking counter measures the text it is given, and the
@@ -53,6 +60,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -93,14 +101,34 @@ int count_tokens(const char32_t* begin, const char32_t* end);
 // separators.
 bool is_wordish_whitespace(char32_t code_point);
 
+// The largest tokenizer.json the loader reads. Published tokenizer files
+// run to a few MiB; the cap keeps a misconfigured path from reading a
+// device or a huge file into memory.
+inline constexpr std::uintmax_t kMaximumTokenizerBytes = std::uintmax_t{64} << 20;
+
 // Resolves the tokenizer.json an hf/1 request counts with, in the order
 // documented above. `per_request_path` is the request's tokenizer_path
-// option; pass an empty string when the request did not set one.
+// option; pass an empty string when the request did not set one. A
+// request's path is confined first (confine_request_tokenizer_path).
 std::string resolve_hf_tokenizer_path(std::string_view per_request_path);
+
+// The directory a request's tokenizer_path must name a file under:
+// $GRPARSE_TOKENIZER_DIR, else $GRPARSE_MODELS_DIR, else "/models". The
+// environment overrides (GRPARSE_CHUNK_TOKENIZER and the models default)
+// are the operator's and are not confined.
+std::string hf_tokenizer_dir();
+
+// The canonical path of the regular file a request's tokenizer_path names
+// inside hf_tokenizer_dir(): a relative path resolves against the
+// directory, and symlinks and ".." resolve before the containment test.
+// Absent for anything else (outside the directory, missing, not a regular
+// file), with no distinction the caller could report.
+std::optional<std::string> confine_request_tokenizer_path(std::string_view requested);
 
 // Reads the tokenizer.json at `path` into `json_out` with the top-level
 // "padding" and "truncation" members removed (see the header comment). A
-// file that is unreadable or is not one well-formed JSON object is an
+// file that is not a regular file, is larger than kMaximumTokenizerBytes,
+// is unreadable, or is not one well-formed JSON object is an
 // INVALID_ARGUMENT naming the file.
 grpc::Status load_hf_tokenizer_json(std::string_view path, std::string* json_out);
 

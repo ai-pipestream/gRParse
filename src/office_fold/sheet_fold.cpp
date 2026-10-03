@@ -126,9 +126,14 @@ void SheetFold::on_sheet(const officev1::Sheet& sheet) {
   // if it were real page-local geometry.
   arena_.add_prov(table->mutable_prov(), sheet.index(), true, 0, 0, 0, 0, 0, 0,
                   false);
-  arena_.warn("sheet '" + sheet.name()
-              + "' has no geometry; its table provenance names the sheet "
-                "grid only");
+  // Said once per document: every sheet is alike in this, and a warning per
+  // sheet would bury the ones that say something.
+  if (!geometry_warned_) {
+    arena_.warn("sheet '" + sheet.name()
+                + "' has no geometry (nor does any other sheet); sheet "
+                  "table provenance names the sheet grid only");
+    geometry_warned_ = true;
+  }
   if (table->prov_size() > 0 && !sheet.name().empty()) {
     table->mutable_prov(0)->mutable_grid()->set_sheet(sheet.name());
   }

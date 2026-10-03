@@ -46,7 +46,7 @@ class DoclangRenderer : RendererBase {
 
   static std::string element(const std::string& tag, const std::string& attributes,
                              const std::string& text) {
-    return "<" + tag + attributes + ">" + escape_html_text(text) + "</" + tag + ">";
+    return "<" + tag + attributes + ">" + escape_xml_text(text) + "</" + tag + ">";
   }
 
   void render_children(const docv1::GroupItem& group, int depth) {
@@ -104,7 +104,7 @@ class DoclangRenderer : RendererBase {
       const std::string language = code_fence_language(code);
       const std::string attributes =
           language.empty() ? std::string()
-                           : " language=\"" + escape_html_attribute(language) + "\"";
+                           : " language=\"" + escape_xml_attribute(language) + "\"";
       line(depth, element("code", attributes, code.text()));
       return;
     }
@@ -206,9 +206,9 @@ class DoclangRenderer : RendererBase {
       // the normalized target, then the caption text as a bare text line.
       line(depth, "<caption>");
       line(depth + 1,
-           "<href uri=\"" + escape_html_attribute(normalized_uri(caption->hyperlink())) +
+           "<href uri=\"" + escape_xml_attribute(normalized_uri(caption->hyperlink())) +
                "\"/>");
-      line(depth + 1, escape_html_text(caption->text()));
+      line(depth + 1, escape_xml_text(caption->text()));
       line(depth, "</caption>");
     }
   }
@@ -279,7 +279,7 @@ class DoclangRenderer : RendererBase {
     const std::string uri = picture_uri_ ? picture_uri_(picture) : std::string();
     const std::string open =
         uri.empty() ? std::string("<picture")
-                    : "<picture uri=\"" + escape_html_attribute(uri) + "\"";
+                    : "<picture uri=\"" + escape_xml_attribute(uri) + "\"";
     // A picture description rides as a nested description element.
     const std::string description = trimmed(picture_description(picture));
     if (description.empty()) {

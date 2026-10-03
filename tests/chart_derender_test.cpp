@@ -247,6 +247,10 @@ void verify_candidates_need_a_chart_verdict_pixels_and_no_typed_table() {
           "the request carries the candidate without its pixels and lists it under the body");
   require(grparse::chart_derender_candidates(request).empty(),
           "a stripped picture is not a candidate again: the pixels travel separately");
+  docv1::Document malformed = document;
+  malformed.mutable_pictures(0)->mutable_image()->set_uri("data:image/png;base64,@@@");
+  require(grparse::chart_derender_candidates(malformed).empty(),
+          "a data URI that is not base64 skips its picture instead of throwing");
 }
 
 void verify_fold_attributes_the_table_to_the_model() {

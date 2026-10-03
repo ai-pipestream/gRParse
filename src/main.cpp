@@ -301,9 +301,13 @@ int main() {
     const std::optional<grparse::RepairOptions> repair = grparse::configure_repair();
     const auto embedding_config = grparse::read_embedding_config(process.models_dir);
     const auto embedding_engine = grparse::make_embedding_engine(embedding_config);
+    const auto inflight =
+        std::make_shared<grparse::InflightBytes>(grparse::read_inflight_byte_budget());
+    std::println("gRParse in-flight document bytes: at most {} MiB (GRPARSE_MAX_INFLIGHT_BYTES)",
+                 inflight->limit() / (1024 * 1024));
     grparse::DocumentParserService service(scheduler, endpoints, executor_options, repair,
-                                          embedding_engine, embedding_config);
-    grparse::DocumentStreamingService streaming_service(scheduler, endpoints, repair);
+                                          embedding_engine, embedding_config, inflight);
+    grparse::DocumentStreamingService streaming_service(scheduler, endpoints, repair, inflight);
     const auto server = start_server(process.listen_address, service, streaming_service,
                                      grparse::read_grpc_limits());
     if (!server) {

@@ -10,11 +10,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <optional>
 #include <print>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "../src/targets/bundle.h"
@@ -22,6 +24,7 @@
 #include "../src/targets/s3_uploader.h"
 #include "../src/targets/sha256.h"
 #include "../src/targets/sigv4.h"
+#include "../src/targets/target_step.h"
 #include "../src/targets/zip_writer.h"
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
@@ -251,6 +254,50 @@ void verify_sigv4_matches_the_published_vector() {
           "authorization: " + authorization);
 }
 
+// A session token is an ordinary signed header. The inputs are the AWS SigV4
+// test suite's "post-sts-header-after" request; the expected canonical request
+// digest and signature were cross-checked with an independent Python
+// (hmac/hashlib) implementation of the specification.
+void verify_sigv4_signs_the_session_token() {
+  const std::string token =
+      "AQoDYXdzEPT//////////wEXAMPLEtc764bNrC9SAPBSM22wDOk4x4HIZ8j4FZTwdQWLWsKWHGBuFqwAeMicRX"
+      "mxfpSPfIeoIYRqTflfKD8YUuwthAx7mSEI/qkPpKPi/kMcGdQrmGdeehM4IC1NtBmUpp2wUE8phUZampKsburE"
+      "Dy0KPkyQDYwT7WZ0wq5VSXDvp75YU9HFvlRd8Tx6q6fE8YQcHNVXAkiY9q6d+xo0rKwT38xVqr7ZD0u0iPPkUL"
+      "64lIZbqBAz+scqKmlzm8FDrypNC9Yjc8fPOLn9FX9KSYvKTr4rvx3iSIlTJabIQwj2ICCR/oLxBA==";
+  const std::string secret = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
+  targets::SigV4Request request;
+  request.method = "POST";
+  request.canonical_uri = "/";
+  // The order s3_client.cpp builds them in: the token is appended last, and
+  // the signer must still sort it into place.
+  request.headers = {{"host", "example.amazonaws.com"},
+                     {"x-amz-date", "20150830T123600Z"},
+                     {"x-amz-security-token", token}};
+  request.payload_sha256_hex = targets::sha256_hex("");
+  request.region = "us-east-1";
+  request.service = "service";
+  request.amz_date = "20150830T123600Z";
+
+  const std::string canonical = targets::canonical_request(request);
+  require(canonical.contains("\nx-amz-security-token:" + token + "\n"),
+          "the token is a canonical header:\n" + canonical);
+  require(targets::sha256_hex(canonical) ==
+              "c237e1b440d4c63c32ca95b5b99481081cb7b13c7e40434868e71567c1a882f6",
+          "the canonical request must hash to the expected value");
+
+  const std::string authorization =
+      targets::authorization_header("AKIDEXAMPLE", secret, request);
+  require(authorization.contains("SignedHeaders=host;x-amz-date;x-amz-security-token,"),
+          "the token is among the signed headers: " + authorization);
+  require(!authorization.contains(secret), "the secret never appears in the header");
+  require(!authorization.contains(token), "the token value is not in the header");
+  require(authorization ==
+              "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, "
+              "SignedHeaders=host;x-amz-date;x-amz-security-token, "
+              "Signature=85d96828115b5dc0cfc3bd16ad9e210dd772bbebba041836c64533a82be05ead",
+          "authorization: " + authorization);
+}
+
 void verify_region_comes_from_the_endpoint() {
   require(targets::region_for_endpoint("https://s3.eu-west-1.amazonaws.com") == "eu-west-1",
           "a regional AWS endpoint names its region");
@@ -260,6 +307,15 @@ void verify_region_comes_from_the_endpoint() {
           "the regionless AWS endpoint defaults");
   require(targets::region_for_endpoint("http://127.0.0.1:9000") == "us-east-1",
           "a store that encodes no region defaults");
+  require(targets::region_for_endpoint("https://s3-us-west-2.amazonaws.com") == "us-west-2",
+          "the legacy dash-style endpoint names its region inside the label");
+  require(targets::region_for_endpoint("bucket.s3.dualstack.us-east-2.amazonaws.com") ==
+              "us-east-2",
+          "the dualstack qualifier is not a region");
+  require(targets::region_for_endpoint("s3-fips.us-gov-west-1.amazonaws.com") == "us-gov-west-1",
+          "the fips qualifier is not a region either");
+  require(targets::region_for_endpoint("s3-external-1.amazonaws.com") == "us-east-1",
+          "s3-external-1 is the us-east-1 default");
 }
 
 void verify_explicit_region_overrides_endpoint() {
@@ -286,9 +342,12 @@ class FakeStore final {
     std::string content_sha;
     std::string session_token;
     std::string body;
+    bool accepted = true;
   };
 
-  FakeStore() {
+  // `refuse_suffix`, when set, answers 403 to every path ending in it.
+  explicit FakeStore(std::string refuse_suffix = {}) : refuse_suffix_(std::move(refuse_suffix)) {
+
     listener_ = ::socket(AF_INET, SOCK_STREAM, 0);
     require(listener_ >= 0, "fake store could not open a socket");
     const int reuse = 1;
@@ -373,8 +432,13 @@ class FakeStore final {
     }
     request.body = body.substr(0, expected);
 
-    const std::string response = "HTTP/1.1 200 OK\r\nETag: " + etag_for(request.body) +
-                                 "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    request.accepted = refuse_suffix_.empty() || !request.path.ends_with(refuse_suffix_);
+    const std::string response =
+        request.accepted
+            ? "HTTP/1.1 200 OK\r\nETag: " + etag_for(request.body) +
+                  "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            : std::string("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n"
+                          "Connection: close\r\n\r\n");
     // Recorded before the answer goes out: a client that has its response is
     // free to finish, and the test reads this list the moment the last one
     // does.
@@ -414,6 +478,7 @@ class FakeStore final {
     return std::string(found);
   }
 
+  std::string refuse_suffix_;
   mutable std::mutex mutex_;
   std::vector<Request> received_;
   std::atomic<bool> stopping_{false};
@@ -508,8 +573,48 @@ void verify_a_refused_upload_fails_without_leaking() {
   require(refused, "an unreachable store must fail the delivery");
 }
 
-// A session token is a signed header on the PUT, and it is not the secret.
-void verify_session_token_is_signed() {
+// A batch that fails partway still reports what it wrote: those objects are
+// in the store whatever became of the rest.
+void verify_a_partial_failure_reports_the_written_objects() {
+  const docv1::Document document = sample_document("partial");
+  const auto files = targets::build_bundle(document, sample_exports(document));
+
+  FakeStore store("/manifest.json");
+  targets::S3Config config;
+  config.endpoint = store.endpoint();
+  config.access_key = "AKIAIOSFODNN7EXAMPLE";
+  config.secret_key = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
+  config.bucket = "conversions";
+  config.verify_ssl = false;
+
+  bool failed = false;
+  try {
+    targets::upload_bundle(config, files);
+  } catch (const targets::UploadFailure& failure) {
+    failed = true;
+    require(std::string(failure.what()).contains("manifest.json"),
+            "the failure names the refused key: " + std::string(failure.what()));
+    const auto received = store.received();
+    size_t accepted = 0;
+    for (const auto& request : received) accepted += request.accepted ? 1 : 0;
+    require(failure.written().size() == accepted,
+            "every object the store accepted is reported, and nothing else");
+    for (const auto& object : failure.written()) {
+      require(object.key != "manifest.json", "the refused member is not reported");
+      require(std::ranges::any_of(received,
+                                  [&object](const FakeStore::Request& request) {
+                                    return request.accepted &&
+                                           request.path == "/conversions/" + object.key;
+                                  }),
+              "a reported object is one the store accepted: " + object.key);
+    }
+  }
+  require(failed, "a refused member fails the batch");
+}
+
+// A session token never crosses the wire in cleartext: an http endpoint is
+// refused before any request is made.
+void verify_session_token_is_refused_over_http() {
   const docv1::Document document = sample_document("session");
   const auto files = targets::build_bundle(document, sample_exports(document));
 
@@ -520,23 +625,105 @@ void verify_session_token_is_signed() {
   config.secret_key = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
   config.bucket = "conversions";
   config.verify_ssl = false;
-  config.session_token = "session-token-that-must-be-signed";
+  config.session_token = "session-token-that-must-not-leak";
 
-  const auto objects = targets::upload_bundle(config, files);
-  require(objects.size() == files.size(), "a session token does not change which objects land");
-  const auto received = store.received();
-  require(received.size() == files.size(), "the store saw one request per member");
-  for (const auto& request : received) {
-    require(request.session_token == config.session_token,
-            "the session token is the x-amz-security-token header: " + request.session_token);
-    require(request.authorization.contains("x-amz-security-token"),
-            "the session token is one of the signed headers: " + request.authorization);
-    require(!request.authorization.contains(config.secret_key),
-            "the secret key must never appear on the wire");
-    require(!request.session_token.empty() &&
-                request.authorization.find(config.session_token) == std::string::npos,
-            "the authorization value must not repeat the session token");
+  bool refused = false;
+  try {
+    targets::upload_bundle(config, files);
+  } catch (const std::invalid_argument& cleartext) {
+    refused = true;
+    require(!std::string(cleartext.what()).contains(config.session_token),
+            "the refusal must not quote the token");
   }
+  require(refused, "a session token over http must be refused");
+  require(store.received().empty(), "the store saw no request at all");
+}
+
+// Nor is it sent to a peer whose certificate went unchecked, https or not.
+void verify_session_token_is_refused_without_verification() {
+  const docv1::Document document = sample_document("unverified");
+  const auto files = targets::build_bundle(document, sample_exports(document));
+
+  targets::S3Config config;
+  // Nothing listens here: the refusal must come before any connection.
+  config.endpoint = "https://127.0.0.1:1";
+  config.access_key = "AKIAIOSFODNN7EXAMPLE";
+  config.secret_key = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
+  config.bucket = "conversions";
+  config.verify_ssl = false;
+  config.session_token = "session-token-that-must-not-leak";
+
+  bool refused = false;
+  try {
+    targets::upload_bundle(config, files);
+  } catch (const std::invalid_argument& unverified) {
+    refused = true;
+    const std::string message = unverified.what();
+    require(message.contains("verify_ssl"), "the refusal names the setting: " + message);
+    require(!message.contains(config.session_token), "the refusal must not quote the token");
+  }
+  require(refused, "a session token with verify_ssl false must be refused");
+}
+
+// Sets an environment variable for one scope and puts the old value back.
+class ScopedEnv {
+ public:
+  ScopedEnv(const char* name, const char* value) : name_(name) {
+    if (const char* old = std::getenv(name); old != nullptr) old_ = old;
+    if (value == nullptr) {
+      ::unsetenv(name);
+    } else {
+      ::setenv(name, value, 1);
+    }
+  }
+  ~ScopedEnv() {
+    if (old_.has_value()) {
+      ::setenv(name_.c_str(), old_->c_str(), 1);
+    } else {
+      ::unsetenv(name_.c_str());
+    }
+  }
+  ScopedEnv(const ScopedEnv&) = delete;
+  ScopedEnv& operator=(const ScopedEnv&) = delete;
+
+ private:
+  std::string name_;
+  std::optional<std::string> old_;
+};
+
+// The server's own identity only signs for a peer whose certificate is
+// checked: a caller who turns verification off is refused before any request,
+// while the same target with verification on goes through.
+void verify_ambient_credentials_need_verification() {
+  const ScopedEnv opt_in("GRPARSE_S3_AMBIENT_CREDENTIALS", "1");
+  const ScopedEnv access("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE");
+  const ScopedEnv secret("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY");
+  const ScopedEnv token("AWS_SESSION_TOKEN", nullptr);
+
+  const docv1::Document document = sample_document("ambient");
+  const parsev1::DocumentExports exports = sample_exports(document);
+  FakeStore store;
+  parsev1::Target target;
+  target.mutable_s3()->set_endpoint(store.endpoint());
+  target.mutable_s3()->set_bucket("conversions");
+
+  target.mutable_s3()->set_verify_ssl(false);
+  parsev1::TargetResult refused_result;
+  const grpc::Status refused = targets::deliver(target, document, exports, &refused_result);
+  require(refused.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
+          "ambient credentials with verify_ssl false are refused: " + refused.error_message());
+  require(refused.error_message().contains("verify_ssl"),
+          "the refusal names the setting: " + refused.error_message());
+  require(store.received().empty(), "the store saw no request at all");
+
+  // The control: an http endpoint carries no certificate to skip, and with
+  // no session token the ambient identity signs as before.
+  target.mutable_s3()->clear_verify_ssl();
+  parsev1::TargetResult result;
+  const grpc::Status delivered = targets::deliver(target, document, exports, &result);
+  require(delivered.ok(), "the same target with verification on is delivered: " +
+                              delivered.error_message());
+  require(!store.received().empty(), "the store saw the upload");
 }
 
 void verify_incomplete_targets_are_rejected() {
@@ -565,10 +752,14 @@ int main() {
       verify_bundle_carries_the_canonical_file_set,
       verify_manifest_describes_every_member,
       verify_sigv4_matches_the_published_vector,
+      verify_sigv4_signs_the_session_token,
       verify_region_comes_from_the_endpoint,
       verify_explicit_region_overrides_endpoint,
       verify_uploads_land_as_objects,
-      verify_session_token_is_signed,
+      verify_session_token_is_refused_over_http,
+      verify_session_token_is_refused_without_verification,
+      verify_ambient_credentials_need_verification,
+      verify_a_partial_failure_reports_the_written_objects,
       verify_a_refused_upload_fails_without_leaking,
       verify_incomplete_targets_are_rejected,
   });

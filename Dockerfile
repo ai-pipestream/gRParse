@@ -28,38 +28,14 @@ ENV DEBIAN_FRONTEND=noninteractive
 # hybrid chunker's hf/1 counter.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates cargo cmake curl g++ git make ninja-build pkg-config rustc xz-utils \
-    libfreetype-dev libfontconfig-dev libjpeg-dev libopenjp2-7-dev \
-    liblcms2-dev libboost-dev libcurl4-openssl-dev \
+    libcurl4-openssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Poppler is vendored from source instead of taken from the distro: ubuntu
-# 26.04 ships 26.01.0, which predates the 26.06 thread-safety fixes in annots
-# loading (upstream 4aca25d6, 2f10803d) that bit this server on arm64. Only
-# the cpp frontend and the splash renderer are built.
-# ENABLE_HARFBUZZ=OFF: since 26.09 poppler wants harfbuzz for font subsetting
-# when it saves annotation and form edits; this server only renders and
-# extracts, so the option is off and the runtime closure stays as it was.
-ARG POPPLER_VERSION=26.09.0
-ARG POPPLER_SHA256=8059eadb6805340768f138c465b57f8164c92b4a0773c37ef031ea6c0d987b2e
-RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/poppler.tar.xz "https://poppler.freedesktop.org/poppler-${POPPLER_VERSION}.tar.xz" \
- && echo "${POPPLER_SHA256}  /tmp/poppler.tar.xz" | sha256sum -c - \
- && tar -xJf /tmp/poppler.tar.xz -C /tmp \
- && cmake -S "/tmp/poppler-${POPPLER_VERSION}" -B /tmp/poppler-build -G Ninja \
-      -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/poppler -DCMAKE_INSTALL_LIBDIR=lib \
-      -DENABLE_CPP=ON -DENABLE_QT5=OFF -DENABLE_QT6=OFF -DENABLE_GLIB=OFF -DENABLE_UTILS=OFF \
-      -DENABLE_BOOST=ON -DENABLE_NSS3=OFF -DENABLE_GPGME=OFF -DENABLE_LIBCURL=OFF -DENABLE_HARFBUZZ=OFF \
-      -DENABLE_LIBTIFF=OFF -DENABLE_LIBOPENJPEG=openjpeg2 -DBUILD_CPP_TESTS=OFF \
-      -DBUILD_GTK_TESTS=OFF -DBUILD_QT5_TESTS=OFF -DBUILD_QT6_TESTS=OFF -DBUILD_MANUAL_TESTS=OFF \
- && cmake --build /tmp/poppler-build --parallel ${GRPARSE_BUILD_JOBS} \
- && cmake --install /tmp/poppler-build \
- && rm -rf /tmp/poppler.tar.xz "/tmp/poppler-${POPPLER_VERSION}" /tmp/poppler-build
-
 # OpenCV is vendored from source instead of taken from the distro: the distro
-# imgcodecs links GDAL, and GDAL links the distro poppler, so one process ends
-# up loading two poppler majors whose identical C++ symbols interpose across
-# versions and shift how pages rasterize. This build carries only the three
-# modules the server uses, with no GDAL and the image codecs linked in
-# statically, so the binary's library closure holds exactly one poppler.
+# imgcodecs links GDAL, and GDAL links the distro poppler (GPL), which would
+# put a copyleft PDF engine back into this Apache-2.0 image's library
+# closure. This build carries only the modules the server uses, with no GDAL
+# and the image codecs linked in statically.
 ARG OPENCV_VERSION=5.0.0
 ARG OPENCV_SHA256=b0528f5a1d379d59d4701cb28c36e22214cc51cf64594e5b56f2d3e6c0233095
 RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/opencv.tar.gz "https://github.com/opencv/opencv/archive/refs/tags/${OPENCV_VERSION}.tar.gz" \
@@ -93,9 +69,8 @@ ARG GRPARSE_BUILD_CACHE_SCOPE=
 # COPY-ed proto as newer than a cached generated header, so a content stamp
 # decides: any proto change discards the staged and generated trees, which
 # forces regeneration; everything else stays warm.
-RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.84.0-ort1.30.0-poppler26.09-cxx23-sessionep2-static1-simdutf9-ocv500-tokcpp1${GRPARSE_BUILD_CACHE_SCOPE},sharing=locked,target=/build \
-    export PKG_CONFIG_PATH=/opt/poppler/lib/pkgconfig \
- && PROTO_SUM=$(cat *.proto collectors/*.proto | sha256sum | cut -d' ' -f1) \
+RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.84.0-ort1.30.0-cxx23-sessionep2-static1-simdutf9-ocv500-tokcpp1${GRPARSE_BUILD_CACHE_SCOPE},sharing=locked,target=/build \
+    PROTO_SUM=$(cat *.proto collectors/*.proto | sha256sum | cut -d' ' -f1) \
  && if [ "$(cat /build/.proto-sum 2>/dev/null)" != "$PROTO_SUM" ]; then \
       rm -rf /build/proto /build/generated && printf '%s' "$PROTO_SUM" > /build/.proto-sum; \
     fi \
@@ -103,7 +78,7 @@ RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.84.0-ort1.30.0-poppler26
  && cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
       -DGRPARSE_WERROR=ON -DGRPARSE_EMBED_TENSORRT=ON -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv5 \
  && cmake --build /build --target grparse-server grparse-stream-client grparse-embed-text grparse-tests --parallel ${GRPARSE_BUILD_JOBS} \
- && LD_LIBRARY_PATH=/opt/poppler/lib:/opt/opencv/lib ctest --test-dir /build --output-on-failure -L grparse \
+ && LD_LIBRARY_PATH=/opt/opencv/lib ctest --test-dir /build --output-on-failure -L grparse \
  && mkdir -p /out \
  && cp /build/grparse-server /out/grparse-server \
  && cp /build/grparse-stream-client /out/grparse-stream-client \
@@ -119,21 +94,10 @@ RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.84.0-ort1.30.0-poppler26
 # the CUDA runtime math libraries (cublas, cufft, curand), which are the
 # reason the base is a CUDA image at all. cuDNN is installed here only to be
 # copied out; ONNX Runtime dlopens it, so ldd alone would never surface it.
-# The Liberation fonts are poppler's base-14 substitutes: a PDF that uses
-# Helvetica/Times/Courier without embedding them renders blank text without
-# a metric-compatible substitute, which starves layout detection and page
-# previews of pixels. fc-cache prebuilds the fontconfig cache so the
-# read-only runtime never tries to write one.
-# The font set is pinned rather than inherited: fontconfig substitutes
-# whatever it happens to find, so an image that carries a different set
-# rasterizes non-embedded text to different pixels than its siblings, and a
-# page the images disagree about cannot be compared between them. The CUDA
-# image used to inherit DejaVu from its base while the others had Liberation
-# alone; all three now ask for the same fonts explicitly.
+# The last line holds this image to the invariant the vendored OpenCV
+# exists for: no poppler in the staged closure.
 RUN apt-get update && apt-get install -y --no-install-recommends libcudnn9-cuda-13 \
-    fonts-liberation fonts-dejavu-core fontconfig \
     && rm -rf /var/lib/apt/lists/* \
-    && fc-cache -f \
     && mkdir -p /out/runtime-libs \
     && cp -a /usr/lib/x86_64-linux-gnu/libcudnn* /out/runtime-libs/ \
     && cp -a /usr/lib/x86_64-linux-gnu/libnvinfer*.so* /usr/lib/x86_64-linux-gnu/libnvonnxparser*.so* /out/runtime-libs/ \
@@ -141,14 +105,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends libcudnn9-cuda-
                 /out/onnxruntime-lib/*.so* /usr/lib/x86_64-linux-gnu/libcudnn*.so* \
                 /usr/lib/x86_64-linux-gnu/libnvinfer*.so* \
                 /usr/lib/x86_64-linux-gnu/libnvonnxparser*.so*; do \
-         LD_LIBRARY_PATH=/out/onnxruntime-lib:/opt/poppler/lib:/opt/opencv/lib ldd "$f" 2>/dev/null; \
+         LD_LIBRARY_PATH=/out/onnxruntime-lib:/opt/opencv/lib ldd "$f" 2>/dev/null; \
        done \
        | awk '/=> \// {print $3}' | sort -u \
        | grep -v '^/usr/local/cuda' \
        | grep -v -E '/(libc|libm|libdl|libpthread|librt|libresolv|libnsl|libutil|libanl)\.so' \
        | while read -r lib; do cp -L "$lib" /out/runtime-libs/; done \
     && ls /out/runtime-libs | wc -l \
-    && test "$(ls /out/runtime-libs | grep -cE '^libpoppler\.so\.[0-9]+$')" = 1
+    && test "$(ls /out/runtime-libs | grep -c '^libpoppler')" = 0
 
 # LD_LIBRARY_PATH stands in for ldconfig, and the numeric USER works with or
 # without a passwd entry (65532 is the conventional nonroot uid in hardened
@@ -158,18 +122,6 @@ ENV GRPARSE_LISTEN_ADDRESS=0.0.0.0:50051 GRPARSE_MODELS_DIR=/models GRPARSE_PAGE
     LD_LIBRARY_PATH=/usr/local/lib
 COPY --from=build /out/runtime-libs/ /usr/local/lib/
 COPY --from=build /out/onnxruntime-lib/ /usr/local/lib/
-# Fontconfig's configuration, the Liberation base-14 substitutes, and the
-# prebuilt font cache: PDFs with embedded fonts never needed any of this,
-# but non-embedded Helvetica/Times/Courier text would otherwise rasterize
-# blank — invisible to layout detection and page previews. /etc/fonts/conf.d
-# holds symlinks into /usr/share/fontconfig/conf.avail (the metric-alias
-# rules that map Helvetica to Liberation Sans live there), so that tree
-# travels too; without it every link dangles and the substitution rules
-# silently do not apply.
-COPY --from=build /etc/fonts /etc/fonts
-COPY --from=build /usr/share/fontconfig /usr/share/fontconfig
-COPY --from=build /usr/share/fonts /usr/share/fonts
-COPY --from=build /var/cache/fontconfig /var/cache/fontconfig
 COPY --from=build /out/grparse-server /usr/local/bin/grparse-server
 COPY --from=build /out/grparse-stream-client /usr/local/bin/grparse-stream-client
 COPY --from=build /out/grparse-embed-text /usr/local/bin/grparse-embed-text

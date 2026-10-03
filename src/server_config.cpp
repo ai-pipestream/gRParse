@@ -10,6 +10,8 @@
 #include <thread>
 
 #include "grparse/chart_derender.h"
+#include "grparse/in_memory_document.h"
+#include "grparse/remote_page_source.h"
 #include "grparse/vlm_convert.h"
 #include "grparse_session_ep.h"
 
@@ -43,6 +45,23 @@ int configured_index(const char* name, int fallback, int maximum = 63) {
                                 std::to_string(maximum));
   }
   return static_cast<int>(parsed);
+}
+
+// An endpoint as the startup log may show it: VLM endpoints commonly carry
+// credentials as userinfo (https://user:key@host) or in the query
+// (?api_key=...), and container logs are no place for either.
+std::string redacted_endpoint(std::string endpoint) {
+  if (const size_t query = endpoint.find_first_of("?#"); query != std::string::npos) {
+    endpoint.erase(query);
+  }
+  const size_t scheme = endpoint.find("://");
+  const size_t authority = scheme == std::string::npos ? 0 : scheme + 3;
+  const size_t path = endpoint.find('/', authority);
+  const size_t at = endpoint.substr(0, path).rfind('@');
+  if (at != std::string::npos && at >= authority) {
+    endpoint.replace(authority, at + 1 - authority, "<redacted>@");
+  }
+  return endpoint;
 }
 
 // The accepted words of a mode variable, written the way the rejection has
@@ -277,6 +296,15 @@ GrpcLimits read_grpc_limits() {
   };
 }
 
+uint64_t read_inflight_byte_budget() {
+  // Four of the largest uploads a stream accepts at once, or a few dozen
+  // ordinary ones: room for the configured concurrency without letting a
+  // burst of large requests outgrow the container.
+  constexpr size_t kDefaultBytes = size_t{4} * 1024 * 1024 * 1024;
+  constexpr size_t kMaximumBytes = size_t{1} << 40;
+  return configured_size("GRPARSE_MAX_INFLIGHT_BYTES", kDefaultBytes, kMaximumBytes);
+}
+
 MetricsConfig read_metrics_config() {
   MetricsConfig metrics;
   // GRPARSE_METRICS_PORT exposes the scheduler counters in Prometheus text
@@ -303,11 +331,13 @@ PageScheduler::Options read_scheduler_options(const WorkerConfig& workers, bool 
   options.assembly_workers = configured_size("GRPARSE_ASSEMBLY_WORKERS", 2, 64);
   options.page_window = configured_size("GRPARSE_PAGE_WINDOW", 4, 64);
   options.max_active_documents = configured_size("GRPARSE_MAX_ACTIVE_DOCUMENTS", 32, 1024);
-  options.pdf_parsers = configured_size("GRPARSE_PDF_PARSERS", workers.render_workers, 256);
   options.capture_picture_images = configure_picture_images(layout_active);
   options.capture_page_images = configure_page_images();
   options.barcode_mode = configure_barcode_mode(layout_active, classifier_active);
   options.orientation.enabled = configure_ocr_rotation();
+  // Read per input; read here too so a malformed value fails startup.
+  max_image_pixels();
+  remote_pdf_backend_target();
   return options;
 }
 
@@ -342,6 +372,9 @@ CollectorTargets read_collector_targets() {
       // The VLM convert leg through grpc-vlm-convert: off unless a target
       // is named; PROCESSING_PIPELINE_VLM requires it.
       .vlm = std::move(vlm),
+      // Request-named model endpoints: off unless the operator opts in.
+      .enable_remote_services =
+          configured_mode("GRPARSE_ENABLE_REMOTE_SERVICES", "off", {"on", "off"}) == "on",
   };
 }
 
@@ -373,18 +406,24 @@ void report_collector_targets(const CollectorTargets& targets, bool layout_activ
                  targets.derender.timeout.count(),
                  targets.derender.vlm_endpoint.empty()
                      ? std::string()
-                     : ", vlm " + targets.derender.vlm_endpoint);
+                     : ", vlm " + redacted_endpoint(targets.derender.vlm_endpoint));
   } else {
     std::println("gRParse chart derender (enrich): not configured");
   }
   if (targets.vlm.enabled()) {
     std::println("gRParse vlm convert: {} ({} ms{})", targets.vlm.target,
                  targets.vlm.timeout.count(),
-                 targets.vlm.endpoint.empty() ? std::string()
-                                              : ", endpoint " + targets.vlm.endpoint);
+                 targets.vlm.endpoint.empty()
+                     ? std::string()
+                     : ", endpoint " + redacted_endpoint(targets.vlm.endpoint));
   } else {
     std::println("gRParse vlm convert: not configured");
   }
+  std::println("gRParse request-named remote services: {}",
+               targets.enable_remote_services
+                   ? "enabled (GRPARSE_ENABLE_REMOTE_SERVICES=on)"
+                   : "disabled (picture_description_api.url and an http(s) "
+                     "vlm_pipeline_model_api.url are refused)");
   if (!targets.libreoffice.empty()) {
     std::println("gRParse office CV enrichment: {}",
                  layout_active ? "enabled (layout"
