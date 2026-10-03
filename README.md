@@ -20,8 +20,9 @@ merges additively into one page-streamed `Document`:
 ```mermaid
 flowchart LR
     in["document bytes<br/>(gRPC stream, diskless)"] --> route["format routing<br/>+ optional PDF inspector oracle"]
-    route --> cv["CV collector (in-process)<br/>Poppler render / OpenCV decode<br/>RapidOCR + layout detection<br/>SLANet tables, figure classes, ZXing barcodes"]
+    route --> cv["CV collector (in-process)<br/>PDF pages from the PDF backend / OpenCV decode<br/>RapidOCR + layout detection<br/>SLANet tables, figure classes, ZXing barcodes"]
     cv --- ort["ONNX Runtime<br/>CUDA or OpenVINO"]
+    cv --- pdfb["PDF backend service<br/>(PdfBackendService: grpc-pdfium,<br/>grpc-qparse, grpc-poppler)"]
     route --> lo["libreoffice collector<br/>(office formats; typed events<br/>folded client-side, renders re-enter CV)"]
     route --> lol["lol-html collector<br/>(explicit CSS-selector extraction,<br/>folded client-side)"]
     route --> fw["fastwarc collector<br/>(WARC archives,<br/>folded client-side)"]
@@ -66,7 +67,7 @@ real paper. [Watch it here](docs/images/demo-shell-screencast.mp4).
 
 The service listens on `localhost:50051` and implements `ai.pipestream.parse.v1.ParseService` from the local `parse.proto` contract. `ConvertSource` currently accepts one `FileSource` containing base64-encoded PDF, PNG, JPEG, or TIFF bytes. It renders every `OutputFormat` the wire declares from the merged document: TEXT, MARKDOWN, HTML, HTML_SPLIT_PAGE, JSON, CANONICAL_JSON, GDOCS_JSON, YAML, DOCTAGS, DOCLANG, VTT, and LATEX (an empty `to_formats` keeps the plain-text default alone), and returns `INVALID_ARGUMENT`, naming the offender, for populated options it does not implement and for unrenderable format values.
 
-Each PDF request opens a small pool of Poppler documents directly from the request bytes, so render and digital-text extraction for different pages of the same document proceed in parallel. Recognition is selective by default: full native-text pages skip raster OCR, while weak/partial digital layers keep their native boxes and still run OCR, and geometry merge drops overlapping OCR duplicates so headers and scan body can coexist. Two `ConvertDocumentOptions` fields override the default per request: `do_ocr = false` disables recognition entirely, so only the embedded text layer is read and a page with no text layer yields no text; `force_ocr = true` recognizes every page at full-page scope and the recognized text replaces the embedded layer. `do_ocr = false` with `force_ocr = true` is contradictory and rejected by name. Pages rasterize at 200 DPI by default; `render_scale` sets a per-request scale in multiples of 72 DPI (accepted range [1.0, 8.0], rejected outside it by name), and all digital-line geometry scales with it so downstream boxes stay consistent. Raster inputs decode with OpenCV from request memory and are already pixels, so they ignore `render_scale`. Nothing is written to disk on the hot path.
+gRParse links no PDF engine. Every PDF is read through the PDF backend service `GRPARSE_PDF_BACKEND` names (a `PdfBackendService` target such as grpc-pdfium, which the compose stacks start; a comma list of targets runs the consensus vote across them, see [docs/pdf-backend-services.md](docs/pdf-backend-services.md)). The engines run as separate services so their licenses stay with their own containers: the default stack is Apache-2.0 throughout, and the GPL grpc-poppler is an opt-in compose profile. The client probes each document once, then addresses it by content hash for every page's text cells and raster, so render and digital-text extraction for different pages of the same document proceed in parallel. With no backend configured a PDF fails with `FAILED_PRECONDITION` naming `GRPARSE_PDF_BACKEND`, the way an unconfigured collector fails; raster input never needs a backend. Recognition is selective by default: full native-text pages skip raster OCR, while weak/partial digital layers keep their native boxes and still run OCR, and geometry merge drops overlapping OCR duplicates so headers and scan body can coexist. Two `ConvertDocumentOptions` fields override the default per request: `do_ocr = false` disables recognition entirely, so only the embedded text layer is read and a page with no text layer yields no text; `force_ocr = true` recognizes every page at full-page scope and the recognized text replaces the embedded layer. `do_ocr = false` with `force_ocr = true` is contradictory and rejected by name. Pages rasterize at 200 DPI by default; `render_scale` sets a per-request scale in multiples of 72 DPI (accepted range [1.0, 8.0], rejected outside it by name), and all digital-line geometry scales with it so downstream boxes stay consistent. Raster inputs decode with OpenCV from request memory and are already pixels, so they ignore `render_scale`. Nothing is written to disk on the hot path.
 
 The rest of the accepted `ConvertDocumentOptions` mirror the reference converter's (docling-serve) semantics. `pipeline` accepts `STANDARD` (the default routing) and `NATIVE`, which takes the pdf collector's model-free text-layer extraction whatever the inspector classified (a warning names the pages the models would have run for), fails with `FAILED_PRECONDITION` when that extraction fails or when the input is raster, and never runs the CV models; `VLM` and `ASR` are rejected by name. `include_page_images` overrides the server's `GRPARSE_PAGE_IMAGES` default per request, attaching a level-6 PNG of each page raster to its `PageItem` (`false` suppresses the previews a server has on). `md_page_break_placeholder` and `md_compact_tables` steer the Markdown export exactly as the reference serializer's parameters do: a placeholder part between items whose first provenance moves to a later page (before a list or inline group whose first provenanced item opens a page), and tables without column padding with a bare `| - |` rule. `do_pdf_heading_hierarchy` and `pdf_heading_hierarchy_options` tune the section-header level pass: `enabled` (off, every undecided header is level 1 and no title is elected), `use_numbering` (read `1.1`, `A.`, `IV`, `Appendix B`, and all-caps section words as depth), `use_style` (cluster measured sizes for what numbering did not decide, and elect a title by size), `max_level` (1..6), and `style_size_tolerance` (a heading founds the next depth below `1 - tolerance` of the current depth's founding size; 0.15 is the historical 85% rule). Contradictory switches (`do_pdf_heading_hierarchy` against `pdf_heading_hierarchy_options.enabled`) are rejected by name, as is any populated option the service does not implement.
 
@@ -294,7 +295,7 @@ incremental delivery.
 
 Each outbound event and its nested protobuf messages are allocated in a
 short-lived `google::protobuf::Arena`. The arena stays alive until the
-asynchronous gRPC write completes. Protobuf Arena does not own Poppler, OpenCV, or ONNX Runtime buffers;
+asynchronous gRPC write completes. Protobuf Arena does not own OpenCV or ONNX Runtime buffers;
 those libraries release their own in-memory buffers at the page boundary. The
 server never writes input documents, rendered pages, OCR intermediates, or
 results to disk. It only reads the installed binaries and OCR model files. The
@@ -311,10 +312,10 @@ The server has two CUDA RapidOCR sessions by default. Tune concurrency and
 queue memory with `GRPARSE_PAGE_WORKERS`, `GRPARSE_RENDER_WORKERS`,
 `GRPARSE_ASSEMBLY_WORKERS`, `GRPARSE_DOCUMENT_QUEUE`, `GRPARSE_RENDER_QUEUE`,
 `GRPARSE_INFERENCE_QUEUE`, `GRPARSE_ASSEMBLY_QUEUE`, `GRPARSE_PAGE_WINDOW`,
-`GRPARSE_PDF_PARSERS`, and `GRPARSE_MAX_ACTIVE_DOCUMENTS`.
-`GRPARSE_PDF_PARSERS` sets how many Poppler documents a single PDF request may
-open concurrently; it defaults to `GRPARSE_RENDER_WORKERS` and costs one parsed
-document structure per slot. `GRPARSE_INTRA_OP_THREADS` caps how many threads
+and `GRPARSE_MAX_ACTIVE_DOCUMENTS`. `GRPARSE_MAX_IMAGE_PIXELS` (default
+200000000) caps one PNG, JPEG, or TIFF page's pixel count, checked against
+the image header before decode; a multi-page TIFF reads as one page per
+image. `GRPARSE_INTRA_OP_THREADS` caps how many threads
 one pooled ONNX Runtime session uses inside a single operator; it defaults to
 cores divided by `GRPARSE_PAGE_WORKERS`, because ONNX Runtime's own default is
 every core per session and a pool of those is oversubscribed by exactly the
@@ -820,7 +821,7 @@ tests are in [`e2e/README.md`](e2e/README.md).
 ## Development
 
 The container is the supported build environment. It runs Ubuntu 26.04
-with CUDA 13.3.1, cuDNN 9, ONNX Runtime GPU 1.30.0 for CUDA 13, poppler 26.09.0, OpenCV 5.0.0,
+with CUDA 13.3.1, cuDNN 9, ONNX Runtime GPU 1.30.0 for CUDA 13, OpenCV 5.0.0,
 RapidOcrOnnx 1.2.3 C++ sources, and gRPC 1.84.0. These are the newest applicable
 upstream versions as of 2026-09-16. RapidOCR 3.9.2 is the current Python package
 release; its C++ entry point still directs users to RapidOcrOnnx, whose newest
@@ -845,8 +846,8 @@ in [docs/RELEASING.md](docs/RELEASING.md). With models present locally (or
 `scripts/smoke-test.sh <image> --full` additionally boots the server on the
 CPU provider and streams a fixture through the bundled client.
 
-Every push and PR also runs a short libFuzzer window over the two ingest
-doors (Poppler PDF open/extract and OpenCV raster decode) — see
+Every push and PR also runs a short libFuzzer window over the in-process
+ingest door (OpenCV raster decode; PDFs parse in the backend service) — see
 [fuzz/README.md](fuzz/README.md) for the standalone fuzz project and longer
 campaigns. A weekly `sanitize.yml` workflow (also manually dispatchable)
 builds the whole test battery with `-DGRPARSE_SANITIZE=address,undefined` on
@@ -864,8 +865,9 @@ mapped page renders), scheduler (page
 credits, backpressure, partial digital→OCR merge, layout labelling, page
 previews, turned scans re-read upright), orientation recovery (the turn
 decision and its cost bound against a fake recognizer), PDF page
-source (Poppler text/raster geometry, `/Rotate`, concurrent access, two-column
-reading order), Prometheus exporter (exact text rendering, cumulative
+source (against a fake PDF backend: contract boxes to raster pixels under
+`/Rotate` and CropBox offsets, the OCR-skip gate, the missing-backend
+precondition, concurrent access, two-column reading order), Prometheus exporter (exact text rendering, cumulative
 histogram, live loopback scrapes with the 404/405/500 doors), raster page
 source (in-memory PNG/JPEG decode, BGR
 normalization, decode-failure surfacing), reading order (XY-cut multi-column,
@@ -895,8 +897,6 @@ binaries there and run them with
 and PDF page source tests are the concurrency-carrying ones and are expected to
 be ThreadSanitizer-clean and, with
 `LSAN_OPTIONS=suppressions=tests/lsan.supp`, AddressSanitizer- and
-UndefinedBehaviorSanitizer-clean. The suppression file covers fontconfig's
-one-time global config cache, which Poppler reaches when it substitutes a
-base-14 font; it is not a per-page allocation. Generated protobuf and
+UndefinedBehaviorSanitizer-clean. Generated protobuf and
 gRPC sources stay inside the build directory and are not committed; the
 document messages live in a single canonical `document.proto`.

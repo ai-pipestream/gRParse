@@ -15,7 +15,7 @@
 namespace grparse {
 
 // Fixed-capacity pool of exclusively leased, expensive-to-build resources
-// (ONNX Runtime sessions, Poppler documents).  Slots are filled lazily on first
+// (ONNX Runtime sessions, table and figure engines).  Slots are filled lazily on first
 // use, so a pool sized for peak concurrency costs nothing until the concurrency
 // actually arrives; call prime() when construction must fail loudly at startup.
 //

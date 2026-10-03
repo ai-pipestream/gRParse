@@ -2,221 +2,30 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cmath>
+#include <cstdint>
+#include <cstdlib>
 #include <initializer_list>
 #include <limits>
 #include <memory>
-#include <mutex>
+#include <optional>
+#include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include <opencv2/imgcodecs.hpp>
-// Resolved via pkg-config's poppler-cpp Cflags (includedir ends in
-// poppler/cpp), which is what lets the vendored /opt/poppler prefix win over
-// any distro headers; the old <poppler/cpp/...> spelling bypassed the .pc
-// contract and only worked off the default /usr/include path.
-#include <poppler-document.h>
-#include <poppler-image.h>
-#include <poppler-page.h>
-#include <poppler-page-renderer.h>
 
 // The standalone fuzz project compiles this file without the gRPC-backed
 // sources (fuzz/CMakeLists.txt); a fuzzer must never dial a backend, so
-// the whole remote dispatch compiles out there.
+// the whole PDF dispatch compiles out there.
 #ifndef GRPARSE_FUZZ_STANDALONE
 #include "grparse/consensus_page_source.h"
 #include "grparse/remote_page_source.h"
 #endif
-#include "grparse/resource_pool.h"
 
 namespace grparse {
 namespace {
-
-// Born-digital coverage gate: skip OCR only when the native text layer looks real.
-constexpr size_t kMinDigitalNonWhitespace = 32;
-constexpr size_t kMinDigitalLines = 4;
-constexpr double kMinDigitalVerticalCoverage = 0.12;
-constexpr size_t kStrongDigitalNonWhitespace = 128;
-constexpr double kPdfUserSpaceDpi = 72.0;
-
-// Poppler applies the page's intrinsic /Rotate to both the raster and the text
-// list, but page_rect() still reports unrotated media geometry.  Without this
-// swap, provenance boxes on a rotated page would not fit the page size we
-// advertise (and would not match the raster the OCR path measures).
-bool is_quarter_turn(const poppler::page& page) {
-  const auto orientation = page.orientation();
-  return orientation == poppler::page::landscape || orientation == poppler::page::seascape;
-}
-
-// Poppler's documented threading contract (one document per thread) is not
-// enough on arm64: concurrent work on a PDF whose broken fonts hammer the
-// substitute-font fallback corrupts shared state even across fully
-// independent documents (std::system_error or SIGSEGV out of XRef::fetch
-// from two threads at once - AcroForm sheets with /DA fonts missing from
-// /DR are the trigger). VERIFIED STILL BROKEN IN POPPLER 26.08: two-thread
-// hammer runs on real arm64 hardware crash both 26.01 and 26.08 at a
-// roughly 5-12% rate per run (SIGSEGV on Cortex-A76, SIGABRT on
-// Cortex-A78), so the 26.06 annots use-after-free fixes (4aca25d6,
-// 2f10803d) are adjacent but not this bug. x86-64 has never reproduced it
-// under the same hammering - its stronger memory ordering hides whatever
-// the race is - so the serialisation stays exactly where the crash exists
-// and costs the primary x86-64 targets nothing. This gate is load-bearing
-// on arm64: do not remove it on a poppler version bump without re-running
-// the two-thread repro on real arm64 silicon first.
-#if defined(__aarch64__)
-class PopplerGate {
- public:
-  PopplerGate() : lock_(mutex()) {}
-
- private:
-  static std::mutex& mutex() {
-    static std::mutex mutex;
-    return mutex;
-  }
-  const std::lock_guard<std::mutex> lock_;
-};
-#else
-class PopplerGate {};
-#endif
-
-class PdfPageSource final : public PageSource {
- public:
-  PdfPageSource(std::shared_ptr<const std::string> bytes, size_t parser_slots, double render_dpi)
-      : bytes_(std::move(bytes)),
-        render_dpi_(render_dpi),
-        render_scale_(render_dpi / kPdfUserSpaceDpi),
-        parsers_(std::max<size_t>(parser_slots, 1), [bytes = bytes_] { return load(*bytes); }) {
-    // Parse once now so an unreadable document fails before any page is queued.
-    [[maybe_unused]] const PopplerGate poppler_gate;
-    auto parser = parsers_.acquire();
-    pages_ = parser->pages();
-    if (pages_ <= 0) throw InvalidDocument("PDF does not contain a renderable page");
-  }
-
-  int page_count() const override { return pages_; }
-
-  std::optional<OcrPage> extract_digital_page(int page_number) const override {
-    // The poppler section ends when this scope does - the boxes own their
-    // strings and rects, so the fold below runs unserialised. The page is
-    // destroyed inside the scope, before any gate releases.
-    poppler::rectf page_rect;
-    bool quarter_turn = false;
-    std::vector<poppler::text_box> text_boxes;
-    {
-      [[maybe_unused]] const PopplerGate poppler_gate;
-      auto parser = parsers_.acquire();
-      const std::unique_ptr<poppler::page> page = open_page(*parser, page_number);
-      page_rect = page->page_rect();
-      quarter_turn = is_quarter_turn(*page);
-      // Font info is one flag away and is the only heading-depth signal a
-      // born-digital page has that survives without rasterizing.
-      text_boxes = page->text_list(poppler::page::text_list_include_font);
-    }
-
-    OcrPage result;
-    result.width = scaled(quarter_turn ? page_rect.height() : page_rect.width());
-    result.height = scaled(quarter_turn ? page_rect.width() : page_rect.height());
-    result.source = OcrPage::Source::kDigitalPdf;
-
-    const double page_extent = quarter_turn ? page_rect.width() : page_rect.height();
-    size_t non_whitespace_bytes = 0;
-    double text_top = page_extent;
-    double text_bottom = 0.0;
-    result.lines.reserve(text_boxes.size());
-    for (const auto& text_box : text_boxes) {
-      const auto utf8 = text_box.text().to_utf8();
-      std::string text(utf8.begin(), utf8.end());
-      if (text.empty()) continue;
-      const poppler::rectf box = text_box.bbox();
-      for (const unsigned char byte : text) {
-        if (std::isspace(byte) == 0) ++non_whitespace_bytes;
-      }
-      text_top = std::min(text_top, box.top());
-      text_bottom = std::max(text_bottom, box.bottom());
-      const int left = scaled(box.left());
-      const int top = scaled(box.top());
-      const int right = scaled(box.right());
-      const int bottom = scaled(box.bottom());
-      OcrLine line{std::move(text),
-                   {{left, top}, {right, top}, {right, bottom}, {left, bottom}},
-                   std::nullopt,
-                   TextOrigin::kDigitalPdf};
-      if (text_box.has_font_info()) {
-        std::string font = text_box.get_font_name();
-        // Embedded subsets carry a random six-letter prefix (ABCDEF+Real).
-        if (const auto plus = font.find('+');
-            plus != std::string::npos && plus + 1 < font.size()) {
-          font.erase(0, plus + 1);
-        }
-        if (!font.empty()) line.font_name = std::move(font);
-        const double size = text_box.get_font_size();
-        if (size > 0) line.font_size_pt = size;
-      }
-      result.lines.push_back(std::move(line));
-    }
-    if (result.lines.empty()) return std::nullopt;
-
-    const double vertical_coverage =
-        page_extent > 0.0 ? (text_bottom - text_top) / page_extent : 0.0;
-    result.skip_ocr = non_whitespace_bytes >= kMinDigitalNonWhitespace &&
-                      result.lines.size() >= kMinDigitalLines &&
-                      (vertical_coverage >= kMinDigitalVerticalCoverage ||
-                       non_whitespace_bytes >= kStrongDigitalNonWhitespace);
-    // Always return native text when present so the scheduler can merge with OCR on weak pages.
-    return result;
-  }
-
-  cv::Mat render_page(int page_number) const override {
-    // Gated end to end: rendering drives the same font machinery, and the
-    // clone must happen while poppler still owns the image buffer.
-    [[maybe_unused]] const PopplerGate poppler_gate;
-    auto parser = parsers_.acquire();
-    const std::unique_ptr<poppler::page> page = open_page(*parser, page_number);
-
-    poppler::page_renderer renderer;
-    renderer.set_image_format(poppler::image::format_bgr24);
-    const poppler::image image = renderer.render_page(page.get(), render_dpi_, render_dpi_);
-    if (!image.is_valid()) throw InvalidDocument("PDF page could not be rendered in memory");
-    // Poppler owns image.const_data() for this stack frame only — clone before return.
-    return cv::Mat(image.height(), image.width(), CV_8UC3, const_cast<char*>(image.const_data()),
-                   static_cast<size_t>(image.bytes_per_row()))
-        .clone();
-  }
-
- private:
-  // Digital-line geometry scales from PDF user space into the same pixel
-  // space render_page produces, so a per-document DPI stays self-consistent.
-  int scaled(double user_space_units) const {
-    return static_cast<int>(std::lround(user_space_units * render_scale_));
-  }
-
-  // Each pooled parser is an independent poppler::document over the shared,
-  // immutable request buffer, so render workers no longer serialise on one
-  // document lock.  load_from_raw_data does not copy: the captured shared_ptr
-  // keeps the bytes alive for as long as the pool holds documents.
-  static std::unique_ptr<poppler::document> load(const std::string& bytes) {
-    if (bytes.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
-      throw InvalidDocument("PDF exceeds the Poppler in-memory input limit");
-    }
-    auto* raw = poppler::document::load_from_raw_data(bytes.data(), static_cast<int>(bytes.size()));
-    if (raw == nullptr) throw InvalidDocument("PDF could not be opened from memory");
-    return std::unique_ptr<poppler::document>(raw);
-  }
-
-  std::unique_ptr<poppler::page> open_page(poppler::document& parser, int page_number) const {
-    if (page_number < 1 || page_number > pages_) throw InvalidDocument("PDF page number is out of range");
-    std::unique_ptr<poppler::page> page(parser.create_page(page_number - 1));
-    if (!page) throw InvalidDocument("PDF page could not be opened");
-    return page;
-  }
-
-  std::shared_ptr<const std::string> bytes_;
-  const double render_dpi_;
-  const double render_scale_;
-  mutable ResourcePool<poppler::document> parsers_;
-  int pages_ = 0;
-};
 
 // The service advertises PNG, JPEG, and TIFF raster input.  cv::imdecode,
 // left to sniff on its own, accepts far more - WebP, BMP, and, where the
@@ -239,6 +48,95 @@ bool is_supported_raster(const std::string& bytes) {
          starts_with({0x4D, 0x4D, 0x00, 0x2A});                            // TIFF big-endian
 }
 
+bool is_tiff(const std::string& bytes) {
+  return bytes.size() >= 4 && (bytes.compare(0, 4, "II*\0", 4) == 0 ||
+                               bytes.compare(0, 4, "MM\0*", 4) == 0);
+}
+
+struct RasterDims {
+  uint64_t width = 0;
+  uint64_t height = 0;
+};
+
+// Big-endian unless `little`; the caller has bounds-checked [at, at + width).
+uint32_t read_uint(const std::string& bytes, size_t at, int width, bool little = false) {
+  uint32_t value = 0;
+  for (int index = 0; index < width; ++index) {
+    const auto byte = static_cast<unsigned char>(bytes[at + (little ? width - 1 - index : index)]);
+    value = (value << 8) | byte;
+  }
+  return value;
+}
+
+// PNG: the IHDR chunk is first, right after the signature.
+std::optional<RasterDims> png_dims(const std::string& bytes) {
+  if (bytes.size() < 24 || bytes.compare(12, 4, "IHDR") != 0) return std::nullopt;
+  return RasterDims{read_uint(bytes, 16, 4), read_uint(bytes, 20, 4)};
+}
+
+// JPEG: walk the marker segments to the first start-of-frame header.
+std::optional<RasterDims> jpeg_dims(const std::string& bytes) {
+  size_t at = 2;
+  while (at + 4 <= bytes.size()) {
+    if (static_cast<unsigned char>(bytes[at]) != 0xFF) return std::nullopt;
+    const auto marker = static_cast<unsigned char>(bytes[at + 1]);
+    if (marker == 0xFF) {  // fill byte
+      ++at;
+      continue;
+    }
+    at += 2;
+    if (marker == 0x01 || marker == 0xD8 || (marker >= 0xD0 && marker <= 0xD7)) continue;
+    if (marker == 0xD9 || marker == 0xDA) return std::nullopt;  // no frame before the scan
+    const uint32_t length = read_uint(bytes, at, 2);
+    if (length < 2) return std::nullopt;
+    const bool start_of_frame =
+        marker >= 0xC0 && marker <= 0xCF && marker != 0xC4 && marker != 0xC8 && marker != 0xCC;
+    if (start_of_frame) {
+      if (at + 7 > bytes.size()) return std::nullopt;
+      return RasterDims{read_uint(bytes, at + 5, 2), read_uint(bytes, at + 3, 2)};
+    }
+    at += length;
+  }
+  return std::nullopt;
+}
+
+// TIFF: one entry per image file directory on the main IFD chain, which is
+// what libtiff (and so imdecodemulti) counts as pages.
+std::optional<std::vector<RasterDims>> tiff_dims(const std::string& bytes) {
+  if (bytes.size() < 8) return std::nullopt;
+  const bool little = bytes[0] == 'I';
+  std::vector<RasterDims> pages;
+  std::unordered_set<uint32_t> visited;
+  uint32_t offset = read_uint(bytes, 4, 4, little);
+  while (offset != 0) {
+    if (!visited.insert(offset).second) return std::nullopt;  // a looped chain
+    if (static_cast<uint64_t>(offset) + 2 > bytes.size()) return std::nullopt;
+    const uint32_t entries = read_uint(bytes, offset, 2, little);
+    const uint64_t end = static_cast<uint64_t>(offset) + 2 + 12ULL * entries;
+    if (end + 4 > bytes.size()) return std::nullopt;
+    RasterDims dims;
+    for (uint32_t index = 0; index < entries; ++index) {
+      const size_t entry = offset + 2 + 12 * static_cast<size_t>(index);
+      const uint32_t tag = read_uint(bytes, entry, 2, little);
+      if (tag != 256 && tag != 257) continue;  // ImageWidth, ImageLength
+      const uint32_t type = read_uint(bytes, entry + 2, 2, little);
+      uint32_t value = 0;
+      if (type == 3) {
+        value = read_uint(bytes, entry + 8, 2, little);  // SHORT
+      } else if (type == 4) {
+        value = read_uint(bytes, entry + 8, 4, little);  // LONG
+      } else {
+        return std::nullopt;
+      }
+      (tag == 256 ? dims.width : dims.height) = value;
+    }
+    pages.push_back(dims);
+    offset = read_uint(bytes, static_cast<size_t>(end), 4, little);
+  }
+  if (pages.empty()) return std::nullopt;
+  return pages;
+}
+
 class RasterPageSource final : public PageSource {
  public:
   explicit RasterPageSource(std::shared_ptr<const std::string> bytes) : bytes_(std::move(bytes)) {
@@ -248,67 +146,123 @@ class RasterPageSource final : public PageSource {
     if (!is_supported_raster(*bytes_)) {
       throw InvalidDocument("Raster image is not a supported format (PNG, JPEG, or TIFF)");
     }
+    // The header states each page's size before any decoder allocates for
+    // it: a few KB of PNG or TIFF can otherwise inflate to gigabytes.
+    std::optional<std::vector<RasterDims>> pages;
+    if (is_tiff(*bytes_)) {
+      pages = tiff_dims(*bytes_);
+    } else {
+      const bool png = static_cast<unsigned char>((*bytes_)[0]) == 0x89;
+      if (const auto dims = png ? png_dims(*bytes_) : jpeg_dims(*bytes_)) pages.emplace(1, *dims);
+    }
+    if (!pages.has_value()) throw InvalidDocument("Raster image header could not be read");
+    const uint64_t limit = max_image_pixels();
+    for (const RasterDims& dims : *pages) {
+      if (dims.width == 0 || dims.height == 0) {
+        throw InvalidDocument("Raster image header states an empty page");
+      }
+      if (dims.width * dims.height > limit) {
+        throw InvalidDocument("Raster image page of " + std::to_string(dims.width) + "x" +
+                              std::to_string(dims.height) +
+                              " pixels exceeds GRPARSE_MAX_IMAGE_PIXELS (" +
+                              std::to_string(limit) + ")");
+      }
+    }
+    // Each page decode walks the TIFF directory chain from the start, so a
+    // long chain of tiny pages costs quadratic time; real scans stay far
+    // below this bound.
+    if (pages->size() > kMaxRasterPages) {
+      throw InvalidDocument("Raster image has more than " + std::to_string(kMaxRasterPages) +
+                            " pages");
+    }
+    pages_ = static_cast<int>(pages->size());
+#if !(CV_VERSION_MAJOR > 4 || (CV_VERSION_MAJOR == 4 && CV_VERSION_MINOR >= 7))
+    // Without imdecodemulti only the first page decodes; say so up front
+    // instead of failing the document on page 2.
+    pages_ = std::min(pages_, 1);
+#endif
   }
 
-  int page_count() const override { return 1; }
+  int page_count() const override { return pages_; }
 
   cv::Mat render_page(int page_number) const override {
-    if (page_number != 1) throw InvalidDocument("Raster page number is out of range");
+    if (page_number < 1 || page_number > pages_) {
+      throw InvalidDocument("Raster page number is out of range");
+    }
     // Decode from the existing buffer without an intermediate std::vector copy.
     const cv::Mat encoded(1, static_cast<int>(bytes_->size()), CV_8UC1,
                           const_cast<char*>(bytes_->data()));
-    cv::Mat image = cv::imdecode(encoded, cv::IMREAD_COLOR);
+    cv::Mat image;
+    if (pages_ == 1) {
+      image = cv::imdecode(encoded, cv::IMREAD_COLOR);
+    } else {
+      // A multi-page TIFF decodes only the asked-for page. imdecodemulti
+      // arrived in OpenCV 4.7; the images build 5.x, and only the fuzz job's
+      // distro OpenCV 4.6 lacks it, where page 1 is all that decodes.
+#if CV_VERSION_MAJOR > 4 || (CV_VERSION_MAJOR == 4 && CV_VERSION_MINOR >= 7)
+      std::vector<cv::Mat> decoded;
+      if (cv::imdecodemulti(encoded, cv::IMREAD_COLOR, decoded,
+                            cv::Range(page_number - 1, page_number)) &&
+          decoded.size() == 1) {
+        image = std::move(decoded.front());
+      }
+#else
+      if (page_number == 1) image = cv::imdecode(encoded, cv::IMREAD_COLOR);
+#endif
+    }
     if (image.empty()) throw InvalidDocument("Raster image could not be decoded from memory");
     return image;
   }
 
  private:
   std::shared_ptr<const std::string> bytes_;
+  int pages_ = 0;
 };
 
 }  // namespace
 
 std::optional<OcrPage> PageSource::extract_digital_page(int) const { return std::nullopt; }
 
+uint64_t max_image_pixels() {
+  const char* configured = std::getenv("GRPARSE_MAX_IMAGE_PIXELS");
+  if (configured == nullptr) return kDefaultMaxImagePixels;
+  char* end = nullptr;
+  const unsigned long long parsed = std::strtoull(configured, &end, 10);
+  // strtoull accepts a leading minus and wraps it to a huge value, which
+  // would switch the cap off; only plain digits are taken.
+  if (end == configured || *end != '\0' || parsed == 0 ||
+      !std::isdigit(static_cast<unsigned char>(configured[0]))) {
+    throw std::invalid_argument("GRPARSE_MAX_IMAGE_PIXELS must be a positive integer");
+  }
+  return static_cast<uint64_t>(parsed);
+}
+
 std::shared_ptr<PageSource> open_in_memory_document(std::shared_ptr<const std::string> bytes, bool pdf,
-                                                    size_t pdf_parser_slots, double render_dpi) {
+                                                    double render_dpi) {
   if (!bytes || bytes->empty()) throw InvalidDocument("Document bytes are empty");
   if (!(render_dpi > 0.0)) throw std::invalid_argument("Render DPI must be positive");
-  if (pdf) {
+  if (!pdf) return std::make_shared<RasterPageSource>(std::move(bytes));
 #ifndef GRPARSE_FUZZ_STANDALONE
-    // GRPARSE_PDF_BACKEND selects PdfBackendService targets for the PDF
-    // layer; unset or "inprocess" keeps the poppler path below. A single
-    // target dials that backend; a comma-separated list reads the document
-    // through every backend and takes each page from the one whose word
-    // order wins the consensus vote.
-    if (const auto target = remote_pdf_backend_target()) {
-      const auto targets = split_backend_targets(*target);
-      // A set-but-contentless value names no backend at all; failing here
-      // beats dialing the literal string and waiting out a connect timeout.
-      if (targets.empty()) {
-        throw std::invalid_argument(
-            "GRPARSE_PDF_BACKEND names no backend targets");
-      }
-      // "inprocess" is only meaningful as the entire value (handled
-      // above); inside a list it reads like a target and would be
-      // silently dropped after a failed dial, so it is a config error.
-      for (const auto& entry : targets) {
-        if (entry == "inprocess") {
-          throw std::invalid_argument(
-              "GRPARSE_PDF_BACKEND lists 'inprocess' among backend targets; "
-              "use it alone for the in-process path");
-        }
-      }
-      if (targets.size() > 1) {
-        return open_consensus_pdf_document(std::move(bytes), targets, render_dpi);
-      }
-      return open_remote_pdf_document(std::move(bytes), targets.front(),
-                                      render_dpi);
+  // GRPARSE_PDF_BACKEND names the PdfBackendService targets that read PDFs.
+  // A single target dials that backend; a comma-separated list reads the
+  // document through every backend and takes each page from the one whose
+  // word order wins the consensus vote.
+  if (const auto target = remote_pdf_backend_target()) {
+    const auto targets = split_backend_targets(*target);
+    // A set-but-contentless value names no backend at all; failing here
+    // beats dialing the literal string and waiting out a connect timeout.
+    if (targets.empty()) {
+      throw std::invalid_argument("GRPARSE_PDF_BACKEND names no backend targets");
     }
-#endif
-    return std::make_shared<PdfPageSource>(std::move(bytes), pdf_parser_slots, render_dpi);
+    if (targets.size() > 1) {
+      return open_consensus_pdf_document(std::move(bytes), targets, render_dpi);
+    }
+    return open_remote_pdf_document(std::move(bytes), targets.front(), render_dpi);
   }
-  return std::make_shared<RasterPageSource>(std::move(bytes));
+#endif
+  throw PdfBackendNotConfigured(
+      "PDF input needs a PDF backend service: set GRPARSE_PDF_BACKEND to a "
+      "PdfBackendService target such as grpc-pdfium (host:port)");
 }
 
 }  // namespace grparse

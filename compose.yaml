@@ -14,12 +14,31 @@ services:
       # gives them tabs, and parsing a matching document fans out to them.
       GRPARSE_LOL_HTML_TARGET: "host.docker.internal:50057"
       GRPARSE_LIBREOFFICE_TARGET: "host.docker.internal:50053"
+      # gRParse links no PDF engine; PDFs go to the backend service below.
+      GRPARSE_PDF_BACKEND: "${GRPARSE_PDF_BACKEND:-pdfium:50069}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    depends_on:
+      - pdfium
     gpus: all
     read_only: true
     tmpfs:
       - /tmp:size=256m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  # The PDF backend (Apache-2.0, PDFium) gRParse reads PDFs through. Pulled,
+  # never built here, so `docker compose build` stays the gRParse gate; the
+  # image is linux/amd64 only. The worker pool lives under /tmp.
+  pdfium:
+    image: pipestreamai/grpc-pdfium:latest
+    expose:
+      - "50069"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
     cap_drop:
       - ALL
     security_opt:

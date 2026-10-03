@@ -11,6 +11,8 @@
 
 #include "grparse/chart_derender.h"
 #include "grparse/chart_extraction_policy.h"
+#include "grparse/in_memory_document.h"
+#include "grparse/remote_page_source.h"
 #include "grparse/vlm_convert.h"
 #include "grparse_session_ep.h"
 
@@ -304,11 +306,13 @@ PageScheduler::Options read_scheduler_options(const WorkerConfig& workers, bool 
   options.assembly_workers = configured_size("GRPARSE_ASSEMBLY_WORKERS", 2, 64);
   options.page_window = configured_size("GRPARSE_PAGE_WINDOW", 4, 64);
   options.max_active_documents = configured_size("GRPARSE_MAX_ACTIVE_DOCUMENTS", 32, 1024);
-  options.pdf_parsers = configured_size("GRPARSE_PDF_PARSERS", workers.render_workers, 256);
   options.capture_picture_images = configure_picture_images(layout_active);
   options.capture_page_images = configure_page_images();
   options.barcode_mode = configure_barcode_mode(layout_active, classifier_active);
   options.orientation.enabled = configure_ocr_rotation();
+  // Read per input; read here too so a malformed value fails startup.
+  max_image_pixels();
+  remote_pdf_backend_target();
   return options;
 }
 

@@ -108,7 +108,13 @@ that gRParse also dials them as collectors now.
 `grpc-pdfium`, `grpc-qparse`, and `grpc-poppler` are interchangeable PDF
 backend services speaking `PdfBackendService`
 (`ai.protomolt.parse.pdf.v1`); `GRPARSE_PDF_BACKEND` selects one (or a
-comma list for consensus mode) instead of the in-process poppler path.
+comma list for consensus mode). They are gRParse's only way to read a PDF:
+gRParse links no PDF engine, so the GPL poppler stays inside grpc-poppler's
+container and gRParse stays Apache-2.0. With the variable unset a PDF on the
+CV path fails `FAILED_PRECONDITION`, like an unconfigured collector; rasters
+decode in process. The compose stacks start grpc-pdfium by default
+(`pdfium:50069`); grpc-qparse rides in the `pdf-backends` profile and
+grpc-poppler in its own `poppler` profile.
 The contract's working copies live here in `backends/`; the standalone
 `parser-protos` repo publishes the same bytes for the backend services to
 pin (`PDF_PROTOS_COMMIT` in their CMake). A contract change lands in both
@@ -146,6 +152,7 @@ contract in its image, see step 3):
   grpc-email/  grpc-xml/  grpc-epub/  grpc-markup/  grpc-ebcdic/
   grpc-lol-html/  grpc-asr/  fastwarc-grpc/
   grPOIc/  grpc-calamine/  grpc-enrich/  grpc-vlm-convert/
+  grpc-pdfium/             the core stack's PDF backend
   worktrees/               feature worktrees, one per repo-feature
 ```
 
@@ -157,7 +164,7 @@ WS=/work/main/grpc-services            # any path; the layout is what matters
 mkdir -p "$WS/worktrees" && cd "$WS"
 for repo in gRParse grpc-libreoffice grpc-pdf-inspector grpc-email grpc-xml \
             grpc-epub grpc-markup grpc-ebcdic grpc-lol-html grpc-asr fastwarc-grpc \
-            grPOIc grpc-calamine grpc-enrich grpc-vlm-convert; do
+            grPOIc grpc-calamine grpc-enrich grpc-vlm-convert grpc-pdfium; do
   [ -d "$repo" ] || git clone "https://git.rokkon.com/ai-pipestream/$repo.git"
   git -C "$repo" remote get-url github >/dev/null 2>&1 || \
     git -C "$repo" remote add github "https://github.com/ai-pipestream/$repo.git"
@@ -281,12 +288,11 @@ a shell whose cwd drifted into a worktree once built the wrong tree.
 
 ```bash
 cd gRParse
-docker compose -f compose.stack.yaml up --build                             # core: grparse, libreoffice, lol-html, pdf-inspector, shell
+docker compose -f compose.stack.yaml up --build                             # core: grparse, pdfium, libreoffice, lol-html, pdf-inspector, shell
 docker compose -f compose.stack.yaml --profile parsers --profile heavy up   # + every collector and the shell peers
 # overlays, stackable:
 #   -f compose.stack.expose-grpc.yaml   publish gRParse gRPC on the host (50051)
 #   -f compose.stack.cpu.yaml           CPU image
-#   -f compose.stack.arm64.yaml         arm64 hosts: CPU image + pin the amd64-only pdf backends (pdfium/qparse/poppler) to linux/amd64 emulation
 #   -f compose.stack.openvino.yaml      Intel GPU image (OpenVINO, /dev/dri)
 ```
 
