@@ -2844,31 +2844,83 @@ void verify_stream_chunks_matches_the_unary_chunkers(TestServer* server) {
               refused.status.error_message());
 }
 
-// A reader that walks away mid-stream ends the call without wedging the
-// server: the next StreamChunks call still completes in full.
-void verify_stream_chunks_survives_a_cancelled_reader(TestServer* server) {
-  auto client = server->unary_stub();
+// A reader that walks away mid-stream ends the call, and the in-flight
+// charge the stream held for its unwritten messages comes back. The source
+// is a few megabytes of in-process storage XHTML, so with BDP probing off
+// the client's flow-control window fills long before the last chunk and
+// the cancel lands while the server still has writes outstanding.
+void verify_stream_chunks_returns_its_charge_when_the_reader_cancels() {
+  const auto inflight = std::make_shared<grparse::InflightBytes>(256ULL << 20U);
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
+                                   [](std::shared_ptr<const std::string>, bool, double) {
+                                     return std::make_shared<FakeSource>();
+                                   });
+  grparse::DocumentParserService parser_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{}),
+      grparse::CallExecutor::Options{}, grparse::RepairOptions{}, {}, {}, inflight);
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&parser_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "cancel test server failed to start");
+  grpc::ChannelArguments arguments;
+  arguments.SetInt(GRPC_ARG_HTTP2_BDP_PROBE, 0);
+  arguments.SetMaxReceiveMessageSize(64 << 20);
+  auto client = pipestream::parse::v1::ParseService::NewStub(grpc::CreateCustomChannel(
+      "127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials(), arguments));
+
+  std::string body = "<h1>Handbook</h1>";
+  const std::string paragraph = "<p>" + std::string(4000, 'x') + "</p>";
+  for (int index = 0; index < 400; ++index) body += paragraph;
   pipestream::parse::v1::StreamChunksRequest request;
   auto* source = request.mutable_hierarchical()->add_sources()->mutable_file();
-  source->set_filename("image.png");
-  source->set_base64_string("bWVtb3J5");
-  for (int round = 0; round < 3; ++round) {
+  source->set_filename("handbook.confluence");
+  source->set_base64_string(grparse::encode_base64(body.data(), body.size()));
+
+  {
     grpc::ClientContext context;
-    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    context.set_deadline(std::chrono::system_clock::now() + 20s);
     auto reader = client->StreamChunks(&context, request);
     pipestream::parse::v1::StreamChunksResponse first;
-    require(reader->Read(&first) && first.has_chunk(), "the stream starts with a chunk");
+    if (!reader->Read(&first)) {
+      const grpc::Status failed = reader->Finish();
+      require(false, "the stream starts with a chunk: " + failed.error_message());
+    }
+    require(first.has_chunk(), "the stream starts with a chunk");
+    require(inflight->in_use() > 0,
+            "the stream holds its charge while messages wait to be written");
     context.TryCancel();
     pipestream::parse::v1::StreamChunksResponse rest;
-    while (reader->Read(&rest)) {
-    }
+    int drained = 0;
+    while (reader->Read(&rest)) ++drained;
+    require(drained < 400, "the cancel landed before the stream was written out");
     require(reader->Finish().error_code() == grpc::StatusCode::CANCELLED,
             "a cancelled reader sees CANCELLED");
   }
-  const StreamedChunks after = read_stream_chunks(server, request);
-  require(after.status.ok() && !after.messages.empty() && after.messages.back().has_summary(),
-          "the server still streams a full call after cancelled ones: " +
-              after.status.error_message());
+  for (int attempt = 0; attempt < 200 && inflight->in_use() != 0; ++attempt) {
+    std::this_thread::sleep_for(10ms);
+  }
+  require(inflight->in_use() == 0, "the cancelled stream returns its whole charge");
+
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 20s);
+  auto reader = client->StreamChunks(&context, request);
+  pipestream::parse::v1::StreamChunksResponse message;
+  int chunks = 0;
+  bool summary = false;
+  while (reader->Read(&message)) {
+    if (message.has_chunk()) ++chunks;
+    summary = summary || message.has_summary();
+  }
+  const grpc::Status status = reader->Finish();
+  require(status.ok() && summary && chunks >= 400,
+          "the server still streams a full call after a cancelled one: " +
+              status.error_message());
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+  require(inflight->in_use() == 0, "a finished stream returns its charge");
 }
 
 // These RPC tests exercise orchestration, not model quality. Native model
@@ -3096,11 +3148,11 @@ int main() {
         verify_pdf_without_backend_fails_precondition();
         verify_streaming_pdf_classification_restricts_recognition();
         verify_stream_charge_follows_the_bytes();
+        verify_stream_chunks_returns_its_charge_when_the_reader_cancels();
         verify_streaming_pdf_router_cancels_with_the_client();
         verify_hierarchical_chunk_rpc_carries_digest_and_offsets(&server);
         verify_hybrid_chunk_rpc_merges_and_validates(&server);
         verify_stream_chunks_matches_the_unary_chunkers(&server);
-        verify_stream_chunks_survives_a_cancelled_reader(&server);
         verify_chunk_rpcs_refuse_targets_and_surface_failures(&server);
         verify_chunk_embeddings_rpc();
         verify_disabled_embeddings_and_unimplemented_chunk_rpcs(&server);
