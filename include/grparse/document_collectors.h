@@ -111,13 +111,22 @@ CollectorOutcome collect_epub_document(const std::shared_ptr<grpc::Channel>& cha
 // each; chapters past it stay empty, with a warning. With no
 // markup channel (`GRPARSE_MARKUP_TARGET` unset) the skeleton is the
 // outcome, with a warning naming the variable, so the degradation is
-// visible rather than silent.
+// visible rather than silent. An image spine item (a cover or plate in the
+// spine) needs no markup dial: its chapter group gets one picture of the
+// bytes its chapter event carried.
+//
+// The chapters and images the stream carries are decompressed archive
+// entries, so a small book can inflate far past its upload: once they
+// pass `stream_byte_cap` together the call is cancelled and the leg fails
+// with RESOURCE_EXHAUSTED.
+inline constexpr size_t kEpubStreamByteCap = 512U * 1024U * 1024U;
 CollectorOutcome collect_epub_book(const std::shared_ptr<grpc::Channel>& epub,
                                    const std::shared_ptr<grpc::Channel>& markup,
                                    const std::string& bytes,
                                    CollectorDeadline inbound_deadline =
                                        kNoCollectorDeadline,
-                                   CollectorCancelled cancelled = {});
+                                   CollectorCancelled cancelled = {},
+                                   size_t stream_byte_cap = kEpubStreamByteCap);
 
 // grpc-markup (Markdown, HTML, AsciiDoc, LaTeX, WebVTT, BoxNote, Docling
 // JSON). The format is hinted from the filename and content type via

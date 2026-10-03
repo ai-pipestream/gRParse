@@ -672,11 +672,12 @@ void verify_epub_book_folds_chapters_and_images() {
           "the markup collector is dialed once per XHTML chapter and never for the SVG");
 
   const auto& book = outcome.document;
-  require(book.groups_size() == 3 && book.texts_size() == 2 && book.pictures_size() == 1,
-          "the book holds the skeleton's groups, both headings, and one picture");
+  require(book.groups_size() == 3 && book.texts_size() == 2 && book.pictures_size() == 2,
+          "the book holds the skeleton's groups, both headings, and two pictures");
   require(book.groups(0).children_size() == 2 && book.groups(1).children_size() == 1 &&
-              book.groups(2).children_size() == 0,
-          "chapter one holds its heading and picture, chapter two its heading, the SVG nothing");
+              book.groups(2).children_size() == 1,
+          "chapter one holds its heading and picture, chapter two its heading, the SVG its "
+          "picture");
   require(book.texts(0).section_header().base().text() == "One" &&
               book.texts(0).section_header().base().parent().ref() == "#/groups/0" &&
               book.texts(1).section_header().base().text() == "Two" &&
@@ -688,15 +689,37 @@ void verify_epub_book_folds_chapters_and_images() {
   require(picture.image().mimetype() == "image/jpeg" &&
               picture.image().uri().starts_with("data:image/jpeg;base64,"),
           "the image is inlined under the manifest's media type");
+  // The image spine item is a picture of the bytes its chapter event
+  // carried; no resource event ever named it.
+  const auto& plate = book.pictures(1);
+  require(plate.parent().ref() == "#/groups/2" &&
+              plate.image().uri() == "data:image/svg+xml;base64,PHN2Zy8+" &&
+              plate.source_size() == 1 && plate.source(0).collector().collector() == "epub",
+          "the image spine item becomes its chapter's picture, inlined from the chapter event");
   require(book.body().children_size() == 3,
           "the body lists the three chapter groups and no orphaned picture");
   require(book.source_meta().title() == "The Book",
           "a chapter's page title never overrides the book's");
-  bool svg_noted = false;
   for (const auto& warning : outcome.warnings) {
-    if (warning.contains("OPS/plate.svg") && warning.contains("not XHTML")) svg_noted = true;
+    require(!warning.contains("OPS/plate.svg"), "the image spine item folds cleanly: " + warning);
   }
-  require(svg_noted, "the SVG spine item is reported, not silently skipped");
+}
+
+// The chapters and images are decompressed archive entries: past the
+// stream's byte cap the call is cancelled and the leg fails, instead of
+// buffering whatever a small book inflates to.
+void verify_epub_book_stream_has_a_byte_cap() {
+  BookEpubService epub;
+  ServerFixture epub_server(&epub);
+  HtmlMarkupService markup;
+  ServerFixture markup_server(&markup);
+  const auto outcome =
+      grparse::collect_epub_book(epub_server.channel(), markup_server.channel(),
+                                 "PK\x03\x04zip", grparse::kNoCollectorDeadline, {}, 32);
+  require(!outcome.success && outcome.code == grpc::StatusCode::RESOURCE_EXHAUSTED &&
+              outcome.error.contains("32 bytes"),
+          "a book past the cap fails as resource exhaustion: " + outcome.error);
+  require(markup.dials().empty(), "nothing past the cap is folded");
 }
 
 void verify_epub_book_without_markup_keeps_the_skeleton() {
@@ -2762,6 +2785,7 @@ int main() {
       verify_epub_collects_document,
       verify_missing_document_event_fails,
       verify_epub_book_folds_chapters_and_images,
+      verify_epub_book_stream_has_a_byte_cap,
       verify_epub_book_without_markup_keeps_the_skeleton,
       verify_epub_book_survives_a_failing_chapter,
       verify_markup_forwards_hint_and_collects,
