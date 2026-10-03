@@ -613,6 +613,10 @@ message DocumentMetadata {
   map<string, int64> statistics = 15;
   // Custom properties stored in the document, with their original types.
   repeated UserProperty user_properties = 16;
+  // The document's description (the "Comments" property: dc:description in
+  // OOXML and ODF, the summary stream's comments in the legacy binary
+  // formats); empty when unset.
+  string description = 17;
 }
 
 // UserProperty is one custom document property, keeping the type the

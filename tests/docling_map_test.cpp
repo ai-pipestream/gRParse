@@ -538,6 +538,8 @@ void verify_metadata_maps_name_language_and_fields() {
   meta->add_keywords("finance");
   meta->add_keywords("q3");
   meta->set_language("en-US");
+  meta->set_description("Board pack, final");
+  (*meta->mutable_statistics())["NonWhitespaceCharacterCount"] = 5600;
   mapper.consume(event);
   const docv1::Document& document = mapper.document();
   require(document.name() == "Quarterly Report",
@@ -548,6 +550,13 @@ void verify_metadata_maps_name_language_and_fields() {
   require(source_meta.keywords_size() == 2 &&
               source_meta.keywords(1) == "q3",
           "keywords keep their order");
+  require(source_meta.statistics().characters() == 5600,
+          "a character count without whitespace fills the counter when the "
+          "count with whitespace is absent");
+  require(source_meta.user_properties_size() == 1 &&
+              source_meta.user_properties(0).name() == "description" &&
+              source_meta.user_properties(0).text() == "Board pack, final",
+          "the description rides as a text property");
   require(document.body().meta().keywords().values_size() == 2,
           "keywords also reach the body keywords field");
   const docv1::LanguageMetaField& language = document.body().meta().language();

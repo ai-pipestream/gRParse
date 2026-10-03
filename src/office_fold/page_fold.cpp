@@ -23,13 +23,22 @@ void set_statistics(const google::protobuf::Map<std::string, int64_t>& statistic
   for (const auto& [name, count] : statistics) {
     if (name == "PageCount") out->set_pages(count);
     else if (name == "WordCount") out->set_words(count);
-    else if (name == "CharacterCount") out->set_characters(count);
     else if (name == "ParagraphCount") out->set_paragraphs(count);
     else if (name == "TableCount") out->set_tables(count);
     else if (name == "ImageCount") out->set_images(count);
     else if (name == "ObjectCount") out->set_objects(count);
     else if (name == "CellCount") out->set_cells(count);
     else if (name == "SheetCount") out->set_sheets(count);
+  }
+  // The office core counts characters both with and without whitespace, and
+  // an imported OOXML document carries only the latter (its app.xml
+  // Characters). The counter takes the count with whitespace when there is
+  // one and falls back to the other, rather than leaving it empty.
+  if (const auto found = statistics.find("CharacterCount"); found != statistics.end()) {
+    out->set_characters(found->second);
+  } else if (const auto stripped = statistics.find("NonWhitespaceCharacterCount");
+             stripped != statistics.end()) {
+    out->set_characters(stripped->second);
   }
 }
 
@@ -86,6 +95,14 @@ void add_user_properties(const officev1::DocumentMetadata& meta,
         // for keeps its name and no value.
         break;
     }
+  }
+  // The metadata slot has no description field of its own, so the
+  // document's description rides as a text property under the key the poi
+  // collector gives it.
+  if (!meta.description().empty()) {
+    docv1::UserProperty* property = out->add_user_properties();
+    property->set_name("description");
+    property->set_text(meta.description());
   }
 }
 
