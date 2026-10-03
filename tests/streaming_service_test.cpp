@@ -4,6 +4,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <format>
@@ -24,11 +25,13 @@
 #include "ai/pipestream/email/v1/email_service.grpc.pb.h"
 #include "ai/pipestream/parse/v1/parse_stream.grpc.pb.h"
 #include "ai/pipestream/pdf/v1/pdf_service.grpc.pb.h"
+#include "ai/pipestream/vlm/v1/vlm_convert.grpc.pb.h"
 #include "grparse/base64.h"
 #include "grparse/confluence_storage.h"
 #include "grparse/document_assembly.h"
 #include "grparse/document_parser_service.h"
 #include "grparse/page_scheduler.h"
+#include "grparse/service_version.h"
 #include "grparse/structure_rules.h"
 #include "support/check.h"
 #include "support/fake_pdf_backend.h"
@@ -2686,22 +2689,10 @@ void verify_hierarchical_chunk_rpc_carries_digest_and_offsets(TestServer* server
     const std::string producer =
         std::string("grparse-") + GRPARSE_VERSION + "-" + GRPARSE_ORT_PACKAGE_NAME;
     require(chunk.producer() == producer, "every chunk names the build that produced it");
-    const std::vector<std::string> parts = [&chunk] {
-      std::vector<std::string> out;
-      std::string_view key = chunk.chunk_key();
-      for (std::size_t bar = key.find('|'); bar != std::string_view::npos; bar = key.find('|')) {
-        out.emplace_back(key.substr(0, bar));
-        key.remove_prefix(bar + 1);
-      }
-      out.emplace_back(key);
-      return out;
-    }();
-    require(parts.size() == 5 && parts[0].size() == 16 && parts[1].size() == 16 &&
-                parts[2] == producer && parts[3] == "grparse-hier/2" &&
-                parts[4] == std::to_string(index),
-            "the chunk key spells bytes, options, build, rules and position: " +
-                chunk.chunk_key());
+    require(chunk.chunk_key().size() == 64, "every chunk carries its storage key");
   }
+  require(chunks.Get(0).chunk_key() != chunks.Get(1).chunk_key(),
+          "sibling chunks have distinct keys");
   require(response.response().documents().empty(),
           "the converted document rides along only when it is asked for");
   require(response.response().processing_time() >= 0.0, "processing time is reported");
@@ -2741,13 +2732,10 @@ void verify_hybrid_chunk_rpc_merges_and_validates(TestServer* server) {
               response.response().documents(0).content().doc().texts_size() == 3,
           "include_converted_doc returns the parsed document too");
   const auto& identity = response.response().documents(0).content().doc().parse();
-  require(identity.producer() == chunk.producer() && identity.options_digest().size() == 16,
-          "the document names the build and the options that produced it");
-  require(chunk.chunk_key().starts_with(
-              std::format("{:016x}|{}|", response.response().documents(0).content().doc()
-                                             .origin().binary_hash(),
-                          identity.options_digest())),
-          "the chunk key starts from the document's bytes and options");
+  require(identity.producer() == chunk.producer() && identity.options_digest().size() == 64 &&
+              identity.settings_digest().size() == 64 && !identity.build().empty(),
+          "the document names the build, settings and options that produced it");
+  require(chunk.chunk_key().size() == 64, "the hybrid chunk carries its storage key");
   const auto& info = response.response().chunking_info();
   require(info.contains("chunker") && info.at("chunker").string_value() == "hybrid",
           "chunking_info names the hybrid chunker");
@@ -2779,6 +2767,102 @@ void verify_hybrid_chunk_rpc_merges_and_validates(TestServer* server) {
           "an unknown tokenizer must be rejected");
   require(tokenizer_status.error_message().contains("wordish/1"),
           "the rejection lists what is supported: " + tokenizer_status.error_message());
+}
+
+// Answers every page image with a one-text page Document.
+class OneTextVlmConvertService final
+    : public ai::pipestream::vlm::v1::VlmConvertService::Service {
+ public:
+  grpc::Status ConvertPages(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<ai::pipestream::vlm::v1::ConvertPagesResponse,
+                               ai::pipestream::vlm::v1::ConvertPagesRequest>* stream) override {
+    ai::pipestream::vlm::v1::ConvertPagesRequest request;
+    std::vector<uint32_t> pages;
+    while (stream->Read(&request)) {
+      if (request.has_page_image()) pages.push_back(request.page_image().page_no());
+    }
+    for (const uint32_t page_no : pages) {
+      ai::pipestream::vlm::v1::ConvertPagesResponse event;
+      auto* page = event.mutable_page_document();
+      page->set_page_no(page_no);
+      auto* text = page->mutable_document()->add_texts()->mutable_text();
+      text->mutable_base()->set_self_ref("#/texts/0");
+      text->mutable_base()->set_text("vlm page");
+      text->mutable_base()->mutable_parent()->set_ref("#/body");
+      page->mutable_document()->mutable_body()->set_self_ref("#/body");
+      page->mutable_document()->mutable_body()->add_children()->set_ref("#/texts/0");
+      (*page->mutable_document()->mutable_pages())[page_no].set_page_no(page_no);
+      stream->Write(event);
+    }
+    ai::pipestream::vlm::v1::ConvertPagesResponse done;
+    done.mutable_complete()->set_pages_started(static_cast<uint32_t>(pages.size()));
+    done.mutable_complete()->set_pages_ok(static_cast<uint32_t>(pages.size()));
+    stream->Write(done);
+    return grpc::Status::OK;
+  }
+};
+
+// The VLM pipeline returns before the collector merge, and its document
+// still names the parse that produced it, so its chunks get keys too.
+void verify_vlm_pipeline_document_carries_the_parse_identity() {
+  OneTextVlmConvertService vlm;
+  grpc::ServerBuilder vlm_builder;
+  int vlm_port = 0;
+  vlm_builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &vlm_port);
+  vlm_builder.RegisterService(&vlm);
+  auto vlm_server = vlm_builder.BuildAndStart();
+  require(vlm_server && vlm_port != 0, "fake VLM convert peer failed to start");
+
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
+                                   [](std::shared_ptr<const std::string>, bool, double) {
+                                     return std::make_shared<FakeSource>();
+                                   });
+  grparse::CollectorTargets targets;
+  targets.vlm.target = "127.0.0.1:" + std::to_string(vlm_port);
+  grparse::DocumentParserService parser_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(targets));
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&parser_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "VLM pipeline test server failed to start");
+  auto client = pipestream::parse::v1::ParseService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+
+  pipestream::parse::v1::ChunkHierarchicalSourceRequest request;
+  auto* source = request.mutable_request()->add_sources()->mutable_file();
+  source->set_filename("page.png");
+  // A 1x1 PNG: the VLM leg renders the image itself.
+  source->set_base64_string(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==");
+  request.mutable_request()->mutable_convert_options()->set_pipeline(
+      pipestream::parse::v1::PROCESSING_PIPELINE_VLM);
+  request.mutable_request()->set_include_converted_doc(true);
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  pipestream::parse::v1::ChunkHierarchicalSourceResponse response;
+  const grpc::Status status = client->ChunkHierarchicalSource(&context, request, &response);
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+  vlm_server->Shutdown(std::chrono::system_clock::now() + 2s);
+  vlm_server->Wait();
+  require(status.ok(), "VLM pipeline chunking failed: " + status.error_message());
+  require(response.response().documents_size() == 1, "the converted document rides along");
+  const auto& identity = response.response().documents(0).content().doc().parse();
+  require(identity.producer() == std::string(grparse::kServiceVersion) &&
+              identity.options_digest() ==
+                  grparse::options_digest(request.request().convert_options()) &&
+              identity.settings_digest() == grparse::settings_digest() &&
+              !identity.build().empty(),
+          "the VLM document names the build, settings and options that produced it");
+  require(response.response().chunks_size() == 1 &&
+              response.response().chunks(0).text() == "vlm page" &&
+              response.response().chunks(0).producer() == identity.producer() &&
+              response.response().chunks(0).chunk_key().size() == 64,
+          "the VLM document's chunk carries its producer and storage key");
 }
 
 // These RPC tests exercise orchestration, not model quality. Native model
@@ -3009,6 +3093,7 @@ int main() {
         verify_streaming_pdf_router_cancels_with_the_client();
         verify_hierarchical_chunk_rpc_carries_digest_and_offsets(&server);
         verify_hybrid_chunk_rpc_merges_and_validates(&server);
+        verify_vlm_pipeline_document_carries_the_parse_identity();
         verify_chunk_rpcs_refuse_targets_and_surface_failures(&server);
         verify_chunk_embeddings_rpc();
         verify_disabled_embeddings_and_unimplemented_chunk_rpcs(&server);

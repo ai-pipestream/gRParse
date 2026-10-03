@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdlib>
 #include <exception>
 #include <format>
 #include <initializer_list>
@@ -41,6 +42,7 @@
 #include "grparse/vlm_convert.h"
 #include "parse_support.h"
 #include "structure_validation.h"
+#include "targets/sha256.h"
 
 namespace fs = std::filesystem;
 namespace pipestream = ai::pipestream;
@@ -1094,21 +1096,6 @@ std::expected<PictureDescriptionCall, grpc::Status> request_picture_description_
 
 namespace {
 
-// The options digest a ParseIdentity carries: FNV-1a 64 over the options'
-// deterministic serialization, as sixteen lowercase hex digits.
-std::string options_digest(const pipestream::parse::v1::ConvertDocumentOptions& options) {
-  std::string bytes;
-  {
-    google::protobuf::io::StringOutputStream stream(&bytes);
-    google::protobuf::io::CodedOutputStream coded(&stream);
-    coded.SetSerializationDeterministic(true);
-    if (!options.SerializeToCodedStream(&coded)) {
-      throw std::runtime_error("conversion options did not serialize for the parse identity");
-    }
-  }
-  return std::format("{:016x}", content_hash(bytes));
-}
-
 // The document every collector's output merges into, additively and in plan
 // order. It carries identity and nothing else: the schema name and version
 // name the wire schema minor this repo currently mirrors, and must match
@@ -1872,6 +1859,11 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     // decide its type and route rather than a made-up extension.
     const fs::path requested_name = source.filename().empty() ? "document" : fs::path(source.filename()).filename();
     pipestream::document::v1::Document base = base_document(*bytes, requested_name);
+    // Which build, settings and options produce this document, so anything
+    // stored against its items can tell a re-parse that would renumber them.
+    // Stamped on the base every path builds on (the VLM pipeline and the
+    // collector merge alike), so no path can return a document without it.
+    *base.mutable_parse() = parse_identity(request.options());
 
     if (!request.options().from_formats().empty()) {
       const auto detected =
@@ -1988,11 +1980,6 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
                                      std::move(*warning));
       }
     }
-    // Which build and options produced this document, so anything stored
-    // against its items can tell a re-parse that would renumber them.
-    auto* identity = result.document.mutable_parse();
-    identity->set_producer(std::string(kServiceVersion));
-    identity->set_options_digest(options_digest(request.options()));
     // The document is final here: every surface renders, chunks or delivers
     // exactly this, so the structural rules check this.
     const grpc::Status structure_status =
@@ -2015,6 +2002,121 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
   } catch (...) {
     return status_from_exception(std::current_exception());
   }
+}
+
+
+namespace {
+
+// The server settings that change what a parse produces: which collectors
+// and remote models are configured, the CV models and their tuning, the
+// picture and page image policy, and the repair pass. Concurrency, queues,
+// limits on admission, metrics, listening and credentials stay out: they
+// decide whether and how fast a parse runs, not what it returns.
+constexpr std::string_view kIdentitySettings[] = {
+    "GRPARSE_ASR_DIARIZE",
+    "GRPARSE_ASR_MODEL",
+    "GRPARSE_ASR_TARGET",
+    "GRPARSE_BARCODES",
+    "GRPARSE_CALAMINE_TARGET",
+    "GRPARSE_CUSTOM_CHART_EXTRACTION_PRESETS",
+    "GRPARSE_DEFAULT_CHART_EXTRACTION_PRESET",
+    "GRPARSE_EBCDIC_TARGET",
+    "GRPARSE_EMAIL_TARGET",
+    "GRPARSE_ENRICH_TARGET",
+    "GRPARSE_ENRICH_VLM_ENDPOINT",
+    "GRPARSE_EPUB_TARGET",
+    "GRPARSE_FASTWARC_TARGET",
+    "GRPARSE_FIGURE_CLASSES",
+    "GRPARSE_LAYOUT",
+    "GRPARSE_LAYOUT_MODEL",
+    "GRPARSE_LIBREOFFICE_TARGET",
+    "GRPARSE_LOL_HTML_TARGET",
+    "GRPARSE_MARKUP_TARGET",
+    "GRPARSE_MAX_IMAGE_PIXELS",
+    "GRPARSE_MODELS_DIR",
+    "GRPARSE_OCR_BOX_SCORE",
+    "GRPARSE_OCR_BOX_THRESH",
+    "GRPARSE_OCR_MAX_SIDE",
+    "GRPARSE_OCR_PADDING",
+    "GRPARSE_OCR_ROTATION",
+    "GRPARSE_OCR_UNCLIP",
+    "GRPARSE_OPENVINO_DEVICE",
+    "GRPARSE_ORT_EP",
+    "GRPARSE_PAGE_IMAGES",
+    "GRPARSE_PDF_BACKEND",
+    "GRPARSE_PDF_TARGET",
+    "GRPARSE_PICTURE_IMAGES",
+    "GRPARSE_POI_TARGET",
+    "GRPARSE_REPAIR",
+    "GRPARSE_TABLE_STRUCTURE",
+    "GRPARSE_VLM_CONVERT_ENDPOINT",
+    "GRPARSE_VLM_CONVERT_TARGET",
+    "GRPARSE_XML_TARGET",
+};
+
+std::string compute_settings_digest() {
+  std::string manifest;
+  for (const std::string_view name : kIdentitySettings) {
+    const char* value = std::getenv(std::string(name).c_str());
+    if (value == nullptr) continue;
+    manifest += std::format("{}={}\n", name, value);
+  }
+  return targets::sha256_hex(manifest);
+}
+
+}  // namespace
+
+std::string options_digest(const pipestream::parse::v1::ConvertDocumentOptions& options) {
+  pipestream::parse::v1::ConvertDocumentOptions decisive = options;
+  decisive.DiscardUnknownFields();
+  decisive.clear_to_formats();
+  decisive.clear_image_export_mode();
+  decisive.clear_md_page_break_placeholder();
+  decisive.clear_md_compact_tables();
+  decisive.clear_doclang_include_namespace();
+  decisive.clear_document_timeout();
+  decisive.clear_abort_on_error();
+  decisive.clear_chunking_preset();
+  decisive.clear_chunking_options();
+  decisive.clear_structure_validation();
+  decisive.clear_structure_validation_rules();
+  if (decisive.has_picture_description_api()) {
+    auto* api = decisive.mutable_picture_description_api();
+    api->clear_headers();
+    api->clear_timeout();
+    api->clear_concurrency();
+  }
+  if (decisive.has_vlm_pipeline_model_api()) {
+    auto* api = decisive.mutable_vlm_pipeline_model_api();
+    api->clear_headers();
+    api->clear_timeout();
+    api->clear_concurrency();
+  }
+  std::string bytes;
+  {
+    google::protobuf::io::StringOutputStream stream(&bytes);
+    google::protobuf::io::CodedOutputStream coded(&stream);
+    coded.SetSerializationDeterministic(true);
+    if (!decisive.SerializeToCodedStream(&coded)) {
+      throw std::runtime_error("conversion options did not serialize for the parse identity");
+    }
+  }
+  return targets::sha256_hex(bytes);
+}
+
+const std::string& settings_digest() {
+  static const std::string digest = compute_settings_digest();
+  return digest;
+}
+
+ai::pipestream::document::v1::ParseIdentity parse_identity(
+    const pipestream::parse::v1::ConvertDocumentOptions& options) {
+  ai::pipestream::document::v1::ParseIdentity identity;
+  identity.set_producer(std::string(kServiceVersion));
+  identity.set_options_digest(options_digest(options));
+  identity.set_settings_digest(settings_digest());
+  identity.set_build(std::string(kSourceDigest));
+  return identity;
 }
 
 }  // namespace grparse

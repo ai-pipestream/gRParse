@@ -13,6 +13,7 @@
 
 #include "../render/canonical_json_writer.h"
 #include "../render/renderer_base.h"
+#include "../targets/sha256.h"
 #include "sentence_rules.h"
 #include "token_counter.h"
 
@@ -641,18 +642,26 @@ void stamp_typed_metadata(const WorkChunk& work, const docv1::DocumentOrigin& or
   if (!origin.mimetype().empty()) typed["mimetype"].set_string_value(origin.mimetype());
 }
 
-// The chunk's storage key (Chunk.chunk_key): the source bytes, the parse
-// identity, the chunk rules and the position, joined by '|'. Empty when the
-// document cannot say which bytes or which parse it came from.
+// The chunk's storage key (Chunk.chunk_key): SHA-256 hex over the source
+// bytes hash, every parse identity field, the chunk rules and the position,
+// each length-prefixed so no two field lists spell the same bytes. Empty
+// when the document cannot say which bytes or which parse it came from.
 std::string chunk_key(const docv1::Document& document, const std::string& rules_digest,
                       int index) {
-  if (document.origin().binary_hash() == 0 || !document.has_parse() ||
-      document.parse().producer().empty() || document.parse().options_digest().empty()) {
+  if (document.origin().binary_hash() == 0 || !document.has_parse()) return {};
+  const docv1::ParseIdentity& parse = document.parse();
+  if (parse.producer().empty() || parse.options_digest().empty() ||
+      parse.settings_digest().empty() || parse.build().empty()) {
     return {};
   }
-  return std::format("{:016x}|{}|{}|{}|{}", document.origin().binary_hash(),
-                     document.parse().options_digest(), document.parse().producer(),
-                     rules_digest, index);
+  std::string material;
+  for (const std::string& field :
+       {std::format("{:016x}", document.origin().binary_hash()), parse.producer(),
+        parse.build(), parse.settings_digest(), parse.options_digest(), rules_digest,
+        std::to_string(index)}) {
+    material += std::format("{}:{}", field.size(), field);
+  }
+  return targets::sha256_hex(material);
 }
 
 parsev1::Chunk to_proto(const WorkChunk& work, int index, std::string_view filename,

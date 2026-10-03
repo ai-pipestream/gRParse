@@ -13,10 +13,18 @@
 #ifndef GRPARSE_ORT_PACKAGE_NAME
 #define GRPARSE_ORT_PACKAGE_NAME "unknown"
 #endif
+// SHA-256 of the source tree, computed when CMake configures
+// (CMakeLists.txt, GRPARSE_SOURCE_DIGEST): it tells apart two builds that
+// carry the same unbumped version.
+#ifndef GRPARSE_SOURCE_DIGEST
+#define GRPARSE_SOURCE_DIGEST "unknown"
+#endif
 
 namespace grparse {
 
 inline constexpr std::string_view kServiceVersion =
     "grparse-" GRPARSE_VERSION "-" GRPARSE_ORT_PACKAGE_NAME;
+
+inline constexpr std::string_view kSourceDigest = GRPARSE_SOURCE_DIGEST;
 
 }  // namespace grparse
