@@ -201,7 +201,7 @@
    }
   },
   "pdf-rotated-scan-mixed": {
-   "latency_ms": 7543.2,
+   "latency_ms": 6153.5,
    "stable": true,
    "truth": {
     "truth_anchors_found": 1.0,
@@ -851,6 +851,15 @@
    "reason": "366c8ce: poi fan-out legs merge claims beside the primary body; agreement baseline gains poi claims",
    "service": "gRParse grparse-0.2.0-cpu",
    "timestamp": "2026-09-09T05:25:42+00:00"
+  },
+  {
+   "documents": [
+    "pdf-rotated-scan-mixed"
+   ],
+   "partial": true,
+   "reason": "9f58494: PDFs now rasterize in grpc-pdfium instead of in-process poppler; pdfium resamples the 150 dpi scan differently, so OCR splits page 3 (turned 270) into finer paragraphs, closer to the source's dialogue lines; truth scores unchanged at 1.000",
+   "service": "gRParse grparse-0.2.1-cuda",
+   "timestamp": "2026-10-02T05:49:15+00:00"
   }
  ],
  "manifest": "eval/scorecard/corpus.json",

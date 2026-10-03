@@ -116,6 +116,89 @@ void verify_only_advertised_formats_are_admitted() {
   }
 }
 
+template <typename Fn>
+bool throws_invalid_document(Fn&& fn) {
+  try {
+    fn();
+  } catch (const grparse::InvalidDocument&) {
+    return true;
+  }
+  return false;
+}
+
+// Every page of a multi-page TIFF is a page of the document, each decoded
+// on its own.
+void verify_multi_page_tiff() {
+  const std::vector<cv::Mat> pages = {cv::Mat(10, 12, CV_8UC3, cv::Scalar(10, 10, 10)),
+                                      cv::Mat(20, 14, CV_8UC3, cv::Scalar(20, 40, 60)),
+                                      cv::Mat(30, 16, CV_8UC3, cv::Scalar(90, 90, 90))};
+  std::vector<unsigned char> buffer;
+  require(cv::imencodemulti(".tiff", pages, buffer), "multi-page TIFF must encode");
+  const auto source = grparse::open_in_memory_document(
+      std::make_shared<const std::string>(buffer.begin(), buffer.end()), /*pdf=*/false);
+  require(source->page_count() == 3, "a three-page TIFF is three pages");
+  for (int page = 1; page <= 3; ++page) {
+    const cv::Mat decoded = source->render_page(page);
+    const cv::Mat& expected = pages[static_cast<size_t>(page - 1)];
+    require(decoded.cols == expected.cols && decoded.rows == expected.rows,
+            "each TIFF page decodes at its own size");
+    require(decoded.at<cv::Vec3b>(0, 0) == expected.at<cv::Vec3b>(0, 0),
+            "each TIFF page decodes its own pixels");
+  }
+  require(throws_invalid_document([&] { static_cast<void>(source->render_page(4)); }),
+          "a page past the TIFF's last is out of range");
+}
+
+// The header's stated size is checked against GRPARSE_MAX_IMAGE_PIXELS
+// before any decoder allocates for it.
+void verify_pixel_cap() {
+  // A PNG whose IHDR claims 100000 x 100000 (10 gigapixels): rejected at
+  // open under the default cap, without a decode.
+  const cv::Mat small(4, 4, CV_8UC3, cv::Scalar(0, 0, 0));
+  std::string bomb = *encode(small, ".png");
+  for (const size_t at : {size_t{16}, size_t{20}}) {
+    bomb[at] = '\x00';
+    bomb[at + 1] = '\x01';
+    bomb[at + 2] = '\x86';
+    bomb[at + 3] = '\xA0';
+  }
+  require(throws_invalid_document([&] {
+            grparse::open_in_memory_document(std::make_shared<const std::string>(bomb), false);
+          }),
+          "a PNG header past the default pixel cap is rejected");
+
+  setenv("GRPARSE_MAX_IMAGE_PIXELS", "100", 1);
+  const cv::Mat image(20, 20, CV_8UC3, cv::Scalar(0, 0, 0));
+  for (const char* extension : {".png", ".jpg", ".tif"}) {
+    require(throws_invalid_document(
+                [&] { grparse::open_in_memory_document(encode(image, extension), false); }),
+            std::string("an over-cap image is rejected: ") + extension);
+    require(grparse::open_in_memory_document(encode(small, extension), false)->page_count() == 1,
+            std::string("an image under the cap opens: ") + extension);
+  }
+  // One over-cap page fails a multi-page TIFF.
+  std::vector<unsigned char> buffer;
+  require(cv::imencodemulti(".tiff", std::vector<cv::Mat>{small, image}, buffer),
+          "multi-page TIFF must encode");
+  require(throws_invalid_document([&] {
+            grparse::open_in_memory_document(
+                std::make_shared<const std::string>(buffer.begin(), buffer.end()), false);
+          }),
+          "a TIFF with an over-cap page is rejected");
+
+  setenv("GRPARSE_MAX_IMAGE_PIXELS", "lots", 1);
+  bool threw = false;
+  try {
+    static_cast<void>(grparse::max_image_pixels());
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  require(threw, "a malformed GRPARSE_MAX_IMAGE_PIXELS is a config error");
+  unsetenv("GRPARSE_MAX_IMAGE_PIXELS");
+  require(grparse::max_image_pixels() == grparse::kDefaultMaxImagePixels,
+          "the cap defaults to 200 megapixels");
+}
+
 }  // namespace
 
 int main() {
@@ -126,5 +209,7 @@ int main() {
       verify_page_range,
       verify_invalid_bytes,
       verify_only_advertised_formats_are_admitted,
+      verify_multi_page_tiff,
+      verify_pixel_cap,
   });
 }

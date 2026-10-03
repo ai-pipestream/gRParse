@@ -138,7 +138,11 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
   const double dpi = options.render_dpi > 0.0 ? options.render_dpi : kDefaultRenderDpi;
   std::shared_ptr<PageSource> source;
   try {
-    source = open_in_memory_document(std::move(bytes), pdf, /*pdf_parser_slots=*/1, dpi);
+    source = open_in_memory_document(std::move(bytes), pdf, dpi);
+  } catch (const PdfBackendNotConfigured& ex) {
+    report.error = std::string("vlm convert: ") + ex.what();
+    report.code = grpc::StatusCode::FAILED_PRECONDITION;
+    return report;
   } catch (const std::exception& ex) {
     report.error = std::string("vlm convert: could not open document: ") + ex.what();
     report.code = grpc::StatusCode::INVALID_ARGUMENT;

@@ -26,6 +26,7 @@
 #include "grparse/document_parser_service.h"
 #include "grparse/page_scheduler.h"
 #include "support/check.h"
+#include "support/fake_pdf_backend.h"
 
 namespace {
 
@@ -2369,45 +2370,25 @@ void verify_streaming_pdf_fast_path_projects_pages() {
   require(run.events.at(3).has_complete(), "the stream closes with the complete event");
 }
 
-// A real two-page PDF, so the fast path has something to render.
-std::string two_page_pdf() {
-  const std::string content = "BT /F1 24 Tf 72 700 Td (Hello) Tj ET\n";
-  std::vector<std::string> objects = {
-      "<< /Type /Catalog /Pages 2 0 R >>",
-      "<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>",
-      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> "
-      ">> /Contents 5 0 R >>",
-      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-      "<< /Length " + std::to_string(content.size()) + " >>\nstream\n" + content + "endstream",
-      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> "
-      ">> /Contents 5 0 R >>",
-  };
-  std::string pdf = "%PDF-1.4\n";
-  std::vector<size_t> offsets;
-  for (size_t index = 0; index < objects.size(); ++index) {
-    offsets.push_back(pdf.size());
-    pdf += std::to_string(index + 1) + " 0 obj\n" + objects[index] + "\nendobj\n";
-  }
-  const size_t xref = pdf.size();
-  pdf += "xref\n0 " + std::to_string(objects.size() + 1) + "\n0000000000 65535 f \n";
-  for (const size_t offset : offsets) {
-    std::string entry = std::to_string(offset);
-    entry.insert(entry.begin(), 10 - entry.size(), '0');
-    pdf += entry + " 00000 n \n";
-  }
-  pdf += "trailer\n<< /Size " + std::to_string(objects.size() + 1) +
-         " /Root 1 0 R >>\nstartxref\n" + std::to_string(xref) + "\n%%EOF\n";
-  return pdf;
+// The bytes the preview tests send: the fake PDF backend reads them as two
+// Letter pages, so the fast path has something to render.
+const std::string kTwoPagePdf = "%PDF-two-page-preview-fixture";
+
+void add_two_page_pdf(grparse_test::FakePdfBackend& backend) {
+  backend.add_document(kTwoPagePdf, {grparse_test::text_page({"Hello"}),
+                                     grparse_test::text_page({"Hello"})});
 }
 
 // With previews on, the routed text PDF streams its pages with a rendered
 // preview under the boxes, exactly as the CV path does; the whole document
 // that follows carries the same previews on its page map.
 void verify_streaming_pdf_fast_path_renders_previews() {
+  grparse_test::ScopedPdfBackend pdf_backend;
+  add_two_page_pdf(pdf_backend.backend());
   FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {}, /*paged_document=*/true);
   PdfInspectorServer inspector_server(&inspector);
   const StreamPdfRun run =
-      run_stream_pdf(inspector_server.target(), /*capture_page_images=*/true, two_page_pdf());
+      run_stream_pdf(inspector_server.target(), /*capture_page_images=*/true, kTwoPagePdf);
   require(run.status.ok(), "preview fast-path stream failed: " + run.status.error_message());
   require(run.recognizer_calls == 0, "previews never touch the recognizer");
   require(run.events.size() == 4, "two pages, the document, complete");
@@ -2424,12 +2405,56 @@ void verify_streaming_pdf_fast_path_renders_previews() {
 
 // With previews off nothing is rendered: the fast path stays the fast path.
 void verify_streaming_pdf_fast_path_skips_previews_when_off() {
+  grparse_test::ScopedPdfBackend pdf_backend;
+  add_two_page_pdf(pdf_backend.backend());
   FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {}, /*paged_document=*/true);
   PdfInspectorServer inspector_server(&inspector);
   const StreamPdfRun run =
-      run_stream_pdf(inspector_server.target(), /*capture_page_images=*/false, two_page_pdf());
+      run_stream_pdf(inspector_server.target(), /*capture_page_images=*/false, kTwoPagePdf);
   require(run.status.ok(), "stream failed: " + run.status.error_message());
   require(!run.events.at(0).page().page_meta().has_image(), "no preview was asked for");
+  require(pdf_backend.backend().render_calls() == 0, "nothing was rendered");
+}
+
+// gRParse reads PDFs only through a PdfBackendService. With none configured
+// a PDF on the CV path fails the way an unconfigured collector does
+// (FAILED_PRECONDITION), naming the variable that fixes it.
+void verify_pdf_without_backend_fails_precondition() {
+  unsetenv("GRPARSE_PDF_BACKEND");
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2});
+  grparse::DocumentStreamingService streaming_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{}));
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&streaming_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "no-backend test server failed to start");
+  auto client = pipestream::parse::v1::ParseStreamingService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  auto stream = client->StreamProcessDocument(&context);
+  pipestream::parse::v1::DocumentChunk source;
+  source.set_document_id("no-backend");
+  source.set_filename("scan.pdf");
+  source.set_content_type("application/pdf");
+  source.set_data(kTwoPagePdf);
+  source.set_complete(true);
+  require(stream->Write(source), "no-backend client could not write the source chunk");
+  stream->WritesDone();
+  pipestream::parse::v1::DocumentStreamEvent event;
+  while (stream->Read(&event)) {
+  }
+  const grpc::Status status = stream->Finish();
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+  require(status.error_code() == grpc::StatusCode::FAILED_PRECONDITION,
+          "a PDF without a backend fails FAILED_PRECONDITION, got " +
+              std::to_string(status.error_code()) + ": " + status.error_message());
+  require(status.error_message().find("GRPARSE_PDF_BACKEND") != std::string::npos,
+          "the error names GRPARSE_PDF_BACKEND: " + status.error_message());
 }
 
 void verify_streaming_pdf_classification_restricts_recognition() {
@@ -2775,6 +2800,7 @@ int main() {
         verify_streaming_pdf_fast_path_projects_pages();
         verify_streaming_pdf_fast_path_renders_previews();
         verify_streaming_pdf_fast_path_skips_previews_when_off();
+        verify_pdf_without_backend_fails_precondition();
         verify_streaming_pdf_classification_restricts_recognition();
         verify_stream_charge_follows_the_bytes();
         verify_streaming_pdf_router_cancels_with_the_client();

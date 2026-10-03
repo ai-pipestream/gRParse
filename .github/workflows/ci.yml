@@ -95,8 +95,9 @@ jobs:
       - name: Load every peer contract inside the built image
         run: docker run --rm grparse-ci-demo-shell node server.js --check-protos
 
-  # Short fuzz window on the two ingest doors (the only code that touches
-  # attacker-controlled bytes before a model runs).  The fuzz project builds
+  # Short fuzz window on the raster ingest door (the only in-process code that
+  # touches attacker-controlled bytes before a model runs; PDFs go to a
+  # PdfBackendService).  The fuzz project builds
   # standalone in seconds - no gRPC or ONNX Runtime fetch - so this fits in a
   # PR gate.  Long campaigns run manually; see fuzz/README.md.
   fuzz-smoke:
@@ -108,18 +109,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             clang libclang-rt-dev ninja-build cmake pkg-config \
-            libopencv-dev libpoppler-cpp-dev
+            libopencv-dev
       - name: Build the fuzzers
         run: |
           cmake -S fuzz -B build-fuzz -G Ninja -DCMAKE_CXX_COMPILER=clang++
           cmake --build build-fuzz
-      - name: Fuzz the PDF ingest door
-        env:
-          LSAN_OPTIONS: suppressions=tests/lsan.supp
-        run: |
-          mkdir -p corpus-pdf
-          ./build-fuzz/pdf-source-fuzzer corpus-pdf fuzz/seeds/pdf \
-            -max_total_time=90 -max_len=1048576 -rss_limit_mb=4096 -print_final_stats=1
       - name: Fuzz the raster ingest door
         env:
           LSAN_OPTIONS: suppressions=tests/lsan.supp

@@ -1,12 +1,17 @@
 #include "grparse/remote_page_source.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <map>
 #include <mutex>
+#include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -29,14 +34,11 @@ constexpr int kMaxMessageBytes = 520 * 1024 * 1024;
 constexpr double kPdfUserSpaceDpi = 72.0;
 
 // A hung backend must not hang the document; consensus mode multiplies
-// the exposure, so each RPC carries a deadline sized to its work.
+// the exposure, so each RPC carries a deadline sized to its work, or the
+// request's own deadline when that comes sooner.
 constexpr auto kProbeDeadline = std::chrono::seconds(30);
 constexpr auto kParseDeadline = std::chrono::seconds(300);
 constexpr auto kRenderDeadline = std::chrono::seconds(600);
-
-void set_deadline(grpc::ClientContext* context, std::chrono::seconds budget) {
-  context->set_deadline(std::chrono::system_clock::now() + budget);
-}
 
 // The content-addressed handshake: calls go out with PdfDocument.sha256 set
 // and data empty (a cache lookup), and only a LOAD_STATUS_BYTES_REQUIRED
@@ -49,13 +51,108 @@ bool handshake_enabled() {
   return configured == nullptr || std::string_view(configured) != "off";
 }
 
-// Born-digital coverage gate, kept numerically identical to the in-process
-// path in in_memory_document.cpp so flipping the backend never changes the
-// OCR-skip decision for the same text layer.
+// Born-digital coverage gate: skip OCR only when the native text layer
+// looks real.
 constexpr size_t kMinDigitalNonWhitespace = 32;
 constexpr size_t kMinDigitalLines = 4;
 constexpr double kMinDigitalVerticalCoverage = 0.12;
 constexpr size_t kStrongDigitalNonWhitespace = 128;
+
+// A failed backend call. Outages, deadlines and cancellation keep their
+// gRPC code (PdfBackendUnavailable); anything else is the backend refusing
+// the document, which stays INVALID_ARGUMENT.
+[[noreturn]] void throw_backend_failure(const std::string& what, const grpc::Status& status) {
+  const std::string message = what + ": " + status.error_message();
+  switch (status.error_code()) {
+    case grpc::StatusCode::UNAVAILABLE:
+      throw PdfBackendUnavailable(message, PdfBackendFailure::kUnavailable);
+    case grpc::StatusCode::DEADLINE_EXCEEDED:
+      throw PdfBackendUnavailable(message, PdfBackendFailure::kDeadlineExceeded);
+    case grpc::StatusCode::CANCELLED:
+      throw PdfBackendUnavailable(message, PdfBackendFailure::kCancelled);
+    case grpc::StatusCode::RESOURCE_EXHAUSTED:
+      throw PdfBackendUnavailable(message, PdfBackendFailure::kResourceExhausted);
+    default:
+      throw InvalidDocument(message);
+  }
+}
+
+// Maps contract page space into the top-left frame of the page as rendered.
+// The contract's boxes are PDF user space, bottom-left origin, before the
+// page's /Rotate; the rendered page is the CropBox with /Rotate applied, so
+// a box shifts by the CropBox origin, flips to a top-left origin, and turns
+// clockwise with the page.
+class PageFrame {
+ public:
+  explicit PageFrame(const pdfv1::PageInfo& info)
+      : rotation_(((info.rotation_degrees() % 360) + 360) % 360) {
+    const bool quarter_turn = rotation_ == 90 || rotation_ == 270;
+    // Unrotated extent: the visible box, which is the CropBox clipped to
+    // the MediaBox (a CropBox reaching past the MediaBox is legal, and
+    // renderers draw only the overlap), or the MediaBox alone. Without
+    // either, the rendered size turned back.
+    std::optional<pdfv1::BoundingBox> visible;
+    if (valid(info.media_box())) visible = info.media_box();
+    if (valid(info.crop_box())) {
+      pdfv1::BoundingBox crop = info.crop_box();
+      if (visible.has_value()) {
+        crop.set_x0(std::max(crop.x0(), visible->x0()));
+        crop.set_y0(std::max(crop.y0(), visible->y0()));
+        crop.set_x1(std::min(crop.x1(), visible->x1()));
+        crop.set_y1(std::min(crop.y1(), visible->y1()));
+      }
+      if (valid(crop)) visible = crop;
+    }
+    if (visible.has_value()) {
+      origin_x_ = visible->x0();
+      origin_y_ = visible->y0();
+      width_ = visible->x1() - visible->x0();
+      height_ = visible->y1() - visible->y0();
+    } else {
+      width_ = quarter_turn ? info.height_pts() : info.width_pts();
+      height_ = quarter_turn ? info.width_pts() : info.height_pts();
+    }
+  }
+
+  // Width and height of the rendered page, in points.
+  double display_width() const { return rotation_ % 180 == 0 ? width_ : height_; }
+  double display_height() const { return rotation_ % 180 == 0 ? height_ : width_; }
+
+  // The axis-aligned box in the rendered top-left frame: {left, top, right,
+  // bottom} in points.
+  std::array<double, 4> place(const pdfv1::BoundingBox& box) const {
+    const auto a = to_display(box.x0(), box.y0());
+    const auto b = to_display(box.x1(), box.y1());
+    return {std::min(a[0], b[0]), std::min(a[1], b[1]), std::max(a[0], b[0]),
+            std::max(a[1], b[1])};
+  }
+
+ private:
+  std::array<double, 2> to_display(double x, double y) const {
+    const double u = x - origin_x_;
+    const double down = height_ - (y - origin_y_);
+    switch (rotation_) {
+      case 90:
+        return {height_ - down, u};
+      case 180:
+        return {width_ - u, height_ - down};
+      case 270:
+        return {down, width_ - u};
+      default:
+        return {u, down};
+    }
+  }
+
+  static bool valid(const pdfv1::BoundingBox& box) {
+    return box.x1() > box.x0() && box.y1() > box.y0();
+  }
+
+  int rotation_;
+  double origin_x_ = 0.0;
+  double origin_y_ = 0.0;
+  double width_ = 0.0;
+  double height_ = 0.0;
+};
 
 // One channel per backend target per process; channels multiplex.
 std::shared_ptr<grpc::Channel> channel_for(const std::string& target) {
@@ -88,15 +185,13 @@ class RemotePdfPageSource final : public PageSource {
     pdfv1::ProbeResponse response;
     bool sent_bytes = !handshake_;
     for (;;) {
-      grpc::ClientContext context;
-      set_deadline(&context, kProbeDeadline);
+      Call call(*this, kProbeDeadline);
       pdfv1::ProbeRequest request;
       fill_document(request.mutable_document(), sent_bytes);
       response.Clear();
-      const grpc::Status status = stub_->Probe(&context, request, &response);
+      const grpc::Status status = stub_->Probe(call.context(), request, &response);
       if (!status.ok()) {
-        throw InvalidDocument("PDF backend unreachable: " +
-                              status.error_message());
+        throw_backend_failure("PDF backend unreachable", status);
       }
       if (response.capabilities().load_status() ==
               pdfv1::LOAD_STATUS_BYTES_REQUIRED &&
@@ -130,8 +225,7 @@ class RemotePdfPageSource final : public PageSource {
     check_page(page_number);
     bool sent_bytes = !handshake_;
     for (;;) {
-      grpc::ClientContext context;
-      set_deadline(&context, kParseDeadline);
+      Call call(*this, kParseDeadline);
       pdfv1::ParseRequest request;
       fill_document(request.mutable_document(), sent_bytes);
       request.add_families(pdfv1::PDF_FAMILY_TEXT_CELLS);
@@ -139,11 +233,10 @@ class RemotePdfPageSource final : public PageSource {
       auto* range = request.mutable_pages();
       range->set_begin(static_cast<uint32_t>(page_number - 1));
       range->set_end(static_cast<uint32_t>(page_number));
-      auto reader = stub_->Parse(&context, request);
+      auto reader = stub_->Parse(call.context(), request);
 
       pdfv1::ParseResponse message;
-      double page_width_pts = 0.0;
-      double page_height_pts = 0.0;
+      std::optional<PageFrame> frame;
       std::optional<pdfv1::LoadStatus> header_load_status;
       std::string header_load_detail;
       std::map<uint32_t, std::string> font_names;
@@ -155,8 +248,7 @@ class RemotePdfPageSource final : public PageSource {
             header_load_detail = message.header().capabilities().load_detail();
             for (const auto& info : message.header().pages()) {
               if (info.page_index() == static_cast<uint32_t>(page_number - 1)) {
-                page_width_pts = info.width_pts();
-                page_height_pts = info.height_pts();
+                frame.emplace(info);
               }
             }
             break;
@@ -176,8 +268,7 @@ class RemotePdfPageSource final : public PageSource {
       }
       const grpc::Status status = reader->Finish();
       if (!status.ok()) {
-        throw InvalidDocument("PDF backend parse failed: " +
-                              status.error_message());
+        throw_backend_failure("PDF backend parse failed", status);
       }
       if (header_load_status == pdfv1::LOAD_STATUS_BYTES_REQUIRED &&
           !sent_bytes) {
@@ -194,14 +285,14 @@ class RemotePdfPageSource final : public PageSource {
             pdfv1::LoadStatus_Name(*header_load_status) +
             (header_load_detail.empty() ? "" : " (" + header_load_detail + ")"));
       }
-      if (page_height_pts <= 0.0) return std::nullopt;
+      if (!frame.has_value() || frame->display_height() <= 0.0) return std::nullopt;
 
       OcrPage result;
-      result.width = scaled(page_width_pts);
-      result.height = scaled(page_height_pts);
+      result.width = scaled(frame->display_width());
+      result.height = scaled(frame->display_height());
       result.source = OcrPage::Source::kDigitalPdf;
       size_t non_whitespace_bytes = 0;
-      double text_top = page_height_pts;
+      double text_top = frame->display_height();
       double text_bottom = 0.0;
       result.lines.reserve(cells.size());
       for (const auto& cell : cells) {
@@ -209,15 +300,13 @@ class RemotePdfPageSource final : public PageSource {
         for (const unsigned char byte : cell.text()) {
           if (std::isspace(byte) == 0) ++non_whitespace_bytes;
         }
-        // Contract boxes are bottom-left origin; the fold works in the
-        // top-left raster frame.
-        const double top_pts = page_height_pts - cell.bbox().y1();
-        const double bottom_pts = page_height_pts - cell.bbox().y0();
+        // The fold works in the top-left frame of the rendered page.
+        const auto [left_pts, top_pts, right_pts, bottom_pts] = frame->place(cell.bbox());
         text_top = std::min(text_top, top_pts);
         text_bottom = std::max(text_bottom, bottom_pts);
-        const int left = scaled(cell.bbox().x0());
+        const int left = scaled(left_pts);
         const int top = scaled(top_pts);
-        const int right = scaled(cell.bbox().x1());
+        const int right = scaled(right_pts);
         const int bottom = scaled(bottom_pts);
         OcrLine line{cell.text(),
                      {{left, top}, {right, top}, {right, bottom}, {left, bottom}},
@@ -243,7 +332,7 @@ class RemotePdfPageSource final : public PageSource {
       if (result.lines.empty()) return std::nullopt;
 
       const double vertical_coverage =
-          page_height_pts > 0.0 ? (text_bottom - text_top) / page_height_pts : 0.0;
+          (text_bottom - text_top) / frame->display_height();
       result.skip_ocr = non_whitespace_bytes >= kMinDigitalNonWhitespace &&
                         result.lines.size() >= kMinDigitalLines &&
                         (vertical_coverage >= kMinDigitalVerticalCoverage ||
@@ -252,12 +341,22 @@ class RemotePdfPageSource final : public PageSource {
     }
   }
 
+  void set_deadline(std::chrono::system_clock::time_point deadline) override {
+    const std::lock_guard<std::mutex> lock(calls_mutex_);
+    deadline_ = deadline;
+  }
+
+  void cancel() override {
+    const std::lock_guard<std::mutex> lock(calls_mutex_);
+    cancelled_ = true;
+    for (grpc::ClientContext* context : calls_) context->TryCancel();
+  }
+
   cv::Mat render_page(int page_number) const override {
     check_page(page_number);
     bool sent_bytes = !handshake_;
     for (;;) {
-      grpc::ClientContext context;
-      set_deadline(&context, kRenderDeadline);
+      Call call(*this, kRenderDeadline);
       pdfv1::RenderRequest request;
       fill_document(request.mutable_document(), sent_bytes);
       request.set_dpi(render_dpi_);
@@ -265,7 +364,7 @@ class RemotePdfPageSource final : public PageSource {
       auto* range = request.mutable_pages();
       range->set_begin(static_cast<uint32_t>(page_number - 1));
       range->set_end(static_cast<uint32_t>(page_number));
-      auto reader = stub_->Render(&context, request);
+      auto reader = stub_->Render(call.context(), request);
 
       pdfv1::RenderResponse message;
       cv::Mat rendered;
@@ -281,13 +380,17 @@ class RemotePdfPageSource final : public PageSource {
         }
         const auto& raster = message.raster();
         if (raster.width_px() == 0 || raster.height_px() == 0) continue;
-        const cv::Mat view = raster_view(raster);
-        rendered = to_bgr(view, raster.pixel_format());
+        if (raster.page_index() != static_cast<uint32_t>(page_number - 1)) {
+          throw InvalidDocument("PDF backend answered with a raster for page " +
+                                std::to_string(raster.page_index() + 1) + " instead of page " +
+                                std::to_string(page_number));
+        }
+        rendered = at_render_dpi(to_bgr(raster_view(raster), raster.pixel_format()),
+                                 raster.dpi());
       }
       const grpc::Status status = reader->Finish();
       if (!status.ok()) {
-        throw InvalidDocument("PDF backend render failed: " +
-                              status.error_message());
+        throw_backend_failure("PDF backend render failed", status);
       }
       if (head_load_status == pdfv1::LOAD_STATUS_BYTES_REQUIRED &&
           !sent_bytes) {
@@ -313,6 +416,32 @@ class RemotePdfPageSource final : public PageSource {
   }
 
  private:
+  // One backend call's context, registered with the source so cancel()
+  // reaches it in flight. Its deadline is the sooner of the call's own
+  // budget and the request's; after cancel() no new call goes out.
+  class Call {
+   public:
+    Call(const RemotePdfPageSource& source, std::chrono::seconds budget) : source_(source) {
+      const std::lock_guard<std::mutex> lock(source_.calls_mutex_);
+      if (source_.cancelled_) {
+        throw PdfBackendUnavailable("PDF backend call cancelled", PdfBackendFailure::kCancelled);
+      }
+      context_.set_deadline(std::min(source_.deadline_, std::chrono::system_clock::now() + budget));
+      source_.calls_.insert(&context_);
+    }
+    Call(const Call&) = delete;
+    Call& operator=(const Call&) = delete;
+    ~Call() {
+      const std::lock_guard<std::mutex> lock(source_.calls_mutex_);
+      source_.calls_.erase(&context_);
+    }
+    grpc::ClientContext* context() { return &context_; }
+
+   private:
+    const RemotePdfPageSource& source_;
+    grpc::ClientContext context_;
+  };
+
   void check_page(int page_number) const {
     if (page_number < 1 || page_number > pages_) {
       throw InvalidDocument("PDF page number is out of range");
@@ -331,20 +460,66 @@ class RemotePdfPageSource final : public PageSource {
     return static_cast<int>(std::lround(user_space_units * render_scale_));
   }
 
+  // The raster is the backend's word on its own layout; a short or
+  // inconsistent one is a failed page (InvalidDocument, so consensus falls
+  // over to the next leg), never an out-of-bounds read.
   static cv::Mat raster_view(const pdfv1::PageRaster& raster) {
-    const int channels =
-        raster.pixel_format() == pdfv1::PIXEL_FORMAT_GRAY8 ? 1
-        : raster.pixel_format() == pdfv1::PIXEL_FORMAT_RGBA8 ||
-                raster.pixel_format() == pdfv1::PIXEL_FORMAT_BGRA8
-            ? 4
-            : 3;
-    return cv::Mat(static_cast<int>(raster.height_px()),
-                   static_cast<int>(raster.width_px()), CV_8UC(channels),
-                   const_cast<char*>(raster.pixels().data()),
-                   raster.stride_bytes());
+    int channels = 0;
+    switch (raster.pixel_format()) {
+      case pdfv1::PIXEL_FORMAT_GRAY8:
+        channels = 1;
+        break;
+      case pdfv1::PIXEL_FORMAT_RGB8:
+      case pdfv1::PIXEL_FORMAT_BGR8:
+        channels = 3;
+        break;
+      case pdfv1::PIXEL_FORMAT_RGBA8:
+      case pdfv1::PIXEL_FORMAT_BGRA8:
+        channels = 4;
+        break;
+      default:
+        throw InvalidDocument("PDF backend answered with an unknown pixel format");
+    }
+    constexpr uint64_t kMaxDim = static_cast<uint64_t>(std::numeric_limits<int>::max());
+    const uint64_t width = raster.width_px();
+    const uint64_t height = raster.height_px();
+    const uint64_t stride = raster.stride_bytes();
+    if (width > kMaxDim || height > kMaxDim || stride < width * channels ||
+        raster.pixels().size() < height * stride) {
+      throw InvalidDocument("PDF backend answered with a malformed raster (" +
+                            std::to_string(width) + "x" + std::to_string(height) + ", stride " +
+                            std::to_string(stride) + ", " +
+                            std::to_string(raster.pixels().size()) + " bytes)");
+    }
+    return cv::Mat(static_cast<int>(height), static_cast<int>(width), CV_8UC(channels),
+                   const_cast<char*>(raster.pixels().data()), stride);
   }
 
-  // The fold consumes BGR (what the in-process path produces); backends may
+  // Digital-text boxes scale by render_dpi/72, so a raster a backend
+  // rendered at another DPI (one that clamps it, say) is resized to the
+  // requested one; boxes and pixels then share one frame. A raster without
+  // a stated DPI is taken as rendered at the requested one.
+  cv::Mat at_render_dpi(cv::Mat image, double raster_dpi) const {
+    if (!(raster_dpi > 0.0) || !std::isfinite(raster_dpi)) return image;
+    const double factor = render_dpi_ / raster_dpi;
+    const double width = std::round(image.cols * factor);
+    const double height = std::round(image.rows * factor);
+    if (std::abs(width - image.cols) <= 1.0 && std::abs(height - image.rows) <= 1.0) return image;
+    // A raster's stated DPI is the backend's word; a tiny one would scale a
+    // small raster to an allocation the size of the whole budget, so the
+    // resized page is held to the same pixel cap as a decoded image.
+    if (width < 1.0 || height < 1.0 || width > std::numeric_limits<int>::max() ||
+        height > std::numeric_limits<int>::max() ||
+        width * height > static_cast<double>(max_image_pixels())) {
+      throw InvalidDocument("PDF backend raster DPI is out of range");
+    }
+    cv::Mat resized;
+    cv::resize(image, resized, cv::Size(static_cast<int>(width), static_cast<int>(height)), 0, 0,
+               factor < 1.0 ? cv::INTER_AREA : cv::INTER_LINEAR);
+    return resized;
+  }
+
+  // The fold consumes BGR (what the raster path decodes to); backends may
   // answer in their native layout.
   static cv::Mat to_bgr(const cv::Mat& view, pdfv1::PixelFormat format) {
     cv::Mat out;
@@ -376,6 +551,12 @@ class RemotePdfPageSource final : public PageSource {
   std::unique_ptr<pdfv1::PdfBackendService::Stub> stub_;
   int pages_ = 0;
   std::string backend_name_;
+  // Guards the request ties: set_deadline() and cancel() arrive from other
+  // threads than the page calls.
+  mutable std::mutex calls_mutex_;
+  std::chrono::system_clock::time_point deadline_ = std::chrono::system_clock::time_point::max();
+  bool cancelled_ = false;
+  mutable std::set<grpc::ClientContext*> calls_;
 };
 
 }  // namespace
@@ -386,9 +567,8 @@ std::optional<std::string> remote_pdf_backend_target() {
   std::string target(value);
   const auto begin = target.find_first_not_of(" \t");
   if (begin == std::string::npos) {
-    // The documented empty value keeps the in-process poppler path; a
-    // whitespace-only value is a typo that must fail loudly, not silently
-    // fall back or dial the literal string.
+    // The empty value means no backend is configured; a whitespace-only
+    // value is a typo that must fail loudly, not dial the literal string.
     if (target.empty()) return std::nullopt;
     throw std::invalid_argument(
         "GRPARSE_PDF_BACKEND is whitespace-only; unset it or name a backend "
@@ -396,7 +576,24 @@ std::optional<std::string> remote_pdf_backend_target() {
   }
   const auto end = target.find_last_not_of(" \t");
   target = target.substr(begin, end - begin + 1);
-  if (target == "inprocess") return std::nullopt;
+  // The in-process poppler path is gone; dialing a host by that name would
+  // fail every PDF at request time instead of at startup. A consensus list
+  // is checked entry by entry.
+  size_t start = 0;
+  bool inprocess = false;
+  while (start <= target.size()) {
+    const size_t comma = std::min(target.find(',', start), target.size());
+    std::string_view entry(target.data() + start, comma - start);
+    while (!entry.empty() && (entry.front() == ' ' || entry.front() == '\t')) entry.remove_prefix(1);
+    while (!entry.empty() && (entry.back() == ' ' || entry.back() == '\t')) entry.remove_suffix(1);
+    if (entry == "inprocess") inprocess = true;
+    start = comma + 1;
+  }
+  if (inprocess) {
+    throw std::invalid_argument(
+        "GRPARSE_PDF_BACKEND=inprocess is no longer supported: gRParse links "
+        "no PDF engine; name a PdfBackendService target such as pdfium:50069");
+  }
   return target;
 }
 

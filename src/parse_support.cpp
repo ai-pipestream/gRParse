@@ -233,11 +233,33 @@ PageScheduler::OcrTuning ocr_tuning(bool has_do_ocr, bool do_ocr, bool force_ocr
   return tuning;
 }
 
+namespace {
+
+grpc::StatusCode status_code_for(PdfBackendFailure reason) {
+  switch (reason) {
+    case PdfBackendFailure::kDeadlineExceeded:
+      return grpc::StatusCode::DEADLINE_EXCEEDED;
+    case PdfBackendFailure::kCancelled:
+      return grpc::StatusCode::CANCELLED;
+    case PdfBackendFailure::kResourceExhausted:
+      return grpc::StatusCode::RESOURCE_EXHAUSTED;
+    case PdfBackendFailure::kUnavailable:
+      break;
+  }
+  return grpc::StatusCode::UNAVAILABLE;
+}
+
+}  // namespace
+
 grpc::Status status_from_exception(std::exception_ptr failure) {
   try {
     if (failure) std::rethrow_exception(failure);
+  } catch (const PdfBackendUnavailable& error) {
+    return grpc::Status(status_code_for(error.reason()), error.what());
   } catch (const InvalidDocument& error) {
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, error.what());
+  } catch (const PdfBackendNotConfigured& error) {
+    return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION, error.what());
   } catch (const SchedulerSaturated& error) {
     return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED, error.what());
   } catch (const SchedulerShuttingDown& error) {

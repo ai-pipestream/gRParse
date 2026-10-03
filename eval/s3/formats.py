@@ -173,12 +173,13 @@ def parser_type(document: dict[str, Any]) -> str:
 
 def pdf_has_text_layer(document: dict[str, Any]) -> bool:
     """True when the PDF's text came from its text layer: the inspector's
-    fold ("pdf") or the CV path's poppler-text engine."""
+    fold ("pdf") or the CV path's pdf-text layer (read through the PDF
+    backend service)."""
     for _, node in arena_nodes(document):
         for source in node.get("source", []) or []:
             collector = source.get("collector") or {}
             if collector.get("collector") == "pdf":
                 return True
-            if collector.get("collector") == "grparse" and collector.get("model") == "poppler-text":
+            if collector.get("collector") == "grparse" and collector.get("model") == "pdf-text":
                 return True
     return False

@@ -38,8 +38,7 @@ void attach_page_previews(std::shared_ptr<const std::string> bytes,
   if (document == nullptr || bytes == nullptr) return;
   std::shared_ptr<PageSource> source;
   try {
-    source = open_in_memory_document(std::move(bytes), /*pdf=*/true, /*pdf_parser_slots=*/1,
-                                     kPreviewRenderDpi);
+    source = open_in_memory_document(std::move(bytes), /*pdf=*/true, kPreviewRenderDpi);
   } catch (const std::exception&) {
     return;
   }

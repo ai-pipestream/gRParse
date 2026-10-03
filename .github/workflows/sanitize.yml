@@ -39,16 +39,13 @@ jobs:
         # code exchanges std::string/std::vector with the uninstrumented
         # fetched dependencies, which is the documented false-positive case.
         # -DGRPARSE_ORT_PACKAGE=cpu keeps the CUDA ORT package off a GPU-less
-        # runner. The two poppler lines (LD_LIBRARY_PATH's /opt/poppler/lib
-        # and PKG_CONFIG_PATH) go away when the in-process poppler path is
-        # removed (PR #90).
+        # runner.
         run: |
           docker run --rm --cap-add SYS_PTRACE -v "$PWD:/src" -w /src \
             -e ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1:detect_container_overflow=0 \
             -e UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
             -e LSAN_OPTIONS=suppressions=/src/tests/lsan.supp \
-            -e LD_LIBRARY_PATH=/opt/poppler/lib:/opt/opencv/lib \
-            -e PKG_CONFIG_PATH=/opt/poppler/lib/pkgconfig \
+            -e LD_LIBRARY_PATH=/opt/opencv/lib \
             grparse-san-deps sh -c '
               cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
                 -DBUILD_TESTING=ON -DGRPARSE_SANITIZE=address,undefined \
