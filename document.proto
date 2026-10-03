@@ -160,6 +160,14 @@ message Document {
 // The analyzer's own result is carried unchanged, so nothing it reports is
 // lost to a translation into item meta; filling BaseMeta from it is a
 // projection a consumer or a later stage may make.
+//
+// A document may hold several entries over the same window: the core
+// analyzer and each add-on (WordNet, dependency parsing) can answer
+// separately, each under its own `source`. Every result is self-contained:
+// an index reference inside it (a dependency arc's token, a relation's
+// entity) resolves within that same result, so an add-on that builds on
+// tokens or entities returns the layers it indexes. Entries share only the
+// stream coordinates.
 message TextAnalysis {
   // The analyzer that answered: collector "opennlp", `model` the model bundle
   // id, `version` the analyzer build as its GetServiceInfo reports it.
@@ -174,8 +182,9 @@ message TextAnalysis {
   uint64 stream_start = 3;
   uint64 stream_end = 4;
   // The models behind each layer of the result, keyed by the layer id the
-  // result uses (for OpenNLP, AnnotationLayer.id such as "opennlp:entities"),
-  // so tags, entity labels and subword ids stay interpretable later.
+  // result uses (for OpenNLP, AnnotationLayer.id: a standard id such as
+  // "opennlp:entities" or an add-on's namespaced custom id), so tags, entity
+  // labels, senses and subword ids stay interpretable later.
   map<string, CollectorSource> layer_sources = 5;
   oneof result {
     // An OpenNLP analysis, verbatim. Its raw_text is the analyzed window,
