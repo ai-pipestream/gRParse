@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <print>
 #include <stdexcept>
@@ -194,9 +195,8 @@ void verify_validation_accepts_hf_and_names_the_resolution_order() {
   require(absent.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
           "hf/1 without a readable file is INVALID_ARGUMENT");
   require(absent.error_message().contains("tokenizer_path") &&
-              absent.error_message().contains("GRPARSE_CHUNK_TOKENIZER") &&
-              absent.error_message().contains("GRPARSE_MODELS_DIR"),
-          "the rejection names the resolution order: " + absent.error_message());
+              absent.error_message().contains("GRPARSE_TOKENIZER_DIR"),
+          "the rejection names the option and its directory: " + absent.error_message());
 
   {
     // No request path, no env override, and a models dir without the file.
@@ -219,6 +219,45 @@ void verify_validation_accepts_hf_and_names_the_resolution_order() {
   parsev1::HybridChunkerOptions wordish;
   wordish.set_max_tokens(64);
   require(validate_hybrid_options(wordish).ok(), "the wordish default needs no file");
+}
+
+// A request's tokenizer_path names a regular file inside the tokenizer
+// directory or nothing, and every refusal reads the same apart from the
+// echoed path.
+void verify_request_tokenizer_path_is_confined() {
+  const std::filesystem::path data = std::filesystem::path(fixture_path()).parent_path();
+  ScopedEnv dir("GRPARSE_TOKENIZER_DIR", data.c_str());
+  require(validate_hybrid_options(hf_options(64, "chunk_tokenizer_tiny.json")).ok(),
+          "a relative path resolves inside the directory");
+  require(validate_hybrid_options(hf_options(64, "../data/chunk_tokenizer_tiny.json")).ok(),
+          "a path that resolves back inside the directory is accepted");
+
+  const std::string outside = write_temp("grparse-hf-outside.json", [] {
+    std::ifstream in(fixture_path(), std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  }());
+  const auto message_for = [](const std::string& path) {
+    const grpc::Status status = validate_hybrid_options(hf_options(64, path));
+    require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
+            "'" + path + "' is refused");
+    std::string message = status.error_message();
+    message.erase(message.find(path), path.size());
+    return message;
+  };
+  const std::string reference = message_for("/nonexistent/tokenizer.json");
+  for (const std::string& path :
+       {outside, std::string("/dev/zero"), std::string("../chunking_test.cpp"),
+        std::string("/etc/passwd"), data.string(), std::string("missing.json")}) {
+    require(message_for(path) == reference,
+            "every refusal reads the same: '" + path + "' gave " + message_for(path));
+  }
+  std::filesystem::remove(outside);
+
+  std::string json;
+  const grpc::Status device = load_hf_tokenizer_json("/dev/zero", &json);
+  require(device.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              device.error_message().contains("regular file"),
+          "the loader refuses a device instead of reading it: " + device.error_message());
 }
 
 // -- chunking with hf/1 ---------------------------------------------------------
@@ -265,7 +304,7 @@ void verify_hybrid_chunks_use_the_hf_counter() {
     require_eq(chunk.num_tokens(), counter.count(chunk.text()),
                "num_tokens is the hf/1 count");
     require(chunk.rules_digest() ==
-                "grparse-hybrid/1;tok=hf/1;sent=sentence/1;max_tokens=2;merge_peers=true",
+                "grparse-hybrid/2;tok=hf/1;sent=sentence/1;max_tokens=2;merge_peers=true",
             "the digest names the hf/1 counter: " + chunk.rules_digest());
   }
 
@@ -285,8 +324,8 @@ void verify_hybrid_chunks_use_the_hf_counter() {
 
 void verify_the_hard_cut_measures_under_hf() {
   // One pretoken over budget: wordish/1 would cut by code point count, which
-  // says nothing about a merge-heavy tokenizer, so hf/1 grows each piece one
-  // code point at a time and measures.
+  // says nothing about a merge-heavy tokenizer, so hf/1 measures each piece
+  // (doubling, then a binary search for the longest piece that fits).
   docv1::Document document = new_document();
   add_paragraph(&document, "helloworld");
   const auto chunks = hybrid_or_throw(document, hf_options(1, fixture_path()));
@@ -338,6 +377,11 @@ void verify_hf_chunking_is_byte_identical_across_runs_and_threads() {
 }  // namespace
 
 int main() {
+  // A request's tokenizer_path must sit inside the tokenizer directory; the
+  // committed fixture's directory is that directory for these cases.
+  if (const char* data = std::getenv("GRPARSE_TEST_DATA_DIR"); data != nullptr) {
+    setenv("GRPARSE_TOKENIZER_DIR", data, 1);
+  }
   return grparse_test::run_test_main("chunk-hf-tokenizer-test", "all cases passed",
                                      {
                                          verify_resolution_order,
@@ -345,6 +389,7 @@ int main() {
                                          verify_hf_counts_match_the_fixture_vocab,
                                          verify_load_failures_are_invalid_argument_not_crashes,
                                          verify_validation_accepts_hf_and_names_the_resolution_order,
+                                         verify_request_tokenizer_path_is_confined,
                                          verify_hybrid_chunks_use_the_hf_counter,
                                          verify_the_hard_cut_measures_under_hf,
                                          verify_hf_chunking_is_byte_identical_across_runs_and_threads,

@@ -234,7 +234,8 @@ void note_error(const lolv1::StreamError& error, CollectorOutcome* outcome) {
 CollectorOutcome collect_lol_html_document(const std::shared_ptr<grpc::Channel>& channel,
                                            const std::string& options_json,
                                            const std::string& bytes,
-                                           CollectorDeadline inbound_deadline) {
+                                           CollectorDeadline inbound_deadline,
+                                           CollectorCancelled cancelled) {
   CollectorOutcome outcome;
   if (options_json.empty()) {
     // Nothing to dial: the collector extracts what its selector rules name,
@@ -258,15 +259,16 @@ CollectorOutcome collect_lol_html_document(const std::shared_ptr<grpc::Channel>&
   auto stub = lolv1::LolHtmlService::NewStub(channel);
   grpc::ClientContext context;
   context.set_deadline(capped_collector_deadline(inbound_deadline, kDeadline));
+  const CancelWatch watch(context, std::move(cancelled));
   auto stream = stub->Extract(&context);
 
   lolv1::ExtractRequest request;
   *request.mutable_options() = std::move(options);
-  upload_stream(*stream, request, bytes, /*always_send_chunk=*/false,
-                [&bytes](lolv1::ExtractRequest& frame, size_t offset,
-                         size_t length, bool /*last*/) {
-                  frame.set_chunk(bytes.data() + offset, length);
-                });
+  ConcurrentUpload upload(
+      context, *stream, request, bytes, /*always_send_chunk=*/false,
+      [&bytes](lolv1::ExtractRequest& frame, size_t offset, size_t length, bool /*last*/) {
+        frame.set_chunk(bytes.data() + offset, length);
+      });
 
   LolHtmlFold fold(outcome.document);
   bool finished_seen = false;
@@ -303,6 +305,7 @@ CollectorOutcome collect_lol_html_document(const std::shared_ptr<grpc::Channel>&
     event.Clear();
   }
 
+  upload.join();
   const grpc::Status status = stream->Finish();
   if (!status.ok()) {
     outcome.error = std::string("lol-html collector: ") + status.error_message();

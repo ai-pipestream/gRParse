@@ -278,12 +278,12 @@ Ort::Session* make_rapidocr_session(Ort::Env& env, const std::filesystem::path& 
       throw_if_build_failure_injected();
       return cpu_build();
     }
-    // The same options the patched nets used to configure themselves:
-    // their thread count, then the central provider hook.
+    // The same options the patched nets used to configure themselves: the
+    // central provider hook with the net's own thread count, exactly what
+    // cpu_build() honours, so a provider never changes the threading.
     Ort::SessionOptions options;
     options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
-    if (num_thread > 0) options.SetIntraOpNumThreads(num_thread);
-    append_execution_provider(options, -1);
+    append_execution_provider(options, -1, OrtPrecision::kProviderDefault, num_thread);
     throw_if_build_failure_injected();
     return new Ort::Session(env, model_path.c_str(), options);
   });

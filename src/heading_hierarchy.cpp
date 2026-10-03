@@ -362,12 +362,22 @@ std::vector<HeaderHeight> headers_of(const std::vector<Candidate>& found) {
   return headers;
 }
 
+int64_t codepoint_count(std::string_view text) {
+  int64_t count = 0;
+  for (const unsigned char byte : text) {
+    if ((byte & 0xC0U) != 0x80U) ++count;
+  }
+  return count;
+}
+
 // The tail's text and provenance folded into the head, spans shifted past
-// the head's text and the joining space.
+// the head's text and the joining space, less the leading whitespace
+// trimmed from the tail. Span ranges count code points.
 void fold_title_line(docv1::TextItemBase* head, docv1::TextItemBase* tail) {
   const std::string head_text(trim_right(head->text()));
   const std::string tail_text(trim_left(tail->text()));
-  const int64_t shift = static_cast<int64_t>(head_text.size()) + 1;
+  const int64_t shift = codepoint_count(head_text) + 1 -
+                        (codepoint_count(tail->text()) - codepoint_count(tail_text));
   head->set_text(head_text + " " + tail_text);
   if (!head->orig().empty() || !tail->orig().empty()) {
     const std::string head_orig(trim_right(head->orig().empty() ? head_text : head->orig()));

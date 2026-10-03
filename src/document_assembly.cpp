@@ -65,8 +65,9 @@ pipestream::parse::v1::TextSource text_source_for(const OcrPage& page, const Ocr
 
 // Region label -> document item label for the text lines inside it.  Covers
 // both detectors' vocabularies; lines inside table/picture regions keep TEXT,
-// because the region itself is emitted as a TableItem/PictureItem and
-// cell/caption structure is later work. `recognized` false means the label
+// because the region itself is emitted as a TableItem/PictureItem whose cells
+// come from fill_table_data and whose captions bind once the page is
+// assembled (append_page_data). `recognized` false means the label
 // is outside both vocabularies and the deliberate structural set: the caller
 // keeps the raw spelling on label_raw and names the fallback, because a
 // forgotten label must never be invisible.

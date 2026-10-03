@@ -1,7 +1,10 @@
 #pragma once
 
+#include <functional>
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -37,7 +40,15 @@ cv::Mat preview_of(const cv::Mat& raster);
 // pages the PDF has that the document never named are added with only their
 // number and preview. Bytes that do not open as a PDF leave the document
 // exactly as it was: a preview is an aid, never a reason to fail a parse.
+//
+// `page_range` (inclusive, 1-indexed, the request's Docling page_range)
+// limits the pages rendered, so a document trimmed to a span gains no entries
+// outside it. `stop` is polled before each page (a cancelled request, a
+// passed deadline); once it answers true the pages rendered so far stay and
+// the rest are skipped.
 void attach_page_previews(std::shared_ptr<const std::string> bytes,
-                          ai::pipestream::document::v1::Document* document);
+                          ai::pipestream::document::v1::Document* document,
+                          std::optional<std::pair<int, int>> page_range = std::nullopt,
+                          const std::function<bool()>& stop = {});
 
 }  // namespace grparse

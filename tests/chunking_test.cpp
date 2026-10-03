@@ -333,7 +333,7 @@ void verify_heading_trail_shadows_and_pops() {
   for (const auto& chunk : chunks) {
     require(chunk.text() != "Birds" && chunk.text() != "Field Guide",
             "headings never emit chunks of their own");
-    require_eq(chunk.rules_digest(), "grparse-hier/1",
+    require_eq(chunk.rules_digest(), "grparse-hier/2",
                "every hierarchical chunk carries the hierarchical digest");
   }
   for (int index = 0; index < static_cast<int>(chunks.size()); ++index) {
@@ -659,6 +659,83 @@ void verify_wordish_token_counts() {
   }
 }
 
+// What a list item holds rides inside its list: a sub-list under the item
+// (docling-core's canonical nesting) and a paragraph under it both join the
+// list chunk, and a picture inside the list chunks on its own after it.
+void verify_list_items_carry_their_children() {
+  docv1::Document document = new_document();
+  std::vector<std::string> items;
+  const std::string outer = add_list(&document, false, {"apples", "pears"}, 0, &items);
+  const int pears = std::stoi(items[1].substr(std::string("#/texts/").size()));
+
+  const std::string inner_ref = "#/groups/" + std::to_string(document.groups_size());
+  auto* inner = document.add_groups();
+  inner->set_self_ref(inner_ref);
+  inner->set_label(docv1::GROUP_LABEL_ORDERED_LIST);
+  inner->mutable_parent()->set_ref(items[1]);
+  document.mutable_texts(pears)->mutable_list_item()->mutable_base()->add_children()->set_ref(
+      inner_ref);
+  for (const char* text : {"conference", "williams"}) {
+    const std::string ref = next_text_ref(document);
+    auto* item = document.add_texts()->mutable_list_item();
+    fill_base(item->mutable_base(), ref, text, 0);
+    item->mutable_base()->mutable_parent()->set_ref(inner_ref);
+    item->mutable_base()->set_label(docv1::DOC_ITEM_LABEL_LIST_ITEM);
+    document.mutable_groups(1)->add_children()->set_ref(ref);
+  }
+  const std::string note = next_text_ref(document);
+  fill_base(document.add_texts()->mutable_text()->mutable_base(), note, "Both ripen late.", 0);
+  document.mutable_texts(pears)->mutable_list_item()->mutable_base()->add_children()->set_ref(note);
+
+  const std::string caption = next_text_ref(document);
+  fill_base(document.add_texts()->mutable_text()->mutable_base(), caption, "A pear tree.", 0);
+  document.mutable_texts(document.texts_size() - 1)->mutable_text()->mutable_base()->set_label(
+      docv1::DOC_ITEM_LABEL_CAPTION);
+  auto* picture = document.add_pictures();
+  picture->set_self_ref("#/pictures/0");
+  picture->set_label(docv1::DOC_ITEM_LABEL_PICTURE);
+  picture->mutable_parent()->set_ref(outer);
+  picture->add_captions()->set_ref(caption);
+  document.mutable_groups(0)->add_children()->set_ref("#/pictures/0");
+
+  const auto chunks = chunk_hierarchical(document, {}, {}, "list.pdf");
+  require_eq(static_cast<int>(chunks.size()), 2, "the list chunks, then the picture inside it");
+  require_eq(chunks[0].text(), "- apples\n- pears\n1. conference\n2. williams\nBoth ripen late.",
+             "a list item's sub-list and paragraph follow its line");
+  require(std::ranges::find(chunks[0].doc_items(), inner_ref) != chunks[0].doc_items().end() &&
+              std::ranges::find(chunks[0].doc_items(), note) != chunks[0].doc_items().end(),
+          "the nested group and the paragraph are the list chunk's items");
+  require_eq(chunks[1].text(), "A pear tree.", "the picture inside the list keeps its caption");
+  require(chunks[0].rules_digest() == "grparse-hier/2", "the walk's rules moved to hier/2");
+}
+
+// A walk nested past the cap leaves the deep subtree out instead of
+// overflowing the stack.
+void verify_deep_nesting_is_bounded() {
+  docv1::Document document = new_document();
+  add_paragraph(&document, "shallow");
+  std::string parent = "#/body";
+  for (int level = 0; level < 2000; ++level) {
+    const std::string ref = "#/groups/" + std::to_string(document.groups_size());
+    auto* group = document.add_groups();
+    group->set_self_ref(ref);
+    group->set_label(level % 2 == 0 ? docv1::GROUP_LABEL_SECTION : docv1::GROUP_LABEL_LIST);
+    group->mutable_parent()->set_ref(parent);
+    if (level == 0) {
+      document.mutable_body()->add_children()->set_ref(ref);
+    } else {
+      document.mutable_groups(level - 1)->add_children()->set_ref(ref);
+    }
+    parent = ref;
+  }
+  const std::string deep = next_text_ref(document);
+  fill_base(document.add_texts()->mutable_text()->mutable_base(), deep, "deep", 0);
+  document.mutable_groups(document.groups_size() - 1)->add_children()->set_ref(deep);
+  const auto chunks = chunk_hierarchical(document, {}, {}, "deep.html");
+  require(find_chunk(chunks, "shallow") != nullptr, "the shallow paragraph chunks");
+  require(find_chunk(chunks, "deep") == nullptr, "the subtree past the cap is left out");
+}
+
 // -- hybrid -----------------------------------------------------------------
 
 parsev1::HybridChunkerOptions hybrid_options(int max_tokens) {
@@ -719,7 +796,7 @@ void verify_hybrid_merges_only_equal_heading_trails() {
           "the merged chunk keeps the shared trail");
   require_eq(merged.back().text(), "five six", "a different trail always breaks the run");
   require_eq(merged.front().rules_digest(),
-             "grparse-hybrid/1;tok=wordish/1;sent=sentence/1;max_tokens=64;merge_peers=true",
+             "grparse-hybrid/2;tok=wordish/1;sent=sentence/1;max_tokens=64;merge_peers=true",
              "the hybrid digest spells out every boundary input");
 
   // The budget, not the trail, is what stops a merge here.
@@ -789,6 +866,20 @@ void verify_hybrid_headings_count_against_the_budget() {
   }
 }
 
+// A heading trail that alone reaches the budget leaves its chunk whole
+// rather than cut into 1-token pieces that are each still over budget.
+void verify_hybrid_heading_over_budget_leaves_chunk_whole() {
+  docv1::Document document = new_document();
+  add_section(&document, "a very long run on heading of many words", 1);
+  add_paragraph(&document, "alpha beta gamma delta epsilon zeta eta theta.");
+  const auto chunks = run_hybrid(document, {}, hybrid_options(4), "d.pdf");
+  require_eq(static_cast<int>(chunks.size()), 1, "the chunk is not exploded");
+  require_eq(chunks[0].text(), "alpha beta gamma delta epsilon zeta eta theta.",
+             "the text goes out whole");
+  require(chunks[0].rules_digest().starts_with("grparse-hybrid/2;"),
+          "the hybrid rules moved to hybrid/2");
+}
+
 void verify_split_pieces_narrow_offsets_only_when_exact() {
   docv1::Document document = new_document();
   const std::string ref = add_paragraph(&document, "Alpha beta. Gamma delta.", 1);
@@ -831,10 +922,10 @@ void verify_raw_text_mirrors_text_when_requested() {
 
 void verify_hybrid_digest_reports_the_budget() {
   require_eq(hybrid_rules_digest(512, true),
-             "grparse-hybrid/1;tok=wordish/1;sent=sentence/1;max_tokens=512;merge_peers=true",
+             "grparse-hybrid/2;tok=wordish/1;sent=sentence/1;max_tokens=512;merge_peers=true",
              "the hybrid digest string is fixed");
   require_eq(hybrid_rules_digest(8, false),
-             "grparse-hybrid/1;tok=wordish/1;sent=sentence/1;max_tokens=8;merge_peers=false",
+             "grparse-hybrid/2;tok=wordish/1;sent=sentence/1;max_tokens=8;merge_peers=false",
              "the hybrid digest string is fixed");
 }
 
@@ -870,6 +961,8 @@ const Case kCases[] = {
     {"determinism across runs and threads", verify_chunking_is_byte_identical_across_runs_and_threads},
     {"heading trail shadowing", verify_heading_trail_shadows_and_pops},
     {"list group consumption", verify_list_group_consumes_its_items},
+    {"list item children", verify_list_items_carry_their_children},
+    {"nesting depth cap", verify_deep_nesting_is_bounded},
     {"table serialization", verify_table_serialization_and_its_degradations},
     {"picture captions", verify_picture_chunks_carry_captions_only},
     {"picture markdown images", verify_picture_chunks_emit_markdown_image_placeholder},
@@ -885,6 +978,7 @@ const Case kCases[] = {
     {"hybrid sentence splitting", verify_hybrid_splits_oversized_chunks},
     {"hybrid word and hard-cut fallback", verify_hybrid_falls_back_to_words_then_hard_cuts},
     {"hybrid heading budget", verify_hybrid_headings_count_against_the_budget},
+    {"hybrid heading over budget", verify_hybrid_heading_over_budget_leaves_chunk_whole},
     {"hybrid offset narrowing", verify_split_pieces_narrow_offsets_only_when_exact},
     {"raw text option", verify_raw_text_mirrors_text_when_requested},
     {"hybrid digest", verify_hybrid_digest_reports_the_budget},

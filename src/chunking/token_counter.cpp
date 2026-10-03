@@ -1,10 +1,14 @@
 #include "token_counter.h"
 
+#include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
-#include <iterator>
+#include <optional>
 #include <string>
+#include <system_error>
 #include <utility>
 
 #include <tokenizers_cpp.h>
@@ -196,16 +200,47 @@ int count_tokens(std::string_view text) {
 
 // -- hf/1 -------------------------------------------------------------------
 
+namespace {
+
+std::string models_dir() {
+  const char* models = std::getenv("GRPARSE_MODELS_DIR");
+  return (models != nullptr && *models != '\0') ? models : "/models";
+}
+
+}  // namespace
+
 std::string resolve_hf_tokenizer_path(std::string_view per_request_path) {
   if (!per_request_path.empty()) return std::string(per_request_path);
   if (const char* env = std::getenv("GRPARSE_CHUNK_TOKENIZER");
       env != nullptr && *env != '\0') {
     return env;
   }
-  const char* models = std::getenv("GRPARSE_MODELS_DIR");
-  const std::string dir =
-      (models != nullptr && *models != '\0') ? models : "/models";
-  return dir + "/chunk/tokenizer.json";
+  return models_dir() + "/chunk/tokenizer.json";
+}
+
+std::string hf_tokenizer_dir() {
+  if (const char* env = std::getenv("GRPARSE_TOKENIZER_DIR"); env != nullptr && *env != '\0') {
+    return env;
+  }
+  return models_dir();
+}
+
+std::optional<std::string> confine_request_tokenizer_path(std::string_view requested) {
+  namespace fs = std::filesystem;
+  if (requested.empty()) return std::nullopt;
+  std::error_code error;
+  const fs::path dir = fs::canonical(hf_tokenizer_dir(), error);
+  if (error) return std::nullopt;
+  fs::path candidate{std::string(requested)};
+  if (candidate.is_relative()) candidate = dir / candidate;
+  // Symlinks and ".." resolve before the containment test, so neither can
+  // step outside the directory.
+  const fs::path resolved = fs::canonical(candidate, error);
+  if (error) return std::nullopt;
+  const auto [dir_end, _] = std::mismatch(dir.begin(), dir.end(), resolved.begin(), resolved.end());
+  if (dir_end != dir.end() || resolved == dir) return std::nullopt;
+  if (!fs::is_regular_file(resolved, error) || error) return std::nullopt;
+  return resolved.string();
 }
 
 namespace {
@@ -289,12 +324,30 @@ grpc::Status invalid_tokenizer_json(std::string_view path, std::string_view why)
 }  // namespace
 
 grpc::Status load_hf_tokenizer_json(std::string_view path, std::string* json_out) {
-  std::ifstream in{std::string(path), std::ios::binary};
+  // Only a regular file of bounded size is read: a device, a FIFO or a
+  // directory would read forever, block, or fail late.
+  std::error_code error;
+  const std::filesystem::path file{std::string(path)};
+  if (!std::filesystem::is_regular_file(file, error) || error) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        "tokenizer file '" + std::string(path) + "' is not a readable regular file");
+  }
+  const std::uintmax_t size = std::filesystem::file_size(file, error);
+  if (error || size > kMaximumTokenizerBytes) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        "tokenizer file '" + std::string(path) + "' is larger than " +
+                            std::to_string(kMaximumTokenizerBytes >> 20) + " MiB");
+  }
+  std::ifstream in{file, std::ios::binary};
   if (!in) {
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                         "tokenizer file '" + std::string(path) + "' is not readable");
   }
-  const std::string raw{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+  // Read at most the size measured above, so a file growing underneath
+  // cannot push the read past the cap.
+  std::string raw(static_cast<std::size_t>(size), '\0');
+  in.read(raw.data(), static_cast<std::streamsize>(size));
+  raw.resize(static_cast<std::size_t>(in.gcount()));
   if (in.bad()) {
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                         "tokenizer file '" + std::string(path) + "' failed while reading");

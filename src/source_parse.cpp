@@ -1,6 +1,7 @@
 #include "source_parse.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -142,9 +143,9 @@ bool implemented_option(std::string_view name) {
       "do_formula_enrichment",
       "code_formula_preset",
       // Accepted for Docling clients that always populate them. PROCESSING_PIPELINE_VLM
-      // dials grpc-vlm-convert when GRPARSE_VLM_CONVERT_TARGET is set. Typed
-      // *_custom_config messages and open ScalarValue maps are accepted; values
-      // are applied where a local dial exists (e.g. classification threshold).
+      // dials grpc-vlm-convert when GRPARSE_VLM_CONVERT_TARGET is set. The
+      // presets and maps no leg reads pass only at their Docling defaults
+      // (validate_unread_options); the rest apply where a dial exists.
       "vlm_pipeline_model",
       "vlm_pipeline_model_local",
       "vlm_pipeline_model_api",
@@ -269,6 +270,33 @@ grpc::Status validate_picture_description_engines(
     if (api.has_concurrency() && api.concurrency() < 1) {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                           surface + ": picture_description_api.concurrency must be >= 1");
+    }
+  }
+  return grpc::Status::OK;
+}
+
+// A request that names its own remote model endpoint has a peer call that
+// address on the caller's behalf, so it is refused unless the operator set
+// GRPARSE_ENABLE_REMOTE_SERVICES=on (docling-serve's
+// DOCLING_SERVE_ENABLE_REMOTE_SERVICES). A vlm_pipeline_model_api.url that
+// is not an http(s) URL is a preset name, never dialed, and stays allowed.
+grpc::Status validate_remote_services(const pipestream::parse::v1::ConvertDocumentOptions& options,
+                                      const CollectorEndpoints* collectors,
+                                      const std::string& surface) {
+  if (collectors != nullptr && collectors->remote_services_enabled()) return grpc::Status::OK;
+  const auto refused = [&surface](const std::string& field) {
+    return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
+                        surface + ": " + field +
+                            " names a remote service, which this server does not call on a "
+                            "request's behalf unless GRPARSE_ENABLE_REMOTE_SERVICES=on");
+  };
+  if (options.has_picture_description_api() && !options.picture_description_api().url().empty()) {
+    return refused("picture_description_api.url");
+  }
+  if (options.has_vlm_pipeline_model_api()) {
+    const std::string& url = options.vlm_pipeline_model_api().url();
+    if (url.starts_with("http://") || url.starts_with("https://")) {
+      return refused("vlm_pipeline_model_api.url");
     }
   }
   return grpc::Status::OK;
@@ -526,6 +554,80 @@ grpc::Status validate_heading_options(
   return grpc::Status::OK;
 }
 
+// Options Docling clients populate that no leg here reads. Their Docling
+// defaults are what this server does anyway, so those pass; any other value
+// asks for behaviour this server would silently not deliver, and is turned
+// down by name. table_mode and pdf_backend stay accepted (see their
+// validators): one model and the deployment's own backend serve every value.
+grpc::Status validate_unread_options(const pipestream::parse::v1::ConvertDocumentOptions& options,
+                                     const std::string& surface) {
+  const auto rejected = [&surface](const std::string& what) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        surface + " does not implement option '" + what + "'");
+  };
+  // The installed PP-OCRv3 "ch" models read Chinese and English and nothing
+  // else, which is also RapidOCR's own default language list.
+  static constexpr std::string_view kReadLanguages[] = {"ch", "chinese", "zh", "en", "english"};
+  for (const std::string& language : options.ocr_lang()) {
+    if (std::ranges::find(kReadLanguages, language) == std::end(kReadLanguages)) {
+      return rejected("ocr_lang' value '" + language);
+    }
+  }
+  if (options.has_table_cell_matching() && !options.table_cell_matching()) {
+    return rejected("table_cell_matching");
+  }
+  // Only the VLM pipeline stops at the first failed page; the standard path
+  // always degrades to a partial result.
+  const bool vlm_pipeline =
+      (options.has_pipeline() &&
+       options.pipeline() == pipestream::parse::v1::PROCESSING_PIPELINE_VLM) ||
+      (options.collectors_size() == 1 &&
+       options.collectors(0) == pipestream::parse::v1::COLLECTOR_VLM);
+  if (options.has_abort_on_error() && options.abort_on_error() && !vlm_pipeline) {
+    return rejected("abort_on_error");
+  }
+  const auto default_preset = [](bool has, const std::string& value) {
+    return !has || value.empty() || value == "default";
+  };
+  // RapidOCR is the one recognizer here, so its own preset name is honoured.
+  if (!default_preset(options.has_ocr_preset(), options.ocr_preset()) &&
+      options.ocr_preset() != "rapidocr") {
+    return rejected("ocr_preset");
+  }
+  if (!default_preset(options.has_table_structure_preset(), options.table_structure_preset())) {
+    return rejected("table_structure_preset");
+  }
+  if (!default_preset(options.has_layout_preset(), options.layout_preset())) {
+    return rejected("layout_preset");
+  }
+  if (!default_preset(options.has_picture_classification_preset(),
+                      options.picture_classification_preset())) {
+    return rejected("picture_classification_preset");
+  }
+  // There is no chunking preset catalog: the only preset this server can
+  // honour is the hierarchical defaults it falls back to.
+  if (!default_preset(options.has_chunking_preset(), options.chunking_preset()) &&
+      options.chunking_preset() != "hierarchical") {
+    return rejected("chunking_preset");
+  }
+  if (!options.table_structure_custom_config().empty()) {
+    return rejected("table_structure_custom_config");
+  }
+  if (!options.layout_custom_config().empty()) return rejected("layout_custom_config");
+  // The enrich dial carries the endpoint, timeout and concurrency only: a
+  // keyed API's auth headers would be dropped, not sent.
+  if (options.has_picture_description_api()) {
+    const auto& api = options.picture_description_api();
+    if (!api.headers().empty()) return rejected("picture_description_api.headers");
+    if (!api.params().empty()) return rejected("picture_description_api.params");
+    if (api.has_prompt() && !api.prompt().empty() &&
+        api.prompt() != "Describe this image in a few sentences.") {
+      return rejected("picture_description_api.prompt");
+    }
+  }
+  return grpc::Status::OK;
+}
+
 }  // namespace
 
 // `surface` names the RPC in the rejections so a caller learns which of the
@@ -544,6 +646,8 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
       validate_ocr_tuning(options.has_do_ocr(), options.do_ocr(), options.force_ocr(),
                           options.has_render_scale(), options.render_scale());
   if (!tuning_status.ok()) return tuning_status;
+  const grpc::Status unread_status = validate_unread_options(options, surface);
+  if (!unread_status.ok()) return unread_status;
   const grpc::Status pipeline_status = validate_pipeline(options, surface);
   if (!pipeline_status.ok()) return pipeline_status;
   const grpc::Status ocr_engine_status = validate_ocr_engine(options, surface);
@@ -600,6 +704,16 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                         surface + ": chunking_preset/chunking_options require "
                                   "OUTPUT_FORMAT_CHUNKS in to_formats");
+  }
+  // The hybrid budget decides every boundary, so ConvertSource checks it
+  // exactly like ChunkHybridSource does, before any parse starts.
+  if (options.chunking_options_case() ==
+      pipestream::parse::v1::ConvertDocumentOptions::kHybridChunking) {
+    const grpc::Status hybrid_status = chunking::validate_hybrid_options(options.hybrid_chunking());
+    if (!hybrid_status.ok()) {
+      return grpc::Status(hybrid_status.error_code(),
+                          surface + ": " + hybrid_status.error_message());
+    }
   }
   for (const auto raw : options.to_formats()) {
     const auto format = static_cast<pipestream::parse::v1::OutputFormat>(raw);
@@ -711,14 +825,16 @@ class CvCollector {
  public:
   CvCollector(grpc::CallbackServerContext* context, PageScheduler& scheduler,
               std::shared_ptr<const std::string> bytes, bool pdf, CvOffsets offsets,
-              CvConfidence confidence, HeadingOptions heading_options)
+              CvConfidence confidence, HeadingOptions heading_options,
+              CollectorDeadline deadline)
       : context_(context),
         scheduler_(scheduler),
         bytes_(std::move(bytes)),
         pdf_(pdf),
         offsets_(std::move(offsets)),
         confidence_(std::move(confidence)),
-        heading_options_(std::move(heading_options)) {}
+        heading_options_(std::move(heading_options)),
+        deadline_(deadline) {}
 
   CollectorOutcome operator()(const PageScheduler::OcrTuning& tuning) const {
     try {
@@ -728,11 +844,7 @@ class CvCollector {
       }
       return assemble(pages);
     } catch (...) {
-      CollectorOutcome outcome;
-      const grpc::Status status = status_from_exception(std::current_exception());
-      outcome.error = status.error_message();
-      outcome.code = status.error_code();
-      return outcome;
+      return outcome_from_exception(std::current_exception());
     }
   }
 
@@ -755,8 +867,9 @@ class CvCollector {
   };
 
   // Submits the document and waits for the scheduler to finish with it,
-  // cancelling the ticket as soon as the call goes away. Returns the outcome
-  // that ended the run, or nothing when every page arrived.
+  // cancelling the ticket as soon as the call goes away or the parse's
+  // deadline (document_timeout, or the call's own) passes. Returns the
+  // outcome that ended the run, or nothing when every page arrived.
   std::optional<CollectorOutcome> collect_pages(const PageScheduler::OcrTuning& tuning,
                                                 PageSet* collected) const {
     Run state;
@@ -783,11 +896,19 @@ class CvCollector {
             }});
 
     std::unique_lock<std::mutex> lock(state.mutex);
+    bool expired = false;
     while (!state.finished) {
       state.changed.wait_for(lock, std::chrono::milliseconds(25));
-      if (context_->IsCancelled()) ticket.cancel();
+      if (!expired && std::chrono::system_clock::now() >= deadline_) expired = true;
+      if (context_->IsCancelled() || expired) ticket.cancel();
     }
     if (context_->IsCancelled()) return cancelled_outcome();
+    if (expired) {
+      CollectorOutcome outcome;
+      outcome.error = "document deadline exceeded before every page was read";
+      outcome.code = grpc::StatusCode::DEADLINE_EXCEEDED;
+      return outcome;
+    }
     const grpc::Status scheduler_status = status_from_exception(state.failure);
     if (!scheduler_status.ok()) {
       CollectorOutcome outcome;
@@ -842,6 +963,7 @@ class CvCollector {
   CvOffsets offsets_;
   CvConfidence confidence_;
   HeadingOptions heading_options_;
+  CollectorDeadline deadline_;
 };
 
 // Everything one parse's collector legs read: the request's bytes and
@@ -854,6 +976,10 @@ struct ParseInputs {
   std::shared_ptr<const std::string> ebcdic_layout_json;
   std::shared_ptr<const std::string> lol_html_options_json;
   fs::path filename;
+  // What the dialed collectors log and correlate this parse by: the name
+  // plus a per-call sequence, so two concurrent uploads of one filename
+  // stay apart.
+  std::string document_id;
   std::string content_type;
   PageScheduler::OcrTuning tuning;
   CollectorDeadline inbound_deadline = kNoCollectorDeadline;
@@ -995,6 +1121,9 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   inputs.lol_html_options_json =
       std::make_shared<const std::string>(options.lol_html_options_json());
   inputs.filename = requested_name;
+  static std::atomic<uint64_t> call_sequence{0};
+  inputs.document_id = requested_name.string() + "#" +
+                       std::to_string(call_sequence.fetch_add(1, std::memory_order_relaxed) + 1);
   inputs.content_type = std::move(content_type);
   inputs.tuning = ocr_tuning(options.has_do_ocr(), options.do_ocr(), options.force_ocr(),
                              options.has_render_scale(), options.render_scale());
@@ -1090,9 +1219,9 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
       inputs.picture_description_min_confidence = cfg.classification_min_confidence();
     }
   }
-  // ocr_custom_config.lang is accepted (validated) for Docling clients that
-  // put languages there; RapidOCR here already accepts ocr_lang and does not
-  // need a second path.
+  // Neither ocr_lang nor ocr_custom_config.lang selects a model: the one
+  // installed RapidOCR set reads Chinese and English, and
+  // validate_unread_options turns down any other ocr_lang value by name.
   // Every dialed leg inherits this call's own ceiling, so no collector is
   // waited on past the patience of the client that asked for the parse. A
   // call with no deadline yields time_point::max(), which leaves each leg on
@@ -1134,11 +1263,18 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
   if (inputs.context->IsCancelled()) return cancelled_outcome();
   const PdfParseResult parsed =
       collect_pdf(inputs.endpoints->channel(pipestream::parse::v1::COLLECTOR_PDF),
-                  *inputs.bytes, inputs.inbound_deadline, inputs.tuning.page_range);
+                  *inputs.bytes, inputs.inbound_deadline, inputs.tuning.page_range,
+                  [context = inputs.context] { return context->IsCancelled(); });
   const PdfRouteDecision route = route_pdf_by_classification(parsed.classification);
   if (parsed.outcome.success && (route.fast_path || inputs.native_pipeline)) {
     PdfParseResult fast = parsed;
-    if (inputs.previews) attach_page_previews(inputs.bytes, &fast.outcome.document);
+    if (inputs.previews) {
+      attach_page_previews(inputs.bytes, &fast.outcome.document, inputs.tuning.page_range,
+                           [&inputs] {
+                             return inputs.context->IsCancelled() ||
+                                    std::chrono::system_clock::now() >= inputs.inbound_deadline;
+                           });
+    }
     if (!route.fast_path) {
       // NATIVE asked for the text layer as it is; say what the models would
       // have been run for, so a caller can tell a thin result from a thin
@@ -1149,6 +1285,7 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
           std::string(pdf_class_name(parsed.classification.pdf_class)) +
           (parsed.classification.encoding_issues ? " with encoding issues in the text layer"
                                                  : "") +
+          (parsed.classification.empty_body ? " and its extraction carried no body text" : "") +
           "; no layout, OCR, or table-structure model ran");
     }
     return fast.outcome;
@@ -1180,6 +1317,9 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
       std::string(pdf_class_name(parsed.classification.pdf_class)) +
       (parsed.classification.encoding_issues
            ? " with encoding issues in the text layer, so its extraction was not taken"
+           : "") +
+      (parsed.classification.empty_body
+           ? "; its extraction carried no body text, so it was not taken"
            : "") +
       (forced
            ? "; recognition was forced on every page in place of the "
@@ -1263,10 +1403,13 @@ std::vector<PlannedCollector> build_plan(
         // started; a cancel can land any time after. Ask again before
         // dialing so a dead call costs no collector leg.
         if (inputs.context->IsCancelled()) return cancelled_outcome();
-        return run_remote_collector(id, inputs.endpoints, inputs.filename.string(),
+        // The leg's own call ends with this one: a client that cancels
+        // mid-leg leaves no collector working for nobody.
+        return run_remote_collector(id, inputs.endpoints, inputs.document_id,
                                     inputs.filename.string(), inputs.content_type,
                                     *inputs.bytes, *inputs.ebcdic_layout_json,
-                                    *inputs.lol_html_options_json, inputs.inbound_deadline);
+                                    *inputs.lol_html_options_json, inputs.inbound_deadline,
+                                    [context = inputs.context] { return context->IsCancelled(); });
       };
     }
     plan.push_back(std::move(collector));
@@ -1358,10 +1501,16 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
   }
   const grpc::Status option_status = validate_options(request.options(), surface);
   if (!option_status.ok()) return option_status;
+  if (auto remote = validate_remote_services(request.options(), collectors.get(), surface);
+      !remote.ok()) {
+    return remote;
+  }
   try {
     const auto& source = sources.Get(0).file();
     auto bytes = std::make_shared<const std::string>(decode_base64(source.base64_string()));
-    const fs::path requested_name = source.filename().empty() ? "document.pdf" : fs::path(source.filename()).filename();
+    // A nameless upload gets a name that declares nothing, so the bytes
+    // decide its type and route rather than a made-up extension.
+    const fs::path requested_name = source.filename().empty() ? "document" : fs::path(source.filename()).filename();
     pipestream::document::v1::Document base = base_document(*bytes, requested_name);
 
     if (!request.options().from_formats().empty()) {
@@ -1408,7 +1557,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
       result.document = std::move(base);
       const VlmConvertReport report =
           convert_vlm_pages(collectors->vlm_channel(), vlm, bytes, pdf, &result.document,
-                            inputs.inbound_deadline);
+                            inputs.inbound_deadline, [context] { return context->IsCancelled(); });
       for (const std::string& warning : report.warnings) {
         result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_VLM, warning);
       }
@@ -1433,7 +1582,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
       return grpc::Status::OK;
     }
     const CvCollector run_cv(context, scheduler, bytes, pdf, cv_offsets, cv_confidence,
-                             inputs.heading);
+                             inputs.heading, inputs.inbound_deadline);
 
     const RoutedPlan routed = route_plan(request.options().collectors(), pdf, inputs);
     // NATIVE is model-free by definition. A plan that would put the bytes
@@ -1445,7 +1594,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
             routed.ids.end()) {
       return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
                           surface + ": pipeline NATIVE needs the pdf collector "
-                                    "(GRPARSE_COLLECTOR_PDF) for PDF input and does not "
+                                    "(GRPARSE_PDF_TARGET) for PDF input and does not "
                                     "apply to raster input");
     }
     CoordinatorResult result = run_collectors(

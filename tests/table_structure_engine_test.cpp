@@ -18,8 +18,6 @@ namespace {
 
 namespace fs = std::filesystem;
 
-constexpr int kSkipExitCode = 77;
-
 using grparse_test::require;
 
 void verify_missing_model_fails_loudly() {
@@ -162,7 +160,7 @@ int main() {
         fs::path(data_dir == nullptr ? "tests/data" : data_dir) / "span_table.png";
     if (!fs::exists(model)) {
       std::println(stderr, "table-structure-engine-test: skipped, model not present: {:?}", model.string());
-      return kSkipExitCode;
+      return grparse_test::missing_model_exit_code();
     }
     require(fs::exists(image), "test image missing: " + image.string());
 

@@ -48,7 +48,8 @@ TopDownBox top_down_box(const ai::pipestream::document::v1::BoundingBox& box, do
 // Where an arena item sits: its first page and the union of its boxes on
 // that page, top-down. A group's placement is the union of its children's.
 // Absent when the item names no page, has no box on it, or the page's
-// height is unknown; a box of zero area does not count.
+// height is unknown; a box of zero area or with a non-finite edge does not
+// count.
 struct ItemPlacement {
   int page = 0;
   TopDownBox box;

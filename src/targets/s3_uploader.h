@@ -8,7 +8,9 @@
 #define GRPARSE_TARGETS_S3_UPLOADER_H
 
 #include <cstdint>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "bundle.h"
@@ -23,9 +25,23 @@ struct UploadedObject {
   uint64_t size_bytes = 0;
 };
 
+// A batch that failed after some members were already written: the message
+// names the first key that failed, and written() lists the objects that are
+// in the store regardless, in the bundle's own order, so the caller can
+// clean up or retry.
+class UploadFailure : public std::runtime_error {
+ public:
+  UploadFailure(const std::string& message, std::vector<UploadedObject> written)
+      : std::runtime_error(message), written_(std::move(written)) {}
+  const std::vector<UploadedObject>& written() const { return written_; }
+
+ private:
+  std::vector<UploadedObject> written_;
+};
+
 // Writes every member of `files` under the configured bucket and prefix and
-// returns them in the bundle's own order.  Throws std::runtime_error naming
-// the first key that failed, with no credential material in the message; the
+// returns them in the bundle's own order.  Throws UploadFailure naming the
+// first key that failed, with no credential material in the message; the
 // uploads already in flight are waited out first, so nothing outlives the
 // call.
 std::vector<UploadedObject> upload_bundle(const S3Config& config,

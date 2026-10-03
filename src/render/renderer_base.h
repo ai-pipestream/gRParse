@@ -60,7 +60,9 @@ std::string code_fence_language(const ai::pipestream::document::v1::CodeItem& co
 // The table's cell layout as a row-major pointer grid. The grid field wins
 // when populated; otherwise the flat cell list is placed by its offsets.
 // A spanned cell appears at every position it covers; nullptr marks a
-// position no cell reaches.
+// position no cell reaches. The declared dimensions are untrusted: a grid
+// above a fixed position budget keeps only its leading rows and columns, and
+// a warning goes to stderr (derived_table_grid caps the same way).
 std::vector<std::vector<const ai::pipestream::document::v1::TableCell*>> table_grid(
     const ai::pipestream::document::v1::TableData& data);
 
@@ -109,6 +111,15 @@ ordered_custom_fields(
 std::string escape_html_text(const std::string& text);
 
 std::string escape_html_attribute(const std::string& text);
+
+// XML 1.0 escaping for the DocLang exports: & < > (and " plus TAB, LF, CR as
+// character references in an attribute), with every byte that is not valid
+// UTF-8 and every code point outside the XML Char production (C0 controls
+// other than TAB, LF, CR; U+FFFE; U+FFFF) replaced by U+FFFD, so a strict XML
+// parser accepts the output whatever the source text held.
+std::string escape_xml_text(std::string_view text);
+
+std::string escape_xml_attribute(std::string_view text);
 
 // The picture's description text. The meta field wins; the annotation list
 // is the fallback for producers that still write description annotations.

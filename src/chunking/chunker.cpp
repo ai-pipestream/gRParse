@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <print>
 #include <set>
 #include <string>
 #include <utility>
@@ -223,6 +224,12 @@ std::string serialize_table_markdown(const docv1::TableData& data) {
 
 // -- the walk ---------------------------------------------------------------
 
+// How deep the walk follows nested groups and items. The recursion is one
+// frame per level, so a markup source nested tens of thousands deep would
+// otherwise overflow a worker's stack; a subtree past this depth is left
+// out with one log line per document.
+constexpr int kMaximumNesting = 256;
+
 class Chunker {
  public:
   Chunker(const docv1::Document& document, const OffsetTable& offsets,
@@ -232,7 +239,12 @@ class Chunker {
   }
 
   std::vector<WorkChunk> run() {
-    walk("#/body");
+    walk("#/body", 0);
+    if (too_deep_ > 0) {
+      std::println(stderr,
+                   "gRParse chunker: {} subtree(s) nested deeper than {} levels left out",
+                   too_deep_, kMaximumNesting);
+    }
     return std::move(chunks_);
   }
 
@@ -249,6 +261,8 @@ class Chunker {
   // recorded it.
   std::vector<std::pair<int, std::string>> trail_;
   std::vector<WorkChunk> chunks_;
+  // Subtrees the walk left out for nesting past kMaximumNesting.
+  int too_deep_ = 0;
 
   void collect_caption_refs() {
     const auto claim = [this](const auto& item) {
@@ -423,17 +437,21 @@ class Chunker {
         chunk->end - chunk->start == codepoint_length(chunk->text);
   }
 
-  void walk(const std::string& ref) {
+  void walk(const std::string& ref, int depth) {
+    if (depth > kMaximumNesting) {
+      ++too_deep_;
+      return;
+    }
     if (!visited_.insert(ref).second) return;
     if (excluded(layer_of(ref))) return;
     if (const auto* group = group_at(ref)) {
       if (list_group(*group)) {
-        emit_list(ref, *group);
+        emit_list(ref, *group, depth);
         return;
       }
       // Every other group is structure, not content: it emits nothing of its
       // own and its children chunk in place.
-      for (const auto& child : group->children()) walk(child.ref());
+      for (const auto& child : group->children()) walk(child.ref(), depth + 1);
       return;
     }
     if (const auto* text = text_at(ref)) {
@@ -442,7 +460,7 @@ class Chunker {
                              ? nullptr
                              : text_base(*text);
       if (base != nullptr) {
-        for (const auto& child : base->children()) walk(child.ref());
+        for (const auto& child : base->children()) walk(child.ref(), depth + 1);
       }
       return;
     }
@@ -478,8 +496,16 @@ class Chunker {
     chunks_.push_back(std::move(chunk));
   }
 
+  // A list's entries, depth first: each item's line, then whatever the item
+  // holds. Tables and pictures inside the list go to `floating` and chunk on
+  // their own once the list has.
   void collect_list_entries(const docv1::GroupItem& group, WorkChunk* chunk,
-                            std::vector<std::string>* lines) {
+                            std::vector<std::string>* lines,
+                            std::vector<std::string>* floating, int depth) {
+    if (depth > kMaximumNesting) {
+      ++too_deep_;
+      return;
+    }
     const bool ordered = group.label() == docv1::GROUP_LABEL_ORDERED_LIST;
     int position = 0;
     for (const auto& child : group.children()) {
@@ -490,29 +516,69 @@ class Chunker {
         chunk->doc_items.push_back(ref);
         // A nested list flattens into the same chunk; its own numbering
         // restarts, matching how it reads on the page.
-        collect_list_entries(*nested, chunk, lines);
+        collect_list_entries(*nested, chunk, lines, floating, depth + 1);
         continue;
       }
       const auto* text = text_at(ref);
-      if (text == nullptr) continue;
+      if (text == nullptr) {
+        floating->push_back(ref);
+        continue;
+      }
       absorb(chunk, ref);
       const std::string body = text_of(*text);
-      if (trimmed(body).empty()) continue;
-      ++position;
-      lines->push_back((ordered ? std::to_string(position) + ". " : std::string("- ")) +
-                       body);
+      if (!trimmed(body).empty()) {
+        ++position;
+        lines->push_back((ordered ? std::to_string(position) + ". " : std::string("- ")) +
+                         body);
+      }
+      collect_item_children(*text, chunk, lines, floating, depth + 1);
     }
   }
 
-  void emit_list(const std::string& ref, const docv1::GroupItem& group) {
+  // What a list item holds rides inside its list, the way docling-core
+  // nests a sub-list under its ListItem: a nested group flattens in place
+  // and any other text item takes a line of its own.
+  void collect_item_children(const docv1::BaseTextItem& item, WorkChunk* chunk,
+                             std::vector<std::string>* lines,
+                             std::vector<std::string>* floating, int depth) {
+    if (depth > kMaximumNesting) {
+      ++too_deep_;
+      return;
+    }
+    const auto* base =
+        item.item_case() == docv1::BaseTextItem::kCode ? nullptr : text_base(item);
+    if (base == nullptr) return;
+    for (const auto& child : base->children()) {
+      const std::string& ref = child.ref();
+      if (visited_.contains(ref) || excluded(layer_of(ref))) continue;
+      if (const auto* nested = group_at(ref)) {
+        visited_.insert(ref);
+        chunk->doc_items.push_back(ref);
+        collect_list_entries(*nested, chunk, lines, floating, depth + 1);
+        continue;
+      }
+      const auto* text = text_at(ref);
+      if (text == nullptr) {
+        floating->push_back(ref);
+        continue;
+      }
+      absorb(chunk, ref);
+      const std::string body = text_of(*text);
+      if (!trimmed(body).empty()) lines->push_back(body);
+      collect_item_children(*text, chunk, lines, floating, depth + 1);
+    }
+  }
+
+  void emit_list(const std::string& ref, const docv1::GroupItem& group, int depth) {
     WorkChunk chunk;
     chunk.headings = trail_texts();
     chunk.doc_items.push_back(ref);
     std::vector<std::string> lines;
-    collect_list_entries(group, &chunk, &lines);
+    std::vector<std::string> floating;
+    collect_list_entries(group, &chunk, &lines, &floating, depth + 1);
     chunk.text = join(lines, "\n");
-    if (trimmed(chunk.text).empty()) return;
-    chunks_.push_back(std::move(chunk));
+    if (!trimmed(chunk.text).empty()) chunks_.push_back(std::move(chunk));
+    for (const auto& item : floating) walk(item, depth + 1);
   }
 
   void emit_table(const std::string& ref, const docv1::TableItem& table) {
@@ -665,10 +731,11 @@ std::vector<WorkChunk> merge_peers(std::vector<WorkChunk>&& work, int max_tokens
 // then a hard cut inside a word that does not fit alone. Under wordish/1 the
 // hard cut is by code point count, which bounds the token count because no
 // token spans fewer than one code point. A byte-level hf/1 tokenizer breaks
-// that bound (one code point can cost several tokens), so the hf/1 cut grows
-// each piece one code point at a time and measures, always emitting at least
-// one code point so the loop makes progress even when a single code point
-// alone exceeds the budget.
+// that bound (one code point can cost several tokens), so the hf/1 cut
+// measures: it doubles each piece while it fits, then binary-searches the
+// longest piece that does, always emitting at least one code point so the
+// loop makes progress even when a single code point alone exceeds the
+// budget.
 std::vector<Span> pack_spans(const std::vector<char32_t>& points, int budget,
                              const TokenCounter& counter) {
   const char32_t* data = points.data();
@@ -724,14 +791,31 @@ std::vector<Span> pack_spans(const std::vector<char32_t>& points, int budget,
             pieces.push_back({cut, std::min(word.end, cut + static_cast<std::size_t>(budget))});
           }
         } else {
-          // Measured cut: quadratic in the word's length, which only a single
-          // word over the whole budget can trigger.
+          // Measured cut: O(log P) counts of at most 2P code points per piece
+          // of P, so a long unbroken run (a data URI, a minified blob) costs
+          // about its own length times log P rather than its square.
           std::size_t cut = word.begin;
           while (cut < word.end) {
-            std::size_t end = cut + 1;
-            while (end < word.end && tokens_in(Span{cut, end + 1}) <= budget) ++end;
-            pieces.push_back({cut, end});
-            cut = end;
+            std::size_t fits = cut + 1;
+            std::size_t over = word.end + 1;
+            for (std::size_t step = 1; fits < word.end; step *= 2) {
+              const std::size_t probe = std::min(word.end, fits + step);
+              if (tokens_in(Span{cut, probe}) > budget) {
+                over = probe;
+                break;
+              }
+              fits = probe;
+            }
+            while (over <= word.end && over - fits > 1) {
+              const std::size_t middle = fits + (over - fits) / 2;
+              if (tokens_in(Span{cut, middle}) <= budget) {
+                fits = middle;
+              } else {
+                over = middle;
+              }
+            }
+            pieces.push_back({cut, fits});
+            cut = fits;
           }
         }
         continue;
@@ -759,12 +843,22 @@ std::vector<Span> pack_spans(const std::vector<char32_t>& points, int budget,
 std::vector<WorkChunk> split_oversized(std::vector<WorkChunk>&& work, int max_tokens,
                                        const TokenCounter& counter) {
   std::vector<WorkChunk> split;
+  int unsplit = 0;
   for (auto& chunk : work) {
     if (counter.count(contextualized(chunk)) <= max_tokens) {
       split.push_back(std::move(chunk));
       continue;
     }
-    const int budget = std::max(1, max_tokens - heading_tokens(chunk, counter));
+    const int budget = max_tokens - heading_tokens(chunk, counter);
+    if (budget <= 0) {
+      // The heading trail alone fills the budget, so no piece of the text
+      // fits beside it; cutting it to single tokens would only multiply
+      // chunks that are each still over. It goes out whole, logged, the
+      // case docling-core's HybridChunker also warns about.
+      ++unsplit;
+      split.push_back(std::move(chunk));
+      continue;
+    }
     const std::vector<char32_t> points = decode_utf8(chunk.text);
     const std::vector<Span> pieces = pack_spans(points, budget, counter);
     if (pieces.size() <= 1) {
@@ -782,6 +876,12 @@ std::vector<WorkChunk> split_oversized(std::vector<WorkChunk>&& work, int max_to
       }
       split.push_back(std::move(part));
     }
+  }
+  if (unsplit > 0) {
+    std::println(stderr,
+                 "gRParse chunker: {} chunk(s) left unsplit over max_tokens={}: the heading "
+                 "trail alone reaches the budget",
+                 unsplit, max_tokens);
   }
   return split;
 }
@@ -881,7 +981,7 @@ void add_offsets(const google::protobuf::RepeatedPtrField<parsev1::TextOffset>& 
 }
 
 std::string hybrid_rules_digest(int max_tokens, bool merge_peers, std::string_view tokenizer) {
-  return "grparse-hybrid/1;tok=" + std::string(tokenizer) +
+  return "grparse-hybrid/2;tok=" + std::string(tokenizer) +
          ";sent=" + std::string(kSentenceRules) +
          ";max_tokens=" + std::to_string(max_tokens) +
          ";merge_peers=" + (merge_peers ? "true" : "false");
@@ -902,7 +1002,7 @@ std::vector<parsev1::Chunk> chunk_hierarchical(const docv1::Document& document,
 grpc::Status validate_hybrid_options(const parsev1::HybridChunkerOptions& options) {
   if (!options.has_max_tokens()) {
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                        "ChunkHybridSource requires chunking option 'max_tokens'");
+                        "hybrid chunking requires chunking option 'max_tokens'");
   }
   if (options.max_tokens() <= 0) {
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
@@ -921,9 +1021,25 @@ grpc::Status validate_hybrid_options(const parsev1::HybridChunkerOptions& option
         grpc::StatusCode::INVALID_ARGUMENT,
         "chunking option 'tokenizer_path' is meaningful only with tokenizer \"hf/1\"");
   }
-  if (tokenizer == kHfTokenizerRules) {
-    const std::string path = resolve_hf_tokenizer_path(
-        options.has_tokenizer_path() ? options.tokenizer_path() : std::string());
+  if (tokenizer == kHfTokenizerRules && options.has_tokenizer_path() &&
+      !options.tokenizer_path().empty()) {
+    // A request's own path: confined to the tokenizer directory, and every
+    // way it can fail reads the same, so the option is no probe of the
+    // server's filesystem.
+    const std::optional<std::string> path = confine_request_tokenizer_path(options.tokenizer_path());
+    std::string json;
+    if (!path.has_value() || !load_hf_tokenizer_json(*path, &json).ok()) {
+      return grpc::Status(
+          grpc::StatusCode::INVALID_ARGUMENT,
+          "chunking option 'tokenizer_path' must name a well-formed tokenizer.json, a regular "
+          "file of at most " +
+              std::to_string(kMaximumTokenizerBytes >> 20) +
+              " MiB, inside the tokenizer directory ($GRPARSE_TOKENIZER_DIR, defaulting to "
+              "$GRPARSE_MODELS_DIR); '" +
+              options.tokenizer_path() + "' does not");
+    }
+  } else if (tokenizer == kHfTokenizerRules) {
+    const std::string path = resolve_hf_tokenizer_path(std::string());
     std::string json;
     const grpc::Status load = load_hf_tokenizer_json(path, &json);
     if (!load.ok()) {
@@ -932,8 +1048,8 @@ grpc::Status validate_hybrid_options(const parsev1::HybridChunkerOptions& option
           "chunking option 'tokenizer' requested hf/1 but its tokenizer.json did not "
           "load: " +
               load.error_message() +
-              " (resolution order: the request's tokenizer_path, then "
-              "$GRPARSE_CHUNK_TOKENIZER, then "
+              " (resolution order: the request's tokenizer_path inside "
+              "$GRPARSE_TOKENIZER_DIR, then $GRPARSE_CHUNK_TOKENIZER, then "
               "$GRPARSE_MODELS_DIR/chunk/tokenizer.json with GRPARSE_MODELS_DIR "
               "defaulting to /models; tried '" +
               path + "')");
@@ -952,9 +1068,15 @@ grpc::Status chunk_hybrid(const docv1::Document& document, const OffsetTable& of
   const bool peers = !options.has_merge_peers() || options.merge_peers();
   TokenCounter counter;
   if (options.has_tokenizer() && options.tokenizer() == kHfTokenizerRules) {
-    const std::string path = resolve_hf_tokenizer_path(
-        options.has_tokenizer_path() ? options.tokenizer_path() : std::string());
-    const grpc::Status loaded = TokenCounter::huggingface(path, &counter);
+    const bool requested = options.has_tokenizer_path() && !options.tokenizer_path().empty();
+    const std::optional<std::string> path =
+        requested ? confine_request_tokenizer_path(options.tokenizer_path())
+                  : std::optional<std::string>(resolve_hf_tokenizer_path(std::string()));
+    const grpc::Status loaded =
+        path.has_value() ? TokenCounter::huggingface(*path, &counter)
+                         : grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                                        "tokenizer_path no longer names a file inside the "
+                                        "tokenizer directory");
     if (!loaded.ok()) {
       // validate_hybrid_options read the same file before the parse started;
       // a failure here means it changed under the request, which is the

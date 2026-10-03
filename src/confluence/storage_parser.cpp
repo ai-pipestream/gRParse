@@ -202,6 +202,18 @@ void StorageParser::read_element(OpenStack* open) {
       std::ranges::find(kVoid, element.name) != std::end(kVoid)) {
     self_closing = true;
   }
+  // Past kMaxDepth an element is kept but not opened: its content lands
+  // beside it, one level up. That bounds the recursion of everything that
+  // walks the tree (the fold, raw_text, the node destructor) and the end
+  // tag search in close_element.
+  if (!self_closing && open->size() > kMaxDepth) {
+    if (!depth_warned_) {
+      warn("elements nested deeper than " + std::to_string(kMaxDepth) +
+           " levels were flattened into their ancestor");
+      depth_warned_ = true;
+    }
+    self_closing = true;
+  }
   open->back()->children.push_back(std::move(element));
   if (!self_closing) open->push_back(&open->back()->children.back());
 }

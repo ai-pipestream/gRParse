@@ -22,9 +22,8 @@ syntax = "proto3";
 
 package ai.pipestream.pdf.v1;
 
-import "ai/pipestream/pdf/v1/types.proto";
-
 import "ai/pipestream/document/v1/document.proto";
+import "ai/pipestream/pdf/v1/types.proto";
 
 option java_multiple_files = true;
 option java_outer_classname = "PdfServiceProto";
@@ -47,11 +46,13 @@ service PdfParseService {
   // has arrived. Streaming begins the moment it is possible to begin,
   // which is why this is `info`-then-pages rather than one big response.
   //
-  // A successful stream is exactly: one `info`, then `page` events in
-  // requested page order (FULL mode, text-bearing documents only), then —
-  // only when `options.emit_document` was set — one `document`, then one
-  // `status`. A failed stream ends with a gRPC status and no `status`
-  // event:
+  // A successful stream is exactly: one `info`, an optional `metadata`,
+  // then — per page, in requested page order, in FULL mode and for
+  // text-bearing documents only — an optional `structure` event, an
+  // optional `tables` event, an optional `spans` event, and that page's
+  // `page` event; then, only when
+  // `options.emit_document` was set, one `document`; then one `status`.
+  // A failed stream ends with a gRPC status and no `status` event:
   //
   //   RESOURCE_EXHAUSTED  the upload exceeded its byte cap
   //   INVALID_ARGUMENT    not a PDF, truncated or malformed, encrypted
@@ -113,9 +114,27 @@ message ParsePdfResponse {
     // the fold that builds it consumes exactly this stream. Item refs are
     // dense and local to this message (`#/texts/0`), so a coordinator can
     // renumber them into a larger document. The structure is
-    // markdown-derived and coarse: paragraphs and ATX headings only, pages
-    // named but without sizes, no provenance boxes.
+    // markdown-derived and coarse: paragraphs and ATX headings only.
     ai.pipestream.document.v1.Document document = 4;
+
+    // One page's positioned text runs, immediately before that page's
+    // `page` event. FULL mode only, and only when
+    // `PdfOptions.emit_spans` was set.
+    PageSpans spans = 5;
+
+    // Everything the file says about itself, sent once immediately after
+    // `info`. Only when `PdfOptions.emit_metadata` was set.
+    PdfMetadata metadata = 6;
+
+    // One page's authored structure roles, before that page's `spans` and
+    // `page` events. FULL mode only, and only when
+    // `PdfOptions.emit_structure` was set.
+    PageStructure structure = 7;
+
+    // The tables found on one page, before that page's `page` event and
+    // only when `PdfOptions.emit_tables` was set. A page with no tables
+    // produces no event.
+    PageTables tables = 8;
   }
 }
 

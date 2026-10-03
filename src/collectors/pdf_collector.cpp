@@ -1,17 +1,60 @@
 #include "grparse/document_collectors.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <limits>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "ai/pipestream/pdf/v1/pdf_service.grpc.pb.h"
 #include "collector_support.h"
+#include "grparse/document_geometry.h"
 
+namespace docv1 = ai::pipestream::document::v1;
 namespace pdfv1 = ai::pipestream::pdf::v1;
 
 namespace grparse {
+
+namespace {
+
+// Past any real document's page count; a page_range end beyond it means
+// "to the end", not a list of pages to spell out.
+constexpr int64_t kMaxListedPage = 100000;
+
+void add_ocr_page(uint32_t page, std::set<int>* pages) {
+  // Page 0 is never a page (the wire rejects it in requests, and it names
+  // the whole-document password fallback on a page event); drop it so a
+  // buggy server cannot inject it into the scheduler.
+  if (page >= 1 && page <= static_cast<uint32_t>(std::numeric_limits<int>::max())) {
+    pages->insert(static_cast<int>(page));
+  }
+}
+
+bool blank(const std::string& text) {
+  return std::ranges::all_of(text, [](unsigned char c) { return std::isspace(c) != 0; });
+}
+
+bool in_body(docv1::ContentLayer layer) {
+  return layer == docv1::CONTENT_LAYER_BODY || layer == docv1::CONTENT_LAYER_UNSPECIFIED;
+}
+
+// Whether the fold carries anything a reader would call content: a body
+// text that is not blank, or a body table. Pictures do not count, because a
+// page image with nothing read off it is exactly the scan this guards.
+bool has_body_content(const docv1::Document& document) {
+  for (const auto& item : document.texts()) {
+    const docv1::TextItemBase* base = text_base_of(item);
+    if (base != nullptr && in_body(base->content_layer()) && !blank(base->text())) return true;
+  }
+  return std::ranges::any_of(document.tables(), [](const docv1::TableItem& table) {
+    return in_body(table.content_layer());
+  });
+}
+
+}  // namespace
 
 PdfRouteDecision route_pdf_by_classification(const PdfClassification& classification) {
   PdfRouteDecision decision;
@@ -30,8 +73,11 @@ PdfRouteDecision route_pdf_by_classification(const PdfClassification& classifica
       // the CV path's own heuristic decides recognition (custom-encoded
       // vector fonts routinely classify TEXT_BASED at full confidence while
       // extracting mojibake or nothing).
-      decision.fast_path =
-          classification.pages_needing_ocr.empty() && !classification.encoding_issues;
+      // Nor is one whose fold carried no body at all: a searchable scan
+      // (a page image behind an invisible OCR layer) classifies TEXT_BASED
+      // and extracts nothing, and an empty Document is not a parse.
+      decision.fast_path = classification.pages_needing_ocr.empty() &&
+                           !classification.encoding_issues && !classification.empty_body;
       decision.ocr_pages = classification.pages_needing_ocr;
       break;
     case PdfClass::kScanned:
@@ -50,7 +96,8 @@ PdfRouteDecision route_pdf_by_classification(const PdfClassification& classifica
 PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
                            const std::string& bytes,
                            CollectorDeadline inbound_deadline,
-                           std::optional<std::pair<int, int>> page_range) {
+                           std::optional<std::pair<int, int>> page_range,
+                           CollectorCancelled cancelled) {
   PdfParseResult result;
   if (channel == nullptr) {
     result.outcome.error = "pdf collector is not configured (GRPARSE_PDF_TARGET)";
@@ -60,6 +107,7 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
   auto stub = pdfv1::PdfParseService::NewStub(channel);
   grpc::ClientContext context;
   context.set_deadline(capped_collector_deadline(inbound_deadline, kDeadline));
+  const CancelWatch watch(context, std::move(cancelled));
   auto stream = stub->ParsePdf(&context);
 
   pdfv1::ParsePdfRequest request;
@@ -68,19 +116,32 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
   // the fold, and the fold is built from the page stream.
   request.mutable_options()->set_emit_document(true);
   // Docling page_range → collector options.pages (1-indexed inclusive span).
-  if (page_range.has_value()) {
-    for (int page = page_range->first; page <= page_range->second; ++page) {
-      if (page >= 1) request.mutable_options()->add_pages(static_cast<uint32_t>(page));
+  // Docling spells "to the end" as (start, sys.maxsize), which reaches this
+  // wire as INT32_MAX: the listed span stops at kMaxListedPage, and an
+  // open-ended span from page 1 is the whole document, which the wire
+  // spells as no list at all.
+  if (page_range.has_value() &&
+      !(page_range->first <= 1 && page_range->second >= kMaxListedPage)) {
+    const int64_t first = std::max<int64_t>(page_range->first, 1);
+    const int64_t last = std::min<int64_t>(page_range->second, kMaxListedPage);
+    for (int64_t page = first; page <= last; ++page) {
+      request.mutable_options()->add_pages(static_cast<uint32_t>(page));
     }
   }
-  upload_stream(*stream, request, bytes, /*always_send_chunk=*/false,
-                [&bytes](pdfv1::ParsePdfRequest& frame, size_t offset,
-                         size_t length, bool /*last*/) {
-                  frame.set_chunk(bytes.data() + offset, length);
-                });
+  ConcurrentUpload upload(
+      context, *stream, request, bytes, /*always_send_chunk=*/false,
+      [&bytes](pdfv1::ParsePdfRequest& frame, size_t offset, size_t length, bool /*last*/) {
+        frame.set_chunk(bytes.data() + offset, length);
+      });
 
   bool trailer_seen = false;
   bool document_seen = false;
+  uint32_t page_count = 0;
+  std::set<int> ocr_pages;
+  // Pages whose markdown came back empty; whether that means "scanned"
+  // needs the fold's pictures and the trailer's invisible-text flag, which
+  // arrive after the pages.
+  std::vector<uint32_t> empty_pages;
   pdfv1::ParsePdfResponse event;
   while (stream->Read(&event)) {
     if (event.has_info()) {
@@ -101,13 +162,13 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
         default:
           break;
       }
-      // Page 0 is never a page (the wire rejects it in requests); drop it
-      // defensively so a buggy server cannot inject it into the scheduler.
-      for (const uint32_t page : info.pages_needing_ocr()) {
-        if (page >= 1 && page <= static_cast<uint32_t>(std::numeric_limits<int>::max())) {
-          result.classification.pages_needing_ocr.push_back(static_cast<int>(page));
-        }
-      }
+      page_count = info.page_count();
+      for (const uint32_t page : info.pages_needing_ocr()) add_ocr_page(page, &ocr_pages);
+    } else if (event.has_page()) {
+      // The pass that decoded the page can convict it where the sampling
+      // detection on info did not look.
+      if (event.page().needs_ocr()) add_ocr_page(event.page().page_no(), &ocr_pages);
+      if (blank(event.page().markdown())) empty_pages.push_back(event.page().page_no());
     } else if (event.has_document()) {
       result.outcome.document = std::move(*event.mutable_document());
       document_seen = true;
@@ -125,9 +186,39 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
         result.outcome.warnings.push_back(
             "encoding issues detected in the text layer; extracted text may be untrustworthy");
       }
+      for (const auto& reasons : event.status().extraction_ocr_reasons()) {
+        add_ocr_page(reasons.page(), &ocr_pages);
+      }
+      result.classification.invisible_text = event.status().has_invisible_text();
       trailer_seen = true;
     }
     event.Clear();
+  }
+  upload.join();
+  if (!empty_pages.empty()) {
+    // An empty page is a scan the detection missed when it drew a picture,
+    // or when the document drew invisible text: the page image with its
+    // OCR layer held out of the markdown. A blank page that is neither
+    // stays a blank page.
+    std::set<int> pictured;
+    for (const auto& picture : result.outcome.document.pictures()) {
+      for (const auto& prov : picture.prov()) pictured.insert(prov.page_no());
+    }
+    for (const uint32_t page : empty_pages) {
+      if (result.classification.invisible_text ||
+          (page <= static_cast<uint32_t>(std::numeric_limits<int>::max()) &&
+           pictured.contains(static_cast<int>(page)))) {
+        add_ocr_page(page, &ocr_pages);
+      }
+    }
+  }
+  result.classification.pages_needing_ocr.assign(ocr_pages.begin(), ocr_pages.end());
+  result.classification.empty_body =
+      document_seen && page_count > 0 && !has_body_content(result.outcome.document);
+  if (result.classification.invisible_text) {
+    result.outcome.warnings.push_back(
+        "the text layer drew invisible text (an OCR layer behind a scan, or hidden text), "
+        "which the extraction leaves out");
   }
   result.outcome = finish_outcome("pdf", stream->Finish(), trailer_seen, document_seen,
                                   std::move(result.outcome));
@@ -136,7 +227,9 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
 
 CollectorOutcome collect_pdf_document(const std::shared_ptr<grpc::Channel>& channel,
                                       const std::string& bytes,
-                                      CollectorDeadline inbound_deadline) {
-  return collect_pdf(channel, bytes, inbound_deadline).outcome;
+                                      CollectorDeadline inbound_deadline,
+                                      CollectorCancelled cancelled) {
+  return collect_pdf(channel, bytes, inbound_deadline, std::nullopt, std::move(cancelled))
+      .outcome;
 }
 }  // namespace grparse

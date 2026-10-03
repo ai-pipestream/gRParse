@@ -23,7 +23,6 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr int kSkipExitCode = 77;
 using grparse_test::require;
 
 void verify_counts_against_a_real_vocabulary(const fs::path& model) {
@@ -106,7 +105,7 @@ int main() {
     if (!fs::exists(model)) {
       std::println(stderr, "chunk-hf-model-test: skipped, model not present: {:?}",
                    model.string());
-      return kSkipExitCode;
+      return grparse_test::missing_model_exit_code();
     }
     verify_counts_against_a_real_vocabulary(model);
     verify_end_to_end_chunking_via_models_dir(models_dir);
