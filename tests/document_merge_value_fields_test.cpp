@@ -70,7 +70,7 @@ void verify_timestamp_is_attributed_as_one_field() {
 void verify_timestamp_is_taken_or_left_whole() {
   docv1::Document target = base_document();
   grparse::merge_documents(with_created(1'700'000'000, 0, "Report"), &target, collector("libreoffice"));
-  grparse::merge_documents(with_created(1'600'000'000, 250, "Other"), &target, collector("poi"));
+  grparse::merge_documents(with_created(1'600'000'000, 250, "Other"), &target, collector("calamine"));
   const auto& created = target.source_meta().created();
   const bool first = created.seconds() == 1'700'000'000 && created.nanos() == 0;
   const bool second = created.seconds() == 1'600'000'000 && created.nanos() == 250;
@@ -78,7 +78,7 @@ void verify_timestamp_is_taken_or_left_whole() {
   const docv1::FieldSource* holder = source_of(target.source_meta(), "created");
   require(holder != nullptr, "the instant names its holder");
   require((first && holder->source().collector() == "libreoffice") ||
-              (second && holder->source().collector() == "poi"),
+              (second && holder->source().collector() == "calamine"),
           "the recorded holder is the collector whose instant is carried");
 }
 

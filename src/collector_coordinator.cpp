@@ -145,20 +145,6 @@ bool office_format(const std::string& filename, const std::string& content_type)
          type == "text/csv" || type == "application/rtf";
 }
 
-bool poi_format(const std::string& filename, const std::string& content_type) {
-  const std::string extension =
-      lowercase(std::filesystem::path(filename).extension().string());
-  // Exactly grPOIc's six DocumentFormat values; the macro/template and ODF
-  // siblings stay with libreoffice alone.
-  if (extension_in(extension,
-                   {".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"})) {
-    return true;
-  }
-  const std::string type = lowercase(content_type);
-  return type.contains("officedocument") || type.contains("msword") ||
-         type.contains("ms-excel") || type.contains("ms-powerpoint");
-}
-
 bool calamine_workbook_format(const std::string& filename, const std::string& content_type) {
   const std::string extension =
       lowercase(std::filesystem::path(filename).extension().string());
@@ -172,16 +158,9 @@ bool calamine_workbook_format(const std::string& filename, const std::string& co
 
 void append_office_fanout(std::vector<pipestream::parse::v1::Collector>* plan,
                           const std::string& filename, const std::string& content_type,
-                          bool poi_configured, bool calamine_configured) {
-  const auto missing = [plan](pipestream::parse::v1::Collector id) {
-    return std::ranges::find(*plan, id) == plan->end();
-  };
-  if (poi_configured && poi_format(filename, content_type) &&
-      missing(pipestream::parse::v1::COLLECTOR_POI)) {
-    plan->push_back(pipestream::parse::v1::COLLECTOR_POI);
-  }
+                          bool calamine_configured) {
   if (calamine_configured && calamine_workbook_format(filename, content_type) &&
-      missing(pipestream::parse::v1::COLLECTOR_CALAMINE)) {
+      std::ranges::find(*plan, pipestream::parse::v1::COLLECTOR_CALAMINE) == plan->end()) {
     plan->push_back(pipestream::parse::v1::COLLECTOR_CALAMINE);
   }
 }

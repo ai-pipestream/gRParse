@@ -28,7 +28,7 @@
 namespace grparse {
 
 // One parsed source: the merged document every conversion surface starts
-// from, plus the offset side table when this parse produced a usable one.
+// from, plus the offset table of its text stream.
 struct SourceParse {
   std::filesystem::path filename;
   CoordinatorResult result;
