@@ -82,9 +82,11 @@ enum OutputFormat {
   // Enum value differs from serve (11) because gRParse already uses 11 for
   // GDOCS_JSON; the name and Convert behavior match.
   OUTPUT_FORMAT_CHUNKS = 13;
-  // DocLang OPC archive (`.dclx`): ZIP with root `document.xml` plus OPC
-  // furniture. Serve uses tag 10 (gRParse 10 is CANONICAL_JSON); name and
-  // Convert export behavior match. Bytes land on DocumentExports.dclx.
+  // DocLang OPC archive (`.dclx`): ZIP with root `document.xml`, OPC
+  // furniture, page images under `pages/` and (image_export_mode REFERENCED,
+  // the default) picture images under `assets/`. Serve uses tag 10 (gRParse
+  // 10 is CANONICAL_JSON); name and Convert export behavior match. Bytes
+  // land on DocumentExports.dclx.
   OUTPUT_FORMAT_DCLX = 14;
 }
 
@@ -687,7 +689,17 @@ message ConvertDocumentOptions {
   repeated InputFormat from_formats = 1;
   // Output format(s) to convert to
   repeated OutputFormat to_formats = 2;
-  // Image export mode
+  // How exports carry picture images (docling image_export_mode). Markdown:
+  // PLACEHOLDER (default) writes "<!-- image -->", EMBEDDED and REFERENCED a
+  // Markdown image from the picture's uri. OUTPUT_FORMAT_DOCLANG: PLACEHOLDER
+  // (default) writes no picture source, REFERENCED the picture's existing
+  // image uri, EMBEDDED that uri or else a PNG data URI cropped from its page
+  // image. OUTPUT_FORMAT_DCLX: REFERENCED (default) stores each picture's
+  // image (cropped from its page image when it has none of its own) under
+  // assets/ in the archive and references it, PLACEHOLDER stores none;
+  // EMBEDDED is rejected with INVALID_ARGUMENT, since the archive keeps
+  // images outside the markup. Page images go under pages/ in either mode.
+  // UNSPECIFIED is the same as unset.
   optional ImageRefMode image_export_mode = 3;
   // Text recognition over rendered pages. Unset or true runs selective
   // recognition: a page whose embedded text layer is complete skips it,
@@ -836,6 +848,13 @@ message ConvertDocumentOptions {
   // chart_extraction_custom_config.
   optional string chart_extraction_preset = 56;
   optional ChartExtractionVlmEngineOptions chart_extraction_custom_config = 57;
+  // Declare the DocLang namespace on the root element of the DocLang exports
+  // (OUTPUT_FORMAT_DOCLANG and the archive's document.xml in
+  // OUTPUT_FORMAT_DCLX). Unset or true declares it, which is what the
+  // DocLang dialect sniffers key on first; false omits it for byte parity
+  // with docling-core, whose include_namespace defaults to off. Readers that
+  // fall back to the root element name (grpc-xml does) accept either.
+  optional bool doclang_include_namespace = 58;
 }
 
 // HeadingHierarchyOptions mirrors the upstream PdfHeadingHierarchyOptions.

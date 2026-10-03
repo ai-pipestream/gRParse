@@ -1,20 +1,34 @@
 // The DocLang XML export, unit by unit: the root element, the vocabulary each
 // item maps to, list ordinals and nesting depth, table spans and gaps, the
 // picture element with and without a description, and the comments the
-// unserved arenas leave.  Whole-document parity for the same renderer lives
-// in document_render_test.cpp; these cases pin the pieces that file does not
-// reach.
+// unserved arenas leave, the image modes and the namespace switch of
+// DoclangOptions, and the DocLang archive's members (OPC parts, assets/,
+// pages/) read back out of the ZIP.  Whole-document parity for the same
+// renderer lives in document_render_test.cpp; these cases pin the pieces
+// that file does not reach.
 
+#include <algorithm>
 #include <cstddef>
+#include <map>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
+#include <miniz.h>
+#include <opencv2/core.hpp>
+#include <opencv2/imgcodecs.hpp>
+
+#include "../src/targets/sha256.h"
 #include "ai/pipestream/document/v1/document.pb.h"
+#include "grparse/base64.h"
 #include "grparse/document_render.h"
 #include "support/check.h"
 #include "support/document_builder.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 
+using grparse::DoclangOptions;
+using grparse::render_dclx;
 using grparse::render_doclang;
 using grparse_test::add_cell;
 using grparse_test::add_code;
@@ -22,8 +36,10 @@ using grparse_test::add_group;
 using grparse_test::add_heading;
 using grparse_test::add_owned_group;
 using grparse_test::add_owned_text;
+using grparse_test::add_page;
 using grparse_test::add_paragraph;
 using grparse_test::add_picture;
+using grparse_test::add_prov;
 using grparse_test::add_table;
 using grparse_test::add_text;
 using grparse_test::base_document;
@@ -34,10 +50,18 @@ namespace {
 
 const std::string kRoot = "<doclang xmlns=\"http://docling-project.org/ns/doclang/v1\">\n";
 
+DoclangOptions with_mode(DoclangOptions::ImageMode mode) {
+  DoclangOptions options;
+  options.image_mode = mode;
+  return options;
+}
+
 // Everything between the root element's tags, so a case states the elements
-// it expects and nothing else.
+// it expects and nothing else.  The vocabulary cases state picture uris, so
+// they render in the mode that writes the existing one.
 std::string body_of(const docv1::Document& document) {
-  const std::string doclang = render_doclang(document);
+  const std::string doclang =
+      render_doclang(document, with_mode(DoclangOptions::ImageMode::kReferenced));
   require(doclang.starts_with(kRoot), "the export must open the DocLang root:\n" + doclang);
   require(doclang.ends_with("</doclang>"), "the export must close its root:\n" + doclang);
   const std::size_t tail = std::string("</doclang>").size();
@@ -334,17 +358,235 @@ void verify_a_transparent_group_adds_no_element_and_no_indent() {
                 "a chapter group is transparent, so its child keeps the body's indent");
 }
 
+// A solid-color PNG of the given pixel size, as the bytes a data URI wraps.
+std::string png_of(int width, int height, unsigned char shade) {
+  const cv::Mat pixels(height, width, CV_8UC3, cv::Scalar(shade, shade, shade));
+  std::vector<unsigned char> png;
+  require(cv::imencode(".png", pixels, png), "the fixture PNG must encode");
+  return std::string(png.begin(), png.end());
+}
+
+std::string data_uri(const std::string& mimetype, const std::string& bytes) {
+  return "data:" + mimetype + ";base64," + grparse::encode_base64(bytes.data(), bytes.size());
+}
+
+cv::Size png_size(const std::string& png) {
+  const cv::Mat buffer(1, static_cast<int>(png.size()), CV_8UC1,
+                       const_cast<char*>(png.data()));
+  const cv::Mat decoded = cv::imdecode(buffer, cv::IMREAD_UNCHANGED);
+  require(!decoded.empty(), "the member must decode as an image");
+  return decoded.size();
+}
+
+// The archive's members by name, in the order the central directory lists
+// them (`names`).
+struct Archive {
+  std::vector<std::string> names;
+  std::map<std::string, std::string> members;
+};
+
+Archive unzip(const std::string& bytes) {
+  mz_zip_archive zip{};
+  require(mz_zip_reader_init_mem(&zip, bytes.data(), bytes.size(), 0) != 0,
+          "the archive must be a readable ZIP");
+  Archive archive;
+  const mz_uint count = mz_zip_reader_get_num_files(&zip);
+  for (mz_uint index = 0; index < count; ++index) {
+    mz_zip_archive_file_stat stat;
+    require(mz_zip_reader_file_stat(&zip, index, &stat) != 0, "member stat");
+    size_t size = 0;
+    void* data = mz_zip_reader_extract_to_heap(&zip, index, &size, 0);
+    require(data != nullptr, std::string("member must inflate: ") + stat.m_filename);
+    archive.names.emplace_back(stat.m_filename);
+    archive.members[stat.m_filename] = std::string(static_cast<const char*>(data), size);
+    mz_free(data);
+  }
+  mz_zip_reader_end(&zip);
+  return archive;
+}
+
+// Two pages of 100 x 200 units with 50 x 100 pixel page images (half scale),
+// then three pictures in body order: one carrying its own PNG, one with no
+// image whose box on page 2 must be cropped out of that page's image, and
+// one whose image is a relative reference no archive can load.
+struct Fixture {
+  docv1::Document document;
+  std::string own_png;
+};
+
+Fixture image_fixture() {
+  Fixture fixture{base_document("pictures.pdf"), png_of(7, 5, 40)};
+  docv1::Document& document = fixture.document;
+  for (const int page_no : {2, 1}) {
+    auto* page = add_page(&document, page_no, 100, 200);
+    page->mutable_image()->set_mimetype("image/png");
+    page->mutable_image()->set_uri(
+        data_uri("image/png", png_of(50, 100, static_cast<unsigned char>(page_no * 60))));
+  }
+  add_picture(&document, "#/body", data_uri("image/png", fixture.own_png));
+  auto* cropped = add_picture(&document, "#/body", "");
+  // 20..60 x 40..120 units is 10..30 x 20..60 pixels: a 20 x 40 crop.
+  add_prov(cropped->mutable_prov(), 2, 20, 40, 60, 120);
+  add_picture(&document, "#/body", "figs/remote.png");
+  return fixture;
+}
+
+void verify_doclang_image_modes() {
+  const Fixture fixture = image_fixture();
+  const std::string own_uri = data_uri("image/png", fixture.own_png);
+
+  const std::string placeholder = render_doclang(fixture.document);
+  require(!placeholder.contains("uri="),
+          "the default (placeholder) mode writes no picture source:\n" + placeholder);
+  require_equal(placeholder,
+                render_doclang(fixture.document,
+                               with_mode(DoclangOptions::ImageMode::kPlaceholder)),
+                "an unset image mode is the placeholder mode");
+
+  require_equal(render_doclang(fixture.document,
+                               with_mode(DoclangOptions::ImageMode::kReferenced)),
+                kRoot + "  <picture uri=\"" + own_uri + "\"/>\n  <picture/>\n" +
+                    "  <picture uri=\"figs/remote.png\"/>\n</doclang>",
+                "referenced writes each picture's existing uri and nothing for one without");
+
+  const std::string embedded =
+      render_doclang(fixture.document, with_mode(DoclangOptions::ImageMode::kEmbedded));
+  require(embedded.contains("<picture uri=\"" + own_uri + "\"/>"),
+          "embedded keeps an existing data URI:\n" + embedded);
+  require(embedded.contains("<picture uri=\"figs/remote.png\"/>"),
+          "embedded writes an existing non-data uri as is, like docling:\n" + embedded);
+  const std::string prefix = "<picture uri=\"data:image/png;base64,";
+  const size_t start = embedded.find(prefix, embedded.find(own_uri) + own_uri.size());
+  require(start != std::string::npos,
+          "embedded crops a picture without an image out of its page image:\n" + embedded);
+  const size_t payload = start + prefix.size();
+  const std::string crop =
+      grparse::decode_base64(embedded.substr(payload, embedded.find('"', payload) - payload));
+  require(png_size(crop) == cv::Size(20, 40),
+          "the crop is the provenance box scaled from page units to image pixels");
+}
+
+void verify_doclang_namespace_switch() {
+  const docv1::Document document = base_document("ns.pdf");
+  require_equal(render_doclang(document), kRoot + "</doclang>",
+                "the namespace is declared by default");
+  DoclangOptions bare;
+  bare.include_namespace = false;
+  require_equal(render_doclang(document, bare), std::string("<doclang>\n</doclang>"),
+                "include_namespace=false writes a bare root");
+}
+
 void verify_dclx_is_a_zip_with_document_xml() {
   const docv1::Document document = base_document("archive.pdf");
-  const std::string archive = grparse::render_dclx(document);
+  const std::string archive = render_dclx(document);
   require(archive.size() >= 4 && archive[0] == 'P' && archive[1] == 'K',
           "render_dclx must produce a ZIP");
-  require(archive.find("document.xml") != std::string::npos,
-          "the ZIP local headers must name document.xml");
-  require(archive.find("[Content_Types].xml") != std::string::npos,
-          "the ZIP must carry OPC Content_Types furniture");
-  const std::string again = grparse::render_dclx(document);
-  require_equal(archive, again, "render_dclx must be deterministic");
+  const Archive read = unzip(archive);
+  require_equal(read.names.size(), std::size_t{3}, "an imageless document packs three members");
+  require_equal(read.names[0], std::string("[Content_Types].xml"), "OPC content types first");
+  require_equal(read.names[1], std::string("_rels/.rels"), "then the package relationships");
+  require_equal(read.names[2], std::string("document.xml"), "then the document");
+  require(read.members.at("[Content_Types].xml")
+              .contains("PartName=\"/document.xml\" "
+                        "ContentType=\"application/vnd.doclang.document+xml\""),
+          "the content types name the DocLang document part");
+  require(read.members.at("_rels/.rels").contains("Target=\"document.xml\""),
+          "the package relationship targets document.xml");
+  require_equal(read.members.at("document.xml"), kRoot + "</doclang>\n",
+                "document.xml is the export plus a final newline, as docling writes it");
+  require_equal(archive, render_dclx(document), "render_dclx must be deterministic");
+}
+
+void verify_dclx_referenced_stores_assets_and_pages() {
+  const Fixture fixture = image_fixture();
+  const std::string archive = render_dclx(fixture.document);
+  require_equal(archive,
+                render_dclx(fixture.document, with_mode(DoclangOptions::ImageMode::kReferenced)),
+                "the archive defaults to the referenced mode");
+  const Archive read = unzip(archive);
+
+  const std::string own_asset =
+      "assets/image_000000_" + grparse::targets::sha256_hex(fixture.own_png) + ".png";
+  require(read.members.contains(own_asset), "a picture's own image is stored as " + own_asset);
+  require_equal(read.members.at(own_asset), fixture.own_png,
+                "a PNG picture image is stored byte for byte");
+
+  std::string crop_asset;
+  for (const auto& name : read.names) {
+    if (name.starts_with("assets/image_000001_")) crop_asset = name;
+  }
+  require(!crop_asset.empty() && crop_asset.ends_with(".png"),
+          "the picture without an image is stored as the second asset");
+  require(png_size(read.members.at(crop_asset)) == cv::Size(20, 40),
+          "the second asset is the crop of its page image");
+
+  const std::string& xml = read.members.at("document.xml");
+  require(xml.contains("<picture uri=\"" + own_asset + "\"/>") &&
+              xml.contains("<picture uri=\"" + crop_asset + "\"/>"),
+          "each stored picture references its asset:\n" + xml);
+  require(xml.contains("<picture uri=\"figs/remote.png\"/>"),
+          "an image the archive cannot load keeps its uri:\n" + xml);
+  require(!xml.contains("data:"), "no image rides inside the archive's markup:\n" + xml);
+
+  require(read.members.contains("pages/1.png") && read.members.contains("pages/2.png"),
+          "every page image is stored under pages/");
+  require(png_size(read.members.at("pages/2.png")) == cv::Size(50, 100),
+          "a page image is stored as it came");
+
+  std::vector<std::string> sorted = read.names;
+  std::ranges::sort(sorted);
+  require(sorted == read.names, "members are written in path order");
+  require_equal(read.names.size(), std::size_t{7},
+                "content types, rels, two assets, document.xml and two pages");
+  require_equal(archive, render_dclx(fixture.document), "the archive is deterministic");
+}
+
+void verify_dclx_placeholder_keeps_pages_only() {
+  const Fixture fixture = image_fixture();
+  const Archive read =
+      unzip(render_dclx(fixture.document, with_mode(DoclangOptions::ImageMode::kPlaceholder)));
+  for (const auto& name : read.names) {
+    require(!name.starts_with("assets/"), "placeholder stores no picture image: " + name);
+  }
+  require(read.members.contains("pages/1.png") && read.members.contains("pages/2.png"),
+          "page images are stored in the placeholder mode too");
+  require(!read.members.at("document.xml").contains("uri="),
+          "placeholder references no picture image:\n" + read.members.at("document.xml"));
+}
+
+void verify_dclx_rejects_embedded() {
+  bool rejected = false;
+  try {
+    render_dclx(base_document("embedded.pdf"), with_mode(DoclangOptions::ImageMode::kEmbedded));
+  } catch (const std::invalid_argument& error) {
+    rejected = std::string(error.what()).contains("EMBEDDED");
+  }
+  require(rejected, "the archive rejects the embedded mode, as docling does");
+}
+
+void verify_dclx_namespace_switch() {
+  DoclangOptions bare;
+  bare.include_namespace = false;
+  const Archive read = unzip(render_dclx(base_document("ns.pdf"), bare));
+  require_equal(read.members.at("document.xml"), std::string("<doclang>\n</doclang>\n"),
+                "include_namespace=false reaches the archive's document.xml");
+}
+
+void verify_dclx_transcodes_other_formats_to_png() {
+  docv1::Document document = base_document("bitmap.pdf");
+  const cv::Mat pixels(3, 4, CV_8UC3, cv::Scalar(10, 20, 30));
+  std::vector<unsigned char> bitmap;
+  require(cv::imencode(".bmp", pixels, bitmap), "the fixture BMP must encode");
+  add_picture(&document, "#/body",
+              data_uri("image/bmp", std::string(bitmap.begin(), bitmap.end())));
+  const Archive read = unzip(render_dclx(document));
+  std::string asset;
+  for (const auto& name : read.names) {
+    if (name.starts_with("assets/")) asset = name;
+  }
+  require(asset.starts_with("assets/image_000000_") && asset.ends_with(".png"),
+          "a format the content types do not declare is stored as PNG: " + asset);
+  require(png_size(read.members.at(asset)) == cv::Size(4, 3), "the re-encoded pixels survive");
 }
 
 }  // namespace
@@ -366,6 +608,13 @@ int main() {
       verify_the_unserved_arenas_leave_a_comment,
       verify_content_and_attributes_are_xml_escaped,
       verify_a_transparent_group_adds_no_element_and_no_indent,
+      verify_doclang_image_modes,
+      verify_doclang_namespace_switch,
       verify_dclx_is_a_zip_with_document_xml,
+      verify_dclx_referenced_stores_assets_and_pages,
+      verify_dclx_placeholder_keeps_pages_only,
+      verify_dclx_rejects_embedded,
+      verify_dclx_namespace_switch,
+      verify_dclx_transcodes_other_formats_to_png,
   });
 }

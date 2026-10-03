@@ -5,7 +5,9 @@
 #include <string>
 #include <vector>
 
+#include "doclang_markup.h"
 #include "grparse/document_render.h"
+#include "picture_image.h"
 #include "renderer_base.h"
 
 namespace docv1 = ai::pipestream::document::v1;
@@ -17,18 +19,23 @@ using namespace grparse::render;
 
 class DoclangRenderer : RendererBase {
  public:
-  explicit DoclangRenderer(const docv1::Document& document) : RendererBase(document) {}
+  DoclangRenderer(const docv1::Document& document, bool include_namespace,
+                  const PictureUri& picture_uri)
+      : RendererBase(document), include_namespace_(include_namespace), picture_uri_(picture_uri) {}
 
   std::string render() {
     // The root grpc-xml sniffs: the doclang local name in its NS_DOCLANG
-    // namespace.
-    out_ = "<doclang xmlns=\"http://docling-project.org/ns/doclang/v1\">\n";
+    // namespace. Without the namespace it falls back to the local name.
+    out_ = include_namespace_ ? "<doclang xmlns=\"http://docling-project.org/ns/doclang/v1\">\n"
+                              : "<doclang>\n";
     render_children(document_.body(), 1);
     out_.append("</doclang>");
     return out_;
   }
 
  private:
+  const bool include_namespace_;
+  const PictureUri& picture_uri_;
   std::string out_;
 
   void line(int depth, const std::string& text) {
@@ -269,7 +276,7 @@ class DoclangRenderer : RendererBase {
   void render_picture(const docv1::PictureItem& picture, int depth) {
     if (excluded_layer(picture.content_layer())) return;
     render_captions(picture.captions(), depth);
-    const std::string& uri = picture.has_image() ? picture.image().uri() : std::string();
+    const std::string uri = picture_uri_ ? picture_uri_(picture) : std::string();
     const std::string open =
         uri.empty() ? std::string("<picture")
                     : "<picture uri=\"" + escape_xml_attribute(uri) + "\"";
@@ -287,8 +294,45 @@ class DoclangRenderer : RendererBase {
 
 }  // namespace
 
+namespace render {
+
+std::string render_doclang_markup(const docv1::Document& document, bool include_namespace,
+                                  const PictureUri& picture_uri) {
+  return DoclangRenderer(document, include_namespace, picture_uri).render();
+}
+
+}  // namespace render
+
 std::string render_doclang(const docv1::Document& document) {
-  return DoclangRenderer(document).render();
+  return render_doclang(document, DoclangOptions{});
+}
+
+std::string render_doclang(const docv1::Document& document, const DoclangOptions& options) {
+  using Mode = DoclangOptions::ImageMode;
+  // docling-core's export_to_doclang default.
+  const Mode mode = options.image_mode.value_or(Mode::kPlaceholder);
+  render::PictureUri picture_uri;
+  switch (mode) {
+    case Mode::kPlaceholder:
+      // No source on the picture element.
+      break;
+    case Mode::kReferenced:
+      // The picture's existing image uri, whatever it is.
+      picture_uri = [](const docv1::PictureItem& picture) {
+        return picture.has_image() ? picture.image().uri() : std::string();
+      };
+      break;
+    case Mode::kEmbedded:
+      // The existing uri when there is one (docling writes it as is, data
+      // URI or not), otherwise the picture cropped out of its page image.
+      picture_uri = [&document](const docv1::PictureItem& picture) {
+        if (picture.has_image() && !picture.image().uri().empty()) return picture.image().uri();
+        const auto png = render::crop_picture_png(document, picture);
+        return png.has_value() ? render::png_data_uri(*png) : std::string();
+      };
+      break;
+  }
+  return render::render_doclang_markup(document, options.include_namespace, picture_uri);
 }
 
 }  // namespace grparse

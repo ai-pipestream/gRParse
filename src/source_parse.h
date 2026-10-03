@@ -20,6 +20,7 @@
 #include "grparse/chart_extraction_policy.h"
 #include "grparse/collector_coordinator.h"
 #include "grparse/document_parser_service.h"
+#include "grparse/document_render.h"
 #include "grparse/document_repair.h"
 #include "grparse/page_scheduler.h"
 
@@ -57,6 +58,12 @@ grpc::Status validate_options(const ai::pipestream::parse::v1::ConvertDocumentOp
 std::expected<std::optional<ChartExtractionPreset>, grpc::Status> resolve_chart_extraction(
     const ai::pipestream::parse::v1::ConvertDocumentOptions& options,
     const ChartExtractionPolicy& policy, const std::string& surface);
+
+// The DocLang export options a request carries: image_export_mode (unset or
+// UNSPECIFIED leaves each DocLang format at its own docling default) and
+// doclang_include_namespace. validate_options has already turned down the
+// combinations the renderers reject.
+DoclangOptions doclang_options(const ai::pipestream::parse::v1::ConvertDocumentOptions& options);
 
 grpc::Status parse_source(grpc::CallbackServerContext* context,
                           const ai::pipestream::parse::v1::ConvertDocumentRequest& request,
