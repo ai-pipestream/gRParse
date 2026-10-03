@@ -258,7 +258,9 @@ bool encoded_image_within_pixel_cap(const std::string& bytes) {
   }
   if (!pages.has_value()) return false;
   const uint64_t limit = max_image_pixels();
-  return std::ranges::all_of(*pages, [limit](const RasterDims& dims) {
+  // std::all_of, not the ranges form: the fuzz build's standard library
+  // compiles this file without <ranges> support.
+  return std::all_of(pages->begin(), pages->end(), [limit](const RasterDims& dims) {
     return dims.width != 0 && dims.height != 0 && dims.width * dims.height <= limit;
   });
 }
