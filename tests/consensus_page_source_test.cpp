@@ -4,6 +4,7 @@
 // backend that cannot load the document must drop out of the vote, and
 // target splitting must trim.
 #include <memory>
+#include <optional>
 #include <print>
 #include <string>
 #include <vector>
@@ -17,7 +18,9 @@
 #include "grparse/consensus_page_source.h"
 #include "grparse/document_assembly.h"
 #include "grparse/in_memory_document.h"
+#include "grparse/remote_page_source.h"
 #include "support/check.h"
+#include "support/fake_pdf_backend.h"
 
 namespace {
 
@@ -42,11 +45,13 @@ class FakeBackend final : public pdfv1::PdfBackendService::Service {
   bool fail_render = false;
   // Answers Render with a raster whose pixels are short of height * stride.
   bool short_raster = false;
+  int probe_calls = 0;
   int parse_calls = 0;
   int render_calls = 0;
 
   grpc::Status Probe(grpc::ServerContext*, const pdfv1::ProbeRequest*,
                      pdfv1::ProbeResponse* response) override {
+    ++probe_calls;
     auto* caps = response->mutable_capabilities();
     caps->set_backend_name(name_);
     caps->set_engine_version("test");
@@ -151,6 +156,19 @@ std::string joined_text(const grparse::OcrPage& page) {
     text += line.text;
   }
   return text;
+}
+
+// The PdfBackendUnavailable reason `call` fails with; nullopt when it
+// fails another way or not at all.
+template <typename Call>
+std::optional<grparse::PdfBackendFailure> failure_reason(Call call) {
+  try {
+    call();
+  } catch (const grparse::PdfBackendUnavailable& error) {
+    return error.reason();
+  } catch (const std::exception&) {
+  }
+  return std::nullopt;
 }
 
 }  // namespace
@@ -529,18 +547,68 @@ int main() {
     const auto source = grparse::open_consensus_pdf_document(
         bytes, {leg_a.target, leg_b.target}, 144.0);
     source->cancel();
-    require(!source->extract_digital_page(1).has_value(),
-            "a cancelled source yields no text candidates");
-    bool threw = false;
-    try {
-      static_cast<void>(source->render_page(1));
-    } catch (const grparse::InvalidDocument&) {
-      threw = true;
-    }
-    require(threw, "a cancelled source fails the raster");
+    // A cancel is the request's: the page fails as cancelled, not as a
+    // page without text or a bad document.
+    require(failure_reason([&] { static_cast<void>(source->extract_digital_page(1)); }) ==
+                grparse::PdfBackendFailure::kCancelled,
+            "a cancelled source fails the text page as cancelled");
+    require(failure_reason([&] { static_cast<void>(source->render_page(1)); }) ==
+                grparse::PdfBackendFailure::kCancelled,
+            "a cancelled source fails the raster as cancelled");
     require(leg_a.service->parse_calls == 0 && leg_b.service->parse_calls == 0 &&
                 leg_a.service->render_calls == 0 && leg_b.service->render_calls == 0,
             "no backend is dialed after cancel");
+  }
+
+  // Every leg failing for a reason that is not the document's fault is an
+  // outage, UNAVAILABLE, not INVALID_ARGUMENT: at the open (no leg
+  // reachable), and on a page (every leg went away after the open).
+  {
+    require(failure_reason([&] {
+              static_cast<void>(grparse::open_consensus_pdf_document(
+                  bytes, {"127.0.0.1:1", "127.0.0.1:2"}, 144.0));
+            }) == grparse::PdfBackendFailure::kUnavailable,
+            "no reachable leg fails the open as an outage");
+    Server gone_a = start("gone-a", story, true);
+    Server gone_b = start("gone-b", story, true);
+    const auto source = grparse::open_consensus_pdf_document(
+        bytes, {gone_a.target, gone_b.target}, 144.0);
+    gone_a.server->Shutdown();
+    gone_b.server->Shutdown();
+    require(failure_reason([&] { static_cast<void>(source->extract_digital_page(1)); }) ==
+                grparse::PdfBackendFailure::kUnavailable,
+            "every leg unreachable fails the text page as an outage");
+    require(failure_reason([&] { static_cast<void>(source->render_page(1)); }) ==
+                grparse::PdfBackendFailure::kUnavailable,
+            "every leg unreachable fails the raster as an outage");
+
+    // A leg that refuses the document keeps it the document's fault.
+    Server refuses = start("refuses", {}, false);
+    bool refused = false;
+    try {
+      static_cast<void>(grparse::open_consensus_pdf_document(
+          bytes, {"127.0.0.1:1", refuses.target}, 144.0));
+    } catch (const grparse::PdfBackendUnavailable&) {
+    } catch (const grparse::InvalidDocument&) {
+      refused = true;
+    }
+    require(refused, "a leg's load refusal keeps the failure INVALID_ARGUMENT");
+  }
+
+  // Opened on first use, a consensus source makes no backend call until
+  // it is used, so a cancel before then fails the open as cancelled
+  // without dialing any leg.
+  {
+    Server leg_a = start("lazy-a", story, true);
+    Server leg_b = start("lazy-b", story, true);
+    const auto source = grparse::open_consensus_pdf_document(
+        bytes, {leg_a.target, leg_b.target}, 144.0, grparse::SourceOpening::kOnFirstUse);
+    source->cancel();
+    require(failure_reason([&] { static_cast<void>(source->page_count()); }) ==
+                grparse::PdfBackendFailure::kCancelled,
+            "a cancel before first use fails the open as cancelled");
+    require(leg_a.service->probe_calls == 0 && leg_b.service->probe_calls == 0,
+            "no leg is dialed after cancel");
   }
 
   // The vote's word fold: ASCII case, curly quotes and dashes, soft
@@ -564,6 +632,46 @@ int main() {
     for (const auto& [in, want] : cases) {
       require(grparse::fold_word(in) == want,
               "fold_word(\"" + in + "\") is \"" + want + "\"");
+    }
+  }
+
+  // Legs may measure in different frames while the fleet moves to the
+  // contract frame: one backend reports unshifted user space (no
+  // page_space), another PAGE_SPACE_CROP_BOX. Each leg maps its own frame,
+  // so on an offset CropBox and a turned page every leg places the page
+  // where a single backend does, whichever leg wins the vote.
+  for (const int rotation : {0, 90, 270}) {
+    grparse_test::FakePdfPage page =
+        grparse_test::text_page({"The survey team returned", "the equipment on time"}, rotation);
+    page.crop_box = std::vector<double>{36, 48, 576, 756};
+    const std::string pdf = "%PDF-frames-" + std::to_string(rotation);
+    grparse_test::ScopedPdfBackend user_leg;
+    grparse_test::ScopedPdfBackend crop_leg;
+    crop_leg.backend().set_page_space(grparse_test::pdfv1::PAGE_SPACE_CROP_BOX);
+    user_leg.backend().add_document(pdf, {page});
+    crop_leg.backend().add_document(pdf, {page});
+    const auto pdf_bytes = std::make_shared<const std::string>(pdf);
+    const auto single = grparse::open_remote_pdf_document(pdf_bytes, user_leg.target(), 144.0)
+                            ->extract_digital_page(1);
+    require(single.has_value() && single->lines.size() == 2, "single-leg page read");
+    for (const auto& order : std::vector<std::vector<std::string>>{
+             {user_leg.target(), crop_leg.target()}, {crop_leg.target(), user_leg.target()}}) {
+      const auto voted =
+          grparse::open_consensus_pdf_document(pdf_bytes, order, 144.0)->extract_digital_page(1);
+      const std::string what = "/Rotate " + std::to_string(rotation) +
+                               (order.front() == crop_leg.target() ? ", contract-frame leg first"
+                                                                   : ", user-space leg first");
+      require(voted.has_value() && voted->lines.size() == single->lines.size(),
+              what + ": consensus page read");
+      require(voted->width == single->width && voted->height == single->height,
+              what + ": same page size as one backend");
+      for (size_t index = 0; index < voted->lines.size(); ++index) {
+        require(voted->lines[index].polygon == single->lines[index].polygon,
+                what + ": same line box as one backend");
+      }
+      for (const auto& rec : voted->reconciliation) {
+        require(rec.missing == 0 && rec.order_breaks == 0, what + ": the legs agree");
+      }
     }
   }
 

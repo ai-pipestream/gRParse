@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <print>
 #include <stdexcept>
 #include <string>
@@ -17,6 +18,7 @@
 
 #include "grparse/page_scheduler.h"
 #include "support/check.h"
+#include "support/fake_pdf_backend.h"
 
 namespace {
 
@@ -1190,6 +1192,87 @@ void verify_cancel_and_deadline_reach_the_source() {
   require(result.finish_calls == 1, "a cancelled document finishes exactly once");
 }
 
+// Opening a PDF makes a backend call, the Probe. It runs on an opener
+// thread with the source already tied to the request: while one
+// document's Probe hangs, other documents still open, schedule and finish,
+// and cancelling the hung one, or its deadline passing, ends it promptly
+// instead of after the Probe's own 30-second cap.
+void verify_blocked_open_does_not_stall_scheduling() {
+  grparse_test::ScopedPdfBackend pdf_backend;
+  auto& backend = pdf_backend.backend();
+  const std::string stuck = "%PDF-stuck-open";
+  const std::string late = "%PDF-late-open";
+  const std::string quick = "%PDF-quick-open";
+  backend.add_document(stuck, {grparse_test::text_page({"Stuck"})});
+  backend.add_document(late, {grparse_test::text_page({"Late"})});
+  backend.add_document(quick, {grparse_test::text_page({"Quick"})});
+  backend.block_probe(stuck);
+  backend.block_probe(late);
+  const auto wait_for_held = [&backend](int count) {
+    const auto give_up = std::chrono::steady_clock::now() + 5s;
+    while (backend.held_probes() < count && std::chrono::steady_clock::now() < give_up) {
+      std::this_thread::sleep_for(10ms);
+    }
+    return backend.held_probes() >= count;
+  };
+  const auto reason_of = [](const std::exception_ptr& failure) {
+    try {
+      if (failure) std::rethrow_exception(failure);
+    } catch (const grparse::PdfBackendUnavailable& error) {
+      return std::optional<grparse::PdfBackendFailure>(error.reason());
+    } catch (...) {
+    }
+    return std::optional<grparse::PdfBackendFailure>();
+  };
+
+  FakeRecognizer recognizer;
+  // The default source factory: the real PDF path, through the fake backend.
+  grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2});
+  Result stuck_result;
+  const auto stuck_ticket = scheduler.submit(std::make_shared<const std::string>(stuck), true,
+                                             callbacks_for(&stuck_result));
+  require(wait_for_held(1), "the first document's opening Probe must reach the backend");
+
+  // Two more documents open, schedule and finish behind the hung Probe.
+  for (int round = 0; round < 2; ++round) {
+    Result quick_result;
+    scheduler.submit(std::make_shared<const std::string>(quick), true,
+                     callbacks_for(&quick_result));
+    wait_until_finished(&quick_result);
+    std::lock_guard<std::mutex> lock(quick_result.mutex);
+    require(!quick_result.failure && quick_result.completed_pages.size() == 1,
+            "a document behind a hung open must still be read");
+  }
+  {
+    std::lock_guard<std::mutex> lock(stuck_result.mutex);
+    require(!stuck_result.finished, "the hung open is still waiting on its Probe");
+  }
+
+  const auto cancelled_at = std::chrono::steady_clock::now();
+  stuck_ticket.cancel();
+  wait_until_finished(&stuck_result);
+  require(std::chrono::steady_clock::now() - cancelled_at < 5s,
+          "cancel must abort the opening Probe, not wait it out");
+  require(reason_of(stuck_result.failure) == grparse::PdfBackendFailure::kCancelled,
+          "a cancelled open fails as cancelled");
+  require(stuck_result.finish_calls == 1, "a cancelled open finishes exactly once");
+
+  // The request's deadline caps the opening Probe the way it caps later
+  // calls.
+  grparse::PageScheduler::OcrTuning tuning;
+  tuning.deadline = std::chrono::system_clock::now() + 300ms;
+  const auto submitted_at = std::chrono::steady_clock::now();
+  Result late_result;
+  scheduler.submit(std::make_shared<const std::string>(late), true, tuning,
+                   callbacks_for(&late_result));
+  wait_until_finished(&late_result);
+  require(std::chrono::steady_clock::now() - submitted_at < 5s,
+          "the request deadline must end the opening Probe");
+  require(reason_of(late_result.failure) == grparse::PdfBackendFailure::kDeadlineExceeded,
+          "an open past the request deadline fails as deadline exceeded");
+  backend.release_probes();
+}
+
 void verify_render_dpi_reaches_source_factory() {
   FakeRecognizer recognizer;
   std::atomic<double> factory_dpi{0.0};
@@ -1450,6 +1533,7 @@ int main() {
       verify_force_ocr_replaces_the_embedded_layer,
       verify_render_dpi_reaches_source_factory,
       verify_cancel_and_deadline_reach_the_source,
+    verify_blocked_open_does_not_stall_scheduling,
       verify_delivery_cancellation_drains_queued_work,
       verify_page_credits_bound_a_document,
       verify_uncredited_document_survives_later_submissions,

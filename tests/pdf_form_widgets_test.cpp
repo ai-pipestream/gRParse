@@ -21,6 +21,7 @@
 #include "grparse/pdf_form_widgets.h"
 #include "support/check.h"
 #include "support/document_builder.h"
+#include "support/fake_pdf_backend.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 namespace pdfv1 = ai::protomolt::parse::pdf::v1;
@@ -96,8 +97,8 @@ pdfv1::FormField combo_box() {
 grparse::PdfPageWidgets page_one(std::vector<pdfv1::FormField> fields) {
   grparse::PdfPageWidgets page;
   page.page_number = 1;
-  page.width_pts = kWidthPts;
-  page.height_pts = kHeightPts;
+  page.page_info.set_width_pts(kWidthPts);
+  page.page_info.set_height_pts(kHeightPts);
   page.fields = std::move(fields);
   return page;
 }
@@ -357,7 +358,7 @@ void fetches_over_the_wire() {
   require_equal(fetch.engine, std::string("fake-forms"), "engine from the header");
   require_equal(fetch.pages.size(), size_t{1}, "only pages with widgets");
   require_equal(fetch.pages[0].page_number, 2, "one-based page number");
-  require_equal(fetch.pages[0].width_pts, kWidthPts, "page width from the header");
+  require_equal(fetch.pages[0].page_info.width_pts(), kWidthPts, "page info from the header");
   require_equal(fetch.pages[0].fields.size(), size_t{2}, "both widgets");
   server->Shutdown();
 }
@@ -418,6 +419,67 @@ void folds_from_the_configured_backends() {
   second->Shutdown();
 }
 
+// The fold measures widgets on the rendered page the way the page source
+// measures text: a backend on the contract frame (PAGE_SPACE_CROP_BOX)
+// reports rects already shifted by the CropBox origin, an older one
+// reports unshifted user space, and either way, on every quarter turn,
+// the widgets land on the same document boxes.
+void widget_frames_agree_on_cropped_and_rotated_pages() {
+  const std::vector<double> crop = {36, 48, 576, 756};
+  for (const int rotation : {0, 90, 180, 270}) {
+    const bool quarter_turn = rotation % 180 != 0;
+    const double width = quarter_turn ? crop[3] - crop[1] : crop[2] - crop[0];
+    const double height = quarter_turn ? crop[2] - crop[0] : crop[3] - crop[1];
+    std::vector<docv1::Document> folded;
+    for (const auto space : {pdfv1::PAGE_SPACE_UNSPECIFIED, pdfv1::PAGE_SPACE_CROP_BOX}) {
+      grparse_test::ScopedPdfBackend pdf_backend;
+      pdf_backend.backend().set_page_space(space);
+      grparse_test::FakePdfPage page;
+      page.rotation_degrees = rotation;
+      page.crop_box = crop;
+      page.form_fields = {text_field(), check_box(), combo_box()};
+      const std::string bytes = "%PDF-widgets-" + std::to_string(rotation);
+      pdf_backend.backend().add_document(bytes, {page});
+      const auto fetch = grparse::fetch_pdf_form_widgets(bytes, pdf_backend.target(), soon());
+      require(fetch.ok && fetch.pages.size() == 1, "widgets fetched: " + fetch.error);
+
+      // The CV path's page: the rendered page at twice the points.
+      docv1::Document document = base_document("form.pdf");
+      add_page(&document, 1, width * 2, height * 2);
+      add_paragraph(&document, "#/body", "page one text");
+      add_prov(document.mutable_texts(0)->mutable_text()->mutable_base()->mutable_prov(), 1,
+               10, 10, 50, 30);
+      grparse::fold_pdf_form_widgets(fetch.pages, fetch.engine, &document);
+      require_equal(document.field_items_size(), 3, "every widget folded");
+      folded.push_back(std::move(document));
+    }
+    const std::string what = "/Rotate " + std::to_string(rotation);
+    require(same(folded[0], folded[1]), what + ": both frames fold to the same document");
+
+    // Pinned: the text field's rect (300, 300)-(450, 320) in user space.
+    const docv1::FieldItem* text = nullptr;
+    for (const auto& item : folded[1].field_items()) {
+      if (item.field_name() == "customer_name") text = &item;
+    }
+    require(text != nullptr, what + ": the text field folded");
+    const auto& bbox = text->prov(0).bbox();
+    if (rotation == 0) {
+      require_equal(bbox.l(), (300 - crop[0]) * 2, "upright: left from the CropBox edge");
+      require_equal(bbox.t(), (crop[3] - 320) * 2, "upright: top from the CropBox top");
+    } else if (rotation == 90) {
+      // Reading order follows the turned page: the combo box (user x 72)
+      // is now nearest the top.
+      require_equal(folded[1].field_items(0).field_name(), std::string("form.country"),
+                    "quarter turn: reading order as shown");
+      // Turned clockwise: user y runs left to right across the page.
+      require_equal(bbox.l(), (300 - crop[1]) * 2, "quarter turn: left from user y");
+      require_equal(bbox.r(), (320 - crop[1]) * 2, "quarter turn: right from user y");
+      require_equal(bbox.t(), (300 - crop[0]) * 2, "quarter turn: top from user x");
+      require_equal(bbox.b(), (450 - crop[0]) * 2, "quarter turn: bottom from user x");
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -426,5 +488,6 @@ int main() {
       {folds_into_the_cv_page_space, keeps_points_for_a_points_page,
        read_only_values_and_bare_widgets, deterministic_whatever_the_backend_order,
        canonical_json_keeps_extensions_out, nothing_to_fold, fetches_over_the_wire,
-       absent_and_unsupported_families, folds_from_the_configured_backends});
+       absent_and_unsupported_families, folds_from_the_configured_backends,
+       widget_frames_agree_on_cropped_and_rotated_pages});
 }

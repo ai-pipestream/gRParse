@@ -24,13 +24,13 @@ namespace grparse {
 // collector merge): only the widgets come from the backend.
 
 // The widgets of one page as the backend reported them, with the page's
-// size in points so the fold can map the contract's bottom-left point
-// space onto the document's own page space.
+// PageInfo so the fold can map the contract's page space (in whichever
+// frame PageInfo.page_space names, before /Rotate) onto the document's own
+// page space, the way the page source maps text cells.
 struct PdfPageWidgets {
   // One-based, the numbering Document.pages uses.
   int page_number = 0;
-  double width_pts = 0.0;
-  double height_pts = 0.0;
+  ai::protomolt::parse::pdf::v1::PageInfo page_info;
   std::vector<ai::protomolt::parse::pdf::v1::FormField> fields;
 };
 
@@ -45,9 +45,11 @@ struct PdfPageWidgets {
 // when the widget's /AS names a state other than /Off), none for push
 // buttons and signatures.
 //
-// Boxes land in the page's space: a page whose PageItem.unit is "pt", or
-// that has no size, keeps points; otherwise boxes scale by the page's size
-// over its size in points (the CV path's raster pixels). The origin
+// Boxes land in the page's space, measured on the page as rendered (the
+// CropBox with /Rotate applied, see PdfPageFrame): a page whose
+// PageItem.unit is "pt", or that has no size, keeps points; otherwise boxes
+// scale by the page's size over its rendered size in points (the CV path's
+// raster pixels). The origin
 // follows the boxes already on that page, top-left when there are none and
 // the page is sized, bottom-left for points. Items are attributed to the
 // collector "grparse" with `engine` as the model. Deterministic: the same

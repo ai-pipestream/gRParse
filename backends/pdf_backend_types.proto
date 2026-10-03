@@ -12,9 +12,11 @@ option java_package = "ai.protomolt.parse.pdf.v1";
 // PdfBackendService contract defined in pdf_backend_service.proto.
 //
 // Coordinate convention for every geometry message in this package: PDF user
-// space of the page's CropBox, origin at the bottom-left corner, y increasing
-// upward, units in points (1/72 inch), before page /Rotate is applied unless
-// a field says otherwise. Raster pixel data is top-down row order.
+// space of the page's CropBox, origin at the CropBox's bottom-left corner
+// (a point at the CropBox origin is (0, 0)), y increasing upward, units in
+// points (1/72 inch), before page /Rotate is applied unless a field says
+// otherwise. Raster pixel data is top-down row order. A backend states the
+// frame it used in PageInfo.page_space; see PageSpace.
 //
 // Absent-vs-empty discipline: a backend never emits an empty message for a
 // family it cannot produce. What a backend will populate for a given document
@@ -259,6 +261,19 @@ message PageInfo {
   // document does not set one. All page-space geometry in this package is
   // relative to this box.
   BoundingBox crop_box = 6;
+  // The frame this page's geometry is in. Backends set PAGE_SPACE_CROP_BOX.
+  PageSpace page_space = 7;
+}
+
+// Which origin a page's geometry is measured from. Backends released before
+// this field existed reported unshifted user space and leave it unset, so a
+// client treats PAGE_SPACE_UNSPECIFIED as PAGE_SPACE_USER.
+enum PageSpace {
+  PAGE_SPACE_UNSPECIFIED = 0;
+  // Unshifted PDF user space: the CropBox origin is at crop_box.(x0, y0).
+  PAGE_SPACE_USER = 1;
+  // The contract frame: user space shifted so the CropBox origin is (0, 0).
+  PAGE_SPACE_CROP_BOX = 2;
 }
 
 // ---------------------------------------------------------------------------

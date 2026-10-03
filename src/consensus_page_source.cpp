@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <exception>
 #include <chrono>
 #include <iostream>
 #include <mutex>
@@ -239,59 +240,50 @@ class ConsensusPdfPageSource final : public PageSource {
                          const std::vector<std::string>& targets,
                          double render_dpi)
       : render_dpi_(render_dpi) {
-    std::string last_error = "no backend targets";
+    // No backend call yet: every leg opens on first use, so the request's
+    // deadline and cancel reach the opening Probes too.
     for (const std::string& target : targets) {
-      try {
-        auto source = open_remote_pdf_document(bytes, target, render_dpi);
-        const int pages = source->page_count();
-        sources_.push_back({target, std::move(source), pages});
-      } catch (const InvalidDocument& error) {
-        // A backend that cannot load this document leaves the vote; the
-        // others still read it.
-        last_error = error.what();
-        std::cerr << "consensus: dropping backend " << target << ": "
-                  << error.what() << std::endl;
-      }
-    }
-    if (sources_.empty()) throw InvalidDocument(last_error);
-    // Legs can disagree on the count (a repaired xref, an engine that skips
-    // broken pages). The document is the longest reading; a page past a
-    // leg's own count is simply not that leg's to vote on.
-    for (const Entry& entry : sources_) {
-      if (entry.pages != sources_.front().pages) {
-        std::cerr << "consensus: backend " << entry.target << " reports "
-                  << entry.pages << " pages, " << sources_.front().target
-                  << " reports " << sources_.front().pages << std::endl;
-      }
-      pages_ = std::max(pages_, entry.pages);
+      legs_.push_back({target, open_remote_pdf_document(bytes, target, render_dpi,
+                                                        SourceOpening::kOnFirstUse)});
     }
   }
 
-  int page_count() const override { return pages_; }
+  int page_count() const override {
+    open();
+    return pages_;
+  }
 
   void set_deadline(std::chrono::system_clock::time_point deadline) override {
-    for (auto& entry : sources_) entry.source->set_deadline(deadline);
+    for (auto& leg : legs_) leg.source->set_deadline(deadline);
   }
 
   void cancel() override {
-    for (auto& entry : sources_) entry.source->cancel();
+    for (auto& leg : legs_) leg.source->cancel();
   }
 
   std::optional<OcrPage> extract_digital_page(int page_number) const override {
+    open();
     std::vector<OcrPage> candidates;
     std::vector<std::string> names;
     std::vector<std::string> engines;
+    LegFailures failures;
+    bool any_answered = false;
     for (const auto& entry : sources_) {
       if (page_number > entry.pages || leg_disabled(entry)) continue;
       try {
         auto page = entry.source->extract_digital_page(page_number);
         record_leg_success(entry);
+        any_answered = true;
         if (page.has_value() && !page->lines.empty()) {
           candidates.push_back(std::move(*page));
           names.push_back(entry.target);
           engines.push_back(entry.source->backend_name());
         }
       } catch (const InvalidDocument& error) {
+        // A cancel is the request's, not the leg's: no other leg will
+        // answer either, and the page must fail as cancelled.
+        if (cancelled(error)) throw;
+        failures.record(error);
         // A backend that fails mid-document leaves this page's vote; the
         // healthy backends still read it. Consensus must never be less
         // dependable than the best configured backend. A leg that keeps
@@ -303,6 +295,9 @@ class ConsensusPdfPageSource final : public PageSource {
         }
       }
     }
+    // Every leg that was asked failed: the page fails the way one backend
+    // would, an outage as an outage rather than a bad document.
+    if (!any_answered && failures.any()) failures.raise();
     if (candidates.empty()) return std::nullopt;
     if (candidates.size() == 1) return std::move(candidates.front());
 
@@ -361,7 +356,8 @@ class ConsensusPdfPageSource final : public PageSource {
     // Raster priority is the configured order, with the same failure
     // isolation as the text path: a dead first target must not fail a page
     // another backend can render.
-    std::string last_error = "no backend rendered the page";
+    open();
+    LegFailures failures;
     for (const auto& entry : sources_) {
       if (page_number > entry.pages || leg_disabled(entry)) continue;
       try {
@@ -369,7 +365,8 @@ class ConsensusPdfPageSource final : public PageSource {
         record_leg_success(entry);
         return raster;
       } catch (const InvalidDocument& error) {
-        last_error = error.what();
+        if (cancelled(error)) throw;
+        failures.record(error);
         if (!record_leg_failure(entry)) {
           std::cerr << "consensus: render of page " << page_number
                     << " skipped on " << entry.target << ": " << error.what()
@@ -377,10 +374,102 @@ class ConsensusPdfPageSource final : public PageSource {
         }
       }
     }
-    throw InvalidDocument(last_error);
+    if (failures.any()) failures.raise();
+    throw InvalidDocument("no backend rendered the page");
   }
 
  private:
+  static bool cancelled(const InvalidDocument& error) {
+    const auto* unavailable = dynamic_cast<const PdfBackendUnavailable*>(&error);
+    return unavailable != nullptr && unavailable->reason() == PdfBackendFailure::kCancelled;
+  }
+
+  // The failures of every leg asked for one thing, and what they add up to
+  // when none answered: a cancel stays a cancel; legs that all failed for a
+  // reason that is not the document's fault keep it (every deadline passed
+  // is DEADLINE_EXCEEDED, and an outage, or a mix of transport failures,
+  // is UNAVAILABLE); any leg that refused the document makes it the
+  // document's fault, INVALID_ARGUMENT.
+  class LegFailures {
+   public:
+    void record(const InvalidDocument& error) {
+      last_error_ = error.what();
+      const auto* unavailable = dynamic_cast<const PdfBackendUnavailable*>(&error);
+      if (unavailable == nullptr) {
+        refused_ = true;
+      } else if (unavailable->reason() == PdfBackendFailure::kCancelled) {
+        cancelled_ = true;
+      } else if (!reason_.has_value()) {
+        reason_ = unavailable->reason();
+      } else if (*reason_ != unavailable->reason()) {
+        reason_ = PdfBackendFailure::kUnavailable;
+      }
+    }
+
+    bool any() const { return !last_error_.empty(); }
+
+    [[noreturn]] void raise() const {
+      if (cancelled_) throw PdfBackendUnavailable(last_error_, PdfBackendFailure::kCancelled);
+      if (!refused_ && reason_.has_value()) throw PdfBackendUnavailable(last_error_, *reason_);
+      throw InvalidDocument(last_error_);
+    }
+
+   private:
+    std::string last_error_;
+    bool refused_ = false;
+    bool cancelled_ = false;
+    std::optional<PdfBackendFailure> reason_;
+  };
+
+  struct Leg {
+    std::string target;
+    std::shared_ptr<PageSource> source;
+  };
+
+  // Opens every leg once, on first use: a leg that cannot load the
+  // document leaves the vote and the others still read it. When none
+  // loads, the open fails the way LegFailures adds the legs up; a cancel
+  // fails it at once.
+  void open() const {
+    const std::lock_guard<std::mutex> lock(open_mutex_);
+    if (open_failure_) std::rethrow_exception(open_failure_);
+    if (opened_) return;
+    try {
+      LegFailures failures;
+      for (const Leg& leg : legs_) {
+        try {
+          const int pages = leg.source->page_count();
+          sources_.push_back({leg.target, leg.source, pages});
+        } catch (const InvalidDocument& error) {
+          if (cancelled(error)) throw;
+          failures.record(error);
+          std::cerr << "consensus: dropping backend " << leg.target << ": "
+                    << error.what() << std::endl;
+        }
+      }
+      if (sources_.empty()) {
+        if (failures.any()) failures.raise();
+        throw InvalidDocument("no backend targets");
+      }
+      // Legs can disagree on the count (a repaired xref, an engine that
+      // skips broken pages). The document is the longest reading; a page
+      // past a leg's own count is simply not that leg's to vote on.
+      for (const Entry& entry : sources_) {
+        if (entry.pages != sources_.front().pages) {
+          std::cerr << "consensus: backend " << entry.target << " reports "
+                    << entry.pages << " pages, " << sources_.front().target
+                    << " reports " << sources_.front().pages << std::endl;
+        }
+        pages_ = std::max(pages_, entry.pages);
+      }
+      opened_ = true;
+    } catch (...) {
+      sources_.clear();
+      open_failure_ = std::current_exception();
+      throw;
+    }
+  }
+
   struct Entry {
     std::string target;
     std::shared_ptr<PageSource> source;
@@ -418,10 +507,18 @@ class ConsensusPdfPageSource final : public PageSource {
     return true;
   }
 
-  std::vector<Entry> sources_;
+  // Every configured leg, for set_deadline() and cancel(); fixed at
+  // construction.
+  std::vector<Leg> legs_;
+  // The legs that loaded the document, filled once by open() under
+  // open_mutex_ and read-only after.
+  mutable std::mutex open_mutex_;
+  mutable bool opened_ = false;
+  mutable std::exception_ptr open_failure_;
+  mutable std::vector<Entry> sources_;
   mutable std::mutex breaker_mutex_;
   const double render_dpi_;
-  int pages_ = 0;
+  mutable int pages_ = 0;
 };
 
 }  // namespace
@@ -528,9 +625,12 @@ std::vector<std::string> split_backend_targets(const std::string& value) {
 
 std::shared_ptr<PageSource> open_consensus_pdf_document(
     std::shared_ptr<const std::string> bytes,
-    const std::vector<std::string>& targets, double render_dpi) {
-  return std::make_shared<ConsensusPdfPageSource>(std::move(bytes), targets,
-                                                  render_dpi);
+    const std::vector<std::string>& targets, double render_dpi,
+    SourceOpening opening) {
+  auto source = std::make_shared<ConsensusPdfPageSource>(std::move(bytes), targets,
+                                                         render_dpi);
+  if (opening == SourceOpening::kNow) static_cast<void>(source->page_count());
+  return source;
 }
 
 }  // namespace grparse
