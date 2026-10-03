@@ -22,6 +22,7 @@ cp "$ROOT/collectors/lolhtml_types.proto" "$STAGED/lolhtml/v1/types.proto"
 cp "$ROOT/collectors/lolhtml_service.proto" "$STAGED/lolhtml/v1/lolhtml_service.proto"
 # document.proto imports the OpenNLP analysis document (Document.analyses).
 cp "$ROOT/collectors/opennlp_document.proto" "$STAGED/org/apache/opennlp/grpc/v1/opennlp_document.proto"
+cp "$ROOT/collectors/opennlp_annotations.proto" "$STAGED/org/apache/opennlp/grpc/v1/opennlp_annotations.proto"
 
 python -m grpc_tools.protoc -I "$STAGED" \
   --python_out="$HERE/gen" --grpc_python_out="$HERE/gen" \
@@ -29,6 +30,7 @@ python -m grpc_tools.protoc -I "$STAGED" \
   "$STAGED/lolhtml/v1/types.proto" \
   "$STAGED/lolhtml/v1/lolhtml_service.proto" \
   "$STAGED/org/apache/opennlp/grpc/v1/opennlp_document.proto" \
+  "$STAGED/org/apache/opennlp/grpc/v1/opennlp_annotations.proto" \
   "$STAGED/ai/pipestream/document/v1/document.proto" \
   "$STAGED/ai/pipestream/parse/v1/parse_types.proto" \
   "$STAGED/ai/pipestream/parse/v1/parse.proto" \

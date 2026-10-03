@@ -9,7 +9,7 @@ COPY examples/web-demo/server.js examples/web-demo/peers.js examples/web-demo/po
 COPY examples/web-demo/public ./public
 COPY document.proto parse_types.proto parse.proto parse_stream.proto /protos/
 COPY collectors/ebcdic.proto collectors/lolhtml_types.proto collectors/lolhtml_service.proto \
-  collectors/opennlp_document.proto /protos/collectors/
+  collectors/opennlp_document.proto collectors/opennlp_annotations.proto /protos/collectors/
 # The peers' contracts ride in the image: examples/web-demo/peer-protos holds
 # a byte-identical copy of every sibling's proto include tree (written by
 # sync-peer-protos.sh), copied here to the layout the resolver probes for a

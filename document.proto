@@ -4,6 +4,7 @@ package ai.pipestream.document.v1;
 
 import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
+import "org/apache/opennlp/grpc/v1/opennlp_annotations.proto";
 import "org/apache/opennlp/grpc/v1/opennlp_document.proto";
 
 option java_multiple_files = true;
@@ -192,6 +193,10 @@ message TextAnalysis {
     // AnnotationSpan indexes raw_text (spans found in a normalized form are
     // already mapped back to raw_text by the analyzer).
     org.apache.opennlp.grpc.v1.OpenNlpDocument opennlp = 6;
+    // An OpenNLP analysis in the strongly typed contract: one dedicated
+    // message per annotation kind, per-layer model provenance, and index
+    // references declared per layer. Same offset rules as `opennlp`.
+    org.apache.opennlp.grpc.v1.OpenNlpAnnotations opennlp_annotations = 7;
   }
 }
 

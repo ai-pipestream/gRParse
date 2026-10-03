@@ -113,6 +113,7 @@ cp "$project_root/collectors/lolhtml_types.proto" "$proto_root/lolhtml/v1/types.
 cp "$project_root/collectors/lolhtml_service.proto" "$proto_root/lolhtml/v1/lolhtml_service.proto"
 # document.proto imports the OpenNLP analysis document (Document.analyses).
 cp "$project_root/collectors/opennlp_document.proto" "$proto_root/org/apache/opennlp/grpc/v1/opennlp_document.proto"
+cp "$project_root/collectors/opennlp_annotations.proto" "$proto_root/org/apache/opennlp/grpc/v1/opennlp_annotations.proto"
 
 grpc() {
   local method=$1

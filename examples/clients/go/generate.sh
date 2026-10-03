@@ -24,12 +24,14 @@ cp "$ROOT/collectors/lolhtml_types.proto" "$STAGED/lolhtml/v1/types.proto"
 cp "$ROOT/collectors/lolhtml_service.proto" "$STAGED/lolhtml/v1/lolhtml_service.proto"
 # document.proto imports the OpenNLP analysis document (Document.analyses).
 cp "$ROOT/collectors/opennlp_document.proto" "$STAGED/org/apache/opennlp/grpc/v1/opennlp_document.proto"
+cp "$ROOT/collectors/opennlp_annotations.proto" "$STAGED/org/apache/opennlp/grpc/v1/opennlp_annotations.proto"
 
 MAPPINGS="Mai/pipestream/document/v1/document.proto=$MODULE/gen/documentv1"
 MAPPINGS="$MAPPINGS,Mai/pipestream/ebcdic/v1/ebcdic.proto=$MODULE/gen/ebcdicv1"
 MAPPINGS="$MAPPINGS,Mlolhtml/v1/types.proto=$MODULE/gen/lolhtmlv1"
 MAPPINGS="$MAPPINGS,Mlolhtml/v1/lolhtml_service.proto=$MODULE/gen/lolhtmlv1"
 MAPPINGS="$MAPPINGS,Morg/apache/opennlp/grpc/v1/opennlp_document.proto=$MODULE/gen/opennlpv1"
+MAPPINGS="$MAPPINGS,Morg/apache/opennlp/grpc/v1/opennlp_annotations.proto=$MODULE/gen/opennlpv1"
 MAPPINGS="$MAPPINGS,Mai/pipestream/parse/v1/parse_types.proto=$MODULE/gen/parsev1"
 MAPPINGS="$MAPPINGS,Mai/pipestream/parse/v1/parse.proto=$MODULE/gen/parsev1"
 MAPPINGS="$MAPPINGS,Mai/pipestream/parse/v1/parse_stream.proto=$MODULE/gen/parsev1"
@@ -41,6 +43,7 @@ protoc -I "$STAGED" \
   "$STAGED/lolhtml/v1/types.proto" \
   "$STAGED/lolhtml/v1/lolhtml_service.proto" \
   "$STAGED/org/apache/opennlp/grpc/v1/opennlp_document.proto" \
+  "$STAGED/org/apache/opennlp/grpc/v1/opennlp_annotations.proto" \
   "$STAGED/ai/pipestream/document/v1/document.proto" \
   "$STAGED/ai/pipestream/parse/v1/parse_types.proto" \
   "$STAGED/ai/pipestream/parse/v1/parse.proto" \
