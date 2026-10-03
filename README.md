@@ -118,6 +118,8 @@ Table exports are bounded per document, because a table's declared size and span
 
 `ChunkHierarchicalSource` and `ChunkHybridSource` parse the source exactly the way `ConvertSource` does and chunk the document that comes out of it. Their asynchronous and watch variants stay unimplemented.
 
+`StreamChunks` takes either chunk request (`hierarchical` or `hybrid`) and returns the same chunks as a server stream: one `chunk` message per chunk in `chunk_index` order, then one `summary` with the chunk count, `documents`, `chunking_info` and `processing_time`. The parse and any embedding finish before the first message, so the stream saves the consumer from holding one large response (and from the client's default 4 MiB receive limit), not from waiting for the parse. Any failure, including a missing chunker, closes the stream with its status before a single message is sent.
+
 Determinism is the point: the same input bytes produce the same chunk bytes on every machine and every run. There is no tokenizer download by default, no locale, and no defaulted budget, and every boundary rule is versioned. Each chunk carries the version it was produced under in `rules_digest`:
 
 | Rule set | Digest | What it decides |

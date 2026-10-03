@@ -37,6 +37,14 @@ service ParseService {
   // Synchronous hybrid chunking - mirrors POST /v1/chunk/hybrid/source
   rpc ChunkHybridSource(ChunkHybridSourceRequest) returns (ChunkHybridSourceResponse);
 
+  // Streamed chunking: parses the one source exactly as the two chunk RPCs
+  // above do, then sends each chunk as its own message in chunk_index order
+  // and closes with one summary. The parse finishes before the first chunk
+  // goes out, so what streams is the result, not the parse; a consumer can
+  // embed and store as it reads, and no single message has to hold the
+  // whole chunk list. No REST counterpart.
+  rpc StreamChunks(StreamChunksRequest) returns (stream StreamChunksResponse);
+
   // Async hierarchical chunking - mirrors POST /v1/chunk/hierarchical/source/async
   rpc ChunkHierarchicalSourceAsync(ChunkHierarchicalSourceAsyncRequest) returns (ChunkHierarchicalSourceAsyncResponse);
 
@@ -152,6 +160,38 @@ message ChunkHybridSourceRequest {
 
 message ChunkHybridSourceResponse {
   ChunkDocumentResponse response = 1;
+}
+
+// Exactly one chunker must be set; neither answers INVALID_ARGUMENT. Each
+// carries the same fields, validation and target refusal as its unary RPC.
+message StreamChunksRequest {
+  oneof chunker {
+    HierarchicalChunkRequest hierarchical = 1;
+    HybridChunkRequest hybrid = 2;
+  }
+}
+
+// Every chunk message comes first, then exactly one summary, then the stream
+// closes OK. A failure before the first chunk (bad options, a failed parse,
+// a failed embedding batch) closes the stream with that status and sends no
+// messages, so a reader never sees a partial chunk list end in OK.
+message StreamChunksResponse {
+  oneof event {
+    Chunk chunk = 1;
+    StreamChunksSummary summary = 2;
+  }
+}
+
+// The ChunkDocumentResponse fields that sit beside the chunks.
+message StreamChunksSummary {
+  // How many chunk messages preceded this summary.
+  int32 chunk_count = 1;
+  // As ChunkDocumentResponse.documents: the converted document when the
+  // request set include_converted_doc, otherwise an entry only when some
+  // collector failed.
+  repeated Document documents = 2;
+  double processing_time = 3;
+  map<string, ScalarValue> chunking_info = 4;
 }
 
 message ChunkHierarchicalSourceAsyncRequest {

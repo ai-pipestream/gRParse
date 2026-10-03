@@ -2752,6 +2752,85 @@ void verify_hybrid_chunk_rpc_merges_and_validates(TestServer* server) {
           "the rejection lists what is supported: " + tokenizer_status.error_message());
 }
 
+// Reads a StreamChunks call to its end.
+struct StreamedChunks {
+  grpc::Status status;
+  std::vector<pipestream::parse::v1::StreamChunksResponse> messages;
+};
+
+StreamedChunks read_stream_chunks(TestServer* server,
+                                  const pipestream::parse::v1::StreamChunksRequest& request) {
+  auto client = server->unary_stub();
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  auto reader = client->StreamChunks(&context, request);
+  StreamedChunks streamed;
+  pipestream::parse::v1::StreamChunksResponse message;
+  while (reader->Read(&message)) streamed.messages.push_back(message);
+  streamed.status = reader->Finish();
+  return streamed;
+}
+
+// The streamed chunker sends exactly the unary chunks, one per message in
+// order, then one summary; a refused request sends nothing.
+void verify_stream_chunks_matches_the_unary_chunkers(TestServer* server) {
+  auto client = server->unary_stub();
+  pipestream::parse::v1::ChunkHierarchicalSourceRequest unary;
+  auto* source = unary.mutable_request()->add_sources()->mutable_file();
+  source->set_filename("image.png");
+  source->set_base64_string("bWVtb3J5");
+  grpc::ClientContext unary_context;
+  unary_context.set_deadline(std::chrono::system_clock::now() + 10s);
+  pipestream::parse::v1::ChunkHierarchicalSourceResponse baseline;
+  require(client->ChunkHierarchicalSource(&unary_context, unary, &baseline).ok(),
+          "baseline hierarchical chunking");
+
+  pipestream::parse::v1::StreamChunksRequest hierarchical;
+  *hierarchical.mutable_hierarchical() = unary.request();
+  const StreamedChunks streamed = read_stream_chunks(server, hierarchical);
+  require(streamed.status.ok(), "streamed chunking failed: " + streamed.status.error_message());
+  const auto& chunks = baseline.response().chunks();
+  require(streamed.messages.size() == static_cast<size_t>(chunks.size()) + 1,
+          "one message per chunk, then the summary");
+  for (int index = 0; index < chunks.size(); ++index) {
+    const auto& message = streamed.messages.at(static_cast<size_t>(index));
+    require(message.has_chunk() && same_message(message.chunk(), chunks.Get(index)),
+            "each streamed chunk is the unary chunk at the same position");
+  }
+  const auto& summary = streamed.messages.back();
+  require(summary.has_summary(), "the stream ends with its summary");
+  require(summary.summary().chunk_count() == chunks.size(), "the summary counts the chunks");
+  require(summary.summary().documents().empty(),
+          "the converted document rides along only when it is asked for");
+  require(summary.summary().chunking_info().at("chunker").string_value() == "hierarchical",
+          "the summary carries chunking_info");
+
+  pipestream::parse::v1::StreamChunksRequest hybrid;
+  *hybrid.mutable_hybrid()->add_sources() = unary.request().sources(0);
+  hybrid.mutable_hybrid()->set_include_converted_doc(true);
+  hybrid.mutable_hybrid()->mutable_chunking_options()->set_max_tokens(8);
+  const StreamedChunks merged = read_stream_chunks(server, hybrid);
+  require(merged.status.ok(), "streamed hybrid failed: " + merged.status.error_message());
+  require(merged.messages.size() == 2 && merged.messages.front().has_chunk() &&
+              merged.messages.front().chunk().text() == "one\ntwo\nthree",
+          "the hybrid stream sends its one merged chunk, then the summary");
+  require(merged.messages.back().summary().documents_size() == 1 &&
+              merged.messages.back().summary().documents(0).content().doc().texts_size() == 3,
+          "include_converted_doc puts the parsed document on the summary");
+
+  const StreamedChunks unset = read_stream_chunks(server, {});
+  require(unset.status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              unset.messages.empty(),
+          "a request naming no chunker is refused before anything streams");
+  pipestream::parse::v1::StreamChunksRequest without_budget;
+  *without_budget.mutable_hybrid()->add_sources() = unary.request().sources(0);
+  const StreamedChunks refused = read_stream_chunks(server, without_budget);
+  require(refused.status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              refused.status.error_message().contains("max_tokens") && refused.messages.empty(),
+          "a hybrid request without a budget is refused with no messages: " +
+              refused.status.error_message());
+}
+
 // These RPC tests exercise orchestration, not model quality. Native model
 // acceptance is a separate gate against the packaged artifacts.
 class RecordingEmbedder final : public grparse::EmbeddingEngine {
@@ -2980,6 +3059,7 @@ int main() {
         verify_streaming_pdf_router_cancels_with_the_client();
         verify_hierarchical_chunk_rpc_carries_digest_and_offsets(&server);
         verify_hybrid_chunk_rpc_merges_and_validates(&server);
+        verify_stream_chunks_matches_the_unary_chunkers(&server);
         verify_chunk_rpcs_refuse_targets_and_surface_failures(&server);
         verify_chunk_embeddings_rpc();
         verify_disabled_embeddings_and_unimplemented_chunk_rpcs(&server);
