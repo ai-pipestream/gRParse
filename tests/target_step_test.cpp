@@ -187,6 +187,7 @@ void verify_s3_credentials_are_paired() {
   EnvSlot access("AWS_ACCESS_KEY_ID");
   EnvSlot secret("AWS_SECRET_ACCESS_KEY");
   EnvSlot token("AWS_SESSION_TOKEN");
+  EnvSlot ambient("GRPARSE_S3_AMBIENT_CREDENTIALS");
 
   auto deliver_s3 = [](void (*fill)(parsev1::S3Target*)) {
     parsev1::Target target;
@@ -216,6 +217,21 @@ void verify_s3_credentials_are_paired() {
                 static_cast<int>(grpc::StatusCode::INVALID_ARGUMENT),
                 "empty S3 keys are INVALID_ARGUMENT");
 
+  setenv("AWS_ACCESS_KEY_ID", "AKIAEXAMPLEKEY", 1);
+  setenv("AWS_SECRET_ACCESS_KEY", "s3cr3t-value-that-must-never-print", 1);
+  const grpc::Status not_opted_in = deliver_s3([](parsev1::S3Target* s3) {
+    s3->set_endpoint("https://127.0.0.1:9");
+    s3->set_bucket("bucket");
+  });
+  require_equal(static_cast<int>(not_opted_in.error_code()),
+                static_cast<int>(grpc::StatusCode::INVALID_ARGUMENT),
+                "the server's own credentials never sign without the deployment's opt-in");
+  require(not_opted_in.error_message().contains("GRPARSE_S3_AMBIENT_CREDENTIALS"),
+          not_opted_in.error_message());
+  unsetenv("AWS_ACCESS_KEY_ID");
+  unsetenv("AWS_SECRET_ACCESS_KEY");
+
+  setenv("GRPARSE_S3_AMBIENT_CREDENTIALS", "1", 1);
   const grpc::Status missing_env = deliver_s3([](parsev1::S3Target* s3) {
     s3->set_endpoint("https://127.0.0.1:9");
     s3->set_bucket("bucket");
@@ -239,6 +255,19 @@ void verify_s3_credentials_are_paired() {
           "the failure must not carry the secret key: " + from_env.error_message());
   require(!from_env.error_message().contains("AKIAEXAMPLEKEY"),
           "the failure must not carry the access key: " + from_env.error_message());
+
+  // A session token is a bearer credential: an http endpoint is refused
+  // before anything is sent, rather than handed it in cleartext.
+  setenv("AWS_SESSION_TOKEN", "session-token-that-must-never-print", 1);
+  const grpc::Status cleartext = deliver_s3([](parsev1::S3Target* s3) {
+    s3->set_endpoint("http://127.0.0.1:9");
+    s3->set_bucket("bucket");
+  });
+  require_equal(static_cast<int>(cleartext.error_code()),
+                static_cast<int>(grpc::StatusCode::INVALID_ARGUMENT),
+                "a session token over http is INVALID_ARGUMENT");
+  require(!cleartext.error_message().contains("session-token-that-must-never-print"),
+          "the refusal must not carry the token: " + cleartext.error_message());
 }
 
 void verify_a_failed_delivery_leaks_no_credentials() {

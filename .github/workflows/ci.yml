@@ -49,6 +49,32 @@ jobs:
             -e GRPARSE_EMBEDDING_TEST_REQUIRE=1 \
             --entrypoint grparse-embedding-reference grparse-ci-openvino
 
+  # Dockerfile.cpu is the multi-arch :latest-cpu image; publish.yml would
+  # otherwise build it first on push to main. amd64 is enough to gate a PR.
+  # This job also runs the model-backed goldens (layout, table structure,
+  # figure classifier, hf/1 tokenizer): the grparse-models fetch stage
+  # downloads the pinned files, sha-checked against models/MANIFEST, into
+  # the build context's models/, and GRPARSE_TEST_REQUIRE_MODELS=1 makes a
+  # missing model fail the in-build ctest instead of skipping.
+  cpu-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Provide the pinned model files
+        run: |
+          docker build --progress=plain -f Dockerfile.models \
+            --build-arg MODELS_LAYOUT=all --build-arg MODELS_TOKENIZER=1 -t grparse-ci-models .
+          id=$(docker create grparse-ci-models)
+          docker cp "$id:/models/." models/
+          docker rm "$id"
+          scripts/fetch-models.sh --verify --dir models --layout all --tokenizer
+      - name: Build CPU image and run the tests, model goldens included
+        run: |
+          docker build --progress=plain -f Dockerfile.cpu \
+            --build-arg GRPARSE_TEST_REQUIRE_MODELS=1 -t grparse-ci-cpu .
+      - name: Boot-proof the runtime image
+        run: ./scripts/smoke-test.sh grparse-ci-cpu
+
   # The demo shell image carries every peer's proto contract (vendored under
   # examples/web-demo/peer-protos); the Dockerfile's own build gate loads
   # them all, and the unit tests cover the registry, the vendored trees, and
@@ -69,8 +95,9 @@ jobs:
       - name: Load every peer contract inside the built image
         run: docker run --rm grparse-ci-demo-shell node server.js --check-protos
 
-  # Short fuzz window on the two ingest doors (the only code that touches
-  # attacker-controlled bytes before a model runs).  The fuzz project builds
+  # Short fuzz window on the raster ingest door (the only in-process code that
+  # touches attacker-controlled bytes before a model runs; PDFs go to a
+  # PdfBackendService).  The fuzz project builds
   # standalone in seconds - no gRPC or ONNX Runtime fetch - so this fits in a
   # PR gate.  Long campaigns run manually; see fuzz/README.md.
   fuzz-smoke:
@@ -82,18 +109,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             clang libclang-rt-dev ninja-build cmake pkg-config \
-            libopencv-dev libpoppler-cpp-dev
+            libopencv-dev
       - name: Build the fuzzers
         run: |
           cmake -S fuzz -B build-fuzz -G Ninja -DCMAKE_CXX_COMPILER=clang++
           cmake --build build-fuzz
-      - name: Fuzz the PDF ingest door
-        env:
-          LSAN_OPTIONS: suppressions=tests/lsan.supp
-        run: |
-          mkdir -p corpus-pdf
-          ./build-fuzz/pdf-source-fuzzer corpus-pdf fuzz/seeds/pdf \
-            -max_total_time=90 -max_len=1048576 -rss_limit_mb=4096 -print_final_stats=1
       - name: Fuzz the raster ingest door
         env:
           LSAN_OPTIONS: suppressions=tests/lsan.supp

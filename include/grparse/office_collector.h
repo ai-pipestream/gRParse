@@ -22,11 +22,13 @@ namespace grparse {
 // `inbound_deadline` is the absolute ceiling of the call that asked for the
 // parse: the stream runs until the sooner of that and this leg's own static
 // cap. kNoCollectorDeadline (the default) means the call carried none, which
-// leaves the leg on its cap alone.
+// leaves the leg on its cap alone. `cancelled` cancels the stream once the
+// inbound call is gone; empty (the default) watches nothing.
 CollectorOutcome collect_office_document(
     const std::shared_ptr<grpc::Channel>& channel, const std::string& document_id,
     const std::string& filename, const std::string& content_type,
     const std::string& bytes, const OfficeCvEnrichment& enrichment = {},
-    CollectorDeadline inbound_deadline = kNoCollectorDeadline);
+    CollectorDeadline inbound_deadline = kNoCollectorDeadline,
+    CollectorCancelled cancelled = {});
 
 }  // namespace grparse

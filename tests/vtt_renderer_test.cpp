@@ -105,6 +105,18 @@ void verify_a_voice_wraps_the_cue_text() {
                 "a named voice wraps the cue payload in its span");
 }
 
+// Cue text is escaped and its blank lines collapse: an unescaped "<" opens a
+// span and a blank line ends the cue, letting the rest parse as timing.
+void verify_cue_text_is_escaped_and_keeps_its_cue_together() {
+  docv1::Document document = base_document("meeting.wav");
+  add_cue(&document, "#/body", "a < b && c > d\n\n00:00:09.000 --> 00:00:10.000\r\nend\n",
+          1.0, 2.0, "Bob <host>");
+  require_equal(render_vtt(document),
+                "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n<v Bob &lt;host&gt;>"
+                "a &lt; b &amp;&amp; c &gt; d\n00:00:09.000 --&gt; 00:00:10.000\nend</v>",
+                "cue text escapes & < > and collapses blank lines");
+}
+
 void verify_an_identifier_takes_the_line_above_the_timing() {
   docv1::Document document = base_document("meeting.wav");
   add_cue(&document, "#/body", "Hello", 1.0, 2.0, "", "cue-1");
@@ -191,6 +203,7 @@ int main() {
       verify_timestamps_pad_their_fields_and_round_to_milliseconds,
       verify_a_negative_start_reads_as_zero,
       verify_a_voice_wraps_the_cue_text,
+      verify_cue_text_is_escaped_and_keeps_its_cue_together,
       verify_an_identifier_takes_the_line_above_the_timing,
       verify_consecutive_items_with_the_same_cue_merge,
       verify_a_different_timing_or_identifier_opens_a_new_cue,

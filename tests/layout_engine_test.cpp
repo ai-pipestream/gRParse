@@ -18,8 +18,6 @@ namespace {
 
 namespace fs = std::filesystem;
 
-constexpr int kSkipExitCode = 77;
-
 using grparse_test::require;
 
 void verify_missing_model_fails_loudly() {
@@ -139,12 +137,28 @@ void verify_rejects_empty_image(const fs::path& model, grparse::LayoutModel sele
   require(threw, "an empty image must be rejected");
 }
 
+// A provider whose first inference fails retreats to CPU and binds the same
+// strategy to the new session.  That rebind must replace the cached names, not
+// append to them: appending reallocated the name storage under the pointers
+// handed to Run, so the fallback engine read freed memory.
+void verify_cpu_fallback_after_failed_probe(const fs::path& model,
+                                            grparse::LayoutModel selection, const cv::Mat& image,
+                                            const ExpectedRegion* expected,
+                                            size_t expected_count) {
+  grparse::layout_engine_test_inject_probe_failures(1);
+  grparse::LayoutEngine engine(model, selection);
+  grparse::layout_engine_test_inject_probe_failures(0);
+  verify_matches_reference(engine, engine.detect_regions(image), expected, expected_count);
+}
+
 // One model's whole leg: skipped when its file is not provisioned, so a host
 // that fetched only one of the two still proves that one.
 bool run_model(grparse::LayoutModel selection, const fs::path& models_dir, const cv::Mat& image,
                const ExpectedRegion* expected, size_t expected_count) {
   const fs::path model = models_dir / grparse::layout_model_file(selection);
   if (!fs::exists(model)) {
+    require(!grparse_test::models_required(),
+            "GRPARSE_TEST_REQUIRE_MODELS=1 but the model is missing: " + model.string());
     std::println(stderr, "layout-engine-test: {} leg skipped, no {}",
                  grparse::layout_model_name(selection), model.string());
     return false;
@@ -155,6 +169,7 @@ bool run_model(grparse::LayoutModel selection, const fs::path& models_dir, const
   const auto regions = engine.detect_regions(image);
   verify_matches_reference(engine, regions, expected, expected_count);
   verify_shared_session_serves_repeat_calls(engine, image, regions);
+  verify_cpu_fallback_after_failed_probe(model, selection, image, expected, expected_count);
   return true;
 }
 
@@ -180,7 +195,7 @@ int main() {
     if (!heron && !picodet) {
       std::println(stderr, "layout-engine-test: skipped, no layout model present in {:?}",
                    models_dir.string());
-      return kSkipExitCode;
+      return grparse_test::missing_model_exit_code();
     }
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {

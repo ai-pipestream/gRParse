@@ -37,8 +37,9 @@ struct CutPolicy {
 // axis, the policy above arbitrating between a horizontal band cut
 // (top-to-bottom) and a vertical one (left-to-right, which is what keeps
 // multi-column text in column order); a set with no clean gap sorts by
-// top, then left, keeping input order for exact ties. Deterministic in the
-// boxes and the policy alone.
+// top, then left, keeping input order for exact ties. A box with a
+// non-finite edge orders after all the others, in input order.
+// Deterministic in the boxes and the policy alone.
 std::vector<size_t> xy_cut_order(const std::vector<OrderBox>& boxes, const CutPolicy& policy = {});
 
 // Returns the indices of page.lines in reading order.

@@ -155,6 +155,39 @@ void verify_form_rows_split_on_document() {
   require(grparse::split_form_rows(&document, kPdf) == 0, "a second pass splits nothing");
 }
 
+// Spans count code points while the cuts are bytes; and a piece of an
+// item a picture holds is listed by that picture, right after the original.
+void verify_split_in_code_points_under_item_parent() {
+  docv1::Document document = base_document();
+  const std::string text = "\xCE\x91\xCE\x92\xCE\x93 \xCE\x94\xCE\x95\xCE\x96 alpha beta";
+  const std::string ref = add_prose(&document, text, 159, 61);
+  document.mutable_body()->clear_children();
+  auto* picture = document.add_pictures();
+  picture->set_self_ref("#/pictures/0");
+  picture->mutable_parent()->set_ref("#/body");
+  picture->add_children()->set_ref(ref);
+  document.mutable_body()->add_children()->set_ref("#/pictures/0");
+  auto* base = document.mutable_texts(0)->mutable_text()->mutable_base();
+  base->mutable_parent()->set_ref("#/pictures/0");
+  auto* span = base->add_spans();
+  span->mutable_range()->set_start(14);  // "beta"
+  span->mutable_range()->set_end(18);
+  base->mutable_prov(0)->mutable_charspan()->set_end(18);
+
+  const auto created = grparse::split_text_item(&document, 0, {text.find("alpha")});
+  require(created == std::vector<std::string>{"#/texts/1"}, "one piece is created");
+  const auto& piece = document.texts(1).text().base();
+  require(piece.text() == "alpha beta", "the piece holds the tail");
+  require(piece.spans_size() == 1 && piece.spans(0).range().start() == 6 &&
+              piece.spans(0).range().end() == 10,
+          "the span lands on its word in code points");
+  require(piece.prov(0).charspan().end() == 10, "the piece's charspan counts code points");
+  require(document.texts(0).text().base().spans_size() == 0, "the first piece keeps no span");
+  require(picture->children_size() == 2 && document.pictures(0).children(1).ref() == "#/texts/1",
+          "the piece is listed by the picture that is its parent");
+  require(body_refs(document) == std::vector<std::string>{"#/pictures/0"}, "the body is unchanged");
+}
+
 void verify_structural_producers_are_left_alone() {
   docv1::Document document = base_document();
   add_prose(&document, "3.1 TRAINING THE DIFFUSION MODEL The pre-trained components generate code",
@@ -174,6 +207,7 @@ int main() {
       verify_form_row_detection,
       verify_document_split_and_geometry,
       verify_form_rows_split_on_document,
+      verify_split_in_code_points_under_item_parent,
       verify_structural_producers_are_left_alone,
   });
 }

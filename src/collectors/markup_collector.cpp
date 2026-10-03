@@ -16,10 +16,12 @@ CollectorOutcome collect_markup_document(const std::shared_ptr<grpc::Channel>& c
                                          const std::string& filename,
                                          const std::string& content_type,
                                          const std::string& bytes,
-                                         CollectorDeadline inbound_deadline) {
+                                         CollectorDeadline inbound_deadline,
+                                         CollectorCancelled cancelled) {
   auto stub = markupv1::MarkupParseService::NewStub(channel);
   grpc::ClientContext context;
   context.set_deadline(capped_collector_deadline(inbound_deadline, kDeadline));
+  const CancelWatch watch(context, std::move(cancelled));
   auto stream = stub->ParseMarkup(&context);
 
   markupv1::ParseMarkupRequest request;
@@ -29,13 +31,13 @@ CollectorOutcome collect_markup_document(const std::shared_ptr<grpc::Channel>& c
   // wire's "sniff it".
   request.mutable_options()->set_format(markup_format_for(filename, content_type));
   request.mutable_options()->set_emit_document(true);
-  upload_stream(*stream, request, bytes, /*always_send_chunk=*/false,
-                [&bytes](markupv1::ParseMarkupRequest& frame, size_t offset,
-                         size_t length, bool /*last*/) {
-                  frame.set_chunk(bytes.data() + offset, length);
-                });
+  ConcurrentUpload upload(
+      context, *stream, request, bytes, /*always_send_chunk=*/false,
+      [&bytes](markupv1::ParseMarkupRequest& frame, size_t offset, size_t length, bool /*last*/) {
+        frame.set_chunk(bytes.data() + offset, length);
+      });
   CollectorOutcome outcome = drain_stream<markupv1::ParseMarkupResponse>(
-      "markup", *stream,
+      "markup", *stream, upload,
       [](const markupv1::ParseMarkupResponse& event,
          std::vector<std::string>& warnings) {
         if (!event.has_status()) return false;

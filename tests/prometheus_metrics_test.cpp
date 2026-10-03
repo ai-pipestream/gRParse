@@ -234,6 +234,7 @@ void verify_render_histogram_is_cumulative() {
   metrics.page_latency[0] = 1;  // <= 25 ms
   metrics.page_latency[2] = 2;  // <= 100 ms
   metrics.page_latency[metrics.page_latency.size() - 1] = 3;  // overflow bucket
+  metrics.page_latency_ns = 1'500'000'000;
 
   const std::string text = grparse::render_prometheus_metrics(
       metrics, grparse::OcrEnginePool::Stats{}, grparse::PageScheduler::Options{});
@@ -248,6 +249,8 @@ void verify_render_histogram_is_cumulative() {
   require_contains(text, "grparse_page_latency_seconds_bucket{le=\"+Inf\"} 6\n",
                    "+Inf bucket counts everything");
   require_contains(text, "grparse_page_latency_seconds_count 6\n", "histogram count");
+  require_contains(text, "grparse_page_latency_seconds_sum 1.5\n",
+                   "a histogram carries its mandatory _sum series");
 }
 
 void verify_http_listener() {

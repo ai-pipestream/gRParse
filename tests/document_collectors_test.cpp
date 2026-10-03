@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <print>
@@ -228,7 +229,7 @@ void verify_email_collects_document_and_warnings() {
   FakeEmailService service;
   ServerFixture server(&service);
   const auto outcome = grparse::collect_email_document(
-      server.channel(), "doc-9", "thread.eml", "message/rfc822",
+      server.channel(), nullptr, "doc-9", "thread.eml", "message/rfc822",
       std::string(300U * 1024U, 'e'));
   require(outcome.success, "email collection succeeds: " + outcome.error);
   require(outcome.document.texts(0).text().base().text() == "from email",
@@ -241,7 +242,7 @@ void verify_missing_trailer_fails() {
   TruncatingEmailService service;
   ServerFixture server(&service);
   const auto outcome =
-      grparse::collect_email_document(server.channel(), "d", "f.eml", "", "abc");
+      grparse::collect_email_document(server.channel(), nullptr, "d", "f.eml", "", "abc");
   require(!outcome.success && outcome.code == grpc::StatusCode::UNAVAILABLE,
           "a stream without a terminal status fails the collector");
   require(outcome.error.contains("terminal status"),
@@ -352,6 +353,23 @@ void verify_inbound_deadline_bounds_a_hanging_collector() {
           "a hanging collector ends on the inbound deadline");
   require(elapsed < std::chrono::seconds{30},
           "the leg answers on the inbound deadline, not on its own ceiling");
+}
+
+// A cancelled inbound call cancels the leg it started: against a collector
+// that never answers, the leg ends once the hook says the caller is gone,
+// not on its own five-minute ceiling.
+void verify_cancellation_ends_a_hanging_collector() {
+  HangingXmlService service;
+  ServerFixture server(&service);
+  const auto started = std::chrono::steady_clock::now();
+  const auto outcome = grparse::collect_xml_document(
+      server.channel(), "<a/>", grparse::kNoCollectorDeadline, [started] {
+        return std::chrono::steady_clock::now() - started > std::chrono::milliseconds{200};
+      });
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  require(!outcome.success, "a cancelled leg is not a success");
+  require(elapsed < std::chrono::seconds{30},
+          "the leg ends on the cancellation, not on its own ceiling");
 }
 
 // ---- ebcdic ----------------------------------------------------------------
@@ -686,6 +704,121 @@ void verify_epub_book_without_markup_keeps_the_skeleton() {
     if (warning.contains("GRPARSE_MARKUP_TARGET")) named = true;
   }
   require(named, "the degradation names the variable that would fix it");
+}
+
+// ---- email HTML bodies -------------------------------------------------------
+
+// Serves what grpc-email sends for a message whose body is HTML: the body
+// part events, then a fold that maps the subject and the attachment list but
+// no HTML (the fold leaves HTML to the HTML collector), then the trailer.
+class HtmlEmailService final : public emailv1::EmailParseService::Service {
+ public:
+  explicit HtmlEmailService(bool plain_alternative) : plain_alternative_(plain_alternative) {}
+
+  grpc::Status ParseEmail(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<emailv1::ParseEmailResponse, emailv1::ParseEmailRequest>*
+          stream) override {
+    emailv1::ParseEmailRequest request;
+    while (stream->Read(&request)) {
+    }
+    emailv1::ParseEmailResponse event;
+    if (plain_alternative_) {
+      auto* plain = event.mutable_body_part();
+      plain->set_part_id("1.1");
+      plain->set_media_type(emailv1::BODY_MEDIA_TYPE_PLAIN);
+      plain->set_text("Quarterly numbers");
+      stream->Write(event);
+      event.Clear();
+    }
+    auto* html = event.mutable_body_part();
+    html->set_part_id(plain_alternative_ ? "1.2" : "1");
+    html->set_media_type(emailv1::BODY_MEDIA_TYPE_HTML);
+    html->set_text("<html><body><h1>Quarterly numbers</h1></body></html>");
+    stream->Write(event);
+    event.Clear();
+
+    docv1::Document document;
+    document.set_name("Q3 update");
+    document.mutable_source_meta()->set_title("Q3 update");
+    document.mutable_body()->set_self_ref("#/body");
+    document.mutable_furniture()->set_self_ref("#/furniture");
+    auto* title = document.add_texts()->mutable_title()->mutable_base();
+    title->set_self_ref("#/texts/0");
+    title->mutable_parent()->set_ref("#/body");
+    title->set_label(docv1::DOC_ITEM_LABEL_TITLE);
+    title->set_text("Q3 update");
+    document.mutable_body()->add_children()->set_ref("#/texts/0");
+    auto* attachments = document.add_groups();
+    attachments->set_self_ref("#/groups/0");
+    attachments->mutable_parent()->set_ref("#/body");
+    attachments->set_name("attachments");
+    attachments->set_label(docv1::GROUP_LABEL_LIST);
+    document.mutable_body()->add_children()->set_ref("#/groups/0");
+    *event.mutable_document() = document;
+    stream->Write(event);
+    event.Clear();
+    event.mutable_status()->set_state(emailv1::ParseStatus::STATE_OK);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+
+ private:
+  bool plain_alternative_;
+};
+
+void verify_email_html_body_folds_through_markup() {
+  HtmlEmailService email(/*plain_alternative=*/false);
+  ServerFixture email_server(&email);
+  HtmlMarkupService markup;
+  ServerFixture markup_server(&markup);
+  const auto outcome = grparse::collect_email_document(
+      email_server.channel(), markup_server.channel(), "d", "news.eml", "message/rfc822",
+      "From: a@example.com\r\n");
+  require(outcome.success, "the html-only message collects: " + outcome.error);
+  require(markup.dials().size() == 1 && markup.dials()[0].contains("<h1>Quarterly numbers"),
+          "the HTML body part is dialed through the markup collector");
+  const auto& document = outcome.document;
+  require(document.texts_size() == 2 &&
+              document.texts(1).section_header().base().text() == "Quarterly numbers" &&
+              document.texts(1).section_header().base().parent().ref() == "#/body",
+          "the HTML body's heading joins the message body");
+  require(document.body().children_size() == 3 &&
+              document.body().children(0).ref() == "#/texts/0" &&
+              document.body().children(1).ref() == "#/texts/1" &&
+              document.body().children(2).ref() == "#/groups/0",
+          "the body reads title, HTML body, attachments");
+  require(document.name() == "Q3 update" && document.source_meta().title() == "Q3 update",
+          "the HTML page's title never overrides the message's");
+}
+
+void verify_email_plain_body_skips_markup() {
+  HtmlEmailService email(/*plain_alternative=*/true);
+  ServerFixture email_server(&email);
+  HtmlMarkupService markup;
+  ServerFixture markup_server(&markup);
+  const auto outcome = grparse::collect_email_document(
+      email_server.channel(), markup_server.channel(), "d", "news.eml", "message/rfc822",
+      "From: a@example.com\r\n");
+  require(outcome.success, "the alternative message collects: " + outcome.error);
+  require(markup.dials().empty(),
+          "a message with a text/plain body keeps the fold's mapping of it");
+  require(outcome.document.texts_size() == 1, "the fold arrives unchanged");
+}
+
+void verify_email_html_body_without_markup_warns() {
+  HtmlEmailService email(/*plain_alternative=*/false);
+  ServerFixture email_server(&email);
+  const auto outcome = grparse::collect_email_document(
+      email_server.channel(), nullptr, "d", "news.eml", "message/rfc822",
+      "From: a@example.com\r\n");
+  require(outcome.success, "the fold still collects without markup: " + outcome.error);
+  require(outcome.document.texts_size() == 1, "the fold arrives unchanged");
+  bool named = false;
+  for (const auto& warning : outcome.warnings) {
+    if (warning.contains("GRPARSE_MARKUP_TARGET")) named = true;
+  }
+  require(named, "the missing HTML body names the variable that would fix it");
 }
 
 // ---- markup ----------------------------------------------------------------
@@ -1145,6 +1278,92 @@ class FakeWarcService final : public warcv1::WarcService::Service {
   Mode mode_;
 };
 
+// Answers while it reads, the way fastwarc-grpc does: every request chunk is
+// echoed back as payload chunks before the next one is read, so a client
+// that uploads everything before reading anything fills both directions'
+// flow-control windows and stalls until the deadline.
+class EchoingWarcService final : public warcv1::WarcService::Service {
+ public:
+  grpc::Status ParseWarc(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<warcv1::ParseWarcResponse, warcv1::ParseWarcRequest>*
+          stream) override {
+    warcv1::ParseWarcRequest request;
+    warcv1::ParseWarcResponse event;
+    auto* start = event.mutable_record_start()->mutable_metadata();
+    start->set_record_type(warcv1::WARC_RECORD_TYPE_RESOURCE);
+    start->set_stream_pos(0);
+    if (!stream->Write(event)) return grpc::Status::OK;
+    uint64_t offset = 0;
+    while (stream->Read(&request)) {
+      if (request.has_config()) continue;
+      // Echo in 64 KiB payload chunks, like the real server's.
+      for (size_t at = 0; at < request.chunk().size(); at += 65536) {
+        event.Clear();
+        auto* chunk = event.mutable_payload_chunk();
+        chunk->set_offset(offset);
+        chunk->set_data(request.chunk().substr(at, 65536));
+        offset += chunk->data().size();
+        if (!stream->Write(event)) return grpc::Status::OK;
+      }
+    }
+    event.Clear();
+    event.mutable_record_end()->set_payload_length(offset);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+};
+
+void verify_fastwarc_streams_both_ways_without_deadlock() {
+  EchoingWarcService service;
+  ServerFixture server(&service);
+  const std::string archive(48U * 1024U * 1024U, 'w');
+  const auto started = std::chrono::steady_clock::now();
+  const auto outcome = grparse::collect_fastwarc_document(
+      server.channel(), archive, std::chrono::system_clock::now() + std::chrono::seconds{120});
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  require(outcome.success, "an echoing collector completes: " + outcome.error);
+  require(outcome.document.groups_size() == 1, "the echoed record folds");
+  require(elapsed < std::chrono::seconds{60},
+          "the upload interleaves with the reads instead of waiting on the deadline");
+}
+
+// One record, then silence until the leg gives up.
+class StallingWarcService final : public warcv1::WarcService::Service {
+ public:
+  grpc::Status ParseWarc(
+      grpc::ServerContext* context,
+      grpc::ServerReaderWriter<warcv1::ParseWarcResponse, warcv1::ParseWarcRequest>*
+          stream) override {
+    warcv1::ParseWarcRequest request;
+    while (stream->Read(&request)) {
+    }
+    warcv1::ParseWarcResponse event;
+    event.mutable_record_start()->mutable_metadata()->set_record_type(
+        warcv1::WARC_RECORD_TYPE_WARCINFO);
+    stream->Write(event);
+    event.Clear();
+    event.mutable_record_end()->set_payload_length(0);
+    stream->Write(event);
+    while (!context->IsCancelled()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    return grpc::Status::OK;
+  }
+};
+
+// A leg cut off by its deadline is a failure, not a clipped archive: the
+// records that made it are not known to be the whole archive.
+void verify_fastwarc_deadline_is_a_failure() {
+  StallingWarcService service;
+  ServerFixture server(&service);
+  const auto outcome = grparse::collect_fastwarc_document(
+      server.channel(), "WARC/1.0 fake bytes",
+      std::chrono::system_clock::now() + std::chrono::milliseconds{500});
+  require(!outcome.success && outcome.code == grpc::StatusCode::DEADLINE_EXCEEDED,
+          "a deadline after some records fails the leg: " + outcome.error);
+}
+
 void verify_fastwarc_folds_records_and_warnings() {
   FakeWarcService service(FakeWarcService::Mode::kOk);
   ServerFixture server(&service);
@@ -1380,6 +1599,113 @@ class FakePoiService final : public poiv1::PoiParseService::Service {
     return grpc::Status::OK;
   }
 };
+
+// One Word table whose first cell spans two rows: per the contract the
+// covered position is not repeated, so row 2 carries only B2 and C2.
+class MergedTablePoiService final : public poiv1::PoiParseService::Service {
+ public:
+  grpc::Status ParseDocument(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<poiv1::ParseEvent, poiv1::ParseRequestChunk>* stream)
+      override {
+    poiv1::ParseRequestChunk chunk;
+    while (stream->Read(&chunk)) {
+    }
+    poiv1::ParseEvent event;
+    poiv1::Table* table = event.mutable_table();
+    poiv1::TableRow* first = table->add_rows();
+    poiv1::TableCell* merged = first->add_cells();
+    merged->set_text("A1");
+    merged->set_row_span(2);
+    first->add_cells()->set_text("B1");
+    first->add_cells()->set_text("C1");
+    poiv1::TableRow* second = table->add_rows();
+    second->add_cells()->set_text("B2");
+    second->add_cells()->set_text("C2");
+    stream->Write(event);
+    event.Clear();
+    event.mutable_status();
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+};
+
+// A cell spanning rows from above keeps its columns in the rows below: the
+// next row's cells start past it instead of overlapping it.
+void verify_poi_vertical_merge_keeps_columns() {
+  MergedTablePoiService service;
+  ServerFixture server(&service);
+  const auto outcome = grparse::collect_poi_document(server.channel(), "doc-merge",
+                                                     "merge.docx", "", "bytes");
+  require(outcome.success, "poi collection succeeds: " + outcome.error);
+  const docv1::TableData& data = outcome.document.tables(0).data();
+  require(data.num_rows() == 2 && data.num_cols() == 3 && data.table_cells_size() == 5,
+          "the merged table keeps its three columns");
+  const docv1::TableCell& a1 = data.table_cells(0);
+  require(a1.text() == "A1" && a1.start_row_offset_idx() == 0 &&
+              a1.end_row_offset_idx() == 2 && a1.start_col_offset_idx() == 0,
+          "the merged cell spans both rows of the first column");
+  const docv1::TableCell& b2 = data.table_cells(3);
+  const docv1::TableCell& c2 = data.table_cells(4);
+  require(b2.text() == "B2" && b2.start_row_offset_idx() == 1 &&
+              b2.start_col_offset_idx() == 1 && b2.end_col_offset_idx() == 2,
+          "the second row's first cell lands in column B, past the merge");
+  require(c2.text() == "C2" && c2.start_col_offset_idx() == 2,
+          "and the cell after it in column C");
+}
+
+// One table whose cells claim spans no real document has: a gridSpan of
+// uint32 max and a vMerge two billion rows deep.
+class HostileSpanPoiService final : public poiv1::PoiParseService::Service {
+ public:
+  grpc::Status ParseDocument(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<poiv1::ParseEvent, poiv1::ParseRequestChunk>* stream)
+      override {
+    poiv1::ParseRequestChunk chunk;
+    while (stream->Read(&chunk)) {
+    }
+    poiv1::ParseEvent event;
+    poiv1::Table* table = event.mutable_table();
+    poiv1::TableRow* first = table->add_rows();
+    poiv1::TableCell* wide = first->add_cells();
+    wide->set_text("wide");
+    wide->set_col_span(std::numeric_limits<uint32_t>::max());
+    poiv1::TableCell* deep = first->add_cells();
+    deep->set_text("deep");
+    deep->set_row_span(2000000000U);
+    table->add_rows()->add_cells()->set_text("below");
+    stream->Write(event);
+    event.Clear();
+    event.mutable_status();
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+};
+
+// Hostile spans clamp to the table's bounds with a warning instead of
+// sizing the column ledger from the wire.
+void verify_poi_hostile_span_is_clamped() {
+  HostileSpanPoiService service;
+  ServerFixture server(&service);
+  const auto outcome = grparse::collect_poi_document(server.channel(), "doc-span",
+                                                     "span.docx", "", "bytes");
+  require(outcome.success, "poi collection succeeds: " + outcome.error);
+  const docv1::TableData& data = outcome.document.tables(0).data();
+  require(data.num_rows() == 2 && data.table_cells_size() == 3,
+          "the hostile table keeps its rows and cells");
+  const docv1::TableCell& wide = data.table_cells(0);
+  require(wide.col_span() == 16384 && wide.end_col_offset_idx() == 16384,
+          "the wide cell clamps to the spreadsheet column limit");
+  const docv1::TableCell& deep = data.table_cells(1);
+  require(deep.row_span() == 2 && deep.end_row_offset_idx() == 2 &&
+              deep.start_col_offset_idx() == 16384 && deep.col_span() == 1,
+          "the deep cell clamps to the rows the table has");
+  require(data.num_cols() == 16385, "the column count follows the clamped spans");
+  require(outcome.warnings.size() == 1 &&
+              outcome.warnings[0].find("clamped") != std::string::npos,
+          "the clamp surfaces as a warning");
+}
 
 class RejectingPoiService final : public poiv1::PoiParseService::Service {
  public:
@@ -1760,6 +2086,13 @@ class FakeCalamineService final : public calaminev1::CalamineService::Service {
       data->add_values()->set_error(calaminev1::CELL_ERROR_TYPE_DIV0);
       data->add_values()->mutable_empty();
       writer->Write(event);
+    } else {
+      // 45000.999999 rounds up to midnight: 2023-03-16 00:00:00.
+      event.Clear();
+      calaminev1::WorksheetRow* row = event.mutable_rows()->add_rows();
+      row->set_row_index(0);
+      row->add_values()->mutable_date_time()->set_value(45000.999999);
+      writer->Write(event);
     }
     return grpc::Status::OK;
   }
@@ -1882,6 +2215,66 @@ void verify_calamine_folds_sheets() {
   require(data.row_prov_size() == 2 && data.row_prov(1).grid().row() == 2 &&
               data.row_prov(1).grid().sheet() == "First",
           "rows carry grid provenance in the sheet's absolute addresses");
+  const docv1::TableData& second = document.tables(1).data();
+  require(second.table_cells_size() == 1 &&
+              second.table_cells(0).text() == "2023-03-16 00:00:00" &&
+              second.table_cells(0).value().datetime().day() == 16 &&
+              second.table_cells(0).value().datetime().hour() == 0,
+          "a time that rounds up to midnight lands on the next day");
+}
+
+// A terminal in-band sheet error, then a server that keeps the stream open:
+// the client must cancel the call rather than wait in Finish for messages
+// it will never read.
+class TerminalErrorCalamineService final : public calaminev1::CalamineService::Service {
+ public:
+  grpc::Status OpenWorkbook(
+      grpc::ServerContext*,
+      grpc::ServerReader<calaminev1::OpenWorkbookRequest>* reader,
+      calaminev1::OpenWorkbookResponse* response) override {
+    calaminev1::OpenWorkbookRequest frame;
+    while (reader->Read(&frame)) {
+    }
+    response->set_workbook_id("wb-7");
+    calaminev1::Sheet* sheet = response->mutable_metadata()->add_sheets();
+    sheet->set_name("Poisoned");
+    sheet->set_visible(calaminev1::SHEET_VISIBLE_VISIBLE);
+    return grpc::Status::OK;
+  }
+
+  grpc::Status StreamWorksheetRange(
+      grpc::ServerContext* context, const calaminev1::StreamWorksheetRangeRequest*,
+      grpc::ServerWriter<calaminev1::StreamWorksheetRangeResponse>* writer) override {
+    calaminev1::StreamWorksheetRangeResponse event;
+    event.mutable_error()->set_terminal(true);
+    event.mutable_error()->mutable_error()->set_message("cell table corrupt");
+    writer->Write(event);
+    while (!context->IsCancelled()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    return grpc::Status::OK;
+  }
+
+  grpc::Status CloseWorkbook(grpc::ServerContext*,
+                             const calaminev1::CloseWorkbookRequest*,
+                             calaminev1::CloseWorkbookResponse* response) override {
+    response->set_closed(true);
+    return grpc::Status::OK;
+  }
+};
+
+void verify_calamine_terminal_error_does_not_wait_out_the_deadline() {
+  TerminalErrorCalamineService service;
+  ServerFixture server(&service);
+  const auto started = std::chrono::steady_clock::now();
+  const auto outcome = grparse::collect_calamine_document(
+      server.channel(), "bytes", std::chrono::system_clock::now() + std::chrono::seconds{60});
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  require(!outcome.success && outcome.error.contains("cell table corrupt") &&
+              outcome.code == grpc::StatusCode::INVALID_ARGUMENT,
+          "the terminal in-band error is the outcome: " + outcome.error);
+  require(elapsed < std::chrono::seconds{30},
+          "the leg cancels the sheet call instead of waiting on its deadline");
 }
 
 void verify_calamine_sheet_failure_still_closes() {
@@ -2070,6 +2463,11 @@ void verify_pdf_routing_decision_logic() {
               !mixed_decision.force_ocr,
           "without encoding issues nothing escalates to forced recognition");
 
+  grparse::PdfClassification empty_fold = text_based;
+  empty_fold.empty_body = true;
+  require(!grparse::route_pdf_by_classification(empty_fold).fast_path,
+          "a text-based document whose fold carried no body is not the fast path");
+
   grparse::PdfClassification garbled_mixed = mixed;
   garbled_mixed.encoding_issues = true;
   require(grparse::route_pdf_by_classification(garbled_mixed).force_ocr,
@@ -2096,6 +2494,140 @@ void verify_pdf_encoding_issues_defeat_the_fast_path() {
   require(route.force_ocr,
           "the declined fast path escalates to forced recognition, skipping "
           "the digital extraction of the flagged layer");
+}
+
+// Serves a scripted FULL stream for the routing guards: TEXT_BASED with no
+// OCR pages on info, then the given page events, the given fold, and a
+// trailer carrying the given extraction verdicts and invisible-text flag.
+class ScriptedPdfService final : public pdfv1::PdfParseService::Service {
+ public:
+  ScriptedPdfService(std::vector<pdfv1::PageMarkdown> pages, docv1::Document document,
+                     std::vector<uint32_t> extraction_ocr_pages, bool invisible_text)
+      : pages_(std::move(pages)),
+        document_(std::move(document)),
+        extraction_ocr_pages_(std::move(extraction_ocr_pages)),
+        invisible_text_(invisible_text) {}
+
+  grpc::Status ParsePdf(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<pdfv1::ParsePdfResponse, pdfv1::ParsePdfRequest>* stream)
+      override {
+    pdfv1::ParsePdfRequest request;
+    while (stream->Read(&request)) {
+    }
+    pdfv1::ParsePdfResponse event;
+    event.mutable_info()->set_pdf_type(pdfv1::PDF_TYPE_TEXT_BASED);
+    event.mutable_info()->set_confidence(1.0F);
+    event.mutable_info()->set_page_count(static_cast<uint32_t>(pages_.size()));
+    stream->Write(event);
+    for (const auto& page : pages_) {
+      event.Clear();
+      *event.mutable_page() = page;
+      stream->Write(event);
+    }
+    event.Clear();
+    *event.mutable_document() = document_;
+    stream->Write(event);
+    event.Clear();
+    auto* status = event.mutable_status();
+    status->set_pages_extracted(static_cast<uint32_t>(pages_.size()));
+    for (const uint32_t page : extraction_ocr_pages_) {
+      auto* reasons = status->add_extraction_ocr_reasons();
+      reasons->set_page(page);
+      reasons->add_reasons(pdfv1::OCR_REASON_SUSPECTED_GARBLED);
+    }
+    status->set_has_invisible_text(invisible_text_);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+
+ private:
+  std::vector<pdfv1::PageMarkdown> pages_;
+  docv1::Document document_;
+  std::vector<uint32_t> extraction_ocr_pages_;
+  bool invisible_text_;
+};
+
+pdfv1::PageMarkdown pdf_page(uint32_t page_no, const std::string& markdown,
+                             bool needs_ocr = false) {
+  pdfv1::PageMarkdown page;
+  page.set_page_no(page_no);
+  page.set_markdown(markdown);
+  page.set_needs_ocr(needs_ocr);
+  return page;
+}
+
+// The OCRmyPDF shape: a page image behind an invisible OCR layer on every
+// page. Detection counts the hidden text and says TEXT_BASED with no OCR
+// pages; extraction leaves the hidden layer out, so every page is empty and
+// the fold's only text sits in the invisible layer.
+void verify_pdf_searchable_scan_refuses_the_fast_path() {
+  docv1::Document document;
+  document.mutable_body()->set_self_ref("#/body");
+  auto* hidden = document.add_texts()->mutable_text()->mutable_base();
+  hidden->set_self_ref("#/texts/0");
+  hidden->set_content_layer(docv1::CONTENT_LAYER_INVISIBLE);
+  hidden->set_text("the scanned contract's OCR layer");
+  ScriptedPdfService service({pdf_page(1, ""), pdf_page(2, "  \n")}, document, {},
+                             /*invisible_text=*/true);
+  ServerFixture server(&service);
+  const auto result = grparse::collect_pdf(server.channel(), "%PDF-fake");
+  require(result.outcome.success, "pdf collection succeeds: " + result.outcome.error);
+  require(result.classification.invisible_text,
+          "the trailer's has_invisible_text rides the classification");
+  require(result.classification.empty_body,
+          "a fold whose only text is invisible has no body");
+  require(result.classification.pages_needing_ocr == std::vector<int>({1, 2}),
+          "every empty page of a document that drew invisible text needs OCR");
+  bool warned = false;
+  for (const auto& warning : result.outcome.warnings) {
+    if (warning.contains("invisible text")) warned = true;
+  }
+  require(warned, "the invisible text layer is warned about");
+  const auto route = grparse::route_pdf_by_classification(result.classification);
+  require(!route.fast_path && route.ocr_pages == std::vector<int>({1, 2}),
+          "a searchable scan routes its pages to recognition instead of fast-pathing");
+}
+
+// A mostly-text document whose scanned page the 8-page detection sample
+// missed: the empty page drew a picture, a garbled page is convicted by the
+// pass that read it, and a blank page that is neither stays out.
+void verify_pdf_extraction_verdicts_name_ocr_pages() {
+  docv1::Document document = canned_document("pdf");
+  auto* picture = document.add_pictures();
+  picture->set_self_ref("#/pictures/0");
+  picture->mutable_parent()->set_ref("#/body");
+  picture->add_prov()->set_page_no(2);
+  ScriptedPdfService service(
+      {pdf_page(1, "# report"), pdf_page(2, ""), pdf_page(3, "8VceZWZTReV", /*needs_ocr=*/true),
+       pdf_page(4, "body"), pdf_page(5, "")},
+      document, /*extraction_ocr_pages=*/{4}, /*invisible_text=*/false);
+  ServerFixture server(&service);
+  const auto result = grparse::collect_pdf(server.channel(), "%PDF-fake");
+  require(result.outcome.success, "pdf collection succeeds: " + result.outcome.error);
+  require(!result.classification.empty_body && !result.classification.invisible_text,
+          "a fold with body text is not empty");
+  require(result.classification.pages_needing_ocr == std::vector<int>({2, 3, 4}),
+          "the pictured empty page, the needs_ocr page, and the trailer's verdict page "
+          "need OCR; the blank page does not");
+  require(!grparse::route_pdf_by_classification(result.classification).fast_path,
+          "a text-based document with extraction verdicts does not fast-path");
+}
+
+// No OCR verdict anywhere, but the fold came back with nothing in it: an
+// empty Document for a document with pages is not a parse result.
+void verify_pdf_empty_fold_refuses_the_fast_path() {
+  docv1::Document document;
+  document.mutable_body()->set_self_ref("#/body");
+  ScriptedPdfService service({pdf_page(1, "")}, document, {}, /*invisible_text=*/false);
+  ServerFixture server(&service);
+  const auto result = grparse::collect_pdf(server.channel(), "%PDF-fake");
+  require(result.outcome.success, "pdf collection succeeds: " + result.outcome.error);
+  require(result.classification.empty_body && result.classification.pages_needing_ocr.empty(),
+          "an empty fold is flagged without inventing OCR pages");
+  const auto route = grparse::route_pdf_by_classification(result.classification);
+  require(!route.fast_path && route.ocr_pages.empty(),
+          "an empty fold leaves the CV path's own heuristic in charge");
 }
 
 void verify_pdf_collector_failure_is_an_outcome() {
@@ -2149,6 +2681,22 @@ void verify_pdf_page_range_forwards_as_pages() {
   require(ranged.outcome.success, "page_range collect succeeds: " + ranged.outcome.error);
   require(service.last_pages() == std::vector<uint32_t>({2, 3, 4}),
           "page_range expands to the inclusive PdfOptions.pages list");
+
+  // Docling's "to the end" span, (1, sys.maxsize) clamped to INT32_MAX on
+  // this wire, is the whole document: no list, no overflow, no allocation.
+  const auto open_ended = grparse::collect_pdf(
+      server.channel(), "%PDF-fake", grparse::kNoCollectorDeadline,
+      std::make_pair(1, std::numeric_limits<int>::max()));
+  require(open_ended.outcome.success, "open-ended page_range collects: " + open_ended.outcome.error);
+  require(service.last_pages().empty(),
+          "an open-ended span from page 1 sends no page list");
+
+  const auto tail = grparse::collect_pdf(server.channel(), "%PDF-fake",
+                                         grparse::kNoCollectorDeadline,
+                                         std::make_pair(99999, std::numeric_limits<int>::max()));
+  require(tail.outcome.success, "an open-ended tail collects: " + tail.outcome.error);
+  require(service.last_pages() == std::vector<uint32_t>({99999, 100000}),
+          "an open-ended span from a later page stops at the listed-page ceiling");
 }
 
 }  // namespace
@@ -2186,9 +2734,13 @@ int main() {
       verify_transport_class_collapses_to_unavailable,
       verify_email_collects_document_and_warnings,
       verify_missing_trailer_fails,
+      verify_email_html_body_folds_through_markup,
+      verify_email_plain_body_skips_markup,
+      verify_email_html_body_without_markup_warns,
       verify_xml_collects_document_and_formats_warnings,
       verify_caller_status_classes_survive,
       verify_inbound_deadline_bounds_a_hanging_collector,
+      verify_cancellation_ends_a_hanging_collector,
       verify_ebcdic_forwards_layout_and_collects,
       verify_ebcdic_without_layout_never_dials,
       verify_epub_collects_document,
@@ -2207,19 +2759,27 @@ int main() {
       verify_fastwarc_framing_error_keeps_records,
       verify_fastwarc_transport_failure_without_records,
       verify_fastwarc_truncates_payload_text,
+      verify_fastwarc_streams_both_ways_without_deadlock,
+      verify_fastwarc_deadline_is_a_failure,
       verify_poi_folds_typed_events,
       verify_poi_collector_failure_survives_its_code,
       verify_poi_truncated_stream_fails,
+      verify_poi_vertical_merge_keeps_columns,
+      verify_poi_hostile_span_is_clamped,
       verify_poi_unreachable_endpoint_degrades,
       verify_poi_fanout_merges_claims_without_a_second_body,
       verify_poi_fanout_keeps_its_body_when_the_primary_failed,
       verify_calamine_folds_sheets,
       verify_calamine_sheet_failure_still_closes,
+      verify_calamine_terminal_error_does_not_wait_out_the_deadline,
       verify_calamine_unreachable_endpoint_degrades,
       verify_pdf_collects_document_classification_and_warnings,
       verify_pdf_scanned_reports_the_ocr_page_set,
       verify_pdf_routing_decision_logic,
       verify_pdf_encoding_issues_defeat_the_fast_path,
+      verify_pdf_searchable_scan_refuses_the_fast_path,
+      verify_pdf_extraction_verdicts_name_ocr_pages,
+      verify_pdf_empty_fold_refuses_the_fast_path,
       verify_pdf_collector_failure_is_an_outcome,
       verify_pdf_endpoint_configuration,
       verify_pdf_plain_leg_returns_the_document,

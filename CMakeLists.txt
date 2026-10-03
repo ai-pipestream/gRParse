@@ -7,6 +7,14 @@ include(CTest)
 # zxing-cpp 3.x requires at least C++20 in its public headers.
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# The sources use <print> (absent from GCC 13's libstdc++) and the "{:?}"
+# debug format spec (absent before GCC 15's); fail here rather than forty
+# minutes into the build.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 15)
+  message(FATAL_ERROR
+    "gRParse needs GCC 15 or newer (found ${CMAKE_CXX_COMPILER_VERSION}); "
+    "build in the image toolchain (Dockerfile.cpu --target deps)")
+endif()
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # Everything links statically into the two binaries; the only shared libraries
 # the runtime image stages are ONNX Runtime's (imported below).  Pinned OFF
@@ -32,6 +40,21 @@ if(GRPARSE_SANITIZE)
   target_compile_options(grparse_flags INTERFACE
     -fsanitize=${GRPARSE_SANITIZE} -fno-omit-frame-pointer -g)
   target_link_options(grparse_flags INTERFACE -fsanitize=${GRPARSE_SANITIZE})
+  # GCC's null, nonnull-attribute and returns-nonnull-attribute checks imply
+  # -fno-delete-null-pointer-checks, under which abseil's constexpr
+  # function-pointer comparisons are "not a constant expression"; protobuf's
+  # MessageDifferencer header instantiates them. Only tests include that
+  # header, so those tests alone build without the three checks.
+  if(GRPARSE_SANITIZE MATCHES "undefined")
+    file(GLOB GRPARSE_TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp")
+    foreach(source IN LISTS GRPARSE_TEST_SOURCES)
+      file(STRINGS "${source}" uses_differencer REGEX "message_differencer\\.h")
+      if(uses_differencer)
+        set_source_files_properties("${source}" PROPERTIES COMPILE_OPTIONS
+          "-fno-sanitize=null,nonnull-attribute,returns-nonnull-attribute")
+      endif()
+    endforeach()
+  endif()
 endif()
 
 include(FetchContent)
@@ -221,7 +244,7 @@ FetchContent_MakeAvailable(simdutf)
 # "hf/1" token counter. It wraps the Rust tokenizers crate behind a small C
 # ABI, so the build needs cargo on PATH (the Dockerfiles and the CI runner
 # images carry it; a local build needs a Rust toolchain). Pinned to a commit
-# because the project publishes no releases. Two patches ride on top:
+# because the project publishes no releases. Four patches ride on top:
 # hf-only-build drops the sentencepiece and msgpack subdirectories (this
 # counter never loads those formats, and sentencepiece vendors its own
 # abseil whose absl::* target names collide with the ones gRPC expects from
@@ -234,16 +257,23 @@ FetchContent_MakeAvailable(simdutf)
 # toolchain (aarch64-unknown-linux-gnu-gcc) when the build host itself is
 # arm64: there the compiler is plain gcc, the prefixed name does not exist,
 # and the onig_sys crate's build script fails to find any C compiler. The
-# prefixed names are now set only under CMAKE_CROSSCOMPILING.
+# prefixed names are now set only under CMAKE_CROSSCOMPILING. A fourth,
+# cargo-lock, adds rust/Cargo.lock (upstream ships none) and builds with
+# --locked, so the crate graph linked into the server is the reviewed one,
+# checksums included, rather than whatever crates.io resolves that day. To
+# move it, regenerate the lock with `cargo update` in rust/ and refresh the
+# patch.
 FetchContent_Declare(tokenizers_cpp
   GIT_REPOSITORY https://github.com/mlc-ai/tokenizers-cpp.git
   GIT_TAG c586c52f93f7b060753bd2388eb96a105cb7374d
   # checkout first so the step is idempotent: FetchContent re-runs the patch
   # step whenever the subbuild re-executes, including on cached trees.
   PATCH_COMMAND git checkout -- CMakeLists.txt rust/src/lib.rs src/huggingface_tokenizer.cc
+        COMMAND ${CMAKE_COMMAND} -E rm -f rust/Cargo.lock
         COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/tokenizers-cpp-hf-only-build.patch"
         COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/tokenizers-cpp-null-on-parse-error.patch"
-        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/tokenizers-cpp-native-aarch64.patch")
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/tokenizers-cpp-native-aarch64.patch"
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/tokenizers-cpp-cargo-lock.patch")
 FetchContent_MakeAvailable(tokenizers_cpp)
 # FetchContent only patches when it populates, so a dependency tree cached
 # before the patch existed would keep the panicking load. Fail the configure
@@ -269,6 +299,12 @@ if(GRPARSE_TOKENIZERS_AARCH64_PATCH_AT EQUAL -1)
     "patches/tokenizers-cpp-native-aarch64.patch. Delete _deps/tokenizers_cpp-* from the "
     "build directory (or the docker build cache) and re-run CMake.")
 endif()
+string(FIND "${GRPARSE_TOKENIZERS_CMAKE}" "build --locked" GRPARSE_TOKENIZERS_LOCK_PATCH_AT)
+if(GRPARSE_TOKENIZERS_LOCK_PATCH_AT EQUAL -1)
+  message(FATAL_ERROR "tokenizers_cpp CMakeLists.txt is unpatched: the source tree predates "
+    "patches/tokenizers-cpp-cargo-lock.patch. Delete _deps/tokenizers_cpp-* from the "
+    "build directory (or the docker build cache) and re-run CMake.")
+endif()
 unset(GRPARSE_TOKENIZERS_CMAKE)
 
 # miniz supplies the raw deflate compressor and the CRC-32 the ZIP target
@@ -287,14 +323,12 @@ target_include_directories(miniz PUBLIC "${miniz_SOURCE_DIR}")
 # OpenCV 5 moved the 2D contour functions RapidOcrOnnx uses (minAreaRect,
 # boxPoints, getPerspectiveTransform) out of imgproc into the geometry module.
 find_package(OpenCV 5.0 REQUIRED COMPONENTS core imgcodecs imgproc geometry)
-find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
 # libcurl carries the S3 target's signed PUTs.  The distribution's own, not a
 # vendored copy: the three images already ship a TLS stack, and the signing is
 # this repo's (Signature V4 over the request headers), so nothing here needs
 # an AWS SDK.
 find_package(CURL REQUIRED)
-pkg_check_modules(POPPLER_CPP REQUIRED IMPORTED_TARGET poppler-cpp)
 
 # The server links gRPC's vendored BoringSSL statically and libcurl
 # dynamically, and libcurl's TLS backend is OpenSSL.  The two define the same
@@ -752,7 +786,7 @@ target_compile_definitions(grparse_core
 target_link_libraries(grparse_core
   # grparse_curl is PUBLIC for its link options alone: they belong to every
   # executable that ends up with both TLS stacks in its link closure.
-  PUBLIC grparse_proto rapidocr PkgConfig::POPPLER_CPP Threads::Threads grparse_curl
+  PUBLIC grparse_proto rapidocr Threads::Threads grparse_curl
   PRIVATE ZXing::ZXing yaml-cpp::yaml-cpp simdutf::simdutf miniz tokenizers_cpp grparse_flags)
 
 add_executable(grparse-server src/main.cpp src/server_config.cpp)
@@ -797,7 +831,6 @@ if(BUILD_TESTING)
     remote-pdf-source-test
     consensus-page-source-test
     prometheus-metrics-test
-    pdf-source-concurrency-test
     raster-source-test
     reading-order-test
     region-geometry-test
@@ -818,6 +851,8 @@ if(BUILD_TESTING)
     target_link_libraries(${test_name} PRIVATE grparse_core grparse_flags)
     add_test(NAME ${test_name} COMMAND ${test_name})
   endforeach()
+  # The YAML export test loads its output back to check the scalar tags.
+  target_link_libraries(document-render-test PRIVATE yaml-cpp::yaml-cpp)
   # The image builds stage the runtime library closure with
   # scripts/stage-runtime-closure.sh (the runtime bases carry nothing but
   # glibc). Its own check runs with the suite, so a build stage whose ldd
@@ -875,6 +910,8 @@ if(BUILD_TESTING)
   # The layout golden needs the real model file; without it the test skips
   # (exit 77) so environments that never download models stay green while any
   # environment with models proves the decode against the reference output.
+  # GRPARSE_TEST_REQUIRE_MODELS=1 in the environment turns that skip into a
+  # failure; the CI cpu-image job provides the models and sets it.
   set_tests_properties(figure-classifier-test layout-engine-test table-structure-engine-test PROPERTIES
     SKIP_RETURN_CODE 77
     ENVIRONMENT

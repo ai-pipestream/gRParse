@@ -57,8 +57,9 @@ struct PictureAnchorReport {
 // below the picture's, after the page's last item when none is, and where
 // the page has no items at all, after the last item of any earlier page.
 // Pictures without a page or box go to the end of the body.
-// Both groups are processed in (page, top, left, self_ref) order, so the
-// result is the same whatever order the detector reported them in.
+// Both groups are processed in (page, top, left) order, so the result is
+// the same whatever order the detector reported them in; pictures that tie
+// on all three (the unplaced ones, say) keep their body order.
 PictureAnchorReport anchor_pictures_by_provenance(
     ai::pipestream::document::v1::Document* document,
     const std::vector<std::string>& picture_refs);

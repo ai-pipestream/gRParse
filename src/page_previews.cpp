@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <utility>
 #include <vector>
 
 #include <opencv2/imgcodecs.hpp>
@@ -31,18 +32,25 @@ cv::Mat preview_of(const cv::Mat& raster) {
 }
 
 void attach_page_previews(std::shared_ptr<const std::string> bytes,
-                          ai::pipestream::document::v1::Document* document) {
+                          ai::pipestream::document::v1::Document* document,
+                          std::optional<std::pair<int, int>> page_range,
+                          const std::function<bool()>& stop) {
   if (document == nullptr || bytes == nullptr) return;
   std::shared_ptr<PageSource> source;
   try {
-    source = open_in_memory_document(std::move(bytes), /*pdf=*/true, /*pdf_parser_slots=*/1,
-                                     kPreviewRenderDpi);
+    source = open_in_memory_document(std::move(bytes), /*pdf=*/true, kPreviewRenderDpi);
   } catch (const std::exception&) {
     return;
   }
   if (!source) return;
-  const int pages = source->page_count();
-  for (int page_no = 1; page_no <= pages; ++page_no) {
+  int first = 1;
+  int last = source->page_count();
+  if (page_range.has_value()) {
+    first = std::max(first, page_range->first);
+    last = std::min(last, page_range->second);
+  }
+  for (int page_no = first; page_no <= last; ++page_no) {
+    if (stop && stop()) return;
     cv::Mat raster;
     try {
       raster = source->render_page(page_no);

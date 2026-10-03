@@ -30,7 +30,7 @@ def test_parser_type_names_item_collectors() -> None:
     assert parser_type(word_document()) == "libreoffice"
     assert parser_type({}) == "none"
     b = Builder("application/pdf", "a.pdf", collectors=())
-    b.text("text", "x", source=[{"collector": {"collector": "grparse", "model": "poppler-text"}}])
+    b.text("text", "x", source=[{"collector": {"collector": "grparse", "model": "pdf-text"}}])
     b.text("text", "y", source=[{"collector": {"collector": "pdf"}}])
     assert parser_type(b.build()) == "grparse-cv+pdf"
 
@@ -39,5 +39,5 @@ def test_pdf_text_layer_detection() -> None:
     b = Builder("application/pdf", "a.pdf", collectors=())
     b.text("text", "x", source=[{"collector": {"collector": "grparse", "model": "rapidocr"}}])
     assert not pdf_has_text_layer(b.build())
-    b.text("text", "y", source=[{"collector": {"collector": "grparse", "model": "poppler-text"}}])
+    b.text("text", "y", source=[{"collector": {"collector": "grparse", "model": "pdf-text"}}])
     assert pdf_has_text_layer(b.build())

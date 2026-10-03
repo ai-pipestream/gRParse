@@ -10,10 +10,14 @@
 
 #include <fstream>
 
+#include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
+#include <print>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
 namespace grparse {
@@ -266,7 +270,8 @@ std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
     }
     out << "\"} " << cumulative << '\n';
   }
-  out << "grparse_page_latency_seconds_count " << cumulative << '\n';
+  out << "grparse_page_latency_seconds_sum " << seconds(metrics.page_latency_ns) << '\n'
+      << "grparse_page_latency_seconds_count " << cumulative << '\n';
 
   return out.str();
 }
@@ -306,13 +311,25 @@ MetricsHttpServer::~MetricsHttpServer() {
 }
 
 void MetricsHttpServer::serve() {
+  constexpr std::chrono::milliseconds kMaximumBackoff{1000};
+  std::chrono::milliseconds backoff{0};
   while (!stopping_.load()) {
     const int client = ::accept4(listen_fd_, nullptr, nullptr, SOCK_CLOEXEC);
     if (client < 0) {
       if (stopping_.load()) return;
       if (errno == EINTR || errno == ECONNABORTED) continue;
-      return;
+      // EMFILE, ENFILE, ENOBUFS and the like are pressure that passes, not a
+      // dead listener: say so once per run of failures and retry, backing off,
+      // rather than letting /metrics go dark for the life of the process.
+      if (backoff.count() == 0) {
+        std::println(stderr, "Metrics exporter: accept failed ({}); retrying",
+                     std::strerror(errno));
+      }
+      backoff = std::min(kMaximumBackoff, std::max(std::chrono::milliseconds(10), backoff * 2));
+      std::this_thread::sleep_for(backoff);
+      continue;
     }
+    backoff = std::chrono::milliseconds(0);
     // Bounded I/O so one stuck scraper cannot wedge the single serving thread.
     timeval timeout{};
     timeout.tv_sec = 5;

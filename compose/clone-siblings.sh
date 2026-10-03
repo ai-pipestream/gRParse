@@ -16,7 +16,8 @@ parent="$(dirname -- "$here")"
 
 repos="grpc-lol-html grpc-libreoffice grpc-calamine grpc-pdf-inspector \
 grpc-epub grpc-xml grpc-markup grpc-ebcdic grpc-email grpc-enrich \
-grpc-asr grpc-vlm-convert fastwarc-grpc grPOIc"
+grpc-asr grpc-vlm-convert fastwarc-grpc grPOIc grpc-pdfium grpc-qparse \
+grpc-poppler"
 
 for repo in $repos; do
   if [ -e "$parent/$repo" ]; then

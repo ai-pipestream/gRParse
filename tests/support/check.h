@@ -45,6 +45,19 @@ void require_equal(const Actual& actual, const Expected& expected, std::string_v
                                        shown(expected), shown(actual)));
 }
 
+// Whether GRPARSE_TEST_REQUIRE_MODELS=1 says the model files were
+// provisioned. A model-backed test then fails on a missing file instead of
+// skipping; CI sets it so a fetch that went wrong cannot turn the goldens
+// into green skips.
+inline bool models_required() {
+  const char* value = std::getenv("GRPARSE_TEST_REQUIRE_MODELS");
+  return value != nullptr && std::string_view(value) == "1";
+}
+
+// The exit code a model-backed test returns when its model file is absent:
+// ctest's skip (77), or a failure when models_required().
+inline int missing_model_exit_code() { return models_required() ? EXIT_FAILURE : 77; }
+
 using test_case = std::function<void()>;
 
 // The two lines a run can print, spelled out in full for a test whose

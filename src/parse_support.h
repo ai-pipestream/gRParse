@@ -29,7 +29,10 @@ namespace grparse {
 uint64_t content_hash(const std::string& document);
 
 // True when the bytes or the name say PDF. The bytes are asked first
-// because a name is a claim and a signature is evidence.
+// because a name is a claim and a signature is evidence: a %PDF- header in
+// the first kilobyte is a PDF whatever its name, bytes that sniff as any
+// other type are not one, and only bytes that say nothing leave it to a
+// case-insensitive .pdf extension.
 bool is_pdf(const std::string& content, const std::filesystem::path& filename);
 
 // True for every collector run_remote_collector can dial.
@@ -55,6 +58,8 @@ CollectorOutcome run_local_collector(ai::pipestream::parse::v1::Collector id,
 // threaded down so no leg outlives the client waiting on it; each leg still
 // caps itself at its own ceiling, and kNoCollectorDeadline (an inbound call
 // with no deadline of its own) leaves every leg on that ceiling alone.
+// `cancelled` reaches the collector client, which cancels its call once the
+// inbound call is gone.
 CollectorOutcome run_remote_collector(
     ai::pipestream::parse::v1::Collector id,
     const std::shared_ptr<CollectorEndpoints>& endpoints,
@@ -62,7 +67,7 @@ CollectorOutcome run_remote_collector(
     const std::string& content_type, const std::string& bytes,
     const std::string& ebcdic_layout_json,
     const std::string& lol_html_options_json,
-    CollectorDeadline inbound_deadline);
+    CollectorDeadline inbound_deadline, CollectorCancelled cancelled = {});
 
 // Validation both surfaces share: the unary options message and the
 // streaming chunk carry the same recognition fields with the same rules.
@@ -78,6 +83,10 @@ PageScheduler::OcrTuning ocr_tuning(bool has_do_ocr, bool do_ocr, bool force_ocr
 // The status a thrown failure reports as: each exception this pipeline
 // raises has one status class, and everything else is INTERNAL.
 grpc::Status status_from_exception(std::exception_ptr failure);
+
+// A collector leg's failed outcome, from the exception that ended it,
+// carrying the status status_from_exception maps the throw to.
+CollectorOutcome outcome_from_exception(std::exception_ptr failure);
 
 // The cancellation outcome every collector leg reports when the call it
 // belongs to died before the leg started.

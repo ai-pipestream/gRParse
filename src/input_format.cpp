@@ -21,17 +21,36 @@ std::string lower_extension(const std::filesystem::path& filename) {
 std::optional<parsev1::InputFormat> input_format_for(
     std::string_view mimetype, const std::filesystem::path& filename) {
   const std::string ext = lower_extension(filename);
+  std::string name = filename.filename().string();
+  std::ranges::transform(name, name.begin(),
+                         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+  // Formats whose bytes sniff as their container (a zip, a gzip, JSON) and
+  // which only the name tells apart, as the collector routing does.
+  if (ext == ".dclx") return parsev1::INPUT_FORMAT_DCLX;
+  if (name.ends_with(".tar.gz")) return parsev1::INPUT_FORMAT_METS_GBS;
+  if (ext == ".boxnote") return parsev1::INPUT_FORMAT_BOXNOTE;
 
   if (mimetype == "application/pdf") return parsev1::INPUT_FORMAT_PDF;
   if (mimetype.starts_with("image/")) return parsev1::INPUT_FORMAT_IMAGE;
-  if (mimetype == "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+  // The macro-enabled and template OOXML variants are the same packages.
+  if (mimetype == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+      mimetype == "application/vnd.openxmlformats-officedocument.wordprocessingml.template" ||
+      mimetype == "application/vnd.ms-word.document.macroEnabled.12" ||
+      mimetype == "application/vnd.ms-word.template.macroEnabled.12") {
     return parsev1::INPUT_FORMAT_DOCX;
   }
-  if (mimetype == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") {
+  if (mimetype == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+      mimetype == "application/vnd.openxmlformats-officedocument.spreadsheetml.template" ||
+      mimetype == "application/vnd.ms-excel.sheet.macroEnabled.12" ||
+      mimetype == "application/vnd.ms-excel.template.macroEnabled.12") {
     return parsev1::INPUT_FORMAT_XLSX;
   }
   if (mimetype ==
-      "application/vnd.openxmlformats-officedocument.presentationml.presentation") {
+          "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
+      mimetype == "application/vnd.openxmlformats-officedocument.presentationml.template" ||
+      mimetype == "application/vnd.ms-powerpoint.presentation.macroEnabled.12" ||
+      mimetype == "application/vnd.ms-powerpoint.template.macroEnabled.12") {
     return parsev1::INPUT_FORMAT_PPTX;
   }
   if (mimetype == "application/msword") return parsev1::INPUT_FORMAT_DOC;
@@ -72,6 +91,9 @@ std::optional<parsev1::InputFormat> input_format_for(
       ext == ".latex") {
     return parsev1::INPUT_FORMAT_LATEX;
   }
+  // Plain text routes to the markup collector as Markdown, and that is the
+  // InputFormat it parses as.
+  if (mimetype == "text/plain") return parsev1::INPUT_FORMAT_MD;
   if (mimetype == "application/xml" || mimetype == "text/xml") {
     if (ext == ".xbrl") return parsev1::INPUT_FORMAT_XML_XBRL;
     // JATS / USPTO / DocLang are not distinguishable by MIME alone; leave
@@ -88,11 +110,19 @@ std::optional<parsev1::InputFormat> input_format_for(
     }
     return parsev1::INPUT_FORMAT_XML_JATS;
   }
-  if (ext == ".md" || ext == ".markdown") return parsev1::INPUT_FORMAT_MD;
+  if (ext == ".md" || ext == ".markdown" || ext == ".txt") return parsev1::INPUT_FORMAT_MD;
   if (ext == ".html" || ext == ".htm") return parsev1::INPUT_FORMAT_HTML;
   if (ext == ".csv") return parsev1::INPUT_FORMAT_CSV;
   if (ext == ".pdf") return parsev1::INPUT_FORMAT_PDF;
-  if (ext == ".docx") return parsev1::INPUT_FORMAT_DOCX;
+  if (ext == ".docx" || ext == ".docm" || ext == ".dotx" || ext == ".dotm") {
+    return parsev1::INPUT_FORMAT_DOCX;
+  }
+  if (ext == ".xlsx" || ext == ".xlsm" || ext == ".xltx" || ext == ".xltm") {
+    return parsev1::INPUT_FORMAT_XLSX;
+  }
+  if (ext == ".pptx" || ext == ".pptm" || ext == ".potx" || ext == ".potm") {
+    return parsev1::INPUT_FORMAT_PPTX;
+  }
   if (ext == ".doc") return parsev1::INPUT_FORMAT_DOC;
   if (ext == ".rtf") return parsev1::INPUT_FORMAT_RTF;
   if (ext == ".mht" || ext == ".mhtml") return parsev1::INPUT_FORMAT_MHTML;

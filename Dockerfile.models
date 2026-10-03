@@ -27,8 +27,11 @@ FROM --platform=$BUILDPLATFORM python:3.14-slim AS fetch
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 # onnx rewrites the figure classifier graph; onnxruntime and numpy let the
-# patch script score both graphs and refuse a non-identical result.
-RUN pip install --no-cache-dir onnx onnxruntime numpy
+# patch script score both graphs and refuse a non-identical result. Pinned
+# (scripts/models-requirements.txt): an unpinned onnx release could change
+# the patched file's bytes and fail its sha256 check with no code change.
+COPY scripts/models-requirements.txt /tmp/models-requirements.txt
+RUN pip install --no-cache-dir --no-deps -r /tmp/models-requirements.txt
 WORKDIR /src
 COPY models/MANIFEST models/MANIFEST
 COPY scripts/fetch-models.sh scripts/patch_figure_classifier.py scripts/

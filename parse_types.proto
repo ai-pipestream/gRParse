@@ -1294,8 +1294,8 @@ message Chunk {
   // "hf/1" that guarantee is per tokenizer.json: the digest names the
   // counter, not the model file the deployment resolved it to).
   //
-  //   hierarchical: "grparse-hier/1"
-  //   hybrid:       "grparse-hybrid/1;tok=T;sent=sentence/1;
+  //   hierarchical: "grparse-hier/2"
+  //   hybrid:       "grparse-hybrid/2;tok=T;sent=sentence/1;
   //                  max_tokens=N;merge_peers=B"
   //                 (one line on the wire, T "wordish/1" or "hf/1",
   //                  N decimal, B "true" or "false")
