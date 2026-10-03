@@ -10,6 +10,8 @@
 #include <thread>
 
 #include "grparse/chart_derender.h"
+#include "grparse/in_memory_document.h"
+#include "grparse/remote_page_source.h"
 #include "grparse/vlm_convert.h"
 #include "grparse_session_ep.h"
 
@@ -307,8 +309,9 @@ PageScheduler::Options read_scheduler_options(const WorkerConfig& workers, bool 
   options.capture_page_images = configure_page_images();
   options.barcode_mode = configure_barcode_mode(layout_active, classifier_active);
   options.orientation.enabled = configure_ocr_rotation();
-  // Read per image input; read here too so a malformed value fails startup.
+  // Read per input; read here too so a malformed value fails startup.
   max_image_pixels();
+  remote_pdf_backend_target();
   return options;
 }
 

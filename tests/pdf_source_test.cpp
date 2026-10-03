@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "grparse/in_memory_document.h"
+#include "grparse/remote_page_source.h"
 #include "grparse/reading_order.h"
 #include "grparse/text_geometry.h"
 #include "support/check.h"
@@ -161,6 +162,24 @@ void verify_crop_box_origin() {
           "boxes are measured from the CropBox corner");
 }
 
+// A CropBox reaching past the MediaBox is legal; renderers draw only the
+// overlap, so boxes are measured from the clipped corner and the page is the
+// MediaBox, matching the raster.
+void verify_crop_box_past_media_box_is_clipped() {
+  ScopedPdfBackend pdf_backend;
+  FakePdfPage oversized;
+  oversized.crop_box = std::vector<double>{-18, -18, 630, 810};
+  oversized.cells.push_back(FakeTextCell{"Bleed", 72, 700, 172, 712});
+  const auto source = open_pages(pdf_backend, {oversized});
+  const auto page = source->extract_digital_page(1);
+  require(page.has_value(), "digital text on an oversized CropBox must be extracted");
+  require(page->width == expected_pixels(kMediaWidth) && page->height == expected_pixels(kMediaHeight),
+          "the page is the CropBox clipped to the MediaBox");
+  const auto box = grparse::bounding_box(page->lines.front());
+  require(box.left == expected_pixels(72) && box.top == expected_pixels(80),
+          "boxes are measured from the clipped corner");
+}
+
 void verify_render_matches_page_size() {
   ScopedPdfBackend pdf_backend;
   const auto source = open_pages(pdf_backend, {text_page({"Hello gRParse"})});
@@ -242,6 +261,24 @@ void verify_missing_backend_is_a_precondition() {
     threw = true;
   }
   require(threw, "an empty GRPARSE_PDF_BACKEND configures no backend");
+  unsetenv("GRPARSE_PDF_BACKEND");
+}
+
+// The in-process engine is gone; naming it must fail at configuration time,
+// in a single target or inside a consensus list, not dial a host by that name.
+void verify_inprocess_target_is_refused() {
+  for (const char* value : {"inprocess", " inprocess ", "pdfium:50069, inprocess"}) {
+    setenv("GRPARSE_PDF_BACKEND", value, 1);
+    bool threw = false;
+    try {
+      grparse::remote_pdf_backend_target();
+    } catch (const std::invalid_argument& error) {
+      threw = std::string(error.what()).find("inprocess") != std::string::npos;
+    }
+    require(threw, std::string("GRPARSE_PDF_BACKEND=") + value + " is refused by name");
+  }
+  setenv("GRPARSE_PDF_BACKEND", "pdfium:50069,qparse:50070", 1);
+  require(grparse::remote_pdf_backend_target().has_value(), "a real consensus list still parses");
   unsetenv("GRPARSE_PDF_BACKEND");
 }
 
@@ -344,10 +381,12 @@ int main() {
       verify_dense_text_layer_skips_ocr,
       verify_rotated_page_geometry,
       verify_crop_box_origin,
+      verify_crop_box_past_media_box_is_clipped,
       verify_render_matches_page_size,
       verify_per_document_render_dpi,
       verify_invalid_input_is_rejected,
       verify_missing_backend_is_a_precondition,
+      verify_inprocess_target_is_refused,
       verify_concurrent_page_access,
       verify_raster_source,
       verify_two_column_digital_pdf_reads_in_column_order,

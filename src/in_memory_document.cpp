@@ -1,5 +1,7 @@
 #include "grparse/in_memory_document.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <initializer_list>
@@ -166,10 +168,19 @@ class RasterPageSource final : public PageSource {
                               std::to_string(limit) + ")");
       }
     }
-    if (pages->size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
-      throw InvalidDocument("Raster image has too many pages");
+    // Each page decode walks the TIFF directory chain from the start, so a
+    // long chain of tiny pages costs quadratic time; real scans stay far
+    // below this bound.
+    if (pages->size() > kMaxRasterPages) {
+      throw InvalidDocument("Raster image has more than " + std::to_string(kMaxRasterPages) +
+                            " pages");
     }
     pages_ = static_cast<int>(pages->size());
+#if !(CV_VERSION_MAJOR > 4 || (CV_VERSION_MAJOR == 4 && CV_VERSION_MINOR >= 7))
+    // Without imdecodemulti only the first page decodes; say so up front
+    // instead of failing the document on page 2.
+    pages_ = std::min(pages_, 1);
+#endif
   }
 
   int page_count() const override { return pages_; }
@@ -217,7 +228,10 @@ uint64_t max_image_pixels() {
   if (configured == nullptr) return kDefaultMaxImagePixels;
   char* end = nullptr;
   const unsigned long long parsed = std::strtoull(configured, &end, 10);
-  if (end == configured || *end != '\0' || parsed == 0) {
+  // strtoull accepts a leading minus and wraps it to a huge value, which
+  // would switch the cap off; only plain digits are taken.
+  if (end == configured || *end != '\0' || parsed == 0 ||
+      !std::isdigit(static_cast<unsigned char>(configured[0]))) {
     throw std::invalid_argument("GRPARSE_MAX_IMAGE_PIXELS must be a positive integer");
   }
   return static_cast<uint64_t>(parsed);

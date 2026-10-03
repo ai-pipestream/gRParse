@@ -58,6 +58,22 @@ constexpr size_t kMinDigitalLines = 4;
 constexpr double kMinDigitalVerticalCoverage = 0.12;
 constexpr size_t kStrongDigitalNonWhitespace = 128;
 
+// A failed backend call. Outages, deadlines and cancellation keep their
+// gRPC code (PdfBackendUnavailable); anything else is the backend refusing
+// the document, which stays INVALID_ARGUMENT.
+[[noreturn]] void throw_backend_failure(const std::string& what, const grpc::Status& status) {
+  const std::string message = what + ": " + status.error_message();
+  switch (status.error_code()) {
+    case grpc::StatusCode::UNAVAILABLE:
+    case grpc::StatusCode::DEADLINE_EXCEEDED:
+    case grpc::StatusCode::CANCELLED:
+    case grpc::StatusCode::RESOURCE_EXHAUSTED:
+      throw PdfBackendUnavailable(message, status.error_code());
+    default:
+      throw InvalidDocument(message);
+  }
+}
+
 // Maps contract page space into the top-left frame of the page as rendered.
 // The contract's boxes are PDF user space, bottom-left origin, before the
 // page's /Rotate; the rendered page is the CropBox with /Rotate applied, so
@@ -68,14 +84,27 @@ class PageFrame {
   explicit PageFrame(const pdfv1::PageInfo& info)
       : rotation_(((info.rotation_degrees() % 360) + 360) % 360) {
     const bool quarter_turn = rotation_ == 90 || rotation_ == 270;
-    // Unrotated extent: the CropBox when the backend reports one, otherwise
-    // the rendered size turned back.
-    if (info.has_crop_box() && info.crop_box().x1() > info.crop_box().x0() &&
-        info.crop_box().y1() > info.crop_box().y0()) {
-      origin_x_ = info.crop_box().x0();
-      origin_y_ = info.crop_box().y0();
-      width_ = info.crop_box().x1() - info.crop_box().x0();
-      height_ = info.crop_box().y1() - info.crop_box().y0();
+    // Unrotated extent: the visible box, which is the CropBox clipped to
+    // the MediaBox (a CropBox reaching past the MediaBox is legal, and
+    // renderers draw only the overlap), or the MediaBox alone. Without
+    // either, the rendered size turned back.
+    std::optional<pdfv1::BoundingBox> visible;
+    if (valid(info.media_box())) visible = info.media_box();
+    if (valid(info.crop_box())) {
+      pdfv1::BoundingBox crop = info.crop_box();
+      if (visible.has_value()) {
+        crop.set_x0(std::max(crop.x0(), visible->x0()));
+        crop.set_y0(std::max(crop.y0(), visible->y0()));
+        crop.set_x1(std::min(crop.x1(), visible->x1()));
+        crop.set_y1(std::min(crop.y1(), visible->y1()));
+      }
+      if (valid(crop)) visible = crop;
+    }
+    if (visible.has_value()) {
+      origin_x_ = visible->x0();
+      origin_y_ = visible->y0();
+      width_ = visible->x1() - visible->x0();
+      height_ = visible->y1() - visible->y0();
     } else {
       width_ = quarter_turn ? info.height_pts() : info.width_pts();
       height_ = quarter_turn ? info.width_pts() : info.height_pts();
@@ -109,6 +138,10 @@ class PageFrame {
       default:
         return {u, down};
     }
+  }
+
+  static bool valid(const pdfv1::BoundingBox& box) {
+    return box.x1() > box.x0() && box.y1() > box.y0();
   }
 
   int rotation_;
@@ -155,8 +188,7 @@ class RemotePdfPageSource final : public PageSource {
       response.Clear();
       const grpc::Status status = stub_->Probe(call.context(), request, &response);
       if (!status.ok()) {
-        throw InvalidDocument("PDF backend unreachable: " +
-                              status.error_message());
+        throw_backend_failure("PDF backend unreachable", status);
       }
       if (response.capabilities().load_status() ==
               pdfv1::LOAD_STATUS_BYTES_REQUIRED &&
@@ -233,8 +265,7 @@ class RemotePdfPageSource final : public PageSource {
       }
       const grpc::Status status = reader->Finish();
       if (!status.ok()) {
-        throw InvalidDocument("PDF backend parse failed: " +
-                              status.error_message());
+        throw_backend_failure("PDF backend parse failed", status);
       }
       if (header_load_status == pdfv1::LOAD_STATUS_BYTES_REQUIRED &&
           !sent_bytes) {
@@ -346,13 +377,17 @@ class RemotePdfPageSource final : public PageSource {
         }
         const auto& raster = message.raster();
         if (raster.width_px() == 0 || raster.height_px() == 0) continue;
+        if (raster.page_index() != static_cast<uint32_t>(page_number - 1)) {
+          throw InvalidDocument("PDF backend answered with a raster for page " +
+                                std::to_string(raster.page_index() + 1) + " instead of page " +
+                                std::to_string(page_number));
+        }
         rendered = at_render_dpi(to_bgr(raster_view(raster), raster.pixel_format()),
                                  raster.dpi());
       }
       const grpc::Status status = reader->Finish();
       if (!status.ok()) {
-        throw InvalidDocument("PDF backend render failed: " +
-                              status.error_message());
+        throw_backend_failure("PDF backend render failed", status);
       }
       if (head_load_status == pdfv1::LOAD_STATUS_BYTES_REQUIRED &&
           !sent_bytes) {
@@ -385,7 +420,9 @@ class RemotePdfPageSource final : public PageSource {
    public:
     Call(const RemotePdfPageSource& source, std::chrono::seconds budget) : source_(source) {
       const std::lock_guard<std::mutex> lock(source_.calls_mutex_);
-      if (source_.cancelled_) throw InvalidDocument("PDF backend call cancelled");
+      if (source_.cancelled_) {
+        throw PdfBackendUnavailable("PDF backend call cancelled", grpc::StatusCode::CANCELLED);
+      }
       context_.set_deadline(std::min(source_.deadline_, std::chrono::system_clock::now() + budget));
       source_.calls_.insert(&context_);
     }
@@ -465,8 +502,12 @@ class RemotePdfPageSource final : public PageSource {
     const double width = std::round(image.cols * factor);
     const double height = std::round(image.rows * factor);
     if (std::abs(width - image.cols) <= 1.0 && std::abs(height - image.rows) <= 1.0) return image;
+    // A raster's stated DPI is the backend's word; a tiny one would scale a
+    // small raster to an allocation the size of the whole budget, so the
+    // resized page is held to the same pixel cap as a decoded image.
     if (width < 1.0 || height < 1.0 || width > std::numeric_limits<int>::max() ||
-        height > std::numeric_limits<int>::max()) {
+        height > std::numeric_limits<int>::max() ||
+        width * height > static_cast<double>(max_image_pixels())) {
       throw InvalidDocument("PDF backend raster DPI is out of range");
     }
     cv::Mat resized;
@@ -532,6 +573,24 @@ std::optional<std::string> remote_pdf_backend_target() {
   }
   const auto end = target.find_last_not_of(" \t");
   target = target.substr(begin, end - begin + 1);
+  // The in-process poppler path is gone; dialing a host by that name would
+  // fail every PDF at request time instead of at startup. A consensus list
+  // is checked entry by entry.
+  size_t start = 0;
+  bool inprocess = false;
+  while (start <= target.size()) {
+    const size_t comma = std::min(target.find(',', start), target.size());
+    std::string_view entry(target.data() + start, comma - start);
+    while (!entry.empty() && (entry.front() == ' ' || entry.front() == '\t')) entry.remove_prefix(1);
+    while (!entry.empty() && (entry.back() == ' ' || entry.back() == '\t')) entry.remove_suffix(1);
+    if (entry == "inprocess") inprocess = true;
+    start = comma + 1;
+  }
+  if (inprocess) {
+    throw std::invalid_argument(
+        "GRPARSE_PDF_BACKEND=inprocess is no longer supported: gRParse links "
+        "no PDF engine; name a PdfBackendService target such as pdfium:50069");
+  }
   return target;
 }
 

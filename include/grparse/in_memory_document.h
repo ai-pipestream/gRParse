@@ -8,15 +8,32 @@
 #include <stdexcept>
 #include <string>
 
+#include <grpcpp/support/status.h>
 #include <opencv2/core.hpp>
 
 #include "grparse/ocr_types.h"
 
 namespace grparse {
 
-class InvalidDocument final : public std::runtime_error {
+class InvalidDocument : public std::runtime_error {
  public:
   using std::runtime_error::runtime_error;
+};
+
+// A PDF backend call failed for a reason that is not the document's fault:
+// the backend was unreachable, the request's deadline passed, or the call
+// was cancelled. It is still an InvalidDocument so consensus falls over to
+// the next leg, but the service answers with the transport's own code
+// instead of INVALID_ARGUMENT, so clients and dashboards can tell an outage
+// from a bad file.
+class PdfBackendUnavailable final : public InvalidDocument {
+ public:
+  PdfBackendUnavailable(const std::string& what, grpc::StatusCode code)
+      : InvalidDocument(what), code_(code) {}
+  grpc::StatusCode code() const { return code_; }
+
+ private:
+  grpc::StatusCode code_;
 };
 
 // A PDF arrived and GRPARSE_PDF_BACKEND names no PdfBackendService. gRParse
@@ -53,6 +70,8 @@ class PageSource {
 // malformed value raises std::invalid_argument, and the server also reads
 // it at startup so the mistake fails there.
 inline constexpr uint64_t kDefaultMaxImagePixels = 200'000'000;
+// Most pages a multi-page TIFF may declare.
+inline constexpr size_t kMaxRasterPages = 4096;
 uint64_t max_image_pixels();
 
 // The rasterization DPI a source uses when no per-document value arrives.

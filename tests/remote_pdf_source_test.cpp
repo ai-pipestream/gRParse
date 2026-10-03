@@ -494,6 +494,16 @@ int main() {
   }
   require(threw, "typed load failure raises InvalidDocument with the status");
 
+  // An unreachable backend is an outage, not a bad document: it keeps the
+  // transport's code so the service does not answer INVALID_ARGUMENT.
+  bool outage = false;
+  try {
+    grparse::open_remote_pdf_document(bytes, "127.0.0.1:1", dpi);
+  } catch (const grparse::PdfBackendUnavailable& error) {
+    outage = error.code() == grpc::StatusCode::UNAVAILABLE;
+  }
+  require(outage, "an unreachable backend raises PdfBackendUnavailable with UNAVAILABLE");
+
   require(!grparse::remote_pdf_backend_target().has_value() ||
               std::getenv("GRPARSE_PDF_BACKEND") != nullptr,
           "target helper only reports when the variable is set");

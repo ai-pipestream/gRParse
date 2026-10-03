@@ -218,6 +218,8 @@ PageScheduler::OcrTuning ocr_tuning(bool has_do_ocr, bool do_ocr, bool force_ocr
 grpc::Status status_from_exception(std::exception_ptr failure) {
   try {
     if (failure) std::rethrow_exception(failure);
+  } catch (const PdfBackendUnavailable& error) {
+    return grpc::Status(error.code(), error.what());
   } catch (const InvalidDocument& error) {
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, error.what());
   } catch (const PdfBackendNotConfigured& error) {
