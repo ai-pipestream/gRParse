@@ -63,6 +63,11 @@ class FakeVlmConvertService final : public vlmv1::VlmConvertService::Service {
       text->mutable_base()->set_self_ref("#/texts/" + std::to_string(page_no - 1));
       text->mutable_base()->set_text("page-" + std::to_string(page_no));
       (*page->mutable_document()->mutable_pages())[page_no].set_page_no(page_no);
+      auto* warning = page->add_warnings();
+      warning->set_code(vlmv1::PAGE_WARNING_CODE_TABLE_TRUNCATED);
+      warning->set_message("kept 500 of 90000 rows");
+      warning->set_ref("#/tables/0");
+      page->add_warnings()->set_code(static_cast<vlmv1::PageWarningCode>(77));
       stream->Write(event);
     }
     vlmv1::ConvertPagesResponse done;
@@ -172,6 +177,12 @@ void verify_convert_rasters_dials_and_merges() {
           "one raster page converts: " + report.error);
   require(document.texts_size() == 1 && document.texts(0).text().base().text() == "page-1",
           "page document merges into the target");
+  require(report.warnings.size() == 2 &&
+              report.warnings[0] ==
+                  "vlm convert: page 1: PAGE_WARNING_CODE_TABLE_TRUNCATED: kept 500 of 90000 "
+                  "rows (#/tables/0)" &&
+              report.warnings[1] == "vlm convert: page 1: page warning 77",
+          "the fragment's cap warnings reach the report by code name");
   const FakeVlmConvertService::Seen seen = fake.seen();
   require(seen.options_first && seen.options.preset() == vlmv1::VLM_PRESET_GRANITE_DOCLING &&
               seen.options.endpoint() == "http://vlm.test:9" && seen.page_nos.size() == 1 &&
