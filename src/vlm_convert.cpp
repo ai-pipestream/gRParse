@@ -1,12 +1,14 @@
 #include "grparse/vlm_convert.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -17,6 +19,7 @@
 #include "grparse/document_merge.h"
 #include "grparse/in_memory_document.h"
 #include "grparse/page_previews.h"
+#include "grparse/page_source_watch.h"
 
 namespace grparse {
 namespace {
@@ -172,6 +175,12 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
     if (last > source->page_count()) last = source->page_count();
   }
 
+  // The source's backend calls end with the request: they run no later than
+  // its deadline, and a render in flight is cancelled once the caller goes.
+  const PageSourceWatch source_watch(source, inbound_deadline, [&cancelled, inbound_deadline] {
+    return (cancelled && cancelled()) || std::chrono::system_clock::now() >= inbound_deadline;
+  });
+
   // Pages render, encode and go out one at a time, so memory holds one page's
   // raster and PNG, not the whole document's. The stream opens on the first
   // page that encodes: a document with nothing to send never dials the peer.
@@ -183,6 +192,59 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
   // Cancels the open stream once the caller is gone, through the write
   // phase and the read loop alike, like every other collector's call.
   std::optional<CancelWatch> watch;
+  // The responses are read on their own thread while pages still go out: a
+  // peer that answers as it converts stops reading once its response channel
+  // and this client's receive window are full, and an upload that sent every
+  // page before reading would stall against it until the deadline. Only the
+  // reader touches `document` and `answers` until it is joined.
+  struct Answers {
+    int pages_ok = 0;
+    int pages_failed = 0;
+    std::vector<std::string> warnings;
+    std::optional<std::string> abort_error;
+  } answers;
+  std::atomic<bool> reader_aborted{false};
+  std::thread reader;
+  const auto join_reader = [&] {
+    if (reader.joinable()) reader.join();
+  };
+  // A return that leaves the reader running cancels the call first, so the
+  // reader cannot stay blocked.
+  struct ReaderGuard {
+    grpc::ClientContext& context;
+    std::thread& reader;
+    ~ReaderGuard() {
+      if (!reader.joinable()) return;
+      context.TryCancel();
+      reader.join();
+    }
+  } reader_guard{context, reader};
+  const auto start_reader = [&] {
+    reader = std::thread([&] {
+      const auto claimant = vlm_claimant();
+      vlmv1::ConvertPagesResponse event;
+      while (stream->Read(&event)) {
+        if (event.has_page_document()) {
+          docv1::Document fragment = event.page_document().document();
+          merge_documents(std::move(fragment), document, claimant);
+          ++answers.pages_ok;
+        } else if (event.has_page_raw()) {
+          ++answers.pages_failed;
+          std::string detail = "vlm convert: page " +
+                               std::to_string(event.page_raw().page_no()) + " raw";
+          if (!event.page_raw().error().empty()) detail += ": " + event.page_raw().error();
+          else if (!event.page_raw().text().empty()) detail += " (unmapped text)";
+          answers.warnings.push_back(std::move(detail));
+          if (options.abort_on_error && !answers.abort_error.has_value()) {
+            answers.abort_error = answers.warnings.back();
+            reader_aborted.store(true);
+            context.TryCancel();
+          }
+        }
+        event.Clear();
+      }
+    });
+  };
   vlmv1::ConvertPagesRequest frame;
   bool written = true;
   // Ends the dial early: the peer is told to stop before Finish, which would
@@ -192,12 +254,13 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
     report.code = code;
     if (stream) {
       context.TryCancel();
+      join_reader();
       const grpc::Status ignored = stream->Finish();
       (void)ignored;
     }
     return report;
   };
-  for (int page_no = first; page_no <= last && written; ++page_no) {
+  for (int page_no = first; page_no <= last && written && !reader_aborted.load(); ++page_no) {
     if (cancelled && cancelled()) {
       return abandon(grpc::StatusCode::CANCELLED, "vlm convert: request cancelled");
     }
@@ -249,6 +312,7 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
       request_options->set_abort_on_error(options.abort_on_error);
       written = stream->Write(frame);
       if (!written) break;
+      start_reader();
     }
     frame.Clear();
     vlmv1::PageImage* image = frame.mutable_page_image();
@@ -265,34 +329,22 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
     return report;
   }
   stream->WritesDone();
+  join_reader();
+  const grpc::Status status = stream->Finish();
+  report.pages_ok = answers.pages_ok;
+  report.pages_failed = answers.pages_failed;
+  for (std::string& warning : answers.warnings) report.warnings.push_back(std::move(warning));
+  if (answers.abort_error.has_value()) {
+    report.error = std::move(*answers.abort_error);
+    report.code = grpc::StatusCode::INTERNAL;
+    return report;
+  }
   if (!written) {
-    const grpc::Status status = stream->Finish();
     report.error = "vlm convert: failed to write ConvertPages stream: " + status.error_message();
     report.code = status.error_code() == grpc::StatusCode::OK ? grpc::StatusCode::UNAVAILABLE
                                                               : status.error_code();
     return report;
   }
-
-  const auto claimant = vlm_claimant();
-  vlmv1::ConvertPagesResponse event;
-  while (stream->Read(&event)) {
-    if (event.has_page_document()) {
-      docv1::Document fragment = event.page_document().document();
-      merge_documents(std::move(fragment), document, claimant);
-      ++report.pages_ok;
-    } else if (event.has_page_raw()) {
-      ++report.pages_failed;
-      std::string detail = "vlm convert: page " +
-                           std::to_string(event.page_raw().page_no()) + " raw";
-      if (!event.page_raw().error().empty()) detail += ": " + event.page_raw().error();
-      else if (!event.page_raw().text().empty()) detail += " (unmapped text)";
-      report.warnings.push_back(std::move(detail));
-      if (options.abort_on_error) {
-        return abandon(grpc::StatusCode::INTERNAL, report.warnings.back());
-      }
-    }
-  }
-  const grpc::Status status = stream->Finish();
   if (!status.ok()) {
     report.error = "vlm convert: ConvertPages failed: " + status.error_message();
     report.code = status.error_code();

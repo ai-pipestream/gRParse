@@ -1,8 +1,11 @@
+#include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <memory>
 #include <print>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -92,12 +95,33 @@ void verify_previews_stop_when_asked() {
   pdf_backend.backend().add_document(
       kTwoPagePdf, {grparse_test::text_page({"Hello"}), grparse_test::text_page({"Hello"})});
   docv1::Document document;
-  int polls = 0;
+  // The watch that cancels a render in flight polls the same predicate from
+  // its own thread; only the page loop's polls are counted here.
+  const auto caller = std::this_thread::get_id();
+  std::atomic<int> polls{0};
   grparse::attach_page_previews(std::make_shared<const std::string>(kTwoPagePdf), &document,
-                                std::nullopt, [&polls] { return ++polls > 1; });
+                                std::nullopt, [&polls, caller] {
+                                  return std::this_thread::get_id() == caller && ++polls > 1;
+                                });
   require(polls == 2, "the stop predicate is polled before each page");
   require(document.pages_size() == 1 && document.pages().contains(1),
           "the page rendered before the stop keeps its preview, the rest are skipped");
+}
+
+// A render stuck on the backend ends with the request: the source is
+// cancelled once `stop` answers true, instead of waiting out the backend.
+void verify_stop_cancels_a_render_in_flight() {
+  grparse_test::ScopedPdfBackend pdf_backend;
+  pdf_backend.backend().add_document(kTwoPagePdf, {grparse_test::text_page({"Hello"})});
+  pdf_backend.backend().stall_renders(std::chrono::seconds(20));
+  docv1::Document document;
+  const auto started = std::chrono::steady_clock::now();
+  grparse::attach_page_previews(
+      std::make_shared<const std::string>(kTwoPagePdf), &document, std::nullopt,
+      [started] { return std::chrono::steady_clock::now() - started > std::chrono::milliseconds(300); });
+  require(std::chrono::steady_clock::now() - started < std::chrono::seconds(5),
+          "the stalled render is cancelled, not waited out");
+  require(document.pages_size() == 0, "the cancelled page keeps no preview");
 }
 
 }  // namespace
@@ -109,5 +133,6 @@ int main() {
       verify_missing_backend_changes_nothing,
       verify_previews_honor_page_range,
       verify_previews_stop_when_asked,
+      verify_stop_cancels_a_render_in_flight,
   });
 }

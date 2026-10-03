@@ -642,7 +642,8 @@ class DocumentStreamReactor final
     attach_page_previews(leg.bytes, document, leg.tuning.page_range,
                          [&gone, deadline = leg.deadline] {
                            return std::chrono::system_clock::now() >= deadline || gone();
-                         });
+                         },
+                         leg.deadline);
   }
 
   void note_pdf_fallback(const CollectorOutcome& outcome) {

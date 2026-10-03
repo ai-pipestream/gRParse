@@ -10,6 +10,7 @@
 
 #include "grparse/document_assembly.h"
 #include "grparse/in_memory_document.h"
+#include "grparse/page_source_watch.h"
 
 namespace grparse {
 
@@ -34,7 +35,8 @@ cv::Mat preview_of(const cv::Mat& raster) {
 void attach_page_previews(std::shared_ptr<const std::string> bytes,
                           ai::pipestream::document::v1::Document* document,
                           std::optional<std::pair<int, int>> page_range,
-                          const std::function<bool()>& stop) {
+                          const std::function<bool()>& stop,
+                          std::chrono::system_clock::time_point deadline) {
   if (document == nullptr || bytes == nullptr) return;
   std::shared_ptr<PageSource> source;
   try {
@@ -43,6 +45,8 @@ void attach_page_previews(std::shared_ptr<const std::string> bytes,
     return;
   }
   if (!source) return;
+  // A render blocked on a backend ends with the request, not its own timeout.
+  const PageSourceWatch watch(source, deadline, stop);
   int first = 1;
   int last = source->page_count();
   if (page_range.has_value()) {

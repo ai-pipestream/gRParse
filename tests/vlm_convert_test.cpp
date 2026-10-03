@@ -16,6 +16,7 @@
 #include "grparse/page_previews.h"
 #include "grparse/vlm_convert.h"
 #include "support/check.h"
+#include "support/fake_pdf_backend.h"
 
 namespace {
 
@@ -282,6 +283,93 @@ void verify_cancel_after_upload_ends_the_read() {
   require(elapsed < std::chrono::seconds(5), "the read does not wait out the peer");
 }
 
+// A peer that answers each page before it reads the next: its answers fill
+// this client's receive window, it stops reading, and an upload that sent
+// every page before reading anything would stall until the deadline.
+class InterleavingVlmConvertService final : public vlmv1::VlmConvertService::Service {
+ public:
+  grpc::Status ConvertPages(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<vlmv1::ConvertPagesResponse, vlmv1::ConvertPagesRequest>*
+          stream) override {
+    vlmv1::ConvertPagesRequest request;
+    uint32_t answered = 0;
+    while (stream->Read(&request)) {
+      if (!request.has_page_image()) continue;
+      const uint32_t page_no = request.page_image().page_no();
+      vlmv1::ConvertPagesResponse event;
+      auto* page = event.mutable_page_document();
+      page->set_page_no(page_no);
+      auto* text = page->mutable_document()->add_texts()->mutable_text();
+      text->mutable_base()->set_self_ref("#/texts/0");
+      text->mutable_base()->set_text(std::string(2U * 1024U * 1024U, 'x'));
+      (*page->mutable_document()->mutable_pages())[page_no].set_page_no(page_no);
+      if (!stream->Write(event)) break;
+      ++answered;
+    }
+    vlmv1::ConvertPagesResponse done;
+    done.mutable_complete()->set_pages_ok(answered);
+    stream->Write(done);
+    return grpc::Status::OK;
+  }
+};
+
+void verify_answers_are_read_while_pages_go_out() {
+  InterleavingVlmConvertService interleaving;
+  ServerFixture server(&interleaving);
+  constexpr int kPages = 12;
+  std::vector<cv::Mat> pages;
+  cv::RNG noise(7);
+  for (int index = 0; index < kPages; ++index) {
+    cv::Mat page(700, 700, CV_8UC3);
+    noise.fill(page, cv::RNG::UNIFORM, 0, 256);
+    pages.push_back(page);
+  }
+  std::vector<unsigned char> tiff;
+  require(cv::imencodemulti(".tiff", pages, tiff), "encode the multi-page fixture");
+  grparse::VlmConvertOptions options;
+  options.target = server.target();
+  options.timeout = std::chrono::milliseconds(30000);
+  docv1::Document document;
+  document.mutable_body()->set_self_ref("#/body");
+  const auto started = std::chrono::steady_clock::now();
+  const grparse::VlmConvertReport report = grparse::convert_vlm_pages(
+      server.channel(), options,
+      std::make_shared<const std::string>(reinterpret_cast<const char*>(tiff.data()), tiff.size()),
+      /*pdf=*/false, &document);
+  require(std::chrono::steady_clock::now() - started < std::chrono::seconds(15),
+          "the convert finishes long before its deadline");
+  require(report.success && report.pages_sent == kPages && report.pages_ok == kPages,
+          "every page was answered: " + report.error);
+}
+
+// A render stuck on the PDF backend ends with the request: the page source
+// is cancelled once the caller goes, instead of waiting out the backend.
+void verify_cancel_reaches_a_stalled_render() {
+  grparse_test::ScopedPdfBackend pdf_backend;
+  const std::string pdf = "%PDF-vlm-stalled-render";
+  pdf_backend.backend().add_document(
+      pdf, {grparse_test::text_page({"one"}), grparse_test::text_page({"two"})});
+  pdf_backend.backend().stall_renders(std::chrono::seconds(20));
+  FakeVlmConvertService fake;
+  ServerFixture server(&fake);
+  grparse::VlmConvertOptions options;
+  options.target = server.target();
+  options.timeout = std::chrono::milliseconds(30000);
+  docv1::Document document;
+  document.mutable_body()->set_self_ref("#/body");
+  const auto started = std::chrono::steady_clock::now();
+  const grparse::VlmConvertReport report = grparse::convert_vlm_pages(
+      server.channel(), options, std::make_shared<const std::string>(pdf), /*pdf=*/true,
+      &document, grparse::kNoCollectorDeadline, [started] {
+        return std::chrono::steady_clock::now() - started > std::chrono::milliseconds(300);
+      });
+  require(std::chrono::steady_clock::now() - started < std::chrono::seconds(5),
+          "the stalled render is cancelled, not waited out");
+  require(!report.success && report.code == grpc::StatusCode::CANCELLED,
+          "the convert ends cancelled: " + report.error);
+}
+
 void verify_missing_target_is_failed_precondition() {
   docv1::Document document;
   document.mutable_body()->set_self_ref("#/body");
@@ -315,6 +403,8 @@ int main() {
       verify_abort_cancels_the_stream,
       verify_cancel_and_deadline_stop_before_rendering,
       verify_cancel_after_upload_ends_the_read,
+      verify_answers_are_read_while_pages_go_out,
+      verify_cancel_reaches_a_stalled_render,
       verify_endpoints_lazy_channel,
   });
 }

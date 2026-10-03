@@ -758,6 +758,7 @@ add_library(grparse_core STATIC
   src/layout_decode.cpp
   src/layout_engine.cpp
   src/page_previews.cpp
+  src/page_source_watch.cpp
   src/page_projection.cpp
   src/page_scheduler.cpp
   src/prometheus_metrics.cpp
@@ -1166,7 +1167,7 @@ if(BUILD_TESTING)
   # source, whatever subdirectory it sits in.
   foreach(test_name IN LISTS GRPARSE_TESTS GRPARSE_DATA_TESTS GRPARSE_DRIFT_TESTS
                             GRPARSE_CHART_TESTS GRPARSE_ORIENTATION_TESTS
-                            GRPARSE_S3_EVAL_TESTS GRPARSE_UNIT_TESTS)
+                            GRPARSE_S3_EVAL_TESTS GRPARSE_UNIT_TESTS GRPARSE_VLM_TESTS)
     target_include_directories(${test_name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
   endforeach()
 endif()
