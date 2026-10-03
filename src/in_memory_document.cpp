@@ -185,13 +185,19 @@ class RasterPageSource final : public PageSource {
     if (pages_ == 1) {
       image = cv::imdecode(encoded, cv::IMREAD_COLOR);
     } else {
-      // A multi-page TIFF decodes only the asked-for page.
+      // A multi-page TIFF decodes only the asked-for page. imdecodemulti
+      // arrived in OpenCV 4.7; the images build 5.x, and only the fuzz job's
+      // distro OpenCV 4.6 lacks it, where page 1 is all that decodes.
+#if CV_VERSION_MAJOR > 4 || (CV_VERSION_MAJOR == 4 && CV_VERSION_MINOR >= 7)
       std::vector<cv::Mat> decoded;
       if (cv::imdecodemulti(encoded, cv::IMREAD_COLOR, decoded,
                             cv::Range(page_number - 1, page_number)) &&
           decoded.size() == 1) {
         image = std::move(decoded.front());
       }
+#else
+      if (page_number == 1) image = cv::imdecode(encoded, cv::IMREAD_COLOR);
+#endif
     }
     if (image.empty()) throw InvalidDocument("Raster image could not be decoded from memory");
     return image;
