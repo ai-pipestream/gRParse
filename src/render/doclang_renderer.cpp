@@ -2,7 +2,9 @@
 // the declaration in include/grparse/document_render.h.
 #include <algorithm>
 #include <cstddef>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "doclang_markup.h"
@@ -21,7 +23,9 @@ class DoclangRenderer : RendererBase {
  public:
   DoclangRenderer(const docv1::Document& document, bool include_namespace,
                   const PictureUri& picture_uri)
-      : RendererBase(document), include_namespace_(include_namespace), picture_uri_(picture_uri) {}
+      : RendererBase(document), include_namespace_(include_namespace), picture_uri_(picture_uri) {
+    claim_satellites();
+  }
 
   std::string render() {
     // The root grpc-xml sniffs: the doclang local name in its NS_DOCLANG
@@ -37,6 +41,13 @@ class DoclangRenderer : RendererBase {
   const bool include_namespace_;
   const PictureUri& picture_uri_;
   std::string out_;
+  // A table's or picture's captions and footnotes (its satellites) render
+  // with it and nowhere else, and so does everything nested under them;
+  // the tree walk skips both sets, wherever the producer also linked them.
+  // Nested content renders while a satellite is open (satellite_depth_).
+  std::set<std::string> satellites_;
+  std::set<std::string> satellite_nested_;
+  int satellite_depth_ = 0;
 
   void line(int depth, const std::string& text) {
     out_.append(static_cast<size_t>(depth) * 2, ' ');
@@ -54,7 +65,7 @@ class DoclangRenderer : RendererBase {
   }
 
   void render_ref(const std::string& raw, int depth) {
-    if (!consume(raw)) return;
+    if (claimed(raw) || !consume(raw)) return;
     const ArenaRef ref = parse_ref(raw);
     switch (ref.kind) {
       case ArenaRef::kText:
@@ -97,6 +108,189 @@ class DoclangRenderer : RendererBase {
     }
   }
 
+  // Whether the tree walk must leave a reference to its float: a satellite
+  // always, the content nested in one unless a satellite is rendering it.
+  bool claimed(const std::string& ref) const {
+    return satellites_.contains(ref) ||
+           (satellite_depth_ == 0 && satellite_nested_.contains(ref));
+  }
+
+  // The text satellites of every table and picture, then everything nested
+  // under them, so the walk can leave both to the float.
+  void claim_satellites() {
+    const auto claim = [this](const google::protobuf::RepeatedPtrField<docv1::RefItem>& refs) {
+      for (const auto& ref : refs) {
+        const ArenaRef parsed = parse_ref(ref.ref());
+        if (parsed.kind == ArenaRef::kText && parsed.index < document_.texts_size()) {
+          satellites_.insert(ref.ref());
+        }
+      }
+    };
+    for (const auto& table : document_.tables()) {
+      claim(table.captions());
+      claim(table.footnotes());
+    }
+    for (const auto& picture : document_.pictures()) {
+      claim(picture.captions());
+      claim(picture.footnotes());
+    }
+    std::vector<std::string> pending;
+    const auto push_children = [this, &pending](const std::string& ref) {
+      if (const auto* children = children_of(ref)) {
+        for (const auto& child : *children) pending.push_back(child.ref());
+      }
+    };
+    for (const auto& ref : satellites_) push_children(ref);
+    while (!pending.empty()) {
+      const std::string ref = std::move(pending.back());
+      pending.pop_back();
+      if (satellites_.contains(ref) || !satellite_nested_.insert(ref).second) continue;
+      push_children(ref);
+    }
+  }
+
+  static const google::protobuf::RepeatedPtrField<docv1::RefItem>& text_children(
+      const docv1::BaseTextItem& item) {
+    static const google::protobuf::RepeatedPtrField<docv1::RefItem> kNone;
+    if (item.item_case() == docv1::BaseTextItem::kCode) return item.code().children();
+    const auto* base = text_base(item);
+    return base != nullptr ? base->children() : kNone;
+  }
+
+  // The children of the item a reference names, for the arenas the walk
+  // descends into; nullptr for the others and for a dangling reference.
+  const google::protobuf::RepeatedPtrField<docv1::RefItem>* children_of(
+      const std::string& raw) const {
+    const ArenaRef ref = parse_ref(raw);
+    switch (ref.kind) {
+      case ArenaRef::kText:
+        return ref.index < document_.texts_size() ? &text_children(document_.texts(ref.index))
+                                                  : nullptr;
+      case ArenaRef::kGroup:
+        return ref.index < document_.groups_size() ? &document_.groups(ref.index).children()
+                                                   : nullptr;
+      case ArenaRef::kTable:
+        return ref.index < document_.tables_size() ? &document_.tables(ref.index).children()
+                                                   : nullptr;
+      case ArenaRef::kPicture:
+        return ref.index < document_.pictures_size()
+                   ? &document_.pictures(ref.index).children()
+                   : nullptr;
+      case ArenaRef::kFieldRegion:
+        return ref.index < document_.field_regions_size()
+                   ? &document_.field_regions(ref.index).children()
+                   : nullptr;
+      case ArenaRef::kFieldItem:
+        return ref.index < document_.field_items_size()
+                   ? &document_.field_items(ref.index).children()
+                   : nullptr;
+      default: return nullptr;
+    }
+  }
+
+  // What a text host's element holds: its own text with the runs of an
+  // inline group joined on, and the children that are not runs, in order.
+  struct HostContent {
+    std::string text;
+    std::vector<std::string> blocks;
+    bool runs = false;
+  };
+
+  static void append_run(std::string& text, const std::string& run) {
+    if (run.empty()) return;
+    if (!text.empty()) text.push_back(' ');
+    text.append(run);
+  }
+
+  // Folds one member of an inline flow into `content`: a text run joins the
+  // text (its own children folding after it), a group's members fold in
+  // turn, and anything else (a table, a picture) stays a block.
+  void append_inline(const std::string& raw, HostContent& content) {
+    const ArenaRef ref = parse_ref(raw);
+    if (ref.kind != ArenaRef::kText && ref.kind != ArenaRef::kGroup) {
+      content.blocks.push_back(raw);
+      return;
+    }
+    if (!consume(raw)) return;
+    if (ref.kind == ArenaRef::kText) {
+      if (ref.index >= document_.texts_size()) return;
+      const auto& run = document_.texts(ref.index);
+      const bool code = run.item_case() == docv1::BaseTextItem::kCode;
+      const auto* base = text_base(run);
+      if (!code && base == nullptr) return;
+      if (excluded_layer(code ? run.code().content_layer() : base->content_layer())) return;
+      append_run(content.text, code ? run.code().text() : base->text());
+      for (const auto& child : text_children(run)) append_inline(child.ref(), content);
+      return;
+    }
+    if (ref.index >= document_.groups_size()) return;
+    const auto& group = document_.groups(ref.index);
+    if (excluded_layer(group.content_layer())) return;
+    for (const auto& child : group.children()) append_inline(child.ref(), content);
+  }
+
+  // A host's own text, then the runs of its first child when that child is
+  // an inline group (docling's host shape, DocLang's mixed content): the
+  // runs are part of the host's text, never items of their own.
+  HostContent host_content(const docv1::BaseTextItem& item, const std::string& own) {
+    HostContent content{own, {}, false};
+    const auto& children = text_children(item);
+    for (int index = 0; index < children.size(); ++index) {
+      const std::string& raw = children[index].ref();
+      const ArenaRef ref = parse_ref(raw);
+      if (index == 0 && ref.kind == ArenaRef::kGroup && ref.index < document_.groups_size() &&
+          document_.groups(ref.index).label() == docv1::GROUP_LABEL_INLINE) {
+        content.runs = true;
+        append_inline(raw, content);
+        continue;
+      }
+      content.blocks.push_back(raw);
+    }
+    return content;
+  }
+
+  // Where a host's block children go: after its element at the same depth,
+  // inside it when the host has no text or runs of its own (docling nests
+  // a bare host's children), or inside it always (a float's satellite).
+  enum class Nest { kNever, kWhenBare, kAlways };
+
+  // Renders a text host as the element `tag`. The text sits on the element's
+  // line; with block children nested (or a `head` such as an <href/>) the
+  // element opens on its own line and holds the text as a bare text line
+  // followed by the blocks. An empty host with nothing nested is omitted
+  // when `skip_empty`.
+  void render_host(const docv1::BaseTextItem& item, const std::string& own,
+                   const std::string& tag, const std::string& attributes, int depth, Nest nest,
+                   bool skip_empty, const std::string& head = std::string()) {
+    HostContent content = host_content(item, own);
+    const bool inside = nest == Nest::kAlways ||
+                        (nest == Nest::kWhenBare && own.empty() && !content.runs);
+    std::string nested;
+    if (inside) {
+      std::swap(out_, nested);
+      for (const auto& block : content.blocks) render_ref(block, depth + 1);
+      std::swap(out_, nested);
+    }
+    if (content.text.empty() && nested.empty() && skip_empty) {
+      if (!inside) {
+        for (const auto& block : content.blocks) render_ref(block, depth);
+      }
+      return;
+    }
+    if (nested.empty() && head.empty()) {
+      line(depth, element(tag, attributes, content.text));
+    } else {
+      line(depth, "<" + tag + attributes + ">");
+      if (!head.empty()) line(depth + 1, head);
+      if (!content.text.empty()) line(depth + 1, escape_xml_text(content.text));
+      out_.append(nested);
+      line(depth, "</" + tag + ">");
+    }
+    if (!inside) {
+      for (const auto& block : content.blocks) render_ref(block, depth);
+    }
+  }
+
   void render_text(const docv1::BaseTextItem& item, int depth) {
     if (item.item_case() == docv1::BaseTextItem::kCode) {
       const auto& code = item.code();
@@ -105,42 +299,45 @@ class DoclangRenderer : RendererBase {
       const std::string attributes =
           language.empty() ? std::string()
                            : " language=\"" + escape_xml_attribute(language) + "\"";
-      line(depth, element("code", attributes, code.text()));
+      render_host(item, code.text(), "code", attributes, depth, Nest::kWhenBare, false);
       return;
     }
     const auto* base = text_base(item);
     if (base == nullptr || excluded_layer(base->content_layer())) return;
     switch (item.item_case()) {
       case docv1::BaseTextItem::kTitle:
-        line(depth, element("title", "", base->text()));
+        render_host(item, base->text(), "title", "", depth, Nest::kWhenBare, false);
         return;
       case docv1::BaseTextItem::kSectionHeader:
-        line(depth, element("section-header",
-                            " level=\"" +
-                                std::to_string(std::max(item.section_header().level(), 1)) +
-                                "\"",
-                            base->text()));
+        render_host(item, base->text(), "section-header",
+                    " level=\"" + std::to_string(std::max(item.section_header().level(), 1)) +
+                        "\"",
+                    depth, Nest::kWhenBare, false);
         return;
       case docv1::BaseTextItem::kFormula:
-        line(depth, element("formula", "", base->text()));
+        render_host(item, base->text(), "formula", "", depth, Nest::kWhenBare, false);
         return;
       case docv1::BaseTextItem::kListItem:
-        line(depth, element("list-item", "", base->text()));
+        // A nested list follows the item: inside it, grpc-xml would read the
+        // list as part of the item's text.
+        render_host(item, base->text(), "list-item", "", depth, Nest::kNever, false);
         return;
       default: break;
     }
     switch (base->label()) {
       case docv1::DOC_ITEM_LABEL_FOOTNOTE:
-        line(depth, element("footnote", "", base->text()));
+        render_host(item, base->text(), "footnote", "", depth, Nest::kWhenBare, false);
         return;
       case docv1::DOC_ITEM_LABEL_REFERENCE:
-        line(depth, element("reference", "", base->text()));
+        render_host(item, base->text(), "reference", "", depth, Nest::kWhenBare, false);
         return;
       case docv1::DOC_ITEM_LABEL_CAPTION:
-        line(depth, element("caption", "", base->text()));
+        render_host(item, base->text(), "caption", "", depth, Nest::kWhenBare, false);
         return;
       default:
-        if (!base->text().empty()) line(depth, element("paragraph", "", base->text()));
+        // A paragraph with no text adds nothing around its children, so
+        // they render in its place.
+        render_host(item, base->text(), "paragraph", "", depth, Nest::kNever, true);
         return;
     }
   }
@@ -150,6 +347,14 @@ class DoclangRenderer : RendererBase {
     if (group.label() == docv1::GROUP_LABEL_LIST ||
         group.label() == docv1::GROUP_LABEL_ORDERED_LIST) {
       render_list(group, depth);
+      return;
+    }
+    if (group.label() == docv1::GROUP_LABEL_INLINE) {
+      // One flow of runs, so one paragraph, as the HTML export folds it.
+      HostContent content;
+      for (const auto& child : group.children()) append_inline(child.ref(), content);
+      if (!content.text.empty()) line(depth, element("paragraph", "", content.text));
+      for (const auto& block : content.blocks) render_ref(block, depth);
       return;
     }
     // Non-list groups are transparent containers, as in the other renderers.
@@ -166,18 +371,23 @@ class DoclangRenderer : RendererBase {
         const auto& nested = document_.groups(ref.index);
         if (nested.label() == docv1::GROUP_LABEL_LIST ||
             nested.label() == docv1::GROUP_LABEL_ORDERED_LIST) {
-          if (consume(child.ref())) render_list(nested, depth + 1);
+          if (!claimed(child.ref()) && consume(child.ref())) render_list(nested, depth + 1);
           continue;
         }
       }
-      if (ref.kind != ArenaRef::kText || ref.index >= document_.texts_size()) continue;
-      if (!consume(child.ref())) continue;
-      const auto* base = text_base(document_.texts(ref.index));
+      if (ref.kind != ArenaRef::kText || ref.index >= document_.texts_size()) {
+        // Anything else in a list renders in place, one level in.
+        render_ref(child.ref(), depth + 1);
+        continue;
+      }
+      if (claimed(child.ref()) || !consume(child.ref())) continue;
+      const auto& item = document_.texts(ref.index);
+      const auto* base = text_base(item);
       if (base == nullptr || excluded_layer(base->content_layer())) continue;
       ++ordinal;
       const std::string attributes =
           ordered ? " ordinal=\"" + std::to_string(ordinal) + "\"" : std::string();
-      line(depth + 1, element("list-item", attributes, base->text()));
+      render_host(item, base->text(), "list-item", attributes, depth + 1, Nest::kNever, false);
     }
     line(depth, "</list>");
   }
@@ -194,22 +404,28 @@ class DoclangRenderer : RendererBase {
     return false;
   }
 
-  void render_captions(const google::protobuf::RepeatedPtrField<docv1::RefItem>& captions,
-                       int depth) {
-    for (const auto* caption : caption_bases(captions)) {
-      if (caption->text().empty()) continue;
-      if (!caption->has_hyperlink()) {
-        line(depth, element("caption", "", caption->text()));
-        continue;
-      }
-      // A linked caption takes docling's block form: an <href/> head naming
-      // the normalized target, then the caption text as a bare text line.
-      line(depth, "<caption>");
-      line(depth + 1,
-           "<href uri=\"" + escape_xml_attribute(normalized_uri(caption->hyperlink())) +
-               "\"/>");
-      line(depth + 1, escape_xml_text(caption->text()));
-      line(depth, "</caption>");
+  // A float's captions (before it) or footnotes (after it), each as the
+  // element `tag` holding its own text, the runs of an inline group, and
+  // whatever else is nested under it (a field region in an otherwise empty
+  // footnote), the last one level in. A satellite with none of these is
+  // omitted. A linked caption takes docling's block form: an <href/> head
+  // naming the normalized target, then the caption text as a bare text line.
+  void render_satellites(const google::protobuf::RepeatedPtrField<docv1::RefItem>& refs,
+                         const std::string& tag, int depth) {
+    for (const auto& ref : refs) {
+      const ArenaRef parsed = parse_ref(ref.ref());
+      if (parsed.kind != ArenaRef::kText || parsed.index >= document_.texts_size()) continue;
+      if (!consume(ref.ref())) continue;
+      const auto& item = document_.texts(parsed.index);
+      const auto* base = text_base(item);
+      if (base == nullptr || excluded_layer(base->content_layer())) continue;
+      const std::string head =
+          base->has_hyperlink()
+              ? "<href uri=\"" + escape_xml_attribute(normalized_uri(base->hyperlink())) + "\"/>"
+              : std::string();
+      ++satellite_depth_;
+      render_host(item, base->text(), tag, "", depth, Nest::kAlways, true, head);
+      --satellite_depth_;
     }
   }
 
@@ -236,7 +452,12 @@ class DoclangRenderer : RendererBase {
 
   void render_table(const docv1::TableItem& table, int depth) {
     if (excluded_layer(table.content_layer())) return;
-    render_captions(table.captions(), depth);
+    render_satellites(table.captions(), "caption", depth);
+    render_grid(table, depth);
+    render_satellites(table.footnotes(), "footnote", depth);
+  }
+
+  void render_grid(const docv1::TableItem& table, int depth) {
     const auto grid = table_grid(table.data(), grid_budget_);
     if (grid.empty()) return;
     size_t columns = 0;
@@ -275,7 +496,7 @@ class DoclangRenderer : RendererBase {
 
   void render_picture(const docv1::PictureItem& picture, int depth) {
     if (excluded_layer(picture.content_layer())) return;
-    render_captions(picture.captions(), depth);
+    render_satellites(picture.captions(), "caption", depth);
     const std::string uri = picture_uri_ ? picture_uri_(picture) : std::string();
     const std::string open =
         uri.empty() ? std::string("<picture")
@@ -289,6 +510,7 @@ class DoclangRenderer : RendererBase {
       line(depth + 1, element("description", "", description));
       line(depth, "</picture>");
     }
+    render_satellites(picture.footnotes(), "footnote", depth);
   }
 };
 

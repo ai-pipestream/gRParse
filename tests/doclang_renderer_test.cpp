@@ -406,6 +406,194 @@ Archive unzip(const std::string& bytes) {
   return archive;
 }
 
+// The mutable base of a text arena entry the builder wrote as a plain text.
+docv1::TextItemBase* text_base_at(docv1::Document* document, const std::string& ref) {
+  const std::string prefix = "#/texts/";
+  require(ref.starts_with(prefix), "fixture ref must name the text arena");
+  auto* item = document->mutable_texts(std::stoi(ref.substr(prefix.size())));
+  return item->item_case() == docv1::BaseTextItem::kListItem
+             ? item->mutable_list_item()->mutable_base()
+             : item->mutable_text()->mutable_base();
+}
+
+// A group held by a text item (docling's host shape): it lives in the group
+// arena with the host as its parent and is linked as the host's child, never
+// under the body.
+std::string add_hosted_group(docv1::Document* document, const std::string& host,
+                             docv1::GroupLabel label) {
+  const std::string ref = add_owned_group(document, host, label);
+  text_base_at(document, host)->add_children()->set_ref(ref);
+  return ref;
+}
+
+// A field region holding one field item whose key and value are its two text
+// children, hosted by `host` (a text item).
+void add_hosted_field_region(docv1::Document* document, const std::string& host,
+                             const std::string& key, const std::string& value) {
+  const std::string region_ref =
+      "#/field_regions/" + std::to_string(document->field_regions_size());
+  const std::string field_ref = "#/field_items/" + std::to_string(document->field_items_size());
+  auto* region = document->add_field_regions();
+  region->set_self_ref(region_ref);
+  region->mutable_parent()->set_ref(host);
+  region->set_label(docv1::DOC_ITEM_LABEL_FIELD_REGION);
+  region->set_content_layer(docv1::CONTENT_LAYER_BODY);
+  region->add_children()->set_ref(field_ref);
+  text_base_at(document, host)->add_children()->set_ref(region_ref);
+  auto* field = document->add_field_items();
+  field->set_self_ref(field_ref);
+  field->mutable_parent()->set_ref(region_ref);
+  field->set_label(docv1::DOC_ITEM_LABEL_FIELD_ITEM);
+  field->set_content_layer(docv1::CONTENT_LAYER_BODY);
+  for (const auto& [label, text] : {std::pair{docv1::DOC_ITEM_LABEL_FIELD_KEY, key},
+                                    std::pair{docv1::DOC_ITEM_LABEL_FIELD_VALUE, value}}) {
+    field->add_children()->set_ref(add_owned_text(document, field_ref, label, text));
+  }
+}
+
+// docling-core #804's host shape: a footnote (or any text) with no text of
+// its own whose first child is an inline group of runs. The runs belong
+// inside the host's element, after any text the host has, exactly once;
+// later children follow the host as siblings.
+void verify_a_host_renders_its_inline_runs_inside_its_element() {
+  docv1::Document document = base_document("host.pdf");
+  const std::string note = add_text(&document, "#/body", docv1::BaseTextItem::kText,
+                                    docv1::DOC_ITEM_LABEL_FOOTNOTE, "");
+  const std::string runs = add_hosted_group(&document, note, docv1::GROUP_LABEL_INLINE);
+  add_paragraph(&document, runs, "①");
+  add_paragraph(&document, runs, "Yanchi county gazetteer");
+
+  const std::string titled = add_text(&document, "#/body", docv1::BaseTextItem::kText,
+                                      docv1::DOC_ITEM_LABEL_FOOTNOTE, "See");
+  const std::string tail = add_hosted_group(&document, titled, docv1::GROUP_LABEL_INLINE);
+  add_paragraph(&document, tail, "p.");
+  add_paragraph(&document, tail, "4");
+  const std::string after = add_hosted_group(&document, titled, docv1::GROUP_LABEL_UNSPECIFIED);
+  add_paragraph(&document, after, "a later child");
+
+  const std::string list = add_group(&document, "#/body", docv1::GROUP_LABEL_LIST);
+  const std::string item = add_text(&document, list, docv1::BaseTextItem::kListItem,
+                                    docv1::DOC_ITEM_LABEL_LIST_ITEM, "");
+  const std::string item_runs = add_hosted_group(&document, item, docv1::GROUP_LABEL_INLINE);
+  add_paragraph(&document, item_runs, "bold");
+  add_paragraph(&document, item_runs, "lead");
+  const std::string sublist = add_hosted_group(&document, item, docv1::GROUP_LABEL_LIST);
+  add_text(&document, sublist, docv1::BaseTextItem::kListItem, docv1::DOC_ITEM_LABEL_LIST_ITEM,
+           "nested");
+
+  require_equal(body_of(document),
+                "  <footnote>① Yanchi county gazetteer</footnote>\n"
+                "  <footnote>See p. 4</footnote>\n"
+                "  <paragraph>a later child</paragraph>\n"
+                "  <list ordered=\"false\">\n"
+                "    <list-item>bold lead</list-item>\n"
+                "    <list ordered=\"false\">\n"
+                "      <list-item>nested</list-item>\n"
+                "    </list>\n"
+                "  </list>\n",
+                "a host's inline runs render inside its element once, after its own text, "
+                "and its other children follow it (a list item's nested list inside the list)");
+}
+
+// An inline group in the body is one flow of runs, so it folds into one
+// paragraph, as the HTML and Google Docs exports fold it, instead of one
+// paragraph per run.
+void verify_a_body_inline_group_folds_into_one_paragraph() {
+  docv1::Document document = base_document("inline.pdf");
+  const std::string runs = add_group(&document, "#/body", docv1::GROUP_LABEL_INLINE);
+  add_paragraph(&document, runs, "Water is");
+  const std::string bold = add_paragraph(&document, runs, "wet");
+  text_base_at(&document, bold)->mutable_formatting()->set_bold(true);
+  add_paragraph(&document, runs, "");
+  add_text(&document, runs, docv1::BaseTextItem::kFormula, docv1::DOC_ITEM_LABEL_FORMULA,
+           "H_2O");
+  require_equal(body_of(document), "  <paragraph>Water is wet H_2O</paragraph>\n",
+                "the runs join with a space into one paragraph, formatting kept as text");
+}
+
+// docling-core #824: a table's footnotes render after it, each holding its
+// nested content (a field region held by an otherwise empty footnote) inside
+// its own element; an empty footnote is omitted, and a footnote the tree also
+// links ahead of the table still renders once, with its table.
+void verify_float_footnotes_render_after_their_float_with_nested_content() {
+  docv1::Document document = base_document("footnotes.pdf");
+  const std::string early = add_text(&document, "#/body", docv1::BaseTextItem::kText,
+                                     docv1::DOC_ITEM_LABEL_FOOTNOTE, "Plain note.");
+  auto* table = add_table(&document, "#/body");
+  table->mutable_data()->set_num_rows(1);
+  table->mutable_data()->set_num_cols(1);
+  add_cell(table->mutable_data(), nullptr, "x", false, 0, 0);
+  const std::string table_ref = table->self_ref();
+  const std::string region_note =
+      add_owned_text(&document, table_ref, docv1::DOC_ITEM_LABEL_FOOTNOTE, "");
+  add_hosted_field_region(&document, region_note, "K:", "V");
+  const std::string empty_note =
+      add_owned_text(&document, table_ref, docv1::DOC_ITEM_LABEL_FOOTNOTE, "");
+  // The region is also linked under the body, ahead of the table like the
+  // plain footnote; both still render only with the table.
+  auto* body = document.mutable_body()->mutable_children();
+  body->Add()->set_ref("#/field_regions/0");
+  for (int index = body->size() - 1; index > 0; --index) body->SwapElements(index, index - 1);
+  auto* footnotes = document.mutable_tables(0)->mutable_footnotes();
+  for (const auto& ref : {region_note, early, empty_note}) footnotes->Add()->set_ref(ref);
+  add_paragraph(&document, "#/body", "after");
+
+  const std::string expected =
+      "  <table>\n"
+      "    <tr>\n"
+      "      <td>x</td>\n"
+      "    </tr>\n"
+      "  </table>\n"
+      "  <footnote>\n"
+      "    <paragraph>K:</paragraph>\n"
+      "    <paragraph>V</paragraph>\n"
+      "  </footnote>\n"
+      "  <footnote>Plain note.</footnote>\n"
+      "  <paragraph>after</paragraph>\n";
+  require_equal(body_of(document), expected,
+                "the footnotes follow their table, nested content inside, each once");
+  const Archive read = unzip(render_dclx(document));
+  require_equal(read.members.at("document.xml"), kRoot + expected + "</doclang>\n",
+                "the archive's document.xml carries the same footnotes");
+}
+
+// The same for a figure's captions: a caption holding nested content keeps
+// it inside its element (its own text first), a caption with nothing in it
+// is omitted, and a picture's footnote follows the picture.
+void verify_float_captions_keep_their_nested_content() {
+  docv1::Document document = base_document("captions.pdf");
+  auto* figure = add_picture(&document, "#/body", "figs/a.png");
+  const std::string figure_ref = figure->self_ref();
+  const std::string first =
+      add_owned_text(&document, figure_ref, docv1::DOC_ITEM_LABEL_CAPTION, "A chart");
+  const std::string sourced =
+      add_owned_text(&document, figure_ref, docv1::DOC_ITEM_LABEL_CAPTION, "Source:");
+  const std::string runs = add_hosted_group(&document, sourced, docv1::GROUP_LABEL_INLINE);
+  add_paragraph(&document, runs, "survey");
+  const std::string blocks = add_hosted_group(&document, sourced, docv1::GROUP_LABEL_UNSPECIFIED);
+  add_paragraph(&document, blocks, "n = 40");
+  const std::string empty =
+      add_owned_text(&document, figure_ref, docv1::DOC_ITEM_LABEL_CAPTION, "");
+  const std::string note =
+      add_owned_text(&document, figure_ref, docv1::DOC_ITEM_LABEL_FOOTNOTE, "");
+  add_paragraph(&document, add_hosted_group(&document, note, docv1::GROUP_LABEL_INLINE),
+                "estimated");
+  auto* picture = document.mutable_pictures(0);
+  for (const auto& ref : {first, sourced, empty}) picture->add_captions()->set_ref(ref);
+  picture->add_footnotes()->set_ref(note);
+
+  require_equal(body_of(document),
+                "  <caption>A chart</caption>\n"
+                "  <caption>\n"
+                "    Source: survey\n"
+                "    <paragraph>n = 40</paragraph>\n"
+                "  </caption>\n"
+                "  <picture uri=\"figs/a.png\"/>\n"
+                "  <footnote>estimated</footnote>\n",
+                "captions keep their nested content inside their element and the footnote "
+                "follows the picture");
+}
+
 // Two pages of 100 x 200 units with 50 x 100 pixel page images (half scale),
 // then three pictures in body order: one carrying its own PNG, one with no
 // image whose box on page 2 must be cropped out of that page's image, and
@@ -622,6 +810,10 @@ int main() {
       verify_the_unserved_arenas_leave_a_comment,
       verify_content_and_attributes_are_xml_escaped,
       verify_a_transparent_group_adds_no_element_and_no_indent,
+      verify_a_host_renders_its_inline_runs_inside_its_element,
+      verify_a_body_inline_group_folds_into_one_paragraph,
+      verify_float_footnotes_render_after_their_float_with_nested_content,
+      verify_float_captions_keep_their_nested_content,
       verify_doclang_image_modes,
       verify_doclang_namespace_switch,
       verify_dclx_is_a_zip_with_document_xml,
