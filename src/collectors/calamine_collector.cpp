@@ -350,6 +350,11 @@ CollectorOutcome collect_calamine_document(const std::shared_ptr<grpc::Channel>&
             fold.row(row);
           }
           break;
+        case calaminev1::StreamWorksheetRangeResponse::kRowGap:
+          // A run of rows holding nothing: the fold places populated cells
+          // at their absolute rows, so the run needs no blank rows spelled
+          // out, and a gap is never the last row event of a range.
+          break;
         case calaminev1::StreamWorksheetRangeResponse::kError:
           if (event.error().terminal()) {
             terminal_error = true;

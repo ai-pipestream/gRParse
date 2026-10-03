@@ -34,9 +34,12 @@ service EmailParseService {
   //
   // Errors: no bytes, a truncated message, or a stream that ended without a
   // chunk marked complete is INVALID_ARGUMENT; bytes that are not an email
-  // this server understands are UNIMPLEMENTED; input above the byte cap is
-  // RESOURCE_EXHAUSTED; an unexpected parser fault is INTERNAL. A stream may
-  // carry events before it fails; the status is the authority on success.
+  // this server understands are UNIMPLEMENTED; input above the byte cap, or a
+  // parse that runs out of memory, is RESOURCE_EXHAUSTED; an upload that makes
+  // no progress for the server's idle timeout (an empty chunk is none) is
+  // DEADLINE_EXCEEDED; an unexpected parser fault is INTERNAL. A
+  // stream may carry events before it fails; the status is the authority on
+  // success.
   rpc ParseEmail(stream ParseEmailRequest) returns (stream ParseEmailResponse);
 
   // Reports server identity, the formats it parses, and its operational
@@ -262,7 +265,9 @@ enum BodyMediaType {
 // One decoded body part of the message, emitted as the MIME walk reaches it.
 message BodyPart {
   // Dotted MIME path of this part within the message, for example "1.2".
-  // The root part of a non-multipart message is "1".
+  // The root part of a non-multipart message is "1". A body taken from a
+  // TNEF (winmail.dat) container is named under the container's part id,
+  // for example "1.2/body:rtf".
   string part_id = 1;
   // Which of the two body kinds this is.
   BodyMediaType media_type = 2;
@@ -274,8 +279,9 @@ message BodyPart {
   // Charset the part declared, for example "iso-8859-1". Empty when the
   // part declared none and US-ASCII was assumed.
   string charset = 5;
-  // For .msg, the MAPI property this body came from ("PidTagBody",
-  // "PidTagHtml", "PidTagRtfCompressed"). Empty for .eml.
+  // For .msg, and for a body taken from a TNEF (winmail.dat) container in
+  // either format, the MAPI property this body came from ("PidTagBody",
+  // "PidTagHtml", "PidTagRtfCompressed"). Empty for any other .eml part.
   string source_property = 6;
 }
 
@@ -304,6 +310,9 @@ message Attachment {
   bytes data = 7;
   // Dotted MIME path of the part, matching BodyPart.part_id numbering. For
   // .msg this is the MAPI attachment storage index, for example "attach:0".
+  // An attachment unpacked from a TNEF (winmail.dat) container is named
+  // under the container's part id, for example "1.2/attach:0"; the
+  // container itself is not listed.
   string part_id = 8;
 }
 
@@ -324,7 +333,8 @@ message ParseStatus {
   // Outcome of the parse.
   State state = 1;
   // Human-readable notes about degraded or skipped content, for example an
-  // unnamed attachment part or an RTF-only body.
+  // unnamed attachment part or an RTF-only body. At most the first 100 are
+  // listed; past that, one last entry says how many more were suppressed.
   repeated string warnings = 2;
   // Number of BodyPart events emitted.
   uint32 body_parts = 3;
@@ -356,7 +366,9 @@ message GetServiceInfoResponse {
   // Per-attachment payload cap for include_attachment_bytes. Larger
   // attachments are still described, just without their bytes.
   uint64 max_attachment_bytes = 7;
-  // Messages parsed concurrently before further parses queue.
+  // Calls admitted at once, upload and parse together. A call takes its
+  // slot when its options arrive, before any chunk is read; further calls
+  // wait, unread, until a slot frees.
   uint32 max_concurrent_parses = 8;
   // Frontend advertisement. The demo shell reads it to build its tab bar.
   UiInfo ui = 9;

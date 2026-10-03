@@ -95,6 +95,19 @@ test("sync-peer-protos.sh --check fails and names a drifted file", () => {
   assert.match(result.stdout, /drift: .*lolhtml\/v1\/types\.proto/);
 });
 
+test("sync-peer-protos.sh --check names every drifted peer, not just the first", () => {
+  const ws = fakeWorkspace();
+  fs.appendFileSync(path.join(ws, "grpc-lol-html/proto/lolhtml/v1/types.proto"), "\n// drift\n");
+  fs.appendFileSync(
+    path.join(ws, "grpc-pdf-inspector/proto/ai/pipestream/pdf/v1/types.proto"),
+    "\n// drift\n",
+  );
+  const result = runSync(ws, "--check");
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /drift: .*lolhtml\/v1\/types\.proto/);
+  assert.match(result.stdout, /drift: .*pdf\/v1\/types\.proto/);
+});
+
 test("sync-peer-protos.sh --check fails when a sibling tree is missing", () => {
   const ws = fakeWorkspace();
   fs.rmSync(path.join(ws, "grpc-xml"), { recursive: true });
