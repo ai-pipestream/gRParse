@@ -97,8 +97,7 @@ void add_user_properties(const officev1::DocumentMetadata& meta,
     }
   }
   // The metadata slot has no description field of its own, so the
-  // document's description rides as a text property under the key the poi
-  // collector gives it.
+  // document's description rides as a text property named "description".
   if (!meta.description().empty()) {
     docv1::UserProperty* property = out->add_user_properties();
     property->set_name("description");

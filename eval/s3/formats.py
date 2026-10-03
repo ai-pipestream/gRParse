@@ -84,7 +84,7 @@ PAGED = frozenset({"pdf", "image", "word", "sheet", "deck"})
 # plus the in-process ones and the shell peers the merge already ranks).
 KNOWN_COLLECTORS = frozenset({
     "grparse", "libreoffice", "pdf", "email", "xml", "epub", "markup", "ebcdic", "lol-html",
-    "asr", "fastwarc", "confluence", "poi", "calamine", "enrich",
+    "asr", "fastwarc", "confluence", "calamine", "enrich",
 })
 
 ARENAS = ("texts", "tables", "pictures", "groups", "key_value_items", "form_items",

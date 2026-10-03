@@ -26,7 +26,6 @@
 #include "ai/pipestream/epub/v1/epub_service.grpc.pb.h"
 #include "ai/pipestream/markup/v1/markup_service.grpc.pb.h"
 #include "ai/pipestream/pdf/v1/pdf_service.grpc.pb.h"
-#include "ai/pipestream/poi/v1/poi_service.grpc.pb.h"
 #include "ai/pipestream/xml/v1/xml_service.grpc.pb.h"
 #include "calamine/v1/calamine_service.grpc.pb.h"
 #include "fastwarc/v1/warc_service.grpc.pb.h"
@@ -47,7 +46,6 @@ namespace lolv1 = lolhtml::v1;
 namespace markupv1 = ai::pipestream::markup::v1;
 namespace parsev1 = ai::pipestream::parse::v1;
 namespace pdfv1 = ai::pipestream::pdf::v1;
-namespace poiv1 = ai::pipestream::poi::v1;
 namespace warcv1 = fastwarc::v1;
 namespace xmlv1 = ai::pipestream::xml::v1;
 
@@ -1528,841 +1526,6 @@ void verify_fastwarc_truncates_payload_text() {
 
 }  // namespace
 
-// ---- poi --------------------------------------------------------------------
-
-namespace {
-
-// Serves one canned typed stream: document info with a title, paragraphs in
-// four styles, a body table, a sheet with a formula cell, a slide, an
-// embedded object, and the terminal status with one warning.
-class FakePoiService final : public poiv1::PoiParseService::Service {
- public:
-  grpc::Status ParseDocument(
-      grpc::ServerContext*,
-      grpc::ServerReaderWriter<poiv1::ParseEvent, poiv1::ParseRequestChunk>* stream)
-      override {
-    poiv1::ParseRequestChunk chunk;
-    std::string document_id;
-    std::string filename;
-    std::string bytes;
-    bool complete = false;
-    while (stream->Read(&chunk)) {
-      if (document_id.empty()) {
-        document_id = chunk.document_id();
-        filename = chunk.filename();
-      }
-      bytes += chunk.data();
-      complete = chunk.complete();
-    }
-    if (document_id.empty() || filename.empty() || !complete || bytes.empty()) {
-      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                          "fake poi expects a complete identified upload");
-    }
-
-    poiv1::ParseEvent event;
-    poiv1::DocumentInfo* info = event.mutable_document_info();
-    info->set_document_id(document_id);
-    info->set_format(poiv1::DOCUMENT_FORMAT_XLSX);
-    info->mutable_metadata()->set_title("Quarterly Report");
-    info->mutable_metadata()->set_author("Alice");
-    info->mutable_metadata()->set_last_modified_by("Bob");
-    stream->Write(event);
-
-    event.Clear();
-    event.mutable_paragraph()->set_text("Quarterly Report");
-    event.mutable_paragraph()->set_style("Title");
-    stream->Write(event);
-
-    event.Clear();
-    event.mutable_paragraph()->set_text("Overview");
-    event.mutable_paragraph()->set_style("Heading1");
-    stream->Write(event);
-
-    event.Clear();
-    event.mutable_paragraph()->set_text("body text");
-    stream->Write(event);
-
-    event.Clear();
-    event.mutable_paragraph()->set_text("first point");
-    event.mutable_paragraph()->set_style("ListParagraph");
-    stream->Write(event);
-
-    event.Clear();
-    poiv1::Table* table = event.mutable_table();
-    for (int row = 0; row < 2; ++row) {
-      poiv1::TableRow* table_row = table->add_rows();
-      table_row->add_cells()->set_text(row == 0 ? "h1" : "v1");
-      table_row->add_cells()->set_text(row == 0 ? "h2" : "v2");
-    }
-    stream->Write(event);
-
-    event.Clear();
-    poiv1::Sheet* sheet = event.mutable_sheet();
-    sheet->set_index(0);
-    sheet->set_name("Data");
-    poiv1::SheetRow* header = sheet->add_rows();
-    header->set_row_index(0);
-    header->add_cells()->set_text("Name");
-    poiv1::SheetCell* header_score = header->add_cells();
-    header_score->set_column_index(1);
-    header_score->set_text("Score");
-    poiv1::SheetRow* data = sheet->add_rows();
-    data->set_row_index(1);
-    poiv1::SheetCell* name = data->add_cells();
-    name->set_text("a");
-    poiv1::SheetCell* score = data->add_cells();
-    score->set_column_index(1);
-    score->set_formatted("84");
-    score->set_number(84);
-    score->set_formula("B1*2");
-    stream->Write(event);
-
-    event.Clear();
-    poiv1::Slide* slide = event.mutable_slide();
-    slide->set_index(0);
-    slide->set_title("Intro");
-    slide->add_texts("bullet");
-    slide->add_notes("speaker note");
-    stream->Write(event);
-
-    event.Clear();
-    poiv1::EmbeddedObject* object = event.mutable_embedded_object();
-    object->set_id("ole1");
-    object->set_filename("chart.xlsx");
-    object->set_content_type("application/vnd.ms-excel");
-    object->set_size_bytes(100);
-    stream->Write(event);
-
-    event.Clear();
-    event.mutable_status()->set_state(poiv1::ParseStatus::STATE_OK);
-    event.mutable_status()->add_warnings("header skipped");
-    stream->Write(event);
-    return grpc::Status::OK;
-  }
-};
-
-// One Word table whose first cell spans two rows: per the contract the
-// covered position is not repeated, so row 2 carries only B2 and C2.
-class MergedTablePoiService final : public poiv1::PoiParseService::Service {
- public:
-  grpc::Status ParseDocument(
-      grpc::ServerContext*,
-      grpc::ServerReaderWriter<poiv1::ParseEvent, poiv1::ParseRequestChunk>* stream)
-      override {
-    poiv1::ParseRequestChunk chunk;
-    while (stream->Read(&chunk)) {
-    }
-    poiv1::ParseEvent event;
-    poiv1::Table* table = event.mutable_table();
-    poiv1::TableRow* first = table->add_rows();
-    poiv1::TableCell* merged = first->add_cells();
-    merged->set_text("A1");
-    merged->set_row_span(2);
-    first->add_cells()->set_text("B1");
-    first->add_cells()->set_text("C1");
-    poiv1::TableRow* second = table->add_rows();
-    second->add_cells()->set_text("B2");
-    second->add_cells()->set_text("C2");
-    stream->Write(event);
-    event.Clear();
-    event.mutable_status();
-    stream->Write(event);
-    return grpc::Status::OK;
-  }
-};
-
-// A cell spanning rows from above keeps its columns in the rows below: the
-// next row's cells start past it instead of overlapping it.
-void verify_poi_vertical_merge_keeps_columns() {
-  MergedTablePoiService service;
-  ServerFixture server(&service);
-  const auto outcome = grparse::collect_poi_document(server.channel(), "doc-merge",
-                                                     "merge.docx", "", "bytes");
-  require(outcome.success, "poi collection succeeds: " + outcome.error);
-  const docv1::TableData& data = outcome.document.tables(0).data();
-  require(data.num_rows() == 2 && data.num_cols() == 3 && data.table_cells_size() == 5,
-          "the merged table keeps its three columns");
-  const docv1::TableCell& a1 = data.table_cells(0);
-  require(a1.text() == "A1" && a1.start_row_offset_idx() == 0 &&
-              a1.end_row_offset_idx() == 2 && a1.start_col_offset_idx() == 0,
-          "the merged cell spans both rows of the first column");
-  const docv1::TableCell& b2 = data.table_cells(3);
-  const docv1::TableCell& c2 = data.table_cells(4);
-  require(b2.text() == "B2" && b2.start_row_offset_idx() == 1 &&
-              b2.start_col_offset_idx() == 1 && b2.end_col_offset_idx() == 2,
-          "the second row's first cell lands in column B, past the merge");
-  require(c2.text() == "C2" && c2.start_col_offset_idx() == 2,
-          "and the cell after it in column C");
-}
-
-// One table whose cells claim spans no real document has: a gridSpan of
-// uint32 max and a vMerge two billion rows deep.
-class HostileSpanPoiService final : public poiv1::PoiParseService::Service {
- public:
-  grpc::Status ParseDocument(
-      grpc::ServerContext*,
-      grpc::ServerReaderWriter<poiv1::ParseEvent, poiv1::ParseRequestChunk>* stream)
-      override {
-    poiv1::ParseRequestChunk chunk;
-    while (stream->Read(&chunk)) {
-    }
-    poiv1::ParseEvent event;
-    poiv1::Table* table = event.mutable_table();
-    poiv1::TableRow* first = table->add_rows();
-    poiv1::TableCell* wide = first->add_cells();
-    wide->set_text("wide");
-    wide->set_col_span(std::numeric_limits<uint32_t>::max());
-    poiv1::TableCell* deep = first->add_cells();
-    deep->set_text("deep");
-    deep->set_row_span(2000000000U);
-    table->add_rows()->add_cells()->set_text("below");
-    stream->Write(event);
-    event.Clear();
-    event.mutable_status();
-    stream->Write(event);
-    return grpc::Status::OK;
-  }
-};
-
-// Hostile spans clamp to the table's bounds with a warning instead of
-// sizing the column ledger from the wire.
-void verify_poi_hostile_span_is_clamped() {
-  HostileSpanPoiService service;
-  ServerFixture server(&service);
-  const auto outcome = grparse::collect_poi_document(server.channel(), "doc-span",
-                                                     "span.docx", "", "bytes");
-  require(outcome.success, "poi collection succeeds: " + outcome.error);
-  const docv1::TableData& data = outcome.document.tables(0).data();
-  require(data.num_rows() == 2 && data.table_cells_size() == 3,
-          "the hostile table keeps its rows and cells");
-  const docv1::TableCell& wide = data.table_cells(0);
-  require(wide.col_span() == 16384 && wide.end_col_offset_idx() == 16384,
-          "the wide cell clamps to the spreadsheet column limit");
-  const docv1::TableCell& deep = data.table_cells(1);
-  require(deep.row_span() == 2 && deep.end_row_offset_idx() == 2 &&
-              deep.start_col_offset_idx() == 16384 && deep.col_span() == 1,
-          "the deep cell clamps to the rows the table has");
-  require(data.num_cols() == 16385, "the column count follows the clamped spans");
-  require(outcome.warnings.size() == 1 &&
-              outcome.warnings[0].find("clamped") != std::string::npos,
-          "the clamp surfaces as a warning");
-}
-
-// Plays grPOIc's batched sheet stream. A client that did not ask for
-// sheet_batches gets RESOURCE_EXHAUSTED, the way the real server refuses an
-// unbatched sheet over 256 MiB. Otherwise: a slide and its native table, a
-// hidden sheet in three batches (the last one carrying the merged regions),
-// and, when `truncate` is set, a second sheet whose batches stop with
-// more_rows still set before the trailer.
-class BatchedSheetPoiService final : public poiv1::PoiParseService::Service {
- public:
-  explicit BatchedSheetPoiService(bool truncate = false) : truncate_(truncate) {}
-
-  grpc::Status ParseDocument(
-      grpc::ServerContext*,
-      grpc::ServerReaderWriter<poiv1::ParseEvent, poiv1::ParseRequestChunk>* stream)
-      override {
-    poiv1::ParseRequestChunk chunk;
-    bool first = true;
-    bool batches = false;
-    while (stream->Read(&chunk)) {
-      if (first) batches = chunk.sheet_batches();
-      first = false;
-    }
-    if (!batches) {
-      return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
-                          "sheet 'Big' passed 256 MiB unbatched; set sheet_batches");
-    }
-    poiv1::ParseEvent event;
-    poiv1::Slide* slide = event.mutable_slide();
-    slide->set_index(3);
-    slide->set_title("Numbers");
-    stream->Write(event);
-
-    event.Clear();
-    poiv1::Table* slide_table = event.mutable_table();
-    slide_table->set_slide_index(3);
-    slide_table->add_rows()->add_cells()->set_text("on the slide");
-    stream->Write(event);
-
-    event.Clear();
-    poiv1::Table* stray = event.mutable_table();
-    stray->set_slide_index(9);
-    stray->add_rows()->add_cells()->set_text("no such slide");
-    stream->Write(event);
-
-    // Rows 0..5 in three batches of two; rows 0 and 1 hold A and B.
-    for (uint32_t batch = 0; batch < 3; ++batch) {
-      event.Clear();
-      poiv1::Sheet* sheet = event.mutable_sheet();
-      sheet->set_index(0);
-      sheet->set_name("Big");
-      sheet->set_hidden(true);
-      for (uint32_t row = batch * 2; row < batch * 2 + 2; ++row) {
-        poiv1::SheetRow* out = sheet->add_rows();
-        out->set_row_index(row);
-        out->add_cells()->set_text("a" + std::to_string(row));
-        poiv1::SheetCell* second = out->add_cells();
-        second->set_column_index(1);
-        second->set_text("b" + std::to_string(row));
-      }
-      sheet->set_more_rows(batch < 2);
-      if (batch == 2) {
-        // A1:C2 merged (anchor A1), a range anchored on a blank cell, and
-        // a hostile range running backwards.
-        poiv1::CellRange* merged = sheet->add_merged_regions();
-        merged->set_first_row(0);
-        merged->set_last_row(1);
-        merged->set_first_column(0);
-        merged->set_last_column(2);
-        poiv1::CellRange* blank = sheet->add_merged_regions();
-        blank->set_first_row(4);
-        blank->set_last_row(4);
-        blank->set_first_column(5);
-        blank->set_last_column(6);
-        poiv1::CellRange* backwards = sheet->add_merged_regions();
-        backwards->set_first_row(3);
-        backwards->set_last_row(2);
-      }
-      stream->Write(event);
-    }
-
-    if (truncate_) {
-      event.Clear();
-      poiv1::Sheet* cut = event.mutable_sheet();
-      cut->set_index(1);
-      cut->set_name("Cut");
-      poiv1::SheetRow* row = cut->add_rows();
-      row->set_row_index(0);
-      row->add_cells()->set_text("only batch");
-      cut->set_more_rows(true);
-      stream->Write(event);
-    }
-
-    event.Clear();
-    event.mutable_status()->set_state(poiv1::ParseStatus::STATE_OK);
-    stream->Write(event);
-    return grpc::Status::OK;
-  }
-
- private:
-  bool truncate_;
-};
-
-void verify_poi_sheet_batches_fold_into_one_table() {
-  BatchedSheetPoiService service;
-  ServerFixture server(&service);
-  const auto outcome = grparse::collect_poi_document(server.channel(), "doc-batches",
-                                                     "big.xlsx", "", "bytes");
-  require(outcome.success, "the client asks for sheet batches: " + outcome.error);
-  const docv1::Document& document = outcome.document;
-
-  // groups: the slide, then the one sheet; tables: slide table, stray, sheet.
-  require(document.groups_size() == 2, "three batches open one sheet group, not three");
-  require(document.tables_size() == 3, "three batches fold into one sheet table");
-  const docv1::GroupItem& sheet_group = document.groups(1);
-  require(sheet_group.label() == docv1::GROUP_LABEL_SHEET && sheet_group.name() == "Big" &&
-              !sheet_group.sheet().visible() &&
-              sheet_group.content_layer() == docv1::CONTENT_LAYER_INVISIBLE,
-          "a hidden sheet folds onto the invisible layer, as the office fold does");
-  const docv1::TableItem& sheet_table = document.tables(2);
-  require(sheet_table.parent().ref() == sheet_group.self_ref() &&
-              sheet_group.children_size() == 1 &&
-              sheet_table.content_layer() == docv1::CONTENT_LAYER_INVISIBLE,
-          "the one table hangs off the sheet group on the sheet's layer");
-  const docv1::TableData& data = sheet_table.data();
-  // A1:C2 covers b0, a1 and b1, which drop out; row 1 keeps no cell and
-  // so no provenance entry.
-  require(data.table_cells_size() == 12 - 3 && data.row_prov_size() == 5,
-          "every batch's rows land in the table, in order, less the covered cells");
-  require(data.table_cells(8).text() == "b5" && data.table_cells(8).start_row_offset_idx() == 5,
-          "the last batch's cells keep their absolute rows");
-  require(data.table_cells(1).text() == "a2" && data.row_prov(1).grid().row() == 2,
-          "the first kept cell after the merge is row 2's");
-  require(data.num_rows() == 6 && data.num_cols() == 3,
-          "the table sizes across every batch and the merged region");
-  const docv1::TableCell& anchor = data.table_cells(0);
-  require(anchor.text() == "a0" && anchor.row_span() == 2 && anchor.col_span() == 3 &&
-              anchor.end_row_offset_idx() == 2 && anchor.end_col_offset_idx() == 3,
-          "the merged region's spans land on its anchor cell");
-  for (int index = 1; index < data.table_cells_size(); ++index) {
-    require(data.table_cells(index).row_span() == 1 && data.table_cells(index).col_span() == 1,
-            "only the anchor cell spans");
-  }
-
-  const docv1::GroupItem& slide_group = document.groups(0);
-  require(slide_group.label() == docv1::GROUP_LABEL_SLIDE &&
-              document.tables(0).parent().ref() == slide_group.self_ref(),
-          "a slide table hangs off its slide's group, not the body");
-  bool listed = false;
-  for (const auto& child : slide_group.children()) {
-    if (child.ref() == document.tables(0).self_ref()) listed = true;
-  }
-  require(listed, "the slide group lists its table");
-  require(document.tables(1).parent().ref() == "#/body",
-          "a table naming an unannounced slide stays in the body");
-
-  bool stray_warned = false;
-  bool merge_warned = false;
-  bool covered_warned = false;
-  for (const std::string& warning : outcome.warnings) {
-    if (warning.contains("slide 9")) stray_warned = true;
-    if (warning.contains("outside the sheet's bounds")) merge_warned = true;
-    if (warning.contains("covers held text")) covered_warned = true;
-  }
-  require(stray_warned, "the unannounced slide is reported");
-  require(merge_warned, "the backwards merged region is reported");
-  require(covered_warned, "the covered cells that held text are reported");
-  require(outcome.warnings.size() == 3, "nothing else is reported");
-}
-
-void verify_poi_cut_sheet_batches_warn() {
-  BatchedSheetPoiService service(/*truncate=*/true);
-  ServerFixture server(&service);
-  const auto outcome = grparse::collect_poi_document(server.channel(), "doc-cut",
-                                                     "cut.xlsx", "", "bytes");
-  require(outcome.success, "a cut batch stream still collects: " + outcome.error);
-  require(outcome.document.groups_size() == 3 && outcome.document.groups(2).name() == "Cut",
-          "the cut sheet keeps the rows that arrived");
-  bool cut_warned = false;
-  for (const std::string& warning : outcome.warnings) {
-    if (warning.contains("'Cut'") && warning.contains("missing")) cut_warned = true;
-  }
-  require(cut_warned, "a sheet whose batches stop with more_rows set is reported");
-}
-
-// One six-row, three-column sheet with populated covered cells: a merged
-// title (A1:C1), a vertical merge (B3:B4), and a range anchored on the one
-// empty position (A5:B6). Batched, the rows arrive as three Sheet events
-// (more_rows on the first two, the merged ranges on the last); unbatched,
-// as one, which the fold must give the same document for.
-class MergedSheetPoiService final : public poiv1::PoiParseService::Service {
- public:
-  explicit MergedSheetPoiService(bool batched) : batched_(batched) {}
-
-  grpc::Status ParseDocument(
-      grpc::ServerContext*,
-      grpc::ServerReaderWriter<poiv1::ParseEvent, poiv1::ParseRequestChunk>* stream)
-      override {
-    poiv1::ParseRequestChunk chunk;
-    bool first = true;
-    while (stream->Read(&chunk)) {
-      if (first) asked_for_batches_ = chunk.sheet_batches();
-      first = false;
-    }
-    const uint32_t per_event = batched_ ? 2 : 6;
-    poiv1::ParseEvent event;
-    for (uint32_t start = 0; start < 6; start += per_event) {
-      event.Clear();
-      poiv1::Sheet* sheet = event.mutable_sheet();
-      sheet->set_index(0);
-      sheet->set_name("Big");
-      for (uint32_t row = start; row < start + per_event; ++row) add_row(sheet, row);
-      if (start + per_event < 6) {
-        sheet->set_more_rows(true);
-      } else {
-        add_range(sheet, 0, 0, 0, 2);
-        add_range(sheet, 2, 3, 1, 1);
-        add_range(sheet, 4, 5, 0, 1);
-      }
-      stream->Write(event);
-    }
-    event.Clear();
-    event.mutable_status()->set_state(poiv1::ParseStatus::STATE_OK);
-    stream->Write(event);
-    return grpc::Status::OK;
-  }
-
-  bool asked_for_batches() const { return asked_for_batches_.load(); }
-
- private:
-  // Row `index` holds r<row>c<column> in three columns, except A5.
-  static void add_row(poiv1::Sheet* sheet, uint32_t index) {
-    poiv1::SheetRow* row = sheet->add_rows();
-    row->set_row_index(index);
-    for (uint32_t column = 0; column < 3; ++column) {
-      if (index == 4 && column == 0) continue;
-      poiv1::SheetCell* cell = row->add_cells();
-      cell->set_column_index(column);
-      cell->set_text("r" + std::to_string(index) + "c" + std::to_string(column));
-    }
-  }
-
-  static void add_range(poiv1::Sheet* sheet, uint32_t first_row, uint32_t last_row,
-                        uint32_t first_column, uint32_t last_column) {
-    poiv1::CellRange* range = sheet->add_merged_regions();
-    range->set_first_row(first_row);
-    range->set_last_row(last_row);
-    range->set_first_column(first_column);
-    range->set_last_column(last_column);
-  }
-
-  const bool batched_;
-  std::atomic<bool> asked_for_batches_{false};
-};
-
-grparse::CollectorOutcome collect_merged_sheet(bool batched) {
-  MergedSheetPoiService service(batched);
-  ServerFixture server(&service);
-  auto outcome = grparse::collect_poi_document(server.channel(), "doc-merged", "book.xlsx", "",
-                                               "bytes");
-  require(service.asked_for_batches(), "the first upload chunk asks for sheet batches");
-  return outcome;
-}
-
-// Three batches fold into exactly the document one Sheet event gives: the
-// merged ranges from the last batch apply to rows from the earlier ones.
-void verify_poi_batched_sheet_folds_like_one_sheet() {
-  const auto batched = collect_merged_sheet(true);
-  const auto unbatched = collect_merged_sheet(false);
-  require(batched.success && unbatched.success,
-          "poi collection succeeds: " + batched.error + unbatched.error);
-  require(batched.warnings == unbatched.warnings,
-          "the batched sheet warns exactly as the unbatched one");
-  require(batched.document.SerializeAsString() == unbatched.document.SerializeAsString(),
-          "three batches fold into the document one Sheet event gives");
-}
-
-// A merged range's populated covered cells drop out, so a renderer placing
-// cells in order cannot write one over the anchor's repeat; the row
-// provenance follows. A range with no anchor cell changes nothing.
-void verify_poi_merged_regions_drop_covered_cells() {
-  const auto outcome = collect_merged_sheet(true);
-  require(outcome.success, "poi collection succeeds: " + outcome.error);
-  const docv1::TableData& data = outcome.document.tables(0).data();
-  const auto cell_at = [&data](int row, int column) -> const docv1::TableCell* {
-    for (const auto& cell : data.table_cells()) {
-      if (cell.start_row_offset_idx() == row && cell.start_col_offset_idx() == column) {
-        return &cell;
-      }
-    }
-    return nullptr;
-  };
-  require(data.table_cells_size() == 17 - 2 - 1,
-          "the two cells under the title and the one under the tall cell drop out");
-  const docv1::TableCell* title = cell_at(0, 0);
-  require(title != nullptr && title->text() == "r0c0" && title->col_span() == 3 &&
-              title->end_col_offset_idx() == 3 && cell_at(0, 1) == nullptr &&
-              cell_at(0, 2) == nullptr,
-          "the title anchor spans its three columns and its covered cells are gone");
-  const docv1::TableCell* tall = cell_at(2, 1);
-  require(tall != nullptr && tall->row_span() == 2 && tall->end_row_offset_idx() == 4 &&
-              cell_at(3, 1) == nullptr && cell_at(3, 0) != nullptr && cell_at(3, 2) != nullptr,
-          "the vertical anchor spans two rows and only its covered cell drops out");
-  require(cell_at(4, 1) != nullptr && cell_at(5, 0) != nullptr && cell_at(5, 1) != nullptr &&
-              cell_at(5, 0)->row_span() == 1,
-          "a range with no anchor cell keeps the cells it would cover");
-  require(data.row_prov_size() == 6 && data.row_prov(0).grid().col() == 0 &&
-              data.row_prov(4).grid().col() == 1,
-          "each row's provenance points at its first kept cell");
-  require(outcome.warnings.size() == 1 && outcome.warnings[0].contains("'Big'") &&
-              outcome.warnings[0].contains("covers held text"),
-          "covered cells that held text are named in one warning per sheet");
-}
-
-class RejectingPoiService final : public poiv1::PoiParseService::Service {
- public:
-  grpc::Status ParseDocument(
-      grpc::ServerContext*,
-      grpc::ServerReaderWriter<poiv1::ParseEvent, poiv1::ParseRequestChunk>* stream)
-      override {
-    poiv1::ParseRequestChunk chunk;
-    while (stream->Read(&chunk)) {
-    }
-    return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
-                        "document exceeds the 70 MiB cap");
-  }
-};
-
-// Ends the stream cleanly without the terminal ParseStatus.
-class TruncatingPoiService final : public poiv1::PoiParseService::Service {
- public:
-  grpc::Status ParseDocument(
-      grpc::ServerContext*,
-      grpc::ServerReaderWriter<poiv1::ParseEvent, poiv1::ParseRequestChunk>* stream)
-      override {
-    poiv1::ParseRequestChunk chunk;
-    while (stream->Read(&chunk)) {
-    }
-    poiv1::ParseEvent event;
-    event.mutable_paragraph()->set_text("orphan");
-    stream->Write(event);
-    return grpc::Status::OK;
-  }
-};
-
-void verify_poi_folds_typed_events() {
-  FakePoiService service;
-  ServerFixture server(&service);
-  // Large enough to prove multi-chunk uploads reassemble.
-  const std::string bytes(600U * 1024U, 'x');
-  const auto outcome = grparse::collect_poi_document(
-      server.channel(), "doc-7", "book.xlsx",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", bytes);
-  require(outcome.success, "poi collection succeeds: " + outcome.error);
-  require(outcome.warnings.size() == 1 && outcome.warnings[0] == "header skipped",
-          "poi status warnings surface verbatim");
-
-  const docv1::Document& document = outcome.document;
-  require(document.source_meta().title() == "Quarterly Report" &&
-              document.source_meta().authors_size() == 1 &&
-              document.source_meta().authors(0) == "Alice" &&
-              document.source_meta().modified_by() == "Bob",
-          "the document info folds into source_meta");
-
-  require(document.texts_size() == 7,
-          "title, heading, paragraph, list item, slide title, bullet, and note fold");
-  const docv1::TextItemBase& title = document.texts(0).title().base();
-  require(title.label() == docv1::DOC_ITEM_LABEL_TITLE &&
-              title.text() == "Quarterly Report" && title.style_name() == "Title",
-          "the Title style folds to a title item keeping the style name");
-  const auto& heading = document.texts(1).section_header();
-  require(heading.base().label() == docv1::DOC_ITEM_LABEL_SECTION_HEADER &&
-              heading.level() == 1 && heading.base().text() == "Overview",
-          "Heading1 folds to a level-1 section header");
-  require(document.texts(2).text().base().label() == docv1::DOC_ITEM_LABEL_PARAGRAPH,
-          "an unstyled paragraph folds to a paragraph item");
-  require(document.texts(3).list_item().base().label() == docv1::DOC_ITEM_LABEL_LIST_ITEM &&
-              document.texts(3).list_item().base().style_name() == "ListParagraph",
-          "a list style folds to a list item");
-  for (int i = 0; i < document.texts_size(); ++i) {
-    const auto& item = document.texts(i);
-    const docv1::TextItemBase* base = nullptr;
-    if (item.has_title()) base = &item.title().base();
-    if (item.has_section_header()) base = &item.section_header().base();
-    if (item.has_list_item()) base = &item.list_item().base();
-    if (item.has_text()) base = &item.text().base();
-    require(base != nullptr && base->source_size() == 1 &&
-                base->source(0).collector().collector() == "poi",
-            "every poi item carries the poi collector source");
-    require(base->self_ref() == "#/texts/" + std::to_string(i),
-            "item refs are dense and local");
-  }
-
-  require(document.tables_size() == 2, "the body table and the sheet fold into tables");
-  const docv1::TableData& body_table = document.tables(0).data();
-  require(body_table.num_rows() == 2 && body_table.num_cols() == 2 &&
-              body_table.table_cells_size() == 4 &&
-              body_table.table_cells(3).text() == "v2",
-          "the body table folds with its cells");
-  require(document.tables(0).parent().ref() == "#/body" &&
-              document.body().children(0).ref() == "#/texts/0",
-          "the body table hangs off the body beside the texts");
-
-  require(document.groups_size() == 2, "the sheet and the slide fold into groups");
-  const docv1::GroupItem& sheet_group = document.groups(0);
-  require(sheet_group.label() == docv1::GROUP_LABEL_SHEET &&
-              sheet_group.name() == "Data" && sheet_group.sheet().index() == 0,
-          "the sheet group carries the sheet identity");
-  const docv1::TableData& sheet_table = document.tables(1).data();
-  require(document.tables(1).parent().ref() == sheet_group.self_ref() &&
-              sheet_group.children(0).ref() == document.tables(1).self_ref(),
-          "the sheet table hangs off the sheet group, reciprocally");
-  require(sheet_table.num_rows() == 2 && sheet_table.num_cols() == 2,
-          "the sheet table sizes from the populated cells");
-  const docv1::TableCell* formula_cell = nullptr;
-  for (const auto& cell : sheet_table.table_cells()) {
-    if (cell.start_row_offset_idx() == 1 && cell.start_col_offset_idx() == 1) {
-      formula_cell = &cell;
-    }
-  }
-  require(formula_cell != nullptr && formula_cell->text() == "84" &&
-              formula_cell->value().formula() == "B1*2",
-          "a formula cell keeps the formula and the cached value's display");
-  require(sheet_table.row_prov_size() == 2 &&
-              sheet_table.row_prov(1).grid().sheet() == "Data" &&
-              sheet_table.row_prov(1).grid().row() == 1,
-          "sheet rows carry grid provenance");
-
-  const docv1::GroupItem& slide_group = document.groups(1);
-  require(slide_group.label() == docv1::GROUP_LABEL_SLIDE &&
-              slide_group.name() == "Intro",
-          "the slide folds into its own group");
-  const docv1::TextItemBase& slide_title = document.texts(4).section_header().base();
-  require(slide_title.parent().ref() == slide_group.self_ref() &&
-              slide_title.text() == "Intro",
-          "the slide title heads its group");
-  require(document.texts(6).text().base().content_layer() == docv1::CONTENT_LAYER_NOTES,
-          "speaker notes land on the notes layer");
-
-  require(document.attachments_size() == 1 &&
-              document.attachments(0).id() == "ole1" &&
-              document.attachments(0).name() == "chart.xlsx" &&
-              document.attachments(0).media_type() == "application/vnd.ms-excel" &&
-              document.attachments(0).size_bytes() == 100,
-          "an embedded object registers as an attachment descriptor");
-}
-
-void verify_poi_collector_failure_survives_its_code() {
-  RejectingPoiService service;
-  ServerFixture server(&service);
-  const auto outcome =
-      grparse::collect_poi_document(server.channel(), "d", "big.docx", "", "bytes");
-  require(!outcome.success && outcome.code == grpc::StatusCode::RESOURCE_EXHAUSTED,
-          "the collector's byte-cap rejection keeps its status class");
-  require(outcome.error.contains("70 MiB"), "the collector's message survives");
-}
-
-void verify_poi_truncated_stream_fails() {
-  TruncatingPoiService service;
-  ServerFixture server(&service);
-  const auto outcome =
-      grparse::collect_poi_document(server.channel(), "d", "cut.docx", "", "bytes");
-  require(!outcome.success && outcome.error.contains("terminal status"),
-          "a stream without ParseStatus is a failure, not an empty success");
-}
-
-void verify_poi_unreachable_endpoint_degrades() {
-  const auto channel = grpc::CreateChannel("127.0.0.1:1",
-                                           grpc::InsecureChannelCredentials());
-  const auto outcome =
-      grparse::collect_poi_document(channel, "d", "nowhere.docx", "", "bytes");
-  require(!outcome.success && outcome.code == grpc::StatusCode::UNAVAILABLE,
-          "an unreachable poi collector degrades to UNAVAILABLE");
-}
-
-const docv1::FieldSource* meta_source_of(const docv1::DocumentMeta& meta,
-                                         const std::string& field) {
-  for (const auto& entry : meta.field_sources()) {
-    if (entry.field() == field) return &entry;
-  }
-  return nullptr;
-}
-
-// The base the service stamps before any collector runs, the way
-// parse_source does: the origin's mimetype is what the claim ranks score
-// against, and the stamp is attributed like any other claimant.
-docv1::Document stamped_base(const std::string& mimetype) {
-  docv1::Document base;
-  base.mutable_body()->set_self_ref("#/body");
-  base.mutable_body()->set_content_layer(docv1::CONTENT_LAYER_BODY);
-  base.mutable_furniture()->set_self_ref("#/furniture");
-  base.mutable_furniture()->set_content_layer(docv1::CONTENT_LAYER_FURNITURE);
-  base.mutable_origin()->set_filename("book.xlsx");
-  base.mutable_origin()->set_mimetype(mimetype);
-  docv1::CollectorSource stamp;
-  stamp.set_collector("grparse");
-  grparse::claim_fields(base.mutable_origin(), stamp);
-  return base;
-}
-
-// The routed libreoffice primary's reading of the same bytes: a title and a
-// paragraph in the body, plus its own idea of the document's title.
-grparse::CollectorOutcome office_outcome() {
-  grparse::CollectorOutcome outcome;
-  outcome.success = true;
-  outcome.document.mutable_body()->set_self_ref("#/body");
-  outcome.document.mutable_furniture()->set_self_ref("#/furniture");
-  outcome.document.mutable_source_meta()->set_title("Office Title");
-  auto* title = outcome.document.add_texts()->mutable_title()->mutable_base();
-  title->set_self_ref("#/texts/0");
-  title->mutable_parent()->set_ref("#/body");
-  title->set_label(docv1::DOC_ITEM_LABEL_TITLE);
-  title->set_text("Converted Title");
-  outcome.document.mutable_body()->add_children()->set_ref("#/texts/0");
-  auto* paragraph = outcome.document.add_texts()->mutable_text()->mutable_base();
-  paragraph->set_self_ref("#/texts/1");
-  paragraph->mutable_parent()->set_ref("#/body");
-  paragraph->set_label(docv1::DOC_ITEM_LABEL_PARAGRAPH);
-  paragraph->set_text("office paragraph");
-  outcome.document.mutable_body()->add_children()->set_ref("#/texts/1");
-  return outcome;
-}
-
-constexpr const char* kXlsxMimetype =
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-
-// A routed office plan with poi wired runs the leg beside the libreoffice
-// default. The leg reads the same bytes, so its body reading must not merge
-// on top of the primary's: the merged document carries the body once, and
-// the leg's contribution is its document-level claims, ranked per
-// document_claim_rank (poi above libreoffice, below the service's stamp).
-void verify_poi_fanout_merges_claims_without_a_second_body() {
-  FakePoiService service;
-  ServerFixture server(&service);
-
-  std::vector<grparse::PlannedCollector> plan;
-  plan.push_back({parsev1::COLLECTOR_LIBREOFFICE, [] { return office_outcome(); }});
-  grparse::PlannedCollector poi;
-  poi.id = parsev1::COLLECTOR_POI;
-  poi.office_fanout = true;
-  const std::string bytes(100, 'x');
-  poi.run = [channel = server.channel(), bytes] {
-    return grparse::collect_poi_document(channel, "doc-9", "book.xlsx", kXlsxMimetype,
-                                         bytes);
-  };
-  plan.push_back(std::move(poi));
-
-  auto result = grparse::run_collectors(std::move(plan), stamped_base(kXlsxMimetype));
-  require(result.succeeded == 2 && result.failures.empty(),
-          "both the primary and the fan-out leg contribute");
-  require(result.warnings.size() == 1 && result.warnings[0].second == "header skipped",
-          "the fan-out leg's warnings still surface");
-
-  require(result.document.texts_size() == 2 &&
-              result.document.texts(0).title().base().text() == "Converted Title" &&
-              result.document.texts(1).text().base().text() == "office paragraph",
-          "the body lands once: none of the fan-out leg's seven texts merge");
-  require(result.document.tables_size() == 0 && result.document.groups_size() == 0 &&
-              result.document.attachments_size() == 0,
-          "the fan-out leg's tables, sheet and slide groups, and attachment "
-          "descriptor drop with its body reading");
-
-  require(result.document.source_meta().title() == "Quarterly Report" &&
-              result.document.source_meta().authors_size() == 1 &&
-              result.document.source_meta().authors(0) == "Alice",
-          "the fan-out leg's metadata lands as the document's own");
-  require(meta_source_of(result.document.source_meta(), "title") != nullptr &&
-              meta_source_of(result.document.source_meta(), "title")->source().collector() == "poi",
-          "poi outranks the converter on OOXML, so its title wins and names poi");
-  require(meta_source_of(result.document.source_meta(), "modified_by") != nullptr &&
-              meta_source_of(result.document.source_meta(), "modified_by")->source().collector() == "poi",
-          "the field only the fan-out leg answered names it");
-  require(result.document.claims_size() == 2 &&
-              result.document.claims(0).source().collector() == "libreoffice" &&
-              result.document.claims(0).source_meta().title() == "Office Title" &&
-              result.document.claims(1).source().collector() == "poi" &&
-              result.document.claims(1).source_meta().title() == "Quarterly Report",
-          "both collectors' accounts stay on the wire whole under their collectors");
-}
-
-// A deployment with poi wired but libreoffice not still routes office
-// uploads to the libreoffice default; that leg fails to dial and the fan-out
-// leg is the only body the parse gets. Its full reading must land.
-void verify_poi_fanout_keeps_its_body_when_the_primary_failed() {
-  FakePoiService service;
-  ServerFixture server(&service);
-
-  std::vector<grparse::PlannedCollector> plan;
-  plan.push_back({parsev1::COLLECTOR_LIBREOFFICE, [] {
-                    grparse::CollectorOutcome outcome;
-                    outcome.error = "libreoffice collector is not configured";
-                    outcome.code = grpc::StatusCode::FAILED_PRECONDITION;
-                    return outcome;
-                  }});
-  grparse::PlannedCollector poi;
-  poi.id = parsev1::COLLECTOR_POI;
-  poi.office_fanout = true;
-  const std::string bytes(100, 'x');
-  poi.run = [channel = server.channel(), bytes] {
-    return grparse::collect_poi_document(channel, "doc-10", "book.xlsx", kXlsxMimetype,
-                                         bytes);
-  };
-  plan.push_back(std::move(poi));
-
-  auto result = grparse::run_collectors(std::move(plan), stamped_base(kXlsxMimetype));
-  require(result.succeeded == 1 && result.failures.size() == 1,
-          "the failed primary degrades and the fan-out leg survives");
-  require(result.document.texts_size() == 7 && result.document.tables_size() == 2 &&
-              result.document.groups_size() == 2 &&
-              result.document.attachments_size() == 1,
-          "with no primary body, the fan-out leg's full reading is the document");
-  require(result.document.source_meta().title() == "Quarterly Report",
-          "its metadata lands either way");
-}
-
-}  // namespace
-
 // ---- calamine ---------------------------------------------------------------
 
 namespace {
@@ -2655,6 +1818,124 @@ void verify_calamine_unreachable_endpoint_degrades() {
   const auto outcome = grparse::collect_calamine_document(channel, "bytes");
   require(!outcome.success && outcome.code == grpc::StatusCode::UNAVAILABLE,
           "an unreachable calamine collector degrades to UNAVAILABLE");
+}
+
+const docv1::FieldSource* meta_source_of(const docv1::DocumentMeta& meta,
+                                         const std::string& field) {
+  for (const auto& entry : meta.field_sources()) {
+    if (entry.field() == field) return &entry;
+  }
+  return nullptr;
+}
+
+// The base the service stamps before any collector runs, the way
+// parse_source does: the origin's mimetype is what the claim ranks score
+// against, and the stamp is attributed like any other claimant.
+docv1::Document stamped_base(const std::string& mimetype) {
+  docv1::Document base;
+  base.mutable_body()->set_self_ref("#/body");
+  base.mutable_body()->set_content_layer(docv1::CONTENT_LAYER_BODY);
+  base.mutable_furniture()->set_self_ref("#/furniture");
+  base.mutable_furniture()->set_content_layer(docv1::CONTENT_LAYER_FURNITURE);
+  base.mutable_origin()->set_filename("book.xlsx");
+  base.mutable_origin()->set_mimetype(mimetype);
+  docv1::CollectorSource stamp;
+  stamp.set_collector("grparse");
+  grparse::claim_fields(base.mutable_origin(), stamp);
+  return base;
+}
+
+// The routed libreoffice primary's reading of the same bytes: a title and a
+// paragraph in the body, plus its own idea of the document's title.
+grparse::CollectorOutcome office_outcome() {
+  grparse::CollectorOutcome outcome;
+  outcome.success = true;
+  outcome.document.mutable_body()->set_self_ref("#/body");
+  outcome.document.mutable_furniture()->set_self_ref("#/furniture");
+  outcome.document.mutable_source_meta()->set_title("Office Title");
+  auto* title = outcome.document.add_texts()->mutable_title()->mutable_base();
+  title->set_self_ref("#/texts/0");
+  title->mutable_parent()->set_ref("#/body");
+  title->set_label(docv1::DOC_ITEM_LABEL_TITLE);
+  title->set_text("Converted Title");
+  outcome.document.mutable_body()->add_children()->set_ref("#/texts/0");
+  auto* paragraph = outcome.document.add_texts()->mutable_text()->mutable_base();
+  paragraph->set_self_ref("#/texts/1");
+  paragraph->mutable_parent()->set_ref("#/body");
+  paragraph->set_label(docv1::DOC_ITEM_LABEL_PARAGRAPH);
+  paragraph->set_text("office paragraph");
+  outcome.document.mutable_body()->add_children()->set_ref("#/texts/1");
+  return outcome;
+}
+
+constexpr const char* kXlsxMimetype =
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+// A routed workbook plan with calamine wired runs the leg beside the
+// libreoffice default. The leg reads the same bytes, so its body reading
+// must not merge on top of the primary's: the merged document carries the
+// body once.
+void verify_calamine_fanout_merges_without_a_second_body() {
+  FakeCalamineService service;
+  ServerFixture server(&service);
+
+  std::vector<grparse::PlannedCollector> plan;
+  plan.push_back({parsev1::COLLECTOR_LIBREOFFICE, [] { return office_outcome(); }});
+  grparse::PlannedCollector calamine;
+  calamine.id = parsev1::COLLECTOR_CALAMINE;
+  calamine.office_fanout = true;
+  calamine.run = [channel = server.channel()] {
+    return grparse::collect_calamine_document(channel, std::string(100, 'x'));
+  };
+  plan.push_back(std::move(calamine));
+
+  auto result = grparse::run_collectors(std::move(plan), stamped_base(kXlsxMimetype));
+  require(result.succeeded == 2 && result.failures.empty(),
+          "both the primary and the fan-out leg contribute");
+  require(result.document.texts_size() == 2 &&
+              result.document.texts(0).title().base().text() == "Converted Title" &&
+              result.document.texts(1).text().base().text() == "office paragraph",
+          "the body lands once, from the primary");
+  require(result.document.tables_size() == 0 && result.document.groups_size() == 0 &&
+              result.document.named_ranges_size() == 0,
+          "the fan-out leg's sheet groups, tables and named ranges drop with its "
+          "body reading");
+  require(result.document.source_meta().title() == "Office Title" &&
+              meta_source_of(result.document.source_meta(), "title") != nullptr &&
+              meta_source_of(result.document.source_meta(), "title")->source().collector() ==
+                  "libreoffice",
+          "the primary's metadata stands, attributed to libreoffice");
+}
+
+// A workbook whose libreoffice leg fails still parses: the calamine leg is
+// the only body the parse gets, and its full reading lands.
+void verify_calamine_fanout_keeps_its_body_when_the_primary_failed() {
+  FakeCalamineService service;
+  ServerFixture server(&service);
+
+  std::vector<grparse::PlannedCollector> plan;
+  plan.push_back({parsev1::COLLECTOR_LIBREOFFICE, [] {
+                    grparse::CollectorOutcome outcome;
+                    outcome.error = "libreoffice collector: worker crashed";
+                    outcome.code = grpc::StatusCode::UNAVAILABLE;
+                    return outcome;
+                  }});
+  grparse::PlannedCollector calamine;
+  calamine.id = parsev1::COLLECTOR_CALAMINE;
+  calamine.office_fanout = true;
+  calamine.run = [channel = server.channel()] {
+    return grparse::collect_calamine_document(channel, std::string(100, 'x'));
+  };
+  plan.push_back(std::move(calamine));
+
+  auto result = grparse::run_collectors(std::move(plan), stamped_base(kXlsxMimetype));
+  require(result.succeeded == 1 && result.failures.size() == 1 &&
+              result.failures[0].id == parsev1::COLLECTOR_LIBREOFFICE &&
+              result.failures[0].code == grpc::StatusCode::UNAVAILABLE,
+          "the failed primary degrades to a failure entry and the fan-out leg survives");
+  require(result.document.groups_size() == 2 && result.document.tables_size() == 2 &&
+              result.document.named_ranges_size() == 1,
+          "with no primary body, the calamine reading is the document");
 }
 
 }  // namespace
@@ -3219,22 +2500,12 @@ int main() {
       verify_fastwarc_truncates_payload_text,
       verify_fastwarc_streams_both_ways_without_deadlock,
       verify_fastwarc_deadline_is_a_failure,
-      verify_poi_folds_typed_events,
-      verify_poi_collector_failure_survives_its_code,
-      verify_poi_truncated_stream_fails,
-      verify_poi_vertical_merge_keeps_columns,
-      verify_poi_hostile_span_is_clamped,
-      verify_poi_sheet_batches_fold_into_one_table,
-      verify_poi_cut_sheet_batches_warn,
-      verify_poi_batched_sheet_folds_like_one_sheet,
-      verify_poi_merged_regions_drop_covered_cells,
-      verify_poi_unreachable_endpoint_degrades,
-      verify_poi_fanout_merges_claims_without_a_second_body,
-      verify_poi_fanout_keeps_its_body_when_the_primary_failed,
       verify_calamine_folds_sheets,
       verify_calamine_sheet_failure_still_closes,
       verify_calamine_terminal_error_does_not_wait_out_the_deadline,
       verify_calamine_unreachable_endpoint_degrades,
+      verify_calamine_fanout_merges_without_a_second_body,
+      verify_calamine_fanout_keeps_its_body_when_the_primary_failed,
       verify_pdf_collects_document_classification_and_warnings,
       verify_pdf_scanned_reports_the_ocr_page_set,
       verify_pdf_routing_decision_logic,

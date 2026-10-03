@@ -18,7 +18,6 @@ const char* collector_name(pipestream::parse::v1::Collector collector) {
   switch (collector) {
     case pipestream::parse::v1::COLLECTOR_GRPARSE_CV: return "grparse-cv";
     case pipestream::parse::v1::COLLECTOR_LIBREOFFICE: return "libreoffice";
-    case pipestream::parse::v1::COLLECTOR_POI: return "poi";
     case pipestream::parse::v1::COLLECTOR_CALAMINE: return "calamine";
     case pipestream::parse::v1::COLLECTOR_ASR: return "asr";
     case pipestream::parse::v1::COLLECTOR_EMAIL: return "email";
@@ -49,7 +48,6 @@ const std::string& CollectorEndpoints::target(
     case pipestream::parse::v1::COLLECTOR_LOL_HTML: return targets_.lol_html;
     case pipestream::parse::v1::COLLECTOR_FASTWARC: return targets_.fastwarc;
     case pipestream::parse::v1::COLLECTOR_PDF: return targets_.pdf;
-    case pipestream::parse::v1::COLLECTOR_POI: return targets_.poi;
     case pipestream::parse::v1::COLLECTOR_CALAMINE: return targets_.calamine;
     default: return kNone;
   }

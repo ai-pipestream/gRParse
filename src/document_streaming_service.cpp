@@ -422,12 +422,11 @@ class DocumentStreamReactor final
       routed = pipestream::parse::v1::COLLECTOR_PDF;
     }
     auto plan_ids = resolve_collectors(requested_collectors_, routed);
-    // The same fan-out the unary plan gets: a routed office default gains
-    // the poi and calamine legs when their endpoints are configured; an
-    // explicit selection stays verbatim.
+    // The same fan-out the unary plan gets: a routed workbook gains the
+    // calamine leg when its endpoint is configured; an explicit selection
+    // stays verbatim.
     if (requested_collectors_.empty() && endpoints_ != nullptr) {
       append_office_fanout(&plan_ids, filename_.string(), content_type_,
-                           endpoints_->has(pipestream::parse::v1::COLLECTOR_POI),
                            endpoints_->has(pipestream::parse::v1::COLLECTOR_CALAMINE));
     }
     // The routing leg applies when the pdf collector is the whole plan;

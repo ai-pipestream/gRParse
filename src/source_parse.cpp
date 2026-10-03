@@ -1687,8 +1687,8 @@ struct RoutedPlan {
   std::vector<pipestream::parse::v1::Collector> ids;
   bool pdf_routing = false;
   // True when the routed (not explicitly selected) plan fanned out to the
-  // secondary office collectors; the legs append_office_fanout adds are
-  // always poi or calamine, never the routed primary itself.
+  // secondary office collector; the leg append_office_fanout adds is always
+  // calamine, never the routed primary itself.
   bool office_fanout = false;
 };
 
@@ -1708,13 +1708,13 @@ RoutedPlan route_plan(const google::protobuf::RepeatedField<int>& requested, boo
   }
   RoutedPlan plan;
   plan.ids = resolve_collectors(selected, routed);
-  // A routed office default fans out to the secondary office collectors when
-  // their endpoints are configured: a poi leg for the OOXML/OLE2 formats, a
-  // calamine leg for workbooks. An explicit selection stays verbatim.
+  // A routed office default fans out to calamine for workbooks when its
+  // endpoint is configured. An explicit selection stays verbatim. Word
+  // processing and presentation formats have libreoffice alone, so its
+  // failure is the parse's failure (all_failed_status), never an empty body.
   if (selected.empty() && inputs.endpoints != nullptr) {
     plan.office_fanout = true;
     append_office_fanout(&plan.ids, inputs.filename.string(), inputs.content_type,
-                         inputs.endpoints->has(pipestream::parse::v1::COLLECTOR_POI),
                          inputs.endpoints->has(pipestream::parse::v1::COLLECTOR_CALAMINE));
   }
   // Classification routing applies when the pdf collector is the whole plan:
@@ -1734,13 +1734,11 @@ std::vector<PlannedCollector> build_plan(
   for (const auto id : plan_ids) {
     PlannedCollector collector;
     collector.id = id;
-    // The fan-out legs read the same bytes as the routed libreoffice
-    // default: beside a live primary their body readings drop and only
-    // their claims merge. An explicit selection stays verbatim, readings
-    // and all.
+    // The fan-out leg reads the same bytes as the routed libreoffice
+    // default: beside a live primary its body reading drops and only its
+    // claims merge. An explicit selection stays verbatim, readings and all.
     collector.office_fanout =
-        office_fanout && (id == pipestream::parse::v1::COLLECTOR_POI ||
-                          id == pipestream::parse::v1::COLLECTOR_CALAMINE);
+        office_fanout && id == pipestream::parse::v1::COLLECTOR_CALAMINE;
     if (id == pipestream::parse::v1::COLLECTOR_GRPARSE_CV) {
       collector.run = [run_cv, tuning = inputs.tuning] { return run_cv(tuning); };
     } else if (local_collector(id)) {
@@ -1997,14 +1995,15 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     const grpc::Status structure_status =
         check_structure(result.document, structure, surface, &parsed->structure_findings);
     if (!structure_status.ok()) return structure_status;
-    // The offset table describes the CV collector's own text stream. It is
-    // published only when that collector is the entire document and the
-    // repair pass left its text and arena alone: a merge renumbers arena
-    // references, a repair that retires items or rewrites text moves them,
-    // and a table that no longer names the items it describes is worse than
-    // no table at all.
+    // The offset table comes from the final document, so every path has
+    // one and it always names the items the response carries. The CV
+    // collector's own rows add how each item was read (digital or OCR), but
+    // only when that collector is the entire document and the repair pass
+    // left its text and arena alone: a merge renumbers arena references and
+    // a repair moves text, and a label on the wrong item is worse than none.
+    parsed->offsets = chunking::derive_offsets(result.document);
     if (result.succeeded == 1 && !cv_offsets->empty() && !repaired_text) {
-      chunking::add_offsets(*cv_offsets, &parsed->offsets);
+      chunking::overlay_sources(*cv_offsets, &parsed->offsets);
     }
     stamp_collector_warnings(&result);
     parsed->filename = requested_name;

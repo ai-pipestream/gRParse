@@ -45,7 +45,7 @@ flowchart LR
     shell -- "/api/parse relay" --> grparse["gRParse :50051"]
     shell -- "/ui/&lt;name&gt;/ reverse proxy" --> proxied["proxied frontends<br/>lol-html, libreoffice, calamine, ..."]
     proxied --> theirs["their gRPC services"]
-    shell -- "native bridges<br/>/api/fastwarc /api/poic /api/asr<br/>/api/enrich /api/vlm-convert" --> native["fastwarc-grpc :50061, grPOIc :50052,<br/>grpc-asr :50055, grpc-enrich :50056,<br/>grpc-vlm-convert :50058"]
+    shell -- "native bridges<br/>/api/fastwarc /api/asr<br/>/api/enrich /api/vlm-convert" --> native["fastwarc-grpc :50061,<br/>grpc-asr :50055, grpc-enrich :50056,<br/>grpc-vlm-convert :50058"]
     shell -. "/api/uis GetServiceInfo probes" .-> theirs
 ```
 
@@ -130,7 +130,7 @@ Determinism is the point: the same input bytes produce the same chunk bytes on e
 
 `ChunkHybridSource`, and `ConvertSource`'s `hybrid_chunking` with `OUTPUT_FORMAT_CHUNKS`, require `max_tokens` and return `INVALID_ARGUMENT` naming the field when it is absent; an explicit `tokenizer` must be `wordish/1` or `hf/1`. `hf/1` resolves its tokenizer.json in this order: the request's `tokenizer_path`, then `$GRPARSE_CHUNK_TOKENIZER`, then `$GRPARSE_MODELS_DIR/chunk/tokenizer.json`; a file that does not resolve and load fails the request with `INVALID_ARGUMENT` before any parsing starts. A request's `tokenizer_path` must name a regular file inside the tokenizer directory, `$GRPARSE_TOKENIZER_DIR` (default: `$GRPARSE_MODELS_DIR`, itself `/models` by default); a relative path resolves against that directory, and symlinks or `..` that lead outside it are refused. Every refusal of a request's path reads the same, whether the file is missing, outside the directory, not a regular file, or malformed, so the option cannot probe the server's filesystem. Only regular files of at most 64 MiB are read, from any source. The file's own `padding` and `truncation` settings are stripped on load (a chunking counter measures the text it is given, and the fixed-length padding some published tokenizer.json files ship would count pads), and special tokens are never added to the count. The `rules_digest` names the counter but not the resolved file, so two deployments with different tokenizer.json files chunk differently under the same digest. Both RPCs accept `use_markdown_tables` (pipe tables instead of the default `rowLabel, colLabel = value` flattening) and `include_raw_text`. `include_converted_doc` returns the parsed document alongside the chunks; without it, a parse in which some collector failed still adds one `documents` entry with `CONVERSION_STATUS_PARTIAL_SUCCESS` and the failures in `errors`, but no content. The chunk responses have no target result, so a `target` asking for delivery (anything but unset or `inbody`) is rejected with `INVALID_ARGUMENT`.
 
-A chunk reports `start_offset` and `end_offset` as UTF-8 code point positions in the document's concatenated body text whenever the parse supplied an offset table for every text item the chunk consumed; otherwise both stay unset rather than being guessed.
+A chunk reports `start_offset` and `end_offset` as UTF-8 code point positions in the document's text stream: the plain-text export, every text item in arena order joined by a single `\n`, furniture included. Every parse path builds the offset table from the finished document, and `ConvertSource` returns it as `text_offsets` (one row per text item, in stream order), so the spans hold for office, markup, email, EPUB and fast-path PDF documents as well as CV pages. Only the CV path's rows say how the text was read (`source`), and only when that collector is the whole document. A chunk whose items have no row carries neither field rather than a guess.
 
 A chunk's `metadata` and `typed_metadata` carry `language` when every text item in it has the same one: the item's own `meta.language`, else the document's `source_meta.language`, as a BCP 47 tag in canonical case (`zh-Hant-TW`). The key is absent when the items disagree, when one has no language, or when a tag is malformed. A chunk with no text item, such as a lone table, takes the document's language. It reports what the document's fields hold, which is a source's declaration (an Office run, an HTML `lang`, a PDF's catalog `/Lang`) or a collector's detection (grpc-asr). gRParse runs no language detection itself.
 
@@ -471,8 +471,7 @@ unconfigured otherwise:
 
 | Collector | Target env | Routed by default for |
 |---|---|---|
-| `COLLECTOR_LIBREOFFICE` | `GRPARSE_LIBREOFFICE_TARGET` | office formats (doc/x, xls/x, ppt/x, odf, rtf, csv, ...) |
-| `COLLECTOR_POI` | `GRPARSE_POI_TARGET` | never the routed default; a routed office plan fans a poi leg out beside libreoffice for the six OOXML/OLE2 formats (doc/docx, xls/xlsx, ppt/pptx) when configured. The typed event stream folds client-side: paragraphs by style name, tables and sheets into `TableItem`s, slides into groups (a slide's tables inside its group), embedded objects as attachment descriptors. gRParse asks for sheet batches (`sheet_batches`), so no event grows with a worksheet; the batches of one sheet fold back into its one table, its merged ranges become spans on the anchor cell (populated covered cells drop out, with a warning when one held text), and a hidden sheet stays on the invisible layer with `SheetMeta.visible` false, as the libreoffice and calamine folds keep theirs. grPOIc's own byte cap (`GRPOIC_MAX_DOCUMENT_MIB`, default 70 MiB) sits below gRParse's intake: an oversized upload fails the poi leg with `RESOURCE_EXHAUSTED` and degrades like any collector failure |
+| `COLLECTOR_LIBREOFFICE` | `GRPARSE_LIBREOFFICE_TARGET` | office formats (doc/x, xls/x, ppt/x, odf, rtf, csv, ...). The only collector for word processing and presentation formats: when its leg fails, the request fails with that leg's status (unary) or ends the stream with it (streaming), the message naming `libreoffice` and the cause. Workbooks keep the calamine leg below as a fallback body |
 | `COLLECTOR_CALAMINE` | `GRPARSE_CALAMINE_TARGET` | never the routed default; a routed workbook plan (xls/xlsx/xlsm/xlsb/ods, never CSV) fans a calamine leg out beside libreoffice when configured. The wire is handle-based (`OpenWorkbook`/`StreamWorksheetRange`/`CloseWorkbook`); each sheet folds client-side into a sheet group holding one `TableItem` in absolute cell offsets, and the handle closes on every path |
 | `COLLECTOR_ASR` | `GRPARSE_ASR_TARGET` (+ `GRPARSE_ASR_MODEL`, the whisper model name, required) | audio and video |
 | `COLLECTOR_EMAIL` | `GRPARSE_EMAIL_TARGET` (+ `GRPARSE_MARKUP_TARGET` for HTML bodies) | `.eml`, `.msg`, `message/rfc822`. The email fold maps `text/plain` bodies only; for a message with no plain body gRParse dials the markup collector with each HTML body part and folds its items into the message body ahead of the attachment list. Without a markup target such a message has no body text and a warning names the variable. Attachments are listed by name; their content is not parsed |
@@ -495,7 +494,7 @@ The libreoffice collector streams typed events that gRParse folds into a
 typed chapter and resource events plus one markup leg per chapter
 (`src/epub_book.cpp`), and the lol-html collector's match stream is likewise
 folded client-side (its forward-only wire deliberately has no document
-event); poi and calamine fold client-side too (their contracts carry no
+event); calamine folds client-side too (its contract carries no
 document event), while every other remote collector projects its own typed
 stream into a source-tagged `Document` server-side (their `emit_document`
 option), so gRParse asks for the Document event, drains the typed events,
@@ -507,16 +506,17 @@ Two family members are *not* collectors, whatever `compose.stack.yaml` runs
 next to them: grpc-enrich and grpc-vlm-convert are dialed by the demo shell
 directly and never by gRParse as collectors (enrich is dialed after the
 merge for the chart derender leg when `GRPARSE_ENRICH_TARGET` names it).
-grPOIc and grpc-calamine stopped being shell-only when their legs were
-wired in above; the merge ranks `poi` and `calamine` claims below
-libreoffice's and gRParse's own (see `document_claim_rank`). A fan-out leg
-reads the same bytes as the routed libreoffice default, so beside a live
-primary its body reading drops and only its document-level account merges
+grpc-calamine stopped being shell-only when its leg was wired in above; the
+merge ranks `calamine` claims above libreoffice's on spreadsheets and below
+gRParse's own stamp (see `document_claim_rank`). The fan-out leg reads the
+same bytes as the routed libreoffice default, so beside a live primary its
+body reading drops and only its document-level account merges
 (`retain_claims_only` in `src/document_merge.cpp`): the merged document
 carries the body once, and the leg's claims still rank. An explicit
 collector selection stays verbatim, readings and all, and a fan-out leg
-whose primary failed keeps its full reading, which is what keeps a
-poi-only deployment parsing. fastwarc is
+whose primary failed keeps its full reading, which is what keeps a workbook
+parsing when libreoffice fails on it (a partial success with the
+libreoffice failure listed under `collector:libreoffice`). fastwarc is
 the other way round: a collector here, but
 the stack leaves `GRPARSE_FASTWARC_TARGET` unset because the vendored
 `fastwarc.v1` dialect is not wire-compatible with the published image; the

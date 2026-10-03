@@ -1094,6 +1094,67 @@ void add_offsets(const google::protobuf::RepeatedPtrField<parsev1::TextOffset>& 
   }
 }
 
+OffsetTable derive_offsets(const docv1::Document& document) {
+  OffsetTable table;
+  std::uint64_t cursor = 0;
+  bool has_text = false;
+  for (const auto& item : document.texts()) {
+    const std::string* text = nullptr;
+    const std::string* self_ref = nullptr;
+    if (item.item_case() == docv1::BaseTextItem::kCode) {
+      text = &item.code().text();
+      self_ref = &item.code().self_ref();
+    } else if (const auto* base = text_base(item)) {
+      text = &base->text();
+      self_ref = &base->self_ref();
+    }
+    if (text == nullptr) continue;
+    // The plain-text export separates on what it has written so far, so a
+    // leading run of empty items adds no separator either.
+    if (has_text) ++cursor;
+    const std::uint64_t start = cursor;
+    cursor += codepoint_length(*text);
+    if (!text->empty()) has_text = true;
+    table.emplace(*self_ref, OffsetEntry{start, cursor, parsev1::TEXT_SOURCE_UNSPECIFIED});
+  }
+  return table;
+}
+
+void overlay_sources(const google::protobuf::RepeatedPtrField<parsev1::TextOffset>& rows,
+                     OffsetTable* table) {
+  if (table == nullptr) return;
+  for (const auto& row : rows) {
+    const auto entry = table->find(row.self_ref());
+    if (entry == table->end() || entry->second.start != row.utf_start() ||
+        entry->second.end != row.utf_end()) {
+      continue;
+    }
+    entry->second.source = row.source();
+  }
+}
+
+google::protobuf::RepeatedPtrField<parsev1::TextOffset> offset_rows(const OffsetTable& table) {
+  std::vector<const OffsetTable::value_type*> ordered;
+  ordered.reserve(table.size());
+  for (const auto& row : table) ordered.push_back(&row);
+  std::ranges::sort(ordered, [](const auto* left, const auto* right) {
+    if (left->second.start != right->second.start) {
+      return left->second.start < right->second.start;
+    }
+    return left->first < right->first;
+  });
+  google::protobuf::RepeatedPtrField<parsev1::TextOffset> rows;
+  rows.Reserve(static_cast<int>(ordered.size()));
+  for (const auto* row : ordered) {
+    auto* out = rows.Add();
+    out->set_self_ref(row->first);
+    out->set_utf_start(row->second.start);
+    out->set_utf_end(row->second.end);
+    out->set_source(row->second.source);
+  }
+  return rows;
+}
+
 std::string hybrid_rules_digest(int max_tokens, bool merge_peers, std::string_view tokenizer) {
   return "grparse-hybrid/2;tok=" + std::string(tokenizer) +
          ";sent=" + std::string(kSentenceRules) +
