@@ -54,8 +54,9 @@ void CallExecutor::run() {
       task = std::move(tasks_.front());
       tasks_.pop_front();
     }
-    // A task owns an RPC; letting an exception escape would leave the call
-    // unfinished and take the worker with it.
+    // A task owns an RPC and must finish it itself (status_from_exception
+    // maps any throw to a status for that); swallowing here only keeps the
+    // worker alive, it does not finish a call whose task threw.
     try {
       task();
     } catch (...) {

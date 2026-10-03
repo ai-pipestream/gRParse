@@ -158,21 +158,6 @@ docv1::RefItem* mutable_parent_of(docv1::Document* document, const std::string& 
   return nullptr;
 }
 
-// A chapter Document's document-level identity is the chapter's, not the
-// book's: its <title> is not the book's title and its origin is a
-// fragment's. Only content survives into the book.
-void strip_chapter_identity(docv1::Document* chapter) {
-  chapter->clear_name();
-  chapter->clear_origin();
-  chapter->clear_source_meta();
-  chapter->clear_claims();
-  chapter->clear_media();
-  chapter->clear_email();
-  chapter->clear_page_styles();
-  chapter->clear_meta_tags();
-  chapter->clear_changes();
-}
-
 // Re-points every chapter picture whose `src` names an archive entry at
 // `epub:<href>`, and returns the hrefs so referenced. The raw attribute
 // value survives as a custom field for anyone who needs the author's text.
@@ -308,6 +293,11 @@ void inline_images(const std::vector<EpubResource>& resources, docv1::Document* 
     if (warnings == nullptr || !reported.insert(href).second) return;
     warnings->push_back(std::move(text));
   };
+  // Each image is inlined once, on its first picture: a later picture of the
+  // same image keeps its reference rather than a second copy of the bytes.
+  // The book's inlined bytes stop at kEpubInlineTotalCap.
+  std::map<std::string, std::string> inlined_on;
+  size_t inlined_bytes = 0;
   for (auto& picture : *book->mutable_pictures()) {
     if (!picture.has_image()) continue;
     const auto href = epub_href_of(picture.image().uri());
@@ -323,6 +313,18 @@ void inline_images(const std::vector<EpubResource>& resources, docv1::Document* 
                            " bytes) exceeds the inline cap; kept as a reference");
       continue;
     }
+    if (const auto first = inlined_on.find(*href); first != inlined_on.end()) {
+      warn_once(*href, "image '" + *href + "' is inlined once, on " + first->second +
+                           "; its other pictures keep the reference");
+      continue;
+    }
+    if (inlined_bytes + resource.content.size() > kEpubInlineTotalCap) {
+      warn_once(*href, "image '" + *href + "' (" + std::to_string(resource.content.size()) +
+                           " bytes) would pass the book's inline budget; kept as a reference");
+      continue;
+    }
+    inlined_bytes += resource.content.size();
+    inlined_on.emplace(*href, picture.self_ref());
     auto* image = picture.mutable_image();
     if (!resource.media_type.empty()) image->set_mimetype(resource.media_type);
     image->set_uri(data_uri(image->mimetype(), resource.content));
@@ -359,7 +361,9 @@ void fold_epub_book(std::vector<ParsedChapter> chapters,
 
   std::set<std::string> placed;
   for (auto& chapter : chapters) {
-    strip_chapter_identity(&chapter.document);
+    // A chapter Document's document-level identity is the chapter's, not
+    // the book's: only content survives into the book.
+    strip_document_identity(&chapter.document);
     placed.merge(localize_chapter_pictures(chapter.href, &chapter.document));
   }
   const auto manifest_facts = retire_placed_pictures(placed, book);

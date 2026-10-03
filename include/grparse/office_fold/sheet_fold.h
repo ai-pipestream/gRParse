@@ -72,6 +72,8 @@ class SheetFold {
                             int* marked);
 
   DocumentArena& arena_;
+  // The sheet-geometry note is made once per document, not once per sheet.
+  bool geometry_warned_ = false;
   // Per-sheet arena bookkeeping: the sheet's group ref, its folded table's
   // arena index, its lazily created comment-section group ref, its name and
   // its content layer.

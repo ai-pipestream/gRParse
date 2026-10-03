@@ -137,11 +137,14 @@ std::string decode_entities(std::string_view raw) {
       out.push_back(raw[index++]);
       continue;
     }
-    const size_t semicolon = raw.find(';', index + 1);
-    if (semicolon == std::string_view::npos || semicolon - index > 16) {
+    // An entity name is short: look for its ';' only in the next 16
+    // characters, so a long run of bare '&' stays linear.
+    const size_t found = raw.substr(index + 1, 16).find(';');
+    if (found == std::string_view::npos) {
       out.push_back(raw[index++]);
       continue;
     }
+    const size_t semicolon = index + 1 + found;
     if (!append_entity(raw.substr(index + 1, semicolon - index - 1), &out)) {
       out.push_back(raw[index++]);
       continue;

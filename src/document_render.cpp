@@ -5,6 +5,8 @@
 // YAML re-emission.
 #include "grparse/document_render.h"
 
+#include <algorithm>
+#include <cctype>
 #include <google/protobuf/util/json_util.h>
 #include <set>
 #include <stdexcept>
@@ -35,15 +37,57 @@ std::string render_json(const docv1::Document& document) {
 
 namespace {
 
-// yaml-cpp keeps the flow style it parsed from JSON input; the export
-// promises block style, so every container is restyled before emitting.
-void set_block_style(YAML::Node node) {  // NOLINT(performance-unnecessary-value-param): YAML::Node is a shared handle
-  if (node.IsMap()) {
-    node.SetStyle(YAML::EmitterStyle::Block);
-    for (auto entry : node) set_block_style(entry.second);
-  } else if (node.IsSequence()) {
-    node.SetStyle(YAML::EmitterStyle::Block);
-    for (auto entry : node) set_block_style(entry);
+// A key is written plain only when it is an identifier no YAML 1.1 or 1.2
+// resolver reads as a bool or null; every other key is double-quoted.
+bool plain_key(const std::string& key) {
+  static const std::set<std::string> kResolved = {
+      "y", "Y", "yes", "Yes", "YES", "n", "N", "no", "No", "NO",
+      "true", "True", "TRUE", "false", "False", "FALSE",
+      "on", "On", "ON", "off", "Off", "OFF", "null", "Null", "NULL"};
+  if (key.empty() || kResolved.contains(key)) return false;
+  if (!(std::isalpha(static_cast<unsigned char>(key[0])) || key[0] == '_')) return false;
+  return std::ranges::all_of(key, [](char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+  });
+}
+
+// Emits the parsed JSON tree in block style. yaml-cpp's node emitter drops
+// the tag that marks a JSON string as quoted and then writes "2024", "true"
+// or "off" plain, which a YAML loader reads back as an int or a bool. Every
+// JSON string value (tag "!") is therefore emitted double-quoted, so the
+// export keeps exactly the scalar types of render_json.
+void emit_json_node(YAML::Emitter& out, const YAML::Node& node) {
+  switch (node.Type()) {
+    case YAML::NodeType::Map:
+      out << YAML::BeginMap;
+      for (const auto& entry : node) {
+        const std::string& key = entry.first.Scalar();
+        out << YAML::Key;
+        if (plain_key(key)) {
+          out << key;
+        } else {
+          out << YAML::DoubleQuoted << key;
+        }
+        out << YAML::Value;
+        emit_json_node(out, entry.second);
+      }
+      out << YAML::EndMap;
+      break;
+    case YAML::NodeType::Sequence:
+      out << YAML::BeginSeq;
+      for (const auto& entry : node) emit_json_node(out, entry);
+      out << YAML::EndSeq;
+      break;
+    case YAML::NodeType::Scalar:
+      if (node.Tag() == "!") {
+        out << YAML::DoubleQuoted << node.Scalar();
+      } else {
+        out << node.Scalar();
+      }
+      break;
+    default:
+      out << YAML::Null;
+      break;
   }
 }
 
@@ -52,12 +96,11 @@ void set_block_style(YAML::Node node) {  // NOLINT(performance-unnecessary-value
 std::string render_yaml(const docv1::Document& document) {
   // The canonical JSON is already the exact structure this export promises;
   // YAML is a superset of JSON, so the parsed tree re-emits as the same
-  // document in block-style YAML form.
+  // document in block-style YAML form, with every JSON string quoted.
   try {
-    YAML::Node tree = YAML::Load(render_json(document));
-    set_block_style(tree);
+    const YAML::Node tree = YAML::Load(render_json(document));
     YAML::Emitter emitter;
-    emitter << tree;
+    emit_json_node(emitter, tree);
     if (!emitter.good()) {
       throw std::runtime_error("document YAML export failed: " + emitter.GetLastError());
     }

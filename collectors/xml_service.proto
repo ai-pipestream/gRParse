@@ -94,6 +94,25 @@ message ParseOptions {
   // work. What the projection drops is listed in this repository's
   // `docs/design.md`.
   bool emit_document = 6;
+
+  // Read the inline markup inside captured elements and report it as
+  // `TextItem.spans`. Default false, which keeps today's stream: the item
+  // text is flattened either way, and with the flag off the runs that
+  // produced it are not reported.
+  //
+  // Set it when emphasis, hyperlinks or the cross-reference graph matter.
+  // The flat `text` is byte-identical with the flag on, so a consumer that
+  // ignores `spans` sees no difference.
+  bool emit_inline_spans = 7;
+
+  // Decode the structured metadata subtrees the item mapping skips, and
+  // report them as `meta_item` events. Default false, which skips them and
+  // says so with a `WARNING_CODE_UNMAPPED_ELEMENT` on the trailer.
+  //
+  // These are publication dates, licence terms, funding, classification
+  // codes and cited-reference blocks: high-value fields that flatten into
+  // meaningless prose, which is why they are not simply captured as text.
+  bool emit_source_metadata = 8;
 }
 
 // ParseXmlRequest is one frame of the upload.
@@ -135,6 +154,19 @@ message ParseXmlResponse {
     // An XHTML fragment for the HTML collector. Only sent when
     // `ParseOptions.emit_html_islands` is set.
     HtmlIsland html_island = 7;
+
+    // One piece of the document's declaration about itself. Only sent when
+    // `ParseOptions.emit_source_metadata` is set.
+    MetaItem meta_item = 10;
+
+    // A page of an archive dialect opens. The items on it follow.
+    Page page = 11;
+
+    // One XBRL footnote or label declared inside the instance.
+    XbrlNote xbrl_note = 12;
+
+    // One entry of the source's own table of contents.
+    OutlineItem outline_item = 13;
 
     // Parse trailer. Always the last event of a successful parse, sent once.
     ParseStatus status = 8;
@@ -185,4 +217,21 @@ message GetServiceInfoResponse {
   // wire so an operator can assert it from outside rather than trust a
   // README.
   bool entity_expansion_disabled = 8;
+
+  // Frontend advertisement for the shared demo shell. Same shape in every
+  // ai-pipestream grpc service: the shell reads it to build its tab bar.
+  UiInfo ui = 9;
+}
+
+// UiInfo advertises this service's tab in the shared ai-pipestream demo
+// shell. Same shape in every service.
+message UiInfo {
+  // Tab title, for example `XML`.
+  string title = 1;
+
+  // Shell mount path the tab is reverse-proxied to, for example `/ui/xml`.
+  string path = 2;
+
+  // One line describing the service, used as the tab tooltip.
+  string description = 3;
 }

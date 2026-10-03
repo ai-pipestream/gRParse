@@ -17,6 +17,7 @@
 #include <google/protobuf/util/message_differencer.h>
 #include <grpcpp/grpcpp.h>
 
+#include "ai/pipestream/email/v1/email_service.grpc.pb.h"
 #include "ai/pipestream/parse/v1/parse_stream.grpc.pb.h"
 #include "ai/pipestream/pdf/v1/pdf_service.grpc.pb.h"
 #include "grparse/base64.h"
@@ -87,17 +88,26 @@ class FakeRecognizer final : public grparse::PageRecognizer {
   std::chrono::milliseconds delay_;
 };
 
+grparse::CollectorTargets targets_with_remote_services(bool enabled) {
+  grparse::CollectorTargets targets;
+  targets.enable_remote_services = enabled;
+  return targets;
+}
+
 class TestServer final {
  public:
   explicit TestServer(std::chrono::milliseconds inference_delay = 0ms, bool digital = false,
-                      std::shared_ptr<grparse::EmbeddingEngine> embeddings = {})
+                      std::shared_ptr<grparse::EmbeddingEngine> embeddings = {},
+                      bool remote_services = false)
       : recognizer_(inference_delay),
         scheduler_(recognizer_, {2, 3, 2, 3, 2, 2, 2},
                    [this, digital](std::shared_ptr<const std::string>, bool, double render_dpi) {
                      last_render_dpi_.store(render_dpi);
                      return std::make_shared<FakeSource>(digital);
                    }),
-        parser_service_(scheduler_, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{}),
+        parser_service_(scheduler_,
+                        std::make_shared<grparse::CollectorEndpoints>(
+                            targets_with_remote_services(remote_services)),
                         grparse::CallExecutor::Options{}, grparse::RepairOptions{}, std::move(embeddings)),
         streaming_service_(scheduler_, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{})) {
     grpc::ServerBuilder builder;
@@ -393,6 +403,34 @@ void verify_unsupported_options_are_rejected(TestServer* server) {
 // rejected by name; NATIVE on raster input, which has no text layer to take
 // as it is, is a precondition failure rather than a modelled document under
 // a model-free label; and disagreeing heading switches are rejected.
+// A request-named model endpoint is a peer calling an address the caller
+// chose, so it is refused until the operator opts in; the refusal names
+// the variable that would allow it.
+void verify_remote_services_are_opt_in() {
+  TestServer server;
+  auto client = server.unary_stub();
+  const auto refused = [&client](const pipestream::parse::v1::ConvertSourceRequest& request,
+                                 const std::string& field) {
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ConvertSourceResponse response;
+    const grpc::Status status = client->ConvertSource(&context, request, &response);
+    require(status.error_code() == grpc::StatusCode::FAILED_PRECONDITION &&
+                status.error_message().contains(field) &&
+                status.error_message().contains("GRPARSE_ENABLE_REMOTE_SERVICES"),
+            field + " must be refused while remote services are off: " +
+                status.error_message());
+  };
+  auto request = unary_request();
+  request.mutable_request()->mutable_options()->mutable_picture_description_api()->set_url(
+      "http://169.254.169.254/latest/meta-data");
+  refused(request, "picture_description_api.url");
+  request = unary_request();
+  request.mutable_request()->mutable_options()->mutable_vlm_pipeline_model_api()->set_url(
+      "http://internal.example:8080/v1");
+  refused(request, "vlm_pipeline_model_api.url");
+}
+
 void verify_parity_options_and_confidence(TestServer* server) {
   auto client = server->unary_stub();
   auto request = unary_request();
@@ -455,10 +493,6 @@ void verify_parity_options_and_confidence(TestServer* server) {
   request = unary_request();
   (*request.mutable_request()->mutable_options()->mutable_ocr_custom_config())["bitmap_area_threshold"]
       .set_double_value(0.05);
-  (*request.mutable_request()->mutable_options()->mutable_table_structure_custom_config())["mode"]
-      .set_string_value("accurate");
-  (*request.mutable_request()->mutable_options()->mutable_layout_custom_config())["labels"]
-      .set_string_value("title,table");
   grpc::ClientContext scalar_maps;
   pipestream::parse::v1::ConvertSourceResponse scalar_response;
   const grpc::Status scalar_status =
@@ -466,6 +500,23 @@ void verify_parity_options_and_confidence(TestServer* server) {
   require(scalar_status.ok(),
           "open ScalarValue custom_config maps must be accepted: " +
               scalar_status.error_message());
+
+  // The maps no leg reads are turned down by name rather than ignored.
+  for (const char* unread : {"table_structure_custom_config", "layout_custom_config"}) {
+    request = unary_request();
+    auto* unread_options = request.mutable_request()->mutable_options();
+    auto& map = std::string(unread) == "layout_custom_config"
+                    ? *unread_options->mutable_layout_custom_config()
+                    : *unread_options->mutable_table_structure_custom_config();
+    map["mode"].set_string_value("accurate");
+    grpc::ClientContext unread_context;
+    pipestream::parse::v1::ConvertSourceResponse unread_response;
+    const grpc::Status unread_status =
+        client->ConvertSource(&unread_context, request, &unread_response);
+    require(unread_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+                unread_status.error_message().contains(unread),
+            std::string(unread) + " must be rejected by name: " + unread_status.error_message());
+  }
 
   request = unary_request();
   auto* vlm_custom =
@@ -521,21 +572,33 @@ void verify_parity_options_and_confidence(TestServer* server) {
           "local and api picture description engines must not both be set: " +
               both_status.error_message());
 
-  request = unary_request();
+  // The enrich dial forwards none of the api's headers, params or prompt,
+  // so a keyed API is refused rather than called without its key.
   request = unary_request();
   auto* api_opts =
       request.mutable_request()->mutable_options()->mutable_picture_description_api();
   api_opts->set_url("http://vlm.test:8085");
   (*api_opts->mutable_headers())["Authorization"] = "secret";
-  (*api_opts->mutable_params())["model"].set_string_value("gpt");
-  api_opts->set_prompt("describe");
   grpc::ClientContext headers_context;
   pipestream::parse::v1::ConvertSourceResponse headers_response;
   const grpc::Status headers_status =
       client->ConvertSource(&headers_context, request, &headers_response);
-  require(headers_status.ok(),
-          "picture_description_api headers/params/prompt must be accepted: " +
+  require(headers_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              headers_status.error_message().contains("picture_description_api.headers"),
+          "picture_description_api headers must be rejected by name: " +
               headers_status.error_message());
+  request = unary_request();
+  api_opts = request.mutable_request()->mutable_options()->mutable_picture_description_api();
+  api_opts->set_url("http://vlm.test:8085");
+  api_opts->set_prompt("describe");
+  grpc::ClientContext prompt_context;
+  pipestream::parse::v1::ConvertSourceResponse prompt_response;
+  const grpc::Status prompt_status =
+      client->ConvertSource(&prompt_context, request, &prompt_response);
+  require(prompt_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              prompt_status.error_message().contains("picture_description_api.prompt"),
+          "a non-default picture_description_api prompt must be rejected by name: " +
+              prompt_status.error_message());
 
   request = unary_request();
   auto* local_opts =
@@ -622,7 +685,7 @@ void verify_parity_options_and_confidence(TestServer* server) {
   }
 
   request = unary_request();
-  request.mutable_request()->mutable_options()->set_chunking_preset("granite_embedding_278m");
+  request.mutable_request()->mutable_options()->set_chunking_preset("hierarchical");
   grpc::ClientContext preset_without_chunks;
   pipestream::parse::v1::ConvertSourceResponse preset_response;
   const grpc::Status preset_status =
@@ -1374,10 +1437,13 @@ class RoutableDigitalSource final : public grparse::PageSource {
 // one folded document, then the status trailer.
 class FakePdfInspector final : public pdfv1::PdfParseService::Service {
  public:
+  // searchable_scan serves what an OCRmyPDF-style scan looks like on the
+  // wire: TEXT_BASED, every page's markdown empty, the fold's only text in
+  // the invisible layer, and has_invisible_text on the trailer.
   FakePdfInspector(pdfv1::PdfType type, std::vector<uint32_t> pages_needing_ocr,
-                   bool paged_document = false)
+                   bool paged_document = false, bool searchable_scan = false)
       : type_(type), pages_needing_ocr_(std::move(pages_needing_ocr)),
-        paged_document_(paged_document) {}
+        paged_document_(paged_document), searchable_scan_(searchable_scan) {}
 
   // Counts every dial, so a test can prove a parse that must not happen did
   // not reach the collector.
@@ -1409,6 +1475,13 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
     for (const uint32_t page : pages_needing_ocr_) info->add_pages_needing_ocr(page);
     stream->Write(event);
     event.Clear();
+    if (searchable_scan_) {
+      for (const uint32_t page_no : {1U, 2U, 3U}) {
+        event.mutable_page()->set_page_no(page_no);
+        stream->Write(event);
+        event.Clear();
+      }
+    }
     docv1::Document document;
     document.mutable_body()->set_self_ref("#/body");
     document.mutable_furniture()->set_self_ref("#/furniture");
@@ -1453,10 +1526,12 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
         page.mutable_size()->set_height(792);
       }
     }
+    if (searchable_scan_) base->set_content_layer(docv1::CONTENT_LAYER_INVISIBLE);
     *event.mutable_document() = std::move(document);
     stream->Write(event);
     event.Clear();
-    event.mutable_status()->set_pages_extracted(0);
+    event.mutable_status()->set_pages_extracted(searchable_scan_ ? 3 : 0);
+    event.mutable_status()->set_has_invisible_text(searchable_scan_);
     stream->Write(event);
     return grpc::Status::OK;
   }
@@ -1465,6 +1540,7 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
   pdfv1::PdfType type_;
   std::vector<uint32_t> pages_needing_ocr_;
   bool paged_document_;
+  bool searchable_scan_;
   std::atomic<int> dials_{0};
 };
 
@@ -1542,6 +1618,307 @@ UnaryPdfRun run_unary_pdf(const std::string& pdf_target) {
   return run;
 }
 
+// Records the document_id each upload names, then fails the leg; the ids
+// are what a collector's logs correlate a parse by.
+class RecordingEmailService final : public ai::pipestream::email::v1::EmailParseService::Service {
+ public:
+  grpc::Status ParseEmail(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<ai::pipestream::email::v1::ParseEmailResponse,
+                               ai::pipestream::email::v1::ParseEmailRequest>* stream) override {
+    ai::pipestream::email::v1::ParseEmailRequest request;
+    while (stream->Read(&request)) {
+      if (request.has_options()) {
+        std::lock_guard<std::mutex> lock(mutex);
+        document_ids.push_back(request.options().document_id());
+      }
+    }
+    return grpc::Status(grpc::StatusCode::UNAVAILABLE, "recording email fake");
+  }
+
+  std::mutex mutex;
+  std::vector<std::string> document_ids;
+};
+
+// Two uploads of one filename reach a collector under distinct ids, each
+// still naming the file.
+void verify_remote_legs_get_a_per_call_document_id() {
+  RecordingEmailService email;
+  grpc::ServerBuilder email_builder;
+  int email_port = 0;
+  email_builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &email_port);
+  email_builder.RegisterService(&email);
+  auto email_server = email_builder.BuildAndStart();
+  require(email_server && email_port != 0, "fake email collector failed to start");
+
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
+                                   [](std::shared_ptr<const std::string>, bool, double) {
+                                     return std::make_shared<FakeSource>();
+                                   });
+  grparse::CollectorTargets targets;
+  targets.email = "127.0.0.1:" + std::to_string(email_port);
+  grparse::DocumentParserService parser_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(targets));
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&parser_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "document id test server failed to start");
+  auto client = pipestream::parse::v1::ParseService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+  for (int call = 0; call < 2; ++call) {
+    pipestream::parse::v1::ConvertSourceRequest request;
+    auto* source = request.mutable_request()->add_sources()->mutable_file();
+    source->set_filename("mail.eml");
+    const std::string bytes = "From: a@example.test\r\nSubject: hi\r\n\r\nbody\r\n";
+    source->set_base64_string(grparse::encode_base64(bytes.data(), bytes.size()));
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ConvertSourceResponse response;
+    const grpc::Status status = client->ConvertSource(&context, request, &response);
+    require(!status.ok(), "the failing email leg fails the parse");
+  }
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+  email_server->Shutdown(std::chrono::system_clock::now() + 2s);
+  email_server->Wait();
+  std::lock_guard<std::mutex> lock(email.mutex);
+  require(email.document_ids.size() == 2, "both uploads reached the email collector");
+  require(email.document_ids[0] != email.document_ids[1],
+          "two calls must not share a document_id: " + email.document_ids[0]);
+  for (const auto& id : email.document_ids) {
+    require(id.starts_with("mail.eml#"), "the id still names the file: " + id);
+  }
+}
+
+// A collector's projected page events never took a scheduler credit, so
+// writing them must not hand one back: beside a held head-of-line CV page,
+// stray credits would let the scheduler run past the page window and trip
+// the stream's buffer bound on a client that reads everything.
+void verify_collector_pages_return_no_scheduler_credit(const std::string& pdf_target) {
+  constexpr int kPages = 8;
+  grparse::PageScheduler::Options options{
+      .document_queue_capacity = 4,
+      .render_queue_capacity = 16,
+      .inference_queue_capacity = 16,
+      .assembly_queue_capacity = 16,
+      .render_workers = 4,
+      .inference_workers = 4,
+      .assembly_workers = 2,
+      .page_window = 2,
+  };
+  HeadOfLineRecognizer recognizer;
+  grparse::PageScheduler scheduler(recognizer, options,
+                                   [pages = kPages](std::shared_ptr<const std::string>, bool,
+                                                    double) {
+                                     return std::make_shared<WideSource>(pages);
+                                   });
+  grparse::CollectorTargets targets;
+  targets.pdf = pdf_target;
+  grparse::DocumentStreamingService streaming_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(targets));
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&streaming_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "credit test server failed to start");
+  auto client = pipestream::parse::v1::ParseStreamingService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 20s);
+  auto stream = client->StreamProcessDocument(&context);
+  pipestream::parse::v1::DocumentChunk source;
+  source.set_document_id("mixed-plan");
+  source.set_filename("mixed.pdf");
+  source.set_content_type("application/pdf");
+  source.set_data("%PDF-in-memory");
+  source.add_collectors(pipestream::parse::v1::COLLECTOR_GRPARSE_CV);
+  source.add_collectors(pipestream::parse::v1::COLLECTOR_PDF);
+  source.set_complete(true);
+  require(stream->Write(source), "credit test client could not write the source chunk");
+  stream->WritesDone();
+  int cv_pages = 0;
+  int collector_documents = 0;
+  pipestream::parse::v1::DocumentStreamEvent event;
+  while (stream->Read(&event)) {
+    if (event.has_page() && event.page().texts_size() > 0 &&
+        event.page().texts(0).text().base().text().starts_with("page-")) {
+      ++cv_pages;
+    }
+    if (event.has_collector_document()) ++collector_documents;
+  }
+  const grpc::Status status = stream->Finish();
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+  require(status.ok(), "a mixed plan must not overrun the page window: " + status.error_message());
+  require(cv_pages == kPages, "every CV page streams beside the collector's pages");
+  require(collector_documents == 1, "the pdf collector's document streams once");
+}
+
+// Collector values validate like the unary options do.
+void verify_stream_rejects_invalid_collectors(TestServer* server) {
+  auto client = server->stub();
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  auto stream = client->StreamProcessDocument(&context);
+  auto source = chunk(true);
+  source.add_collectors(static_cast<pipestream::parse::v1::Collector>(999));
+  require(stream->Write(source), "client could not write source chunk");
+  stream->WritesDone();
+  pipestream::parse::v1::DocumentStreamEvent ignored;
+  while (stream->Read(&ignored)) {
+  }
+  const grpc::Status status = stream->Finish();
+  require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              status.error_message().contains("999"),
+          "an unknown collector value is INVALID_ARGUMENT naming it: " + status.error_message());
+}
+
+// document_timeout bounds the in-process CV leg too, not only dialed legs.
+void verify_document_timeout_bounds_the_cv_leg() {
+  TestServer server(500ms);
+  auto client = server.unary_stub();
+  auto request = unary_request();
+  request.mutable_request()->mutable_options()->set_document_timeout(0.1);
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 20s);
+  pipestream::parse::v1::ConvertSourceResponse response;
+  const grpc::Status status = client->ConvertSource(&context, request, &response);
+  require(status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED,
+          "document_timeout must stop the CV leg: " + status.error_message());
+}
+
+// The in-flight byte budget refuses a unary request or a stream chunk that
+// would pass it, admits what fits, and gets every charge back.
+void verify_inflight_byte_budget() {
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
+                                   [](std::shared_ptr<const std::string>, bool, double) {
+                                     return std::make_shared<FakeSource>();
+                                   });
+  const auto endpoints = std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{});
+  const auto request = unary_request();
+  // Room for one request, not for one stream chunk of 64 bytes.
+  const auto inflight = std::make_shared<grparse::InflightBytes>(request.ByteSizeLong());
+  grparse::DocumentParserService parser_service(scheduler, endpoints, grparse::CallExecutor::Options{},
+                                                grparse::RepairOptions{}, {}, {}, inflight);
+  grparse::DocumentStreamingService streaming_service(scheduler, endpoints,
+                                                      grparse::RepairOptions{}, inflight);
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&parser_service);
+  builder.RegisterService(&streaming_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "budget test server failed to start");
+  const auto channel =
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials());
+  auto unary = pipestream::parse::v1::ParseService::NewStub(channel);
+  {
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ConvertSourceResponse response;
+    const grpc::Status status = unary->ConvertSource(&context, request, &response);
+    require(status.ok(), "a request within the budget is admitted: " + status.error_message());
+  }
+  {
+    auto larger = request;
+    larger.mutable_request()->mutable_sources(0)->mutable_file()->set_filename("larger-image.png");
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ConvertSourceResponse response;
+    const grpc::Status status = unary->ConvertSource(&context, larger, &response);
+    require(status.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED &&
+                status.error_message().contains("GRPARSE_MAX_INFLIGHT_BYTES"),
+            "a request past the budget is refused: " + status.error_message());
+  }
+  {
+    auto stream_client = pipestream::parse::v1::ParseStreamingService::NewStub(channel);
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    auto stream = stream_client->StreamProcessDocument(&context);
+    auto source = chunk(true);
+    source.set_data(std::string(request.ByteSizeLong() + 1, 'x'));
+    stream->Write(source);
+    stream->WritesDone();
+    pipestream::parse::v1::DocumentStreamEvent ignored;
+    while (stream->Read(&ignored)) {
+    }
+    const grpc::Status status = stream->Finish();
+    require(status.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED &&
+                status.error_message().contains("GRPARSE_MAX_INFLIGHT_BYTES"),
+            "a stream chunk past the budget is refused: " + status.error_message());
+  }
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+  // A unary charge goes back when the worker drops the finished task, a
+  // moment after the call itself completes.
+  for (int attempt = 0; attempt < 100 && inflight->in_use() != 0; ++attempt) {
+    std::this_thread::sleep_for(10ms);
+  }
+  require(inflight->in_use() == 0, "every charge is returned");
+}
+
+// The chunk RPCs have nowhere to report a delivery, so a target is refused
+// rather than skipped; and a collector that failed beside a surviving one
+// shows up even when the converted document was not asked for.
+void verify_chunk_rpcs_refuse_targets_and_surface_failures(TestServer* server) {
+  auto client = server->unary_stub();
+  const auto source_request = [] {
+    pipestream::parse::v1::ChunkHierarchicalSourceRequest request;
+    auto* source = request.mutable_request()->add_sources()->mutable_file();
+    source->set_filename("image.png");
+    source->set_base64_string("bWVtb3J5");
+    return request;
+  };
+  {
+    auto request = source_request();
+    request.mutable_request()->mutable_target()->mutable_zip();
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ChunkHierarchicalSourceResponse response;
+    const grpc::Status status = client->ChunkHierarchicalSource(&context, request, &response);
+    require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+                status.error_message().contains("target"),
+            "a hierarchical chunk target is refused: " + status.error_message());
+  }
+  {
+    pipestream::parse::v1::ChunkHybridSourceRequest request;
+    *request.mutable_request()->mutable_sources() = source_request().request().sources();
+    request.mutable_request()->mutable_chunking_options()->set_max_tokens(64);
+    request.mutable_request()->mutable_target()->mutable_zip();
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ChunkHybridSourceResponse response;
+    const grpc::Status status = client->ChunkHybridSource(&context, request, &response);
+    require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+                status.error_message().contains("target"),
+            "a hybrid chunk target is refused: " + status.error_message());
+  }
+  {
+    // The email collector is not configured here, so it fails beside CV.
+    auto request = source_request();
+    auto* options = request.mutable_request()->mutable_convert_options();
+    options->add_collectors(pipestream::parse::v1::COLLECTOR_GRPARSE_CV);
+    options->add_collectors(pipestream::parse::v1::COLLECTOR_EMAIL);
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ChunkHierarchicalSourceResponse response;
+    const grpc::Status status = client->ChunkHierarchicalSource(&context, request, &response);
+    require(status.ok(), "a partial parse still chunks: " + status.error_message());
+    require(response.response().chunks_size() == 3, "the surviving collector's chunks");
+    require(response.response().documents_size() == 1, "the failures ride a documents entry");
+    const auto& entry = response.response().documents(0);
+    require(entry.status() == pipestream::parse::v1::CONVERSION_STATUS_PARTIAL_SUCCESS &&
+                !entry.has_content() && entry.errors_size() == 1 &&
+                entry.errors(0).module_name() == "collector:email",
+            "the entry names the failed collector without a document");
+  }
+}
+
 struct StreamPdfRun {
   grpc::Status status;
   std::vector<pipestream::parse::v1::DocumentStreamEvent> events;
@@ -1591,6 +1968,148 @@ StreamPdfRun run_stream_pdf(const std::string& pdf_target, bool capture_page_ima
   return run;
 }
 
+// The stream's in-flight charge follows the uploaded bytes, not the call:
+// a holder that outlives the call (here the CV leg's page source factory,
+// whose argument the test keeps) keeps the charge, and the charge returns
+// when the last holder drops the bytes.
+void verify_stream_charge_follows_the_bytes() {
+  const auto inflight = std::make_shared<grparse::InflightBytes>(1U << 20U);
+  const uint64_t charge = chunk(true).data().size();
+  std::mutex held_mutex;
+  std::shared_ptr<const std::string> held;
+  {
+    FakeRecognizer recognizer;
+    grparse::PageScheduler scheduler(
+        recognizer, {2, 3, 2, 3, 2, 2, 2},
+        [&held_mutex, &held](std::shared_ptr<const std::string> bytes, bool, double) {
+          const std::lock_guard<std::mutex> lock(held_mutex);
+          held = std::move(bytes);
+          return std::make_shared<FakeSource>();
+        });
+    grparse::DocumentStreamingService streaming_service(
+        scheduler, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{}),
+        grparse::RepairOptions{}, inflight);
+    int port = 0;
+    grpc::ServerBuilder builder;
+    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+    builder.RegisterService(&streaming_service);
+    auto server = builder.BuildAndStart();
+    require(server && port != 0, "charge test server failed to start");
+    auto client = pipestream::parse::v1::ParseStreamingService::NewStub(grpc::CreateChannel(
+        "127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    auto stream = client->StreamProcessDocument(&context);
+    require(stream->Write(chunk(true)), "charge test client could not write");
+    stream->WritesDone();
+    pipestream::parse::v1::DocumentStreamEvent ignored;
+    while (stream->Read(&ignored)) {
+    }
+    const grpc::Status status = stream->Finish();
+    require(status.ok(), "the charged stream parses: " + status.error_message());
+    server->Shutdown(std::chrono::system_clock::now() + 2s);
+    server->Wait();
+    require(inflight->in_use() == charge,
+            "bytes still held after the call keep their charge, got " +
+                std::to_string(inflight->in_use()));
+    const std::lock_guard<std::mutex> lock(held_mutex);
+    held.reset();
+  }
+  for (int attempt = 0; attempt < 100 && inflight->in_use() != 0; ++attempt) {
+    std::this_thread::sleep_for(10ms);
+  }
+  require(inflight->in_use() == 0, "the charge returns with the last holder");
+}
+
+// Holds the upload until its call is cancelled or a ceiling passes, so a
+// test can prove the routing leg's own call ends with the client's.
+class HangingPdfInspector final : public pdfv1::PdfParseService::Service {
+ public:
+  grpc::Status ParsePdf(
+      grpc::ServerContext* context,
+      grpc::ServerReaderWriter<pdfv1::ParsePdfResponse, pdfv1::ParsePdfRequest>* stream)
+      override {
+    pdfv1::ParsePdfRequest request;
+    while (stream->Read(&request)) {
+    }
+    received_.store(true);
+    const auto ceiling = std::chrono::steady_clock::now() + 5s;
+    while (!context->IsCancelled() && std::chrono::steady_clock::now() < ceiling) {
+      std::this_thread::sleep_for(5ms);
+    }
+    cancelled_.store(context->IsCancelled());
+    finished_.store(true);
+    return grpc::Status(grpc::StatusCode::UNAVAILABLE, "held until cancelled");
+  }
+
+  bool received() const { return received_.load(); }
+  bool cancelled() const { return cancelled_.load(); }
+  bool finished() const { return finished_.load(); }
+
+ private:
+  std::atomic<bool> received_{false};
+  std::atomic<bool> cancelled_{false};
+  std::atomic<bool> finished_{false};
+};
+
+// Waits up to `limit` for `condition`, polling.
+template <typename Condition>
+bool wait_for(Condition condition, std::chrono::milliseconds limit) {
+  const auto until = std::chrono::steady_clock::now() + limit;
+  while (!condition() && std::chrono::steady_clock::now() < until) {
+    std::this_thread::sleep_for(5ms);
+  }
+  return condition();
+}
+
+// A client that cancels mid-classification cancels the pdf routing leg's
+// own call too, like every other remote leg, instead of leaving it to run
+// to the call's deadline.
+void verify_streaming_pdf_router_cancels_with_the_client() {
+  HangingPdfInspector inspector;
+  PdfInspectorServer inspector_server(&inspector);
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
+                                   [](std::shared_ptr<const std::string>, bool, double) {
+                                     return std::make_shared<RoutableDigitalSource>();
+                                   });
+  grparse::CollectorTargets targets;
+  targets.pdf = inspector_server.target();
+  grparse::DocumentStreamingService streaming_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(targets));
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&streaming_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "pdf cancel stream server failed to start");
+  auto client = pipestream::parse::v1::ParseStreamingService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 30s);
+  auto stream = client->StreamProcessDocument(&context);
+  pipestream::parse::v1::DocumentChunk source;
+  source.set_document_id("pdf-cancel");
+  source.set_filename("cancel.pdf");
+  source.set_content_type("application/pdf");
+  source.set_data("%PDF-in-memory");
+  source.set_complete(true);
+  require(stream->Write(source), "pdf cancel client could not write the source chunk");
+  stream->WritesDone();
+  require(wait_for([&inspector] { return inspector.received(); }, 5000ms),
+          "the routing leg reaches the inspector");
+  context.TryCancel();
+  pipestream::parse::v1::DocumentStreamEvent ignored;
+  while (stream->Read(&ignored)) {
+  }
+  stream->Finish();
+  require(wait_for([&inspector] { return inspector.finished(); }, 6000ms),
+          "the inspector call ends");
+  require(inspector.cancelled(), "the routing leg's own call is cancelled with the client");
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+}
+
 void verify_pdf_fast_path_skips_the_cv_pipeline() {
   FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {});
   PdfInspectorServer inspector_server(&inspector);
@@ -1603,6 +2122,30 @@ void verify_pdf_fast_path_skips_the_cv_pipeline() {
           "the collector's folded document is the parse result");
   require(document.texts(0).text().base().source(0).collector().collector() == "pdf",
           "the fast-path document keeps the collector's source tag");
+}
+
+void verify_pdf_searchable_scan_takes_the_cv_path() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {}, /*paged_document=*/false,
+                             /*searchable_scan=*/true);
+  PdfInspectorServer inspector_server(&inspector);
+  const UnaryPdfRun run = run_unary_pdf(inspector_server.target());
+  require(run.status.ok(), "searchable-scan parse failed: " + run.status.error_message());
+  require(run.recognizer_calls == 3,
+          "every page whose markdown came back empty beside invisible text is recognized, "
+          "got " + std::to_string(run.recognizer_calls));
+  const auto& document = run.response.response().document().doc();
+  for (const auto& item : document.texts()) {
+    require(item.text().base().text() != "from pdf inspector",
+            "the empty fast-path fold is not the parse result");
+  }
+  const auto& fields = document.body().meta().custom_fields();
+  bool recorded = false;
+  if (fields.count("collector_warnings:pdf") == 1) {
+    for (const auto& value : fields.at("collector_warnings:pdf").list_value().values()) {
+      recorded = recorded || value.string_value().contains("no body text");
+    }
+  }
+  require(recorded, "the refused fast path is recorded as a collector warning");
 }
 
 void verify_pdf_classification_restricts_recognition() {
@@ -1955,7 +2498,7 @@ void verify_hierarchical_chunk_rpc_carries_digest_and_offsets(TestServer* server
     require(!chunk.has_embedding(), "embeddings remain absent by default");
     require(chunk.filename() == "image.png", "every chunk names its source file");
     require(chunk.chunk_index() == index, "chunk_index is the emission ordinal");
-    require(chunk.rules_digest() == "grparse-hier/1", "the hierarchical rules digest rides out");
+    require(chunk.rules_digest() == "grparse-hier/2", "the hierarchical rules digest rides out");
     require(chunk.num_tokens() == 1, "one word, one token");
     require(chunk.has_start_offset() && chunk.has_end_offset(),
             "a parse with an offset table gives its chunks spans");
@@ -1997,7 +2540,7 @@ void verify_hybrid_chunk_rpc_merges_and_validates(TestServer* server) {
   const auto& chunk = response.response().chunks(0);
   require(chunk.text() == "one\ntwo\nthree", "merged peers join with a newline");
   require(chunk.rules_digest() ==
-              "grparse-hybrid/1;tok=wordish/1;sent=sentence/1;max_tokens=8;merge_peers=true",
+              "grparse-hybrid/2;tok=wordish/1;sent=sentence/1;max_tokens=8;merge_peers=true",
           "the hybrid rules digest spells out the budget: " + chunk.rules_digest());
   require(chunk.start_offset() == 0 && chunk.end_offset() == 13,
           "the merged span is the union of the merged chunks' spans");
@@ -2217,12 +2760,15 @@ void verify_disabled_embeddings_and_unimplemented_chunk_rpcs(TestServer* server)
 int main() {
   return grparse_test::run_test_main("streaming-service-test", {
       [] {
-        TestServer server;
+        // Remote services on: the parity checks send Docling's
+        // picture_description_api; the default-off gate has its own server.
+        TestServer server(0ms, false, {}, /*remote_services=*/true);
         verify_ordered_page_stream(&server);
         verify_data_after_complete_is_rejected(&server);
         verify_unary_uses_scheduler_and_shared_assembly(&server);
         verify_unsupported_options_are_rejected(&server);
         verify_parity_options_and_confidence(&server);
+        verify_remote_services_are_opt_in();
         verify_recognition_options_steer_the_cv_leg(&server);
         verify_unary_multi_format_exports(&server);
         verify_unary_zip_target_delivers_an_archive(&server);
@@ -2237,17 +2783,30 @@ int main() {
         verify_unary_callback_path_admits_concurrent_conversions();
         verify_unary_cancellation_finishes_without_wedging();
         verify_pdf_fast_path_skips_the_cv_pipeline();
+        verify_pdf_searchable_scan_takes_the_cv_path();
         verify_pdf_classification_restricts_recognition();
         verify_pdf_collector_failure_degrades_to_the_cv_path();
         verify_queued_then_cancelled_call_never_dials_a_collector();
+        verify_remote_legs_get_a_per_call_document_id();
+        {
+          FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {}, /*paged_document=*/true);
+          PdfInspectorServer inspector_server(&inspector);
+          verify_collector_pages_return_no_scheduler_credit(inspector_server.target());
+        }
+        verify_stream_rejects_invalid_collectors(&server);
+        verify_document_timeout_bounds_the_cv_leg();
+        verify_inflight_byte_budget();
         verify_streaming_pdf_fast_path_emits_the_collector_document();
         verify_streaming_pdf_fast_path_projects_pages();
         verify_streaming_pdf_fast_path_renders_previews();
         verify_streaming_pdf_fast_path_skips_previews_when_off();
         verify_pdf_without_backend_fails_precondition();
         verify_streaming_pdf_classification_restricts_recognition();
+        verify_stream_charge_follows_the_bytes();
+        verify_streaming_pdf_router_cancels_with_the_client();
         verify_hierarchical_chunk_rpc_carries_digest_and_offsets(&server);
         verify_hybrid_chunk_rpc_merges_and_validates(&server);
+        verify_chunk_rpcs_refuse_targets_and_surface_failures(&server);
         verify_chunk_embeddings_rpc();
         verify_disabled_embeddings_and_unimplemented_chunk_rpcs(&server);
       },

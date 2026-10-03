@@ -17,13 +17,15 @@ namespace {
 
 using RefMap = std::map<std::string, std::string>;
 
-// Rewrites every reference the moved items carry. References live in two
-// string shapes: RefItem.ref / FineRef.ref pointers to other items, and an
-// item's own self_ref. Walking by reflection keeps the merge correct when
-// the schema grows new item kinds or new reference fields, instead of
-// silently missing them in a hand-maintained field list. Only values that
-// name a moved item are touched, so "#/body", "#/furniture", and
-// already-merged references pass through unchanged.
+// Rewrites every reference the moved items carry. References live in three
+// string shapes: RefItem.ref / FineRef.ref pointers to other items, an
+// item's own self_ref, and SubDocumentRef.item_ref, the item an attachment
+// anchors to. Walking by reflection keeps the merge correct when the schema
+// grows new item kinds or new `ref` fields, instead of silently missing them
+// in a hand-maintained field list; a reference field under any other name
+// must join the list below. Only values that name a moved item are touched,
+// so "#/body", "#/furniture", and already-merged references pass through
+// unchanged.
 void rewrite_refs(const RefMap& mapping, google::protobuf::Message* message) {
   const auto* descriptor = message->GetDescriptor();
   const auto* reflection = message->GetReflection();
@@ -31,7 +33,8 @@ void rewrite_refs(const RefMap& mapping, google::protobuf::Message* message) {
     const auto* field = descriptor->field(index);
     if (field->cpp_type() == google::protobuf::FieldDescriptor::CPPTYPE_STRING &&
         !field->is_repeated() &&
-        (field->name() == "ref" || field->name() == "self_ref")) {
+        (field->name() == "ref" || field->name() == "self_ref" ||
+         field->name() == "item_ref")) {
       if (field->has_presence() && !reflection->HasField(*message, field)) continue;
       if (const auto mapped = mapping.find(reflection->GetString(*message, field));
           mapped != mapping.end()) {
@@ -430,6 +433,18 @@ void rewrite_references(const std::map<std::string, std::string>& renumbering,
 bool is_claim_field(std::string_view name) {
   return name == "source_meta" || name == "origin" || name == "page_styles" ||
          name == "email" || name == "media";
+}
+
+void strip_document_identity(docv1::Document* fragment) {
+  fragment->clear_name();
+  fragment->clear_origin();
+  fragment->clear_source_meta();
+  fragment->clear_claims();
+  fragment->clear_media();
+  fragment->clear_email();
+  fragment->clear_page_styles();
+  fragment->clear_meta_tags();
+  fragment->clear_changes();
 }
 
 void retain_claims_only(docv1::Document* source) {

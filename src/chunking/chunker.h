@@ -9,10 +9,13 @@
 // no floating-point default. The rule sets are versioned and every chunk
 // carries the version it was produced under in its rules_digest, which makes
 // a boundary change a visible wire change instead of a silent reshuffle.
+// grparse-hier/2 serializes what list items hold (hier/1 dropped it);
+// grparse-hybrid/2 builds on it and leaves a chunk whose heading trail
+// alone reaches max_tokens unsplit (hybrid/1 cut it to 1-token pieces).
 //
 // The rule sets, in the exact spelling that reaches the wire:
 //
-//   "grparse-hier/1"   the hierarchical walk and the text serialization
+//   "grparse-hier/2"   the hierarchical walk and the text serialization
 //   "wordish/1"        the built-in token counter (token_counter.h)
 //   "hf/1"             the HuggingFace tokenizer.json counter (token_counter.h)
 //   "sentence/1"       the sentence splitter (sentence_rules.h)
@@ -22,7 +25,11 @@
 //
 //   text-family item  its text field, verbatim
 //   list group        its items joined with "\n", each prefixed "- ", or
-//                     "1. ", "2. ", ... for an ordered list
+//                     "1. ", "2. ", ... for an ordered list; what an item
+//                     holds follows its line: a nested list flattened in
+//                     place with its own numbering, any other text item on
+//                     a line of its own. A table or picture inside the list
+//                     chunks on its own after the list.
 //   table             its caption texts, then the rows flattened as
 //                     "rowLabel, colLabel = value" triplets joined with ". ";
 //                     a table with no headers, a single column, or nothing
@@ -73,11 +80,11 @@ void add_offsets(const google::protobuf::RepeatedPtrField<
                  OffsetTable* table);
 
 // The rules_digest a hierarchical chunk carries.
-inline constexpr std::string_view kHierarchicalRules = "grparse-hier/1";
+inline constexpr std::string_view kHierarchicalRules = "grparse-hier/2";
 
 // The rules_digest a hybrid chunk carries: the hybrid rule set plus every
 // input that can move a boundary. Exactly
-// "grparse-hybrid/1;tok=T;sent=sentence/1;max_tokens=N;merge_peers=B"
+// "grparse-hybrid/2;tok=T;sent=sentence/1;max_tokens=N;merge_peers=B"
 // with T the counter's rules ("wordish/1" or "hf/1"), N in decimal, and B
 // spelled "true" or "false". Note the digest names the counter, not the
 // tokenizer.json hf/1 loaded; the file is a deployment's model, and two

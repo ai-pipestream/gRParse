@@ -1369,7 +1369,8 @@ void verify_sheet_header_rows_are_marked() {
   }
   require(inferred == 1, "the guessed header row is named once, for the sheet "
                          "no database range declares");
-  require(geometry_notes == 3, "every sheet's absent geometry is named once");
+  require(geometry_notes == 1,
+          "the sheets' absent geometry is named once per document, not per sheet");
   require(grparse::docling_integrity_errors(document).empty(), "header marking stays well formed");
 }
 
