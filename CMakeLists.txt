@@ -720,6 +720,7 @@ add_library(grparse_core STATIC
   src/render/doctags_renderer.cpp
   src/render/doclang_renderer.cpp
   src/render/dclx_renderer.cpp
+  src/render/picture_image.cpp
   src/render/vtt_renderer.cpp
   src/render/latex_renderer.cpp
   src/chunking/token_counter.cpp
@@ -1154,6 +1155,9 @@ if(BUILD_TESTING)
   add_dependencies(grparse-tests ${GRPARSE_UNIT_TESTS})
   set_tests_properties(${GRPARSE_UNIT_TESTS} PROPERTIES
     TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
+  # The DocLang archive cases read the packed members back with miniz's
+  # ZIP reader.
+  target_link_libraries(doclang-renderer-test PRIVATE miniz)
   # The shared test helpers are reached as "support/check.h" from any test
   # source, whatever subdirectory it sits in.
   foreach(test_name IN LISTS GRPARSE_TESTS GRPARSE_DATA_TESTS GRPARSE_DRIFT_TESTS

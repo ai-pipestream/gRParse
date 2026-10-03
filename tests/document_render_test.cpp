@@ -18,6 +18,14 @@ namespace docv1 = ai::pipestream::document::v1;
 
 namespace {
 
+// The DocLang cases below state picture uris, which the export writes in the
+// referenced image mode (its default is docling's placeholder).
+grparse::DoclangOptions doclang_referenced() {
+  grparse::DoclangOptions options;
+  options.image_mode = grparse::DoclangOptions::ImageMode::kReferenced;
+  return options;
+}
+
 using grparse_test::require;
 
 void require_contains(const std::string& haystack, const std::string& needle,
@@ -743,7 +751,7 @@ void verify_picture_descriptions_surface_in_exports() {
                    "<figure><img src=\"fig.png\" alt=\"Image\"/>"
                    "<p>A bar chart of quarterly sales</p></figure>",
                    "html surfaces the meta description inside the figure");
-  require_contains(grparse::render_doclang(meta_only),
+  require_contains(grparse::render_doclang(meta_only, doclang_referenced()),
                    "<picture uri=\"fig.png\">\n"
                    "    <description>A bar chart of quarterly sales</description>\n"
                    "  </picture>",
@@ -961,7 +969,7 @@ void verify_doctags_otsl_spans_and_locations() {
 }
 
 void verify_doclang_renders_grpc_xml_vocabulary() {
-  const std::string doclang = grparse::render_doclang(rich_document());
+  const std::string doclang = grparse::render_doclang(rich_document(), doclang_referenced());
   const std::string expected =
       "<doclang xmlns=\"http://docling-project.org/ns/doclang/v1\">\n"
       "  <title>Quarterly Report</title>\n"
@@ -1008,7 +1016,7 @@ void verify_doclang_escapes_xml_content() {
            docv1::DOC_ITEM_LABEL_TEXT, "A & B < C > D");
   auto* figure = add_picture(&document, "#/body", "figs/a&b.png");
   figure->add_captions()->set_ref(add_caption(&document, figure->self_ref(), "Q \"quoted\""));
-  const std::string doclang = grparse::render_doclang(document);
+  const std::string doclang = grparse::render_doclang(document, doclang_referenced());
   require(doclang.contains("<paragraph>A &amp; B &lt; C &gt; D</paragraph>"),
           "doclang text content must be XML-escaped:\n" + doclang);
   require(doclang.contains("<picture uri=\"figs/a&amp;b.png\"/>"),

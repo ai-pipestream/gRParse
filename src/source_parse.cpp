@@ -165,6 +165,7 @@ bool implemented_option(std::string_view name) {
       "layout_custom_config",
       "ocr_custom_config",
       "picture_classification_custom_config",
+      "doclang_include_namespace",
       "structure_validation",
       "structure_validation_rules",
       "structure_repairs",
@@ -771,6 +772,17 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
                             surface + " does not implement image_export_mode '" + name + "'");
       }
     }
+    // docling-core refuses EMBEDDED for the DocLang archive, which keeps
+    // its images outside the markup; so does this server, before parsing.
+    if (options.image_export_mode() == pipestream::parse::v1::IMAGE_REF_MODE_EMBEDDED &&
+        std::find(options.to_formats().begin(), options.to_formats().end(),
+                  static_cast<int>(pipestream::parse::v1::OUTPUT_FORMAT_DCLX)) !=
+            options.to_formats().end()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + ": image_export_mode IMAGE_REF_MODE_EMBEDDED is not supported "
+                                    "for OUTPUT_FORMAT_DCLX (the archive keeps images outside "
+                                    "the markup); use REFERENCED or PLACEHOLDER");
+    }
   }
   return validate_document_timeout(options.has_document_timeout(), options.document_timeout(),
                                    surface);
@@ -800,6 +812,30 @@ std::expected<std::optional<ChartExtractionPreset>, grpc::Status> resolve_chart_
   auto preset = policy.resolve(options.chart_extraction_preset());
   if (!preset.has_value()) return rejected(preset.error());
   return std::optional<ChartExtractionPreset>(std::move(*preset));
+}
+
+DoclangOptions doclang_options(const pipestream::parse::v1::ConvertDocumentOptions& options) {
+  DoclangOptions doclang;
+  if (options.has_image_export_mode()) {
+    switch (options.image_export_mode()) {
+      case pipestream::parse::v1::IMAGE_REF_MODE_EMBEDDED:
+        doclang.image_mode = DoclangOptions::ImageMode::kEmbedded;
+        break;
+      case pipestream::parse::v1::IMAGE_REF_MODE_REFERENCED:
+        doclang.image_mode = DoclangOptions::ImageMode::kReferenced;
+        break;
+      case pipestream::parse::v1::IMAGE_REF_MODE_PLACEHOLDER:
+        doclang.image_mode = DoclangOptions::ImageMode::kPlaceholder;
+        break;
+      default:
+        // UNSPECIFIED: each DocLang format keeps its own default.
+        break;
+    }
+  }
+  if (options.has_doclang_include_namespace()) {
+    doclang.include_namespace = options.doclang_include_namespace();
+  }
+  return doclang;
 }
 
 namespace {

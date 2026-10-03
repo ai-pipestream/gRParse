@@ -114,8 +114,38 @@ std::string render_doctags(const ai::pipestream::document::v1::Document& documen
 // carrying a hyperlink takes the block form with an `<href uri=...>` head,
 // and a rich table cell (its ref naming a group) renders the group's blocks
 // inside the cell element. Content is XML-escaped; provenance is not
-// emitted (the reader skips it anyway).
+// emitted (the reader skips it anyway). Uses DoclangOptions{}: the
+// namespace is declared and pictures carry no uri (placeholder mode).
 std::string render_doclang(const ai::pipestream::document::v1::Document& document);
+
+// The DocLang export parameters a request can move off the defaults
+// (ConvertDocumentOptions.image_export_mode and doclang_include_namespace),
+// after docling-core's export_to_doclang / save_as_doclang_archive options.
+struct DoclangOptions {
+  // How a picture's image is carried.
+  //   kPlaceholder: no uri on the picture element (and, in the archive, no
+  //     assets/ member).
+  //   kReferenced: render_doclang writes the picture's existing image uri;
+  //     render_dclx stores the picture's image bytes (its own data-URI image,
+  //     else a crop of its first provenance box from its page image) as an
+  //     assets/ member and points the uri at it. A picture whose image uri is
+  //     not a data URI keeps that uri, as docling does when it cannot load
+  //     the image.
+  //   kEmbedded: render_doclang writes the existing uri, else a PNG data URI
+  //     cropped from the page image. render_dclx rejects it.
+  enum class ImageMode { kPlaceholder, kEmbedded, kReferenced };
+  // Unset takes the format's docling default: kPlaceholder for
+  // render_doclang, kReferenced for render_dclx.
+  std::optional<ImageMode> image_mode;
+  // Declare the NS_DOCLANG namespace on the root. On by default, unlike
+  // docling-core (off): the namespaced root is the strongest signal the
+  // DocLang readers sniff. False writes a bare `<doclang>` root for byte
+  // parity with docling's default output.
+  bool include_namespace = true;
+};
+
+std::string render_doclang(const ai::pipestream::document::v1::Document& document,
+                           const DoclangOptions& options);
 
 // Renders the WebVTT export of track-timed text: a "WEBVTT" header (with the
 // document title item's text when present), then one cue per body text item
@@ -161,10 +191,21 @@ std::string render_yaml(const ai::pipestream::document::v1::Document& document);
 // failing the export.
 std::string render_latex(const ai::pipestream::document::v1::Document& document);
 
-// Packs a DocLang OPC archive (`.dclx`): deterministic ZIP with OPC stubs
-// (`[Content_Types].xml`, `_rels/.rels`) and root `document.xml` holding
-// render_doclang output. Readable by COLLECTOR_XML / grpc-xml.
+// Packs a DocLang OPC archive (`.dclx`) in the layout docling-core's
+// save_as_doclang_archive writes: `[Content_Types].xml` and `_rels/.rels`
+// (the OPC parts the doclang packager writes), root `document.xml` holding
+// the DocLang export plus a final newline, every page image as
+// `pages/<page_no>.<ext>`, and in kReferenced mode (the archive's default)
+// every picture image as `assets/image_<NNNNNN>_<sha256>.<ext>`, numbered
+// in body order, which the picture's uri names. Image bytes are kept as
+// they are when they are PNG, JPEG or WebP (the types the content-types part
+// declares) and re-encoded as PNG otherwise. Built in memory; members sort
+// by path, so the same document always packs to the same bytes. Throws
+// std::invalid_argument for kEmbedded. Readable by COLLECTOR_XML / grpc-xml.
 std::string render_dclx(const ai::pipestream::document::v1::Document& document);
+
+std::string render_dclx(const ai::pipestream::document::v1::Document& document,
+                        const DoclangOptions& options);
 
 }  // namespace grparse
 
