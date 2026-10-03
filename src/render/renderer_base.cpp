@@ -96,35 +96,48 @@ namespace {
 // grid keeps its leading rows and columns and drops the rest, with a warning.
 constexpr std::int64_t kMaxGridPositions = std::int64_t{1} << 22;
 
-// The grid rows and columns kept for a declared rows x cols table.
-std::pair<int, int> kept_dimensions(int rows, int cols) {
-  if (static_cast<std::int64_t>(rows) * cols <= kMaxGridPositions) return {rows, cols};
-  const int kept_cols = static_cast<int>(std::min<std::int64_t>(cols, kMaxGridPositions));
-  const int kept_rows = static_cast<int>(kMaxGridPositions / kept_cols);
+// The grid rows and columns kept for a declared rows x cols table, spent
+// from the document's budget.
+std::pair<int, int> kept_dimensions(int rows, int cols, GridBudget& budget) {
+  const std::int64_t allowance = std::min(kMaxGridPositions, budget.remaining());
+  if (static_cast<std::int64_t>(rows) * cols <= allowance) {
+    budget.spend(static_cast<std::int64_t>(rows) * cols);
+    return {rows, cols};
+  }
+  const int kept_cols = static_cast<int>(std::min<std::int64_t>(cols, allowance));
+  const int kept_rows = kept_cols == 0 ? 0 : static_cast<int>(allowance / kept_cols);
   std::println(stderr,
-               "grparse: table of {} x {} positions exceeds the render budget of {}; "
-               "rendering the first {} x {}",
-               rows, cols, kMaxGridPositions, kept_rows, kept_cols);
+               "grparse: table of {} x {} positions exceeds the render budget of {} "
+               "({} left for the document); rendering the first {} x {}",
+               rows, cols, kMaxGridPositions, budget.remaining(), kept_rows, kept_cols);
+  budget.spend(static_cast<std::int64_t>(kept_rows) * kept_cols);
   return {kept_rows, kept_cols};
 }
 
 }  // namespace
 
 std::vector<std::vector<const docv1::TableCell*>> table_grid(
-    const docv1::TableData& data) {
+    const docv1::TableData& data, GridBudget& budget) {
   std::vector<std::vector<const docv1::TableCell*>> grid;
   if (!data.grid().empty()) {
-    grid.reserve(data.grid_size());
+    // A collector's grid may be jagged, and the renderers pad every row to
+    // the widest, so the rows times the widest row is what it costs.
+    int widest = 0;
+    for (const auto& row : data.grid()) widest = std::max(widest, row.cells_size());
+    const auto [rows, cols] = kept_dimensions(data.grid_size(), widest, budget);
+    grid.reserve(static_cast<size_t>(rows));
     for (const auto& row : data.grid()) {
+      if (static_cast<int>(grid.size()) == rows) break;
       std::vector<const docv1::TableCell*> cells;
-      cells.reserve(row.cells_size());
-      for (const auto& cell : row.cells()) cells.push_back(&cell);
+      const int kept = std::min(row.cells_size(), cols);
+      cells.reserve(static_cast<size_t>(kept));
+      for (int index = 0; index < kept; ++index) cells.push_back(&row.cells(index));
       grid.push_back(std::move(cells));
     }
     return grid;
   }
   if (data.num_rows() <= 0 || data.num_cols() <= 0) return grid;
-  const auto [rows, cols] = kept_dimensions(data.num_rows(), data.num_cols());
+  const auto [rows, cols] = kept_dimensions(data.num_rows(), data.num_cols(), budget);
   grid.assign(static_cast<size_t>(rows),
               std::vector<const docv1::TableCell*>(static_cast<size_t>(cols), nullptr));
   for (const auto& cell : data.table_cells()) {
@@ -142,10 +155,10 @@ std::vector<std::vector<const docv1::TableCell*>> table_grid(
 }
 
 std::vector<std::vector<const docv1::TableCell*>> derived_table_grid(
-    const docv1::TableData& data) {
+    const docv1::TableData& data, GridBudget& budget) {
   const int rows = std::max(data.num_rows(), 0);
   const int cols = std::max(data.num_cols(), 0);
-  const auto [kept_rows, kept_cols] = kept_dimensions(rows, cols);
+  const auto [kept_rows, kept_cols] = kept_dimensions(rows, cols, budget);
   std::vector<std::vector<const docv1::TableCell*>> grid(
       static_cast<std::size_t>(kept_rows),
       std::vector<const docv1::TableCell*>(static_cast<std::size_t>(kept_cols), nullptr));

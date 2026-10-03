@@ -167,8 +167,8 @@ std::string build_rule(const std::vector<int>& widths) {
 }  // namespace
 
 std::vector<std::vector<std::string>> table_rows(
-    const docv1::TableData& data, const CellTextResolver& resolve_ref) {
-  const auto grid = derived_table_grid(data);
+    const std::vector<std::vector<const docv1::TableCell*>>& grid,
+    const CellTextResolver& resolve_ref) {
   std::vector<std::vector<std::string>> out;
   out.reserve(grid.size());
   for (const auto& row : grid) {
@@ -215,11 +215,13 @@ std::size_t count_header_rows(const std::vector<std::vector<const docv1::TableCe
 }
 
 std::string table_markdown(const docv1::TableData& data,
-                           const CellTextResolver& resolve_ref, bool compact) {
-  const Rows rows = table_rows(data, resolve_ref);
+                           const CellTextResolver& resolve_ref, GridBudget& budget,
+                           bool compact) {
+  const auto grid = derived_table_grid(data, budget);
+  const Rows rows = table_rows(grid, resolve_ref);
   if (rows.empty()) return std::string();
   const std::size_t columns = rows.front().size();
-  const std::size_t num_headers = std::min(count_header_rows(derived_table_grid(data)), rows.size());
+  const std::size_t num_headers = std::min(count_header_rows(grid), rows.size());
   const Rows header_rows(rows.begin(), rows.begin() + static_cast<std::ptrdiff_t>(num_headers));
   const Rows body(rows.begin() + static_cast<std::ptrdiff_t>(num_headers), rows.end());
   const std::vector<std::string> headers = flatten_header_rows(header_rows, columns);

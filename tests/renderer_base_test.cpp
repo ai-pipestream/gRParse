@@ -3,6 +3,8 @@
 // tags, URI normalization, the two table grids, and the custom-field ordering
 // that makes an unordered wire map export deterministically.
 
+#include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -210,45 +212,50 @@ void verify_uri_normalization_touches_only_what_the_model_touches() {
 
 void verify_the_wire_grid_wins_over_the_flat_cell_list() {
   docv1::TableData data;
+  render::GridBudget budget;
   data.set_num_rows(1);
   data.set_num_cols(2);
   add_cell(&data, data.add_grid(), "from-grid", false, 0, 0);
   data.mutable_table_cells(0)->set_text("from-flat");
 
-  require_equal(grid_text(render::table_grid(data)), "from-grid",
+  require_equal(grid_text(render::table_grid(data, budget)), "from-grid",
                 "a populated wire grid is the layout, whatever the flat list says");
 }
 
 void verify_the_flat_cell_list_places_itself_when_there_is_no_grid() {
   docv1::TableData data;
+  render::GridBudget budget;
   data.set_num_rows(2);
   data.set_num_cols(3);
   add_cell(&data, nullptr, "A", false, 0, 0, 2, 1);
   add_cell(&data, nullptr, "B", false, 0, 1, 1, 2);
   add_cell(&data, nullptr, "C", false, 1, 1);
 
-  require_equal(grid_text(render::table_grid(data)), "A,B,B/A,C,.",
+  require_equal(grid_text(render::table_grid(data, budget)), "A,B,B/A,C,.",
                 "a spanned cell appears at every position it covers and a gap stays null");
 }
 
 void verify_a_cell_reaching_past_the_declared_grid_is_capped() {
   docv1::TableData data;
+  render::GridBudget budget;
   data.set_num_rows(1);
   data.set_num_cols(2);
   add_cell(&data, nullptr, "wide", false, 0, 0, 5, 9);
-  require_equal(grid_text(render::table_grid(data)), "wide,wide",
+  require_equal(grid_text(render::table_grid(data, budget)), "wide,wide",
                 "a span past the declared size stops at the edge");
 }
 
 void verify_a_table_without_a_declared_size_has_no_derived_layout() {
   docv1::TableData data;
+  render::GridBudget budget;
   add_cell(&data, nullptr, "orphan", false, 0, 0);
-  require(render::table_grid(data).empty(),
+  require(render::table_grid(data, budget).empty(),
           "a flat cell list with no declared row and column count places nothing");
 }
 
 void verify_the_derived_grid_wraps_a_negative_offset() {
   docv1::TableData data;
+  render::GridBudget budget;
   data.set_num_rows(2);
   data.set_num_cols(2);
   auto* cell = data.add_table_cells();
@@ -257,7 +264,7 @@ void verify_the_derived_grid_wraps_a_negative_offset() {
   cell->set_end_row_offset_idx(0);
   cell->set_start_col_offset_idx(-1);
   cell->set_end_col_offset_idx(0);
-  require_equal(grid_text(render::derived_table_grid(data)), ".,./.,last",
+  require_equal(grid_text(render::derived_table_grid(data, budget)), ".,./.,last",
                 "a negative offset counts back from the end, as the host language's indexing does");
 
   auto* off_front = data.add_table_cells();
@@ -266,18 +273,46 @@ void verify_the_derived_grid_wraps_a_negative_offset() {
   off_front->set_end_row_offset_idx(-8);
   off_front->set_start_col_offset_idx(-9);
   off_front->set_end_col_offset_idx(-8);
-  require_equal(grid_text(render::derived_table_grid(data)), ".,./.,last",
+  require_equal(grid_text(render::derived_table_grid(data, budget)), ".,./.,last",
                 "an offset so negative it falls off the front reaches no position");
 }
 
 void verify_the_derived_grid_ignores_the_wire_grid() {
   docv1::TableData data;
+  render::GridBudget budget;
   data.set_num_rows(1);
   data.set_num_cols(1);
   add_cell(&data, data.add_grid(), "flat", false, 0, 0);
   data.mutable_grid(0)->mutable_cells(0)->set_text("wire");
-  require_equal(grid_text(render::derived_table_grid(data)), "flat",
+  require_equal(grid_text(render::derived_table_grid(data, budget)), "flat",
                 "the wire grid is a redundant projection the derived layout never reads");
+}
+
+// A jagged wire grid costs its rows times its widest row: past the per-table
+// cap it keeps its leading rows, each cut to the kept width. Every grid
+// spends from the document's budget, and once that is gone a table keeps
+// no positions at all.
+void verify_grids_spend_from_the_document_budget() {
+  docv1::TableData jagged;
+  auto* wide = jagged.add_grid();
+  for (int col = 0; col < 4096; ++col) wide->add_cells();
+  for (int row = 1; row < 2048; ++row) jagged.add_grid()->add_cells();
+  render::GridBudget budget;
+  const auto kept = render::table_grid(jagged, budget);
+  require_equal(kept.size(), std::size_t{1024},
+                "4096 x 2048 positions keep the 1024 leading rows under the 2^22 cap");
+  require_equal(budget.remaining(), render::GridBudget::kDocumentPositions - (std::int64_t{1} << 22),
+                "the kept positions are spent from the document's budget");
+
+  docv1::TableData declared;
+  declared.set_num_rows(1 << 20);
+  declared.set_num_cols(1 << 14);
+  require_equal(render::derived_table_grid(declared, budget).size(), std::size_t{256},
+                "a second capped table takes the rest of the budget");
+  require_equal(budget.remaining(), std::int64_t{0}, "the budget is spent");
+  require(render::derived_table_grid(declared, budget).empty() &&
+              render::table_grid(jagged, budget).empty(),
+          "a table built after the budget runs out keeps no positions");
 }
 
 void verify_custom_fields_order_by_their_final_name() {
@@ -342,6 +377,7 @@ int main() {
       verify_a_table_without_a_declared_size_has_no_derived_layout,
       verify_the_derived_grid_wraps_a_negative_offset,
       verify_the_derived_grid_ignores_the_wire_grid,
+      verify_grids_spend_from_the_document_budget,
       verify_custom_fields_order_by_their_final_name,
       verify_a_non_conforming_name_moves_under_the_pipestream_namespace,
       verify_a_rename_collision_takes_a_numeric_suffix,

@@ -6,6 +6,8 @@
 #ifndef GRPARSE_RENDER_RENDERER_BASE_H
 #define GRPARSE_RENDER_RENDERER_BASE_H
 
+#include <algorithm>
+#include <cstdint>
 #include <optional>
 #include <set>
 #include <string>
@@ -57,14 +59,31 @@ std::string trimmed(const std::string& text);
 // spelled-out punctuation ones.
 std::string code_fence_language(const ai::pipestream::document::v1::CodeItem& code);
 
+// The grid positions one document's tables may hold together. Each table
+// is already capped on its own, but a document of many capped tables could
+// still render gigabytes; a renderer (or the chunker) keeps one budget per
+// document and every grid it builds spends from it. A table built after the
+// budget runs out keeps no positions, with a warning.
+class GridBudget {
+ public:
+  static constexpr std::int64_t kDocumentPositions = std::int64_t{1} << 23;
+  std::int64_t remaining() const { return remaining_; }
+  void spend(std::int64_t positions) { remaining_ -= std::min(positions, remaining_); }
+
+ private:
+  std::int64_t remaining_ = kDocumentPositions;
+};
+
 // The table's cell layout as a row-major pointer grid. The grid field wins
 // when populated; otherwise the flat cell list is placed by its offsets.
 // A spanned cell appears at every position it covers; nullptr marks a
 // position no cell reaches. The declared dimensions are untrusted: a grid
-// above a fixed position budget keeps only its leading rows and columns, and
-// a warning goes to stderr (derived_table_grid caps the same way).
+// above a fixed position budget, or above what `budget` has left, keeps
+// only its leading rows and columns, and a warning goes to stderr
+// (derived_table_grid caps the same way). A wire grid counts as its row
+// count times its widest row, since a jagged grid renders padded to that.
 std::vector<std::vector<const ai::pipestream::document::v1::TableCell*>> table_grid(
-    const ai::pipestream::document::v1::TableData& data);
+    const ai::pipestream::document::v1::TableData& data, GridBudget& budget);
 
 // The cell layout the model derives for its computed grid field: a
 // num_rows x num_cols rectangle of empty positions that every declared cell
@@ -75,7 +94,7 @@ std::vector<std::vector<const ai::pipestream::document::v1::TableCell*>> table_g
 // at all (the model raises there, which an export must not). nullptr marks a
 // position no cell covers.
 std::vector<std::vector<const ai::pipestream::document::v1::TableCell*>>
-derived_table_grid(const ai::pipestream::document::v1::TableData& data);
+derived_table_grid(const ai::pipestream::document::v1::TableData& data, GridBudget& budget);
 
 // The model layer parses hyperlink/uri strings through a URL type whose
 // serializer normalizes them; the states this service and its collectors
@@ -147,6 +166,9 @@ class RendererBase {
 
   const ai::pipestream::document::v1::Document& document_;
   std::set<std::string> consumed_;
+  // Every table grid this document's render builds spends from it; mutable
+  // because the const serializers build grids too.
+  mutable GridBudget grid_budget_;
 
   bool consume(const std::string& ref) { return consumed_.insert(ref).second; }
 

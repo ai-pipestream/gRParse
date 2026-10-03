@@ -506,7 +506,7 @@ class MarkdownRenderer : public MarkdownWalk {
       if (!parts.back().empty() && first_span != nullptr) *first_span = caption_span;
     }
     if (!excluded(ref)) {
-      parts.push_back(render::table_markdown(table.data(), cell_resolver(), compact_tables_));
+      parts.push_back(render::table_markdown(table.data(), cell_resolver(), grid_budget_, compact_tables_));
       if (!parts.back().empty() && first_span != nullptr && first_span->empty()) {
         *first_span = ref;
       }
@@ -618,7 +618,7 @@ class MarkdownRenderer : public MarkdownWalk {
     if (meta.has_tabular_chart()) {
       const std::string table = stripped(
           render::table_markdown(meta.tabular_chart().chart_data(), cell_resolver(),
-                                 compact_tables_));
+                                 grid_budget_, compact_tables_));
       if (!table.empty()) parts.push_back(table);
     }
     if (meta.has_code()) parts.push_back(code_meta_repr(meta.code()));
