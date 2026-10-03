@@ -1076,6 +1076,8 @@ class CvCollector {
     // Heading depth clusters over the whole document's heights, so it can
     // only run after every page is in.
     assign_section_header_levels(&outcome.document, heading_options_);
+    // A list is one structure: consecutive list items join a LIST group.
+    group_list_items(&outcome.document);
     std::vector<PageConfidence> page_scores;
     page_scores.reserve(assembled_pages.size());
     for (const OcrPage* page : assembled_pages) page_scores.push_back(page_confidence(*page));

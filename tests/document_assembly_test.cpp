@@ -677,6 +677,42 @@ void verify_recovered_rotation_reaches_page_quality() {
           "an unturned page claims no rotation");
 }
 
+// Consecutive body list items become one LIST group, in body order and
+// across what were page boundaries; a single item gets its own group, and
+// everything else stays where it was.
+void verify_list_items_join_a_list_group() {
+  namespace docv1 = ai::pipestream::document::v1;
+  docv1::Document document;
+  document.mutable_body()->set_self_ref("#/body");
+  const auto add = [&document](bool list_item) {
+    const std::string ref = "#/texts/" + std::to_string(document.texts_size());
+    auto* text = document.add_texts();
+    docv1::TextItemBase* base = list_item ? text->mutable_list_item()->mutable_base()
+                                          : text->mutable_text()->mutable_base();
+    base->set_self_ref(ref);
+    base->mutable_parent()->set_ref("#/body");
+    base->set_label(list_item ? docv1::DOC_ITEM_LABEL_LIST_ITEM : docv1::DOC_ITEM_LABEL_TEXT);
+    document.mutable_body()->add_children()->set_ref(ref);
+  };
+  for (const bool list_item : {false, true, true, false, true}) add(list_item);
+  require(grparse::group_list_items(&document) == 2, "two runs make two groups");
+  const auto& body = document.body().children();
+  require(body.size() == 4 && body[0].ref() == "#/texts/0" && body[1].ref() == "#/groups/0" &&
+              body[2].ref() == "#/texts/3" && body[3].ref() == "#/groups/1",
+          "each run is replaced in the body by its group");
+  const auto& first = document.groups(0);
+  require(first.label() == docv1::GROUP_LABEL_LIST && first.parent().ref() == "#/body" &&
+              first.children_size() == 2 && first.children(0).ref() == "#/texts/1" &&
+              first.children(1).ref() == "#/texts/2",
+          "the group holds its run in order");
+  require(document.texts(1).list_item().base().parent().ref() == "#/groups/0" &&
+              document.texts(4).list_item().base().parent().ref() == "#/groups/1",
+          "the items name their group as parent");
+  require(document.texts(0).text().base().parent().ref() == "#/body",
+          "other items keep their parent");
+  require(grparse::group_list_items(&document) == 0, "a grouped document is left as it is");
+}
+
 int main() {
   return grparse_test::run_test_main("document-assembly-test", {
       verify_contract_shape,
@@ -698,5 +734,6 @@ int main() {
       verify_rotated_lines_keep_their_quad,
       verify_body_order_and_column_anchoring,
       verify_recovered_rotation_reaches_page_quality,
+      verify_list_items_join_a_list_group,
   });
 }
