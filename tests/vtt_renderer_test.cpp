@@ -117,6 +117,27 @@ void verify_cue_text_is_escaped_and_keeps_its_cue_together() {
                 "cue text escapes & < > and collapses blank lines");
 }
 
+// The header title and a cue identifier stay on their own line: a line
+// break in either would let the rest parse as a cue, and an identifier with
+// "-->" would read as the timing line.
+void verify_title_and_identifier_cannot_inject_cues() {
+  docv1::Document document = base_document("meeting.wav");
+  add_text(&document, "#/body", docv1::BaseTextItem::kTitle, docv1::DOC_ITEM_LABEL_TITLE,
+           "Sync\n\n00:00:09.000 --> 00:00:10.000\nforged");
+  add_cue(&document, "#/body", "one", 1.0, 2.0, "", "intro\nline");
+  add_cue(&document, "#/body", "two", 2.0, 3.0, "", "00:00:05.000 --> 00:00:06.000");
+  require_equal(render_vtt(document),
+                "WEBVTT Sync  00:00:09.000 --> 00:00:10.000 forged\n"
+                "\n"
+                "intro line\n"
+                "00:00:01.000 --> 00:00:02.000\n"
+                "one\n"
+                "\n"
+                "00:00:02.000 --> 00:00:03.000\n"
+                "two",
+                "line breaks fold to spaces and an arrow identifier is dropped");
+}
+
 void verify_an_identifier_takes_the_line_above_the_timing() {
   docv1::Document document = base_document("meeting.wav");
   add_cue(&document, "#/body", "Hello", 1.0, 2.0, "", "cue-1");
@@ -205,6 +226,7 @@ int main() {
       verify_a_voice_wraps_the_cue_text,
       verify_cue_text_is_escaped_and_keeps_its_cue_together,
       verify_an_identifier_takes_the_line_above_the_timing,
+      verify_title_and_identifier_cannot_inject_cues,
       verify_consecutive_items_with_the_same_cue_merge,
       verify_a_different_timing_or_identifier_opens_a_new_cue,
       verify_an_untimed_item_between_two_cues_does_not_merge_them,
