@@ -309,12 +309,16 @@ class ParseUnaryReactor final : public grpc::ServerUnaryReactor {
 };
 
 // The reactor the streamed surfaces finish through. The work runs on the
-// executor exactly as ParseUnaryReactor's does, under the same in-flight
-// charge, and fills every message the stream will carry. Only then do the
-// writes start, one outstanding at a time, each OnWriteDone starting the
-// next and releasing the message it sent. A work failure finishes the call
-// before anything is written, so a reader never sees a partial stream end
-// in OK.
+// executor exactly as ParseUnaryReactor's does and fills every message the
+// stream will carry. Only then do the writes start, one outstanding at a
+// time, each OnWriteDone starting the next and releasing the message it
+// sent. A work failure finishes the call before anything is written, so a
+// reader never sees a partial stream end in OK.
+//
+// The in-flight charge is held by the reactor itself and returned in
+// OnDone: the messages waiting to be written are as large as what the
+// parse held, so the budget covers the call until its last write is done
+// (or refused), not just until the work returns.
 class ParseWriteReactor final
     : public grpc::ServerWriteReactor<pipestream::parse::v1::StreamChunksResponse> {
  public:
@@ -331,11 +335,9 @@ class ParseWriteReactor final
                           "in-flight document bytes would exceed GRPARSE_MAX_INFLIGHT_BYTES"));
       return;
     }
-    std::shared_ptr<void> charge(nullptr, [inflight, request_bytes](void*) {
-      if (inflight != nullptr) inflight->release(request_bytes);
-    });
-    const bool queued = executor.submit([this, context, work = std::move(work),
-                                         charge = std::move(charge)] {
+    inflight_ = inflight;
+    charge_ = request_bytes;
+    const bool queued = executor.submit([this, context, work = std::move(work)] {
       if (context->IsCancelled()) {
         Finish(grpc::Status(grpc::StatusCode::CANCELLED,
                             "request cancelled before conversion started"));
@@ -371,7 +373,10 @@ class ParseWriteReactor final
     write_next();
   }
 
-  void OnDone() override { delete this; }
+  void OnDone() override {
+    if (inflight_ != nullptr) inflight_->release(charge_);
+    delete this;
+  }
 
  private:
   // The cursor moves before StartWrite because OnWriteDone can run on
@@ -388,6 +393,9 @@ class ParseWriteReactor final
 
   Messages messages_;
   std::size_t next_ = 0;
+  // Set only once the charge is taken, so a refused call returns nothing.
+  std::shared_ptr<InflightBytes> inflight_;
+  uint64_t charge_ = 0;
 };
 
 // The trivial surfaces answer on the reaction thread through the context's own

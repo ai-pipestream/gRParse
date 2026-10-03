@@ -42,7 +42,9 @@ service ParseService {
   // and closes with one summary. The parse finishes before the first chunk
   // goes out, so what streams is the result, not the parse; a consumer can
   // embed and store as it reads, and no single message has to hold the
-  // whole chunk list. No REST counterpart.
+  // whole chunk list. With include_converted_doc the summary carries the
+  // whole Document, which can be as large as a unary response. No REST
+  // counterpart.
   rpc StreamChunks(StreamChunksRequest) returns (stream StreamChunksResponse);
 
   // Async hierarchical chunking - mirrors POST /v1/chunk/hierarchical/source/async

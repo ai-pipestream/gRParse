@@ -2844,6 +2844,33 @@ void verify_stream_chunks_matches_the_unary_chunkers(TestServer* server) {
               refused.status.error_message());
 }
 
+// A reader that walks away mid-stream ends the call without wedging the
+// server: the next StreamChunks call still completes in full.
+void verify_stream_chunks_survives_a_cancelled_reader(TestServer* server) {
+  auto client = server->unary_stub();
+  pipestream::parse::v1::StreamChunksRequest request;
+  auto* source = request.mutable_hierarchical()->add_sources()->mutable_file();
+  source->set_filename("image.png");
+  source->set_base64_string("bWVtb3J5");
+  for (int round = 0; round < 3; ++round) {
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    auto reader = client->StreamChunks(&context, request);
+    pipestream::parse::v1::StreamChunksResponse first;
+    require(reader->Read(&first) && first.has_chunk(), "the stream starts with a chunk");
+    context.TryCancel();
+    pipestream::parse::v1::StreamChunksResponse rest;
+    while (reader->Read(&rest)) {
+    }
+    require(reader->Finish().error_code() == grpc::StatusCode::CANCELLED,
+            "a cancelled reader sees CANCELLED");
+  }
+  const StreamedChunks after = read_stream_chunks(server, request);
+  require(after.status.ok() && !after.messages.empty() && after.messages.back().has_summary(),
+          "the server still streams a full call after cancelled ones: " +
+              after.status.error_message());
+}
+
 // These RPC tests exercise orchestration, not model quality. Native model
 // acceptance is a separate gate against the packaged artifacts.
 class RecordingEmbedder final : public grparse::EmbeddingEngine {
@@ -3073,6 +3100,7 @@ int main() {
         verify_hierarchical_chunk_rpc_carries_digest_and_offsets(&server);
         verify_hybrid_chunk_rpc_merges_and_validates(&server);
         verify_stream_chunks_matches_the_unary_chunkers(&server);
+        verify_stream_chunks_survives_a_cancelled_reader(&server);
         verify_chunk_rpcs_refuse_targets_and_surface_failures(&server);
         verify_chunk_embeddings_rpc();
         verify_disabled_embeddings_and_unimplemented_chunk_rpcs(&server);
