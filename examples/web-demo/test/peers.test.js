@@ -29,7 +29,7 @@ test("includeTrees lists each (repo, include) pair once, in registry order", () 
   const keys = trees.map((tree) => `${tree.repo}/${tree.include}`);
   assert.equal(new Set(keys).size, keys.length);
   assert.equal(keys[0], "grpc-lol-html/proto");
-  assert.ok(keys.includes("grPOIc/grpoic-api/src/main/proto"));
+  assert.ok(keys.includes("fastwarc-grpc/proto"));
 });
 
 test("every vendored contract loads with its transitive imports and declares its service", () => {

@@ -41,7 +41,6 @@ export interface NativeTab {
 export const NATIVE_TABS: NativeTab[] = [
   { name: "document", title: "Document", page: "/document.html", status: "/api/document/status" },
   { name: "fastwarc", title: "FastWARC", page: "/fastwarc.html", status: "/api/fastwarc/status" },
-  { name: "poic", title: "POI", page: "/poic.html", status: "/api/poic/status" },
   { name: "asr", title: "ASR", page: "/asr.html", status: "/api/asr/status" },
   { name: "enrich", title: "Enrich", page: "/enrich.html", status: "/api/enrich/status" },
   { name: "vlm-convert", title: "VLM Convert", page: "/vlm-convert.html", status: "/api/vlm-convert/status" },

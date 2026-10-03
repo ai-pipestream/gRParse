@@ -64,7 +64,6 @@ Environment:
 | `DEMO_UIS` | *(empty)* | Shell registry, `name=grpc_addr@ui_addr` comma-separated (see below) |
 | `DEMO_PROTO_DIR` | *(empty)* | Override directory with one `<name>.proto` per registry entry |
 | `FASTWARC_TARGET` | `127.0.0.1:50060` | fastwarc-grpc endpoint backing the native FastWARC tab (see below) |
-| `POIC_TARGET` | `127.0.0.1:50052` | grPOIc endpoint backing the native POI tab (see below) |
 | `ASR_TARGET` | `127.0.0.1:50055` | grpc-asr endpoint backing the native ASR tab (see below) |
 | `ENRICH_TARGET` | `127.0.0.1:50056` | grpc-enrich endpoint backing the native Enrich tab (see below) |
 | `VLM_CONVERT_TARGET` | `127.0.0.1:50058` | grpc-vlm-convert endpoint backing the native VLM Convert tab (see below) |
@@ -216,45 +215,13 @@ resolves from the sibling `fastwarc-grpc` checkout (or the vendored
 `collectors/warc*.proto` files speak the legacy chatnoir dialect and are
 used only by the C++ collector's own client, never by this bridge.
 
-## Native POI tab
-
-grPOIc (`ai.pipestream.poi.v1.PoiParseService`, default port 50052) wraps
-Apache POI: office document bytes in, typed structure events out. The shell
-carries it as a **native tab** like FastWARC: in shell mode the tab bar
-always shows "POI", pointing at the bridge's own `/poic.html`, whether or
-not the server is reachable (its status dot and the page's badge follow
-`GET /api/poic/status`, a `GetServiceInfo` probe with the same 1.5s deadline
-and 5s cache as the other probes; the response also carries the service and
-POI versions and the supported formats). The page is also served
-standalone at `/poic.html` when shell mode is off.
-
-The page posts document bytes (.docx/.xlsx/.pptx and the legacy OLE2 trio)
-to `POST /api/poic/parse` (same 500 MiB cap as `/api/parse`; `filename` and
-`contentType` as query params), the bridge opens the bidirectional
-`ParseDocument` stream, uploads the body in 1 MiB chunks (identity fields
-and `sheet_batches` on the first, `complete` on the last), and relays the
-response stream as NDJSON: a `start` line from `DocumentInfo` (detected
-format plus the well-known metadata fields), one `preview` line per content
-element (paragraph/table/sheet/slide/embedded object, text capped at 512
-characters), an `end` line from the final `ParseStatus`, a `grpc-error`
-line on stream failure, and a final `done` summary. Sheets are always
-requested in batches, because grPOIc refuses a worksheet sent as one event
-past 256 MiB; `poic-sheets.js` folds the consecutive `more_rows` batches of
-a worksheet back into one `preview` line carrying the total row count, the
-batch count, and the first row, without holding the rows themselves. A
-sheet the stream left before its last batch is sent with `incomplete: true`.
-The contract is
-resolved from the sibling grPOIc checkout through the same
-`KNOWN_UIS`/`resolveServiceProto` registry the `/api/uis` probes use, so it
-works in the plain workspace, a worktree, and the demo image.
-
 ## Native ASR, Enrich, and VLM Convert tabs
 
 grpc-asr (`ai.pipestream.asr.v1.AsrService`, default port 50055), grpc-enrich
 (`ai.pipestream.enrich.v1.EnrichService`, default port 50056), and
 grpc-vlm-convert (`ai.pipestream.vlm.v1.VlmConvertService`, default port
 50058) are headless pipeline services, so the shell carries each as a
-**native tab** like FastWARC and POI: pages at `/asr.html`, `/enrich.html`,
+**native tab** like FastWARC: pages at `/asr.html`, `/enrich.html`,
 and `/vlm-convert.html`, status dots and page badges following
 `GET /api/<name>/status` (a `GetServiceInfo` probe with the same 1.5s
 deadline and 5s cache as the other probes), contracts resolved from the

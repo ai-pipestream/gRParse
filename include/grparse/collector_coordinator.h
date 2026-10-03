@@ -75,8 +75,7 @@ struct PlannedCollector {
   ai::pipestream::parse::v1::Collector id =
       ai::pipestream::parse::v1::COLLECTOR_UNSPECIFIED;
   std::function<CollectorOutcome()> run;
-  // A routed office fan-out leg (poi or calamine beside the libreoffice
-  // default): it reads the same bytes as the plan's primary, so once an
+  // A routed office fan-out leg (calamine beside the libreoffice default): it reads the same bytes as the plan's primary, so once an
   // earlier leg has contributed a body, its own body reading drops and only
   // its document-level claims merge. Explicit selections never set this:
   // they stay verbatim, body readings and all.
@@ -122,27 +121,22 @@ CoordinatorResult run_collectors(
 // format the libreoffice collector owns.
 bool office_format(const std::string& filename, const std::string& content_type);
 
-// True when the document is one of the six formats grPOIc reads: doc/docx,
-// xls/xlsx, ppt/pptx (by extension or an officedocument/msword/ms-excel/
-// ms-powerpoint content type). No ODF, no RTF, no CSV: the collector
-// cannot read them.
-bool poi_format(const std::string& filename, const std::string& content_type);
-
 // True when the document is a workbook grpc-calamine reads: xls/xlsx/xlsm/
 // xlsb/ods. Deliberately not csv/tsv: calamine is not a delimited-text
 // reader, however the claim ranks score it.
 bool calamine_workbook_format(const std::string& filename, const std::string& content_type);
 
-// The fan-out a routed office plan gains: a poi leg when the poi endpoint
-// is configured and the format is one grPOIc reads, a calamine leg when the
-// calamine endpoint is configured and the format is a workbook calamine
-// reads. Appended after the routed default, so the legs merge in plan order
-// and the claim ranks decide conflicts. Callers only fan out an implicit
+// The fan-out a routed office plan gains: a calamine leg when the calamine
+// endpoint is configured and the format is a workbook calamine reads.
+// Appended after the routed default, so the legs merge in plan order and
+// the claim ranks decide conflicts. Word processing and presentation
+// formats gain no leg: libreoffice is their only collector, so its failure
+// fails the parse. Callers only fan out an implicit
 // (routed) plan; an explicit selection stays verbatim, and a leg already in
 // the plan is never duplicated.
 void append_office_fanout(std::vector<ai::pipestream::parse::v1::Collector>* plan,
                           const std::string& filename, const std::string& content_type,
-                          bool poi_configured, bool calamine_configured);
+                          bool calamine_configured);
 
 // The collector a document routes to when the caller selects none: office
 // formats to libreoffice, WARC archives (.warc and its gzip/zstd/lz4 forms,

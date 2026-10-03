@@ -27,14 +27,15 @@ below, and PDF/raster to the in-process CV path — with one
 twist: a PDF routes to the pdf inspector instead when one is configured,
 and its classification then decides between the collector's own fast-path
 Document (text-based) and a CV run whose OCR is restricted to the pages
-the inspector named. Office plans fan out: a routed office upload keeps
-libreoffice as its default and gains a poi leg (the six OOXML/OLE2 formats)
-or a calamine leg (workbooks, never CSV) whenever those endpoints are
-configured, so the merge sees three readings of the same file and the claim
-ranks decide conflicts: the primary's body is the document's body, and a
-fan-out leg whose primary lived merges only its document-level account, its
-own body reading dropped (`retain_claims_only`), while a fan-out leg whose
-primary failed keeps its full reading as the only body. Two
+the inspector named. Workbook plans fan out: a routed workbook upload
+(never CSV) keeps libreoffice as its default and gains a calamine leg
+whenever that endpoint is configured, so the merge sees two readings of the
+same file and the claim ranks decide conflicts: the primary's body is the
+document's body, and a fan-out leg whose primary lived merges only its
+document-level account, its own body reading dropped (`retain_claims_only`),
+while a fan-out leg whose primary failed keeps its full reading as the only
+body. Word processing and presentation uploads have libreoffice alone, so a
+libreoffice failure on them fails the parse with that leg's status. Two
 collectors are never routed to — EBCDIC, because raw records carry no
 trustworthy format signal and a parse needs a caller-supplied layout, and
 lol-html, because it does targeted CSS-selector extraction rather than
@@ -46,11 +47,11 @@ streams typed events back as it parses — records, chapters, rows, envelope
 parts. Two fold shapes exist. Most collectors can project their own event
 stream into a `Document` server-side (their `emit_document` option), so
 gRParse asks for that event and drains the rest: the fold happens where the
-events were made, and attribution stays with the collector. Five contracts
-have no document event by design — libreoffice's page events, lol-html's
-selector matches, fastwarc's record stream, poi's typed parse events, and
-calamine's handle-based cell streams — so for those, gRParse folds
-client-side into the same `Document` shape. Either way, every collector's
+events were made, and attribution stays with the collector. Four contracts
+have no document event by design: libreoffice's page events, lol-html's
+selector matches, fastwarc's record stream, and calamine's handle-based
+cell streams. For those, gRParse folds client-side into the same
+`Document` shape. Either way, every collector's
 contribution arrives as one `ai.pipestream.document.v1.Document` whose items
 carry a `CollectorSource` tag.
 
