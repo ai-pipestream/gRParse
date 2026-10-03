@@ -115,8 +115,10 @@ class DoclangRenderer : RendererBase {
            (satellite_depth_ == 0 && satellite_nested_.contains(ref));
   }
 
-  // The text satellites of every table and picture, then everything nested
-  // under them, so the walk can leave both to the float.
+  // The text satellites of every table and picture that renders, then
+  // everything nested under them, so the walk can leave both to the float.
+  // A float in an excluded layer claims nothing: it never renders, so a
+  // satellite the producer also linked into the body renders there.
   void claim_satellites() {
     const auto claim = [this](const google::protobuf::RepeatedPtrField<docv1::RefItem>& refs) {
       for (const auto& ref : refs) {
@@ -127,10 +129,12 @@ class DoclangRenderer : RendererBase {
       }
     };
     for (const auto& table : document_.tables()) {
+      if (excluded_layer(table.content_layer())) continue;
       claim(table.captions());
       claim(table.footnotes());
     }
     for (const auto& picture : document_.pictures()) {
+      if (excluded_layer(picture.content_layer())) continue;
       claim(picture.captions());
       claim(picture.footnotes());
     }
@@ -204,10 +208,10 @@ class DoclangRenderer : RendererBase {
 
   // Folds one member of an inline flow into `content`: a text run joins the
   // text (its own children folding after it), a group's members fold in
-  // turn, and anything else (a table, a picture) stays a block.
+  // turn, and anything else (a list, a table, a picture) stays a block.
   void append_inline(const std::string& raw, HostContent& content) {
     const ArenaRef ref = parse_ref(raw);
-    if (ref.kind != ArenaRef::kText && ref.kind != ArenaRef::kGroup) {
+    if ((ref.kind != ArenaRef::kText && ref.kind != ArenaRef::kGroup) || list_group(ref)) {
       content.blocks.push_back(raw);
       return;
     }
@@ -229,9 +233,18 @@ class DoclangRenderer : RendererBase {
     for (const auto& child : group.children()) append_inline(child.ref(), content);
   }
 
+  // Whether a reference names a list group, which keeps its structure even
+  // inside an inline flow.
+  bool list_group(const ArenaRef& ref) const {
+    if (ref.kind != ArenaRef::kGroup || ref.index >= document_.groups_size()) return false;
+    const auto label = document_.groups(ref.index).label();
+    return label == docv1::GROUP_LABEL_LIST || label == docv1::GROUP_LABEL_ORDERED_LIST;
+  }
+
   // A host's own text, then the runs of its first child when that child is
-  // an inline group (docling's host shape, DocLang's mixed content): the
-  // runs are part of the host's text, never items of their own.
+  // an inline group (a text item with no text of its own over its runs,
+  // DocLang's mixed content): the runs are part of the host's text, never
+  // items of their own.
   HostContent host_content(const docv1::BaseTextItem& item, const std::string& own) {
     HostContent content{own, {}, false};
     const auto& children = text_children(item);
@@ -250,8 +263,8 @@ class DoclangRenderer : RendererBase {
   }
 
   // Where a host's block children go: after its element at the same depth,
-  // inside it when the host has no text or runs of its own (docling nests
-  // a bare host's children), or inside it always (a float's satellite).
+  // inside it when the host has no text or runs of its own (a bare host's
+  // children nest), or inside it always (a float's satellite).
   enum class Nest { kNever, kWhenBare, kAlways };
 
   // Renders a text host as the element `tag`. The text sits on the element's
@@ -408,7 +421,7 @@ class DoclangRenderer : RendererBase {
   // element `tag` holding its own text, the runs of an inline group, and
   // whatever else is nested under it (a field region in an otherwise empty
   // footnote), the last one level in. A satellite with none of these is
-  // omitted. A linked caption takes docling's block form: an <href/> head
+  // omitted. A linked caption takes the block form: an <href/> head
   // naming the normalized target, then the caption text as a bare text line.
   void render_satellites(const google::protobuf::RepeatedPtrField<docv1::RefItem>& refs,
                          const std::string& tag, int depth) {

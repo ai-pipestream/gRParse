@@ -114,14 +114,16 @@ std::string render_doctags(const ai::pipestream::document::v1::Document& documen
 // carrying a hyperlink takes the block form with an `<href uri=...>` head,
 // and a rich table cell (its ref naming a group) renders the group's blocks
 // inside the cell element. A text item whose first child is an inline group
-// (docling's host shape, e.g. a footnote with text "" over its runs) holds
+// (a host, e.g. a footnote with text "" over its runs) holds
 // the runs in its own element, after its own text and joined by spaces;
 // formatting is not written. Its other children follow it, or nest inside
 // it when it has neither text nor runs. A body-level inline group folds into
 // one paragraph. A table's or picture's captions render before it and its
 // footnotes after it, each holding everything nested under it (a field
 // region in an otherwise empty footnote) and omitted when it holds nothing;
-// they render with their float only, even where the tree links them too.
+// they render with their float only, even where the tree links them too,
+// unless the float is in an excluded layer. A list inside an inline flow
+// keeps its structure and renders after the flow's text.
 // Content is XML-escaped; provenance is not
 // emitted (the reader skips it anyway). Uses DoclangOptions{}: the
 // namespace is declared and pictures carry no uri (placeholder mode).

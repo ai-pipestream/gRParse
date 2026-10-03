@@ -416,7 +416,7 @@ docv1::TextItemBase* text_base_at(docv1::Document* document, const std::string& 
              : item->mutable_text()->mutable_base();
 }
 
-// A group held by a text item (docling's host shape): it lives in the group
+// A group held by a text item (a host): it lives in the group
 // arena with the host as its parent and is linked as the host's child, never
 // under the body.
 std::string add_hosted_group(docv1::Document* document, const std::string& host,
@@ -451,7 +451,7 @@ void add_hosted_field_region(docv1::Document* document, const std::string& host,
   }
 }
 
-// docling-core #804's host shape: a footnote (or any text) with no text of
+// A host: a footnote (or any text) with no text of
 // its own whose first child is an inline group of runs. The runs belong
 // inside the host's element, after any text the host has, exactly once;
 // later children follow the host as siblings.
@@ -511,7 +511,7 @@ void verify_a_body_inline_group_folds_into_one_paragraph() {
                 "the runs join with a space into one paragraph, formatting kept as text");
 }
 
-// docling-core #824: a table's footnotes render after it, each holding its
+// A table's footnotes render after it, each holding its
 // nested content (a field region held by an otherwise empty footnote) inside
 // its own element; an empty footnote is omitted, and a footnote the tree also
 // links ahead of the table still renders once, with its table.
@@ -592,6 +592,144 @@ void verify_float_captions_keep_their_nested_content() {
                 "  <footnote>estimated</footnote>\n",
                 "captions keep their nested content inside their element and the footnote "
                 "follows the picture");
+}
+
+// Nested content is escaped wherever it lands: runs joined into a host's
+// text, the text line and the nested blocks of a satellite, and the
+// satellite's <href/> head.
+void verify_nested_content_is_xml_escaped() {
+  docv1::Document document = base_document("escaped.pdf");
+  const std::string note = add_text(&document, "#/body", docv1::BaseTextItem::kText,
+                                    docv1::DOC_ITEM_LABEL_FOOTNOTE, "");
+  const std::string runs = add_hosted_group(&document, note, docv1::GROUP_LABEL_INLINE);
+  add_paragraph(&document, runs, "a < b");
+  add_paragraph(&document, runs, "& c");
+  auto* table = add_table(&document, "#/body");
+  table->mutable_data()->set_num_rows(1);
+  table->mutable_data()->set_num_cols(1);
+  add_cell(table->mutable_data(), nullptr, "x", false, 0, 0);
+  const std::string caption =
+      add_owned_text(&document, table->self_ref(), docv1::DOC_ITEM_LABEL_CAPTION, "T<1>");
+  text_base_at(&document, caption)->set_hyperlink("https://e.x/?a=1&b=\"2\"");
+  const std::string blocks =
+      add_hosted_group(&document, caption, docv1::GROUP_LABEL_UNSPECIFIED);
+  add_paragraph(&document, blocks, "n & m");
+  document.mutable_tables(0)->add_captions()->set_ref(caption);
+
+  require_equal(body_of(document),
+                "  <footnote>a &lt; b &amp; c</footnote>\n"
+                "  <caption>\n"
+                "    <href uri=\"https://e.x/?a=1&amp;b=&quot;2&quot;\"/>\n"
+                "    T&lt;1&gt;\n"
+                "    <paragraph>n &amp; m</paragraph>\n"
+                "  </caption>\n"
+                "  <table>\n"
+                "    <tr>\n"
+                "      <td>x</td>\n"
+                "    </tr>\n"
+                "  </table>\n",
+                "joined runs, satellite text, nested blocks and the href are all escaped");
+}
+
+// A list keeps what is not a list item where the producer put it, one level
+// in (an inline flow as one paragraph, a table), and a list inside an inline
+// flow keeps its structure after the flow's text instead of folding into it.
+void verify_lists_keep_their_nested_blocks() {
+  docv1::Document document = base_document("list-blocks.pdf");
+  const std::string list = add_group(&document, "#/body", docv1::GROUP_LABEL_LIST);
+  add_text(&document, list, docv1::BaseTextItem::kListItem, docv1::DOC_ITEM_LABEL_LIST_ITEM,
+           "one");
+  const std::string flow = add_group(&document, list, docv1::GROUP_LABEL_INLINE);
+  add_paragraph(&document, flow, "run a");
+  add_paragraph(&document, flow, "run b");
+  auto* table = add_table(&document, list);
+  table->mutable_data()->set_num_rows(1);
+  table->mutable_data()->set_num_cols(1);
+  add_cell(table->mutable_data(), nullptr, "cell", false, 0, 0);
+  add_text(&document, list, docv1::BaseTextItem::kListItem, docv1::DOC_ITEM_LABEL_LIST_ITEM,
+           "two");
+
+  const std::string lead = add_group(&document, "#/body", docv1::GROUP_LABEL_INLINE);
+  add_paragraph(&document, lead, "lead");
+  const std::string inner = add_group(&document, lead, docv1::GROUP_LABEL_LIST);
+  add_text(&document, inner, docv1::BaseTextItem::kListItem, docv1::DOC_ITEM_LABEL_LIST_ITEM,
+           "first");
+
+  require_equal(body_of(document),
+                "  <list ordered=\"false\">\n"
+                "    <list-item>one</list-item>\n"
+                "    <paragraph>run a run b</paragraph>\n"
+                "    <table>\n"
+                "      <tr>\n"
+                "        <td>cell</td>\n"
+                "      </tr>\n"
+                "    </table>\n"
+                "    <list-item>two</list-item>\n"
+                "  </list>\n"
+                "  <paragraph>lead</paragraph>\n"
+                "  <list ordered=\"false\">\n"
+                "    <list-item>first</list-item>\n"
+                "  </list>\n",
+                "a list's other blocks render in place and a list in a flow stays a list");
+}
+
+// Inside a rich cell: a list item hosting its runs, and a nested table whose
+// footnote follows it inside the cell.
+void verify_a_rich_cell_keeps_hosts_and_satellites() {
+  docv1::Document document = base_document("rich-nested.pdf");
+  auto* table = add_table(&document, "#/body");
+  table->mutable_data()->set_num_rows(1);
+  table->mutable_data()->set_num_cols(1);
+  const std::string blocks =
+      add_owned_group(&document, table->self_ref(), docv1::GROUP_LABEL_UNSPECIFIED);
+  add_cell(table->mutable_data(), nullptr, "", false, 0, 0)->mutable_ref()->set_ref(blocks);
+  const std::string list = add_group(&document, blocks, docv1::GROUP_LABEL_LIST);
+  const std::string item = add_text(&document, list, docv1::BaseTextItem::kListItem,
+                                    docv1::DOC_ITEM_LABEL_LIST_ITEM, "");
+  const std::string runs = add_hosted_group(&document, item, docv1::GROUP_LABEL_INLINE);
+  add_paragraph(&document, runs, "x");
+  add_paragraph(&document, runs, "<y>");
+  auto* inner = add_table(&document, blocks);
+  inner->mutable_data()->set_num_rows(1);
+  inner->mutable_data()->set_num_cols(1);
+  add_cell(inner->mutable_data(), nullptr, "in", false, 0, 0);
+  const std::string note =
+      add_owned_text(&document, inner->self_ref(), docv1::DOC_ITEM_LABEL_FOOTNOTE, "inner note");
+  document.mutable_tables(1)->add_footnotes()->set_ref(note);
+
+  require_equal(body_of(document),
+                "  <table>\n"
+                "    <tr>\n"
+                "      <td>\n"
+                "        <list ordered=\"false\">\n"
+                "          <list-item>x &lt;y&gt;</list-item>\n"
+                "        </list>\n"
+                "        <table>\n"
+                "          <tr>\n"
+                "            <td>in</td>\n"
+                "          </tr>\n"
+                "        </table>\n"
+                "        <footnote>inner note</footnote>\n"
+                "      </td>\n"
+                "    </tr>\n"
+                "  </table>\n",
+                "a rich cell holds a hosting list item and a footnoted table");
+}
+
+// A float in an excluded layer never renders, so it claims no satellite: a
+// footnote the producer also linked into the body still renders there.
+void verify_an_excluded_float_leaves_its_satellites_to_the_body() {
+  docv1::Document document = base_document("furniture.pdf");
+  auto* table = add_table(&document, "#/body");
+  table->set_content_layer(docv1::CONTENT_LAYER_FURNITURE);
+  table->mutable_data()->set_num_rows(1);
+  table->mutable_data()->set_num_cols(1);
+  add_cell(table->mutable_data(), nullptr, "x", false, 0, 0);
+  const std::string note = add_text(&document, "#/body", docv1::BaseTextItem::kText,
+                                    docv1::DOC_ITEM_LABEL_FOOTNOTE, "body note");
+  document.mutable_tables(0)->add_footnotes()->set_ref(note);
+  require_equal(body_of(document), "  <footnote>body note</footnote>\n",
+                "the excluded table is gone and its footnote stays in the body");
 }
 
 // Two pages of 100 x 200 units with 50 x 100 pixel page images (half scale),
@@ -814,6 +952,10 @@ int main() {
       verify_a_body_inline_group_folds_into_one_paragraph,
       verify_float_footnotes_render_after_their_float_with_nested_content,
       verify_float_captions_keep_their_nested_content,
+      verify_nested_content_is_xml_escaped,
+      verify_lists_keep_their_nested_blocks,
+      verify_a_rich_cell_keeps_hosts_and_satellites,
+      verify_an_excluded_float_leaves_its_satellites_to_the_body,
       verify_doclang_image_modes,
       verify_doclang_namespace_switch,
       verify_dclx_is_a_zip_with_document_xml,
