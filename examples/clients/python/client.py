@@ -10,7 +10,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "gen"))
 
 import grpc  # noqa: E402
-from ai.pipestream.parse.v1 import parse_stream_pb2, parse_stream_pb2_grpc  # noqa: E402
+from ai.pipestream.parse.v1 import parse_stream_pb2, parse_stream_pb2_grpc, parse_types_pb2  # noqa: E402
 
 CHUNK_BYTES = 1024 * 1024
 CONTENT_TYPES = {
@@ -34,8 +34,8 @@ def chunk_stream(path: pathlib.Path):
 
 
 def describe_page(page) -> str:
-    digital = sum(1 for o in page.text_offsets if o.source == parse_stream_pb2.TEXT_SOURCE_DIGITAL_PDF)
-    ocr = sum(1 for o in page.text_offsets if o.source == parse_stream_pb2.TEXT_SOURCE_OCR)
+    digital = sum(1 for o in page.text_offsets if o.source == parse_types_pb2.TEXT_SOURCE_DIGITAL_PDF)
+    ocr = sum(1 for o in page.text_offsets if o.source == parse_types_pb2.TEXT_SOURCE_OCR)
     barcodes = sum(
         1
         for picture in page.pictures

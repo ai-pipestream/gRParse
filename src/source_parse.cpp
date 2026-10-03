@@ -1971,14 +1971,15 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     const grpc::Status structure_status =
         check_structure(result.document, structure, surface, &parsed->structure_findings);
     if (!structure_status.ok()) return structure_status;
-    // The offset table describes the CV collector's own text stream. It is
-    // published only when that collector is the entire document and the
-    // repair pass left its text and arena alone: a merge renumbers arena
-    // references, a repair that retires items or rewrites text moves them,
-    // and a table that no longer names the items it describes is worse than
-    // no table at all.
+    // The offset table comes from the final document, so every path has
+    // one and it always names the items the response carries. The CV
+    // collector's own rows add how each item was read (digital or OCR), but
+    // only when that collector is the entire document and the repair pass
+    // left its text and arena alone: a merge renumbers arena references and
+    // a repair moves text, and a label on the wrong item is worse than none.
+    parsed->offsets = chunking::derive_offsets(result.document);
     if (result.succeeded == 1 && !cv_offsets->empty() && !repaired_text) {
-      chunking::add_offsets(*cv_offsets, &parsed->offsets);
+      chunking::overlay_sources(*cv_offsets, &parsed->offsets);
     }
     stamp_collector_warnings(&result);
     parsed->filename = requested_name;

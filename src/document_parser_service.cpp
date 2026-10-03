@@ -329,6 +329,7 @@ grpc::ServerUnaryReactor* DocumentParserService::ConvertSource(
     report_failures(result.failures, converted->mutable_errors());
     if (parsed.confidence.has_value()) *converted->mutable_confidence() = *parsed.confidence;
     converted->mutable_structure_findings()->Swap(&parsed.structure_findings);
+    *converted->mutable_text_offsets() = chunking::offset_rows(parsed.offsets);
     // Every requested output format renders from the same merged document;
     // TEXT keeps its arena-order line export, the rest fold the body tree.
     const auto& options = request->request().options();
