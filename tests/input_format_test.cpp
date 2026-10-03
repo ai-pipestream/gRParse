@@ -57,6 +57,13 @@ void verify_container_and_variant_mappings() {
   require_format("application/octet-stream", "a.docm", parsev1::INPUT_FORMAT_DOCX, "docm");
   require_format("application/octet-stream", "a.pptm", parsev1::INPUT_FORMAT_PPTX, "pptm");
   require_format("application/octet-stream", "a.xltx", parsev1::INPUT_FORMAT_XLSX, "xltx");
+  // The legacy and ODF formats fall back to their extension like the OOXML
+  // ones when the sniffer names only the container.
+  require_format("application/octet-stream", "a.XLS", parsev1::INPUT_FORMAT_XLS, ".xls");
+  require_format("application/octet-stream", "a.ppt", parsev1::INPUT_FORMAT_PPT, ".ppt");
+  require_format("application/zip", "a.odt", parsev1::INPUT_FORMAT_ODT, ".odt");
+  require_format("application/zip", "a.ods", parsev1::INPUT_FORMAT_ODS, ".ods");
+  require_format("application/zip", "a.odp", parsev1::INPUT_FORMAT_ODP, ".odp");
 }
 
 void verify_allowlist() {
