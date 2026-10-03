@@ -116,6 +116,13 @@ services:
       GRPARSE_ENRICH_TARGET: "enrich:50056"
       GRPARSE_ENRICH_TIMEOUT_MS: "5000"
       GRPARSE_ENRICH_VLM_ENDPOINT: "${GRPARSE_ENRICH_VLM_ENDPOINT:-http://krick-1.taild24b1c.ts.net:8086}"
+      # Chart extraction policy. North Micro Vision is a general VLM without
+      # the Granite Vision <chart2csv> tokens, so the stack's default preset
+      # asks with Docling's natural-language prompts and leaves the model
+      # name to the endpoint. Name granite_vision_v4 per request (or set it
+      # as the default) when the endpoint serves the Granite fine-tune.
+      GRPARSE_CUSTOM_CHART_EXTRACTION_PRESETS: '${GRPARSE_CUSTOM_CHART_EXTRACTION_PRESETS:-{"stack_vlm":{"use_natural_language_prompts":true}}}'
+      GRPARSE_DEFAULT_CHART_EXTRACTION_PRESET: "${GRPARSE_DEFAULT_CHART_EXTRACTION_PRESET:-stack_vlm}"
       # PROCESSING_PIPELINE_VLM dials grpc-vlm-convert with full-page PNGs.
       GRPARSE_VLM_CONVERT_TARGET: "vlm-convert:50058"
       GRPARSE_VLM_CONVERT_TIMEOUT_MS: "120000"

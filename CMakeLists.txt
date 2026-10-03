@@ -751,6 +751,7 @@ add_library(grparse_core STATIC
   src/in_memory_document.cpp
   src/consensus_page_source.cpp
   src/remote_page_source.cpp
+  src/pdf_form_widgets.cpp
   src/ocr_engine.cpp
   src/layout_decode.cpp
   src/layout_engine.cpp
@@ -1009,9 +1010,9 @@ add_custom_command(
 target_sources(grparse_proto PRIVATE
   "${GENERATED_DIR}/ai/pipestream/enrich/v1/enrich_service.pb.cc"
   "${GENERATED_DIR}/ai/pipestream/enrich/v1/enrich_service.grpc.pb.cc")
-target_sources(grparse_core PRIVATE src/chart_derender.cpp)
+target_sources(grparse_core PRIVATE src/chart_derender.cpp src/chart_extraction_policy.cpp)
 if(BUILD_TESTING)
-  set(GRPARSE_CHART_TESTS chart-composite-test chart-derender-test)
+  set(GRPARSE_CHART_TESTS chart-composite-test chart-derender-test chart-extraction-policy-test)
   foreach(test_name IN LISTS GRPARSE_CHART_TESTS)
     string(REPLACE "-" "_" test_source "${test_name}")
     add_executable(${test_name} "tests/${test_source}.cpp")
@@ -1135,6 +1136,7 @@ if(BUILD_TESTING)
     json-key-order-test
     latex-renderer-test
     load-normalization-test
+    pdf-form-widgets-test
     render-determinism-test
     render-map-order-test
     renderer-base-test

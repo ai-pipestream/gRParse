@@ -102,7 +102,7 @@ enrichv1::ChartTable canned_table(const std::string& title) {
   return chart;
 }
 
-enum class FakeMode { kAnswer, kSkip, kEmptyTable, kSlow, kDuplicate };
+enum class FakeMode { kAnswer, kSkip, kEmptyTable, kSlow, kDuplicate, kOutputs, kSummarySkipped };
 
 class FakeEnrichService final : public enrichv1::EnrichService::Service {
  public:
@@ -149,6 +149,36 @@ class FakeEnrichService final : public enrichv1::EnrichService::Service {
     stream->Write(event);
     for (const docv1::PictureItem& picture : seen.document.pictures()) {
       event.Clear();
+      if (mode_ == FakeMode::kOutputs || mode_ == FakeMode::kSummarySkipped) {
+        // One event per chart output, the way grpc-enrich answers a request
+        // carrying ChartExtractionOptions.
+        enrichv1::ItemAnnotation* table = event.mutable_annotation();
+        table->set_self_ref(picture.self_ref());
+        table->set_model("chart-vlm");
+        *table->mutable_chart_table() = canned_table("Revenue by region");
+        stream->Write(event);
+        event.Clear();
+        if (mode_ == FakeMode::kSummarySkipped) {
+          event.mutable_skipped()->set_self_ref(picture.self_ref());
+          event.mutable_skipped()->set_reason(enrichv1::SKIP_REASON_VLM_ERROR);
+          event.mutable_skipped()->set_chart_output(enrichv1::CHART_OUTPUT_SUMMARY);
+          event.mutable_skipped()->set_detail("chart model returned an empty summary");
+        } else {
+          enrichv1::ItemAnnotation* summary = event.mutable_annotation();
+          summary->set_self_ref(picture.self_ref());
+          summary->set_model("chart-vlm");
+          summary->mutable_chart_summary()->set_text("Revenue is higher in the North.");
+        }
+        stream->Write(event);
+        event.Clear();
+        enrichv1::ItemAnnotation* code = event.mutable_annotation();
+        code->set_self_ref(picture.self_ref());
+        code->set_model("chart-vlm");
+        code->mutable_chart_code()->set_text("import matplotlib.pyplot as plt");
+        code->mutable_chart_code()->set_language(docv1::CODE_LANGUAGE_LABEL_PYTHON);
+        stream->Write(event);
+        continue;
+      }
       if (mode_ == FakeMode::kSkip) {
         event.mutable_skipped()->set_self_ref(picture.self_ref());
         event.mutable_skipped()->set_reason(enrichv1::SKIP_REASON_VLM_ERROR);
@@ -538,6 +568,113 @@ void verify_fold_lands_on_a_picture_without_self_ref() {
           "the folded picture is no longer a candidate");
 }
 
+grparse::ChartExtractionPreset all_outputs_preset() {
+  grparse::ChartExtractionPreset preset;
+  preset.id = "charts";
+  preset.model = "chart-vlm";
+  preset.vlm_endpoint = "http://charts.test:9000";
+  preset.chart2summary = true;
+  preset.chart2code = true;
+  preset.use_natural_language_prompts = true;
+  return preset;
+}
+
+// The resolved preset travels as ChartExtractionOptions, and the table,
+// summary and code that come back land in meta.tabular_chart,
+// meta.description and meta.code, each created_by the model, with one
+// GenerationSource naming the model and the preset's endpoint.
+void verify_chart_outputs_reach_enrich_and_fold_into_meta() {
+  FakeEnrichService fake(FakeMode::kOutputs);
+  ServerFixture server(&fake);
+  docv1::Document document = sample_document();
+  grparse::ChartDerenderOptions options = options_for(server.target());
+  options.chart_extraction = all_outputs_preset();
+  const grparse::ChartDerenderReport report =
+      grparse::derender_charts(server.channel(), options, &document);
+  require(report.candidates == 1 && report.derendered == 1 && report.skipped == 0 &&
+              report.chart_tables == 1 && report.chart_summaries == 1 && report.chart_codes == 1,
+          "one chart, three outputs folded");
+  require(report.warnings.empty(), "a complete answer has no warnings");
+  const FakeEnrichService::Seen seen = fake.seen();
+  require(seen.options.has_chart_extraction(), "the preset travels as ChartExtractionOptions");
+  const enrichv1::ChartExtractionOptions& chart = seen.options.chart_extraction();
+  require(chart.has_csv() && chart.csv() && chart.summary() && chart.code() &&
+              chart.natural_language_prompts() && chart.model() == "chart-vlm" &&
+              chart.vlm_endpoint() == "http://charts.test:9000",
+          "outputs, prompt dialect, model and endpoint all reach enrich");
+  require(seen.options.vlm_endpoint() == "http://vlm.test:8085",
+          "the request endpoint stays for the other jobs");
+  const docv1::PictureItem& picture = document.pictures(0);
+  require(picture.meta().tabular_chart().created_by() == "chart-vlm" &&
+              picture.meta().tabular_chart().chart_data().table_cells_size() == 6,
+          "the table lands in meta.tabular_chart");
+  require(picture.meta().description().text() == "Revenue is higher in the North." &&
+              picture.meta().description().created_by() == "chart-vlm",
+          "the summary lands in meta.description, attributed to the model");
+  require(picture.meta().code().text() == "import matplotlib.pyplot as plt" &&
+              picture.meta().code().language() == docv1::CODE_LANGUAGE_LABEL_PYTHON &&
+              picture.meta().code().created_by() == "chart-vlm",
+          "the code lands in meta.code as Python, attributed to the model");
+  require(picture.source_size() == 1 && picture.source(0).generation().model() == "chart-vlm" &&
+              picture.source(0).generation().endpoint() == "http://charts.test:9000",
+          "one GenerationSource names the model and the chart endpoint");
+}
+
+// A summary the model could not produce is skipped on its own: the table
+// and the code still land, the chart counts as derendered, and the warning
+// names the output.
+void verify_one_failed_output_keeps_the_others() {
+  FakeEnrichService fake(FakeMode::kSummarySkipped);
+  ServerFixture server(&fake);
+  docv1::Document document = sample_document();
+  grparse::ChartDerenderOptions options = options_for(server.target());
+  options.chart_extraction = all_outputs_preset();
+  const grparse::ChartDerenderReport report =
+      grparse::derender_charts(server.channel(), options, &document);
+  require(report.derendered == 1 && report.skipped == 0 && report.chart_tables == 1 &&
+              report.chart_summaries == 0 && report.chart_codes == 1,
+          "the chart is derendered without its summary");
+  require(report.warnings.size() == 1 && report.warnings[0].contains("CHART_OUTPUT_SUMMARY") &&
+              report.warnings[0].contains("empty summary"),
+          "the warning names the skipped output: " +
+              (report.warnings.empty() ? std::string("no warning") : report.warnings[0]));
+  require(!document.pictures(0).meta().has_description() &&
+              document.pictures(0).meta().code().text() == "import matplotlib.pyplot as plt",
+          "no description, code present");
+}
+
+// The fold refuses to overwrite: a picture that already has a description
+// or code keeps it.
+void verify_summary_and_code_fold_once() {
+  docv1::Document document = sample_document();
+  enrichv1::ItemAnnotation summary;
+  summary.set_self_ref("#/pictures/0");
+  summary.set_model("chart-vlm");
+  summary.mutable_chart_summary()->set_text("first");
+  require(grparse::fold_chart_summary(summary, "", &document), "a summary folds");
+  summary.mutable_chart_summary()->set_text("second");
+  require(!grparse::fold_chart_summary(summary, "", &document) &&
+              document.pictures(0).meta().description().text() == "first",
+          "a second summary does not overwrite");
+  enrichv1::ItemAnnotation code;
+  code.set_self_ref("#/pictures/0");
+  code.set_model("chart-vlm");
+  code.mutable_chart_code()->set_text("plot()");
+  require(grparse::fold_chart_code(code, "", &document) &&
+              document.pictures(0).meta().code().language() == docv1::CODE_LANGUAGE_LABEL_PYTHON,
+          "code folds as Python even when the peer leaves the language unset");
+  code.mutable_chart_code()->set_text("other()");
+  require(!grparse::fold_chart_code(code, "", &document) &&
+              document.pictures(0).meta().code().text() == "plot()",
+          "a second code does not overwrite");
+  enrichv1::ItemAnnotation empty = code;
+  empty.set_self_ref("#/pictures/1");
+  empty.mutable_chart_code()->clear_text();
+  require(!grparse::fold_chart_code(empty, "", &document), "empty code folds nothing");
+  require(document.pictures(0).source_size() == 1,
+          "the same model and endpoint is one GenerationSource");
+}
+
 void verify_off_by_default_dials_nothing() {
   grparse::CollectorTargets targets;
   require(!targets.derender.enabled(), "no target, no leg");
@@ -586,5 +723,8 @@ int main() {
       verify_duplicate_tables_fold_once_and_never_go_negative,
       verify_fold_lands_on_a_picture_without_self_ref,
       verify_off_by_default_dials_nothing,
+      verify_chart_outputs_reach_enrich_and_fold_into_meta,
+      verify_one_failed_output_keeps_the_others,
+      verify_summary_and_code_fold_once,
   });
 }

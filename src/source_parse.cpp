@@ -27,6 +27,7 @@
 #include "grparse/heading_hierarchy.h"
 #include "grparse/input_format.h"
 #include "grparse/page_previews.h"
+#include "grparse/pdf_form_widgets.h"
 #include "grparse/schema_version.h"
 #include "grparse/vlm_convert.h"
 #include "parse_support.h"
@@ -475,17 +476,16 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
         !s.ok()) {
       return s;
     }
+    // Docling's ChartExtractionVlmEngineOptions validator: the three
+    // outputs are independent, but at least one must be on. All three, and
+    // the natural-language prompt switch, travel to grpc-enrich.
     const bool chart2csv = !cfg.has_chart2csv() || cfg.chart2csv();
     const bool chart2summary = cfg.has_chart2summary() && cfg.chart2summary();
     const bool chart2code = cfg.has_chart2code() && cfg.chart2code();
-    const bool natural_language =
-        cfg.has_use_natural_language_prompts() && cfg.use_natural_language_prompts();
-    if (!chart2csv || chart2summary || chart2code || natural_language) {
-      return grpc::Status(
-          grpc::StatusCode::INVALID_ARGUMENT,
-          surface +
-              ": chart_extraction_custom_config asks for chart output this "
-              "service cannot forward (only chart2csv is carried, as the model name)");
+    if (!chart2csv && !chart2summary && !chart2code) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + ": chart_extraction_custom_config: at least one of "
+                                    "chart2csv, chart2summary, or chart2code must be true");
     }
     if (cfg.has_output_format()) {
       const auto format = cfg.output_format();
@@ -781,6 +781,32 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
                                    surface);
 }
 
+std::expected<std::optional<ChartExtractionPreset>, grpc::Status> resolve_chart_extraction(
+    const pipestream::parse::v1::ConvertDocumentOptions& options,
+    const ChartExtractionPolicy& policy, const std::string& surface) {
+  const auto rejected = [&surface](const grpc::Status& status) {
+    return std::unexpected(
+        grpc::Status(status.error_code(), surface + ": " + status.error_message()));
+  };
+  if (options.has_chart_extraction_custom_config()) {
+    const auto& config = options.chart_extraction_custom_config();
+    const grpc::Status allowed =
+        policy.check_custom_config(vlm_engine_name(config.engine_options().engine_type()));
+    if (!allowed.ok()) return rejected(allowed);
+    return std::optional<ChartExtractionPreset>(chart_preset_from_custom_config(config));
+  }
+  // An unset do_chart_extraction keeps the environment opt-in (the leg runs
+  // when GRPARSE_ENRICH_TARGET is set), so it resolves the default preset
+  // too; only an explicit false with no preset named turns charts off.
+  if (!options.has_chart_extraction_preset() && options.has_do_chart_extraction() &&
+      !options.do_chart_extraction()) {
+    return std::optional<ChartExtractionPreset>();
+  }
+  auto preset = policy.resolve(options.chart_extraction_preset());
+  if (!preset.has_value()) return rejected(preset.error());
+  return std::optional<ChartExtractionPreset>(std::move(*preset));
+}
+
 DoclangOptions doclang_options(const pipestream::parse::v1::ConvertDocumentOptions& options) {
   DoclangOptions doclang;
   if (options.has_image_export_mode()) {
@@ -1036,7 +1062,10 @@ struct ParseInputs {
   double picture_description_area_threshold = 0.0;
   std::string picture_description_preset;
   std::string code_formula_preset;
-  std::string chart_extraction_preset;
+  // The chart-extraction preset the server policy resolved (outputs,
+  // prompts, model, endpoint); nullopt when the request switched charts off
+  // without naming a preset.
+  std::optional<ChartExtractionPreset> chart_extraction;
   // From picture_description_api.url / local.repo_id when set; empty means keep
   // the enrich service (or env) default.
   std::string picture_description_vlm_endpoint;
@@ -1146,7 +1175,8 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
                          const PageScheduler& scheduler,
                          const std::shared_ptr<CollectorEndpoints>& collectors,
                          std::shared_ptr<const std::string> bytes,
-                         const fs::path& requested_name, std::string content_type) {
+                         const fs::path& requested_name, std::string content_type,
+                         std::optional<ChartExtractionPreset> chart_extraction) {
   const auto& options = request.options();
   ParseInputs inputs;
   inputs.context = context;
@@ -1199,12 +1229,7 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   if (options.has_code_formula_preset()) {
     inputs.code_formula_preset = options.code_formula_preset();
   }
-  if (options.has_chart_extraction_preset()) {
-    inputs.chart_extraction_preset = options.chart_extraction_preset();
-  } else if (options.has_chart_extraction_custom_config()) {
-    inputs.chart_extraction_preset =
-        options.chart_extraction_custom_config().model_spec().name();
-  }
+  inputs.chart_extraction = std::move(chart_extraction);
   if (options.has_picture_description_local()) {
     // repo_id is the enrich raw preset name; presence of local does not force
     // do_picture_description — the Convert bool still gates the job.
@@ -1487,7 +1512,7 @@ void derender_charts_if_configured(const std::shared_ptr<CollectorEndpoints>& co
   enrich.picture_description_area_threshold = inputs.picture_description_area_threshold;
   enrich.picture_description_preset_raw = inputs.picture_description_preset;
   enrich.code_formula_preset_raw = inputs.code_formula_preset;
-  enrich.chart_preset_raw = inputs.chart_extraction_preset;
+  enrich.chart_extraction = inputs.chart_extraction;
   if (!inputs.picture_description_vlm_endpoint.empty()) {
     enrich.vlm_endpoint = inputs.picture_description_vlm_endpoint;
   }
@@ -1540,6 +1565,11 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
       !remote.ok()) {
     return remote;
   }
+  static const ChartExtractionPolicy kDefaultChartPolicy = default_chart_extraction_policy();
+  auto chart_extraction = resolve_chart_extraction(
+      request.options(), collectors != nullptr ? collectors->chart_policy() : kDefaultChartPolicy,
+      surface);
+  if (!chart_extraction.has_value()) return chart_extraction.error();
   try {
     const auto& source = sources.Get(0).file();
     auto bytes = std::make_shared<const std::string>(decode_base64(source.base64_string()));
@@ -1567,7 +1597,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
 
     const ParseInputs inputs =
         parse_inputs(context, request, scheduler, collectors, bytes, requested_name,
-                     base.origin().mimetype());
+                     base.origin().mimetype(), std::move(*chart_extraction));
 
     const auto cv_offsets = std::make_shared<
         google::protobuf::RepeatedPtrField<pipestream::parse::v1::TextOffset>>();
@@ -1648,6 +1678,17 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
         repair.has_value() &&
         run_repair_pass(&result.document, *repair).changed_text_or_arenas();
     derender_charts_if_configured(collectors, context, inputs.inbound_deadline, inputs, &result);
+    // AcroForm widgets join the finished body as field items, whichever
+    // path produced it; the backend that owns the PDF layer supplies them
+    // (pdf_form_widgets.h). Appending to the arenas leaves the offset table
+    // below describing the same items.
+    if (pdf && !context->IsCancelled()) {
+      if (auto warning = fold_pdf_form_widgets_from_backend(*bytes, inputs.inbound_deadline,
+                                                            &result.document)) {
+        result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
+                                     std::move(*warning));
+      }
+    }
     // The offset table describes the CV collector's own text stream. It is
     // published only when that collector is the entire document and the
     // repair pass left its text and arena alone: a merge renumbers arena
