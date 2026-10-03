@@ -486,6 +486,8 @@ A request selects collectors explicitly (`ConvertDocumentOptions.collectors`,
 or `DocumentChunk.collectors` on the streaming RPC); an empty selection
 routes by format as above, with PDF and raster inputs staying on the CV
 path. No code path converts office bytes to PDF in order to parse them.
+`GRPARSE_POI_TARGET` is no longer read; a deployment that still sets it gets
+a one-line startup warning saying grPOIc is not used.
 
 The libreoffice collector streams typed events that gRParse folds into a
 `Document` itself, the epub collector's skeleton is completed here from its

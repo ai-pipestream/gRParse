@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <string>
+#include <string_view>
 
 #include "grparse/office_fold/value_convert.h"
 
@@ -72,6 +73,16 @@ void set_source_meta(const officev1::DocumentMetadata& meta,
   }
 }
 
+// Adds a named text property to the document metadata, unless the value is
+// empty.
+void add_text_property(std::string_view name, const std::string& value,
+                       docv1::DocumentMeta* out) {
+  if (value.empty()) return;
+  docv1::UserProperty* property = out->add_user_properties();
+  property->set_name(std::string(name));
+  property->set_text(value);
+}
+
 void add_user_properties(const officev1::DocumentMetadata& meta,
                          docv1::DocumentMeta* out) {
   for (const officev1::UserProperty& prop : meta.user_properties()) {
@@ -96,13 +107,10 @@ void add_user_properties(const officev1::DocumentMetadata& meta,
         break;
     }
   }
-  // The metadata slot has no description field of its own, so the
-  // document's description rides as a text property named "description".
-  if (!meta.description().empty()) {
-    docv1::UserProperty* property = out->add_user_properties();
-    property->set_name("description");
-    property->set_text(meta.description());
-  }
+  // The metadata slot has no description or category field of its own, so
+  // each rides as a text property under its own name.
+  add_text_property("description", meta.description(), out);
+  add_text_property("category", meta.category(), out);
 }
 
 // The body's language field: the raw tag as it came, plus the enum arm when
