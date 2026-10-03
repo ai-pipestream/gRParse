@@ -182,6 +182,8 @@ struct Mover {
   std::string ref;
   docv1::RefItem child;
   std::optional<ItemPlacement> placement;
+  // The mover's position in the original body, the last tiebreak.
+  int position = 0;
 };
 
 bool before(const Mover& a, const Mover& b) {
@@ -196,7 +198,7 @@ bool before(const Mover& a, const Mover& b) {
       return a.placement->box.left < b.placement->box.left;
     }
   }
-  return a.ref < b.ref;
+  return a.position < b.position;
 }
 
 }  // namespace
@@ -264,7 +266,8 @@ PictureAnchorReport anchor_pictures_by_provenance(docv1::Document* document,
   std::vector<Mover> movers;
   for (const auto& child : document->body().children()) {
     if (moving.contains(child.ref())) {
-      movers.push_back({child.ref(), child, item_placement(*document, child.ref(), heights)});
+      movers.push_back({child.ref(), child, item_placement(*document, child.ref(), heights),
+                        static_cast<int>(movers.size() + kept.size())});
     } else {
       kept.push_back({child, item_placement(*document, child.ref(), heights)});
     }

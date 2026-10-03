@@ -1,20 +1,8 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "description": "Base images are covered by the stock Dockerfile manager. The custom managers below cover the CMake FetchContent pins and the version-bearing build-cache ids, so toolchain bumps get PRs too. The OpenVINO-path ONNX Runtime (1.24.x in CMakeLists and Dockerfile.openvino) is deliberately unmanaged: it must match Intel's newest onnxruntime-openvino wheel, not Microsoft's newest release.",
+  "description": "Base images are covered by the stock Dockerfile manager. The custom managers below cover the CMake FetchContent pins and the version-bearing build-cache ids, so toolchain bumps get PRs too. ONNX Runtime is deliberately unmanaged on every path: a bump must move the tarball URLs together with their URL_HASH / GRPARSE_ORT_CPU_SHA256 values and the Dockerfile cache ids, which a regex manager cannot recompute, so its PRs would fail FetchContent hash verification. The OpenVINO path (1.24.x) must also match Intel's newest onnxruntime-openvino wheel, not Microsoft's newest release. Bump ORT by hand.",
   "extends": ["config:recommended"],
   "customManagers": [
-    {
-      "customType": "regex",
-      "description": "ONNX Runtime CUDA tarball in CMakeLists (version appears in the path and the filename)",
-      "managerFilePatterns": ["/^CMakeLists\\.txt$/"],
-      "matchStrings": [
-        "releases/download/v(?<currentValue>\\d+\\.\\d+\\.\\d+)/onnxruntime-linux-x64-gpu_cuda13",
-        "onnxruntime-linux-x64-gpu_cuda13-(?<currentValue>\\d+\\.\\d+\\.\\d+)\\.tgz"
-      ],
-      "depNameTemplate": "microsoft/onnxruntime",
-      "datasourceTemplate": "github-releases",
-      "extractVersionTemplate": "^v(?<version>.*)$"
-    },
     {
       "customType": "regex",
       "description": "gRPC FetchContent tag in CMakeLists",
@@ -43,15 +31,6 @@
       "managerFilePatterns": ["/^Dockerfile$/", "/^Dockerfile\\.cpu$/", "/^Dockerfile\\.openvino$/"],
       "matchStrings": ["-grpc(?<currentValue>\\d+\\.\\d+\\.\\d+)-ort"],
       "depNameTemplate": "grpc/grpc",
-      "datasourceTemplate": "github-releases",
-      "extractVersionTemplate": "^v(?<version>.*)$"
-    },
-    {
-      "customType": "regex",
-      "description": "CUDA- and CPU-path ONNX Runtime version embedded in the Dockerfile and Dockerfile.cpu build-cache ids",
-      "managerFilePatterns": ["/^Dockerfile$/", "/^Dockerfile\\.cpu$/"],
-      "matchStrings": ["(?:cuda13|cpu-ubuntu26)-grpc\\d+\\.\\d+\\.\\d+-ort(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
-      "depNameTemplate": "microsoft/onnxruntime",
       "datasourceTemplate": "github-releases",
       "extractVersionTemplate": "^v(?<version>.*)$"
     }

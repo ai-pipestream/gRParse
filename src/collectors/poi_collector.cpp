@@ -46,9 +46,25 @@ bool list_style(const std::string& style) {
   return lowered.starts_with("list");
 }
 
+// The widest grid a table may claim: the spreadsheet column limit. A span
+// on the wire is a claim, not a size: a hostile gridSpan of two billion
+// would otherwise size the column ledger.
+constexpr int64_t kMaxTableColumns = 16384;
+
+// A wire span clamped to the room left: at least 1, at most `room` (itself
+// at least 1). Sets `clamped` when the wire asked for more.
+int clamp_span(uint32_t wire, int64_t room, bool& clamped) {
+  const int64_t limit = std::max<int64_t>(1, room);
+  const int64_t span = std::max<int64_t>(1, wire);
+  if (span <= limit) return static_cast<int>(span);
+  clamped = true;
+  return static_cast<int>(limit);
+}
+
 class PoiFold {
  public:
-  explicit PoiFold(docv1::Document& document) : document_(document) {
+  PoiFold(docv1::Document& document, std::vector<std::string>& warnings)
+      : document_(document), warnings_(warnings) {
     document_.mutable_body()->set_self_ref("#/body");
     document_.mutable_body()->set_content_layer(docv1::CONTENT_LAYER_BODY);
     document_.mutable_furniture()->set_self_ref("#/furniture");
@@ -123,12 +139,30 @@ class PoiFold {
     docv1::TableData* data = item->mutable_data();
     data->set_num_rows(table.rows_size());
     int num_cols = 0;
+    // The wire does not repeat the positions a merged cell covers, so a cell
+    // spanning rows from above still holds its columns in the rows below:
+    // each column remembers the first row it is free again, and a row's
+    // cells skip the columns still held.
+    std::vector<int> occupied_until;
+    bool clamped = false;
     for (int row = 0; row < table.rows_size(); ++row) {
       int column = 0;
       for (const poiv1::TableCell& cell : table.rows(row).cells()) {
+        while (column < static_cast<int>(occupied_until.size()) &&
+               occupied_until[static_cast<size_t>(column)] > row) {
+          ++column;
+        }
         docv1::TableCell* out = data->add_table_cells();
-        const int row_span = std::max(1U, cell.row_span());
-        const int col_span = std::max(1U, cell.col_span());
+        const int row_span =
+            clamp_span(cell.row_span(), int64_t{table.rows_size()} - row, clamped);
+        const int col_span =
+            clamp_span(cell.col_span(), kMaxTableColumns - column, clamped);
+        if (occupied_until.size() < static_cast<size_t>(column + col_span)) {
+          occupied_until.resize(static_cast<size_t>(column + col_span), 0);
+        }
+        for (int held = column; held < column + col_span; ++held) {
+          occupied_until[static_cast<size_t>(held)] = row + row_span;
+        }
         out->set_start_row_offset_idx(row);
         out->set_end_row_offset_idx(row + row_span);
         out->set_start_col_offset_idx(column);
@@ -140,7 +174,12 @@ class PoiFold {
       }
       num_cols = std::max(num_cols, column);
     }
-    data->set_num_cols(num_cols);
+    // A column held only by a merge from above still counts.
+    data->set_num_cols(std::max(num_cols, static_cast<int>(occupied_until.size())));
+    if (clamped) {
+      warnings_.push_back("poi table " + std::to_string(document_.tables_size() - 1) +
+                          ": a cell span past the table's bounds was clamped");
+    }
   }
 
   // One worksheet folds into a sheet group holding one TableItem in
@@ -312,6 +351,7 @@ class PoiFold {
   }
 
   docv1::Document& document_;
+  std::vector<std::string>& warnings_;
 };
 
 }  // namespace
@@ -321,10 +361,12 @@ CollectorOutcome collect_poi_document(const std::shared_ptr<grpc::Channel>& chan
                                       const std::string& filename,
                                       const std::string& content_type,
                                       const std::string& bytes,
-                                      CollectorDeadline inbound_deadline) {
+                                      CollectorDeadline inbound_deadline,
+                                      CollectorCancelled cancelled) {
   auto stub = poiv1::PoiParseService::NewStub(channel);
   grpc::ClientContext context;
   context.set_deadline(capped_collector_deadline(inbound_deadline, kDeadline));
+  const CancelWatch watch(context, std::move(cancelled));
   auto stream = stub->ParseDocument(&context);
 
   // The wire reads identity from the first chunk and wants the last chunk
@@ -333,15 +375,15 @@ CollectorOutcome collect_poi_document(const std::shared_ptr<grpc::Channel>& chan
   request.set_document_id(document_id);
   request.set_filename(filename);
   request.set_content_type(content_type);
-  upload_stream(*stream, request, bytes, /*always_send_chunk=*/true,
-                [&bytes](poiv1::ParseRequestChunk& frame, size_t offset,
-                         size_t length, bool last) {
-                  frame.set_data(bytes.data() + offset, length);
-                  frame.set_complete(last);
-                });
+  ConcurrentUpload upload(
+      context, *stream, request, bytes, /*always_send_chunk=*/true,
+      [&bytes](poiv1::ParseRequestChunk& frame, size_t offset, size_t length, bool last) {
+        frame.set_data(bytes.data() + offset, length);
+        frame.set_complete(last);
+      });
 
   CollectorOutcome outcome;
-  PoiFold fold(outcome.document);
+  PoiFold fold(outcome.document, outcome.warnings);
   bool status_seen = false;
   poiv1::ParseEvent event;
   while (stream->Read(&event)) {
@@ -376,6 +418,7 @@ CollectorOutcome collect_poi_document(const std::shared_ptr<grpc::Channel>& chan
     event.Clear();
   }
 
+  upload.join();
   const grpc::Status status = stream->Finish();
   if (!status.ok()) {
     outcome.error = collector_status_text("poi", status);

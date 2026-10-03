@@ -2,5 +2,14 @@
 #
 # Use with: LSAN_OPTIONS=suppressions=tests/lsan.supp
 #
-# Empty on purpose: list only one-time allocations in third-party code that
-# LSan reports once per process, each with the reason it is not a leak.
+# ONNX Runtime keeps one 14-byte allocation per process that it never frees
+# (seen whenever a session or environment is created, including the failed
+# loads the missing-model cases exercise). Third-party, one-time, not per
+# request.
+leak:libonnxruntime.so
+
+# curl_global_init, which s3_client.cpp runs once per process and never
+# undoes (curl_global_cleanup is not thread-safe while transfers run),
+# initializes OpenSSL, whose config load leaves its error-queue state on the
+# initializing thread. One-time global state inside libcurl/libcrypto.
+leak:curl_global_init

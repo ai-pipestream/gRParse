@@ -352,6 +352,9 @@ services:
       # Without a VLM URL the description/chart jobs answer with skip
       # events; the shell tab shows the amber "no VLM endpoint" state.
       ENRICH_VLM_URL: "${ENRICH_VLM_URL:-}"
+      # grpc-enrich refuses a per-request vlm_endpoint unless its origin is
+      # listed here; gRParse names GRPARSE_ENRICH_VLM_ENDPOINT on every call.
+      ENRICH_VLM_ENDPOINT_ALLOWLIST: "${GRPARSE_ENRICH_VLM_ENDPOINT:-http://krick-1.taild24b1c.ts.net:8086}"
     read_only: true
     tmpfs:
       - /tmp:size=64m

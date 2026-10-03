@@ -272,6 +272,43 @@ void verify_degradations_are_reported() {
           "each degradation is reported exactly once");
 }
 
+// One image referenced from many pictures is inlined once, and the book's
+// inlined bytes stay within its budget however many images it holds.
+void verify_inlining_is_once_per_image_and_budgeted() {
+  constexpr size_t kImage = 15U * 1024U * 1024U;  // under the per-image cap
+  const std::vector<std::string> hrefs = {"OPS/logo.png", "OPS/logo.png", "OPS/logo.png",
+                                          "OPS/b1.jpg",   "OPS/b2.jpg",   "OPS/b3.jpg",
+                                          "OPS/b4.jpg",   "OPS/b5.jpg"};
+  docv1::Document book = skeleton({}, hrefs);
+  std::vector<grparse::EpubResource> resources = {{"OPS/logo.png", "image/png", "LOGO"}};
+  for (const char* big : {"OPS/b1.jpg", "OPS/b2.jpg", "OPS/b3.jpg", "OPS/b4.jpg", "OPS/b5.jpg"}) {
+    resources.push_back({big, "image/jpeg", std::string(kImage, 'x')});
+  }
+  std::vector<std::string> warnings;
+  grparse::fold_epub_book({}, resources, &book, &warnings);
+
+  require(book.pictures(0).image().uri().starts_with("data:image/png;base64,") &&
+              book.pictures(1).image().uri() == "epub:OPS/logo.png" &&
+              book.pictures(2).image().uri() == "epub:OPS/logo.png",
+          "a repeated image is inlined on its first picture only");
+  size_t inlined = 0;
+  size_t kept = 0;
+  for (int index = 3; index < book.pictures_size(); ++index) {
+    if (book.pictures(index).image().uri().starts_with("data:")) ++inlined;
+    if (book.pictures(index).image().uri().starts_with("epub:")) ++kept;
+  }
+  require(inlined * kImage <= grparse::kEpubInlineTotalCap && inlined + kept == 5 && kept >= 1,
+          "the inlined bytes stop at the book's budget, the rest keep their references");
+  int repeated = 0;
+  int budget = 0;
+  for (const auto& warning : warnings) {
+    if (warning.contains("logo.png") && warning.contains("inlined once")) ++repeated;
+    if (warning.contains("inline budget")) ++budget;
+  }
+  require(repeated == 1 && budget == static_cast<int>(kept),
+          "the repeat is reported once and each image past the budget once");
+}
+
 }  // namespace
 
 int main() {
@@ -280,5 +317,6 @@ int main() {
       verify_chapters_plug_into_their_groups,
       verify_images_are_placed_and_inlined,
       verify_degradations_are_reported,
+      verify_inlining_is_once_per_image_and_budgeted,
   });
 }

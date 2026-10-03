@@ -1,0 +1,13 @@
+# The Python packages Dockerfile.models installs to patch and check the
+# figure classifier, pinned with their whole dependency closure: a different
+# onnx serializes the patched graph differently, which fails the manifest's
+# sha256 check and with it the grparse-models build. Bump these together and
+# rebuild the image to confirm the patched file still hashes the same.
+flatbuffers==25.12.19
+ml_dtypes==0.6.0
+numpy==2.5.3
+onnx==1.23.1
+onnxruntime==1.30.0
+packaging==26.3
+protobuf==7.36.2
+typing_extensions==4.16.0

@@ -23,7 +23,8 @@ struct S3Config {
   std::string endpoint;
   std::string access_key;
   std::string secret_key;
-  // Signed as x-amz-security-token when non-empty.
+  // Signed as x-amz-security-token when non-empty; an endpoint that is not
+  // https is refused rather than sent it in cleartext.
   std::string session_token;
   std::string bucket;
   std::string key_prefix;

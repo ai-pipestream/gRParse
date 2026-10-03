@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -101,11 +102,17 @@ class Projector {
     for (int i = 0; i < document_.pictures_size(); ++i) {
       if (!visited_.contains(document_.pictures(i).self_ref())) place_picture(i, true);
     }
-    int last = pages_.empty() ? 0 : pages_.rbegin()->first;
-    for (const auto& [page_no, _] : document_.pages()) last = std::max(last, page_no);
+    // Only pages the document names are emitted: a page number is collector
+    // or model supplied, so one bogus value (2^31-1 from a hallucinated
+    // fragment) must cost one page, not a dense run up to it.
+    std::set<int> named;
+    for (const auto& [page_no, _] : pages_) named.insert(page_no);
+    for (const auto& [page_no, _] : document_.pages()) {
+      if (page_no > 0) named.insert(page_no);
+    }
     std::vector<parsev1::PageData> result;
-    result.reserve(static_cast<size_t>(last));
-    for (int page_no = 1; page_no <= last; ++page_no) {
+    result.reserve(named.size());
+    for (const int page_no : named) {
       parsev1::PageData page;
       if (const auto it = pages_.find(page_no); it != pages_.end()) {
         page = std::move(it->second);

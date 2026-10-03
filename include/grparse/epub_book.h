@@ -53,6 +53,10 @@ std::string resolve_epub_href(const std::string& chapter_href,
 // Document that carries a 60 MB TIFF inline serves nobody.
 inline constexpr size_t kEpubInlineImageCap = 16 * 1024 * 1024;
 
+// The most image bytes one book inlines in total; past it, images keep
+// their `epub:` references, with a warning each.
+inline constexpr size_t kEpubInlineTotalCap = 64 * 1024 * 1024;
+
 // Plugs the chapters into `book`, in the order given (spine order), and
 // carries the images:
 //
@@ -65,7 +69,9 @@ inline constexpr size_t kEpubInlineImageCap = 16 * 1024 * 1024;
 //   href, so reading order is the spine order the groups already encode;
 // - every remaining `epub:` reference whose bytes arrived becomes a
 //   `data:<media type>;base64,...` URI, with the manifest's media type
-//   winning over whatever the XHTML implied.
+//   winning over whatever the XHTML implied: once per image, on its first
+//   picture (later pictures of the same image keep the reference), and
+//   within kEpubInlineTotalCap for the whole book.
 //
 // A chapter whose group is missing lands at the body's end rather than
 // being dropped; a resource that never arrived keeps its reference. Both

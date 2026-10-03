@@ -4,6 +4,7 @@
 #ifndef GRPARSE_CONFLUENCE_STORAGE_PARSER_H
 #define GRPARSE_CONFLUENCE_STORAGE_PARSER_H
 
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -26,6 +27,9 @@ class StorageParser {
 
   // True once any element has been seen: a body without one is not markup.
   bool saw_element() const { return saw_element_; }
+
+  // The deepest element nesting kept as a tree; deeper start tags flatten.
+  static constexpr size_t kMaxDepth = 256;
 
  private:
   // The elements still open, innermost last; the root is always element 0.
@@ -56,6 +60,7 @@ class StorageParser {
   std::vector<std::string>* warnings_ = nullptr;
   size_t position_ = 0;
   bool saw_element_ = false;
+  bool depth_warned_ = false;
 };
 
 }  // namespace grparse::confluence

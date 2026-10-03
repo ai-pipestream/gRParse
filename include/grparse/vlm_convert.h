@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -66,11 +67,15 @@ struct VlmConvertReport {
 
 // Rasterize `bytes` and run ConvertPages through `channel`. Merges every
 // PageDocument into `document` under claimant "vlm-convert". Never throws;
-// dial / peer failures set report.success false and report.error.
+// dial / peer failures set report.success false and report.error. Pages are
+// rendered and streamed one at a time; `cancelled` and `inbound_deadline` are
+// checked before each page, and either ends the dial (CANCELLED or
+// DEADLINE_EXCEEDED) instead of rasterizing the rest of the document.
 VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel,
                                    const VlmConvertOptions& options,
                                    std::shared_ptr<const std::string> bytes, bool pdf,
                                    ai::pipestream::document::v1::Document* document,
-                                   CollectorDeadline inbound_deadline = kNoCollectorDeadline);
+                                   CollectorDeadline inbound_deadline = kNoCollectorDeadline,
+                                   const std::function<bool()>& cancelled = {});
 
 }  // namespace grparse

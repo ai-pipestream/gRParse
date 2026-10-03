@@ -43,6 +43,22 @@ void verify_common_mime_mappings() {
                  "modcap");
 }
 
+// Formats only the name tells apart from their container, the OOXML macro
+// and template variants, and plain text (which parses as Markdown).
+void verify_container_and_variant_mappings() {
+  require_format("application/zip", "a.dclx", parsev1::INPUT_FORMAT_DCLX, "dclx");
+  require_format("application/gzip", "books.TAR.GZ", parsev1::INPUT_FORMAT_METS_GBS, "mets");
+  require_format("application/json", "a.boxnote", parsev1::INPUT_FORMAT_BOXNOTE, "boxnote");
+  require_format("text/plain", "a.txt", parsev1::INPUT_FORMAT_MD, "text/plain");
+  require_format("application/octet-stream", "a.txt", parsev1::INPUT_FORMAT_MD, ".txt");
+  require_format("text/plain", "a.adoc", parsev1::INPUT_FORMAT_ASCIIDOC, "adoc stays adoc");
+  require_format("application/vnd.ms-excel.sheet.macroEnabled.12", "a.xlsm",
+                 parsev1::INPUT_FORMAT_XLSX, "xlsm mime");
+  require_format("application/octet-stream", "a.docm", parsev1::INPUT_FORMAT_DOCX, "docm");
+  require_format("application/octet-stream", "a.pptm", parsev1::INPUT_FORMAT_PPTX, "pptm");
+  require_format("application/octet-stream", "a.xltx", parsev1::INPUT_FORMAT_XLSX, "xltx");
+}
+
 void verify_allowlist() {
   google::protobuf::RepeatedField<int> empty;
   require(grparse::from_formats_allows(empty, parsev1::INPUT_FORMAT_PDF),
@@ -61,6 +77,7 @@ void verify_allowlist() {
 int main() {
   try {
     verify_common_mime_mappings();
+    verify_container_and_variant_mappings();
     verify_allowlist();
   } catch (const std::exception& ex) {
     std::println(stderr, "{}", ex.what());

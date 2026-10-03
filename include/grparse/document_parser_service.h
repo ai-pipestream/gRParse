@@ -15,6 +15,7 @@
 #include "grparse/chart_extraction_policy.h"
 #include "grparse/chunk_embeddings.h"
 #include "grparse/document_repair.h"
+#include "grparse/inflight_bytes.h"
 #include "grparse/office_cv_enrichment.h"
 #include "grparse/page_scheduler.h"
 #include "grparse/vlm_convert.h"
@@ -57,6 +58,15 @@ struct CollectorTargets {
   // PROCESSING_PIPELINE_VLM body producer. Empty target means that pipeline
   // is unavailable.
   VlmConvertOptions vlm;
+  // GRPARSE_ENABLE_REMOTE_SERVICES: whether a request may name its own
+  // remote model endpoint (picture_description_api.url, an http(s)
+  // vlm_pipeline_model_api.url), which a peer then calls on the caller's
+  // behalf. Off by default, as docling-serve's
+  // DOCLING_SERVE_ENABLE_REMOTE_SERVICES is: an open endpoint field lets any
+  // caller point a peer at an internal address. The operator's own
+  // endpoints (GRPARSE_ENRICH_VLM_ENDPOINT, GRPARSE_VLM_CONVERT_ENDPOINT)
+  // are not requests and are unaffected.
+  bool enable_remote_services = false;
 };
 
 // The largest message this server accepts on its own port and the largest
@@ -103,6 +113,10 @@ class CollectorEndpoints {
   bool has_vlm() const { return targets_.vlm.enabled(); }
   std::shared_ptr<grpc::Channel> vlm_channel();
 
+  // Whether requests may name their own remote model endpoints
+  // (GRPARSE_ENABLE_REMOTE_SERVICES).
+  bool remote_services_enabled() const { return targets_.enable_remote_services; }
+
   // The CV engines the office collector runs over LibreOffice page renders;
   // an all-null enrichment disables the hybrid leg.
   const OfficeCvEnrichment& cv_enrichment() const { return cv_enrichment_; }
@@ -134,7 +148,8 @@ class DocumentParserService final
                         CallExecutor::Options executor_options = {},
                         std::optional<RepairOptions> repair = RepairOptions{},
                         std::shared_ptr<EmbeddingEngine> embedding_engine = {},
-                        EmbeddingConfig embedding_config = {});
+                        EmbeddingConfig embedding_config = {},
+                        std::shared_ptr<InflightBytes> inflight = {});
 
   grpc::ServerUnaryReactor* ConvertSource(
       grpc::CallbackServerContext* context,
@@ -165,6 +180,8 @@ class DocumentParserService final
   std::shared_ptr<CollectorEndpoints> endpoints_;
   std::optional<RepairOptions> repair_;
   ChunkEmbedder embedder_;
+  // The process-wide in-flight byte budget; null admits by call count alone.
+  std::shared_ptr<InflightBytes> inflight_;
   // Declared last so it is torn down first: joining the workers before the
   // endpoints and the scheduler reference go away is what keeps an in-flight
   // parse from outliving what it reads.
@@ -176,9 +193,13 @@ class DocumentStreamingService final : public ai::pipestream::parse::v1::ParseSt
   // The stream has no merged Document: each collector's finished Document
   // is what the repair pass runs on, before it is projected into page
   // events and emitted whole.
+  // `inflight` is the budget every stream's chunks are charged to as they
+  // arrive (see InflightBytes); null leaves the 500 MiB per-stream limit as
+  // the only bound.
   DocumentStreamingService(PageScheduler& scheduler,
                            std::shared_ptr<CollectorEndpoints> endpoints,
-                           std::optional<RepairOptions> repair = RepairOptions{});
+                           std::optional<RepairOptions> repair = RepairOptions{},
+                           std::shared_ptr<InflightBytes> inflight = {});
 
   grpc::ServerBidiReactor<ai::pipestream::parse::v1::DocumentChunk,
                           ai::pipestream::parse::v1::DocumentStreamEvent>*
@@ -188,6 +209,7 @@ class DocumentStreamingService final : public ai::pipestream::parse::v1::ParseSt
   PageScheduler& scheduler_;
   std::shared_ptr<CollectorEndpoints> endpoints_;
   std::optional<RepairOptions> repair_;
+  std::shared_ptr<InflightBytes> inflight_;
 };
 
 }  // namespace grparse

@@ -28,6 +28,13 @@ class SchedulerSaturated final : public std::runtime_error {
   using std::runtime_error::runtime_error;
 };
 
+// The scheduler stopped with the document still in flight: the server is
+// going away, which is UNAVAILABLE to a caller, not a full queue.
+class SchedulerShuttingDown final : public std::runtime_error {
+ public:
+  using std::runtime_error::runtime_error;
+};
+
 class PageScheduler final {
  public:
   // What sends a figure crop through barcode decoding.  kClassTriggered
@@ -159,6 +166,9 @@ class PageScheduler final {
     // Completed pages by schedule-to-delivered latency, kPageLatencyBoundsMs
     // bucket bounds plus one overflow bucket.
     std::array<uint64_t, kPageLatencyBoundsMs.size() + 1> page_latency = {};
+    // Summed schedule-to-delivered latency of those pages, the histogram's
+    // _sum series.
+    uint64_t page_latency_ns = 0;
     // Pages read more than once to recover their orientation, the extra
     // recognition passes that cost, and the turns kept, by kRotationDegrees
     // index.  A page counts in pages_rerecognized whether or not a turn won.
