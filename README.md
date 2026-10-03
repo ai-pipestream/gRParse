@@ -641,6 +641,41 @@ one data module, `chart_data.py`, with truth files quoting the same data),
 and the scorecard's stability rule treats a derendered chart's title as
 descriptive while keeping its cells in the fingerprint.
 
+Each derendered chart can produce up to three outputs, as Docling's chart
+stage does: `chart2csv` (the table above), `chart2summary` (a few sentences,
+written to the picture's `meta.description`) and `chart2code` (Python that
+recreates the chart, written to `meta.code`). Each output comes from its own
+VLM call through grpc-enrich and carries the same attribution as the table
+(`created_by` = the model, one `GenerationSource` per model and endpoint). A
+failed output is a warning naming it; the chart's other outputs still land.
+Which outputs run, which prompts they use (the Granite Vision special tokens
+or Docling's natural-language wording) and which model and endpoint answer
+come from a chart-extraction preset: the request names one with
+`chart_extraction_preset` (unset or `"default"` means the server default) or,
+when the server allows it, sends its own `chart_extraction_custom_config`.
+The server decides what a request may use, with the same five settings
+docling-serve 1.35 has:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `GRPARSE_DEFAULT_CHART_EXTRACTION_PRESET` | `granite_vision_v4` | The preset an unnamed or `"default"` request gets. A custom preset of the same id wins over the built-in one. |
+| `GRPARSE_ALLOWED_CHART_EXTRACTION_PRESETS` | unset (all built-ins) | Built-in presets a request may name, as a JSON array or comma-separated. Custom presets and `default` stay reachable. |
+| `GRPARSE_CUSTOM_CHART_EXTRACTION_PRESETS` | unset | Admin presets as a JSON object, id to `{"model", "url", "engine_type", "chart2csv", "chart2summary", "chart2code", "use_natural_language_prompts"}`, every key optional (`chart2csv` defaults to true, `engine_type` to `api_openai`, an empty `model` leaves the endpoint on its default model, an empty `url` uses `GRPARSE_ENRICH_VLM_ENDPOINT`). Parsed at startup into typed presets; an unknown key or a preset with no output stops the process. |
+| `GRPARSE_ALLOWED_CHART_EXTRACTION_ENGINES` | unset (all) | Docling engine names (`api_openai`, `api_ollama`, `transformers`, ...) a preset or custom config may use. |
+| `GRPARSE_ALLOW_CUSTOM_CHART_EXTRACTION_CONFIG` | `false` | Whether a request may send `chart_extraction_custom_config`. |
+
+The built-in `granite_vision_v4` preset is Docling's: `chart2csv` only,
+special-token prompts, model `granite-vision-4.1-4b`. Rejections follow
+upstream wording: a preset outside the registry is `INVALID_ARGUMENT`
+(`Chart extraction preset 'x' is not allowed. Allowed presets: ...`); a
+custom config while the switch is off (`Custom chart extraction
+configuration is disabled by server policy.`) or an excluded engine
+(`Engine 'x' is not allowed. Allowed engines: ...`) is `PERMISSION_DENIED`.
+The policy is checked when the options are validated, whether or not the
+enrich leg is configured. The compose stack defines a `stack_vlm` preset
+with natural-language prompts and makes it the default, because the stack's
+chart endpoint is a general VLM without the Granite tokens.
+
 Whether every collector's data merged into the Document shape correctly is
 checked on a whole corpus by the S3 eval (`eval/s3/`, see
 [`eval/s3/README.md`](eval/s3/README.md)): every object of an S3-compatible

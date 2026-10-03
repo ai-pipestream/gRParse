@@ -7,6 +7,7 @@
 // Internal to src: the served surfaces stay in
 // include/grparse/document_parser_service.h.
 
+#include <expected>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -16,6 +17,7 @@
 
 #include "ai/pipestream/parse/v1/parse.pb.h"
 #include "chunking/chunker.h"
+#include "grparse/chart_extraction_policy.h"
 #include "grparse/collector_coordinator.h"
 #include "grparse/document_parser_service.h"
 #include "grparse/document_repair.h"
@@ -43,6 +45,18 @@ struct SourceParse {
 // the conversion surfaces turned its request down.
 grpc::Status validate_options(const ai::pipestream::parse::v1::ConvertDocumentOptions& options,
                               const std::string& surface);
+
+// The chart-extraction preset a Convert request resolves to under the
+// server's policy, mirroring docling-jobkit's _parse_chart_extraction_options:
+// a chart_extraction_custom_config must be allowed by policy (and use an
+// allowed engine); otherwise the named chart_extraction_preset, or "default"
+// when none is named, must be in the policy's registry. nullopt when the
+// request names nothing and sets do_chart_extraction false. INVALID_ARGUMENT
+// for an unknown or disallowed preset, PERMISSION_DENIED for a disabled
+// custom config or a disallowed engine. Call after validate_options.
+std::expected<std::optional<ChartExtractionPreset>, grpc::Status> resolve_chart_extraction(
+    const ai::pipestream::parse::v1::ConvertDocumentOptions& options,
+    const ChartExtractionPolicy& policy, const std::string& surface);
 
 grpc::Status parse_source(grpc::CallbackServerContext* context,
                           const ai::pipestream::parse::v1::ConvertDocumentRequest& request,

@@ -164,8 +164,26 @@ std::string status_code_name(grpc::StatusCode code) {
 
 std::string skip_reason_text(const enrichv1::ItemSkipped& skipped) {
   std::string text = enrichv1::SkipReason_Name(skipped.reason());
+  if (skipped.chart_output() != enrichv1::CHART_OUTPUT_UNSPECIFIED) {
+    text += ", " + enrichv1::ChartOutput_Name(skipped.chart_output());
+  }
   if (!skipped.detail().empty()) text += ": " + skipped.detail();
   return text;
+}
+
+// One GenerationSource per (model, endpoint) on a picture: a chart whose
+// table, summary and code came from the same model names that model once.
+void add_generation_source(const std::string& model, const std::string& endpoint,
+                           docv1::PictureItem* picture) {
+  for (const docv1::SourceType& source : picture->source()) {
+    if (source.has_generation() && source.generation().model() == model &&
+        source.generation().endpoint() == endpoint) {
+      return;
+    }
+  }
+  docv1::GenerationSource* generation = picture->add_source()->mutable_generation();
+  generation->set_model(model);
+  if (!endpoint.empty()) generation->set_endpoint(endpoint);
 }
 
 }  // namespace
@@ -233,9 +251,49 @@ bool fold_chart_table(const enrichv1::ItemAnnotation& annotation, const std::str
   if (!chart.title().empty()) meta->set_title(chart.title());
   *meta->mutable_chart_data() = data;
 
-  docv1::GenerationSource* generation = target->add_source()->mutable_generation();
-  generation->set_model(annotation.model());
-  if (!endpoint.empty()) generation->set_endpoint(endpoint);
+  add_generation_source(annotation.model(), endpoint, target);
+  return true;
+}
+
+bool fold_chart_summary(const enrichv1::ItemAnnotation& annotation, const std::string& endpoint,
+                        docv1::Document* document) {
+  if (!annotation.has_chart_summary() || annotation.chart_summary().text().empty()) return false;
+  docv1::PictureItem* target = picture_for(annotation.self_ref(), document);
+  if (target == nullptr) return false;
+  if (target->has_meta() && target->meta().has_description() &&
+      !target->meta().description().text().empty()) {
+    return false;
+  }
+  // Docling stores chart2summary as the picture's DescriptionMetaField; the
+  // description annotation keeps the legacy list in step, as the picture
+  // description fold does.
+  docv1::DescriptionMetaField* meta = target->mutable_meta()->mutable_description();
+  meta->set_text(annotation.chart_summary().text());
+  if (!annotation.model().empty()) meta->set_created_by(annotation.model());
+  auto* note = target->add_annotations()->mutable_description();
+  note->set_kind("description");
+  note->set_text(annotation.chart_summary().text());
+  if (!annotation.model().empty()) note->set_provenance(annotation.model());
+  add_generation_source(annotation.model(), endpoint, target);
+  return true;
+}
+
+bool fold_chart_code(const enrichv1::ItemAnnotation& annotation, const std::string& endpoint,
+                     docv1::Document* document) {
+  if (!annotation.has_chart_code() || annotation.chart_code().text().empty()) return false;
+  docv1::PictureItem* target = picture_for(annotation.self_ref(), document);
+  if (target == nullptr) return false;
+  if (target->has_meta() && target->meta().has_code() && !target->meta().code().text().empty()) {
+    return false;
+  }
+  // Docling stores chart2code as the picture's CodeMetaField (Python).
+  docv1::CodeMetaField* meta = target->mutable_meta()->mutable_code();
+  meta->set_text(annotation.chart_code().text());
+  meta->set_language(annotation.chart_code().language() == docv1::CODE_LANGUAGE_LABEL_UNSPECIFIED
+                         ? docv1::CODE_LANGUAGE_LABEL_PYTHON
+                         : annotation.chart_code().language());
+  if (!annotation.model().empty()) meta->set_created_by(annotation.model());
+  add_generation_source(annotation.model(), endpoint, target);
   return true;
 }
 
@@ -254,9 +312,7 @@ bool fold_picture_description(const enrichv1::ItemAnnotation& annotation,
   auto* note = target->add_annotations()->mutable_description();
   note->set_kind("description");
   note->set_text(annotation.description().text());
-  docv1::GenerationSource* generation = target->add_source()->mutable_generation();
-  generation->set_model(annotation.model());
-  if (!endpoint.empty()) generation->set_endpoint(endpoint);
+  add_generation_source(annotation.model(), endpoint, target);
   return true;
 }
 
@@ -402,8 +458,23 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
   if (!options.code_formula_preset_raw.empty()) {
     request_options->set_code_formula_preset_raw(options.code_formula_preset_raw);
   }
-  if (!options.chart_preset_raw.empty()) {
-    request_options->set_chart_preset_raw(options.chart_preset_raw);
+  // The endpoint the chart calls go to, for attribution: the preset's own
+  // when it names one, otherwise the request's.
+  std::string chart_endpoint = options.vlm_endpoint;
+  int outputs_per_chart = 1;
+  if (options.do_chart_extraction && options.chart_extraction.has_value()) {
+    const ChartExtractionPreset& preset = *options.chart_extraction;
+    enrichv1::ChartExtractionOptions* chart = request_options->mutable_chart_extraction();
+    chart->set_csv(preset.chart2csv);
+    chart->set_summary(preset.chart2summary);
+    chart->set_code(preset.chart2code);
+    chart->set_natural_language_prompts(preset.use_natural_language_prompts);
+    chart->set_model(preset.model);
+    chart->set_vlm_endpoint(preset.vlm_endpoint);
+    if (!preset.vlm_endpoint.empty()) chart_endpoint = preset.vlm_endpoint;
+    outputs_per_chart = static_cast<int>(preset.chart2csv) +
+                        static_cast<int>(preset.chart2summary) +
+                        static_cast<int>(preset.chart2code);
   }
   const auto seconds = std::chrono::ceil<std::chrono::seconds>(options.timeout).count();
   request_options->set_timeout_seconds(static_cast<uint32_t>(std::max<long long>(1, seconds)));
@@ -440,9 +511,11 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
   }
   stream->WritesDone();
 
-  int folded = 0;
   int skipped_events = 0;
+  int chart_skips = 0;
   std::set<std::string> answered;
+  // Charts that received at least one chart output.
+  std::set<std::string> charts_answered;
   enrichv1::EnrichDocumentResponse event;
   while (stream->Read(&event)) {
     if (event.has_annotation()) {
@@ -451,16 +524,40 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
         if (answered.contains(annotation.self_ref() + "#chart")) {
           report.warnings.push_back("chart derender: " + annotation.self_ref() +
                                     " returned a duplicate table, ignored");
-        } else if (fold_chart_table(annotation, options.vlm_endpoint, document)) {
-          ++folded;
+        } else if (fold_chart_table(annotation, chart_endpoint, document)) {
+          ++report.chart_tables;
           answered.insert(annotation.self_ref() + "#chart");
+          charts_answered.insert(annotation.self_ref());
           data_log("chart " + annotation.self_ref() + " derendered by " + annotation.model() +
                    " (" + std::to_string(annotation.chart_table().table().num_rows()) + "x" +
                    std::to_string(annotation.chart_table().table().num_cols()) + ")");
         } else {
           ++skipped_events;
+          ++chart_skips;
           report.warnings.push_back("chart derender: " + annotation.self_ref() +
                                     " returned an empty table");
+        }
+      } else if (annotation.has_chart_summary()) {
+        if (fold_chart_summary(annotation, chart_endpoint, document)) {
+          ++report.chart_summaries;
+          charts_answered.insert(annotation.self_ref());
+        } else {
+          ++skipped_events;
+          ++chart_skips;
+          report.warnings.push_back("chart derender: " + annotation.self_ref() +
+                                    " summary not applied (empty, or the picture already "
+                                    "has a description)");
+        }
+      } else if (annotation.has_chart_code()) {
+        if (fold_chart_code(annotation, chart_endpoint, document)) {
+          ++report.chart_codes;
+          charts_answered.insert(annotation.self_ref());
+        } else {
+          ++skipped_events;
+          ++chart_skips;
+          report.warnings.push_back("chart derender: " + annotation.self_ref() +
+                                    " code not applied (empty, or the picture already has "
+                                    "code)");
         }
       } else if (annotation.has_description()) {
         if (fold_picture_description(annotation, options.vlm_endpoint, document)) {
@@ -484,6 +581,7 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
       }
     } else if (event.has_skipped()) {
       ++skipped_events;
+      if (event.skipped().chart_output() != enrichv1::CHART_OUTPUT_UNSPECIFIED) ++chart_skips;
       report.warnings.push_back("document enrich: " + event.skipped().self_ref() +
                                 " skipped (" + skip_reason_text(event.skipped()) + ")");
     }
@@ -495,12 +593,22 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
                               status_code_name(status.error_code()) +
                               (status.error_message().empty() ? "" : ": " + status.error_message()));
   }
-  report.derendered = folded;
-  data_counters().charts_derendered.fetch_add(static_cast<uint64_t>(folded),
+  report.derendered = static_cast<int>(charts_answered.size());
+  data_counters().charts_derendered.fetch_add(static_cast<uint64_t>(report.derendered),
                                               std::memory_order_relaxed);
-  const int unanswered = std::max(0, report.candidates - folded);
+  const int unanswered = std::max(0, report.candidates - report.derendered);
   count_skipped(unanswered);
-  if (unanswered > skipped_events && status.ok() && options.do_chart_extraction) {
+  if (options.chart_extraction.has_value()) {
+    // One event per enabled output per chart: name the outputs that never
+    // came back at all (not even as a skip).
+    const int delivered =
+        report.chart_tables + report.chart_summaries + report.chart_codes + chart_skips;
+    const int missing = report.candidates * outputs_per_chart - delivered;
+    if (missing > 0 && status.ok() && options.do_chart_extraction) {
+      report.warnings.push_back("chart derender: " + std::to_string(missing) +
+                                " chart output(s) received no event before the stream ended");
+    }
+  } else if (unanswered > skipped_events && status.ok() && options.do_chart_extraction) {
     report.warnings.push_back("chart derender: " + std::to_string(unanswered - skipped_events) +
                               " chart(s) received no event before the stream ended");
   }
