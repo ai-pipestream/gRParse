@@ -1,7 +1,6 @@
 #include "grparse/remote_page_source.h"
 
 #include <algorithm>
-#include <array>
 #include <cctype>
 #include <cmath>
 #include <chrono>
@@ -21,6 +20,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "ai/protomolt/parse/pdf/v1/pdf_backend_service.grpc.pb.h"
+#include "grparse/pdf_page_frame.h"
 #include "targets/sha256.h"
 
 namespace grparse {
@@ -76,83 +76,6 @@ constexpr size_t kStrongDigitalNonWhitespace = 128;
       throw InvalidDocument(message);
   }
 }
-
-// Maps contract page space into the top-left frame of the page as rendered.
-// The contract's boxes are PDF user space, bottom-left origin, before the
-// page's /Rotate; the rendered page is the CropBox with /Rotate applied, so
-// a box shifts by the CropBox origin, flips to a top-left origin, and turns
-// clockwise with the page.
-class PageFrame {
- public:
-  explicit PageFrame(const pdfv1::PageInfo& info)
-      : rotation_(((info.rotation_degrees() % 360) + 360) % 360) {
-    const bool quarter_turn = rotation_ == 90 || rotation_ == 270;
-    // Unrotated extent: the visible box, which is the CropBox clipped to
-    // the MediaBox (a CropBox reaching past the MediaBox is legal, and
-    // renderers draw only the overlap), or the MediaBox alone. Without
-    // either, the rendered size turned back.
-    std::optional<pdfv1::BoundingBox> visible;
-    if (valid(info.media_box())) visible = info.media_box();
-    if (valid(info.crop_box())) {
-      pdfv1::BoundingBox crop = info.crop_box();
-      if (visible.has_value()) {
-        crop.set_x0(std::max(crop.x0(), visible->x0()));
-        crop.set_y0(std::max(crop.y0(), visible->y0()));
-        crop.set_x1(std::min(crop.x1(), visible->x1()));
-        crop.set_y1(std::min(crop.y1(), visible->y1()));
-      }
-      if (valid(crop)) visible = crop;
-    }
-    if (visible.has_value()) {
-      origin_x_ = visible->x0();
-      origin_y_ = visible->y0();
-      width_ = visible->x1() - visible->x0();
-      height_ = visible->y1() - visible->y0();
-    } else {
-      width_ = quarter_turn ? info.height_pts() : info.width_pts();
-      height_ = quarter_turn ? info.width_pts() : info.height_pts();
-    }
-  }
-
-  // Width and height of the rendered page, in points.
-  double display_width() const { return rotation_ % 180 == 0 ? width_ : height_; }
-  double display_height() const { return rotation_ % 180 == 0 ? height_ : width_; }
-
-  // The axis-aligned box in the rendered top-left frame: {left, top, right,
-  // bottom} in points.
-  std::array<double, 4> place(const pdfv1::BoundingBox& box) const {
-    const auto a = to_display(box.x0(), box.y0());
-    const auto b = to_display(box.x1(), box.y1());
-    return {std::min(a[0], b[0]), std::min(a[1], b[1]), std::max(a[0], b[0]),
-            std::max(a[1], b[1])};
-  }
-
- private:
-  std::array<double, 2> to_display(double x, double y) const {
-    const double u = x - origin_x_;
-    const double down = height_ - (y - origin_y_);
-    switch (rotation_) {
-      case 90:
-        return {height_ - down, u};
-      case 180:
-        return {width_ - u, height_ - down};
-      case 270:
-        return {down, width_ - u};
-      default:
-        return {u, down};
-    }
-  }
-
-  static bool valid(const pdfv1::BoundingBox& box) {
-    return box.x1() > box.x0() && box.y1() > box.y0();
-  }
-
-  int rotation_;
-  double origin_x_ = 0.0;
-  double origin_y_ = 0.0;
-  double width_ = 0.0;
-  double height_ = 0.0;
-};
 
 // One channel per backend target per process; channels multiplex.
 std::shared_ptr<grpc::Channel> channel_for(const std::string& target) {
@@ -236,7 +159,7 @@ class RemotePdfPageSource final : public PageSource {
       auto reader = stub_->Parse(call.context(), request);
 
       pdfv1::ParseResponse message;
-      std::optional<PageFrame> frame;
+      std::optional<PdfPageFrame> frame;
       std::optional<pdfv1::LoadStatus> header_load_status;
       std::string header_load_detail;
       std::map<uint32_t, std::string> font_names;

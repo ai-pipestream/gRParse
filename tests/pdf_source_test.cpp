@@ -7,10 +7,12 @@
 #include <atomic>
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <print>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #include "grparse/in_memory_document.h"
@@ -178,6 +180,79 @@ void verify_crop_box_past_media_box_is_clipped() {
   const auto box = grparse::bounding_box(page->lines.front());
   require(box.left == expected_pixels(72) && box.top == expected_pixels(80),
           "boxes are measured from the clipped corner");
+}
+
+// PageInfo.page_space names the frame a backend measured in. A backend on
+// the contract frame (PAGE_SPACE_CROP_BOX) reports boxes already shifted
+// by the CropBox origin; an older one reports unshifted user space and
+// leaves the field unset. The page source must land the same page in the
+// same place either way, on every quarter turn and every CropBox shape.
+void verify_page_space_frames_agree() {
+  struct Placed {
+    int width = 0;
+    int height = 0;
+    std::vector<grparse::AxisAlignedBox> boxes;
+  };
+  const std::vector<std::optional<std::vector<double>>> crops = {
+      std::nullopt, std::vector<double>{36, 48, 576, 756},
+      std::vector<double>{-18, -18, 630, 810}};
+  for (const int rotation : {0, 90, 180, 270}) {
+    for (const auto& crop : crops) {
+      std::optional<Placed> reference;
+      for (const auto space : {grparse_test::pdfv1::PAGE_SPACE_UNSPECIFIED,
+                               grparse_test::pdfv1::PAGE_SPACE_USER,
+                               grparse_test::pdfv1::PAGE_SPACE_CROP_BOX}) {
+        ScopedPdfBackend pdf_backend;
+        pdf_backend.backend().set_page_space(space);
+        FakePdfPage page;
+        page.rotation_degrees = rotation;
+        page.crop_box = crop;
+        page.cells.push_back(FakeTextCell{"First", 72, 700, 172, 712});
+        page.cells.push_back(FakeTextCell{"Second", 300, 400, 420, 418});
+        const auto source = open_pages(pdf_backend, {page});
+        const auto read = source->extract_digital_page(1);
+        const std::string what = "/Rotate " + std::to_string(rotation) + ", " +
+                                 grparse_test::pdfv1::PageSpace_Name(space) +
+                                 (crop.has_value() ? ", CropBox set" : ", no CropBox");
+        require(read.has_value() && read->lines.size() == 2, what + ": text extracted");
+        Placed placed{read->width, read->height, {}};
+        for (const auto& line : read->lines) placed.boxes.push_back(grparse::bounding_box(line));
+        if (!reference.has_value()) {
+          reference = placed;
+          continue;
+        }
+        require(placed.width == reference->width && placed.height == reference->height,
+                what + ": same page size as unshifted user space");
+        for (size_t index = 0; index < placed.boxes.size(); ++index) {
+          const auto& a = placed.boxes[index];
+          const auto& b = reference->boxes[index];
+          require(a.left == b.left && a.top == b.top && a.right == b.right &&
+                      a.bottom == b.bottom,
+                  what + ": same box as unshifted user space");
+        }
+      }
+    }
+  }
+
+  // Pinned values on the offset CropBox in the contract frame: upright,
+  // the cell sits 36pt from the CropBox's left edge and 44pt below its
+  // top; turned a quarter, the visible box is 540 x 708 and the cell's
+  // corner lands at (652, 36).
+  for (const auto& [rotation, left, top] :
+       std::vector<std::tuple<int, double, double>>{{0, 36, 44}, {90, 652, 36}}) {
+    ScopedPdfBackend pdf_backend;
+    pdf_backend.backend().set_page_space(grparse_test::pdfv1::PAGE_SPACE_CROP_BOX);
+    FakePdfPage page;
+    page.rotation_degrees = rotation;
+    page.crop_box = std::vector<double>{36, 48, 576, 756};
+    page.cells.push_back(FakeTextCell{"First", 72, 700, 172, 712});
+    const auto read = open_pages(pdf_backend, {page})->extract_digital_page(1);
+    require(read.has_value(), "contract-frame text extracted");
+    const auto box = grparse::bounding_box(read->lines.front());
+    require(box.left == expected_pixels(left) && box.top == expected_pixels(top),
+            "/Rotate " + std::to_string(rotation) +
+                ": a contract-frame box is not shifted by the CropBox twice");
+  }
 }
 
 void verify_render_matches_page_size() {
@@ -382,6 +457,7 @@ int main() {
       verify_rotated_page_geometry,
       verify_crop_box_origin,
       verify_crop_box_past_media_box_is_clipped,
+      verify_page_space_frames_agree,
       verify_render_matches_page_size,
       verify_per_document_render_dpi,
       verify_invalid_input_is_rejected,

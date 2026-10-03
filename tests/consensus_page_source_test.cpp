@@ -17,7 +17,9 @@
 #include "grparse/consensus_page_source.h"
 #include "grparse/document_assembly.h"
 #include "grparse/in_memory_document.h"
+#include "grparse/remote_page_source.h"
 #include "support/check.h"
+#include "support/fake_pdf_backend.h"
 
 namespace {
 
@@ -564,6 +566,46 @@ int main() {
     for (const auto& [in, want] : cases) {
       require(grparse::fold_word(in) == want,
               "fold_word(\"" + in + "\") is \"" + want + "\"");
+    }
+  }
+
+  // Legs may measure in different frames while the fleet moves to the
+  // contract frame: one backend reports unshifted user space (no
+  // page_space), another PAGE_SPACE_CROP_BOX. Each leg maps its own frame,
+  // so on an offset CropBox and a turned page every leg places the page
+  // where a single backend does, whichever leg wins the vote.
+  for (const int rotation : {0, 90, 270}) {
+    grparse_test::FakePdfPage page =
+        grparse_test::text_page({"The survey team returned", "the equipment on time"}, rotation);
+    page.crop_box = std::vector<double>{36, 48, 576, 756};
+    const std::string pdf = "%PDF-frames-" + std::to_string(rotation);
+    grparse_test::ScopedPdfBackend user_leg;
+    grparse_test::ScopedPdfBackend crop_leg;
+    crop_leg.backend().set_page_space(grparse_test::pdfv1::PAGE_SPACE_CROP_BOX);
+    user_leg.backend().add_document(pdf, {page});
+    crop_leg.backend().add_document(pdf, {page});
+    const auto pdf_bytes = std::make_shared<const std::string>(pdf);
+    const auto single = grparse::open_remote_pdf_document(pdf_bytes, user_leg.target(), 144.0)
+                            ->extract_digital_page(1);
+    require(single.has_value() && single->lines.size() == 2, "single-leg page read");
+    for (const auto& order : std::vector<std::vector<std::string>>{
+             {user_leg.target(), crop_leg.target()}, {crop_leg.target(), user_leg.target()}}) {
+      const auto voted =
+          grparse::open_consensus_pdf_document(pdf_bytes, order, 144.0)->extract_digital_page(1);
+      const std::string what = "/Rotate " + std::to_string(rotation) +
+                               (order.front() == crop_leg.target() ? ", contract-frame leg first"
+                                                                   : ", user-space leg first");
+      require(voted.has_value() && voted->lines.size() == single->lines.size(),
+              what + ": consensus page read");
+      require(voted->width == single->width && voted->height == single->height,
+              what + ": same page size as one backend");
+      for (size_t index = 0; index < voted->lines.size(); ++index) {
+        require(voted->lines[index].polygon == single->lines[index].polygon,
+                what + ": same line box as one backend");
+      }
+      for (const auto& rec : voted->reconciliation) {
+        require(rec.missing == 0 && rec.order_breaks == 0, what + ": the legs agree");
+      }
     }
   }
 
