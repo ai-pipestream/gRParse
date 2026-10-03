@@ -10,6 +10,8 @@
 #include <cctype>
 #include <cstdint>
 #include <ctime>
+#include <map>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -50,6 +52,8 @@ bool list_style(const std::string& style) {
 // on the wire is a claim, not a size: a hostile gridSpan of two billion
 // would otherwise size the column ledger.
 constexpr int64_t kMaxTableColumns = 16384;
+// The spreadsheet row limit, which bounds a merged range the same way.
+constexpr uint32_t kMaxSheetRows = 1048576;
 
 // A wire span clamped to the room left: at least 1, at most `room` (itself
 // at least 1). Sets `clamped` when the wire asked for more.
@@ -134,8 +138,21 @@ class PoiFold {
     if (!style.empty()) base->set_style_name(style);
   }
 
+  // A body table hangs off the body; a slide table (slide_index set) off
+  // its slide's group, which the slide event before it opened.
   void table(const poiv1::Table& table) {
-    docv1::TableItem* item = add_table("#/body");
+    std::string parent_ref = "#/body";
+    if (table.has_slide_index()) {
+      auto slide = slide_groups_.find(table.slide_index());
+      if (slide != slide_groups_.end()) {
+        parent_ref = slide->second;
+      } else {
+        warnings_.push_back("poi table " + std::to_string(document_.tables_size()) +
+                            ": slide " + std::to_string(table.slide_index()) +
+                            " was never announced; the table hangs off the body");
+      }
+    }
+    docv1::TableItem* item = add_table(parent_ref);
     docv1::TableData* data = item->mutable_data();
     data->set_num_rows(table.rows_size());
     int num_cols = 0;
@@ -184,15 +201,30 @@ class PoiFold {
 
   // One worksheet folds into a sheet group holding one TableItem in
   // absolute row and column offsets, the same shape the office fold gives
-  // libreoffice sheets.
+  // libreoffice sheets. A batched sheet arrives as consecutive events with
+  // more_rows set on all but the last; they fold into the one table, and
+  // the last carries the merged regions, applied once every row is in. A
+  // hidden sheet is kept on the invisible layer, as the office fold keeps
+  // libreoffice's.
   void sheet(const poiv1::Sheet& sheet) {
-    docv1::GroupItem* group = add_group("#/body", docv1::GROUP_LABEL_SHEET,
-                                        sheet.name(), docv1::CONTENT_LAYER_BODY);
-    group->mutable_sheet()->set_index(static_cast<int32_t>(sheet.index()));
-    docv1::TableItem* item = add_table(group->self_ref());
-    docv1::TableData* data = item->mutable_data();
-    uint32_t num_rows = 0;
-    uint32_t num_cols = 0;
+    if (open_sheet_.has_value() && open_sheet_->index != sheet.index()) {
+      end_sheet_batches();
+    }
+    if (!open_sheet_.has_value()) {
+      const bool visible = !sheet.hidden();
+      const docv1::ContentLayer layer =
+          visible ? docv1::CONTENT_LAYER_BODY : docv1::CONTENT_LAYER_INVISIBLE;
+      docv1::GroupItem* group =
+          add_group("#/body", docv1::GROUP_LABEL_SHEET, sheet.name(), layer);
+      group->mutable_sheet()->set_index(static_cast<int32_t>(sheet.index()));
+      group->mutable_sheet()->set_visible(visible);
+      add_table(group->self_ref(), layer);
+      open_sheet_ = OpenSheet{sheet.index(), sheet.name(), document_.tables_size() - 1};
+    }
+    docv1::TableData* data =
+        document_.mutable_tables(open_sheet_->table)->mutable_data();
+    uint32_t num_rows = static_cast<uint32_t>(data->num_rows());
+    uint32_t num_cols = static_cast<uint32_t>(data->num_cols());
     for (const poiv1::SheetRow& row : sheet.rows()) {
       if (row.cells().empty()) continue;
       docv1::ProvenanceItem* row_prov = data->add_row_prov();
@@ -200,7 +232,7 @@ class PoiFold {
       docv1::GridCell* grid = row_prov->mutable_grid();
       grid->set_row(static_cast<int32_t>(row.row_index()));
       grid->set_col(static_cast<int32_t>(row.cells(0).column_index()));
-      grid->set_sheet(sheet.name());
+      grid->set_sheet(open_sheet_->name);
       for (const poiv1::SheetCell& cell : row.cells()) {
         docv1::TableCell* out = data->add_table_cells();
         out->set_start_row_offset_idx(static_cast<int32_t>(row.row_index()));
@@ -218,6 +250,21 @@ class PoiFold {
     }
     data->set_num_rows(static_cast<int32_t>(num_rows));
     data->set_num_cols(static_cast<int32_t>(num_cols));
+    if (sheet.more_rows()) return;
+    apply_merged_regions(sheet.merged_regions(), data);
+    open_sheet_.reset();
+  }
+
+  // Closes a batched sheet whose last batch never came: another sheet, any
+  // other event, or the end of the stream arrived while more_rows was
+  // still promised. Its rows stay; the merged regions it never declared
+  // cannot be applied, and the warning says so.
+  void end_sheet_batches() {
+    if (!open_sheet_.has_value()) return;
+    warnings_.push_back("poi sheet '" + open_sheet_->name +
+                        "': the stream moved on before the sheet's last batch; its "
+                        "merged cells are not applied");
+    open_sheet_.reset();
   }
 
   // One slide: its own group, the title as a level-1 section header, the
@@ -228,6 +275,7 @@ class PoiFold {
                                  : "slide " + std::to_string(slide.index() + 1);
     docv1::GroupItem* group = add_group("#/body", docv1::GROUP_LABEL_SLIDE, name,
                                         docv1::CONTENT_LAYER_BODY);
+    slide_groups_[slide.index()] = group->self_ref();
     if (!slide.title().empty()) {
       auto* header = document_.add_texts()->mutable_section_header();
       header->set_level(1);
@@ -298,11 +346,12 @@ class PoiFold {
     }
   }
 
-  docv1::TableItem* add_table(const std::string& parent_ref) {
+  docv1::TableItem* add_table(const std::string& parent_ref,
+                              docv1::ContentLayer layer = docv1::CONTENT_LAYER_BODY) {
     docv1::TableItem* item = document_.add_tables();
     item->set_self_ref("#/tables/" + std::to_string(document_.tables_size() - 1));
     item->mutable_parent()->set_ref(parent_ref);
-    item->set_content_layer(docv1::CONTENT_LAYER_BODY);
+    item->set_content_layer(layer);
     item->set_label(docv1::DOC_ITEM_LABEL_TABLE);
     item->add_source()->mutable_collector()->set_collector("poi");
     if (parent_ref == "#/body") {
@@ -350,8 +399,114 @@ class PoiFold {
     }
   }
 
+  // The merged regions of one finished sheet: each range's top-left cell
+  // becomes the anchor and takes the range as its row and column spans,
+  // and the populated cells the range covers drop out, the way the wire's
+  // body tables never repeat a covered position. A range is a claim, not a
+  // size: it clamps to the sheet's grid limits, and a range with its ends
+  // reversed is ignored, each with a warning. A range whose anchor holds
+  // nothing has no cell to span and changes nothing but the cells it covers.
+  void apply_merged_regions(const google::protobuf::RepeatedPtrField<poiv1::CellRange>& regions,
+                            docv1::TableData* data) {
+    if (regions.empty()) return;
+    const std::string& sheet = open_sheet_->name;
+    // Cells by row, so a range visits only the rows it spans.
+    std::map<uint32_t, std::vector<int>> rows;
+    for (int index = 0; index < data->table_cells_size(); ++index) {
+      rows[static_cast<uint32_t>(data->table_cells(index).start_row_offset_idx())].push_back(
+          index);
+    }
+    std::vector<bool> covered(static_cast<size_t>(data->table_cells_size()), false);
+    bool clamped = false;
+    bool reversed = false;
+    bool dropped_text = false;
+    int32_t num_rows = data->num_rows();
+    int32_t num_cols = data->num_cols();
+    for (const poiv1::CellRange& range : regions) {
+      if (range.last_row() < range.first_row() || range.last_column() < range.first_column() ||
+          range.first_row() >= kMaxSheetRows ||
+          range.first_column() >= static_cast<uint32_t>(kMaxTableColumns)) {
+        reversed = true;
+        continue;
+      }
+      const uint32_t last_row = std::min<uint32_t>(range.last_row(), kMaxSheetRows - 1);
+      const uint32_t last_column =
+          std::min(range.last_column(), static_cast<uint32_t>(kMaxTableColumns - 1));
+      clamped = clamped || last_row != range.last_row() || last_column != range.last_column();
+      for (auto row = rows.lower_bound(range.first_row());
+           row != rows.end() && row->first <= last_row; ++row) {
+        for (const int index : row->second) {
+          docv1::TableCell* cell = data->mutable_table_cells(index);
+          const auto column = static_cast<uint32_t>(cell->start_col_offset_idx());
+          if (column < range.first_column() || column > last_column) continue;
+          if (row->first == range.first_row() && column == range.first_column()) {
+            const auto row_span = static_cast<int32_t>(last_row - range.first_row() + 1);
+            const auto col_span = static_cast<int32_t>(last_column - range.first_column() + 1);
+            cell->set_row_span(row_span);
+            cell->set_col_span(col_span);
+            cell->set_end_row_offset_idx(cell->start_row_offset_idx() + row_span);
+            cell->set_end_col_offset_idx(cell->start_col_offset_idx() + col_span);
+            num_rows = std::max(num_rows, cell->end_row_offset_idx());
+            num_cols = std::max(num_cols, cell->end_col_offset_idx());
+          } else {
+            covered[static_cast<size_t>(index)] = true;
+            dropped_text = dropped_text || !cell->text().empty();
+          }
+        }
+      }
+    }
+    data->set_num_rows(num_rows);
+    data->set_num_cols(num_cols);
+    if (std::ranges::any_of(covered, [](bool hidden) { return hidden; })) {
+      google::protobuf::RepeatedPtrField<docv1::TableCell> kept;
+      kept.Reserve(data->table_cells_size());
+      // The first kept cell of each row, for the row provenance below.
+      std::map<int32_t, int32_t> first_column;
+      for (int index = 0; index < data->table_cells_size(); ++index) {
+        if (covered[static_cast<size_t>(index)]) continue;
+        docv1::TableCell* cell = data->mutable_table_cells(index);
+        first_column.try_emplace(cell->start_row_offset_idx(), cell->start_col_offset_idx());
+        *kept.Add() = std::move(*cell);
+      }
+      data->mutable_table_cells()->Swap(&kept);
+      // A row provenance entry locates a row that still holds cells.
+      google::protobuf::RepeatedPtrField<docv1::ProvenanceItem> row_prov;
+      for (docv1::ProvenanceItem& entry : *data->mutable_row_prov()) {
+        auto first = first_column.find(entry.grid().row());
+        if (first == first_column.end()) continue;
+        entry.mutable_grid()->set_col(first->second);
+        *row_prov.Add() = std::move(entry);
+      }
+      data->mutable_row_prov()->Swap(&row_prov);
+    }
+    if (reversed) {
+      warnings_.push_back("poi sheet '" + sheet +
+                          "': a merged range with its ends reversed or past the sheet's "
+                          "grid was ignored");
+    }
+    if (clamped) {
+      warnings_.push_back("poi sheet '" + sheet +
+                          "': a merged range past the sheet's grid was clamped");
+    }
+    if (dropped_text) {
+      warnings_.push_back("poi sheet '" + sheet +
+                          "': a cell a merged range covers held text; the anchor's "
+                          "value stands for the range");
+    }
+  }
+
+  // A batched sheet whose last event has not come yet.
+  struct OpenSheet {
+    uint32_t index = 0;
+    std::string name;
+    int table = 0;
+  };
+
   docv1::Document& document_;
   std::vector<std::string>& warnings_;
+  std::optional<OpenSheet> open_sheet_;
+  // Slide index to its group's self_ref, for the slide's tables.
+  std::map<uint32_t, std::string> slide_groups_;
 };
 
 }  // namespace
@@ -375,6 +530,9 @@ CollectorOutcome collect_poi_document(const std::shared_ptr<grpc::Channel>& chan
   request.set_document_id(document_id);
   request.set_filename(filename);
   request.set_content_type(content_type);
+  // A large worksheet then streams as several bounded Sheet events instead
+  // of one message that grows with the sheet; the fold joins them again.
+  request.set_sheet_batches(true);
   ConcurrentUpload upload(
       context, *stream, request, bytes, /*always_send_chunk=*/true,
       [&bytes](poiv1::ParseRequestChunk& frame, size_t offset, size_t length, bool last) {
@@ -387,6 +545,8 @@ CollectorOutcome collect_poi_document(const std::shared_ptr<grpc::Channel>& chan
   bool status_seen = false;
   poiv1::ParseEvent event;
   while (stream->Read(&event)) {
+    // A batched sheet is consecutive Sheet events; anything else ends it.
+    if (event.event_case() != poiv1::ParseEvent::kSheet) fold.end_sheet_batches();
     switch (event.event_case()) {
       case poiv1::ParseEvent::kDocumentInfo:
         fold.document_info(event.document_info());
@@ -417,6 +577,7 @@ CollectorOutcome collect_poi_document(const std::shared_ptr<grpc::Channel>& chan
     }
     event.Clear();
   }
+  fold.end_sheet_batches();
 
   upload.join();
   const grpc::Status status = stream->Finish();

@@ -157,7 +157,11 @@ CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>&
 // grPOIc (the six OOXML/OLE2 office formats: doc/docx, xls/xlsx, ppt/pptx).
 // The wire carries no document event: the typed ParseEvent stream folds into
 // a Document here — paragraphs by their style names, tables and sheets into
-// TableItems, slides into groups, embedded objects as attachment descriptors.
+// TableItems, slides into groups (with their tables), embedded objects as
+// attachment descriptors. Sheets are requested in batches, so no one event
+// grows with a worksheet; the batches of one sheet fold back into its one
+// table, its merged ranges become anchor-cell spans, and a hidden sheet
+// stays on the invisible layer.
 // Note the collector's own byte cap (GRPOIC_MAX_DOCUMENT_MIB, default 70) is
 // below this server's intake: an oversized upload fails this leg with
 // RESOURCE_EXHAUSTED and degrades like any other collector failure.

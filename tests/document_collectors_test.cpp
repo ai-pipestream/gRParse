@@ -4,6 +4,7 @@
 // warning surfacing, and the failure paths are proven without any collector
 // binary.
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <limits>
@@ -1868,6 +1869,196 @@ void verify_poi_unreachable_endpoint_degrades() {
           "an unreachable poi collector degrades to UNAVAILABLE");
 }
 
+// One workbook-and-deck stream exercising the typed sheet contract: a
+// six-row sheet with a merged title (A1:C1) and a vertical merge (B3:B4)
+// whose covered cells are populated, a hidden sheet, then a slide with its
+// table and a body table. Batched, the six rows arrive as three Sheet
+// events (more_rows on the first two, the merged ranges on the last);
+// unbatched, as one. Records whether the client asked for batches.
+class SheetContractPoiService final : public poiv1::PoiParseService::Service {
+ public:
+  explicit SheetContractPoiService(bool batched) : batched_(batched) {}
+
+  grpc::Status ParseDocument(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<poiv1::ParseEvent, poiv1::ParseRequestChunk>* stream)
+      override {
+    poiv1::ParseRequestChunk chunk;
+    bool first = true;
+    while (stream->Read(&chunk)) {
+      if (first) asked_for_batches_ = chunk.sheet_batches();
+      first = false;
+    }
+    poiv1::ParseEvent event;
+    const auto add_row = [](poiv1::Sheet* sheet, uint32_t index) {
+      poiv1::SheetRow* row = sheet->add_rows();
+      row->set_row_index(index);
+      for (uint32_t column = 0; column < 3; ++column) {
+        poiv1::SheetCell* cell = row->add_cells();
+        cell->set_column_index(column);
+        cell->set_text("r" + std::to_string(index) + "c" + std::to_string(column));
+      }
+    };
+    const auto add_merges = [](poiv1::Sheet* sheet) {
+      poiv1::CellRange* title = sheet->add_merged_regions();
+      title->set_first_row(0);
+      title->set_last_row(0);
+      title->set_first_column(0);
+      title->set_last_column(2);
+      poiv1::CellRange* tall = sheet->add_merged_regions();
+      tall->set_first_row(2);
+      tall->set_last_row(3);
+      tall->set_first_column(1);
+      tall->set_last_column(1);
+    };
+    const uint32_t per_event = batched_ ? 2 : 6;
+    for (uint32_t start = 0; start < 6; start += per_event) {
+      event.Clear();
+      poiv1::Sheet* sheet = event.mutable_sheet();
+      sheet->set_index(0);
+      sheet->set_name("Big");
+      for (uint32_t row = start; row < start + per_event; ++row) add_row(sheet, row);
+      if (start + per_event < 6) {
+        sheet->set_more_rows(true);
+      } else {
+        add_merges(sheet);
+      }
+      stream->Write(event);
+    }
+    event.Clear();
+    poiv1::Sheet* hidden = event.mutable_sheet();
+    hidden->set_index(1);
+    hidden->set_name("Secret");
+    hidden->set_hidden(true);
+    add_row(hidden, 0);
+    stream->Write(event);
+
+    event.Clear();
+    event.mutable_slide()->set_index(0);
+    event.mutable_slide()->set_title("Results");
+    stream->Write(event);
+    event.Clear();
+    poiv1::Table* slide_table = event.mutable_table();
+    slide_table->set_slide_index(0);
+    slide_table->add_rows()->add_cells()->set_text("on the slide");
+    stream->Write(event);
+    event.Clear();
+    event.mutable_table()->add_rows()->add_cells()->set_text("in the body");
+    stream->Write(event);
+
+    event.Clear();
+    event.mutable_status()->set_state(poiv1::ParseStatus::STATE_OK);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+
+  bool asked_for_batches() const { return asked_for_batches_.load(); }
+
+ private:
+  const bool batched_;
+  std::atomic<bool> asked_for_batches_{false};
+};
+
+grparse::CollectorOutcome collect_sheet_contract(bool batched, bool* asked_for_batches) {
+  SheetContractPoiService service(batched);
+  ServerFixture server(&service);
+  auto outcome = grparse::collect_poi_document(server.channel(), "doc-sheets", "book.xlsx", "",
+                                               "bytes");
+  *asked_for_batches = service.asked_for_batches();
+  return outcome;
+}
+
+// A batched sheet folds into one table identical to the unbatched one: the
+// client asks for batches, the batches join, and the merged ranges from the
+// last batch apply to rows from the earlier ones.
+void verify_poi_batched_sheet_folds_like_one_sheet() {
+  bool batched_asked = false;
+  bool unbatched_asked = false;
+  const auto batched = collect_sheet_contract(true, &batched_asked);
+  const auto unbatched = collect_sheet_contract(false, &unbatched_asked);
+  require(batched.success && unbatched.success,
+          "poi collection succeeds: " + batched.error + unbatched.error);
+  require(batched_asked && unbatched_asked,
+          "the first upload chunk opts in to sheet batches");
+  require(batched.warnings == unbatched.warnings,
+          "the batched sheet warns exactly as the unbatched one");
+  require(batched.document.SerializeAsString() == unbatched.document.SerializeAsString(),
+          "three batches fold into exactly the document one Sheet event gives");
+  const docv1::Document& document = batched.document;
+  require(document.groups_size() == 3 && document.tables_size() == 4,
+          "two sheets and a slide fold into groups; two sheet tables, a slide and a body table");
+  const docv1::TableData& data = document.tables(0).data();
+  require(data.num_rows() == 6 && data.num_cols() == 3 && data.row_prov_size() == 6,
+          "the batched sheet is one table over all six rows");
+}
+
+// Merged ranges become anchor spans and the populated cells they cover drop
+// out, like a body table's covered positions; the row provenance follows.
+void verify_poi_merged_regions_span_the_anchor() {
+  bool asked = false;
+  const auto outcome = collect_sheet_contract(true, &asked);
+  require(outcome.success, "poi collection succeeds: " + outcome.error);
+  const docv1::TableData& data = outcome.document.tables(0).data();
+  require(data.table_cells_size() == 18 - 2 - 1,
+          "the two cells under the title and the one under the tall cell drop out");
+  const auto cell_at = [&data](int row, int column) -> const docv1::TableCell* {
+    for (const auto& cell : data.table_cells()) {
+      if (cell.start_row_offset_idx() == row && cell.start_col_offset_idx() == column) {
+        return &cell;
+      }
+    }
+    return nullptr;
+  };
+  const docv1::TableCell* title = cell_at(0, 0);
+  require(title != nullptr && title->text() == "r0c0" && title->col_span() == 3 &&
+              title->row_span() == 1 && title->end_col_offset_idx() == 3,
+          "the title anchor spans its three columns");
+  require(cell_at(0, 1) == nullptr && cell_at(0, 2) == nullptr,
+          "the title's covered cells are not repeated");
+  const docv1::TableCell* tall = cell_at(2, 1);
+  require(tall != nullptr && tall->row_span() == 2 && tall->end_row_offset_idx() == 4 &&
+              tall->col_span() == 1,
+          "the vertical anchor spans two rows");
+  require(cell_at(3, 1) == nullptr && cell_at(3, 0) != nullptr && cell_at(3, 2) != nullptr,
+          "only the covered cell of the row below drops out");
+  require(data.row_prov(0).grid().row() == 0 && data.row_prov(0).grid().col() == 0,
+          "the title row keeps its provenance");
+  require(outcome.warnings.size() == 1 && outcome.warnings[0].contains("'Big'") &&
+              outcome.warnings[0].contains("covers held text"),
+          "covered cells that held text are named in one warning per sheet");
+}
+
+// A hidden sheet is kept on the invisible layer and marked not visible, the
+// way the office fold keeps libreoffice's; a slide table hangs off its
+// slide's group, a body table off the body.
+void verify_poi_hidden_sheets_and_slide_tables() {
+  bool asked = false;
+  const auto outcome = collect_sheet_contract(true, &asked);
+  require(outcome.success, "poi collection succeeds: " + outcome.error);
+  const docv1::Document& document = outcome.document;
+  const docv1::GroupItem& shown = document.groups(0);
+  const docv1::GroupItem& hidden = document.groups(1);
+  require(shown.sheet().visible() && shown.content_layer() == docv1::CONTENT_LAYER_BODY,
+          "a visible sheet stays on the body layer");
+  require(hidden.name() == "Secret" && !hidden.sheet().visible() &&
+              hidden.content_layer() == docv1::CONTENT_LAYER_INVISIBLE &&
+              document.tables(1).content_layer() == docv1::CONTENT_LAYER_INVISIBLE &&
+              document.tables(1).data().table_cells_size() == 3,
+          "the hidden sheet keeps its cells on the invisible layer");
+  const docv1::GroupItem& slide = document.groups(2);
+  const docv1::TableItem& slide_table = document.tables(2);
+  require(slide.label() == docv1::GROUP_LABEL_SLIDE &&
+              slide_table.parent().ref() == slide.self_ref() &&
+              slide.children(slide.children_size() - 1).ref() == slide_table.self_ref() &&
+              slide_table.data().table_cells(0).text() == "on the slide",
+          "the slide table lands in its slide's group");
+  const docv1::TableItem& body_table = document.tables(3);
+  require(body_table.parent().ref() == "#/body" &&
+              document.body().children(document.body().children_size() - 1).ref() ==
+                  body_table.self_ref(),
+          "a table without a slide index stays on the body");
+}
+
 const docv1::FieldSource* meta_source_of(const docv1::DocumentMeta& meta,
                                          const std::string& field) {
   for (const auto& entry : meta.field_sources()) {
@@ -2767,6 +2958,9 @@ int main() {
       verify_poi_vertical_merge_keeps_columns,
       verify_poi_hostile_span_is_clamped,
       verify_poi_unreachable_endpoint_degrades,
+      verify_poi_batched_sheet_folds_like_one_sheet,
+      verify_poi_merged_regions_span_the_anchor,
+      verify_poi_hidden_sheets_and_slide_tables,
       verify_poi_fanout_merges_claims_without_a_second_body,
       verify_poi_fanout_keeps_its_body_when_the_primary_failed,
       verify_calamine_folds_sheets,
