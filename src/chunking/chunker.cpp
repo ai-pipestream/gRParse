@@ -38,6 +38,52 @@ std::string join(const std::vector<std::string>& parts, std::string_view separat
   return out;
 }
 
+// A language tag in the canonical case RFC 5646 recommends: the primary
+// subtag lower case, a four-letter script title case, a two-letter region
+// upper case, everything else (and everything after a singleton) lower
+// case; '_' is read as '-'. nullopt for a tag that is not shaped like one:
+// an empty subtag, a character outside [A-Za-z0-9], a primary subtag that
+// is not 2 to 8 letters, or any subtag longer than 8.
+std::optional<std::string> canonical_language_tag(std::string_view raw) {
+  if (raw.empty()) return std::nullopt;
+  std::string out;
+  out.reserve(raw.size());
+  std::size_t position = 0;
+  bool first = true;
+  bool after_singleton = false;
+  while (true) {
+    const std::size_t end = raw.find_first_of("-_", position);
+    const std::string_view subtag =
+        raw.substr(position, end == std::string_view::npos ? std::string_view::npos
+                                                           : end - position);
+    if (subtag.empty() || subtag.size() > 8) return std::nullopt;
+    bool letters = true;
+    for (const unsigned char c : subtag) {
+      if (!std::isalnum(c)) return std::nullopt;
+      letters = letters && std::isalpha(c);
+    }
+    if (first && (!letters || subtag.size() < 2)) return std::nullopt;
+    std::string part(subtag);
+    std::ranges::transform(part, part.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (!first && !after_singleton && letters) {
+      if (part.size() == 2) {
+        std::ranges::transform(part, part.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+      } else if (part.size() == 4) {
+        part[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(part[0])));
+      }
+    }
+    if (!first && subtag.size() == 1) after_singleton = true;
+    if (!first) out.push_back('-');
+    out += part;
+    first = false;
+    if (end == std::string_view::npos) break;
+    position = end + 1;
+  }
+  return out;
+}
+
 // One chunk while it is still being built. The proto is materialized only
 // once every pass has run, so merging and splitting stay plain data folds.
 struct WorkChunk {
@@ -58,9 +104,9 @@ struct WorkChunk {
   std::optional<double> min_confidence;
   bool saw_digital = false;
   bool saw_ocr = false;
-  // The language tags the chunk's text items declare (each item's own,
-  // else the document's), and whether any text item declared none. The
-  // chunk reports a language only when every item agrees on one.
+  // The language tags of the chunk's text items (each item's own, else the
+  // document's), and whether any text item had none. The chunk reports a
+  // language only when every item agrees on one.
   std::set<std::string> languages;
   bool language_unknown = false;
 };
@@ -249,9 +295,10 @@ class Chunker {
 
   std::vector<WorkChunk> run() {
     walk("#/body", 0);
-    // A chunk with no text item (a lone table or picture) speaks the
-    // document's declared language, when it declares one.
-    const std::string& declared = document_.source_meta().language();
+    // A chunk with no text item (a lone table or picture) is in the
+    // document's language, when the document records one.
+    const std::string declared =
+        canonical_language_tag(document_.source_meta().language()).value_or(std::string());
     for (auto& chunk : chunks_) {
       if (chunk.languages.empty() && !chunk.language_unknown && !declared.empty()) {
         chunk.languages.insert(declared);
@@ -368,9 +415,10 @@ class Chunker {
     return std::nullopt;
   }
 
-  // The language a text item is written in as far as the source says: the
-  // item's own tag (the raw tag when kept, else the enum's subtag), falling
-  // back to the document's declared language. Empty when neither says.
+  // The language a text item is in, as the document's fields record it: the
+  // item's own tag (the raw tag when it is well formed, else the enum's
+  // subtag), falling back to the document-level language. Always in
+  // canonical case; empty when nothing usable is recorded.
   std::string language_of(const docv1::BaseTextItem& item) const {
     const docv1::LanguageMetaField* field = nullptr;
     if (item.item_case() == docv1::BaseTextItem::kCode) {
@@ -382,16 +430,16 @@ class Chunker {
       field = &base->meta().language();
     }
     if (field != nullptr) {
-      if (field->has_code_raw() && !field->code_raw().empty()) return field->code_raw();
+      if (auto tag = canonical_language_tag(field->code_raw())) return *std::move(tag);
       if (field->code() != docv1::HUMAN_LANGUAGE_LABEL_UNSPECIFIED) {
-        std::string tag = docv1::HumanLanguageLabel_Name(field->code());
-        tag.erase(0, std::string_view("HUMAN_LANGUAGE_LABEL_").size());
-        std::ranges::transform(tag, tag.begin(),
-                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        return tag;
+        const std::string name = docv1::HumanLanguageLabel_Name(field->code());
+        if (auto tag = canonical_language_tag(
+                std::string_view(name).substr(std::string_view("HUMAN_LANGUAGE_LABEL_").size()))) {
+          return *std::move(tag);
+        }
       }
     }
-    return document_.source_meta().language();
+    return canonical_language_tag(document_.source_meta().language()).value_or(std::string());
   }
 
   static std::string text_of(const docv1::BaseTextItem& item) {
@@ -672,8 +720,8 @@ class Chunker {
 
 // -- materialization --------------------------------------------------------
 
-// The one language every text item of the chunk is written in, by what the
-// source declares; absent when they disagree or any of them is unknown.
+// The one language every text item of the chunk is in, by what the
+// document's fields record; absent when they disagree or any is unknown.
 std::optional<std::string> chunk_language(const WorkChunk& work) {
   if (work.language_unknown || work.languages.size() != 1) return std::nullopt;
   return *work.languages.begin();

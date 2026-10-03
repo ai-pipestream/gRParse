@@ -2684,8 +2684,6 @@ class FakePdfService final : public pdfv1::PdfParseService::Service {
   // nullopt where the client left that end unset.
   std::optional<uint32_t> first_page() const { return first_page_; }
   std::optional<uint32_t> last_page() const { return last_page_; }
-  // Whether the last dial asked for the metadata event.
-  bool emit_metadata() const { return emit_metadata_; }
 
   grpc::Status ParsePdf(
       grpc::ServerContext*,
@@ -2700,7 +2698,6 @@ class FakePdfService final : public pdfv1::PdfParseService::Service {
     while (stream->Read(&request)) {
       if (request.has_options()) {
         emit_document = request.options().emit_document();
-        emit_metadata_ = request.options().emit_metadata();
         last_pages_.assign(request.options().pages().begin(),
                            request.options().pages().end());
         if (request.options().has_first_page()) first_page_ = request.options().first_page();
@@ -2750,7 +2747,6 @@ class FakePdfService final : public pdfv1::PdfParseService::Service {
   std::vector<uint32_t> last_pages_;
   std::optional<uint32_t> first_page_;
   std::optional<uint32_t> last_page_;
-  bool emit_metadata_ = false;
 };
 
 class FailingPdfService final : public pdfv1::PdfParseService::Service {
@@ -2773,8 +2769,6 @@ void verify_pdf_collects_document_classification_and_warnings() {
   require(result.outcome.success, "pdf collection succeeds: " + result.outcome.error);
   require(result.outcome.document.texts(0).text().base().text() == "from pdf",
           "the pdf Document arrives unchanged");
-  require(service.emit_metadata(),
-          "the collector asks for the file's own metadata (title, authors, catalog /Lang)");
   require(result.classification.pdf_class == grparse::PdfClass::kTextBased,
           "the info event's classification is captured");
   require(result.classification.pages_needing_ocr.empty(),

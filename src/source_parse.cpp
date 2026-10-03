@@ -1575,6 +1575,69 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   return inputs;
 }
 
+// The CV path reads pixels and the text layer, never the file's own
+// dictionaries; what the inspector read from them (title, authors, dates,
+// the catalog /Lang) is the same file's account, so the CV document takes
+// it unless it already has its own.
+void lend_source_meta(const CollectorOutcome& inspector, CollectorOutcome* cv) {
+  if (cv->success && inspector.document.has_source_meta() && !cv->document.has_source_meta()) {
+    *cv->document.mutable_source_meta() = inspector.document.source_meta();
+  }
+}
+
+// Why the routed PDF went to the CV path instead of the inspector's
+// extraction, and how recognition was scoped there.
+std::string cv_route_warning(const PdfClassification& classification,
+                             const PdfRouteDecision& route, bool forced) {
+  return "pdf inspector classified the document as " +
+         std::string(pdf_class_name(classification.pdf_class)) +
+         (classification.encoding_issues
+              ? " with encoding issues in the text layer, so its extraction was not taken"
+              : "") +
+         (classification.empty_body
+              ? "; its extraction carried no body text, so it was not taken"
+              : "") +
+         (classification.ocr_recommended
+              ? "; it recommended OCR over the text layer, so its extraction was not taken"
+              : "") +
+         (forced ? "; recognition was forced on every page in place of the embedded layer"
+          : route.ocr_pages.empty()
+              ? "; the CV path's own per-page heuristic decided recognition"
+              : "; recognition restricted to the " + std::to_string(route.ocr_pages.size()) +
+                    " page(s) needing OCR");
+}
+
+// The inspector's own extraction as the leg's result: the fast path, or
+// pipeline NATIVE taking it whatever the classification said.
+CollectorOutcome take_inspector_extraction(const ParseInputs& inputs,
+                                           const PdfParseResult& parsed,
+                                           const PdfRouteDecision& route) {
+  PdfParseResult fast = parsed;
+  if (inputs.previews) {
+    attach_page_previews(inputs.bytes, &fast.outcome.document, inputs.tuning.page_range,
+                         [&inputs] {
+                           return inputs.context->IsCancelled() ||
+                                  std::chrono::system_clock::now() >= inputs.inbound_deadline;
+                         },
+                         inputs.inbound_deadline);
+  }
+  if (!route.fast_path) {
+    // NATIVE asked for the text layer as it is; say what the models would
+    // have been run for, so a caller can tell a thin result from a thin
+    // document.
+    fast.outcome.warnings.push_back(
+        "pipeline NATIVE took the pdf collector's extraction although the inspector "
+        "classified the document as " +
+        std::string(pdf_class_name(parsed.classification.pdf_class)) +
+        (parsed.classification.encoding_issues ? " with encoding issues in the text layer"
+                                               : "") +
+        (parsed.classification.empty_body ? " and its extraction carried no body text" : "") +
+        (parsed.classification.ocr_recommended ? " and recommended OCR for it" : "") +
+        "; no layout, OCR, or table-structure model ran");
+  }
+  return fast.outcome;
+}
+
 // The pdf routing leg: the inspector's classification decides between the
 // collector's own fast-path Document and a CV run restricted to the pages it
 // named as needing OCR. A failed classification degrades to the unrouted CV
@@ -1589,30 +1652,7 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
                   [context = inputs.context] { return context->IsCancelled(); });
   const PdfRouteDecision route = route_pdf_by_classification(parsed.classification);
   if (parsed.outcome.success && (route.fast_path || inputs.native_pipeline)) {
-    PdfParseResult fast = parsed;
-    if (inputs.previews) {
-      attach_page_previews(inputs.bytes, &fast.outcome.document, inputs.tuning.page_range,
-                           [&inputs] {
-                             return inputs.context->IsCancelled() ||
-                                    std::chrono::system_clock::now() >= inputs.inbound_deadline;
-                           },
-                           inputs.inbound_deadline);
-    }
-    if (!route.fast_path) {
-      // NATIVE asked for the text layer as it is; say what the models would
-      // have been run for, so a caller can tell a thin result from a thin
-      // document.
-      fast.outcome.warnings.push_back(
-          "pipeline NATIVE took the pdf collector's extraction although the inspector "
-          "classified the document as " +
-          std::string(pdf_class_name(parsed.classification.pdf_class)) +
-          (parsed.classification.encoding_issues ? " with encoding issues in the text layer"
-                                                 : "") +
-          (parsed.classification.empty_body ? " and its extraction carried no body text" : "") +
-          (parsed.classification.ocr_recommended ? " and recommended OCR for it" : "") +
-          "; no layout, OCR, or table-structure model ran");
-    }
-    return fast.outcome;
+    return take_inspector_extraction(inputs, parsed, route);
   }
   if (!parsed.outcome.success && inputs.native_pipeline) {
     // Degrading to the CV path would run the models NATIVE excludes.
@@ -1636,32 +1676,8 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
       route.force_ocr && routed_tuning.mode == PageScheduler::OcrTuning::Mode::kSelective;
   if (forced) routed_tuning.mode = PageScheduler::OcrTuning::Mode::kForce;
   CollectorOutcome outcome = run_cv(routed_tuning);
-  // The CV path reads pixels and the text layer, never the file's own
-  // dictionaries; what the inspector read from them (title, authors, dates,
-  // the catalog /Lang) is the same file's account, so the CV document takes
-  // it unless it already has its own.
-  if (outcome.success && parsed.outcome.document.has_source_meta() &&
-      !outcome.document.has_source_meta()) {
-    *outcome.document.mutable_source_meta() = parsed.outcome.document.source_meta();
-  }
-  outcome.warnings.push_back(
-      "pdf inspector classified the document as " +
-      std::string(pdf_class_name(parsed.classification.pdf_class)) +
-      (parsed.classification.encoding_issues
-           ? " with encoding issues in the text layer, so its extraction was not taken"
-           : "") +
-      (parsed.classification.empty_body
-           ? "; its extraction carried no body text, so it was not taken"
-           : "") +
-      (parsed.classification.ocr_recommended
-           ? "; it recommended OCR over the text layer, so its extraction was not taken"
-           : "") +
-      (forced
-           ? "; recognition was forced on every page in place of the embedded layer"
-       : route.ocr_pages.empty()
-           ? "; the CV path's own per-page heuristic decided recognition"
-           : "; recognition restricted to the " +
-                 std::to_string(route.ocr_pages.size()) + " page(s) needing OCR"));
+  lend_source_meta(parsed.outcome, &outcome);
+  outcome.warnings.push_back(cv_route_warning(parsed.classification, route, forced));
   return outcome;
 }
 

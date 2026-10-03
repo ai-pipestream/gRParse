@@ -132,6 +132,8 @@ Determinism is the point: the same input bytes produce the same chunk bytes on e
 
 A chunk reports `start_offset` and `end_offset` as UTF-8 code point positions in the document's concatenated body text whenever the parse supplied an offset table for every text item the chunk consumed; otherwise both stay unset rather than being guessed.
 
+A chunk's `metadata` and `typed_metadata` carry `language` when every text item in it has the same one: the item's own `meta.language`, else the document's `source_meta.language`, as a BCP 47 tag in canonical case (`zh-Hant-TW`). The key is absent when the items disagree, when one has no language, or when a tag is malformed. A chunk with no text item, such as a lone table, takes the document's language. It reports what the document's fields hold, which is a source's declaration (an Office run, an HTML `lang`, a PDF's catalog `/Lang`) or a collector's detection (grpc-asr). gRParse runs no language detection itself.
+
 #### Optional local embeddings
 
 The two synchronous chunk RPCs accept `embedding_options.enabled=true` to attach

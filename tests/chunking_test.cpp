@@ -1000,6 +1000,31 @@ void verify_chunk_language_is_the_declared_one() {
   require(merged.size() == 1, "three short peers merge");
   require(language_key(merged.front()).empty(), "a chunk mixing languages reports none");
 
+  // Tags come out in canonical case; a malformed raw tag falls back to the
+  // enum, and a malformed document tag counts as none.
+  docv1::Document cased = new_document();
+  cased.mutable_source_meta()->set_language("zh_hant_tw");
+  add_paragraph(&cased, "unmarked");
+  const std::string shouting = add_paragraph(&cased, "loud");
+  set_language(&cased, shouting, "EN-us", docv1::HUMAN_LANGUAGE_LABEL_EN);
+  const std::string broken = add_paragraph(&cased, "broken");
+  set_language(&cased, broken, "en--US", docv1::HUMAN_LANGUAGE_LABEL_PT);
+  const std::string private_use = add_paragraph(&cased, "private");
+  set_language(&cased, private_use, "de-x-Klingon", docv1::HUMAN_LANGUAGE_LABEL_UNSPECIFIED);
+  const auto cased_chunks = chunk_hierarchical(cased, {}, {}, "d.docx");
+  require(cased_chunks.size() == 4, "one chunk per paragraph");
+  require_eq(language_key(cased_chunks[0]), "zh-Hant-TW",
+             "'_' reads as '-', a script is title case and a region upper case");
+  require_eq(language_key(cased_chunks[1]), "en-US", "the primary subtag is lower case");
+  require_eq(language_key(cased_chunks[2]), "pt", "a malformed raw tag falls back to the enum");
+  require_eq(language_key(cased_chunks[3]), "de-x-klingon",
+             "subtags after a singleton stay lower case");
+  docv1::Document garbage = new_document();
+  garbage.mutable_source_meta()->set_language("1234");
+  add_paragraph(&garbage, "words");
+  require(language_key(chunk_hierarchical(garbage, {}, {}, "d.txt").front()).empty(),
+          "a malformed document language counts as none");
+
   // A chunk with no text item takes the document's language.
   docv1::Document tabled = new_document();
   tabled.mutable_source_meta()->set_language("es");
