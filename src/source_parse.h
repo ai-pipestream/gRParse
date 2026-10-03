@@ -106,9 +106,13 @@ ai::pipestream::document::v1::ParseIdentity parse_identity(
 // that decide the Document (see document.proto for what is left out).
 std::string options_digest(const ai::pipestream::parse::v1::ConvertDocumentOptions& options);
 
-// ParseIdentity.settings_digest: the output-deciding server environment,
-// read once on first use.
+// ParseIdentity.settings_digest: the output-deciding server environment
+// and the models MANIFEST, read once on first use.
 const std::string& settings_digest();
+
+// The same digest read afresh from the environment and the models
+// directory; settings_digest() caches its first answer.
+std::string read_settings_digest();
 
 grpc::Status parse_source(grpc::CallbackServerContext* context,
                           const ai::pipestream::parse::v1::ConvertDocumentRequest& request,

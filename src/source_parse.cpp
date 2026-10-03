@@ -8,12 +8,14 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <exception>
+#include <fstream>
 #include <format>
 #include <initializer_list>
 #include <limits>
 #include <map>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -2053,17 +2055,33 @@ constexpr std::string_view kIdentitySettings[] = {
     "GRPARSE_XML_TARGET",
 };
 
-std::string compute_settings_digest() {
+// The model files' own identity: the SHA-256 of the models directory's
+// MANIFEST, which pins every model file by its sha256 (models/MANIFEST,
+// shipped in the models image). Swapping the models image changes it even
+// when every variable above stays the same. "absent" when there is none.
+std::string models_manifest_digest() {
+  const char* dir = std::getenv("GRPARSE_MODELS_DIR");
+  const fs::path path = fs::path(dir == nullptr ? "/models" : dir) / "MANIFEST";
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return "absent";
+  std::ostringstream contents;
+  contents << in.rdbuf();
+  if (in.bad()) throw std::runtime_error("models MANIFEST could not be read: " + path.string());
+  return targets::sha256_hex(contents.str());
+}
+
+}  // namespace
+
+std::string read_settings_digest() {
   std::string manifest;
   for (const std::string_view name : kIdentitySettings) {
     const char* value = std::getenv(std::string(name).c_str());
     if (value == nullptr) continue;
     manifest += std::format("{}={}\n", name, value);
   }
+  manifest += std::format("models/MANIFEST={}\n", models_manifest_digest());
   return targets::sha256_hex(manifest);
 }
-
-}  // namespace
 
 std::string options_digest(const pipestream::parse::v1::ConvertDocumentOptions& options) {
   pipestream::parse::v1::ConvertDocumentOptions decisive = options;
@@ -2104,7 +2122,7 @@ std::string options_digest(const pipestream::parse::v1::ConvertDocumentOptions& 
 }
 
 const std::string& settings_digest() {
-  static const std::string digest = compute_settings_digest();
+  static const std::string digest = read_settings_digest();
   return digest;
 }
 
