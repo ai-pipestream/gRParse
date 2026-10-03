@@ -94,13 +94,6 @@ const KNOWN_UIS = {
     service: "ai.pipestream.vlm.v1.VlmConvertService",
     method: "GetServiceInfo",
   },
-  poic: {
-    repo: "grPOIc",
-    proto: "grpoic-api/src/main/proto/ai/pipestream/poi/v1/poi_service.proto",
-    include: "grpoic-api/src/main/proto",
-    service: "ai.pipestream.poi.v1.PoiParseService",
-    method: "GetServiceInfo",
-  },
   fastwarc: {
     repo: "fastwarc-grpc",
     proto: "proto/fastwarc/v1/warc_service.proto",

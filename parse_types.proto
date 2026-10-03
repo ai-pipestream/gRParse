@@ -379,12 +379,10 @@ enum Collector {
   // The grpc-libreoffice typed-stream collector. The default for office
   // formats; requires a configured collector endpoint.
   COLLECTOR_LIBREOFFICE = 2;
-  // The grPOIc office collector (Apache POI): text, tables, sheets, and
-  // slides of the six OOXML/OLE2 formats (doc/docx, xls/xlsx, ppt/pptx).
-  // Never the routed default: when GRPARSE_POI_TARGET is configured, a poi
-  // leg fans out beside the libreoffice default for those formats, and
-  // gRParse folds the typed event stream into a Document client-side.
-  COLLECTOR_POI = 3;
+  // 3 was COLLECTOR_POI, a retired office collector; a request naming 3 is
+  // rejected as an invalid collector.
+  reserved 3;
+  reserved "COLLECTOR_POI";
   // The grpc-calamine spreadsheet collector (xls/xlsx/xlsm/xlsb/ods). Never
   // the routed default: when GRPARSE_CALAMINE_TARGET is configured, a
   // calamine leg fans out beside the libreoffice default for workbooks, and

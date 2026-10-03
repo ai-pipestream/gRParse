@@ -7,8 +7,8 @@
 #
 # Profiles beyond the default core:
 #   parsers  - the remaining parser services and their viewer UIs: epub,
-#              xml, markup, ebcdic, email (proxied tabs), plus poic and
-#              fastwarc (native shell tabs, no UI container of their own).
+#              xml, markup, ebcdic, email (proxied tabs), plus fastwarc
+#              (a native shell tab, no UI container of its own).
 #   heavy    - asr (CPU whisper image; mount ggml weights into ./models of
 #              grpc-asr or point ASR models elsewhere), enrich, and
 #              vlm-convert (both need an external VLM endpoint via
@@ -93,12 +93,13 @@ services:
       # path and the in-process CV/ONNX pipeline is skipped; scanned pages
       # fall through with OCR restricted to the pages the inspector names.
       GRPARSE_PDF_TARGET: "pdf-inspector:50067"
-      # The secondary office legs: a routed office upload fans out to poic
-      # (OOXML/OLE2) and calamine (workbooks) beside libreoffice, and the
-      # merge ranks their claims below its own. calamine's service sits in
-      # its opt-in `calamine` profile; with the profile down the workbook
-      # leg fails loudly (UNAVAILABLE), per the doctrine above.
-      GRPARSE_POI_TARGET: "poic:50052"
+      # The secondary office leg: a routed workbook upload fans out to
+      # calamine beside libreoffice, and the merge ranks calamine's claims
+      # above libreoffice's on spreadsheets. calamine's service sits in its
+      # opt-in `calamine` profile; with the profile down the workbook leg
+      # fails loudly (UNAVAILABLE), per the doctrine above. Word processing
+      # and presentation uploads have libreoffice alone: its failure fails
+      # the parse.
       GRPARSE_CALAMINE_TARGET: "calamine:50062"
       # gRParse links no PDF engine: every PDF the CV path reads goes to the
       # PdfBackendService named here (docs/pdf-backend-services.md). pdfium
@@ -290,20 +291,6 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=64m   # JVM scratch (hsperfdata, temp attachments)
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-
-  poic:
-    profiles: ["parsers"]
-    image: pipestreamai/grpoic:${STACK_TAG:-latest}
-    build: ../grPOIc
-    expose:
-      - "50052"
-    read_only: true
-    tmpfs:
-      - /tmp:size=64m   # JVM scratch; POI spools large office files here
     cap_drop:
       - ALL
     security_opt:
@@ -532,8 +519,7 @@ services:
       # report unreachable, so the core stack stays bootable alone.
       DEMO_UIS: "lol-html=lol-html:50057@lol-html-ui:8080,libreoffice=libreoffice:50053@libreoffice-ui:8080,pdf=pdf-inspector:50067@pdf-inspector-ui:8080,epub=epub:50064@epub-ui:8080,xml=xml:50066@xml-ui:8080,markup=markup:50065@markup-ui:8080,ebcdic=ebcdic:50063@ebcdic-ui:8080,email=email:50054@email-ui:8080"
       # Native tabs (bridge endpoints in the shell itself, no UI container):
-      # poic/fastwarc live in the `parsers` profile, the rest in `heavy`.
-      POIC_TARGET: "poic:50052"
+      # fastwarc lives in the `parsers` profile, the rest in `heavy`.
       FASTWARC_TARGET: "fastwarc:50060"
       ASR_TARGET: "asr:50055"
       ENRICH_TARGET: "enrich:50056"
