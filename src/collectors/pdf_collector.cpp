@@ -117,6 +117,12 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
   // needs only the info event, but a text-based document's fast path needs
   // the fold, and the fold is built from the page stream.
   request.mutable_options()->set_emit_document(true);
+  // The file's own dictionaries (information dictionary, XMP, catalog
+  // /Lang, outline, attachments, anchors): the fold writes them into
+  // source_meta and the document's other homes, and the CV route lends the
+  // source_meta to its own document, so a PDF's declared language reaches
+  // every path. One extra read of the file.
+  request.mutable_options()->set_emit_metadata(true);
   // Docling page_range → collector options first_page/last_page, a
   // 1-indexed inclusive span that costs two numbers however long it is.
   // Docling spells "to the end" as (start, sys.maxsize), which reaches this

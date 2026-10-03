@@ -1636,6 +1636,14 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
       route.force_ocr && routed_tuning.mode == PageScheduler::OcrTuning::Mode::kSelective;
   if (forced) routed_tuning.mode = PageScheduler::OcrTuning::Mode::kForce;
   CollectorOutcome outcome = run_cv(routed_tuning);
+  // The CV path reads pixels and the text layer, never the file's own
+  // dictionaries; what the inspector read from them (title, authors, dates,
+  // the catalog /Lang) is the same file's account, so the CV document takes
+  // it unless it already has its own.
+  if (outcome.success && parsed.outcome.document.has_source_meta() &&
+      !outcome.document.has_source_meta()) {
+    *outcome.document.mutable_source_meta() = parsed.outcome.document.source_meta();
+  }
   outcome.warnings.push_back(
       "pdf inspector classified the document as " +
       std::string(pdf_class_name(parsed.classification.pdf_class)) +

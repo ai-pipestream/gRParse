@@ -1,12 +1,14 @@
 #include "chunker.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <print>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -56,6 +58,11 @@ struct WorkChunk {
   std::optional<double> min_confidence;
   bool saw_digital = false;
   bool saw_ocr = false;
+  // The language tags the chunk's text items declare (each item's own,
+  // else the document's), and whether any text item declared none. The
+  // chunk reports a language only when every item agrees on one.
+  std::set<std::string> languages;
+  bool language_unknown = false;
 };
 
 // The headings block a chunk is contextualized with: the trail joined with
@@ -242,6 +249,14 @@ class Chunker {
 
   std::vector<WorkChunk> run() {
     walk("#/body", 0);
+    // A chunk with no text item (a lone table or picture) speaks the
+    // document's declared language, when it declares one.
+    const std::string& declared = document_.source_meta().language();
+    for (auto& chunk : chunks_) {
+      if (chunk.languages.empty() && !chunk.language_unknown && !declared.empty()) {
+        chunk.languages.insert(declared);
+      }
+    }
     if (too_deep_ > 0) {
       std::println(stderr,
                    "gRParse chunker: {} subtree(s) nested deeper than {} levels left out",
@@ -353,6 +368,32 @@ class Chunker {
     return std::nullopt;
   }
 
+  // The language a text item is written in as far as the source says: the
+  // item's own tag (the raw tag when kept, else the enum's subtag), falling
+  // back to the document's declared language. Empty when neither says.
+  std::string language_of(const docv1::BaseTextItem& item) const {
+    const docv1::LanguageMetaField* field = nullptr;
+    if (item.item_case() == docv1::BaseTextItem::kCode) {
+      if (item.code().has_meta() && item.code().meta().has_language()) {
+        field = &item.code().meta().language();
+      }
+    } else if (const auto* base = text_base(item);
+               base != nullptr && base->has_meta() && base->meta().has_language()) {
+      field = &base->meta().language();
+    }
+    if (field != nullptr) {
+      if (field->has_code_raw() && !field->code_raw().empty()) return field->code_raw();
+      if (field->code() != docv1::HUMAN_LANGUAGE_LABEL_UNSPECIFIED) {
+        std::string tag = docv1::HumanLanguageLabel_Name(field->code());
+        tag.erase(0, std::string_view("HUMAN_LANGUAGE_LABEL_").size());
+        std::ranges::transform(tag, tag.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return tag;
+      }
+    }
+    return document_.source_meta().language();
+  }
+
   static std::string text_of(const docv1::BaseTextItem& item) {
     if (item.item_case() == docv1::BaseTextItem::kCode) return item.code().text();
     const auto* base = text_base(item);
@@ -395,6 +436,14 @@ class Chunker {
       }
     }
     if (!view->is_text) return;
+    if (const auto* text = text_at(ref)) {
+      std::string language = language_of(*text);
+      if (language.empty()) {
+        chunk->language_unknown = true;
+      } else {
+        chunk->languages.insert(std::move(language));
+      }
+    }
     const auto entry = offsets_.find(ref);
     if (entry == offsets_.end()) {
       chunk->offsets_complete = false;
@@ -623,6 +672,13 @@ class Chunker {
 
 // -- materialization --------------------------------------------------------
 
+// The one language every text item of the chunk is written in, by what the
+// source declares; absent when they disagree or any of them is unknown.
+std::optional<std::string> chunk_language(const WorkChunk& work) {
+  if (work.language_unknown || work.languages.size() != 1) return std::nullopt;
+  return *work.languages.begin();
+}
+
 // The typed twin of `metadata`: the same keys with their types, plus the
 // source document's identity (origin hash and mimetype), which the reference
 // chunker carries on every chunk's meta.
@@ -636,6 +692,7 @@ void stamp_typed_metadata(const WorkChunk& work, const docv1::DocumentOrigin& or
     typed["text_source"].set_string_value(
         work.saw_digital && work.saw_ocr ? "mixed" : (work.saw_digital ? "digital" : "ocr"));
   }
+  if (const auto language = chunk_language(work)) typed["language"].set_string_value(*language);
   if (origin.binary_hash() != 0) typed["binary_hash"].set_uint_value(origin.binary_hash());
   if (!origin.mimetype().empty()) typed["mimetype"].set_string_value(origin.mimetype());
 }
@@ -660,6 +717,9 @@ parsev1::Chunk to_proto(const WorkChunk& work, int index, std::string_view filen
   if (work.saw_digital || work.saw_ocr) {
     (*chunk.mutable_metadata())["text_source"] =
         work.saw_digital && work.saw_ocr ? "mixed" : (work.saw_digital ? "digital" : "ocr");
+  }
+  if (const auto language = chunk_language(work)) {
+    (*chunk.mutable_metadata())["language"] = *language;
   }
   if (work.offsets_known && work.offsets_complete) {
     chunk.set_start_offset(static_cast<std::int64_t>(work.start));
@@ -693,6 +753,8 @@ void fold_peer(WorkChunk* into, WorkChunk&& next, std::string&& merged_text) {
   for (auto& item : next.doc_items) into->doc_items.push_back(std::move(item));
   into->pages.insert(next.pages.begin(), next.pages.end());
   into->offsets_complete = into->offsets_complete && next.offsets_complete;
+  into->languages.merge(next.languages);
+  into->language_unknown = into->language_unknown || next.language_unknown;
   if (into->offsets_known && next.offsets_known) {
     into->start = std::min(into->start, next.start);
     into->end = std::max(into->end, next.end);

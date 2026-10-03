@@ -1554,10 +1554,12 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
     dials_.fetch_add(1);
     pdfv1::ParsePdfRequest request;
     bool emit_document = false;
+    bool emit_metadata = false;
     std::string bytes;
     while (stream->Read(&request)) {
       if (request.has_options()) {
         emit_document = request.options().emit_document();
+        emit_metadata = request.options().emit_metadata();
       } else {
         bytes += request.chunk();
       }
@@ -1591,6 +1593,10 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
     base->set_text("from pdf inspector");
     base->add_source()->mutable_collector()->set_collector("pdf");
     document.mutable_body()->add_children()->set_ref("#/texts/0");
+    // The real fold writes the file's own dictionaries, the catalog /Lang
+    // among them, into source_meta only when the metadata event was asked
+    // for.
+    if (emit_metadata) document.mutable_source_meta()->set_language("fr-FR");
     if (paged_document_) {
       // A two-page fold: the first text on page 1 with a box, a second
       // text and a picture on page 2, a page-less table after them, and
@@ -2249,6 +2255,8 @@ void verify_pdf_fast_path_skips_the_cv_pipeline() {
           "the collector's folded document is the parse result");
   require(document.texts(0).text().base().source(0).collector().collector() == "pdf",
           "the fast-path document keeps the collector's source tag");
+  require(document.source_meta().language() == "fr-FR",
+          "the fast path asks for the file's own metadata and keeps its /Lang");
 }
 
 void verify_pdf_searchable_scan_takes_the_cv_path() {
@@ -2328,6 +2336,8 @@ void verify_pdf_classification_restricts_recognition() {
           "only the inspector's page hits the recognizer, not the coverage heuristic's set");
   require(run.response.response().document().exports().text().contains("native-one"),
           "the cleared pages settle on their embedded layers");
+  require(run.response.response().document().doc().source_meta().language() == "fr-FR",
+          "the CV route keeps the language the inspector read from the file's catalog");
 }
 
 void verify_pdf_collector_failure_degrades_to_the_cv_path() {
