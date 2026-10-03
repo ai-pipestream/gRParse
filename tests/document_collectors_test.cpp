@@ -2287,7 +2287,16 @@ class FakeCalamineService final : public calaminev1::CalamineService::Service {
       header->set_row_index(0);
       header->add_values()->set_string_value("Name");
       header->add_values()->set_string_value("Score");
-      // Row 1 is skipped entirely: the gap is the sheet's empty region.
+      writer->Write(event);
+      // Row 1 holds nothing: the contract says so with one row_gap event
+      // rather than a blank row, and the fold must not count it as data.
+      event.Clear();
+      calaminev1::WorksheetRowGap* gap = event.mutable_row_gap();
+      gap->set_first_row_index(1);
+      gap->set_row_count(1);
+      writer->Write(event);
+      event.Clear();
+      batch = event.mutable_rows();
       calaminev1::WorksheetRow* data = batch->add_rows();
       data->set_row_index(2);
       data->add_values()->set_int_value(7);
