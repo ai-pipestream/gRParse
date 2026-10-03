@@ -25,9 +25,13 @@ std::string fold_word(const std::string& word);
 // production form of the consensus prototype in eval/consensus, which
 // picked the truth-perfect order on every truth document. Targets that
 // cannot load the document drop out; rasters come from the first target
-// that loaded, so target order states raster priority.
+// that loaded, so target order states raster priority. `opening` says
+// whether the legs' Probes run before this returns or on first use. When
+// every leg fails, a cancel fails as cancelled and a backend outage as
+// PdfBackendUnavailable, not as a bad document.
 std::shared_ptr<PageSource> open_consensus_pdf_document(
     std::shared_ptr<const std::string> bytes,
-    const std::vector<std::string>& targets, double render_dpi);
+    const std::vector<std::string>& targets, double render_dpi,
+    SourceOpening opening = SourceOpening::kNow);
 
 }  // namespace grparse

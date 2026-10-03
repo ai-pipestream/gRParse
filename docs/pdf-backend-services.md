@@ -273,11 +273,19 @@ Each Probe/Parse/Render call's deadline is the sooner of its own budget
 (30 s / 300 s / 600 s) and the inbound request's deadline (with
 `document_timeout` applied), and cancelling the request, or a page failing
 the document, aborts the page calls in flight (`TryCancel`) and fails later
-ones without dialing. A Render raster is validated before use: a known
+ones without dialing. That includes the opening Probe: the page scheduler
+opens a document on one of its opener threads (`open_workers`, default 4),
+never on the thread that schedules pages, and the source it opens makes no
+backend call until it is tied to the request, so a hung backend holds one
+opener, cancel aborts its Probe, and the request deadline caps it. In
+consensus mode, when every leg fails, a cancel fails as `CANCELLED` and
+legs that all failed for a transport reason as that reason (`UNAVAILABLE`
+for an outage); only a leg that refused the document makes the failure
+`INVALID_ARGUMENT`. A Render raster is validated before use: a known
 pixel format, `stride_bytes >= width_px * channels`, and at least
-`height_px * stride_bytes` bytes of pixels; a malformed raster fails that
-leg as `InvalidDocument`, so consensus mode takes the raster from the next
-target. A raster whose reported `dpi` differs from the requested one is
+`height_px * stride_bytes` bytes of pixels, every product computed with an
+overflow check; a malformed raster fails that leg as `InvalidDocument`, so
+consensus mode takes the raster from the next target. A raster whose reported `dpi` differs from the requested one is
 resized to the requested DPI, so it stays in the frame the text boxes are
 scaled to.
 

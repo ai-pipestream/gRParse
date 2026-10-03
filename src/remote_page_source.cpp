@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -102,47 +103,17 @@ class RemotePdfPageSource final : public PageSource {
         sha256_(handshake_ ? targets::sha256_hex(*bytes_) : std::string()),
         render_dpi_(render_dpi),
         render_scale_(render_dpi / kPdfUserSpaceDpi),
-        stub_(pdfv1::PdfBackendService::NewStub(channel_for(target))) {
-    // A hash-only Probe is a cache lookup; a miss earns exactly one retry
-    // with the bytes attached so the backend can cache them under the hash.
-    pdfv1::ProbeResponse response;
-    bool sent_bytes = !handshake_;
-    for (;;) {
-      Call call(*this, kProbeDeadline);
-      pdfv1::ProbeRequest request;
-      fill_document(request.mutable_document(), sent_bytes);
-      response.Clear();
-      const grpc::Status status = stub_->Probe(call.context(), request, &response);
-      if (!status.ok()) {
-        throw_backend_failure("PDF backend unreachable", status);
-      }
-      if (response.capabilities().load_status() ==
-              pdfv1::LOAD_STATUS_BYTES_REQUIRED &&
-          !sent_bytes) {
-        sent_bytes = true;
-        continue;
-      }
-      break;
-    }
-    const auto& caps = response.capabilities();
-    if (caps.load_status() != pdfv1::LOAD_STATUS_OK) {
-      // A BYTES_REQUIRED here means the backend kept asking for bytes after
-      // receiving them; a HASH_MISMATCH means the bytes did not hash to the
-      // value the client computed itself. Both are hard errors, as is every
-      // other non-OK verdict.
-      throw InvalidDocument(
-          "PDF backend could not load the document: " +
-          pdfv1::LoadStatus_Name(caps.load_status()) +
-          (caps.has_load_detail() ? " (" + caps.load_detail() + ")" : ""));
-    }
-    pages_ = static_cast<int>(caps.page_count());
-    if (pages_ <= 0) throw InvalidDocument("PDF does not contain a renderable page");
-    backend_name_ = caps.backend_name();
+        stub_(pdfv1::PdfBackendService::NewStub(channel_for(target))) {}
+
+  int page_count() const override {
+    open();
+    return pages_;
   }
 
-  int page_count() const override { return pages_; }
-
-  std::string backend_name() const override { return backend_name_; }
+  std::string backend_name() const override {
+    open();
+    return backend_name_;
+  }
 
   std::optional<OcrPage> extract_digital_page(int page_number) const override {
     check_page(page_number);
@@ -365,7 +336,63 @@ class RemotePdfPageSource final : public PageSource {
     grpc::ClientContext context_;
   };
 
+  // The opening Probe, made once on first use rather than in the
+  // constructor, so a caller can tie the source to its request
+  // (set_deadline(), cancel()) before any backend call: the Probe then
+  // honors the request's deadline and cancellation like every later call.
+  // A failed open is remembered and every later use fails the same way.
+  void open() const {
+    const std::lock_guard<std::mutex> lock(open_mutex_);
+    if (open_failure_) std::rethrow_exception(open_failure_);
+    if (pages_ > 0) return;
+    try {
+      probe();
+    } catch (...) {
+      open_failure_ = std::current_exception();
+      throw;
+    }
+  }
+
+  void probe() const {
+    // A hash-only Probe is a cache lookup; a miss earns exactly one retry
+    // with the bytes attached so the backend can cache them under the hash.
+    pdfv1::ProbeResponse response;
+    bool sent_bytes = !handshake_;
+    for (;;) {
+      Call call(*this, kProbeDeadline);
+      pdfv1::ProbeRequest request;
+      fill_document(request.mutable_document(), sent_bytes);
+      response.Clear();
+      const grpc::Status status = stub_->Probe(call.context(), request, &response);
+      if (!status.ok()) {
+        throw_backend_failure("PDF backend unreachable", status);
+      }
+      if (response.capabilities().load_status() ==
+              pdfv1::LOAD_STATUS_BYTES_REQUIRED &&
+          !sent_bytes) {
+        sent_bytes = true;
+        continue;
+      }
+      break;
+    }
+    const auto& caps = response.capabilities();
+    if (caps.load_status() != pdfv1::LOAD_STATUS_OK) {
+      // A BYTES_REQUIRED here means the backend kept asking for bytes after
+      // receiving them; a HASH_MISMATCH means the bytes did not hash to the
+      // value the client computed itself. Both are hard errors, as is every
+      // other non-OK verdict.
+      throw InvalidDocument(
+          "PDF backend could not load the document: " +
+          pdfv1::LoadStatus_Name(caps.load_status()) +
+          (caps.has_load_detail() ? " (" + caps.load_detail() + ")" : ""));
+    }
+    pages_ = static_cast<int>(caps.page_count());
+    if (pages_ <= 0) throw InvalidDocument("PDF does not contain a renderable page");
+    backend_name_ = caps.backend_name();
+  }
+
   void check_page(int page_number) const {
+    open();
     if (page_number < 1 || page_number > pages_) {
       throw InvalidDocument("PDF page number is out of range");
     }
@@ -478,8 +505,11 @@ class RemotePdfPageSource final : public PageSource {
   const double render_dpi_;
   const double render_scale_;
   std::unique_ptr<pdfv1::PdfBackendService::Stub> stub_;
-  int pages_ = 0;
-  std::string backend_name_;
+  // Set once by open(), under open_mutex_.
+  mutable std::mutex open_mutex_;
+  mutable std::exception_ptr open_failure_;
+  mutable int pages_ = 0;
+  mutable std::string backend_name_;
   // Guards the request ties: set_deadline() and cancel() arrive from other
   // threads than the page calls.
   mutable std::mutex calls_mutex_;
@@ -528,9 +558,11 @@ std::optional<std::string> remote_pdf_backend_target() {
 
 std::shared_ptr<PageSource> open_remote_pdf_document(
     std::shared_ptr<const std::string> bytes, const std::string& target,
-    double render_dpi) {
-  return std::make_shared<RemotePdfPageSource>(std::move(bytes), target,
-                                               render_dpi);
+    double render_dpi, SourceOpening opening) {
+  auto source = std::make_shared<RemotePdfPageSource>(std::move(bytes), target,
+                                                      render_dpi);
+  if (opening == SourceOpening::kNow) static_cast<void>(source->page_count());
+  return source;
 }
 
 }  // namespace grparse
