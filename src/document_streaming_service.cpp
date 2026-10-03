@@ -695,7 +695,7 @@ class DocumentStreamReactor final
                       const std::weak_ptr<CallbackGate>& weak_gate) {
       deliver(weak_gate, id,
               run_remote_collector(id, endpoints, document_id, filename, content_type,
-                                   *bytes, std::string(), std::string(), inbound_deadline,
+                                   *bytes, CollectorRules{}, inbound_deadline,
                                    leg_cancelled(weak_gate)));
     });
   }

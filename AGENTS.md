@@ -64,8 +64,8 @@ file under `collectors/` copied byte-identical from the sister repo.
 | `grpc-xml` | `main` | Rust (Cargo, buf) | 50066 | `xml.proto`, `xml_service.proto` | `.xml`, `.nxml`, `.xbrl`, METS/GBS archives |
 | `grpc-epub` | `main` | Rust (Cargo, buf) | 50064 | `epub_types.proto`, `epub_service.proto` | `.epub`; returns a skeleton by contract, gRParse folds the chapters through `grpc-markup` and inlines the images (`src/epub_book.cpp`), so a working epub parse needs both targets |
 | `grpc-markup` | `main` | Rust (Cargo, buf) | 50065 | `markup.proto`, `markup_service.proto` | `.md`, `.html`, `.adoc`, `.tex`, `.vtt`, `.boxnote`, `.json` |
-| `grpc-ebcdic` | `main` | Rust (Cargo, buf) | 50063 | `ebcdic.proto`, `ebcdic_service.proto` | never by format; explicit `ebcdic_layout_json` only |
-| `grpc-lol-html` | `master` | Rust (Cargo, buf) | 50057 | `lolhtml_types.proto`, `lolhtml_service.proto` | never by format; explicit `lol_html_options_json` only |
+| `grpc-ebcdic` | `main` | Rust (Cargo, buf) | 50063 | `ebcdic.proto`, `ebcdic_service.proto` | never by format; explicit `ebcdic_layout` only |
+| `grpc-lol-html` | `master` | Rust (Cargo, buf) | 50057 | `lolhtml_types.proto`, `lolhtml_service.proto` | never by format; explicit `lol_html_options` only |
 | `grpc-asr` | `main` | C++ (CMake, buf, whisper.cpp) | 50055 | `asr_service.proto` | audio and video (`GRPARSE_ASR_MODEL` required) |
 | `fastwarc-grpc` | `main` | Rust (Cargo) | 50060 | `warc.proto`, `warc_service.proto` | `.warc*`; see the fastwarc caveat below |
 | `grPOIc` | `main` | Java/Kotlin (Gradle) | 50052 | `poi_document.proto`, `poi_service.proto` | never routed by itself; a routed office plan fans a poi leg out beside libreoffice for the six OOXML/OLE2 formats when configured, folded client-side (`src/collectors/poi_collector.cpp`) |

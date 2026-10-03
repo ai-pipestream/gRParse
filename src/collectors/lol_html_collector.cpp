@@ -9,8 +9,6 @@
 #include <utility>
 #include <vector>
 
-#include <google/protobuf/util/json_util.h>
-
 #include "collector_support.h"
 #include "grparse/document_assembly.h"
 #include "lolhtml/v1/lolhtml_service.grpc.pb.h"
@@ -232,26 +230,15 @@ void note_error(const lolv1::StreamError& error, CollectorOutcome* outcome) {
 }  // namespace
 
 CollectorOutcome collect_lol_html_document(const std::shared_ptr<grpc::Channel>& channel,
-                                           const std::string& options_json,
+                                           const std::optional<lolv1::ExtractOptions>& options,
                                            const std::string& bytes,
                                            CollectorDeadline inbound_deadline,
                                            CollectorCancelled cancelled) {
   CollectorOutcome outcome;
-  if (options_json.empty()) {
+  if (!options.has_value()) {
     // Nothing to dial: the collector extracts what its selector rules name,
     // and this client never invents rules.
-    outcome.error = "lol-html collector: a parse requires lol_html_options_json";
-    outcome.code = grpc::StatusCode::INVALID_ARGUMENT;
-    return outcome;
-  }
-  lolv1::ExtractOptions options;
-  const auto parsed =
-      google::protobuf::util::JsonStringToMessage(options_json, &options);
-  if (!parsed.ok()) {
-    outcome.error =
-        "lol-html collector: lol_html_options_json does not parse as "
-        "lolhtml.v1.ExtractOptions: " +
-        std::string(parsed.message());
+    outcome.error = "lol-html collector: a parse requires lol_html_options";
     outcome.code = grpc::StatusCode::INVALID_ARGUMENT;
     return outcome;
   }
@@ -263,7 +250,7 @@ CollectorOutcome collect_lol_html_document(const std::shared_ptr<grpc::Channel>&
   auto stream = stub->Extract(&context);
 
   lolv1::ExtractRequest request;
-  *request.mutable_options() = std::move(options);
+  *request.mutable_options() = *options;
   ConcurrentUpload upload(
       context, *stream, request, bytes, /*always_send_chunk=*/false,
       [&bytes](lolv1::ExtractRequest& frame, size_t offset, size_t length, bool /*last*/) {

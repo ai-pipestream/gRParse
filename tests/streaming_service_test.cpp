@@ -484,13 +484,16 @@ void verify_parity_options_and_confidence(TestServer* server) {
 
   request = unary_request();
   (*request.mutable_request()->mutable_options()->mutable_ocr_custom_config())["lang"]
-      .set_string_value("eng");
+      .set_string_value("en");
   grpc::ClientContext lang_custom;
   pipestream::parse::v1::ConvertSourceResponse lang_response;
   const grpc::Status lang_status =
       client->ConvertSource(&lang_custom, request, &lang_response);
-  require(lang_status.ok(), "ocr_custom_config.lang must be accepted: " + lang_status.error_message());
+  require(lang_status.ok(), "an ocr_custom_config.lang the models read must be accepted: " +
+                                lang_status.error_message());
 
+  // No OCR engine reads the rest of the map: any other key is turned down by
+  // name rather than ignored.
   request = unary_request();
   (*request.mutable_request()->mutable_options()->mutable_ocr_custom_config())["bitmap_area_threshold"]
       .set_double_value(0.05);
@@ -498,8 +501,9 @@ void verify_parity_options_and_confidence(TestServer* server) {
   pipestream::parse::v1::ConvertSourceResponse scalar_response;
   const grpc::Status scalar_status =
       client->ConvertSource(&scalar_maps, request, &scalar_response);
-  require(scalar_status.ok(),
-          "open ScalarValue custom_config maps must be accepted: " +
+  require(scalar_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              scalar_status.error_message().contains("ocr_custom_config.bitmap_area_threshold"),
+          "an unread ocr_custom_config key must be rejected by name: " +
               scalar_status.error_message());
 
   // The maps no leg reads are turned down by name rather than ignored.

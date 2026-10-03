@@ -56,6 +56,11 @@ function stageProtos() {
     ["parse_types.proto", "ai/pipestream/parse/v1/parse_types.proto"],
     ["parse.proto", "ai/pipestream/parse/v1/parse.proto"],
     ["parse_stream.proto", "ai/pipestream/parse/v1/parse_stream.proto"],
+    // parse_types.proto imports the collector contracts whose typed rules it
+    // carries (ebcdic_layout, lol_html_options).
+    ["collectors/ebcdic.proto", "ai/pipestream/ebcdic/v1/ebcdic.proto"],
+    ["collectors/lolhtml_types.proto", "lolhtml/v1/types.proto"],
+    ["collectors/lolhtml_service.proto", "lolhtml/v1/lolhtml_service.proto"],
   ];
   for (const [source, destination] of layout) {
     const target = path.join(staged, destination);

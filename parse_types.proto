@@ -3,7 +3,9 @@ syntax = "proto3";
 package ai.pipestream.parse.v1;
 
 import "ai/pipestream/document/v1/document.proto";
+import "ai/pipestream/ebcdic/v1/ebcdic.proto";
 import "google/protobuf/struct.proto";
+import "lolhtml/v1/lolhtml_service.proto";
 
 option java_multiple_files = true;
 option java_outer_classname = "ParseTypesProto";
@@ -873,17 +875,15 @@ message ConvertDocumentOptions {
   // a failed collector degrades to an error entry instead of failing the
   // parse while any collector succeeds.
   repeated Collector collectors = 44;
-  // Parsing rules for COLLECTOR_EBCDIC, as the JSON serialization of
-  // that collector's EbcdicLayout model, forwarded verbatim to the
-  // collector's ParseOptions.layout_json. Required when COLLECTOR_EBCDIC is
-  // selected: that collector cannot decode a byte without a layout, and
-  // raw EBCDIC is never routed by format.
+  // Deprecated: use ebcdic_layout. Parsing rules for COLLECTOR_EBCDIC as
+  // the JSON serialization of that collector's EbcdicLayout model,
+  // forwarded verbatim to the collector's ParseOptions.layout_json. Setting
+  // it together with ebcdic_layout is rejected.
   optional bytes ebcdic_layout_json = 45;
-  // Extraction rules for COLLECTOR_LOL_HTML, as the protobuf JSON
-  // serialization of that collector's lolhtml.v1.ExtractOptions message
-  // (rules, document_rule, encoding, limits, and so on). Required when
-  // COLLECTOR_LOL_HTML is selected: that collector extracts what its CSS
-  // selector rules name, and this client never invents rules.
+  // Deprecated: use lol_html_options. Extraction rules for
+  // COLLECTOR_LOL_HTML as the protobuf JSON serialization of
+  // lolhtml.v1.ExtractOptions. Setting it together with lol_html_options is
+  // rejected, and so is JSON that does not parse as that message.
   optional bytes lol_html_options_json = 46;
   // The CV path's rasterization scale, in multiples of 72 DPI (1.0 renders
   // pages at 72 DPI). Unset keeps the server default of 200 DPI (about
@@ -938,6 +938,19 @@ message ConvertDocumentOptions {
   repeated StructureRule structure_validation_rules = 61;
   // Opt-in structural repairs, applied before structure_validation runs.
   optional StructureRepairs structure_repairs = 62;
+  // Parsing rules for COLLECTOR_EBCDIC: that collector's own typed layout,
+  // forwarded as its ParseOptions.layout. Required (this or the deprecated
+  // ebcdic_layout_json) when COLLECTOR_EBCDIC is selected: that collector
+  // cannot decode a byte without a layout, and raw EBCDIC is never routed by
+  // format.
+  optional ai.pipestream.ebcdic.v1.EbcdicLayout ebcdic_layout = 63;
+  // Extraction rules for COLLECTOR_LOL_HTML: that collector's own typed
+  // ExtractOptions (rules, document_rule, encoding, limits, and so on),
+  // forwarded as is. Required (this or the deprecated
+  // lol_html_options_json) when COLLECTOR_LOL_HTML is selected: that
+  // collector extracts what its CSS selector rules name, and this client
+  // never invents rules.
+  optional lolhtml.v1.ExtractOptions lol_html_options = 64;
 }
 
 // HeadingHierarchyOptions mirrors the upstream PdfHeadingHierarchyOptions.

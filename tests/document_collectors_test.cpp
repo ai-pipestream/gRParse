@@ -381,20 +381,21 @@ class FakeEbcdicService final : public ebcdicv1::EbcdicParseService::Service {
       grpc::ServerReaderWriter<ebcdicv1::ParseEbcdicResponse, ebcdicv1::ParseEbcdicRequest>*
           stream) override {
     ebcdicv1::ParseEbcdicRequest request;
-    std::string layout_json;
-    bool emit_document = false;
+    ebcdicv1::ParseOptions options;
     std::string bytes;
     while (stream->Read(&request)) {
       if (request.has_options()) {
-        layout_json = request.options().layout_json();
-        emit_document = request.options().emit_document();
+        options = request.options();
       } else {
         bytes += request.chunk();
       }
     }
-    if (layout_json != R"({"records": []})" || !emit_document || bytes.empty()) {
+    const bool typed = options.has_layout() && options.layout().records_size() == 1 &&
+                       options.layout().records(0).name() == "CUSTOMER";
+    const bool legacy = options.layout_json() == R"({"records": []})";
+    if (!(typed || legacy) || !options.emit_document() || bytes.empty()) {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                          "fake ebcdic expects the layout json verbatim");
+                          "fake ebcdic expects the layout as the request gave it");
     }
     ebcdicv1::ParseEbcdicResponse event;
     *event.mutable_document() = canned_document("ebcdic");
@@ -411,9 +412,16 @@ class FakeEbcdicService final : public ebcdicv1::EbcdicParseService::Service {
 void verify_ebcdic_forwards_layout_and_collects() {
   FakeEbcdicService service;
   ServerFixture server(&service);
-  const auto outcome = grparse::collect_ebcdic_document(
-      server.channel(), R"({"records": []})", "\xC1\xC2\xC3");
+  ebcdicv1::ParseOptions options;
+  options.mutable_layout()->add_records()->set_name("CUSTOMER");
+  const auto outcome =
+      grparse::collect_ebcdic_document(server.channel(), options, "\xC1\xC2\xC3");
   require(outcome.success, "ebcdic collection succeeds: " + outcome.error);
+  // The deprecated JSON form still reaches the collector's own layout_json.
+  ebcdicv1::ParseOptions legacy;
+  legacy.set_layout_json(R"({"records": []})");
+  require(grparse::collect_ebcdic_document(server.channel(), legacy, "\xC1").success,
+          "the deprecated layout JSON is forwarded verbatim");
   require(outcome.document.texts(0).text().base().text() == "from ebcdic",
           "the ebcdic Document arrives unchanged");
   require(outcome.warnings.size() == 1 &&
@@ -425,10 +433,11 @@ void verify_ebcdic_forwards_layout_and_collects() {
 void verify_ebcdic_without_layout_never_dials() {
   // No server behind the channel: the layout check must fire first.
   const auto channel = grpc::CreateChannel("127.0.0.1:1", grpc::InsecureChannelCredentials());
-  const auto outcome = grparse::collect_ebcdic_document(channel, "", "\xC1");
+  const auto outcome =
+      grparse::collect_ebcdic_document(channel, ebcdicv1::ParseOptions(), "\xC1");
   require(!outcome.success && outcome.code == grpc::StatusCode::INVALID_ARGUMENT,
           "a missing layout is the caller's error, reported before dialing");
-  require(outcome.error.contains("ebcdic_layout_json"),
+  require(outcome.error.contains("ebcdic_layout"),
           "the error names the option that was missing");
 }
 
@@ -923,7 +932,7 @@ class FakeLolHtmlService final : public lolv1::LolHtmlService::Service {
         options.rules(0).selector() != "a[href]" ||
         options.rules(0).captures_size() != 3 || bytes.empty()) {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                          "fake lol-html expects the JSON-decoded rules and bytes");
+                          "fake lol-html expects the typed rules and bytes");
     }
     lolv1::ExtractResponse event;
     event.mutable_started()->set_rule_count(2);
@@ -1016,16 +1025,27 @@ class FakeLolHtmlService final : public lolv1::LolHtmlService::Service {
   Mode mode_;
 };
 
-constexpr const char* kLolHtmlOptionsJson =
-    R"({"rules":[{"id":"links","selector":"a[href]",)"
-    R"("captures":["CAPTURE_TAG_NAME","CAPTURE_ATTRIBUTES","CAPTURE_TEXT"]},)"
-    R"({"id":"headings","selector":"h2","captures":["CAPTURE_TEXT"]}]})";
+// The rules every lol-html case sends, in the collector's typed form.
+std::optional<lolv1::ExtractOptions> lol_html_options() {
+  lolv1::ExtractOptions options;
+  auto* links = options.add_rules();
+  links->set_id("links");
+  links->set_selector("a[href]");
+  links->add_captures(lolv1::CAPTURE_TAG_NAME);
+  links->add_captures(lolv1::CAPTURE_ATTRIBUTES);
+  links->add_captures(lolv1::CAPTURE_TEXT);
+  auto* headings = options.add_rules();
+  headings->set_id("headings");
+  headings->set_selector("h2");
+  headings->add_captures(lolv1::CAPTURE_TEXT);
+  return options;
+}
 
 void verify_lol_html_forwards_rules_and_folds() {
   FakeLolHtmlService service(FakeLolHtmlService::Mode::kOk);
   ServerFixture server(&service);
   const auto outcome = grparse::collect_lol_html_document(
-      server.channel(), kLolHtmlOptionsJson,
+      server.channel(), lol_html_options(),
       "<a href=\"/about\">About us</a>");
   require(outcome.success, "lol-html collection succeeds: " + outcome.error);
   require(outcome.document.groups_size() == 1 &&
@@ -1059,7 +1079,7 @@ void verify_lol_html_captures_page_identity() {
   FakeLolHtmlService service(FakeLolHtmlService::Mode::kPageIdentity);
   ServerFixture server(&service);
   const auto outcome = grparse::collect_lol_html_document(
-      server.channel(), kLolHtmlOptionsJson, "<html lang=\"en-GB\">");
+      server.channel(), lol_html_options(), "<html lang=\"en-GB\">");
   require(outcome.success, "lol-html collection succeeds: " + outcome.error);
   require(outcome.document.origin().web().canonical_uri() ==
               "https://example.com/canonical",
@@ -1094,21 +1114,17 @@ void verify_lol_html_captures_page_identity() {
 
 void verify_lol_html_without_rules_never_dials() {
   const auto outcome =
-      grparse::collect_lol_html_document(nullptr, "", "<p>hi</p>");
-  require(!outcome.success && outcome.code == grpc::StatusCode::INVALID_ARGUMENT,
-          "missing lol_html_options_json degrades before dialing");
-  const auto garbled =
-      grparse::collect_lol_html_document(nullptr, "not json", "<p>hi</p>");
-  require(!garbled.success && garbled.code == grpc::StatusCode::INVALID_ARGUMENT &&
-              garbled.error.contains("ExtractOptions"),
-          "unparseable options degrade before dialing, naming the type");
+      grparse::collect_lol_html_document(nullptr, std::nullopt, "<p>hi</p>");
+  require(!outcome.success && outcome.code == grpc::StatusCode::INVALID_ARGUMENT &&
+              outcome.error.contains("lol_html_options"),
+          "missing lol_html_options degrades before dialing");
 }
 
 void verify_lol_html_in_band_error_is_terminal() {
   FakeLolHtmlService service(FakeLolHtmlService::Mode::kError);
   ServerFixture server(&service);
   const auto outcome = grparse::collect_lol_html_document(
-      server.channel(), kLolHtmlOptionsJson, "<select><xmp><script>");
+      server.channel(), lol_html_options(), "<select><xmp><script>");
   require(!outcome.success && outcome.code == grpc::StatusCode::INVALID_ARGUMENT &&
               outcome.error.contains("PARSE_ERROR_CODE_PARSING_AMBIGUITY"),
           "the in-band terminal error fails the outcome with its typed code");

@@ -12,15 +12,15 @@ namespace ebcdicv1 = ai::pipestream::ebcdic::v1;
 namespace grparse {
 
 CollectorOutcome collect_ebcdic_document(const std::shared_ptr<grpc::Channel>& channel,
-                                         const std::string& layout_json,
+                                         const ebcdicv1::ParseOptions& options,
                                          const std::string& bytes,
                                          CollectorDeadline inbound_deadline,
                                          CollectorCancelled cancelled) {
-  if (layout_json.empty()) {
+  if (options.layout_source_case() == ebcdicv1::ParseOptions::LAYOUT_SOURCE_NOT_SET) {
     // Nothing to dial: the collector cannot decode a byte without a layout,
     // and this client never invents one.
     CollectorOutcome outcome;
-    outcome.error = "ebcdic collector: a parse requires ebcdic_layout_json";
+    outcome.error = "ebcdic collector: a parse requires ebcdic_layout";
     outcome.code = grpc::StatusCode::INVALID_ARGUMENT;
     return outcome;
   }
@@ -31,7 +31,7 @@ CollectorOutcome collect_ebcdic_document(const std::shared_ptr<grpc::Channel>& c
   auto stream = stub->ParseEbcdic(&context);
 
   ebcdicv1::ParseEbcdicRequest request;
-  request.mutable_options()->set_layout_json(layout_json);
+  *request.mutable_options() = options;
   request.mutable_options()->set_emit_document(true);
   ConcurrentUpload upload(
       context, *stream, request, bytes, /*always_send_chunk=*/false,
