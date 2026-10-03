@@ -59,6 +59,18 @@ std::string raw_name_for(parsev1::VlmModelType model) {
   return name.empty() ? std::to_string(static_cast<int>(model)) : name;
 }
 
+// "vlm convert: page 3: PAGE_WARNING_CODE_TABLE_TRUNCATED: <detail> (#/tables/0)".
+// A code this build does not know yet prints as its number. The ref is in
+// the page fragment's ref space, before the merge renumbers it.
+std::string page_warning_text(uint32_t page_no, const vlmv1::PageWarning& warning) {
+  std::string code = vlmv1::PageWarningCode_Name(warning.code());
+  if (code.empty()) code = "page warning " + std::to_string(static_cast<int>(warning.code()));
+  std::string text = "vlm convert: page " + std::to_string(page_no) + ": " + code;
+  if (!warning.message().empty()) text += ": " + warning.message();
+  if (!warning.ref().empty()) text += " (" + warning.ref() + ")";
+  return text;
+}
+
 docv1::CollectorSource vlm_claimant() {
   docv1::CollectorSource source;
   source.set_collector("vlm-convert");
@@ -250,7 +262,13 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
       vlmv1::ConvertPagesResponse event;
       while (stream->Read(&event)) {
         if (event.has_page_document()) {
-          docv1::Document fragment = event.page_document().document();
+          const vlmv1::PageDocument& page = event.page_document();
+          // A fragment cut to a server cap still merges; the cut is
+          // reported beside it, by code name, with the fragment's own ref.
+          for (const vlmv1::PageWarning& warning : page.warnings()) {
+            answers.warnings.push_back(page_warning_text(page.page_no(), warning));
+          }
+          docv1::Document fragment = page.document();
           merge_documents(std::move(fragment), document, claimant);
           ++answers.pages_ok;
         } else if (event.has_page_raw()) {

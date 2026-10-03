@@ -20,10 +20,6 @@ namespace grparse {
 
 namespace {
 
-// Past any real document's page count; a page_range end beyond it means
-// "to the end", not a list of pages to spell out.
-constexpr int64_t kMaxListedPage = 100000;
-
 void add_ocr_page(uint32_t page, std::set<int>* pages) {
   // Page 0 is never a page (the wire rejects it in requests, and it names
   // the whole-document password fallback on a page event); drop it so a
@@ -115,17 +111,19 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
   // needs only the info event, but a text-based document's fast path needs
   // the fold, and the fold is built from the page stream.
   request.mutable_options()->set_emit_document(true);
-  // Docling page_range → collector options.pages (1-indexed inclusive span).
+  // Docling page_range → collector options first_page/last_page, a
+  // 1-indexed inclusive span that costs two numbers however long it is.
   // Docling spells "to the end" as (start, sys.maxsize), which reaches this
-  // wire as INT32_MAX: the listed span stops at kMaxListedPage, and an
-  // open-ended span from page 1 is the whole document, which the wire
-  // spells as no list at all.
-  if (page_range.has_value() &&
-      !(page_range->first <= 1 && page_range->second >= kMaxListedPage)) {
-    const int64_t first = std::max<int64_t>(page_range->first, 1);
-    const int64_t last = std::min<int64_t>(page_range->second, kMaxListedPage);
-    for (int64_t page = first; page <= last; ++page) {
-      request.mutable_options()->add_pages(static_cast<uint32_t>(page));
+  // wire as INT32_MAX: an absent last_page already means the last page, and
+  // so does any value past it, so the sentinel is left out. A span from
+  // page 1 to the end is the whole document, which the wire spells as no
+  // selection at all.
+  if (page_range.has_value()) {
+    const int first = std::max(page_range->first, 1);
+    if (first > 1) request.mutable_options()->set_first_page(static_cast<uint32_t>(first));
+    if (page_range->second < std::numeric_limits<int>::max()) {
+      request.mutable_options()->set_last_page(
+          static_cast<uint32_t>(std::max(page_range->second, first)));
     }
   }
   ConcurrentUpload upload(

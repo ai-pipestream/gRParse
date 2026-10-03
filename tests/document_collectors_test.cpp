@@ -4,12 +4,12 @@
 // warning surfacing, and the failure paths are proven without any collector
 // binary.
 
-#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <print>
 #include <stdexcept>
 #include <string>
@@ -1747,6 +1747,182 @@ void verify_poi_hostile_span_is_clamped() {
           "the clamp surfaces as a warning");
 }
 
+// Plays grPOIc's batched sheet stream. A client that did not ask for
+// sheet_batches gets RESOURCE_EXHAUSTED, the way the real server refuses an
+// unbatched sheet over 256 MiB. Otherwise: a slide and its native table, a
+// hidden sheet in three batches (the last one carrying the merged regions),
+// and, when `truncate` is set, a second sheet whose batches stop with
+// more_rows still set before the trailer.
+class BatchedSheetPoiService final : public poiv1::PoiParseService::Service {
+ public:
+  explicit BatchedSheetPoiService(bool truncate = false) : truncate_(truncate) {}
+
+  grpc::Status ParseDocument(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<poiv1::ParseEvent, poiv1::ParseRequestChunk>* stream)
+      override {
+    poiv1::ParseRequestChunk chunk;
+    bool first = true;
+    bool batches = false;
+    while (stream->Read(&chunk)) {
+      if (first) batches = chunk.sheet_batches();
+      first = false;
+    }
+    if (!batches) {
+      return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
+                          "sheet 'Big' passed 256 MiB unbatched; set sheet_batches");
+    }
+    poiv1::ParseEvent event;
+    poiv1::Slide* slide = event.mutable_slide();
+    slide->set_index(3);
+    slide->set_title("Numbers");
+    stream->Write(event);
+
+    event.Clear();
+    poiv1::Table* slide_table = event.mutable_table();
+    slide_table->set_slide_index(3);
+    slide_table->add_rows()->add_cells()->set_text("on the slide");
+    stream->Write(event);
+
+    event.Clear();
+    poiv1::Table* stray = event.mutable_table();
+    stray->set_slide_index(9);
+    stray->add_rows()->add_cells()->set_text("no such slide");
+    stream->Write(event);
+
+    // Rows 0..5 in three batches of two; rows 0 and 1 hold A and B.
+    for (uint32_t batch = 0; batch < 3; ++batch) {
+      event.Clear();
+      poiv1::Sheet* sheet = event.mutable_sheet();
+      sheet->set_index(0);
+      sheet->set_name("Big");
+      sheet->set_hidden(true);
+      for (uint32_t row = batch * 2; row < batch * 2 + 2; ++row) {
+        poiv1::SheetRow* out = sheet->add_rows();
+        out->set_row_index(row);
+        out->add_cells()->set_text("a" + std::to_string(row));
+        poiv1::SheetCell* second = out->add_cells();
+        second->set_column_index(1);
+        second->set_text("b" + std::to_string(row));
+      }
+      sheet->set_more_rows(batch < 2);
+      if (batch == 2) {
+        // A1:C2 merged (anchor A1), a range anchored on a blank cell, and
+        // a hostile range running backwards.
+        poiv1::CellRange* merged = sheet->add_merged_regions();
+        merged->set_first_row(0);
+        merged->set_last_row(1);
+        merged->set_first_column(0);
+        merged->set_last_column(2);
+        poiv1::CellRange* blank = sheet->add_merged_regions();
+        blank->set_first_row(4);
+        blank->set_last_row(4);
+        blank->set_first_column(5);
+        blank->set_last_column(6);
+        poiv1::CellRange* backwards = sheet->add_merged_regions();
+        backwards->set_first_row(3);
+        backwards->set_last_row(2);
+      }
+      stream->Write(event);
+    }
+
+    if (truncate_) {
+      event.Clear();
+      poiv1::Sheet* cut = event.mutable_sheet();
+      cut->set_index(1);
+      cut->set_name("Cut");
+      poiv1::SheetRow* row = cut->add_rows();
+      row->set_row_index(0);
+      row->add_cells()->set_text("only batch");
+      cut->set_more_rows(true);
+      stream->Write(event);
+    }
+
+    event.Clear();
+    event.mutable_status()->set_state(poiv1::ParseStatus::STATE_OK);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+
+ private:
+  bool truncate_;
+};
+
+void verify_poi_sheet_batches_fold_into_one_table() {
+  BatchedSheetPoiService service;
+  ServerFixture server(&service);
+  const auto outcome = grparse::collect_poi_document(server.channel(), "doc-batches",
+                                                     "big.xlsx", "", "bytes");
+  require(outcome.success, "the client asks for sheet batches: " + outcome.error);
+  const docv1::Document& document = outcome.document;
+
+  // groups: the slide, then the one sheet; tables: slide table, stray, sheet.
+  require(document.groups_size() == 2, "three batches open one sheet group, not three");
+  require(document.tables_size() == 3, "three batches fold into one sheet table");
+  const docv1::GroupItem& sheet_group = document.groups(1);
+  require(sheet_group.label() == docv1::GROUP_LABEL_SHEET && sheet_group.name() == "Big" &&
+              !sheet_group.sheet().visible() &&
+              sheet_group.content_layer() == docv1::CONTENT_LAYER_INVISIBLE,
+          "a hidden sheet folds onto the invisible layer, as the office fold does");
+  const docv1::TableItem& sheet_table = document.tables(2);
+  require(sheet_table.parent().ref() == sheet_group.self_ref() &&
+              sheet_group.children_size() == 1 &&
+              sheet_table.content_layer() == docv1::CONTENT_LAYER_INVISIBLE,
+          "the one table hangs off the sheet group on the sheet's layer");
+  const docv1::TableData& data = sheet_table.data();
+  require(data.table_cells_size() == 12 && data.row_prov_size() == 6,
+          "every batch's rows land in the table, in order");
+  require(data.table_cells(11).text() == "b5" && data.table_cells(11).start_row_offset_idx() == 5,
+          "the last batch's cells keep their absolute rows");
+  require(data.num_rows() == 6 && data.num_cols() == 3,
+          "the table sizes across every batch and the merged region");
+  const docv1::TableCell& anchor = data.table_cells(0);
+  require(anchor.text() == "a0" && anchor.row_span() == 2 && anchor.col_span() == 3 &&
+              anchor.end_row_offset_idx() == 2 && anchor.end_col_offset_idx() == 3,
+          "the merged region's spans land on its anchor cell");
+  for (int index = 1; index < data.table_cells_size(); ++index) {
+    require(data.table_cells(index).row_span() == 1 && data.table_cells(index).col_span() == 1,
+            "only the anchor cell spans");
+  }
+
+  const docv1::GroupItem& slide_group = document.groups(0);
+  require(slide_group.label() == docv1::GROUP_LABEL_SLIDE &&
+              document.tables(0).parent().ref() == slide_group.self_ref(),
+          "a slide table hangs off its slide's group, not the body");
+  bool listed = false;
+  for (const auto& child : slide_group.children()) {
+    if (child.ref() == document.tables(0).self_ref()) listed = true;
+  }
+  require(listed, "the slide group lists its table");
+  require(document.tables(1).parent().ref() == "#/body",
+          "a table naming an unannounced slide stays in the body");
+
+  bool stray_warned = false;
+  bool merge_warned = false;
+  for (const std::string& warning : outcome.warnings) {
+    if (warning.contains("slide 9")) stray_warned = true;
+    if (warning.contains("merged region")) merge_warned = true;
+  }
+  require(stray_warned, "the unannounced slide is reported");
+  require(merge_warned, "the backwards merged region is reported");
+  require(outcome.warnings.size() == 2, "nothing else is reported");
+}
+
+void verify_poi_cut_sheet_batches_warn() {
+  BatchedSheetPoiService service(/*truncate=*/true);
+  ServerFixture server(&service);
+  const auto outcome = grparse::collect_poi_document(server.channel(), "doc-cut",
+                                                     "cut.xlsx", "", "bytes");
+  require(outcome.success, "a cut batch stream still collects: " + outcome.error);
+  require(outcome.document.groups_size() == 3 && outcome.document.groups(2).name() == "Cut",
+          "the cut sheet keeps the rows that arrived");
+  bool cut_warned = false;
+  for (const std::string& warning : outcome.warnings) {
+    if (warning.contains("'Cut'") && warning.contains("missing")) cut_warned = true;
+  }
+  require(cut_warned, "a sheet whose batches stop with more_rows set is reported");
+}
+
 class RejectingPoiService final : public poiv1::PoiParseService::Service {
  public:
   grpc::Status ParseDocument(
@@ -1906,196 +2082,6 @@ void verify_poi_unreachable_endpoint_degrades() {
       grparse::collect_poi_document(channel, "d", "nowhere.docx", "", "bytes");
   require(!outcome.success && outcome.code == grpc::StatusCode::UNAVAILABLE,
           "an unreachable poi collector degrades to UNAVAILABLE");
-}
-
-// One workbook-and-deck stream exercising the typed sheet contract: a
-// six-row sheet with a merged title (A1:C1) and a vertical merge (B3:B4)
-// whose covered cells are populated, a hidden sheet, then a slide with its
-// table and a body table. Batched, the six rows arrive as three Sheet
-// events (more_rows on the first two, the merged ranges on the last);
-// unbatched, as one. Records whether the client asked for batches.
-class SheetContractPoiService final : public poiv1::PoiParseService::Service {
- public:
-  explicit SheetContractPoiService(bool batched) : batched_(batched) {}
-
-  grpc::Status ParseDocument(
-      grpc::ServerContext*,
-      grpc::ServerReaderWriter<poiv1::ParseEvent, poiv1::ParseRequestChunk>* stream)
-      override {
-    poiv1::ParseRequestChunk chunk;
-    bool first = true;
-    while (stream->Read(&chunk)) {
-      if (first) asked_for_batches_ = chunk.sheet_batches();
-      first = false;
-    }
-    poiv1::ParseEvent event;
-    const auto add_row = [](poiv1::Sheet* sheet, uint32_t index) {
-      poiv1::SheetRow* row = sheet->add_rows();
-      row->set_row_index(index);
-      for (uint32_t column = 0; column < 3; ++column) {
-        poiv1::SheetCell* cell = row->add_cells();
-        cell->set_column_index(column);
-        cell->set_text("r" + std::to_string(index) + "c" + std::to_string(column));
-      }
-    };
-    const auto add_merges = [](poiv1::Sheet* sheet) {
-      poiv1::CellRange* title = sheet->add_merged_regions();
-      title->set_first_row(0);
-      title->set_last_row(0);
-      title->set_first_column(0);
-      title->set_last_column(2);
-      poiv1::CellRange* tall = sheet->add_merged_regions();
-      tall->set_first_row(2);
-      tall->set_last_row(3);
-      tall->set_first_column(1);
-      tall->set_last_column(1);
-    };
-    const uint32_t per_event = batched_ ? 2 : 6;
-    for (uint32_t start = 0; start < 6; start += per_event) {
-      event.Clear();
-      poiv1::Sheet* sheet = event.mutable_sheet();
-      sheet->set_index(0);
-      sheet->set_name("Big");
-      for (uint32_t row = start; row < start + per_event; ++row) add_row(sheet, row);
-      if (start + per_event < 6) {
-        sheet->set_more_rows(true);
-      } else {
-        add_merges(sheet);
-      }
-      stream->Write(event);
-    }
-    event.Clear();
-    poiv1::Sheet* hidden = event.mutable_sheet();
-    hidden->set_index(1);
-    hidden->set_name("Secret");
-    hidden->set_hidden(true);
-    add_row(hidden, 0);
-    stream->Write(event);
-
-    event.Clear();
-    event.mutable_slide()->set_index(0);
-    event.mutable_slide()->set_title("Results");
-    stream->Write(event);
-    event.Clear();
-    poiv1::Table* slide_table = event.mutable_table();
-    slide_table->set_slide_index(0);
-    slide_table->add_rows()->add_cells()->set_text("on the slide");
-    stream->Write(event);
-    event.Clear();
-    event.mutable_table()->add_rows()->add_cells()->set_text("in the body");
-    stream->Write(event);
-
-    event.Clear();
-    event.mutable_status()->set_state(poiv1::ParseStatus::STATE_OK);
-    stream->Write(event);
-    return grpc::Status::OK;
-  }
-
-  bool asked_for_batches() const { return asked_for_batches_.load(); }
-
- private:
-  const bool batched_;
-  std::atomic<bool> asked_for_batches_{false};
-};
-
-grparse::CollectorOutcome collect_sheet_contract(bool batched, bool* asked_for_batches) {
-  SheetContractPoiService service(batched);
-  ServerFixture server(&service);
-  auto outcome = grparse::collect_poi_document(server.channel(), "doc-sheets", "book.xlsx", "",
-                                               "bytes");
-  *asked_for_batches = service.asked_for_batches();
-  return outcome;
-}
-
-// A batched sheet folds into one table identical to the unbatched one: the
-// client asks for batches, the batches join, and the merged ranges from the
-// last batch apply to rows from the earlier ones.
-void verify_poi_batched_sheet_folds_like_one_sheet() {
-  bool batched_asked = false;
-  bool unbatched_asked = false;
-  const auto batched = collect_sheet_contract(true, &batched_asked);
-  const auto unbatched = collect_sheet_contract(false, &unbatched_asked);
-  require(batched.success && unbatched.success,
-          "poi collection succeeds: " + batched.error + unbatched.error);
-  require(batched_asked && unbatched_asked,
-          "the first upload chunk opts in to sheet batches");
-  require(batched.warnings == unbatched.warnings,
-          "the batched sheet warns exactly as the unbatched one");
-  require(batched.document.SerializeAsString() == unbatched.document.SerializeAsString(),
-          "three batches fold into exactly the document one Sheet event gives");
-  const docv1::Document& document = batched.document;
-  require(document.groups_size() == 3 && document.tables_size() == 4,
-          "two sheets and a slide fold into groups; two sheet tables, a slide and a body table");
-  const docv1::TableData& data = document.tables(0).data();
-  require(data.num_rows() == 6 && data.num_cols() == 3 && data.row_prov_size() == 6,
-          "the batched sheet is one table over all six rows");
-}
-
-// Merged ranges become anchor spans and the populated cells they cover drop
-// out, like a body table's covered positions; the row provenance follows.
-void verify_poi_merged_regions_span_the_anchor() {
-  bool asked = false;
-  const auto outcome = collect_sheet_contract(true, &asked);
-  require(outcome.success, "poi collection succeeds: " + outcome.error);
-  const docv1::TableData& data = outcome.document.tables(0).data();
-  require(data.table_cells_size() == 18 - 2 - 1,
-          "the two cells under the title and the one under the tall cell drop out");
-  const auto cell_at = [&data](int row, int column) -> const docv1::TableCell* {
-    for (const auto& cell : data.table_cells()) {
-      if (cell.start_row_offset_idx() == row && cell.start_col_offset_idx() == column) {
-        return &cell;
-      }
-    }
-    return nullptr;
-  };
-  const docv1::TableCell* title = cell_at(0, 0);
-  require(title != nullptr && title->text() == "r0c0" && title->col_span() == 3 &&
-              title->row_span() == 1 && title->end_col_offset_idx() == 3,
-          "the title anchor spans its three columns");
-  require(cell_at(0, 1) == nullptr && cell_at(0, 2) == nullptr,
-          "the title's covered cells are not repeated");
-  const docv1::TableCell* tall = cell_at(2, 1);
-  require(tall != nullptr && tall->row_span() == 2 && tall->end_row_offset_idx() == 4 &&
-              tall->col_span() == 1,
-          "the vertical anchor spans two rows");
-  require(cell_at(3, 1) == nullptr && cell_at(3, 0) != nullptr && cell_at(3, 2) != nullptr,
-          "only the covered cell of the row below drops out");
-  require(data.row_prov(0).grid().row() == 0 && data.row_prov(0).grid().col() == 0,
-          "the title row keeps its provenance");
-  require(outcome.warnings.size() == 1 && outcome.warnings[0].contains("'Big'") &&
-              outcome.warnings[0].contains("covers held text"),
-          "covered cells that held text are named in one warning per sheet");
-}
-
-// A hidden sheet is kept on the invisible layer and marked not visible, the
-// way the office fold keeps libreoffice's; a slide table hangs off its
-// slide's group, a body table off the body.
-void verify_poi_hidden_sheets_and_slide_tables() {
-  bool asked = false;
-  const auto outcome = collect_sheet_contract(true, &asked);
-  require(outcome.success, "poi collection succeeds: " + outcome.error);
-  const docv1::Document& document = outcome.document;
-  const docv1::GroupItem& shown = document.groups(0);
-  const docv1::GroupItem& hidden = document.groups(1);
-  require(shown.sheet().visible() && shown.content_layer() == docv1::CONTENT_LAYER_BODY,
-          "a visible sheet stays on the body layer");
-  require(hidden.name() == "Secret" && !hidden.sheet().visible() &&
-              hidden.content_layer() == docv1::CONTENT_LAYER_INVISIBLE &&
-              document.tables(1).content_layer() == docv1::CONTENT_LAYER_INVISIBLE &&
-              document.tables(1).data().table_cells_size() == 3,
-          "the hidden sheet keeps its cells on the invisible layer");
-  const docv1::GroupItem& slide = document.groups(2);
-  const docv1::TableItem& slide_table = document.tables(2);
-  require(slide.label() == docv1::GROUP_LABEL_SLIDE &&
-              slide_table.parent().ref() == slide.self_ref() &&
-              slide.children(slide.children_size() - 1).ref() == slide_table.self_ref() &&
-              slide_table.data().table_cells(0).text() == "on the slide",
-          "the slide table lands in its slide's group");
-  const docv1::TableItem& body_table = document.tables(3);
-  require(body_table.parent().ref() == "#/body" &&
-              document.body().children(document.body().children_size() - 1).ref() ==
-                  body_table.self_ref(),
-          "a table without a slide index stays on the body");
 }
 
 const docv1::FieldSource* meta_source_of(const docv1::DocumentMeta& meta,
@@ -2301,7 +2287,16 @@ class FakeCalamineService final : public calaminev1::CalamineService::Service {
       header->set_row_index(0);
       header->add_values()->set_string_value("Name");
       header->add_values()->set_string_value("Score");
-      // Row 1 is skipped entirely: the gap is the sheet's empty region.
+      writer->Write(event);
+      // Row 1 holds nothing: the contract says so with one row_gap event
+      // rather than a blank row, and the fold must not count it as data.
+      event.Clear();
+      calaminev1::WorksheetRowGap* gap = event.mutable_row_gap();
+      gap->set_first_row_index(1);
+      gap->set_row_count(1);
+      writer->Write(event);
+      event.Clear();
+      batch = event.mutable_rows();
       calaminev1::WorksheetRow* data = batch->add_rows();
       data->set_row_index(2);
       data->add_values()->set_int_value(7);
@@ -2545,6 +2540,10 @@ class FakePdfService final : public pdfv1::PdfParseService::Service {
   // Pages the last dial asked for (PdfOptions.pages). Empty means the
   // client left the field unset and the collector extracts every page.
   std::vector<uint32_t> last_pages() const { return last_pages_; }
+  // The span the last dial asked for (PdfOptions.first_page/last_page);
+  // nullopt where the client left that end unset.
+  std::optional<uint32_t> first_page() const { return first_page_; }
+  std::optional<uint32_t> last_page() const { return last_page_; }
 
   grpc::Status ParsePdf(
       grpc::ServerContext*,
@@ -2554,11 +2553,15 @@ class FakePdfService final : public pdfv1::PdfParseService::Service {
     bool emit_document = false;
     std::string bytes;
     last_pages_.clear();
+    first_page_.reset();
+    last_page_.reset();
     while (stream->Read(&request)) {
       if (request.has_options()) {
         emit_document = request.options().emit_document();
         last_pages_.assign(request.options().pages().begin(),
                            request.options().pages().end());
+        if (request.options().has_first_page()) first_page_ = request.options().first_page();
+        if (request.options().has_last_page()) last_page_ = request.options().last_page();
       } else {
         bytes += request.chunk();
       }
@@ -2600,6 +2603,8 @@ class FakePdfService final : public pdfv1::PdfParseService::Service {
   std::vector<uint32_t> pages_needing_ocr_;
   bool encoding_issues_;
   std::vector<uint32_t> last_pages_;
+  std::optional<uint32_t> first_page_;
+  std::optional<uint32_t> last_page_;
 };
 
 class FailingPdfService final : public pdfv1::PdfParseService::Service {
@@ -2894,39 +2899,88 @@ void verify_pdf_plain_leg_returns_the_document() {
           "the plain leg returns the collector's document whatever the class");
 }
 
-// Docling page_range → PdfOptions.pages: inclusive 1-indexed span expands
-// into the collector's page list; unset leaves pages empty (all pages).
-void verify_pdf_page_range_forwards_as_pages() {
+// Docling page_range → PdfOptions.first_page/last_page: an inclusive
+// 1-indexed span costs two numbers however long it is, and never a page
+// list; unset leaves the selection empty (all pages).
+void verify_pdf_page_range_forwards_as_a_span() {
   FakePdfService service(pdfv1::PDF_TYPE_TEXT_BASED, {});
   ServerFixture server(&service);
   const auto unset =
       grparse::collect_pdf(server.channel(), "%PDF-fake", grparse::kNoCollectorDeadline);
   require(unset.outcome.success, "unset page_range still collects: " + unset.outcome.error);
-  require(service.last_pages().empty(),
-          "without page_range the collector leaves PdfOptions.pages empty");
+  require(service.last_pages().empty() && !service.first_page() && !service.last_page(),
+          "without page_range the collector selects no pages");
 
   const auto ranged = grparse::collect_pdf(server.channel(), "%PDF-fake",
                                            grparse::kNoCollectorDeadline,
                                            std::make_pair(2, 4));
   require(ranged.outcome.success, "page_range collect succeeds: " + ranged.outcome.error);
-  require(service.last_pages() == std::vector<uint32_t>({2, 3, 4}),
-          "page_range expands to the inclusive PdfOptions.pages list");
+  require(service.last_pages().empty() && service.first_page() == 2U &&
+              service.last_page() == 4U,
+          "page_range forwards as the inclusive first_page/last_page span");
+
+  const auto head = grparse::collect_pdf(server.channel(), "%PDF-fake",
+                                         grparse::kNoCollectorDeadline, std::make_pair(1, 3));
+  require(head.outcome.success, "a leading span collects: " + head.outcome.error);
+  require(!service.first_page() && service.last_page() == 3U,
+          "a span from page 1 leaves first_page at its default");
 
   // Docling's "to the end" span, (1, sys.maxsize) clamped to INT32_MAX on
-  // this wire, is the whole document: no list, no overflow, no allocation.
+  // this wire, is the whole document: no selection at all.
   const auto open_ended = grparse::collect_pdf(
       server.channel(), "%PDF-fake", grparse::kNoCollectorDeadline,
       std::make_pair(1, std::numeric_limits<int>::max()));
   require(open_ended.outcome.success, "open-ended page_range collects: " + open_ended.outcome.error);
-  require(service.last_pages().empty(),
-          "an open-ended span from page 1 sends no page list");
+  require(service.last_pages().empty() && !service.first_page() && !service.last_page(),
+          "an open-ended span from page 1 selects nothing");
 
+  // A tail far into a long document is still two numbers, not a list.
   const auto tail = grparse::collect_pdf(server.channel(), "%PDF-fake",
                                          grparse::kNoCollectorDeadline,
-                                         std::make_pair(99999, std::numeric_limits<int>::max()));
+                                         std::make_pair(250000, std::numeric_limits<int>::max()));
   require(tail.outcome.success, "an open-ended tail collects: " + tail.outcome.error);
-  require(service.last_pages() == std::vector<uint32_t>({99999, 100000}),
-          "an open-ended span from a later page stops at the listed-page ceiling");
+  require(service.last_pages().empty() && service.first_page() == 250000U &&
+              !service.last_page(),
+          "an open-ended span from a later page sends first_page alone");
+}
+
+// A trailer warning the vendored contract learned after the client was
+// written still prints by its enum name, never as a bare number.
+class OutOfRangePdfService final : public pdfv1::PdfParseService::Service {
+ public:
+  grpc::Status ParsePdf(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<pdfv1::ParsePdfResponse, pdfv1::ParsePdfRequest>* stream)
+      override {
+    pdfv1::ParsePdfRequest request;
+    while (stream->Read(&request)) {
+    }
+    pdfv1::ParsePdfResponse event;
+    event.mutable_info()->set_pdf_type(pdfv1::PDF_TYPE_TEXT_BASED);
+    event.mutable_info()->set_page_count(2);
+    stream->Write(event);
+    event.Clear();
+    *event.mutable_document() = canned_document("pdf");
+    stream->Write(event);
+    event.Clear();
+    auto* warning = event.mutable_status()->add_warnings();
+    warning->set_code(pdfv1::PARSE_WARNING_CODE_PAGES_OUT_OF_RANGE);
+    warning->set_message("pages 7, 9 are past the end of a 2-page document");
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+};
+
+void verify_pdf_out_of_range_warning_prints_by_name() {
+  OutOfRangePdfService service;
+  ServerFixture server(&service);
+  const auto result = grparse::collect_pdf(server.channel(), "%PDF-fake");
+  require(result.outcome.success, "pdf collection succeeds: " + result.outcome.error);
+  require(result.outcome.warnings.size() == 1 &&
+              result.outcome.warnings[0] ==
+                  "PARSE_WARNING_CODE_PAGES_OUT_OF_RANGE: pages 7, 9 are past the end of a "
+                  "2-page document",
+          "the out-of-range trailer warning carries its code name");
 }
 
 }  // namespace
@@ -2997,10 +3051,9 @@ int main() {
       verify_poi_truncated_stream_fails,
       verify_poi_vertical_merge_keeps_columns,
       verify_poi_hostile_span_is_clamped,
+      verify_poi_sheet_batches_fold_into_one_table,
+      verify_poi_cut_sheet_batches_warn,
       verify_poi_unreachable_endpoint_degrades,
-      verify_poi_batched_sheet_folds_like_one_sheet,
-      verify_poi_merged_regions_span_the_anchor,
-      verify_poi_hidden_sheets_and_slide_tables,
       verify_poi_fanout_merges_claims_without_a_second_body,
       verify_poi_fanout_keeps_its_body_when_the_primary_failed,
       verify_calamine_folds_sheets,
@@ -3017,6 +3070,7 @@ int main() {
       verify_pdf_collector_failure_is_an_outcome,
       verify_pdf_endpoint_configuration,
       verify_pdf_plain_leg_returns_the_document,
-      verify_pdf_page_range_forwards_as_pages,
+      verify_pdf_page_range_forwards_as_a_span,
+      verify_pdf_out_of_range_warning_prints_by_name,
   });
 }

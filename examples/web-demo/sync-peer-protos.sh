@@ -76,7 +76,9 @@ while IFS=$'\t' read -r repo include; do
       echo "drift: $target is absent"
       drift=1
     elif ! diff -rq "$source" "$target" >/dev/null; then
-      diff -rq "$source" "$target" | sed 's/^/drift: /'
+      # diff exits 1 on the drift it lists; without the guard, errexit and
+      # pipefail stop the check at the first drifted peer.
+      diff -rq "$source" "$target" | sed 's/^/drift: /' || true
       drift=1
     fi
   else
