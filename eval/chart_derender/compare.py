@@ -206,6 +206,7 @@ def stage_and_load(staged: Path):
     out = staged / "gen"
     out.mkdir(exist_ok=True)
     args = ["protoc", f"-I{staged}", f"-I{include}", f"--python_out={out}", f"--grpc_python_out={out}",
+            str(staged / "org/apache/opennlp/grpc/v1/opennlp_document.proto"),
             str(staged / "ai/pipestream/document/v1/document.proto"),
             str(enrich_dir / "enrich_service.proto")]
     if protoc.main(args) != 0:

@@ -61,6 +61,8 @@ function stageProtos() {
     ["collectors/ebcdic.proto", "ai/pipestream/ebcdic/v1/ebcdic.proto"],
     ["collectors/lolhtml_types.proto", "lolhtml/v1/types.proto"],
     ["collectors/lolhtml_service.proto", "lolhtml/v1/lolhtml_service.proto"],
+    // document.proto imports the OpenNLP analysis document (Document.analyses).
+    ["collectors/opennlp_document.proto", "org/apache/opennlp/grpc/v1/opennlp_document.proto"],
   ];
   for (const [source, destination] of layout) {
     const target = path.join(staged, destination);

@@ -101,7 +101,8 @@ fi
 proto_root=$(mktemp -d "${TMPDIR:-/tmp}/grparse-contract.XXXXXX")
 trap 'rm -rf "$proto_root"' EXIT
 mkdir -p "$proto_root/ai/pipestream/document/v1" "$proto_root/ai/pipestream/parse/v1" \
-  "$proto_root/ai/pipestream/ebcdic/v1" "$proto_root/lolhtml/v1"
+  "$proto_root/ai/pipestream/ebcdic/v1" "$proto_root/lolhtml/v1" \
+  "$proto_root/org/apache/opennlp/grpc/v1"
 cp "$project_root/document.proto" "$proto_root/ai/pipestream/document/v1/document.proto"
 cp "$project_root/parse_types.proto" "$proto_root/ai/pipestream/parse/v1/parse_types.proto"
 cp "$project_root/parse.proto" "$proto_root/ai/pipestream/parse/v1/parse.proto"
@@ -110,6 +111,8 @@ cp "$project_root/parse.proto" "$proto_root/ai/pipestream/parse/v1/parse.proto"
 cp "$project_root/collectors/ebcdic.proto" "$proto_root/ai/pipestream/ebcdic/v1/ebcdic.proto"
 cp "$project_root/collectors/lolhtml_types.proto" "$proto_root/lolhtml/v1/types.proto"
 cp "$project_root/collectors/lolhtml_service.proto" "$proto_root/lolhtml/v1/lolhtml_service.proto"
+# document.proto imports the OpenNLP analysis document (Document.analyses).
+cp "$project_root/collectors/opennlp_document.proto" "$proto_root/org/apache/opennlp/grpc/v1/opennlp_document.proto"
 
 grpc() {
   local method=$1

@@ -385,6 +385,7 @@ file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/pdf/v1")
 file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/poi/v1")
 file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/calamine/v1")
 file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/protomolt/parse/pdf/v1")
+file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/org/apache/opennlp/grpc/v1")
 configure_file(document.proto
   "${STAGED_PROTO_DIR}/ai/pipestream/document/v1/document.proto" COPYONLY)
 configure_file(parse_types.proto
@@ -446,6 +447,10 @@ configure_file(backends/pdf_backend_types.proto
   "${STAGED_PROTO_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_types.proto" COPYONLY)
 configure_file(backends/pdf_backend_service.proto
   "${STAGED_PROTO_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_service.proto" COPYONLY)
+# The OpenNLP analysis document Document.analyses carries verbatim, vendored
+# from the opennlp-sandbox gRPC API (collectors/README.md).
+configure_file(collectors/opennlp_document.proto
+  "${STAGED_PROTO_DIR}/org/apache/opennlp/grpc/v1/opennlp_document.proto" COPYONLY)
 
 set(DOCUMENT_PROTO "${STAGED_PROTO_DIR}/ai/pipestream/document/v1/document.proto")
 set(PARSE_TYPES_PROTO "${STAGED_PROTO_DIR}/ai/pipestream/parse/v1/parse_types.proto")
@@ -474,7 +479,8 @@ set(COLLECTOR_PROTOS
   "${STAGED_PROTO_DIR}/calamine/v1/types.proto"
   "${STAGED_PROTO_DIR}/calamine/v1/calamine_service.proto"
   "${STAGED_PROTO_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_types.proto"
-  "${STAGED_PROTO_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_service.proto")
+  "${STAGED_PROTO_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_service.proto"
+  "${STAGED_PROTO_DIR}/org/apache/opennlp/grpc/v1/opennlp_document.proto")
 set(COLLECTOR_GENERATED
   "${GENERATED_DIR}/ai/pipestream/asr/v1/asr_service.pb.cc"
   "${GENERATED_DIR}/ai/pipestream/asr/v1/asr_service.pb.h"
@@ -563,7 +569,11 @@ set(COLLECTOR_GENERATED
   "${GENERATED_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_service.pb.cc"
   "${GENERATED_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_service.pb.h"
   "${GENERATED_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_service.grpc.pb.cc"
-  "${GENERATED_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_service.grpc.pb.h")
+  "${GENERATED_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_service.grpc.pb.h"
+  "${GENERATED_DIR}/org/apache/opennlp/grpc/v1/opennlp_document.pb.cc"
+  "${GENERATED_DIR}/org/apache/opennlp/grpc/v1/opennlp_document.pb.h"
+  "${GENERATED_DIR}/org/apache/opennlp/grpc/v1/opennlp_document.grpc.pb.cc"
+  "${GENERATED_DIR}/org/apache/opennlp/grpc/v1/opennlp_document.grpc.pb.h")
 add_custom_command(
   OUTPUT "${GENERATED_DIR}/ai/pipestream/document/v1/document.pb.cc"
          "${GENERATED_DIR}/ai/pipestream/document/v1/document.pb.h"
@@ -602,6 +612,7 @@ add_custom_command(
           collectors/poi_document.proto collectors/poi_service.proto
           collectors/calamine_types.proto collectors/calamine_service.proto
           backends/pdf_backend_types.proto backends/pdf_backend_service.proto
+          collectors/opennlp_document.proto
           protoc grpc_cpp_plugin
   VERBATIM)
 # STATIC explicitly, same reason as grparse_core below.
@@ -657,7 +668,9 @@ add_library(grparse_proto STATIC
   "${GENERATED_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_types.pb.cc"
   "${GENERATED_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_types.grpc.pb.cc"
   "${GENERATED_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_service.pb.cc"
-  "${GENERATED_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_service.grpc.pb.cc")
+  "${GENERATED_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_service.grpc.pb.cc"
+  "${GENERATED_DIR}/org/apache/opennlp/grpc/v1/opennlp_document.pb.cc"
+  "${GENERATED_DIR}/org/apache/opennlp/grpc/v1/opennlp_document.grpc.pb.cc")
 target_include_directories(grparse_proto PUBLIC "${GENERATED_DIR}")
 target_link_libraries(grparse_proto PUBLIC grpc++)
 
