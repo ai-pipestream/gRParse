@@ -302,7 +302,7 @@
     tables and Qwen's output; the :8085 image-not-seen behaviour.
   - Shell: the proxy 400 after a streamed POST; the progress bar CSS.
   - Scorecard: the paper's Figure 2 anchor sits past the 60-char entry prefix; the
-    e2e suite has no rows yet for the fastwarc, POI, ASR, Enrich and VLM Convert
+    e2e suite has no rows yet for the fastwarc, ASR, Enrich and VLM Convert
     uploads; CI runs neither the e2e suite nor the scorecard.
   - Proto (fleet sweep): a typed multi-series bar slot, chart title on `ChartMeta`,
     `CollectorClaim.warnings`, `TextItemBase.page_style_name`, `GroupItem.slide`.

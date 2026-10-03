@@ -677,6 +677,18 @@ void verify_parity_options_and_confidence(TestServer* server) {
               chunks_status.error_message());
   require(chunks_response.response().chunks_size() > 0,
           "ConvertSource must populate chunks when OUTPUT_FORMAT_CHUNKS is set");
+  const auto& offsets = chunks_response.response().text_offsets();
+  require(!offsets.empty() &&
+              offsets.size() == chunks_response.response().document().doc().texts_size(),
+          "ConvertSource returns one offset row per text item");
+  std::uint64_t previous_end = 0;
+  for (const auto& row : offsets) {
+    require(row.utf_start() >= previous_end && row.utf_end() >= row.utf_start(),
+            "offset rows run in stream order");
+    require(row.source() == pipestream::parse::v1::TEXT_SOURCE_OCR,
+            "the CV path's rows keep how their text was read");
+    previous_end = row.utf_end();
+  }
 
   request = unary_request();
   request.mutable_request()->mutable_options()->clear_to_formats();

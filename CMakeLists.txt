@@ -382,7 +382,6 @@ file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/markup/v1")
 file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/lolhtml/v1")
 file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/fastwarc/v1")
 file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/pdf/v1")
-file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/poi/v1")
 file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/calamine/v1")
 file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/protomolt/parse/pdf/v1")
 configure_file(document.proto
@@ -430,10 +429,6 @@ configure_file(collectors/pdf_types.proto
   "${STAGED_PROTO_DIR}/ai/pipestream/pdf/v1/types.proto" COPYONLY)
 configure_file(collectors/pdf_service.proto
   "${STAGED_PROTO_DIR}/ai/pipestream/pdf/v1/pdf_service.proto" COPYONLY)
-configure_file(collectors/poi_document.proto
-  "${STAGED_PROTO_DIR}/ai/pipestream/poi/v1/poi_document.proto" COPYONLY)
-configure_file(collectors/poi_service.proto
-  "${STAGED_PROTO_DIR}/ai/pipestream/poi/v1/poi_service.proto" COPYONLY)
 # calamine_types.proto stages under its import path name, like
 # epub_types.proto; the calamine package is calamine.v1, not ai.pipestream.*.
 configure_file(collectors/calamine_types.proto
@@ -469,8 +464,6 @@ set(COLLECTOR_PROTOS
   "${STAGED_PROTO_DIR}/fastwarc/v1/warc_service.proto"
   "${STAGED_PROTO_DIR}/ai/pipestream/pdf/v1/types.proto"
   "${STAGED_PROTO_DIR}/ai/pipestream/pdf/v1/pdf_service.proto"
-  "${STAGED_PROTO_DIR}/ai/pipestream/poi/v1/poi_document.proto"
-  "${STAGED_PROTO_DIR}/ai/pipestream/poi/v1/poi_service.proto"
   "${STAGED_PROTO_DIR}/calamine/v1/types.proto"
   "${STAGED_PROTO_DIR}/calamine/v1/calamine_service.proto"
   "${STAGED_PROTO_DIR}/ai/protomolt/parse/pdf/v1/pdf_backend_types.proto"
@@ -540,14 +533,6 @@ set(COLLECTOR_GENERATED
   "${GENERATED_DIR}/ai/pipestream/pdf/v1/pdf_service.pb.h"
   "${GENERATED_DIR}/ai/pipestream/pdf/v1/pdf_service.grpc.pb.cc"
   "${GENERATED_DIR}/ai/pipestream/pdf/v1/pdf_service.grpc.pb.h"
-  "${GENERATED_DIR}/ai/pipestream/poi/v1/poi_document.pb.cc"
-  "${GENERATED_DIR}/ai/pipestream/poi/v1/poi_document.pb.h"
-  "${GENERATED_DIR}/ai/pipestream/poi/v1/poi_document.grpc.pb.cc"
-  "${GENERATED_DIR}/ai/pipestream/poi/v1/poi_document.grpc.pb.h"
-  "${GENERATED_DIR}/ai/pipestream/poi/v1/poi_service.pb.cc"
-  "${GENERATED_DIR}/ai/pipestream/poi/v1/poi_service.pb.h"
-  "${GENERATED_DIR}/ai/pipestream/poi/v1/poi_service.grpc.pb.cc"
-  "${GENERATED_DIR}/ai/pipestream/poi/v1/poi_service.grpc.pb.h"
   "${GENERATED_DIR}/calamine/v1/types.pb.cc"
   "${GENERATED_DIR}/calamine/v1/types.pb.h"
   "${GENERATED_DIR}/calamine/v1/types.grpc.pb.cc"
@@ -599,7 +584,6 @@ add_custom_command(
           collectors/lolhtml_types.proto collectors/lolhtml_service.proto
           collectors/warc.proto collectors/warc_service.proto
           collectors/pdf_types.proto collectors/pdf_service.proto
-          collectors/poi_document.proto collectors/poi_service.proto
           collectors/calamine_types.proto collectors/calamine_service.proto
           backends/pdf_backend_types.proto backends/pdf_backend_service.proto
           protoc grpc_cpp_plugin
@@ -646,10 +630,6 @@ add_library(grparse_proto STATIC
   "${GENERATED_DIR}/ai/pipestream/pdf/v1/types.grpc.pb.cc"
   "${GENERATED_DIR}/ai/pipestream/pdf/v1/pdf_service.pb.cc"
   "${GENERATED_DIR}/ai/pipestream/pdf/v1/pdf_service.grpc.pb.cc"
-  "${GENERATED_DIR}/ai/pipestream/poi/v1/poi_document.pb.cc"
-  "${GENERATED_DIR}/ai/pipestream/poi/v1/poi_document.grpc.pb.cc"
-  "${GENERATED_DIR}/ai/pipestream/poi/v1/poi_service.pb.cc"
-  "${GENERATED_DIR}/ai/pipestream/poi/v1/poi_service.grpc.pb.cc"
   "${GENERATED_DIR}/calamine/v1/types.pb.cc"
   "${GENERATED_DIR}/calamine/v1/types.grpc.pb.cc"
   "${GENERATED_DIR}/calamine/v1/calamine_service.pb.cc"
@@ -736,7 +716,6 @@ add_library(grparse_core STATIC
   src/collectors/lol_html_collector.cpp
   src/collectors/markup_collector.cpp
   src/collectors/pdf_collector.cpp
-  src/collectors/poi_collector.cpp
   src/collectors/xml_collector.cpp
   src/collector_endpoints.cpp
   src/parse_support.cpp
@@ -849,6 +828,7 @@ if(BUILD_TESTING)
     layout-decode-test
     layout-engine-test
     office-collector-test
+    office-fallback-test
     office-cv-enrichment-test
     ort-session-ep-test
     page-previews-test

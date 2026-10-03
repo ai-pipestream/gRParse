@@ -13,6 +13,7 @@
 #include "../src/chunking/chunker.h"
 #include "../src/chunking/sentence_rules.h"
 #include "../src/chunking/token_counter.h"
+#include "../src/render/renderer_base.h"
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
 #include "support/check.h"
@@ -28,6 +29,9 @@ using grparse::chunking::count_tokens;
 using grparse::chunking::hybrid_rules_digest;
 using grparse::chunking::OffsetEntry;
 using grparse::chunking::OffsetTable;
+using grparse::chunking::derive_offsets;
+using grparse::chunking::offset_rows;
+using grparse::chunking::overlay_sources;
 using grparse::chunking::validate_hybrid_options;
 
 namespace {
@@ -1006,6 +1010,114 @@ void verify_chunk_key_names_bytes_options_build_rules_and_position() {
           "without the source bytes' hash there is no key");
 }
 
+// The text stream the derived table indexes, rebuilt the way the plain-text
+// export writes it: text items in arena order, a newline between each and
+// what was already written.
+std::string export_stream(const docv1::Document& document) {
+  std::string text;
+  for (const auto& item : document.texts()) {
+    const std::string* body = nullptr;
+    if (item.has_code()) {
+      body = &item.code().text();
+    } else if (const auto* base = grparse::render::text_base(item)) {
+      body = &base->text();
+    }
+    if (body == nullptr) continue;
+    if (!text.empty()) text.push_back('\n');
+    text.append(*body);
+  }
+  return text;
+}
+
+std::string slice_code_points(const std::string& text, std::uint64_t start, std::uint64_t end) {
+  const auto points = grparse::chunking::decode_utf8(text);
+  require(end <= points.size() && start <= end, "a row stays inside the stream");
+  return grparse::chunking::encode_utf8(points.data() + start, points.data() + end);
+}
+
+void verify_derived_offsets_index_the_text_export() {
+  docv1::Document document = new_document();
+  const std::string empty = add_paragraph(&document, "");
+  const std::string title = add_title(&document, "Größe");
+  const std::string body = add_paragraph(&document, "naïve café");
+  const std::string code_ref = next_text_ref(document);
+  auto* code = document.add_texts()->mutable_code();
+  code->set_self_ref(code_ref);
+  code->set_text("x = 1");
+  document.add_texts();  // no arm set: no row, no separator
+  const std::string last = add_paragraph(&document, "end");
+
+  const OffsetTable table = derive_offsets(document);
+  require_eq(static_cast<int>(table.size()), 5, "every text arm gets one row");
+  require(!table.contains("#/texts/4"), "an item with no text arm has no row");
+  const std::string stream = export_stream(document);
+  for (const auto& [ref, entry] : table) {
+    require(entry.source == parsev1::TEXT_SOURCE_UNSPECIFIED,
+            "a derived row claims no reading source");
+  }
+  require(table.at(empty).start == 0 && table.at(empty).end == 0,
+          "a leading empty item sits at zero");
+  require(table.at(title).start == 0,
+          "a leading empty item adds no separator, as the export writes none");
+  require_eq(slice_code_points(stream, table.at(title).start, table.at(title).end), "Größe",
+             "spans count code points, not bytes");
+  require_eq(slice_code_points(stream, table.at(body).start, table.at(body).end), "naïve café",
+             "each row slices its own text out of the export");
+  require_eq(slice_code_points(stream, table.at(code_ref).start, table.at(code_ref).end),
+             "x = 1", "code items take part in the stream");
+  require_eq(slice_code_points(stream, table.at(last).start, table.at(last).end), "end",
+             "an armless item between two texts shifts nothing");
+  require(table.at(last).end == grparse::chunking::decode_utf8(stream).size(),
+          "the last row ends the stream");
+
+  // Collector-folded documents have no CV rows at all; their chunks now get
+  // spans from the derived table.
+  const auto chunks = chunk_hierarchical(document, table, {}, "d.docx");
+  bool spanned = false;
+  for (const auto& chunk : chunks) spanned = spanned || chunk.has_start_offset();
+  require(spanned, "chunks of a document without CV rows carry spans");
+}
+
+void verify_overlay_labels_only_matching_rows() {
+  docv1::Document document = new_document();
+  const std::string first = add_paragraph(&document, "one");
+  const std::string second = add_paragraph(&document, "two");
+  const std::string third = add_paragraph(&document, "three");
+  OffsetTable table = derive_offsets(document);
+
+  google::protobuf::RepeatedPtrField<parsev1::TextOffset> rows;
+  auto* matching = rows.Add();
+  matching->set_self_ref(first);
+  matching->set_utf_start(0);
+  matching->set_utf_end(3);
+  matching->set_source(parsev1::TEXT_SOURCE_OCR);
+  auto* moved = rows.Add();
+  moved->set_self_ref(second);
+  moved->set_utf_start(9);
+  moved->set_utf_end(12);
+  moved->set_source(parsev1::TEXT_SOURCE_DIGITAL_PDF);
+  auto* unknown = rows.Add();
+  unknown->set_self_ref("#/texts/99");
+  unknown->set_source(parsev1::TEXT_SOURCE_OCR);
+  overlay_sources(rows, &table);
+
+  require(table.at(first).source == parsev1::TEXT_SOURCE_OCR,
+          "a row naming the same item and span lends its source");
+  require(table.at(second).source == parsev1::TEXT_SOURCE_UNSPECIFIED &&
+              table.at(second).start == 4 && table.at(second).end == 7,
+          "a row whose span disagrees labels nothing and moves nothing");
+  require(!table.contains("#/texts/99"), "a row for an unknown item adds no entry");
+
+  const auto wire = offset_rows(table);
+  require(wire.size() == 3, "one wire row per entry");
+  require(wire.Get(0).self_ref() == first && wire.Get(1).self_ref() == second &&
+              wire.Get(2).self_ref() == third,
+          "wire rows follow the stream, not the map's key order");
+  require(wire.Get(0).source() == parsev1::TEXT_SOURCE_OCR &&
+              wire.Get(1).source() == parsev1::TEXT_SOURCE_UNSPECIFIED,
+          "the wire row carries the overlaid label");
+}
+
 struct Case {
   const char* name;
   void (*run)();
@@ -1037,6 +1149,8 @@ const Case kCases[] = {
     {"raw text option", verify_raw_text_mirrors_text_when_requested},
     {"hybrid digest", verify_hybrid_digest_reports_the_budget},
     {"chunk key", verify_chunk_key_names_bytes_options_build_rules_and_position},
+    {"derived offsets index the text export", verify_derived_offsets_index_the_text_export},
+    {"overlay labels only matching rows", verify_overlay_labels_only_matching_rows},
 };
 
 }  // namespace

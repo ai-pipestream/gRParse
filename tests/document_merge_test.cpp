@@ -422,9 +422,9 @@ const docv1::FieldSource* source_of(const docv1::DocumentMeta& meta, const std::
 // accounts are on the wire whole under their collectors.
 void verify_contested_fields_resolve_by_rank_and_keep_every_account() {
   docv1::Document target = base_document();
-  target.mutable_origin()->set_filename("report.docx");
+  target.mutable_origin()->set_filename("book.xlsx");
   target.mutable_origin()->set_mimetype(
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   target.mutable_origin()->set_binary_hash(99);
   grparse::claim_fields(target.mutable_origin(), claimant("grparse"));
 
@@ -435,23 +435,25 @@ void verify_contested_fields_resolve_by_rank_and_keep_every_account() {
   office.mutable_origin()->set_filename("converted.odt");
   grparse::merge_documents(std::move(office), &target, claimant("libreoffice"));
 
-  docv1::Document poi = base_document();
-  poi.mutable_source_meta()->set_title("Report (POI)");
-  poi.mutable_source_meta()->set_editing_cycles(4);
-  grparse::merge_documents(std::move(poi), &target, claimant("poi"));
+  docv1::Document sheet = base_document();
+  sheet.mutable_source_meta()->set_title("Report (calamine)");
+  sheet.mutable_source_meta()->set_editing_cycles(4);
+  grparse::merge_documents(std::move(sheet), &target, claimant("calamine"));
 
   const auto& meta = target.source_meta();
-  require(meta.title() == "Report (POI)", "the format's native reader wins the contested title");
+  require(meta.title() == "Report (calamine)",
+          "the format's native reader wins the contested title");
   require(meta.subject() == "Quarterly numbers" && meta.editing_cycles() == 4,
           "fields only one collector answered are kept");
-  require(source_of(meta, "title") != nullptr && source_of(meta, "title")->source().collector() == "poi",
+  require(source_of(meta, "title") != nullptr &&
+              source_of(meta, "title")->source().collector() == "calamine",
           "the resolved title names its winner");
   require(source_of(meta, "subject") != nullptr &&
               source_of(meta, "subject")->source().collector() == "libreoffice",
           "the uncontested subject names its only claimant");
-  require(source_of(meta, "editing_cycles")->source().collector() == "poi",
-          "editing cycles name poi");
-  require(target.origin().filename() == "report.docx",
+  require(source_of(meta, "editing_cycles")->source().collector() == "calamine",
+          "editing cycles name calamine");
+  require(target.origin().filename() == "book.xlsx",
           "the service's stamp outranks a collector's filename");
   bool stamped = false;
   for (const auto& entry : target.origin().field_sources()) {
@@ -464,8 +466,8 @@ void verify_contested_fields_resolve_by_rank_and_keep_every_account() {
               target.claims(0).page_styles_size() == 1 &&
               target.claims(0).origin().filename() == "converted.odt",
           "the losing title is still on the wire under its collector, whole");
-  require(target.claims(1).source().collector() == "poi" &&
-              target.claims(1).source_meta().title() == "Report (POI)",
+  require(target.claims(1).source().collector() == "calamine" &&
+              target.claims(1).source_meta().title() == "Report (calamine)",
           "the winner's account is kept too");
   require(target.claims(0).source_meta().field_sources_size() == 0,
           "an account carries no provenance list: it is one collector's word");
@@ -476,13 +478,13 @@ void verify_contested_fields_resolve_by_rank_and_keep_every_account() {
 void verify_confidence_beats_standing() {
   docv1::Document target = base_document();
   target.mutable_origin()->set_mimetype(
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   docv1::Document office = base_document();
   office.mutable_source_meta()->set_title("sure");
   grparse::merge_documents(std::move(office), &target, claimant("libreoffice", 0.9));
-  docv1::Document poi = base_document();
-  poi.mutable_source_meta()->set_title("unsure");
-  grparse::merge_documents(std::move(poi), &target, claimant("poi", 0.4));
+  docv1::Document sheet = base_document();
+  sheet.mutable_source_meta()->set_title("unsure");
+  grparse::merge_documents(std::move(sheet), &target, claimant("calamine", 0.4));
   require(target.source_meta().title() == "sure", "confidence decides before standing");
   require(source_of(target.source_meta(), "title")->source().confidence() == 0.9,
           "the holder's confidence is recorded with it");
@@ -491,15 +493,16 @@ void verify_confidence_beats_standing() {
 // Standing is per format: the spreadsheet reader has none over a text
 // document, and a collector with no standing never displaces one with some.
 void verify_standing_is_per_format() {
-  require(grparse::document_claim_rank("poi", "application/vnd.openxmlformats-officedocument.wordprocessingml.document") >
-              grparse::document_claim_rank("libreoffice", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
-          "poi outranks libreoffice on OOXML");
+  require(grparse::document_claim_rank("libreoffice", "application/vnd.openxmlformats-officedocument.wordprocessingml.document") > 0,
+          "libreoffice has standing on OOXML text");
+  require(grparse::document_claim_rank("poi", "application/msword") == 0,
+          "a retired collector name has no standing");
   require(grparse::document_claim_rank("calamine", "application/vnd.oasis.opendocument.text") == 0,
           "calamine has no standing on a text document");
   require(grparse::document_claim_rank("calamine", "text/csv") >
               grparse::document_claim_rank("libreoffice", "text/csv"),
           "calamine outranks libreoffice on a spreadsheet");
-  require(grparse::document_claim_rank("grparse", "anything") > grparse::document_claim_rank("poi", "application/msword"),
+  require(grparse::document_claim_rank("grparse", "anything") > grparse::document_claim_rank("calamine", "application/vnd.ms-excel"),
           "the service's stamp outranks everything");
   docv1::Document target = base_document();
   target.mutable_origin()->set_mimetype("application/vnd.oasis.opendocument.text");
@@ -517,7 +520,7 @@ void verify_standing_is_per_format() {
 // the service's own stamp, and only on PDF, the one format the vote runs.
 void verify_protomolt_standing() {
   const int vote = grparse::document_claim_rank("protomolt", "application/pdf");
-  require(vote > grparse::document_claim_rank("poi", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+  require(vote > grparse::document_claim_rank("calamine", "application/vnd.ms-excel"),
           "the vote outranks the strongest registered collector standing");
   require(vote > grparse::document_claim_rank("calamine", "text/csv") &&
               vote > grparse::document_claim_rank("libreoffice", "application/rtf"),

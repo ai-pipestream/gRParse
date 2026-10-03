@@ -68,7 +68,6 @@ file under `collectors/` copied byte-identical from the sister repo.
 | `grpc-lol-html` | `master` | Rust (Cargo, buf) | 50057 | `lolhtml_types.proto`, `lolhtml_service.proto` | never by format; explicit `lol_html_options` only |
 | `grpc-asr` | `main` | C++ (CMake, buf, whisper.cpp) | 50055 | `asr_service.proto` | audio and video (`GRPARSE_ASR_MODEL` required) |
 | `fastwarc-grpc` | `main` | Rust (Cargo) | 50060 | `warc.proto`, `warc_service.proto` | `.warc*`; see the fastwarc caveat below |
-| `grPOIc` | `main` | Java/Kotlin (Gradle) | 50052 | `poi_document.proto`, `poi_service.proto` | never routed by itself; a routed office plan fans a poi leg out beside libreoffice for the six OOXML/OLE2 formats when configured, folded client-side (`src/collectors/poi_collector.cpp`) |
 | `grpc-calamine` | `main` on GitHub (`development` was the working branch; check) | Rust (Cargo, buf) | 50062 | `calamine_types.proto`, `calamine_service.proto` (package `calamine.v1`; vendored from GitHub `main`, which carries the fleet port, the UiInfo block, and the `row_gap` event that `development` lacks) | never routed by itself; a routed workbook plan (never CSV) fans a calamine leg out beside libreoffice when configured, folded client-side through the OpenWorkbook/StreamWorksheetRange/CloseWorkbook handle lifecycle (`src/collectors/calamine_collector.cpp`). Meant to be hosted by an external project, so nothing in that repo may mention gRParse or the shell |
 
 Two collectors are compiled in and have no repo: the CV path
@@ -81,11 +80,13 @@ They run in the stack and get a tab in the demo shell
 (`examples/web-demo`), which dials them directly. gRParse never calls them
 as collectors; grpc-enrich is the exception below, dialed after the merge
 only when `GRPARSE_ENRICH_TARGET` names it.
-The merge ranks `poi` and `calamine` claims below gRParse's own
-(`document_claim_rank` in `src/document_merge.cpp`), which is what makes
-their fan-out legs safe to add. grPOIc and grpc-calamine keep their shell
-tabs (`POIC_TARGET`, the opt-in `calamine` compose profile); what changed is
-that gRParse also dials them as collectors now.
+The merge ranks `calamine` claims below gRParse's own
+(`document_claim_rank` in `src/document_merge.cpp`), which is what makes its
+fan-out leg safe to add. grpc-calamine keeps its shell tab (the opt-in
+`calamine` compose profile); what changed is that gRParse also dials it as a
+collector now. gRParse does not use grPOIc: word processing and
+presentation formats have libreoffice as their only collector, and its
+failure fails the parse.
 
 | Repo | Default branch | Language | Port | Shell env | Role |
 |---|---|---|---|---|---|
@@ -151,7 +152,7 @@ contract in its image, see step 3):
   grpc-pdf-inspector/
   grpc-email/  grpc-xml/  grpc-epub/  grpc-markup/  grpc-ebcdic/
   grpc-lol-html/  grpc-asr/  fastwarc-grpc/
-  grPOIc/  grpc-calamine/  grpc-enrich/  grpc-vlm-convert/
+  grpc-calamine/  grpc-enrich/  grpc-vlm-convert/
   grpc-pdfium/             the core stack's PDF backend
   worktrees/               feature worktrees, one per repo-feature
 ```
@@ -164,7 +165,7 @@ WS=/work/main/grpc-services            # any path; the layout is what matters
 mkdir -p "$WS/worktrees" && cd "$WS"
 for repo in gRParse grpc-libreoffice grpc-pdf-inspector grpc-email grpc-xml \
             grpc-epub grpc-markup grpc-ebcdic grpc-lol-html grpc-asr fastwarc-grpc \
-            grPOIc grpc-calamine grpc-enrich grpc-vlm-convert grpc-pdfium; do
+            grpc-calamine grpc-enrich grpc-vlm-convert grpc-pdfium; do
   [ -d "$repo" ] || git clone "https://git.rokkon.com/ai-pipestream/$repo.git"
   git -C "$repo" remote get-url github >/dev/null 2>&1 || \
     git -C "$repo" remote add github "https://github.com/ai-pipestream/$repo.git"

@@ -83,13 +83,6 @@ if (shellMeta && shellMeta.content === "on") {
       statusUrl: "/api/fastwarc/status",
     },
     {
-      name: "poic",
-      title: "POI",
-      path: "/poic.html",
-      description: "office document parsing via grPOIc (Apache POI)",
-      statusUrl: "/api/poic/status",
-    },
-    {
       name: "asr",
       title: "ASR",
       path: "/asr.html",
