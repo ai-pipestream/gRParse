@@ -191,7 +191,8 @@ void verify_unread_options_are_rejected_unless_default() {
   });
   rejects("picture_description_api.params", [](parsev1::ConvertDocumentOptions* o) {
     o->mutable_picture_description_api()->set_url("http://vlm.test");
-    (*o->mutable_picture_description_api()->mutable_params())["model"].set_string_value("x");
+    (*o->mutable_picture_description_api()->mutable_params())["frequency_penalty"]
+        .set_double_value(0.5);
   });
   rejects("vlm_pipeline_model_api.headers", [](parsev1::ConvertDocumentOptions* o) {
     o->mutable_vlm_pipeline_model_api()->set_url("granite-docling");
@@ -481,6 +482,117 @@ void verify_doclang_export_options() {
   }
 }
 
+// picture_description_api's prompt, params and headers travel to enrich in
+// its typed form: the typed param names pass, any other is refused by name,
+// a value of the wrong kind is refused naming the param, and a header the
+// HTTP client sets itself or a value holding a control character is refused
+// naming the header, never echoing its value.
+void verify_picture_description_api_call_is_typed() {
+  const auto api_options = [](auto mutate) {
+    parsev1::ConvertDocumentOptions options;
+    auto* api = options.mutable_picture_description_api();
+    api->set_url("http://vlm.test");
+    mutate(api);
+    return options;
+  };
+  {
+    const auto options = api_options([](parsev1::PictureDescriptionApi* api) {
+      api->set_prompt("Name the chart type.");
+      (*api->mutable_params())["model"].set_string_value("granite-vision");
+      (*api->mutable_params())["max_tokens"].set_int_value(300);
+      (*api->mutable_params())["temperature"].set_int_value(0);
+      (*api->mutable_params())["top_p"].set_double_value(1.0);
+      (*api->mutable_params())["seed"].set_int_value(-3);
+      (*api->mutable_headers())["Authorization"] = "Bearer sk-x";
+    });
+    const grpc::Status status = grparse::validate_options(options, kSurface);
+    require(status.ok(), "the typed api fields pass: " + status.error_message());
+  }
+  const auto invalid = [&](const std::string& expected, auto mutate) {
+    const grpc::Status status = grparse::validate_options(api_options(mutate), kSurface);
+    require_invalid(status, expected);
+    require(!status.error_message().contains("sk-never-echoed"),
+            "a refusal never echoes a header value: " + status.error_message());
+  };
+  invalid("'picture_description_api.params.logit_bias'", [](parsev1::PictureDescriptionApi* api) {
+    (*api->mutable_params())["logit_bias"].set_string_value("{}");
+  });
+  invalid("params.model", [](parsev1::PictureDescriptionApi* api) {
+    (*api->mutable_params())["model"].set_int_value(3);
+  });
+  invalid("params.max_completion_tokens", [](parsev1::PictureDescriptionApi* api) {
+    (*api->mutable_params())["max_completion_tokens"].set_int_value(0);
+  });
+  invalid("same generation cap", [](parsev1::PictureDescriptionApi* api) {
+    (*api->mutable_params())["max_tokens"].set_int_value(10);
+    (*api->mutable_params())["max_completion_tokens"].set_int_value(10);
+  });
+  invalid("params.temperature", [](parsev1::PictureDescriptionApi* api) {
+    (*api->mutable_params())["temperature"].set_double_value(-1.0);
+  });
+  invalid("params.top_p", [](parsev1::PictureDescriptionApi* api) {
+    (*api->mutable_params())["top_p"].set_double_value(1.5);
+  });
+  invalid("params.seed", [](parsev1::PictureDescriptionApi* api) {
+    (*api->mutable_params())["seed"].set_double_value(1.5);
+  });
+  invalid("headers 'Host'", [](parsev1::PictureDescriptionApi* api) {
+    (*api->mutable_headers())["Host"] = "sk-never-echoed";
+  });
+  invalid("headers 'Proxy-Authorization'", [](parsev1::PictureDescriptionApi* api) {
+    (*api->mutable_headers())["Proxy-Authorization"] = "sk-never-echoed";
+  });
+  invalid("headers name 'Bad Name'", [](parsev1::PictureDescriptionApi* api) {
+    (*api->mutable_headers())["Bad Name"] = "sk-never-echoed";
+  });
+  invalid("headers 'Authorization' value holds a control character",
+          [](parsev1::PictureDescriptionApi* api) {
+            (*api->mutable_headers())["Authorization"] = "sk-never-echoed\r\nX-Injected: 1";
+          });
+  invalid("'Authorization' and 'authorization' name the same header",
+          [](parsev1::PictureDescriptionApi* api) {
+            (*api->mutable_headers())["Authorization"] = "sk-never-echoed";
+            (*api->mutable_headers())["authorization"] = "sk-never-echoed";
+          });
+}
+
+// The caller's headers are for its own endpoint. grpc-enrich sends them to
+// every per-request endpoint of the job, so a chart preset naming another
+// endpoint is refused while the chart leg is on, naming the preset and not
+// its endpoint; the same endpoint, no headers, or charts off all pass.
+void verify_picture_description_headers_stay_on_their_endpoint() {
+  parsev1::ConvertDocumentOptions options;
+  auto* api = options.mutable_picture_description_api();
+  api->set_url("http://vlm.test");
+  (*api->mutable_headers())["Authorization"] = "sk-never-echoed";
+  grparse::ChartExtractionPreset preset;
+  preset.id = "granite";
+  preset.vlm_endpoint = "http://charts.internal:8000/v1";
+  const auto refused = grparse::request_picture_description_call(options, preset, kSurface);
+  require(!refused.has_value(), "headers beside another chart endpoint are refused");
+  require_invalid(refused.error(), "chart extraction preset 'granite'");
+  require(!refused.error().error_message().contains("charts.internal") &&
+              !refused.error().error_message().contains("sk-never-echoed"),
+          "the refusal names neither the preset's endpoint nor the header value");
+
+  preset.vlm_endpoint = "http://vlm.test";
+  const auto same = grparse::request_picture_description_call(options, preset, kSurface);
+  require(same.has_value() && same->headers.size() == 1,
+          "a chart preset on the request's own endpoint keeps the headers");
+  preset.vlm_endpoint = "http://charts.internal:8000/v1";
+  options.set_do_chart_extraction(false);
+  require(grparse::request_picture_description_call(options, preset, kSurface).has_value(),
+          "with the chart leg off the preset's endpoint gets no call");
+  options.clear_do_chart_extraction();
+  api->clear_headers();
+  require(grparse::request_picture_description_call(options, preset, kSurface).has_value(),
+          "without headers nothing travels to the preset's endpoint");
+  require(grparse::request_picture_description_call(parsev1::ConvertDocumentOptions(), preset,
+                                                    kSurface)
+              .has_value(),
+          "a request without picture_description_api resolves to an empty call");
+}
+
 }  // namespace
 
 int main() {
@@ -494,5 +606,7 @@ int main() {
       verify_outcome_from_exception_is_a_failure,
       verify_chart_policy_resolution,
       verify_doclang_export_options,
+      verify_picture_description_api_call_is_typed,
+      verify_picture_description_headers_stay_on_their_endpoint,
   });
 }

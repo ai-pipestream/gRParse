@@ -7,7 +7,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
+#include <fstream>
+#include <sstream>
 #include <memory>
 #include <mutex>
 #include <print>
@@ -17,7 +20,9 @@
 #include <vector>
 
 #include <grpcpp/grpcpp.h>
+#include <unistd.h>
 
+#include "../src/source_parse.h"
 #include "ai/pipestream/enrich/v1/enrich_service.grpc.pb.h"
 #include "grparse/base64.h"
 #include "grparse/chart_derender.h"
@@ -102,7 +107,16 @@ enrichv1::ChartTable canned_table(const std::string& title) {
   return chart;
 }
 
-enum class FakeMode { kAnswer, kSkip, kEmptyTable, kSlow, kDuplicate, kOutputs, kSummarySkipped };
+enum class FakeMode {
+  kAnswer,
+  kSkip,
+  kRefused,
+  kEmptyTable,
+  kSlow,
+  kDuplicate,
+  kOutputs,
+  kSummarySkipped
+};
 
 class FakeEnrichService final : public enrichv1::EnrichService::Service {
  public:
@@ -183,6 +197,11 @@ class FakeEnrichService final : public enrichv1::EnrichService::Service {
         event.mutable_skipped()->set_self_ref(picture.self_ref());
         event.mutable_skipped()->set_reason(enrichv1::SKIP_REASON_VLM_ERROR);
         event.mutable_skipped()->set_detail("endpoint answered 503");
+      } else if (mode_ == FakeMode::kRefused) {
+        // grpc-enrich's endpoint policy refused the request's endpoint.
+        event.mutable_skipped()->set_self_ref(picture.self_ref());
+        event.mutable_skipped()->set_reason(enrichv1::SKIP_REASON_ENDPOINT_REFUSED);
+        event.mutable_skipped()->set_detail("endpoint host is not public");
       } else {
         enrichv1::ItemAnnotation* annotation = event.mutable_annotation();
         annotation->set_self_ref(picture.self_ref());
@@ -448,8 +467,115 @@ void verify_picture_description_class_filters() {
           "allow=bar_chart at 0.5 selects the chart but skips without a channel");
 }
 
+// Everything the process writes to stdout and stderr while `body` runs.
+// A redirect that fails throws, so the no-leak checks never pass on an
+// empty capture; the streams are restored even when `body` throws.
+template <typename Body>
+std::string captured_output(Body body) {
+  const auto checked = [](int result, const char* what) {
+    if (result < 0) throw std::runtime_error(std::string(what) + " failed");
+    return result;
+  };
+  std::fflush(stdout);
+  std::fflush(stderr);
+  char path[] = "/tmp/chart-derender-output-XXXXXX";
+  const int file = checked(mkstemp(path), "mkstemp");
+  const int saved_out = checked(dup(STDOUT_FILENO), "dup stdout");
+  const int saved_err = checked(dup(STDERR_FILENO), "dup stderr");
+  const auto restore = [&] {
+    std::fflush(stdout);
+    std::fflush(stderr);
+    checked(dup2(saved_out, STDOUT_FILENO), "restore stdout");
+    checked(dup2(saved_err, STDERR_FILENO), "restore stderr");
+    close(saved_out);
+    close(saved_err);
+    close(file);
+  };
+  try {
+    checked(dup2(file, STDOUT_FILENO), "redirect stdout");
+    checked(dup2(file, STDERR_FILENO), "redirect stderr");
+    body();
+  } catch (...) {
+    restore();
+    std::remove(path);
+    throw;
+  }
+  restore();
+  std::ifstream in(path);
+  std::stringstream text;
+  text << in.rdbuf();
+  std::remove(path);
+  return text.str();
+}
+
+// Docling's picture_description_api prompt, params and headers reach
+// grpc-enrich as the typed EnrichOptions fields, resolved by the same
+// function validate_options runs; a header value never shows up in a
+// warning or on the process's output, with the data log on.
+void verify_picture_description_api_call_reaches_enrich() {
+  namespace parsev1 = ai::pipestream::parse::v1;
+  const std::string secret = "Bearer sk-never-logged-4711";
+  parsev1::PictureDescriptionApi api;
+  api.set_url("http://api.vlm:9000/v1");
+  api.set_prompt("List every object in the picture.");
+  (*api.mutable_params())["model"].set_string_value("granite-vision");
+  (*api.mutable_params())["max_completion_tokens"].set_int_value(512);
+  (*api.mutable_params())["temperature"].set_double_value(0.2);
+  (*api.mutable_params())["top_p"].set_double_value(0.9);
+  (*api.mutable_params())["seed"].set_int_value(7);
+  (*api.mutable_headers())["X-Tenant"] = "acme";
+  (*api.mutable_headers())["Authorization"] = secret;
+
+  FakeEnrichService fake(FakeMode::kAnswer);
+  ServerFixture server(&fake);
+  docv1::Document document = sample_document();
+  grparse::ChartDerenderOptions options = options_for(server.target());
+  options.do_chart_extraction = false;
+  options.do_picture_description = true;
+  options.vlm_endpoint = api.url();
+  auto call = grparse::picture_description_call(api, "ConvertSource");
+  require(call.has_value(),
+          "the api's prompt, params and headers resolve: " +
+              (call.has_value() ? std::string() : call.error().error_message()));
+  options.picture_description_call = std::move(*call);
+  grparse::ChartDerenderReport report;
+  const std::string output = captured_output(
+      [&] { report = grparse::derender_charts(server.channel(), options, &document); });
+
+  const enrichv1::EnrichOptions seen = fake.seen().options;
+  require(seen.picture_description_prompt() == "List every object in the picture.",
+          "the prompt reaches enrich");
+  const enrichv1::VlmGenerationParams& params = seen.picture_description_params();
+  require(seen.has_picture_description_params() && params.model() == "granite-vision" &&
+              params.has_max_tokens() && params.max_tokens() == 512 &&
+              params.has_temperature() && params.temperature() == 0.2 &&
+              params.has_top_p() && params.top_p() == 0.9 && params.has_seed() &&
+              params.seed() == 7,
+          "the params reach enrich as typed fields, max_completion_tokens as max_tokens");
+  require(seen.vlm_headers_size() == 2 && seen.vlm_headers(0).name() == "Authorization" &&
+              seen.vlm_headers(0).value() == secret && seen.vlm_headers(1).name() == "X-Tenant" &&
+              seen.vlm_headers(1).value() == "acme",
+          "the headers reach enrich as VlmHeader entries in name order");
+  require(seen.vlm_endpoint() == "http://api.vlm:9000/v1",
+          "the headers travel with the per-request endpoint they are for");
+  for (const std::string& warning : report.warnings) {
+    require(!warning.contains("sk-never-logged"), "no warning carries a header value");
+  }
+  require(!output.contains("sk-never-logged"), "nothing written to stdout or stderr carries "
+                                               "a header value");
+
+  // No params and no headers send no message and no entries, so the enrich
+  // preset's model and budget stay in place.
+  parsev1::PictureDescriptionApi bare;
+  bare.set_url("http://api.vlm:9000/v1");
+  const auto plain = grparse::picture_description_call(bare, "ConvertSource");
+  require(plain.has_value() && plain->prompt.empty() && !plain->params.has_value() &&
+              plain->headers.empty(),
+          "an api without prompt, params or headers adds nothing");
+}
+
 void verify_skip_events_and_empty_tables_count_as_skipped() {
-  for (FakeMode mode : {FakeMode::kSkip, FakeMode::kEmptyTable}) {
+  for (FakeMode mode : {FakeMode::kSkip, FakeMode::kRefused, FakeMode::kEmptyTable}) {
     FakeEnrichService fake(mode);
     ServerFixture server(&fake);
     docv1::Document document = sample_document();
@@ -466,6 +592,11 @@ void verify_skip_events_and_empty_tables_count_as_skipped() {
       require(report.warnings[0].contains("SKIP_REASON_VLM_ERROR") &&
                   report.warnings[0].contains("503"),
               "the peer's reason and detail survive");
+    }
+    if (mode == FakeMode::kRefused) {
+      require(report.warnings[0].contains("SKIP_REASON_ENDPOINT_REFUSED") &&
+                  report.warnings[0].contains("not public"),
+              "an endpoint the enrich policy refused is reported by name: " + report.warnings[0]);
     }
     require(grparse::data_totals().chart_derender_skipped == skipped_before + 1,
             "the skipped counter moves by one");
@@ -777,6 +908,8 @@ void verify_off_by_default_dials_nothing() {
 }  // namespace
 
 int main() {
+  // The data log on, so the header-value check covers its lines too.
+  setenv("GRPARSE_DATA_LOG", "on", 1);
   return grparse_test::run_test_main("chart-derender-test", "all checks passed", {
       verify_candidates_need_a_chart_verdict_pixels_and_no_typed_table,
       verify_fold_attributes_the_table_to_the_model,
@@ -795,5 +928,6 @@ int main() {
       verify_chart_outputs_reach_enrich_and_fold_into_meta,
       verify_one_failed_output_keeps_the_others,
       verify_summary_and_code_fold_once,
+      verify_picture_description_api_call_reaches_enrich,
   });
 }

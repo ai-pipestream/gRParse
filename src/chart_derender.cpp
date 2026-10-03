@@ -464,6 +464,14 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
   if (!options.code_formula_preset_raw.empty()) {
     request_options->set_code_formula_preset_raw(options.code_formula_preset_raw);
   }
+  const PictureDescriptionCall& call = options.picture_description_call;
+  if (!call.prompt.empty()) request_options->set_picture_description_prompt(call.prompt);
+  if (call.params.has_value()) {
+    *request_options->mutable_picture_description_params() = *call.params;
+  }
+  for (const enrichv1::VlmHeader& header : call.headers) {
+    *request_options->add_vlm_headers() = header;
+  }
   // The endpoint the chart calls go to, for attribution: the preset's own
   // when it names one, otherwise the request's.
   std::string chart_endpoint = options.vlm_endpoint;

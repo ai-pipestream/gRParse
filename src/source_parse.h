@@ -17,6 +17,7 @@
 
 #include "ai/pipestream/parse/v1/parse.pb.h"
 #include "chunking/chunker.h"
+#include "grparse/chart_derender.h"
 #include "grparse/chart_extraction_policy.h"
 #include "grparse/collector_coordinator.h"
 #include "grparse/document_parser_service.h"
@@ -74,6 +75,27 @@ std::expected<std::optional<ChartExtractionPreset>, grpc::Status> resolve_chart_
 // doclang_include_namespace. validate_options has already turned down the
 // combinations the renderers reject.
 DoclangOptions doclang_options(const ai::pipestream::parse::v1::ConvertDocumentOptions& options);
+
+// Docling's picture_description_api prompt, params and headers in the
+// enrich service's typed form. The params map's names that have a typed
+// field travel as one (model; max_tokens or its alias max_completion_tokens;
+// temperature; top_p; seed), each checked for its type and range; any other
+// name is refused by name. Headers become VlmHeader entries in name order;
+// a name HTTP does not allow, one the HTTP client sets itself, two names
+// differing only in case, or a value holding a control character is
+// refused naming the header, never its value. INVALID_ARGUMENT on any
+// refusal.
+std::expected<PictureDescriptionCall, grpc::Status> picture_description_call(
+    const ai::pipestream::parse::v1::PictureDescriptionApi& api, const std::string& surface);
+
+// The request's picture-description call, resolved once per parse (empty
+// without picture_description_api). grpc-enrich sends the headers to every
+// per-request endpoint of the job, so headers alongside a chart-extraction
+// preset that names a different endpoint, with the chart leg on, are
+// INVALID_ARGUMENT rather than handed to that endpoint.
+std::expected<PictureDescriptionCall, grpc::Status> request_picture_description_call(
+    const ai::pipestream::parse::v1::ConvertDocumentOptions& options,
+    const std::optional<ChartExtractionPreset>& chart_extraction, const std::string& surface);
 
 grpc::Status parse_source(grpc::CallbackServerContext* context,
                           const ai::pipestream::parse::v1::ConvertDocumentRequest& request,

@@ -15,6 +15,18 @@
 
 namespace grparse {
 
+// Docling's picture_description_api prompt, params and headers in
+// grpc-enrich's typed form (EnrichOptions picture_description_prompt,
+// picture_description_params, vlm_headers). Empty and absent send nothing,
+// which leaves the enrich preset's prompt, model and budget in place.
+struct PictureDescriptionCall {
+  std::string prompt;
+  std::optional<ai::pipestream::enrich::v1::VlmGenerationParams> params;
+  // Sent only to the per-request endpoint; values are credentials, never
+  // logged and never put in a warning or an error.
+  std::vector<ai::pipestream::enrich::v1::VlmHeader> headers;
+};
+
 // The chart derender leg: raster charts the CV path only classified get
 // their data table from grpc-enrich, the fleet's VLM face. gRParse never
 // talks to a VLM itself; it sends the chart pictures (self_ref, verdict,
@@ -53,6 +65,8 @@ struct ChartDerenderOptions {
   // picture_description_local.repo_id.
   std::string picture_description_preset_raw;
   std::string code_formula_preset_raw;
+  // The picture_description_api prompt, generation params and headers.
+  PictureDescriptionCall picture_description_call;
   // The chart-extraction preset the server policy resolved for this request
   // (outputs, prompt dialect, model, endpoint), sent as
   // EnrichOptions.chart_extraction. Unset sends no chart_extraction message,

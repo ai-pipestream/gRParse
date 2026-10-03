@@ -4,6 +4,7 @@
 // warning surfacing, and the failure paths are proven without any collector
 // binary.
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <limits>
@@ -1870,10 +1871,14 @@ void verify_poi_sheet_batches_fold_into_one_table() {
               sheet_table.content_layer() == docv1::CONTENT_LAYER_INVISIBLE,
           "the one table hangs off the sheet group on the sheet's layer");
   const docv1::TableData& data = sheet_table.data();
-  require(data.table_cells_size() == 12 && data.row_prov_size() == 6,
-          "every batch's rows land in the table, in order");
-  require(data.table_cells(11).text() == "b5" && data.table_cells(11).start_row_offset_idx() == 5,
+  // A1:C2 covers b0, a1 and b1, which drop out; row 1 keeps no cell and
+  // so no provenance entry.
+  require(data.table_cells_size() == 12 - 3 && data.row_prov_size() == 5,
+          "every batch's rows land in the table, in order, less the covered cells");
+  require(data.table_cells(8).text() == "b5" && data.table_cells(8).start_row_offset_idx() == 5,
           "the last batch's cells keep their absolute rows");
+  require(data.table_cells(1).text() == "a2" && data.row_prov(1).grid().row() == 2,
+          "the first kept cell after the merge is row 2's");
   require(data.num_rows() == 6 && data.num_cols() == 3,
           "the table sizes across every batch and the merged region");
   const docv1::TableCell& anchor = data.table_cells(0);
@@ -1899,13 +1904,16 @@ void verify_poi_sheet_batches_fold_into_one_table() {
 
   bool stray_warned = false;
   bool merge_warned = false;
+  bool covered_warned = false;
   for (const std::string& warning : outcome.warnings) {
     if (warning.contains("slide 9")) stray_warned = true;
-    if (warning.contains("merged region")) merge_warned = true;
+    if (warning.contains("outside the sheet's bounds")) merge_warned = true;
+    if (warning.contains("covers held text")) covered_warned = true;
   }
   require(stray_warned, "the unannounced slide is reported");
   require(merge_warned, "the backwards merged region is reported");
-  require(outcome.warnings.size() == 2, "nothing else is reported");
+  require(covered_warned, "the covered cells that held text are reported");
+  require(outcome.warnings.size() == 3, "nothing else is reported");
 }
 
 void verify_poi_cut_sheet_batches_warn() {
@@ -1921,6 +1929,135 @@ void verify_poi_cut_sheet_batches_warn() {
     if (warning.contains("'Cut'") && warning.contains("missing")) cut_warned = true;
   }
   require(cut_warned, "a sheet whose batches stop with more_rows set is reported");
+}
+
+// One six-row, three-column sheet with populated covered cells: a merged
+// title (A1:C1), a vertical merge (B3:B4), and a range anchored on the one
+// empty position (A5:B6). Batched, the rows arrive as three Sheet events
+// (more_rows on the first two, the merged ranges on the last); unbatched,
+// as one, which the fold must give the same document for.
+class MergedSheetPoiService final : public poiv1::PoiParseService::Service {
+ public:
+  explicit MergedSheetPoiService(bool batched) : batched_(batched) {}
+
+  grpc::Status ParseDocument(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<poiv1::ParseEvent, poiv1::ParseRequestChunk>* stream)
+      override {
+    poiv1::ParseRequestChunk chunk;
+    bool first = true;
+    while (stream->Read(&chunk)) {
+      if (first) asked_for_batches_ = chunk.sheet_batches();
+      first = false;
+    }
+    const uint32_t per_event = batched_ ? 2 : 6;
+    poiv1::ParseEvent event;
+    for (uint32_t start = 0; start < 6; start += per_event) {
+      event.Clear();
+      poiv1::Sheet* sheet = event.mutable_sheet();
+      sheet->set_index(0);
+      sheet->set_name("Big");
+      for (uint32_t row = start; row < start + per_event; ++row) add_row(sheet, row);
+      if (start + per_event < 6) {
+        sheet->set_more_rows(true);
+      } else {
+        add_range(sheet, 0, 0, 0, 2);
+        add_range(sheet, 2, 3, 1, 1);
+        add_range(sheet, 4, 5, 0, 1);
+      }
+      stream->Write(event);
+    }
+    event.Clear();
+    event.mutable_status()->set_state(poiv1::ParseStatus::STATE_OK);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+
+  bool asked_for_batches() const { return asked_for_batches_.load(); }
+
+ private:
+  // Row `index` holds r<row>c<column> in three columns, except A5.
+  static void add_row(poiv1::Sheet* sheet, uint32_t index) {
+    poiv1::SheetRow* row = sheet->add_rows();
+    row->set_row_index(index);
+    for (uint32_t column = 0; column < 3; ++column) {
+      if (index == 4 && column == 0) continue;
+      poiv1::SheetCell* cell = row->add_cells();
+      cell->set_column_index(column);
+      cell->set_text("r" + std::to_string(index) + "c" + std::to_string(column));
+    }
+  }
+
+  static void add_range(poiv1::Sheet* sheet, uint32_t first_row, uint32_t last_row,
+                        uint32_t first_column, uint32_t last_column) {
+    poiv1::CellRange* range = sheet->add_merged_regions();
+    range->set_first_row(first_row);
+    range->set_last_row(last_row);
+    range->set_first_column(first_column);
+    range->set_last_column(last_column);
+  }
+
+  const bool batched_;
+  std::atomic<bool> asked_for_batches_{false};
+};
+
+grparse::CollectorOutcome collect_merged_sheet(bool batched) {
+  MergedSheetPoiService service(batched);
+  ServerFixture server(&service);
+  auto outcome = grparse::collect_poi_document(server.channel(), "doc-merged", "book.xlsx", "",
+                                               "bytes");
+  require(service.asked_for_batches(), "the first upload chunk asks for sheet batches");
+  return outcome;
+}
+
+// Three batches fold into exactly the document one Sheet event gives: the
+// merged ranges from the last batch apply to rows from the earlier ones.
+void verify_poi_batched_sheet_folds_like_one_sheet() {
+  const auto batched = collect_merged_sheet(true);
+  const auto unbatched = collect_merged_sheet(false);
+  require(batched.success && unbatched.success,
+          "poi collection succeeds: " + batched.error + unbatched.error);
+  require(batched.warnings == unbatched.warnings,
+          "the batched sheet warns exactly as the unbatched one");
+  require(batched.document.SerializeAsString() == unbatched.document.SerializeAsString(),
+          "three batches fold into the document one Sheet event gives");
+}
+
+// A merged range's populated covered cells drop out, so a renderer placing
+// cells in order cannot write one over the anchor's repeat; the row
+// provenance follows. A range with no anchor cell changes nothing.
+void verify_poi_merged_regions_drop_covered_cells() {
+  const auto outcome = collect_merged_sheet(true);
+  require(outcome.success, "poi collection succeeds: " + outcome.error);
+  const docv1::TableData& data = outcome.document.tables(0).data();
+  const auto cell_at = [&data](int row, int column) -> const docv1::TableCell* {
+    for (const auto& cell : data.table_cells()) {
+      if (cell.start_row_offset_idx() == row && cell.start_col_offset_idx() == column) {
+        return &cell;
+      }
+    }
+    return nullptr;
+  };
+  require(data.table_cells_size() == 17 - 2 - 1,
+          "the two cells under the title and the one under the tall cell drop out");
+  const docv1::TableCell* title = cell_at(0, 0);
+  require(title != nullptr && title->text() == "r0c0" && title->col_span() == 3 &&
+              title->end_col_offset_idx() == 3 && cell_at(0, 1) == nullptr &&
+              cell_at(0, 2) == nullptr,
+          "the title anchor spans its three columns and its covered cells are gone");
+  const docv1::TableCell* tall = cell_at(2, 1);
+  require(tall != nullptr && tall->row_span() == 2 && tall->end_row_offset_idx() == 4 &&
+              cell_at(3, 1) == nullptr && cell_at(3, 0) != nullptr && cell_at(3, 2) != nullptr,
+          "the vertical anchor spans two rows and only its covered cell drops out");
+  require(cell_at(4, 1) != nullptr && cell_at(5, 0) != nullptr && cell_at(5, 1) != nullptr &&
+              cell_at(5, 0)->row_span() == 1,
+          "a range with no anchor cell keeps the cells it would cover");
+  require(data.row_prov_size() == 6 && data.row_prov(0).grid().col() == 0 &&
+              data.row_prov(4).grid().col() == 1,
+          "each row's provenance points at its first kept cell");
+  require(outcome.warnings.size() == 1 && outcome.warnings[0].contains("'Big'") &&
+              outcome.warnings[0].contains("covers held text"),
+          "covered cells that held text are named in one warning per sheet");
 }
 
 class RejectingPoiService final : public poiv1::PoiParseService::Service {
@@ -3053,6 +3190,8 @@ int main() {
       verify_poi_hostile_span_is_clamped,
       verify_poi_sheet_batches_fold_into_one_table,
       verify_poi_cut_sheet_batches_warn,
+      verify_poi_batched_sheet_folds_like_one_sheet,
+      verify_poi_merged_regions_drop_covered_cells,
       verify_poi_unreachable_endpoint_degrades,
       verify_poi_fanout_merges_claims_without_a_second_body,
       verify_poi_fanout_keeps_its_body_when_the_primary_failed,

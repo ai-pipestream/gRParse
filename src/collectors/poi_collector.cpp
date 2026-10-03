@@ -320,9 +320,19 @@ class PoiFold {
                             .data = item->mutable_data()};
   }
 
+  // A merged range applied to its anchor cell: half-open rows and columns.
+  struct MergedRange {
+    int64_t first_row = 0;
+    int64_t end_row = 0;
+    int64_t first_column = 0;
+    int64_t end_column = 0;
+    int anchor = 0;
+  };
+
   // The sheet's merged cells: the anchor (top-left) cell of each range takes
-  // the range's spans. A range whose anchor holds nothing has no cell to
-  // carry them and is left out; a range that runs backwards, or past the
+  // the range's spans and the populated cells it covers drop out. A range
+  // whose anchor holds nothing has no cell to carry them and is left out,
+  // covered cells included; a range that runs backwards, or past the
   // spreadsheet's own limits, is a claim the fold refuses or clamps.
   void merge_regions(const poiv1::Sheet& sheet) {
     if (sheet.merged_regions().empty()) return;
@@ -334,6 +344,7 @@ class PoiFold {
       anchors.emplace(cell_key(cell.start_row_offset_idx(), cell.start_col_offset_idx()), index);
     }
     bool refused = false;
+    std::vector<MergedRange> applied;
     for (const poiv1::CellRange& range : sheet.merged_regions()) {
       if (range.last_row() < range.first_row() || range.last_column() < range.first_column() ||
           range.first_row() >= kMaxSheetRows || range.first_column() >= kMaxTableColumns) {
@@ -357,11 +368,81 @@ class PoiFold {
       anchor->set_col_span(col_span);
       open.num_rows = std::max<int64_t>(open.num_rows, int64_t{range.first_row()} + row_span);
       open.num_cols = std::max<int64_t>(open.num_cols, int64_t{range.first_column()} + col_span);
+      applied.push_back(MergedRange{.first_row = range.first_row(),
+                                    .end_row = int64_t{range.first_row()} + row_span,
+                                    .first_column = range.first_column(),
+                                    .end_column = int64_t{range.first_column()} + col_span,
+                                    .anchor = found->second});
     }
     if (refused) {
       warnings_.push_back("poi sheet '" + open.name +
                           "': a merged region outside the sheet's bounds was refused or clamped");
     }
+    drop_covered_cells(applied);
+  }
+
+  // The populated cells a merged range covers drop out, the way the wire's
+  // body tables never repeat a covered position: the renderers place cells
+  // in order, so a covered cell left in would overwrite the anchor's repeat.
+  // The anchor's value stands for the range, and a covered cell that held
+  // text is reported. Cells are visited by row, so a range costs the cells
+  // of the rows it spans, never its claimed area.
+  void drop_covered_cells(const std::vector<MergedRange>& ranges) {
+    if (ranges.empty()) return;
+    docv1::TableData* data = open_sheet_->data;
+    std::map<int64_t, std::vector<int>> rows;
+    for (int index = 0; index < data->table_cells_size(); ++index) {
+      rows[data->table_cells(index).start_row_offset_idx()].push_back(index);
+    }
+    std::vector<bool> covered(static_cast<size_t>(data->table_cells_size()), false);
+    bool any_covered = false;
+    bool dropped_text = false;
+    for (const MergedRange& range : ranges) {
+      for (auto row = rows.lower_bound(range.first_row);
+           row != rows.end() && row->first < range.end_row; ++row) {
+        for (const int index : row->second) {
+          const docv1::TableCell& cell = data->table_cells(index);
+          const int64_t column = cell.start_col_offset_idx();
+          if (index == range.anchor || column < range.first_column ||
+              column >= range.end_column || covered[static_cast<size_t>(index)]) {
+            continue;
+          }
+          covered[static_cast<size_t>(index)] = true;
+          any_covered = true;
+          dropped_text = dropped_text || !cell.text().empty();
+        }
+      }
+    }
+    if (!any_covered) return;
+    remove_cells(covered, data);
+    if (dropped_text) {
+      warnings_.push_back("poi sheet '" + open_sheet_->name +
+                          "': a cell a merged region covers held text; the anchor's value "
+                          "stands for the region");
+    }
+  }
+
+  // Removes the marked cells; each row's provenance then points at its
+  // first kept cell, and a row left with no cell loses its entry.
+  static void remove_cells(const std::vector<bool>& removed, docv1::TableData* data) {
+    google::protobuf::RepeatedPtrField<docv1::TableCell> kept;
+    kept.Reserve(data->table_cells_size());
+    std::map<int32_t, int32_t> first_column;
+    for (int index = 0; index < data->table_cells_size(); ++index) {
+      if (removed[static_cast<size_t>(index)]) continue;
+      docv1::TableCell* cell = data->mutable_table_cells(index);
+      first_column.try_emplace(cell->start_row_offset_idx(), cell->start_col_offset_idx());
+      *kept.Add() = std::move(*cell);
+    }
+    data->mutable_table_cells()->Swap(&kept);
+    google::protobuf::RepeatedPtrField<docv1::ProvenanceItem> row_prov;
+    for (docv1::ProvenanceItem& entry : *data->mutable_row_prov()) {
+      const auto first = first_column.find(entry.grid().row());
+      if (first == first_column.end()) continue;
+      entry.mutable_grid()->set_col(first->second);
+      *row_prov.Add() = std::move(entry);
+    }
+    data->mutable_row_prov()->Swap(&row_prov);
   }
 
   static uint64_t cell_key(uint32_t row, uint32_t column) {
