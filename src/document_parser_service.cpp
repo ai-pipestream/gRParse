@@ -214,6 +214,15 @@ grpc::Status refuse_target(const pipestream::parse::v1::Target& target,
                                 "response body only");
 }
 
+// What a copy of the request's sources holds: the chunk surfaces copy them
+// into the ConvertDocumentRequest the shared parse reads.
+uint64_t sources_bytes(
+    const google::protobuf::RepeatedPtrField<pipestream::parse::v1::Source>& sources) {
+  uint64_t total = 0;
+  for (const auto& source : sources) total += source.ByteSizeLong();
+  return total;
+}
+
 // The reactor the blocking unary surfaces finish through. Construction hands
 // `work` to the executor and returns immediately, so the event-manager thread
 // that reacted to the call is free the moment the handler returns; the worker
@@ -301,7 +310,10 @@ grpc::ServerUnaryReactor* DocumentParserService::ConvertSource(
     grpc::CallbackServerContext* context,
     const pipestream::parse::v1::ConvertSourceRequest* request,
     pipestream::parse::v1::ConvertSourceResponse* response) {
-  return new ParseUnaryReactor(context, executor_, inflight_, request->ByteSizeLong(),
+  // The wire message and the copy its base64 source decodes to.
+  const uint64_t charge =
+      request->ByteSizeLong() + decoded_source_bytes(request->request().sources());
+  return new ParseUnaryReactor(context, executor_, inflight_, charge,
                                [this, context, request, response] {
     const auto started = std::chrono::steady_clock::now();
     SourceParse parsed;
@@ -396,7 +408,12 @@ grpc::ServerUnaryReactor* DocumentParserService::ChunkHierarchicalSource(
     grpc::CallbackServerContext* context,
     const pipestream::parse::v1::ChunkHierarchicalSourceRequest* request,
     pipestream::parse::v1::ChunkHierarchicalSourceResponse* response) {
-  return new ParseUnaryReactor(context, executor_, inflight_, request->ByteSizeLong(),
+  // The wire message, the sources copied into the parse request, and the
+  // copy their base64 decodes to.
+  const uint64_t charge = request->ByteSizeLong() +
+                          sources_bytes(request->request().sources()) +
+                          decoded_source_bytes(request->request().sources());
+  return new ParseUnaryReactor(context, executor_, inflight_, charge,
                                [this, context, request, response] {
     const auto started = std::chrono::steady_clock::now();
     const auto& chunk_request = request->request();
@@ -442,7 +459,12 @@ grpc::ServerUnaryReactor* DocumentParserService::ChunkHybridSource(
     grpc::CallbackServerContext* context,
     const pipestream::parse::v1::ChunkHybridSourceRequest* request,
     pipestream::parse::v1::ChunkHybridSourceResponse* response) {
-  return new ParseUnaryReactor(context, executor_, inflight_, request->ByteSizeLong(),
+  // The wire message, the sources copied into the parse request, and the
+  // copy their base64 decodes to.
+  const uint64_t charge = request->ByteSizeLong() +
+                          sources_bytes(request->request().sources()) +
+                          decoded_source_bytes(request->request().sources());
+  return new ParseUnaryReactor(context, executor_, inflight_, charge,
                                [this, context, request, response] {
     const auto started = std::chrono::steady_clock::now();
     const auto& chunk_request = request->request();

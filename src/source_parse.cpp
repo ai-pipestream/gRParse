@@ -692,6 +692,15 @@ grpc::Status validate_unread_options(const pipestream::parse::v1::ConvertDocumen
 
 }  // namespace
 
+uint64_t decoded_source_bytes(
+    const google::protobuf::RepeatedPtrField<pipestream::parse::v1::Source>& sources) {
+  uint64_t total = 0;
+  for (const auto& source : sources) {
+    if (source.has_file()) total += source.file().base64_string().size() / 4 * 3 + 3;
+  }
+  return total;
+}
+
 // `surface` names the RPC in the rejections so a caller learns which of the
 // conversion surfaces turned its request down.
 grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOptions& options,

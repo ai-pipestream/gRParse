@@ -17,6 +17,7 @@
 #include <google/protobuf/util/message_differencer.h>
 #include <grpcpp/grpcpp.h>
 
+#include "../src/source_parse.h"
 #include "ai/pipestream/email/v1/email_service.grpc.pb.h"
 #include "ai/pipestream/parse/v1/parse_stream.grpc.pb.h"
 #include "ai/pipestream/pdf/v1/pdf_service.grpc.pb.h"
@@ -1892,8 +1893,11 @@ void verify_inflight_byte_budget() {
                                    });
   const auto endpoints = std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{});
   const auto request = unary_request();
-  // Room for one request, not for one stream chunk of 64 bytes.
-  const auto inflight = std::make_shared<grparse::InflightBytes>(request.ByteSizeLong());
+  // Room for one request (the wire message and the copy its base64 decodes
+  // to), not for one stream chunk past that.
+  const uint64_t one_request =
+      request.ByteSizeLong() + grparse::decoded_source_bytes(request.request().sources());
+  const auto inflight = std::make_shared<grparse::InflightBytes>(one_request);
   grparse::DocumentParserService parser_service(scheduler, endpoints, grparse::CallExecutor::Options{},
                                                 grparse::RepairOptions{}, {}, {}, inflight);
   grparse::DocumentStreamingService streaming_service(scheduler, endpoints,
@@ -1932,7 +1936,7 @@ void verify_inflight_byte_budget() {
     context.set_deadline(std::chrono::system_clock::now() + 10s);
     auto stream = stream_client->StreamProcessDocument(&context);
     auto source = chunk(true);
-    source.set_data(std::string(request.ByteSizeLong() + 1, 'x'));
+    source.set_data(std::string(one_request + 1, 'x'));
     stream->Write(source);
     stream->WritesDone();
     pipestream::parse::v1::DocumentStreamEvent ignored;
@@ -1945,6 +1949,30 @@ void verify_inflight_byte_budget() {
   }
   server->Shutdown(std::chrono::system_clock::now() + 2s);
   server->Wait();
+  {
+    // The decoded copy counts: a budget that fits the wire message alone
+    // refuses the request.
+    const auto wire_only = std::make_shared<grparse::InflightBytes>(request.ByteSizeLong());
+    grparse::DocumentParserService wire_service(scheduler, endpoints,
+                                                grparse::CallExecutor::Options{},
+                                                grparse::RepairOptions{}, {}, {}, wire_only);
+    int wire_port = 0;
+    grpc::ServerBuilder wire_builder;
+    wire_builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &wire_port);
+    wire_builder.RegisterService(&wire_service);
+    auto wire_server = wire_builder.BuildAndStart();
+    require(wire_server && wire_port != 0, "wire-only budget server failed to start");
+    auto wire_stub = pipestream::parse::v1::ParseService::NewStub(grpc::CreateChannel(
+        "127.0.0.1:" + std::to_string(wire_port), grpc::InsecureChannelCredentials()));
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ConvertSourceResponse response;
+    const grpc::Status status = wire_stub->ConvertSource(&context, request, &response);
+    require(status.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED,
+            "the decoded copy is charged beside the wire size: " + status.error_message());
+    wire_server->Shutdown(std::chrono::system_clock::now() + 2s);
+    wire_server->Wait();
+  }
   // A unary charge goes back when the worker drops the finished task, a
   // moment after the call itself completes.
   for (int attempt = 0; attempt < 100 && inflight->in_use() != 0; ++attempt) {
