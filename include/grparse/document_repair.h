@@ -164,10 +164,12 @@ struct RemovedRun {
 // trailing punctuation mark: "hyper-" followed by a stray "t" (a subscript
 // line folded into the paragraph) or by "x2" is not a broken word and
 // keeps its hyphen. A suspended hyphen keeps its hyphen too: a tail token
-// that is a conjunction ("and", "or", "to", "und", ...) with another word
-// after it ("short-\nand long-term"). Soft hyphens (U+00AD) are removed
-// everywhere. Counts accumulate into `counts` and the removed runs, in
-// order, append to `removed` when given.
+// that is a conjunction ("and", "or", "to", "und", ...) followed by a
+// hyphenated word ("short-\nand long-term") or, after a German conjunction,
+// a capitalized one ("Vor-\nund Nachteile"). A tail that only spells a
+// conjunction ("thous-\nand people", "tick-\net office") rejoins. Soft
+// hyphens (U+00AD) are removed everywhere. Counts accumulate into `counts`
+// and the removed runs, in order, append to `removed` when given.
 std::string rejoin_hyphenated_words(std::string_view text, HyphenationCounts* counts = nullptr,
                                     bool space_is_break = false,
                                     std::vector<RemovedRun>* removed = nullptr);
@@ -194,7 +196,8 @@ std::string join_hyphenated_fragments(std::string_view head, std::string_view ta
 // enumerator), and a short sibling (under 6 words) ending in terminal
 // punctuation after a long item (12 words or more) is a caption-like
 // fragment, not a continuation. Texts join
-// with a space (or by the hyphen rule), provenance, sources, spans and
+// with a space (or by the hyphen rule, a suspended hyphen keeping its
+// hyphen and the space), provenance, sources, spans and
 // comments carry over, and the sibling is retired from the body and the
 // texts arena with every reference renumbered. Only direct body children
 // merge, so a section header, a list, a table or any group between two

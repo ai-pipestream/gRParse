@@ -356,6 +356,22 @@ void verify_hyphen_rejoin() {
           "a suspended hyphen at a line end stays");
   require(grparse::rejoin_hyphenated_words("pota-\nto") == "potato",
           "a conjunction-shaped tail closing the text is the rest of a word");
+  require(grparse::rejoin_hyphenated_words("pre- or post-war", nullptr, true) ==
+              "pre- or post-war",
+          "a suspended hyphen before a hyphenated word stays");
+  require(grparse::rejoin_hyphenated_words("tick-\net office") == "ticket office",
+          "a word split whose tail spells a conjunction rejoins");
+  require(grparse::rejoin_hyphenated_words("the col-\nor of it") == "the color of it",
+          "a split \"or\" tail before a plain word rejoins");
+  require(grparse::rejoin_hyphenated_words("a thous- and people", nullptr, true) ==
+              "a thousand people",
+          "a split \"and\" tail before a plain word rejoins");
+  require(grparse::rejoin_hyphenated_words("mi-\nnor changes") == "minor changes",
+          "a split \"nor\" tail before a plain word rejoins");
+  require(grparse::rejoin_hyphenated_words("pota-\nto and") == "potato and",
+          "a split \"to\" tail before another conjunction rejoins");
+  require(grparse::rejoin_hyphenated_words("the hon-\nor The") == "the honor The",
+          "a capitalized word after an English conjunction does not suspend");
   require(grparse::rejoin_hyphenated_words("well-\nknown") == "well-known",
           "a known compound keeps its hyphen");
   require(grparse::rejoin_hyphenated_words("self- aware", nullptr, true) == "self-aware",
@@ -546,6 +562,23 @@ void verify_continuation_applies_hyphen_rule() {
           "a hyphen at the break joins the word");
   require(base_at(document, "#/texts/1").text() == "It is well-known here.",
           "a known compound keeps its hyphen across the break");
+}
+
+// Across a page break a suspended hyphen keeps its hyphen and the two
+// parts meet at a space; a word split whose tail spells a conjunction is
+// joined.
+void verify_continuation_keeps_suspended_hyphen() {
+  docv1::Document document = base_document();
+  add_pages(&document, 3);
+  const std::string suspended = add_prose(&document, "We plan both short-", 1, 900.0, 920.0);
+  add_prose(&document, "and long-term goals.", 2, 100.0, 120.0);
+  const std::string split = add_prose(&document, "There were a thous-", 2, 900.0, 920.0);
+  add_prose(&document, "and people there.", 3, 100.0, 120.0);
+  require(grparse::merge_continuations(&document, {}) == 2, "both pairs merge");
+  require(base_at(document, suspended).text() == "We plan both short- and long-term goals.",
+          "a suspended hyphen keeps its hyphen across the break");
+  require(base_at(document, "#/texts/1").text() == "There were a thousand people there.",
+          "a word split across the break is joined");
 }
 
 // The tail's spans shift by code points, past the leading whitespace the
@@ -810,6 +843,7 @@ int main() {
       verify_hyphen_rejoin_moves_spans,
       verify_continuation_merged_across_pages,
       verify_continuation_applies_hyphen_rule,
+      verify_continuation_keeps_suspended_hyphen,
       verify_continuation_shifts_spans_by_code_points,
       verify_continuation_merges_within_a_page,
       verify_side_by_side_captions_do_not_merge,

@@ -545,6 +545,13 @@ size_t break_after(std::string_view text, size_t position, bool space_is_break) 
   return 0;
 }
 
+// The run of non-space characters that starts `text`.
+std::string_view first_token(std::string_view text) {
+  size_t end = 0;
+  while (end < text.size() && !is_ascii_space(text[end])) ++end;
+  return text.substr(0, end);
+}
+
 // The tail's first token must be a word: two letters or more, letters only
 // up to any trailing punctuation. A lone letter ("t" from a subscript line
 // folded into the paragraph) or a token with a digit or symbol in it
@@ -553,29 +560,38 @@ constexpr size_t kMinimumTailWord = 2;
 constexpr std::string_view kTokenPunctuation = ".,;:!?)]}'\"";
 
 bool tail_token_is_word(std::string_view after_break) {
-  size_t end = 0;
-  while (end < after_break.size() && !is_ascii_space(after_break[end])) ++end;
-  std::string_view token = after_break.substr(0, end);
+  std::string_view token = first_token(after_break);
   while (!token.empty() && kTokenPunctuation.contains(token.back())) token.remove_suffix(1);
   return token.size() >= kMinimumTailWord && std::ranges::all_of(token, is_ascii_alpha);
 }
 
 // A suspended hyphen ("short- and long-term", "pre- or post-war", "Vor- und
-// Nachteile") is not a broken word: the tail token is a conjunction and
-// another word follows it.
-constexpr std::array<std::string_view, 9> kSuspendingConjunctions = {
-    "and", "or", "nor", "to", "und", "oder", "bis", "et", "ou",
+// Nachteile") is not a broken word: the tail token is a conjunction and the
+// word after it finishes the pair, hyphenated itself or, after a German
+// conjunction, a capitalized noun. A word split whose second half happens
+// to spell a conjunction ("tick-\net office", "thous-\nand people") has
+// neither and rejoins.
+struct SuspendingConjunction {
+  std::string_view word;
+  bool german = false;
 };
 
+constexpr std::array<SuspendingConjunction, 9> kSuspendingConjunctions = {{
+    {"and"}, {"or"}, {"nor"}, {"to"}, {"et"}, {"ou"},
+    {"und", true}, {"oder", true}, {"bis", true},
+}};
+
 bool suspended_hyphen(std::string_view after_break) {
-  size_t end = 0;
-  while (end < after_break.size() && !is_ascii_space(after_break[end])) ++end;
-  std::string token(after_break.substr(0, end));
-  std::ranges::transform(token, token.begin(), ascii_lower);
-  if (std::ranges::find(kSuspendingConjunctions, token) == kSuspendingConjunctions.end()) {
-    return false;
-  }
-  return !trim_left(after_break.substr(end)).empty();
+  const std::string_view token = first_token(after_break);
+  std::string folded(token);
+  std::ranges::transform(folded, folded.begin(), ascii_lower);
+  const auto conjunction =
+      std::ranges::find(kSuspendingConjunctions, folded, &SuspendingConjunction::word);
+  if (conjunction == kSuspendingConjunctions.end()) return false;
+  const std::string_view next = first_token(trim_left(after_break.substr(token.size())));
+  if (next.empty()) return false;
+  if (next.find('-', 1) != std::string_view::npos) return true;
+  return conjunction->german && std::isupper(static_cast<unsigned char>(next.front())) != 0;
 }
 
 // The code-point position of byte `byte` in `text`.
@@ -819,11 +835,13 @@ bool continues(const docv1::TextItemBase& head, const docv1::TextItemBase& tail,
 }
 
 // The two texts as one: by the hyphen rule when the head ends on a
-// hyphenated word, with one space otherwise.
+// hyphenated word that is not suspended, with one space otherwise.
 std::string joined_text(std::string_view head, std::string_view tail) {
   const std::string_view head_trimmed = trim_right(head);
   const std::string_view tail_trimmed = trim_left(tail);
-  if (head_trimmed.ends_with('-')) {
+  // A suspended hyphen at the break ("short-" then "and long-term") keeps
+  // its hyphen and takes the space.
+  if (head_trimmed.ends_with('-') && !suspended_hyphen(tail_trimmed)) {
     const std::string_view head_word = trailing_word(head_trimmed.substr(0, head_trimmed.size() - 1));
     const std::string_view tail_word = leading_word(tail_trimmed);
     if (!head_word.empty() && !tail_word.empty()) {
