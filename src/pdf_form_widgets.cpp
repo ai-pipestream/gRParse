@@ -1,6 +1,7 @@
 #include "grparse/pdf_form_widgets.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <map>
 #include <numeric>
@@ -13,6 +14,7 @@
 #include "grparse/consensus_page_source.h"
 #include "grparse/document_assembly.h"
 #include "grparse/document_geometry.h"
+#include "grparse/pdf_page_frame.h"
 #include "grparse/remote_page_source.h"
 #include "targets/sha256.h"
 
@@ -75,12 +77,14 @@ bool button_selected(const pdfv1::FormField& field) {
   return !value.empty() && value != "Off";
 }
 
-// How one page's contract boxes (bottom-left points) map onto the page
-// space the document already uses.
+// How one page's contract boxes map onto the page space the document
+// already uses: the frame places them on the rendered page (top-left
+// points), and the scale and origin take them from there.
 struct PageSpace {
+  explicit PageSpace(const pdfv1::PageInfo& info) : frame(info) {}
+  PdfPageFrame frame;
   double scale_x = 1.0;
   double scale_y = 1.0;
-  double height_pts = 0.0;
   docv1::CoordOrigin origin = docv1::COORD_ORIGIN_BOTTOMLEFT;
 };
 
@@ -114,39 +118,38 @@ std::optional<docv1::CoordOrigin> page_origin(const docv1::Document& document, i
 }
 
 PageSpace page_space(const docv1::Document& document, const PdfPageWidgets& page) {
-  PageSpace space;
-  space.height_pts = page.height_pts;
+  PageSpace space(page.page_info);
+  const double width_pts = space.frame.display_width();
+  const double height_pts = space.frame.display_height();
   const auto found = document.pages().find(page.page_number);
   const bool sized = found != document.pages().end() &&
                      found->second.size().width() > 0 && found->second.size().height() > 0;
   const bool points = found != document.pages().end() && found->second.has_unit() &&
                       found->second.unit() == kPointsUnit;
-  if (sized && !points && page.width_pts > 0 && page.height_pts > 0) {
-    space.scale_x = found->second.size().width() / page.width_pts;
-    space.scale_y = found->second.size().height() / page.height_pts;
+  if (sized && !points && width_pts > 0 && height_pts > 0) {
+    space.scale_x = found->second.size().width() / width_pts;
+    space.scale_y = found->second.size().height() / height_pts;
     space.origin = docv1::COORD_ORIGIN_TOPLEFT;
   }
   if (const auto origin = page_origin(document, page.page_number)) space.origin = *origin;
   // A top-left box needs the page height to flip; without one the points
   // stay bottom-left, which needs none.
-  if (space.height_pts <= 0) space.origin = docv1::COORD_ORIGIN_BOTTOMLEFT;
+  if (height_pts <= 0) space.origin = docv1::COORD_ORIGIN_BOTTOMLEFT;
   return space;
 }
 
 docv1::BoundingBox page_box(const pdfv1::BoundingBox& rect, const PageSpace& space) {
   docv1::BoundingBox box;
-  const double x0 = std::min(rect.x0(), rect.x1());
-  const double x1 = std::max(rect.x0(), rect.x1());
-  const double y0 = std::min(rect.y0(), rect.y1());
-  const double y1 = std::max(rect.y0(), rect.y1());
-  box.set_l(x0 * space.scale_x);
-  box.set_r(x1 * space.scale_x);
+  const auto [left, top, right, bottom] = space.frame.place(rect);
+  box.set_l(left * space.scale_x);
+  box.set_r(right * space.scale_x);
   if (space.origin == docv1::COORD_ORIGIN_TOPLEFT) {
-    box.set_t((space.height_pts - y1) * space.scale_y);
-    box.set_b((space.height_pts - y0) * space.scale_y);
+    box.set_t(top * space.scale_y);
+    box.set_b(bottom * space.scale_y);
   } else {
-    box.set_t(y1 * space.scale_y);
-    box.set_b(y0 * space.scale_y);
+    const double height = space.frame.display_height();
+    box.set_t((height - top) * space.scale_y);
+    box.set_b((height - bottom) * space.scale_y);
   }
   box.set_coord_origin(space.origin);
   return box;
@@ -320,13 +323,13 @@ void fold_pdf_form_widgets(const std::vector<PdfPageWidgets>& pages, const std::
     // the backend's /Annots order.
     std::vector<size_t> order(page->fields.size());
     std::iota(order.begin(), order.end(), size_t{0});
-    std::stable_sort(order.begin(), order.end(), [page](size_t a, size_t b) {
-      const auto& ra = page->fields[a].rect();
-      const auto& rb = page->fields[b].rect();
-      const double top_a = std::max(ra.y0(), ra.y1());
-      const double top_b = std::max(rb.y0(), rb.y1());
-      if (top_a != top_b) return top_a > top_b;
-      return std::min(ra.x0(), ra.x1()) < std::min(rb.x0(), rb.x1());
+    // Measured on the rendered page, so a turned page reads as shown.
+    std::vector<std::array<double, 4>> placed;
+    placed.reserve(page->fields.size());
+    for (const auto& field : page->fields) placed.push_back(space.frame.place(field.rect()));
+    std::stable_sort(order.begin(), order.end(), [&placed](size_t a, size_t b) {
+      if (placed[a][1] != placed[b][1]) return placed[a][1] < placed[b][1];
+      return placed[a][0] < placed[b][0];
     });
 
     const std::string region_ref =
@@ -400,7 +403,7 @@ PdfWidgetFetch fetch_pdf_form_widgets(const std::string& bytes, const std::strin
       auto reader = stub->Parse(&context, request);
 
       pdfv1::ParseResponse message;
-      std::map<uint32_t, std::pair<double, double>> sizes;
+      std::map<uint32_t, pdfv1::PageInfo> infos;
       std::map<uint32_t, std::vector<pdfv1::FormField>> fields;
       std::optional<pdfv1::LoadStatus> load_status;
       std::string load_detail;
@@ -412,7 +415,7 @@ PdfWidgetFetch fetch_pdf_form_widgets(const std::string& bytes, const std::strin
           load_detail = caps.load_detail();
           fetch.engine = caps.backend_name();
           for (const auto& info : message.header().pages()) {
-            sizes[info.page_index()] = {info.width_pts(), info.height_pts()};
+            infos[info.page_index()] = info;
           }
           if (caps.load_status() != pdfv1::LOAD_STATUS_OK) continue;
           // The contract reads a family missing from the verdicts as
@@ -454,9 +457,8 @@ PdfWidgetFetch fetch_pdf_form_widgets(const std::string& bytes, const std::strin
       for (auto& [index, list] : fields) {
         PdfPageWidgets page;
         page.page_number = static_cast<int>(index) + 1;
-        if (const auto size = sizes.find(index); size != sizes.end()) {
-          page.width_pts = size->second.first;
-          page.height_pts = size->second.second;
+        if (const auto info = infos.find(index); info != infos.end()) {
+          page.page_info = info->second;
         }
         page.fields = std::move(list);
         fetch.pages.push_back(std::move(page));

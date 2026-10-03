@@ -48,7 +48,8 @@ From the in-process path `src/in_memory_document.cpp` had until M6
 
 Any backend that can serve those four families at parity replaces the
 in-process path; the client in `src/remote_page_source.cpp` maps contract
-boxes (user space, before `/Rotate`) into the rendered page's frame. Everything else in the matrix is additional surface the
+boxes (CropBox-relative or unshifted user space, as `PageInfo.page_space`
+says, before `/Rotate`) into the rendered page's frame. Everything else in the matrix is additional surface the
 common shape should carry so no backend's data is dropped.
 
 ## Capability matrix
@@ -272,11 +273,19 @@ Each Probe/Parse/Render call's deadline is the sooner of its own budget
 (30 s / 300 s / 600 s) and the inbound request's deadline (with
 `document_timeout` applied), and cancelling the request, or a page failing
 the document, aborts the page calls in flight (`TryCancel`) and fails later
-ones without dialing. A Render raster is validated before use: a known
+ones without dialing. That includes the opening Probe: the page scheduler
+opens a document on one of its opener threads (`open_workers`, default 4),
+never on the thread that schedules pages, and the source it opens makes no
+backend call until it is tied to the request, so a hung backend holds one
+opener, cancel aborts its Probe, and the request deadline caps it. In
+consensus mode, when every leg fails, a cancel fails as `CANCELLED` and
+legs that all failed for a transport reason as that reason (`UNAVAILABLE`
+for an outage); only a leg that refused the document makes the failure
+`INVALID_ARGUMENT`. A Render raster is validated before use: a known
 pixel format, `stride_bytes >= width_px * channels`, and at least
-`height_px * stride_bytes` bytes of pixels; a malformed raster fails that
-leg as `InvalidDocument`, so consensus mode takes the raster from the next
-target. A raster whose reported `dpi` differs from the requested one is
+`height_px * stride_bytes` bytes of pixels, every product computed with an
+overflow check; a malformed raster fails that leg as `InvalidDocument`, so
+consensus mode takes the raster from the next target. A raster whose reported `dpi` differs from the requested one is
 resized to the requested DPI, so it stays in the frame the text boxes are
 scaled to.
 
@@ -335,10 +344,26 @@ Still open, tracked here:
 - grpc-poppler reads AcroForm widgets through poppler's core API (its
   own build installs the core headers); annotations and the struct tree
   through the core/glib surface are still design intent, not built.
-- Page-space frame (measured 2026-10-02 against the published images with
-  a one-word page at /Rotate 0, 90, 180, 270 and with an offset CropBox):
-  grpc-pdfium follows the contract (user space before /Rotate, the stored
-  CropBox, the real /Rotate), which is what gRParse's client maps. grpc-poppler
+- Page-space frame. The contract measures page geometry from the CropBox
+  origin (a point at the CropBox's bottom-left corner is (0, 0)), before
+  /Rotate. The backends released before 2026-10-03 reported unshifted PDF
+  user space instead, and gRParse subtracted the CropBox origin itself.
+  `PageInfo.page_space` (parser-protos #2) now names the frame for each
+  page: `PAGE_SPACE_CROP_BOX` is the contract frame, `PAGE_SPACE_USER` is
+  unshifted user space, and an unset value (`PAGE_SPACE_UNSPECIFIED`, every
+  backend built before the field) is read as `PAGE_SPACE_USER`. gRParse maps
+  either frame through one place, `PdfPageFrame`
+  (`src/pdf_page_frame.cpp`): the page source's text cells, each consensus
+  leg on its own (so legs in different frames still agree), and the
+  AcroForm widget fold's rects, which now also follow /Rotate. Deploy order
+  matters once: this client must ship before any backend that reports
+  `PAGE_SPACE_CROP_BOX`, because an older client always subtracts the
+  CropBox origin and would shift that backend's boxes twice on pages with
+  an offset CropBox. After that, grpc-pdfium, grpc-poppler and grpc-qparse
+  move to `PAGE_SPACE_CROP_BOX` independently (each repo's #3). Measured 2026-10-02 against the published images
+  (a one-word page at /Rotate 0, 90, 180, 270 and with an offset CropBox):
+  grpc-pdfium follows the contract apart from the CropBox shift (user
+  space before /Rotate, the stored CropBox, the real /Rotate). grpc-poppler
   and grpc-qparse emit boxes already in the rotated, CropBox-relative
   frame; grpc-poppler reports `rotation_degrees` 90 for both quarter turns
   and 0 for 180, grpc-qparse reports 0 for every page. Their text lands

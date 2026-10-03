@@ -67,6 +67,11 @@ class PageScheduler final {
     // turns the evidence names, at most once per turn, never when the page
     // has a digital text layer.
     OrientationOptions orientation = {};
+    // Threads that open admitted documents: the source factory and, for a
+    // PDF, the backend's opening Probe. A slow open holds one of them, and
+    // the request's deadline and cancel reach it; pages of documents that
+    // are already open keep being scheduled meanwhile.
+    size_t open_workers = 4;
   };
 
   // Per-document recognition tuning, resolved by the caller from request

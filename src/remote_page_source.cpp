@@ -1,12 +1,12 @@
 #include "grparse/remote_page_source.h"
 
 #include <algorithm>
-#include <array>
 #include <cctype>
 #include <cmath>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -21,6 +21,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "ai/protomolt/parse/pdf/v1/pdf_backend_service.grpc.pb.h"
+#include "grparse/pdf_page_frame.h"
 #include "targets/sha256.h"
 
 namespace grparse {
@@ -77,83 +78,6 @@ constexpr size_t kStrongDigitalNonWhitespace = 128;
   }
 }
 
-// Maps contract page space into the top-left frame of the page as rendered.
-// The contract's boxes are PDF user space, bottom-left origin, before the
-// page's /Rotate; the rendered page is the CropBox with /Rotate applied, so
-// a box shifts by the CropBox origin, flips to a top-left origin, and turns
-// clockwise with the page.
-class PageFrame {
- public:
-  explicit PageFrame(const pdfv1::PageInfo& info)
-      : rotation_(((info.rotation_degrees() % 360) + 360) % 360) {
-    const bool quarter_turn = rotation_ == 90 || rotation_ == 270;
-    // Unrotated extent: the visible box, which is the CropBox clipped to
-    // the MediaBox (a CropBox reaching past the MediaBox is legal, and
-    // renderers draw only the overlap), or the MediaBox alone. Without
-    // either, the rendered size turned back.
-    std::optional<pdfv1::BoundingBox> visible;
-    if (valid(info.media_box())) visible = info.media_box();
-    if (valid(info.crop_box())) {
-      pdfv1::BoundingBox crop = info.crop_box();
-      if (visible.has_value()) {
-        crop.set_x0(std::max(crop.x0(), visible->x0()));
-        crop.set_y0(std::max(crop.y0(), visible->y0()));
-        crop.set_x1(std::min(crop.x1(), visible->x1()));
-        crop.set_y1(std::min(crop.y1(), visible->y1()));
-      }
-      if (valid(crop)) visible = crop;
-    }
-    if (visible.has_value()) {
-      origin_x_ = visible->x0();
-      origin_y_ = visible->y0();
-      width_ = visible->x1() - visible->x0();
-      height_ = visible->y1() - visible->y0();
-    } else {
-      width_ = quarter_turn ? info.height_pts() : info.width_pts();
-      height_ = quarter_turn ? info.width_pts() : info.height_pts();
-    }
-  }
-
-  // Width and height of the rendered page, in points.
-  double display_width() const { return rotation_ % 180 == 0 ? width_ : height_; }
-  double display_height() const { return rotation_ % 180 == 0 ? height_ : width_; }
-
-  // The axis-aligned box in the rendered top-left frame: {left, top, right,
-  // bottom} in points.
-  std::array<double, 4> place(const pdfv1::BoundingBox& box) const {
-    const auto a = to_display(box.x0(), box.y0());
-    const auto b = to_display(box.x1(), box.y1());
-    return {std::min(a[0], b[0]), std::min(a[1], b[1]), std::max(a[0], b[0]),
-            std::max(a[1], b[1])};
-  }
-
- private:
-  std::array<double, 2> to_display(double x, double y) const {
-    const double u = x - origin_x_;
-    const double down = height_ - (y - origin_y_);
-    switch (rotation_) {
-      case 90:
-        return {height_ - down, u};
-      case 180:
-        return {width_ - u, height_ - down};
-      case 270:
-        return {down, width_ - u};
-      default:
-        return {u, down};
-    }
-  }
-
-  static bool valid(const pdfv1::BoundingBox& box) {
-    return box.x1() > box.x0() && box.y1() > box.y0();
-  }
-
-  int rotation_;
-  double origin_x_ = 0.0;
-  double origin_y_ = 0.0;
-  double width_ = 0.0;
-  double height_ = 0.0;
-};
-
 // One channel per backend target per process; channels multiplex.
 std::shared_ptr<grpc::Channel> channel_for(const std::string& target) {
   static std::mutex mutex;
@@ -179,47 +103,17 @@ class RemotePdfPageSource final : public PageSource {
         sha256_(handshake_ ? targets::sha256_hex(*bytes_) : std::string()),
         render_dpi_(render_dpi),
         render_scale_(render_dpi / kPdfUserSpaceDpi),
-        stub_(pdfv1::PdfBackendService::NewStub(channel_for(target))) {
-    // A hash-only Probe is a cache lookup; a miss earns exactly one retry
-    // with the bytes attached so the backend can cache them under the hash.
-    pdfv1::ProbeResponse response;
-    bool sent_bytes = !handshake_;
-    for (;;) {
-      Call call(*this, kProbeDeadline);
-      pdfv1::ProbeRequest request;
-      fill_document(request.mutable_document(), sent_bytes);
-      response.Clear();
-      const grpc::Status status = stub_->Probe(call.context(), request, &response);
-      if (!status.ok()) {
-        throw_backend_failure("PDF backend unreachable", status);
-      }
-      if (response.capabilities().load_status() ==
-              pdfv1::LOAD_STATUS_BYTES_REQUIRED &&
-          !sent_bytes) {
-        sent_bytes = true;
-        continue;
-      }
-      break;
-    }
-    const auto& caps = response.capabilities();
-    if (caps.load_status() != pdfv1::LOAD_STATUS_OK) {
-      // A BYTES_REQUIRED here means the backend kept asking for bytes after
-      // receiving them; a HASH_MISMATCH means the bytes did not hash to the
-      // value the client computed itself. Both are hard errors, as is every
-      // other non-OK verdict.
-      throw InvalidDocument(
-          "PDF backend could not load the document: " +
-          pdfv1::LoadStatus_Name(caps.load_status()) +
-          (caps.has_load_detail() ? " (" + caps.load_detail() + ")" : ""));
-    }
-    pages_ = static_cast<int>(caps.page_count());
-    if (pages_ <= 0) throw InvalidDocument("PDF does not contain a renderable page");
-    backend_name_ = caps.backend_name();
+        stub_(pdfv1::PdfBackendService::NewStub(channel_for(target))) {}
+
+  int page_count() const override {
+    open();
+    return pages_;
   }
 
-  int page_count() const override { return pages_; }
-
-  std::string backend_name() const override { return backend_name_; }
+  std::string backend_name() const override {
+    open();
+    return backend_name_;
+  }
 
   std::optional<OcrPage> extract_digital_page(int page_number) const override {
     check_page(page_number);
@@ -236,7 +130,7 @@ class RemotePdfPageSource final : public PageSource {
       auto reader = stub_->Parse(call.context(), request);
 
       pdfv1::ParseResponse message;
-      std::optional<PageFrame> frame;
+      std::optional<PdfPageFrame> frame;
       std::optional<pdfv1::LoadStatus> header_load_status;
       std::string header_load_detail;
       std::map<uint32_t, std::string> font_names;
@@ -442,7 +336,63 @@ class RemotePdfPageSource final : public PageSource {
     grpc::ClientContext context_;
   };
 
+  // The opening Probe, made once on first use rather than in the
+  // constructor, so a caller can tie the source to its request
+  // (set_deadline(), cancel()) before any backend call: the Probe then
+  // honors the request's deadline and cancellation like every later call.
+  // A failed open is remembered and every later use fails the same way.
+  void open() const {
+    const std::lock_guard<std::mutex> lock(open_mutex_);
+    if (open_failure_) std::rethrow_exception(open_failure_);
+    if (pages_ > 0) return;
+    try {
+      probe();
+    } catch (...) {
+      open_failure_ = std::current_exception();
+      throw;
+    }
+  }
+
+  void probe() const {
+    // A hash-only Probe is a cache lookup; a miss earns exactly one retry
+    // with the bytes attached so the backend can cache them under the hash.
+    pdfv1::ProbeResponse response;
+    bool sent_bytes = !handshake_;
+    for (;;) {
+      Call call(*this, kProbeDeadline);
+      pdfv1::ProbeRequest request;
+      fill_document(request.mutable_document(), sent_bytes);
+      response.Clear();
+      const grpc::Status status = stub_->Probe(call.context(), request, &response);
+      if (!status.ok()) {
+        throw_backend_failure("PDF backend unreachable", status);
+      }
+      if (response.capabilities().load_status() ==
+              pdfv1::LOAD_STATUS_BYTES_REQUIRED &&
+          !sent_bytes) {
+        sent_bytes = true;
+        continue;
+      }
+      break;
+    }
+    const auto& caps = response.capabilities();
+    if (caps.load_status() != pdfv1::LOAD_STATUS_OK) {
+      // A BYTES_REQUIRED here means the backend kept asking for bytes after
+      // receiving them; a HASH_MISMATCH means the bytes did not hash to the
+      // value the client computed itself. Both are hard errors, as is every
+      // other non-OK verdict.
+      throw InvalidDocument(
+          "PDF backend could not load the document: " +
+          pdfv1::LoadStatus_Name(caps.load_status()) +
+          (caps.has_load_detail() ? " (" + caps.load_detail() + ")" : ""));
+    }
+    pages_ = static_cast<int>(caps.page_count());
+    if (pages_ <= 0) throw InvalidDocument("PDF does not contain a renderable page");
+    backend_name_ = caps.backend_name();
+  }
+
   void check_page(int page_number) const {
+    open();
     if (page_number < 1 || page_number > pages_) {
       throw InvalidDocument("PDF page number is out of range");
     }
@@ -484,8 +434,14 @@ class RemotePdfPageSource final : public PageSource {
     const uint64_t width = raster.width_px();
     const uint64_t height = raster.height_px();
     const uint64_t stride = raster.stride_bytes();
-    if (width > kMaxDim || height > kMaxDim || stride < width * channels ||
-        raster.pixels().size() < height * stride) {
+    // The wire fields are 32-bit, so these 64-bit products cannot wrap
+    // today; the checked multiply keeps that true if a field ever widens.
+    uint64_t row_bytes = 0;
+    uint64_t total_bytes = 0;
+    const bool wraps = __builtin_mul_overflow(width, static_cast<uint64_t>(channels), &row_bytes) ||
+                       __builtin_mul_overflow(height, stride, &total_bytes);
+    if (wraps || width > kMaxDim || height > kMaxDim || stride < row_bytes ||
+        raster.pixels().size() < total_bytes) {
       throw InvalidDocument("PDF backend answered with a malformed raster (" +
                             std::to_string(width) + "x" + std::to_string(height) + ", stride " +
                             std::to_string(stride) + ", " +
@@ -549,8 +505,11 @@ class RemotePdfPageSource final : public PageSource {
   const double render_dpi_;
   const double render_scale_;
   std::unique_ptr<pdfv1::PdfBackendService::Stub> stub_;
-  int pages_ = 0;
-  std::string backend_name_;
+  // Set once by open(), under open_mutex_.
+  mutable std::mutex open_mutex_;
+  mutable std::exception_ptr open_failure_;
+  mutable int pages_ = 0;
+  mutable std::string backend_name_;
   // Guards the request ties: set_deadline() and cancel() arrive from other
   // threads than the page calls.
   mutable std::mutex calls_mutex_;
@@ -599,9 +558,11 @@ std::optional<std::string> remote_pdf_backend_target() {
 
 std::shared_ptr<PageSource> open_remote_pdf_document(
     std::shared_ptr<const std::string> bytes, const std::string& target,
-    double render_dpi) {
-  return std::make_shared<RemotePdfPageSource>(std::move(bytes), target,
-                                               render_dpi);
+    double render_dpi, SourceOpening opening) {
+  auto source = std::make_shared<RemotePdfPageSource>(std::move(bytes), target,
+                                                      render_dpi);
+  if (opening == SourceOpening::kNow) static_cast<void>(source->page_count());
+  return source;
 }
 
 }  // namespace grparse

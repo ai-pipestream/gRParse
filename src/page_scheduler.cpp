@@ -235,20 +235,27 @@ class PageScheduler::Impl final {
         render_(options.render_queue_capacity),
         inference_(options.inference_queue_capacity),
         assembly_(options.assembly_queue_capacity) {
-    if (options_.render_workers == 0 || options_.inference_workers == 0 ||
-        options_.assembly_workers == 0 || options_.page_window == 0 ||
+    if (options_.open_workers == 0 || options_.render_workers == 0 ||
+        options_.inference_workers == 0 || options_.assembly_workers == 0 ||
+        options_.page_window == 0 ||
         options_.max_active_documents == 0) {
       throw std::invalid_argument("Scheduler worker counts, page window, and document limit must be positive");
     }
     if (!source_factory_) {
+      // Deferred: the source makes no backend call until coordinate() has
+      // tied it to the request, so the opening Probe honors the request's
+      // deadline and cancel.
       source_factory_ = [](std::shared_ptr<const std::string> bytes, bool pdf, double render_dpi) {
-        return open_in_memory_document(std::move(bytes), pdf, render_dpi);
+        return open_in_memory_document(std::move(bytes), pdf, render_dpi,
+                                       SourceOpening::kOnFirstUse);
       };
     }
     // Any thread that fails to start must not leave the already-started ones
     // joinable at destruction time.
     try {
-      coordinator_ = std::thread([this] { coordinate(); });
+      for (size_t index = 0; index < options_.open_workers; ++index) {
+        openers_.emplace_back([this] { coordinate(); });
+      }
       rescheduler_ = std::thread([this] { reschedule_requests(); });
       for (size_t index = 0; index < options_.render_workers; ++index) {
         render_workers_.emplace_back([this] { render_pages(); });
@@ -353,7 +360,29 @@ class PageScheduler::Impl final {
     render_.close();
     inference_.close();
     assembly_.close();
-    if (coordinator_.joinable()) coordinator_.join();
+    // An opener may sit in a backend's opening Probe; failing the
+    // documents not yet open aborts those calls, so the join does not wait
+    // out a backend's deadline.
+    {
+      std::vector<std::shared_ptr<Ticket::State>> active;
+      {
+        std::lock_guard<std::mutex> lock(active_mutex_);
+        active.assign(active_requests_.begin(), active_requests_.end());
+      }
+      for (const auto& request : active) {
+        bool opening = false;
+        {
+          std::lock_guard<std::mutex> lock(request->schedule_mutex);
+          opening = request->total_pages == 0;
+        }
+        if (opening) {
+          request->fail(std::make_exception_ptr(SchedulerShuttingDown("Scheduler is shutting down")));
+        }
+      }
+    }
+    for (auto& opener : openers_) {
+      if (opener.joinable()) opener.join();
+    }
     if (rescheduler_.joinable()) rescheduler_.join();
     for (auto& worker : render_workers_) {
       if (worker.joinable()) worker.join();
@@ -516,6 +545,14 @@ class PageScheduler::Impl final {
         auto source = source_factory_(document.bytes, document.pdf, render_dpi);
         if (!source) throw InvalidDocument("Document source could not be opened");
         source->set_deadline(document.request->tuning.deadline);
+        // Published before the first backend call, so a cancel that lands
+        // while the document opens aborts the opening Probe instead of
+        // waiting it out.
+        {
+          std::lock_guard<std::mutex> lock(document.request->schedule_mutex);
+          document.request->source = source;
+        }
+        if (document.request->cancelled.load()) source->cancel();
         const int pages = source->page_count();
         if (pages <= 0) throw InvalidDocument("Document does not contain a page");
         // Docling page_range: inclusive 1-indexed span. Clamp the end to the
@@ -537,14 +574,10 @@ class PageScheduler::Impl final {
         document.request->remaining_pages.store(page_count);
         {
           std::lock_guard<std::mutex> lock(document.request->schedule_mutex);
-          document.request->source = std::move(source);
           document.request->total_pages = last_page;
           document.request->next_page_to_schedule = first_page;
           document.request->available_slots = document.request->page_window;
         }
-        // A cancel that landed while the source was opening found no source
-        // to abort; this one reaches it.
-        if (document.request->cancelled.load()) document.request->source->cancel();
         // Callers wait on the number of pages that will arrive, not the last
         // page index (which may be higher when the span does not start at 1).
         document.request->callbacks.on_document(page_count);
@@ -826,7 +859,10 @@ class PageScheduler::Impl final {
   BoundedQueue<std::shared_ptr<PageJob>> render_;
   BoundedQueue<InferenceJob> inference_;
   BoundedQueue<AssemblyJob> assembly_;
-  std::thread coordinator_;
+  // Open documents (the source factory and its first backend calls), off
+  // the rescheduler thread that schedules every request's pages, so a slow
+  // backend open holds one opener and stalls nobody else.
+  std::vector<std::thread> openers_;
   std::thread rescheduler_;
   std::vector<std::thread> render_workers_;
   std::vector<std::thread> inference_workers_;

@@ -753,6 +753,7 @@ add_library(grparse_core STATIC
   src/in_memory_document.cpp
   src/consensus_page_source.cpp
   src/remote_page_source.cpp
+  src/pdf_page_frame.cpp
   src/pdf_form_widgets.cpp
   src/ocr_engine.cpp
   src/layout_decode.cpp

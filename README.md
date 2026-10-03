@@ -986,10 +986,14 @@ binaries there and run them with
 and PDF page source tests are the concurrency-carrying ones and are expected to
 be ThreadSanitizer-clean. The whole `grparse` suite is AddressSanitizer- and
 UndefinedBehaviorSanitizer-clean with
-`LSAN_OPTIONS=suppressions=tests/lsan.supp` (checked locally in the
-sanitize.yml setup). The suppression file covers one-time process-global
-allocations in third-party code: ONNX Runtime's 14-byte global and the
-OpenSSL state curl_global_init leaves; none is per page or per request. Under `undefined`, the tests that include protobuf's
+`LSAN_OPTIONS=suppressions=tests/lsan.supp` and
+`ASAN_OPTIONS=fast_unwind_on_malloc=0` (checked locally in the sanitize.yml
+setup). The suppression file covers one-time process-global allocations in
+third-party code: the 14-byte allocation ONNX Runtime makes while building
+its first `Ort::Env`, and the OpenSSL state curl_global_init leaves; none is
+per page or per request. Each entry names the call that allocates, not a
+whole library, so a leak elsewhere in ONNX Runtime (a session, a run) still
+fails the sanitizer run. Under `undefined`, the tests that include protobuf's
 MessageDifferencer header build without the null and nonnull checks, which
 GCC otherwise rejects in abseil's constexpr code. Generated protobuf and
 gRPC sources stay inside the build directory and are not committed; the

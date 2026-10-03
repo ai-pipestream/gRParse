@@ -8,12 +8,20 @@
 // The fake speaks the content-addressed handshake the way a real backend
 // does: a hash-only request for bytes it has not seen is a cache miss
 // (LOAD_STATUS_BYTES_REQUIRED), and bytes it does not know are CORRUPT.
+//
+// Tests describe geometry in unshifted PDF user space. By default the fake
+// answers in that frame without stating one (a backend released before
+// PageInfo.page_space existed); set_page_space() makes it state a frame,
+// and PAGE_SPACE_CROP_BOX shifts every box by the CropBox origin the way a
+// backend on the contract frame reports it.
 #ifndef GRPARSE_TESTS_SUPPORT_FAKE_PDF_BACKEND_H
 #define GRPARSE_TESTS_SUPPORT_FAKE_PDF_BACKEND_H
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <map>
+#include <set>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -52,6 +60,9 @@ struct FakePdfPage {
   // {x0, y0, x1, y1}; unset means the MediaBox [0 0 width height].
   std::optional<std::vector<double>> crop_box = std::nullopt;
   std::vector<FakeTextCell> cells = {};
+  // AcroForm widgets, rects in user space; answered for
+  // PDF_FAMILY_FORM_FIELDS.
+  std::vector<pdfv1::FormField> form_fields = {};
 };
 
 // Lines of 24pt text from the top of a Letter page down, one cell per line,
@@ -89,8 +100,47 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
     render_stall_ = stall;
   }
 
-  grpc::Status Probe(grpc::ServerContext*, const pdfv1::ProbeRequest* request,
+  // The frame Parse reports geometry in; PAGE_SPACE_UNSPECIFIED (the
+  // default) leaves PageInfo.page_space unset.
+  void set_page_space(pdfv1::PageSpace space) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    page_space_ = space;
+  }
+
+  // A Probe that carries these bytes holds until release_probes() or until
+  // the caller cancels it (or its deadline passes).
+  void block_probe(const std::string& bytes) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    blocked_.insert(bytes);
+  }
+
+  void release_probes() {
+    {
+      const std::lock_guard<std::mutex> lock(mutex_);
+      blocked_.clear();
+    }
+    probe_changed_.notify_all();
+  }
+
+  // Probes currently held by block_probe().
+  int held_probes() const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return held_probes_;
+  }
+
+  grpc::Status Probe(grpc::ServerContext* context, const pdfv1::ProbeRequest* request,
                      pdfv1::ProbeResponse* response) override {
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      if (blocked_.contains(request->document().data())) {
+        ++held_probes_;
+        while (blocked_.contains(request->document().data()) && !context->IsCancelled()) {
+          probe_changed_.wait_for(lock, std::chrono::milliseconds(10));
+        }
+        --held_probes_;
+        if (context->IsCancelled()) return grpc::Status(grpc::StatusCode::CANCELLED, "probe cancelled");
+      }
+    }
     const auto [status, pages] = load(request->document());
     auto* caps = response->mutable_capabilities();
     caps->set_backend_name("fake-pdf-backend");
@@ -112,9 +162,27 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
       return grpc::Status::OK;
     }
     caps->set_page_count(static_cast<uint32_t>(pages.size()));
+    bool any_fields = false;
+    for (const FakePdfPage& page : pages) any_fields = any_fields || !page.form_fields.empty();
+    auto* verdict = caps->add_families();
+    verdict->set_family(pdfv1::PDF_FAMILY_FORM_FIELDS);
+    verdict->set_support(any_fields ? pdfv1::FAMILY_SUPPORT_SUPPORTED
+                                    : pdfv1::FAMILY_SUPPORT_ABSENT_IN_DOCUMENT);
+    bool wants_fields = false;
+    for (const int family : request->families()) {
+      wants_fields = wants_fields || family == pdfv1::PDF_FAMILY_FORM_FIELDS;
+    }
+    const pdfv1::PageSpace space = page_space();
+    // Per page, what the frame subtracts from user space.
+    std::vector<std::pair<double, double>> shifts;
     for (size_t index = 0; index < pages.size(); ++index) {
       const FakePdfPage& page = pages[index];
+      shifts.emplace_back(0.0, 0.0);
+      if (space == pdfv1::PAGE_SPACE_CROP_BOX && page.crop_box.has_value()) {
+        shifts.back() = {(*page.crop_box)[0], (*page.crop_box)[1]};
+      }
       auto* info = header.mutable_header()->add_pages();
+      if (space != pdfv1::PAGE_SPACE_UNSPECIFIED) info->set_page_space(space);
       info->set_page_index(static_cast<uint32_t>(index));
       const bool quarter_turn = page.rotation_degrees % 180 != 0;
       info->set_width_pts(quarter_turn ? page.height_pts : page.width_pts);
@@ -140,8 +208,16 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
                                               : static_cast<uint32_t>(pages.size());
     std::map<std::string, uint32_t> fonts;
     for (uint32_t index = begin; index < end && index < pages.size(); ++index) {
+      const auto [dx, dy] = shifts[index];
       pdfv1::ParseResponse chunk;
       chunk.mutable_page()->set_page_index(index);
+      if (wants_fields) {
+        for (const pdfv1::FormField& source : pages[index].form_fields) {
+          auto* field = chunk.mutable_page()->add_form_fields();
+          *field = source;
+          shift(field->mutable_rect(), dx, dy);
+        }
+      }
       for (const FakeTextCell& source : pages[index].cells) {
         auto [font, added] = fonts.emplace(source.font, static_cast<uint32_t>(fonts.size()));
         if (added) {
@@ -157,6 +233,7 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
         cell->mutable_bbox()->set_y0(source.y0);
         cell->mutable_bbox()->set_x1(source.x1);
         cell->mutable_bbox()->set_y1(source.y1);
+        shift(cell->mutable_bbox(), dx, dy);
         cell->set_font_id(font->second);
         cell->set_font_size(source.font_size);
       }
@@ -213,6 +290,18 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
   }
 
  private:
+  pdfv1::PageSpace page_space() const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return page_space_;
+  }
+
+  static void shift(pdfv1::BoundingBox* box, double dx, double dy) {
+    box->set_x0(box->x0() - dx);
+    box->set_y0(box->y0() - dy);
+    box->set_x1(box->x1() - dx);
+    box->set_y1(box->y1() - dy);
+  }
+
   // The load verdict and, on OK, the registered pages: bytes on the wire are
   // looked up (and cached under the hash the client sent beside them), a
   // bare hash must already be cached.
@@ -234,6 +323,10 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
   std::map<std::string, std::vector<FakePdfPage>> by_hash_;
   int render_calls_ = 0;
   std::chrono::milliseconds render_stall_{0};
+  pdfv1::PageSpace page_space_ = pdfv1::PAGE_SPACE_UNSPECIFIED;
+  std::set<std::string> blocked_;
+  int held_probes_ = 0;
+  std::condition_variable probe_changed_;
 };
 
 // Serves a FakePdfBackend on a loopback port and points GRPARSE_PDF_BACKEND

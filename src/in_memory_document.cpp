@@ -280,7 +280,8 @@ uint64_t max_image_pixels() {
 }
 
 std::shared_ptr<PageSource> open_in_memory_document(std::shared_ptr<const std::string> bytes, bool pdf,
-                                                    double render_dpi) {
+                                                    double render_dpi,
+                                                    [[maybe_unused]] SourceOpening opening) {
   if (!bytes || bytes->empty()) throw InvalidDocument("Document bytes are empty");
   if (!(render_dpi > 0.0)) throw std::invalid_argument("Render DPI must be positive");
   if (!pdf) return std::make_shared<RasterPageSource>(std::move(bytes));
@@ -297,9 +298,9 @@ std::shared_ptr<PageSource> open_in_memory_document(std::shared_ptr<const std::s
       throw std::invalid_argument("GRPARSE_PDF_BACKEND names no backend targets");
     }
     if (targets.size() > 1) {
-      return open_consensus_pdf_document(std::move(bytes), targets, render_dpi);
+      return open_consensus_pdf_document(std::move(bytes), targets, render_dpi, opening);
     }
-    return open_remote_pdf_document(std::move(bytes), targets.front(), render_dpi);
+    return open_remote_pdf_document(std::move(bytes), targets.front(), render_dpi, opening);
   }
 #endif
   throw PdfBackendNotConfigured(
