@@ -84,6 +84,10 @@ PageScheduler::OcrTuning ocr_tuning(bool has_do_ocr, bool do_ocr, bool force_ocr
 // raises has one status class, and everything else is INTERNAL.
 grpc::Status status_from_exception(std::exception_ptr failure);
 
+// A collector leg's failed outcome, from the exception that ended it,
+// carrying the status status_from_exception maps the throw to.
+CollectorOutcome outcome_from_exception(std::exception_ptr failure);
+
 // The cancellation outcome every collector leg reports when the call it
 // belongs to died before the leg started.
 CollectorOutcome cancelled_outcome();

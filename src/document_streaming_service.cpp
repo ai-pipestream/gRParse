@@ -75,8 +75,8 @@ class DocumentStreamReactor final
     StartRead(&incoming_);
   }
 
-  // The upload's charge goes back with the call; the legs still reading
-  // the bytes are bounded by this call's deadline.
+  // Bytes never handed to a leg return their charge with the call; bytes
+  // that were handed off return it when their last holder drops them.
   ~DocumentStreamReactor() override {
     if (inflight_ != nullptr) inflight_->release(charged_bytes_);
   }
@@ -242,20 +242,22 @@ class DocumentStreamReactor final
     bool started = false;
   };
 
-  // begin_processing hashes, sniffs and routes the whole upload (up to
-  // 500 MiB) and spawns the legs, which is not work a gRPC event-manager
-  // thread may be handed: every call multiplexed on it, Health included,
-  // would stall behind it. It runs on its own thread, through the gate like
-  // every other off-reactor callback.
+  // The request's content hash and sniffed mimetype, stamped on the
+  // terminal event's origin.
+  struct DocumentOrigin {
+    uint64_t hash = 0;
+    MimetypeResolution mimetype;
+  };
+
+  // The processing thread resolves the plan, hashes and sniffs the whole
+  // upload (up to 500 MiB) and spawns the legs, which is not work a gRPC
+  // event-manager thread may be handed: every call multiplexed on it,
+  // Health included, would stall behind it. It reaches the reactor through
+  // the gate like every other off-reactor callback.
   void start_processing() {
     const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
     try {
-      std::thread([weak_gate] {
-        if (const auto gate = weak_gate.lock()) {
-          std::lock_guard<std::mutex> lock(gate->mutex);
-          if (gate->reactor != nullptr) gate->reactor->begin_processing();
-        }
-      }).detach();
+      std::thread([weak_gate] { process_guarded(weak_gate); }).detach();
     } catch (const std::system_error& error) {
       std::lock_guard<std::mutex> lock(mutex_);
       request_finish_locked(grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
@@ -264,10 +266,50 @@ class DocumentStreamReactor final
     }
   }
 
-  void begin_processing() {
-    const StreamPlan plan = resolve_plan();
-    if (!plan.started) return;
-    stamp_origin(*plan.bytes);
+  // Calls `fn` on the reactor under the gate, unless it is already gone.
+  template <typename Fn>
+  static void with_reactor(const std::weak_ptr<CallbackGate>& weak_gate, Fn&& fn) {
+    if (const auto gate = weak_gate.lock()) {
+      std::lock_guard<std::mutex> lock(gate->mutex);
+      if (gate->reactor != nullptr) std::forward<Fn>(fn)(*gate->reactor);
+    }
+  }
+
+  // A throw on the processing thread finishes the call with its mapped
+  // status instead of terminating the process.
+  static void process_guarded(const std::weak_ptr<CallbackGate>& weak_gate) {
+    try {
+      process(weak_gate);
+    } catch (...) {
+      const grpc::Status status = status_from_exception(std::current_exception());
+      with_reactor(weak_gate, [&status](DocumentStreamReactor& reactor) {
+        std::lock_guard<std::mutex> lock(reactor.mutex_);
+        reactor.request_finish_locked(status);
+      });
+    }
+  }
+
+  // The plan resolves under the gate; the linear passes over the bytes run
+  // outside it, so OnDone on a gRPC event thread never waits behind a hash
+  // of the whole upload; the gate is taken again only to stamp and spawn.
+  static void process(const std::weak_ptr<CallbackGate>& weak_gate) {
+    std::optional<StreamPlan> plan;
+    std::string content_type;
+    fs::path filename;
+    with_reactor(weak_gate, [&](DocumentStreamReactor& reactor) {
+      plan = reactor.resolve_plan();
+      content_type = reactor.content_type_;
+      filename = reactor.filename_;
+    });
+    if (!plan.has_value() || !plan->started) return;
+    const DocumentOrigin origin = read_origin(*plan->bytes, content_type, filename);
+    with_reactor(weak_gate, [&](DocumentStreamReactor& reactor) {
+      reactor.launch(*plan, origin);
+    });
+  }
+
+  void launch(const StreamPlan& plan, const DocumentOrigin& origin) {
+    stamp_origin(origin);
     for (const auto id : plan.locals) {
       spawn_local_collector(id, plan.bytes);
     }
@@ -280,6 +322,19 @@ class DocumentStreamReactor final
     }
     if (!plan.want_cv) return;
     submit_cv(plan.bytes, plan.pdf, plan.tuning);
+  }
+
+  // The upload moves into one shared buffer whose last holder returns the
+  // in-flight charge: a leg still reading the bytes after the call is gone
+  // keeps them counted against GRPARSE_MAX_INFLIGHT_BYTES.
+  std::shared_ptr<const std::string> take_bytes_locked() {
+    const uint64_t charge = std::exchange(charged_bytes_, 0);
+    auto* bytes = new std::string(std::move(bytes_));
+    return std::shared_ptr<const std::string>(
+        bytes, [inflight = inflight_, charge](const std::string* held) {
+          delete held;
+          if (inflight != nullptr) inflight->release(charge);
+        });
   }
 
   // Scatter-gather routing: the plan resolves from the request's collector
@@ -303,7 +358,7 @@ class DocumentStreamReactor final
     plan.tuning = ocr_tuning(do_ocr_.has_value(), do_ocr_.value_or(true),
                              force_ocr_.value_or(false), render_scale_.has_value(),
                              render_scale_.value_or(0.0));
-    plan.bytes = std::make_shared<const std::string>(std::move(bytes_));
+    plan.bytes = take_bytes_locked();
     plan.pdf = content_type_ == "application/pdf" || is_pdf(*plan.bytes, filename_);
     pdf_ = plan.pdf;
     // The selection validates like the unary options: a value outside the
@@ -388,20 +443,27 @@ class DocumentStreamReactor final
     }
   }
 
-  // Hash and sniff the request once, here, rather than under the reactor
-  // lock at completion: the hash is a linear pass over up to 500 MiB, and
-  // the bytes are gone by the time the completion event is built.
-  void stamp_origin(const std::string& bytes) {
-    const uint64_t hash = content_hash(bytes);
-    const MimetypeResolution resolved = resolve_mimetype(content_type_, bytes, filename_);
-    if (resolved.evidence == "magic") {
+  // Reads the request's hash and sniffed mimetype once, before the legs
+  // start and outside every lock: the hash is a linear pass over up to
+  // 500 MiB, and the bytes are gone by the time the completion event is
+  // built.
+  static DocumentOrigin read_origin(const std::string& bytes, const std::string& content_type,
+                                    const fs::path& filename) {
+    DocumentOrigin origin;
+    origin.hash = content_hash(bytes);
+    origin.mimetype = resolve_mimetype(content_type, bytes, filename);
+    if (origin.mimetype.evidence == "magic") {
       data_counters().mimetypes_sniffed.fetch_add(1, std::memory_order_relaxed);
-      data_log("origin " + filename_.string() + " mimetype " + resolved.mimetype +
+      data_log("origin " + filename.string() + " mimetype " + origin.mimetype.mimetype +
                " from the bytes");
     }
+    return origin;
+  }
+
+  void stamp_origin(const DocumentOrigin& origin) {
     std::lock_guard<std::mutex> lock(mutex_);
-    document_bytes_hash_ = hash;
-    origin_mimetype_ = resolved;
+    document_bytes_hash_ = origin.hash;
+    origin_mimetype_ = origin.mimetype;
   }
 
   // Submits the document to the in-process CV pipeline and wires its
@@ -448,72 +510,114 @@ class DocumentStreamReactor final
     }
   }
 
+  static void deliver(const std::weak_ptr<CallbackGate>& weak_gate,
+                      pipestream::parse::v1::Collector id, CollectorOutcome outcome) {
+    with_reactor(weak_gate, [id, &outcome](DocumentStreamReactor& reactor) {
+      reactor.on_collector_done(id, std::move(outcome));
+    });
+  }
+
+  // Starts one leg on its own detached thread. A throw inside the leg (an
+  // allocation, a thread the leg itself could not start) becomes the leg's
+  // failure through the same gate path as any failed outcome, never
+  // std::terminate; a thread that cannot start fails its leg on the spot.
+  // Called with the gate held, so the reactor is alive.
+  template <typename Body>
+  void start_leg(pipestream::parse::v1::Collector id, Body body) {
+    const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
+    try {
+      std::thread([weak_gate, id, body = std::move(body)]() mutable {
+        try {
+          body(weak_gate);
+        } catch (...) {
+          deliver(weak_gate, id, outcome_from_exception(std::current_exception()));
+        }
+      }).detach();
+    } catch (...) {
+      on_collector_done(id, outcome_from_exception(std::current_exception()));
+    }
+  }
+
+  // The poll a leg's own call makes to learn the client is gone: a cancel,
+  // a client that stopped reading, or a torn-down reactor.
+  static CollectorCancelled leg_cancelled(std::weak_ptr<CallbackGate> weak_gate) {
+    return [weak_gate = std::move(weak_gate)] {
+      const auto gate = weak_gate.lock();
+      if (gate == nullptr) return true;
+      std::lock_guard<std::mutex> lock(gate->mutex);
+      return gate->reactor == nullptr || gate->reactor->client_gone();
+    };
+  }
+
+  // What the pdf routing leg runs with, copied off the reactor.
+  struct PdfLeg {
+    std::shared_ptr<CollectorEndpoints> endpoints;
+    std::shared_ptr<const std::string> bytes;
+    bool pdf = false;
+    CollectorDeadline deadline;
+    PageScheduler::OcrTuning tuning;
+    bool previews = false;
+  };
+
   // The pdf routing leg: the inspector's classification decides whether the
   // parse is the collector's own fast-path Document (text-based) or the
   // in-process CV pipeline restricted to the pages the inspector named as
   // needing OCR. A failed classification degrades to the unrouted CV path,
   // never to a failed parse. Runs on its own thread for the same reason
-  // spawn_remote_collector does: the collector call is a blocking client.
+  // spawn_remote_collector does: the collector call is a blocking client,
+  // cancelled like the other remote legs once the client is gone.
   void spawn_pdf_router(std::shared_ptr<const std::string> bytes, bool pdf,
                         PageScheduler::OcrTuning tuning) {
-    const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
-    auto endpoints = endpoints_;
-    const CollectorDeadline inbound_deadline = context_->deadline();
-    const bool previews = scheduler_.captures_page_images();
-    std::thread([weak_gate, endpoints, bytes = std::move(bytes), pdf, inbound_deadline,
-                 tuning = std::move(tuning), previews]() mutable {
-      PdfParseResult parsed = collect_pdf(
-          endpoints == nullptr
-              ? nullptr
-              : endpoints->channel(pipestream::parse::v1::COLLECTOR_PDF),
-          *bytes, inbound_deadline, tuning.page_range);
-      const PdfRouteDecision route = route_pdf_by_classification(parsed.classification);
-      if (parsed.outcome.success && route.fast_path) {
-        // Rendered before the reactor sees the document, on this thread,
-        // where the blocking work already is.
-        if (previews) {
-          // Stops once the call is gone (the reactor is torn down on cancel
-          // or finish) or its deadline has passed.
-          attach_page_previews(bytes, &parsed.outcome.document, tuning.page_range,
-                               [&weak_gate, inbound_deadline] {
-                                 if (std::chrono::system_clock::now() >= inbound_deadline) {
-                                   return true;
-                                 }
-                                 const auto gate = weak_gate.lock();
-                                 if (gate == nullptr) return true;
-                                 std::lock_guard<std::mutex> lock(gate->mutex);
-                                 return gate->reactor == nullptr;
-                               });
-        }
-        if (const auto gate = weak_gate.lock()) {
-          std::lock_guard<std::mutex> lock(gate->mutex);
-          if (gate->reactor != nullptr) {
-            gate->reactor->on_collector_done(pipestream::parse::v1::COLLECTOR_PDF,
-                                             std::move(parsed.outcome));
-          }
-        }
-        return;
+    PdfLeg leg{endpoints_, std::move(bytes), pdf, context_->deadline(), std::move(tuning),
+               scheduler_.captures_page_images()};
+    start_leg(pipestream::parse::v1::COLLECTOR_PDF,
+              [leg = std::move(leg)](const std::weak_ptr<CallbackGate>& weak_gate) mutable {
+                run_pdf_route(weak_gate, std::move(leg));
+              });
+  }
+
+  static void run_pdf_route(const std::weak_ptr<CallbackGate>& weak_gate, PdfLeg leg) {
+    PdfParseResult parsed = collect_pdf(
+        leg.endpoints == nullptr
+            ? nullptr
+            : leg.endpoints->channel(pipestream::parse::v1::COLLECTOR_PDF),
+        *leg.bytes, leg.deadline, leg.tuning.page_range, leg_cancelled(weak_gate));
+    const PdfRouteDecision route = route_pdf_by_classification(parsed.classification);
+    if (parsed.outcome.success && route.fast_path) {
+      // Rendered before the reactor sees the document, on this thread,
+      // where the blocking work already is.
+      if (leg.previews) attach_previews(weak_gate, leg, &parsed.outcome.document);
+      deliver(weak_gate, pipestream::parse::v1::COLLECTOR_PDF, std::move(parsed.outcome));
+      return;
+    }
+    if (parsed.outcome.success) {
+      leg.tuning.ocr_pages.insert(route.ocr_pages.begin(), route.ocr_pages.end());
+      if (route.force_ocr && leg.tuning.mode == PageScheduler::OcrTuning::Mode::kSelective) {
+        leg.tuning.mode = PageScheduler::OcrTuning::Mode::kForce;
       }
-      if (parsed.outcome.success) {
-        tuning.ocr_pages.insert(route.ocr_pages.begin(), route.ocr_pages.end());
-        if (route.force_ocr && tuning.mode == PageScheduler::OcrTuning::Mode::kSelective) {
-          tuning.mode = PageScheduler::OcrTuning::Mode::kForce;
-        }
-      } else if (const auto gate = weak_gate.lock()) {
-        // The degradation stays visible: the pdf collector's failure rides
-        // the complete event as a failure entry while the in-process CV path
-        // parses the document, same as any collector failing beside a
-        // surviving one. The pending part itself is settled by the CV run.
-        std::lock_guard<std::mutex> lock(gate->mutex);
-        if (gate->reactor != nullptr) gate->reactor->note_pdf_fallback(parsed.outcome);
-      }
-      if (const auto gate = weak_gate.lock()) {
-        std::lock_guard<std::mutex> lock(gate->mutex);
-        if (gate->reactor != nullptr) {
-          gate->reactor->submit_cv(std::move(bytes), pdf, std::move(tuning));
-        }
-      }
-    }).detach();
+    } else {
+      // The degradation stays visible: the pdf collector's failure rides
+      // the complete event as a failure entry while the in-process CV path
+      // parses the document, same as any collector failing beside a
+      // surviving one. The pending part itself is settled by the CV run.
+      with_reactor(weak_gate, [&parsed](DocumentStreamReactor& reactor) {
+        reactor.note_pdf_fallback(parsed.outcome);
+      });
+    }
+    with_reactor(weak_gate, [&leg](DocumentStreamReactor& reactor) {
+      reactor.submit_cv(std::move(leg.bytes), leg.pdf, std::move(leg.tuning));
+    });
+  }
+
+  // Stops once the call is gone (the reactor is torn down on cancel or
+  // finish) or its deadline has passed.
+  static void attach_previews(const std::weak_ptr<CallbackGate>& weak_gate, const PdfLeg& leg,
+                              pipestream::document::v1::Document* document) {
+    const CollectorCancelled gone = leg_cancelled(weak_gate);
+    attach_page_previews(leg.bytes, document, leg.tuning.page_range,
+                         [&gone, deadline = leg.deadline] {
+                           return std::chrono::system_clock::now() >= deadline || gone();
+                         });
   }
 
   void note_pdf_fallback(const CollectorOutcome& outcome) {
@@ -529,16 +633,9 @@ class DocumentStreamReactor final
   // reactor teardown.
   void spawn_local_collector(pipestream::parse::v1::Collector id,
                              std::shared_ptr<const std::string> bytes) {
-    const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
-    std::thread([weak_gate, id, bytes]() {
-      CollectorOutcome outcome = run_local_collector(id, *bytes);
-      if (const auto gate = weak_gate.lock()) {
-        std::lock_guard<std::mutex> lock(gate->mutex);
-        if (gate->reactor != nullptr) {
-          gate->reactor->on_collector_done(id, std::move(outcome));
-        }
-      }
-    }).detach();
+    start_leg(id, [id, bytes](const std::weak_ptr<CallbackGate>& weak_gate) {
+      deliver(weak_gate, id, run_local_collector(id, *bytes));
+    });
   }
 
   // True once the client is gone: it cancelled or stopped reading.
@@ -567,26 +664,14 @@ class DocumentStreamReactor final
       filename = filename_.string();
       content_type = content_type_;
     }
-    const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
-    auto endpoints = endpoints_;
-    const CollectorDeadline inbound_deadline = context_->deadline();
-    std::thread([weak_gate, endpoints, id, bytes, document_id, filename, content_type,
-                 inbound_deadline]() {
-      CollectorOutcome outcome = run_remote_collector(
-          id, endpoints, document_id, filename, content_type, *bytes,
-          std::string(), std::string(), inbound_deadline, [weak_gate] {
-            const auto gate = weak_gate.lock();
-            if (gate == nullptr) return true;
-            std::lock_guard<std::mutex> lock(gate->mutex);
-            return gate->reactor == nullptr || gate->reactor->client_gone();
-          });
-      if (const auto gate = weak_gate.lock()) {
-        std::lock_guard<std::mutex> lock(gate->mutex);
-        if (gate->reactor != nullptr) {
-          gate->reactor->on_collector_done(id, std::move(outcome));
-        }
-      }
-    }).detach();
+    start_leg(id, [endpoints = endpoints_, id, bytes, document_id, filename, content_type,
+                   inbound_deadline = context_->deadline()](
+                      const std::weak_ptr<CallbackGate>& weak_gate) {
+      deliver(weak_gate, id,
+              run_remote_collector(id, endpoints, document_id, filename, content_type,
+                                   *bytes, std::string(), std::string(), inbound_deadline,
+                                   leg_cancelled(weak_gate)));
+    });
   }
 
   void on_document(int total_pages) {
@@ -791,7 +876,9 @@ class DocumentStreamReactor final
   const size_t maximum_buffered_pages_;
   std::shared_ptr<CallbackGate> callback_gate_;
   std::shared_ptr<InflightBytes> inflight_;
-  // What this stream's chunks charged to inflight_, returned on teardown.
+  // What this stream's chunks charged to inflight_ and still owns: moved
+  // onto the shared buffer when the legs take the bytes, else returned on
+  // teardown.
   uint64_t charged_bytes_ = 0;
   std::mutex mutex_;
   pipestream::parse::v1::DocumentChunk incoming_;

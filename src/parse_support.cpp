@@ -256,6 +256,14 @@ grpc::Status status_from_exception(std::exception_ptr failure) {
   return grpc::Status::OK;
 }
 
+CollectorOutcome outcome_from_exception(std::exception_ptr failure) {
+  const grpc::Status status = status_from_exception(std::move(failure));
+  CollectorOutcome outcome;
+  outcome.error = status.error_message();
+  outcome.code = status.error_code();
+  return outcome;
+}
+
 CollectorOutcome cancelled_outcome() {
   CollectorOutcome outcome;
   outcome.error = "request cancelled";

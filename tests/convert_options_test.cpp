@@ -1,4 +1,6 @@
+#include <new>
 #include <string>
+#include <system_error>
 
 #include "../src/parse_support.h"
 #include "../src/source_parse.h"
@@ -241,6 +243,22 @@ void verify_status_from_exception_covers_every_throw() {
       static_cast<int>(grpc::StatusCode::RESOURCE_EXHAUSTED), "a saturated scheduler");
 }
 
+// A leg that throws reports an ordinary failed outcome carrying the mapped
+// status, never success.
+void verify_outcome_from_exception_is_a_failure() {
+  const grparse::CollectorOutcome outcome = grparse::outcome_from_exception(
+      std::make_exception_ptr(std::system_error(
+          std::make_error_code(std::errc::resource_unavailable_try_again), "thread")));
+  require(!outcome.success, "a thrown leg is not a success");
+  require_equal(static_cast<int>(outcome.code), static_cast<int>(grpc::StatusCode::INTERNAL),
+                "a thread that could not start");
+  require(outcome.error.find("thread") != std::string::npos, "the error keeps the reason");
+  require_equal(static_cast<int>(grparse::outcome_from_exception(
+                                     std::make_exception_ptr(std::bad_alloc()))
+                                     .code),
+                static_cast<int>(grpc::StatusCode::RESOURCE_EXHAUSTED), "an allocation failure");
+}
+
 }  // namespace
 
 int main() {
@@ -250,5 +268,6 @@ int main() {
       verify_unread_options_are_rejected_unless_default,
       verify_is_pdf_prefers_the_signature,
       verify_status_from_exception_covers_every_throw,
+      verify_outcome_from_exception_is_a_failure,
   });
 }

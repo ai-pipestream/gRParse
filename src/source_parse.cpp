@@ -842,11 +842,7 @@ class CvCollector {
       }
       return assemble(pages);
     } catch (...) {
-      CollectorOutcome outcome;
-      const grpc::Status status = status_from_exception(std::current_exception());
-      outcome.error = status.error_message();
-      outcome.code = status.error_code();
-      return outcome;
+      return outcome_from_exception(std::current_exception());
     }
   }
 

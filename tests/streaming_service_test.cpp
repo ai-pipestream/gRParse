@@ -1967,6 +1967,148 @@ StreamPdfRun run_stream_pdf(const std::string& pdf_target, bool capture_page_ima
   return run;
 }
 
+// The stream's in-flight charge follows the uploaded bytes, not the call:
+// a holder that outlives the call (here the CV leg's page source factory,
+// whose argument the test keeps) keeps the charge, and the charge returns
+// when the last holder drops the bytes.
+void verify_stream_charge_follows_the_bytes() {
+  const auto inflight = std::make_shared<grparse::InflightBytes>(1U << 20U);
+  const uint64_t charge = chunk(true).data().size();
+  std::mutex held_mutex;
+  std::shared_ptr<const std::string> held;
+  {
+    FakeRecognizer recognizer;
+    grparse::PageScheduler scheduler(
+        recognizer, {2, 3, 2, 3, 2, 2, 2},
+        [&held_mutex, &held](std::shared_ptr<const std::string> bytes, bool, double) {
+          const std::lock_guard<std::mutex> lock(held_mutex);
+          held = std::move(bytes);
+          return std::make_shared<FakeSource>();
+        });
+    grparse::DocumentStreamingService streaming_service(
+        scheduler, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{}),
+        grparse::RepairOptions{}, inflight);
+    int port = 0;
+    grpc::ServerBuilder builder;
+    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+    builder.RegisterService(&streaming_service);
+    auto server = builder.BuildAndStart();
+    require(server && port != 0, "charge test server failed to start");
+    auto client = pipestream::parse::v1::ParseStreamingService::NewStub(grpc::CreateChannel(
+        "127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    auto stream = client->StreamProcessDocument(&context);
+    require(stream->Write(chunk(true)), "charge test client could not write");
+    stream->WritesDone();
+    pipestream::parse::v1::DocumentStreamEvent ignored;
+    while (stream->Read(&ignored)) {
+    }
+    const grpc::Status status = stream->Finish();
+    require(status.ok(), "the charged stream parses: " + status.error_message());
+    server->Shutdown(std::chrono::system_clock::now() + 2s);
+    server->Wait();
+    require(inflight->in_use() == charge,
+            "bytes still held after the call keep their charge, got " +
+                std::to_string(inflight->in_use()));
+    const std::lock_guard<std::mutex> lock(held_mutex);
+    held.reset();
+  }
+  for (int attempt = 0; attempt < 100 && inflight->in_use() != 0; ++attempt) {
+    std::this_thread::sleep_for(10ms);
+  }
+  require(inflight->in_use() == 0, "the charge returns with the last holder");
+}
+
+// Holds the upload until its call is cancelled or a ceiling passes, so a
+// test can prove the routing leg's own call ends with the client's.
+class HangingPdfInspector final : public pdfv1::PdfParseService::Service {
+ public:
+  grpc::Status ParsePdf(
+      grpc::ServerContext* context,
+      grpc::ServerReaderWriter<pdfv1::ParsePdfResponse, pdfv1::ParsePdfRequest>* stream)
+      override {
+    pdfv1::ParsePdfRequest request;
+    while (stream->Read(&request)) {
+    }
+    received_.store(true);
+    const auto ceiling = std::chrono::steady_clock::now() + 5s;
+    while (!context->IsCancelled() && std::chrono::steady_clock::now() < ceiling) {
+      std::this_thread::sleep_for(5ms);
+    }
+    cancelled_.store(context->IsCancelled());
+    finished_.store(true);
+    return grpc::Status(grpc::StatusCode::UNAVAILABLE, "held until cancelled");
+  }
+
+  bool received() const { return received_.load(); }
+  bool cancelled() const { return cancelled_.load(); }
+  bool finished() const { return finished_.load(); }
+
+ private:
+  std::atomic<bool> received_{false};
+  std::atomic<bool> cancelled_{false};
+  std::atomic<bool> finished_{false};
+};
+
+// Waits up to `limit` for `condition`, polling.
+template <typename Condition>
+bool wait_for(Condition condition, std::chrono::milliseconds limit) {
+  const auto until = std::chrono::steady_clock::now() + limit;
+  while (!condition() && std::chrono::steady_clock::now() < until) {
+    std::this_thread::sleep_for(5ms);
+  }
+  return condition();
+}
+
+// A client that cancels mid-classification cancels the pdf routing leg's
+// own call too, like every other remote leg, instead of leaving it to run
+// to the call's deadline.
+void verify_streaming_pdf_router_cancels_with_the_client() {
+  HangingPdfInspector inspector;
+  PdfInspectorServer inspector_server(&inspector);
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
+                                   [](std::shared_ptr<const std::string>, bool, double) {
+                                     return std::make_shared<RoutableDigitalSource>();
+                                   });
+  grparse::CollectorTargets targets;
+  targets.pdf = inspector_server.target();
+  grparse::DocumentStreamingService streaming_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(targets));
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&streaming_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "pdf cancel stream server failed to start");
+  auto client = pipestream::parse::v1::ParseStreamingService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 30s);
+  auto stream = client->StreamProcessDocument(&context);
+  pipestream::parse::v1::DocumentChunk source;
+  source.set_document_id("pdf-cancel");
+  source.set_filename("cancel.pdf");
+  source.set_content_type("application/pdf");
+  source.set_data("%PDF-in-memory");
+  source.set_complete(true);
+  require(stream->Write(source), "pdf cancel client could not write the source chunk");
+  stream->WritesDone();
+  require(wait_for([&inspector] { return inspector.received(); }, 5000ms),
+          "the routing leg reaches the inspector");
+  context.TryCancel();
+  pipestream::parse::v1::DocumentStreamEvent ignored;
+  while (stream->Read(&ignored)) {
+  }
+  stream->Finish();
+  require(wait_for([&inspector] { return inspector.finished(); }, 6000ms),
+          "the inspector call ends");
+  require(inspector.cancelled(), "the routing leg's own call is cancelled with the client");
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+}
+
 void verify_pdf_fast_path_skips_the_cv_pipeline() {
   FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {});
   PdfInspectorServer inspector_server(&inspector);
@@ -2634,6 +2776,8 @@ int main() {
         verify_streaming_pdf_fast_path_renders_previews();
         verify_streaming_pdf_fast_path_skips_previews_when_off();
         verify_streaming_pdf_classification_restricts_recognition();
+        verify_stream_charge_follows_the_bytes();
+        verify_streaming_pdf_router_cancels_with_the_client();
         verify_hierarchical_chunk_rpc_carries_digest_and_offsets(&server);
         verify_hybrid_chunk_rpc_merges_and_validates(&server);
         verify_chunk_rpcs_refuse_targets_and_surface_failures(&server);
