@@ -186,6 +186,13 @@ S3Client::S3Client(S3Config config) : config_(std::move(config)) {
     throw std::invalid_argument(
         "S3Target endpoint is not https, and a session token is never sent in cleartext");
   }
+  // Nor to a peer nobody checked: without verification any host on the path
+  // can answer for the endpoint and read the token off the request.
+  if (!config_.session_token.empty() && !config_.verify_ssl) {
+    throw std::invalid_argument(
+        "S3Target sets verify_ssl false, and a session token is never sent to an "
+        "unverified peer");
+  }
   host_header_ = host_header_for(scheme_, authority_);
   region_ = config_.region.empty() ? region_for_endpoint(config_.endpoint) : config_.region;
 }

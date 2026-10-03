@@ -56,6 +56,14 @@ grpc::Status resolve_s3_credentials(const parsev1::S3Target& target, S3Config* c
         "S3Target omitted credentials and ambient credentials are disabled "
         "(GRPARSE_S3_AMBIENT_CREDENTIALS=1 enables them)");
   }
+  // The server's identity is never handed to a peer whose certificate went
+  // unchecked: a caller who turns verification off could otherwise answer
+  // for the endpoint and read the credential headers.
+  if (!config->verify_ssl) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        "S3Target sets verify_ssl false, and ambient credentials are "
+                        "only sent to a verified peer");
+  }
   const char* access = std::getenv("AWS_ACCESS_KEY_ID");
   const char* secret = std::getenv("AWS_SECRET_ACCESS_KEY");
   if (access == nullptr || access[0] == '\0' || secret == nullptr || secret[0] == '\0') {
