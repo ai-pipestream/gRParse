@@ -407,8 +407,14 @@ class RemotePdfPageSource final : public PageSource {
     const uint64_t width = raster.width_px();
     const uint64_t height = raster.height_px();
     const uint64_t stride = raster.stride_bytes();
-    if (width > kMaxDim || height > kMaxDim || stride < width * channels ||
-        raster.pixels().size() < height * stride) {
+    // Every size product is checked: a stride or height chosen to wrap the
+    // multiply would otherwise pass the size check with a short buffer.
+    uint64_t row_bytes = 0;
+    uint64_t total_bytes = 0;
+    const bool wraps = __builtin_mul_overflow(width, static_cast<uint64_t>(channels), &row_bytes) ||
+                       __builtin_mul_overflow(height, stride, &total_bytes);
+    if (wraps || width > kMaxDim || height > kMaxDim || stride < row_bytes ||
+        raster.pixels().size() < total_bytes) {
       throw InvalidDocument("PDF backend answered with a malformed raster (" +
                             std::to_string(width) + "x" + std::to_string(height) + ", stride " +
                             std::to_string(stride) + ", " +
