@@ -9,6 +9,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <print>
 #include <stdexcept>
 #include <string>
@@ -2530,6 +2531,10 @@ class FakePdfService final : public pdfv1::PdfParseService::Service {
   // Pages the last dial asked for (PdfOptions.pages). Empty means the
   // client left the field unset and the collector extracts every page.
   std::vector<uint32_t> last_pages() const { return last_pages_; }
+  // The span the last dial asked for (PdfOptions.first_page/last_page);
+  // nullopt where the client left that end unset.
+  std::optional<uint32_t> first_page() const { return first_page_; }
+  std::optional<uint32_t> last_page() const { return last_page_; }
 
   grpc::Status ParsePdf(
       grpc::ServerContext*,
@@ -2539,11 +2544,15 @@ class FakePdfService final : public pdfv1::PdfParseService::Service {
     bool emit_document = false;
     std::string bytes;
     last_pages_.clear();
+    first_page_.reset();
+    last_page_.reset();
     while (stream->Read(&request)) {
       if (request.has_options()) {
         emit_document = request.options().emit_document();
         last_pages_.assign(request.options().pages().begin(),
                            request.options().pages().end());
+        if (request.options().has_first_page()) first_page_ = request.options().first_page();
+        if (request.options().has_last_page()) last_page_ = request.options().last_page();
       } else {
         bytes += request.chunk();
       }
@@ -2585,6 +2594,8 @@ class FakePdfService final : public pdfv1::PdfParseService::Service {
   std::vector<uint32_t> pages_needing_ocr_;
   bool encoding_issues_;
   std::vector<uint32_t> last_pages_;
+  std::optional<uint32_t> first_page_;
+  std::optional<uint32_t> last_page_;
 };
 
 class FailingPdfService final : public pdfv1::PdfParseService::Service {
@@ -2879,39 +2890,88 @@ void verify_pdf_plain_leg_returns_the_document() {
           "the plain leg returns the collector's document whatever the class");
 }
 
-// Docling page_range → PdfOptions.pages: inclusive 1-indexed span expands
-// into the collector's page list; unset leaves pages empty (all pages).
-void verify_pdf_page_range_forwards_as_pages() {
+// Docling page_range → PdfOptions.first_page/last_page: an inclusive
+// 1-indexed span costs two numbers however long it is, and never a page
+// list; unset leaves the selection empty (all pages).
+void verify_pdf_page_range_forwards_as_a_span() {
   FakePdfService service(pdfv1::PDF_TYPE_TEXT_BASED, {});
   ServerFixture server(&service);
   const auto unset =
       grparse::collect_pdf(server.channel(), "%PDF-fake", grparse::kNoCollectorDeadline);
   require(unset.outcome.success, "unset page_range still collects: " + unset.outcome.error);
-  require(service.last_pages().empty(),
-          "without page_range the collector leaves PdfOptions.pages empty");
+  require(service.last_pages().empty() && !service.first_page() && !service.last_page(),
+          "without page_range the collector selects no pages");
 
   const auto ranged = grparse::collect_pdf(server.channel(), "%PDF-fake",
                                            grparse::kNoCollectorDeadline,
                                            std::make_pair(2, 4));
   require(ranged.outcome.success, "page_range collect succeeds: " + ranged.outcome.error);
-  require(service.last_pages() == std::vector<uint32_t>({2, 3, 4}),
-          "page_range expands to the inclusive PdfOptions.pages list");
+  require(service.last_pages().empty() && service.first_page() == 2U &&
+              service.last_page() == 4U,
+          "page_range forwards as the inclusive first_page/last_page span");
+
+  const auto head = grparse::collect_pdf(server.channel(), "%PDF-fake",
+                                         grparse::kNoCollectorDeadline, std::make_pair(1, 3));
+  require(head.outcome.success, "a leading span collects: " + head.outcome.error);
+  require(!service.first_page() && service.last_page() == 3U,
+          "a span from page 1 leaves first_page at its default");
 
   // Docling's "to the end" span, (1, sys.maxsize) clamped to INT32_MAX on
-  // this wire, is the whole document: no list, no overflow, no allocation.
+  // this wire, is the whole document: no selection at all.
   const auto open_ended = grparse::collect_pdf(
       server.channel(), "%PDF-fake", grparse::kNoCollectorDeadline,
       std::make_pair(1, std::numeric_limits<int>::max()));
   require(open_ended.outcome.success, "open-ended page_range collects: " + open_ended.outcome.error);
-  require(service.last_pages().empty(),
-          "an open-ended span from page 1 sends no page list");
+  require(service.last_pages().empty() && !service.first_page() && !service.last_page(),
+          "an open-ended span from page 1 selects nothing");
 
+  // A tail far into a long document is still two numbers, not a list.
   const auto tail = grparse::collect_pdf(server.channel(), "%PDF-fake",
                                          grparse::kNoCollectorDeadline,
-                                         std::make_pair(99999, std::numeric_limits<int>::max()));
+                                         std::make_pair(250000, std::numeric_limits<int>::max()));
   require(tail.outcome.success, "an open-ended tail collects: " + tail.outcome.error);
-  require(service.last_pages() == std::vector<uint32_t>({99999, 100000}),
-          "an open-ended span from a later page stops at the listed-page ceiling");
+  require(service.last_pages().empty() && service.first_page() == 250000U &&
+              !service.last_page(),
+          "an open-ended span from a later page sends first_page alone");
+}
+
+// A trailer warning the vendored contract learned after the client was
+// written still prints by its enum name, never as a bare number.
+class OutOfRangePdfService final : public pdfv1::PdfParseService::Service {
+ public:
+  grpc::Status ParsePdf(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<pdfv1::ParsePdfResponse, pdfv1::ParsePdfRequest>* stream)
+      override {
+    pdfv1::ParsePdfRequest request;
+    while (stream->Read(&request)) {
+    }
+    pdfv1::ParsePdfResponse event;
+    event.mutable_info()->set_pdf_type(pdfv1::PDF_TYPE_TEXT_BASED);
+    event.mutable_info()->set_page_count(2);
+    stream->Write(event);
+    event.Clear();
+    *event.mutable_document() = canned_document("pdf");
+    stream->Write(event);
+    event.Clear();
+    auto* warning = event.mutable_status()->add_warnings();
+    warning->set_code(pdfv1::PARSE_WARNING_CODE_PAGES_OUT_OF_RANGE);
+    warning->set_message("pages 7, 9 are past the end of a 2-page document");
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+};
+
+void verify_pdf_out_of_range_warning_prints_by_name() {
+  OutOfRangePdfService service;
+  ServerFixture server(&service);
+  const auto result = grparse::collect_pdf(server.channel(), "%PDF-fake");
+  require(result.outcome.success, "pdf collection succeeds: " + result.outcome.error);
+  require(result.outcome.warnings.size() == 1 &&
+              result.outcome.warnings[0] ==
+                  "PARSE_WARNING_CODE_PAGES_OUT_OF_RANGE: pages 7, 9 are past the end of a "
+                  "2-page document",
+          "the out-of-range trailer warning carries its code name");
 }
 
 }  // namespace
@@ -3001,6 +3061,7 @@ int main() {
       verify_pdf_collector_failure_is_an_outcome,
       verify_pdf_endpoint_configuration,
       verify_pdf_plain_leg_returns_the_document,
-      verify_pdf_page_range_forwards_as_pages,
+      verify_pdf_page_range_forwards_as_a_span,
+      verify_pdf_out_of_range_warning_prints_by_name,
   });
 }
