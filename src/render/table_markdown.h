@@ -20,10 +20,12 @@ namespace grparse::render {
 using CellTextResolver = std::function<std::string(const std::string& ref)>;
 
 // The cell text of the model's computed grid (derived_table_grid), with the
-// two characters a Markdown row cannot carry rewritten.
+// two characters a Markdown row cannot carry rewritten. A cell with a
+// reference resolves once; its repeats at the other positions it spans
+// spend their resolved length from `budget` and render empty past it.
 std::vector<std::vector<std::string>> table_rows(
     const std::vector<std::vector<const ai::pipestream::document::v1::TableCell*>>& grid,
-    const CellTextResolver& resolve_ref);
+    const CellTextResolver& resolve_ref, GridBudget& budget);
 
 // The number of leading grid rows that form the column header, the way the
 // reference resolves a spanned header to the one row GFM allows: rows on

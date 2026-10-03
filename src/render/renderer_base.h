@@ -59,28 +59,56 @@ std::string trimmed(const std::string& text);
 // spelled-out punctuation ones.
 std::string code_fence_language(const ai::pipestream::document::v1::CodeItem& code);
 
-// The grid positions one document's tables may hold together. Each table
-// is already capped on its own, but a document of many capped tables could
-// still render gigabytes; a renderer (or the chunker) keeps one budget per
-// document and every grid it builds spends from it. A table built after the
-// budget runs out keeps no positions, with a warning.
+// What one document's tables may cost together. Each table is already
+// capped on its own, but a document of many capped tables could still
+// render gigabytes; a renderer (or the chunker) keeps one budget per
+// document and every grid it builds spends from it. The positions bound
+// the grid itself. A spanned cell repeats at every position it covers, so
+// its extra positions and the text they repeat spend from two more pools:
+// without them one cell spanning a large grid would print its text
+// millions of times. A table built after the positions run out keeps
+// none; a spanned cell whose repeats no longer fit lands at its first
+// position only. Either way one stderr line per document reports it.
 class GridBudget {
  public:
   static constexpr std::int64_t kDocumentPositions = std::int64_t{1} << 23;
+  static constexpr std::int64_t kDocumentRepeatPositions = std::int64_t{1} << 23;
+  static constexpr std::int64_t kDocumentRepeatBytes = std::int64_t{1} << 26;
   std::int64_t remaining() const { return remaining_; }
   void spend(std::int64_t positions) { remaining_ -= std::min(positions, remaining_); }
 
+  // Spends `repeats` extra positions of a cell whose text is `bytes` long;
+  // false, spending nothing, when either pool would run out.
+  bool spend_repeats(std::int64_t repeats, std::int64_t bytes) {
+    if (repeats <= 0) return true;
+    if (repeats > repeat_positions_) return false;
+    if (bytes > 0 && repeats > repeat_bytes_ / bytes) return false;
+    repeat_positions_ -= repeats;
+    repeat_bytes_ -= repeats * std::max<std::int64_t>(bytes, 0);
+    return true;
+  }
+  std::int64_t repeat_positions_remaining() const { return repeat_positions_; }
+  std::int64_t repeat_bytes_remaining() const { return repeat_bytes_; }
+
+  // True on the first truncation of the document, so it logs once.
+  bool first_truncation() { return !std::exchange(truncated_, true); }
+  bool truncated() const { return truncated_; }
+
  private:
   std::int64_t remaining_ = kDocumentPositions;
+  std::int64_t repeat_positions_ = kDocumentRepeatPositions;
+  std::int64_t repeat_bytes_ = kDocumentRepeatBytes;
+  bool truncated_ = false;
 };
 
 // The table's cell layout as a row-major pointer grid. The grid field wins
 // when populated; otherwise the flat cell list is placed by its offsets.
-// A spanned cell appears at every position it covers; nullptr marks a
-// position no cell reaches. The declared dimensions are untrusted: a grid
-// above a fixed position budget, or above what `budget` has left, keeps
-// only its leading rows and columns, and a warning goes to stderr
-// (derived_table_grid caps the same way). A wire grid counts as its row
+// A spanned cell appears at every position it covers while `budget` can
+// pay for the repeats, and at its first position only once it cannot;
+// nullptr marks a position no cell reaches. The declared dimensions are
+// untrusted: a grid above a fixed position budget, or above what `budget`
+// has left, keeps only its leading rows and columns, and a warning goes to
+// stderr (derived_table_grid caps the same way). A wire grid counts as its row
 // count times its widest row, since a jagged grid renders padded to that.
 std::vector<std::vector<const ai::pipestream::document::v1::TableCell*>> table_grid(
     const ai::pipestream::document::v1::TableData& data, GridBudget& budget);
@@ -92,7 +120,7 @@ std::vector<std::vector<const ai::pipestream::document::v1::TableCell*>> table_g
 // negative one counts back from the end, as the host language's indexing
 // does; an offset so negative that it falls off the front reaches no position
 // at all (the model raises there, which an export must not). nullptr marks a
-// position no cell covers.
+// position no cell covers. Repeats spend from `budget` as in table_grid.
 std::vector<std::vector<const ai::pipestream::document::v1::TableCell*>>
 derived_table_grid(const ai::pipestream::document::v1::TableData& data, GridBudget& budget);
 

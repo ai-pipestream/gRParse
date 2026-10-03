@@ -106,12 +106,61 @@ std::pair<int, int> kept_dimensions(int rows, int cols, GridBudget& budget) {
   }
   const int kept_cols = static_cast<int>(std::min<std::int64_t>(cols, allowance));
   const int kept_rows = kept_cols == 0 ? 0 : static_cast<int>(allowance / kept_cols);
-  std::println(stderr,
-               "grparse: table of {} x {} positions exceeds the render budget of {} "
-               "({} left for the document); rendering the first {} x {}",
-               rows, cols, kMaxGridPositions, budget.remaining(), kept_rows, kept_cols);
+  if (budget.first_truncation()) {
+    std::println(stderr,
+                 "grparse: table of {} x {} positions exceeds the render budget of {} "
+                 "({} left for the document); rendering the first {} x {}, and later "
+                 "truncations in this document are not logged",
+                 rows, cols, kMaxGridPositions, budget.remaining(), kept_rows, kept_cols);
+  }
   budget.spend(static_cast<std::int64_t>(kept_rows) * kept_cols);
   return {kept_rows, kept_cols};
+}
+
+// The kept indexes an offset range reaches along one grid dimension, as
+// two half-open spans in visiting order: `wrapped` holds the positions
+// negative offsets reach (counted back from the declared size), `direct`
+// the rest.
+struct Reach {
+  std::pair<int, int> wrapped{0, 0};
+  std::pair<int, int> direct{0, 0};
+
+  std::int64_t count() const {
+    return std::max(0, wrapped.second - wrapped.first) +
+           std::max(0, direct.second - direct.first);
+  }
+  int first() const { return wrapped.first < wrapped.second ? wrapped.first : direct.first; }
+  template <typename Visit>
+  void each(const Visit& visit) const {
+    for (int index = wrapped.first; index < wrapped.second; ++index) visit(index);
+    for (int index = direct.first; index < direct.second; ++index) visit(index);
+  }
+};
+
+// Writes `cell` at every position its row and column reaches cover, or,
+// when the document's budget cannot pay for the repeats, at the first one
+// only: the cell's text then appears once instead of once per position.
+void place_cell(std::vector<std::vector<const docv1::TableCell*>>& grid,
+                const docv1::TableCell& cell, const Reach& rows, const Reach& cols,
+                GridBudget& budget) {
+  const std::int64_t covered = rows.count() * cols.count();
+  if (covered == 0) return;
+  if (!budget.spend_repeats(covered - 1, static_cast<std::int64_t>(cell.text().size()))) {
+    if (budget.first_truncation()) {
+      std::println(stderr,
+                   "grparse: a table cell spanning {} positions exceeds the document's "
+                   "span budget; it renders at its first position only, and later "
+                   "truncations in this document are not logged",
+                   covered);
+    }
+    grid[static_cast<std::size_t>(rows.first())][static_cast<std::size_t>(cols.first())] = &cell;
+    return;
+  }
+  rows.each([&](int row) {
+    cols.each([&](int col) {
+      grid[static_cast<std::size_t>(row)][static_cast<std::size_t>(col)] = &cell;
+    });
+  });
 }
 
 }  // namespace
@@ -145,11 +194,11 @@ std::vector<std::vector<const docv1::TableCell*>> table_grid(
         rows, std::max(cell.end_row_offset_idx(), cell.start_row_offset_idx() + 1));
     const int col_end = std::min(
         cols, std::max(cell.end_col_offset_idx(), cell.start_col_offset_idx() + 1));
-    for (int row = std::max(0, cell.start_row_offset_idx()); row < row_end; ++row) {
-      for (int col = std::max(0, cell.start_col_offset_idx()); col < col_end; ++col) {
-        grid[static_cast<size_t>(row)][static_cast<size_t>(col)] = &cell;
-      }
-    }
+    Reach row_reach;
+    row_reach.direct = {std::max(0, cell.start_row_offset_idx()), row_end};
+    Reach col_reach;
+    col_reach.direct = {std::max(0, cell.start_col_offset_idx()), col_end};
+    place_cell(grid, cell, row_reach, col_reach, budget);
   }
   return grid;
 }
@@ -162,26 +211,24 @@ std::vector<std::vector<const docv1::TableCell*>> derived_table_grid(
   std::vector<std::vector<const docv1::TableCell*>> grid(
       static_cast<std::size_t>(kept_rows),
       std::vector<const docv1::TableCell*>(static_cast<std::size_t>(kept_cols), nullptr));
-  // Visits, in index order, the kept positions an offset range [begin, end)
-  // reaches: a negative offset counts back from the declared size, and one
-  // that falls off the front reaches nothing.
-  const auto each_position = [](int begin, int end, int size, int kept, const auto& visit) {
+  // The kept positions an offset range [begin, end) reaches: a negative
+  // offset counts back from the declared size, and one that falls off the
+  // front reaches nothing.
+  const auto reach = [](int begin, int end, int size, int kept) {
     end = std::min(end, size);
     begin = std::min(begin, size);
-    for (int index = std::max(begin, -size); index < std::min({end, 0, kept - size}); ++index) {
-      visit(index + size);
-    }
-    for (int index = std::max(begin, 0); index < std::min(end, kept); ++index) visit(index);
+    Reach out;
+    const int wrapped_begin = std::max(begin, -size);
+    const int wrapped_end = std::min({end, 0, kept - size});
+    if (wrapped_begin < wrapped_end) out.wrapped = {wrapped_begin + size, wrapped_end + size};
+    out.direct = {std::max(begin, 0), std::min(end, kept)};
+    return out;
   };
   for (const auto& cell : data.table_cells()) {
-    each_position(cell.start_row_offset_idx(), cell.end_row_offset_idx(), rows, kept_rows,
-                  [&](int row_at) {
-                    each_position(cell.start_col_offset_idx(), cell.end_col_offset_idx(),
-                                  cols, kept_cols, [&](int col_at) {
-                                    grid[static_cast<std::size_t>(row_at)]
-                                        [static_cast<std::size_t>(col_at)] = &cell;
-                                  });
-                  });
+    place_cell(grid, cell,
+               reach(cell.start_row_offset_idx(), cell.end_row_offset_idx(), rows, kept_rows),
+               reach(cell.start_col_offset_idx(), cell.end_col_offset_idx(), cols, kept_cols),
+               budget);
   }
   return grid;
 }

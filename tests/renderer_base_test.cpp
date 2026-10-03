@@ -315,6 +315,57 @@ void verify_grids_spend_from_the_document_budget() {
           "a table built after the budget runs out keeps no positions");
 }
 
+// A spanned cell repeats at every position it covers, so its repeats spend
+// from the document's budget: a 1 KiB cell spanning a 2048 x 2048 grid
+// would print 4 GiB, and lands at its first position only instead. Cells
+// with no text still spend positions, which bounds the writes many
+// full-grid cells cost.
+void verify_spanned_cells_spend_from_the_document_budget() {
+  docv1::TableData data;
+  data.set_num_rows(2048);
+  data.set_num_cols(2048);
+  auto* wide = data.add_table_cells();
+  wide->set_text(std::string(1024, 'x'));
+  wide->set_end_row_offset_idx(2048);
+  wide->set_end_col_offset_idx(2048);
+  render::GridBudget budget;
+  auto grid = render::derived_table_grid(data, budget);
+  require(grid.size() == 2048 && grid[0][0] == wide && grid[0][1] == nullptr &&
+              grid[2047][2047] == nullptr,
+          "a span the budget cannot repeat lands at its first position only");
+  require_equal(budget.repeat_bytes_remaining(), render::GridBudget::kDocumentRepeatBytes,
+                "a refused span spends nothing");
+  require(budget.truncated(), "the refused span is recorded against the document");
+
+  docv1::TableData empty_spans;
+  empty_spans.set_num_rows(2048);
+  empty_spans.set_num_cols(2048);
+  for (int index = 0; index < 100; ++index) {
+    auto* cell = empty_spans.add_table_cells();
+    cell->set_end_row_offset_idx(2048);
+    cell->set_end_col_offset_idx(2048);
+  }
+  render::GridBudget fresh;
+  grid = render::table_grid(empty_spans, fresh);
+  require(grid[2047][2047] == &empty_spans.table_cells(1),
+          "the first two full-grid cells fit the repeat pool and fill the grid");
+  require(grid[0][0] == &empty_spans.table_cells(99) && grid[0][1] == &empty_spans.table_cells(1),
+          "every later one lands at its first position only");
+  require_equal(fresh.repeat_positions_remaining(),
+                render::GridBudget::kDocumentRepeatPositions - 2 * ((std::int64_t{1} << 22) - 1),
+                "only the two filled spans spent repeat positions");
+
+  docv1::TableData small;
+  small.set_num_rows(2);
+  small.set_num_cols(2);
+  auto* header = small.add_table_cells();
+  header->set_text("AB");
+  header->set_end_row_offset_idx(1);
+  header->set_end_col_offset_idx(2);
+  require_equal(grid_text(render::derived_table_grid(small, fresh)), "AB,AB/.,.",
+                "a span that fits still repeats at every position it covers");
+}
+
 void verify_custom_fields_order_by_their_final_name() {
   google::protobuf::Map<std::string, google::protobuf::Value> fields;
   fields["zeta__b"].set_string_value("z");
@@ -378,6 +429,7 @@ int main() {
       verify_the_derived_grid_wraps_a_negative_offset,
       verify_the_derived_grid_ignores_the_wire_grid,
       verify_grids_spend_from_the_document_budget,
+      verify_spanned_cells_spend_from_the_document_budget,
       verify_custom_fields_order_by_their_final_name,
       verify_a_non_conforming_name_moves_under_the_pipestream_namespace,
       verify_a_rename_collision_takes_a_numeric_suffix,
