@@ -766,7 +766,10 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     // OCR, the weaker claim.
     offset->set_source(digital && !ocr ? pipestream::parse::v1::TEXT_SOURCE_DIGITAL_PDF
                                        : pipestream::parse::v1::TEXT_SOURCE_OCR);
-    if (digital) add_collector_source("poppler-text", confidence, base->mutable_source());
+    // Digital text is the PDF's own text layer, read through the configured
+    // PDF backend service; the consensus attribution below names the engine
+    // when several voted.
+    if (digital) add_collector_source("pdf-text", confidence, base->mutable_source());
     if (ocr) add_collector_source("rapidocr", confidence, base->mutable_source());
 
     // Consensus attribution (PDF multi-backend votes only): when a losing

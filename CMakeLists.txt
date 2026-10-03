@@ -287,14 +287,12 @@ target_include_directories(miniz PUBLIC "${miniz_SOURCE_DIR}")
 # OpenCV 5 moved the 2D contour functions RapidOcrOnnx uses (minAreaRect,
 # boxPoints, getPerspectiveTransform) out of imgproc into the geometry module.
 find_package(OpenCV 5.0 REQUIRED COMPONENTS core imgcodecs imgproc geometry)
-find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
 # libcurl carries the S3 target's signed PUTs.  The distribution's own, not a
 # vendored copy: the three images already ship a TLS stack, and the signing is
 # this repo's (Signature V4 over the request headers), so nothing here needs
 # an AWS SDK.
 find_package(CURL REQUIRED)
-pkg_check_modules(POPPLER_CPP REQUIRED IMPORTED_TARGET poppler-cpp)
 
 # The server links gRPC's vendored BoringSSL statically and libcurl
 # dynamically, and libcurl's TLS backend is OpenSSL.  The two define the same
@@ -751,7 +749,7 @@ target_compile_definitions(grparse_core
 target_link_libraries(grparse_core
   # grparse_curl is PUBLIC for its link options alone: they belong to every
   # executable that ends up with both TLS stacks in its link closure.
-  PUBLIC grparse_proto rapidocr PkgConfig::POPPLER_CPP Threads::Threads grparse_curl
+  PUBLIC grparse_proto rapidocr Threads::Threads grparse_curl
   PRIVATE ZXing::ZXing yaml-cpp::yaml-cpp simdutf::simdutf miniz tokenizers_cpp grparse_flags)
 
 add_executable(grparse-server src/main.cpp src/server_config.cpp)
@@ -794,7 +792,6 @@ if(BUILD_TESTING)
     remote-pdf-source-test
     consensus-page-source-test
     prometheus-metrics-test
-    pdf-source-concurrency-test
     raster-source-test
     reading-order-test
     region-geometry-test

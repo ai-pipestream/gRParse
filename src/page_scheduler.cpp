@@ -138,7 +138,17 @@ class BusyTimer final {
 struct PageScheduler::Ticket::State {
   explicit State(Callbacks value) : callbacks(std::move(value)) {}
 
-  void cancel() { cancelled.store(true); }
+  // Also aborts the source's backend calls in flight, so a cancelled or
+  // failed document does not hold a render worker until a backend answers.
+  void cancel() {
+    cancelled.store(true);
+    std::shared_ptr<PageSource> open_source;
+    {
+      std::lock_guard<std::mutex> lock(schedule_mutex);
+      open_source = source;
+    }
+    if (open_source) open_source->cancel();
+  }
 
   void fail(std::exception_ptr value) {
     {
@@ -231,10 +241,8 @@ class PageScheduler::Impl final {
       throw std::invalid_argument("Scheduler worker counts, page window, and document limit must be positive");
     }
     if (!source_factory_) {
-      const size_t parsers = options_.pdf_parsers > 0 ? options_.pdf_parsers : options_.render_workers;
-      source_factory_ = [parsers](std::shared_ptr<const std::string> bytes, bool pdf,
-                                  double render_dpi) {
-        return open_in_memory_document(std::move(bytes), pdf, parsers, render_dpi);
+      source_factory_ = [](std::shared_ptr<const std::string> bytes, bool pdf, double render_dpi) {
+        return open_in_memory_document(std::move(bytes), pdf, render_dpi);
       };
     }
     // Any thread that fails to start must not leave the already-started ones
@@ -504,6 +512,7 @@ class PageScheduler::Impl final {
                                       : kDefaultRenderDpi;
         auto source = source_factory_(document.bytes, document.pdf, render_dpi);
         if (!source) throw InvalidDocument("Document source could not be opened");
+        source->set_deadline(document.request->tuning.deadline);
         const int pages = source->page_count();
         if (pages <= 0) throw InvalidDocument("Document does not contain a page");
         // Docling page_range: inclusive 1-indexed span. Clamp the end to the
@@ -530,6 +539,9 @@ class PageScheduler::Impl final {
           document.request->next_page_to_schedule = first_page;
           document.request->available_slots = document.request->page_window;
         }
+        // A cancel that landed while the source was opening found no source
+        // to abort; this one reaches it.
+        if (document.request->cancelled.load()) document.request->source->cancel();
         // Callers wait on the number of pages that will arrive, not the last
         // page index (which may be higher when the span does not start at 1).
         document.request->callbacks.on_document(page_count);
@@ -591,9 +603,10 @@ class PageScheduler::Impl final {
           }
         }
         // Inspector-routed pages recognize exactly the named set; a page the
-        // inspector called text-bearing but Poppler reads as layerless still
-        // recognizes, because an empty page is a worse answer than the two
-        // extractors disagreeing.  Otherwise the mode decides as always.
+        // inspector called text-bearing but the PDF backend reads as
+        // layerless still recognizes, because an empty page is a worse
+        // answer than the two extractors disagreeing.  Otherwise the mode
+        // decides as always.
         const bool run_ocr =
             inspector_routed
                 ? ocr_pages.count(page->page_number) != 0 || !digital.has_value()

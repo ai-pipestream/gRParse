@@ -46,8 +46,10 @@ The last overlay must be `compose.stack.models.yaml`; it replaces the base
 `./models:/models` bind mount. Add `compose.stack.expose-grpc.yaml` only when
 an external client needs plaintext gRPC on trusted networks. Core operation
 needs no sibling checkout. The optional `heavy` ASR profile additionally needs
-Whisper weights at `./protos/grpc-asr/models`; the `parsers`, `calamine`, and
-`pdf-backends` profiles add their named collectors/backends. The base's
+Whisper weights at `./protos/grpc-asr/models`; the `parsers`, `calamine`,
+`pdf-backends` (grpc-qparse) and `poppler` (the GPL grpc-poppler) profiles
+add their named collectors/backends. The core profile already runs
+grpc-pdfium, the PDF backend gRParse reads every PDF through. The base's
 collector target variables are deliberately wired to profile services, so
 requesting a format whose profile is down fails loudly.
 
@@ -55,7 +57,7 @@ requesting a format whose profile is down fails loudly.
 
 | Host | Overlay order and expected accelerator | Status |
 | --- | --- | --- |
-| macOS, Apple Silicon | `base`, `cpu`, `arm64`, `standalone`, `models` | Native arm64 CPU. Do not add OpenVINO. `pdf-backends` is optional amd64 emulation. |
+| macOS, Apple Silicon | `base`, `cpu`, `standalone`, `models` | Native arm64 CPU, PDF backends included. Do not add OpenVINO. |
 | macOS, Intel | `base`, `cpu`, `standalone`, `models` | CPU only. Docker Desktop supports both Mac architectures, but this stack has no macOS GPU overlay. |
 | Linux amd64, CPU | `base`, `cpu`, `standalone`, `models` | CPU. |
 | Linux amd64, NVIDIA | `base`, `standalone`, `models` | CUDA image, existing `gpus: all` setting. Validate the host NVIDIA container runtime before startup. |
@@ -63,13 +65,6 @@ requesting a format whose profile is down fails loudly.
 | Windows Docker Desktop/WSL2, CPU | Run from a WSL2 distribution: `base`, `cpu`, `standalone`, `models` | CPU. |
 | Windows Docker Desktop/WSL2, NVIDIA | Run from WSL2: `base`, `standalone`, `models` | CUDA when Docker's NVIDIA GPU-PV prerequisites pass. |
 | Windows Docker Desktop/WSL2, Intel GPU | No recipe | **Not run and unsupported by this Compose overlay.** It passes `/dev/dri`, while Intel's WSL2 container guidance uses `/dev/dxg` and `/usr/lib/wsl`; do not infer support from Linux OpenVINO settings. |
-
-For macOS arm64, leave `pdf-backends` disabled unless it is needed. If it is,
-add the `pdf-backends` profile after the arm64 overlay; those three private
-images are amd64-only and can start more slowly under emulation. For a cold
-backend startup, bring that profile up before gRParse or restart gRParse once
-the workers are ready, because its initial backend probe is intentionally
-one-shot.
 
 The Windows NVIDIA path is limited to Docker Desktop's WSL2 backend and an
 NVIDIA GPU with a WSL-capable driver. Docker documents that GPU support there

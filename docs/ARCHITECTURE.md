@@ -118,7 +118,7 @@ Do **not** serialize the machine: parse page → wait GPU → idle CPU → next 
 |---|---|
 | **Page pipeline** | Device ORT on page *N* while CPU parses/renders/assembles *N+1*; Java may decorate *N-1* |
 | **Warm singleton sessions** | OCR, layout, table, figure ORT nets loaded once per EP; leased from pools |
-| **No per-document CPU serialization** | A document's Poppler parsers are pooled (`GRPARSE_PDF_PARSERS`), so render and digital extraction of different pages of the *same* file overlap; a single large PDF must still saturate the render workers |
+| **No per-document CPU serialization** | A PDF's pages are fetched from the PDF backend service per page (text cells and raster by content hash), so render and digital extraction of different pages of the *same* file overlap; a single large PDF must still saturate the render workers |
 | **Bound by device memory / RAM** | `GRPARSE_PAGE_WORKERS` (+ per-model pool sizes); respect CUDA VRAM **or** Intel Arc memory — never unbounded fan-out |
 | **Diskless hot path** | Request bytes → memory → response; office LO spill only on tmpfs if needed |
 | **Selective OCR** | Digital PDF text wins; OCR only image-only / low-text pages |
@@ -174,7 +174,10 @@ in one shared space:
   on it rather than assume.
 
 Raster image inputs (PNG/JPEG/TIFF) use their native pixel grid unscaled —
-one page whose size is the decoded image size.
+one page whose size is the decoded image size, and one page per image of a
+multi-page TIFF. Each page's header size is checked against
+`GRPARSE_MAX_IMAGE_PIXELS` (default 200 megapixels) before it decodes; a
+larger page fails the document as `INVALID_ARGUMENT`.
 
 ## Geometry bridge contract (for Java / UI)
 

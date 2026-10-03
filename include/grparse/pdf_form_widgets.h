@@ -83,8 +83,8 @@ PdfWidgetFetch fetch_pdf_form_widgets(const std::string& bytes, const std::strin
 // stored state, not a reading) and folds them into `document`. Returns
 // nothing when there was nothing to do or the fold ran, and a warning
 // naming the failure when every backend failed; the document is then left
-// as it was. The in-process poppler-cpp path has no forms surface, so with
-// GRPARSE_PDF_BACKEND unset no widgets are read.
+// as it was. With GRPARSE_PDF_BACKEND unset no PDF is read at all, so
+// there are no widgets to fold.
 std::optional<std::string> fold_pdf_form_widgets_from_backend(
     const std::string& bytes, std::chrono::system_clock::time_point deadline,
     ai::pipestream::document::v1::Document* document);
