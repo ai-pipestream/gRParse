@@ -60,7 +60,12 @@ message Paragraph {
 }
 
 // One table cell. Spans cover merged regions; the anchor cell carries the
-// text and the span, covered positions are not repeated.
+// text and the span, covered positions are not repeated. A row lists its
+// cells left to right, so a consumer places each cell at the next grid
+// column that no row span from an earlier row still covers. Grid columns a
+// row leaves empty at its start or end (Word's gridBefore and gridAfter)
+// arrive as one empty cell spanning the gap, so placement never shifts.
+// Both spans are at least 1.
 message TableCell {
   string text = 1;
   uint32 row_span = 2;
@@ -71,9 +76,13 @@ message TableRow {
   repeated TableCell cells = 1;
 }
 
-// One body table, rows in document order.
+// One table, rows in document order: a body table of a word processing
+// document, or a table on a slide.
 message Table {
   repeated TableRow rows = 1;
+  // Set for a table on a slide: the index of the Slide it sits on. Slide
+  // tables follow their Slide event, in shape order.
+  optional uint32 slide_index = 2;
 }
 
 // One spreadsheet cell. `formatted` is the value as the workbook displays it;
@@ -98,15 +107,42 @@ message SheetRow {
   repeated SheetCell cells = 2;
 }
 
-// One worksheet, streamed as a unit.
+// A rectangular block of spreadsheet cells, zero-based and inclusive.
+message CellRange {
+  uint32 first_row = 1;
+  uint32 last_row = 2;
+  uint32 first_column = 3;
+  uint32 last_column = 4;
+}
+
+// One worksheet. By default a worksheet is exactly one Sheet event holding
+// all of its populated rows. A client that sets
+// ParseRequestChunk.sheet_batches instead receives rows in batches, so no
+// single message grows with the sheet: a sheet whose rows do not fit one
+// batch arrives as several consecutive Sheet events with the same index and
+// name, each holding the next rows in the order the sheet stores them, and
+// every batch but the last sets more_rows. A sheet that fits one batch is
+// one event either way.
 message Sheet {
   uint32 index = 1;
   string name = 2;
   repeated SheetRow rows = 3;
+  // The sheet's merged cells: the top-left cell of each range is the anchor
+  // that carries the value, the rest of the range is covered. Carried on the
+  // sheet's only or last event, because a sheet declares them after its
+  // rows.
+  repeated CellRange merged_regions = 4;
+  // True when the next event is another batch of this sheet. Only ever set
+  // when the request asked for sheet batches.
+  bool more_rows = 5;
+  // True when the workbook hides the sheet (hidden or very hidden). Its
+  // content is emitted all the same.
+  bool hidden = 6;
 }
 
-// One presentation slide: title, remaining text frames in shape order, and
-// speaker notes.
+// One presentation slide: title, remaining text frames in shape order
+// (shapes inside groups included), and speaker notes. The slide's tables
+// follow it as Table events carrying its index.
 message Slide {
   uint32 index = 1;
   string title = 2;
