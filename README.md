@@ -549,7 +549,13 @@ layer, which extraction leaves out). A text-based document that names any
 such page, or whose fold carries no body text at all, takes the CV path
 too rather than returning an empty Document: exactly those pages hit the OCR
 engines, and every other page trusts its embedded text layer instead of
-the per-page coverage heuristic deciding. Explicit `do_ocr`/`force_ocr`
+the per-page coverage heuristic deciding. When the inspector sets
+`ocr_recommended` on its classification (images carry essential context, or
+a dense newspaper layout whose reading order the text layer cannot be
+trusted to keep), the answer covers the whole document: a text-based
+document does not take the fast path even with no page named, and the CV
+path recognizes every page in place of the embedded layer, as it does when
+the trailer reports encoding issues. Explicit `do_ocr`/`force_ocr`
 request options still outrank the classification. If the inspector is
 unreachable or errors, the parse degrades to the unrouted CV path with the
 failure noted, never to a failed parse; unconfigured, nothing changes at

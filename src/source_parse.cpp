@@ -1609,6 +1609,7 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
           (parsed.classification.encoding_issues ? " with encoding issues in the text layer"
                                                  : "") +
           (parsed.classification.empty_body ? " and its extraction carried no body text" : "") +
+          (parsed.classification.ocr_recommended ? " and recommended OCR for it" : "") +
           "; no layout, OCR, or table-structure model ran");
     }
     return fast.outcome;
@@ -1644,9 +1645,11 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
       (parsed.classification.empty_body
            ? "; its extraction carried no body text, so it was not taken"
            : "") +
+      (parsed.classification.ocr_recommended
+           ? "; it recommended OCR over the text layer, so its extraction was not taken"
+           : "") +
       (forced
-           ? "; recognition was forced on every page in place of the "
-             "untrustworthy embedded layer"
+           ? "; recognition was forced on every page in place of the embedded layer"
        : route.ocr_pages.empty()
            ? "; the CV path's own per-page heuristic decided recognition"
            : "; recognition restricted to the " +

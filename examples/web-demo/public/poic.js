@@ -58,11 +58,22 @@ function cell(row, text) {
   return td;
 }
 
+// A worksheet's line: the relay folds grPOIc's row batches into one, so it
+// names the batch count when there was more than one, and says when the
+// stream ended before the sheet's last batch.
+function describeSheet(element) {
+  const notes = [`${element.rows} row(s)`];
+  if (element.batches > 1) notes.push(`${element.batches} batches`);
+  if (element.hidden) notes.push("hidden");
+  if (element.incomplete) notes.push("incomplete: the stream ended before the last batch");
+  return `sheet ${element.index}: ${element.name} (${notes.join(", ")})`;
+}
+
 // One line per element, in the table's "detail" column.
 function describe(element) {
   if (element.kind === "paragraph") return element.style || "";
   if (element.kind === "table") return `${element.rows} row(s) x ${element.cols} col(s)`;
-  if (element.kind === "sheet") return `sheet ${element.index}: ${element.name} (${element.rows} row(s))`;
+  if (element.kind === "sheet") return describeSheet(element);
   if (element.kind === "slide") return `slide ${element.index}${element.title ? `: ${element.title}` : ""}`;
   if (element.kind === "embedded") return element.filename || element.id || "";
   return "";

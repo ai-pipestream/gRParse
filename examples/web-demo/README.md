@@ -231,13 +231,19 @@ standalone at `/poic.html` when shell mode is off.
 The page posts document bytes (.docx/.xlsx/.pptx and the legacy OLE2 trio)
 to `POST /api/poic/parse` (same 500 MiB cap as `/api/parse`; `filename` and
 `contentType` as query params), the bridge opens the bidirectional
-`ParseDocument` stream, uploads the body in 1 MiB chunks (identity fields on
-the first, `complete` on the last), and relays the response stream as
-NDJSON: a `start` line from `DocumentInfo` (detected format plus the
-well-known metadata fields), one `preview` line per content element
-(paragraph/table/sheet/slide/embedded object, text capped at 512
+`ParseDocument` stream, uploads the body in 1 MiB chunks (identity fields
+and `sheet_batches` on the first, `complete` on the last), and relays the
+response stream as NDJSON: a `start` line from `DocumentInfo` (detected
+format plus the well-known metadata fields), one `preview` line per content
+element (paragraph/table/sheet/slide/embedded object, text capped at 512
 characters), an `end` line from the final `ParseStatus`, a `grpc-error`
-line on stream failure, and a final `done` summary. The contract is
+line on stream failure, and a final `done` summary. Sheets are always
+requested in batches, because grPOIc refuses a worksheet sent as one event
+past 256 MiB; `poic-sheets.js` folds the consecutive `more_rows` batches of
+a worksheet back into one `preview` line carrying the total row count, the
+batch count, and the first row, without holding the rows themselves. A
+sheet the stream left before its last batch is sent with `incomplete: true`.
+The contract is
 resolved from the sibling grPOIc checkout through the same
 `KNOWN_UIS`/`resolveServiceProto` registry the `/api/uis` probes use, so it
 works in the plain workspace, a worktree, and the demo image.

@@ -55,8 +55,10 @@ bool has_body_content(const docv1::Document& document) {
 PdfRouteDecision route_pdf_by_classification(const PdfClassification& classification) {
   PdfRouteDecision decision;
   // Document-wide encoding issues make the embedded layer untrustworthy for
-  // every class, so the CV run recognizes all pages rather than reading it.
-  decision.force_ocr = classification.encoding_issues;
+  // every class, and a detection that recommends OCR judged recognition the
+  // better reading of the whole document; either way the CV run recognizes
+  // all pages rather than reading the layer.
+  decision.force_ocr = classification.encoding_issues || classification.ocr_recommended;
   switch (classification.pdf_class) {
     case PdfClass::kTextBased:
       // The whole text layer is usable: the collector's own Document is the
@@ -72,8 +74,12 @@ PdfRouteDecision route_pdf_by_classification(const PdfClassification& classifica
       // Nor is one whose fold carried no body at all: a searchable scan
       // (a page image behind an invisible OCR layer) classifies TEXT_BASED
       // and extracts nothing, and an empty Document is not a parse.
+      // Nor is one the detection recommended OCR for: the newspaper case
+      // names no page, because every page has a usable layer and reading
+      // it in order is the hard part.
       decision.fast_path = classification.pages_needing_ocr.empty() &&
-                           !classification.encoding_issues && !classification.empty_body;
+                           !classification.encoding_issues && !classification.empty_body &&
+                           !classification.ocr_recommended;
       decision.ocr_pages = classification.pages_needing_ocr;
       break;
     case PdfClass::kScanned:
@@ -161,6 +167,7 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
           break;
       }
       page_count = info.page_count();
+      result.classification.ocr_recommended = info.ocr_recommended();
       for (const uint32_t page : info.pages_needing_ocr()) add_ocr_page(page, &ocr_pages);
     } else if (event.has_page()) {
       // The pass that decoded the page can convict it where the sampling

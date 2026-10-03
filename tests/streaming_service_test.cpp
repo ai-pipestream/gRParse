@@ -1542,6 +1542,11 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
   // not reach the collector.
   int dials() const { return dials_.load(); }
 
+  // Sets PdfInfo.ocr_recommended on the info event: the detection's
+  // document-wide judgement that OCR reads the document better than its
+  // text layer does.
+  void set_ocr_recommended(bool recommended) { ocr_recommended_ = recommended; }
+
   grpc::Status ParsePdf(
       grpc::ServerContext*,
       grpc::ServerReaderWriter<pdfv1::ParsePdfResponse, pdfv1::ParsePdfRequest>* stream)
@@ -1565,6 +1570,7 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
     auto* info = event.mutable_info();
     info->set_pdf_type(type_);
     info->set_page_count(3);
+    info->set_ocr_recommended(ocr_recommended_);
     for (const uint32_t page : pages_needing_ocr_) info->add_pages_needing_ocr(page);
     stream->Write(event);
     event.Clear();
@@ -1634,6 +1640,7 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
   std::vector<uint32_t> pages_needing_ocr_;
   bool paged_document_;
   bool searchable_scan_;
+  bool ocr_recommended_ = false;
   std::atomic<int> dials_{0};
 };
 
@@ -2266,6 +2273,50 @@ void verify_pdf_searchable_scan_takes_the_cv_path() {
     }
   }
   require(recorded, "the refused fast path is recorded as a collector warning");
+}
+
+// The newspaper shape: TEXT_BASED, no page named, a fold with body text,
+// and the detection recommending OCR for the document. The fold is not the
+// parse result, and recognition replaces the layer on every page.
+void verify_pdf_ocr_recommendation_takes_the_cv_path() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {});
+  inspector.set_ocr_recommended(true);
+  PdfInspectorServer inspector_server(&inspector);
+  const UnaryPdfRun run = run_unary_pdf(inspector_server.target());
+  require(run.status.ok(), "recommended-OCR parse failed: " + run.status.error_message());
+  require(run.recognizer_calls == 3,
+          "a document the inspector recommends OCR for is recognized on every page, got " +
+              std::to_string(run.recognizer_calls));
+  const auto& document = run.response.response().document().doc();
+  for (const auto& item : document.texts()) {
+    require(item.text().base().text() != "from pdf inspector",
+            "the fold of a document recommended for OCR is not the parse result");
+  }
+  const auto& fields = document.body().meta().custom_fields();
+  bool recorded = false;
+  if (fields.count("collector_warnings:pdf") == 1) {
+    for (const auto& value : fields.at("collector_warnings:pdf").list_value().values()) {
+      recorded = recorded || value.string_value().contains("recommended OCR");
+    }
+  }
+  require(recorded, "the recommendation that refused the fast path is recorded");
+}
+
+// The streaming leg routes the same way: no collector-document fast path,
+// every page recognized.
+void verify_streaming_pdf_ocr_recommendation_takes_the_cv_path() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {});
+  inspector.set_ocr_recommended(true);
+  PdfInspectorServer inspector_server(&inspector);
+  const StreamPdfRun run = run_stream_pdf(inspector_server.target());
+  require(run.status.ok(), "recommended-OCR stream failed: " + run.status.error_message());
+  require(run.recognizer_calls == 3,
+          "the streamed leg recognizes every page of a document recommended for OCR, got " +
+              std::to_string(run.recognizer_calls));
+  for (const auto& event : run.events) {
+    require(!event.has_collector_document(),
+            "the streamed leg does not deliver the fold as the fast-path result");
+  }
 }
 
 void verify_pdf_classification_restricts_recognition() {
@@ -2906,6 +2957,8 @@ int main() {
         verify_pdf_fast_path_skips_the_cv_pipeline();
         verify_pdf_searchable_scan_takes_the_cv_path();
         verify_pdf_classification_restricts_recognition();
+        verify_pdf_ocr_recommendation_takes_the_cv_path();
+        verify_streaming_pdf_ocr_recommendation_takes_the_cv_path();
         verify_pdf_collector_failure_degrades_to_the_cv_path();
         verify_queued_then_cancelled_call_never_dials_a_collector();
         verify_remote_legs_get_a_per_call_document_id();
