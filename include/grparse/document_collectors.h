@@ -8,7 +8,9 @@
 
 #include <grpcpp/grpcpp.h>
 
+#include "ai/pipestream/ebcdic/v1/ebcdic.pb.h"
 #include "grparse/collector_coordinator.h"
+#include "lolhtml/v1/lolhtml_service.pb.h"
 
 namespace grparse {
 
@@ -79,11 +81,13 @@ CollectorOutcome collect_xml_document(const std::shared_ptr<grpc::Channel>& chan
                                           kNoCollectorDeadline,
                                       CollectorCancelled cancelled = {});
 
-// grpc-ebcdic. `layout_json` is the JSON serialization of Docling's
-// EbcdicLayout, forwarded verbatim; empty is a caller error surfaced as an
-// INVALID_ARGUMENT outcome before anything is dialed.
+// grpc-ebcdic. `options` carries the request's layout in the collector's
+// own typed form (or the deprecated JSON form, forwarded verbatim); this
+// client asks for the Document event on top. Options with no layout are a
+// caller error surfaced as an INVALID_ARGUMENT outcome before anything is
+// dialed.
 CollectorOutcome collect_ebcdic_document(const std::shared_ptr<grpc::Channel>& channel,
-                                         const std::string& layout_json,
+                                         const ai::pipestream::ebcdic::v1::ParseOptions& options,
                                          const std::string& bytes,
                                          CollectorDeadline inbound_deadline =
                                              kNoCollectorDeadline,
@@ -107,13 +111,22 @@ CollectorOutcome collect_epub_document(const std::shared_ptr<grpc::Channel>& cha
 // each; chapters past it stay empty, with a warning. With no
 // markup channel (`GRPARSE_MARKUP_TARGET` unset) the skeleton is the
 // outcome, with a warning naming the variable, so the degradation is
-// visible rather than silent.
+// visible rather than silent. An image spine item (a cover or plate in the
+// spine) needs no markup dial: its chapter group gets one picture of the
+// bytes its chapter event carried.
+//
+// The chapters and images the stream carries are decompressed archive
+// entries, so a small book can inflate far past its upload: once they
+// pass `stream_byte_cap` together the call is cancelled and the leg fails
+// with RESOURCE_EXHAUSTED.
+inline constexpr size_t kEpubStreamByteCap = 512U * 1024U * 1024U;
 CollectorOutcome collect_epub_book(const std::shared_ptr<grpc::Channel>& epub,
                                    const std::shared_ptr<grpc::Channel>& markup,
                                    const std::string& bytes,
                                    CollectorDeadline inbound_deadline =
                                        kNoCollectorDeadline,
-                                   CollectorCancelled cancelled = {});
+                                   CollectorCancelled cancelled = {},
+                                   size_t stream_byte_cap = kEpubStreamByteCap);
 
 // grpc-markup (Markdown, HTML, AsciiDoc, LaTeX, WebVTT, BoxNote, Docling
 // JSON). The format is hinted from the filename and content type via
@@ -129,12 +142,12 @@ CollectorOutcome collect_markup_document(const std::shared_ptr<grpc::Channel>& c
 // grpc-lol-html, the one collector whose stream carries no document event:
 // it reports CSS selector matches as they happen, so this client folds the
 // match events into a Document here — a group per rule, its matches and
-// text as source-tagged text items in arrival order. `options_json` is the
-// protobuf JSON serialization of lolhtml.v1.ExtractOptions; empty is a
-// caller error surfaced as an INVALID_ARGUMENT outcome before anything is
-// dialed, because this client never invents selector rules.
+// text as source-tagged text items in arrival order. `options` is the
+// request's typed lolhtml.v1.ExtractOptions; absent is a caller error
+// surfaced as an INVALID_ARGUMENT outcome before anything is dialed,
+// because this client never invents selector rules.
 CollectorOutcome collect_lol_html_document(const std::shared_ptr<grpc::Channel>& channel,
-                                           const std::string& options_json,
+                                           const std::optional<lolhtml::v1::ExtractOptions>& options,
                                            const std::string& bytes,
                                            CollectorDeadline inbound_deadline =
                                                kNoCollectorDeadline,

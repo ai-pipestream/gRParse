@@ -309,7 +309,7 @@ class HtmlRenderer : RendererBase {
     if (excluded_layer(table.content_layer())) return;
     note_page(table.prov());
     const std::vector<std::string> captions = caption_texts(table.captions());
-    const auto grid = table_grid(table.data());
+    const auto grid = table_grid(table.data(), grid_budget_);
     if (grid.empty() && captions.empty()) return;
     std::string out = "<table>";
     if (!captions.empty()) {

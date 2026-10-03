@@ -107,9 +107,7 @@ CollectorOutcome run_remote_collector(
     pipestream::parse::v1::Collector id,
     const std::shared_ptr<CollectorEndpoints>& endpoints,
     const std::string& document_id, const std::string& filename,
-    const std::string& content_type, const std::string& bytes,
-    const std::string& ebcdic_layout_json,
-    const std::string& lol_html_options_json,
+    const std::string& content_type, const std::string& bytes, const CollectorRules& rules,
     CollectorDeadline inbound_deadline, CollectorCancelled cancelled) {
   CollectorOutcome outcome;
   if (!remote_collector(id)) {
@@ -157,7 +155,7 @@ CollectorOutcome run_remote_collector(
     case pipestream::parse::v1::COLLECTOR_XML:
       return collect_xml_document(endpoints->channel(id), bytes, inbound_deadline, cancelled);
     case pipestream::parse::v1::COLLECTOR_EBCDIC:
-      return collect_ebcdic_document(endpoints->channel(id), ebcdic_layout_json, bytes,
+      return collect_ebcdic_document(endpoints->channel(id), rules.ebcdic, bytes,
                                      inbound_deadline, cancelled);
     case pipestream::parse::v1::COLLECTOR_EPUB:
       // The book, not the skeleton: the chapters fold through the markup
@@ -181,8 +179,8 @@ CollectorOutcome run_remote_collector(
       return outcome;
     }
     case pipestream::parse::v1::COLLECTOR_LOL_HTML:
-      return collect_lol_html_document(endpoints->channel(id),
-                                       lol_html_options_json, bytes, inbound_deadline, cancelled);
+      return collect_lol_html_document(endpoints->channel(id), rules.lol_html, bytes,
+                                       inbound_deadline, cancelled);
     case pipestream::parse::v1::COLLECTOR_FASTWARC:
       return collect_fastwarc_document(endpoints->channel(id), bytes, inbound_deadline, cancelled);
     case pipestream::parse::v1::COLLECTOR_PDF:

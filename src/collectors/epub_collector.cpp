@@ -1,5 +1,6 @@
 #include "grparse/document_collectors.h"
 
+#include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <string>
@@ -10,6 +11,7 @@
 #include "collector_support.h"
 #include "grparse/epub_book.h"
 
+namespace docv1 = ai::pipestream::document::v1;
 namespace epubv1 = ai::pipestream::epub::v1;
 
 namespace grparse {
@@ -26,7 +28,7 @@ struct EpubStream {
 
 EpubStream read_epub_stream(const std::shared_ptr<grpc::Channel>& channel,
                             const std::string& bytes, CollectorDeadline inbound_deadline,
-                            CollectorCancelled cancelled) {
+                            CollectorCancelled cancelled, size_t byte_cap) {
   EpubStream result;
   auto stub = epubv1::EpubParseService::NewStub(channel);
   grpc::ClientContext context;
@@ -45,6 +47,18 @@ EpubStream read_epub_stream(const std::shared_ptr<grpc::Channel>& channel,
 
   bool trailer_seen = false;
   bool document_seen = false;
+  // What the kept chapters and images hold together; past the cap the call
+  // is cancelled and nothing more is kept.
+  size_t buffered = 0;
+  bool over_cap = false;
+  const auto keep = [&](size_t size) {
+    if (over_cap) return false;
+    buffered += size;
+    if (buffered <= byte_cap) return true;
+    over_cap = true;
+    context.TryCancel();
+    return false;
+  };
   epubv1::ParseEpubResponse event;
   while (stream->Read(&event)) {
     if (event.has_document()) {
@@ -52,11 +66,14 @@ EpubStream read_epub_stream(const std::shared_ptr<grpc::Channel>& channel,
       document_seen = true;
     } else if (event.has_chapter()) {
       auto* chapter = event.mutable_chapter();
-      result.chapters.push_back(EpubChapter{chapter->href(), chapter->media_type(),
-                                            std::move(*chapter->mutable_content())});
+      if (keep(chapter->content().size())) {
+        result.chapters.push_back(EpubChapter{chapter->href(), chapter->media_type(),
+                                              std::move(*chapter->mutable_content())});
+      }
     } else if (event.has_resource()) {
       auto* resource = event.mutable_resource();
-      if (resource->kind() == epubv1::RESOURCE_KIND_IMAGE && !resource->content().empty()) {
+      if (resource->kind() == epubv1::RESOURCE_KIND_IMAGE && !resource->content().empty() &&
+          keep(resource->content().size())) {
         result.images.push_back(EpubResource{resource->href(), resource->media_type(),
                                              std::move(*resource->mutable_content())});
       }
@@ -72,7 +89,17 @@ EpubStream read_epub_stream(const std::shared_ptr<grpc::Channel>& channel,
     event.Clear();
   }
   upload.join();
-  result.outcome = finish_outcome("epub", stream->Finish(), trailer_seen, document_seen,
+  const grpc::Status status = stream->Finish();
+  if (over_cap) {
+    result.outcome.success = false;
+    result.outcome.code = grpc::StatusCode::RESOURCE_EXHAUSTED;
+    result.outcome.error = "epub collector: the book's chapters and images exceed " +
+                           std::to_string(byte_cap) + " bytes once decompressed";
+    result.chapters.clear();
+    result.images.clear();
+    return result;
+  }
+  result.outcome = finish_outcome("epub", status, trailer_seen, document_seen,
                                   std::move(result.outcome));
   return result;
 }
@@ -82,9 +109,34 @@ std::string lowercase(std::string value) {
   return value;
 }
 
+// Whether a spine item is an image (a cover or a plate put straight in the
+// spine, SVG included): a picture, not a text chapter.
+bool image_chapter(const EpubChapter& chapter) {
+  return lowercase(chapter.media_type).starts_with("image/");
+}
+
+// The chapter Document an image spine item stands for: one picture whose
+// source names the item itself, so the fold places it in the chapter's
+// group and inlines the bytes the chapter event carried.
+docv1::Document image_chapter_document(const EpubChapter& chapter) {
+  docv1::Document document;
+  document.mutable_body()->set_self_ref("#/body");
+  document.mutable_furniture()->set_self_ref("#/furniture");
+  auto* picture = document.add_pictures();
+  picture->set_self_ref("#/pictures/0");
+  picture->mutable_parent()->set_ref("#/body");
+  picture->set_label(docv1::DOC_ITEM_LABEL_PICTURE);
+  picture->mutable_image()->set_mimetype(chapter.media_type);
+  // A leading slash names the archive root, so the reference resolves to
+  // the item's own path.
+  picture->mutable_image()->set_uri("/" + chapter.href);
+  picture->add_source()->mutable_collector()->set_collector("epub");
+  document.mutable_body()->add_children()->set_ref("#/pictures/0");
+  return document;
+}
+
 // Whether a spine item is something the markup collector reads as HTML.
-// Spine items are XHTML by the EPUB specification; an SVG-in-spine item is
-// a picture, not a text chapter, and is left to its group.
+// Spine items are XHTML by the EPUB specification.
 bool html_chapter(const EpubChapter& chapter) {
   const std::string type = lowercase(chapter.media_type);
   if (type == "application/xhtml+xml" || type == "text/html") return true;
@@ -98,16 +150,17 @@ CollectorOutcome collect_epub_document(const std::shared_ptr<grpc::Channel>& cha
                                        const std::string& bytes,
                                        CollectorDeadline inbound_deadline,
                                        CollectorCancelled cancelled) {
-  return std::move(
-      read_epub_stream(channel, bytes, inbound_deadline, std::move(cancelled)).outcome);
+  return std::move(read_epub_stream(channel, bytes, inbound_deadline, std::move(cancelled),
+                                    kEpubStreamByteCap)
+                       .outcome);
 }
 
 CollectorOutcome collect_epub_book(const std::shared_ptr<grpc::Channel>& epub,
                                    const std::shared_ptr<grpc::Channel>& markup,
                                    const std::string& bytes,
                                    CollectorDeadline inbound_deadline,
-                                   CollectorCancelled cancelled) {
-  EpubStream stream = read_epub_stream(epub, bytes, inbound_deadline, cancelled);
+                                   CollectorCancelled cancelled, size_t stream_byte_cap) {
+  EpubStream stream = read_epub_stream(epub, bytes, inbound_deadline, cancelled, stream_byte_cap);
   CollectorOutcome& outcome = stream.outcome;
   if (!outcome.success) return std::move(outcome);
   if (markup == nullptr) {
@@ -129,6 +182,18 @@ CollectorOutcome collect_epub_book(const std::shared_ptr<grpc::Channel>& epub,
                                  "' and the ones after it were not parsed: the book's "
                                  "chapter deadline passed or the call was cancelled");
       break;
+    }
+    if (image_chapter(chapter)) {
+      chapters.push_back(ParsedChapter{chapter.href, image_chapter_document(chapter)});
+      const bool carried =
+          std::ranges::any_of(stream.images, [&chapter](const EpubResource& image) {
+            return image.href == chapter.href;
+          });
+      if (!carried && !chapter.content.empty()) {
+        stream.images.push_back(
+            EpubResource{chapter.href, chapter.media_type, std::move(chapter.content)});
+      }
+      continue;
     }
     if (!html_chapter(chapter)) {
       outcome.warnings.push_back("chapter '" + chapter.href + "' (" + chapter.media_type +

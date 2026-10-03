@@ -170,6 +170,12 @@ std::string region_for_endpoint(const std::string& endpoint) {
   return std::string(kDefaultRegion);
 }
 
+S3Endpoint parse_s3_endpoint(const std::string& endpoint) {
+  S3Endpoint parts;
+  split_endpoint(endpoint, &parts.scheme, &parts.authority, &parts.path);
+  return parts;
+}
+
 S3Client::S3Client(S3Config config) : config_(std::move(config)) {
   if (config_.endpoint.empty()) {
     throw std::invalid_argument("S3Target requires an endpoint");
@@ -178,8 +184,18 @@ S3Client::S3Client(S3Config config) : config_(std::move(config)) {
   if (config_.access_key.empty() || config_.secret_key.empty()) {
     throw std::invalid_argument("S3Target requires an access key and a secret key");
   }
+  // The endpoint goes into the URL and the signed Host header as is: a
+  // control character or space could split a header, and userinfo would
+  // make the host the caller sees differ from the one that is dialled.
+  if (std::ranges::any_of(config_.endpoint,
+                          [](unsigned char c) { return c <= 0x20 || c == 0x7F; })) {
+    throw std::invalid_argument("S3Target endpoint carries whitespace or a control character");
+  }
   split_endpoint(config_.endpoint, &scheme_, &authority_, &base_path_);
   if (authority_.empty()) throw std::invalid_argument("S3Target endpoint names no host");
+  if (authority_.find('@') != std::string::npos) {
+    throw std::invalid_argument("S3Target endpoint carries userinfo, which is never sent");
+  }
   // A session token is a bearer credential on its own: it never crosses the
   // wire in cleartext, whatever the endpoint asks for.
   if (!config_.session_token.empty() && scheme_ != "https") {

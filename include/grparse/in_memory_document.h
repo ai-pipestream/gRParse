@@ -78,13 +78,34 @@ inline constexpr uint64_t kDefaultMaxImagePixels = 200'000'000;
 inline constexpr size_t kMaxRasterPages = 4096;
 uint64_t max_image_pixels();
 
+// Whether an encoded image's own header (PNG, JPEG, TIFF, GIF, BMP, or
+// WebP) states a size within max_image_pixels() on every page. False when
+// the header cannot be read, so a caller decoding embedded or collector
+// images refuses what it cannot bound before cv::imdecode allocates.
+bool encoded_image_within_pixel_cap(const std::string& bytes);
+
 // The rasterization DPI a source uses when no per-document value arrives.
 inline constexpr double kDefaultRenderDpi = 200.0;
+
+// When a PDF source makes its opening backend call, the Probe that loads
+// the document and counts its pages.
+enum class SourceOpening {
+  // Before the open function returns, so a document the backend cannot
+  // load fails right there.
+  kNow,
+  // On the source's first use (page_count(), backend_name() or a page), so
+  // the caller can tie it to its request with set_deadline() and cancel()
+  // first and the opening call honors both. Load failures surface there.
+  kOnFirstUse,
+};
 
 // render_dpi is the per-document rasterization DPI; every page of the source
 // renders at it and all digital-line geometry scales to match, so downstream
 // coordinates stay self-consistent.  Raster sources are already pixels and
-// ignore it.
+// ignore it. The page scheduler calls the factory on one of its opener
+// threads, ties the source to the request, and only then asks for the page
+// count; a factory that returns a SourceOpening::kOnFirstUse source lets
+// the request's deadline and cancel reach the opening Probe.
 using PageSourceFactory = std::function<std::shared_ptr<PageSource>(
     std::shared_ptr<const std::string> bytes, bool pdf, double render_dpi)>;
 
@@ -92,8 +113,10 @@ using PageSourceFactory = std::function<std::shared_ptr<PageSource>(
 // PdfBackendService targets GRPARSE_PDF_BACKEND names: one target dials that
 // backend, a comma-separated list runs the consensus vote across all of
 // them. With the variable unset or empty a PDF raises
-// PdfBackendNotConfigured.
+// PdfBackendNotConfigured. `opening` says when a PDF source makes its first
+// backend call; rasters decode here either way.
 std::shared_ptr<PageSource> open_in_memory_document(std::shared_ptr<const std::string> bytes, bool pdf,
-                                                    double render_dpi = kDefaultRenderDpi);
+                                                    double render_dpi = kDefaultRenderDpi,
+                                                    SourceOpening opening = SourceOpening::kNow);
 
 }  // namespace grparse

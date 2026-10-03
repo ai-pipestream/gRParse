@@ -10,6 +10,7 @@
 
 #include "grparse/document_assembly.h"
 #include "grparse/in_memory_document.h"
+#include "grparse/page_source_watch.h"
 
 namespace grparse {
 
@@ -34,17 +35,28 @@ cv::Mat preview_of(const cv::Mat& raster) {
 void attach_page_previews(std::shared_ptr<const std::string> bytes,
                           ai::pipestream::document::v1::Document* document,
                           std::optional<std::pair<int, int>> page_range,
-                          const std::function<bool()>& stop) {
+                          const std::function<bool()>& stop,
+                          std::chrono::system_clock::time_point deadline) {
   if (document == nullptr || bytes == nullptr) return;
   std::shared_ptr<PageSource> source;
   try {
-    source = open_in_memory_document(std::move(bytes), /*pdf=*/true, kPreviewRenderDpi);
+    // The opening Probe waits for the watch below, so it honors the request.
+    source = open_in_memory_document(std::move(bytes), /*pdf=*/true, kPreviewRenderDpi,
+                                     SourceOpening::kOnFirstUse);
   } catch (const std::exception&) {
     return;
   }
   if (!source) return;
+  // A backend call that hangs (the opening Probe or a render) ends with
+  // the request, not its own timeout.
+  const PageSourceWatch watch(source, deadline, stop);
   int first = 1;
-  int last = source->page_count();
+  int last = 0;
+  try {
+    last = source->page_count();
+  } catch (const std::exception&) {
+    return;
+  }
   if (page_range.has_value()) {
     first = std::max(first, page_range->first);
     last = std::min(last, page_range->second);

@@ -1,12 +1,18 @@
 # LeakSanitizer suppressions for gRParse test binaries.
 #
-# Use with: LSAN_OPTIONS=suppressions=tests/lsan.supp
+# Use with: LSAN_OPTIONS=suppressions=tests/lsan.supp and
+# ASAN_OPTIONS=fast_unwind_on_malloc=0 (see the ONNX Runtime entry).
 #
-# ONNX Runtime keeps one 14-byte allocation per process that it never frees
-# (seen whenever a session or environment is created, including the failed
-# loads the missing-model cases exercise). Third-party, one-time, not per
-# request.
-leak:libonnxruntime.so
+# ONNX Runtime makes one 14-byte allocation inside OrtApis::CreateEnv that it
+# never frees: the first Ort::Env a process builds (including the failed
+# loads the missing-model cases exercise) leaks it, later ones do not.
+# Third-party, one-time, not per request. The release libonnxruntime.so is
+# stripped, so every frame inside it is unnamed; the first named frame is
+# the C++ API's inline Ort::Env constructor, compiled into our own code.
+# Matching it needs the full malloc stack: run with
+# ASAN_OPTIONS=fast_unwind_on_malloc=0 (the frame-pointer unwinder stops at
+# the first frame inside the library, which has no frame pointers).
+leak:Ort::Env::Env
 
 # curl_global_init, which s3_client.cpp runs once per process and never
 # undoes (curl_global_cleanup is not thread-safe while transfers run),

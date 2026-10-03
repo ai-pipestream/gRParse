@@ -429,7 +429,7 @@ void report_collector_targets(const CollectorTargets& targets, bool layout_activ
                      ? default_preset->model
                      : "endpoint default model",
                  default_preset.has_value() && !default_preset->vlm_endpoint.empty()
-                     ? ", vlm " + default_preset->vlm_endpoint
+                     ? ", vlm " + redacted_endpoint(default_preset->vlm_endpoint)
                      : std::string(),
                  presets,
                  policy.settings().allowed_engines.has_value() ? "restricted" : "any",

@@ -346,6 +346,83 @@ void verify_oversized_table_dimensions_are_bounded() {
   }
 }
 
+// The per-table cap alone would let a document of many capped tables
+// render gigabytes: every grid a render builds spends from one budget per
+// document (two capped tables' worth), so the later tables keep nothing.
+void verify_document_grid_budget_is_shared() {
+  docv1::Document document = base_document("many.xlsx");
+  for (int index = 0; index < 4; ++index) {
+    auto* data = add_table(&document, "#/body")->mutable_data();
+    data->set_num_rows(1048576);
+    data->set_num_cols(16384);
+    auto* first = data->add_table_cells();
+    first->set_text("table" + std::to_string(index));
+    first->set_end_row_offset_idx(1);
+    first->set_end_col_offset_idx(1);
+  }
+  for (const auto& [format, rendered] :
+       {std::pair{"markdown", grparse::render_markdown(document)},
+        std::pair{"html", grparse::render_html(document)}}) {
+    require(rendered.contains("table0") && rendered.contains("table1") &&
+                !rendered.contains("table2") && !rendered.contains("table3"),
+            std::string(format) + " spends one grid budget across the document");
+  }
+}
+
+// The exports that repeat a spanned cell at every position it covers
+// (Markdown, canonical JSON) are bounded by what the cell's text costs, not
+// only by the grid: a 16 KiB cell spanning 128 x 128 positions would print
+// 256 MiB, and prints once instead.
+void verify_spanned_cell_output_is_bounded() {
+  docv1::Document document = base_document("span.xlsx");
+  auto* data = add_table(&document, "#/body")->mutable_data();
+  data->set_num_rows(128);
+  data->set_num_cols(128);
+  auto* wide = data->add_table_cells();
+  wide->set_text("span" + std::string(16384, 'x'));
+  wide->set_end_row_offset_idx(128);
+  wide->set_end_col_offset_idx(128);
+  for (const auto& [format, rendered] :
+       {std::pair{"markdown", grparse::render_markdown(document)},
+        std::pair{"canonical json", grparse::render_canonical_json(document)}}) {
+    std::size_t copies = 0;
+    for (auto at = rendered.find("spanxxxx"); at != std::string::npos;
+         at = rendered.find("spanxxxx", at + 1)) {
+      ++copies;
+    }
+    require(rendered.size() < (std::size_t{64} << 20),
+            std::string(format) + " output stays bounded: " + std::to_string(rendered.size()));
+    require(copies >= 1 && copies <= 2,
+            std::string(format) + " prints the spanned text once, not per position: " +
+                std::to_string(copies));
+  }
+}
+
+// A collector's wire grid may be jagged; the grid renderers pad each row to
+// the widest, so a few thousand wire cells could stand for millions of
+// positions. The rows times the widest row is held to the same cap.
+void verify_jagged_wire_grid_is_bounded() {
+  docv1::Document document = base_document("jagged.docx");
+  auto* data = add_table(&document, "#/body")->mutable_data();
+  constexpr int kWide = 3000;
+  constexpr int kRows = 2000;
+  data->set_num_rows(kRows);
+  data->set_num_cols(kWide);
+  auto* wide = data->add_grid();
+  for (int col = 0; col < kWide; ++col) {
+    wide->add_cells()->set_text(col == 0 ? "head" : "");
+  }
+  for (int row = 1; row < kRows; ++row) {
+    data->add_grid()->add_cells()->set_text(row == kRows - 1 ? "tail" : "");
+  }
+  for (const auto& [format, rendered] :
+       {std::pair{"html", grparse::render_html(document)},
+        std::pair{"doclang", grparse::render_doclang(document)}}) {
+    require(rendered.contains("head") && !rendered.contains("tail"),
+            std::string(format) + " keeps only the leading rows of an over-budget jagged grid");
+  }
+}
+
 void verify_markdown_multiline_cells_stay_single_line() {
   docv1::Document document = base_document("multiline.pdf");
   auto* table = add_table(&document, "#/body");
@@ -1266,6 +1343,9 @@ int main() {
       verify_markdown_renders_every_item_type,
       verify_markdown_reconstructs_grid_from_flat_cells,
       verify_oversized_table_dimensions_are_bounded,
+      verify_document_grid_budget_is_shared,
+      verify_spanned_cell_output_is_bounded,
+      verify_jagged_wire_grid_is_bounded,
       verify_markdown_multiline_cells_stay_single_line,
       verify_markdown_flattens_stacked_column_headers,
       verify_markdown_compact_tables,

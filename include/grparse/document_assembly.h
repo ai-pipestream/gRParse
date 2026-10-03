@@ -39,6 +39,13 @@ void append_page_to_document(
         nullptr,
     std::vector<std::string>* warnings = nullptr);
 
+// Wraps each run of consecutive body list items in a LIST group, the way
+// the reference's layout assembly does, so a list is one structure (one
+// chunk, one Markdown list) rather than a run of loose items. Runs follow
+// the body order, across page boundaries; items keep their indexes and only
+// their parent moves to the new group. Returns the number of groups made.
+int group_list_items(ai::pipestream::document::v1::Document* document);
+
 // Appends the consensus vote's document-level claim: one "protomolt"
 // CollectorClaim aggregating every page that voted (the winner's engine
 // name as the model when the vote was unanimous, the mean winning score

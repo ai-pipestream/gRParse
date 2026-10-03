@@ -753,11 +753,13 @@ add_library(grparse_core STATIC
   src/in_memory_document.cpp
   src/consensus_page_source.cpp
   src/remote_page_source.cpp
+  src/pdf_page_frame.cpp
   src/pdf_form_widgets.cpp
   src/ocr_engine.cpp
   src/layout_decode.cpp
   src/layout_engine.cpp
   src/page_previews.cpp
+  src/page_source_watch.cpp
   src/page_projection.cpp
   src/page_scheduler.cpp
   src/prometheus_metrics.cpp
@@ -1144,6 +1146,7 @@ if(BUILD_TESTING)
     render-determinism-test
     render-map-order-test
     renderer-base-test
+    server-config-test
     target-step-test
     vtt-renderer-test)
   foreach(test_name IN LISTS GRPARSE_UNIT_TESTS)
@@ -1158,11 +1161,14 @@ if(BUILD_TESTING)
   # The DocLang archive cases read the packed members back with miniz's
   # ZIP reader.
   target_link_libraries(doclang-renderer-test PRIVATE miniz)
+  # The startup report lives in the server's own source, not the library.
+  target_sources(server-config-test PRIVATE src/server_config.cpp)
+  target_include_directories(server-config-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
   # The shared test helpers are reached as "support/check.h" from any test
   # source, whatever subdirectory it sits in.
   foreach(test_name IN LISTS GRPARSE_TESTS GRPARSE_DATA_TESTS GRPARSE_DRIFT_TESTS
                             GRPARSE_CHART_TESTS GRPARSE_ORIENTATION_TESTS
-                            GRPARSE_S3_EVAL_TESTS GRPARSE_UNIT_TESTS)
+                            GRPARSE_S3_EVAL_TESTS GRPARSE_UNIT_TESTS GRPARSE_VLM_TESTS)
     target_include_directories(${test_name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
   endforeach()
 endif()

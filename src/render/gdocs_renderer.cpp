@@ -487,7 +487,7 @@ class GdocsRenderer : RendererBase {
     // The caption is claimed first so a caption item the tree links twice
     // stays consumed even when the table itself renders nothing.
     const std::vector<std::string> captions = caption_texts(table.captions());
-    const auto grid = table_grid(table.data());
+    const auto grid = table_grid(table.data(), grid_budget_);
     if (grid.empty() && captions.empty()) return;
     // The API has no caption element on a table, so a claimed caption rides
     // as the paragraph immediately ahead of its table.

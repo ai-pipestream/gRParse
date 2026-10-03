@@ -199,6 +199,34 @@ void verify_pixel_cap() {
           "the cap defaults to 200 megapixels");
 }
 
+// Embedded and collector images go through the same header check before
+// any decode: every format OpenCV can write here is bounded by its header,
+// and bytes whose header cannot be read are refused.
+void verify_encoded_image_pixel_cap() {
+  const cv::Mat small(4, 4, CV_8UC3, cv::Scalar(0, 0, 0));
+  const cv::Mat image(20, 20, CV_8UC3, cv::Scalar(0, 0, 0));
+  setenv("GRPARSE_MAX_IMAGE_PIXELS", "100", 1);
+  for (const char* extension : {".png", ".jpg", ".tif", ".bmp", ".webp", ".gif"}) {
+    if (!cv::haveImageWriter(extension)) continue;
+    require(grparse::encoded_image_within_pixel_cap(*encode(small, extension)),
+            std::string("an image under the cap passes: ") + extension);
+    require(!grparse::encoded_image_within_pixel_cap(*encode(image, extension)),
+            std::string("an image over the cap is refused: ") + extension);
+  }
+  unsetenv("GRPARSE_MAX_IMAGE_PIXELS");
+  std::string bomb = *encode(small, ".png");
+  for (const size_t at : {size_t{16}, size_t{20}}) {
+    bomb[at] = '\x00';
+    bomb[at + 1] = '\x01';
+    bomb[at + 2] = '\x86';
+    bomb[at + 3] = '\xA0';
+  }
+  require(!grparse::encoded_image_within_pixel_cap(bomb),
+          "a PNG header past the default cap is refused");
+  require(!grparse::encoded_image_within_pixel_cap("not an image at all"),
+          "an unreadable header is refused");
+}
+
 }  // namespace
 
 int main() {
@@ -211,5 +239,6 @@ int main() {
       verify_only_advertised_formats_are_admitted,
       verify_multi_page_tiff,
       verify_pixel_cap,
+      verify_encoded_image_pixel_cap,
   });
 }

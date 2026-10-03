@@ -596,6 +596,73 @@ void verify_deadline_bounds_the_leg_and_never_fails_the_document() {
           "the inbound deadline wins over the leg's own timeout");
 }
 
+// The leg ends with the inbound call: a cancelled caller cancels the enrich
+// call instead of leaving it to run out its own timeout.
+void verify_cancel_hook_ends_the_leg() {
+  FakeEnrichService fake(FakeMode::kSlow);
+  ServerFixture server(&fake);
+  docv1::Document document = sample_document();
+  const auto started = std::chrono::steady_clock::now();
+  const grparse::ChartDerenderReport report = grparse::derender_charts(
+      server.channel(), options_for(server.target()), &document, grparse::kNoCollectorDeadline,
+      [started] { return std::chrono::steady_clock::now() - started > std::chrono::milliseconds(200); });
+  require(std::chrono::steady_clock::now() - started < std::chrono::milliseconds(1000),
+          "the leg returns once the caller is gone, not at the peer's pace");
+  require(!report.warnings.empty() && report.warnings[0].contains("CANCELLED"),
+          "the cancel is reported as such: " +
+              (report.warnings.empty() ? std::string("no warning") : report.warnings[0]));
+}
+
+// A peer that answers each image before it reads the next: its answers fill
+// this client's receive window, it stops reading, and an upload that sent
+// every image before reading anything would stall until the deadline.
+class InterleavingEnrichService final : public enrichv1::EnrichService::Service {
+ public:
+  grpc::Status EnrichDocument(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<enrichv1::EnrichDocumentResponse, enrichv1::EnrichDocumentRequest>*
+          stream) override {
+    enrichv1::EnrichDocumentRequest request;
+    enrichv1::EnrichDocumentResponse event;
+    while (stream->Read(&request)) {
+      if (!request.has_image()) continue;
+      event.Clear();
+      event.mutable_skipped()->set_self_ref(request.image().self_ref());
+      event.mutable_skipped()->set_reason(enrichv1::SKIP_REASON_VLM_ERROR);
+      event.mutable_skipped()->set_detail(std::string(512U * 1024U, 'x'));
+      if (!stream->Write(event)) break;
+    }
+    event.Clear();
+    event.mutable_complete();
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+};
+
+void verify_answers_are_read_while_images_go_out() {
+  InterleavingEnrichService fake;
+  ServerFixture server(&fake);
+  docv1::Document document;
+  document.mutable_body()->set_self_ref("#/body");
+  const std::string pixels = kPng + std::string(512U * 1024U, 'p');
+  constexpr int kPictures = 40;
+  for (int index = 0; index < kPictures; ++index) {
+    add_picture(&document, "bar_chart", false)
+        ->mutable_image()
+        ->set_uri("data:image/png;base64," + grparse::encode_base64(pixels.data(), pixels.size()));
+  }
+  const auto started = std::chrono::steady_clock::now();
+  const grparse::ChartDerenderReport report = grparse::derender_charts(
+      server.channel(), options_for(server.target(), std::chrono::milliseconds(20000)), &document);
+  require(std::chrono::steady_clock::now() - started < std::chrono::milliseconds(10000),
+          "the leg finishes long before its deadline");
+  require(report.candidates == kPictures && report.skipped == kPictures,
+          "every image was answered: " + std::to_string(report.skipped));
+  for (const std::string& warning : report.warnings) {
+    require(!warning.contains("DEADLINE_EXCEEDED"), "the leg did not stall: " + warning.substr(0, 200));
+  }
+}
+
 void verify_unreachable_peer_is_a_warning() {
   docv1::Document document = sample_document();
   const std::string before = document.SerializeAsString();
@@ -815,6 +882,8 @@ int main() {
       verify_leg_dials_folds_and_counts,
       verify_picture_description_engine_fields_reach_enrich,
       verify_picture_description_class_filters,
+      verify_cancel_hook_ends_the_leg,
+      verify_answers_are_read_while_images_go_out,
       verify_skip_events_and_empty_tables_count_as_skipped,
       verify_deadline_bounds_the_leg_and_never_fails_the_document,
       verify_unreachable_peer_is_a_warning,

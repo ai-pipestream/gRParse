@@ -18,6 +18,7 @@
 #include <vector>
 
 #include <google/protobuf/descriptor.h>
+#include <google/protobuf/util/json_util.h>
 
 #include "grparse/base64.h"
 #include "grparse/chart_derender.h"
@@ -110,7 +111,9 @@ bool implemented_option(std::string_view name) {
       "from_formats",
       "to_formats",
       "collectors",
+      "ebcdic_layout",
       "ebcdic_layout_json",
+      "lol_html_options",
       "lol_html_options_json",
       "do_ocr",
       "force_ocr",
@@ -440,14 +443,8 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
     }
   }
 
-  // Open ScalarValue maps: any key is accepted (Docling dict[str, Any] parity).
-  // Soft-validate well-known keys when present.
-  if (auto it = options.ocr_custom_config().find("lang"); it != options.ocr_custom_config().end()) {
-    if (!it->second.has_string_value() || it->second.string_value().empty()) {
-      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                          surface + ": ocr_custom_config.lang must be a non-empty string");
-    }
-  }
+  // Open ScalarValue maps: soft-validate well-known keys when present
+  // (validate_unread_options turns down the ocr_custom_config keys).
   if (auto it = options.picture_classification_custom_config().find("threshold");
       it != options.picture_classification_custom_config().end()) {
     const auto number = scalar_number(it->second);
@@ -565,6 +562,45 @@ grpc::Status validate_heading_options(
   return grpc::Status::OK;
 }
 
+// The per-collector rules in each collector's typed form. The typed fields
+// are the contract; the deprecated JSON fields still work alone (the ebcdic
+// layout JSON is the collector's own layout_json input, forwarded as is;
+// the lol-html JSON is read here into the typed message), and a request
+// that sets both forms of one is refused rather than guessed at.
+grpc::Status resolve_collector_rules(const pipestream::parse::v1::ConvertDocumentOptions& options,
+                                     const std::string& surface, CollectorRules* rules) {
+  if (options.has_ebcdic_layout() && options.has_ebcdic_layout_json()) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        surface + ": ebcdic_layout and the deprecated ebcdic_layout_json are "
+                                  "mutually exclusive");
+  }
+  if (options.has_lol_html_options() && options.has_lol_html_options_json()) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        surface + ": lol_html_options and the deprecated lol_html_options_json "
+                                  "are mutually exclusive");
+  }
+  if (options.has_ebcdic_layout()) {
+    *rules->ebcdic.mutable_layout() = options.ebcdic_layout();
+  } else if (!options.ebcdic_layout_json().empty()) {
+    rules->ebcdic.set_layout_json(options.ebcdic_layout_json());
+  }
+  if (options.has_lol_html_options()) {
+    rules->lol_html = options.lol_html_options();
+  } else if (!options.lol_html_options_json().empty()) {
+    lolhtml::v1::ExtractOptions parsed;
+    const auto status =
+        google::protobuf::util::JsonStringToMessage(options.lol_html_options_json(), &parsed);
+    if (!status.ok()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + ": lol_html_options_json does not parse as "
+                                    "lolhtml.v1.ExtractOptions: " +
+                              std::string(status.message()));
+    }
+    rules->lol_html = std::move(parsed);
+  }
+  return grpc::Status::OK;
+}
+
 // Options Docling clients populate that no leg here reads. Their Docling
 // defaults are what this server does anyway, so those pass; any other value
 // asks for behaviour this server would silently not deliver, and is turned
@@ -625,10 +661,41 @@ grpc::Status validate_unread_options(const pipestream::parse::v1::ConvertDocumen
     return rejected("table_structure_custom_config");
   }
   if (!options.layout_custom_config().empty()) return rejected("layout_custom_config");
+  // The VLM convert dial carries the endpoint and scale: a keyed API's auth
+  // headers and request params would be dropped the same way.
+  if (options.has_vlm_pipeline_model_api()) {
+    const auto& api = options.vlm_pipeline_model_api();
+    if (!api.headers().empty()) return rejected("vlm_pipeline_model_api.headers");
+    if (!api.params().empty()) return rejected("vlm_pipeline_model_api.params");
+  }
+  // No OCR engine reads an option map: RapidOCR runs the installed models
+  // as they are. A lang naming a language they read is what happens anyway
+  // (as with ocr_lang); any other key, or any other lang, is turned down,
+  // first key in name order.
+  std::vector<std::string> ocr_keys;
+  for (const auto& entry : options.ocr_custom_config()) ocr_keys.push_back(entry.first);
+  std::ranges::sort(ocr_keys);
+  for (const std::string& key : ocr_keys) {
+    const auto& value = options.ocr_custom_config().at(key);
+    if (key == "lang" && value.has_string_value() &&
+        std::ranges::find(kReadLanguages, value.string_value()) != std::end(kReadLanguages)) {
+      continue;
+    }
+    return rejected("ocr_custom_config." + key);
+  }
   return grpc::Status::OK;
 }
 
 }  // namespace
+
+uint64_t decoded_source_bytes(
+    const google::protobuf::RepeatedPtrField<pipestream::parse::v1::Source>& sources) {
+  uint64_t total = 0;
+  for (const auto& source : sources) {
+    if (source.has_file()) total += source.file().base64_string().size() / 4 * 3 + 3;
+  }
+  return total;
+}
 
 // `surface` names the RPC in the rejections so a caller learns which of the
 // conversion surfaces turned its request down.
@@ -648,6 +715,9 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
   if (!tuning_status.ok()) return tuning_status;
   const grpc::Status unread_status = validate_unread_options(options, surface);
   if (!unread_status.ok()) return unread_status;
+  CollectorRules rules;
+  const grpc::Status rules_status = resolve_collector_rules(options, surface, &rules);
+  if (!rules_status.ok()) return rules_status;
   const grpc::Status pipeline_status = validate_pipeline(options, surface);
   if (!pipeline_status.ok()) return pipeline_status;
   const grpc::Status ocr_engine_status = validate_ocr_engine(options, surface);
@@ -1118,6 +1188,8 @@ class CvCollector {
     // Heading depth clusters over the whole document's heights, so it can
     // only run after every page is in.
     assign_section_header_levels(&outcome.document, heading_options_);
+    // A list is one structure: consecutive list items join a LIST group.
+    group_list_items(&outcome.document);
     std::vector<PageConfidence> page_scores;
     page_scores.reserve(assembled_pages.size());
     for (const OcrPage* page : assembled_pages) page_scores.push_back(page_confidence(*page));
@@ -1144,8 +1216,7 @@ struct ParseInputs {
   grpc::CallbackServerContext* context = nullptr;
   std::shared_ptr<CollectorEndpoints> endpoints;
   std::shared_ptr<const std::string> bytes;
-  std::shared_ptr<const std::string> ebcdic_layout_json;
-  std::shared_ptr<const std::string> lol_html_options_json;
+  std::shared_ptr<const CollectorRules> collector_rules;
   fs::path filename;
   // What the dialed collectors log and correlate this parse by: the name
   // plus a per-call sequence, so two concurrent uploads of one filename
@@ -1294,9 +1365,10 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   inputs.context = context;
   inputs.endpoints = collectors;
   inputs.bytes = std::move(bytes);
-  inputs.ebcdic_layout_json = std::make_shared<const std::string>(options.ebcdic_layout_json());
-  inputs.lol_html_options_json =
-      std::make_shared<const std::string>(options.lol_html_options_json());
+  // validate_options already refused rules that do not resolve.
+  auto rules = std::make_shared<CollectorRules>();
+  static_cast<void>(resolve_collector_rules(options, std::string(), rules.get()));
+  inputs.collector_rules = std::move(rules);
   inputs.filename = requested_name;
   static std::atomic<uint64_t> call_sequence{0};
   inputs.document_id = requested_name.string() + "#" +
@@ -1447,7 +1519,8 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
                            [&inputs] {
                              return inputs.context->IsCancelled() ||
                                     std::chrono::system_clock::now() >= inputs.inbound_deadline;
-                           });
+                           },
+                           inputs.inbound_deadline);
     }
     if (!route.fast_path) {
       // NATIVE asked for the text layer as it is; say what the models would
@@ -1581,8 +1654,8 @@ std::vector<PlannedCollector> build_plan(
         // mid-leg leaves no collector working for nobody.
         return run_remote_collector(id, inputs.endpoints, inputs.document_id,
                                     inputs.filename.string(), inputs.content_type,
-                                    *inputs.bytes, *inputs.ebcdic_layout_json,
-                                    *inputs.lol_html_options_json, inputs.inbound_deadline,
+                                    *inputs.bytes, *inputs.collector_rules,
+                                    inputs.inbound_deadline,
                                     [context = inputs.context] { return context->IsCancelled(); });
       };
     }
@@ -1642,7 +1715,8 @@ void derender_charts_if_configured(const std::shared_ptr<CollectorEndpoints>& co
   enrich.picture_description_min_confidence = inputs.picture_description_min_confidence;
   if (!enrich.any_job()) return;
   const ChartDerenderReport derendered =
-      derender_charts(collectors->enrich_channel(), enrich, &result->document, inbound_deadline);
+      derender_charts(collectors->enrich_channel(), enrich, &result->document, inbound_deadline,
+                      [context] { return context->IsCancelled(); });
   for (const std::string& warning : derendered.warnings) {
     result->warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, warning);
   }

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -12,6 +13,7 @@
 #include "grparse/base64.h"
 #include "grparse/document_geometry.h"
 #include "grparse/document_reading_order.h"
+#include "grparse/in_memory_document.h"
 #include "grparse/region_geometry.h"
 
 namespace docv1 = ai::pipestream::document::v1;
@@ -31,6 +33,12 @@ cv::Mat decode_page_image(const docv1::PageItem& page) {
   try {
     bytes = decode_base64(uri.substr(prefix));
   } catch (const std::invalid_argument&) {
+    return {};
+  }
+  // The collector's PNG is held to the raster input's pixel cap before
+  // any decoder allocates for it.
+  if (bytes.size() > static_cast<size_t>(std::numeric_limits<int>::max()) ||
+      !encoded_image_within_pixel_cap(bytes)) {
     return {};
   }
   const cv::Mat buffer(1, static_cast<int>(bytes.size()), CV_8UC1,

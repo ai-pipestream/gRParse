@@ -16,8 +16,9 @@ namespace grparse {
 std::optional<std::string> remote_pdf_backend_target();
 
 // Opens a PageSource whose pages come from a PdfBackendService. Loading is
-// verified up front through Probe
-// (typed load failures raise InvalidDocument); text pages arrive as
+// verified through Probe, before this returns (SourceOpening::kNow) or on
+// the source's first use (kOnFirstUse); typed load failures raise
+// InvalidDocument. Text pages arrive as
 // per-page Parse streams and rasters through Render at render_dpi. The
 // document is content-addressed: the client hashes the bytes once and
 // addresses them by sha256 on every call, uploading the bytes exactly once
@@ -26,6 +27,6 @@ std::optional<std::string> remote_pdf_backend_target();
 // sending the bytes with every call.
 std::shared_ptr<PageSource> open_remote_pdf_document(
     std::shared_ptr<const std::string> bytes, const std::string& target,
-    double render_dpi);
+    double render_dpi, SourceOpening opening = SourceOpening::kNow);
 
 }  // namespace grparse

@@ -124,6 +124,11 @@ std::optional<parsev1::InputFormat> input_format_for(
     return parsev1::INPUT_FORMAT_PPTX;
   }
   if (ext == ".doc") return parsev1::INPUT_FORMAT_DOC;
+  if (ext == ".xls") return parsev1::INPUT_FORMAT_XLS;
+  if (ext == ".ppt") return parsev1::INPUT_FORMAT_PPT;
+  if (ext == ".odt") return parsev1::INPUT_FORMAT_ODT;
+  if (ext == ".ods") return parsev1::INPUT_FORMAT_ODS;
+  if (ext == ".odp") return parsev1::INPUT_FORMAT_ODP;
   if (ext == ".rtf") return parsev1::INPUT_FORMAT_RTF;
   if (ext == ".mht" || ext == ".mhtml") return parsev1::INPUT_FORMAT_MHTML;
   if (ext == ".epub") return parsev1::INPUT_FORMAT_EPUB;

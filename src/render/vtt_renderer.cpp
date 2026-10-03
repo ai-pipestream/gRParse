@@ -54,6 +54,15 @@ std::string vtt_cue_text(const std::string& text) {
   return safe;
 }
 
+// A header title or cue identifier as one line: a line break would end the
+// header or the identifier early and let the rest parse as a cue.
+std::string single_line(const std::string& text) {
+  std::string line;
+  line.reserve(text.size());
+  for (const char c : text) line.push_back(c == '\n' || c == '\r' ? ' ' : c);
+  return line;
+}
+
 class VttRenderer : RendererBase {
  public:
   explicit VttRenderer(const docv1::Document& document) : RendererBase(document) {}
@@ -120,7 +129,7 @@ class VttRenderer : RendererBase {
     if (base == nullptr || excluded_layer(base->content_layer())) return;
     if (item.item_case() == docv1::BaseTextItem::kTitle ||
         base->label() == docv1::DOC_ITEM_LABEL_TITLE) {
-      if (!base->text().empty()) title_ = trimmed(base->text());
+      if (!base->text().empty()) title_ = trimmed(single_line(base->text()));
       return;
     }
     if (base->text().empty()) return;
@@ -132,7 +141,11 @@ class VttRenderer : RendererBase {
     if (track->has_voice() && !track->voice().empty()) {
       text = "<v " + vtt_cue_text(track->voice()) + ">" + text + "</v>";
     }
-    const std::string identifier = track->has_identifier() ? track->identifier() : "";
+    // An identifier may hold neither a line break nor "-->", which would make
+    // it read as the timing line; one that holds the arrow is dropped (the
+    // identifier is optional), a line break folds to a space.
+    std::string identifier = track->has_identifier() ? single_line(track->identifier()) : "";
+    if (identifier.find("-->") != std::string::npos) identifier.clear();
     if (cue_open_ && identifier == cue_identifier_ && track->start_time() == cue_start_ &&
         track->end_time() == cue_end_) {
       cue_payload_.append("\n" + text);

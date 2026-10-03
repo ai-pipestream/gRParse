@@ -1,5 +1,7 @@
 #include "target_step.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
@@ -27,6 +29,35 @@ grpc::Status deliver_zip(const docv1::Document& document,
                          parsev1::TargetResult* result) {
   result->set_archive(write_zip(build_bundle(document, exports)));
   return grpc::Status::OK;
+}
+
+std::string lowercase(std::string text) {
+  std::ranges::transform(text, text.begin(),
+                         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return text;
+}
+
+// Whether GRPARSE_S3_AMBIENT_ENDPOINTS, a comma-separated list of endpoints
+// (host[:port], with or without a scheme), names the target's authority.
+bool ambient_endpoint_listed(const std::string& endpoint) {
+  const char* listed = std::getenv("GRPARSE_S3_AMBIENT_ENDPOINTS");
+  if (listed == nullptr) return false;
+  const std::string authority = lowercase(parse_s3_endpoint(endpoint).authority);
+  std::string_view rest(listed);
+  while (!rest.empty()) {
+    const size_t comma = rest.find(',');
+    std::string_view entry = rest.substr(0, comma);
+    rest = comma == std::string_view::npos ? std::string_view() : rest.substr(comma + 1);
+    while (!entry.empty() && std::isspace(static_cast<unsigned char>(entry.front()))) {
+      entry.remove_prefix(1);
+    }
+    while (!entry.empty() && std::isspace(static_cast<unsigned char>(entry.back()))) {
+      entry.remove_suffix(1);
+    }
+    if (entry.empty()) continue;
+    if (parse_s3_endpoint(lowercase(std::string(entry))).authority == authority) return true;
+  }
+  return false;
 }
 
 grpc::Status resolve_s3_credentials(const parsev1::S3Target& target, S3Config* config) {
@@ -63,6 +94,20 @@ grpc::Status resolve_s3_credentials(const parsev1::S3Target& target, S3Config* c
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                         "S3Target sets verify_ssl false, and ambient credentials are "
                         "only sent to a verified peer");
+  }
+  // Nor signed over cleartext, where anyone on the path reads the access
+  // key ID off the request and can replay it, and only for an endpoint the
+  // deployment listed: the opt-in alone would let a caller send the
+  // server's identity to any host it names.
+  if (parse_s3_endpoint(target.endpoint()).scheme != "https") {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        "S3Target endpoint is not https, and ambient credentials never "
+                        "sign a cleartext request");
+  }
+  if (!ambient_endpoint_listed(target.endpoint())) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        "S3Target endpoint is not listed in GRPARSE_S3_AMBIENT_ENDPOINTS, "
+                        "and ambient credentials sign only for listed endpoints");
   }
   const char* access = std::getenv("AWS_ACCESS_KEY_ID");
   const char* secret = std::getenv("AWS_SECRET_ACCESS_KEY");

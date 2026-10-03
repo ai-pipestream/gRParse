@@ -237,7 +237,7 @@ class DoclangRenderer : RendererBase {
   void render_table(const docv1::TableItem& table, int depth) {
     if (excluded_layer(table.content_layer())) return;
     render_captions(table.captions(), depth);
-    const auto grid = table_grid(table.data());
+    const auto grid = table_grid(table.data(), grid_budget_);
     if (grid.empty()) return;
     size_t columns = 0;
     for (const auto& row : grid) columns = std::max(columns, row.size());

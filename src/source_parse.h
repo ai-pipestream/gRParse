@@ -51,6 +51,13 @@ struct SourceParse {
 grpc::Status validate_options(const ai::pipestream::parse::v1::ConvertDocumentOptions& options,
                               const std::string& surface);
 
+// The bytes a request's sources decode to while the parse holds them: each
+// FileSource's base64 payload decoded (three bytes per four characters).
+// The unary surfaces charge it to the in-flight budget beside the wire size,
+// since the decoded copy lives as long as the parse does.
+uint64_t decoded_source_bytes(
+    const google::protobuf::RepeatedPtrField<ai::pipestream::parse::v1::Source>& sources);
+
 // The chart-extraction preset a Convert request resolves to under the
 // server's policy, mirroring docling-jobkit's _parse_chart_extraction_options:
 // a chart_extraction_custom_config must be allowed by policy (and use an

@@ -175,10 +175,13 @@ struct ChartDerenderReport {
 // Never throws; a channel that is null or a target that fails to answer is
 // reported as skipped candidates with one warning. Chart-only requests keep
 // the slim candidate document; picture/code/formula jobs send the full
-// document so enrich can select every matching item.
+// document so enrich can select every matching item. `cancelled` is polled
+// while the call runs and cancels it once the inbound call is gone. The
+// frames go out on a writer thread while the answers are read.
 ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channel,
                                     const ChartDerenderOptions& options,
                                     ai::pipestream::document::v1::Document* document,
-                                    CollectorDeadline inbound_deadline = kNoCollectorDeadline);
+                                    CollectorDeadline inbound_deadline = kNoCollectorDeadline,
+                                    CollectorCancelled cancelled = {});
 
 }  // namespace grparse

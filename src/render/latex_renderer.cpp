@@ -633,7 +633,7 @@ class LatexRenderer : RendererBase {
   // covered position repeats its cell, a position no cell reaches renders
   // empty, and the column count is the widest row's.
   std::string tabular(const docv1::TableData& data) {
-    const auto grid = derived_table_grid(data);
+    const auto grid = derived_table_grid(data, grid_budget_);
     std::size_t ncols = 0;
     for (const auto& row : grid) ncols = std::max(ncols, row.size());
     if (ncols == 0) return std::string();

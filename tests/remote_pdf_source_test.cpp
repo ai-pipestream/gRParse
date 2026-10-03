@@ -357,7 +357,17 @@ class NeverCachedBackend final : public pdfv1::PdfBackendService::Service {
 // shapes, and whose Parse and Render can hang until the client gives up.
 class QuirkBackend final : public pdfv1::PdfBackendService::Service {
  public:
-  enum class Raster { kGood, kShortPixels, kNarrowStride, kUnknownFormat, kHalfDpi };
+  enum class Raster {
+    kGood,
+    kShortPixels,
+    kNarrowStride,
+    kUnknownFormat,
+    kHalfDpi,
+    // height * stride is exactly 2^32. The client multiplies in 64 bits,
+    // so this only pins that a raster claiming 4 GiB of rows against a
+    // 48-byte buffer is refused.
+    kWrappingStride,
+  };
   Raster raster = Raster::kGood;
   bool hang = false;
   std::atomic<int> calls_seen{0};
@@ -389,6 +399,16 @@ class QuirkBackend final : public pdfv1::PdfBackendService::Service {
     const auto height = static_cast<uint32_t>(kPageHeightPts * dpi / 72.0);
     pdfv1::RenderResponse msg;
     auto* out = msg.mutable_raster();
+    if (raster == Raster::kWrappingStride) {
+      out->set_width_px(16);
+      out->set_height_px(65536);
+      out->set_stride_bytes(65536);
+      out->set_pixel_format(pdfv1::PIXEL_FORMAT_BGR8);
+      out->set_dpi(dpi);
+      out->set_pixels(std::string(48, '\xFF'));
+      writer->Write(msg);
+      return grpc::Status::OK;
+    }
     out->set_width_px(width);
     out->set_height_px(height);
     out->set_stride_bytes(raster == Raster::kNarrowStride ? width * 3 - 1 : width * 3);
@@ -610,7 +630,8 @@ int main() {
     const auto source = grparse::open_remote_pdf_document(doc, quirk_target, dpi);
     for (const auto shape : {QuirkBackend::Raster::kShortPixels,
                              QuirkBackend::Raster::kNarrowStride,
-                             QuirkBackend::Raster::kUnknownFormat}) {
+                             QuirkBackend::Raster::kUnknownFormat,
+                             QuirkBackend::Raster::kWrappingStride}) {
       quirk.raster = shape;
       bool threw = false;
       try {
