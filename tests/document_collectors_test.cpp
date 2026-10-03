@@ -1654,6 +1654,59 @@ void verify_poi_vertical_merge_keeps_columns() {
           "and the cell after it in column C");
 }
 
+// One table whose cells claim spans no real document has: a gridSpan of
+// uint32 max and a vMerge two billion rows deep.
+class HostileSpanPoiService final : public poiv1::PoiParseService::Service {
+ public:
+  grpc::Status ParseDocument(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<poiv1::ParseEvent, poiv1::ParseRequestChunk>* stream)
+      override {
+    poiv1::ParseRequestChunk chunk;
+    while (stream->Read(&chunk)) {
+    }
+    poiv1::ParseEvent event;
+    poiv1::Table* table = event.mutable_table();
+    poiv1::TableRow* first = table->add_rows();
+    poiv1::TableCell* wide = first->add_cells();
+    wide->set_text("wide");
+    wide->set_col_span(std::numeric_limits<uint32_t>::max());
+    poiv1::TableCell* deep = first->add_cells();
+    deep->set_text("deep");
+    deep->set_row_span(2000000000U);
+    table->add_rows()->add_cells()->set_text("below");
+    stream->Write(event);
+    event.Clear();
+    event.mutable_status();
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+};
+
+// Hostile spans clamp to the table's bounds with a warning instead of
+// sizing the column ledger from the wire.
+void verify_poi_hostile_span_is_clamped() {
+  HostileSpanPoiService service;
+  ServerFixture server(&service);
+  const auto outcome = grparse::collect_poi_document(server.channel(), "doc-span",
+                                                     "span.docx", "", "bytes");
+  require(outcome.success, "poi collection succeeds: " + outcome.error);
+  const docv1::TableData& data = outcome.document.tables(0).data();
+  require(data.num_rows() == 2 && data.table_cells_size() == 3,
+          "the hostile table keeps its rows and cells");
+  const docv1::TableCell& wide = data.table_cells(0);
+  require(wide.col_span() == 16384 && wide.end_col_offset_idx() == 16384,
+          "the wide cell clamps to the spreadsheet column limit");
+  const docv1::TableCell& deep = data.table_cells(1);
+  require(deep.row_span() == 2 && deep.end_row_offset_idx() == 2 &&
+              deep.start_col_offset_idx() == 16384 && deep.col_span() == 1,
+          "the deep cell clamps to the rows the table has");
+  require(data.num_cols() == 16385, "the column count follows the clamped spans");
+  require(outcome.warnings.size() == 1 &&
+              outcome.warnings[0].find("clamped") != std::string::npos,
+          "the clamp surfaces as a warning");
+}
+
 class RejectingPoiService final : public poiv1::PoiParseService::Service {
  public:
   grpc::Status ParseDocument(
@@ -2712,6 +2765,7 @@ int main() {
       verify_poi_collector_failure_survives_its_code,
       verify_poi_truncated_stream_fails,
       verify_poi_vertical_merge_keeps_columns,
+      verify_poi_hostile_span_is_clamped,
       verify_poi_unreachable_endpoint_degrades,
       verify_poi_fanout_merges_claims_without_a_second_body,
       verify_poi_fanout_keeps_its_body_when_the_primary_failed,
