@@ -355,10 +355,12 @@ Still open, tracked here:
   either frame through one place, `PdfPageFrame`
   (`src/pdf_page_frame.cpp`): the page source's text cells, each consensus
   leg on its own (so legs in different frames still agree), and the
-  AcroForm widget fold's rects, which now also follow /Rotate. There is no
-  flag day: grpc-pdfium, grpc-poppler and grpc-qparse move to
-  `PAGE_SPACE_CROP_BOX` independently (each repo's #3) and can ship before
-  or after this client. Measured 2026-10-02 against the published images
+  AcroForm widget fold's rects, which now also follow /Rotate. Deploy order
+  matters once: this client must ship before any backend that reports
+  `PAGE_SPACE_CROP_BOX`, because an older client always subtracts the
+  CropBox origin and would shift that backend's boxes twice on pages with
+  an offset CropBox. After that, grpc-pdfium, grpc-poppler and grpc-qparse
+  move to `PAGE_SPACE_CROP_BOX` independently (each repo's #3). Measured 2026-10-02 against the published images
   (a one-word page at /Rotate 0, 90, 180, 270 and with an offset CropBox):
   grpc-pdfium follows the contract apart from the CropBox shift (user
   space before /Rotate, the stored CropBox, the real /Rotate). grpc-poppler

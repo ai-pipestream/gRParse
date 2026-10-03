@@ -434,8 +434,8 @@ class RemotePdfPageSource final : public PageSource {
     const uint64_t width = raster.width_px();
     const uint64_t height = raster.height_px();
     const uint64_t stride = raster.stride_bytes();
-    // Every size product is checked: a stride or height chosen to wrap the
-    // multiply would otherwise pass the size check with a short buffer.
+    // The wire fields are 32-bit, so these 64-bit products cannot wrap
+    // today; the checked multiply keeps that true if a field ever widens.
     uint64_t row_bytes = 0;
     uint64_t total_bytes = 0;
     const bool wraps = __builtin_mul_overflow(width, static_cast<uint64_t>(channels), &row_bytes) ||

@@ -363,8 +363,9 @@ class QuirkBackend final : public pdfv1::PdfBackendService::Service {
     kNarrowStride,
     kUnknownFormat,
     kHalfDpi,
-    // height * stride is exactly 2^32: zero in 32-bit arithmetic, so a
-    // check that wrapped would accept a 48-byte buffer.
+    // height * stride is exactly 2^32. The client multiplies in 64 bits,
+    // so this only pins that a raster claiming 4 GiB of rows against a
+    // 48-byte buffer is refused.
     kWrappingStride,
   };
   Raster raster = Raster::kGood;
