@@ -15,8 +15,10 @@ namespace grparse {
 // per page, items in reading order, text offsets and body order included.
 //
 // Reading order is the body tree walk (groups recursed) followed by the
-// furniture tree, then any arena item neither tree reaches. An item's page
-// is its first page-numbered provenance; an item without one rides the page
+// furniture tree, then any arena item neither tree reaches. Each group
+// rides the page of the first item placed under it; a group with none, or
+// one no tree reaches, rides the page of the last item placed. An item's
+// page is its first page-numbered provenance; an item without one rides the page
 // of the item before it (page 1 at the start). Page metadata comes from
 // Document.pages when the collector filled it, otherwise only the number.
 //

@@ -105,6 +105,15 @@ class Projector {
     for (int i = 0; i < document_.pictures_size(); ++i) {
       if (!visited_.contains(document_.pictures(i).self_ref())) place_picture(i, true);
     }
+    // A group with nothing placed under it, and one no tree reaches, rides
+    // the page of the last item placed, so the tree still arrives whole.
+    for (int i = 0; i < document_.groups_size(); ++i) {
+      if (!visited_.contains(document_.groups(i).self_ref())) {
+        visited_.insert(document_.groups(i).self_ref());
+        pending_groups_.push_back(i);
+      }
+    }
+    flush_groups(current_page_);
     // Only pages the document names are emitted: a page number is collector
     // or model supplied, so one bogus value (2^31-1 from a hallucinated
     // fragment) must cost one page, not a dense run up to it.
@@ -157,7 +166,9 @@ class Projector {
         case Arena::kTable: place_table(slot->second.index, body); break;
         case Arena::kPicture: place_picture(slot->second.index, body); break;
         case Arena::kGroup:
+          // The group goes out on the page of its first item.
           visited_.insert(child.ref());
+          pending_groups_.push_back(slot->second.index);
           walk(document_.groups(slot->second.index).children(), body);
           break;
       }
@@ -171,7 +182,19 @@ class Projector {
     return current_page_;
   }
 
-  parsev1::PageData& page_for(int page) { return pages_[page]; }
+  // The page an item lands on, carrying the groups opened since the last
+  // item placed.
+  parsev1::PageData& page_for(int page) {
+    flush_groups(page);
+    return pages_[page];
+  }
+
+  void flush_groups(int page) {
+    if (pending_groups_.empty()) return;
+    auto& target = pages_[page];
+    for (const int index : pending_groups_) *target.add_groups() = document_.groups(index);
+    pending_groups_.clear();
+  }
 
   void place_text(int index, bool body) {
     const auto& item = document_.texts(index);
@@ -209,6 +232,7 @@ class Projector {
   std::unordered_map<std::string, Slot> slots_;
   std::unordered_set<std::string> visited_;
   std::map<int, parsev1::PageData> pages_;
+  std::vector<int> pending_groups_;
   int current_page_ = 1;
   uint64_t utf_cursor_;
 };

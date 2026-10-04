@@ -75,6 +75,16 @@ message DocumentChunk {
   optional StructureValidation structure_validation = 10;
   repeated StructureRule structure_validation_rules = 11;
   optional StructureRepairs structure_repairs = 12;
+  // Slims each collector_document event whose collector's pages already
+  // went out as page events: its Document then carries no texts, tables,
+  // pictures, groups, page map, or body and furniture children, since the
+  // page events plus any repair event for that collector rebuild them
+  // exactly (see DocumentRepairDelta). Everything else on the Document
+  // (origin, source metadata, claims, the remaining arenas) still rides it,
+  // as do the warnings and findings. Off, the default, keeps the whole
+  // Document for clients that read it intact. Resolved from the first chunk
+  // that sets it.
+  optional bool slim_collector_documents = 13;
 }
 
 // DocumentStreamEvent is the page-batched incremental conversion result.
@@ -94,7 +104,68 @@ message DocumentStreamEvent {
     // independently, nothing waits for the slowest one, and the in-process
     // page events above keep streaming while collectors run.
     CollectorDocument collector_document = 5;
+    // What the whole-document passes changed in the document the page
+    // events above carry, sent once after a collector's last page and
+    // before its collector_document (for the CV pipeline's pages, before
+    // the complete event). Absent when the passes changed nothing.
+    DocumentRepairDelta repair = 6;
   }
+}
+
+// DocumentRepairDelta brings the document a client folds from page events
+// up to the server's whole-document result: the repair pass (running
+// headers and footers demoted to furniture, paragraphs split across a page
+// break rejoined, empty groups removed, and the rest of RepairOptions),
+// plus, for the CV pipeline's pages, the list grouping the unary path does.
+//
+// Folding page events: each item in PageData texts, tables, pictures and
+// groups lands at the arena index its self_ref names (#/texts/N at texts
+// index N); page_meta lands in the page map at page_number. Body children
+// are each body_order ref climbed through its parent refs to the item
+// whose parent is #/body, appended when not already present; furniture
+// children are likewise the page's other items whose ancestry ends at
+// #/furniture.
+//
+// Applying the delta, in this order: apply the complete event's
+// section_header_levels to the folded document (its keys are the refs the
+// pages carried); rewrite every reference renamed_refs maps (self_ref,
+// parent, children, captions and any other ref field) in one simultaneous
+// pass; rebuild each arena at its count, taking index N from the upserted
+// item whose self_ref names N, else from the folded item that now carries
+// that self_ref; then replace whichever children lists and page entries
+// the delta carries. The result equals the collector_document's Document
+// in those fields.
+message DocumentRepairDelta {
+  // The collector whose page events this completes; COLLECTOR_GRPARSE_CV
+  // for the CV pipeline's pages (and an inspector-streamed prefix ahead of
+  // them).
+  Collector collector = 1;
+  // Ref renumbering the passes applied, from the ref a page event carried
+  // to the ref the item carries now. An item merged into another maps to
+  // its survivor.
+  map<string, string> renamed_refs = 2;
+  // Items the passes changed or created, each at the arena index its
+  // self_ref names. Items absent here are the folded ones, renamed.
+  repeated ai.pipestream.document.v1.BaseTextItem texts = 3;
+  repeated ai.pipestream.document.v1.TableItem tables = 4;
+  repeated ai.pipestream.document.v1.PictureItem pictures = 5;
+  repeated ai.pipestream.document.v1.GroupItem groups = 6;
+  // The arena sizes after the passes; items past them were retired.
+  uint32 text_count = 7;
+  uint32 table_count = 8;
+  uint32 picture_count = 9;
+  uint32 group_count = 10;
+  // Set when the passes changed the top-level body or furniture children.
+  RefList body_children = 11;
+  RefList furniture_children = 12;
+  // Page map entries the passes changed or that the page events do not
+  // carry, and page numbers the collector's Document has no entry for.
+  map<int32, ai.pipestream.document.v1.PageItem> pages = 13;
+  repeated int32 dropped_pages = 14;
+}
+
+message RefList {
+  repeated ai.pipestream.document.v1.RefItem refs = 1;
 }
 
 // CollectorDocument is one collector's projected output, source-tagged by
@@ -146,6 +217,11 @@ message PageData {
   // stream in both directions. Transport metadata like text_offsets: the
   // core document item shape is unchanged.
   repeated SourceReconciliation reconciliation = 8;
+  // The groups (lists, sections, inline runs) the page's items belong to,
+  // each on the page of its first item in reading order, so the tree
+  // survives the page split. Their children lists are the document's own
+  // and may name items on later pages.
+  repeated ai.pipestream.document.v1.GroupItem groups = 9;
 }
 
 // One word of the page's consensus reading stream linked to the same word
