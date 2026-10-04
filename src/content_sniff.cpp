@@ -414,22 +414,306 @@ std::string sniff_text(string_view bytes) {
   return "text/plain";
 }
 
+// ---- OLE compound files -----------------------------------------------------
+// Enough of [MS-CFB] to walk a compound file's directory from its root and
+// read the head of a stream: the FAT (through the header's DIFAT entries and
+// the DIFAT chain), the directory chain, the mini FAT and the mini stream
+// that holds every stream under the cutoff. Every read is bounds-checked and
+// every chain walk is capped at the number of sectors the file holds, so a
+// truncated or looping file ends the walk instead of the process.
+namespace cfb {
+
+constexpr string_view kSignature = "\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1";
+constexpr size_t kHeaderBytes = 512;
+constexpr size_t kDirectoryEntryBytes = 128;
+constexpr size_t kHeaderDifatEntries = 109;
+constexpr uint32_t kEndOfChain = 0xFFFFFFFE;
+constexpr uint32_t kNoStream = 0xFFFFFFFF;
+constexpr uint32_t kMaxRegularSector = 0xFFFFFFFA;
+constexpr uint8_t kStorageObject = 1;
+constexpr uint8_t kStreamObject = 2;
+constexpr uint8_t kRootStorage = 5;
+
+uint16_t u16(string_view bytes, size_t at) {
+  if (at + 2 > bytes.size()) return 0;
+  return static_cast<uint16_t>(static_cast<uint8_t>(bytes[at]) |
+                               (static_cast<uint8_t>(bytes[at + 1]) << 8));
+}
+
+uint32_t u32(string_view bytes, size_t at) {
+  if (at + 4 > bytes.size()) return 0;
+  return static_cast<uint32_t>(u16(bytes, at)) | (static_cast<uint32_t>(u16(bytes, at + 2)) << 16);
+}
+
+// One directory entry, with its UTF-16LE name narrowed to the ASCII Office
+// uses for the names that matter here (a non-ASCII unit becomes '?').
+struct Entry {
+  std::string name;
+  uint8_t type = 0;
+  uint32_t left = kNoStream;
+  uint32_t right = kNoStream;
+  uint32_t child = kNoStream;
+  uint32_t start = kEndOfChain;
+  uint64_t size = 0;
+};
+
+class File {
+ public:
+  // Parses the header and the FAT; `ok()` is false for anything that is not
+  // a compound file this reader can walk.
+  explicit File(string_view bytes) : bytes_(bytes) {
+    if (!starts_with(bytes, kSignature) || bytes.size() < kHeaderBytes) return;
+    const unsigned sector_shift = u16(bytes, 30);
+    const unsigned mini_shift = u16(bytes, 32);
+    if ((sector_shift != 9 && sector_shift != 12) || mini_shift != 6) return;
+    sector_bytes_ = size_t{1} << sector_shift;
+    mini_cutoff_ = u32(bytes, 56);
+    sector_count_ = bytes.size() / sector_bytes_;  // the header counts as one
+    if (!read_fat()) return;
+    const std::vector<uint32_t> directory = chain(u32(bytes, 48));
+    if (directory.empty()) return;
+    directory_ = directory;
+    mini_fat_ = chain_values(u32(bytes, 60), u32(bytes, 64));
+    const std::optional<Entry> root = entry(0);
+    if (!root.has_value() || root->type != kRootStorage) return;
+    mini_stream_ = chain(root->start);
+    mini_stream_bytes_ = root->size;
+    root_ = *root;
+    ok_ = true;
+  }
+
+  bool ok() const { return ok_; }
+
+  // The entries directly under the root storage, in tree order.
+  std::vector<Entry> root_children() const {
+    std::vector<Entry> children;
+    if (!ok_) return children;
+    std::vector<uint32_t> pending{root_.child};
+    size_t visited = 0;
+    const size_t capacity = directory_.size() * (sector_bytes_ / kDirectoryEntryBytes);
+    while (!pending.empty() && visited < capacity) {
+      const uint32_t id = pending.back();
+      pending.pop_back();
+      if (id == kNoStream) continue;
+      const std::optional<Entry> node = entry(id);
+      if (!node.has_value()) continue;
+      ++visited;
+      pending.push_back(node->left);
+      pending.push_back(node->right);
+      children.push_back(*node);
+    }
+    return children;
+  }
+
+  // The first `limit` bytes of a stream (fewer when the stream is shorter),
+  // from the mini stream when the stream is under the cutoff.
+  std::string head(const Entry& stream, size_t limit) const {
+    std::string out;
+    if (!ok_ || stream.type != kStreamObject) return out;
+    const size_t wanted = static_cast<size_t>(std::min<uint64_t>(stream.size, limit));
+    if (wanted == 0) return out;
+    if (stream.size < mini_cutoff_) {
+      constexpr size_t kMiniBytes = 64;
+      uint32_t mini = stream.start;
+      size_t steps = 0;
+      while (mini <= kMaxRegularSector && out.size() < wanted && steps++ < mini_fat_.size()) {
+        const uint64_t offset = uint64_t{mini} * kMiniBytes;
+        if (offset + kMiniBytes > mini_stream_bytes_) break;
+        const size_t index = static_cast<size_t>(offset / sector_bytes_);
+        if (index >= mini_stream_.size()) break;
+        const string_view sector = sector_bytes(mini_stream_[index]);
+        const size_t within = static_cast<size_t>(offset % sector_bytes_);
+        if (sector.size() < within + kMiniBytes) break;
+        out.append(sector.substr(within, std::min(kMiniBytes, wanted - out.size())));
+        if (mini >= mini_fat_.size()) break;
+        mini = mini_fat_[mini];
+      }
+      return out;
+    }
+    for (const uint32_t sector_id : chain(stream.start)) {
+      const string_view sector = sector_bytes(sector_id);
+      if (sector.empty()) break;
+      out.append(sector.substr(0, std::min(sector.size(), wanted - out.size())));
+      if (out.size() >= wanted) break;
+    }
+    return out;
+  }
+
+ private:
+  string_view sector_bytes(uint32_t id) const {
+    if (id > kMaxRegularSector) return {};
+    const uint64_t offset = (uint64_t{id} + 1) * sector_bytes_;
+    if (offset + sector_bytes_ > bytes_.size()) return {};
+    return bytes_.substr(static_cast<size_t>(offset), sector_bytes_);
+  }
+
+  bool read_fat() {
+    std::vector<uint32_t> fat_sectors;
+    const size_t declared = u32(bytes_, 44);
+    for (size_t i = 0; i < kHeaderDifatEntries && fat_sectors.size() < declared; ++i) {
+      const uint32_t id = u32(bytes_, 76 + 4 * i);
+      if (id > kMaxRegularSector) break;
+      fat_sectors.push_back(id);
+    }
+    uint32_t difat = u32(bytes_, 68);
+    const size_t per_difat = sector_bytes_ / 4 - 1;
+    size_t difat_steps = 0;
+    while (difat <= kMaxRegularSector && fat_sectors.size() < declared &&
+           difat_steps++ < sector_count_) {
+      const string_view sector = sector_bytes(difat);
+      if (sector.empty()) break;
+      for (size_t i = 0; i < per_difat && fat_sectors.size() < declared; ++i) {
+        const uint32_t id = u32(sector, 4 * i);
+        if (id > kMaxRegularSector) break;
+        fat_sectors.push_back(id);
+      }
+      difat = u32(sector, 4 * per_difat);
+    }
+    for (const uint32_t id : fat_sectors) {
+      const string_view sector = sector_bytes(id);
+      if (sector.empty()) return false;
+      for (size_t i = 0; i < sector_bytes_ / 4; ++i) fat_.push_back(u32(sector, 4 * i));
+    }
+    return !fat_.empty();
+  }
+
+  // The sector ids of a chain, in order, capped at the file's sector count.
+  std::vector<uint32_t> chain(uint32_t start) const {
+    std::vector<uint32_t> ids;
+    uint32_t id = start;
+    while (id <= kMaxRegularSector && ids.size() < sector_count_) {
+      if (id >= fat_.size()) break;
+      ids.push_back(id);
+      id = fat_[id];
+    }
+    return ids;
+  }
+
+  // The 32-bit entries of the sectors on a chain (the mini FAT).
+  std::vector<uint32_t> chain_values(uint32_t start, size_t declared_sectors) const {
+    std::vector<uint32_t> values;
+    for (const uint32_t id : chain(start)) {
+      if (values.size() / (sector_bytes_ / 4) >= declared_sectors) break;
+      const string_view sector = sector_bytes(id);
+      if (sector.empty()) break;
+      for (size_t i = 0; i < sector_bytes_ / 4; ++i) values.push_back(u32(sector, 4 * i));
+    }
+    return values;
+  }
+
+  std::optional<Entry> entry(uint32_t id) const {
+    const size_t per_sector = sector_bytes_ / kDirectoryEntryBytes;
+    const size_t index = id / per_sector;
+    if (index >= directory_.size()) return std::nullopt;
+    const string_view sector = sector_bytes(directory_[index]);
+    if (sector.empty()) return std::nullopt;
+    const string_view raw = sector.substr((id % per_sector) * kDirectoryEntryBytes,
+                                          kDirectoryEntryBytes);
+    Entry out;
+    const size_t name_bytes = std::min<size_t>(u16(raw, 64), 64);
+    for (size_t i = 0; i + 1 < name_bytes; i += 2) {
+      const uint16_t unit = u16(raw, i);
+      if (unit == 0) break;
+      out.name.push_back(unit < 0x80 ? static_cast<char>(unit) : '?');
+    }
+    out.type = static_cast<uint8_t>(raw[66]);
+    out.left = u32(raw, 68);
+    out.right = u32(raw, 72);
+    out.child = u32(raw, 76);
+    out.start = u32(raw, 116);
+    // Version 3 files use the low 32 bits only; the high word is unreliable.
+    out.size = sector_bytes_ == 512 ? u32(raw, 120)
+                                    : (uint64_t{u32(raw, 124)} << 32) | u32(raw, 120);
+    return out;
+  }
+
+  string_view bytes_;
+  bool ok_ = false;
+  size_t sector_bytes_ = 512;
+  size_t sector_count_ = 0;
+  uint32_t mini_cutoff_ = 4096;
+  std::vector<uint32_t> fat_;
+  std::vector<uint32_t> mini_fat_;
+  std::vector<uint32_t> directory_;
+  std::vector<uint32_t> mini_stream_;
+  uint64_t mini_stream_bytes_ = 0;
+  Entry root_;
+};
+
+const Entry* stream_named(const std::vector<Entry>& entries, string_view name) {
+  for (const Entry& entry : entries) {
+    if (entry.type == kStreamObject && entry.name == name) return &entry;
+  }
+  return nullptr;
+}
+
+// [MS-DOC] 2.5.1 FibBase: wIdent at 0 is 0xA5EC for a Word binary file;
+// the flags word at 10 has fEncrypted at bit 8 (0x0100). An encrypted
+// document's FIB is in the clear; everything after it is not.
+bool word_fib_encrypted(const std::string& head) {
+  if (head.size() < 12) return false;
+  if (u16(head, 0) != 0xA5EC) return false;
+  return (u16(head, 10) & 0x0100) != 0;
+}
+
+// [MS-XLS] 2.4.117 FilePass: an encrypted workbook's stream opens with a BOF
+// record (0x0809) followed, within the file's first records, by FILEPASS
+// (0x002F). The record walk stops at EOF (0x000A) or a record that runs off
+// the head read here.
+bool biff_filepass(const std::string& head) {
+  if (head.size() < 4 || u16(head, 0) != 0x0809) return false;
+  size_t at = 0;
+  for (int records = 0; records < 64 && at + 4 <= head.size(); ++records) {
+    const uint16_t type = u16(head, at);
+    const uint16_t length = u16(head, at + 2);
+    if (type == 0x002F) return true;
+    if (type == 0x000A) return false;
+    at += 4 + size_t{length};
+  }
+  return false;
+}
+
+// [MS-PPT] 2.3.2 CurrentUserAtom: headerToken at 12 is 0xE391C05F for a
+// plain file and 0xF3D1C4DF for an encrypted one.
+bool powerpoint_encrypted(const std::string& current_user) {
+  return current_user.size() >= 16 && u32(current_user, 12) == 0xF3D1C4DF;
+}
+
+}  // namespace cfb
+
 }  // namespace
 
-bool encrypted_office_package(string_view bytes) {
-  static constexpr string_view kCompoundFile = "\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1";
-  if (!starts_with(bytes, kCompoundFile)) return false;
-  // Directory entry names are UTF-16LE. The directory can sit anywhere in
-  // the file, so the whole compound file is searched.
-  static const std::string kEncryptedPackage = [] {
-    std::string name;
-    for (const char c : string_view("EncryptedPackage")) {
-      name.push_back(c);
-      name.push_back('\0');
+std::optional<EncryptedOfficeDocument> encrypted_office_document(string_view bytes) {
+  const cfb::File file(bytes);
+  if (!file.ok()) return std::nullopt;
+  const std::vector<cfb::Entry> root = file.root_children();
+  if (cfb::stream_named(root, "EncryptedPackage") != nullptr) {
+    return EncryptedOfficeDocument{"Office Open XML package",
+                                   "EncryptedPackage stream under the root"};
+  }
+  if (const cfb::Entry* word = cfb::stream_named(root, "WordDocument"); word != nullptr) {
+    if (cfb::word_fib_encrypted(file.head(*word, 12))) {
+      return EncryptedOfficeDocument{"Word document", "fEncrypted set in the WordDocument FIB"};
     }
-    return name;
-  }();
-  return bytes.find(kEncryptedPackage) != string_view::npos;
+  }
+  for (const string_view name : {"Workbook", "Book"}) {
+    if (const cfb::Entry* workbook = cfb::stream_named(root, name); workbook != nullptr) {
+      if (cfb::biff_filepass(file.head(*workbook, 4096))) {
+        return EncryptedOfficeDocument{"Excel workbook",
+                                       std::string("FILEPASS record in the ") + std::string(name) +
+                                           " stream"};
+      }
+    }
+  }
+  if (cfb::stream_named(root, "PowerPoint Document") != nullptr) {
+    if (const cfb::Entry* user = cfb::stream_named(root, "Current User"); user != nullptr) {
+      if (cfb::powerpoint_encrypted(file.head(*user, 16))) {
+        return EncryptedOfficeDocument{"PowerPoint presentation",
+                                       "encrypted header token in the Current User stream"};
+      }
+    }
+  }
+  return std::nullopt;
 }
 
 std::string sniff_mimetype(string_view bytes) {

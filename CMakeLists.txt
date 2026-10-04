@@ -952,7 +952,7 @@ target_sources(grparse_core PRIVATE
   src/content_sniff.cpp
   src/data_totals.cpp)
 if(BUILD_TESTING)
-  set(GRPARSE_DATA_TESTS content-sniff-test)
+  set(GRPARSE_DATA_TESTS content-sniff-test unary-response-cap-test)
   foreach(test_name IN LISTS GRPARSE_DATA_TESTS)
     string(REPLACE "-" "_" test_source "${test_name}")
     add_executable(${test_name} "tests/${test_source}.cpp")
@@ -964,6 +964,10 @@ if(BUILD_TESTING)
     TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
   set_tests_properties(content-sniff-test PROPERTIES
     ENVIRONMENT "GRPARSE_TEST_CORPUS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/golden/corpus")
+  # The response cap's setting lives in the server's own source, not the
+  # library, like the rest of the startup configuration.
+  target_sources(unary-response-cap-test PRIVATE src/server_config.cpp)
+  target_include_directories(unary-response-cap-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 endif()
 
 # ---- anti-drift battery: determinism, idempotence, data contracts ----------

@@ -412,6 +412,19 @@ DocumentParserService::DocumentParserService(PageScheduler& scheduler,
       inflight_(std::move(inflight)),
       executor_(executor_options) {}
 
+grpc::Status refuse_oversized_response(const google::protobuf::MessageLite& response,
+                                       uint64_t cap, const std::string& surface) {
+  const uint64_t bytes = response.ByteSizeLong();
+  if (bytes <= cap) return grpc::Status::OK;
+  return grpc::Status(
+      grpc::StatusCode::RESOURCE_EXHAUSTED,
+      surface + ": the response is " + std::to_string(bytes) + " bytes, over the " +
+          std::to_string(cap) +
+          " byte unary response limit (GRPARSE_MAX_RESPONSE_BYTES); convert this document "
+          "over StreamProcessDocument, which delivers the same conversion as a sequence of "
+          "messages, or request fewer to_formats");
+}
+
 grpc::ServerUnaryReactor* DocumentParserService::ConvertSource(
     grpc::CallbackServerContext* context,
     const pipestream::parse::v1::ConvertSourceRequest* request,
@@ -507,7 +520,13 @@ grpc::ServerUnaryReactor* DocumentParserService::ConvertSource(
     profile.set_scope(pipestream::parse::v1::PROFILING_SCOPE_DOCUMENT);
     profile.set_count(1);
     profile.add_times(converted->processing_time());
-    return grpc::Status::OK;
+    // Last, once the response is whole: a response the wire will not carry
+    // is refused here, with a status that says what to do instead, rather
+    // than failing in the transport after the call has done all its work.
+    const grpc::Status fits =
+        refuse_oversized_response(*response, response_byte_cap_, "ConvertSource");
+    if (!fits.ok()) response->Clear();
+    return fits;
   });
 }
 
@@ -524,7 +543,10 @@ grpc::ServerUnaryReactor* DocumentParserService::ChunkHierarchicalSource(
         context, request->request(), "ChunkHierarchicalSource", &chunks, chunked);
     if (!status.ok()) return status;
     for (auto& chunk : chunks) *chunked->add_chunks() = std::move(chunk);
-    return grpc::Status::OK;
+    const grpc::Status fits =
+        refuse_oversized_response(*response, response_byte_cap_, "ChunkHierarchicalSource");
+    if (!fits.ok()) response->Clear();
+    return fits;
   });
 }
 
@@ -541,7 +563,10 @@ grpc::ServerUnaryReactor* DocumentParserService::ChunkHybridSource(
                                                     "ChunkHybridSource", &chunks, chunked);
     if (!status.ok()) return status;
     for (auto& chunk : chunks) *chunked->add_chunks() = std::move(chunk);
-    return grpc::Status::OK;
+    const grpc::Status fits =
+        refuse_oversized_response(*response, response_byte_cap_, "ChunkHybridSource");
+    if (!fits.ok()) response->Clear();
+    return fits;
   });
 }
 

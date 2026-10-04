@@ -311,6 +311,9 @@ int main() {
                  inflight->limit() / (1024 * 1024));
     grparse::DocumentParserService service(scheduler, endpoints, executor_options, repair,
                                           embedding_engine, embedding_config, inflight);
+    service.set_response_byte_cap(grparse::read_response_byte_cap());
+    std::println("gRParse unary response: at most {} MiB (GRPARSE_MAX_RESPONSE_BYTES)",
+                 service.response_byte_cap() / (1024 * 1024));
     grparse::DocumentStreamingService streaming_service(scheduler, endpoints, repair, inflight);
     const auto server = start_server(process.listen_address, service, streaming_service,
                                      grparse::read_grpc_limits());

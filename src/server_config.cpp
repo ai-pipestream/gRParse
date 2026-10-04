@@ -306,6 +306,16 @@ uint64_t read_inflight_byte_budget() {
   return configured_size("GRPARSE_MAX_INFLIGHT_BYTES", kDefaultBytes, kMaximumBytes);
 }
 
+uint64_t read_response_byte_cap() {
+  // What the server accepts on its own port is what it sends by default: a
+  // client built to the same limit can take everything it is sent. The
+  // ceiling is the in-flight budget's; a larger message than that fits no
+  // transport anyway.
+  constexpr size_t kMaximumBytes = size_t{1} << 40;
+  return configured_size("GRPARSE_MAX_RESPONSE_BYTES", static_cast<size_t>(kMaxMessageBytes),
+                         kMaximumBytes);
+}
+
 MetricsConfig read_metrics_config() {
   MetricsConfig metrics;
   // GRPARSE_METRICS_PORT exposes the scheduler counters in Prometheus text

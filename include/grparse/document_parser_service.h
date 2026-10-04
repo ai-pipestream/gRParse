@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -7,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include <google/protobuf/message_lite.h>
 #include <grpcpp/grpcpp.h>
 
 #include "ai/pipestream/parse/v1/parse.grpc.pb.h"
@@ -75,6 +77,18 @@ struct CollectorTargets {
 // let in can come back from a collector. gRPC's default of 4 MB refused a
 // 15 MB HTML page's markup answer with RESOURCE_EXHAUSTED.
 inline constexpr int kMaxMessageBytes = 520 * 1024 * 1024;
+
+// The unary surfaces' answer to a response that would not fit on the wire.
+// A unary call returns the whole conversion in one message (the Document,
+// every requested export, the chunks), and nothing capped that: a 20 MB CSV
+// came back as a 770 MB response that no client could receive, after the
+// server had done all the work. `cap` is the largest serialized response the
+// server sends (GRPARSE_MAX_RESPONSE_BYTES, default kMaxMessageBytes, the
+// size it accepts itself); a larger one is refused with RESOURCE_EXHAUSTED,
+// naming both sizes and the streaming surface that carries the same
+// conversion as a sequence of messages. OK when the response fits.
+grpc::Status refuse_oversized_response(const google::protobuf::MessageLite& response,
+                                       uint64_t cap, const std::string& surface);
 
 // The channel arguments every collector channel is created with.
 grpc::ChannelArguments collector_channel_arguments();
@@ -152,6 +166,11 @@ class DocumentParserService final
                         EmbeddingConfig embedding_config = {},
                         std::shared_ptr<InflightBytes> inflight = {});
 
+  // The largest serialized response a unary surface sends (see
+  // refuse_oversized_response); kMaxMessageBytes until set.
+  void set_response_byte_cap(uint64_t bytes) { response_byte_cap_ = bytes; }
+  uint64_t response_byte_cap() const { return response_byte_cap_; }
+
   grpc::ServerUnaryReactor* ConvertSource(
       grpc::CallbackServerContext* context,
       const ai::pipestream::parse::v1::ConvertSourceRequest* request,
@@ -206,6 +225,7 @@ class DocumentParserService final
   ChunkEmbedder embedder_;
   // The process-wide in-flight byte budget; null admits by call count alone.
   std::shared_ptr<InflightBytes> inflight_;
+  uint64_t response_byte_cap_ = static_cast<uint64_t>(kMaxMessageBytes);
   // Declared last so it is torn down first: joining the workers before the
   // endpoints and the scheduler reference go away is what keeps an in-flight
   // parse from outliving what it reads.
