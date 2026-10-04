@@ -2580,6 +2580,142 @@ void verify_streaming_pdf_fast_path_projects_pages() {
   require(run.events.at(3).has_complete(), "the stream closes with the complete event");
 }
 
+// Holds the last page's recognition until the client has read page one. A
+// server that pushes each page as it is ready gets past the gate at once; one
+// that buffered the document would hold page one behind the last page, the
+// gate would time out, and opened() would read false.
+class LastPageGate final : public grparse::PageRecognizer {
+ public:
+  explicit LastPageGate(int last_page) : last_page_(last_page) {}
+
+  grparse::OcrPage extract_page(const cv::Mat& image) override {
+    const int page = image.at<unsigned char>(0, 0);
+    if (page == last_page_) {
+      std::unique_lock<std::mutex> lock(mutex_);
+      opened_ = condition_.wait_for(lock, 5s, [this] { return first_page_read_; });
+    }
+    return {100, 200, {{"page-" + std::to_string(page), {{1, 2}, {20, 2}, {20, 12}, {1, 12}}}}};
+  }
+
+  void first_page_read() {
+    {
+      const std::lock_guard<std::mutex> lock(mutex_);
+      first_page_read_ = true;
+    }
+    condition_.notify_all();
+  }
+
+  bool opened() {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return opened_;
+  }
+
+ private:
+  const int last_page_;
+  std::mutex mutex_;
+  std::condition_variable condition_;
+  bool first_page_read_ = false;
+  bool opened_ = false;
+};
+
+// Streams one document through a server whose recognizer is the gate and
+// returns the page numbers in arrival order. The window covers every page,
+// so only the reactor's own emission decides whether page one leaves the
+// server before the last page is recognized.
+std::vector<int> stream_behind_gate(LastPageGate& gate, int pages,
+                                    grparse::PageSourceFactory source_factory,
+                                    grparse::CollectorTargets targets,
+                                    const std::string& filename,
+                                    const std::string& content_type, const std::string& bytes) {
+  grparse::PageScheduler::Options options{
+      .document_queue_capacity = 4,
+      .render_queue_capacity = 16,
+      .inference_queue_capacity = 16,
+      .assembly_queue_capacity = 16,
+      .render_workers = 4,
+      .inference_workers = 4,
+      .assembly_workers = 2,
+      .page_window = static_cast<size_t>(pages),
+  };
+  grparse::PageScheduler scheduler(gate, options, std::move(source_factory));
+  grparse::DocumentStreamingService streaming_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(std::move(targets)));
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&streaming_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "incremental stream server failed to start");
+  auto client = pipestream::parse::v1::ParseStreamingService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 20s);
+  auto stream = client->StreamProcessDocument(&context);
+  pipestream::parse::v1::DocumentChunk source;
+  source.set_document_id("incremental");
+  source.set_filename(filename);
+  source.set_content_type(content_type);
+  source.set_data(bytes);
+  source.set_complete(true);
+  require(stream->Write(source), "incremental client could not write the source chunk");
+  stream->WritesDone();
+  std::vector<int> page_numbers;
+  bool complete = false;
+  pipestream::parse::v1::DocumentStreamEvent event;
+  while (stream->Read(&event)) {
+    if (event.has_page()) {
+      page_numbers.push_back(event.page().page_number());
+      if (event.page().page_number() == 1) gate.first_page_read();
+    }
+    if (event.has_complete()) complete = true;
+  }
+  const grpc::Status status = stream->Finish();
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+  require(status.ok(), "incremental stream failed: " + status.error_message());
+  require(complete, "incremental stream ends with the complete event");
+  return page_numbers;
+}
+
+// Pages leave the server as they are recognized, not when the document is
+// done: page one reaches the client while the last page is still inside
+// recognition.
+void verify_pages_stream_before_the_document_finishes() {
+  constexpr int kPages = 6;
+  LastPageGate gate(kPages);
+  const std::vector<int> pages = stream_behind_gate(
+      gate, kPages,
+      [count = kPages](std::shared_ptr<const std::string>, bool, double) {
+        return std::make_shared<WideSource>(count);
+      },
+      grparse::CollectorTargets{}, "scan.png", "image/png", "in-memory-source");
+  require(gate.opened(), "page one must reach the client before the last page is recognized");
+  require(pages.size() == static_cast<size_t>(kPages), "every page streams");
+  for (int index = 0; index < kPages; ++index) {
+    require(pages.at(index) == index + 1, "pages stream in document order");
+  }
+}
+
+// The same holds on the default PDF route for a scan: the inspector's
+// classification gates the start of the CV leg, not the delivery of its
+// pages, so page one still leaves before the last page is recognized.
+void verify_routed_scan_pages_stream_before_the_document_finishes() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_SCANNED, {1, 2, 3});
+  PdfInspectorServer inspector_server(&inspector);
+  grparse::CollectorTargets targets;
+  targets.pdf = inspector_server.target();
+  LastPageGate gate(3);
+  const std::vector<int> pages = stream_behind_gate(
+      gate, 3,
+      [](std::shared_ptr<const std::string>, bool, double) {
+        return std::make_shared<RoutableDigitalSource>();
+      },
+      std::move(targets), "scan.pdf", "application/pdf", "%PDF-in-memory");
+  require(gate.opened(),
+          "a routed scan's page one must reach the client before its last page is recognized");
+  require(pages == std::vector<int>({1, 2, 3}), "routed scan pages stream in document order");
+}
+
 // The bytes the preview tests send: the fake PDF backend reads them as two
 // Letter pages, so the fast path has something to render.
 const std::string kTwoPagePdf = "%PDF-two-page-preview-fixture";
@@ -3280,6 +3416,8 @@ int main() {
         verify_streaming_pdf_fast_path_skips_previews_when_off();
         verify_pdf_without_backend_fails_precondition();
         verify_streaming_pdf_classification_restricts_recognition();
+        verify_pages_stream_before_the_document_finishes();
+        verify_routed_scan_pages_stream_before_the_document_finishes();
         verify_stream_charge_follows_the_bytes();
         verify_stream_chunks_returns_its_charge_when_the_reader_cancels();
         verify_streaming_pdf_router_cancels_with_the_client();

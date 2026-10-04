@@ -110,7 +110,28 @@ int main(int argc, char** argv) {
   auto channel = grpc::CreateChannel(endpoint, grpc::InsecureChannelCredentials());
   auto client = pipestream::parse::v1::ParseStreamingService::NewStub(channel);
   grpc::ClientContext context;
-  context.set_deadline(std::chrono::system_clock::now() + std::chrono::minutes(10));
+  // GRPARSE_STREAM_CLIENT_DEADLINE_S raises the ten-minute default for long
+  // documents: a scan of a few hundred pages recognizes for longer than that.
+  long deadline_seconds = 600;
+  if (const char* configured = std::getenv("GRPARSE_STREAM_CLIENT_DEADLINE_S")) {
+    char* end = nullptr;
+    const long value = std::strtol(configured, &end, 10);
+    if (end == configured || *end != '\0' || value <= 0) {
+      std::println(stderr, "GRPARSE_STREAM_CLIENT_DEADLINE_S must be a positive number of seconds");
+      return 64;
+    }
+    deadline_seconds = value;
+  }
+  context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(deadline_seconds));
+  // Every event line carries ms= since the first chunk went out, so a run
+  // shows when each page arrived: pages pushed as they are recognized arrive
+  // spread across the parse, a buffered document arrives in one burst.
+  const auto started = std::chrono::steady_clock::now();
+  const auto elapsed_ms = [started] {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
+                                                                 started)
+        .count();
+  };
   auto stream = client->StreamProcessDocument(&context);
   const std::string document_id = pdf.filename().string();
   const std::string content_type = content_type_for(pdf);
@@ -130,14 +151,19 @@ int main(int argc, char** argv) {
   final_chunk.set_complete(true);
   stream->Write(final_chunk);
   stream->WritesDone();
+  const auto upload_ms = elapsed_ms();
 
   const char* items = std::getenv("GRPARSE_STREAM_CLIENT_ITEMS");
   const bool dump_items = items != nullptr && std::string_view(items) == "1";
   int page_events = 0;
+  std::int64_t first_page_ms = -1;
+  std::int64_t last_page_ms = -1;
   pipestream::parse::v1::DocumentStreamEvent event;
   while (stream->Read(&event)) {
     if (event.has_page()) {
       ++page_events;
+      last_page_ms = elapsed_ms();
+      if (first_page_ms < 0) first_page_ms = last_page_ms;
       int digital_items = 0;
       int ocr_items = 0;
       for (const auto& offset : event.page().text_offsets()) {
@@ -166,10 +192,10 @@ int main(int argc, char** argv) {
         }
       }
       std::println("page={} text_items={} digital_items={} ocr_items={} labelled={} tables={} "
-                   "cells={} pictures={} picture_images={} barcodes={}",
+                   "cells={} pictures={} picture_images={} barcodes={} ms={}",
                    event.page().page_number(), event.page().texts_size(), digital_items,
                    ocr_items, labelled_items, event.page().tables_size(), filled_cells,
-                   event.page().pictures_size(), picture_images, barcodes);
+                   event.page().pictures_size(), picture_images, barcodes, last_page_ms);
       if (dump_items) {
         const auto& image = event.page().page_meta().image();
         if (!image.uri().empty()) {
@@ -179,7 +205,8 @@ int main(int argc, char** argv) {
         dump_page_items(event.page());
       }
     } else if (event.has_complete()) {
-      std::println("complete total_pages={}", event.total_pages());
+      std::println("complete total_pages={} ms={} upload_ms={} first_page_ms={} last_page_ms={}",
+                   event.total_pages(), elapsed_ms(), upload_ms, first_page_ms, last_page_ms);
     }
   }
   const grpc::Status status = stream->Finish();
