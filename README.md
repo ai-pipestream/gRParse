@@ -572,13 +572,27 @@ a dense newspaper layout whose reading order the text layer cannot be
 trusted to keep), the answer covers the whole document: a text-based
 document does not take the fast path even with no page named, and the CV
 path recognizes every page in place of the embedded layer, as it does when
-the trailer reports encoding issues. Explicit `do_ocr`/`force_ocr`
+the trailer reports encoding issues that no page carries. Encoding issues the
+inspector pinned to pages (a page's `encoding_issues`, or a
+`SUSPECTED_GARBLED` reason) are those pages' alone: they are recognized in
+place of their own layer, and every other page keeps its text. Explicit `do_ocr`/`force_ocr`
 request options still outrank the classification. If the inspector is
 unreachable or errors, the parse degrades to the unrouted CV path with the
 failure noted, never to a failed parse; unconfigured, nothing changes at
 all. When a request names `COLLECTOR_PDF` alongside other collectors, the
 routing step does not apply and the inspector is a plain Document-emitting
 leg like the rest.
+
+On `StreamProcessDocument` the routing goes page by page. Unless the
+inspector recommended OCR for the whole document, gRParse asks it for page
+documents, and each page whose own verdict is clean goes to the client as
+the inspector's slice of the fold the moment it is read. Only the pages
+that need recognition go through the CV pipeline: pages it named or marked
+`needs_ocr`, pages with a broken encoding, and blank pages the trailer shows
+to be scans. The stream interleaves the two readings in page order, renaming
+the inspector's items so the refs and text offsets run on without a gap or a
+collision. A page the inspector never delivered goes to the CV path too. The
+complete event names the pages each reading took.
 
 Every collector's output is an `ai.pipestream.document.v1.Document` whose items carry a
 `CollectorSource` tag, and the coordinator merges them additively: item

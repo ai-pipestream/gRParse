@@ -1004,6 +1004,38 @@ void verify_force_ocr_replaces_the_embedded_layer() {
           "forced recognition must not read the embedded layer");
 }
 
+// A page the inspector convicted of a broken encoding is read as kForce
+// reads it, while the rest of the document keeps its embedded layer.
+void verify_distrusted_page_replaces_only_its_own_layer() {
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 2, 2, 2, 1, 1, 1},
+      [](std::shared_ptr<const std::string>, bool, double) {
+        return std::make_shared<RenderableDigitalSource>();
+      });
+  grparse::PageScheduler::OcrTuning tuning;
+  tuning.ocr_pages = {2};
+  tuning.distrusted_pages = {2};
+  Result result;
+  std::mutex pages_mutex;
+  std::vector<std::shared_ptr<const grparse::OcrPage>> delivered;
+  scheduler.submit(std::make_shared<const std::string>("memory"), true, tuning,
+                   capturing_callbacks_for(&result, &pages_mutex, &delivered));
+  wait_until_finished(&result);
+
+  require(!result.failure, "distrusted-page document failed");
+  require(recognizer.calls.load() == 1, "only the distrusted page is recognized");
+  const auto metrics = scheduler.metrics();
+  require(metrics.pages_read_digitally == 1,
+          "the other page's embedded layer is read; the distrusted one's is not");
+  std::lock_guard<std::mutex> lock(pages_mutex);
+  require(delivered.size() == 2, "distrusted-page delivery count");
+  const auto recognized = std::ranges::count_if(delivered, [](const auto& page) {
+    return page->source == grparse::OcrPage::Source::kOcr;
+  });
+  require(recognized == 1, "recognized text replaces the distrusted layer, not merges with it");
+}
+
 // A three-page source whose embedded layers are all weak (skip_ocr false),
 // so the unrouted kSelective heuristic would recognize every page; page 3
 // has no embedded layer at all.
@@ -1511,6 +1543,39 @@ void verify_page_range_restricts_scheduled_pages() {
   require(recognizer.calls.load() == 3, "recognition runs only for the span");
 }
 
+// A named page list schedules exactly those pages, in order, keeping
+// their numbers: the pdf inspector's per-page routing hands recognition
+// pages that need not be a span. Pages past the end are dropped.
+void verify_page_list_schedules_exactly_the_named_pages() {
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 3, 2, 3, 1, 1, 1},
+      [](std::shared_ptr<const std::string>, bool, double) {
+        return std::make_shared<FakeSource>(6);
+      });
+  grparse::PageScheduler::OcrTuning tuning;
+  tuning.pages = {2, 5, 9};
+  Result result;
+  scheduler.submit(std::make_shared<const std::string>("memory"), true, tuning,
+                   callbacks_for(&result));
+  wait_until_finished(&result);
+
+  require(!result.failure, "page list document failed");
+  require(result.total_pages == 2, "on_document reports the pages that exist");
+  std::sort(result.completed_pages.begin(), result.completed_pages.end());
+  require(result.completed_pages == std::vector<int>({2, 5}),
+          "exactly the named pages are delivered, under their own numbers");
+  require(recognizer.calls.load() == 2, "recognition runs only for the named pages");
+
+  grparse::PageScheduler::OcrTuning nowhere;
+  nowhere.pages = {7, 8};
+  Result rejected;
+  scheduler.submit(std::make_shared<const std::string>("memory"), true, nowhere,
+                   callbacks_for(&rejected));
+  wait_until_finished(&rejected);
+  require(rejected.failure != nullptr, "a list naming no page of the document is rejected");
+}
+
 int main() {
   return grparse_test::run_test_main("page-scheduler-test", {
       verify_pipeline_and_metrics,
@@ -1541,5 +1606,7 @@ int main() {
       verify_upside_down_scan_takes_one_extra_pass,
       verify_digital_layer_and_disabled_recovery_never_rerecognize,
       verify_page_range_restricts_scheduled_pages,
+      verify_page_list_schedules_exactly_the_named_pages,
+      verify_distrusted_page_replaces_only_its_own_layer,
   });
 }

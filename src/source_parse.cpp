@@ -1605,6 +1605,10 @@ std::string cv_route_warning(const PdfClassification& classification,
          (classification.encoding_issues
               ? " with encoding issues in the text layer, so its extraction was not taken"
               : "") +
+         (classification.encoding_issues && !route.distrusted_pages.empty()
+              ? "; the " + std::to_string(route.distrusted_pages.size()) +
+                    " page(s) with a broken encoding are recognized in place of their layer"
+              : "") +
          (classification.empty_body
               ? "; its extraction carried no body text, so it was not taken"
               : "") +
@@ -1683,6 +1687,8 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
   }
   PageScheduler::OcrTuning routed_tuning = inputs.tuning;
   routed_tuning.ocr_pages.insert(route.ocr_pages.begin(), route.ocr_pages.end());
+  routed_tuning.distrusted_pages.insert(route.distrusted_pages.begin(),
+                                        route.distrusted_pages.end());
   const bool forced =
       route.force_ocr && routed_tuning.mode == PageScheduler::OcrTuning::Mode::kSelective;
   if (forced) routed_tuning.mode = PageScheduler::OcrTuning::Mode::kForce;

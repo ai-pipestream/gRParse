@@ -30,6 +30,14 @@ void add_ocr_page(uint32_t page, std::set<int>* pages) {
   }
 }
 
+// Whether a page's reasons convict its text layer rather than its want of
+// one.
+bool garbled(const pdfv1::PageOcrReasons& reasons) {
+  return std::ranges::any_of(reasons.reasons(), [](int reason) {
+    return reason == pdfv1::OCR_REASON_SUSPECTED_GARBLED;
+  });
+}
+
 bool blank(const std::string& text) {
   return std::ranges::all_of(text, [](unsigned char c) { return std::isspace(c) != 0; });
 }
@@ -53,17 +61,17 @@ bool has_body_content(const docv1::Document& document) {
 
 }  // namespace
 
-bool pdf_page_is_clean(bool needs_ocr, bool encoding_issues, const std::string& markdown) {
-  return !needs_ocr && !encoding_issues && !blank(markdown);
-}
-
 PdfRouteDecision route_pdf_by_classification(const PdfClassification& classification) {
   PdfRouteDecision decision;
-  // Document-wide encoding issues make the embedded layer untrustworthy for
-  // every class, and a detection that recommends OCR judged recognition the
-  // better reading of the whole document; either way the CV run recognizes
-  // all pages rather than reading the layer.
-  decision.force_ocr = classification.encoding_issues || classification.ocr_recommended;
+  // A detection that recommends OCR judged recognition the better reading
+  // of the whole document, and encoding issues that name no page leave no
+  // page of the layer to trust; either way the CV run recognizes all pages
+  // rather than reading the layer. Encoding issues the inspector pinned to
+  // pages are those pages': they are read as kForce reads every page, and
+  // the rest keep their layer.
+  decision.force_ocr = (classification.encoding_issues && classification.distrusted_pages.empty()) ||
+                       classification.ocr_recommended;
+  decision.distrusted_pages = classification.distrusted_pages;
   switch (classification.pdf_class) {
     case PdfClass::kTextBased:
       // The whole text layer is usable: the collector's own Document is the
@@ -151,16 +159,33 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
   bool document_seen = false;
   uint32_t page_count = 0;
   std::set<int> ocr_pages;
+  // The pages whose text layer the inspector convicted of a broken encoding.
+  std::set<int> distrusted;
   // Pages whose markdown came back empty; whether that means "scanned"
   // needs the fold's pictures and the trailer's invisible-text flag, which
   // arrive after the pages.
   std::vector<uint32_t> empty_pages;
-  // The streaming state: whether the info event left the fast path open,
-  // whether every page so far went to the sink, and the verdict on the page
-  // whose slice comes next (its page event precedes it).
-  bool fast_path_open = false;
-  bool run_open = false;
-  std::optional<std::pair<uint32_t, bool>> pending_page;
+  // The routing state: whether the info event left the document to be
+  // routed page by page, whether anyone still listens, the verdict on the
+  // page whose slice comes next (its page event precedes it), and the
+  // blank pages, whose route waits for the trailer.
+  bool routed = false;
+  bool sink_open = true;
+  struct PageVerdict {
+    uint32_t page_no = 0;
+    // Recognition is where the page goes: its pass asked for it, the
+    // encoding backstop convicted it, or the detection named it.
+    bool convicted = false;
+    bool blank = false;
+  };
+  std::optional<PageVerdict> pending_page;
+  std::vector<PdfPageSlice> blank_slices;
+  const auto send = [&](PdfPageSlice slice) {
+    if (!sink_open) return;
+    if (slice.recognize) result.recognize_pages.push_back(slice.page_no);
+    ++result.streamed_pages;
+    if (!page_sink(std::move(slice))) sink_open = false;
+  };
   pdfv1::ParsePdfResponse event;
   while (stream->Read(&event)) {
     if (event.has_info()) {
@@ -184,48 +209,54 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
       page_count = info.page_count();
       result.classification.ocr_recommended = info.ocr_recommended();
       for (const uint32_t page : info.pages_needing_ocr()) add_ocr_page(page, &ocr_pages);
-      // The same document-wide conditions route_pdf_by_classification
-      // reads off the info event; anything the pages or the trailer add is
-      // judged page by page below.
-      fast_path_open = streaming && result.classification.pdf_class == PdfClass::kTextBased &&
-                       !result.classification.ocr_recommended && ocr_pages.empty();
-      run_open = fast_path_open;
+      for (const auto& reasons : info.ocr_reasons()) {
+        if (garbled(reasons)) add_ocr_page(reasons.page(), &distrusted);
+      }
+      // A detection that recommends recognition judged it the better
+      // reading of the whole document (the newspaper case: every page has a
+      // usable layer, and reading it in order is the hard part), so that
+      // document is not routed page by page. Every other one is: each
+      // page's own verdict decides where it goes.
+      routed = streaming && !result.classification.ocr_recommended;
     } else if (event.has_page()) {
       // The pass that decoded the page can convict it where the sampling
       // detection on info did not look.
       if (event.page().needs_ocr()) add_ocr_page(event.page().page_no(), &ocr_pages);
+      if (event.page().encoding_issues() ||
+          event.page().ocr_reason() == pdfv1::OCR_REASON_SUSPECTED_GARBLED) {
+        add_ocr_page(event.page().page_no(), &distrusted);
+      }
       if (blank(event.page().markdown())) empty_pages.push_back(event.page().page_no());
-      if (streaming) {
-        pending_page.emplace(event.page().page_no(),
-                             pdf_page_is_clean(event.page().needs_ocr(),
-                                               event.page().encoding_issues(),
-                                               event.page().markdown()));
+      if (routed) {
+        const uint32_t page_no = event.page().page_no();
+        pending_page = PageVerdict{
+            page_no,
+            event.page().needs_ocr() || event.page().encoding_issues() ||
+                (page_no <= static_cast<uint32_t>(std::numeric_limits<int>::max()) &&
+                 ocr_pages.contains(static_cast<int>(page_no))),
+            blank(event.page().markdown())};
       }
     } else if (event.has_page_document()) {
-      // A page's slice is final the moment it arrives; whether it may go out
-      // now is the page's own verdict and the run before it. A blank page
-      // ends the run because the trailer can still send it to recognition
-      // (a picture on it, or invisible text anywhere), and an unclean one
-      // ends it because recognition is where it is going.
+      // A page's slice is final the moment it arrives, and so is its route
+      // unless the page is blank: a clean page goes out as its text, an
+      // unclean one as notice that recognition will read it. A blank page
+      // waits, because the trailer can still show it to be a scan.
       const uint32_t page_no = event.page_document().page_no();
-      const bool clean = pending_page.has_value() && pending_page->first == page_no &&
-                         pending_page->second;
+      const std::optional<PageVerdict> verdict =
+          pending_page.has_value() && pending_page->page_no == page_no ? pending_page
+                                                                       : std::nullopt;
       pending_page.reset();
-      if (fast_path_open && page_no >= 1 &&
+      if (routed && page_no >= 1 &&
           page_no <= static_cast<uint32_t>(std::numeric_limits<int>::max())) {
         PdfPageSlice slice{static_cast<int>(page_no),
                            static_cast<int>(std::min<uint32_t>(
                                page_count, static_cast<uint32_t>(std::numeric_limits<int>::max()))),
                            std::move(*event.mutable_page_document()->mutable_document())};
-        if (run_open && clean) {
-          if (page_sink(std::move(slice))) {
-            ++result.streamed_pages;
-          } else {
-            run_open = false;
-          }
+        if (verdict.has_value() && verdict->blank && !verdict->convicted) {
+          blank_slices.push_back(std::move(slice));
         } else {
-          run_open = false;
-          result.held_pages.push_back(std::move(slice));
+          slice.recognize = !verdict.has_value() || verdict->convicted;
+          send(std::move(slice));
         }
       }
     } else if (event.has_document()) {
@@ -247,6 +278,7 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
       }
       for (const auto& reasons : event.status().extraction_ocr_reasons()) {
         add_ocr_page(reasons.page(), &ocr_pages);
+        if (garbled(reasons)) add_ocr_page(reasons.page(), &distrusted);
       }
       result.classification.invisible_text = event.status().has_invisible_text();
       trailer_seen = true;
@@ -271,9 +303,20 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
       }
     }
   }
+  ocr_pages.insert(distrusted.begin(), distrusted.end());
   result.classification.pages_needing_ocr.assign(ocr_pages.begin(), ocr_pages.end());
+  result.classification.distrusted_pages.assign(distrusted.begin(), distrusted.end());
   result.classification.empty_body =
       document_seen && page_count > 0 && !has_body_content(result.outcome.document);
+  // A blank page is a scan when it carries a picture, when the document drew
+  // invisible text (a page image behind an OCR layer), or when nothing in
+  // the document read as a body; and when the trailer never came, nothing
+  // says otherwise. Any other blank page is a blank page.
+  for (auto& slice : blank_slices) {
+    slice.recognize = !trailer_seen || result.classification.invisible_text ||
+                      result.classification.empty_body || slice.document.pictures_size() > 0;
+    send(std::move(slice));
+  }
   if (result.classification.invisible_text) {
     result.outcome.warnings.push_back(
         "the text layer drew invisible text (an OCR layer behind a scan, or hidden text), "

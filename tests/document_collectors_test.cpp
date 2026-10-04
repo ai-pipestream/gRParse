@@ -2130,6 +2130,16 @@ void verify_pdf_routing_decision_logic() {
   garbled_mixed.encoding_issues = true;
   require(grparse::route_pdf_by_classification(garbled_mixed).force_ocr,
           "encoding issues force recognition for every classification");
+
+  // A flag the inspector pinned to pages is those pages': they replace
+  // their own layer, and nothing else is forced.
+  grparse::PdfClassification pinned = garbled_mixed;
+  pinned.pages_needing_ocr = {2, 3, 5};
+  pinned.distrusted_pages = {3};
+  const auto pinned_route = grparse::route_pdf_by_classification(pinned);
+  require(!pinned_route.force_ocr && pinned_route.distrusted_pages == std::vector<int>({3}) &&
+              pinned_route.ocr_pages == std::vector<int>({2, 3, 5}),
+          "encoding issues pinned to a page force only that page");
 }
 
 // PdfInfo.ocr_recommended answers about the whole document, so it refuses
@@ -2301,6 +2311,24 @@ void verify_pdf_extraction_verdicts_name_ocr_pages() {
           "need OCR; the blank page does not");
   require(!grparse::route_pdf_by_classification(result.classification).fast_path,
           "a text-based document with extraction verdicts does not fast-path");
+  require(result.classification.distrusted_pages.empty(),
+          "no page was convicted of a broken encoding");
+}
+
+// A page the encoding backstop convicted is distrusted: its layer is
+// recognized over, and the document's flag is that page's.
+void verify_pdf_encoding_verdicts_name_distrusted_pages() {
+  pdfv1::PageMarkdown garbled = pdf_page(2, "\xc3\x83\xc2\xa9t\xc3\x83\xc2\xa9");
+  garbled.set_encoding_issues(true);
+  ScriptedPdfService service({pdf_page(1, "# report"), garbled, pdf_page(3, "body")},
+                             canned_document("pdf"), {}, /*invisible_text=*/false);
+  ServerFixture server(&service);
+  const auto result = grparse::collect_pdf(server.channel(), "%PDF-fake");
+  require(result.outcome.success, "pdf collection succeeds: " + result.outcome.error);
+  require(result.classification.distrusted_pages == std::vector<int>({2}),
+          "the convicted page is distrusted");
+  require(result.classification.pages_needing_ocr == std::vector<int>({2}),
+          "and needs OCR");
 }
 
 // No OCR verdict anywhere, but the fold came back with nothing in it: an
@@ -2511,6 +2539,7 @@ int main() {
       verify_pdf_routing_decision_logic,
       verify_pdf_ocr_recommendation_routing,
       verify_pdf_encoding_issues_defeat_the_fast_path,
+      verify_pdf_encoding_verdicts_name_distrusted_pages,
       verify_pdf_searchable_scan_refuses_the_fast_path,
       verify_pdf_extraction_verdicts_name_ocr_pages,
       verify_pdf_empty_fold_refuses_the_fast_path,

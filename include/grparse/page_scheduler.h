@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 #include "grparse/in_memory_document.h"
 #include "grparse/figure_classifier.h"
@@ -95,10 +96,23 @@ class PageScheduler final {
     // layer.  kForce and kOff ignore it: an explicit recognition override
     // outranks the classification.
     std::unordered_set<int> ocr_pages;
+    // Pages whose embedded layer is not read at all in kSelective mode, as
+    // kForce treats every page: the pdf inspector convicted that page's
+    // text layer of a broken encoding, so recognition replaces it instead
+    // of merging with its mojibake. kOff still reads it, being an explicit
+    // request not to recognize.
+    std::unordered_set<int> distrusted_pages;
     // Inclusive 1-indexed page span to process (Docling page_range). Unset
     // means every page. Original PDF page numbers are preserved on emitted
     // pages; only which pages run changes.
     std::optional<std::pair<int, int>> page_range;
+    // Exactly the pages to process, 1-indexed and ascending, when not
+    // empty: the pdf inspector's per-page routing sends recognition only
+    // the pages its text layer cannot answer for, which need not be a
+    // span. Pages past the document's end, or outside page_range when
+    // both are set, are dropped; a list that names no page of the document
+    // is an invalid request. Pages keep their own numbers.
+    std::vector<int> pages;
     // Whether this document's pages carry a preview image
     // (OcrPage::preview_png). Unset defers to Options::capture_page_images;
     // a value overrides it for this document alone.

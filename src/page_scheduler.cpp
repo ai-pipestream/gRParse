@@ -186,6 +186,11 @@ struct PageScheduler::Ticket::State {
   std::shared_ptr<PageSource> source;
   int total_pages = 0;
   int next_page_to_schedule = 1;
+  // The pages to schedule when the tuning named them (OcrTuning::pages),
+  // and the index of the next one; empty schedules the span up to
+  // total_pages from next_page_to_schedule.
+  std::vector<int> page_list;
+  size_t next_list_index = 0;
   size_t available_slots = 0;
   size_t page_window = 0;
   std::function<void(std::shared_ptr<State>)> wake_scheduler;
@@ -435,17 +440,27 @@ class PageScheduler::Impl final {
       std::lock_guard<std::mutex> lock(request->schedule_mutex);
       if (!request->source || request->total_pages <= 0) return;
       if (request->cancelled.load()) {
-        if (request->next_page_to_schedule <= request->total_pages) {
+        if (!request->page_list.empty()) {
+          cancelled_pages =
+              static_cast<int>(request->page_list.size() - request->next_list_index);
+          request->next_list_index = request->page_list.size();
+        } else if (request->next_page_to_schedule <= request->total_pages) {
           cancelled_pages = request->total_pages - request->next_page_to_schedule + 1;
           request->next_page_to_schedule = request->total_pages + 1;
         }
       } else {
-        while (request->available_slots > 0 &&
-               request->next_page_to_schedule <= request->total_pages) {
+        const auto pages_left = [&request] {
+          return request->page_list.empty()
+                     ? request->next_page_to_schedule <= request->total_pages
+                     : request->next_list_index < request->page_list.size();
+        };
+        while (request->available_slots > 0 && pages_left()) {
           auto page = std::make_shared<PageJob>();
           page->source = request->source;
           page->request = request;
-          page->page_number = request->next_page_to_schedule;
+          page->page_number = request->page_list.empty()
+                                  ? request->next_page_to_schedule
+                                  : request->page_list[request->next_list_index];
           page->scheduled_at = std::chrono::steady_clock::now();
           // A full render queue parks this document until a render worker
           // dequeues.  The old code slept on the single scheduler thread, which
@@ -454,7 +469,11 @@ class PageScheduler::Impl final {
                                 [this, request] { queue_reschedule(request); })) {
             break;
           }
-          ++request->next_page_to_schedule;
+          if (request->page_list.empty()) {
+            ++request->next_page_to_schedule;
+          } else {
+            ++request->next_list_index;
+          }
           --request->available_slots;
         }
       }
@@ -570,12 +589,27 @@ class PageScheduler::Impl final {
           }
           if (last_page > pages) last_page = pages;
         }
-        const int page_count = last_page - first_page + 1;
+        // A named page list keeps the pages of the span that exist, in order.
+        std::vector<int> page_list;
+        for (const int page : document.request->tuning.pages) {
+          if (page >= first_page && page <= last_page &&
+              (page_list.empty() || page > page_list.back())) {
+            page_list.push_back(page);
+          }
+        }
+        if (!document.request->tuning.pages.empty() && page_list.empty()) {
+          throw InvalidDocument("the page list names no page of the document");
+        }
+        const int page_count = page_list.empty() ? last_page - first_page + 1
+                                                 : static_cast<int>(page_list.size());
+        if (!page_list.empty()) last_page = page_list.back();
         document.request->remaining_pages.store(page_count);
         {
           std::lock_guard<std::mutex> lock(document.request->schedule_mutex);
           document.request->total_pages = last_page;
           document.request->next_page_to_schedule = first_page;
+          document.request->page_list = std::move(page_list);
+          document.request->next_list_index = 0;
           document.request->available_slots = document.request->page_window;
         }
         // Callers wait on the number of pages that will arrive, not the last
@@ -615,7 +649,9 @@ class PageScheduler::Impl final {
         // Forced recognition never reads the embedded layer: dropping the
         // seed here is what makes the recognized text replace it instead of
         // merging with it.
-        if (mode != OcrTuning::Mode::kForce) {
+        if (mode != OcrTuning::Mode::kForce &&
+            !(mode == OcrTuning::Mode::kSelective &&
+              page->request->tuning.distrusted_pages.contains(page->page_number))) {
           const BusyTimer timer(render_busy_ns_);
           digital = page->source->extract_digital_page(page->page_number);
         }

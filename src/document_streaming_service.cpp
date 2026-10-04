@@ -6,19 +6,24 @@
 #include <deque>
 #include <exception>
 #include <filesystem>
+#include <format>
 #include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <system_error>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include <google/protobuf/arena.h>
+#include <google/protobuf/descriptor.h>
+#include <google/protobuf/message.h>
 
 #include "grparse/collector_coordinator.h"
 #include "grparse/confidence.h"
@@ -43,6 +48,100 @@ namespace {
 constexpr size_t kMaximumDocumentBytes = 500U * 1024U * 1024U;
 // The surface the structural option rejections name.
 constexpr const char* kStreamSurface = "StreamProcessDocument";
+
+// The first self_ref under an arena item, whichever variant carries it.
+const std::string* find_self_ref(const google::protobuf::Message& message) {
+  const auto* reflection = message.GetReflection();
+  std::vector<const google::protobuf::FieldDescriptor*> fields;
+  reflection->ListFields(message, &fields);
+  for (const auto* field : fields) {
+    if (field->name() == "self_ref" && field->cpp_type() ==
+                                           google::protobuf::FieldDescriptor::CPPTYPE_STRING &&
+        !field->is_repeated()) {
+      return &reflection->GetStringReference(message, field, nullptr);
+    }
+  }
+  for (const auto* field : fields) {
+    if (field->cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE ||
+        field->is_repeated()) {
+      continue;
+    }
+    if (const auto* found = find_self_ref(reflection->GetMessage(message, field))) return found;
+  }
+  return nullptr;
+}
+
+// Renames every self_ref and ref under `message` that `names` maps.
+void rename_refs(google::protobuf::Message* message,
+                 const std::unordered_map<std::string, std::string>& names) {
+  const auto* reflection = message->GetReflection();
+  std::vector<const google::protobuf::FieldDescriptor*> fields;
+  reflection->ListFields(*message, &fields);
+  for (const auto* field : fields) {
+    if (field->cpp_type() == google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE) {
+      if (field->is_repeated()) {
+        for (int index = 0; index < reflection->FieldSize(*message, field); ++index) {
+          rename_refs(reflection->MutableRepeatedMessage(message, field, index), names);
+        }
+      } else {
+        rename_refs(reflection->MutableMessage(message, field), names);
+      }
+    } else if (field->cpp_type() == google::protobuf::FieldDescriptor::CPPTYPE_STRING &&
+               !field->is_repeated() && (field->name() == "self_ref" || field->name() == "ref")) {
+      const auto renamed = names.find(reflection->GetString(*message, field));
+      if (renamed != names.end()) reflection->SetString(message, field, renamed->second);
+    }
+  }
+}
+
+// Moves one inspector page slice onto the stream's own numbering. The
+// inspector names a page's items by their place in its whole Document,
+// which counts the items of every page; once a page between went through
+// recognition instead, those names would skip or collide with the CV
+// pages'. The slice's texts, tables and pictures continue the cursor the
+// CV pages advance, and its groups continue the stream's own group count
+// (CV pages make no groups). `names` keeps every rename the stream has
+// made, so a ref to an item on an earlier page (a list continued across a
+// page break) follows that item's new name too. On a document every page
+// of which came from the inspector, the names do not change.
+void renumber_slice(pipestream::document::v1::Document* document, const AssemblyCursor& cursor,
+                    uint64_t group_index, std::unordered_map<std::string, std::string>* names) {
+  const auto name = [names](const google::protobuf::Message& item, const char* arena,
+                            uint64_t index) {
+    if (const auto* self_ref = find_self_ref(item)) {
+      std::string renamed = std::format("#/{}/{}", arena, index);
+      if (renamed != *self_ref) names->insert_or_assign(*self_ref, std::move(renamed));
+    }
+  };
+  for (int index = 0; index < document->texts_size(); ++index) {
+    name(document->texts(index), "texts", cursor.text_index + static_cast<uint64_t>(index));
+  }
+  for (int index = 0; index < document->tables_size(); ++index) {
+    name(document->tables(index), "tables", cursor.table_index + static_cast<uint64_t>(index));
+  }
+  for (int index = 0; index < document->pictures_size(); ++index) {
+    name(document->pictures(index), "pictures",
+         cursor.picture_index + static_cast<uint64_t>(index));
+  }
+  for (int index = 0; index < document->groups_size(); ++index) {
+    name(document->groups(index), "groups", group_index + static_cast<uint64_t>(index));
+  }
+  if (!names->empty()) rename_refs(document, *names);
+}
+
+// "3, 7-9, 12" for an ascending page list.
+std::string page_list_text(const std::vector<int>& pages) {
+  std::string text;
+  for (size_t index = 0; index < pages.size();) {
+    size_t end = index;
+    while (end + 1 < pages.size() && pages[end + 1] == pages[end] + 1) ++end;
+    if (!text.empty()) text += ", ";
+    text += std::to_string(pages[index]);
+    if (end > index) text += "-" + std::to_string(pages[end]);
+    index = end + 1;
+  }
+  return text;
+}
 
 class ArenaEvent final {
  public:
@@ -593,12 +692,10 @@ class DocumentStreamReactor final
   // spawn_remote_collector does: the collector call is a blocking client,
   // cancelled like the other remote legs once the client is gone.
   //
-  // The fast path streams: each clean page's slice of the inspector's fold
-  // goes to the client as it arrives, while the rest of the document is
-  // still being read. The first page that is not clean stops the run, and
-  // once the trailer is in, the pages after the run take whichever route
-  // the whole document would have taken: their held slices when it is
-  // still the fast path, the CV pipeline over just those pages otherwise.
+  // The pdf is routed page by page: each page whose own text layer answers
+  // for it goes to the client as the inspector's slice the moment it
+  // arrives, and only the pages it cannot answer for go through the CV
+  // pipeline, which the stream interleaves in page order.
   void spawn_pdf_router(std::shared_ptr<const std::string> bytes, bool pdf,
                         PageScheduler::OcrTuning tuning) {
     PdfLeg leg{endpoints_, std::move(bytes), pdf, context_->deadline(), std::move(tuning),
@@ -610,11 +707,11 @@ class DocumentStreamReactor final
   }
 
   static void run_pdf_route(const std::weak_ptr<CallbackGate>& weak_gate, PdfLeg leg) {
-    // Previews rendered for streamed pages, kept to dress the whole
+    // Previews rendered for the inspector's pages, kept to dress the whole
     // Document's pages without rendering them a second time.
     std::map<int, pipestream::document::v1::PageItem> previews;
-    const auto stream_page = [&weak_gate, &leg, &previews](PdfPageSlice slice) {
-      if (leg.previews) {
+    const auto route_page = [&weak_gate, &leg, &previews](PdfPageSlice slice) {
+      if (leg.previews && !slice.recognize) {
         attach_previews(weak_gate, leg, &slice.document,
                         std::pair<int, int>{slice.page_no, slice.page_no});
         if (const auto page = slice.document.pages().find(slice.page_no);
@@ -624,7 +721,7 @@ class DocumentStreamReactor final
       }
       bool accepted = false;
       with_reactor(weak_gate, [&slice, &accepted](DocumentStreamReactor& reactor) {
-        accepted = reactor.on_streamed_page(std::move(slice));
+        accepted = reactor.on_routed_page(std::move(slice));
       });
       return accepted;
     };
@@ -632,57 +729,25 @@ class DocumentStreamReactor final
         leg.endpoints == nullptr
             ? nullptr
             : leg.endpoints->channel(pipestream::parse::v1::COLLECTOR_PDF),
-        *leg.bytes, leg.deadline, leg.tuning.page_range, leg_cancelled(weak_gate), stream_page);
+        *leg.bytes, leg.deadline, leg.tuning.page_range, leg_cancelled(weak_gate), route_page);
     const PdfRouteDecision route = route_pdf_by_classification(parsed.classification);
-    const bool streamed = parsed.streamed_pages > 0;
+    if (parsed.streamed_pages > 0) {
+      route_cv_pages(weak_gate, std::move(leg), std::move(parsed), route, previews);
+      return;
+    }
     if (parsed.outcome.success && route.fast_path) {
-      if (streamed) {
-        // Every page the run left behind is the fast path's too.
-        for (auto& slice : parsed.held_pages) {
-          if (!stream_page(std::move(slice))) break;
-        }
-        for (const auto& [page_no, page] : previews) {
-          auto& whole = (*parsed.outcome.document.mutable_pages())[page_no];
-          if (page.has_image()) *whole.mutable_image() = page.image();
-        }
-      } else if (leg.previews) {
+      if (leg.previews) {
         // Rendered before the reactor sees the document, on this thread,
         // where the blocking work already is.
         attach_previews(weak_gate, leg, &parsed.outcome.document, leg.tuning.page_range);
       }
-      deliver(weak_gate, pipestream::parse::v1::COLLECTOR_PDF, std::move(parsed.outcome),
-              streamed);
+      deliver(weak_gate, pipestream::parse::v1::COLLECTOR_PDF, std::move(parsed.outcome));
       return;
-    }
-    if (streamed) {
-      // The run's pages are on the wire; what is left is recognition's,
-      // starting at the first page the run did not reach.
-      int first_left = 0;
-      int page_count = 0;
-      with_reactor(weak_gate, [&first_left, &page_count](DocumentStreamReactor& reactor) {
-        std::lock_guard<std::mutex> lock(reactor.mutex_);
-        first_left = reactor.next_page_;
-        page_count = reactor.total_pages_;
-      });
-      if (first_left == 0) return;  // the call is gone
-      with_reactor(weak_gate, [first_left](DocumentStreamReactor& reactor) {
-        reactor.note_streamed_prefix(first_left);
-      });
-      if (first_left > page_count) {
-        // Every page went out and only the Document's own checks failed:
-        // the part settles on the collector's outcome, with nothing left
-        // to recognize.
-        deliver(weak_gate, pipestream::parse::v1::COLLECTOR_PDF, std::move(parsed.outcome),
-                /*pages_streamed=*/true);
-        return;
-      }
-      leg.tuning.page_range =
-          std::pair<int, int>{first_left, leg.tuning.page_range.has_value()
-                                              ? leg.tuning.page_range->second
-                                              : std::numeric_limits<int>::max()};
     }
     if (parsed.outcome.success) {
       leg.tuning.ocr_pages.insert(route.ocr_pages.begin(), route.ocr_pages.end());
+      leg.tuning.distrusted_pages.insert(route.distrusted_pages.begin(),
+                                         route.distrusted_pages.end());
       if (route.force_ocr && leg.tuning.mode == PageScheduler::OcrTuning::Mode::kSelective) {
         leg.tuning.mode = PageScheduler::OcrTuning::Mode::kForce;
       }
@@ -694,6 +759,72 @@ class DocumentStreamReactor final
       with_reactor(weak_gate, [&parsed](DocumentStreamReactor& reactor) {
         reactor.note_pdf_fallback(parsed.outcome);
       });
+    }
+    with_reactor(weak_gate, [&leg](DocumentStreamReactor& reactor) {
+      reactor.submit_cv(std::move(leg.bytes), leg.pdf, std::move(leg.tuning));
+    });
+  }
+
+  // The rest of a document the inspector routed page by page: its pages are
+  // with the reactor already, the text ones streaming, and what is left is
+  // recognizing the pages routed there, plus every page the inspector never
+  // routed (a stream that failed partway, or a page it did not extract),
+  // since a page that never arrives would hold back every page after it.
+  static void route_cv_pages(const std::weak_ptr<CallbackGate>& weak_gate, PdfLeg leg,
+                             PdfParseResult parsed, const PdfRouteDecision& route,
+                             const std::map<int, pipestream::document::v1::PageItem>& previews) {
+    std::vector<int> recognize = std::move(parsed.recognize_pages);
+    std::sort(recognize.begin(), recognize.end());
+    int page_count = 0;
+    std::vector<int> unrouted;
+    bool gone = true;
+    const int first_page = leg.tuning.page_range.has_value()
+                               ? std::max(leg.tuning.page_range->first, 1)
+                               : 1;
+    with_reactor(weak_gate, [&](DocumentStreamReactor& reactor) {
+      std::lock_guard<std::mutex> lock(reactor.mutex_);
+      gone = false;
+      page_count = reactor.total_pages_;
+      for (int page = first_page; page <= page_count; ++page) {
+        if (!reactor.routed_pages_.contains(page)) unrouted.push_back(page);
+      }
+    });
+    if (gone) return;
+    // The pages the trailer named for recognition after their text had
+    // already gone out keep that text, and the complete event says so.
+    std::vector<int> late;
+    for (const int page : route.ocr_pages) {
+      if (!std::binary_search(recognize.begin(), recognize.end(), page) &&
+          !std::binary_search(unrouted.begin(), unrouted.end(), page)) {
+        late.push_back(page);
+      }
+    }
+    std::vector<int> pages = recognize;
+    pages.insert(pages.end(), unrouted.begin(), unrouted.end());
+    std::sort(pages.begin(), pages.end());
+    with_reactor(weak_gate, [&](DocumentStreamReactor& reactor) {
+      reactor.note_routed_pages(recognize, late, unrouted);
+      if (!parsed.outcome.success && !pages.empty()) reactor.note_pdf_fallback(parsed.outcome);
+    });
+    if (pages.empty()) {
+      // Every page was the inspector's: the whole Document follows the
+      // pages as the collector's, dressed in the previews they carried.
+      for (const auto& [page_no, page] : previews) {
+        auto& whole = (*parsed.outcome.document.mutable_pages())[page_no];
+        if (page.has_image()) *whole.mutable_image() = page.image();
+      }
+      deliver(weak_gate, pipestream::parse::v1::COLLECTOR_PDF, std::move(parsed.outcome),
+              /*pages_streamed=*/true);
+      return;
+    }
+    // Recognition reads exactly the routed pages; the pages the inspector
+    // never routed keep the CV path's own heuristic.
+    leg.tuning.pages = std::move(pages);
+    leg.tuning.ocr_pages.insert(recognize.begin(), recognize.end());
+    leg.tuning.distrusted_pages.insert(route.distrusted_pages.begin(),
+                                       route.distrusted_pages.end());
+    if (route.force_ocr && leg.tuning.mode == PageScheduler::OcrTuning::Mode::kSelective) {
+      leg.tuning.mode = PageScheduler::OcrTuning::Mode::kForce;
     }
     with_reactor(weak_gate, [&leg](DocumentStreamReactor& reactor) {
       reactor.submit_cv(std::move(leg.bytes), leg.pdf, std::move(leg.tuning));
@@ -713,15 +844,26 @@ class DocumentStreamReactor final
                          leg.deadline);
   }
 
-  // Pages before first_left came from the inspector's text layer as they
-  // arrived; the rest go to recognition. The complete event says so, since
-  // one document now carries both readings.
-  void note_streamed_prefix(int first_left) {
+  // One document now carries two readings, and the complete event says
+  // which pages took which.
+  void note_routed_pages(const std::vector<int>& recognized, const std::vector<int>& late,
+                         const std::vector<int>& unrouted) {
     std::lock_guard<std::mutex> lock(mutex_);
-    assembly_warnings_.push_back(
-        "pages 1-" + std::to_string(first_left - 1) +
-        " streamed from the pdf inspector's text layer as they were read; pages " +
-        std::to_string(first_left) + " onward went through the CV path");
+    std::string note = std::to_string(routed_text_pages_) +
+                       " pages streamed from the pdf inspector's text layer as they were read";
+    if (!recognized.empty()) {
+      note += "; pages " + page_list_text(recognized) + " went through the CV path";
+    }
+    assembly_warnings_.push_back(std::move(note));
+    if (!unrouted.empty()) {
+      assembly_warnings_.push_back("the pdf inspector never delivered pages " +
+                                   page_list_text(unrouted) + ", so the CV path read them");
+    }
+    if (!late.empty()) {
+      assembly_warnings_.push_back(
+          "the pdf inspector's trailer named pages " + page_list_text(late) +
+          " for recognition after their text layer had streamed; they keep that text");
+    }
   }
 
   void note_pdf_fallback(const CollectorOutcome& outcome) {
@@ -778,27 +920,72 @@ class DocumentStreamReactor final
     });
   }
 
-  // The scheduler counts the pages it will deliver; pages the inspector
-  // already streamed come before them.
+  // The scheduler counts the pages it will deliver. A document the
+  // inspector routed already knows its page count, and the scheduler's
+  // pages are only some of them.
   void on_document(int total_pages) {
     std::lock_guard<std::mutex> lock(mutex_);
-    total_pages_ = (next_page_ - 1) + total_pages;
+    if (routed_pages_.empty()) total_pages_ = total_pages;
   }
 
-  // One page of the inspector's fast path, the moment its slice is final.
-  // It takes the next page number, continues the stream's text offsets,
-  // and advances the ref cursor past its items, so a CV run that takes over
-  // after it neither reuses a ref nor restarts the offsets. False once the
-  // call is gone or finishing, which stops the run.
-  bool on_streamed_page(PdfPageSlice slice) {
+  // One page of a document the inspector routes page by page. A text page
+  // waits for its turn and goes out as the inspector's slice; a page routed
+  // to recognition goes out when the CV pipeline delivers it. False once
+  // the call is gone or finishing, which stops the routing.
+  bool on_routed_page(PdfPageSlice slice) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (client_cancelled_ || finish_requested_) return false;
     total_pages_ = std::max({total_pages_, slice.page_count, slice.page_no});
+    routed_pages_.insert(slice.page_no);
+    if (!slice.recognize) {
+      ++routed_text_pages_;
+      const int page_no = slice.page_no;
+      text_pages_.insert_or_assign(page_no, std::move(slice));
+    }
+    drain_pages_locked();
+    pump_locked();
+    return true;
+  }
+
+  // Emits every page whose turn has come, from whichever reading has it:
+  // the inspector's slice for a text page, the CV pipeline's for the rest.
+  void drain_pages_locked() {
+    while (true) {
+      if (auto text = text_pages_.find(next_page_); text != text_pages_.end()) {
+        emit_text_page_locked(std::move(text->second));
+        text_pages_.erase(text);
+        ++next_page_;
+        continue;
+      }
+      auto page_it = completed_pages_.find(next_page_);
+      if (page_it == completed_pages_.end()) break;
+      auto event = std::make_unique<ArenaEvent>();
+      event->message->set_document_id(document_id_);
+      event->message->set_total_pages(total_pages_);
+      append_page_data(*page_it->second, next_page_, &assembly_cursor_, event->message->mutable_page(),
+                       &assembly_warnings_);
+      page_scores_.push_back(page_confidence(*page_it->second));
+      // Heading depth needs every page's heights; the terminal event ships
+      // the clustered result for the level-0 headers streamed here.
+      collect_header_heights(event->message->page(), &header_heights_);
+      completed_pages_.erase(page_it);
+      event->scheduler_credit = true;
+      events_.push_back(std::move(event));
+      ++next_page_;
+    }
+  }
+
+  // One inspector page on the wire: renamed onto the stream's numbering,
+  // continuing its text offsets, and advancing the cursor past its items so
+  // the CV pages after it neither reuse a ref nor restart the offsets.
+  void emit_text_page_locked(PdfPageSlice slice) {
+    renumber_slice(&slice.document, assembly_cursor_, group_index_, &renamed_refs_);
     auto pages = project_page_data(slice.document, pipestream::parse::v1::TEXT_SOURCE_DIGITAL_PDF,
                                    &assembly_cursor_.utf_offset);
     assembly_cursor_.text_index += static_cast<uint64_t>(slice.document.texts_size());
     assembly_cursor_.table_index += static_cast<uint64_t>(slice.document.tables_size());
     assembly_cursor_.picture_index += static_cast<uint64_t>(slice.document.pictures_size());
+    group_index_ += static_cast<uint64_t>(slice.document.groups_size());
     if (slice.document.texts_size() > 0) assembly_cursor_.has_text = true;
     // A slice names its own page; a page with nothing on it still goes out
     // as an empty page, so the client sees every page number once.
@@ -815,9 +1002,6 @@ class DocumentStreamReactor final
       *event->message->mutable_page() = std::move(page);
       events_.push_back(std::move(event));
     }
-    next_page_ = slice.page_no + 1;
-    pump_locked();
-    return true;
   }
 
   PageScheduler::DeliveryResult on_page(int page_number, std::shared_ptr<const OcrPage> page) {
@@ -839,23 +1023,7 @@ class DocumentStreamReactor final
     }
     ++buffered_pages_;
     completed_pages_.emplace(page_number, std::move(page));
-    while (true) {
-      auto page_it = completed_pages_.find(next_page_);
-      if (page_it == completed_pages_.end()) break;
-      auto event = std::make_unique<ArenaEvent>();
-      event->message->set_document_id(document_id_);
-      event->message->set_total_pages(total_pages_);
-      append_page_data(*page_it->second, next_page_, &assembly_cursor_, event->message->mutable_page(),
-                       &assembly_warnings_);
-      page_scores_.push_back(page_confidence(*page_it->second));
-      // Heading depth needs every page's heights; the terminal event ships
-      // the clustered result for the level-0 headers streamed here.
-      collect_header_heights(event->message->page(), &header_heights_);
-      completed_pages_.erase(page_it);
-      event->scheduler_credit = true;
-      events_.push_back(std::move(event));
-      ++next_page_;
-    }
+    drain_pages_locked();
     pump_locked();
     return PageScheduler::DeliveryResult::kAccepted;
   }
@@ -867,7 +1035,8 @@ class DocumentStreamReactor final
       return;
     }
     grpc::Status status = status_from_exception(std::move(failure));
-    if (status.ok() && (next_page_ != total_pages_ + 1 || !completed_pages_.empty())) {
+    if (status.ok() &&
+        (next_page_ != total_pages_ + 1 || !completed_pages_.empty() || !text_pages_.empty())) {
       status = grpc::Status(grpc::StatusCode::INTERNAL,
                             "scheduler completed before every page was assembled");
     }
@@ -1057,6 +1226,15 @@ class DocumentStreamReactor final
   MimetypeResolution origin_mimetype_;
   PageScheduler::Ticket ticket_;
   std::map<int, std::shared_ptr<const OcrPage>> completed_pages_;
+  // The inspector's text pages waiting for an earlier page's recognition.
+  std::map<int, PdfPageSlice> text_pages_;
+  // The pages the inspector routed, and how many of them as text.
+  std::set<int> routed_pages_;
+  int routed_text_pages_ = 0;
+  // Groups the inspector's pages carried so far, for their names, and every
+  // inspector name the stream changed.
+  uint64_t group_index_ = 0;
+  std::unordered_map<std::string, std::string> renamed_refs_;
   std::deque<std::unique_ptr<ArenaEvent>> events_;
   AssemblyCursor assembly_cursor_;
   // Level-less section headers streamed so far, clustered into depths for

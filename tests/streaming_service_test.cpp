@@ -2928,8 +2928,16 @@ void verify_streaming_pdf_hands_the_rest_to_the_cv_path() {
   require(second.text_offsets(0).utf_start() >= first.text_offsets(0).utf_end(),
           "recognition continues the offsets");
   const auto& third = run.events.at(2).page();
-  require(third.page_number() == 3 && third.texts(0).text().base().text() == "native-three",
-          "page three reads its embedded layer on the CV path");
+  require(third.page_number() == 3 && third.texts(0).text().base().text() == "inspector page 3",
+          "page three, after the recognized page, is the inspector's again");
+  require(third.texts(0).text().base().self_ref() ==
+              "#/texts/" + std::to_string(1 + second.texts_size()),
+          "the inspector's page after a recognized one continues the stream's refs");
+  require(third.body_order(0).ref() == third.texts(0).text().base().self_ref(),
+          "its reading order names it under the new ref");
+  require(third.text_offsets(0).utf_start() >=
+              second.text_offsets(second.text_offsets_size() - 1).utf_end(),
+          "and continues the offsets");
   require(run.recognizer_calls == 1, "only the page that asked for it is recognized");
   for (const auto& event : run.events) {
     require(event.total_pages() == 3, "every event names three pages");
@@ -2937,9 +2945,39 @@ void verify_streaming_pdf_hands_the_rest_to_the_cv_path() {
   const auto& complete = run.events.back().complete();
   require(std::ranges::any_of(complete.warnings(),
                               [](const std::string& warning) {
-                                return warning.find("pages 1-1 streamed") != std::string::npos;
+                                return warning.find("2 pages streamed") != std::string::npos &&
+                                       warning.find("pages 2 went through the CV path") !=
+                                           std::string::npos;
                               }),
           "the complete event says which pages came from the text layer");
+}
+
+// A page that needs recognition first does not hold the rest of the
+// document on the CV path: page one is recognized, and the inspector's
+// pages two and three follow it in order, renamed after the recognized
+// page's items, with nothing else recognized.
+void verify_streaming_pdf_routes_each_page_on_its_own() {
+  SlicingPdfInspector inspector(/*needs_ocr_page=*/1);
+  inspector.first_page_read();
+  PdfInspectorServer inspector_server(&inspector);
+  const StreamPdfRun run = run_stream_pdf(inspector_server.target(), false, "%PDF-in-memory");
+  require(run.status.ok(), "the routed stream failed: " + run.status.error_message());
+  require(run.events.size() == 4, "three page events then complete; got " +
+                                      std::to_string(run.events.size()));
+  const auto& first = run.events.at(0).page();
+  require(first.page_number() == 1 && first.texts_size() >= 1, "page one is recognized");
+  int next_text = first.texts_size();
+  for (const int page_number : {2, 3}) {
+    const auto& page = run.events.at(static_cast<size_t>(page_number - 1)).page();
+    require(page.page_number() == page_number &&
+                page.texts(0).text().base().text() ==
+                    "inspector page " + std::to_string(page_number),
+            "page " + std::to_string(page_number) + " is the inspector's");
+    require(page.texts(0).text().base().self_ref() == "#/texts/" + std::to_string(next_text),
+            "page " + std::to_string(page_number) + " continues the refs");
+    next_text += page.texts_size();
+  }
+  require(run.recognizer_calls == 1, "only page one is recognized");
 }
 
 // gRParse reads PDFs only through a PdfBackendService. With none configured
@@ -3594,6 +3632,7 @@ int main() {
         verify_streaming_pdf_fast_path_projects_pages();
         verify_streaming_pdf_fast_path_streams_page_by_page();
         verify_streaming_pdf_hands_the_rest_to_the_cv_path();
+        verify_streaming_pdf_routes_each_page_on_its_own();
         verify_streaming_pdf_fast_path_renders_previews();
         verify_streaming_pdf_fast_path_skips_previews_when_off();
         verify_pdf_without_backend_fails_precondition();
