@@ -95,6 +95,11 @@ CollectorTargets read_collector_targets();
 void report_collector_targets(const CollectorTargets& targets, bool layout_active,
                               bool classifier_active);
 
+// Settings this server no longer reads. A deployment that still sets one
+// gets a one-line warning on stderr naming it, since the value is otherwise
+// ignored without a word: GRPARSE_POI_TARGET (grPOIc is no longer used).
+void report_retired_settings();
+
 // The unary executor's pool: GRPARSE_UNARY_WORKERS and GRPARSE_UNARY_QUEUE.
 CallExecutor::Options read_executor_options();
 

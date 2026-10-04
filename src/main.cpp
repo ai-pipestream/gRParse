@@ -298,6 +298,7 @@ int main() {
     };
     const auto endpoints = std::make_shared<grparse::CollectorEndpoints>(targets, office_cv);
     grparse::report_collector_targets(targets, layout != nullptr, figure_classes != nullptr);
+    grparse::report_retired_settings();
     const grparse::CallExecutor::Options executor_options = grparse::read_executor_options();
     std::println("gRParse unary executor: {} workers, queue {}", executor_options.workers,
                  executor_options.queue_capacity);
