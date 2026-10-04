@@ -4,6 +4,8 @@ package ai.pipestream.document.v1;
 
 import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
+import "org/apache/opennlp/grpc/v1/opennlp_annotations.proto";
+import "org/apache/opennlp/grpc/v1/opennlp_document.proto";
 
 option java_multiple_files = true;
 option java_outer_classname = "DocumentProto";
@@ -147,6 +149,61 @@ message Document {
   // same identity: a new build or different options may renumber items.
   // Extension beyond the upstream dialect.
   optional ParseIdentity parse = 29;
+
+  // Language analyses run over this document's text, each kept exactly as
+  // the analyzer answered. Extension beyond the upstream dialect.
+  repeated TextAnalysis analyses = 30;
+}
+
+// TextAnalysis is one analyzer run over a window of the document's text
+// stream: the stream ConvertDocumentResponse.text_offsets indexes, every text
+// item in arena order joined by a single "\n", counted in code points.
+// The analyzer's own result is carried unchanged, so nothing it reports is
+// lost to a translation into item meta; filling BaseMeta from it is a
+// projection a consumer or a later stage may make.
+//
+// A document may hold several entries over the same window: the core
+// analyzer and each add-on (WordNet, dependency parsing) can answer
+// separately, each under its own `source`. Every result is self-contained:
+// an index reference inside it (a dependency arc's token, a relation's
+// entity) resolves within that same result, so an add-on that builds on
+// tokens or entities returns the layers it indexes. Entries share only the
+// stream coordinates.
+message TextAnalysis {
+  // The analyzer that answered: collector "opennlp", `model` the model bundle
+  // id, `version` the analyzer build as its GetServiceInfo reports it.
+  CollectorSource source = 1;
+  // The parse whose text stream was analyzed. Spans are valid only against a
+  // document with the same identity; a re-parse with a different producer or
+  // options digest may change the stream, which makes this analysis stale.
+  optional ParseIdentity over = 2;
+  // Half-open [stream_start, stream_end) of the analyzed window within the
+  // text stream, in code points. Every span in the result is relative to
+  // stream_start, so stream offset = stream_start + span offset.
+  uint64 stream_start = 3;
+  uint64 stream_end = 4;
+  // The models behind each layer of the result, keyed by the layer id the
+  // result uses (for OpenNLP, AnnotationLayer.id: a standard id such as
+  // "opennlp:entities" or an add-on's namespaced custom id), so tags, entity
+  // labels, senses and subword ids stay interpretable later.
+  map<string, CollectorSource> layer_sources = 5;
+  oneof result {
+    // An OpenNLP analysis, verbatim. Its raw_text is the analyzed window,
+    // its offset_encoding is OFFSET_ENCODING_UNICODE_CODE_POINT, and every
+    // AnnotationSpan indexes raw_text (spans found in a normalized form are
+    // already mapped back to raw_text by the analyzer).
+    org.apache.opennlp.grpc.v1.OpenNlpDocument opennlp = 6;
+    // An OpenNLP analysis in the strongly typed contract: one dedicated
+    // message per annotation kind, per-layer model provenance, and index
+    // references declared per layer. Same offset rules as `opennlp`.
+    //
+    // Placeholder: collectors/opennlp_annotations.proto is a draft of a
+    // contract OpenNLP has not published yet. Because this file is copied
+    // byte-identical across the fleet, if the published message differs in
+    // type, reserve number 7 and the name `opennlp_annotations` and add the
+    // published type under a new number; never retype this field in place.
+    org.apache.opennlp.grpc.v1.OpenNlpAnnotations opennlp_annotations = 7;
+  }
 }
 
 // ParseIdentity names the parse that produced a document. ConvertSource
