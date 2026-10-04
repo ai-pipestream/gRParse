@@ -1165,8 +1165,12 @@ message ConvertDocumentRequest {
   optional Target target = 3;
 }
 
-// One text item's place in the document's concatenated text stream, in
-// UTF-8 code points, half-open [utf_start, utf_end). Defined here so the
+// One text item's place in the document's concatenated text stream,
+// half-open [utf_start, utf_end). The unit is the Unicode code point (a
+// scalar value), not the UTF-8 byte and not the UTF-16 code unit: a Java
+// consumer such as OpenNLP, which indexes UTF-16, converts with
+// String.offsetByCodePoints and back with String.codePointCount. An empty
+// item gives a zero-width row (utf_start == utf_end). Defined here so the
 // unary responses and the streaming page events share one row type.
 message TextOffset {
   string self_ref = 1;

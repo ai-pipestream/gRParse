@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <format>
 #include <print>
 #include <stdexcept>
 #include <string>
@@ -1147,6 +1148,29 @@ void verify_overlay_labels_only_matching_rows() {
           "the wire row carries the overlaid label");
 }
 
+// An empty or repeated self_ref cannot fold two items into one row: rows
+// are keyed by arena position, and wire rows follow the arena even where
+// starts tie ("#/texts/9" before "#/texts/10").
+void verify_derived_offsets_key_by_arena_position() {
+  docv1::Document document = new_document();
+  for (int index = 0; index < 11; ++index) add_paragraph(&document, "");
+  add_paragraph(&document, "tail");
+  document.mutable_texts(3)->mutable_text()->mutable_base()->clear_self_ref();
+  document.mutable_texts(4)->mutable_text()->mutable_base()->set_self_ref("#/texts/5");
+  const OffsetTable table = derive_offsets(document);
+  require_eq(static_cast<int>(table.size()), 12, "one row per text item, refs aside");
+  require(table.contains("#/texts/3") && table.contains("#/texts/4"),
+          "an empty and a duplicated self_ref still get their own rows");
+  const auto wire = offset_rows(table);
+  require(wire.size() == 12, "one wire row per item");
+  for (int index = 0; index < wire.size(); ++index) {
+    require_eq(wire.Get(index).self_ref(), std::format("#/texts/{}", index),
+               "wire rows run in arena order, ties included");
+  }
+  require(wire.Get(11).utf_start() == 0 && wire.Get(11).utf_end() == 4,
+          "a leading run of empty items adds no separator");
+}
+
 struct Case {
   const char* name;
   void (*run)();
@@ -1180,6 +1204,7 @@ const Case kCases[] = {
     {"declared chunk language", verify_chunk_language_is_the_declared_one},
     {"derived offsets index the text export", verify_derived_offsets_index_the_text_export},
     {"overlay labels only matching rows", verify_overlay_labels_only_matching_rows},
+    {"derived offsets key by arena position", verify_derived_offsets_key_by_arena_position},
 };
 
 }  // namespace

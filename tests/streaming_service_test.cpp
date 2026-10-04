@@ -18,6 +18,7 @@
 #include <google/protobuf/util/message_differencer.h>
 #include <grpcpp/grpcpp.h>
 
+#include "../src/render/renderer_base.h"
 #include "../src/source_parse.h"
 #include "ai/pipestream/email/v1/email_service.grpc.pb.h"
 #include "ai/pipestream/parse/v1/parse_stream.grpc.pb.h"
@@ -661,6 +662,8 @@ void verify_parity_options_and_confidence(TestServer* server) {
   request.mutable_request()->mutable_options()->clear_to_formats();
   request.mutable_request()->mutable_options()->add_to_formats(
       pipestream::parse::v1::OUTPUT_FORMAT_CHUNKS);
+  request.mutable_request()->mutable_options()->add_to_formats(
+      pipestream::parse::v1::OUTPUT_FORMAT_TEXT);
   request.mutable_request()->mutable_options()->mutable_hierarchical_chunking()->set_include_raw_text(
       true);
   grpc::ClientContext chunks_context;
@@ -676,10 +679,21 @@ void verify_parity_options_and_confidence(TestServer* server) {
   require(!offsets.empty() &&
               offsets.size() == chunks_response.response().document().doc().texts_size(),
           "ConvertSource returns one offset row per text item");
+  // The rows index the real plain-text export, not a copy of its rules:
+  // each one slices its own item's text out of exports.text.
+  const auto& exported_document = chunks_response.response().document();
+  const auto exported = grparse::chunking::decode_utf8(exported_document.exports().text());
   std::uint64_t previous_end = 0;
   for (const auto& row : offsets) {
     require(row.utf_start() >= previous_end && row.utf_end() >= row.utf_start(),
             "offset rows run in stream order");
+    const int index = std::stoi(row.self_ref().substr(std::string_view("#/texts/").size()));
+    const auto* base = grparse::render::text_base(exported_document.doc().texts(index));
+    require(base != nullptr && row.utf_end() <= exported.size() &&
+                grparse::chunking::encode_utf8(exported.data() + row.utf_start(),
+                                               exported.data() + row.utf_end()) ==
+                    base->text(),
+            "each offset row slices its item's text out of exports.text");
     require(row.source() == pipestream::parse::v1::TEXT_SOURCE_OCR,
             "the CV path's rows keep how their text was read");
     previous_end = row.utf_end();
