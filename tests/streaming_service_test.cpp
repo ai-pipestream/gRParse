@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <format>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <print>
@@ -2087,8 +2088,10 @@ struct StreamPdfRun {
   int recognizer_calls = 0;
 };
 
-StreamPdfRun run_stream_pdf(const std::string& pdf_target, bool capture_page_images = false,
-                            const std::string& pdf_bytes = "%PDF-in-memory") {
+StreamPdfRun run_stream_pdf(
+    const std::string& pdf_target, bool capture_page_images = false,
+    const std::string& pdf_bytes = "%PDF-in-memory",
+    const std::function<void(const pipestream::parse::v1::DocumentStreamEvent&)>& observe = {}) {
   FakeRecognizer recognizer;
   grparse::PageScheduler::Options options{2, 3, 2, 3, 2, 2, 2};
   options.capture_page_images = capture_page_images;
@@ -2122,7 +2125,10 @@ StreamPdfRun run_stream_pdf(const std::string& pdf_target, bool capture_page_ima
   stream->WritesDone();
   StreamPdfRun run;
   pipestream::parse::v1::DocumentStreamEvent event;
-  while (stream->Read(&event)) run.events.push_back(event);
+  while (stream->Read(&event)) {
+    if (observe) observe(event);
+    run.events.push_back(event);
+  }
   run.status = stream->Finish();
   server->Shutdown(std::chrono::system_clock::now() + 2s);
   server->Wait();
@@ -2624,6 +2630,180 @@ void verify_streaming_pdf_fast_path_skips_previews_when_off() {
   require(run.status.ok(), "stream failed: " + run.status.error_message());
   require(!run.events.at(0).page().page_meta().has_image(), "no preview was asked for");
   require(pdf_backend.backend().render_calls() == 0, "nothing was rendered");
+}
+
+// Serves the inspector's page-document contract for a three-page text
+// document: each page's markdown, then its slice of the fold, then the
+// whole fold and the trailer. After page one's slice it waits until the
+// test says the client has read page one, so a gRParse that buffered the
+// fast path until the Document arrived would hold page one behind the wait
+// and the gate would time out.
+class SlicingPdfInspector final : public pdfv1::PdfParseService::Service {
+ public:
+  // needs_ocr_page: the one page whose own pass asks for recognition, 0
+  // for none.
+  explicit SlicingPdfInspector(uint32_t needs_ocr_page = 0) : needs_ocr_page_(needs_ocr_page) {}
+
+  void first_page_read() {
+    {
+      const std::lock_guard<std::mutex> lock(mutex_);
+      first_page_read_ = true;
+    }
+    condition_.notify_all();
+  }
+
+  bool opened() {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return opened_;
+  }
+
+  grpc::Status ParsePdf(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<pdfv1::ParsePdfResponse, pdfv1::ParsePdfRequest>* stream)
+      override {
+    pdfv1::ParsePdfRequest request;
+    bool page_documents = false;
+    while (stream->Read(&request)) {
+      if (request.has_options()) page_documents = request.options().emit_page_documents();
+    }
+    pdfv1::ParsePdfResponse event;
+    event.mutable_info()->set_pdf_type(pdfv1::PDF_TYPE_TEXT_BASED);
+    event.mutable_info()->set_page_count(3);
+    stream->Write(event);
+    docv1::Document whole;
+    whole.mutable_body()->set_self_ref("#/body");
+    whole.mutable_furniture()->set_self_ref("#/furniture");
+    for (const uint32_t page_no : {1U, 2U, 3U}) {
+      const std::string text = "inspector page " + std::to_string(page_no);
+      event.Clear();
+      event.mutable_page()->set_page_no(page_no);
+      event.mutable_page()->set_markdown(text);
+      event.mutable_page()->set_needs_ocr(page_no == needs_ocr_page_);
+      stream->Write(event);
+      docv1::Document slice;
+      slice.mutable_body()->set_self_ref("#/body");
+      slice.mutable_furniture()->set_self_ref("#/furniture");
+      const std::string self_ref = "#/texts/" + std::to_string(page_no - 1);
+      auto* base = slice.add_texts()->mutable_text()->mutable_base();
+      base->set_self_ref(self_ref);
+      base->mutable_parent()->set_ref("#/body");
+      base->set_label(docv1::DOC_ITEM_LABEL_TEXT);
+      base->set_text(text);
+      base->add_prov()->set_page_no(static_cast<int>(page_no));
+      slice.mutable_body()->add_children()->set_ref(self_ref);
+      auto& page = (*slice.mutable_pages())[static_cast<int>(page_no)];
+      page.set_page_no(static_cast<int>(page_no));
+      *whole.add_texts() = slice.texts(0);
+      whole.mutable_body()->add_children()->set_ref(self_ref);
+      (*whole.mutable_pages())[static_cast<int>(page_no)] = page;
+      if (page_documents) {
+        event.Clear();
+        event.mutable_page_document()->set_page_no(page_no);
+        *event.mutable_page_document()->mutable_document() = std::move(slice);
+        stream->Write(event);
+      }
+      if (page_no == 1) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        opened_ = condition_.wait_for(lock, 5s, [this] { return first_page_read_; });
+      }
+    }
+    event.Clear();
+    *event.mutable_document() = std::move(whole);
+    stream->Write(event);
+    event.Clear();
+    event.mutable_status()->set_pages_extracted(3);
+    if (needs_ocr_page_ != 0) {
+      event.mutable_status()->add_extraction_ocr_reasons()->set_page(needs_ocr_page_);
+    }
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+
+ private:
+  const uint32_t needs_ocr_page_;
+  std::mutex mutex_;
+  std::condition_variable condition_;
+  bool first_page_read_ = false;
+  bool opened_ = false;
+};
+
+// A text PDF's fast path streams page by page: page one reaches the client
+// while the inspector is still reading page two, every page goes out once
+// with continuous offsets, and the whole Document follows the pages
+// without projecting them a second time.
+void verify_streaming_pdf_fast_path_streams_page_by_page() {
+  SlicingPdfInspector inspector;
+  PdfInspectorServer inspector_server(&inspector);
+  const StreamPdfRun run = run_stream_pdf(
+      inspector_server.target(), false, "%PDF-in-memory",
+      [&inspector](const pipestream::parse::v1::DocumentStreamEvent& event) {
+        if (event.has_page() && event.page().page_number() == 1) inspector.first_page_read();
+      });
+  require(run.status.ok(), "streamed fast path failed: " + run.status.error_message());
+  require(inspector.opened(), "page one must reach the client while the inspector reads on");
+  require(run.recognizer_calls == 0, "the fast path never recognizes");
+  require(run.events.size() == 5,
+          "three page events, the collector document, then complete; got " +
+              std::to_string(run.events.size()));
+  uint64_t offset = 0;
+  for (int index = 0; index < 3; ++index) {
+    const auto& event = run.events.at(index);
+    require(event.has_page() && event.page().page_number() == index + 1,
+            "the inspector's pages stream in order, once each");
+    require(event.total_pages() == 3, "every page event names the document's page count");
+    require(event.page().texts_size() == 1 &&
+                event.page().texts(0).text().base().text() ==
+                    "inspector page " + std::to_string(index + 1),
+            "each page carries its own slice");
+    require(event.page().text_offsets(0).utf_start() == offset, "offsets continue across pages");
+    offset = event.page().text_offsets(0).utf_end();
+  }
+  require(run.events.at(3).has_collector_document() &&
+              run.events.at(3).collector_document().document().texts_size() == 3,
+          "the whole document follows the pages");
+  require(run.events.at(4).has_complete(), "the stream closes with the complete event");
+}
+
+// A page whose own pass asks for recognition ends the run: the pages before
+// it have already streamed from the text layer, and recognition takes over
+// from it with the next page number, the next free refs and the offsets
+// where the run left them. The complete event says which pages came from
+// where.
+void verify_streaming_pdf_hands_the_rest_to_the_cv_path() {
+  SlicingPdfInspector inspector(/*needs_ocr_page=*/2);
+  PdfInspectorServer inspector_server(&inspector);
+  const StreamPdfRun run = run_stream_pdf(
+      inspector_server.target(), false, "%PDF-in-memory",
+      [&inspector](const pipestream::parse::v1::DocumentStreamEvent& event) {
+        if (event.has_page() && event.page().page_number() == 1) inspector.first_page_read();
+      });
+  require(run.status.ok(), "the handed-over stream failed: " + run.status.error_message());
+  require(inspector.opened(), "page one streamed before the inspector finished");
+  require(run.events.size() == 4, "three page events then complete; got " +
+                                      std::to_string(run.events.size()));
+  const auto& first = run.events.at(0).page();
+  require(first.page_number() == 1 && first.texts(0).text().base().text() == "inspector page 1",
+          "page one is the inspector's");
+  require(first.texts(0).text().base().self_ref() == "#/texts/0", "page one keeps its ref");
+  const auto& second = run.events.at(1).page();
+  require(second.page_number() == 2 && second.texts_size() >= 1, "page two is recognized");
+  require(second.texts(0).text().base().self_ref() == "#/texts/1",
+          "recognition takes the next free ref");
+  require(second.text_offsets(0).utf_start() >= first.text_offsets(0).utf_end(),
+          "recognition continues the offsets");
+  const auto& third = run.events.at(2).page();
+  require(third.page_number() == 3 && third.texts(0).text().base().text() == "native-three",
+          "page three reads its embedded layer on the CV path");
+  require(run.recognizer_calls == 1, "only the page that asked for it is recognized");
+  for (const auto& event : run.events) {
+    require(event.total_pages() == 3, "every event names three pages");
+  }
+  const auto& complete = run.events.back().complete();
+  require(std::ranges::any_of(complete.warnings(),
+                              [](const std::string& warning) {
+                                return warning.find("pages 1-1 streamed") != std::string::npos;
+                              }),
+          "the complete event says which pages came from the text layer");
 }
 
 // gRParse reads PDFs only through a PdfBackendService. With none configured
@@ -3276,6 +3456,8 @@ int main() {
         verify_inflight_byte_budget();
         verify_streaming_pdf_fast_path_emits_the_collector_document();
         verify_streaming_pdf_fast_path_projects_pages();
+        verify_streaming_pdf_fast_path_streams_page_by_page();
+        verify_streaming_pdf_hands_the_rest_to_the_cv_path();
         verify_streaming_pdf_fast_path_renders_previews();
         verify_streaming_pdf_fast_path_skips_previews_when_off();
         verify_pdf_without_backend_fails_precondition();

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -239,23 +240,60 @@ struct PdfRouteDecision {
 
 PdfRouteDecision route_pdf_by_classification(const PdfClassification& classification);
 
+// One page's share of the inspector's fold (its page_document event): the
+// items folding that page made, under the refs they carry in the whole
+// Document, plus the page count the info event reported.
+struct PdfPageSlice {
+  int page_no = 0;
+  int page_count = 0;
+  ai::pipestream::document::v1::Document document;
+};
+
+// Receives a page slice the moment it is known to be final: the document is
+// still on course for the fast path and the page itself is clean. Answers
+// false once nobody is listening (the call is gone), which stops the
+// streaming for the rest of the parse.
+using PdfPageSink = std::function<bool(PdfPageSlice slice)>;
+
 // The pdf client's full return: the collector outcome (its Document, which
 // the server folds whenever emit_document is set) plus the classification
 // the stream opened with.
 struct PdfParseResult {
   CollectorOutcome outcome;
   PdfClassification classification;
+  // With a page sink: the pages handed to it, a run from the first page
+  // the collector extracted, in order.
+  int streamed_pages = 0;
+  // With a page sink: the slices of the pages after that run, held while
+  // the trailer could still route them to recognition. Kept only for a
+  // document the info event left on course for the fast path, since no
+  // other route reads them.
+  std::vector<PdfPageSlice> held_pages;
 };
+
+// Whether an extracted page's own text layer is final as it arrives: it
+// carries text, its reading pass did not ask for recognition, and the
+// encoding backstop did not convict its rendering. A page that fails any
+// of these may still be routed to recognition by the trailer.
+bool pdf_page_is_clean(bool needs_ocr, bool encoding_issues, const std::string& markdown);
 
 // grpc-pdf-inspector, dialed for routing: FULL mode with emit_document, so
 // a text-based document's own Document is the fast-path result while every
 // classification reports its OCR page set in the info event. page_range
 // (inclusive 1-indexed) selects which pages the collector extracts when set.
+//
+// With a page sink, the call also asks for page documents and streams the
+// fast path page by page: while the info event's classification allows the
+// fast path and every page so far was clean, each page's slice goes to the
+// sink as it arrives. The first page that is not clean ends the run; the
+// slices after it are held for the caller to route once the trailer is in.
+// An inspector that predates page documents sends none, and the parse is
+// exactly what it was without a sink.
 PdfParseResult collect_pdf(
     const std::shared_ptr<grpc::Channel>& channel, const std::string& bytes,
     CollectorDeadline inbound_deadline = kNoCollectorDeadline,
     std::optional<std::pair<int, int>> page_range = std::nullopt,
-    CollectorCancelled cancelled = {});
+    CollectorCancelled cancelled = {}, PdfPageSink page_sink = {});
 
 // The plain collector leg for a selection the pdf collector shares with
 // other collectors: the collector's Document is the contribution, whatever

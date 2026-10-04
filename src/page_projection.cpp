@@ -68,8 +68,9 @@ TextView text_view(const docv1::BaseTextItem& item) {
 
 class Projector {
  public:
-  Projector(const docv1::Document& document, parsev1::TextSource text_source)
-      : document_(document), text_source_(text_source) {
+  Projector(const docv1::Document& document, parsev1::TextSource text_source,
+            uint64_t utf_offset)
+      : document_(document), text_source_(text_source), utf_cursor_(utf_offset) {
     for (int i = 0; i < document.texts_size(); ++i) {
       slots_.emplace(text_view(document.texts(i)).self_ref, Slot{Arena::kText, i});
     }
@@ -83,6 +84,8 @@ class Projector {
       slots_.emplace(document.groups(i).self_ref(), Slot{Arena::kGroup, i});
     }
   }
+
+  uint64_t utf_cursor() const { return utf_cursor_; }
 
   std::vector<parsev1::PageData> run() {
     if (!names_a_page()) return {};
@@ -207,14 +210,18 @@ class Projector {
   std::unordered_set<std::string> visited_;
   std::map<int, parsev1::PageData> pages_;
   int current_page_ = 1;
-  uint64_t utf_cursor_ = 0;
+  uint64_t utf_cursor_;
 };
 
 }  // namespace
 
 std::vector<parsev1::PageData> project_page_data(const docv1::Document& document,
-                                                 parsev1::TextSource text_source) {
-  return Projector(document, text_source).run();
+                                                 parsev1::TextSource text_source,
+                                                 uint64_t* utf_offset) {
+  Projector projector(document, text_source, utf_offset == nullptr ? 0 : *utf_offset);
+  auto pages = projector.run();
+  if (utf_offset != nullptr) *utf_offset = projector.utf_cursor();
+  return pages;
 }
 
 }  // namespace grparse

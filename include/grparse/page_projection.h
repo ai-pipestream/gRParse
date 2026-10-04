@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <vector>
 
 #include "ai/pipestream/document/v1/document.pb.h"
@@ -24,8 +25,13 @@ namespace grparse {
 // pages the document names (an item placed on it, or a Document.pages
 // entry), in page order; a page nothing names is not emitted, so a single
 // bogus page number costs one page rather than a run of empty ones up to it.
+//
+// `utf_offset`, when given, is where the document's text stream stands
+// before this document's first item, and is advanced past its last: a
+// caller projecting a document page by page (the inspector's page slices)
+// keeps one stream of offsets across the calls. Null starts at zero.
 std::vector<ai::pipestream::parse::v1::PageData> project_page_data(
     const ai::pipestream::document::v1::Document& document,
-    ai::pipestream::parse::v1::TextSource text_source);
+    ai::pipestream::parse::v1::TextSource text_source, uint64_t* utf_offset = nullptr);
 
 }  // namespace grparse
