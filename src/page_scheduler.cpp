@@ -5,11 +5,14 @@
 #include <cmath>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <deque>
 #include <format>
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <print>
+#include <string>
 #include <thread>
 #include <unordered_set>
 #include <utility>
@@ -133,6 +136,39 @@ class BusyTimer final {
   std::chrono::steady_clock::time_point started_;
 };
 
+using Clock = std::chrono::steady_clock;
+
+// GRPARSE_PAGE_TIMINGS=on prints one line per delivered page with the wall
+// time it spent waiting for and inside each stage, so a page that is slow
+// can be pinned to the stage that made it slow. Off by default: a line per
+// page is noise on a busy server.
+bool page_timings_enabled() {
+  static const bool enabled = [] {
+    const char* configured = std::getenv("GRPARSE_PAGE_TIMINGS");
+    return configured != nullptr && std::string(configured) == "on";
+  }();
+  return enabled;
+}
+
+// Milliseconds from `from` to `to`; 0 when the page never reached `from`.
+double ms_between(Clock::time_point from, Clock::time_point to) {
+  if (from == Clock::time_point{}) return 0.0;
+  return std::chrono::duration<double, std::milli>(to - from).count();
+}
+
+// Adds the wall time of its scope to one stage of one page's timings.
+class StageTimer final {
+ public:
+  explicit StageTimer(double& sink) : sink_(sink), started_(Clock::now()) {}
+  StageTimer(const StageTimer&) = delete;
+  StageTimer& operator=(const StageTimer&) = delete;
+  ~StageTimer() { sink_ += ms_between(started_, Clock::now()); }
+
+ private:
+  double& sink_;
+  Clock::time_point started_;
+};
+
 }  // namespace
 
 struct PageScheduler::Ticket::State {
@@ -176,6 +212,8 @@ struct PageScheduler::Ticket::State {
 
   Callbacks callbacks;
   OcrTuning tuning;
+  // Names the document on page timing lines; counts submissions from 1.
+  uint64_t serial = 0;
   std::atomic<bool> cancelled{false};
   std::atomic<int> remaining_pages{0};
   std::atomic<bool> finish_called{false};
@@ -206,6 +244,30 @@ class PageScheduler::Impl final {
     // Set when the page enters the render queue; delivery latency is measured
     // from here so it includes every queue wait, not just compute.
     std::chrono::steady_clock::time_point scheduled_at{};
+    // Where this page's time went, printed under GRPARSE_PAGE_TIMINGS=on.
+    // Each stage writes it while it holds the page, and the queues between
+    // stages order those writes, so it needs no lock.
+    struct Timings {
+      Clock::time_point render_started{};
+      Clock::time_point inference_queued{};
+      Clock::time_point inference_started{};
+      Clock::time_point assembly_queued{};
+      Clock::time_point assembly_started{};
+      double digital_ms = 0.0;
+      double render_ms = 0.0;
+      double ocr_ms = 0.0;
+      double orientation_ms = 0.0;
+      double layout_ms = 0.0;
+      double tables_ms = 0.0;
+      double figures_ms = 0.0;
+      double encode_ms = 0.0;
+      double deliver_ms = 0.0;
+      int orientation_passes = 0;
+      size_t lines = 0;
+      size_t regions = 0;
+      size_t tables = 0;
+      size_t figures = 0;
+    } timings;
   };
 
   struct InferenceJob {
@@ -287,6 +349,7 @@ class PageScheduler::Impl final {
     }
     auto state = std::make_shared<Ticket::State>(std::move(callbacks));
     state->tuning = tuning;
+    state->serial = next_serial_.fetch_add(1) + 1;
     state->page_window = options_.page_window;
     state->wake_scheduler = [this](std::shared_ptr<Ticket::State> request) {
       queue_reschedule(std::move(request));
@@ -522,7 +585,26 @@ class PageScheduler::Impl final {
     if (page->request->remaining_pages.fetch_sub(1) == 1) finish_request(page->request);
   }
 
+  // One GRPARSE_PAGE_TIMINGS line for a delivered page.
+  static void log_page_timings(const PageJob& page, Clock::time_point delivered) {
+    const auto& t = page.timings;
+    std::println(
+        "gRParse page timing: document={} page={}/{} total_ms={:.1f} render_wait_ms={:.1f} "
+        "digital_ms={:.1f} render_ms={:.1f} inference_wait_ms={:.1f} ocr_ms={:.1f} "
+        "orientation_ms={:.1f} orientation_passes={} layout_ms={:.1f} tables_ms={:.1f} "
+        "figures_ms={:.1f} encode_ms={:.1f} assembly_wait_ms={:.1f} deliver_ms={:.1f} lines={} "
+        "regions={} tables={} figures={}",
+        page.request->serial, page.page_number, page.request->total_pages,
+        ms_between(page.scheduled_at, delivered), ms_between(page.scheduled_at, t.render_started),
+        t.digital_ms, t.render_ms, ms_between(t.inference_queued, t.inference_started), t.ocr_ms,
+        t.orientation_ms, t.orientation_passes, t.layout_ms, t.tables_ms, t.figures_ms,
+        t.encode_ms, ms_between(t.assembly_queued, t.assembly_started), t.deliver_ms, t.lines,
+        t.regions, t.tables, t.figures);
+  }
+
   void enqueue_assembly(const std::shared_ptr<PageJob>& page, std::shared_ptr<const OcrPage> result) {
+    page->timings.assembly_queued = Clock::now();
+    page->timings.lines = result->lines.size();
     if (!assembly_.push(AssemblyJob{page, std::move(result)})) {
       page->request->fail(std::make_exception_ptr(std::runtime_error("Assembly queue closed")));
       complete_page(page, PageOutcome::kFailed);
@@ -598,6 +680,7 @@ class PageScheduler::Impl final {
   void render_pages() {
     std::shared_ptr<PageJob> page;
     while (render_.pop(&page)) {
+      page->timings.render_started = Clock::now();
       if (page->request->cancelled.load()) {
         complete_page(page, PageOutcome::kCancelled);
         page.reset();
@@ -617,6 +700,7 @@ class PageScheduler::Impl final {
         // merging with it.
         if (mode != OcrTuning::Mode::kForce) {
           const BusyTimer timer(render_busy_ns_);
+          const StageTimer stage(page->timings.digital_ms);
           digital = page->source->extract_digital_page(page->page_number);
         }
         if (digital.has_value()) {
@@ -653,6 +737,7 @@ class PageScheduler::Impl final {
         cv::Mat image;
         {
           const BusyTimer timer(render_busy_ns_);
+          const StageTimer stage(page->timings.render_ms);
           image = page->source->render_page(page->page_number);
         }
         pages_rendered_.fetch_add(1);
@@ -662,6 +747,7 @@ class PageScheduler::Impl final {
           continue;
         }
         InferenceJob job{page, std::move(image), std::move(digital), run_ocr};
+        page->timings.inference_queued = Clock::now();
         if (!inference_.push(std::move(job))) {
           page->request->fail(std::make_exception_ptr(std::runtime_error("Inference queue closed")));
           complete_page(page, PageOutcome::kFailed);
@@ -677,6 +763,8 @@ class PageScheduler::Impl final {
   void recognize_pages() {
     InferenceJob job;
     while (inference_.pop(&job)) {
+      auto& timings = job.page->timings;
+      timings.inference_started = Clock::now();
       if (job.page->request->cancelled.load()) {
         complete_page(job.page, PageOutcome::kCancelled);
         job = InferenceJob{};
@@ -691,7 +779,11 @@ class PageScheduler::Impl final {
           // crops, figure crops, the preview) must see the upright raster.
           OcrPage assembled;
           if (job.run_ocr) {
-            OcrPage ocr = recognizer_.extract_page(job.image);
+            OcrPage ocr;
+            {
+              const StageTimer stage(timings.ocr_ms);
+              ocr = recognizer_.extract_page(job.image);
+            }
             pages_recognized_.fetch_add(1);
             const bool digital_layer =
                 job.digital_seed.has_value() && !job.digital_seed->lines.empty();
@@ -699,9 +791,13 @@ class PageScheduler::Impl final {
             // source applied its own rotation), so only layerless pages are
             // candidates for a turn.
             if (!digital_layer) {
-              record_orientation(job.page->page_number,
-                                 recover_orientation(recognizer_, options_.orientation,
-                                                     &job.image, &ocr));
+              OrientationOutcome outcome;
+              {
+                const StageTimer stage(timings.orientation_ms);
+                outcome = recover_orientation(recognizer_, options_.orientation, &job.image, &ocr);
+              }
+              timings.orientation_passes = outcome.passes;
+              record_orientation(job.page->page_number, outcome);
             }
             if (digital_layer) {
               assembled = merge_digital_and_ocr(std::move(*job.digital_seed), std::move(ocr));
@@ -723,6 +819,7 @@ class PageScheduler::Impl final {
           std::vector<LayoutRegion> regions;
           std::string layout_model;
           if (region_detector_ != nullptr) {
+            const StageTimer stage(timings.layout_ms);
             regions = region_detector_->detect_regions(job.image);
             layout_model = region_detector_->model_name();
             pages_layout_labelled_.fetch_add(1);
@@ -734,7 +831,13 @@ class PageScheduler::Impl final {
           const bool run_tables =
               table_structurer_ != nullptr &&
               job.page->request->tuning.do_table_structure.value_or(true);
+          for (const auto& region : regions) {
+            if (region.label == "table") ++timings.tables;
+            if (region.label == "picture") ++timings.figures;
+          }
+          timings.regions = regions.size();
           if (run_tables) {
+            const StageTimer stage(timings.tables_ms);
             for (auto& region : regions) {
               if (region.label != "table") continue;
               const cv::Rect roi = clip_region(region, job.image.cols, job.image.rows);
@@ -757,6 +860,7 @@ class PageScheduler::Impl final {
               figure_classifier_ != nullptr &&
               job.page->request->tuning.do_picture_classification.value_or(true);
           if (run_figures) {
+            const StageTimer stage(timings.figures_ms);
             for (auto& region : regions) {
               if (region.label != "picture") continue;
               const cv::Mat crop = crop_region(job.image, region);
@@ -767,6 +871,7 @@ class PageScheduler::Impl final {
           }
           // Crops encode after OCR so the device work is never delayed, but
           // before the raster drops; the crop is a view, the PNG is owned.
+          const auto encode_started = Clock::now();
           if (captures_picture_images(job.page->request->tuning) && !job.image.empty()) {
             const double scale = job.page->request->tuning.images_scale.value_or(1.0);
             for (auto& region : regions) {
@@ -801,6 +906,7 @@ class PageScheduler::Impl final {
           if (captures_page_images(job.page->request->tuning) && !job.image.empty()) {
             cv::imencode(".png", preview_of(job.image), assembled.preview_png, kPngEncodeParams);
           }
+          timings.encode_ms = ms_between(encode_started, Clock::now());
           // Drop the raster the moment the device stage is done with it (B5).
           job.image.release();
           assembled.regions = std::move(regions);
@@ -824,10 +930,12 @@ class PageScheduler::Impl final {
         job = AssemblyJob{};
         continue;
       }
+      job.page->timings.assembly_started = Clock::now();
       try {
         DeliveryResult delivery = DeliveryResult::kCancelled;
         {
           const BusyTimer timer(assembly_busy_ns_);
+          const StageTimer stage(job.page->timings.deliver_ms);
           delivery =
               job.page->request->callbacks.on_page(job.page->page_number, std::move(job.result));
         }
@@ -839,6 +947,7 @@ class PageScheduler::Impl final {
           complete_page(job.page, PageOutcome::kCancelled);
         } else {
           record_page_latency(job.page->scheduled_at);
+          if (page_timings_enabled()) log_page_timings(*job.page, Clock::now());
           complete_page(job.page, PageOutcome::kCompleted);
         }
       } catch (...) {
@@ -870,6 +979,7 @@ class PageScheduler::Impl final {
   std::mutex reschedule_mutex_;
   std::condition_variable reschedule_changed_;
   std::deque<std::shared_ptr<Ticket::State>> pending_reschedules_;
+  std::atomic<uint64_t> next_serial_{0};
   bool stopping_ = false;
   mutable std::mutex active_mutex_;
   std::unordered_set<std::shared_ptr<Ticket::State>> active_requests_;

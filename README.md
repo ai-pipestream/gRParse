@@ -110,6 +110,16 @@ Prometheus exposition (`grparse_pages_rerecognized_total`,
 `GRPARSE_DATA_LOG=on` prints one line per re-read page with what was tried
 and kept.
 
+`GRPARSE_PAGE_TIMINGS=on` prints one `gRParse page timing:` line per page the
+CV pipeline delivers: the document (numbered by submission), the page, its
+wall time from scheduling to delivery, and the milliseconds it spent waiting
+for a render worker, reading the digital layer, rendering, waiting for the
+inference worker, in OCR, in orientation re-reads (with the pass count), in
+layout, table structure and figure classification, encoding crops and the
+preview, waiting for assembly, and being delivered to the stream, with the
+page's OCR line, region, table and figure counts. A page that is slow names
+its stage, and the counts say whether the page is simply denser.
+
 `ConvertSource` returns the contract's `ConvertDocumentResponse`, populated with a native `Document`. Each OCR line becomes a `TextItem`, with its page and bounding box in `provenance`; pages, `TableItem`/`PictureItem` entries from layout, and the `#/body` reference graph are also populated. It deliberately leaves asynchronous jobs and remote sources unimplemented: `ConvertSourceAsync`, the chunk `*Async` RPCs, `PollTaskStatus`, `GetConvertResult`, `GetChunkResult`, `ClearConverters`, `ClearResults`, `ConvertSourceStream`, and the `Watch*` RPCs all return `UNIMPLEMENTED`.
 
 Table exports are bounded per document, because a table's declared size and spans are untrusted. Each table's grid keeps at most 4,194,304 positions (its leading rows and columns), and all tables of one document share 8,388,608; a table built after that keeps no positions and renders empty. A spanned cell repeats at every position it covers only while the document's span budget lasts (8,388,608 extra positions and 64 MiB of repeated text); past it the cell renders once, at its first position (a Markdown cell that references another item renders empty at its later positions instead). The export responses carry no warning channel, so a truncated export is reported only by one line on the server's stderr per document.
