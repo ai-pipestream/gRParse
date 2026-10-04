@@ -20,6 +20,12 @@ namespace grparse {
 // extension does.
 std::string sniff_mimetype(std::string_view bytes);
 
+// True for a password-protected Office Open XML document: Office wraps an
+// encrypted .docx/.xlsx/.pptx in an OLE compound file whose directory lists
+// an "EncryptedPackage" stream. No collector can open one without the
+// password, so the caller says so instead of reporting a load failure.
+bool encrypted_office_package(std::string_view bytes);
+
 // The mimetype a filename extension implies; "application/octet-stream"
 // when the extension is unknown. Extension only; never reads bytes.
 std::string extension_mimetype(const std::filesystem::path& filename);

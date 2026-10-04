@@ -1882,6 +1882,12 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     // A nameless upload gets a name that declares nothing, so the bytes
     // decide its type and route rather than a made-up extension.
     const fs::path requested_name = source.filename().empty() ? "document" : fs::path(source.filename()).filename();
+    if (encrypted_office_package(*bytes)) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + ": " + requested_name.string() +
+                              " is a password-protected Office document (an encrypted "
+                              "package); it cannot be read without the password");
+    }
     pipestream::document::v1::Document base = base_document(*bytes, requested_name);
     // Which build, settings and options produce this document, so anything
     // stored against its items can tell a re-parse that would renumber them.

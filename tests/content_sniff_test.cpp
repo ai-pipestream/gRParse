@@ -115,6 +115,25 @@ void verify_embedded_packages_do_not_decide_the_type() {
                 "a document with an embedded workbook is a document");
 }
 
+// An encrypted Office package is an OLE compound file listing an
+// "EncryptedPackage" stream (UTF-16LE in the directory); a plain legacy
+// compound document does not list one.
+void verify_encrypted_office_packages_are_recognised() {
+  const std::string compound = std::string("\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1", 8) +
+                               std::string(512, '\0');
+  std::string encrypted = compound;
+  for (const char c : std::string("EncryptedPackage")) {
+    encrypted.push_back(c);
+    encrypted.push_back('\0');
+  }
+  require(grparse::encrypted_office_package(encrypted),
+          "a compound file listing EncryptedPackage is an encrypted Office package");
+  require(!grparse::encrypted_office_package(compound + "WordDocument"),
+          "a plain compound document is not");
+  require(!grparse::encrypted_office_package("EncryptedPackage"),
+          "the name alone, outside a compound file, is not");
+}
+
 void verify_container_signatures() {
   require_sniff(zip_with_mimetype_entry("application/vnd.oasis.opendocument.text"),
                 "application/vnd.oasis.opendocument.text", "odt by mimetype entry");
@@ -258,6 +277,7 @@ void verify_corpus_fixtures() {
 int main() {
   return grparse_test::run_test_main("content-sniff-test", "all checks passed", {
       verify_container_signatures,
+      verify_encrypted_office_packages_are_recognised,
       verify_embedded_packages_do_not_decide_the_type,
       verify_binary_signatures,
       verify_text_signatures,

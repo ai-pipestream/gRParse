@@ -416,6 +416,22 @@ std::string sniff_text(string_view bytes) {
 
 }  // namespace
 
+bool encrypted_office_package(string_view bytes) {
+  static constexpr string_view kCompoundFile = "\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1";
+  if (!starts_with(bytes, kCompoundFile)) return false;
+  // Directory entry names are UTF-16LE. The directory can sit anywhere in
+  // the file, so the whole compound file is searched.
+  static const std::string kEncryptedPackage = [] {
+    std::string name;
+    for (const char c : string_view("EncryptedPackage")) {
+      name.push_back(c);
+      name.push_back('\0');
+    }
+    return name;
+  }();
+  return bytes.find(kEncryptedPackage) != string_view::npos;
+}
+
 std::string sniff_mimetype(string_view bytes) {
   if (bytes.empty()) return {};
   if (const std::string binary = sniff_binary(bytes); !binary.empty()) return binary;
