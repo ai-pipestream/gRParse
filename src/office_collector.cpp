@@ -60,6 +60,17 @@ CollectorOutcome collect_office_document(
   }
   outcome.warnings = mapper.warnings();
   outcome.document = mapper.take();
+  // The worker echoes the request's document_id on document_info, and the
+  // fold names the document after it. That id is a per-call correlation
+  // key (gRParse sends "<name>#<sequence>"), not a file name: the same file
+  // parsed twice would report two different origins. The upload's filename
+  // is what the origin and the name describe.
+  if (!filename.empty()) {
+    if (outcome.document.name() == document_id) outcome.document.set_name(filename);
+    if (outcome.document.origin().filename() == document_id) {
+      outcome.document.mutable_origin()->set_filename(filename);
+    }
+  }
   // The hybrid leg: native office text and tables are exact, so the CV
   // engines add only what the office core cannot see on its own renders —
   // figure regions, their classes, and barcode payloads.
