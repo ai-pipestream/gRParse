@@ -957,6 +957,89 @@ void verify_sentence_rule_boundaries() {
           "text with no terminator is one sentence");
 }
 
+void set_language(docv1::Document* document, const std::string& ref, const std::string& raw,
+                  docv1::HumanLanguageLabel code) {
+  const int index = std::stoi(ref.substr(std::string("#/texts/").size()));
+  auto* language = document->mutable_texts(index)->mutable_text()->mutable_base()
+                       ->mutable_meta()->mutable_language();
+  if (!raw.empty()) language->set_code_raw(raw);
+  language->set_code(code);
+}
+
+std::string language_key(const parsev1::Chunk& chunk) {
+  const auto typed = chunk.typed_metadata().find("language");
+  const auto plain = chunk.metadata().find("language");
+  require((typed == chunk.typed_metadata().end()) == (plain == chunk.metadata().end()),
+          "metadata and typed_metadata agree on whether a language is reported");
+  if (typed == chunk.typed_metadata().end()) return {};
+  require(typed->second.string_value() == plain->second,
+          "metadata and typed_metadata report the same language");
+  return plain->second;
+}
+
+void verify_chunk_language_is_the_declared_one() {
+  // No declaration anywhere: no key.
+  docv1::Document bare = new_document();
+  add_paragraph(&bare, "plain words");
+  require(language_key(chunk_hierarchical(bare, {}, {}, "d.txt").front()).empty(),
+          "a document that declares no language gets no language key");
+
+  // The document's declaration covers items without their own.
+  docv1::Document declared = new_document();
+  declared.mutable_source_meta()->set_language("fr-CA");
+  add_paragraph(&declared, "bonjour");
+  const std::string german = add_paragraph(&declared, "guten Tag");
+  set_language(&declared, german, "", docv1::HUMAN_LANGUAGE_LABEL_DE);
+  const std::string english = add_paragraph(&declared, "hello");
+  set_language(&declared, english, "en-GB", docv1::HUMAN_LANGUAGE_LABEL_EN);
+  const auto chunks = chunk_hierarchical(declared, {}, {}, "d.docx");
+  require(chunks.size() == 3, "one chunk per paragraph");
+  require_eq(language_key(chunks[0]), "fr-CA", "an untagged item speaks the document's language");
+  require_eq(language_key(chunks[1]), "de", "an enum-only tag reports its lowercase subtag");
+  require_eq(language_key(chunks[2]), "en-GB", "the raw tag wins over the enum");
+
+  // A merged chunk reports a language only when its items agree.
+  std::vector<parsev1::Chunk> merged;
+  require(chunk_hybrid(declared, {}, hybrid_options(64), "d.docx", &merged).ok(),
+          "hybrid chunking succeeds");
+  require(merged.size() == 1, "three short peers merge");
+  require(language_key(merged.front()).empty(), "a chunk mixing languages reports none");
+
+  // Tags come out in canonical case; a malformed raw tag falls back to the
+  // enum, and a malformed document tag counts as none.
+  docv1::Document cased = new_document();
+  cased.mutable_source_meta()->set_language("zh_hant_tw");
+  add_paragraph(&cased, "unmarked");
+  const std::string shouting = add_paragraph(&cased, "loud");
+  set_language(&cased, shouting, "EN-us", docv1::HUMAN_LANGUAGE_LABEL_EN);
+  const std::string broken = add_paragraph(&cased, "broken");
+  set_language(&cased, broken, "en--US", docv1::HUMAN_LANGUAGE_LABEL_PT);
+  const std::string private_use = add_paragraph(&cased, "private");
+  set_language(&cased, private_use, "de-x-Klingon", docv1::HUMAN_LANGUAGE_LABEL_UNSPECIFIED);
+  const auto cased_chunks = chunk_hierarchical(cased, {}, {}, "d.docx");
+  require(cased_chunks.size() == 4, "one chunk per paragraph");
+  require_eq(language_key(cased_chunks[0]), "zh-Hant-TW",
+             "'_' reads as '-', a script is title case and a region upper case");
+  require_eq(language_key(cased_chunks[1]), "en-US", "the primary subtag is lower case");
+  require_eq(language_key(cased_chunks[2]), "pt", "a malformed raw tag falls back to the enum");
+  require_eq(language_key(cased_chunks[3]), "de-x-klingon",
+             "subtags after a singleton stay lower case");
+  docv1::Document garbage = new_document();
+  garbage.mutable_source_meta()->set_language("1234");
+  add_paragraph(&garbage, "words");
+  require(language_key(chunk_hierarchical(garbage, {}, {}, "d.txt").front()).empty(),
+          "a malformed document language counts as none");
+
+  // A chunk with no text item takes the document's language.
+  docv1::Document tabled = new_document();
+  tabled.mutable_source_meta()->set_language("es");
+  add_table(&tabled, {{{"a", false, false}, {"b", false, false}}});
+  const auto table_chunks = chunk_hierarchical(tabled, {}, {}, "d.xlsx");
+  require(!table_chunks.empty(), "the table chunks");
+  require_eq(language_key(table_chunks.front()), "es",
+             "a table chunk speaks the document's declared language");
+}
+
 // The text stream the derived table indexes, rebuilt the way the plain-text
 // export writes it: text items in arena order, a newline between each and
 // what was already written.
@@ -1118,6 +1201,7 @@ const Case kCases[] = {
     {"hybrid offset narrowing", verify_split_pieces_narrow_offsets_only_when_exact},
     {"raw text option", verify_raw_text_mirrors_text_when_requested},
     {"hybrid digest", verify_hybrid_digest_reports_the_budget},
+    {"declared chunk language", verify_chunk_language_is_the_declared_one},
     {"derived offsets index the text export", verify_derived_offsets_index_the_text_export},
     {"overlay labels only matching rows", verify_overlay_labels_only_matching_rows},
     {"derived offsets key by arena position", verify_derived_offsets_key_by_arena_position},

@@ -1367,6 +1367,14 @@ message Chunk {
   //   "min_confidence"  double, the weakest OCR confidence among the chunk's
   //                     items (absent when no item carried one)
   //   "text_source"     string, "digital" | "ocr" | "mixed"
+  //   "language"        string, the language tag every text item of the
+  //                     chunk carries (each item's own meta.language, else
+  //                     the document's source_meta.language), in canonical
+  //                     BCP 47 case; absent when they disagree, any item has
+  //                     none, or a tag is malformed. It reports what the
+  //                     document's fields hold: a source's declaration, or
+  //                     a collector's detection (grpc-asr writes the
+  //                     language it detected). gRParse detects nothing.
   //   "binary_hash"     uint, the source document's DocumentOrigin.binary_hash
   //   "mimetype"        string, the source document's DocumentOrigin.mimetype
   map<string, ScalarValue> typed_metadata = 14;

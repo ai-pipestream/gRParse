@@ -132,6 +132,8 @@ Determinism is the point: the same input bytes produce the same chunk bytes on e
 
 A chunk reports `start_offset` and `end_offset` as UTF-8 code point positions in the document's text stream: the plain-text export, every text item in arena order joined by a single `\n`, furniture included. Every parse path builds the offset table from the finished document, and `ConvertSource` returns it as `text_offsets` (one row per text item, in stream order), so the spans hold for office, markup, email, EPUB and fast-path PDF documents as well as CV pages. Only the CV path's rows say how the text was read (`source`), and only when that collector is the whole document. A chunk whose items have no row carries neither field rather than a guess. Rows are keyed by arena position (`#/texts/N`) and run in arena order, so an item with an empty or repeated `self_ref` still gets its own row. Offsets count Unicode code points; a UTF-16 consumer such as OpenNLP converts with `String.offsetByCodePoints`. `TextOffset` and `TextSource` live in `parse_types.proto`: wire and JSON names are unchanged from when they sat in `parse_stream.proto`, but Python code must import them from `parse_types_pb2`.
 
+A chunk's `metadata` and `typed_metadata` carry `language` when every text item in it has the same one: the item's own `meta.language`, else the document's `source_meta.language`, as a BCP 47 tag in canonical case (`zh-Hant-TW`). The key is absent when the items disagree, when one has no language, or when a tag is malformed. A chunk with no text item, such as a lone table, takes the document's language. It reports what the document's fields hold, which is a source's declaration (an Office run, an HTML `lang`, a PDF's catalog `/Lang`) or a collector's detection (grpc-asr). gRParse runs no language detection itself.
+
 #### Optional local embeddings
 
 The two synchronous chunk RPCs accept `embedding_options.enabled=true` to attach
@@ -486,6 +488,8 @@ A request selects collectors explicitly (`ConvertDocumentOptions.collectors`,
 or `DocumentChunk.collectors` on the streaming RPC); an empty selection
 routes by format as above, with PDF and raster inputs staying on the CV
 path. No code path converts office bytes to PDF in order to parse them.
+`GRPARSE_POI_TARGET` is no longer read; a deployment that still sets it gets
+a one-line startup warning saying grPOIc is not used.
 
 The libreoffice collector streams typed events that gRParse folds into a
 `Document` itself, the epub collector's skeleton is completed here from its
