@@ -7,6 +7,7 @@
 #include <exception>
 #include <filesystem>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -535,9 +536,10 @@ class DocumentStreamReactor final
   }
 
   static void deliver(const std::weak_ptr<CallbackGate>& weak_gate,
-                      pipestream::parse::v1::Collector id, CollectorOutcome outcome) {
-    with_reactor(weak_gate, [id, &outcome](DocumentStreamReactor& reactor) {
-      reactor.on_collector_done(id, std::move(outcome));
+                      pipestream::parse::v1::Collector id, CollectorOutcome outcome,
+                      bool pages_streamed = false) {
+    with_reactor(weak_gate, [id, &outcome, pages_streamed](DocumentStreamReactor& reactor) {
+      reactor.on_collector_done(id, std::move(outcome), pages_streamed);
     });
   }
 
@@ -590,6 +592,13 @@ class DocumentStreamReactor final
   // never to a failed parse. Runs on its own thread for the same reason
   // spawn_remote_collector does: the collector call is a blocking client,
   // cancelled like the other remote legs once the client is gone.
+  //
+  // The fast path streams: each clean page's slice of the inspector's fold
+  // goes to the client as it arrives, while the rest of the document is
+  // still being read. The first page that is not clean stops the run, and
+  // once the trailer is in, the pages after the run take whichever route
+  // the whole document would have taken: their held slices when it is
+  // still the fast path, the CV pipeline over just those pages otherwise.
   void spawn_pdf_router(std::shared_ptr<const std::string> bytes, bool pdf,
                         PageScheduler::OcrTuning tuning) {
     PdfLeg leg{endpoints_, std::move(bytes), pdf, context_->deadline(), std::move(tuning),
@@ -601,18 +610,76 @@ class DocumentStreamReactor final
   }
 
   static void run_pdf_route(const std::weak_ptr<CallbackGate>& weak_gate, PdfLeg leg) {
+    // Previews rendered for streamed pages, kept to dress the whole
+    // Document's pages without rendering them a second time.
+    std::map<int, pipestream::document::v1::PageItem> previews;
+    const auto stream_page = [&weak_gate, &leg, &previews](PdfPageSlice slice) {
+      if (leg.previews) {
+        attach_previews(weak_gate, leg, &slice.document,
+                        std::pair<int, int>{slice.page_no, slice.page_no});
+        if (const auto page = slice.document.pages().find(slice.page_no);
+            page != slice.document.pages().end()) {
+          previews[slice.page_no] = page->second;
+        }
+      }
+      bool accepted = false;
+      with_reactor(weak_gate, [&slice, &accepted](DocumentStreamReactor& reactor) {
+        accepted = reactor.on_streamed_page(std::move(slice));
+      });
+      return accepted;
+    };
     PdfParseResult parsed = collect_pdf(
         leg.endpoints == nullptr
             ? nullptr
             : leg.endpoints->channel(pipestream::parse::v1::COLLECTOR_PDF),
-        *leg.bytes, leg.deadline, leg.tuning.page_range, leg_cancelled(weak_gate));
+        *leg.bytes, leg.deadline, leg.tuning.page_range, leg_cancelled(weak_gate), stream_page);
     const PdfRouteDecision route = route_pdf_by_classification(parsed.classification);
+    const bool streamed = parsed.streamed_pages > 0;
     if (parsed.outcome.success && route.fast_path) {
-      // Rendered before the reactor sees the document, on this thread,
-      // where the blocking work already is.
-      if (leg.previews) attach_previews(weak_gate, leg, &parsed.outcome.document);
-      deliver(weak_gate, pipestream::parse::v1::COLLECTOR_PDF, std::move(parsed.outcome));
+      if (streamed) {
+        // Every page the run left behind is the fast path's too.
+        for (auto& slice : parsed.held_pages) {
+          if (!stream_page(std::move(slice))) break;
+        }
+        for (const auto& [page_no, page] : previews) {
+          auto& whole = (*parsed.outcome.document.mutable_pages())[page_no];
+          if (page.has_image()) *whole.mutable_image() = page.image();
+        }
+      } else if (leg.previews) {
+        // Rendered before the reactor sees the document, on this thread,
+        // where the blocking work already is.
+        attach_previews(weak_gate, leg, &parsed.outcome.document, leg.tuning.page_range);
+      }
+      deliver(weak_gate, pipestream::parse::v1::COLLECTOR_PDF, std::move(parsed.outcome),
+              streamed);
       return;
+    }
+    if (streamed) {
+      // The run's pages are on the wire; what is left is recognition's,
+      // starting at the first page the run did not reach.
+      int first_left = 0;
+      int page_count = 0;
+      with_reactor(weak_gate, [&first_left, &page_count](DocumentStreamReactor& reactor) {
+        std::lock_guard<std::mutex> lock(reactor.mutex_);
+        first_left = reactor.next_page_;
+        page_count = reactor.total_pages_;
+      });
+      if (first_left == 0) return;  // the call is gone
+      with_reactor(weak_gate, [first_left](DocumentStreamReactor& reactor) {
+        reactor.note_streamed_prefix(first_left);
+      });
+      if (first_left > page_count) {
+        // Every page went out and only the Document's own checks failed:
+        // the part settles on the collector's outcome, with nothing left
+        // to recognize.
+        deliver(weak_gate, pipestream::parse::v1::COLLECTOR_PDF, std::move(parsed.outcome),
+                /*pages_streamed=*/true);
+        return;
+      }
+      leg.tuning.page_range =
+          std::pair<int, int>{first_left, leg.tuning.page_range.has_value()
+                                              ? leg.tuning.page_range->second
+                                              : std::numeric_limits<int>::max()};
     }
     if (parsed.outcome.success) {
       leg.tuning.ocr_pages.insert(route.ocr_pages.begin(), route.ocr_pages.end());
@@ -636,13 +703,25 @@ class DocumentStreamReactor final
   // Stops once the call is gone (the reactor is torn down on cancel or
   // finish) or its deadline has passed.
   static void attach_previews(const std::weak_ptr<CallbackGate>& weak_gate, const PdfLeg& leg,
-                              pipestream::document::v1::Document* document) {
+                              pipestream::document::v1::Document* document,
+                              std::optional<std::pair<int, int>> page_range) {
     const CollectorCancelled gone = leg_cancelled(weak_gate);
-    attach_page_previews(leg.bytes, document, leg.tuning.page_range,
+    attach_page_previews(leg.bytes, document, page_range,
                          [&gone, deadline = leg.deadline] {
                            return std::chrono::system_clock::now() >= deadline || gone();
                          },
                          leg.deadline);
+  }
+
+  // Pages before first_left came from the inspector's text layer as they
+  // arrived; the rest go to recognition. The complete event says so, since
+  // one document now carries both readings.
+  void note_streamed_prefix(int first_left) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    assembly_warnings_.push_back(
+        "pages 1-" + std::to_string(first_left - 1) +
+        " streamed from the pdf inspector's text layer as they were read; pages " +
+        std::to_string(first_left) + " onward went through the CV path");
   }
 
   void note_pdf_fallback(const CollectorOutcome& outcome) {
@@ -699,9 +778,46 @@ class DocumentStreamReactor final
     });
   }
 
+  // The scheduler counts the pages it will deliver; pages the inspector
+  // already streamed come before them.
   void on_document(int total_pages) {
     std::lock_guard<std::mutex> lock(mutex_);
-    total_pages_ = total_pages;
+    total_pages_ = (next_page_ - 1) + total_pages;
+  }
+
+  // One page of the inspector's fast path, the moment its slice is final.
+  // It takes the next page number, continues the stream's text offsets,
+  // and advances the ref cursor past its items, so a CV run that takes over
+  // after it neither reuses a ref nor restarts the offsets. False once the
+  // call is gone or finishing, which stops the run.
+  bool on_streamed_page(PdfPageSlice slice) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (client_cancelled_ || finish_requested_) return false;
+    total_pages_ = std::max({total_pages_, slice.page_count, slice.page_no});
+    auto pages = project_page_data(slice.document, pipestream::parse::v1::TEXT_SOURCE_DIGITAL_PDF,
+                                   &assembly_cursor_.utf_offset);
+    assembly_cursor_.text_index += static_cast<uint64_t>(slice.document.texts_size());
+    assembly_cursor_.table_index += static_cast<uint64_t>(slice.document.tables_size());
+    assembly_cursor_.picture_index += static_cast<uint64_t>(slice.document.pictures_size());
+    if (slice.document.texts_size() > 0) assembly_cursor_.has_text = true;
+    // A slice names its own page; a page with nothing on it still goes out
+    // as an empty page, so the client sees every page number once.
+    if (pages.empty()) {
+      pipestream::parse::v1::PageData empty;
+      empty.set_page_number(slice.page_no);
+      empty.mutable_page_meta()->set_page_no(slice.page_no);
+      pages.push_back(std::move(empty));
+    }
+    for (auto& page : pages) {
+      auto event = std::make_unique<ArenaEvent>();
+      event->message->set_document_id(document_id_);
+      event->message->set_total_pages(total_pages_);
+      *event->message->mutable_page() = std::move(page);
+      events_.push_back(std::move(event));
+    }
+    next_page_ = slice.page_no + 1;
+    pump_locked();
+    return true;
   }
 
   PageScheduler::DeliveryResult on_page(int page_number, std::shared_ptr<const OcrPage> page) {
@@ -764,7 +880,11 @@ class DocumentStreamReactor final
     pump_locked();
   }
 
-  void on_collector_done(pipestream::parse::v1::Collector collector, CollectorOutcome outcome) {
+  // `pages_streamed`: the collector's pages already went out one by one
+  // (the inspector's streamed fast path), so only the whole Document
+  // follows here.
+  void on_collector_done(pipestream::parse::v1::Collector collector, CollectorOutcome outcome,
+                         bool pages_streamed = false) {
     // A collector's Document is complete the moment it lands here, and this
     // is where it is projected and emitted, so the repair pass runs on it
     // first, on the caller's thread and outside the reactor lock: it is
@@ -790,10 +910,12 @@ class DocumentStreamReactor final
       // as the collector-document event for consumers that want it intact.
       // The pdf collector's text is the document's own text layer; other
       // collectors' text has no OCR-or-digital story to tell.
-      auto pages = project_page_data(
-          outcome.document, collector == pipestream::parse::v1::COLLECTOR_PDF
-                                ? pipestream::parse::v1::TEXT_SOURCE_DIGITAL_PDF
-                                : pipestream::parse::v1::TEXT_SOURCE_UNSPECIFIED);
+      auto pages = pages_streamed
+                       ? std::vector<pipestream::parse::v1::PageData>{}
+                       : project_page_data(outcome.document,
+                                           collector == pipestream::parse::v1::COLLECTOR_PDF
+                                               ? pipestream::parse::v1::TEXT_SOURCE_DIGITAL_PDF
+                                               : pipestream::parse::v1::TEXT_SOURCE_UNSPECIFIED);
       if (!pages.empty()) {
         total_pages_ = std::max(total_pages_, static_cast<int>(pages.size()));
         for (auto& page : pages) {

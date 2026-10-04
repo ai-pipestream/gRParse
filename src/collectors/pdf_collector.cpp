@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -52,6 +53,10 @@ bool has_body_content(const docv1::Document& document) {
 
 }  // namespace
 
+bool pdf_page_is_clean(bool needs_ocr, bool encoding_issues, const std::string& markdown) {
+  return !needs_ocr && !encoding_issues && !blank(markdown);
+}
+
 PdfRouteDecision route_pdf_by_classification(const PdfClassification& classification) {
   PdfRouteDecision decision;
   // Document-wide encoding issues make the embedded layer untrustworthy for
@@ -99,7 +104,7 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
                            const std::string& bytes,
                            CollectorDeadline inbound_deadline,
                            std::optional<std::pair<int, int>> page_range,
-                           CollectorCancelled cancelled) {
+                           CollectorCancelled cancelled, PdfPageSink page_sink) {
   PdfParseResult result;
   if (channel == nullptr) {
     result.outcome.error = "pdf collector is not configured (GRPARSE_PDF_TARGET)";
@@ -117,6 +122,10 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
   // needs only the info event, but a text-based document's fast path needs
   // the fold, and the fold is built from the page stream.
   request.mutable_options()->set_emit_document(true);
+  // With a sink, the fold also comes page by page, so the fast path can
+  // stream instead of waiting for the whole Document.
+  const bool streaming = static_cast<bool>(page_sink);
+  if (streaming) request.mutable_options()->set_emit_page_documents(true);
   // Docling page_range → collector options first_page/last_page, a
   // 1-indexed inclusive span that costs two numbers however long it is.
   // Docling spells "to the end" as (start, sys.maxsize), which reaches this
@@ -146,6 +155,12 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
   // needs the fold's pictures and the trailer's invisible-text flag, which
   // arrive after the pages.
   std::vector<uint32_t> empty_pages;
+  // The streaming state: whether the info event left the fast path open,
+  // whether every page so far went to the sink, and the verdict on the page
+  // whose slice comes next (its page event precedes it).
+  bool fast_path_open = false;
+  bool run_open = false;
+  std::optional<std::pair<uint32_t, bool>> pending_page;
   pdfv1::ParsePdfResponse event;
   while (stream->Read(&event)) {
     if (event.has_info()) {
@@ -169,11 +184,50 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
       page_count = info.page_count();
       result.classification.ocr_recommended = info.ocr_recommended();
       for (const uint32_t page : info.pages_needing_ocr()) add_ocr_page(page, &ocr_pages);
+      // The same document-wide conditions route_pdf_by_classification
+      // reads off the info event; anything the pages or the trailer add is
+      // judged page by page below.
+      fast_path_open = streaming && result.classification.pdf_class == PdfClass::kTextBased &&
+                       !result.classification.ocr_recommended && ocr_pages.empty();
+      run_open = fast_path_open;
     } else if (event.has_page()) {
       // The pass that decoded the page can convict it where the sampling
       // detection on info did not look.
       if (event.page().needs_ocr()) add_ocr_page(event.page().page_no(), &ocr_pages);
       if (blank(event.page().markdown())) empty_pages.push_back(event.page().page_no());
+      if (streaming) {
+        pending_page.emplace(event.page().page_no(),
+                             pdf_page_is_clean(event.page().needs_ocr(),
+                                               event.page().encoding_issues(),
+                                               event.page().markdown()));
+      }
+    } else if (event.has_page_document()) {
+      // A page's slice is final the moment it arrives; whether it may go out
+      // now is the page's own verdict and the run before it. A blank page
+      // ends the run because the trailer can still send it to recognition
+      // (a picture on it, or invisible text anywhere), and an unclean one
+      // ends it because recognition is where it is going.
+      const uint32_t page_no = event.page_document().page_no();
+      const bool clean = pending_page.has_value() && pending_page->first == page_no &&
+                         pending_page->second;
+      pending_page.reset();
+      if (fast_path_open && page_no >= 1 &&
+          page_no <= static_cast<uint32_t>(std::numeric_limits<int>::max())) {
+        PdfPageSlice slice{static_cast<int>(page_no),
+                           static_cast<int>(std::min<uint32_t>(
+                               page_count, static_cast<uint32_t>(std::numeric_limits<int>::max()))),
+                           std::move(*event.mutable_page_document()->mutable_document())};
+        if (run_open && clean) {
+          if (page_sink(std::move(slice))) {
+            ++result.streamed_pages;
+          } else {
+            run_open = false;
+          }
+        } else {
+          run_open = false;
+          result.held_pages.push_back(std::move(slice));
+        }
+      }
     } else if (event.has_document()) {
       result.outcome.document = std::move(*event.mutable_document());
       document_seen = true;
