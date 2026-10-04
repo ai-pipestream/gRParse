@@ -217,6 +217,8 @@ void verify_collects_and_folds_typed_stream() {
   require(comment_group && form_group,
           "comments land in their section and form fields in their arenas");
   require(document.pages_size() == 1, "page rects become page items");
+  require(document.origin().filename() == "letter.odt" && document.name() == "letter.odt",
+          "the origin names the uploaded file, not the per-call document_id");
 }
 
 void verify_load_failure_degrades_to_outcome() {
