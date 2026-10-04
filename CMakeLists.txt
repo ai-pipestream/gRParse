@@ -964,6 +964,10 @@ if(BUILD_TESTING)
     TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
   set_tests_properties(content-sniff-test PROPERTIES
     ENVIRONMENT "GRPARSE_TEST_CORPUS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/golden/corpus")
+  # The response cap's setting lives in the server's own source, not the
+  # library, like the rest of the startup configuration.
+  target_sources(unary-response-cap-test PRIVATE src/server_config.cpp)
+  target_include_directories(unary-response-cap-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 endif()
 
 # ---- anti-drift battery: determinism, idempotence, data contracts ----------
