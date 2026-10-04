@@ -2802,6 +2802,164 @@ void verify_hybrid_chunk_rpc_merges_and_validates(TestServer* server) {
           "the rejection lists what is supported: " + tokenizer_status.error_message());
 }
 
+// Reads a StreamChunks call to its end.
+struct StreamedChunks {
+  grpc::Status status;
+  std::vector<pipestream::parse::v1::StreamChunksResponse> messages;
+};
+
+StreamedChunks read_stream_chunks(TestServer* server,
+                                  const pipestream::parse::v1::StreamChunksRequest& request) {
+  auto client = server->unary_stub();
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  auto reader = client->StreamChunks(&context, request);
+  StreamedChunks streamed;
+  pipestream::parse::v1::StreamChunksResponse message;
+  while (reader->Read(&message)) streamed.messages.push_back(message);
+  streamed.status = reader->Finish();
+  return streamed;
+}
+
+// The streamed chunker sends exactly the unary chunks, one per message in
+// order, then one summary; a refused request sends nothing.
+void verify_stream_chunks_matches_the_unary_chunkers(TestServer* server) {
+  auto client = server->unary_stub();
+  pipestream::parse::v1::ChunkHierarchicalSourceRequest unary;
+  auto* source = unary.mutable_request()->add_sources()->mutable_file();
+  source->set_filename("image.png");
+  source->set_base64_string("bWVtb3J5");
+  grpc::ClientContext unary_context;
+  unary_context.set_deadline(std::chrono::system_clock::now() + 10s);
+  pipestream::parse::v1::ChunkHierarchicalSourceResponse baseline;
+  require(client->ChunkHierarchicalSource(&unary_context, unary, &baseline).ok(),
+          "baseline hierarchical chunking");
+
+  pipestream::parse::v1::StreamChunksRequest hierarchical;
+  *hierarchical.mutable_hierarchical() = unary.request();
+  const StreamedChunks streamed = read_stream_chunks(server, hierarchical);
+  require(streamed.status.ok(), "streamed chunking failed: " + streamed.status.error_message());
+  const auto& chunks = baseline.response().chunks();
+  require(streamed.messages.size() == static_cast<size_t>(chunks.size()) + 1,
+          "one message per chunk, then the summary");
+  for (int index = 0; index < chunks.size(); ++index) {
+    const auto& message = streamed.messages.at(static_cast<size_t>(index));
+    require(message.has_chunk() && same_message(message.chunk(), chunks.Get(index)),
+            "each streamed chunk is the unary chunk at the same position");
+  }
+  const auto& summary = streamed.messages.back();
+  require(summary.has_summary(), "the stream ends with its summary");
+  require(summary.summary().chunk_count() == chunks.size(), "the summary counts the chunks");
+  require(summary.summary().documents().empty(),
+          "the converted document rides along only when it is asked for");
+  require(summary.summary().chunking_info().at("chunker").string_value() == "hierarchical",
+          "the summary carries chunking_info");
+
+  pipestream::parse::v1::StreamChunksRequest hybrid;
+  *hybrid.mutable_hybrid()->add_sources() = unary.request().sources(0);
+  hybrid.mutable_hybrid()->set_include_converted_doc(true);
+  hybrid.mutable_hybrid()->mutable_chunking_options()->set_max_tokens(8);
+  const StreamedChunks merged = read_stream_chunks(server, hybrid);
+  require(merged.status.ok(), "streamed hybrid failed: " + merged.status.error_message());
+  require(merged.messages.size() == 2 && merged.messages.front().has_chunk() &&
+              merged.messages.front().chunk().text() == "one\ntwo\nthree",
+          "the hybrid stream sends its one merged chunk, then the summary");
+  require(merged.messages.back().summary().documents_size() == 1 &&
+              merged.messages.back().summary().documents(0).content().doc().texts_size() == 3,
+          "include_converted_doc puts the parsed document on the summary");
+
+  const StreamedChunks unset = read_stream_chunks(server, {});
+  require(unset.status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              unset.messages.empty(),
+          "a request naming no chunker is refused before anything streams");
+  pipestream::parse::v1::StreamChunksRequest without_budget;
+  *without_budget.mutable_hybrid()->add_sources() = unary.request().sources(0);
+  const StreamedChunks refused = read_stream_chunks(server, without_budget);
+  require(refused.status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              refused.status.error_message().contains("max_tokens") && refused.messages.empty(),
+          "a hybrid request without a budget is refused with no messages: " +
+              refused.status.error_message());
+}
+
+// A reader that walks away mid-stream ends the call, and the in-flight
+// charge the stream held for its unwritten messages comes back. The source
+// is a few megabytes of in-process storage XHTML, so with BDP probing off
+// the client's flow-control window fills long before the last chunk and
+// the cancel lands while the server still has writes outstanding.
+void verify_stream_chunks_returns_its_charge_when_the_reader_cancels() {
+  const auto inflight = std::make_shared<grparse::InflightBytes>(256ULL << 20U);
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
+                                   [](std::shared_ptr<const std::string>, bool, double) {
+                                     return std::make_shared<FakeSource>();
+                                   });
+  grparse::DocumentParserService parser_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{}),
+      grparse::CallExecutor::Options{}, grparse::RepairOptions{}, {}, {}, inflight);
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&parser_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "cancel test server failed to start");
+  grpc::ChannelArguments arguments;
+  arguments.SetInt(GRPC_ARG_HTTP2_BDP_PROBE, 0);
+  arguments.SetMaxReceiveMessageSize(64 << 20);
+  auto client = pipestream::parse::v1::ParseService::NewStub(grpc::CreateCustomChannel(
+      "127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials(), arguments));
+
+  std::string body = "<h1>Handbook</h1>";
+  const std::string paragraph = "<p>" + std::string(4000, 'x') + "</p>";
+  for (int index = 0; index < 400; ++index) body += paragraph;
+  pipestream::parse::v1::StreamChunksRequest request;
+  auto* source = request.mutable_hierarchical()->add_sources()->mutable_file();
+  source->set_filename("handbook.confluence");
+  source->set_base64_string(grparse::encode_base64(body.data(), body.size()));
+
+  {
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 20s);
+    auto reader = client->StreamChunks(&context, request);
+    pipestream::parse::v1::StreamChunksResponse first;
+    if (!reader->Read(&first)) {
+      const grpc::Status failed = reader->Finish();
+      require(false, "the stream starts with a chunk: " + failed.error_message());
+    }
+    require(first.has_chunk(), "the stream starts with a chunk");
+    require(inflight->in_use() > 0,
+            "the stream holds its charge while messages wait to be written");
+    context.TryCancel();
+    pipestream::parse::v1::StreamChunksResponse rest;
+    int drained = 0;
+    while (reader->Read(&rest)) ++drained;
+    require(drained < 400, "the cancel landed before the stream was written out");
+    require(reader->Finish().error_code() == grpc::StatusCode::CANCELLED,
+            "a cancelled reader sees CANCELLED");
+  }
+  for (int attempt = 0; attempt < 200 && inflight->in_use() != 0; ++attempt) {
+    std::this_thread::sleep_for(10ms);
+  }
+  require(inflight->in_use() == 0, "the cancelled stream returns its whole charge");
+
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 20s);
+  auto reader = client->StreamChunks(&context, request);
+  pipestream::parse::v1::StreamChunksResponse message;
+  int chunks = 0;
+  bool summary = false;
+  while (reader->Read(&message)) {
+    if (message.has_chunk()) ++chunks;
+    summary = summary || message.has_summary();
+  }
+  const grpc::Status status = reader->Finish();
+  require(status.ok() && summary && chunks >= 400,
+          "the server still streams a full call after a cancelled one: " +
+              status.error_message());
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+  require(inflight->in_use() == 0, "a finished stream returns its charge");
+}
+
 // Answers every page image with a one-text page Document.
 class OneTextVlmConvertService final
     : public ai::pipestream::vlm::v1::VlmConvertService::Service {
@@ -3123,9 +3281,11 @@ int main() {
         verify_pdf_without_backend_fails_precondition();
         verify_streaming_pdf_classification_restricts_recognition();
         verify_stream_charge_follows_the_bytes();
+        verify_stream_chunks_returns_its_charge_when_the_reader_cancels();
         verify_streaming_pdf_router_cancels_with_the_client();
         verify_hierarchical_chunk_rpc_carries_digest_and_offsets(&server);
         verify_hybrid_chunk_rpc_merges_and_validates(&server);
+        verify_stream_chunks_matches_the_unary_chunkers(&server);
         verify_vlm_pipeline_document_carries_the_parse_identity();
         verify_chunk_rpcs_refuse_targets_and_surface_failures(&server);
         verify_chunk_embeddings_rpc();

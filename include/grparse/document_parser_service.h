@@ -5,6 +5,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <grpcpp/grpcpp.h>
 
@@ -21,6 +22,8 @@
 #include "grparse/vlm_convert.h"
 
 namespace grparse {
+
+struct SourceParse;
 
 // The dial targets of the out-of-process collectors, one per wire-capable
 // Collector value. An empty target means that collector is not configured;
@@ -164,6 +167,10 @@ class DocumentParserService final
       grpc::CallbackServerContext* context,
       const ai::pipestream::parse::v1::ChunkHybridSourceRequest* request,
       ai::pipestream::parse::v1::ChunkHybridSourceResponse* response) override;
+  // Either chunker's result, one chunk per message and then a summary.
+  grpc::ServerWriteReactor<ai::pipestream::parse::v1::StreamChunksResponse>* StreamChunks(
+      grpc::CallbackServerContext* context,
+      const ai::pipestream::parse::v1::StreamChunksRequest* request) override;
   grpc::ServerUnaryReactor* Health(
       grpc::CallbackServerContext* context,
       const ai::pipestream::parse::v1::HealthRequest* request,
@@ -174,6 +181,25 @@ class DocumentParserService final
       ai::pipestream::parse::v1::GetServiceInfoResponse* response) override;
 
  private:
+  // The parse, chunking and embedding behind the unary and streamed chunk
+  // surfaces. `chunks` receives the chunks; `response` receives everything
+  // else a ChunkDocumentResponse carries. Blocking: executor workers only.
+  grpc::Status chunk_hierarchical_source(
+      grpc::CallbackServerContext* context,
+      const ai::pipestream::parse::v1::HierarchicalChunkRequest& chunk_request,
+      const std::string& surface, std::vector<ai::pipestream::parse::v1::Chunk>* chunks,
+      ai::pipestream::parse::v1::ChunkDocumentResponse* response);
+  grpc::Status chunk_hybrid_source(
+      grpc::CallbackServerContext* context,
+      const ai::pipestream::parse::v1::HybridChunkRequest& chunk_request,
+      const std::string& surface, std::vector<ai::pipestream::parse::v1::Chunk>* chunks,
+      ai::pipestream::parse::v1::ChunkDocumentResponse* response);
+  grpc::Status parse_chunk_source(
+      grpc::CallbackServerContext* context,
+      const google::protobuf::RepeatedPtrField<ai::pipestream::parse::v1::Source>& sources,
+      const ai::pipestream::parse::v1::ConvertDocumentOptions& options,
+      const std::string& surface, SourceParse* parsed);
+
   PageScheduler& scheduler_;
   std::shared_ptr<CollectorEndpoints> endpoints_;
   std::optional<RepairOptions> repair_;
