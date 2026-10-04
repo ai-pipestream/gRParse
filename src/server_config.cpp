@@ -456,6 +456,14 @@ void report_collector_targets(const CollectorTargets& targets, bool layout_activ
   }
 }
 
+void report_retired_settings() {
+  if (std::getenv("GRPARSE_POI_TARGET") != nullptr) {
+    std::println(stderr,
+                 "gRParse warning: GRPARSE_POI_TARGET is set but ignored; grPOIc is no "
+                 "longer used and libreoffice is the office text collector");
+  }
+}
+
 CallExecutor::Options read_executor_options() {
   // The unary surfaces run on gRPC's callback API, so their parsing blocks
   // on this pool instead of on an event-manager thread. A worker spends

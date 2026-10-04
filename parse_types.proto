@@ -1165,8 +1165,12 @@ message ConvertDocumentRequest {
   optional Target target = 3;
 }
 
-// One text item's place in the document's concatenated text stream, in
-// UTF-8 code points, half-open [utf_start, utf_end). Defined here so the
+// One text item's place in the document's concatenated text stream,
+// half-open [utf_start, utf_end). The unit is the Unicode code point (a
+// scalar value), not the UTF-8 byte and not the UTF-16 code unit: a Java
+// consumer such as OpenNLP, which indexes UTF-16, converts with
+// String.offsetByCodePoints and back with String.codePointCount. An empty
+// item gives a zero-width row (utf_start == utf_end). Defined here so the
 // unary responses and the streaming page events share one row type.
 message TextOffset {
   string self_ref = 1;
@@ -1363,6 +1367,14 @@ message Chunk {
   //   "min_confidence"  double, the weakest OCR confidence among the chunk's
   //                     items (absent when no item carried one)
   //   "text_source"     string, "digital" | "ocr" | "mixed"
+  //   "language"        string, the language tag every text item of the
+  //                     chunk carries (each item's own meta.language, else
+  //                     the document's source_meta.language), in canonical
+  //                     BCP 47 case; absent when they disagree, any item has
+  //                     none, or a tag is malformed. It reports what the
+  //                     document's fields hold: a source's declaration, or
+  //                     a collector's detection (grpc-asr writes the
+  //                     language it detected). gRParse detects nothing.
   //   "binary_hash"     uint, the source document's DocumentOrigin.binary_hash
   //   "mimetype"        string, the source document's DocumentOrigin.mimetype
   map<string, ScalarValue> typed_metadata = 14;

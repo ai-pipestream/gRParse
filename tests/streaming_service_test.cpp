@@ -18,6 +18,7 @@
 #include <google/protobuf/util/message_differencer.h>
 #include <grpcpp/grpcpp.h>
 
+#include "../src/render/renderer_base.h"
 #include "../src/source_parse.h"
 #include "ai/pipestream/email/v1/email_service.grpc.pb.h"
 #include "ai/pipestream/parse/v1/parse_stream.grpc.pb.h"
@@ -661,6 +662,8 @@ void verify_parity_options_and_confidence(TestServer* server) {
   request.mutable_request()->mutable_options()->clear_to_formats();
   request.mutable_request()->mutable_options()->add_to_formats(
       pipestream::parse::v1::OUTPUT_FORMAT_CHUNKS);
+  request.mutable_request()->mutable_options()->add_to_formats(
+      pipestream::parse::v1::OUTPUT_FORMAT_TEXT);
   request.mutable_request()->mutable_options()->mutable_hierarchical_chunking()->set_include_raw_text(
       true);
   grpc::ClientContext chunks_context;
@@ -676,10 +679,21 @@ void verify_parity_options_and_confidence(TestServer* server) {
   require(!offsets.empty() &&
               offsets.size() == chunks_response.response().document().doc().texts_size(),
           "ConvertSource returns one offset row per text item");
+  // The rows index the real plain-text export, not a copy of its rules:
+  // each one slices its own item's text out of exports.text.
+  const auto& exported_document = chunks_response.response().document();
+  const auto exported = grparse::chunking::decode_utf8(exported_document.exports().text());
   std::uint64_t previous_end = 0;
   for (const auto& row : offsets) {
     require(row.utf_start() >= previous_end && row.utf_end() >= row.utf_start(),
             "offset rows run in stream order");
+    const int index = std::stoi(row.self_ref().substr(std::string_view("#/texts/").size()));
+    const auto* base = grparse::render::text_base(exported_document.doc().texts(index));
+    require(base != nullptr && row.utf_end() <= exported.size() &&
+                grparse::chunking::encode_utf8(exported.data() + row.utf_start(),
+                                               exported.data() + row.utf_end()) ==
+                    base->text(),
+            "each offset row slices its item's text out of exports.text");
     require(row.source() == pipestream::parse::v1::TEXT_SOURCE_OCR,
             "the CV path's rows keep how their text was read");
     previous_end = row.utf_end();
@@ -1604,6 +1618,9 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
     base->set_text("from pdf inspector");
     base->add_source()->mutable_collector()->set_collector("pdf");
     document.mutable_body()->add_children()->set_ref("#/texts/0");
+    // The real fold reads the file's own dictionaries whenever it folds,
+    // and writes the catalog /Lang into source_meta.
+    document.mutable_source_meta()->set_language("fr-FR");
     if (paged_document_) {
       // A two-page fold: the first text on page 1 with a box, a second
       // text and a picture on page 2, a page-less table after them, and
@@ -2262,6 +2279,8 @@ void verify_pdf_fast_path_skips_the_cv_pipeline() {
           "the collector's folded document is the parse result");
   require(document.texts(0).text().base().source(0).collector().collector() == "pdf",
           "the fast-path document keeps the collector's source tag");
+  require(document.source_meta().language() == "fr-FR",
+          "the fast path keeps the /Lang the inspector read from the file's catalog");
 }
 
 void verify_pdf_searchable_scan_takes_the_cv_path() {
@@ -2341,6 +2360,8 @@ void verify_pdf_classification_restricts_recognition() {
           "only the inspector's page hits the recognizer, not the coverage heuristic's set");
   require(run.response.response().document().exports().text().contains("native-one"),
           "the cleared pages settle on their embedded layers");
+  require(run.response.response().document().doc().source_meta().language() == "fr-FR",
+          "the CV route keeps the language the inspector read from the file's catalog");
 }
 
 void verify_pdf_collector_failure_degrades_to_the_cv_path() {

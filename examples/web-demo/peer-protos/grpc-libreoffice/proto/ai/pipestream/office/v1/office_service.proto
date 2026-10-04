@@ -613,6 +613,16 @@ message DocumentMetadata {
   map<string, int64> statistics = 15;
   // Custom properties stored in the document, with their original types.
   repeated UserProperty user_properties = 16;
+  // The document's description (the "Comments" property: dc:description in
+  // OOXML and ODF, the summary stream's comments in the legacy binary
+  // formats); empty when unset.
+  string description = 17;
+  // The document's category (cp:category in OOXML, which the office core
+  // keeps as the user-defined property OOXMLCorePropertyCategory, and that
+  // property's meta:user-defined entry in ODF); empty when unset. The office
+  // core drops the legacy binary formats' summary category on import, so
+  // those formats report it empty.
+  string category = 18;
 }
 
 // UserProperty is one custom document property, keeping the type the
