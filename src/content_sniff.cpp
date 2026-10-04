@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -88,9 +89,60 @@ std::string zip_mimetype_entry(string_view bytes) {
   return mime;
 }
 
-// True when an entry name appears in the archive's head or in the central
-// directory at its tail.
-bool zip_names_entry(string_view bytes, string_view entry) {
+// The archive's entry names, read from its central directory; nullopt when
+// the bytes carry no central directory this can read (a truncated upload, a
+// ZIP64 archive, a hand-built stub).
+//
+// A byte search for a part name is not enough on its own: an OOXML package
+// may embed another package stored uncompressed (a deck carries the
+// workbook behind each of its charts under ppt/embeddings/), and that inner
+// package's own "xl/workbook.xml" sits in the outer archive's bytes.
+std::optional<std::vector<string_view>> zip_central_names(string_view bytes) {
+  constexpr size_t kEndRecord = 22;
+  constexpr size_t kCentralHeader = 46;
+  constexpr size_t kMaxEntries = 65535;
+  if (bytes.size() < kEndRecord) return std::nullopt;
+  // The end record sits in the last 22 bytes plus a comment of at most 64K.
+  const size_t floor =
+      bytes.size() > kEndRecord + 65535 ? bytes.size() - kEndRecord - 65535 : 0;
+  size_t end = string_view::npos;
+  for (size_t at = bytes.size() - kEndRecord + 1; at-- > floor;) {
+    if (bytes.substr(at, 4) == "PK\x05\x06") {
+      end = at;
+      break;
+    }
+  }
+  if (end == string_view::npos) return std::nullopt;
+  const uint32_t entries = le16(bytes, end + 10);
+  const uint32_t directory_size = le32(bytes, end + 12);
+  const uint32_t directory_at = le32(bytes, end + 16);
+  if (directory_at == 0xFFFFFFFFU || static_cast<size_t>(directory_at) + directory_size > end) {
+    return std::nullopt;
+  }
+  std::vector<string_view> names;
+  size_t at = directory_at;
+  for (uint32_t i = 0; i < entries && i < kMaxEntries; i++) {
+    if (at + kCentralHeader > end || bytes.substr(at, 4) != "PK\x01\x02") return std::nullopt;
+    const size_t name_length = le16(bytes, at + 28);
+    const size_t skip = name_length + le16(bytes, at + 30) + le16(bytes, at + 32);
+    if (at + kCentralHeader + name_length > end) return std::nullopt;
+    names.push_back(bytes.substr(at + kCentralHeader, name_length));
+    at += kCentralHeader + skip;
+  }
+  return names;
+}
+
+// True when the archive lists an entry whose name starts with `entry`: an
+// exact part name, or a prefix such as "Index/Slide". Without a readable
+// central directory, a byte search of the archive's head and its tail
+// stands in for the listing.
+bool zip_names_entry(string_view bytes,
+                     const std::optional<std::vector<string_view>>& names,
+                     string_view entry) {
+  if (names.has_value()) {
+    return std::ranges::any_of(*names,
+                               [entry](string_view name) { return name.starts_with(entry); });
+  }
   const string_view head = bytes.substr(0, kZipDirectoryBytes);
   if (head.find(entry) != string_view::npos) return true;
   if (bytes.size() <= kZipDirectoryBytes) return false;
@@ -101,16 +153,18 @@ bool zip_names_entry(string_view bytes, string_view entry) {
 std::string sniff_zip(string_view bytes) {
   const std::string entry = zip_mimetype_entry(bytes);
   if (!entry.empty()) return entry;
-  if (zip_names_entry(bytes, "word/document.xml")) {
+  const auto names = zip_central_names(bytes);
+  const auto names_entry = [&](string_view part) { return zip_names_entry(bytes, names, part); };
+  if (names_entry("word/document.xml")) {
     return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
   }
-  if (zip_names_entry(bytes, "xl/workbook.xml")) {
+  if (names_entry("xl/workbook.xml")) {
     return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
   }
-  if (zip_names_entry(bytes, "ppt/presentation.xml")) {
+  if (names_entry("ppt/presentation.xml")) {
     return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
   }
-  if (zip_names_entry(bytes, "META-INF/container.xml")) {
+  if (names_entry("META-INF/container.xml")) {
     return "application/epub+zip";
   }
   // The iWork '13+ container: every app's document opens at
@@ -118,8 +172,8 @@ std::string sniff_zip(string_view bytes) {
   // Pages and Numbers cannot be told apart by entry names (both hold
   // CalculationEngine.iwa and a Tables/ directory); the name decides them
   // (resolve_mimetype).
-  if (zip_names_entry(bytes, "Index/Document.iwa") &&
-      (zip_names_entry(bytes, "Index/MasterSlide") || zip_names_entry(bytes, "Index/Slide"))) {
+  if (names_entry("Index/Document.iwa") &&
+      (names_entry("Index/MasterSlide") || names_entry("Index/Slide"))) {
     return "application/vnd.apple.keynote";
   }
   return "application/zip";

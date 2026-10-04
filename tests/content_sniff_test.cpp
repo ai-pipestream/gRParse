@@ -6,6 +6,8 @@
 #include <print>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "grparse/confluence_storage.h"
 #include "grparse/content_sniff.h"
@@ -64,6 +66,53 @@ std::string zip_naming(const std::string& entry) {
   zip += entry;
   zip += "PK\x05\x06";
   return zip;
+}
+
+// A well-formed zip of stored entries: local headers, then a central
+// directory listing every entry, then the end record.
+std::string stored_zip(const std::vector<std::pair<std::string, std::string>>& entries) {
+  std::string zip;
+  std::string directory;
+  for (const auto& [name, data] : entries) {
+    const unsigned long offset = zip.size();
+    zip += "PK\x03\x04";
+    zip += le16(20) + le16(0) + le16(0) + le16(0) + le16(0) + le32(0);
+    zip += le32(data.size()) + le32(data.size());
+    zip += le16(static_cast<unsigned>(name.size())) + le16(0);
+    zip += name + data;
+    directory += "PK\x01\x02";
+    directory += le16(20) + le16(20) + le16(0) + le16(0) + le16(0) + le16(0) + le32(0);
+    directory += le32(data.size()) + le32(data.size());
+    directory += le16(static_cast<unsigned>(name.size())) + le16(0) + le16(0);
+    directory += le16(0) + le16(0) + le32(0) + le32(offset);
+    directory += name;
+  }
+  const unsigned long directory_at = zip.size();
+  zip += directory;
+  zip += "PK\x05\x06";
+  zip += le16(0) + le16(0);
+  zip += le16(static_cast<unsigned>(entries.size())) + le16(static_cast<unsigned>(entries.size()));
+  zip += le32(directory.size()) + le32(directory_at) + le16(0);
+  return zip;
+}
+
+// A deck that carries a chart's workbook stored uncompressed: the inner
+// package's "xl/workbook.xml" is in the outer archive's bytes, but the outer
+// archive lists only the deck's own parts.
+void verify_embedded_packages_do_not_decide_the_type() {
+  const std::string workbook = stored_zip({{"[Content_Types].xml", "<Types/>"},
+                                           {"xl/workbook.xml", "<workbook/>"}});
+  const std::string deck = stored_zip({{"[Content_Types].xml", "<Types/>"},
+                                       {"ppt/embeddings/Microsoft_Excel_Worksheet1.xlsx", workbook},
+                                       {"ppt/presentation.xml", "<presentation/>"}});
+  require_sniff(deck, "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                "a deck with an embedded workbook is a deck");
+  require_sniff(workbook, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "the workbook on its own is a workbook");
+  const std::string letter = stored_zip({{"word/document.xml", "<document/>"},
+                                         {"word/embeddings/Microsoft_Excel_Worksheet.xlsx", workbook}});
+  require_sniff(letter, "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "a document with an embedded workbook is a document");
 }
 
 void verify_container_signatures() {
@@ -209,6 +258,7 @@ void verify_corpus_fixtures() {
 int main() {
   return grparse_test::run_test_main("content-sniff-test", "all checks passed", {
       verify_container_signatures,
+      verify_embedded_packages_do_not_decide_the_type,
       verify_binary_signatures,
       verify_text_signatures,
       verify_extension_map,
