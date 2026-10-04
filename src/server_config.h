@@ -67,6 +67,10 @@ GrpcLimits read_grpc_limits();
 // document bytes the parsing surfaces hold at once (see InflightBytes).
 uint64_t read_inflight_byte_budget();
 
+// GRPARSE_MAX_RESPONSE_BYTES (default kMaxMessageBytes, 520 MiB): the largest
+// serialized response a unary surface sends (see refuse_oversized_response).
+uint64_t read_response_byte_cap();
+
 // GRPARSE_METRICS_PORT (0 keeps the Prometheus listener off) and
 // GRPARSE_METRICS_INTERVAL_SECONDS (0 keeps the stdout line off).
 struct MetricsConfig {

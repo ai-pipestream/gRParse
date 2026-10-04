@@ -952,7 +952,7 @@ target_sources(grparse_core PRIVATE
   src/content_sniff.cpp
   src/data_totals.cpp)
 if(BUILD_TESTING)
-  set(GRPARSE_DATA_TESTS content-sniff-test)
+  set(GRPARSE_DATA_TESTS content-sniff-test unary-response-cap-test)
   foreach(test_name IN LISTS GRPARSE_DATA_TESTS)
     string(REPLACE "-" "_" test_source "${test_name}")
     add_executable(${test_name} "tests/${test_source}.cpp")

@@ -373,6 +373,15 @@ sources they copy into the parse), a stream each chunk as it arrives, and a
 call that would pass the cap is refused with `RESOURCE_EXHAUSTED`. The merged
 Document a parse builds is not charged.
 
+A unary call returns the whole conversion in one message: the Document, every
+requested export and the chunks. `GRPARSE_MAX_RESPONSE_BYTES` (default 520 MiB,
+the size the server accepts itself, printed at startup) caps that message; a
+conversion whose response would be larger is refused with `RESOURCE_EXHAUSTED`
+naming both sizes, once the parse is complete and before anything is sent,
+and the status points at `StreamProcessDocument`, which delivers the same
+conversion as a sequence of messages. A 20 MB CSV once produced a 770 MB
+unary response, which no client could receive.
+
 Every RPC is served on gRPC's callback API. A unary conversion blocks for as
 long as the document takes, so it never runs on the thread that reacted to the
 call: it is handed to a pool sized by `GRPARSE_UNARY_WORKERS` (default 16) and

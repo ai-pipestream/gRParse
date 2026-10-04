@@ -12,6 +12,7 @@
 #include "grparse/confluence_storage.h"
 #include "grparse/content_sniff.h"
 #include "support/check.h"
+#include "support/compound_file.h"
 
 namespace fs = std::filesystem;
 
@@ -115,23 +116,181 @@ void verify_embedded_packages_do_not_decide_the_type() {
                 "a document with an embedded workbook is a document");
 }
 
-// An encrypted Office package is an OLE compound file listing an
-// "EncryptedPackage" stream (UTF-16LE in the directory); a plain legacy
-// compound document does not list one.
+// The compound-file fixtures: what Office writes for each family, encrypted
+// and not, built with the test-only writer.
+namespace office {
+
+using grparse_test::CompoundObject;
+using grparse_test::compound_file;
+
+// An encrypted .docx/.xlsx/.pptx: the package, its encryption header and
+// the DataSpaces storage Office adds beside them.
+std::string encrypted_package() {
+  return compound_file({
+      CompoundObject::stream("EncryptionInfo", std::string(200, '\x01')),
+      CompoundObject::stream("EncryptedPackage", std::string(6000, '\x02')),
+      CompoundObject::folder("\x06"
+                             "DataSpaces",
+                             {CompoundObject::stream("Version", std::string(76, '\0')),
+                              CompoundObject::stream("DataSpaceMap", std::string(104, '\0'))}),
+  });
+}
+
+// A Word binary file's WordDocument stream: a FIB whose flags word carries
+// `flags`, followed by enough bytes to look like a document.
+std::string word_document(unsigned flags) {
+  std::string fib(1472, '\0');
+  fib[0] = '\xEC';
+  fib[1] = '\xA5';
+  fib[10] = static_cast<char>(flags & 0xFF);
+  fib[11] = static_cast<char>((flags >> 8) & 0xFF);
+  return fib + std::string(5000, 'w');
+}
+
+std::vector<CompoundObject> word_file(unsigned fib_flags, std::vector<CompoundObject> extra = {}) {
+  std::vector<CompoundObject> objects{
+      CompoundObject::stream("WordDocument", word_document(fib_flags)),
+      CompoundObject::stream("1Table", std::string(300, 't')),
+      CompoundObject::stream("\x05SummaryInformation", std::string(120, 's')),
+  };
+  for (auto& object : extra) objects.push_back(std::move(object));
+  return objects;
+}
+
+std::string biff_record(unsigned type, const std::string& body) {
+  return le16(type) + le16(static_cast<unsigned>(body.size())) + body;
+}
+
+// A BIFF8 Workbook stream: BOF, then the records given, then EOF.
+std::string workbook_stream(const std::vector<std::string>& records) {
+  std::string stream = biff_record(0x0809, le16(0x0600) + le16(0x0005) + std::string(12, '\0'));
+  for (const auto& record : records) stream += record;
+  stream += biff_record(0x000A, "");
+  return stream;
+}
+
+std::string filepass() { return biff_record(0x002F, le16(1) + le16(1) + le16(1) + std::string(48, 'k')); }
+std::string interface_header() { return biff_record(0x00E1, le16(0x04B0)); }
+
+std::vector<CompoundObject> excel_file(const std::string& stream_name, const std::string& workbook) {
+  return {CompoundObject::stream(stream_name, workbook),
+          CompoundObject::stream("\x05SummaryInformation", std::string(120, 's'))};
+}
+
+// A PowerPoint binary file: the document stream and the Current User atom,
+// whose header token says whether the file is encrypted.
+std::vector<CompoundObject> powerpoint_file(unsigned long header_token) {
+  std::string current_user = le16(0x000F) + le16(0x0FF6) + le32(20);  // record header
+  current_user += le32(20);           // size
+  current_user += le32(header_token);  // headerToken
+  current_user += std::string(12, '\0');
+  return {CompoundObject::stream("PowerPoint Document", std::string(7000, 'p')),
+          CompoundObject::stream("Current User", current_user)};
+}
+
+}  // namespace office
+
+void require_encrypted(const std::string& bytes, const std::string& format,
+                       const std::string& what) {
+  const auto verdict = grparse::encrypted_office_document(bytes);
+  require(verdict.has_value(), what + ": expected a password-protected verdict");
+  require(verdict->format == format,
+          what + ": expected format '" + format + "', got '" + verdict->format + "' (" +
+              verdict->evidence + ")");
+}
+
+void require_not_encrypted(const std::string& bytes, const std::string& what) {
+  const auto verdict = grparse::encrypted_office_document(bytes);
+  require(!verdict.has_value(),
+          what + ": expected no verdict, got '" + (verdict ? verdict->format : "") + "' (" +
+              (verdict ? verdict->evidence : "") + ")");
+}
+
+// An encrypted Office Open XML document is a compound file whose root
+// lists the EncryptedPackage stream; the same name anywhere else is not one.
 void verify_encrypted_office_packages_are_recognised() {
-  const std::string compound = std::string("\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1", 8) +
-                               std::string(512, '\0');
-  std::string encrypted = compound;
-  for (const char c : std::string("EncryptedPackage")) {
-    encrypted.push_back(c);
-    encrypted.push_back('\0');
-  }
-  require(grparse::encrypted_office_package(encrypted),
-          "a compound file listing EncryptedPackage is an encrypted Office package");
-  require(!grparse::encrypted_office_package(compound + "WordDocument"),
-          "a plain compound document is not");
-  require(!grparse::encrypted_office_package("EncryptedPackage"),
-          "the name alone, outside a compound file, is not");
+  require_encrypted(office::encrypted_package(), "Office Open XML package",
+                    "an encrypted package");
+  require_not_encrypted("EncryptedPackage", "the name alone, outside a compound file");
+
+  // A legacy document that embeds an encrypted workbook keeps the package
+  // under ObjectPool, two storages down; that is the embedded object's
+  // business, not the document's, and the byte search used to refuse it.
+  const auto embedded = office::word_file(
+      0, {grparse_test::CompoundObject::folder(
+             "ObjectPool",
+             {grparse_test::CompoundObject::folder(
+                 "_1234567890",
+                 {grparse_test::CompoundObject::stream("EncryptionInfo", std::string(200, 'e')),
+                  grparse_test::CompoundObject::stream("EncryptedPackage",
+                                                       std::string(4500, 'E')),
+                  grparse_test::CompoundObject::stream("\x01Ole", std::string(20, 'o'))})})});
+  require_not_encrypted(grparse_test::compound_file(embedded),
+                        "a plain .doc embedding an encrypted package");
+  // The directory walk starts at the root, so a package name in stream
+  // bytes is nothing either.
+  const auto name_in_body = office::word_file(
+      0, {grparse_test::CompoundObject::stream("Data", std::string("E\0n\0c\0r\0y\0p\0t\0e\0d\0P\0a\0c\0k\0a\0g\0e\0", 32) + std::string(4100, 'd'))});
+  require_not_encrypted(grparse_test::compound_file(name_in_body),
+                        "a .doc whose data stream spells the name");
+}
+
+// The binary formats say so in their own structures: the Word FIB flag, the
+// Excel FILEPASS record, the PowerPoint Current User header token.
+void verify_encrypted_legacy_office_files_are_recognised() {
+  require_encrypted(grparse_test::compound_file(office::word_file(0x0100)), "Word document",
+                    "a .doc with fEncrypted set");
+  require_not_encrypted(grparse_test::compound_file(office::word_file(0x0000)),
+                        "a plain .doc");
+  require_not_encrypted(grparse_test::compound_file(office::word_file(0x0200)),
+                        "a .doc with a neighbouring FIB flag (fWhichTblStm) set");
+
+  require_encrypted(
+      grparse_test::compound_file(office::excel_file(
+          "Workbook", office::workbook_stream({office::filepass(), office::interface_header()}))),
+      "Excel workbook", "a BIFF8 workbook with FILEPASS");
+  require_encrypted(
+      grparse_test::compound_file(office::excel_file(
+          "Book", office::workbook_stream({office::interface_header(), office::filepass()}))),
+      "Excel workbook", "a BIFF5 workbook with FILEPASS after another record");
+  require_not_encrypted(
+      grparse_test::compound_file(office::excel_file(
+          "Workbook", office::workbook_stream({office::interface_header()}))),
+      "a plain workbook");
+  // FILEPASS past the first records' walk is not looked for: a record body
+  // that spells the type is not a record.
+  require_not_encrypted(
+      grparse_test::compound_file(office::excel_file(
+          "Workbook", office::workbook_stream({office::biff_record(0x00FC, le16(0x002F) + "x")}))),
+      "a workbook whose SST body holds the FILEPASS type");
+
+  require_encrypted(grparse_test::compound_file(office::powerpoint_file(0xF3D1C4DF)),
+                    "PowerPoint presentation", "an encrypted .ppt");
+  require_not_encrypted(grparse_test::compound_file(office::powerpoint_file(0xE391C05F)),
+                        "a plain .ppt");
+}
+
+// Damaged compound files end the walk, never the process.
+void verify_damaged_compound_files_are_not_encrypted() {
+  const std::string encrypted = office::encrypted_package();
+  require_not_encrypted(encrypted.substr(0, 511), "a header cut short");
+  require_not_encrypted(encrypted.substr(0, 1024), "a file cut before its directory");
+  std::string looping = encrypted;
+  // The directory chain points back at itself: FAT entry for sector 1.
+  looping[512 + 4 * 1] = '\x01';
+  looping[512 + 4 * 1 + 1] = '\0';
+  looping[512 + 4 * 1 + 2] = '\0';
+  looping[512 + 4 * 1 + 3] = '\0';
+  grparse::encrypted_office_document(looping);  // terminates
+  std::string wild = encrypted;
+  // The root's child points far outside the directory.
+  wild[1024 + 76] = '\xFF';
+  wild[1024 + 77] = '\xFF';
+  wild[1024 + 78] = '\xFF';
+  wild[1024 + 79] = '\x7F';
+  require_not_encrypted(wild, "a root whose child is out of range");
+  require_not_encrypted(std::string("\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1", 8) + std::string(2000, '\xFF'),
+                        "a signature followed by noise");
 }
 
 void verify_container_signatures() {
@@ -278,6 +437,8 @@ int main() {
   return grparse_test::run_test_main("content-sniff-test", "all checks passed", {
       verify_container_signatures,
       verify_encrypted_office_packages_are_recognised,
+      verify_encrypted_legacy_office_files_are_recognised,
+      verify_damaged_compound_files_are_not_encrypted,
       verify_embedded_packages_do_not_decide_the_type,
       verify_binary_signatures,
       verify_text_signatures,

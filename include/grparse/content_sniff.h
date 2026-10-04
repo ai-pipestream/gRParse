@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -20,11 +21,31 @@ namespace grparse {
 // extension does.
 std::string sniff_mimetype(std::string_view bytes);
 
-// True for a password-protected Office Open XML document: Office wraps an
-// encrypted .docx/.xlsx/.pptx in an OLE compound file whose directory lists
-// an "EncryptedPackage" stream. No collector can open one without the
-// password, so the caller says so instead of reporting a load failure.
-bool encrypted_office_package(std::string_view bytes);
+// Why an Office document in an OLE compound file is password-protected: the
+// family the evidence belongs to ("Office Open XML package", "Word document",
+// "Excel workbook", "PowerPoint presentation") and the structure that says so.
+struct EncryptedOfficeDocument {
+  std::string format;
+  std::string evidence;
+};
+
+// The evidence that a document is a password-protected Office document, when
+// it is one. The bytes must be an OLE compound file; its directory is walked
+// from the root rather than searched for a name, so the evidence has to be
+// where Office puts it:
+//   - an "EncryptedPackage" stream directly under the root (an encrypted
+//     .docx/.xlsx/.pptx, which Office wraps in a compound file);
+//   - a "WordDocument" stream whose FIB sets fEncrypted (an encrypted .doc);
+//   - a "Workbook" or "Book" stream opening with a FILEPASS record (an
+//     encrypted .xls; a workbook saved under Excel's default password
+//     VelvetSweatshop carries the same record and is reported the same way);
+//   - a "Current User" stream with the encrypted header token beside a
+//     "PowerPoint Document" stream (an encrypted .ppt).
+// A legacy document that merely embeds an encrypted package (a .doc with an
+// encrypted workbook object under ObjectPool) is not encrypted and gets
+// nullopt. No collector can open any of these without the password, so the
+// caller says so instead of reporting a load failure.
+std::optional<EncryptedOfficeDocument> encrypted_office_document(std::string_view bytes);
 
 // The mimetype a filename extension implies; "application/octet-stream"
 // when the extension is unknown. Extension only; never reads bytes.

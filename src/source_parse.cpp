@@ -27,6 +27,8 @@
 #include <google/protobuf/io/zero_copy_stream_impl_lite.h>
 #include <google/protobuf/util/json_util.h>
 
+#include "ai/protomolt/parse/pdf/v1/pdf_backend_types.pb.h"
+
 #include "grparse/base64.h"
 #include "grparse/chart_derender.h"
 #include "grparse/confidence.h"
@@ -1882,11 +1884,18 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     // A nameless upload gets a name that declares nothing, so the bytes
     // decide its type and route rather than a made-up extension.
     const fs::path requested_name = source.filename().empty() ? "document" : fs::path(source.filename()).filename();
-    if (encrypted_office_package(*bytes)) {
-      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                          surface + ": " + requested_name.string() +
-                              " is a password-protected Office document (an encrypted "
-                              "package); it cannot be read without the password");
+    if (const auto encrypted = encrypted_office_document(*bytes); encrypted.has_value()) {
+      // The same verdict the PDF path gives for an encrypted PDF (see
+      // remote_page_source.cpp): INVALID_ARGUMENT whose message carries the
+      // backend contract's load status by name, so a client branches on one
+      // token whatever the format, with the evidence in parentheses after it.
+      return grpc::Status(
+          grpc::StatusCode::INVALID_ARGUMENT,
+          surface + ": could not load " + requested_name.string() + ": " +
+              ai::protomolt::parse::pdf::v1::LoadStatus_Name(
+                  ai::protomolt::parse::pdf::v1::LOAD_STATUS_PASSWORD_REQUIRED) +
+              " (password-protected " + encrypted->format + ": " + encrypted->evidence +
+              "; it cannot be read without the password)");
     }
     pipestream::document::v1::Document base = base_document(*bytes, requested_name);
     // Which build, settings and options produce this document, so anything
