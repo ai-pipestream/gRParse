@@ -909,6 +909,12 @@ docker run --rm --network host \
   grparse-grparse /input/document.pdf localhost:50051
 ```
 
+Each `page=` line ends with `ms=`, the milliseconds since the first chunk
+went out, and the `complete` line adds `upload_ms`, `first_page_ms` and
+`last_page_ms`, so a run shows whether pages arrived as they were recognized
+or in one burst at the end. The client deadline is ten minutes; set
+`GRPARSE_STREAM_CLIENT_DEADLINE_S` for longer documents.
+
 ## End-to-end suite
 
 `e2e/` holds a Playwright suite that drives the whole demo stack through
