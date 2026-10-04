@@ -19,6 +19,7 @@
 
 #include "../render/canonical_json_writer.h"
 #include "../render/renderer_base.h"
+#include "../targets/sha256.h"
 #include "sentence_rules.h"
 #include "token_counter.h"
 
@@ -750,9 +751,32 @@ void stamp_typed_metadata(const WorkChunk& work, const docv1::DocumentOrigin& or
   if (!origin.mimetype().empty()) typed["mimetype"].set_string_value(origin.mimetype());
 }
 
+// The chunk's storage key (Chunk.chunk_key): SHA-256 hex over the source
+// bytes hash, every parse identity field, the chunk rules and the position,
+// each length-prefixed so no two field lists spell the same bytes. Empty
+// when the document cannot say which bytes or which parse it came from.
+std::string chunk_key(const docv1::Document& document, const std::string& rules_digest,
+                      int index) {
+  if (document.origin().binary_hash() == 0 || !document.has_parse()) return {};
+  const docv1::ParseIdentity& parse = document.parse();
+  if (parse.producer().empty() || parse.options_digest().empty() ||
+      parse.settings_digest().empty() || parse.build().empty()) {
+    return {};
+  }
+  std::string material;
+  for (const std::string& field :
+       {std::format("{:016x}", document.origin().binary_hash()), parse.producer(),
+        parse.build(), parse.settings_digest(), parse.options_digest(), rules_digest,
+        std::to_string(index)}) {
+    material += std::format("{}:{}", field.size(), field);
+  }
+  return targets::sha256_hex(material);
+}
+
 parsev1::Chunk to_proto(const WorkChunk& work, int index, std::string_view filename,
                         const ChunkOptions& options, const std::string& digest,
-                        const TokenCounter& counter, const docv1::DocumentOrigin& origin) {
+                        const TokenCounter& counter, const docv1::Document& document) {
+  const docv1::DocumentOrigin& origin = document.origin();
   parsev1::Chunk chunk;
   chunk.set_filename(std::string(filename));
   chunk.set_chunk_index(index);
@@ -779,6 +803,8 @@ parsev1::Chunk to_proto(const WorkChunk& work, int index, std::string_view filen
     chunk.set_end_offset(static_cast<std::int64_t>(work.end));
   }
   chunk.set_rules_digest(digest);
+  if (document.has_parse()) chunk.set_producer(document.parse().producer());
+  chunk.set_chunk_key(chunk_key(document, digest, index));
   stamp_typed_metadata(work, origin, &chunk);
   return chunk;
 }
@@ -788,12 +814,12 @@ std::vector<parsev1::Chunk> materialize(const std::vector<WorkChunk>& work,
                                         const ChunkOptions& options,
                                         const std::string& digest,
                                         const TokenCounter& counter,
-                                        const docv1::DocumentOrigin& origin) {
+                                        const docv1::Document& document) {
   std::vector<parsev1::Chunk> chunks;
   chunks.reserve(work.size());
   for (std::size_t index = 0; index < work.size(); ++index) {
     chunks.push_back(to_proto(work[index], static_cast<int>(index), filename, options, digest,
-                              counter, origin));
+                              counter, document));
   }
   return chunks;
 }
@@ -1193,7 +1219,7 @@ std::vector<parsev1::Chunk> chunk_hierarchical(const docv1::Document& document,
   // num_tokens is always the wordish/1 count.
   const TokenCounter counter;
   return materialize(chunker.run(), filename, options, std::string(kHierarchicalRules), counter,
-                     document.origin());
+                     document);
 }
 
 grpc::Status validate_hybrid_options(const parsev1::HybridChunkerOptions& options) {
@@ -1289,7 +1315,7 @@ grpc::Status chunk_hybrid(const docv1::Document& document, const OffsetTable& of
   work = split_oversized(std::move(work), max_tokens, counter);
   *out = materialize(work, filename, serialization,
                      hybrid_rules_digest(max_tokens, peers, counter.rules()), counter,
-                     document.origin());
+                     document);
   return grpc::Status::OK;
 }
 

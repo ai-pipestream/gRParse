@@ -16,6 +16,7 @@
 #include "chunking/chunker.h"
 #include "grparse/collector_coordinator.h"
 #include "grparse/document_render.h"
+#include "grparse/service_version.h"
 #include "parse_support.h"
 #include "source_parse.h"
 #include "targets/target_step.h"
@@ -25,18 +26,6 @@ namespace pipestream = ai::pipestream;
 
 namespace grparse {
 namespace {
-
-// The version every image reports is "grparse-<version>-<flavor>". Both
-// halves come from the build: the version from the project() line in
-// CMakeLists.txt, so a release bumps one place, and the flavor from the ONNX
-// Runtime package, so the OpenVINO and CPU images stop claiming cuda.
-#ifndef GRPARSE_VERSION
-#define GRPARSE_VERSION "unversioned"
-#endif
-#ifndef GRPARSE_ORT_PACKAGE_NAME
-#define GRPARSE_ORT_PACKAGE_NAME "unknown"
-#endif
-constexpr const char* kServiceVersion = "grparse-" GRPARSE_VERSION "-" GRPARSE_ORT_PACKAGE_NAME;
 
 // The document's plain text export: its text items in arena order, which is
 // each collector's emission order.
@@ -517,7 +506,7 @@ grpc::ServerUnaryReactor* DocumentParserService::Health(
     grpc::CallbackServerContext* context, const pipestream::parse::v1::HealthRequest*,
     pipestream::parse::v1::HealthResponse* response) {
   response->set_status("ready");
-  response->set_version(kServiceVersion);
+  response->set_version(std::string(kServiceVersion));
   return finish_inline(context, grpc::Status::OK);
 }
 
@@ -526,7 +515,7 @@ grpc::ServerUnaryReactor* DocumentParserService::GetServiceInfo(
     const pipestream::parse::v1::GetServiceInfoRequest*,
     pipestream::parse::v1::GetServiceInfoResponse* response) {
   response->set_name("gRParse");
-  response->set_version(kServiceVersion);
+  response->set_version(std::string(kServiceVersion));
   auto* ui = response->mutable_ui();
   ui->set_title("gRParse");
   ui->set_path("/ui/grparse");

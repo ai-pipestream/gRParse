@@ -1,4 +1,7 @@
 #include <new>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <string>
 #include <system_error>
@@ -12,6 +15,8 @@
 namespace parsev1 = ai::pipestream::parse::v1;
 
 namespace {
+
+namespace fs = std::filesystem;
 
 using grparse_test::require;
 using grparse_test::require_equal;
@@ -593,6 +598,77 @@ void verify_picture_description_headers_stay_on_their_endpoint() {
           "a request without picture_description_api resolves to an empty call");
 }
 
+// The parse identity's options digest: SHA-256 over the options that decide
+// the Document, with the export, timing, report and transport fields and
+// any unknown fields left out first.
+void verify_options_digest_hashes_only_decisive_options() {
+  const parsev1::ConvertDocumentOptions unset;
+  require(grparse::options_digest(unset) ==
+              "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "no decisive option set digests the empty serialization");
+  parsev1::ConvertDocumentOptions options;
+  options.set_do_ocr(false);
+  const std::string digest = grparse::options_digest(options);
+  // SHA-256 of the bytes 0x20 0x00 (field 4, do_ocr, explicitly false).
+  require(digest == "869f1dfb999a452f497a4cf7f44db2d6ee661f74a9e7e05251bc1420e50672d4",
+          "the digest is fixed for a fixed option set: " + digest);
+
+  parsev1::ConvertDocumentOptions neutral = options;
+  neutral.add_to_formats(parsev1::OUTPUT_FORMAT_HTML);
+  neutral.set_image_export_mode(parsev1::IMAGE_REF_MODE_EMBEDDED);
+  neutral.set_md_page_break_placeholder("<!-- page -->");
+  neutral.set_md_compact_tables(true);
+  neutral.set_doclang_include_namespace(true);
+  neutral.set_document_timeout(30.0);
+  neutral.set_abort_on_error(true);
+  neutral.mutable_hybrid_chunking()->set_max_tokens(64);
+  neutral.set_structure_validation(parsev1::STRUCTURE_VALIDATION_REPORT);
+  auto* api = neutral.mutable_vlm_pipeline_model_api();
+  api->set_url("http://vlm:1");
+  (*api->mutable_headers())["authorization"] = "Bearer secret";
+  api->set_timeout(5.0);
+  api->set_concurrency(2);
+  neutral.GetReflection()->MutableUnknownFields(&neutral)->AddVarint(9999, 1);
+  parsev1::ConvertDocumentOptions same_api = options;
+  same_api.mutable_vlm_pipeline_model_api()->set_url("http://vlm:1");
+  require(grparse::options_digest(neutral) == grparse::options_digest(same_api),
+          "export, timing, report, chunking, transport and unknown fields leave it alone");
+
+  parsev1::ConvertDocumentOptions decisive = options;
+  decisive.set_do_ocr(true);
+  require(grparse::options_digest(decisive) != digest, "a decisive option changes the digest");
+}
+
+// The settings digest follows the output-deciding environment and the
+// models MANIFEST, and ignores what only decides admission or speed.
+void verify_settings_digest_follows_settings_and_models() {
+  const fs::path models = fs::temp_directory_path() / "grparse-settings-digest-test";
+  fs::remove_all(models);
+  fs::create_directories(models);
+  ::setenv("GRPARSE_MODELS_DIR", models.c_str(), 1);
+  ::unsetenv("GRPARSE_REPAIR");
+  const std::string without_manifest = grparse::read_settings_digest();
+  require(without_manifest.size() == 64, "the settings digest is SHA-256 hex");
+  {
+    std::ofstream(models / "MANIFEST") << "ocr/det.onnx aa 1 ocr mit url\n";
+  }
+  const std::string with_manifest = grparse::read_settings_digest();
+  require(with_manifest != without_manifest, "a models MANIFEST enters the digest");
+  {
+    std::ofstream(models / "MANIFEST") << "ocr/det.onnx bb 1 ocr mit url\n";
+  }
+  const std::string swapped = grparse::read_settings_digest();
+  require(swapped != with_manifest, "swapping a model's pinned sha256 changes the digest");
+  ::setenv("GRPARSE_UNARY_WORKERS", "3", 1);
+  require(grparse::read_settings_digest() == swapped, "concurrency does not enter the digest");
+  ::setenv("GRPARSE_REPAIR", "off", 1);
+  require(grparse::read_settings_digest() != swapped, "the repair setting enters the digest");
+  ::unsetenv("GRPARSE_REPAIR");
+  ::unsetenv("GRPARSE_UNARY_WORKERS");
+  ::unsetenv("GRPARSE_MODELS_DIR");
+  fs::remove_all(models);
+}
+
 }  // namespace
 
 int main() {
@@ -608,5 +684,7 @@ int main() {
       verify_doclang_export_options,
       verify_picture_description_api_call_is_typed,
       verify_picture_description_headers_stay_on_their_endpoint,
+      verify_options_digest_hashes_only_decisive_options,
+      verify_settings_digest_follows_settings_and_models,
   });
 }
