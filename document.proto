@@ -196,6 +196,12 @@ message TextAnalysis {
     // An OpenNLP analysis in the strongly typed contract: one dedicated
     // message per annotation kind, per-layer model provenance, and index
     // references declared per layer. Same offset rules as `opennlp`.
+    //
+    // Placeholder: collectors/opennlp_annotations.proto is a draft of a
+    // contract OpenNLP has not published yet. Because this file is copied
+    // byte-identical across the fleet, if the published message differs in
+    // type, reserve number 7 and the name `opennlp_annotations` and add the
+    // published type under a new number; never retype this field in place.
     org.apache.opennlp.grpc.v1.OpenNlpAnnotations opennlp_annotations = 7;
   }
 }
