@@ -379,12 +379,10 @@ enum Collector {
   // The grpc-libreoffice typed-stream collector. The default for office
   // formats; requires a configured collector endpoint.
   COLLECTOR_LIBREOFFICE = 2;
-  // The grPOIc office collector (Apache POI): text, tables, sheets, and
-  // slides of the six OOXML/OLE2 formats (doc/docx, xls/xlsx, ppt/pptx).
-  // Never the routed default: when GRPARSE_POI_TARGET is configured, a poi
-  // leg fans out beside the libreoffice default for those formats, and
-  // gRParse folds the typed event stream into a Document client-side.
-  COLLECTOR_POI = 3;
+  // 3 was COLLECTOR_POI, a retired office collector; a request naming 3 is
+  // rejected as an invalid collector.
+  reserved 3;
+  reserved "COLLECTOR_POI";
   // The grpc-calamine spreadsheet collector (xls/xlsx/xlsm/xlsb/ods). Never
   // the routed default: when GRPARSE_CALAMINE_TARGET is configured, a
   // calamine leg fans out beside the libreoffice default for workbooks, and
@@ -1167,6 +1165,29 @@ message ConvertDocumentRequest {
   optional Target target = 3;
 }
 
+// One text item's place in the document's concatenated text stream,
+// half-open [utf_start, utf_end). The unit is the Unicode code point (a
+// scalar value), not the UTF-8 byte and not the UTF-16 code unit: a Java
+// consumer such as OpenNLP, which indexes UTF-16, converts with
+// String.offsetByCodePoints and back with String.codePointCount. An empty
+// item gives a zero-width row (utf_start == utf_end). Defined here so the
+// unary responses and the streaming page events share one row type.
+message TextOffset {
+  string self_ref = 1;
+  uint64 utf_start = 2;
+  uint64 utf_end = 3;
+  // Recognition confidence is populated for OCR text and absent for native
+  // PDF text. This remains transport metadata, not a core document field.
+  optional float confidence = 4;
+  TextSource source = 5;
+}
+
+enum TextSource {
+  TEXT_SOURCE_UNSPECIFIED = 0;
+  TEXT_SOURCE_OCR = 1;
+  TEXT_SOURCE_DIGITAL_PDF = 2;
+}
+
 // ConvertDocumentResponse mirrors the REST convert response body.
 message ConvertDocumentResponse {
   DocumentResponse document = 1;
@@ -1192,6 +1213,14 @@ message ConvertDocumentResponse {
   // document order. Empty when validation is OFF or the document breaks no
   // checked rule.
   repeated StructureFinding structure_findings = 11;
+  // The document's offset table, one row per text item in stream order
+  // (ascending utf_start). The stream is the plain-text export
+  // (OUTPUT_FORMAT_TEXT): every text item in arena order, each joined to the
+  // one before by a single "\n", so text[utf_start, utf_end) in code points
+  // is the item's text. Every parse path fills it; `source` is set only
+  // for the CV path's own pages and `confidence` is left unset (the page
+  // events carry it). Empty when the document has no text items.
+  repeated TextOffset text_offsets = 12;
 }
 
 // Embeddings are opt-in on the two implemented synchronous chunk RPCs.
@@ -1318,6 +1347,7 @@ message Chunk {
   // Half-open [start_offset, end_offset) span of the chunk in the document's
   // concatenated text stream (furniture included), counted in UTF-8 CODE
   // POINTS, not bytes.
+  // The stream is the one ConvertDocumentResponse.text_offsets indexes.
   // Both are set together or neither is: a chunk whose items the parse gave
   // no offset table entry for carries neither field rather than a guess.
   optional int64 start_offset = 11;
@@ -1337,6 +1367,14 @@ message Chunk {
   //   "min_confidence"  double, the weakest OCR confidence among the chunk's
   //                     items (absent when no item carried one)
   //   "text_source"     string, "digital" | "ocr" | "mixed"
+  //   "language"        string, the language tag every text item of the
+  //                     chunk carries (each item's own meta.language, else
+  //                     the document's source_meta.language), in canonical
+  //                     BCP 47 case; absent when they disagree, any item has
+  //                     none, or a tag is malformed. It reports what the
+  //                     document's fields hold: a source's declaration, or
+  //                     a collector's detection (grpc-asr writes the
+  //                     language it detected). gRParse detects nothing.
   //   "binary_hash"     uint, the source document's DocumentOrigin.binary_hash
   //   "mimetype"        string, the source document's DocumentOrigin.mimetype
   map<string, ScalarValue> typed_metadata = 14;
@@ -1346,12 +1384,12 @@ message Chunk {
   // empty when the document names none.
   string producer = 16;
   // A key for storing what is derived from this chunk (a vector, an
-  // annotation): equal keys mean the same source bytes, conversion options,
-  // producing build, chunk rules and position, so the chunk text is
-  // byte-identical. Spelled
-  //   <binary_hash, 16 lowercase hex>|<options_digest>|<producer>|<rules_digest>|<chunk_index>
-  // Empty when the document lacks its binary_hash or parse identity. A
-  // stored vector whose key a fresh chunking no longer produces is stale.
+  // annotation): equal keys mean the same source bytes, the same parse
+  // identity (Document.parse), the same chunk rules and the same position,
+  // so the chunk text is byte-identical. 64 lowercase hex digits: SHA-256
+  // over those fields, each length-prefixed. Empty when the document lacks
+  // its binary_hash or parse identity. A stored vector whose key a fresh
+  // chunking no longer produces is stale.
   string chunk_key = 17;
 }
 

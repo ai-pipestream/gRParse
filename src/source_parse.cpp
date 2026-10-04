@@ -6,13 +6,16 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdlib>
 #include <exception>
+#include <fstream>
 #include <format>
 #include <initializer_list>
 #include <limits>
 #include <map>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -41,6 +44,7 @@
 #include "grparse/vlm_convert.h"
 #include "parse_support.h"
 #include "structure_validation.h"
+#include "targets/sha256.h"
 
 namespace fs = std::filesystem;
 namespace pipestream = ai::pipestream;
@@ -1094,21 +1098,6 @@ std::expected<PictureDescriptionCall, grpc::Status> request_picture_description_
 
 namespace {
 
-// The options digest a ParseIdentity carries: FNV-1a 64 over the options'
-// deterministic serialization, as sixteen lowercase hex digits.
-std::string options_digest(const pipestream::parse::v1::ConvertDocumentOptions& options) {
-  std::string bytes;
-  {
-    google::protobuf::io::StringOutputStream stream(&bytes);
-    google::protobuf::io::CodedOutputStream coded(&stream);
-    coded.SetSerializationDeterministic(true);
-    if (!options.SerializeToCodedStream(&coded)) {
-      throw std::runtime_error("conversion options did not serialize for the parse identity");
-    }
-  }
-  return std::format("{:016x}", content_hash(bytes));
-}
-
 // The document every collector's output merges into, additively and in plan
 // order. It carries identity and nothing else: the schema name and version
 // name the wire schema minor this repo currently mirrors, and must match
@@ -1595,6 +1584,69 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   return inputs;
 }
 
+// The CV path reads pixels and the text layer, never the file's own
+// dictionaries; what the inspector read from them (title, authors, dates,
+// the catalog /Lang) is the same file's account, so the CV document takes
+// it unless it already has its own.
+void lend_source_meta(const CollectorOutcome& inspector, CollectorOutcome* cv) {
+  if (cv->success && inspector.document.has_source_meta() && !cv->document.has_source_meta()) {
+    *cv->document.mutable_source_meta() = inspector.document.source_meta();
+  }
+}
+
+// Why the routed PDF went to the CV path instead of the inspector's
+// extraction, and how recognition was scoped there.
+std::string cv_route_warning(const PdfClassification& classification,
+                             const PdfRouteDecision& route, bool forced) {
+  return "pdf inspector classified the document as " +
+         std::string(pdf_class_name(classification.pdf_class)) +
+         (classification.encoding_issues
+              ? " with encoding issues in the text layer, so its extraction was not taken"
+              : "") +
+         (classification.empty_body
+              ? "; its extraction carried no body text, so it was not taken"
+              : "") +
+         (classification.ocr_recommended
+              ? "; it recommended OCR over the text layer, so its extraction was not taken"
+              : "") +
+         (forced ? "; recognition was forced on every page in place of the embedded layer"
+          : route.ocr_pages.empty()
+              ? "; the CV path's own per-page heuristic decided recognition"
+              : "; recognition restricted to the " + std::to_string(route.ocr_pages.size()) +
+                    " page(s) needing OCR");
+}
+
+// The inspector's own extraction as the leg's result: the fast path, or
+// pipeline NATIVE taking it whatever the classification said.
+CollectorOutcome take_inspector_extraction(const ParseInputs& inputs,
+                                           const PdfParseResult& parsed,
+                                           const PdfRouteDecision& route) {
+  PdfParseResult fast = parsed;
+  if (inputs.previews) {
+    attach_page_previews(inputs.bytes, &fast.outcome.document, inputs.tuning.page_range,
+                         [&inputs] {
+                           return inputs.context->IsCancelled() ||
+                                  std::chrono::system_clock::now() >= inputs.inbound_deadline;
+                         },
+                         inputs.inbound_deadline);
+  }
+  if (!route.fast_path) {
+    // NATIVE asked for the text layer as it is; say what the models would
+    // have been run for, so a caller can tell a thin result from a thin
+    // document.
+    fast.outcome.warnings.push_back(
+        "pipeline NATIVE took the pdf collector's extraction although the inspector "
+        "classified the document as " +
+        std::string(pdf_class_name(parsed.classification.pdf_class)) +
+        (parsed.classification.encoding_issues ? " with encoding issues in the text layer"
+                                               : "") +
+        (parsed.classification.empty_body ? " and its extraction carried no body text" : "") +
+        (parsed.classification.ocr_recommended ? " and recommended OCR for it" : "") +
+        "; no layout, OCR, or table-structure model ran");
+  }
+  return fast.outcome;
+}
+
 // The pdf routing leg: the inspector's classification decides between the
 // collector's own fast-path Document and a CV run restricted to the pages it
 // named as needing OCR. A failed classification degrades to the unrouted CV
@@ -1609,30 +1661,7 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
                   [context = inputs.context] { return context->IsCancelled(); });
   const PdfRouteDecision route = route_pdf_by_classification(parsed.classification);
   if (parsed.outcome.success && (route.fast_path || inputs.native_pipeline)) {
-    PdfParseResult fast = parsed;
-    if (inputs.previews) {
-      attach_page_previews(inputs.bytes, &fast.outcome.document, inputs.tuning.page_range,
-                           [&inputs] {
-                             return inputs.context->IsCancelled() ||
-                                    std::chrono::system_clock::now() >= inputs.inbound_deadline;
-                           },
-                           inputs.inbound_deadline);
-    }
-    if (!route.fast_path) {
-      // NATIVE asked for the text layer as it is; say what the models would
-      // have been run for, so a caller can tell a thin result from a thin
-      // document.
-      fast.outcome.warnings.push_back(
-          "pipeline NATIVE took the pdf collector's extraction although the inspector "
-          "classified the document as " +
-          std::string(pdf_class_name(parsed.classification.pdf_class)) +
-          (parsed.classification.encoding_issues ? " with encoding issues in the text layer"
-                                                 : "") +
-          (parsed.classification.empty_body ? " and its extraction carried no body text" : "") +
-          (parsed.classification.ocr_recommended ? " and recommended OCR for it" : "") +
-          "; no layout, OCR, or table-structure model ran");
-    }
-    return fast.outcome;
+    return take_inspector_extraction(inputs, parsed, route);
   }
   if (!parsed.outcome.success && inputs.native_pipeline) {
     // Degrading to the CV path would run the models NATIVE excludes.
@@ -1656,24 +1685,8 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
       route.force_ocr && routed_tuning.mode == PageScheduler::OcrTuning::Mode::kSelective;
   if (forced) routed_tuning.mode = PageScheduler::OcrTuning::Mode::kForce;
   CollectorOutcome outcome = run_cv(routed_tuning);
-  outcome.warnings.push_back(
-      "pdf inspector classified the document as " +
-      std::string(pdf_class_name(parsed.classification.pdf_class)) +
-      (parsed.classification.encoding_issues
-           ? " with encoding issues in the text layer, so its extraction was not taken"
-           : "") +
-      (parsed.classification.empty_body
-           ? "; its extraction carried no body text, so it was not taken"
-           : "") +
-      (parsed.classification.ocr_recommended
-           ? "; it recommended OCR over the text layer, so its extraction was not taken"
-           : "") +
-      (forced
-           ? "; recognition was forced on every page in place of the embedded layer"
-       : route.ocr_pages.empty()
-           ? "; the CV path's own per-page heuristic decided recognition"
-           : "; recognition restricted to the " +
-                 std::to_string(route.ocr_pages.size()) + " page(s) needing OCR"));
+  lend_source_meta(parsed.outcome, &outcome);
+  outcome.warnings.push_back(cv_route_warning(parsed.classification, route, forced));
   return outcome;
 }
 
@@ -1683,8 +1696,8 @@ struct RoutedPlan {
   std::vector<pipestream::parse::v1::Collector> ids;
   bool pdf_routing = false;
   // True when the routed (not explicitly selected) plan fanned out to the
-  // secondary office collectors; the legs append_office_fanout adds are
-  // always poi or calamine, never the routed primary itself.
+  // secondary office collector; the leg append_office_fanout adds is always
+  // calamine, never the routed primary itself.
   bool office_fanout = false;
 };
 
@@ -1704,13 +1717,13 @@ RoutedPlan route_plan(const google::protobuf::RepeatedField<int>& requested, boo
   }
   RoutedPlan plan;
   plan.ids = resolve_collectors(selected, routed);
-  // A routed office default fans out to the secondary office collectors when
-  // their endpoints are configured: a poi leg for the OOXML/OLE2 formats, a
-  // calamine leg for workbooks. An explicit selection stays verbatim.
+  // A routed office default fans out to calamine for workbooks when its
+  // endpoint is configured. An explicit selection stays verbatim. Word
+  // processing and presentation formats have libreoffice alone, so its
+  // failure is the parse's failure (all_failed_status), never an empty body.
   if (selected.empty() && inputs.endpoints != nullptr) {
     plan.office_fanout = true;
     append_office_fanout(&plan.ids, inputs.filename.string(), inputs.content_type,
-                         inputs.endpoints->has(pipestream::parse::v1::COLLECTOR_POI),
                          inputs.endpoints->has(pipestream::parse::v1::COLLECTOR_CALAMINE));
   }
   // Classification routing applies when the pdf collector is the whole plan:
@@ -1730,13 +1743,11 @@ std::vector<PlannedCollector> build_plan(
   for (const auto id : plan_ids) {
     PlannedCollector collector;
     collector.id = id;
-    // The fan-out legs read the same bytes as the routed libreoffice
-    // default: beside a live primary their body readings drop and only
-    // their claims merge. An explicit selection stays verbatim, readings
-    // and all.
+    // The fan-out leg reads the same bytes as the routed libreoffice
+    // default: beside a live primary its body reading drops and only its
+    // claims merge. An explicit selection stays verbatim, readings and all.
     collector.office_fanout =
-        office_fanout && (id == pipestream::parse::v1::COLLECTOR_POI ||
-                          id == pipestream::parse::v1::COLLECTOR_CALAMINE);
+        office_fanout && id == pipestream::parse::v1::COLLECTOR_CALAMINE;
     if (id == pipestream::parse::v1::COLLECTOR_GRPARSE_CV) {
       collector.run = [run_cv, tuning = inputs.tuning] { return run_cv(tuning); };
     } else if (local_collector(id)) {
@@ -1872,6 +1883,11 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     // decide its type and route rather than a made-up extension.
     const fs::path requested_name = source.filename().empty() ? "document" : fs::path(source.filename()).filename();
     pipestream::document::v1::Document base = base_document(*bytes, requested_name);
+    // Which build, settings and options produce this document, so anything
+    // stored against its items can tell a re-parse that would renumber them.
+    // Stamped on the base every path builds on (the VLM pipeline and the
+    // collector merge alike), so no path can return a document without it.
+    *base.mutable_parse() = parse_identity(request.options());
 
     if (!request.options().from_formats().empty()) {
       const auto detected =
@@ -1988,24 +2004,20 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
                                      std::move(*warning));
       }
     }
-    // Which build and options produced this document, so anything stored
-    // against its items can tell a re-parse that would renumber them.
-    auto* identity = result.document.mutable_parse();
-    identity->set_producer(std::string(kServiceVersion));
-    identity->set_options_digest(options_digest(request.options()));
     // The document is final here: every surface renders, chunks or delivers
     // exactly this, so the structural rules check this.
     const grpc::Status structure_status =
         check_structure(result.document, structure, surface, &parsed->structure_findings);
     if (!structure_status.ok()) return structure_status;
-    // The offset table describes the CV collector's own text stream. It is
-    // published only when that collector is the entire document and the
-    // repair pass left its text and arena alone: a merge renumbers arena
-    // references, a repair that retires items or rewrites text moves them,
-    // and a table that no longer names the items it describes is worse than
-    // no table at all.
+    // The offset table comes from the final document, so every path has
+    // one and it always names the items the response carries. The CV
+    // collector's own rows add how each item was read (digital or OCR), but
+    // only when that collector is the entire document and the repair pass
+    // left its text and arena alone: a merge renumbers arena references and
+    // a repair moves text, and a label on the wrong item is worse than none.
+    parsed->offsets = chunking::derive_offsets(result.document);
     if (result.succeeded == 1 && !cv_offsets->empty() && !repaired_text) {
-      chunking::add_offsets(*cv_offsets, &parsed->offsets);
+      chunking::overlay_sources(*cv_offsets, &parsed->offsets);
     }
     stamp_collector_warnings(&result);
     parsed->filename = requested_name;
@@ -2015,6 +2027,137 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
   } catch (...) {
     return status_from_exception(std::current_exception());
   }
+}
+
+
+namespace {
+
+// The server settings that change what a parse produces: which collectors
+// and remote models are configured, the CV models and their tuning, the
+// picture and page image policy, and the repair pass. Concurrency, queues,
+// limits on admission, metrics, listening and credentials stay out: they
+// decide whether and how fast a parse runs, not what it returns.
+constexpr std::string_view kIdentitySettings[] = {
+    "GRPARSE_ASR_DIARIZE",
+    "GRPARSE_ASR_MODEL",
+    "GRPARSE_ASR_TARGET",
+    "GRPARSE_BARCODES",
+    "GRPARSE_CALAMINE_TARGET",
+    "GRPARSE_CUSTOM_CHART_EXTRACTION_PRESETS",
+    "GRPARSE_DEFAULT_CHART_EXTRACTION_PRESET",
+    "GRPARSE_EBCDIC_TARGET",
+    "GRPARSE_EMAIL_TARGET",
+    "GRPARSE_ENRICH_TARGET",
+    "GRPARSE_ENRICH_VLM_ENDPOINT",
+    "GRPARSE_EPUB_TARGET",
+    "GRPARSE_FASTWARC_TARGET",
+    "GRPARSE_FIGURE_CLASSES",
+    "GRPARSE_LAYOUT",
+    "GRPARSE_LAYOUT_MODEL",
+    "GRPARSE_LIBREOFFICE_TARGET",
+    "GRPARSE_LOL_HTML_TARGET",
+    "GRPARSE_MARKUP_TARGET",
+    "GRPARSE_MAX_IMAGE_PIXELS",
+    "GRPARSE_MODELS_DIR",
+    "GRPARSE_OCR_BOX_SCORE",
+    "GRPARSE_OCR_BOX_THRESH",
+    "GRPARSE_OCR_MAX_SIDE",
+    "GRPARSE_OCR_PADDING",
+    "GRPARSE_OCR_ROTATION",
+    "GRPARSE_OCR_UNCLIP",
+    "GRPARSE_OPENVINO_DEVICE",
+    "GRPARSE_ORT_EP",
+    "GRPARSE_PAGE_IMAGES",
+    "GRPARSE_PDF_BACKEND",
+    "GRPARSE_PDF_TARGET",
+    "GRPARSE_PICTURE_IMAGES",
+    "GRPARSE_POI_TARGET",
+    "GRPARSE_REPAIR",
+    "GRPARSE_TABLE_STRUCTURE",
+    "GRPARSE_VLM_CONVERT_ENDPOINT",
+    "GRPARSE_VLM_CONVERT_TARGET",
+    "GRPARSE_XML_TARGET",
+};
+
+// The model files' own identity: the SHA-256 of the models directory's
+// MANIFEST, which pins every model file by its sha256 (models/MANIFEST,
+// shipped in the models image). Swapping the models image changes it even
+// when every variable above stays the same. "absent" when there is none.
+std::string models_manifest_digest() {
+  const char* dir = std::getenv("GRPARSE_MODELS_DIR");
+  const fs::path path = fs::path(dir == nullptr ? "/models" : dir) / "MANIFEST";
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return "absent";
+  std::ostringstream contents;
+  contents << in.rdbuf();
+  if (in.bad()) throw std::runtime_error("models MANIFEST could not be read: " + path.string());
+  return targets::sha256_hex(contents.str());
+}
+
+}  // namespace
+
+std::string read_settings_digest() {
+  std::string manifest;
+  for (const std::string_view name : kIdentitySettings) {
+    const char* value = std::getenv(std::string(name).c_str());
+    if (value == nullptr) continue;
+    manifest += std::format("{}={}\n", name, value);
+  }
+  manifest += std::format("models/MANIFEST={}\n", models_manifest_digest());
+  return targets::sha256_hex(manifest);
+}
+
+std::string options_digest(const pipestream::parse::v1::ConvertDocumentOptions& options) {
+  pipestream::parse::v1::ConvertDocumentOptions decisive = options;
+  decisive.DiscardUnknownFields();
+  decisive.clear_to_formats();
+  decisive.clear_image_export_mode();
+  decisive.clear_md_page_break_placeholder();
+  decisive.clear_md_compact_tables();
+  decisive.clear_doclang_include_namespace();
+  decisive.clear_document_timeout();
+  decisive.clear_abort_on_error();
+  decisive.clear_chunking_preset();
+  decisive.clear_chunking_options();
+  decisive.clear_structure_validation();
+  decisive.clear_structure_validation_rules();
+  if (decisive.has_picture_description_api()) {
+    auto* api = decisive.mutable_picture_description_api();
+    api->clear_headers();
+    api->clear_timeout();
+    api->clear_concurrency();
+  }
+  if (decisive.has_vlm_pipeline_model_api()) {
+    auto* api = decisive.mutable_vlm_pipeline_model_api();
+    api->clear_headers();
+    api->clear_timeout();
+    api->clear_concurrency();
+  }
+  std::string bytes;
+  {
+    google::protobuf::io::StringOutputStream stream(&bytes);
+    google::protobuf::io::CodedOutputStream coded(&stream);
+    coded.SetSerializationDeterministic(true);
+    if (!decisive.SerializeToCodedStream(&coded)) {
+      throw std::runtime_error("conversion options did not serialize for the parse identity");
+    }
+  }
+  return targets::sha256_hex(bytes);
+}
+
+const std::string& settings_digest() {
+  static const std::string digest = read_settings_digest();
+  return digest;
+}
+
+ai::pipestream::document::v1::ParseIdentity parse_identity(
+    const pipestream::parse::v1::ConvertDocumentOptions& options) {
+  ai::pipestream::document::v1::ParseIdentity identity;
+  identity.set_producer(std::string(kServiceVersion));
+  identity.set_options_digest(options_digest(options));
+  identity.set_settings_digest(settings_digest());
+  identity.set_build(std::string(kSourceDigest));
+  return identity;
 }
 
 }  // namespace grparse

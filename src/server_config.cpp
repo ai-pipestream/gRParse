@@ -365,7 +365,6 @@ CollectorTargets read_collector_targets() {
       .lol_html = collector_env("GRPARSE_LOL_HTML_TARGET"),
       .fastwarc = collector_env("GRPARSE_FASTWARC_TARGET"),
       .pdf = collector_env("GRPARSE_PDF_TARGET"),
-      .poi = collector_env("GRPARSE_POI_TARGET"),
       .calamine = collector_env("GRPARSE_CALAMINE_TARGET"),
       // The chart derender leg through grpc-enrich: off unless a target
       // is named; the timeout bounds the whole leg per parse.
@@ -404,7 +403,6 @@ void report_collector_targets(const CollectorTargets& targets, bool layout_activ
   report_collector("lol-html", targets.lol_html);
   report_collector("fastwarc", targets.fastwarc);
   report_collector("pdf", targets.pdf);
-  report_collector("poi", targets.poi);
   report_collector("calamine", targets.calamine);
   if (targets.derender.enabled()) {
     std::println("gRParse chart derender (enrich): {} ({} ms{})", targets.derender.target,
@@ -455,6 +453,14 @@ void report_collector_targets(const CollectorTargets& targets, bool layout_activ
                                      + std::string(classifier_active ? " + figure classes" : "")
                                      + ")"
                                : "disabled (layout is disabled)");
+  }
+}
+
+void report_retired_settings() {
+  if (std::getenv("GRPARSE_POI_TARGET") != nullptr) {
+    std::println(stderr,
+                 "gRParse warning: GRPARSE_POI_TARGET is set but ignored; grPOIc is no "
+                 "longer used and libreoffice is the office text collector");
   }
 }
 

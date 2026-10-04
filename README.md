@@ -45,7 +45,7 @@ flowchart LR
     shell -- "/api/parse relay" --> grparse["gRParse :50051"]
     shell -- "/ui/&lt;name&gt;/ reverse proxy" --> proxied["proxied frontends<br/>lol-html, libreoffice, calamine, ..."]
     proxied --> theirs["their gRPC services"]
-    shell -- "native bridges<br/>/api/fastwarc /api/poic /api/asr<br/>/api/enrich /api/vlm-convert" --> native["fastwarc-grpc :50061, grPOIc :50052,<br/>grpc-asr :50055, grpc-enrich :50056,<br/>grpc-vlm-convert :50058"]
+    shell -- "native bridges<br/>/api/fastwarc /api/asr<br/>/api/enrich /api/vlm-convert" --> native["fastwarc-grpc :50061,<br/>grpc-asr :50055, grpc-enrich :50056,<br/>grpc-vlm-convert :50058"]
     shell -. "/api/uis GetServiceInfo probes" .-> theirs
 ```
 
@@ -118,6 +118,8 @@ Table exports are bounded per document, because a table's declared size and span
 
 `ChunkHierarchicalSource` and `ChunkHybridSource` parse the source exactly the way `ConvertSource` does and chunk the document that comes out of it. Their asynchronous and watch variants stay unimplemented.
 
+`StreamChunks` takes either chunk request (`hierarchical` or `hybrid`) and returns the same chunks as a server stream: one `chunk` message per chunk in `chunk_index` order, then one `summary` with the chunk count, `documents`, `chunking_info` and `processing_time`. The parse and any embedding finish before the first message, so the stream saves the consumer from holding the whole chunk list in one response, not from waiting for the parse. Each chunk message is one chunk; with `include_converted_doc` the summary carries the whole `Document`, which can be as large as a unary response and can still exceed a client's default 4 MiB receive limit. Any failure, including a missing chunker, closes the stream with its status before a single message is sent.
+
 Determinism is the point: the same input bytes produce the same chunk bytes on every machine and every run. There is no tokenizer download by default, no locale, and no defaulted budget, and every boundary rule is versioned. Each chunk carries the version it was produced under in `rules_digest`:
 
 | Rule set | Digest | What it decides |
@@ -130,9 +132,11 @@ Determinism is the point: the same input bytes produce the same chunk bytes on e
 
 `ChunkHybridSource`, and `ConvertSource`'s `hybrid_chunking` with `OUTPUT_FORMAT_CHUNKS`, require `max_tokens` and return `INVALID_ARGUMENT` naming the field when it is absent; an explicit `tokenizer` must be `wordish/1` or `hf/1`. `hf/1` resolves its tokenizer.json in this order: the request's `tokenizer_path`, then `$GRPARSE_CHUNK_TOKENIZER`, then `$GRPARSE_MODELS_DIR/chunk/tokenizer.json`; a file that does not resolve and load fails the request with `INVALID_ARGUMENT` before any parsing starts. A request's `tokenizer_path` must name a regular file inside the tokenizer directory, `$GRPARSE_TOKENIZER_DIR` (default: `$GRPARSE_MODELS_DIR`, itself `/models` by default); a relative path resolves against that directory, and symlinks or `..` that lead outside it are refused. Every refusal of a request's path reads the same, whether the file is missing, outside the directory, not a regular file, or malformed, so the option cannot probe the server's filesystem. Only regular files of at most 64 MiB are read, from any source. The file's own `padding` and `truncation` settings are stripped on load (a chunking counter measures the text it is given, and the fixed-length padding some published tokenizer.json files ship would count pads), and special tokens are never added to the count. The `rules_digest` names the counter but not the resolved file, so two deployments with different tokenizer.json files chunk differently under the same digest. Both RPCs accept `use_markdown_tables` (pipe tables instead of the default `rowLabel, colLabel = value` flattening) and `include_raw_text`. `include_converted_doc` returns the parsed document alongside the chunks; without it, a parse in which some collector failed still adds one `documents` entry with `CONVERSION_STATUS_PARTIAL_SUCCESS` and the failures in `errors`, but no content. The chunk responses have no target result, so a `target` asking for delivery (anything but unset or `inbody`) is rejected with `INVALID_ARGUMENT`.
 
-A chunk reports `start_offset` and `end_offset` as UTF-8 code point positions in the document's concatenated body text whenever the parse supplied an offset table for every text item the chunk consumed; otherwise both stay unset rather than being guessed.
+A chunk reports `start_offset` and `end_offset` as UTF-8 code point positions in the document's text stream: the plain-text export, every text item in arena order joined by a single `\n`, furniture included. Every parse path builds the offset table from the finished document, and `ConvertSource` returns it as `text_offsets` (one row per text item, in stream order), so the spans hold for office, markup, email, EPUB and fast-path PDF documents as well as CV pages. Only the CV path's rows say how the text was read (`source`), and only when that collector is the whole document. A chunk whose items have no row carries neither field rather than a guess. Rows are keyed by arena position (`#/texts/N`) and run in arena order, so an item with an empty or repeated `self_ref` still gets its own row. Offsets count Unicode code points; a UTF-16 consumer such as OpenNLP converts with `String.offsetByCodePoints`. `TextOffset` and `TextSource` live in `parse_types.proto`: wire and JSON names are unchanged from when they sat in `parse_stream.proto`, but Python code must import them from `parse_types_pb2`.
 
-Every parsed `Document` names the parse that produced it in `parse`: `producer` is the service version `GetServiceInfo` reports (`grparse-<version>-<flavor>`), and `options_digest` is a 64-bit FNV-1a hash of the request's conversion options. Each chunk repeats the `producer` and carries a `chunk_key`, `<binary_hash as 16 hex>|<options_digest>|<producer>|<rules_digest>|<chunk_index>`. Equal keys mean the same bytes, options, build, chunk rules and position, and so byte-identical chunk text. A vector or annotation stored under a key that a fresh chunking no longer produces is stale. Item `self_ref`s are positions (`#/texts/12`) and can shift between builds, so store derived data against `chunk_key`, not `self_ref` alone.
+Every `Document` that `ConvertSource` and the chunk RPCs return names the parse that produced it in `parse`, the VLM pipeline included; the `StreamProcessDocument` stream does not stamp one. `producer` is the service version `GetServiceInfo` reports (`grparse-<version>-<flavor>`). `build` is a SHA-256 of the source tree taken when CMake configures, so an unbumped version still tells builds apart. `settings_digest` is a SHA-256 of the server environment that changes output: the configured collector targets, the CV model and OCR tuning variables, the image policy and `GRPARSE_REPAIR`, plus the SHA-256 of the models directory's `MANIFEST`, so swapping the models image changes it. It names those settings, not the builds of the remote collectors behind them. `options_digest` is a SHA-256 of the request's conversion options with the output-neutral fields removed first (output formats, export styling, timeouts, API headers, structure validation, chunking) along with unknown fields. An option set explicitly to the value the server would use anyway still digests apart from unset, which can only cause an unneeded re-embed, never a stale hit. Each chunk repeats the `producer` and carries a `chunk_key`: a SHA-256 over the length-prefixed source `binary_hash`, every `parse` field, the `rules_digest` and the `chunk_index`. Equal keys mean byte-identical chunk text. A vector or annotation stored under a key that a fresh chunking no longer produces is stale. Item `self_ref`s are positions (`#/texts/12`) and can shift between builds, so store derived data against `chunk_key`, not `self_ref` alone.
+
+A chunk's `metadata` and `typed_metadata` carry `language` when every text item in it has the same one: the item's own `meta.language`, else the document's `source_meta.language`, as a BCP 47 tag in canonical case (`zh-Hant-TW`). The key is absent when the items disagree, when one has no language, or when a tag is malformed. A chunk with no text item, such as a lone table, takes the document's language. It reports what the document's fields hold, which is a source's declaration (an Office run, an HTML `lang`, a PDF's catalog `/Lang`) or a collector's detection (grpc-asr). gRParse runs no language detection itself.
 
 #### Optional local embeddings
 
@@ -471,8 +475,7 @@ unconfigured otherwise:
 
 | Collector | Target env | Routed by default for |
 |---|---|---|
-| `COLLECTOR_LIBREOFFICE` | `GRPARSE_LIBREOFFICE_TARGET` | office formats (doc/x, xls/x, ppt/x, odf, rtf, csv, ...) |
-| `COLLECTOR_POI` | `GRPARSE_POI_TARGET` | never the routed default; a routed office plan fans a poi leg out beside libreoffice for the six OOXML/OLE2 formats (doc/docx, xls/xlsx, ppt/pptx) when configured. The typed event stream folds client-side: paragraphs by style name, tables and sheets into `TableItem`s, slides into groups (a slide's tables inside its group), embedded objects as attachment descriptors. gRParse asks for sheet batches (`sheet_batches`), so no event grows with a worksheet; the batches of one sheet fold back into its one table, its merged ranges become spans on the anchor cell (populated covered cells drop out, with a warning when one held text), and a hidden sheet stays on the invisible layer with `SheetMeta.visible` false, as the libreoffice and calamine folds keep theirs. grPOIc's own byte cap (`GRPOIC_MAX_DOCUMENT_MIB`, default 70 MiB) sits below gRParse's intake: an oversized upload fails the poi leg with `RESOURCE_EXHAUSTED` and degrades like any collector failure |
+| `COLLECTOR_LIBREOFFICE` | `GRPARSE_LIBREOFFICE_TARGET` | office formats (doc/x, xls/x, ppt/x, odf, rtf, csv, ...). The only collector for word processing and presentation formats: when its leg fails, the request fails with that leg's status (unary) or ends the stream with it (streaming), the message naming `libreoffice` and the cause. Workbooks keep the calamine leg below as a fallback body |
 | `COLLECTOR_CALAMINE` | `GRPARSE_CALAMINE_TARGET` | never the routed default; a routed workbook plan (xls/xlsx/xlsm/xlsb/ods, never CSV) fans a calamine leg out beside libreoffice when configured. The wire is handle-based (`OpenWorkbook`/`StreamWorksheetRange`/`CloseWorkbook`); each sheet folds client-side into a sheet group holding one `TableItem` in absolute cell offsets, and the handle closes on every path |
 | `COLLECTOR_ASR` | `GRPARSE_ASR_TARGET` (+ `GRPARSE_ASR_MODEL`, the whisper model name, required) | audio and video |
 | `COLLECTOR_EMAIL` | `GRPARSE_EMAIL_TARGET` (+ `GRPARSE_MARKUP_TARGET` for HTML bodies) | `.eml`, `.msg`, `message/rfc822`. The email fold maps `text/plain` bodies only; for a message with no plain body gRParse dials the markup collector with each HTML body part and folds its items into the message body ahead of the attachment list. Without a markup target such a message has no body text and a warning names the variable. Attachments are listed by name; their content is not parsed |
@@ -489,13 +492,15 @@ A request selects collectors explicitly (`ConvertDocumentOptions.collectors`,
 or `DocumentChunk.collectors` on the streaming RPC); an empty selection
 routes by format as above, with PDF and raster inputs staying on the CV
 path. No code path converts office bytes to PDF in order to parse them.
+`GRPARSE_POI_TARGET` is no longer read; a deployment that still sets it gets
+a one-line startup warning saying grPOIc is not used.
 
 The libreoffice collector streams typed events that gRParse folds into a
 `Document` itself, the epub collector's skeleton is completed here from its
 typed chapter and resource events plus one markup leg per chapter
 (`src/epub_book.cpp`), and the lol-html collector's match stream is likewise
 folded client-side (its forward-only wire deliberately has no document
-event); poi and calamine fold client-side too (their contracts carry no
+event); calamine folds client-side too (its contract carries no
 document event), while every other remote collector projects its own typed
 stream into a source-tagged `Document` server-side (their `emit_document`
 option), so gRParse asks for the Document event, drains the typed events,
@@ -507,16 +512,17 @@ Two family members are *not* collectors, whatever `compose.stack.yaml` runs
 next to them: grpc-enrich and grpc-vlm-convert are dialed by the demo shell
 directly and never by gRParse as collectors (enrich is dialed after the
 merge for the chart derender leg when `GRPARSE_ENRICH_TARGET` names it).
-grPOIc and grpc-calamine stopped being shell-only when their legs were
-wired in above; the merge ranks `poi` and `calamine` claims below
-libreoffice's and gRParse's own (see `document_claim_rank`). A fan-out leg
-reads the same bytes as the routed libreoffice default, so beside a live
-primary its body reading drops and only its document-level account merges
+grpc-calamine stopped being shell-only when its leg was wired in above; the
+merge ranks `calamine` claims above libreoffice's on spreadsheets and below
+gRParse's own stamp (see `document_claim_rank`). The fan-out leg reads the
+same bytes as the routed libreoffice default, so beside a live primary its
+body reading drops and only its document-level account merges
 (`retain_claims_only` in `src/document_merge.cpp`): the merged document
 carries the body once, and the leg's claims still rank. An explicit
 collector selection stays verbatim, readings and all, and a fan-out leg
-whose primary failed keeps its full reading, which is what keeps a
-poi-only deployment parsing. fastwarc is
+whose primary failed keeps its full reading, which is what keeps a workbook
+parsing when libreoffice fails on it (a partial success with the
+libreoffice failure listed under `collector:libreoffice`). fastwarc is
 the other way round: a collector here, but
 the stack leaves `GRPARSE_FASTWARC_TARGET` unset because the vendored
 `fastwarc.v1` dialect is not wire-compatible with the published image; the

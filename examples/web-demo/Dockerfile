@@ -5,7 +5,7 @@ FROM node:26-alpine
 WORKDIR /app
 COPY examples/web-demo/package.json ./
 RUN npm install --omit=dev
-COPY examples/web-demo/server.js examples/web-demo/peers.js examples/web-demo/poic-sheets.js ./
+COPY examples/web-demo/server.js examples/web-demo/peers.js ./
 COPY examples/web-demo/public ./public
 COPY document.proto parse_types.proto parse.proto parse_stream.proto /protos/
 COPY collectors/ebcdic.proto collectors/lolhtml_types.proto collectors/lolhtml_service.proto \

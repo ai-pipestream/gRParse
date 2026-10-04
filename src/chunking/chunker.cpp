@@ -1,18 +1,25 @@
 #include "chunker.h"
 
 #include <algorithm>
+#include <cctype>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <limits>
 #include <optional>
 #include <print>
 #include <set>
 #include <string>
+#include <string_view>
+#include <system_error>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 #include "../render/canonical_json_writer.h"
 #include "../render/renderer_base.h"
+#include "../targets/sha256.h"
 #include "sentence_rules.h"
 #include "token_counter.h"
 
@@ -37,6 +44,52 @@ std::string join(const std::vector<std::string>& parts, std::string_view separat
   return out;
 }
 
+// A language tag in the canonical case RFC 5646 recommends: the primary
+// subtag lower case, a four-letter script title case, a two-letter region
+// upper case, everything else (and everything after a singleton) lower
+// case; '_' is read as '-'. nullopt for a tag that is not shaped like one:
+// an empty subtag, a character outside [A-Za-z0-9], a primary subtag that
+// is not 2 to 8 letters, or any subtag longer than 8.
+std::optional<std::string> canonical_language_tag(std::string_view raw) {
+  if (raw.empty()) return std::nullopt;
+  std::string out;
+  out.reserve(raw.size());
+  std::size_t position = 0;
+  bool first = true;
+  bool after_singleton = false;
+  while (true) {
+    const std::size_t end = raw.find_first_of("-_", position);
+    const std::string_view subtag =
+        raw.substr(position, end == std::string_view::npos ? std::string_view::npos
+                                                           : end - position);
+    if (subtag.empty() || subtag.size() > 8) return std::nullopt;
+    bool letters = true;
+    for (const unsigned char c : subtag) {
+      if (!std::isalnum(c)) return std::nullopt;
+      letters = letters && std::isalpha(c);
+    }
+    if (first && (!letters || subtag.size() < 2)) return std::nullopt;
+    std::string part(subtag);
+    std::ranges::transform(part, part.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (!first && !after_singleton && letters) {
+      if (part.size() == 2) {
+        std::ranges::transform(part, part.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+      } else if (part.size() == 4) {
+        part[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(part[0])));
+      }
+    }
+    if (!first && subtag.size() == 1) after_singleton = true;
+    if (!first) out.push_back('-');
+    out += part;
+    first = false;
+    if (end == std::string_view::npos) break;
+    position = end + 1;
+  }
+  return out;
+}
+
 // One chunk while it is still being built. The proto is materialized only
 // once every pass has run, so merging and splitting stay plain data folds.
 struct WorkChunk {
@@ -57,6 +110,11 @@ struct WorkChunk {
   std::optional<double> min_confidence;
   bool saw_digital = false;
   bool saw_ocr = false;
+  // The language tags of the chunk's text items (each item's own, else the
+  // document's), and whether any text item had none. The chunk reports a
+  // language only when every item agrees on one.
+  std::set<std::string> languages;
+  bool language_unknown = false;
 };
 
 // The headings block a chunk is contextualized with: the trail joined with
@@ -243,6 +301,15 @@ class Chunker {
 
   std::vector<WorkChunk> run() {
     walk("#/body", 0);
+    // A chunk with no text item (a lone table or picture) is in the
+    // document's language, when the document records one.
+    const std::string declared =
+        canonical_language_tag(document_.source_meta().language()).value_or(std::string());
+    for (auto& chunk : chunks_) {
+      if (chunk.languages.empty() && !chunk.language_unknown && !declared.empty()) {
+        chunk.languages.insert(declared);
+      }
+    }
     if (too_deep_ > 0) {
       std::println(stderr,
                    "gRParse chunker: {} subtree(s) nested deeper than {} levels left out",
@@ -354,6 +421,33 @@ class Chunker {
     return std::nullopt;
   }
 
+  // The language a text item is in, as the document's fields record it: the
+  // item's own tag (the raw tag when it is well formed, else the enum's
+  // subtag), falling back to the document-level language. Always in
+  // canonical case; empty when nothing usable is recorded.
+  std::string language_of(const docv1::BaseTextItem& item) const {
+    const docv1::LanguageMetaField* field = nullptr;
+    if (item.item_case() == docv1::BaseTextItem::kCode) {
+      if (item.code().has_meta() && item.code().meta().has_language()) {
+        field = &item.code().meta().language();
+      }
+    } else if (const auto* base = text_base(item);
+               base != nullptr && base->has_meta() && base->meta().has_language()) {
+      field = &base->meta().language();
+    }
+    if (field != nullptr) {
+      if (auto tag = canonical_language_tag(field->code_raw())) return *std::move(tag);
+      if (field->code() != docv1::HUMAN_LANGUAGE_LABEL_UNSPECIFIED) {
+        const std::string name = docv1::HumanLanguageLabel_Name(field->code());
+        if (auto tag = canonical_language_tag(
+                std::string_view(name).substr(std::string_view("HUMAN_LANGUAGE_LABEL_").size()))) {
+          return *std::move(tag);
+        }
+      }
+    }
+    return canonical_language_tag(document_.source_meta().language()).value_or(std::string());
+  }
+
   static std::string text_of(const docv1::BaseTextItem& item) {
     if (item.item_case() == docv1::BaseTextItem::kCode) return item.code().text();
     const auto* base = text_base(item);
@@ -396,6 +490,14 @@ class Chunker {
       }
     }
     if (!view->is_text) return;
+    if (const auto* text = text_at(ref)) {
+      std::string language = language_of(*text);
+      if (language.empty()) {
+        chunk->language_unknown = true;
+      } else {
+        chunk->languages.insert(std::move(language));
+      }
+    }
     const auto entry = offsets_.find(ref);
     if (entry == offsets_.end()) {
       chunk->offsets_complete = false;
@@ -624,6 +726,13 @@ class Chunker {
 
 // -- materialization --------------------------------------------------------
 
+// The one language every text item of the chunk is in, by what the
+// document's fields record; absent when they disagree or any is unknown.
+std::optional<std::string> chunk_language(const WorkChunk& work) {
+  if (work.language_unknown || work.languages.size() != 1) return std::nullopt;
+  return *work.languages.begin();
+}
+
 // The typed twin of `metadata`: the same keys with their types, plus the
 // source document's identity (origin hash and mimetype), which the reference
 // chunker carries on every chunk's meta.
@@ -637,22 +746,31 @@ void stamp_typed_metadata(const WorkChunk& work, const docv1::DocumentOrigin& or
     typed["text_source"].set_string_value(
         work.saw_digital && work.saw_ocr ? "mixed" : (work.saw_digital ? "digital" : "ocr"));
   }
+  if (const auto language = chunk_language(work)) typed["language"].set_string_value(*language);
   if (origin.binary_hash() != 0) typed["binary_hash"].set_uint_value(origin.binary_hash());
   if (!origin.mimetype().empty()) typed["mimetype"].set_string_value(origin.mimetype());
 }
 
-// The chunk's storage key (Chunk.chunk_key): the source bytes, the parse
-// identity, the chunk rules and the position, joined by '|'. Empty when the
-// document cannot say which bytes or which parse it came from.
+// The chunk's storage key (Chunk.chunk_key): SHA-256 hex over the source
+// bytes hash, every parse identity field, the chunk rules and the position,
+// each length-prefixed so no two field lists spell the same bytes. Empty
+// when the document cannot say which bytes or which parse it came from.
 std::string chunk_key(const docv1::Document& document, const std::string& rules_digest,
                       int index) {
-  if (document.origin().binary_hash() == 0 || !document.has_parse() ||
-      document.parse().producer().empty() || document.parse().options_digest().empty()) {
+  if (document.origin().binary_hash() == 0 || !document.has_parse()) return {};
+  const docv1::ParseIdentity& parse = document.parse();
+  if (parse.producer().empty() || parse.options_digest().empty() ||
+      parse.settings_digest().empty() || parse.build().empty()) {
     return {};
   }
-  return std::format("{:016x}|{}|{}|{}|{}", document.origin().binary_hash(),
-                     document.parse().options_digest(), document.parse().producer(),
-                     rules_digest, index);
+  std::string material;
+  for (const std::string& field :
+       {std::format("{:016x}", document.origin().binary_hash()), parse.producer(),
+        parse.build(), parse.settings_digest(), parse.options_digest(), rules_digest,
+        std::to_string(index)}) {
+    material += std::format("{}:{}", field.size(), field);
+  }
+  return targets::sha256_hex(material);
 }
 
 parsev1::Chunk to_proto(const WorkChunk& work, int index, std::string_view filename,
@@ -676,6 +794,9 @@ parsev1::Chunk to_proto(const WorkChunk& work, int index, std::string_view filen
   if (work.saw_digital || work.saw_ocr) {
     (*chunk.mutable_metadata())["text_source"] =
         work.saw_digital && work.saw_ocr ? "mixed" : (work.saw_digital ? "digital" : "ocr");
+  }
+  if (const auto language = chunk_language(work)) {
+    (*chunk.mutable_metadata())["language"] = *language;
   }
   if (work.offsets_known && work.offsets_complete) {
     chunk.set_start_offset(static_cast<std::int64_t>(work.start));
@@ -711,6 +832,8 @@ void fold_peer(WorkChunk* into, WorkChunk&& next, std::string&& merged_text) {
   for (auto& item : next.doc_items) into->doc_items.push_back(std::move(item));
   into->pages.insert(next.pages.begin(), next.pages.end());
   into->offsets_complete = into->offsets_complete && next.offsets_complete;
+  into->languages.merge(next.languages);
+  into->language_unknown = into->language_unknown || next.language_unknown;
   if (into->offsets_known && next.offsets_known) {
     into->start = std::min(into->start, next.start);
     into->end = std::max(into->end, next.end);
@@ -1000,6 +1123,84 @@ void add_offsets(const google::protobuf::RepeatedPtrField<parsev1::TextOffset>& 
   for (const auto& row : rows) {
     table->emplace(row.self_ref(), OffsetEntry{row.utf_start(), row.utf_end(), row.source()});
   }
+}
+
+OffsetTable derive_offsets(const docv1::Document& document) {
+  OffsetTable table;
+  std::uint64_t cursor = 0;
+  bool has_text = false;
+  // Rows are keyed by arena position, the ref the chunker looks items up
+  // by, not by each item's own self_ref: an empty or duplicated self_ref
+  // would otherwise fold two items into one row.
+  for (int index = 0; index < document.texts_size(); ++index) {
+    const auto& item = document.texts(index);
+    const std::string* text = nullptr;
+    if (item.item_case() == docv1::BaseTextItem::kCode) {
+      text = &item.code().text();
+    } else if (const auto* base = text_base(item)) {
+      text = &base->text();
+    }
+    if (text == nullptr) continue;
+    // The plain-text export separates on what it has written so far, so a
+    // leading run of empty items adds no separator either.
+    if (has_text) ++cursor;
+    const std::uint64_t start = cursor;
+    cursor += codepoint_length(*text);
+    if (!text->empty()) has_text = true;
+    table.emplace(std::format("#/texts/{}", index),
+                  OffsetEntry{start, cursor, parsev1::TEXT_SOURCE_UNSPECIFIED});
+  }
+  return table;
+}
+
+void overlay_sources(const google::protobuf::RepeatedPtrField<parsev1::TextOffset>& rows,
+                     OffsetTable* table) {
+  if (table == nullptr) return;
+  for (const auto& row : rows) {
+    const auto entry = table->find(row.self_ref());
+    if (entry == table->end() || entry->second.start != row.utf_start() ||
+        entry->second.end != row.utf_end()) {
+      continue;
+    }
+    entry->second.source = row.source();
+  }
+}
+
+google::protobuf::RepeatedPtrField<parsev1::TextOffset> offset_rows(const OffsetTable& table) {
+  std::vector<const OffsetTable::value_type*> ordered;
+  ordered.reserve(table.size());
+  for (const auto& row : table) ordered.push_back(&row);
+  // Stream order is arena order: equal starts (a leading run of empty
+  // items) break on the arena position, so "#/texts/9" precedes
+  // "#/texts/10". A ref that names no text arena slot sorts after them.
+  const auto position = [](const std::string& ref) {
+    constexpr std::string_view kPrefix = "#/texts/";
+    std::size_t index = std::numeric_limits<std::size_t>::max();
+    if (ref.starts_with(kPrefix)) {
+      const char* first = ref.data() + kPrefix.size();
+      const char* last = ref.data() + ref.size();
+      std::size_t parsed = 0;
+      const auto [end, error] = std::from_chars(first, last, parsed);
+      if (error == std::errc() && end == last && first != last) index = parsed;
+    }
+    return index;
+  };
+  std::ranges::sort(ordered, [&position](const auto* left, const auto* right) {
+    const std::size_t left_position = position(left->first);
+    const std::size_t right_position = position(right->first);
+    return std::tie(left->second.start, left_position, left->first) <
+           std::tie(right->second.start, right_position, right->first);
+  });
+  google::protobuf::RepeatedPtrField<parsev1::TextOffset> rows;
+  rows.Reserve(static_cast<int>(ordered.size()));
+  for (const auto* row : ordered) {
+    auto* out = rows.Add();
+    out->set_self_ref(row->first);
+    out->set_utf_start(row->second.start);
+    out->set_utf_end(row->second.end);
+    out->set_source(row->second.source);
+  }
+  return rows;
 }
 
 std::string hybrid_rules_digest(int max_tokens, bool merge_peers, std::string_view tokenizer) {

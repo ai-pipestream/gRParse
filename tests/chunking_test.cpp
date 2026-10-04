@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <format>
 #include <print>
 #include <stdexcept>
 #include <string>
@@ -13,6 +14,7 @@
 #include "../src/chunking/chunker.h"
 #include "../src/chunking/sentence_rules.h"
 #include "../src/chunking/token_counter.h"
+#include "../src/render/renderer_base.h"
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
 #include "support/check.h"
@@ -28,6 +30,9 @@ using grparse::chunking::count_tokens;
 using grparse::chunking::hybrid_rules_digest;
 using grparse::chunking::OffsetEntry;
 using grparse::chunking::OffsetTable;
+using grparse::chunking::derive_offsets;
+using grparse::chunking::offset_rows;
+using grparse::chunking::overlay_sources;
 using grparse::chunking::validate_hybrid_options;
 
 namespace {
@@ -963,26 +968,261 @@ void verify_chunk_key_names_bytes_options_build_rules_and_position() {
   document.mutable_origin()->set_binary_hash(0xabcULL);
   auto* identity = document.mutable_parse();
   identity->set_producer("grparse-9.9.9-cpu");
-  identity->set_options_digest("0123456789abcdef");
+  identity->set_build("b");
+  identity->set_settings_digest("s");
+  identity->set_options_digest("o");
   const auto chunks = chunk_hierarchical(document, {}, {}, "d.txt");
   require(chunks.size() == 2, "one chunk per paragraph");
   require_eq(chunks[0].producer(), "grparse-9.9.9-cpu", "the chunk names the producing build");
+  // SHA-256 of "16:0000000000000abc17:grparse-9.9.9-cpu1:b1:s1:o14:grparse-hier/21:0".
+  // Fixed on purpose: a change here re-keys every stored vector.
   require_eq(chunks[0].chunk_key(),
-             "0000000000000abc|0123456789abcdef|grparse-9.9.9-cpu|grparse-hier/2|0",
-             "the key spells bytes, options, build, rules and position");
+             "209ede7cf5d68c5ed4dd53307e06f71590e3418988be0cf0331496343a607169",
+             "the key digests bytes, identity, rules and position");
   require_eq(chunks[1].chunk_key(),
-             "0000000000000abc|0123456789abcdef|grparse-9.9.9-cpu|grparse-hier/2|1",
+             "727e4fd3abf5dc45be0568f3be60b8637fa1904ef941dc5bb1acd5750811ce87",
              "the position tells sibling chunks apart");
+
+  const auto rekeyed = [&document](auto&& change) {
+    docv1::Document changed = document;
+    change(changed.mutable_parse());
+    return chunk_hierarchical(changed, {}, {}, "d.txt").front().chunk_key();
+  };
+  require(rekeyed([](docv1::ParseIdentity* p) { p->set_build("c"); }) != chunks[0].chunk_key(),
+          "another build re-keys the chunk");
+  require(rekeyed([](docv1::ParseIdentity* p) { p->set_settings_digest("t"); }) !=
+              chunks[0].chunk_key(),
+          "other server settings re-key the chunk");
+  require(rekeyed([](docv1::ParseIdentity* p) { p->set_options_digest("p"); }) !=
+              chunks[0].chunk_key(),
+          "other options re-key the chunk");
+  require(rekeyed([](docv1::ParseIdentity* p) { p->clear_build(); }).empty(),
+          "an incomplete identity gives no key");
 
   std::vector<parsev1::Chunk> hybrid;
   require(chunk_hybrid(document, {}, hybrid_options(64), "d.txt", &hybrid).ok(),
           "hybrid chunking succeeds");
-  require(hybrid.front().chunk_key().ends_with("|" + hybrid.front().rules_digest() + "|0"),
-          "the hybrid key carries the hybrid rules, budget included");
+  require(hybrid.front().chunk_key().size() == 64 &&
+              hybrid.front().chunk_key() != chunks[0].chunk_key(),
+          "the hybrid rules key the chunk apart from the hierarchical one");
 
   document.mutable_origin()->set_binary_hash(0);
   require(chunk_hierarchical(document, {}, {}, "d.txt").front().chunk_key().empty(),
           "without the source bytes' hash there is no key");
+}
+
+void set_language(docv1::Document* document, const std::string& ref, const std::string& raw,
+                  docv1::HumanLanguageLabel code) {
+  const int index = std::stoi(ref.substr(std::string("#/texts/").size()));
+  auto* language = document->mutable_texts(index)->mutable_text()->mutable_base()
+                       ->mutable_meta()->mutable_language();
+  if (!raw.empty()) language->set_code_raw(raw);
+  language->set_code(code);
+}
+
+std::string language_key(const parsev1::Chunk& chunk) {
+  const auto typed = chunk.typed_metadata().find("language");
+  const auto plain = chunk.metadata().find("language");
+  require((typed == chunk.typed_metadata().end()) == (plain == chunk.metadata().end()),
+          "metadata and typed_metadata agree on whether a language is reported");
+  if (typed == chunk.typed_metadata().end()) return {};
+  require(typed->second.string_value() == plain->second,
+          "metadata and typed_metadata report the same language");
+  return plain->second;
+}
+
+void verify_chunk_language_is_the_declared_one() {
+  // No declaration anywhere: no key.
+  docv1::Document bare = new_document();
+  add_paragraph(&bare, "plain words");
+  require(language_key(chunk_hierarchical(bare, {}, {}, "d.txt").front()).empty(),
+          "a document that declares no language gets no language key");
+
+  // The document's declaration covers items without their own.
+  docv1::Document declared = new_document();
+  declared.mutable_source_meta()->set_language("fr-CA");
+  add_paragraph(&declared, "bonjour");
+  const std::string german = add_paragraph(&declared, "guten Tag");
+  set_language(&declared, german, "", docv1::HUMAN_LANGUAGE_LABEL_DE);
+  const std::string english = add_paragraph(&declared, "hello");
+  set_language(&declared, english, "en-GB", docv1::HUMAN_LANGUAGE_LABEL_EN);
+  const auto chunks = chunk_hierarchical(declared, {}, {}, "d.docx");
+  require(chunks.size() == 3, "one chunk per paragraph");
+  require_eq(language_key(chunks[0]), "fr-CA", "an untagged item speaks the document's language");
+  require_eq(language_key(chunks[1]), "de", "an enum-only tag reports its lowercase subtag");
+  require_eq(language_key(chunks[2]), "en-GB", "the raw tag wins over the enum");
+
+  // A merged chunk reports a language only when its items agree.
+  std::vector<parsev1::Chunk> merged;
+  require(chunk_hybrid(declared, {}, hybrid_options(64), "d.docx", &merged).ok(),
+          "hybrid chunking succeeds");
+  require(merged.size() == 1, "three short peers merge");
+  require(language_key(merged.front()).empty(), "a chunk mixing languages reports none");
+
+  // Tags come out in canonical case; a malformed raw tag falls back to the
+  // enum, and a malformed document tag counts as none.
+  docv1::Document cased = new_document();
+  cased.mutable_source_meta()->set_language("zh_hant_tw");
+  add_paragraph(&cased, "unmarked");
+  const std::string shouting = add_paragraph(&cased, "loud");
+  set_language(&cased, shouting, "EN-us", docv1::HUMAN_LANGUAGE_LABEL_EN);
+  const std::string broken = add_paragraph(&cased, "broken");
+  set_language(&cased, broken, "en--US", docv1::HUMAN_LANGUAGE_LABEL_PT);
+  const std::string private_use = add_paragraph(&cased, "private");
+  set_language(&cased, private_use, "de-x-Klingon", docv1::HUMAN_LANGUAGE_LABEL_UNSPECIFIED);
+  const auto cased_chunks = chunk_hierarchical(cased, {}, {}, "d.docx");
+  require(cased_chunks.size() == 4, "one chunk per paragraph");
+  require_eq(language_key(cased_chunks[0]), "zh-Hant-TW",
+             "'_' reads as '-', a script is title case and a region upper case");
+  require_eq(language_key(cased_chunks[1]), "en-US", "the primary subtag is lower case");
+  require_eq(language_key(cased_chunks[2]), "pt", "a malformed raw tag falls back to the enum");
+  require_eq(language_key(cased_chunks[3]), "de-x-klingon",
+             "subtags after a singleton stay lower case");
+  docv1::Document garbage = new_document();
+  garbage.mutable_source_meta()->set_language("1234");
+  add_paragraph(&garbage, "words");
+  require(language_key(chunk_hierarchical(garbage, {}, {}, "d.txt").front()).empty(),
+          "a malformed document language counts as none");
+
+  // A chunk with no text item takes the document's language.
+  docv1::Document tabled = new_document();
+  tabled.mutable_source_meta()->set_language("es");
+  add_table(&tabled, {{{"a", false, false}, {"b", false, false}}});
+  const auto table_chunks = chunk_hierarchical(tabled, {}, {}, "d.xlsx");
+  require(!table_chunks.empty(), "the table chunks");
+  require_eq(language_key(table_chunks.front()), "es",
+             "a table chunk speaks the document's declared language");
+}
+
+// The text stream the derived table indexes, rebuilt the way the plain-text
+// export writes it: text items in arena order, a newline between each and
+// what was already written.
+std::string export_stream(const docv1::Document& document) {
+  std::string text;
+  for (const auto& item : document.texts()) {
+    const std::string* body = nullptr;
+    if (item.has_code()) {
+      body = &item.code().text();
+    } else if (const auto* base = grparse::render::text_base(item)) {
+      body = &base->text();
+    }
+    if (body == nullptr) continue;
+    if (!text.empty()) text.push_back('\n');
+    text.append(*body);
+  }
+  return text;
+}
+
+std::string slice_code_points(const std::string& text, std::uint64_t start, std::uint64_t end) {
+  const auto points = grparse::chunking::decode_utf8(text);
+  require(end <= points.size() && start <= end, "a row stays inside the stream");
+  return grparse::chunking::encode_utf8(points.data() + start, points.data() + end);
+}
+
+void verify_derived_offsets_index_the_text_export() {
+  docv1::Document document = new_document();
+  const std::string empty = add_paragraph(&document, "");
+  const std::string title = add_title(&document, "Größe");
+  const std::string body = add_paragraph(&document, "naïve café");
+  const std::string code_ref = next_text_ref(document);
+  auto* code = document.add_texts()->mutable_code();
+  code->set_self_ref(code_ref);
+  code->set_text("x = 1");
+  document.add_texts();  // no arm set: no row, no separator
+  const std::string last = add_paragraph(&document, "end");
+
+  const OffsetTable table = derive_offsets(document);
+  require_eq(static_cast<int>(table.size()), 5, "every text arm gets one row");
+  require(!table.contains("#/texts/4"), "an item with no text arm has no row");
+  const std::string stream = export_stream(document);
+  for (const auto& [ref, entry] : table) {
+    require(entry.source == parsev1::TEXT_SOURCE_UNSPECIFIED,
+            "a derived row claims no reading source");
+  }
+  require(table.at(empty).start == 0 && table.at(empty).end == 0,
+          "a leading empty item sits at zero");
+  require(table.at(title).start == 0,
+          "a leading empty item adds no separator, as the export writes none");
+  require_eq(slice_code_points(stream, table.at(title).start, table.at(title).end), "Größe",
+             "spans count code points, not bytes");
+  require_eq(slice_code_points(stream, table.at(body).start, table.at(body).end), "naïve café",
+             "each row slices its own text out of the export");
+  require_eq(slice_code_points(stream, table.at(code_ref).start, table.at(code_ref).end),
+             "x = 1", "code items take part in the stream");
+  require_eq(slice_code_points(stream, table.at(last).start, table.at(last).end), "end",
+             "an armless item between two texts shifts nothing");
+  require(table.at(last).end == grparse::chunking::decode_utf8(stream).size(),
+          "the last row ends the stream");
+
+  // Collector-folded documents have no CV rows at all; their chunks now get
+  // spans from the derived table.
+  const auto chunks = chunk_hierarchical(document, table, {}, "d.docx");
+  bool spanned = false;
+  for (const auto& chunk : chunks) spanned = spanned || chunk.has_start_offset();
+  require(spanned, "chunks of a document without CV rows carry spans");
+}
+
+void verify_overlay_labels_only_matching_rows() {
+  docv1::Document document = new_document();
+  const std::string first = add_paragraph(&document, "one");
+  const std::string second = add_paragraph(&document, "two");
+  const std::string third = add_paragraph(&document, "three");
+  OffsetTable table = derive_offsets(document);
+
+  google::protobuf::RepeatedPtrField<parsev1::TextOffset> rows;
+  auto* matching = rows.Add();
+  matching->set_self_ref(first);
+  matching->set_utf_start(0);
+  matching->set_utf_end(3);
+  matching->set_source(parsev1::TEXT_SOURCE_OCR);
+  auto* moved = rows.Add();
+  moved->set_self_ref(second);
+  moved->set_utf_start(9);
+  moved->set_utf_end(12);
+  moved->set_source(parsev1::TEXT_SOURCE_DIGITAL_PDF);
+  auto* unknown = rows.Add();
+  unknown->set_self_ref("#/texts/99");
+  unknown->set_source(parsev1::TEXT_SOURCE_OCR);
+  overlay_sources(rows, &table);
+
+  require(table.at(first).source == parsev1::TEXT_SOURCE_OCR,
+          "a row naming the same item and span lends its source");
+  require(table.at(second).source == parsev1::TEXT_SOURCE_UNSPECIFIED &&
+              table.at(second).start == 4 && table.at(second).end == 7,
+          "a row whose span disagrees labels nothing and moves nothing");
+  require(!table.contains("#/texts/99"), "a row for an unknown item adds no entry");
+
+  const auto wire = offset_rows(table);
+  require(wire.size() == 3, "one wire row per entry");
+  require(wire.Get(0).self_ref() == first && wire.Get(1).self_ref() == second &&
+              wire.Get(2).self_ref() == third,
+          "wire rows follow the stream, not the map's key order");
+  require(wire.Get(0).source() == parsev1::TEXT_SOURCE_OCR &&
+              wire.Get(1).source() == parsev1::TEXT_SOURCE_UNSPECIFIED,
+          "the wire row carries the overlaid label");
+}
+
+// An empty or repeated self_ref cannot fold two items into one row: rows
+// are keyed by arena position, and wire rows follow the arena even where
+// starts tie ("#/texts/9" before "#/texts/10").
+void verify_derived_offsets_key_by_arena_position() {
+  docv1::Document document = new_document();
+  for (int index = 0; index < 11; ++index) add_paragraph(&document, "");
+  add_paragraph(&document, "tail");
+  document.mutable_texts(3)->mutable_text()->mutable_base()->clear_self_ref();
+  document.mutable_texts(4)->mutable_text()->mutable_base()->set_self_ref("#/texts/5");
+  const OffsetTable table = derive_offsets(document);
+  require_eq(static_cast<int>(table.size()), 12, "one row per text item, refs aside");
+  require(table.contains("#/texts/3") && table.contains("#/texts/4"),
+          "an empty and a duplicated self_ref still get their own rows");
+  const auto wire = offset_rows(table);
+  require(wire.size() == 12, "one wire row per item");
+  for (int index = 0; index < wire.size(); ++index) {
+    require_eq(wire.Get(index).self_ref(), std::format("#/texts/{}", index),
+               "wire rows run in arena order, ties included");
+  }
+  require(wire.Get(11).utf_start() == 0 && wire.Get(11).utf_end() == 4,
+          "a leading run of empty items adds no separator");
 }
 
 struct Case {
@@ -1016,6 +1256,10 @@ const Case kCases[] = {
     {"raw text option", verify_raw_text_mirrors_text_when_requested},
     {"hybrid digest", verify_hybrid_digest_reports_the_budget},
     {"chunk key", verify_chunk_key_names_bytes_options_build_rules_and_position},
+    {"declared chunk language", verify_chunk_language_is_the_declared_one},
+    {"derived offsets index the text export", verify_derived_offsets_index_the_text_export},
+    {"overlay labels only matching rows", verify_overlay_labels_only_matching_rows},
+    {"derived offsets key by arena position", verify_derived_offsets_key_by_arena_position},
 };
 
 }  // namespace
