@@ -957,6 +957,60 @@ void verify_sentence_rule_boundaries() {
           "text with no terminator is one sentence");
 }
 
+void verify_chunk_key_names_bytes_options_build_rules_and_position() {
+  docv1::Document document = new_document();
+  add_paragraph(&document, "first");
+  add_paragraph(&document, "second");
+  const auto anonymous = chunk_hierarchical(document, {}, {}, "d.txt");
+  require(anonymous.front().producer().empty() && anonymous.front().chunk_key().empty(),
+          "a document with no parse identity gets no producer and no key");
+
+  document.mutable_origin()->set_binary_hash(0xabcULL);
+  auto* identity = document.mutable_parse();
+  identity->set_producer("grparse-9.9.9-cpu");
+  identity->set_build("b");
+  identity->set_settings_digest("s");
+  identity->set_options_digest("o");
+  const auto chunks = chunk_hierarchical(document, {}, {}, "d.txt");
+  require(chunks.size() == 2, "one chunk per paragraph");
+  require_eq(chunks[0].producer(), "grparse-9.9.9-cpu", "the chunk names the producing build");
+  // SHA-256 of "16:0000000000000abc17:grparse-9.9.9-cpu1:b1:s1:o14:grparse-hier/21:0".
+  // Fixed on purpose: a change here re-keys every stored vector.
+  require_eq(chunks[0].chunk_key(),
+             "209ede7cf5d68c5ed4dd53307e06f71590e3418988be0cf0331496343a607169",
+             "the key digests bytes, identity, rules and position");
+  require_eq(chunks[1].chunk_key(),
+             "727e4fd3abf5dc45be0568f3be60b8637fa1904ef941dc5bb1acd5750811ce87",
+             "the position tells sibling chunks apart");
+
+  const auto rekeyed = [&document](auto&& change) {
+    docv1::Document changed = document;
+    change(changed.mutable_parse());
+    return chunk_hierarchical(changed, {}, {}, "d.txt").front().chunk_key();
+  };
+  require(rekeyed([](docv1::ParseIdentity* p) { p->set_build("c"); }) != chunks[0].chunk_key(),
+          "another build re-keys the chunk");
+  require(rekeyed([](docv1::ParseIdentity* p) { p->set_settings_digest("t"); }) !=
+              chunks[0].chunk_key(),
+          "other server settings re-key the chunk");
+  require(rekeyed([](docv1::ParseIdentity* p) { p->set_options_digest("p"); }) !=
+              chunks[0].chunk_key(),
+          "other options re-key the chunk");
+  require(rekeyed([](docv1::ParseIdentity* p) { p->clear_build(); }).empty(),
+          "an incomplete identity gives no key");
+
+  std::vector<parsev1::Chunk> hybrid;
+  require(chunk_hybrid(document, {}, hybrid_options(64), "d.txt", &hybrid).ok(),
+          "hybrid chunking succeeds");
+  require(hybrid.front().chunk_key().size() == 64 &&
+              hybrid.front().chunk_key() != chunks[0].chunk_key(),
+          "the hybrid rules key the chunk apart from the hierarchical one");
+
+  document.mutable_origin()->set_binary_hash(0);
+  require(chunk_hierarchical(document, {}, {}, "d.txt").front().chunk_key().empty(),
+          "without the source bytes' hash there is no key");
+}
+
 void set_language(docv1::Document* document, const std::string& ref, const std::string& raw,
                   docv1::HumanLanguageLabel code) {
   const int index = std::stoi(ref.substr(std::string("#/texts/").size()));
@@ -1201,6 +1255,7 @@ const Case kCases[] = {
     {"hybrid offset narrowing", verify_split_pieces_narrow_offsets_only_when_exact},
     {"raw text option", verify_raw_text_mirrors_text_when_requested},
     {"hybrid digest", verify_hybrid_digest_reports_the_budget},
+    {"chunk key", verify_chunk_key_names_bytes_options_build_rules_and_position},
     {"declared chunk language", verify_chunk_language_is_the_declared_one},
     {"derived offsets index the text export", verify_derived_offsets_index_the_text_export},
     {"overlay labels only matching rows", verify_overlay_labels_only_matching_rows},

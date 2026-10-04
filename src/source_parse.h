@@ -97,6 +97,23 @@ std::expected<PictureDescriptionCall, grpc::Status> request_picture_description_
     const ai::pipestream::parse::v1::ConvertDocumentOptions& options,
     const std::optional<ChartExtractionPreset>& chart_extraction, const std::string& surface);
 
+// The identity parse_source stamps on every Document it returns
+// (Document.parse): this build, its settings, and the request's options.
+ai::pipestream::document::v1::ParseIdentity parse_identity(
+    const ai::pipestream::parse::v1::ConvertDocumentOptions& options);
+
+// ParseIdentity.options_digest for `options`: SHA-256 hex over the options
+// that decide the Document (see document.proto for what is left out).
+std::string options_digest(const ai::pipestream::parse::v1::ConvertDocumentOptions& options);
+
+// ParseIdentity.settings_digest: the output-deciding server environment
+// and the models MANIFEST, read once on first use.
+const std::string& settings_digest();
+
+// The same digest read afresh from the environment and the models
+// directory; settings_digest() caches its first answer.
+std::string read_settings_digest();
+
 grpc::Status parse_source(grpc::CallbackServerContext* context,
                           const ai::pipestream::parse::v1::ConvertDocumentRequest& request,
                           PageScheduler& scheduler,
