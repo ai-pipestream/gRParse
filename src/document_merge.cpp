@@ -421,9 +421,42 @@ void merge_arenas(docv1::Document&& source, docv1::Document* target) {
 
 }  // namespace
 
+namespace {
+thread_local ReferenceRenameLog* active_rename_log = nullptr;
+}  // namespace
+
 void rewrite_references(const std::map<std::string, std::string>& renumbering,
                         google::protobuf::Message* message) {
   rewrite_refs(renumbering, message);
+  if (active_rename_log != nullptr) active_rename_log->record(renumbering);
+}
+
+ReferenceRenameLog::ReferenceRenameLog() : previous_(active_rename_log) {
+  active_rename_log = this;
+}
+
+ReferenceRenameLog::~ReferenceRenameLog() {
+  if (previous_ != nullptr) previous_->record(current_of_);
+  active_rename_log = previous_;
+}
+
+// A step renames simultaneously, by current name. A current name some
+// earlier step produced moves its originals on; any other name is an
+// original nobody renamed yet, unless an earlier step already moved that
+// original away (then nothing carries the name and the entry is moot).
+void ReferenceRenameLog::record(const std::map<std::string, std::string>& step) {
+  std::map<std::string, std::vector<std::string>> holders;
+  for (const auto& [original, current] : current_of_) holders[current].push_back(original);
+  std::map<std::string, std::string> next = current_of_;
+  for (const auto& [from, to] : step) {
+    if (const auto held = holders.find(from); held != holders.end()) {
+      for (const std::string& original : held->second) next[original] = to;
+    } else if (!current_of_.contains(from)) {
+      next[from] = to;
+    }
+  }
+  std::erase_if(next, [](const auto& entry) { return entry.first == entry.second; });
+  current_of_ = std::move(next);
 }
 
 // The field names whose content forms a document-level account: exactly the

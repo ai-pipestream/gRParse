@@ -69,4 +69,27 @@ void claim_fields(google::protobuf::Message* tracked,
 void rewrite_references(const std::map<std::string, std::string>& renumbering,
                         google::protobuf::Message* message);
 
+// Records every renumbering rewrite_references applies on this thread while
+// it lives, composed into one map from each ref as it stood when the log
+// opened to the ref it names now. The streaming surface wraps the
+// whole-document passes in one, so it can tell clients which refs the page
+// events carried were renamed rather than resending every item after a
+// retired one. Nested logs each see the renumberings made in their scope.
+class ReferenceRenameLog {
+ public:
+  ReferenceRenameLog();
+  ~ReferenceRenameLog();
+  ReferenceRenameLog(const ReferenceRenameLog&) = delete;
+  ReferenceRenameLog& operator=(const ReferenceRenameLog&) = delete;
+
+  // Composes one renumbering step onto what the log holds.
+  void record(const std::map<std::string, std::string>& step);
+  // Original ref to current ref, for every ref whose name changed.
+  const std::map<std::string, std::string>& renames() const { return current_of_; }
+
+ private:
+  ReferenceRenameLog* previous_;
+  std::map<std::string, std::string> current_of_;
+};
+
 }  // namespace grparse

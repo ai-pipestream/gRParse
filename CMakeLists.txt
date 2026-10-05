@@ -740,6 +740,7 @@ add_library(grparse_core STATIC
   src/page_previews.cpp
   src/page_source_watch.cpp
   src/page_projection.cpp
+  src/stream_delta.cpp
   src/page_scheduler.cpp
   src/prometheus_metrics.cpp
   src/reading_order.cpp
@@ -833,6 +834,7 @@ if(BUILD_TESTING)
     ort-session-ep-test
     page-previews-test
     page-projection-test
+    stream-delta-test
     page-scheduler-test
     pdf-source-test
     remote-pdf-source-test

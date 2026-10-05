@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -26,9 +27,11 @@
 #include "grparse/data_totals.h"
 #include "grparse/document_assembly.h"
 #include "grparse/document_collectors.h"
+#include "grparse/document_merge.h"
 #include "grparse/document_repair.h"
 #include "grparse/page_previews.h"
 #include "grparse/page_projection.h"
+#include "grparse/stream_delta.h"
 #include "parse_support.h"
 #include "structure_validation.h"
 
@@ -239,6 +242,9 @@ class DocumentStreamReactor final
     }
     if (!structure_.repairs.has_value() && incoming_.has_structure_repairs()) {
       structure_.repairs = incoming_.structure_repairs();
+    }
+    if (!slim_collector_documents_.has_value() && incoming_.has_slim_collector_documents()) {
+      slim_collector_documents_ = incoming_.slim_collector_documents();
     }
   }
 
@@ -809,6 +815,7 @@ class DocumentStreamReactor final
       pages.push_back(std::move(empty));
     }
     for (auto& page : pages) {
+      stream_fold_.fold(page);
       auto event = std::make_unique<ArenaEvent>();
       event->message->set_document_id(document_id_);
       event->message->set_total_pages(total_pages_);
@@ -848,6 +855,8 @@ class DocumentStreamReactor final
       append_page_data(*page_it->second, next_page_, &assembly_cursor_, event->message->mutable_page(),
                        &assembly_warnings_);
       page_scores_.push_back(page_confidence(*page_it->second));
+      stream_fold_.fold(event->message->page());
+      fold_has_cv_ = true;
       // Heading depth needs every page's heights; the terminal event ships
       // the clustered result for the level-0 headers streamed here.
       collect_header_heights(event->message->page(), &header_heights_);
@@ -889,7 +898,15 @@ class DocumentStreamReactor final
     // is where it is projected and emitted, so the repair pass runs on it
     // first, on the caller's thread and outside the reactor lock: it is
     // straight-line work on the outcome alone.
-    if (outcome.success && repair_.has_value()) run_repair_pass(&outcome.document, *repair_);
+    // Streamed pages went out before the pass; the renumbering it applies
+    // is what lets the repair event name renamed refs instead of resending
+    // every item after a retired one.
+    std::map<std::string, std::string> renamed;
+    if (outcome.success && repair_.has_value()) {
+      const ReferenceRenameLog log;
+      run_repair_pass(&outcome.document, *repair_);
+      renamed = log.renames();
+    }
     google::protobuf::RepeatedPtrField<pipestream::parse::v1::StructureFinding> findings;
     const grpc::Status structure_status =
         outcome.success ? check_structure(outcome.document, structure_, kStreamSurface, &findings)
@@ -916,6 +933,22 @@ class DocumentStreamReactor final
                                            collector == pipestream::parse::v1::COLLECTOR_PDF
                                                ? pipestream::parse::v1::TEXT_SOURCE_DIGITAL_PDF
                                                : pipestream::parse::v1::TEXT_SOURCE_UNSPECIFIED);
+      // What a client folding these pages still lacks to hold the
+      // collector's Document: the repair pass's changes for pages that
+      // streamed before it ran, and the tree the projection flattened for
+      // pages projected from the finished Document.
+      std::optional<pipestream::parse::v1::DocumentRepairDelta> delta;
+      if (pages_streamed) {
+        if (!fold_has_cv_ && !fold_settled_) {
+          fold_settled_ = true;
+          delta = repair_delta(stream_fold_.document(), outcome.document, renamed, collector);
+        }
+      } else if (!pages.empty()) {
+        PageFold fold;
+        for (const auto& page : pages) fold.fold(page);
+        delta = repair_delta(fold.document(), outcome.document, {}, collector);
+      }
+      const bool paged = pages_streamed || !pages.empty();
       if (!pages.empty()) {
         total_pages_ = std::max(total_pages_, static_cast<int>(pages.size()));
         for (auto& page : pages) {
@@ -926,6 +959,14 @@ class DocumentStreamReactor final
           events_.push_back(std::move(page_event));
         }
       }
+      if (delta.has_value()) {
+        auto delta_event = std::make_unique<ArenaEvent>();
+        delta_event->message->set_document_id(document_id_);
+        delta_event->message->set_total_pages(total_pages_);
+        *delta_event->message->mutable_repair() = std::move(*delta);
+        events_.push_back(std::move(delta_event));
+      }
+      if (paged && slim_collector_documents_.value_or(false)) slim(&outcome.document);
       auto event = std::make_unique<ArenaEvent>();
       event->message->set_document_id(document_id_);
       event->message->set_total_pages(total_pages_);
@@ -969,6 +1010,9 @@ class DocumentStreamReactor final
                                 : first_failure_status_);
       return;
     }
+    std::map<std::string, int32_t> levels;
+    if (!header_heights_.empty()) levels = section_header_levels(std::move(header_heights_));
+    emit_fold_delta_locked(levels);
     auto event = std::make_unique<ArenaEvent>();
     event->message->set_document_id(document_id_);
     event->message->set_total_pages(total_pages_);
@@ -979,10 +1023,7 @@ class DocumentStreamReactor final
     origin->set_mimetype_evidence(origin_mimetype_.evidence);
     origin->set_binary_hash(document_bytes_hash_);
     *complete->mutable_collector_failures() = collector_failures_;
-    if (!header_heights_.empty()) {
-      auto levels = section_header_levels(std::move(header_heights_));
-      complete->mutable_section_header_levels()->insert(levels.begin(), levels.end());
-    }
+    complete->mutable_section_header_levels()->insert(levels.begin(), levels.end());
     for (std::string& warning : assembly_warnings_) {
       complete->add_warnings(std::move(warning));
     }
@@ -991,6 +1032,63 @@ class DocumentStreamReactor final
     }
     events_.push_back(std::move(event));
     request_finish_locked(grpc::Status::OK);
+  }
+
+  // The CV pipeline's pages (and an inspector-streamed prefix ahead of
+  // them) went out as recognized, before anything whole-document could run
+  // on them. Here the stream catches up with the unary path: the fold of
+  // those pages, with the terminal event's heading levels applied, gets the
+  // list grouping and the repair pass, and whatever they changed goes out
+  // as the repair event. Inspector-only pages whose collector Document
+  // never arrived get the repair pass alone.
+  void emit_fold_delta_locked(const std::map<std::string, int32_t>& levels) {
+    if (stream_fold_.empty() || fold_settled_) return;
+    fold_settled_ = true;
+    try {
+      pipestream::document::v1::Document before = stream_fold_.document();
+      apply_section_header_levels(levels, &before);
+      pipestream::document::v1::Document after = before;
+      std::map<std::string, std::string> renamed;
+      {
+        const ReferenceRenameLog log;
+        if (fold_has_cv_) group_list_items(&after);
+        if (repair_.has_value()) {
+          // The CV pages' pass counts toward the server's repair totals as
+          // the unary path's does; inspector pages already counted with
+          // their collector's Document.
+          if (fold_has_cv_) {
+            run_repair_pass(&after, *repair_);
+          } else {
+            repair_document(&after, *repair_);
+          }
+        }
+        renamed = log.renames();
+      }
+      auto delta = repair_delta(before, after, renamed,
+                                fold_has_cv_ ? pipestream::parse::v1::COLLECTOR_GRPARSE_CV
+                                             : pipestream::parse::v1::COLLECTOR_PDF);
+      if (!delta.has_value()) return;
+      auto event = std::make_unique<ArenaEvent>();
+      event->message->set_document_id(document_id_);
+      event->message->set_total_pages(total_pages_);
+      *event->message->mutable_repair() = std::move(*delta);
+      events_.push_back(std::move(event));
+    } catch (const std::exception& error) {
+      assembly_warnings_.push_back(std::string("the streamed pages' repair event was skipped: ") +
+                                   error.what());
+    }
+  }
+
+  // What slim_collector_documents drops from a collector Document whose
+  // pages went out: everything the page events and repair event rebuild.
+  static void slim(pipestream::document::v1::Document* document) {
+    document->clear_texts();
+    document->clear_tables();
+    document->clear_pictures();
+    document->clear_groups();
+    document->clear_pages();
+    document->mutable_body()->clear_children();
+    document->mutable_furniture()->clear_children();
   }
 
   void request_finish_locked(grpc::Status status) {
@@ -1062,6 +1160,14 @@ class DocumentStreamReactor final
   // Level-less section headers streamed so far, clustered into depths for
   // the terminal event.
   std::vector<HeaderHeight> header_heights_;
+  // Every page event this stream emitted page by page (CV pages and the
+  // inspector's streamed fast path), folded the way a client folds them,
+  // so the end of the stream can say what the whole-document passes
+  // changed. Settled once its repair event is decided.
+  PageFold stream_fold_;
+  bool fold_has_cv_ = false;
+  bool fold_settled_ = false;
+  std::optional<bool> slim_collector_documents_;
   // Each streamed CV page's read quality, folded into the terminal event.
   std::vector<PageConfidence> page_scores_;
   // What the page assembly had to approximate rather than map, shipped with

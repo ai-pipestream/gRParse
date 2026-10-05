@@ -332,6 +332,22 @@ append-only UTF offsets, source type, and OCR confidence when available. The ori
 `Document` shape is unchanged: this is only a transport envelope for
 incremental delivery.
 
+Page events are deltas a client can fold back into the `Document`: each item
+sits at the arena index its `self_ref` names, `body_order` gives the page's
+body items, and `groups` carries each list or section group on the page of
+its first item. Pages go out before anything whole-document runs, so the
+stream follows them with one `DocumentStreamEvent.repair` when the repair
+pass (running headers and footers demoted, page-split paragraphs rejoined)
+or, for CV pages, the list grouping changed something: the refs it renamed,
+the items it changed, the arena sizes, and the new top-level children. Fold
+the pages, apply the complete event's `section_header_levels`, then apply
+the repair event, and the result equals the collector document (for CV
+pages, what the unary path returns); `DocumentRepairDelta` in
+`parse_stream.proto` gives the exact rules. A client that rebuilds from the
+pages can set `slim_collector_documents` on the first chunk, and each
+collector document whose pages streamed then omits the arenas, page map
+and children the pages already carried.
+
 Each outbound event and its nested protobuf messages are allocated in a
 short-lived `google::protobuf::Arena`. The arena stays alive until the
 asynchronous gRPC write completes. Protobuf Arena does not own OpenCV or ONNX Runtime buffers;

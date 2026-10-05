@@ -16,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -34,6 +35,7 @@
 #include "grparse/document_parser_service.h"
 #include "grparse/page_scheduler.h"
 #include "grparse/service_version.h"
+#include "grparse/stream_delta.h"
 #include "grparse/structure_rules.h"
 #include "support/check.h"
 #include "support/fake_pdf_backend.h"
@@ -2091,7 +2093,8 @@ struct StreamPdfRun {
 StreamPdfRun run_stream_pdf(
     const std::string& pdf_target, bool capture_page_images = false,
     const std::string& pdf_bytes = "%PDF-in-memory",
-    const std::function<void(const pipestream::parse::v1::DocumentStreamEvent&)>& observe = {}) {
+    const std::function<void(const pipestream::parse::v1::DocumentStreamEvent&)>& observe = {},
+    bool slim_collector_documents = false) {
   FakeRecognizer recognizer;
   grparse::PageScheduler::Options options{2, 3, 2, 3, 2, 2, 2};
   options.capture_page_images = capture_page_images;
@@ -2121,6 +2124,7 @@ StreamPdfRun run_stream_pdf(
   chunk.set_content_type("application/pdf");
   chunk.set_data(pdf_bytes);
   chunk.set_complete(true);
+  if (slim_collector_documents) chunk.set_slim_collector_documents(true);
   require(stream->Write(chunk), "pdf routing client could not write the source chunk");
   stream->WritesDone();
   StreamPdfRun run;
@@ -2942,6 +2946,149 @@ void verify_streaming_pdf_hands_the_rest_to_the_cv_path() {
           "the complete event says which pages came from the text layer");
 }
 
+// Streams a three-page text document page by page whose whole-document
+// repair has work to do: a running header in the top band of every page,
+// and a paragraph the page break splits between pages one and two.
+class RepairablePdfInspector final : public pdfv1::PdfParseService::Service {
+ public:
+  grpc::Status ParsePdf(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<pdfv1::ParsePdfResponse, pdfv1::ParsePdfRequest>* stream)
+      override {
+    pdfv1::ParsePdfRequest request;
+    bool page_documents = false;
+    while (stream->Read(&request)) {
+      if (request.has_options()) page_documents = request.options().emit_page_documents();
+    }
+    pdfv1::ParsePdfResponse event;
+    event.mutable_info()->set_pdf_type(pdfv1::PDF_TYPE_TEXT_BASED);
+    event.mutable_info()->set_page_count(3);
+    stream->Write(event);
+    docv1::Document whole;
+    whole.mutable_body()->set_self_ref("#/body");
+    whole.mutable_furniture()->set_self_ref("#/furniture");
+    const std::vector<std::vector<std::tuple<std::string, double, double>>> lines{
+        {{"ACME REPORT", 20, 40}, {"Minutes of the meeting.", 100, 120},
+         {"The committee decided that the", 900, 920}},
+        {{"ACME REPORT", 20, 40}, {"budget would be approved.", 100, 120}},
+        {{"ACME REPORT", 20, 40}, {"Closing remarks.", 300, 320}}};
+    for (const uint32_t page_no : {1U, 2U, 3U}) {
+      docv1::Document slice;
+      slice.mutable_body()->set_self_ref("#/body");
+      slice.mutable_furniture()->set_self_ref("#/furniture");
+      std::string markdown;
+      for (const auto& [text, top, bottom] : lines.at(page_no - 1)) {
+        const std::string self_ref = "#/texts/" + std::to_string(whole.texts_size());
+        auto* base = slice.add_texts()->mutable_text()->mutable_base();
+        base->set_self_ref(self_ref);
+        base->mutable_parent()->set_ref("#/body");
+        base->set_label(docv1::DOC_ITEM_LABEL_TEXT);
+        base->set_content_layer(docv1::CONTENT_LAYER_BODY);
+        base->set_text(text);
+        base->add_source()->mutable_collector()->set_collector("pdf");
+        auto* prov = base->add_prov();
+        prov->set_page_no(static_cast<int>(page_no));
+        prov->mutable_bbox()->set_l(60);
+        prov->mutable_bbox()->set_t(top);
+        prov->mutable_bbox()->set_r(740);
+        prov->mutable_bbox()->set_b(bottom);
+        prov->mutable_bbox()->set_coord_origin(docv1::COORD_ORIGIN_TOPLEFT);
+        slice.mutable_body()->add_children()->set_ref(self_ref);
+        *whole.add_texts() = *slice.mutable_texts()->rbegin();
+        whole.mutable_body()->add_children()->set_ref(self_ref);
+        markdown += text + "\n";
+      }
+      auto& page = (*slice.mutable_pages())[static_cast<int>(page_no)];
+      page.set_page_no(static_cast<int>(page_no));
+      page.mutable_size()->set_width(800);
+      page.mutable_size()->set_height(1000);
+      (*whole.mutable_pages())[static_cast<int>(page_no)] = page;
+      event.Clear();
+      event.mutable_page()->set_page_no(page_no);
+      event.mutable_page()->set_markdown(markdown);
+      stream->Write(event);
+      if (page_documents) {
+        event.Clear();
+        event.mutable_page_document()->set_page_no(page_no);
+        *event.mutable_page_document()->mutable_document() = std::move(slice);
+        stream->Write(event);
+      }
+    }
+    event.Clear();
+    *event.mutable_document() = std::move(whole);
+    stream->Write(event);
+    event.Clear();
+    event.mutable_status()->set_pages_extracted(3);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+};
+
+// The fields page events plus a repair event rebuild.
+docv1::Document rebuilt_part(const docv1::Document& document) {
+  docv1::Document part;
+  *part.mutable_texts() = document.texts();
+  *part.mutable_tables() = document.tables();
+  *part.mutable_pictures() = document.pictures();
+  *part.mutable_groups() = document.groups();
+  *part.mutable_body()->mutable_children() = document.body().children();
+  *part.mutable_furniture()->mutable_children() = document.furniture().children();
+  *part.mutable_pages() = document.pages();
+  return part;
+}
+
+// Pages that streamed before the repair pass ran are not the repaired
+// Document: the repair event says what changed (the header demoted on
+// every page, the split paragraph rejoined and the texts after it
+// renumbered), so a client folding the pages and applying it holds exactly
+// the collector document. With slim_collector_documents the collector
+// document drops what the pages rebuild and keeps the rest.
+void verify_streamed_pages_plus_repair_rebuild_the_document() {
+  RepairablePdfInspector inspector;
+  PdfInspectorServer inspector_server(&inspector);
+  docv1::Document whole;
+  for (const bool slim : {false, true}) {
+    const StreamPdfRun run =
+        run_stream_pdf(inspector_server.target(), false, "%PDF-in-memory", {}, slim);
+    require(run.status.ok(), "repairable stream failed: " + run.status.error_message());
+    require(run.events.size() == 6,
+            "three pages, the repair event, the collector document, then complete; got " +
+                std::to_string(run.events.size()));
+    grparse::PageFold fold;
+    for (int index = 0; index < 3; ++index) {
+      require(run.events.at(index).has_page(), "the pages stream first");
+      fold.fold(run.events.at(index).page());
+    }
+    const auto& repair = run.events.at(3);
+    require(repair.has_repair() &&
+                repair.repair().collector() == pipestream::parse::v1::COLLECTOR_PDF,
+            "the repair event follows the pages, naming the pdf collector");
+    require(!repair.repair().renamed_refs().empty(),
+            "the rejoined paragraph's renumbering travels as renames");
+    require(repair.repair().text_count() == 6, "one of seven texts was merged away");
+    require(repair.repair().texts_size() < 6, "renumbered-only texts are not resent");
+    const auto& collector = run.events.at(4);
+    require(collector.has_collector_document(), "the collector document follows the repair");
+    require(run.events.at(5).has_complete(), "the stream closes with the complete event");
+    docv1::Document rebuilt = fold.document();
+    require(grparse::apply_repair_delta(repair.repair(), &rebuilt), "the repair event applies");
+    if (!slim) {
+      whole = collector.collector_document().document();
+      require(whole.furniture().children_size() == 3, "the header is furniture on every page");
+    } else {
+      require(collector.collector_document().document().texts_size() == 0 &&
+                  collector.collector_document().document().pages().empty() &&
+                  collector.collector_document().document().body().children_size() == 0,
+              "a slim collector document drops what the pages rebuild");
+    }
+    google::protobuf::util::MessageDifferencer differencer;
+    std::string report;
+    differencer.ReportDifferencesToString(&report);
+    require(differencer.Compare(rebuilt_part(rebuilt), rebuilt_part(whole)),
+            "pages plus the repair event rebuild the collector document: " + report);
+  }
+}
+
 // gRParse reads PDFs only through a PdfBackendService. With none configured
 // a PDF on the CV path fails the way an unconfigured collector does
 // (FAILED_PRECONDITION), naming the variable that fixes it.
@@ -3594,6 +3741,7 @@ int main() {
         verify_streaming_pdf_fast_path_projects_pages();
         verify_streaming_pdf_fast_path_streams_page_by_page();
         verify_streaming_pdf_hands_the_rest_to_the_cv_path();
+        verify_streamed_pages_plus_repair_rebuild_the_document();
         verify_streaming_pdf_fast_path_renders_previews();
         verify_streaming_pdf_fast_path_skips_previews_when_off();
         verify_pdf_without_backend_fails_precondition();

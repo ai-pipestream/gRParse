@@ -204,6 +204,16 @@ int main(int argc, char** argv) {
         }
         dump_page_items(event.page());
       }
+    } else if (event.has_repair()) {
+      const auto& repair = event.repair();
+      std::println("repair renamed={} texts={} groups={} text_count={} body_children={} "
+                   "furniture_children={} ms={}",
+                   repair.renamed_refs_size(), repair.texts_size(), repair.groups_size(),
+                   repair.text_count(),
+                   repair.has_body_children() ? repair.body_children().refs_size() : -1,
+                   repair.has_furniture_children() ? repair.furniture_children().refs_size()
+                                                   : -1,
+                   elapsed_ms());
     } else if (event.has_complete()) {
       std::println("complete total_pages={} ms={} upload_ms={} first_page_ms={} last_page_ms={}",
                    event.total_pages(), elapsed_ms(), upload_ms, first_page_ms, last_page_ms);
