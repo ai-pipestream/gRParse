@@ -11,6 +11,8 @@
 #include <yaml-cpp/yaml.h>
 
 #include "ai/pipestream/document/v1/document.pb.h"
+#include "org/apache/opennlp/grpc/v1/opennlp_annotations.pb.h"
+#include "org/apache/opennlp/grpc/v1/opennlp_document.pb.h"
 #include "grparse/document_render.h"
 #include "support/check.h"
 
@@ -1336,6 +1338,95 @@ void verify_json_preserves_field_names_and_round_trips() {
           "round-tripped json is lossless");
 }
 
+// Document.analyses keeps the OpenNLP answer as its own typed message, so the
+// JSON export names its fields and reads back without loss, and the upstream
+// dialect leaves it out.
+void verify_json_round_trips_opennlp_analysis() {
+  namespace nlp = org::apache::opennlp::grpc::v1;
+  docv1::Document document = rich_document();
+  auto* analysis = document.add_analyses();
+  analysis->mutable_source()->set_collector("opennlp");
+  analysis->mutable_source()->set_version("3.0.0");
+  analysis->mutable_over()->set_producer("grparse-test");
+  analysis->mutable_over()->set_options_digest("0123456789abcdef");
+  analysis->set_stream_start(4);
+  analysis->set_stream_end(15);
+  (*analysis->mutable_layer_sources())["opennlp:entities"].set_model("en-ner-person");
+  nlp::OpenNlpDocument* result = analysis->mutable_opennlp();
+  result->set_raw_text("Ada Lovelace");
+  result->set_offset_encoding(nlp::OFFSET_ENCODING_UNICODE_CODE_POINT);
+  nlp::AnnotationLayer* layer = result->mutable_layers()->add_layers();
+  layer->set_id("opennlp:entities");
+  layer->set_scope(nlp::LAYER_SCOPE_POSITIONAL);
+  nlp::StringAnnotation* entity = layer->mutable_string_values()->add_annotations();
+  entity->mutable_span()->set_start(0);
+  entity->mutable_span()->set_end(12);
+  entity->mutable_span()->set_space(nlp::COORDINATE_SPACE_CHAR_DOCUMENT);
+  entity->set_value("person");
+  entity->set_probability(0.93);
+
+  const std::string json = grparse::render_json(document);
+  require_contains(json, "\"analyses\"", "json names the analyses field");
+  require_contains(json, "\"raw_text\"", "json keeps the OpenNLP field names");
+  require_contains(json, "\"OFFSET_ENCODING_UNICODE_CODE_POINT\"",
+                   "json spells the offset unit by name");
+  docv1::Document parsed;
+  require(google::protobuf::util::JsonStringToMessage(json, &parsed).ok(),
+          "json with an analysis parses back into the proto");
+  require(parsed.SerializeAsString() == document.SerializeAsString(),
+          "round-tripped analysis is lossless");
+  require(!grparse::render_canonical_json(document).contains("opennlp"),
+          "the upstream dialect leaves the analysis out");
+}
+
+// The typed arm keeps each annotation kind as its own message, so a place's
+// coordinates and an entity's votes come back from JSON exactly.
+void verify_json_round_trips_typed_opennlp_annotations() {
+  namespace nlp = org::apache::opennlp::grpc::v1;
+  docv1::Document document = rich_document();
+  auto* analysis = document.add_analyses();
+  analysis->mutable_source()->set_collector("opennlp");
+  analysis->set_stream_start(0);
+  analysis->set_stream_end(12);
+  nlp::OpenNlpAnnotations* typed = analysis->mutable_opennlp_annotations();
+  typed->set_raw_text("Paris, Texas");
+  typed->set_offset_encoding(nlp::OFFSET_ENCODING_UNICODE_CODE_POINT);
+  auto* model = typed->add_models();
+  model->set_model_ref("ner-1");
+  model->set_component("TokenNameFinder");
+  nlp::TypedLayer* entities = typed->add_layers();
+  entities->set_id("opennlp:entities");
+  entities->set_scope(nlp::LAYER_SCOPE_POSITIONAL);
+  entities->add_model_refs("ner-1");
+  nlp::Annotation* entity = entities->add_annotations();
+  entity->mutable_span()->set_start(0);
+  entity->mutable_span()->set_end(12);
+  entity->set_probability(0.91);
+  entity->mutable_entity()->set_type("location");
+  entity->mutable_entity()->set_text("Paris, Texas");
+  entity->mutable_entity()->add_votes()->set_recognizer_id("location");
+  nlp::TypedLayer* places = typed->add_layers();
+  places->set_id("opennlp:locations");
+  nlp::Annotation* place = places->add_annotations();
+  place->mutable_span()->set_start(0);
+  place->mutable_span()->set_end(12);
+  auto* resolved = place->mutable_place();
+  resolved->set_confidence(0.8);
+  resolved->mutable_place()->set_name("Paris");
+  resolved->mutable_place()->mutable_location()->set_latitude(33.6609);
+  resolved->mutable_place()->mutable_location()->set_longitude(-95.5555);
+  resolved->mutable_place()->set_feature_class(nlp::PLACE_FEATURE_CLASS_CITY);
+
+  const std::string json = grparse::render_json(document);
+  require_contains(json, "\"opennlp_annotations\"", "json names the typed arm");
+  require_contains(json, "\"PLACE_FEATURE_CLASS_CITY\"", "json spells typed enums by name");
+  docv1::Document parsed;
+  require(google::protobuf::util::JsonStringToMessage(json, &parsed).ok(),
+          "json with typed annotations parses back into the proto");
+  require(parsed.SerializeAsString() == document.SerializeAsString(),
+          "round-tripped typed annotations are lossless");
+}
+
 }  // namespace
 
 int main() {
@@ -1370,5 +1461,7 @@ int main() {
       verify_yaml_keeps_string_scalars,
       verify_empty_document_renders,
       verify_json_preserves_field_names_and_round_trips,
+      verify_json_round_trips_opennlp_analysis,
+      verify_json_round_trips_typed_opennlp_annotations,
   });
 }
