@@ -99,6 +99,9 @@ class WriterFold : public FoldBase {
   // recognise the per-page copies of a header's object.
   std::map<std::string, std::string> placed_objects_;
   std::set<std::string> repeated_objects_;
+  // Objects anchored in a header or footer, by identity without their
+  // place: the first copy goes to the furniture, later copies are dropped.
+  std::set<std::string> header_objects_;
   // True once a text frame streamed: the body walk is over, and a table
   // arriving now is held by a frame.
   bool frames_seen_ = false;

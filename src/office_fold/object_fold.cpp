@@ -91,7 +91,10 @@ void ObjectFold::on_embedded_object(const officev1::EmbeddedObject& object) {
         page_local ? object.position() : object.anchor();
     const double l = static_cast<double>(at.x());
     const double t = static_cast<double>(at.y());
-    return charts_.emit(&object, nullptr, "#/body", docv1::CONTENT_LAYER_BODY,
+    const bool header_object = object.in_header_footer();
+    return charts_.emit(&object, nullptr, header_object ? "#/furniture" : "#/body",
+                        header_object ? docv1::CONTENT_LAYER_FURNITURE
+                                      : docv1::CONTENT_LAYER_BODY,
                         page_local, object.page_index(), l, t,
                         l + static_cast<double>(object.width_twips()),
                         t + static_cast<double>(object.height_twips()));
@@ -100,6 +103,11 @@ void ObjectFold::on_embedded_object(const officev1::EmbeddedObject& object) {
   // OLE2 shape that places it on its slide.
   if (arena_.document_type() == "presentation") {
     pending_[object.page_index()].push_back(object);
+    return;
+  }
+  // An object anchored in a header or footer is page furniture.
+  if (object.in_header_footer()) {
+    emit(object, "#/furniture", docv1::CONTENT_LAYER_FURNITURE);
     return;
   }
   emit(object, "#/body", docv1::CONTENT_LAYER_BODY);

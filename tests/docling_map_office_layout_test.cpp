@@ -290,6 +290,46 @@ void verify_picture_reads_after_its_anchor_paragraph() {
           "the logo follows its anchor paragraph");
 }
 
+// A logo anchored in the page header is furniture, kept once however many
+// pages repeat it, and never reads in the body after the title.
+void verify_header_anchored_picture_is_furniture() {
+  std::vector<officev1::StreamPagesResponse> events{text_info(2)};
+  events.push_back(paragraph("Agenda", 0, 1505));
+  for (int page = 0; page < 2; page++) {
+    officev1::StreamPagesResponse logo = anchored_picture("logo", page, page * kPageHeight + 686);
+    logo.mutable_embedded_image()->set_in_header_footer(true);
+    events.push_back(logo);
+  }
+  officev1::StreamPagesResponse box;
+  officev1::TextFrame* frame = box.mutable_text_frame();
+  frame->set_name("HeaderBox");
+  frame->set_page_index(0);
+  frame->set_width_twips(4000);
+  frame->set_height_twips(500);
+  frame->mutable_anchor()->set_x(1440);
+  frame->mutable_anchor()->set_y(700);
+  frame->set_in_header_footer(true);
+  *frame->add_runs() = run("Letterhead");
+  events.push_back(box);
+  events.push_back(status_event());
+  const docv1::Document document = fold(events);
+  require(document.pictures_size() == 1, "the repeated logo is kept once");
+  require(document.pictures(0).parent().ref() == "#/furniture" &&
+              document.pictures(0).content_layer() == docv1::CONTENT_LAYER_FURNITURE,
+          "the logo is furniture");
+  const auto& body = document.body().children();
+  require(body.size() == 1 && body[0].ref() == "#/texts/0",
+          "the body holds only the title");
+  bool frame_in_furniture = false;
+  for (int i = 0; i < document.texts_size(); i++) {
+    const docv1::TextItemBase* base = text_base(document, i);
+    if (base->text() == "Letterhead") {
+      frame_in_furniture = base->content_layer() == docv1::CONTENT_LAYER_FURNITURE;
+    }
+  }
+  require(frame_in_furniture, "a header text frame is furniture too");
+}
+
 // A frame whose anchor plus size overruns its page reports the part on
 // the page.
 void verify_frame_overrunning_its_page_is_clipped() {
@@ -480,5 +520,6 @@ int main() {
       verify_slide_reads_in_geometric_order,
       verify_pictures_on_blank_pages_keep_page_order,
       verify_picture_reads_after_its_anchor_paragraph,
+      verify_header_anchored_picture_is_furniture,
   });
 }

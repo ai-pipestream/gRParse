@@ -226,7 +226,19 @@ void WriterFold::on_embedded_image(const officev1::EmbeddedImage& image) {
     }
     return;
   }
-  if (!page_local) {
+  // A header or footer logo repeats on the pages of its page style; it is
+  // furniture, kept once, never a body picture at the header's caret.
+  const bool header_object = !page_local && image.in_header_footer();
+  if (header_object) {
+    if (!header_objects_
+             .insert(object_key("image", image.name(),
+                                std::to_string(std::hash<std::string>{}(image.data())),
+                                image.width_twips(), image.height_twips(), -1, nullptr))
+             .second) {
+      return;
+    }
+    if (parent == "#/body") parent = "#/furniture";
+  } else if (!page_local) {
     // The image bytes are part of the identity: two different pictures can
     // share a name and a size, never the bytes too.
     const std::string key = object_key(
@@ -238,8 +250,13 @@ void WriterFold::on_embedded_image(const officev1::EmbeddedImage& image) {
         "#/pictures/" + std::to_string(arena_.document().pictures_size());
     if (repeats_placed_object(key, next_ref)) return;
   }
+  const docv1::GroupItem* container = arena_.group_by_ref(parent);
+  const bool furniture =
+      header_object || container->content_layer() == docv1::CONTENT_LAYER_FURNITURE;
   picture = arena_.add_picture(docv1::DOC_ITEM_LABEL_PICTURE,
-                               docv1::CONTENT_LAYER_BODY, parent, &picture_ref);
+                               furniture ? docv1::CONTENT_LAYER_FURNITURE
+                                         : docv1::CONTENT_LAYER_BODY,
+                               parent, &picture_ref);
   if (!image.name().empty()) picture->mutable_shape()->set_name(image.name());
   set_alt_text(image.title(), image.description(), picture);
   // A Writer picture anchored in an otherwise empty paragraph takes that
@@ -346,18 +363,30 @@ void WriterFold::on_text_frame(const officev1::TextFrame& frame) {
   // on its own) is no text item.
   const std::string text = concat_runs(frame.runs());
   if (blank_text(text)) return;
-  const std::string key = object_key(
-      "frame", frame.name(), text, frame.width_twips(), frame.height_twips(),
-      frame.page_index(), frame.has_anchor() ? &frame.anchor() : nullptr);
-  const std::string group_ref =
-      "#/groups/" + std::to_string(arena_.document().groups_size());
-  if (repeats_placed_object(key, group_ref)) return;
+  const bool header_object = frame.in_header_footer();
+  if (header_object) {
+    if (!header_objects_
+             .insert(object_key("frame", frame.name(), text, frame.width_twips(),
+                                frame.height_twips(), -1, nullptr))
+             .second) {
+      return;
+    }
+  } else {
+    const std::string key = object_key(
+        "frame", frame.name(), text, frame.width_twips(), frame.height_twips(),
+        frame.page_index(), frame.has_anchor() ? &frame.anchor() : nullptr);
+    const std::string group_ref =
+        "#/groups/" + std::to_string(arena_.document().groups_size());
+    if (repeats_placed_object(key, group_ref)) return;
+  }
+  const docv1::ContentLayer layer =
+      header_object ? docv1::CONTENT_LAYER_FURNITURE : docv1::CONTENT_LAYER_BODY;
   docv1::GroupItem* group =
-      arena_.add_group("#/body", docv1::GROUP_LABEL_UNSPECIFIED, frame.name(),
-                       docv1::CONTENT_LAYER_BODY);
+      arena_.add_group(header_object ? "#/furniture" : "#/body",
+                       docv1::GROUP_LABEL_UNSPECIFIED, frame.name(), layer);
   TextHandle handle =
-      arena_.add_text(TextKind::kText, docv1::DOC_ITEM_LABEL_TEXT,
-                      docv1::CONTENT_LAYER_BODY, group->self_ref());
+      arena_.add_text(TextKind::kText, docv1::DOC_ITEM_LABEL_TEXT, layer,
+                      group->self_ref());
   // The frame's identity, chain included, belongs on the item that carries
   // its text.
   docv1::ShapeMeta* shape_meta = handle.base->mutable_shape();
@@ -374,7 +403,7 @@ void WriterFold::on_text_frame(const officev1::TextFrame& frame) {
   }
   // A frame streams after the body text; like an unslotted picture it is
   // judged against the finished body and placed by where it sits.
-  floating_items_.insert(group->self_ref());
+  if (!header_object) floating_items_.insert(group->self_ref());
 }
 
 void WriterFold::on_shape(const officev1::Shape& shape) {
@@ -384,12 +413,22 @@ void WriterFold::on_shape(const officev1::Shape& shape) {
     parent = container->second;
   }
 
+  // Only a top-level shape has a caret anchor, so only it can say it sits
+  // in a header; its children follow it there through their group.
+  const bool header_object = parent == "#/body" && shape.in_header_footer();
+  if (header_object) parent = "#/furniture";
+  const docv1::GroupItem* container = arena_.group_by_ref(parent);
+  const docv1::ContentLayer layer =
+      parent == "#/furniture" ||
+              container->content_layer() == docv1::CONTENT_LAYER_FURNITURE
+          ? docv1::CONTENT_LAYER_FURNITURE
+          : docv1::CONTENT_LAYER_BODY;
+
   if (shape.is_group()) {
     // The group's own shape type is always the office core's group shape,
     // which GROUP_LABEL_PICTURE_AREA already says.
     docv1::GroupItem* group =
-        arena_.add_group(parent, docv1::GROUP_LABEL_PICTURE_AREA, shape.name(),
-                         docv1::CONTENT_LAYER_BODY);
+        arena_.add_group(parent, docv1::GROUP_LABEL_PICTURE_AREA, shape.name(), layer);
     writer_groups_[child_group_path(shape.group_path(), shape.z_order())] =
         group->self_ref();
     if (parent == "#/body") floating_items_.insert(group->self_ref());
@@ -399,20 +438,28 @@ void WriterFold::on_shape(const officev1::Shape& shape) {
   // A drawn shape with no text (a line, a box, an arrow) is no text item.
   const std::string text = concat_runs(shape.runs());
   if (blank_text(text)) return;
-  const std::string key = object_key(
-      "shape", shape.name() + "\x1f" + shape.group_path(), text,
-      shape.width_twips(), shape.height_twips(), shape.page_index(),
-      shape.has_anchor() ? &shape.anchor()
-                         : (shape.has_position() ? &shape.position() : nullptr));
-  const std::string group_ref =
-      "#/groups/" + std::to_string(arena_.document().groups_size());
-  if (repeats_placed_object(key, group_ref)) return;
+  if (header_object) {
+    if (!header_objects_
+             .insert(object_key("shape", shape.name(), text, shape.width_twips(),
+                                shape.height_twips(), -1, nullptr))
+             .second) {
+      return;
+    }
+  } else {
+    const std::string key = object_key(
+        "shape", shape.name() + "\x1f" + shape.group_path(), text,
+        shape.width_twips(), shape.height_twips(), shape.page_index(),
+        shape.has_anchor() ? &shape.anchor()
+                           : (shape.has_position() ? &shape.position() : nullptr));
+    const std::string group_ref =
+        "#/groups/" + std::to_string(arena_.document().groups_size());
+    if (repeats_placed_object(key, group_ref)) return;
+  }
   docv1::GroupItem* group =
-      arena_.add_group(parent, docv1::GROUP_LABEL_UNSPECIFIED, shape.name(),
-                       docv1::CONTENT_LAYER_BODY);
+      arena_.add_group(parent, docv1::GROUP_LABEL_UNSPECIFIED, shape.name(), layer);
   TextHandle handle =
-      arena_.add_text(TextKind::kText, docv1::DOC_ITEM_LABEL_TEXT,
-                      docv1::CONTENT_LAYER_BODY, group->self_ref());
+      arena_.add_text(TextKind::kText, docv1::DOC_ITEM_LABEL_TEXT, layer,
+                      group->self_ref());
   docv1::ShapeMeta* shape_meta = handle.base->mutable_shape();
   set_shape_meta(shape.shape_type(), shape.name(), shape_meta);
   shape_meta->set_z_order(shape.z_order());
