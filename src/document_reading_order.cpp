@@ -1,6 +1,7 @@
 #include "grparse/document_reading_order.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <map>
 #include <optional>
@@ -251,9 +252,18 @@ BodyOrderReport order_body_by_geometry(docv1::Document* document, const BodyOrde
 }
 
 PictureAnchorReport anchor_pictures_by_provenance(docv1::Document* document,
-                                                  const std::vector<std::string>& picture_refs) {
+                                                  const std::vector<std::string>& picture_refs,
+                                                  const std::string& container) {
   PictureAnchorReport report;
   if (document == nullptr || picture_refs.empty()) return report;
+  docv1::GroupItem* holder = nullptr;
+  if (container == "#/body") {
+    holder = document->mutable_body();
+  } else if (container.starts_with("#/groups/")) {
+    const int index = std::stoi(container.substr(9));
+    if (index >= 0 && index < document->groups_size()) holder = document->mutable_groups(index);
+  }
+  if (holder == nullptr) return report;
   const std::set<std::string> moving(picture_refs.begin(), picture_refs.end());
   const std::map<int, double> heights = document_page_heights(*document);
 
@@ -264,7 +274,7 @@ PictureAnchorReport anchor_pictures_by_provenance(docv1::Document* document,
   };
   std::vector<Kept> kept;
   std::vector<Mover> movers;
-  for (const auto& child : document->body().children()) {
+  for (const auto& child : holder->children()) {
     if (moving.contains(child.ref())) {
       movers.push_back({child.ref(), child, item_placement(*document, child.ref(), heights),
                         static_cast<int>(movers.size() + kept.size())});
@@ -311,6 +321,29 @@ PictureAnchorReport anchor_pictures_by_provenance(docv1::Document* document,
         first_after_page = index;
       }
     }
+    // Paragraphs of one text box all carry the box's own frame (a slide
+    // placeholder's bullets, say): the picture beside that box follows the
+    // whole run of them, not just the first.
+    while (beside.has_value() && *beside + 1 < kept.size()) {
+      const auto& here = kept[*beside].placement;
+      const auto& next = kept[*beside + 1].placement;
+      if (!next.has_value() || next->page != page ||
+          std::abs(next->box.top - here->box.top) > 1.0 ||
+          std::abs(next->box.bottom - here->box.bottom) > 1.0) {
+        break;
+      }
+      beside = *beside + 1;
+    }
+    // Items after it on the page that start above the picture are read
+    // before it too: a slide's text boxes laid over a full-slide table, or
+    // a heading over the picture it introduces.
+    while (beside.has_value() && *beside + 1 < kept.size()) {
+      const auto& next = kept[*beside + 1].placement;
+      if (!next.has_value() || next->page != page || next->box.top >= mover.placement->box.top) {
+        break;
+      }
+      beside = *beside + 1;
+    }
     if (beside.has_value()) slot = *beside + 1;
     if (!slot.has_value()) {
       if (last_on_page.has_value()) {
@@ -326,7 +359,7 @@ PictureAnchorReport anchor_pictures_by_provenance(docv1::Document* document,
   }
 
   google::protobuf::RepeatedPtrField<docv1::RefItem> rebuilt;
-  rebuilt.Reserve(document->body().children_size());
+  rebuilt.Reserve(holder->children_size());
   const auto emit_slot = [&](size_t index) {
     if (const auto found = slots.find(index); found != slots.end()) {
       for (const Mover* mover : found->second) *rebuilt.Add() = mover->child;
@@ -338,7 +371,7 @@ PictureAnchorReport anchor_pictures_by_provenance(docv1::Document* document,
   }
   emit_slot(kept.size());
   for (const Mover* mover : trailing) *rebuilt.Add() = mover->child;
-  document->mutable_body()->mutable_children()->Swap(&rebuilt);
+  holder->mutable_children()->Swap(&rebuilt);
   return report;
 }
 

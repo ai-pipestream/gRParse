@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <limits>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -118,14 +119,19 @@ bool region_before(const LayoutRegion& a, const LayoutRegion& b) {
 // the page's own coordinate space and linked into the body like every other
 // mapped item. Returns its reference.
 std::string append_figure(const LayoutRegion& region, int page_number, double scale,
-                          const std::string& layout_model, docv1::Document* document) {
+                          const std::string& layout_model, const std::string& parent,
+                          docv1::Document* document) {
   const std::string ref = "#/pictures/" + std::to_string(document->pictures_size());
   docv1::PictureItem* picture = document->add_pictures();
   picture->set_self_ref(ref);
-  picture->mutable_parent()->set_ref("#/body");
+  picture->mutable_parent()->set_ref(parent);
   picture->set_content_layer(docv1::CONTENT_LAYER_BODY);
   picture->set_label(docv1::DOC_ITEM_LABEL_PICTURE);
-  document->mutable_body()->add_children()->set_ref(ref);
+  if (parent.starts_with("#/groups/")) {
+    document->mutable_groups(std::stoi(parent.substr(9)))->add_children()->set_ref(ref);
+  } else {
+    document->mutable_body()->add_children()->set_ref(ref);
+  }
 
   docv1::ProvenanceItem* provenance = picture->add_prov();
   provenance->set_page_no(page_number);
@@ -172,8 +178,25 @@ OfficeCvReport enrich_office_document(const OfficeCvEnrichment& enrichment,
   for (const auto& [page_number, _] : document->pages()) page_numbers.push_back(page_number);
   std::ranges::sort(page_numbers);
 
+  // A deck's items sit in one group per slide, in slide order; a figure
+  // found on a slide belongs in that slide's group, read among its items,
+  // not after the whole slide in the body.
+  std::vector<std::string> slide_groups;
+  for (const auto& child : document->body().children()) {
+    if (!child.ref().starts_with("#/groups/")) continue;
+    const int index = std::stoi(child.ref().substr(9));
+    if (index < document->groups_size() &&
+        document->groups(index).label() == docv1::GROUP_LABEL_SLIDE) {
+      slide_groups.push_back(child.ref());
+    }
+  }
+  const bool deck = !slide_groups.empty() && slide_groups.size() == page_numbers.size();
+  std::map<std::string, std::vector<std::string>> added_by_container;
+
   std::vector<std::string> added;
-  for (const int page_number : page_numbers) {
+  for (size_t page_slot = 0; page_slot < page_numbers.size(); ++page_slot) {
+    const int page_number = page_numbers[page_slot];
+    const std::string parent = deck ? slide_groups[page_slot] : "#/body";
     const docv1::PageItem& page = document->pages().at(page_number);
     const cv::Mat raster = decode_page_image(page);
     if (raster.empty()) continue;
@@ -206,11 +229,14 @@ OfficeCvReport enrich_office_document(const OfficeCvEnrichment& enrichment,
           (enrichment.barcode_mode == PageScheduler::BarcodeMode::kClassTriggered &&
            barcode_class(region));
       if (decode) region.barcodes = decode_barcodes(crop);
-      added.push_back(append_figure(region, page_number, scale, layout_model, document));
+      added.push_back(append_figure(region, page_number, scale, layout_model, parent, document));
+      added_by_container[parent].push_back(added.back());
     }
   }
   report.pictures_added = static_cast<int>(added.size());
-  report.pictures_anchored = anchor_pictures_by_provenance(document, added).anchored;
+  for (const auto& [container, refs] : added_by_container) {
+    report.pictures_anchored += anchor_pictures_by_provenance(document, refs, container).anchored;
+  }
   counters().pictures_added.fetch_add(static_cast<uint64_t>(report.pictures_added),
                                       std::memory_order_relaxed);
   counters().pictures_anchored.fetch_add(static_cast<uint64_t>(report.pictures_anchored),

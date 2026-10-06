@@ -256,6 +256,58 @@ void verify_figures_anchor_deterministically() {
   require(a == expected, "figures sit at their provenance positions; got " + got);
 }
 
+// A deck: each slide's items sit in that slide's group. A figure found on a
+// slide joins that group, among the slide's own items by position, instead
+// of trailing the whole slide in the body.
+void verify_deck_figures_join_their_slide() {
+  docv1::Document document = office_document_with_qr_page(222, 2220);
+  docv1::PageItem& second = (*document.mutable_pages())[2];
+  second = document.pages().at(1);
+  second.set_page_no(2);
+  for (int slide = 1; slide <= 2; ++slide) {
+    const std::string group_ref = "#/groups/" + std::to_string(document.groups_size());
+    docv1::GroupItem* group = document.add_groups();
+    group->set_self_ref(group_ref);
+    group->mutable_parent()->set_ref("#/body");
+    group->set_label(docv1::GROUP_LABEL_SLIDE);
+    document.mutable_body()->add_children()->set_ref(group_ref);
+    for (const double top : {0.0, 2000.0}) {
+      add_paragraph(&document, "s" + std::to_string(slide) + (top == 0.0 ? " title" : " footer"), slide, top);
+      // add_paragraph links into the body; move the link into the slide.
+      document.mutable_body()->mutable_children()->RemoveLast();
+      auto* base = document.mutable_texts(document.texts_size() - 1)->mutable_text()->mutable_base();
+      base->mutable_parent()->set_ref(group_ref);
+      group->add_children()->set_ref(base->self_ref());
+    }
+  }
+  AlternatingTwoFigureDetector detector;
+  grparse::OfficeCvEnrichment enrichment;
+  enrichment.detector = &detector;
+  const grparse::OfficeCvReport report = grparse::enrich_office_document(enrichment, &document);
+  require(report.pictures_added == 4 && report.pictures_anchored == 4, "four figures, all anchored");
+  require(document.body().children_size() == 2, "the body still holds just the two slides");
+  for (int slide = 0; slide < 2; ++slide) {
+    const docv1::GroupItem& group = document.groups(slide);
+    std::vector<std::string> sequence;
+    for (const auto& child : group.children()) {
+      if (child.ref().starts_with("#/texts/")) {
+        sequence.push_back(document.texts(std::stoi(child.ref().substr(8))).text().base().text());
+      } else {
+        const auto& picture = document.pictures(std::stoi(child.ref().substr(11)));
+        require(picture.parent().ref() == group.self_ref(), "a figure's parent is its slide");
+        require(picture.prov(0).page_no() == slide + 1, "a figure joins the slide it was found on");
+        sequence.push_back("figure@" + std::to_string(static_cast<int>(picture.prov(0).bbox().t())));
+      }
+    }
+    const std::string title = "s" + std::to_string(slide + 1) + " title";
+    const std::string footer = "s" + std::to_string(slide + 1) + " footer";
+    const std::vector<std::string> expected = {title, "figure@100", "figure@1310", footer};
+    std::string got;
+    for (const auto& entry : sequence) got += entry + " | ";
+    require(sequence == expected, "figures read inside their slide; got " + got);
+  }
+}
+
 // A detection where the office core already placed a picture is dropped,
 // and so is a second detection of the same place on one page.
 void verify_detections_dedupe_against_existing_pictures() {
@@ -314,6 +366,7 @@ int main() {
       verify_detected_figure_lands_scaled_classified_and_decoded,
       verify_class_gate_blocks_decode,
       verify_figures_anchor_deterministically,
+      verify_deck_figures_join_their_slide,
       verify_detections_dedupe_against_existing_pictures,
       verify_pages_without_usable_images_are_skipped,
   });

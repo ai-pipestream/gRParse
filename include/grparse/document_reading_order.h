@@ -61,8 +61,12 @@ struct PictureAnchorReport {
 // Both groups are processed in (page, top, left) order, so the result is
 // the same whatever order the detector reported them in; pictures that tie
 // on all three (the unplaced ones, say) keep their body order.
+// container names the group whose direct children the pictures are and
+// among which they are placed: the body by default, a slide's group in a
+// deck.
 PictureAnchorReport anchor_pictures_by_provenance(
     ai::pipestream::document::v1::Document* document,
-    const std::vector<std::string>& picture_refs);
+    const std::vector<std::string>& picture_refs,
+    const std::string& container = "#/body");
 
 }  // namespace grparse
