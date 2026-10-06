@@ -251,9 +251,18 @@ BodyOrderReport order_body_by_geometry(docv1::Document* document, const BodyOrde
 }
 
 PictureAnchorReport anchor_pictures_by_provenance(docv1::Document* document,
-                                                  const std::vector<std::string>& picture_refs) {
+                                                  const std::vector<std::string>& picture_refs,
+                                                  const std::string& container) {
   PictureAnchorReport report;
   if (document == nullptr || picture_refs.empty()) return report;
+  docv1::GroupItem* holder = nullptr;
+  if (container == "#/body") {
+    holder = document->mutable_body();
+  } else if (container.starts_with("#/groups/")) {
+    const int index = std::stoi(container.substr(9));
+    if (index >= 0 && index < document->groups_size()) holder = document->mutable_groups(index);
+  }
+  if (holder == nullptr) return report;
   const std::set<std::string> moving(picture_refs.begin(), picture_refs.end());
   const std::map<int, double> heights = document_page_heights(*document);
 
@@ -264,7 +273,7 @@ PictureAnchorReport anchor_pictures_by_provenance(docv1::Document* document,
   };
   std::vector<Kept> kept;
   std::vector<Mover> movers;
-  for (const auto& child : document->body().children()) {
+  for (const auto& child : holder->children()) {
     if (moving.contains(child.ref())) {
       movers.push_back({child.ref(), child, item_placement(*document, child.ref(), heights),
                         static_cast<int>(movers.size() + kept.size())});
@@ -326,7 +335,7 @@ PictureAnchorReport anchor_pictures_by_provenance(docv1::Document* document,
   }
 
   google::protobuf::RepeatedPtrField<docv1::RefItem> rebuilt;
-  rebuilt.Reserve(document->body().children_size());
+  rebuilt.Reserve(holder->children_size());
   const auto emit_slot = [&](size_t index) {
     if (const auto found = slots.find(index); found != slots.end()) {
       for (const Mover* mover : found->second) *rebuilt.Add() = mover->child;
@@ -338,7 +347,7 @@ PictureAnchorReport anchor_pictures_by_provenance(docv1::Document* document,
   }
   emit_slot(kept.size());
   for (const Mover* mover : trailing) *rebuilt.Add() = mover->child;
-  document->mutable_body()->mutable_children()->Swap(&rebuilt);
+  holder->mutable_children()->Swap(&rebuilt);
   return report;
 }
 

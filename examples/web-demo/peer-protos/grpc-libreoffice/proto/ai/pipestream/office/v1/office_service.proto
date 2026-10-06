@@ -873,8 +873,9 @@ message TrackedChange {
   int64 epoch_ms = 5;
   // The change's comment; empty when unset.
   string comment = 6;
-  // The office core's redline identifier pairing this change's start and
-  // end marks; empty when the office core does not report one.
+  // This change's number in the document, 1 up in the order the
+  // extraction meets the changes; the same on every parse of the same
+  // bytes. Empty when the office core does not report a redline identifier.
   string identifier = 7;
   // Start of the changed range in the annotation text space; -1 when the
   // change sits outside the body flow (a table cell or header).
