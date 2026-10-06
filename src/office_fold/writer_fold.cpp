@@ -534,6 +534,17 @@ void WriterFold::place_headers_footers() {
 }
 
 void WriterFold::anchor_trailing_pictures() {
+  for (const std::string& ref : deferred_floating_) {
+    auto* children = arena_.document().mutable_body()->mutable_children();
+    for (int i = 0; i < children->size(); i++) {
+      if (children->Get(i).ref() != ref) continue;
+      docv1::RefItem moved = children->Get(i);
+      children->DeleteSubrange(i, 1);
+      *children->Add() = std::move(moved);
+      floating_items_.insert(ref);
+      break;
+    }
+  }
   const docv1::Document& document = arena_.document();
   if (arena_.document_type() != "text" || floating_items_.empty()) return;
   const std::map<int, double> heights = document_page_heights(document);

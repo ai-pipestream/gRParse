@@ -46,8 +46,19 @@ void DoclingMapper::consume(const officev1::StreamPagesResponse& event) {
       return writer_.on_text_frame(event.text_frame());
     case officev1::StreamPagesResponse::kShape:
       return writer_.on_shape(event.shape());
-    case officev1::StreamPagesResponse::kEmbeddedObject:
-      return objects_.on_embedded_object(event.embedded_object());
+    case officev1::StreamPagesResponse::kEmbeddedObject: {
+      // A text document streams its objects ahead of the body text; what
+      // they add to the body is placed by where it sits once the body is in.
+      const int before = arena_.document().body().children_size();
+      objects_.on_embedded_object(event.embedded_object());
+      if (arena_.document_type() == "text") {
+        const auto& children = arena_.document().body().children();
+        for (int i = before; i < children.size(); i++) {
+          writer_.defer_floating(children.Get(i).ref());
+        }
+      }
+      return;
+    }
     case officev1::StreamPagesResponse::kSheet:
       return sheets_.on_sheet(event.sheet());
     case officev1::StreamPagesResponse::kSheetRow:

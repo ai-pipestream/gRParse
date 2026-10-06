@@ -43,6 +43,10 @@ class WriterFold : public FoldBase {
   // in reading order is left where the fold put it. Text frames and
   // shapes, which stream after all body text, are placed the same way.
   void anchor_trailing_pictures();
+  // A body item that streamed ahead of the text it sits in (a Writer OLE
+  // object): it moves to the end of the body and is placed with the
+  // trailing pictures.
+  void defer_floating(const std::string& ref) { deferred_floating_.push_back(ref); }
 
   // A page header or footer belongs to the page style that declares it and
   // so sits on every page laid out in that style. Once the pages are in,
@@ -104,6 +108,7 @@ class WriterFold : public FoldBase {
   std::set<std::string> header_objects_;
   // Caret extents (start y, end y, document twips) of the body tables.
   std::vector<std::pair<long long, long long>> table_spans_;
+  std::vector<std::string> deferred_floating_;
   // True once a text frame streamed: the body walk is over, and a table
   // arriving now is held by a frame.
   bool frames_seen_ = false;
