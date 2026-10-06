@@ -354,6 +354,27 @@ void verify_picture_anchoring() {
   require(build(true) == forward, "the detector's report order does not matter");
 }
 
+// A slide placeholder's bullets each carry the placeholder's box. A picture
+// beside that box follows the whole run of bullets, not the first one.
+void verify_picture_follows_a_shared_box_run() {
+  docv1::Document document = base_document(1, 800, 1000);
+  add_text(&document, "title", 1, 50, 20, 750, 80, docv1::COORD_ORIGIN_TOPLEFT,
+           docv1::DOC_ITEM_LABEL_TEXT, "libreoffice");
+  for (const char* bullet : {"bullet one", "bullet two", "bullet three"}) {
+    add_text(&document, bullet, 1, 50, 200, 750, 980, docv1::COORD_ORIGIN_TOPLEFT,
+             docv1::DOC_ITEM_LABEL_TEXT, "libreoffice");
+  }
+  const std::string logo = add_picture(&document, 1, 650, 900, 750, 960,
+                                       docv1::COORD_ORIGIN_TOPLEFT, "grparse");
+  const grparse::PictureAnchorReport report =
+      grparse::anchor_pictures_by_provenance(&document, {logo});
+  require(report.anchored == 1, "the picture is anchored");
+  const std::vector<std::string> expected = {"#/texts/0", "#/texts/1", "#/texts/2", "#/texts/3",
+                                             logo};
+  require(body_refs(document) == expected,
+          "the picture follows every bullet of its box; got " + joined(body_refs(document)));
+}
+
 // Pictures that tie on placement (here: none has one) keep their body
 // order, not the string order of their references ("#/pictures/10" before
 // "#/pictures/2").
@@ -401,6 +422,7 @@ int main() {
       verify_coverage_gate_and_aside_attachment,
       verify_paper_page_two_anchors,
       verify_picture_anchoring,
+      verify_picture_follows_a_shared_box_run,
       verify_unplaced_pictures_keep_body_order,
       verify_non_finite_boxes_have_no_placement,
   });

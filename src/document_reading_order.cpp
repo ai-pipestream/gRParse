@@ -1,6 +1,7 @@
 #include "grparse/document_reading_order.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <map>
 #include <optional>
@@ -319,6 +320,29 @@ PictureAnchorReport anchor_pictures_by_provenance(docv1::Document* document,
       } else if (placement->page > page && !first_after_page.has_value()) {
         first_after_page = index;
       }
+    }
+    // Paragraphs of one text box all carry the box's own frame (a slide
+    // placeholder's bullets, say): the picture beside that box follows the
+    // whole run of them, not just the first.
+    while (beside.has_value() && *beside + 1 < kept.size()) {
+      const auto& here = kept[*beside].placement;
+      const auto& next = kept[*beside + 1].placement;
+      if (!next.has_value() || next->page != page ||
+          std::abs(next->box.top - here->box.top) > 1.0 ||
+          std::abs(next->box.bottom - here->box.bottom) > 1.0) {
+        break;
+      }
+      beside = *beside + 1;
+    }
+    // Items after it on the page that start above the picture are read
+    // before it too: a slide's text boxes laid over a full-slide table, or
+    // a heading over the picture it introduces.
+    while (beside.has_value() && *beside + 1 < kept.size()) {
+      const auto& next = kept[*beside + 1].placement;
+      if (!next.has_value() || next->page != page || next->box.top >= mover.placement->box.top) {
+        break;
+      }
+      beside = *beside + 1;
     }
     if (beside.has_value()) slot = *beside + 1;
     if (!slot.has_value()) {
