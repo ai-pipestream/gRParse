@@ -242,10 +242,12 @@ void verify_figures_anchor_deterministically() {
   require(a == b, "the detector's output order does not change the document");
   // Upper figure: 10..111 px -> 100..1110 twips, overlapping the page's
   // first paragraph (0..200) so it follows it; lower figure: 131..221 px ->
-  // 1310..2210 twips, overlapping "p1 middle" (1200..1400) and "p2 bottom"
-  // (2000..2200) respectively, so it follows those.
+  // 1310..2210 twips. On page 1 it overlaps "p1 middle" (1200..1400), which
+  // starts above it, so it follows that; on page 2 the paragraph it
+  // overlaps, "p2 bottom" (2000..2200), starts well below the figure's top,
+  // so the figure reads before it.
   const std::vector<std::string> expected = {
-      "p2 top", "#/pictures/2@p2:100", "p2 bottom", "#/pictures/3@p2:1310",
+      "p2 top", "#/pictures/2@p2:100", "#/pictures/3@p2:1310", "p2 bottom",
       "p1 top", "#/pictures/0@p1:100", "p1 middle", "#/pictures/1@p1:1310",
       "p1 bottom",
   };
