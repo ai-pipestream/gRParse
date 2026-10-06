@@ -330,6 +330,62 @@ void verify_header_anchored_picture_is_furniture() {
   require(frame_in_furniture, "a header text frame is furniture too");
 }
 
+// A Writer OLE object streams ahead of the body text; it reads where it
+// sits on its page, not before the document's first line.
+void verify_writer_object_reads_where_it_sits() {
+  std::vector<officev1::StreamPagesResponse> events{text_info(2)};
+  officev1::StreamPagesResponse object;
+  officev1::EmbeddedObject* ole = object.mutable_embedded_object();
+  ole->set_kind(officev1::EMBEDDED_OBJECT_KIND_OLE_OTHER);
+  ole->set_page_index(1);
+  ole->set_name("Signature");
+  ole->mutable_anchor()->set_x(1440);
+  ole->mutable_anchor()->set_y(kPageHeight + 4000);
+  ole->set_width_twips(3000);
+  ole->set_height_twips(900);
+  ole->set_replacement_mime_type("image/png");
+  ole->set_replacement_image("png");
+  events.push_back(object);
+  events.push_back(paragraph("Page one.", 0, 1440));
+  events.push_back(paragraph("Sincerely", 1, 3500));
+  events.push_back(paragraph("Name", 1, 5200));
+  events.push_back(status_event());
+  const docv1::Document document = fold(events);
+  std::vector<std::string> order;
+  for (const docv1::RefItem& child : document.body().children()) order.push_back(child.ref());
+  require(order.size() == 4 && order[0] == "#/texts/0" && order[1] == "#/texts/1" &&
+              order[3] == "#/texts/2",
+          "the object reads between the lines around it");
+}
+
+// A picture anchored in a table cell does not take a blank paragraph below
+// the table and the title after it.
+void verify_picture_in_table_cell_takes_no_blank_paragraph() {
+  std::vector<officev1::StreamPagesResponse> events{text_info(1)};
+  officev1::StreamPagesResponse table;
+  officev1::TableData* data = table.mutable_table();
+  data->set_page_index(0);
+  data->set_rows(1);
+  data->set_columns(1);
+  data->mutable_start()->set_x(1440);
+  data->mutable_start()->set_y(1200);
+  data->mutable_end()->set_x(1440);
+  data->mutable_end()->set_y(3500);
+  officev1::TableCellData* cell = data->add_cells();
+  cell->set_name("A1");
+  cell->set_text("logo cell");
+  events.push_back(table);
+  events.push_back(paragraph("Expression of Interest", 0, 3850));
+  events.push_back(paragraph("", 0, 4270));
+  events.push_back(paragraph("Part 1", 0, 5300));
+  events.push_back(anchored_picture("logo", 0, 2900));
+  events.push_back(status_event());
+  const docv1::Document document = fold(events);
+  const auto& body = document.body().children();
+  require(body.size() >= 3 && body[0].ref() == "#/tables/0" && body[1].ref() == "#/pictures/0",
+          "the picture reads after its table, before the title");
+}
+
 // A frame whose anchor plus size overruns its page reports the part on
 // the page.
 void verify_frame_overrunning_its_page_is_clipped() {
@@ -521,5 +577,7 @@ int main() {
       verify_pictures_on_blank_pages_keep_page_order,
       verify_picture_reads_after_its_anchor_paragraph,
       verify_header_anchored_picture_is_furniture,
+      verify_writer_object_reads_where_it_sits,
+      verify_picture_in_table_cell_takes_no_blank_paragraph,
   });
 }

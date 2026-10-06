@@ -12,6 +12,7 @@ from s3.tests.fixtures import (
     email_document,
     epub_document,
     html_document,
+    prov,
     result,
     scan_document,
     sheet_document,
@@ -308,6 +309,28 @@ def test_two_column_pages_are_skipped_by_reading_order() -> None:
     b.text("text", "left bottom", page=1, box=(50, 500, 300, 550), source=src)
     b.text("text", "right top", page=1, box=(320, 50, 560, 100), source=src)
     _, checks = failing(b.build(), "two.pdf")
+    assert checks["reading_order"] == "pass"
+
+
+def test_docx_pictures_do_not_follow_footnotes() -> None:
+    b = Builder("application/msword", "f.doc")
+    b.page(1).page(2)
+    b.text("text", "body", page=1, box=(100, 100, 500, 200))
+    b.text("text", "a note", page=2, box=(100, 100, 500, 200), label="FOOTNOTE")
+    b.picture(page=1, box=(100, 300, 500, 600))
+    _, checks = failing(b.build(), "f.doc")
+    assert checks["docx_pictures"] == "pass"
+
+
+def test_continued_items_fill_a_column_for_reading_order() -> None:
+    b = Builder("application/msword", "s.doc")
+    b.page(1).page(2)
+    long = b.text("text", "left column, from page one", page=1, box=(100, 9000, 5000, 15000))
+    b.node(long)["prov"].append(prov(2, 100, 1000, 5000, 2500))
+    b.text("text", "left, lower", page=2, box=(100, 3000, 5000, 3300))
+    b.text("text", "left, lowest", page=2, box=(100, 3400, 5000, 3700))
+    b.text("text", "right column top", page=2, box=(6000, 1000, 11000, 1300))
+    _, checks = failing(b.build(), "s.doc")
     assert checks["reading_order"] == "pass"
 
 
