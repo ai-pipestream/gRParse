@@ -1148,6 +1148,11 @@ message EmbeddedImage {
   // The image's accessibility description (alt text) from the document;
   // empty when unset.
   string description = 12;
+  // True when the anchor sits in a page header or footer text, so the
+  // object repeats on every page of that page style rather than belonging
+  // to the body at the anchor's caret. The caret point and page are then
+  // where the header is laid out on its first page.
+  bool in_header_footer = 13;
 }
 
 // EmbeddedObjectKind classifies an embedded object's inner content.
@@ -1276,6 +1281,11 @@ message EmbeddedObject {
   // The StarMath command string; set only when kind is
   // EMBEDDED_OBJECT_KIND_FORMULA.
   string formula = 14;
+  // True when the anchor sits in a page header or footer text, so the
+  // object repeats on every page of that page style rather than belonging
+  // to the body at the anchor's caret. The caret point and page are then
+  // where the header is laid out on its first page.
+  bool in_header_footer = 15;
 }
 
 // SheetCellType is the office core's cell content classification, mirroring
@@ -1509,6 +1519,11 @@ message TextFrame {
   // Name of the previous frame in the text chain that flows into this
   // frame; empty when this frame is not chained backward.
   string chain_prev = 9;
+  // True when the anchor sits in a page header or footer text, so the
+  // object repeats on every page of that page style rather than belonging
+  // to the body at the anchor's caret. The caret point and page are then
+  // where the header is laid out on its first page.
+  bool in_header_footer = 10;
 }
 
 // Shape is one draw-page shape of a text document: a custom shape, a text
@@ -1572,6 +1587,11 @@ message Shape {
   // The shape's accessibility description (alt text) from the document;
   // empty when unset.
   string description = 16;
+  // True when the anchor sits in a page header or footer text, so the
+  // object repeats on every page of that page style rather than belonging
+  // to the body at the anchor's caret. The caret point and page are then
+  // where the header is laid out on its first page.
+  bool in_header_footer = 17;
 }
 
 // PlaceholderRole is the presentation role of a slide shape, derived from
