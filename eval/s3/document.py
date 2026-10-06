@@ -119,7 +119,15 @@ class View:
     def box(self, node: Node) -> Box | None:
         """The union of the item's boxes on its first page, top-down; None
         when it has no page, no box, or a zero-area box only."""
-        page = self.first_page(node)
+        return self.box_on(node, self.first_page(node))
+
+    def pages_of(self, node: Node) -> list[int]:
+        """Every page the item has provenance on, in order."""
+        return sorted({int(entry.get("page_no", 0)) for entry in self.prov(node)} - {0})
+
+    def box_on(self, node: Node, page: int) -> Box | None:
+        """The union of the item's boxes on one page, top-down; None when it
+        has no box there."""
         if page <= 0:
             return None
         size = self.page_size(page)

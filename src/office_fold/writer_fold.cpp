@@ -134,8 +134,16 @@ void WriterFold::on_table(const officev1::TableData& table) {
     table_spans_.emplace_back(table.start().y(), table.end().y());
   }
   arena_.fold_table(table, item);
-  if (!table.line_rects().empty()) {
-    arena_.add_line_prov(item->mutable_prov(), table.line_rects(), 0, 0);
+  // The layout's selection over the table can report a box that ends
+  // above the table's first caret (an object anchored in a cell, laid out
+  // on an earlier page); it is not the table's.
+  google::protobuf::RepeatedPtrField<officev1::LineBox> rects;
+  for (const officev1::LineBox& box : table.line_rects()) {
+    if (table.has_start() && box.y_twips() + box.height_twips() < table.start().y()) continue;
+    *rects.Add() = box;
+  }
+  if (!rects.empty()) {
+    arena_.add_line_prov(item->mutable_prov(), rects, 0, 0);
   } else {
     arena_.add_caret_prov(item->mutable_prov(), table.page_index(),
                           table.start(), table.end(), 0, 0);
@@ -563,6 +571,20 @@ void WriterFold::anchor_trailing_pictures() {
     last = placement;
   }
   if (!trailing.empty()) {
+    // The floating items in order on a page a trailing one lands on move
+    // with it, so a grid of pictures beside a table keeps its own order.
+    std::set<int> pages;
+    for (const std::string& ref : trailing) {
+      if (auto placement = item_placement(document, ref, heights)) pages.insert(placement->page);
+    }
+    const std::set<std::string> already(trailing.begin(), trailing.end());
+    for (const docv1::RefItem& child : document.body().children()) {
+      if (!floating_items_.contains(child.ref()) || already.contains(child.ref())) continue;
+      if (auto placement = item_placement(document, child.ref(), heights);
+          placement.has_value() && pages.contains(placement->page)) {
+        trailing.push_back(child.ref());
+      }
+    }
     const PictureAnchorReport report =
         anchor_pictures_by_provenance(&arena_.document(), trailing);
     data_log("office " + document.name() + ": "

@@ -845,6 +845,9 @@ def _single_column(boxes: list[Any]) -> bool:
 def reading_order(ctx: ObjectContext) -> list[Failure]:
     view = ctx.view
     per_page: dict[int, list[tuple[Node, Any]]] = {}
+    # The parts of items that continue from an earlier page: not ordered
+    # here, but they fill a column and so say whether the page has two.
+    continued: dict[int, list[Any]] = {}
     for node in view.body.nodes:
         if node.kind == "group" or view.label(node) in ("caption", "footnote") or view.content_layer(node) == "notes":
             continue
@@ -852,9 +855,13 @@ def reading_order(ctx: ObjectContext) -> list[Failure]:
         if box is None:
             continue
         per_page.setdefault(box.page, []).append((node, box))
+        for page in view.pages_of(node):
+            if page > box.page and (part := view.box_on(node, page)) is not None:
+                continued.setdefault(page, []).append(part)
     violations = []
     for page, placed in sorted(per_page.items()):
-        if len(placed) < 3 or not _single_column([box for _, box in placed]):
+        boxes = [box for _, box in placed] + continued.get(page, [])
+        if len(placed) < 3 or not _single_column(boxes):
             continue
         for (a_node, a), (b_node, b) in zip(placed, placed[1:]):
             if b.top < a.top - 0.5 * min(a.height, b.height):
