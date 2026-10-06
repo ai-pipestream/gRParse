@@ -41,7 +41,7 @@ void DoclingMapper::consume(const officev1::StreamPagesResponse& event) {
     case officev1::StreamPagesResponse::kSlide:
       return shapes_.on_slide(event.slide());
     case officev1::StreamPagesResponse::kSlideShape:
-      return shapes_.on_slide_shape(event.slide_shape(), charts_);
+      return shapes_.on_slide_shape(event.slide_shape(), charts_, objects_);
     case officev1::StreamPagesResponse::kTextFrame:
       return writer_.on_text_frame(event.text_frame());
     case officev1::StreamPagesResponse::kShape:
@@ -77,13 +77,18 @@ void DoclingMapper::consume(const officev1::StreamPagesResponse& event) {
 
 void DoclingMapper::on_status(const officev1::RenderStatus& status) {
   for (const std::string& warning : status.warnings()) arena_.warn(warning);
-  // Charts whose placing event never came still belong to their sheet or
-  // slide; sheet header rows need every row in before the first can be
+  // Charts and objects whose placing event never came still belong to
+  // their sheet or slide, and a slide's items read in its geometric order
+  // once all of them are in; sheet header rows need every row in before the first can be
   // judged against the second.
   charts_.flush(shapes_);
+  objects_.flush(shapes_);
+  shapes_.order_slides();
   sheets_.size_empty_tables();
   sheets_.mark_header_rows();
   writer_.anchor_trailing_pictures();
+  writer_.place_headers_footers();
+  forms_.place_form();
   // Anchors resolve only once the whole body has streamed past: a comment
   // can close before the paragraph it sits in is emitted, and a
   // cross-reference can name an anchor from a later page. The sheet each

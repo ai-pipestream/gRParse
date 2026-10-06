@@ -1,7 +1,9 @@
 #include "grparse/office_fold/writer_fold.h"
 
 #include <algorithm>
-#include <cctype>
+#include <climits>
+#include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <utility>
@@ -16,11 +18,6 @@
 namespace grparse::office_fold {
 
 namespace {
-
-bool blank(const std::string& text) {
-  return std::ranges::all_of(
-      text, [](unsigned char c) { return std::isspace(c) != 0; });
-}
 
 // The path a child of this group carries: the parent's path with the
 // group's own paint order appended.
@@ -38,11 +35,36 @@ void set_chain(const std::string& next, const std::string& prev,
   if (!prev.empty()) out->set_chain_prev(prev);
 }
 
+// The identity of an anchored object's event: every per-page copy of a
+// header's object carries the same one.
+std::string object_key(const char* kind, const std::string& name,
+                       const std::string& content, long long width,
+                       long long height, int page_index,
+                       const officev1::TwipsPoint* anchor) {
+  std::string key = std::string(kind) + "\x1f" + name + "\x1f"
+                    + std::to_string(width) + "x" + std::to_string(height)
+                    + "\x1f" + std::to_string(page_index);
+  if (anchor != nullptr) {
+    key += "@" + std::to_string(anchor->x()) + "," + std::to_string(anchor->y());
+  }
+  return key + "\x1f" + content;
+}
+
 }  // namespace
+
+bool WriterFold::repeats_placed_object(const std::string& key,
+                                       const std::string& ref) {
+  auto [found, inserted] = placed_objects_.try_emplace(key, ref);
+  if (inserted) return false;
+  if (repeated_objects_.insert(found->second).second) {
+    arena_.move_to_furniture(found->second);
+  }
+  return true;
+}
 
 bool WriterFold::record_empty_paragraph(const officev1::Paragraph& paragraph,
                                         const std::string& text) {
-  if (!blank(text)) return false;
+  if (!blank_text(text)) return false;
   ParagraphSlot slot;
   slot.page_index = paragraph.page_index();
   slot.caret_y = paragraph.start().y();
@@ -80,6 +102,8 @@ void WriterFold::on_paragraph(const officev1::Paragraph& paragraph) {
   // Provenance charspans are 0-indexed within the item's own text; the
   // document-absolute paragraph offset stays on the office wire only.
   TextHandle handle = add_paragraph_item(paragraph);
+  paragraph_starts_[{paragraph.page_index(), paragraph.start().x(),
+                     paragraph.start().y()}] = handle.ref;
   fill_from_runs(paragraph.runs(), handle);
   if (!paragraph.style().empty()) {
     handle.base->set_style_name(paragraph.style());
@@ -100,8 +124,12 @@ void WriterFold::on_paragraph(const officev1::Paragraph& paragraph) {
 }
 
 void WriterFold::on_table(const officev1::TableData& table) {
+  std::string table_ref;
   docv1::TableItem* item =
-      arena_.add_table(docv1::CONTENT_LAYER_BODY, "#/body", nullptr);
+      arena_.add_table(docv1::CONTENT_LAYER_BODY, "#/body", &table_ref);
+  // A table streaming after the text frames is one a frame holds (a Word
+  // floating table): it is placed by where it sits, like the frames.
+  if (frames_seen_) floating_items_.insert(table_ref);
   arena_.fold_table(table, item);
   if (!table.line_rects().empty()) {
     arena_.add_line_prov(item->mutable_prov(), table.line_rects(), 0, 0);
@@ -130,17 +158,32 @@ int WriterFold::take_anchor_slot(int page_index, long long anchor_y,
 
 void WriterFold::slot_inline_picture(const officev1::EmbeddedImage& image,
                                      const std::string& picture_ref) {
+  // A picture anchored to a paragraph that has text of its own (a logo
+  // floating beside a letterhead line) carries that paragraph's start
+  // caret as its anchor: it reads right after its paragraph, not in some
+  // empty paragraph below it.
+  if (auto anchor = paragraph_starts_.find(
+          {image.page_index(), image.anchor().x(), image.anchor().y()});
+      anchor != paragraph_starts_.end()) {
+    arena_.move_child_after("#/body", picture_ref, anchor->second);
+    return;
+  }
   const int slot = take_anchor_slot(image.page_index(), image.anchor().y(),
                                     image.height_twips());
   if (slot < 0) {
     // No paragraph to take the place of: the picture sits where it
     // arrived, and once the stream is in it is judged against the body
     // around it (anchor_trailing_pictures).
-    unslotted_pictures_.insert(picture_ref);
+    floating_items_.insert(picture_ref);
     return;
   }
-  arena_.move_child_after("#/body", picture_ref,
-                          paragraph_slots_[slot].after_ref);
+  const std::string after = paragraph_slots_[slot].after_ref;
+  arena_.move_child_after("#/body", picture_ref, after);
+  // Blank paragraphs in a row all wait after the same item; a later one
+  // now waits after this picture, so pictures taking them keep page order.
+  for (size_t i = static_cast<size_t>(slot) + 1; i < paragraph_slots_.size(); i++) {
+    if (paragraph_slots_[i].after_ref == after) paragraph_slots_[i].after_ref = picture_ref;
+  }
   paragraph_slots_.erase(paragraph_slots_.begin() + slot);
 }
 
@@ -157,9 +200,46 @@ void WriterFold::on_embedded_image(const officev1::EmbeddedImage& image) {
     parent = container->second;
   }
   std::string picture_ref;
-  docv1::PictureItem* picture = arena_.add_picture(
-      docv1::DOC_ITEM_LABEL_PICTURE, docv1::CONTENT_LAYER_BODY, parent,
-      &picture_ref);
+  docv1::PictureItem* picture = nullptr;
+  // A slide's graphic shape has already placed this picture; the image
+  // fills it in rather than adding it a second time.
+  if (page_local && image.has_anchor()) {
+    picture_ref = shapes_.take_slide_picture(
+        image.page_index(), image.anchor().x(), image.anchor().y());
+    if (!picture_ref.empty()) {
+      picture = arena_.picture_by_ref(picture_ref);
+      if (picture == nullptr) picture_ref.clear();
+    }
+  }
+  if (picture != nullptr) {
+    if (!image.name().empty()) picture->mutable_shape()->set_name(image.name());
+    if (!image.title().empty() || !image.description().empty()) {
+      set_alt_text(image.title(), image.description(), picture);
+    }
+    if (!image.data().empty()) {
+      docv1::ImageRef* ref = picture->mutable_image();
+      ref->set_mimetype(image.mime_type());
+      ref->mutable_size()->set_width(static_cast<double>(image.width_twips()));
+      ref->mutable_size()->set_height(
+          static_cast<double>(image.height_twips()));
+      ref->set_uri(data_uri(image.mime_type(), image.data()));
+    }
+    return;
+  }
+  if (!page_local) {
+    // The image bytes are part of the identity: two different pictures can
+    // share a name and a size, never the bytes too.
+    const std::string key = object_key(
+        "image", image.name(),
+        std::to_string(std::hash<std::string>{}(image.data())),
+        image.width_twips(), image.height_twips(), image.page_index(),
+        image.has_anchor() ? &image.anchor() : nullptr);
+    const std::string next_ref =
+        "#/pictures/" + std::to_string(arena_.document().pictures_size());
+    if (repeats_placed_object(key, next_ref)) return;
+  }
+  picture = arena_.add_picture(docv1::DOC_ITEM_LABEL_PICTURE,
+                               docv1::CONTENT_LAYER_BODY, parent, &picture_ref);
   if (!image.name().empty()) picture->mutable_shape()->set_name(image.name());
   set_alt_text(image.title(), image.description(), picture);
   // A Writer picture anchored in an otherwise empty paragraph takes that
@@ -187,6 +267,9 @@ void WriterFold::on_embedded_image(const officev1::EmbeddedImage& image) {
 }
 
 void WriterFold::on_footnote(const officev1::Footnote& footnote) {
+  // A note with no text (its mark kept, its body emptied) has nothing to
+  // read.
+  if (blank_text(concat_runs(footnote.runs()))) return;
   TextHandle handle =
       arena_.add_text(TextKind::kText, docv1::DOC_ITEM_LABEL_FOOTNOTE,
                       docv1::CONTENT_LAYER_BODY, "#/body");
@@ -205,10 +288,18 @@ void WriterFold::on_footnote(const officev1::Footnote& footnote) {
 }
 
 void WriterFold::on_header_footer(const officev1::HeaderFooter& block) {
+  // Which pages a header sits on is known only once every page is in.
+  header_footer_blocks_.push_back(block);
+}
+
+void WriterFold::add_header_footer(const officev1::HeaderFooter& block,
+                                   const std::vector<int>& pages) {
   const docv1::DocItemLabel label = block.footer()
       ? docv1::DOC_ITEM_LABEL_PAGE_FOOTER
       : docv1::DOC_ITEM_LABEL_PAGE_HEADER;
   for (const officev1::Paragraph& paragraph : block.paragraphs()) {
+    // A blank header line is spacing, not furniture text.
+    if (blank_text(concat_runs(paragraph.runs()))) continue;
     TextHandle handle = arena_.add_text(TextKind::kText, label,
                                         docv1::CONTENT_LAYER_FURNITURE,
                                         "#/furniture");
@@ -218,6 +309,16 @@ void WriterFold::on_header_footer(const officev1::HeaderFooter& block) {
     }
     (*handle.base->mutable_meta()->mutable_custom_fields())["page_style"] =
         str_value(block.page_style());
+    // The header repeats on each page, always at the same place; where on
+    // the page is not on the wire, so the entries name the page alone.
+    const long long length = runs_length(paragraph.runs());
+    for (int page_no : pages) {
+      docv1::ProvenanceItem* prov = handle.base->add_prov();
+      prov->set_page_no(page_no);
+      prov->mutable_charspan()->set_start(0);
+      prov->mutable_charspan()->set_end(
+          static_cast<int32_t>(std::min<long long>(length, INT32_MAX)));
+    }
   }
 }
 
@@ -240,6 +341,17 @@ void WriterFold::on_document_index(const officev1::DocumentIndex& index) {
 }
 
 void WriterFold::on_text_frame(const officev1::TextFrame& frame) {
+  frames_seen_ = true;
+  // A frame with no text (a border, a picture holder whose picture streams
+  // on its own) is no text item.
+  const std::string text = concat_runs(frame.runs());
+  if (blank_text(text)) return;
+  const std::string key = object_key(
+      "frame", frame.name(), text, frame.width_twips(), frame.height_twips(),
+      frame.page_index(), frame.has_anchor() ? &frame.anchor() : nullptr);
+  const std::string group_ref =
+      "#/groups/" + std::to_string(arena_.document().groups_size());
+  if (repeats_placed_object(key, group_ref)) return;
   docv1::GroupItem* group =
       arena_.add_group("#/body", docv1::GROUP_LABEL_UNSPECIFIED, frame.name(),
                        docv1::CONTENT_LAYER_BODY);
@@ -260,6 +372,9 @@ void WriterFold::on_text_frame(const officev1::TextFrame& frame) {
                     static_cast<double>(frame.anchor().y() + frame.height_twips()),
                     0, runs_length(frame.runs()));
   }
+  // A frame streams after the body text; like an unslotted picture it is
+  // judged against the finished body and placed by where it sits.
+  floating_items_.insert(group->self_ref());
 }
 
 void WriterFold::on_shape(const officev1::Shape& shape) {
@@ -277,9 +392,21 @@ void WriterFold::on_shape(const officev1::Shape& shape) {
                          docv1::CONTENT_LAYER_BODY);
     writer_groups_[child_group_path(shape.group_path(), shape.z_order())] =
         group->self_ref();
+    if (parent == "#/body") floating_items_.insert(group->self_ref());
     return;
   }
 
+  // A drawn shape with no text (a line, a box, an arrow) is no text item.
+  const std::string text = concat_runs(shape.runs());
+  if (blank_text(text)) return;
+  const std::string key = object_key(
+      "shape", shape.name() + "\x1f" + shape.group_path(), text,
+      shape.width_twips(), shape.height_twips(), shape.page_index(),
+      shape.has_anchor() ? &shape.anchor()
+                         : (shape.has_position() ? &shape.position() : nullptr));
+  const std::string group_ref =
+      "#/groups/" + std::to_string(arena_.document().groups_size());
+  if (repeats_placed_object(key, group_ref)) return;
   docv1::GroupItem* group =
       arena_.add_group(parent, docv1::GROUP_LABEL_UNSPECIFIED, shape.name(),
                        docv1::CONTENT_LAYER_BODY);
@@ -310,11 +437,49 @@ void WriterFold::on_shape(const officev1::Shape& shape) {
                     arena_.page_for_point((l + r) / 2, (t + b) / 2), false, l,
                     t, r, b, 0, runs_length(shape.runs()));
   }
+  // Shapes stream after the body text, like frames.
+  if (parent == "#/body") floating_items_.insert(group->self_ref());
+}
+
+void WriterFold::place_headers_footers() {
+  if (header_footer_blocks_.empty()) return;
+  const docv1::Document& document = arena_.document();
+  // Pages by the page style the layout put them in; a page the stream named
+  // no style for (no page image for it) may be in any style.
+  std::map<std::string, std::vector<int>> pages_by_style;
+  std::vector<int> unstyled;
+  for (const auto& [page_no, page] : document.pages()) {
+    if (page.style_name().empty()) {
+      unstyled.push_back(page_no);
+    } else {
+      pages_by_style[page.style_name()].push_back(page_no);
+    }
+  }
+  int unused = 0;
+  for (const officev1::HeaderFooter& block : header_footer_blocks_) {
+    std::vector<int> pages = unstyled;
+    if (auto found = pages_by_style.find(block.page_style());
+        found != pages_by_style.end()) {
+      pages.insert(pages.end(), found->second.begin(), found->second.end());
+    }
+    // A header of a page style no page is laid out in never shows.
+    if (pages.empty() && !document.pages().empty()) {
+      unused++;
+      continue;
+    }
+    std::ranges::sort(pages);
+    add_header_footer(block, pages);
+  }
+  header_footer_blocks_.clear();
+  if (unused > 0) {
+    data_log("office " + document.name() + ": " + std::to_string(unused)
+             + " header/footer block(s) of page styles no page uses left out");
+  }
 }
 
 void WriterFold::anchor_trailing_pictures() {
   const docv1::Document& document = arena_.document();
-  if (arena_.document_type() != "text" || unslotted_pictures_.empty()) return;
+  if (arena_.document_type() != "text" || floating_items_.empty()) return;
   const std::map<int, double> heights = document_page_heights(document);
   std::vector<std::string> trailing;
   std::optional<ItemPlacement> last;
@@ -322,7 +487,7 @@ void WriterFold::anchor_trailing_pictures() {
     const std::optional<ItemPlacement> placement =
         item_placement(document, child.ref(), heights);
     if (!placement.has_value()) continue;
-    if (unslotted_pictures_.contains(child.ref()) && last.has_value() &&
+    if (floating_items_.contains(child.ref()) && last.has_value() &&
         std::pair(placement->page, placement->box.top) <
             std::pair(last->page, last->box.top)) {
       trailing.push_back(child.ref());
@@ -330,11 +495,63 @@ void WriterFold::anchor_trailing_pictures() {
     }
     last = placement;
   }
-  if (trailing.empty()) return;
-  const PictureAnchorReport report =
-      anchor_pictures_by_provenance(&arena_.document(), trailing);
-  data_log("office " + document.name() + ": " + std::to_string(report.anchored)
-           + " trailing picture(s) placed by provenance");
+  if (!trailing.empty()) {
+    const PictureAnchorReport report =
+        anchor_pictures_by_provenance(&arena_.document(), trailing);
+    data_log("office " + document.name() + ": "
+             + std::to_string(report.anchored)
+             + " trailing picture(s), frame(s) and shape(s) placed by provenance");
+  }
+  place_page_only_pictures();
+}
+
+void WriterFold::place_page_only_pictures() {
+  docv1::Document& document = arena_.document();
+  const std::map<int, double> heights = document_page_heights(document);
+  // A floating picture whose caret box was dropped (its anchor caret stood
+  // on another page) still knows its page: it goes before the first body
+  // item of that page, the place a picture pushed to the top of a page has.
+  std::vector<std::pair<std::string, int>> pictures;
+  for (const docv1::RefItem& child : document.body().children()) {
+    if (!floating_items_.contains(child.ref())) continue;
+    if (item_placement(document, child.ref(), heights).has_value()) continue;
+    const docv1::PictureItem* picture = arena_.picture_by_ref(child.ref());
+    if (picture == nullptr) continue;
+    const int page = first_page_of(picture->prov());
+    if (page >= 1) pictures.emplace_back(child.ref(), page);
+  }
+  // Pictures already moved count by their page too, so a run of page-only
+  // pictures on consecutive pages keeps its page order.
+  std::map<std::string, int> page_only(pictures.begin(), pictures.end());
+  for (const auto& [ref, page] : pictures) {
+    std::string after;
+    bool placed = false;
+    for (const docv1::RefItem& child : document.body().children()) {
+      if (child.ref() == ref) continue;
+      std::optional<int> child_page;
+      if (const auto known = page_only.find(child.ref()); known != page_only.end()) {
+        child_page = known->second;
+      } else if (const std::optional<ItemPlacement> placement =
+                     item_placement(document, child.ref(), heights)) {
+        child_page = placement->page;
+      } else if (const docv1::PictureItem* other = arena_.picture_by_ref(child.ref());
+                 other != nullptr && first_page_of(other->prov()) >= 1) {
+        // A picture placed by its anchor paragraph, page known but no box.
+        child_page = first_page_of(other->prov());
+      }
+      if (child_page.has_value() && *child_page > page) {
+        placed = true;
+        break;
+      }
+      if (child_page.has_value() && *child_page == page &&
+          !page_only.contains(child.ref()) && arena_.picture_by_ref(child.ref()) == nullptr) {
+        placed = true;
+        break;
+      }
+      after = child.ref();
+    }
+    if (placed) arena_.move_child_after("#/body", ref, after);
+  }
 }
 
 }  // namespace grparse::office_fold

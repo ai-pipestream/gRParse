@@ -1138,6 +1138,7 @@ if(BUILD_TESTING)
     docling-integrity-destinations-test
     docling-map-sheet-shape-test
     docling-map-trailing-pictures-test
+    docling-map-office-layout-test
     collector-route-by-bytes-test
     content-sniff-precedence-test
     document-collectors-status-test

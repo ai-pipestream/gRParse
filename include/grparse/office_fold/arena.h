@@ -61,6 +61,11 @@ class DocumentArena {
   // The zero-based page whose rectangle contains the document-absolute
   // point; -1 when no page does.
   int page_for_point(double x, double y) const;
+  // The page whose vertical extent holds document-absolute y, or -1. Pages
+  // stack vertically in the layout, so y alone names one.
+  int page_for_y(double y) const;
+  // The page's laid-out size in twips; false when the page is unknown.
+  bool page_size(int page_index, double* width, double* height) const;
 
   docv1::GroupItem* group_by_ref(const std::string& ref);
   // Appends child_ref to the children of parent_ref: a group, the two
@@ -93,6 +98,14 @@ class DocumentArena {
   // The text item behind an arena reference ("#/texts/N"); null when the
   // reference names no text item.
   docv1::TextItemBase* text_by_ref(const std::string& ref);
+  // Moves a placed picture, text or group (with everything under it) out
+  // of the body into the furniture layer and drops its boxes, keeping its
+  // pages: for content the layout repeats on every page, whose single
+  // stream position says nothing about where any one copy sits.
+  void move_to_furniture(const std::string& ref);
+
+  // The picture behind "#/pictures/N"; null when the reference names none.
+  docv1::PictureItem* picture_by_ref(const std::string& ref);
 
   // Appends one page-local ProvenanceItem. page_index is the wire's
   // zero-based index; -1 appends nothing. page_local says whether l/t/r/b

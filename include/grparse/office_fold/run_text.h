@@ -10,6 +10,11 @@
 namespace grparse::office_fold {
 
 std::string concat_runs(const TextRuns& runs);
+
+// True when the UTF-8 text shows nothing: every code point is white space
+// (ASCII and Unicode alike, the no-break space a word processor pads empty
+// lines with included) or a zero-width space or byte-order mark.
+bool blank_text(const std::string& text);
 long long runs_length(const TextRuns& runs);
 
 // Sets item-level Formatting when every run agrees on the flags the item

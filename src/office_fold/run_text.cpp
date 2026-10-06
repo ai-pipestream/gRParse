@@ -80,6 +80,36 @@ void describe_span(const RunKey& key, const std::string& highlight,
 
 }  // namespace
 
+bool blank_text(const std::string& text) {
+  size_t at = 0;
+  while (at < text.size()) {
+    const auto lead = static_cast<unsigned char>(text[at]);
+    char32_t cp = 0;
+    size_t length = 1;
+    if (lead < 0x80) {
+      cp = lead;
+    } else if ((lead >> 5) == 0x6 && at + 1 < text.size()) {
+      cp = ((lead & 0x1Fu) << 6) | (static_cast<unsigned char>(text[at + 1]) & 0x3Fu);
+      length = 2;
+    } else if ((lead >> 4) == 0xE && at + 2 < text.size()) {
+      cp = ((lead & 0x0Fu) << 12)
+           | ((static_cast<unsigned char>(text[at + 1]) & 0x3Fu) << 6)
+           | (static_cast<unsigned char>(text[at + 2]) & 0x3Fu);
+      length = 3;
+    } else {
+      return false;  // a four-byte or malformed sequence is never space
+    }
+    const bool space =
+        (cp >= 0x09 && cp <= 0x0D) || (cp >= 0x1C && cp <= 0x20) || cp == 0x85
+        || cp == 0xA0 || cp == 0x1680 || (cp >= 0x2000 && cp <= 0x200B)
+        || cp == 0x2028 || cp == 0x2029 || cp == 0x202F || cp == 0x205F
+        || cp == 0x3000 || cp == 0xFEFF;
+    if (!space) return false;
+    at += length;
+  }
+  return true;
+}
+
 std::string concat_runs(const TextRuns& runs) {
   std::string text;
   for (const officev1::TextRun& run : runs) text += run.text();

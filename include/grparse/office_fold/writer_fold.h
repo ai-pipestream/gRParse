@@ -7,6 +7,7 @@
 
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "grparse/office_fold/fold_base.h"
@@ -18,7 +19,7 @@ namespace grparse::office_fold {
 class WriterFold : public FoldBase {
  public:
   WriterFold(DocumentArena& arena, AnchorIndex& anchors,
-             const ShapeFold& shapes)
+             ShapeFold& shapes)
       : FoldBase(arena, anchors), shapes_(shapes) {}
 
   void on_paragraph(const officev1::Paragraph& paragraph);
@@ -39,8 +40,16 @@ class WriterFold : public FoldBase {
   // picture the fold could not slot AND that sits behind a body item which
   // comes later on the page plane is trailing; a slotted picture keeps the
   // place its anchor paragraph gave it, and an unslotted one that arrived
-  // in reading order is left where the fold put it.
+  // in reading order is left where the fold put it. Text frames and
+  // shapes, which stream after all body text, are placed the same way.
   void anchor_trailing_pictures();
+
+  // A page header or footer belongs to the page style that declares it and
+  // so sits on every page laid out in that style. Once the pages are in,
+  // each header and footer line becomes a furniture item with one
+  // provenance entry per such page; a block whose style lays out no page
+  // shows on no page and is left out.
+  void place_headers_footers();
 
  private:
   // Where an empty Writer paragraph sat in the body: an inline picture's
@@ -71,14 +80,42 @@ class WriterFold : public FoldBase {
   // line. -1 when no slot fits.
   int take_anchor_slot(int page_index, long long anchor_y, long long height);
 
-  const ShapeFold& shapes_;
+  // A frame, shape or picture anchored in a page header or footer streams
+  // once per page that repeats it, every copy identical, anchor included.
+  // True when this event repeats one already placed; the first copy then
+  // moves to the furniture, since its one anchor places none of the
+  // copies.
+  bool repeats_placed_object(const std::string& key, const std::string& ref);
+
+  // Floating pictures with a page but no box go before the first body item
+  // of their page.
+  void place_page_only_pictures();
+  // One block's non-blank lines as furniture items placed on these pages.
+  void add_header_footer(const officev1::HeaderFooter& block,
+                         const std::vector<int>& pages);
+
+  ShapeFold& shapes_;
+  // Placed frames, shapes and pictures by their event's identity, to
+  // recognise the per-page copies of a header's object.
+  std::map<std::string, std::string> placed_objects_;
+  std::set<std::string> repeated_objects_;
+  // True once a text frame streamed: the body walk is over, and a table
+  // arriving now is held by a frame.
+  bool frames_seen_ = false;
+  // Header and footer blocks, held until the pages are in.
+  std::vector<officev1::HeaderFooter> header_footer_blocks_;
   // Writer draw-page group nesting: child group_path to the group's ref.
   // The text document has a single draw page, so the path alone keys it.
   std::map<std::string, std::string> writer_groups_;
   std::vector<ParagraphSlot> paragraph_slots_;
-  // Body pictures whose anchor met no empty paragraph, judged against the
-  // finished body by anchor_trailing_pictures.
-  std::set<std::string> unslotted_pictures_;
+  // Text paragraphs by their start caret (page, x, y): a picture anchored
+  // to a paragraph carries exactly that caret as its anchor.
+  std::map<std::tuple<int, long long, long long>, std::string>
+      paragraph_starts_;
+  // Body pictures whose anchor met no empty paragraph, and text frames and
+  // shapes, which stream after the body text: judged against the finished
+  // body by anchor_trailing_pictures.
+  std::set<std::string> floating_items_;
 };
 
 }  // namespace grparse::office_fold

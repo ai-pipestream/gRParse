@@ -44,6 +44,10 @@ def test_office_zip_facts() -> None:
     assert source_facts("pptx", "deck", deck).slides == 2
     word = zip_bytes({"word/document.xml": b"<w:body><w:drawing><pic:pic/></w:drawing><pic:pic/></w:body>"})
     assert source_facts("docx", "word", word).inline_pictures == 2
+    boxed = zip_bytes({"word/document.xml": b"<w:body><mc:AlternateContent><mc:Choice><pic:pic/></mc:Choice>"
+                                            b"<mc:Fallback><v:textbox><pic:pic/></v:textbox></mc:Fallback>"
+                                            b"</mc:AlternateContent></w:body>"})
+    assert source_facts("docx", "word", boxed).inline_pictures == 1
     workbook = (b'<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
                 b'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
                 b'<sheets><sheet name="Data" sheetId="1" r:id="rId1"/><sheet name="Blank" sheetId="2" r:id="rId2"/></sheets></workbook>')

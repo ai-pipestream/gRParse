@@ -151,6 +151,21 @@ void FormFold::add_field_prov(const officev1::FormField& field,
   }
 }
 
+void FormFold::place_form() {
+  if (field_region_ref_.empty()) return;
+  docv1::Document& document = arena_.document();
+  std::set<int> pages;
+  for (const docv1::FieldItem& item : document.field_items()) {
+    for (const docv1::ProvenanceItem& prov : item.prov()) {
+      if (prov.page_no() >= 1) pages.insert(prov.page_no());
+    }
+  }
+  for (int page_no : pages) {
+    document.mutable_field_regions(0)->add_prov()->set_page_no(page_no);
+    document.mutable_form_items(0)->add_prov()->set_page_no(page_no);
+  }
+}
+
 void FormFold::on_form_field(const officev1::FormField& field) {
   ensure_form_arena();
   // One field item per office form field, holding its heading and its

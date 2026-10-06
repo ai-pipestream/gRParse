@@ -298,7 +298,12 @@ PictureAnchorReport anchor_pictures_by_provenance(docv1::Document* document,
         last_on_page = index;
         const TopDownBox& box = placement->box;
         const TopDownBox& mine = mover.placement->box;
-        if (!beside.has_value() && std::min(box.bottom, mine.bottom) > std::max(box.top, mine.top)) {
+        // An item the picture overlaps is the paragraph it sits beside, so
+        // the picture follows it; but not one that starts more than half a
+        // line below the picture's top (a page-tall watermark beside the
+        // page's first paragraph), which the picture precedes.
+        if (!beside.has_value() && std::min(box.bottom, mine.bottom) > std::max(box.top, mine.top) &&
+            mine.top >= box.top - 0.5 * std::min(box.height(), mine.height())) {
           beside = index;
         }
         if (!slot.has_value() && box.top >= mine.top) slot = index;
