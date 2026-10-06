@@ -20,6 +20,10 @@ _HTML_STRIP = re.compile(rb"<(script|style)\b.*?</\1>|<!--.*?-->", re.I | re.S)
 _ATTACHMENT = re.compile(rb"^content-disposition:\s*attachment", re.I | re.M)
 _MULTIPART = re.compile(rb"^content-type:\s*multipart/", re.I | re.M)
 _PIC = re.compile(rb"<pic:pic\b")
+# Word writes a text box's content twice, once in the drawing (mc:Choice) and
+# once as its VML fallback; a picture inside the box appears in both, and the
+# fallback copy is not a second picture.
+_FALLBACK = re.compile(rb"<mc:Fallback\b.*?</mc:Fallback>", re.DOTALL)
 _SLIDE_ENTRY = re.compile(r"^ppt/slides/slide(\d+)\.xml$")
 _SHEET_CELL = re.compile(rb"<c\b")
 
@@ -204,7 +208,7 @@ def word_facts(data: bytes) -> SourceFacts:
         document = archive.read("word/document.xml")
     except KeyError:
         return SourceFacts(ok=False, note="no word/document.xml")
-    return SourceFacts(inline_pictures=len(_PIC.findall(document)))
+    return SourceFacts(inline_pictures=len(_PIC.findall(_FALLBACK.sub(b"", document))))
 
 
 def xlsx_facts(data: bytes) -> SourceFacts:

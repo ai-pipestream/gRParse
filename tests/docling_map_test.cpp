@@ -570,6 +570,8 @@ void verify_metadata_maps_name_language_and_fields() {
           "the primary subtag parses to the typed language label");
 }
 
+officev1::StreamPagesResponse status_event();
+
 void verify_header_footer_lands_in_furniture() {
   grparse::DoclingMapper mapper;
   officev1::StreamPagesResponse event;
@@ -578,9 +580,12 @@ void verify_header_footer_lands_in_furniture() {
   block->set_page_style("Default");
   officev1::Paragraph* paragraph = block->add_paragraphs();
   *paragraph->add_runs() = make_run("page 1 of 9");
+  // A blank footer line is spacing and makes no item.
+  block->add_paragraphs()->add_runs()->set_text("  ");
   mapper.consume(event);
+  mapper.consume(status_event());
   const docv1::Document& document = mapper.document();
-  require(document.texts_size() == 1, "each header/footer paragraph is a text");
+  require(document.texts_size() == 1, "each non-blank header/footer paragraph is a text");
   const auto& base = document.texts(0).text().base();
   require(base.label() == docv1::DOC_ITEM_LABEL_PAGE_FOOTER,
           "the footer flag picks the footer label");

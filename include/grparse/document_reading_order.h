@@ -53,7 +53,8 @@ struct PictureAnchorReport {
 // Moves the named pictures (direct body children) to their provenance
 // positions: on their page, right after the first item whose vertical
 // extent overlaps the picture's (the paragraph a drawing sits inline in or
-// beside), else before the first item of that page whose top edge is at or
+// beside) and which starts no more than half the shorter height below the
+// picture's top, else before the first item of that page whose top edge is at or
 // below the picture's, after the page's last item when none is, and where
 // the page has no items at all, after the last item of any earlier page.
 // Pictures without a page or box go to the end of the body.

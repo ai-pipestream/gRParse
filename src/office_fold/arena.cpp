@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "grparse/office_fold/grid_cells.h"
 #include "grparse/office_fold/value_convert.h"
@@ -57,6 +58,27 @@ int DocumentArena::page_for_point(double x, double y) const {
   return -1;
 }
 
+int DocumentArena::page_for_y(double y) const {
+  for (int index = 0; index < static_cast<int>(page_rects_.size()); index++) {
+    const officev1::PageRect& page = page_rects_[index];
+    if (y >= static_cast<double>(page.y_twips())
+        && y < static_cast<double>(page.y_twips() + page.height_twips())) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+bool DocumentArena::page_size(int page_index, double* width,
+                              double* height) const {
+  if (page_index < 0 || page_index >= static_cast<int>(page_rects_.size())) {
+    return false;
+  }
+  *width = static_cast<double>(page_rects_[page_index].width_twips());
+  *height = static_cast<double>(page_rects_[page_index].height_twips());
+  return *width > 0 && *height > 0;
+}
+
 docv1::GroupItem* DocumentArena::group_by_ref(const std::string& ref) {
   if (ref == "#/body") return document_.mutable_body();
   if (ref == "#/furniture") return document_.mutable_furniture();
@@ -65,6 +87,68 @@ docv1::GroupItem* DocumentArena::group_by_ref(const std::string& ref) {
     return document_.mutable_groups(index);
   }
   return document_.mutable_body();
+}
+
+namespace {
+
+template <typename Prov>
+void drop_boxes(Prov* prov) {
+  for (auto& item : *prov) item.clear_bbox();
+}
+
+}  // namespace
+
+void DocumentArena::move_to_furniture(const std::string& ref) {
+  std::string parent;
+  if (docv1::PictureItem* picture = picture_by_ref(ref)) {
+    parent = picture->parent().ref();
+    picture->mutable_parent()->set_ref("#/furniture");
+  } else if (docv1::TextItemBase* text = text_by_ref(ref)) {
+    parent = text->parent().ref();
+    text->mutable_parent()->set_ref("#/furniture");
+  } else if (const int index = index_in_arena(ref, "#/groups/");
+             index >= 0 && index < document_.groups_size()) {
+    parent = document_.groups(index).parent().ref();
+    document_.mutable_groups(index)->mutable_parent()->set_ref("#/furniture");
+  } else {
+    return;
+  }
+  ChildRefs* children = group_by_ref(parent)->mutable_children();
+  for (int i = 0; i < children->size(); i++) {
+    if (children->Get(i).ref() == ref) {
+      children->DeleteSubrange(i, 1);
+      break;
+    }
+  }
+  link_child("#/furniture", ref);
+  // Everything under the moved item follows it into the furniture layer.
+  std::vector<std::string> pending{ref};
+  while (!pending.empty()) {
+    const std::string next = std::move(pending.back());
+    pending.pop_back();
+    if (docv1::PictureItem* picture = picture_by_ref(next)) {
+      picture->set_content_layer(docv1::CONTENT_LAYER_FURNITURE);
+      drop_boxes(picture->mutable_prov());
+    } else if (docv1::TextItemBase* text = text_by_ref(next)) {
+      text->set_content_layer(docv1::CONTENT_LAYER_FURNITURE);
+      drop_boxes(text->mutable_prov());
+    } else if (const int index = index_in_arena(next, "#/groups/");
+               index >= 0 && index < document_.groups_size()) {
+      docv1::GroupItem* group = document_.mutable_groups(index);
+      group->set_content_layer(docv1::CONTENT_LAYER_FURNITURE);
+      for (const docv1::RefItem& child : group->children()) {
+        pending.push_back(child.ref());
+      }
+    }
+  }
+}
+
+docv1::PictureItem* DocumentArena::picture_by_ref(const std::string& ref) {
+  const int index = index_in_arena(ref, "#/pictures/");
+  if (index >= 0 && index < document_.pictures_size()) {
+    return document_.mutable_pictures(index);
+  }
+  return nullptr;
 }
 
 bool DocumentArena::link_into_item_arena(const std::string& parent_ref,
@@ -271,6 +355,29 @@ void DocumentArena::add_prov(ProvenanceItems* prov, int page_index,
   if (has_geometry && !page_local) {
     reduced = to_page_local(page_index, &l, &t, &r, &b);
   }
+  double width = 0, height = 0;
+  if (has_geometry && reduced && page_size(page_index, &width, &height)) {
+    const double top = std::min(t, b), bottom = std::max(t, b);
+    if (!page_local && (l < 0 || l >= width || top < 0 || top >= height)) {
+      // A caret-built box (anchor plus size) whose origin is not on the
+      // page the layout put the item on was built from the wrong caret: a
+      // picture pushed to the next page keeps its anchor paragraph's caret
+      // on the page before, and an object anchored in a page header is
+      // reached through whichever page shows that header. The page is the
+      // layout's own answer; the box is not, so none is claimed.
+      has_geometry = false;
+    } else {
+      // A box reports where the item shows on its page, so the part hanging
+      // off the page (a shape dragged past a slide's edge, a frame whose
+      // anchor plus size overruns the page) is cut away. A box with nothing
+      // left on the page keeps its page but claims no box.
+      l = std::clamp(l, 0.0, width);
+      r = std::clamp(r, 0.0, width);
+      t = std::clamp(top, 0.0, height);
+      b = std::clamp(bottom, 0.0, height);
+      if (r - l <= 0 || b - t <= 0) has_geometry = false;
+    }
+  }
   docv1::ProvenanceItem* item = prov->Add();
   item->set_page_no(page_index + 1);
   if (has_geometry) {
@@ -319,12 +426,29 @@ void DocumentArena::add_caret_prov(ProvenanceItems* prov, int page_index,
                                    const officev1::TwipsPoint& start,
                                    const officev1::TwipsPoint& end,
                                    long long span_start, long long span_end) {
-  add_prov(prov, page_index, false,
-           static_cast<double>(std::min(start.x(), end.x())),
-           static_cast<double>(std::min(start.y(), end.y())),
-           static_cast<double>(std::max(start.x(), end.x())),
-           static_cast<double>(std::max(start.y(), end.y())),
-           span_start, span_end);
+  const double l = static_cast<double>(std::min(start.x(), end.x()));
+  const double r = static_cast<double>(std::max(start.x(), end.x()));
+  const double t = static_cast<double>(std::min(start.y(), end.y()));
+  const double b = static_cast<double>(std::max(start.y(), end.y()));
+  // A long table or index runs from a caret on one page to a caret on a
+  // later one. One box between the two would cover the gap between the
+  // pages and stand on neither, so the span takes one box per page: from
+  // the start caret to the page's foot, whole pages between, and from the
+  // last page's head to the end caret.
+  const int first = page_for_y(t);
+  const int last = page_for_y(b);
+  if (first < 0 || last <= first) {
+    add_prov(prov, page_index, false, l, t, r, b, span_start, span_end);
+    return;
+  }
+  for (int page = first; page <= last; page++) {
+    const officev1::PageRect& rect = page_rects_[page];
+    const double page_top = static_cast<double>(rect.y_twips());
+    const double page_bottom =
+        static_cast<double>(rect.y_twips() + rect.height_twips());
+    add_prov(prov, page, false, l, page == first ? t : page_top, r,
+             page == last ? b : page_bottom, span_start, span_end);
+  }
 }
 
 bool DocumentArena::cell_bbox(const LineBoxes& lines,

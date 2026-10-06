@@ -412,21 +412,32 @@ def _text_bearing(ctx: ObjectContext) -> bool:
     return ctx.family in TEXT_BEARING
 
 
+def _table_has_text(table: dict[str, Any]) -> bool:
+    cells = (table.get("data", {}) or {}).get("table_cells", []) or []
+    return any(normalize_text(cell.get("text")) for cell in cells)
+
+
 @check("text_present", "text-bearing types (pdf with a text layer, word, deck, html, markdown, xml, email, epub, "
-                       "txt) yield at least one non-empty text item in the body; a markup source with no visible "
+                       "txt) yield at least one non-empty text item or table cell in the body; a markup source with no visible "
                        "text is exempt", applies=_text_bearing)
 def text_present(ctx: ObjectContext) -> list[Failure]:
     view = ctx.view
     if any(node.kind == "text" and view.text(node) for node in view.body.nodes):
         return []
+    # A document laid out entirely as tables (a form, a report held in one
+    # floating table) carries its text in the cells, not in text items.
+    if any(node.kind == "table" and _table_has_text(node.item) for node in view.body.nodes):
+        return []
     return [_fail("text_present", "no non-empty text item in the body",
                   texts=len(view.doc.get("texts", []) or []), body_items=len(view.body.nodes))]
 
 
-@check("empty_text_items", "no whitespace-only text item is placed in the body")
+@check("empty_text_items", "no whitespace-only text item is placed in the body; a form field's value is exempt, "
+                           "since a field left unfilled has an empty value by design")
 def empty_text_items(ctx: ObjectContext) -> list[Failure]:
     view = ctx.view
-    empty = [f"{node.ref} ({view.label(node)})" for node in view.body.nodes if node.kind == "text" and not view.text(node)]
+    empty = [f"{node.ref} ({view.label(node)})" for node in view.body.nodes
+             if node.kind == "text" and not view.text(node) and view.label(node) != "field_value"]
     if not empty:
         return []
     return [_fail("empty_text_items", "empty text item in the body", refs=_cap(empty), count=len(empty))]

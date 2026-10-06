@@ -3,6 +3,7 @@
 // field holding its heading and its value.
 #pragma once
 
+#include <set>
 #include <string>
 
 #include "grparse/office_fold/fold_base.h"
@@ -16,6 +17,11 @@ class FormFold : public FoldBase {
       : FoldBase(arena, anchors) {}
 
   void on_form_field(const officev1::FormField& field);
+
+  // The region and the form span every page their fields sit on. Neither
+  // is one rectangle, so once the fields are in each names those pages and
+  // claims no box.
+  void place_form();
 
  private:
   // Creates the form region and the form whose graph pairs the fields, once
