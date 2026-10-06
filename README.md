@@ -215,6 +215,42 @@ The helper invokes the compiled bidirectional-streaming client. It reads the
 source and sends fixed-size chunks directly to gRPC; it does not base64-encode
 the document or create temporary files.
 
+### Encrypted documents
+
+A password-protected PDF or Office document opens when the call carries its
+password. Passwords travel in the call's initial metadata, never in the
+request message: the message is what clients log, recapture and replay, and
+the metadata is read once and goes nowhere else. That also makes one
+convention serve every RPC, `StreamProcessDocument` included, since a
+streaming call has its initial metadata before its first chunk.
+
+| Metadata key | Carries |
+|---|---|
+| `document-password` | one printable-ASCII candidate per entry |
+| `document-password-bin` | one candidate of any bytes (UTF-8 and the rest) per entry; gRPC base64-encodes it on the wire |
+
+Either key may repeat. The plain key's candidates are tried before the
+binary key's, each in the order sent; empty values are ignored; more than 16
+candidates, or one over 1024 bytes, fails `INVALID_ARGUMENT`. A document that
+opens without a password never uses them. Otherwise the PDF backend's
+opening Probe tries each candidate until one opens the document and sends
+that one on every later backend call, and an encrypted Office document goes
+to grpc-libreoffice with the candidates on the same metadata keys. When none
+opens it the call fails `INVALID_ARGUMENT` with the same
+`LOAD_STATUS_PASSWORD_REQUIRED` token as before, saying how many candidates
+were tried and never which. The server stores, configures and logs no
+passwords; a deployment that puts a proxy in front of gRParse must keep its
+access log from recording these two headers.
+
+```python
+stub.ConvertSource(request, metadata=[("document-password-bin", "s\u00e9same".encode())])
+```
+
+An encrypted PDF skips the pdf inspector's fast path (its contract takes a
+single password and gives up page streaming with one), so it reads through
+the PDF backend on the CV path, which still takes each page's embedded text
+layer where it is good.
+
 ### Result targets
 
 `ConvertSource` takes an optional `Target` naming where the result goes besides the response body. Targets are additive delivery, never a replacement: a response that carries a `target_result` still carries its full `DocumentResponse`.

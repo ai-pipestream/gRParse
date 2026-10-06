@@ -8,12 +8,16 @@
 #include <print>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <grpcpp/grpcpp.h>
 
 #include "ai/pipestream/office/v1/office_service.grpc.pb.h"
+#include "grparse/document_passwords.h"
 #include "grparse/office_collector.h"
 #include "support/check.h"
+#include "support/compound_file.h"
 
 namespace officev1 = ai::pipestream::office::v1;
 
@@ -115,6 +119,46 @@ class RejectingOfficeService final : public officev1::OfficeRenderService::Servi
     while (stream->Read(&request)) {
     }
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "cannot load document");
+  }
+};
+
+// Records the password metadata the call arrived with, then refuses the
+// load the way the office core refuses an encrypted document it cannot open.
+class PasswordRecordingOfficeService final : public officev1::OfficeRenderService::Service {
+ public:
+  std::vector<std::string> received;
+
+  grpc::Status StreamPages(
+      grpc::ServerContext* context,
+      grpc::ServerReaderWriter<officev1::StreamPagesResponse,
+                               officev1::StreamPagesRequest>* stream) override {
+    const auto [first, last] =
+        context->client_metadata().equal_range(std::string(grparse::kDocumentPasswordBinKey));
+    for (auto entry = first; entry != last; ++entry) {
+      received.emplace_back(entry->second.data(), entry->second.size());
+    }
+    officev1::StreamPagesRequest request;
+    while (stream->Read(&request)) {
+    }
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        "document load failed: password-protected");
+  }
+};
+
+// Reads the call's candidates the way gRParse's own surfaces do, and
+// answers with the read's status.
+class PasswordReadingOfficeService final : public officev1::OfficeRenderService::Service {
+ public:
+  grparse::DocumentPasswords read;
+
+  grpc::Status StreamPages(
+      grpc::ServerContext* context,
+      grpc::ServerReaderWriter<officev1::StreamPagesResponse,
+                               officev1::StreamPagesRequest>* stream) override {
+    officev1::StreamPagesRequest request;
+    while (stream->Read(&request)) {
+    }
+    return grparse::read_document_passwords(*context, &read);
   }
 };
 
@@ -233,6 +277,115 @@ void verify_load_failure_degrades_to_outcome() {
           "the collector's error text survives");
 }
 
+// An encrypted .docx as Office wraps it: a compound file holding the
+// encryption header and the encrypted package.
+std::string encrypted_docx() {
+  using grparse_test::CompoundObject;
+  return grparse_test::compound_file({
+      CompoundObject::stream("EncryptionInfo", std::string(200, '\x01')),
+      CompoundObject::stream("EncryptedPackage", std::string(6000, '\x02')),
+  });
+}
+
+void verify_passwords_ride_metadata_in_order() {
+  PasswordRecordingOfficeService service;
+  ServerFixture server(&service);
+  grparse::DocumentPasswords passwords;
+  // A non-ASCII candidate too: the binary key carries any bytes.
+  passwords.candidates = {"hunter2-alpha", "s\xC3\xA9" "cret-beta", "gamma-3"};
+  const auto outcome = grparse::collect_office_document(
+      server.channel(), "doc-5", "locked.docx", "", encrypted_docx(), {},
+      grparse::kNoCollectorDeadline, {}, passwords);
+  require(service.received == passwords.candidates,
+          "every candidate reaches the collector in order on the binary metadata key");
+  require(!outcome.success && outcome.code == grpc::StatusCode::INVALID_ARGUMENT,
+          "an encrypted document no candidate opens is the caller's problem");
+  require(outcome.error.contains("LOAD_STATUS_PASSWORD_REQUIRED"),
+          "the refusal carries the PDF path's password token: " + outcome.error);
+  require(outcome.error.contains("none of the 3 supplied passwords opened it"),
+          "the refusal says how many candidates were tried: " + outcome.error);
+  for (const std::string& candidate : passwords.candidates) {
+    require(!outcome.error.contains(candidate), "no candidate appears in the error");
+  }
+}
+
+void verify_encrypted_refusal_without_passwords() {
+  PasswordRecordingOfficeService service;
+  ServerFixture server(&service);
+  const auto outcome = grparse::collect_office_document(
+      server.channel(), "doc-6", "locked.docx", "", encrypted_docx());
+  require(service.received.empty(), "no password metadata without candidates");
+  require(outcome.error.contains("LOAD_STATUS_PASSWORD_REQUIRED") &&
+              outcome.error.contains("no password was supplied"),
+          "an encrypted document without candidates gets the same token: " + outcome.error);
+}
+
+void verify_plain_load_failure_keeps_its_message() {
+  PasswordRecordingOfficeService service;
+  ServerFixture server(&service);
+  grparse::DocumentPasswords passwords;
+  passwords.candidates = {"unused"};
+  const auto outcome = grparse::collect_office_document(
+      server.channel(), "doc-7", "plain.odt", "", "not an encrypted document", {},
+      grparse::kNoCollectorDeadline, {}, passwords);
+  require(!outcome.error.contains("PASSWORD_REQUIRED") &&
+              outcome.error.contains("document load failed"),
+          "a document that is not encrypted keeps the collector's own refusal");
+}
+
+// One raw call carrying `metadata`, answered by the reading service.
+grpc::Status call_with_metadata(
+    PasswordReadingOfficeService& service,
+    const std::vector<std::pair<std::string, std::string>>& metadata) {
+  ServerFixture server(&service);
+  auto stub = officev1::OfficeRenderService::NewStub(server.channel());
+  grpc::ClientContext context;
+  for (const auto& [key, value] : metadata) context.AddMetadata(key, value);
+  auto stream = stub->StreamPages(&context);
+  stream->WritesDone();
+  officev1::StreamPagesResponse event;
+  while (stream->Read(&event)) {
+  }
+  return stream->Finish();
+}
+
+void verify_reading_passwords_from_metadata() {
+  const std::string plain(grparse::kDocumentPasswordKey);
+  const std::string binary(grparse::kDocumentPasswordBinKey);
+  {
+    PasswordReadingOfficeService service;
+    const grpc::Status status = call_with_metadata(
+        service, {{binary, std::string("b\x00inary", 7)},
+                  {plain, "plain-1"},
+                  {plain, ""},
+                  {plain, "plain-2"}});
+    require(status.ok(), "candidates within the bounds read: " + status.error_message());
+    require(service.read.candidates ==
+                std::vector<std::string>{"plain-1", "plain-2", std::string("b\x00inary", 7)},
+            "plain candidates first, then binary ones, each in order, empties skipped");
+  }
+  {
+    PasswordReadingOfficeService service;
+    std::vector<std::pair<std::string, std::string>> many;
+    for (size_t i = 0; i <= grparse::kMaxDocumentPasswords; ++i) {
+      many.emplace_back(plain, "candidate-" + std::to_string(i));
+    }
+    const grpc::Status status = call_with_metadata(service, many);
+    require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+                status.error_message().find("candidate-") == std::string::npos,
+            "one candidate too many fails naming the bound, not a value");
+    require(service.read.empty(), "a refused read keeps nothing");
+  }
+  {
+    PasswordReadingOfficeService service;
+    const std::string long_one(grparse::kMaxDocumentPasswordBytes + 1, 'p');
+    const grpc::Status status = call_with_metadata(service, {{binary, long_one}});
+    require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+                status.error_message().find(long_one) == std::string::npos,
+            "an oversized candidate fails naming the bound, not the value");
+  }
+}
+
 void verify_truncated_stream_is_a_failure() {
   TruncatingOfficeService service;
   ServerFixture server(&service);
@@ -257,6 +410,10 @@ int main() {
   return grparse_test::run_test_main("office-collector-test", {
       verify_collects_and_folds_typed_stream,
       verify_load_failure_degrades_to_outcome,
+      verify_passwords_ride_metadata_in_order,
+      verify_encrypted_refusal_without_passwords,
+      verify_plain_load_failure_keeps_its_message,
+      verify_reading_passwords_from_metadata,
       verify_truncated_stream_is_a_failure,
       verify_unreachable_endpoint_is_a_failure,
   });

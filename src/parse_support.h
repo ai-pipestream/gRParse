@@ -22,6 +22,7 @@
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
 #include "grparse/collector_coordinator.h"
 #include "grparse/document_parser_service.h"
+#include "grparse/document_passwords.h"
 #include "grparse/page_scheduler.h"
 #include "lolhtml/v1/lolhtml_service.pb.h"
 
@@ -59,6 +60,9 @@ CollectorOutcome run_local_collector(ai::pipestream::parse::v1::Collector id,
 struct CollectorRules {
   ai::pipestream::ebcdic::v1::ParseOptions ebcdic;
   std::optional<lolhtml::v1::ExtractOptions> lol_html;
+  // The call's candidate passwords, for the collector that opens an
+  // encrypted document itself (libreoffice). Never logged.
+  DocumentPasswords passwords;
 };
 
 // Dials one Document-emitting remote collector and returns its outcome.

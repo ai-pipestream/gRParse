@@ -627,6 +627,7 @@ class PageScheduler::Impl final {
         auto source = source_factory_(document.bytes, document.pdf, render_dpi);
         if (!source) throw InvalidDocument("Document source could not be opened");
         source->set_deadline(document.request->tuning.deadline);
+        source->set_passwords(document.request->tuning.passwords);
         // Published before the first backend call, so a cancel that lands
         // while the document opens aborts the opening Probe instead of
         // waiting it out.

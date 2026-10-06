@@ -6,6 +6,7 @@
 #include <grpcpp/grpcpp.h>
 
 #include "grparse/collector_coordinator.h"
+#include "grparse/document_passwords.h"
 #include "grparse/office_cv_enrichment.h"
 
 namespace grparse {
@@ -24,11 +25,17 @@ namespace grparse {
 // cap. kNoCollectorDeadline (the default) means the call carried none, which
 // leaves the leg on its cap alone. `cancelled` cancels the stream once the
 // inbound call is gone; empty (the default) watches nothing.
+//
+// `passwords` are the call's candidates for an encrypted document; they
+// ride the collector call's metadata, never its payload. A password-
+// protected document the collector cannot open fails INVALID_ARGUMENT with
+// the backend contract's LOAD_STATUS_PASSWORD_REQUIRED token, the verdict
+// an encrypted PDF gets, saying how many candidates were tried.
 CollectorOutcome collect_office_document(
     const std::shared_ptr<grpc::Channel>& channel, const std::string& document_id,
     const std::string& filename, const std::string& content_type,
     const std::string& bytes, const OfficeCvEnrichment& enrichment = {},
     CollectorDeadline inbound_deadline = kNoCollectorDeadline,
-    CollectorCancelled cancelled = {});
+    CollectorCancelled cancelled = {}, const DocumentPasswords& passwords = {});
 
 }  // namespace grparse

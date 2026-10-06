@@ -1301,6 +1301,44 @@ void verify_render_dpi_reaches_source_factory() {
   require(factory_dpi.load() == 300.0, "a tuned render DPI must reach the source factory");
 }
 
+// A one-page source that records the passwords it was handed and refuses
+// to open without them, the way an encrypted PDF's backend source does.
+class PasswordRecordingSource final : public grparse::PageSource {
+ public:
+  explicit PasswordRecordingSource(std::shared_ptr<std::vector<std::string>> seen)
+      : seen_(std::move(seen)) {}
+  void set_passwords(const grparse::DocumentPasswords& passwords) override {
+    *seen_ = passwords.candidates;
+  }
+  int page_count() const override {
+    if (seen_->empty()) throw grparse::InvalidDocument("LOAD_STATUS_PASSWORD_REQUIRED");
+    return 1;
+  }
+  cv::Mat render_page(int) const override { return cv::Mat(1, 1, CV_8UC1, cv::Scalar(1)).clone(); }
+
+ private:
+  std::shared_ptr<std::vector<std::string>> seen_;
+};
+
+void verify_passwords_reach_the_source_before_it_opens() {
+  FakeRecognizer recognizer;
+  const auto seen = std::make_shared<std::vector<std::string>>();
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 3, 2, 3, 2, 2, 2},
+      [seen](std::shared_ptr<const std::string>, bool, double) {
+        return std::make_shared<PasswordRecordingSource>(seen);
+      });
+  grparse::PageScheduler::OcrTuning tuning;
+  tuning.passwords.candidates = {"first-guess", "second-guess"};
+  Result opened;
+  scheduler.submit(std::make_shared<const std::string>("memory"), false, tuning,
+                   callbacks_for(&opened));
+  wait_until_finished(&opened);
+  require(!opened.failure, "a source handed its passwords opens");
+  require(*seen == std::vector<std::string>{"first-guess", "second-guess"},
+          "the tuning's candidates reach the source in order before its first use");
+}
+
 // Orientation recovery through the pipeline.  The source renders the
 // upright 4x2 marker raster turned a quarter turn clockwise; the recognizer
 // reads a portrait raster as tall boxes, a landscape raster with the marker
@@ -1532,6 +1570,7 @@ int main() {
       verify_ocr_off_still_runs_layout,
       verify_force_ocr_replaces_the_embedded_layer,
       verify_render_dpi_reaches_source_factory,
+      verify_passwords_reach_the_source_before_it_opens,
       verify_cancel_and_deadline_reach_the_source,
     verify_blocked_open_does_not_stall_scheduling,
       verify_delivery_cancellation_drains_queued_work,

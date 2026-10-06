@@ -37,6 +37,7 @@
 #include "grparse/document_assembly.h"
 #include "grparse/document_collectors.h"
 #include "grparse/document_merge.h"
+#include "grparse/document_passwords.h"
 #include "grparse/heading_hierarchy.h"
 #include "grparse/input_format.h"
 #include "grparse/page_previews.h"
@@ -1447,7 +1448,8 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
                          std::shared_ptr<const std::string> bytes,
                          const fs::path& requested_name, std::string content_type,
                          std::optional<ChartExtractionPreset> chart_extraction,
-                         PictureDescriptionCall picture_description_call) {
+                         PictureDescriptionCall picture_description_call,
+                         const DocumentPasswords& passwords) {
   const auto& options = request.options();
   ParseInputs inputs;
   inputs.context = context;
@@ -1456,6 +1458,9 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   // validate_options already refused rules that do not resolve.
   auto rules = std::make_shared<CollectorRules>();
   static_cast<void>(resolve_collector_rules(options, std::string(), rules.get()));
+  // The office leg opens an encrypted document itself, so the candidates
+  // ride its rules; the CV path's PDF source gets them through the tuning.
+  rules->passwords = passwords;
   inputs.collector_rules = std::move(rules);
   inputs.filename = requested_name;
   static std::atomic<uint64_t> call_sequence{0};
@@ -1563,6 +1568,7 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   inputs.inbound_deadline = deadline_with_document_timeout(
       context->deadline(), options.has_document_timeout(), options.document_timeout());
   inputs.tuning.deadline = inputs.inbound_deadline;
+  inputs.tuning.passwords = passwords;
   // A collector-folded PDF never rasterized; when previews are on, it gets
   // them rendered so the shell has a page to paint the boxes on. The request
   // decides when it says; the server setting otherwise.
@@ -1878,17 +1884,26 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
   // pass; the validation runs once the document is final.
   const StructureRequest structure = StructureRequest::from(request.options());
   const std::optional<RepairOptions> repair = repair_for_request(server_repair, structure);
+  // Candidate passwords for an encrypted document come from the call's
+  // metadata only; see document_passwords.h.
+  DocumentPasswords passwords;
+  if (const grpc::Status read = read_document_passwords(*context, &passwords); !read.ok()) {
+    return grpc::Status(read.error_code(), surface + ": " + read.error_message());
+  }
   try {
     const auto& source = sources.Get(0).file();
     auto bytes = std::make_shared<const std::string>(decode_base64(source.base64_string()));
     // A nameless upload gets a name that declares nothing, so the bytes
     // decide its type and route rather than a made-up extension.
     const fs::path requested_name = source.filename().empty() ? "document" : fs::path(source.filename()).filename();
-    if (const auto encrypted = encrypted_office_document(*bytes); encrypted.has_value()) {
+    if (const auto encrypted = encrypted_office_document(*bytes);
+        encrypted.has_value() && passwords.empty()) {
       // The same verdict the PDF path gives for an encrypted PDF (see
       // remote_page_source.cpp): INVALID_ARGUMENT whose message carries the
       // backend contract's load status by name, so a client branches on one
       // token whatever the format, with the evidence in parentheses after it.
+      // With candidate passwords the office collector tries them, and a
+      // document none of them opens fails with the same token there.
       return grpc::Status(
           grpc::StatusCode::INVALID_ARGUMENT,
           surface + ": could not load " + requested_name.string() + ": " +
@@ -1924,7 +1939,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     const ParseInputs inputs =
         parse_inputs(context, request, scheduler, collectors, bytes, requested_name,
                      base.origin().mimetype(), std::move(*chart_extraction),
-                     std::move(*picture_description));
+                     std::move(*picture_description), passwords);
 
     const auto cv_offsets = std::make_shared<
         google::protobuf::RepeatedPtrField<pipestream::parse::v1::TextOffset>>();

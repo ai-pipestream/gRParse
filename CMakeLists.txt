@@ -747,6 +747,7 @@ add_library(grparse_core STATIC
   src/document_parser_service.cpp
   src/document_streaming_service.cpp
   src/office_collector.cpp
+  src/document_passwords.cpp
   src/office_cv_enrichment.cpp
   src/figure_classifier.cpp
   src/document_assembly.cpp

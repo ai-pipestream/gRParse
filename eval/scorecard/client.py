@@ -25,6 +25,9 @@ from compare_vlm import load_stubs, stage_protos  # noqa: E402
 MAX_MESSAGE_BYTES = 512 * 1024 * 1024
 CONVERT_TIMEOUT_SECONDS = 1800.0
 HEALTH_TIMEOUT_SECONDS = 10.0
+# gRParse reads a document's candidate passwords from this call metadata key
+# (include/grparse/document_passwords.h); the binary form carries any UTF-8.
+PASSWORD_METADATA_KEY = "document-password-bin"
 
 
 class Unreachable(RuntimeError):
@@ -109,10 +112,12 @@ class GrparseClient:
 
     def convert_bytes(self, data: bytes, filename: str, *, formats: tuple[str, ...] = DEFAULT_FORMATS,
                       collectors: tuple[str, ...] = (), ebcdic_layout_json: bytes | None = None,
-                      timeout: float | None = None) -> ConvertResult:
+                      timeout: float | None = None, passwords: tuple[str, ...] = ()) -> ConvertResult:
         """One ConvertSource over in-memory bytes (nothing touches disk). ``formats``
         are OutputFormat names without the prefix, ``collectors`` Collector enum
-        names without theirs; RPC failures are returned, not raised."""
+        names without theirs; RPC failures are returned, not raised. ``passwords``
+        are candidates for an encrypted document: they ride the call's metadata
+        (``document-password-bin``, one entry each, in order), never the request."""
         import grpc
         from google.protobuf.json_format import MessageToDict
 
@@ -130,7 +135,9 @@ class GrparseClient:
             request.request.options.ebcdic_layout_json = ebcdic_layout_json
         started = time.monotonic()
         try:
-            response = self._stub.ConvertSource(request, timeout=timeout or CONVERT_TIMEOUT_SECONDS)
+            metadata = [(PASSWORD_METADATA_KEY, candidate.encode("utf-8")) for candidate in passwords]
+            response = self._stub.ConvertSource(request, timeout=timeout or CONVERT_TIMEOUT_SECONDS,
+                                                metadata=metadata or None)
         except grpc.RpcError as error:
             elapsed = (time.monotonic() - started) * 1000.0
             if error.code() == grpc.StatusCode.UNAVAILABLE:

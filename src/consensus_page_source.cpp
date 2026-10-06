@@ -257,6 +257,10 @@ class ConsensusPdfPageSource final : public PageSource {
     for (auto& leg : legs_) leg.source->set_deadline(deadline);
   }
 
+  void set_passwords(const DocumentPasswords& passwords) override {
+    for (auto& leg : legs_) leg.source->set_passwords(passwords);
+  }
+
   void cancel() override {
     for (auto& leg : legs_) leg.source->cancel();
   }

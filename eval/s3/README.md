@@ -39,6 +39,7 @@ not a pass.
 | `EVAL_S3_SNIFF_PER_EXTENSION` | objects per extension parsed once more under an extension-less name, default 1 |
 | `EVAL_OUT`, `EVAL_LABEL` | output root (default `eval/out`) and run label (default `live`) |
 | `EVAL_REQUIRE` | `1` makes a skipped object (an `.ebc` without a layout) a failure |
+| `EVAL_S3_PASSWORDS_FILE` | optional UTF-8 file, one candidate document password per line (blank lines skipped, at most 16); every conversion sends them as `document-password-bin` call metadata and gRParse tries them only on a document that will not open without one. Never printed, never written into a report |
 
 Outputs land in `EVAL_OUT/s3/<label>/report.md` and `report.json`: a per-check
 table, the (parser type x file type) matrix with files/pass/fail per check,

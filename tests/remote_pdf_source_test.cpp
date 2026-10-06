@@ -437,6 +437,101 @@ class QuirkBackend final : public pdfv1::PdfBackendService::Service {
 
 // Starts a fake backend on its own port; returns the target. The server
 // outlives the caller's scope by reference.
+// An encrypted one-page document that opens with "open-sesame" only: no
+// password is PASSWORD_REQUIRED and a wrong one PASSWORD_INCORRECT, on
+// every call, the way a backend that loads the document afresh per call
+// answers. It records the passwords each RPC carried.
+class PasswordBackend final : public pdfv1::PdfBackendService::Service {
+ public:
+  static constexpr const char* kPassword = "open-sesame";
+  std::mutex mutex;
+  std::vector<std::string> probe_passwords;
+  std::vector<std::string> parse_passwords;
+  std::vector<std::string> render_passwords;
+
+  static pdfv1::LoadStatus verdict(const pdfv1::PdfDocument& document) {
+    if (!document.has_password()) return pdfv1::LOAD_STATUS_PASSWORD_REQUIRED;
+    return document.password() == kPassword ? pdfv1::LOAD_STATUS_OK
+                                            : pdfv1::LOAD_STATUS_PASSWORD_INCORRECT;
+  }
+
+  static std::string seen(const pdfv1::PdfDocument& document) {
+    return document.has_password() ? document.password() : std::string("<none>");
+  }
+
+  grpc::Status Probe(grpc::ServerContext*, const pdfv1::ProbeRequest* request,
+                     pdfv1::ProbeResponse* response) override {
+    {
+      const std::lock_guard<std::mutex> lock(mutex);
+      probe_passwords.push_back(seen(request->document()));
+    }
+    auto* caps = response->mutable_capabilities();
+    caps->set_backend_name("password-fake");
+    caps->set_load_status(verdict(request->document()));
+    if (caps->load_status() == pdfv1::LOAD_STATUS_OK) caps->set_page_count(1);
+    return grpc::Status::OK;
+  }
+
+  grpc::Status Parse(grpc::ServerContext*, const pdfv1::ParseRequest* request,
+                     grpc::ServerWriter<pdfv1::ParseResponse>* writer) override {
+    {
+      const std::lock_guard<std::mutex> lock(mutex);
+      parse_passwords.push_back(seen(request->document()));
+    }
+    pdfv1::ParseResponse header;
+    auto* caps = header.mutable_header()->mutable_capabilities();
+    caps->set_load_status(verdict(request->document()));
+    if (caps->load_status() != pdfv1::LOAD_STATUS_OK) {
+      writer->Write(header);
+      return grpc::Status::OK;
+    }
+    caps->set_page_count(1);
+    auto* info = header.mutable_header()->add_pages();
+    info->set_page_index(0);
+    info->set_width_pts(kPageWidthPts);
+    info->set_height_pts(kPageHeightPts);
+    writer->Write(header);
+    pdfv1::ParseResponse page;
+    auto* cell = page.mutable_page()->add_text_cells();
+    cell->set_text("the unlocked page");
+    cell->mutable_bbox()->set_x0(72.0);
+    cell->mutable_bbox()->set_y0(700.0);
+    cell->mutable_bbox()->set_x1(300.0);
+    cell->mutable_bbox()->set_y1(712.0);
+    page.mutable_page()->set_page_index(0);
+    writer->Write(page);
+    return grpc::Status::OK;
+  }
+
+  grpc::Status Render(grpc::ServerContext*, const pdfv1::RenderRequest* request,
+                      grpc::ServerWriter<pdfv1::RenderResponse>* writer) override {
+    {
+      const std::lock_guard<std::mutex> lock(mutex);
+      render_passwords.push_back(seen(request->document()));
+    }
+    const pdfv1::LoadStatus status = verdict(request->document());
+    if (status != pdfv1::LOAD_STATUS_OK) {
+      pdfv1::RenderResponse head;
+      head.mutable_head()->set_load_status(status);
+      writer->Write(head);
+      return grpc::Status::OK;
+    }
+    const int width = static_cast<int>(kPageWidthPts * request->dpi() / 72.0);
+    const int height = static_cast<int>(kPageHeightPts * request->dpi() / 72.0);
+    pdfv1::RenderResponse msg;
+    auto* raster = msg.mutable_raster();
+    raster->set_page_index(0);
+    raster->set_width_px(width);
+    raster->set_height_px(height);
+    raster->set_stride_bytes(width * 3);
+    raster->set_pixel_format(pdfv1::PIXEL_FORMAT_BGR8);
+    raster->set_dpi(request->dpi());
+    raster->set_pixels(std::string(static_cast<size_t>(width) * height * 3, '\0'));
+    writer->Write(msg);
+    return grpc::Status::OK;
+  }
+};
+
 template <typename Service>
 std::string serve(Service& backend, std::unique_ptr<grpc::Server>& server) {
   grpc::ServerBuilder builder;
@@ -704,6 +799,80 @@ int main() {
     require(threw && quirk.calls_seen.load() == seen_after,
             "a cancelled source fails later calls without dialing");
     quirk_server->Shutdown();
+  }
+
+  // --- Per-request document passwords ------------------------------------
+  // The request's candidates reach the opening Probe in order, the first
+  // that opens the document rides every later call, and a document none of
+  // them opens fails with PASSWORD_REQUIRED naming how many were tried,
+  // never which.
+  {
+    PasswordBackend locked;
+    std::unique_ptr<grpc::Server> locked_server;
+    const std::string locked_target = serve(locked, locked_server);
+    const auto encrypted = std::make_shared<const std::string>("%PDF-encrypted-fixture");
+
+    require(throws_load_status(
+                [&] { grparse::open_remote_pdf_document(encrypted, locked_target, dpi); },
+                "LOAD_STATUS_PASSWORD_REQUIRED"),
+            "an encrypted PDF without candidates fails PASSWORD_REQUIRED");
+
+    {
+      const auto source = grparse::open_remote_pdf_document(
+          encrypted, locked_target, dpi, grparse::SourceOpening::kOnFirstUse);
+      grparse::DocumentPasswords passwords;
+      passwords.candidates = {"wrong-guess", PasswordBackend::kPassword, "never-tried"};
+      source->set_passwords(passwords);
+      locked.probe_passwords.clear();
+      require(source->page_count() == 1, "the right candidate opens the document");
+      require(locked.probe_passwords ==
+                  std::vector<std::string>{"<none>", "wrong-guess", PasswordBackend::kPassword},
+              "the Probe tries no password, then each candidate in order, stopping at the "
+              "one that opens it");
+      const auto page = source->extract_digital_page(1);
+      require(page.has_value() && page->lines.size() == 1 &&
+                  page->lines.front().text == "the unlocked page",
+              "the unlocked page's text layer reads");
+      const cv::Mat raster = source->render_page(1);
+      require(!raster.empty(), "the unlocked page renders");
+      require(locked.parse_passwords == std::vector<std::string>{PasswordBackend::kPassword} &&
+                  locked.render_passwords == std::vector<std::string>{PasswordBackend::kPassword},
+              "Parse and Render carry the password that opened the document");
+    }
+
+    {
+      const auto source = grparse::open_remote_pdf_document(
+          encrypted, locked_target, dpi, grparse::SourceOpening::kOnFirstUse);
+      grparse::DocumentPasswords passwords;
+      passwords.candidates = {"nope-first", "nope-second"};
+      source->set_passwords(passwords);
+      std::string message;
+      try {
+        static_cast<void>(source->page_count());
+      } catch (const grparse::InvalidDocument& error) {
+        message = error.what();
+      }
+      require(message.find("LOAD_STATUS_PASSWORD_REQUIRED") != std::string::npos &&
+                  message.find("none of the 2 supplied passwords opened it") != std::string::npos,
+              "no opening candidate fails PASSWORD_REQUIRED with the count: " + message);
+      require(message.find("nope-") == std::string::npos, "no candidate appears in the error");
+    }
+
+    {
+      // A document that opens without a password never sends one.
+      CachingFakeBackend plain;
+      std::unique_ptr<grpc::Server> plain_server;
+      const std::string plain_target = serve(plain, plain_server);
+      const auto source = grparse::open_remote_pdf_document(
+          doc, plain_target, dpi, grparse::SourceOpening::kOnFirstUse);
+      grparse::DocumentPasswords passwords;
+      passwords.candidates = {"not-needed"};
+      source->set_passwords(passwords);
+      require(source->page_count() == 2, "an unencrypted document opens as before");
+      require(plain.probe.calls == 2, "candidates cost no Probe on a document that opens");
+      plain_server->Shutdown();
+    }
+    locked_server->Shutdown();
   }
 
   // --- Target configuration edge cases ------------------------------------
