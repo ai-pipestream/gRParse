@@ -131,3 +131,17 @@ def test_a_parse_that_runs_out_of_time_is_not_repeated_or_sniffed() -> None:
     assert set(clients[0].timeouts) == {30.0}
     finding = next(f for f in report["findings"] if f["check"] == "parse_succeeds")
     assert finding["keys"] == ["r/corners.xlsx"] and "DEADLINE_EXCEEDED" in finding["cause"]
+
+
+def test_password_file_reaches_every_conversion_and_no_report() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "passwords.txt"
+        path.write_text("corpus-secret-1\ncorpus-secret-2\n", encoding="utf-8")
+        objects = {"repo/a.docx": b"PK-docx"}
+        answers = {"docx": result(word_document())}
+        code, report, markdown, _, clients, _ = _run(objects, answers,
+                                                     env_extra={"EVAL_S3_PASSWORDS_FILE": str(path)})
+    assert code == 0, report["findings"] if report else None
+    sent = clients[0].passwords
+    assert sent and all(candidates == ("corpus-secret-1", "corpus-secret-2") for candidates in sent)
+    assert "corpus-secret" not in markdown and "corpus-secret" not in json.dumps(report)

@@ -3,7 +3,9 @@
 #include <utility>
 
 #include "ai/pipestream/office/v1/office_service.grpc.pb.h"
+#include "ai/protomolt/parse/pdf/v1/pdf_backend_types.pb.h"
 #include "collectors/collector_support.h"
+#include "grparse/content_sniff.h"
 #include "grparse/docling_map.h"
 
 namespace officev1 = ai::pipestream::office::v1;
@@ -17,11 +19,13 @@ CollectorOutcome collect_office_document(
     const std::shared_ptr<grpc::Channel>& channel, const std::string& document_id,
     const std::string& filename, const std::string& content_type,
     const std::string& bytes, const OfficeCvEnrichment& enrichment,
-    CollectorDeadline inbound_deadline, CollectorCancelled cancelled) {
+    CollectorDeadline inbound_deadline, CollectorCancelled cancelled,
+    const DocumentPasswords& passwords) {
   CollectorOutcome outcome;
   auto stub = officev1::OfficeRenderService::NewStub(channel);
   grpc::ClientContext context;
   context.set_deadline(capped_collector_deadline(inbound_deadline, kDeadline));
+  attach_document_passwords(context, passwords);
   const CancelWatch watch(context, std::move(cancelled));
   auto stream = stub->StreamPages(&context);
 
@@ -51,6 +55,20 @@ CollectorOutcome collect_office_document(
   if (!status.ok()) {
     outcome.error = "libreoffice collector: " + status.error_message();
     outcome.code = map_code(status.error_code());
+    // A password-protected document the office core refused gets the
+    // verdict an encrypted PDF gets, so a client branches on one token
+    // whatever the format. Only a refusal of the document itself: an
+    // outage or a deadline keeps its own code and message.
+    if (status.error_code() == grpc::StatusCode::INVALID_ARGUMENT) {
+      if (const auto encrypted = encrypted_office_document(bytes); encrypted.has_value()) {
+        outcome.error = "libreoffice collector: could not load the document: " +
+                        ai::protomolt::parse::pdf::v1::LoadStatus_Name(
+                            ai::protomolt::parse::pdf::v1::LOAD_STATUS_PASSWORD_REQUIRED) +
+                        " (password-protected " + encrypted->format + ": " +
+                        encrypted->evidence + "; " + password_attempt_clause(passwords) + ")";
+        outcome.code = grpc::StatusCode::INVALID_ARGUMENT;
+      }
+    }
     return outcome;
   }
   if (!mapper.finished()) {

@@ -131,7 +131,7 @@ CollectorOutcome run_remote_collector(
                                      filename, content_type, bytes,
                                      spreadsheet ? OfficeCvEnrichment{}
                                                  : endpoints->cv_enrichment(),
-                                     inbound_deadline, cancelled);
+                                     inbound_deadline, cancelled, rules.passwords);
     }
     case pipestream::parse::v1::COLLECTOR_ASR:
       if (endpoints->asr_model().empty()) {

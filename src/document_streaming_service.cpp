@@ -28,6 +28,7 @@
 #include "grparse/document_assembly.h"
 #include "grparse/document_collectors.h"
 #include "grparse/document_merge.h"
+#include "grparse/document_passwords.h"
 #include "grparse/document_repair.h"
 #include "grparse/page_previews.h"
 #include "grparse/page_projection.h"
@@ -386,10 +387,19 @@ class DocumentStreamReactor final
       return plan;
     }
     repair_ = repair_for_request(server_repair_, structure_);
+    // Candidate passwords ride the call's initial metadata, the one place a
+    // streaming call has before its chunks (see document_passwords.h).
+    if (const grpc::Status read = read_document_passwords(*context_, &passwords_);
+        !read.ok()) {
+      request_finish_locked(
+          grpc::Status(read.error_code(), "StreamProcessDocument: " + read.error_message()));
+      return plan;
+    }
     plan.tuning = ocr_tuning(do_ocr_.has_value(), do_ocr_.value_or(true),
                              force_ocr_.value_or(false), render_scale_.has_value(),
                              render_scale_.value_or(0.0));
     plan.tuning.deadline = context_->deadline();
+    plan.tuning.passwords = passwords_;
     plan.bytes = take_bytes_locked();
     plan.pdf = content_type_ == "application/pdf" || is_pdf(*plan.bytes, filename_);
     pdf_ = plan.pdf;
@@ -768,18 +778,20 @@ class DocumentStreamReactor final
     std::string document_id;
     std::string filename;
     std::string content_type;
+    CollectorRules rules;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       document_id = document_id_;
       filename = filename_.string();
       content_type = content_type_;
+      rules.passwords = passwords_;
     }
     start_leg(id, [endpoints = endpoints_, id, bytes, document_id, filename, content_type,
-                   inbound_deadline = context_->deadline()](
+                   rules = std::move(rules), inbound_deadline = context_->deadline()](
                       const std::weak_ptr<CallbackGate>& weak_gate) {
       deliver(weak_gate, id,
               run_remote_collector(id, endpoints, document_id, filename, content_type,
-                                   *bytes, CollectorRules{}, inbound_deadline,
+                                   *bytes, rules, inbound_deadline,
                                    leg_cancelled(weak_gate)));
     });
   }
@@ -1136,6 +1148,8 @@ class DocumentStreamReactor final
   // the recognition fields.
   std::optional<pipestream::parse::v1::StructureValidation> structure_validation_;
   StructureRequest structure_;
+  // The call's candidate passwords, read once when the plan resolves.
+  DocumentPasswords passwords_;
   const size_t maximum_buffered_pages_;
   std::shared_ptr<CallbackGate> callback_gate_;
   std::shared_ptr<InflightBytes> inflight_;

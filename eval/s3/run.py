@@ -10,6 +10,8 @@ Environment (nothing else configures the run):
   EVAL_S3_MAX_OBJECTS, EVAL_S3_INCLUDE / EVAL_S3_EXCLUDE (comma-separated key globs)
   EVAL_S3_REPEAT (default 2), EVAL_S3_SNIFF_PER_EXTENSION (default 1)
   EVAL_OUT (default eval/out), EVAL_LABEL (default live), EVAL_REQUIRE=1 (a skip fails)
+  EVAL_S3_PASSWORDS_FILE (optional): one candidate document password per line,
+    sent with every conversion as call metadata, never printed or reported
 
 Object bytes are fetched into memory and never written to disk. Outputs land
 in EVAL_OUT/s3/<label>/report.md and report.json.
@@ -93,9 +95,12 @@ def ran_out_of_time(result: Any, timeout: float) -> bool:
 
 
 def convert_object(client: Any, key: str, data: bytes, ext: str, *, repeat: int, sniff: bool,
-                   layout: bytes | None, timeout: float) -> tuple[list[Any], Any | None]:
+                   layout: bytes | None, timeout: float,
+                   passwords: tuple[str, ...] = ()) -> tuple[list[Any], Any | None]:
     name = key.rsplit("/", 1)[-1]
     kwargs: dict[str, Any] = {"formats": FORMATS, "timeout": timeout}
+    if passwords:
+        kwargs["passwords"] = passwords
     if layout is not None:
         kwargs.update(collectors=("EBCDIC",), ebcdic_layout_json=layout)
     runs: list[Any] = []
@@ -137,7 +142,7 @@ def evaluate_bucket(config: Config, source: ObjectSource, client: Any, results: 
         if do_sniff:
             sniffed_per_ext[ext] = sniffed_per_ext.get(ext, 0) + 1
         runs, sniff = convert_object(client, ref.key, data, ext, repeat=config.repeat, sniff=do_sniff, layout=layout,
-                                     timeout=config.convert_timeout)
+                                     timeout=config.convert_timeout, passwords=config.document_passwords)
         first = runs[0]
         view = View(first.document) if first.document and not first.rpc_error else None
         ctx = ObjectContext(key=ref.key, ext=ext, family=family, size=ref.size,

@@ -123,6 +123,9 @@ class PageScheduler final {
     // backend call made for it runs past it. max() means the call carried
     // none, and each backend call keeps its own cap.
     std::chrono::system_clock::time_point deadline = std::chrono::system_clock::time_point::max();
+    // The call's candidate passwords for an encrypted PDF, handed to the
+    // document's source before its opening backend call. Empty means none.
+    DocumentPasswords passwords;
   };
 
   enum class DeliveryResult { kAccepted, kAcceptedAndRelease, kCancelled };

@@ -115,6 +115,11 @@ class RemotePdfPageSource final : public PageSource {
     return backend_name_;
   }
 
+  void set_passwords(const DocumentPasswords& passwords) override {
+    const std::lock_guard<std::mutex> lock(open_mutex_);
+    candidates_ = passwords;
+  }
+
   std::optional<OcrPage> extract_digital_page(int page_number) const override {
     check_page(page_number);
     bool sent_bytes = !handshake_;
@@ -354,28 +359,34 @@ class RemotePdfPageSource final : public PageSource {
   }
 
   void probe() const {
-    // A hash-only Probe is a cache lookup; a miss earns exactly one retry
-    // with the bytes attached so the backend can cache them under the hash.
-    pdfv1::ProbeResponse response;
-    bool sent_bytes = !handshake_;
-    for (;;) {
-      Call call(*this, kProbeDeadline);
-      pdfv1::ProbeRequest request;
-      fill_document(request.mutable_document(), sent_bytes);
-      response.Clear();
-      const grpc::Status status = stub_->Probe(call.context(), request, &response);
-      if (!status.ok()) {
-        throw_backend_failure("PDF backend unreachable", status);
+    pdfv1::ProbeResponse response = probe_with(nullptr);
+    // A document that will not open without a password tries the request's
+    // candidates in order; the first that opens it is sent on every later
+    // call, since the backend loads the document afresh each time.
+    if (password_status(response.capabilities().load_status()) && !candidates_.empty()) {
+      for (const std::string& candidate : candidates_.candidates) {
+        response = probe_with(&candidate);
+        if (response.capabilities().load_status() == pdfv1::LOAD_STATUS_OK) {
+          password_ = candidate;
+          break;
+        }
+        if (!password_status(response.capabilities().load_status())) break;
       }
-      if (response.capabilities().load_status() ==
-              pdfv1::LOAD_STATUS_BYTES_REQUIRED &&
-          !sent_bytes) {
-        sent_bytes = true;
-        continue;
-      }
-      break;
     }
     const auto& caps = response.capabilities();
+    if (password_status(caps.load_status())) {
+      // One verdict whatever was tried, so a client branches on a single
+      // token; how many candidates failed is said, never which, and the
+      // backend's detail on a failed attempt is left out.
+      std::string why;
+      if (!candidates_.empty()) {
+        why = " (" + password_attempt_clause(candidates_) + ")";
+      } else if (caps.has_load_detail()) {
+        why = " (" + caps.load_detail() + ")";
+      }
+      throw InvalidDocument("PDF backend could not load the document: " +
+                            pdfv1::LoadStatus_Name(pdfv1::LOAD_STATUS_PASSWORD_REQUIRED) + why);
+    }
     if (caps.load_status() != pdfv1::LOAD_STATUS_OK) {
       // A BYTES_REQUIRED here means the backend kept asking for bytes after
       // receiving them; a HASH_MISMATCH means the bytes did not hash to the
@@ -391,6 +402,38 @@ class RemotePdfPageSource final : public PageSource {
     backend_name_ = caps.backend_name();
   }
 
+  static bool password_status(pdfv1::LoadStatus status) {
+    return status == pdfv1::LOAD_STATUS_PASSWORD_REQUIRED ||
+           status == pdfv1::LOAD_STATUS_PASSWORD_INCORRECT;
+  }
+
+  // One Probe, opening with `password` when one is given. A hash-only Probe
+  // is a cache lookup; a miss earns exactly one retry with the bytes
+  // attached so the backend can cache them under the hash.
+  pdfv1::ProbeResponse probe_with(const std::string* password) const {
+    pdfv1::ProbeResponse response;
+    bool sent_bytes = !handshake_;
+    for (;;) {
+      Call call(*this, kProbeDeadline);
+      pdfv1::ProbeRequest request;
+      fill_document(request.mutable_document(), sent_bytes);
+      if (password != nullptr) request.mutable_document()->set_password(*password);
+      response.Clear();
+      const grpc::Status status = stub_->Probe(call.context(), request, &response);
+      if (!status.ok()) {
+        throw_backend_failure("PDF backend unreachable", status);
+      }
+      if (response.capabilities().load_status() ==
+              pdfv1::LOAD_STATUS_BYTES_REQUIRED &&
+          !sent_bytes) {
+        sent_bytes = true;
+        continue;
+      }
+      break;
+    }
+    return response;
+  }
+
   void check_page(int page_number) const {
     open();
     if (page_number < 1 || page_number > pages_) {
@@ -404,6 +447,7 @@ class RemotePdfPageSource final : public PageSource {
   void fill_document(pdfv1::PdfDocument* document, bool sent_bytes) const {
     if (handshake_) document->set_sha256(sha256_);
     if (!handshake_ || sent_bytes) document->set_data(*bytes_);
+    if (password_.has_value()) document->set_password(*password_);
   }
 
   int scaled(double user_space_units) const {
@@ -510,6 +554,11 @@ class RemotePdfPageSource final : public PageSource {
   mutable std::exception_ptr open_failure_;
   mutable int pages_ = 0;
   mutable std::string backend_name_;
+  // The request's candidates (set_passwords(), before the first use) and
+  // the one that opened the document, chosen once by open() under
+  // open_mutex_; every later call happens after open() returned.
+  DocumentPasswords candidates_;
+  mutable std::optional<std::string> password_;
   // Guards the request ties: set_deadline() and cancel() arrive from other
   // threads than the page calls.
   mutable std::mutex calls_mutex_;

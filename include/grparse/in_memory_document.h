@@ -10,6 +10,7 @@
 
 #include <opencv2/core.hpp>
 
+#include "grparse/document_passwords.h"
 #include "grparse/ocr_types.h"
 
 namespace grparse {
@@ -65,6 +66,11 @@ class PageSource {
   // remote calls ignore both.
   virtual void set_deadline(std::chrono::system_clock::time_point) {}
   virtual void cancel() {}
+  // The request's candidate passwords for an encrypted document, tried in
+  // order by the opening backend call when the document will not open
+  // without one. Like the request ties above, set before the source's first
+  // use. Sources that open nothing encrypted ignore them.
+  virtual void set_passwords(const DocumentPasswords&) {}
 };
 
 // The largest raster page, in pixels, an image input may decode to:

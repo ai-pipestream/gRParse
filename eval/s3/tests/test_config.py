@@ -49,3 +49,30 @@ def test_bad_integer_is_named() -> None:
 def test_public_endpoint_drops_userinfo() -> None:
     config = Config.from_env(dict(FULL, EVAL_S3_ENDPOINT="http://user:pw@host:9000"), Path("/repo"))
     assert config.public_endpoint() == "host:9000"
+
+
+def test_password_file_is_read_and_never_printed() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "passwords.txt"
+        path.write_text("first-secret\n\n  \nsécond secret\n", encoding="utf-8")
+        config = Config.from_env(dict(FULL, EVAL_S3_PASSWORDS_FILE=str(path)), Path("/repo"))
+        assert config.document_passwords == ("first-secret", "sécond secret")
+        assert "first-secret" not in repr(config) and "cond secret" not in repr(config)
+        assert Config.from_env(FULL, Path("/repo")).document_passwords == ()
+
+        path.write_text("\n".join(f"secret-{i}" for i in range(17)), encoding="utf-8")
+        try:
+            Config.from_env(dict(FULL, EVAL_S3_PASSWORDS_FILE=str(path)), Path("/repo"))
+        except ConfigError as error:
+            assert "at most 16" in str(error) and "secret-" not in str(error)
+        else:
+            raise AssertionError("more candidates than gRParse takes must raise")
+
+    try:
+        Config.from_env(dict(FULL, EVAL_S3_PASSWORDS_FILE="/nonexistent/passwords.txt"), Path("/repo"))
+    except ConfigError as error:
+        assert "EVAL_S3_PASSWORDS_FILE" in str(error)
+    else:
+        raise AssertionError("an unreadable password file must raise")
