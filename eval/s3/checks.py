@@ -643,7 +643,10 @@ def docx_pictures(ctx: ObjectContext) -> list[Failure]:
             failures.append(_fail("docx_pictures", "pictures out of page order", ref=picture.ref, page=page,
                                   previous=last_page))
         last_page = max(last_page, page)
-        anchor = next((nodes[i] for i in range(index - 1, -1, -1) if nodes[i].kind != "picture"), None)
+        # Footnotes sit where their notes stream, not in the text flow, as
+        # reading_order also treats them.
+        anchor = next((nodes[i] for i in range(index - 1, -1, -1)
+                       if nodes[i].kind != "picture" and view.label(nodes[i]) != "footnote"), None)
         if anchor is not None:
             anchor_page = view.first_page(anchor)
             if anchor_page > page:

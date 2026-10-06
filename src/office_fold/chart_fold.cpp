@@ -450,8 +450,11 @@ bool ChartFold::bind_chart_data(const officev1::EmbeddedObject* object,
     if (sheet_chart != nullptr) name_corner(*sheet_chart, table->mutable_data());
     return true;
   }
+  // A chart with no data (a stale copy under another chart) reports a 1x1
+  // grid with no cells; that is no table.
   if (typed && object->chart().has_tabular()
-      && object->chart().tabular().rows() > 0) {
+      && object->chart().tabular().rows() > 0
+      && !object->chart().tabular().cells().empty()) {
     arena_.fold_table(object->chart().tabular(), table);
     mark_tabular_headers(table->mutable_data());
     return true;
