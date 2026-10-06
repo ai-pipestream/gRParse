@@ -130,6 +130,9 @@ void WriterFold::on_table(const officev1::TableData& table) {
   // A table streaming after the text frames is one a frame holds (a Word
   // floating table): it is placed by where it sits, like the frames.
   if (frames_seen_) floating_items_.insert(table_ref);
+  if (table.has_start() && table.has_end()) {
+    table_spans_.emplace_back(table.start().y(), table.end().y());
+  }
   arena_.fold_table(table, item);
   if (!table.line_rects().empty()) {
     arena_.add_line_prov(item->mutable_prov(), table.line_rects(), 0, 0);
@@ -168,8 +171,14 @@ void WriterFold::slot_inline_picture(const officev1::EmbeddedImage& image,
     arena_.move_child_after("#/body", picture_ref, anchor->second);
     return;
   }
-  const int slot = take_anchor_slot(image.page_index(), image.anchor().y(),
-                                    image.height_twips());
+  // A picture anchored in a table cell has no body paragraph of its own;
+  // a blank paragraph below the table is not its place.
+  const long long anchor_y = image.anchor().y();
+  const bool in_table = std::ranges::any_of(table_spans_, [&](const auto& span) {
+    return span.first <= anchor_y && anchor_y <= span.second;
+  });
+  const int slot =
+      in_table ? -1 : take_anchor_slot(image.page_index(), anchor_y, image.height_twips());
   if (slot < 0) {
     // No paragraph to take the place of: the picture sits where it
     // arrived, and once the stream is in it is judged against the body

@@ -102,6 +102,8 @@ class WriterFold : public FoldBase {
   // Objects anchored in a header or footer, by identity without their
   // place: the first copy goes to the furniture, later copies are dropped.
   std::set<std::string> header_objects_;
+  // Caret extents (start y, end y, document twips) of the body tables.
+  std::vector<std::pair<long long, long long>> table_spans_;
   // True once a text frame streamed: the body walk is over, and a table
   // arriving now is held by a frame.
   bool frames_seen_ = false;
