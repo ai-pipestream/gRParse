@@ -357,7 +357,60 @@ void verify_text_signatures() {
   require_sniff("[1, 2, 3]", "application/json", "json array");
   require_sniff(std::string("text\0with nul", 13), "", "a NUL byte is not text");
   require_sniff("caf\xC3\xA9 au lait\n", "text/plain", "valid utf-8 is text");
-  require_sniff("bad \xC3 sequence", "", "invalid utf-8 is not text");
+  require_sniff("bad \xC3 sequence", "text/plain", "a lone high byte reads as single-byte text");
+  require_sniff("Dear Customer,\r\nOn Saturday the caf\xE9 is closed.\r\n", "text/plain",
+                "Latin-1 prose is text");
+  require_sniff("\xE9\xE8\xE0\xF9 ok", "", "mostly high bytes are not a single-byte text");
+  require_sniff(std::string("abc\x01\x02\xFF" "def", 9), "", "control bytes are not text");
+  require_sniff("From:\tTransport for London <info@example.org>\r\nSent:\t13 July 2015\r\n\r\n"
+                "Dear Customer,\r\n",
+                "text/plain", "a pasted From/Sent display block is not a mail header block");
+  require_sniff("a,b,c\n1,2,3\n4,\"5,5\",6\n", "text/csv", "three lines of three fields");
+  require_sniff("name;amount\nx;1\ny;2\n", "text/csv", "semicolon separated values");
+  require_sniff("a,b\n1,2\n", "text/plain", "two narrow lines are too few to call csv");
+  require_sniff("Family,Entity,Date,Amount\r\nHMRC,VOA,01/09/2014,510.00\r\n", "text/csv",
+                "a header and one row of four fields");
+  require_sniff("\"id\",\"note\",\"n\"\n\"1\",\"first line\nsecond line\",\"2\"\n\"3\",\"x\",\"4\"\n",
+                "text/csv", "a quoted field may hold a line break");
+  require_sniff("Hello, world.\nThis line, too, has commas.\nBut, here, more.\n", "text/plain",
+                "prose with unequal comma counts stays plain");
+  require_sniff("one\ntwo\nthree\n", "text/plain", "one field per line is not csv");
+}
+
+// A compound file is placed by its root streams: the legacy Office families
+// by their document stream, an encrypted package by its EncryptedPackage
+// stream, and any other compound file not at all.
+void verify_compound_files_are_placed_by_their_streams() {
+  using grparse_test::CompoundObject;
+  require_sniff(grparse_test::compound_file(office::word_file(0)), "application/msword",
+                "a Word binary file");
+  require_sniff(grparse_test::compound_file(office::excel_file("Workbook", office::workbook_stream({}))),
+                "application/vnd.ms-excel", "an Excel 97 workbook");
+  require_sniff(grparse_test::compound_file(office::excel_file("Book", office::workbook_stream({}))),
+                "application/vnd.ms-excel", "an Excel 5 workbook");
+  require_sniff(grparse_test::compound_file(office::powerpoint_file(0xE391C05F)),
+                "application/vnd.ms-powerpoint", "a PowerPoint binary file");
+  require_sniff(office::encrypted_package(), std::string(grparse::kEncryptedOfficePackageMimetype),
+                "an encrypted Office Open XML package");
+  require_sniff(grparse_test::compound_file(
+                    {CompoundObject::stream("__substg1.0_0037001F", std::string(80, 'm'))}),
+                "", "an Outlook message is left to its extension");
+
+  const auto named = grparse::resolve_mimetype("", office::encrypted_package(), "report.docx");
+  require(named.mimetype ==
+                  "application/vnd.openxmlformats-officedocument.wordprocessingml.document" &&
+              named.evidence == "extension",
+          "an encrypted package's name says which package it is");
+  const auto nameless = grparse::resolve_mimetype("", office::encrypted_package(), "upload");
+  require(nameless.mimetype == grparse::kEncryptedOfficePackageMimetype &&
+              nameless.evidence == "magic",
+          "a nameless encrypted package rests on its bytes");
+  const auto txt = grparse::resolve_mimetype("", "a,b\n1,2\n3,4\n", "table.txt");
+  require(txt.mimetype == "text/plain" && txt.evidence == "extension",
+          "a text name outranks a csv guess");
+  const auto bare = grparse::resolve_mimetype("", "a,b\n1,2\n3,4\n", "table");
+  require(bare.mimetype == "text/csv" && bare.evidence == "magic",
+          "a nameless csv rests on its bytes");
 }
 
 void verify_extension_map() {
@@ -442,6 +495,7 @@ int main() {
       verify_embedded_packages_do_not_decide_the_type,
       verify_binary_signatures,
       verify_text_signatures,
+      verify_compound_files_are_placed_by_their_streams,
       verify_extension_map,
       verify_resolution_order,
       verify_corpus_fixtures,

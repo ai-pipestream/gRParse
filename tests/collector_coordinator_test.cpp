@@ -207,34 +207,39 @@ void verify_office_fanout() {
   for (const char* single : {"report.docx", "report.doc", "deck.pptx", "deck.ppt",
                              "data.csv", "notes.odt", "letter.rtf"}) {
     std::vector<parsev1::Collector> plan = {parsev1::COLLECTOR_LIBREOFFICE};
-    grparse::append_office_fanout(&plan, single, "", true);
+    grparse::append_office_fanout(&plan, single, "", true, false);
     require(plan.size() == 1 && plan[0] == parsev1::COLLECTOR_LIBREOFFICE,
             std::string(single) + " never fans out: libreoffice is its only collector");
   }
 
   std::vector<parsev1::Collector> plan = {parsev1::COLLECTOR_LIBREOFFICE};
-  grparse::append_office_fanout(&plan, "book.xlsx", "", true);
+  grparse::append_office_fanout(&plan, "book.xlsx", "", true, false);
   require(plan.size() == 2 && plan[0] == parsev1::COLLECTOR_LIBREOFFICE &&
               plan[1] == parsev1::COLLECTOR_CALAMINE,
           "xlsx with calamine configured fans out to calamine");
 
   plan = {parsev1::COLLECTOR_LIBREOFFICE};
-  grparse::append_office_fanout(&plan, "ledger.xls", "", true);
+  grparse::append_office_fanout(&plan, "ledger.xls", "", true, false);
   require(plan.size() == 2 && plan[1] == parsev1::COLLECTOR_CALAMINE,
           "xls fans out to calamine");
 
   plan = {parsev1::COLLECTOR_LIBREOFFICE};
-  grparse::append_office_fanout(&plan, "book.ods", "", true);
+  grparse::append_office_fanout(&plan, "book.ods", "", true, false);
   require(plan.size() == 2 && plan[1] == parsev1::COLLECTOR_CALAMINE,
           "ods fans out to calamine");
 
   plan = {parsev1::COLLECTOR_LIBREOFFICE};
-  grparse::append_office_fanout(&plan, "book.xlsx", "", false);
+  grparse::append_office_fanout(&plan, "book.xlsx", "", false, false);
   require(plan.size() == 1, "an unconfigured calamine endpoint adds no leg");
 
   plan = {parsev1::COLLECTOR_LIBREOFFICE, parsev1::COLLECTOR_CALAMINE};
-  grparse::append_office_fanout(&plan, "book.xlsx", "", true);
+  grparse::append_office_fanout(&plan, "book.xlsx", "", true, false);
   require(plan.size() == 2, "a leg already in the plan is never duplicated");
+
+  plan = {parsev1::COLLECTOR_LIBREOFFICE};
+  grparse::append_office_fanout(&plan, "book.xlsx", "", true, true);
+  require(plan.size() == 1 && plan[0] == parsev1::COLLECTOR_LIBREOFFICE,
+          "an encrypted workbook gains no calamine leg: calamine cannot decrypt it");
 }
 
 void verify_scatter_gather_merges_additively() {

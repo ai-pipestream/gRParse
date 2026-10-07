@@ -304,7 +304,10 @@ bool looks_like_mail(string_view probe) {
       if (starts_with_nocase(line, name)) mail_headers++;
     }
   }
-  return header_lines >= 2 && mail_headers >= 1;
+  // Two of the headers mail carries, not one: a message copied out of a mail
+  // client into a text file keeps a "From:" line over a "Sent:" line, which
+  // is a display block, not a header block a mail transfer agent wrote.
+  return header_lines >= 2 && mail_headers >= 2;
 }
 
 // A saved web archive: an rfc822 header block whose Content-Type names the
@@ -393,9 +396,77 @@ std::string sniff_markup(string_view text) {
   return {};
 }
 
+// True for a body in a single-byte encoding (Latin-1, Windows-1252): not
+// UTF-8, but free of NUL and of control bytes other than the whitespace
+// family, with high bytes no more than a quarter of the probe. Binary
+// formats fail on their control bytes long before the ratio matters.
+bool looks_like_single_byte_text(string_view probe) {
+  size_t high = 0;
+  for (const char c : probe) {
+    const auto byte = static_cast<unsigned char>(c);
+    if ((byte < 0x20 && byte != '\t' && byte != '\n' && byte != '\r' && byte != '\f') ||
+        byte == 0x7F) {
+      return false;
+    }
+    if (byte >= 0x80) high++;
+  }
+  return high * 4 <= probe.size();
+}
+
+// The field count of each delimited record in `text`, a quoted field (with
+// doubled quotes inside it) counting as one field whatever delimiters and
+// line breaks it holds. Blank lines are skipped; a final record the probe
+// cut short (`truncated`) or whose quote never closes is dropped.
+std::vector<size_t> delimited_records(string_view text, char delimiter, bool truncated) {
+  std::vector<size_t> records;
+  size_t fields = 1;
+  bool quoted = false;
+  bool blank = true;
+  for (size_t i = 0; i < text.size(); i++) {
+    const char c = text[i];
+    if (c == '"') {
+      blank = false;
+      if (quoted && i + 1 < text.size() && text[i + 1] == '"') {
+        i++;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (quoted) {
+      continue;
+    } else if (c == delimiter) {
+      blank = false;
+      fields++;
+    } else if (c == '\n') {
+      if (!blank) records.push_back(fields);
+      fields = 1;
+      blank = true;
+    } else if (c != '\r') {
+      blank = false;
+    }
+  }
+  if (!blank && !quoted && !truncated) records.push_back(fields);
+  return records;
+}
+
+// Comma (or semicolon) separated values: every record with the same field
+// count, over at least three records of two or more fields, or a header and
+// one row of four or more. Prose with commas almost never keeps one count.
+bool looks_like_csv(string_view probe, bool truncated) {
+  for (const char delimiter : {',', ';'}) {
+    const std::vector<size_t> records = delimited_records(probe, delimiter, truncated);
+    if (records.size() < 2) continue;
+    const size_t fields = records.front();
+    const bool enough = records.size() >= 3 ? fields >= 2 : fields >= 4;
+    if (enough && std::ranges::all_of(records, [&](size_t count) { return count == fields; })) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::string sniff_text(string_view bytes) {
   const string_view probe = bytes.substr(0, kTextProbeBytes);
-  if (!looks_like_text(probe)) return {};
+  if (!looks_like_text(probe) && !looks_like_single_byte_text(probe)) return {};
   const string_view text = strip_bom_and_space(probe);
   if (text.empty()) return {};
   if (const std::string markup = sniff_markup(text); !markup.empty()) return markup;
@@ -411,6 +482,7 @@ std::string sniff_text(string_view bytes) {
     }
   }
   if (looks_like_markdown(text)) return "text/markdown";
+  if (looks_like_csv(text, bytes.size() > kTextProbeBytes)) return "text/csv";
   return "text/plain";
 }
 
@@ -716,10 +788,35 @@ std::optional<EncryptedOfficeDocument> encrypted_office_document(string_view byt
   return std::nullopt;
 }
 
+namespace {
+
+// The Office format a compound file holds, read off its root streams; empty
+// for any other compound file (an Outlook .msg, a thumbnail cache). An
+// encrypted Office Open XML package hides which of docx, xlsx or pptx it is
+// until it is decrypted, so it gets the one type that says so.
+std::string ole_office_mimetype(string_view bytes) {
+  const cfb::File file(bytes);
+  if (!file.ok()) return {};
+  const std::vector<cfb::Entry> root = file.root_children();
+  if (cfb::stream_named(root, "EncryptedPackage") != nullptr) {
+    return std::string(kEncryptedOfficePackageMimetype);
+  }
+  if (cfb::stream_named(root, "WordDocument") != nullptr) return "application/msword";
+  if (cfb::stream_named(root, "Workbook") != nullptr || cfb::stream_named(root, "Book") != nullptr) {
+    return "application/vnd.ms-excel";
+  }
+  if (cfb::stream_named(root, "PowerPoint Document") != nullptr) {
+    return "application/vnd.ms-powerpoint";
+  }
+  return {};
+}
+
+}  // namespace
+
 std::string sniff_mimetype(string_view bytes) {
   if (bytes.empty()) return {};
   if (const std::string binary = sniff_binary(bytes); !binary.empty()) return binary;
-  if (starts_with(bytes, "\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1")) return {};
+  if (starts_with(bytes, cfb::kSignature)) return ole_office_mimetype(bytes);
   return sniff_text(bytes);
 }
 
@@ -822,10 +919,20 @@ MimetypeResolution resolve_mimetype(string_view declared_content_type,
       by_name.starts_with("text/")) {
     return {std::move(by_name), "extension"};
   }
+  // "text/csv" is a guess from field counts alone, so any text name, .txt
+  // included, outranks it.
+  if (sniffed == "text/csv" && by_name.starts_with("text/")) {
+    return {std::move(by_name), "extension"};
+  }
   // Likewise a zip the container scan could not place: an iWork name
   // (.pages, .numbers) says which app's document it is, which the entries
   // of a Pages and a Numbers container cannot (sniff_zip).
   if (sniffed == "application/zip" && by_name.starts_with("application/vnd.apple.")) {
+    return {std::move(by_name), "extension"};
+  }
+  // And an encrypted Office Open XML package: its bytes hide which of docx,
+  // xlsx or pptx it is, and its name says.
+  if (sniffed == kEncryptedOfficePackageMimetype && by_name.contains("openxmlformats")) {
     return {std::move(by_name), "extension"};
   }
   if (!sniffed.empty()) return {std::move(sniffed), "magic"};

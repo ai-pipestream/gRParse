@@ -444,7 +444,8 @@ class DocumentStreamReactor final
     // stays verbatim.
     if (requested_collectors_.empty() && endpoints_ != nullptr) {
       append_office_fanout(&plan_ids, filename_.string(), content_type_,
-                           endpoints_->has(pipestream::parse::v1::COLLECTOR_CALAMINE));
+                           endpoints_->has(pipestream::parse::v1::COLLECTOR_CALAMINE),
+                           encrypted_office_document(*plan.bytes).has_value());
     }
     // The routing leg applies when the pdf collector is the whole plan;
     // shared with other collectors it runs as a plain Document leg.

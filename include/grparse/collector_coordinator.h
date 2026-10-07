@@ -131,12 +131,15 @@ bool calamine_workbook_format(const std::string& filename, const std::string& co
 // Appended after the routed default, so the legs merge in plan order and
 // the claim ranks decide conflicts. Word processing and presentation
 // formats gain no leg: libreoffice is their only collector, so its failure
-// fails the parse. Callers only fan out an implicit
+// fails the parse. An encrypted workbook gains no leg either: calamine has
+// no decryption, so the leg could only fail, and its failure would mark a
+// workbook libreoffice opened with a candidate password as a partial
+// parse. Callers only fan out an implicit
 // (routed) plan; an explicit selection stays verbatim, and a leg already in
 // the plan is never duplicated.
 void append_office_fanout(std::vector<ai::pipestream::parse::v1::Collector>* plan,
                           const std::string& filename, const std::string& content_type,
-                          bool calamine_configured);
+                          bool calamine_configured, bool encrypted);
 
 // The collector a document routes to when the caller selects none: office
 // formats to libreoffice, WARC archives (.warc and its gzip/zstd/lz4 forms,
