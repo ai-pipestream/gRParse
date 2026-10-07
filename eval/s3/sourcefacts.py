@@ -239,9 +239,16 @@ def xlsx_facts(data: bytes) -> SourceFacts:
 
 
 def csv_facts(data: bytes) -> SourceFacts:
+    """The CSV's grid as a sheet holds it: anchored at A1, through the last
+    record and the last column with a non-blank cell. Blank records inside
+    the data keep their row (a record's position is its sheet row), while
+    trailing blank records and padding columns (",,,,") hold nothing."""
     text = data.decode("utf-8-sig", "replace")
-    rows = [row for row in csv.reader(io.StringIO(text)) if any(cell.strip() for cell in row)]
-    return SourceFacts(csv_rows=len(rows), csv_cols=max((len(row) for row in rows), default=0))
+    rows = list(csv.reader(io.StringIO(text)))
+    filled = [[index for index, cell in enumerate(row) if cell.strip()] for row in rows]
+    last_row = max((index for index, cells in enumerate(filled) if cells), default=-1)
+    last_col = max((cells[-1] for cells in filled if cells), default=-1)
+    return SourceFacts(csv_rows=last_row + 1, csv_cols=last_col + 1)
 
 
 def source_facts(ext: str, family: str, data: bytes) -> SourceFacts:
