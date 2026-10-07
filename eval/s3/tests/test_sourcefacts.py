@@ -60,8 +60,28 @@ def test_office_zip_facts() -> None:
 
 
 def test_csv_grid() -> None:
+    # Blank records inside the data keep their sheet row.
     facts = source_facts("csv", "sheet", b"\xef\xbb\xbfa,b,c\n1,2,3\n\n,,\n4,5\n")
-    assert (facts.csv_rows, facts.csv_cols) == (3, 3)
+    assert (facts.csv_rows, facts.csv_cols) == (5, 3)
+
+
+def test_csv_grid_ignores_padding_columns_and_trailing_blank_records() -> None:
+    # The napierone export shape: every record padded with empty fields and
+    # the file closed by comma-only records.
+    data = b"Family,Entity,Amount,,\r\nHMRC,VOA,599.00,,\r\n,,,,\r\n,,,,\r\n"
+    facts = source_facts("csv", "sheet", data)
+    assert (facts.csv_rows, facts.csv_cols) == (2, 3)
+
+
+def test_csv_grid_is_anchored_at_a1() -> None:
+    # Leading blank records and columns still count, as the sheet keeps them.
+    facts = source_facts("csv", "sheet", b",,,\n,,,\n,b,,\n,2,,\n")
+    assert (facts.csv_rows, facts.csv_cols) == (4, 2)
+
+
+def test_csv_grid_counts_a_quoted_newline_once() -> None:
+    facts = source_facts("csv", "sheet", b'a,b\n"two\nlines",2\n')
+    assert (facts.csv_rows, facts.csv_cols) == (2, 2)
 
 
 def test_unknown_family_reads_nothing() -> None:
