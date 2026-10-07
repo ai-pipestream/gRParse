@@ -11,6 +11,7 @@
 
 #include "grparse/collector_coordinator.h"
 #include "support/check.h"
+#include "support/compound_file.h"
 
 namespace parsev1 = ai::pipestream::parse::v1;
 namespace markupv1 = ai::pipestream::markup::v1;
@@ -67,6 +68,31 @@ void verify_extension_less_names_route_by_bytes() {
           "xml bytes under a bare name reach the xml collector");
 }
 
+// S3 eval finding: a password-protected docx or xlsx, a legacy Word file, a
+// csv and a Latin-1 text file under bare names all reached the CV path and
+// failed as "not a raster".
+void verify_compound_files_csv_and_latin1_route_by_bytes() {
+  using grparse::route_document;
+  using grparse_test::CompoundObject;
+  const std::string encrypted = grparse_test::compound_file({
+      CompoundObject::stream("EncryptionInfo", std::string(200, '\x01')),
+      CompoundObject::stream("EncryptedPackage", std::string(6000, '\x02')),
+  });
+  require(route_document("upload", "", encrypted) == parsev1::COLLECTOR_LIBREOFFICE,
+          "an encrypted package under a bare name reaches libreoffice");
+  const std::string word = grparse_test::compound_file({
+      CompoundObject::stream("WordDocument", std::string(6000, 'w')),
+      CompoundObject::stream("1Table", std::string(300, 't')),
+  });
+  require(route_document("upload", "", word) == parsev1::COLLECTOR_LIBREOFFICE,
+          "a Word binary file under a bare name reaches libreoffice");
+  require(route_document("upload", "", "a,b,c\n1,2,3\n4,5,6\n") == parsev1::COLLECTOR_LIBREOFFICE,
+          "csv bytes under a bare name reach libreoffice, as a .csv does");
+  require(route_document("upload", "", "Dear Customer,\r\nthe caf\xE9 is closed.\r\n") ==
+              parsev1::COLLECTOR_MARKUP,
+          "Latin-1 text under a bare name reaches the markup collector");
+}
+
 void verify_a_name_that_says_something_keeps_its_say() {
   using grparse::route_document;
   require(route_document("data.csv", "", "a,b\n1,2\n") == parsev1::COLLECTOR_LIBREOFFICE,
@@ -105,6 +131,7 @@ void verify_plain_text_reads_as_markdown() {
 int main() {
   return grparse_test::run_test_main("collector_route_by_bytes_test", "ok", {
       verify_extension_less_names_route_by_bytes,
+      verify_compound_files_csv_and_latin1_route_by_bytes,
       verify_a_name_that_says_something_keeps_its_say,
       verify_plain_text_reads_as_markdown,
   });

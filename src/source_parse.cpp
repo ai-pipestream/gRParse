@@ -1732,7 +1732,8 @@ RoutedPlan route_plan(const google::protobuf::RepeatedField<int>& requested, boo
   if (selected.empty() && inputs.endpoints != nullptr) {
     plan.office_fanout = true;
     append_office_fanout(&plan.ids, inputs.filename.string(), inputs.content_type,
-                         inputs.endpoints->has(pipestream::parse::v1::COLLECTOR_CALAMINE));
+                         inputs.endpoints->has(pipestream::parse::v1::COLLECTOR_CALAMINE),
+                         encrypted_office_document(*inputs.bytes).has_value());
   }
   // Classification routing applies when the pdf collector is the whole plan:
   // by the swap above or by explicit sole selection. Shared with other

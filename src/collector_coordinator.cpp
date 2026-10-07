@@ -142,7 +142,8 @@ bool office_format(const std::string& filename, const std::string& content_type)
   return type.contains("officedocument") || type.contains("msword") ||
          type.contains("ms-excel") || type.contains("ms-powerpoint") ||
          type.contains("opendocument") ||
-         type == "text/csv" || type == "application/rtf";
+         type == "text/csv" || type == "application/rtf" ||
+         type == kEncryptedOfficePackageMimetype;
 }
 
 bool calamine_workbook_format(const std::string& filename, const std::string& content_type) {
@@ -158,8 +159,8 @@ bool calamine_workbook_format(const std::string& filename, const std::string& co
 
 void append_office_fanout(std::vector<pipestream::parse::v1::Collector>* plan,
                           const std::string& filename, const std::string& content_type,
-                          bool calamine_configured) {
-  if (calamine_configured && calamine_workbook_format(filename, content_type) &&
+                          bool calamine_configured, bool encrypted) {
+  if (calamine_configured && !encrypted && calamine_workbook_format(filename, content_type) &&
       std::ranges::find(*plan, pipestream::parse::v1::COLLECTOR_CALAMINE) == plan->end()) {
     plan->push_back(pipestream::parse::v1::COLLECTOR_CALAMINE);
   }

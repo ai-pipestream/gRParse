@@ -15,11 +15,20 @@ namespace grparse {
 // PostScript, and for text: HTML by a leading doctype or html tag after
 // whitespace or a BOM, XML by its declaration (XHTML and SVG by their root
 // element behind it), mail by RFC 822 header lines, JSON by a bracketed
-// body, Markdown by its markers, and text/plain for any other valid text.
-// Compound-file (OLE2) containers return empty on purpose: the signature
-// does not say whether the payload is a .doc, .xls, .ppt, or .msg, and the
-// extension does.
+// body, Markdown by its markers, comma or semicolon separated values by a
+// steady field count over three or more lines, and text/plain for any other
+// text (UTF-8, or a single-byte encoding such as Latin-1). A compound file
+// (OLE2) is placed by its root streams: WordDocument, Workbook and
+// PowerPoint Document name .doc, .xls and .ppt, and an EncryptedPackage
+// stream gets kEncryptedOfficePackageMimetype. Any other compound file (an
+// Outlook .msg) returns empty and its extension decides.
 std::string sniff_mimetype(std::string_view bytes);
+
+// The type of an encrypted Office Open XML package: an OLE compound file
+// whose EncryptedPackage stream hides which of docx, xlsx or pptx it is
+// until the office collector decrypts it. Routes to the office collector.
+inline constexpr std::string_view kEncryptedOfficePackageMimetype =
+    "application/x-tika-ooxml-protected";
 
 // Why an Office document in an OLE compound file is password-protected: the
 // family the evidence belongs to ("Office Open XML package", "Word document",
