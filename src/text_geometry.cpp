@@ -21,12 +21,6 @@ AxisAlignedBox bounding_box(const OcrLine& line) {
   return box;
 }
 
-bool touches_raster(const OcrLine& line, int width, int height) {
-  if (line.polygon.empty()) return false;
-  const AxisAlignedBox box = bounding_box(line);
-  return box.right > 0 && box.left < width && box.bottom > 0 && box.top < height;
-}
-
 void clip_to_raster(OcrLine* line, int width, int height) {
   if (line == nullptr) return;
   for (auto& point : line->polygon) {

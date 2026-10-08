@@ -213,7 +213,6 @@ void verify_read_quality_candidates_and_ranking() {
 void verify_clip_to_raster() {
   auto reaching = make_line("The parents", -50, 260, 1011, 520, grparse::TextOrigin::kOcr);
   reaching.polygon = {{-48, 260}, {1011, 269}, {1010, 520}, {-50, 512}};
-  require(grparse::touches_raster(reaching, 2339, 1653), "a line on the page touches it");
   grparse::clip_to_raster(&reaching, 2339, 1653);
   const auto box = grparse::bounding_box(reaching);
   require(box.left == 0 && box.right == 1011 && box.top == 260 && box.bottom == 520,
@@ -223,12 +222,10 @@ void verify_clip_to_raster() {
   grparse::clip_to_raster(&beyond, 2339, 1653);
   require(grparse::bounding_box(beyond).right == 2339, "a box past the right edge stops at it");
 
-  const auto footer = make_line("Steve", 1786, 1804, 1887, 1857, grparse::TextOrigin::kDigitalPdf);
-  require(!grparse::touches_raster(footer, 2339, 1653), "a line wholly below the page is off it");
-  const auto title = make_line("A", 13, -166, 94, -11, grparse::TextOrigin::kDigitalPdf);
-  require(!grparse::touches_raster(title, 2339, 1653), "a line wholly above the page is off it");
-  require(!grparse::touches_raster(grparse::OcrLine{"x", {}, std::nullopt, std::nullopt}, 10, 10),
-          "a line with no polygon touches nothing");
+  grparse::OcrLine bare{"x", {}, std::nullopt, std::nullopt};
+  grparse::clip_to_raster(&bare, 10, 10);
+  require(bare.polygon.empty(), "a line with no polygon has nothing to clip");
+  grparse::clip_to_raster(nullptr, 10, 10);
 }
 
 int main() {
