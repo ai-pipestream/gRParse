@@ -87,15 +87,17 @@ class FakeBackend final : public pdfv1::PdfBackendService::Service {
     pdfv1::ParseResponse page;
     auto* chunk = page.mutable_page();
     chunk->set_page_index(page_index);
+    // The 12 words at 40 points a step all fit on the 612-point page; a
+    // cell placed wholly off the page is not read as a line.
     double x = 72.0;
     for (const auto& word : pages_[page_index]) {
       auto* cell = chunk->add_text_cells();
       cell->set_text(word);
       cell->mutable_bbox()->set_x0(x);
       cell->mutable_bbox()->set_y0(700.0);
-      cell->mutable_bbox()->set_x1(x + 40.0);
+      cell->mutable_bbox()->set_x1(x + 30.0);
       cell->mutable_bbox()->set_y1(712.0);
-      x += 50.0;
+      x += 40.0;
     }
     writer->Write(page);
     return grpc::Status::OK;
