@@ -32,7 +32,9 @@ the inspector named. Workbook plans fan out: a routed workbook upload
 whenever that endpoint is configured, so the merge sees two readings of the
 same file and the claim ranks decide conflicts: the primary's body is the
 document's body, and a fan-out leg whose primary lived merges only its
-document-level account, its own body reading dropped (`retain_claims_only`),
+document-level account, its own body reading dropped (`retain_claims_only`)
+except for calamine's cells, which replace the cells of the sheet tables
+libreoffice placed (`adopt_calamine_cells`, `src/workbook_cells.cpp`),
 while a fan-out leg whose primary failed keeps its full reading as the only
 body. Word processing and presentation uploads have libreoffice alone, so a
 libreoffice failure on them fails the parse with that leg's status. Two

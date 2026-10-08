@@ -700,6 +700,7 @@ add_library(grparse_core STATIC
   src/office_fold/value_convert.cpp
   src/office_fold/writer_fold.cpp
   src/document_merge.cpp
+  src/workbook_cells.cpp
   src/document_repair.cpp
   src/structure_repair.cpp
   src/epub_book.cpp
@@ -1141,6 +1142,7 @@ if(BUILD_TESTING)
     docling-integrity-destinations-test
     docling-map-sheet-shape-test
     sheet-header-band-test
+    workbook-cells-test
     docling-map-trailing-pictures-test
     docling-map-office-layout-test
     collector-route-by-bytes-test

@@ -546,8 +546,8 @@ unconfigured otherwise:
 
 | Collector | Target env | Routed by default for |
 |---|---|---|
-| `COLLECTOR_LIBREOFFICE` | `GRPARSE_LIBREOFFICE_TARGET` | office formats (doc/x, xls/x, ppt/x, odf, rtf, csv, ...). The only collector for word processing and presentation formats: when its leg fails, the request fails with that leg's status (unary) or ends the stream with it (streaming), the message naming `libreoffice` and the cause. Workbooks keep the calamine leg below as a fallback body |
-| `COLLECTOR_CALAMINE` | `GRPARSE_CALAMINE_TARGET` | never the routed default; a routed workbook plan (xls/xlsx/xlsm/xlsb/ods, never CSV) fans a calamine leg out beside libreoffice when configured. The wire is handle-based (`OpenWorkbook`/`StreamWorksheetRange`/`CloseWorkbook`); each sheet folds client-side into a sheet group holding one `TableItem` in absolute cell offsets, and the handle closes on every path |
+| `COLLECTOR_LIBREOFFICE` | `GRPARSE_LIBREOFFICE_TARGET` | office formats (doc/x, xls/x, ppt/x, odf, rtf, csv, ...). The only collector for word processing and presentation formats: when its leg fails, the request fails with that leg's status (unary) or ends the stream with it (streaming), the message naming `libreoffice` and the cause. On workbooks libreoffice gives the document its shape (sheet groups, charts, pictures, metadata) and the calamine leg below gives the sheet tables their cells; with libreoffice down, calamine's reading is the whole body |
+| `COLLECTOR_CALAMINE` | `GRPARSE_CALAMINE_TARGET` | the cell reader for workbooks: a routed workbook plan (xls/xlsx/xlsm/xlsb/ods, never CSV) runs a calamine leg beside libreoffice when configured, and calamine's cells replace libreoffice's in every sheet table (`src/workbook_cells.cpp`). The wire is handle-based (`OpenWorkbook`/`StreamWorksheetRange`/`CloseWorkbook`); each sheet folds client-side into a sheet group holding one `TableItem` in absolute cell offsets, with the merged areas the range header lists (XLS, XLSX) spanned and the header band marked, and the handle closes on every path |
 | `COLLECTOR_ASR` | `GRPARSE_ASR_TARGET` (+ `GRPARSE_ASR_MODEL`, the whisper model name, required) | audio and video |
 | `COLLECTOR_EMAIL` | `GRPARSE_EMAIL_TARGET` (+ `GRPARSE_MARKUP_TARGET` for HTML bodies) | `.eml`, `.msg`, `message/rfc822`. The email fold maps `text/plain` bodies only; for a message with no plain body gRParse dials the markup collector with each HTML body part and folds its items into the message body ahead of the attachment list. Without a markup target such a message has no body text and a warning names the variable. Attachments are listed by name; their content is not parsed |
 | `COLLECTOR_XML` | `GRPARSE_XML_TARGET` | `.xml`, `.nxml`, `.xbrl`, `application/xml`, `text/xml` (never the `+xml` suffix family), plus the archive forms `.dclx` and `.tar.gz` (METS/GBS) |
@@ -587,9 +587,17 @@ grpc-calamine stopped being shell-only when its leg was wired in above; the
 merge ranks `calamine` claims above libreoffice's on spreadsheets and below
 gRParse's own stamp (see `document_claim_rank`). The fan-out leg reads the
 same bytes as the routed libreoffice default, so beside a live primary its
-body reading drops and only its document-level account merges
-(`retain_claims_only` in `src/document_merge.cpp`): the merged document
-carries the body once, and the leg's claims still rank. An explicit
+body does not merge as a second copy: its cells move into the sheet tables
+libreoffice already placed (`adopt_calamine_cells` in
+`src/workbook_cells.cpp`), matched by sheet name, and the rest of its
+reading drops to its document-level account (`retain_claims_only` in
+`src/document_merge.cpp`). The adopted cells keep a libreoffice cell's
+presentation at the same place (alignment, number format, a formula's
+source) and libreoffice's merged areas where calamine reads none (ODS,
+XLSB), and the header band is marked again over them. The values and text
+are calamine's because it reads what the file stores, where libreoffice's
+import re-parses text cells (a reference such as `1-31-16` becomes a
+date) and shows numbers in their display format. An explicit
 collector selection stays verbatim, readings and all, and a fan-out leg
 whose primary failed keeps its full reading, which is what keeps a workbook
 parsing when libreoffice fails on it (a partial success with the
