@@ -254,7 +254,8 @@ def epub_bytes() -> bytes:
            b'<item id="img" href="images/a.png" media-type="image/png"/></manifest>'
            b'<spine><itemref idref="c1"/><itemref idref="c2"/></spine></package>')
     return zip_bytes({"mimetype": b"application/epub+zip", "META-INF/container.xml": container,
-                      "OEBPS/content.opf": opf, "OEBPS/text/chap1.xhtml": b"<html/>", "OEBPS/text/chap2.xhtml": b"<html/>"})
+                      "OEBPS/content.opf": opf, "OEBPS/text/chap1.xhtml": b"<html><body><p>Call me Ishmael.</p></body></html>",
+                      "OEBPS/text/chap2.xhtml": b'<html><body><p><a id="p72" title="[72]"></a></p></body></html>'})
 
 
 @dataclass

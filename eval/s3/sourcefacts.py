@@ -26,6 +26,7 @@ _PIC = re.compile(rb"<pic:pic\b")
 _FALLBACK = re.compile(rb"<mc:Fallback\b.*?</mc:Fallback>", re.DOTALL)
 _SLIDE_ENTRY = re.compile(r"^ppt/slides/slide(\d+)\.xml$")
 _SHEET_CELL = re.compile(rb"<c\b")
+_MEDIA = re.compile(rb"<(img|svg|image|video|audio|object|embed|math)\b", re.I)
 
 
 @dataclass
@@ -189,7 +190,18 @@ def epub_facts(data: bytes) -> SourceFacts:
             entry = manifest.get(itemref.get("idref", ""))
             if entry:
                 spine.append(entry)
-    return SourceFacts(spine=spine)
+    # A spine item can hold nothing a reader sees (a body of one empty div);
+    # its chapter group then has nothing to hold either.
+    empty = []
+    for href, _ in spine:
+        try:
+            markup = _HTML_STRIP.sub(b"", archive.read(href))
+        except KeyError:
+            continue
+        body = markup.split(b"<body", 1)[-1]
+        if not _plain(body.split(b">", 1)[-1]) and not _MEDIA.search(body):
+            empty.append(href)
+    return SourceFacts(spine=spine, extra={"empty_spine": empty})
 
 
 def deck_facts(data: bytes) -> SourceFacts:

@@ -36,6 +36,7 @@ def test_epub_spine_from_opf() -> None:
     facts = source_facts("epub", "epub", epub_bytes())
     assert facts.spine == [("OEBPS/text/chap1.xhtml", "application/xhtml+xml"),
                            ("OEBPS/text/chap2.xhtml", "application/xhtml+xml")]
+    assert facts.extra["empty_spine"] == ["OEBPS/text/chap2.xhtml"], "a page-number anchor alone shows nothing"
     assert not source_facts("epub", "epub", b"not a zip").ok
 
 
