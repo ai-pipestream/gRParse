@@ -848,22 +848,27 @@ def _single_column(boxes: list[Any]) -> bool:
 def reading_order(ctx: ObjectContext) -> list[Failure]:
     view = ctx.view
     per_page: dict[int, list[tuple[Node, Any]]] = {}
-    # The parts of items that continue from an earlier page: not ordered
-    # here, but they fill a column and so say whether the page has two.
-    continued: dict[int, list[Any]] = {}
+    # Every box on a page, each part of an item on its own: the parts of an
+    # item continued from an earlier page or merged across a column break
+    # are not ordered by those parts, but they fill a column and so say
+    # whether the page has two.
+    parts: dict[int, list[Any]] = {}
     for node in view.body.nodes:
         if node.kind == "group" or view.label(node) in ("caption", "footnote") or view.content_layer(node) == "notes":
             continue
-        box = view.box(node)
-        if box is None:
+        first = view.first_page(node)
+        own = view.boxes_on(node, first)
+        if not own:
             continue
-        per_page.setdefault(box.page, []).append((node, box))
+        # An item is read where it starts: its first box on its first page,
+        # not the union with a part further down or across the page.
+        per_page.setdefault(first, []).append((node, own[0]))
         for page in view.pages_of(node):
-            if page > box.page and (part := view.box_on(node, page)) is not None:
-                continued.setdefault(page, []).append(part)
+            if page >= first:
+                parts.setdefault(page, []).extend(view.boxes_on(node, page))
     violations = []
     for page, placed in sorted(per_page.items()):
-        boxes = [box for _, box in placed] + continued.get(page, [])
+        boxes = parts.get(page, [])
         if len(placed) < 3 or not _single_column(boxes):
             continue
         for (a_node, a), (b_node, b) in zip(placed, placed[1:]):

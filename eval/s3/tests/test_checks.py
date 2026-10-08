@@ -312,6 +312,32 @@ def test_two_column_pages_are_skipped_by_reading_order() -> None:
     assert checks["reading_order"] == "pass"
 
 
+def test_an_item_merged_across_a_column_break_is_read_where_it_starts() -> None:
+    # A two-up scan whose right column holds only the end of the left
+    # column's last paragraph (court/2970702 p20): one item with a box in
+    # each column. Its union spans the page, so it hid the second column and
+    # put the item at the right column's top.
+    b = Builder("application/pdf", "twoup.pdf", collectors=())
+    src = [{"collector": {"collector": "pdf"}}]
+    b.page(1, 1200, 800)
+    b.text("text", "left one", page=1, box=(50, 50, 550, 200), source=src)
+    b.text("text", "left two", page=1, box=(50, 220, 550, 400), source=src)
+    merged = b.text("text", "left three, continued", page=1, box=(50, 420, 550, 750), source=src)
+    b.node(merged)["prov"].append(prov(1, 650, 50, 1150, 150))
+    _, checks = failing(b.build(), "twoup.pdf")
+    assert checks["reading_order"] == "pass"
+    # The same page read out of order inside one column still fails once the
+    # merged item no longer hides the second column: here the page is one
+    # column, and its last item sits above the one before it.
+    c = Builder("application/pdf", "one.pdf", collectors=())
+    c.page(1, 612, 792)
+    c.text("text", "first", page=1, box=(50, 50, 550, 100), source=src)
+    c.text("text", "third", page=1, box=(50, 300, 550, 350), source=src)
+    c.text("text", "second", page=1, box=(50, 150, 550, 200), source=src)
+    found, _ = failing(c.build(), "one.pdf")
+    assert found["reading_order"].evidence["count"] == 1
+
+
 def test_docx_pictures_do_not_follow_footnotes() -> None:
     b = Builder("application/msword", "f.doc")
     b.page(1).page(2)
