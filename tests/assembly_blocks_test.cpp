@@ -121,6 +121,22 @@ void verify_float_column_uses_block_hulls() {
           "a corner logo over a word-split heading reads before the heading");
 }
 
+// A cover page (0047 p1): a photo top left, the publisher's mark text at the
+// bottom right and a version line under it at the bottom left. Nothing on
+// the page reads in columns, so the photo anchors before the mark's text,
+// not before the version line that happens to share its horizontal span.
+void verify_cover_photo_precedes_the_next_block_in_any_column() {
+  grparse::OcrPage page{1654, 2360, {line_at("SECURE TENANCY", 130, 230, 800, 340),
+                                     line_at("NORTHAMPTON BOROUGH COUNCIL", 1300, 2141, 300, 30),
+                                     line_at("Version: June 2009", 180, 2253, 220, 25)}};
+  page.regions = {{"picture", 0.9F, 130, 632, 1030, 1500},
+                  {"picture", 0.9F, 1310, 1990, 1600, 2130}};
+  const std::vector<std::string> expected = {"SECURE TENANCY", "<picture>",
+                                             "NORTHAMPTON BOROUGH COUNCIL", "Version: June 2009"};
+  require(sequence(page, page.regions[0]) == expected,
+          "a cover photo reads before the first block under it, whatever its column");
+}
+
 void verify_page_without_blocks_anchors_at_end() {
   grparse::OcrPage page{1000, 1000, {}};
   page.regions = {{"picture", 0.8F, 100, 100, 900, 900}};
@@ -139,6 +155,7 @@ int main() {
       verify_float_closing_a_column_stays_last,
       verify_furniture_beside_a_float_is_not_a_column,
       verify_float_column_uses_block_hulls,
+      verify_cover_photo_precedes_the_next_block_in_any_column,
       verify_page_without_blocks_anchors_at_end,
   });
 }

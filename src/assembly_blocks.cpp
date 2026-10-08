@@ -66,14 +66,31 @@ bool overlaps_horizontally(const AxisAlignedBox& box, const LayoutRegion& region
   return std::min(box.right, region.right) - std::max(box.left, region.left) > 0;
 }
 
-// Whether a body block runs beside the region: level with it (vertical
-// overlap) in another column (no horizontal overlap). Furniture never
-// counts; a running header level with a corner logo is not a column.
-bool block_runs_beside(const OcrPage& page, const TextBlock& block, const LayoutRegion& region) {
-  if (is_furniture_region(block.region)) return false;
-  const AxisAlignedBox box = block_box(page, block);
-  if (overlaps_horizontally(box, region)) return false;
-  return std::min(box.bottom, region.bottom) - std::max(box.top, region.top) > 0;
+bool level_and_apart(const AxisAlignedBox& a, const AxisAlignedBox& b) {
+  const bool level = std::min(a.bottom, b.bottom) - std::max(a.top, b.top) > 0;
+  const bool apart = std::min(a.right, b.right) - std::max(a.left, b.left) <= 0;
+  return level && apart;
+}
+
+// Whether the page reads in columns around the region: some body block of
+// the region's column (one it overlaps horizontally) is level with a body
+// block outside that column. Furniture never counts; a running header level
+// with a corner logo is not a column.
+bool page_has_columns(const OcrPage& page, const std::vector<TextBlock>& blocks,
+                      const LayoutRegion& region) {
+  std::vector<AxisAlignedBox> own;
+  std::vector<AxisAlignedBox> other;
+  for (const TextBlock& block : blocks) {
+    if (is_furniture_region(block.region)) continue;
+    const AxisAlignedBox box = block_box(page, block);
+    (overlaps_horizontally(box, region) ? own : other).push_back(box);
+  }
+  for (const AxisAlignedBox& a : own) {
+    for (const AxisAlignedBox& b : other) {
+      if (level_and_apart(a, b)) return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace
@@ -119,20 +136,15 @@ size_t region_anchor(const OcrPage& page, const std::vector<TextBlock>& blocks,
   for (size_t index = 0; index < blocks.size(); ++index) {
     if (blocks[index].region == &region) return index;
   }
-  // The block's hull, not its first line: a recognizer that reads word by
-  // word gives a heading a first "line" of one word at the left margin,
-  // which never reaches a corner logo's column although the heading does.
+  // Blocks are measured by the hull of their lines: a recognizer that reads
+  // word by word gives a heading a first "line" of one word at the left
+  // margin, which never reaches a corner logo's column although the heading
+  // does.
+  const bool columns = page_has_columns(page, blocks, region);
   for (size_t index = 0; index < blocks.size(); ++index) {
     const AxisAlignedBox box = block_box(page, blocks[index]);
-    if (!overlaps_horizontally(box, region)) continue;
+    if (columns && !overlaps_horizontally(box, region)) continue;
     if (box.top >= region.top) return index;
-  }
-  const bool in_a_column = std::ranges::any_of(blocks, [&](const TextBlock& block) {
-    return block_runs_beside(page, block, region);
-  });
-  if (in_a_column) return blocks.size();
-  for (size_t index = 0; index < blocks.size(); ++index) {
-    if (block_box(page, blocks[index]).top >= region.top) return index;
   }
   return blocks.size();
 }

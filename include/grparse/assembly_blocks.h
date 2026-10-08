@@ -39,17 +39,18 @@ std::vector<TextBlock> build_text_blocks(const OcrPage& page);
 // makes a heading's first line one word at the margin).
 //
 // 1. Before the first block it owns lines of.
-// 2. Else before the first block in its own column (one it overlaps
-//    horizontally) that starts below its top edge. Reading order is
-//    column-major, so a float with text beside it belongs to its column and
-//    comparing tops across columns would anchor a right-column float into
-//    the middle of the left one.
-// 3. Else, when no body block runs beside it (level with it in another
-//    column), before the first block anywhere that starts below its top
-//    edge: nothing sits beside the float, so it heads a band of its own (a
-//    logo in the top corner above a narrower title, a signature beside no
-//    text) rather than closing a column it was never part of.
-// 4. Else after everything on the page: the float ends its column.
+// 2. Else, on a page that reads in columns around it (a body block of its
+//    column is level with one outside it), before the first block of its
+//    own column that starts below its top edge, or after everything on
+//    the page when none does: reading order is column-major, so comparing
+//    tops across columns would anchor a right-column float into the middle
+//    of the left one.
+// 3. Else before the first block anywhere that starts below its top edge:
+//    with no columns the float heads a band of its own (a logo in the top
+//    corner above a narrower title, a signature image between an order and
+//    its date line, a cover photo above the publisher's mark) rather than
+//    waiting for the next block that happens to share its horizontal span.
+// 4. Else after everything on the page.
 size_t region_anchor(const OcrPage& page, const std::vector<TextBlock>& blocks,
                      const LayoutRegion& region);
 
