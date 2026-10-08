@@ -528,6 +528,7 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     const LayoutRegion* region;
     std::string self_ref;
     google::protobuf::RepeatedPtrField<pipestream::document::v1::RefItem>* captions;
+    google::protobuf::RepeatedPtrField<pipestream::document::v1::RefItem>* children;
   };
   std::vector<EmittedFloat> floats;
   struct EmittedCaption {
@@ -552,7 +553,7 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
       fill_table_data(source, region, table->mutable_data());
       add_collector_source(region.structured_cells.empty() ? "geometry" : "slanet-plus",
                            region.confidence, table->mutable_source());
-      floats.push_back({&region, self_ref, table->mutable_captions()});
+      floats.push_back({&region, self_ref, table->mutable_captions(), table->mutable_children()});
       body_order.push_back(self_ref);
       return;
     }
@@ -602,7 +603,8 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
       fields["value"].set_string_value(barcode.text);
       fields["provenance"].set_string_value("zxing-cpp");
     }
-    floats.push_back({&region, self_ref, picture->mutable_captions()});
+    floats.push_back({&region, self_ref, picture->mutable_captions(),
+                      picture->mutable_children()});
     body_order.push_back(self_ref);
   };
 
@@ -837,7 +839,13 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
   // least 30% of the caption's width overlapping horizontally and a vertical
   // gap of at most 1.5 caption heights, nearest gap wins. The claimed
   // caption re-parents under the float and leaves body order; renderers then
-  // emit it with its float instead of as free prose.
+  // emit it with its float instead of as free prose. The link is written on
+  // both sides, as docling-core's add_text(parent=float) does: the caption's
+  // parent names the float, and the float lists the caption among its
+  // children as well as its captions. A parent that does not list its child
+  // is the one-sided link the integrity check reports and the opt-in
+  // repair_referenced_orphans pass exists to mend in foreign documents; a
+  // document this assembler produces never needs it.
   for (auto& caption : captions) {
     const double width = caption.region->right - caption.region->left;
     const double height = caption.region->bottom - caption.region->top;
@@ -863,6 +871,7 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     if (best == nullptr) continue;
     caption.base->mutable_parent()->set_ref(best->self_ref);
     best->captions->Add()->set_ref(caption.self_ref);
+    best->children->Add()->set_ref(caption.self_ref);
     std::erase(body_order, caption.self_ref);
   }
 

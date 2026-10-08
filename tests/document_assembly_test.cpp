@@ -10,7 +10,9 @@
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "ai/pipestream/parse/v1/parse_stream.pb.h"
 #include "../src/chunking/chunker.h"
+#include "grparse/docling_map.h"
 #include "grparse/document_assembly.h"
+#include "grparse/document_repair.h"
 #include "support/check.h"
 
 namespace {
@@ -528,6 +530,9 @@ void verify_captions_attach_to_nearest_float() {
   require(data.pictures(0).captions_size() == 1 &&
               data.pictures(0).captions(0).ref() == attached.self_ref(),
           "the float claims the caption by reference");
+  require(data.pictures(0).children_size() == 1 &&
+              data.pictures(0).children(0).ref() == attached.self_ref(),
+          "the float lists the caption it parents among its children");
   const auto& orphan = data.texts(1).text().base();
   require(orphan.parent().ref() == "#/body", "a caption with no float in reach stays body prose");
 
@@ -542,6 +547,74 @@ void verify_captions_attach_to_nearest_float() {
   require(!claimed_in_body, "a claimed caption never doubles as a body child");
   require(plain_text == "Figure 1: shoreline\nOrphan caption",
           "captions keep their place in the text stream");
+  require(grparse::docling_integrity_errors(document).empty(),
+          "a claimed picture caption leaves the document well linked");
+}
+
+// A parent link is written on both sides: every caption a table or a
+// picture claims names the float as its parent AND sits in the float's
+// children list. A caption whose parent does not list it is the one-sided
+// link the integrity check reports ("parent #/tables/0 does not list
+// #/texts/1 as a child"), and the opt-in repair_referenced_orphans pass must
+// find nothing to mend in a document this assembler produced.
+void verify_claimed_captions_are_listed_by_their_float() {
+  grparse::OcrPage page{1000, 2000,
+                        {line("Table 1: yields", 280), line("Region", 320),
+                         line("Figure 2: the site", 1420), line("Closing prose", 1700)}};
+  page.regions = {
+      {"caption", 0.9F, 0, 270, 1000, 300},
+      {"table", 0.9F, 0, 310, 1000, 600},
+      {"picture", 0.8F, 0, 900, 1000, 1400},
+      {"caption", 0.9F, 0, 1410, 1000, 1440},
+  };
+
+  grparse::AssemblyCursor cursor;
+  ai::pipestream::document::v1::Document document;
+  document.mutable_body()->set_self_ref("#/body");
+  document.mutable_furniture()->set_self_ref("#/furniture");
+  std::string plain_text;
+  grparse::append_page_to_document(page, 1, &cursor, &document, &plain_text);
+  require(document.tables_size() == 1 && document.pictures_size() == 1,
+          "one table and one picture");
+
+  const auto lists = [](const auto& refs, const std::string& ref) {
+    for (const auto& entry : refs) {
+      if (entry.ref() == ref) return true;
+    }
+    return false;
+  };
+  const auto& table = document.tables(0);
+  const auto& picture = document.pictures(0);
+  require(table.captions_size() == 1 && picture.captions_size() == 1,
+          "each float claims the caption beside it");
+  const std::string table_caption = table.captions(0).ref();
+  const std::string picture_caption = picture.captions(0).ref();
+  require(table_caption != picture_caption, "the two captions bind to different floats");
+  for (const auto& text : document.texts()) {
+    const auto& base = text.text().base();
+    if (base.self_ref() == table_caption) {
+      require(base.parent().ref() == table.self_ref(), "the table caption names the table");
+    } else if (base.self_ref() == picture_caption) {
+      require(base.parent().ref() == picture.self_ref(), "the picture caption names the picture");
+    } else {
+      require(base.parent().ref() == "#/body", "other prose stays on the body");
+    }
+  }
+  require(lists(table.children(), table_caption),
+          "the table lists its caption among its children");
+  require(lists(picture.children(), picture_caption),
+          "the picture lists its caption among its children");
+  require(!lists(document.body().children(), table_caption) &&
+              !lists(document.body().children(), picture_caption),
+          "a claimed caption is not also a body child");
+
+  const auto errors = grparse::docling_integrity_errors(document);
+  std::string joined;
+  for (const auto& error : errors) joined += error + "; ";
+  require(errors.empty(), "the assembled page is well linked: " + joined);
+  ai::pipestream::document::v1::Document repaired = document;
+  require(grparse::repair_referenced_orphans(&repaired) == 0,
+          "the orphan repair finds no one-sided caption link to mend");
 }
 
 // Heading depth comes from clustering heights across the document: the
@@ -769,6 +842,7 @@ int main() {
       verify_region_lines_merge_into_one_item,
       verify_unclaimed_table_line_stays_body_text,
       verify_captions_attach_to_nearest_float,
+      verify_claimed_captions_are_listed_by_their_float,
       verify_section_header_levels,
       verify_numbered_section_header_levels,
       verify_rotated_lines_keep_their_quad,
