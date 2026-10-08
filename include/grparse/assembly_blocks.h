@@ -35,6 +35,9 @@ std::vector<TextBlock> build_text_blocks(const OcrPage& page);
 // sequence: the index of the block it is emitted before, blocks.size() for
 // after everything on the page.
 //
+// Blocks are measured by the hull of their lines (a word-by-word recognizer
+// makes a heading's first line one word at the margin).
+//
 // 1. Before the first block it owns lines of.
 // 2. Else before the first block in its own column (one it overlaps
 //    horizontally) that starts below its top edge. Reading order is

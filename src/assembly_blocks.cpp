@@ -119,8 +119,11 @@ size_t region_anchor(const OcrPage& page, const std::vector<TextBlock>& blocks,
   for (size_t index = 0; index < blocks.size(); ++index) {
     if (blocks[index].region == &region) return index;
   }
+  // The block's hull, not its first line: a recognizer that reads word by
+  // word gives a heading a first "line" of one word at the left margin,
+  // which never reaches a corner logo's column although the heading does.
   for (size_t index = 0; index < blocks.size(); ++index) {
-    const AxisAlignedBox box = bounding_box(page.lines[blocks[index].lines.front()]);
+    const AxisAlignedBox box = block_box(page, blocks[index]);
     if (!overlaps_horizontally(box, region)) continue;
     if (box.top >= region.top) return index;
   }
@@ -129,7 +132,7 @@ size_t region_anchor(const OcrPage& page, const std::vector<TextBlock>& blocks,
   });
   if (in_a_column) return blocks.size();
   for (size_t index = 0; index < blocks.size(); ++index) {
-    if (bounding_box(page.lines[blocks[index].lines.front()]).top >= region.top) return index;
+    if (block_box(page, blocks[index]).top >= region.top) return index;
   }
   return blocks.size();
 }

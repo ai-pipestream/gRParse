@@ -100,6 +100,27 @@ void verify_furniture_beside_a_float_is_not_a_column() {
           "a logo level with the running header still heads the body");
 }
 
+// Word-by-word recognition (0073 p5): the slide heading is three word
+// lines in one region, only the last reaching the logo's column, and a
+// second logo with its own text sits at the bottom right. The top logo
+// anchors before the heading, not before the bottom logo's text.
+void verify_float_column_uses_block_hulls() {
+  grparse::OcrPage page{2339, 1653,
+                        {line_at("Staff", 731, 281, 222, 112), line_at("Survey", 981, 281, 333, 112),
+                         line_at("cont..", 1342, 281, 266, 112),
+                         line_at("The Council receives better ratings", 339, 512, 1600, 100),
+                         line_at("Simon Atkinson, Ipsos Mori", 1296, 855, 750, 50),
+                         line_at("Hackney", 1640, 1460, 480, 80)}};
+  page.regions = {{"section_header", 0.9F, 720, 270, 1620, 400},
+                  {"text", 0.9F, 330, 500, 1950, 830},
+                  {"picture", 0.96F, 1525, 73, 2172, 456},
+                  {"picture", 0.97F, 1631, 1452, 2126, 1545}};
+  const std::vector<std::string> expected = {"<picture>", "Staff", "The Council receives better ratings",
+                                             "Simon Atkinson, Ipsos Mori", "Hackney"};
+  require(sequence(page, page.regions[2]) == expected,
+          "a corner logo over a word-split heading reads before the heading");
+}
+
 void verify_page_without_blocks_anchors_at_end() {
   grparse::OcrPage page{1000, 1000, {}};
   page.regions = {{"picture", 0.8F, 100, 100, 900, 900}};
@@ -117,6 +138,7 @@ int main() {
       verify_lonely_float_reads_between_the_lines_around_it,
       verify_float_closing_a_column_stays_last,
       verify_furniture_beside_a_float_is_not_a_column,
+      verify_float_column_uses_block_hulls,
       verify_page_without_blocks_anchors_at_end,
   });
 }
