@@ -88,13 +88,14 @@ void verify_float_closing_a_column_stays_last() {
 }
 
 // A running header level with a corner logo is not a column: furniture
-// never holds a float back.
+// does not hold a float back, and the logo heads the page (before the
+// header block, which is not body content anyway).
 void verify_furniture_beside_a_float_is_not_a_column() {
   grparse::OcrPage page{1000, 1500, {line_at("Running header", 60, 80, 300, 20),
                                      line_at("Body", 60, 650, 300, 20)}};
   page.regions = {{"page_header", 0.8F, 40, 60, 400, 110},
                   {"picture", 0.8F, 760, 60, 960, 180}};
-  const std::vector<std::string> expected = {"Running header", "<picture>", "Body"};
+  const std::vector<std::string> expected = {"<picture>", "Running header", "Body"};
   require(sequence(page, page.regions[1]) == expected,
           "a logo level with the running header still heads the body");
 }
