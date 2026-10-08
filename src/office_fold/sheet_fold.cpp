@@ -160,6 +160,11 @@ void SheetFold::on_sheet_row(const officev1::SheetRow& row) {
   }
   for (const officev1::SheetCell& cell : row.cells()) {
     docv1::TableCell* out = place_sheet_cell(cell, row.row(), data);
+    // A merge can reach past the used range the sheet header declared (the
+    // used range counts filled cells, a merge covers blank ones too); the
+    // table grows to hold it rather than claim a cell outside its grid.
+    data->set_num_rows(std::max(data->num_rows(), out->end_row_offset_idx()));
+    data->set_num_cols(std::max(data->num_cols(), out->end_col_offset_idx()));
     docv1::CellValue value;
     if (typed_cell_value(cell, &value)) *out->mutable_value() = value;
   }
@@ -251,21 +256,16 @@ void SheetFold::on_chart(const officev1::SheetChart& chart, ChartFold& charts) {
 }
 
 void SheetFold::on_pivot_table(const officev1::SheetPivotTable& pivot) {
-  const std::string sheet_ref = group_ref(pivot.sheet_index());
-  docv1::TableItem* table =
-      arena_.add_table(layer(pivot.sheet_index()), sheet_ref, nullptr);
-  const officev1::SheetRangeRef& output = pivot.output_range();
-  table->mutable_data()->set_num_rows(output.end_row() - output.start_row()
-                                      + 1);
-  table->mutable_data()->set_num_cols(output.end_column()
-                                      - output.start_column() + 1);
-  // The definition is a declaration of the workbook, not of the output
-  // table, so it lives beside the document with its ranges as grid spans.
+  // A pivot's output cells are cells of its sheet and arrive in the sheet's
+  // own table, so the pivot adds no table of its own: a second TableItem
+  // under the sheet would hold no cells (or a copy of them). The definition
+  // is a declaration of the workbook, so it lives beside the document with
+  // its source and output ranges as grid spans into that sheet table.
   const std::string sheet = label(pivot.sheet_index());
   docv1::PivotSpec* spec = arena_.document().add_pivots();
   spec->set_name(pivot.name());
   set_grid_span(pivot.source_range(), sheet, spec->mutable_source());
-  set_grid_span(output, sheet, spec->mutable_output());
+  set_grid_span(pivot.output_range(), sheet, spec->mutable_output());
   for (const std::string& name : pivot.row_fields()) spec->add_row_fields(name);
   for (const std::string& name : pivot.column_fields()) {
     spec->add_column_fields(name);
@@ -276,12 +276,6 @@ void SheetFold::on_pivot_table(const officev1::SheetPivotTable& pivot) {
   for (const std::string& name : pivot.page_fields()) {
     spec->add_page_fields(name);
   }
-  // Like a sheet table, a pivot output has no rectangle of its own; the
-  // provenance names the sheet only, never a fabricated zero-area box.
-  arena_.add_prov(table->mutable_prov(), pivot.sheet_index(), true, 0, 0, 0, 0,
-                  0, 0, false);
-  arena_.warn("pivot table '" + pivot.name()
-              + "' has no geometry; its provenance names the sheet only");
 }
 
 void SheetFold::size_empty_tables() {
