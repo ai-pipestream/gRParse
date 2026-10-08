@@ -299,6 +299,10 @@ bool looks_like_mail(string_view probe) {
     if (line.empty()) break;
     if (line.front() == ' ' || line.front() == '\t') continue;  // folded
     if (!header_line(line)) return false;
+    // "Sent:" is the date line a mail client prints when a message is saved
+    // or pasted as text; a transfer agent writes "Date:". The block is the
+    // client's display, not a message.
+    if (starts_with_nocase(line, "sent:")) return false;
     header_lines++;
     for (string_view name : kMailHeaders) {
       if (starts_with_nocase(line, name)) mail_headers++;
