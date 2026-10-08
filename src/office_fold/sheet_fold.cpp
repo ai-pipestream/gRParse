@@ -7,6 +7,7 @@
 #include "grparse/data_totals.h"
 #include "grparse/office_fold/chart_fold.h"
 #include "grparse/office_fold/grid_cells.h"
+#include "grparse/office_fold/sheet_header_band.h"
 #include "grparse/office_fold/value_convert.h"
 
 namespace grparse::office_fold {
@@ -328,9 +329,8 @@ bool SheetFold::mark_declared_headers(int sheet_index, const RowCells& rows,
 
 void SheetFold::mark_inferred_header(docv1::TableData* data,
                                      const RowCells& rows, int* marked) {
-  // The first row with two or more labels directly above a row that carries
-  // quantities; a lone merged label spanning the used width above it is a
-  // section row, not a header.
+  // A lone merged label spanning the used width at the top is a section
+  // row, not a header; the band rule reads the rows under it.
   auto it = rows.begin();
   if (it->second.size() == 1 && it->second[0]->col_span() >= 2
       && it->second[0]->col_span() >= data->num_cols()
@@ -338,21 +338,18 @@ void SheetFold::mark_inferred_header(docv1::TableData* data,
     it->second[0]->set_row_section(true);
     ++it;
   }
-  if (it == rows.end()) return;
-  auto next = std::next(it);
-  const bool labels =
-      it->second.size() >= 2
-      && std::ranges::all_of(it->second, [](const docv1::TableCell* cell) {
-           return label_cell(*cell);
-         });
-  const bool quantities_below =
-      next != rows.end()
-      && std::ranges::any_of(next->second, [](const docv1::TableCell* cell) {
-           return quantity_cell(*cell);
-         });
-  if (!labels || !quantities_below) return;
-  for (docv1::TableCell* cell : it->second) cell->set_column_header(true);
-  *marked += static_cast<int>(it->second.size());
+  std::vector<SheetRowShape> shapes;
+  for (; it != rows.end(); ++it) {
+    SheetRowShape shape = sheet_row_shape(it->first, it->second);
+    if (shape.coverage > 0) shapes.push_back(shape);
+  }
+  for (const int row : header_band_rows(shapes)) {
+    for (docv1::TableCell* cell : rows.at(row)) {
+      if (cell->column_header()) continue;
+      cell->set_column_header(true);
+      (*marked)++;
+    }
+  }
 }
 
 void SheetFold::mark_header_rows() {
@@ -375,8 +372,8 @@ void SheetFold::mark_header_rows() {
         // which case holds: fully inferred, or inferred on top of a
         // declaration that only partially covered the header rows.
         arena_.warn("sheet '" + label(sheet_index)
-                    + "': header row inferred by the labels-above-quantities "
-                      "heuristic; "
+                    + "': header row inferred by the labels-over-data band "
+                      "rule; "
                     + (before > 0
                            ? "a database range declares only part of it"
                            : "no database range declares it"));

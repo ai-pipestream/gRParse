@@ -180,8 +180,84 @@ def test_sheet_tables() -> None:
     sheet = b.group("SHEET", "p")
     b.table([(0, 0, 1, 1, "a"), (0, 1, 1, 1, "b"), (1, 0, 1, 1, "1"), (1, 1, 1, 1, "2")], 2, 2, sheet, page=1,
             box=(0, 0, 0, 0), header_rows=1)
+    for cell in b.doc["tables"][-1]["data"]["table_cells"][2:]:
+        cell["value"] = {"number": float(cell["text"])}
     found, _ = failing(b.build(), "p.csv", facts=SourceFacts(csv_rows=3, csv_cols=2))
     assert found["sheet_tables"].evidence["source"] == "3x2"
+
+
+def _sheet_with(cells: list[tuple], rows: int, cols: int, header_rows: tuple[int, ...] = ()) -> dict:
+    """One sheet table from (row, col, text) or (row, col, text, number) cells; header_rows get column_header."""
+    b = Builder("application/vnd.ms-excel", "r.xls")
+    b.page(1)
+    sheet = b.group("SHEET", "r")
+    ref = b.table([(spec[0], spec[1], 1, 1, spec[2]) for spec in cells], rows, cols, sheet,
+                  page=1, box=(0, 0, 0, 0))
+    table_cells = b.doc["tables"][int(ref.rsplit("/", 1)[1])]["data"]["table_cells"]
+    for spec, cell in zip(cells, table_cells):
+        if len(spec) > 3:
+            cell["value"] = {"number": spec[3]}
+        if cell["start_row_offset_idx"] in header_rows:
+            cell["column_header"] = True
+    return b.build()
+
+
+def test_sheet_header_under_preamble() -> None:
+    """A title and a run line above the header: the label line nearest the
+    data is the one that must be marked, and row 0 is left alone."""
+    cells = [(0, 0, "A3131"), (0, 1, "Expenditure Over Threshold"), (2, 0, "RUN AT 2/1/2016"),
+             (4, 0, "Entity"), (4, 1, "Supplier"), (4, 2, "Amount"),
+             (5, 0, "NHS"), (5, 1, "NEMS"), (5, 2, "99,761.56", 99761.56),
+             (6, 0, "NHS"), (6, 1, "BMI"), (6, 2, "30,697.43", 30697.43)]
+    _, checks = failing(_sheet_with(cells, 7, 3, header_rows=(4,)), "r.xls")
+    assert checks["sheet_tables"] == "pass"
+    found, _ = failing(_sheet_with(cells, 7, 3), "r.xls")
+    assert "row 4" in found["sheet_tables"].evidence["tables"][0]
+    found, _ = failing(_sheet_with(cells, 7, 3, header_rows=(0, 4)), "r.xls")
+    assert "row 0" in found["sheet_tables"].evidence["tables"][0], "a title marked as a header is wrong too"
+
+
+def test_sheet_header_band_two_lines() -> None:
+    """A group line over a leaf line is one band: both lines must be marked, one alone fails."""
+    cells = [(0, 0, "Figure 5"), (2, 0, "Age"), (2, 1, "Males"), (2, 2, "Females"),
+             (3, 0, "x"), (3, 1, "lx"), (3, 2, "exo"), (3, 3, "lx"),
+             (4, 0, "0", 0.0), (4, 1, "100000", 100000.0), (4, 2, "69.5", 69.5), (4, 3, "100000", 100000.0),
+             (5, 0, "1", 1.0), (5, 1, "98808", 98808.0), (5, 2, "69.4", 69.4), (5, 3, "99099", 99099.0)]
+    _, checks = failing(_sheet_with(cells, 6, 4, header_rows=(2, 3)), "r.xls")
+    assert checks["sheet_tables"] == "pass"
+    found, _ = failing(_sheet_with(cells, 6, 4, header_rows=(3,)), "r.xls")
+    assert "rows 2, 3" in found["sheet_tables"].evidence["tables"][0]
+
+
+def test_sheet_header_plain_and_absent() -> None:
+    """A plain sheet is still held to its row-0 header; a numeric first row and a record
+    without its number demand nothing; an all-text table demands its first row."""
+    plain = [(0, 0, "Region"), (0, 1, "Q1"), (1, 0, "North"), (1, 1, "12", 12.0), (2, 0, "South"), (2, 1, "9", 9.0)]
+    found, _ = failing(_sheet_with(plain, 3, 2), "r.xls")
+    assert "row 0" in found["sheet_tables"].evidence["tables"][0]
+    _, checks = failing(_sheet_with(plain, 3, 2, header_rows=(0,)), "r.xls")
+    assert checks["sheet_tables"] == "pass"
+    numeric = [(0, 0, "1", 1.0), (0, 1, "2", 2.0), (1, 0, "3", 3.0), (1, 1, "4", 4.0)]
+    _, checks = failing(_sheet_with(numeric, 2, 2), "r.xls")
+    assert checks["sheet_tables"] == "pass"
+    found, _ = failing(_sheet_with(numeric, 2, 2, header_rows=(0,)), "r.xls")
+    assert "no label band" in found["sheet_tables"].evidence["tables"][0]
+    register = [(0, 0, "Director"), (0, 1, "Contract"), (0, 2, "Supplier"), (0, 3, "Value"),
+                (1, 0, "M. Pocock"), (1, 1, "To be tendered"), (1, 2, "Muse"),
+                (2, 0, "M. Pocock"), (2, 1, "C005032"), (2, 2, "Muse"), (2, 3, "8000000", 8000000.0),
+                (3, 0, "M. Pocock"), (3, 1, "C005033"), (3, 2, "Herman"), (3, 3, "900000", 900000.0)]
+    _, checks = failing(_sheet_with(register, 4, 4, header_rows=(0,)), "r.xls")
+    assert checks["sheet_tables"] == "pass"
+    found, _ = failing(_sheet_with(register, 4, 4, header_rows=(0, 1)), "r.xls")
+    assert "row 1" in found["sheet_tables"].evidence["tables"][0], "the record without its number is not a header line"
+    text = [(0, 0, "Country"), (0, 1, "Institution"), (1, 0, "Austria"), (1, 1, "Institute"),
+            (2, 0, "Belgium"), (2, 1, "Institute"), (3, 0, "Bosnia"), (3, 1, "University")]
+    found, _ = failing(_sheet_with(text, 4, 2), "r.xls")
+    assert "row 0" in found["sheet_tables"].evidence["tables"][0]
+    contents = [(0, 0, "JH"), (0, 1, "Contents"), (3, 0, "VT"), (3, 1, "Table 2"), (3, 2, "Breaks"),
+                (5, 0, "VT"), (5, 1, "Table 4"), (5, 2, "Summary")]
+    _, checks = failing(_sheet_with(contents, 6, 3), "r.xls")
+    assert checks["sheet_tables"] == "pass"
 
 
 def test_chart_composite() -> None:
