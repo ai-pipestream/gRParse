@@ -174,6 +174,29 @@ void verify_figure_caption_and_boxless_items() {
               joined(body_refs(document)));
 }
 
+// A single-column page with a map narrower than the paragraphs, its source
+// line under it and a paragraph below that (dpbench p1, as the pdf
+// collector reports it with the figure last): the figure and its source
+// line read between the paragraphs. Boxes in points, bottom-left origin.
+void verify_figure_between_paragraphs_reads_in_place() {
+  docv1::Document document = base_document(1, 612, 792);
+  constexpr auto kBl = docv1::COORD_ORIGIN_BOTTOMLEFT;
+  const std::string p9 = add_text(&document, "one of the two players", 1, 90, 740, 550, 680, kBl);
+  const std::string p10 = add_text(&document, "10. We demonstrated", 1, 90, 660, 550, 600, kBl);
+  const std::string p11 = add_text(&document, "11. The map below", 1, 90, 580, 550, 535, kBl);
+  const std::string source = add_text(&document, "Source: Google Maps", 1, 180, 210, 280, 198, kBl);
+  const std::string p12 = add_text(&document, "12. In this chapter", 1, 90, 165, 550, 70, kBl);
+  const std::string footer = add_text(&document, "BEHAVIORAL ECONOMICS PRACTICUM 175", 1, 400, 40,
+                                      550, 30, kBl);
+  const std::string map = add_picture(&document, 1, 110, 510, 360, 225, kBl);
+
+  grparse::order_body_by_geometry(&document);
+  const std::vector<std::string> expected = {p9, p10, p11, map, source, p12, footer};
+  require(body_refs(document) == expected,
+          "the map and its source line read between the paragraphs; got " +
+              joined(body_refs(document)));
+}
+
 // The pages come out in page order even when the producer appended a
 // page's items late; a group orders by the union of its children.
 void verify_pages_and_groups() {
@@ -417,6 +440,7 @@ int main() {
   return grparse_test::run_test_main("document-reading-order-test", "ok", {
       verify_columns_title_footnote_and_furniture,
       verify_figure_caption_and_boxless_items,
+      verify_figure_between_paragraphs_reads_in_place,
       verify_pages_and_groups,
       verify_producer_gate,
       verify_coverage_gate_and_aside_attachment,
