@@ -37,7 +37,8 @@ def test_readme_documents_every_check() -> None:
 def test_known_findings_name_their_owner() -> None:
     from s3.owners import KNOWN_FINDINGS, owner_of
 
-    assert owner_of("warnings_typed", "collector warnings keyed as custom_fields strings").owner.startswith("gRParse")
+    assert owner_of("warnings_typed", "collector warnings keyed as custom_fields strings") is None
+    assert owner_of("parse_succeeds", "fastwarc collector is not configured").owner.startswith("fastwarc")
     assert owner_of("table_grids", "grid rows have [#, #] cells, num_cols says #").owner == "grpc-markup"
     assert owner_of("integrity", "anything") is None
     assert all(entry.note for entry in KNOWN_FINDINGS)
@@ -46,7 +47,4 @@ def test_known_findings_name_their_owner() -> None:
     result = evaluate(context(broken, "r/b.pdf"))
     grouped = findings([result])
     keyed = next(f for f in grouped if f["check"] == "warnings_typed")
-    assert keyed["owner"] and "schema" in keyed["note"]
-    report = build_report(label="t", target="x", endpoint="e", bucket="b", prefix="", service="s",
-                          results=[result], matrix=Matrix(), wall_seconds=1.0, notes=[], exit_code=1)
-    assert "- owner: gRParse (schema follow-on)" in render_markdown(report)
+    assert not keyed["owner"], "a warning in a custom field is no longer a known, owned gap"

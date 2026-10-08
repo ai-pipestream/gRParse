@@ -2298,6 +2298,16 @@ void verify_pdf_fast_path_skips_the_cv_pipeline() {
           "the fast path keeps the /Lang the inspector read from the file's catalog");
 }
 
+// True when the document carries a warning from `collector` whose message
+// contains `fragment`.
+bool warned(const docv1::Document& document, const std::string& collector,
+            const std::string& fragment) {
+  return std::ranges::any_of(document.warnings(), [&](const docv1::CollectorWarning& warning) {
+    return warning.source().collector() == collector && warning.message().contains(fragment);
+  });
+}
+
+
 void verify_pdf_searchable_scan_takes_the_cv_path() {
   FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {}, /*paged_document=*/false,
                              /*searchable_scan=*/true);
@@ -2312,14 +2322,7 @@ void verify_pdf_searchable_scan_takes_the_cv_path() {
     require(item.text().base().text() != "from pdf inspector",
             "the empty fast-path fold is not the parse result");
   }
-  const auto& fields = document.body().meta().custom_fields();
-  bool recorded = false;
-  if (fields.count("collector_warnings:pdf") == 1) {
-    for (const auto& value : fields.at("collector_warnings:pdf").list_value().values()) {
-      recorded = recorded || value.string_value().contains("no body text");
-    }
-  }
-  require(recorded, "the refused fast path is recorded as a collector warning");
+  require(warned(document, "pdf", "no body text"), "the refused fast path is recorded as a collector warning");
 }
 
 // The newspaper shape: TEXT_BASED, no page named, a fold with body text,
@@ -2339,14 +2342,7 @@ void verify_pdf_ocr_recommendation_takes_the_cv_path() {
     require(item.text().base().text() != "from pdf inspector",
             "the fold of a document recommended for OCR is not the parse result");
   }
-  const auto& fields = document.body().meta().custom_fields();
-  bool recorded = false;
-  if (fields.count("collector_warnings:pdf") == 1) {
-    for (const auto& value : fields.at("collector_warnings:pdf").list_value().values()) {
-      recorded = recorded || value.string_value().contains("recommended OCR");
-    }
-  }
-  require(recorded, "the recommendation that refused the fast path is recorded");
+  require(warned(document, "pdf", "recommended OCR"), "the recommendation that refused the fast path is recorded");
 }
 
 // The streaming leg routes the same way: no collector-document fast path,
@@ -2387,10 +2383,8 @@ void verify_pdf_collector_failure_degrades_to_the_cv_path() {
                                run.status.error_message());
   require(run.recognizer_calls == 0,
           "the fallback CV run parses digitally, exactly as without the collector");
-  const auto& fields = run.response.response().document().doc().body().meta().custom_fields();
-  require(fields.count("collector_warnings:pdf") == 1 &&
-              fields.at("collector_warnings:pdf").list_value().values(0).string_value().contains(
-                  "fell back to the in-process CV path"),
+  require(warned(run.response.response().document().doc(), "pdf",
+                 "fell back to the in-process CV path"),
           "the degradation is recorded as a collector warning");
 }
 
