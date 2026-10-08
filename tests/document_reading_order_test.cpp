@@ -197,6 +197,88 @@ void verify_figure_between_paragraphs_reads_in_place() {
               joined(body_refs(document)));
 }
 
+// A page where a quarter of the items have no box (a table's row texts, as
+// the text layer delivers them) is still cut: the table listed before the
+// paragraphs above it moves below them, and the boxless rows ride with the
+// item before them (0003-pdf p42, points, bottom-left).
+void verify_a_page_with_three_quarters_placed_is_cut() {
+  docv1::Document document = base_document(1, 595, 842);
+  constexpr auto kBl = docv1::COORD_ORIGIN_BOTTOMLEFT;
+  const std::string p1 = add_text(&document, "4.6.7 New Products", 1, 71, 786, 532, 679, kBl);
+  const std::string legend = add_text(&document, "Non-Users (PIMS 2013)", 1, 229, 671, 532, 647, kBl);
+  const std::string table = add_table(&document, 1, 69, 291, 538, 119, kBl);
+  const std::string p2 = add_text(&document, "UKTI users are more likely", 1, 71, 479, 530, 412, kBl);
+  const std::string p3 = add_text(&document, "As detailed below", 1, 71, 396, 528, 343, kBl);
+  const std::string title = add_text(&document, "Table 4.6.7.2 Whether", 1, 91, 327, 504, 315, kBl);
+  const std::string row_1 = add_text(&document, "- Non-Users by Whether Supported", 0, 0, 0, 0, 0);
+  const std::string row_2 = add_text(&document, "- New to the business", 0, 0, 0, 0, 0);
+
+  grparse::order_body_by_geometry(&document);
+  const std::vector<std::string> expected = {p1, legend, p2, p3, title, row_1, row_2, table};
+  require(body_refs(document) == expected,
+          "six placed items of eight are enough to seat the table under its title; got " +
+              joined(body_refs(document)));
+}
+
+// A figure between two items of an ordered list (dpbench p1): the text
+// layer lists the figure after the list, and the list's union box encloses
+// the figure. The list splits around the figure, the second half as a new
+// group of the same kind right after the first, and the figure reads
+// between them; a second pass has nothing left to split or move.
+void verify_a_figure_inside_a_list_splits_the_list() {
+  docv1::Document document = base_document(1, 612, 792);
+  constexpr auto kBl = docv1::COORD_ORIGIN_BOTTOMLEFT;
+  const std::string p9 = add_text(&document, "one of the two players", 1, 90, 736, 554, 679, kBl);
+  const std::string group_ref = "#/groups/" + std::to_string(document.groups_size());
+  auto* group = document.add_groups();
+  group->set_self_ref(group_ref);
+  group->mutable_parent()->set_ref("#/body");
+  group->set_content_layer(docv1::CONTENT_LAYER_BODY);
+  group->set_label(docv1::GROUP_LABEL_ORDERED_LIST);
+  group->set_name("ordered list");
+  document.mutable_body()->add_children()->set_ref(group_ref);
+  std::vector<std::string> items;
+  const auto add_item = [&](const std::string& text, int page, double t, double b) {
+    const std::string ref = "#/texts/" + std::to_string(document.texts_size());
+    auto* base = document.add_texts()->mutable_list_item()->mutable_base();
+    base->set_self_ref(ref);
+    base->mutable_parent()->set_ref(group_ref);
+    base->set_label(docv1::DOC_ITEM_LABEL_LIST_ITEM);
+    base->set_content_layer(docv1::CONTENT_LAYER_BODY);
+    base->set_text(text);
+    if (page > 0) set_box(base->add_prov(), page, 67, t, 555, b, kBl);
+    add_source(kPdf, base->mutable_source());
+    group->add_children()->set_ref(ref);
+    items.push_back(ref);
+  };
+  add_item("We demonstrated how to solve", 1, 660, 600);
+  add_item("The map below identifies", 1, 578, 536);
+  add_item("In this chapter, we learned", 1, 173, 69);
+  const std::string map = add_picture(&document, 1, 90, 531, 375, 195, kBl);
+
+  const grparse::BodyOrderReport first = grparse::order_body_by_geometry(&document);
+  require(first.groups_split == 1 && document.groups_size() == 2, "the list splits once");
+  const std::string tail_ref = "#/groups/1";
+  require(body_refs(document) == std::vector<std::string>{p9, group_ref, map, tail_ref},
+          "the figure reads between the two halves of the list; got " +
+              joined(body_refs(document)));
+  const auto& head = document.groups(0);
+  const auto& tail = document.groups(1);
+  require(head.children_size() == 2 && head.children(0).ref() == items[0] &&
+              head.children(1).ref() == items[1],
+          "the first half keeps the items above the figure");
+  require(tail.children_size() == 1 && tail.children(0).ref() == items[2] &&
+              tail.label() == docv1::GROUP_LABEL_ORDERED_LIST && tail.name() == "ordered list" &&
+              tail.parent().ref() == "#/body" && tail.content_layer() == docv1::CONTENT_LAYER_BODY,
+          "the second half is a list of the same kind under the body");
+  require(document.texts(3).list_item().base().parent().ref() == tail_ref,
+          "an item that moved names its new group as parent");
+  const std::vector<std::string> settled = body_refs(document);
+  const grparse::BodyOrderReport second = grparse::order_body_by_geometry(&document);
+  require(second.groups_split == 0 && second.items_moved == 0 && body_refs(document) == settled,
+          "a second pass splits and moves nothing");
+}
+
 // The pages come out in page order even when the producer appended a
 // page's items late; a group orders by the union of its children.
 void verify_pages_and_groups() {
@@ -441,6 +523,8 @@ int main() {
       verify_columns_title_footnote_and_furniture,
       verify_figure_caption_and_boxless_items,
       verify_figure_between_paragraphs_reads_in_place,
+      verify_a_page_with_three_quarters_placed_is_cut,
+      verify_a_figure_inside_a_list_splits_the_list,
       verify_pages_and_groups,
       verify_producer_gate,
       verify_coverage_gate_and_aside_attachment,

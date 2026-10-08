@@ -735,7 +735,9 @@ The same pass owns the document's shape where the producer had only
 geometry to go on. A body that came entirely from the PDF text layer is
 re-ordered page by page with the XY-cut the CV path uses (columns top to
 bottom then left to right, footnotes after the page body, captions right
-after the float they label, furniture last). Heading levels follow the
+after the float they label, furniture last); a page is re-cut when at least
+half of its items carry a box, the rest riding with the item before them,
+and a list a figure interrupts splits into two lists around the figure. Heading levels follow the
 numbering (`1`, `1.1`, `A.`, `IV`, `Appendix A`), all-caps section words sit
 at depth one, unnumbered headings join the nearest size cluster, and the
 first page's opening heading block becomes the `TitleItem`; run-in headings
