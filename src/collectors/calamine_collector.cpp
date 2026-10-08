@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <format>
 #include <string>
 #include <utility>
@@ -89,6 +90,30 @@ std::string civil_text(const docv1::CivilDateTime& when, bool has_time) {
   return std::format("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", when.year(),
                      when.month(), when.day(), when.hour(), when.minute(),
                      when.second());
+}
+
+// An ISO 8601 date ("2015-04-13") or date-time ("2015-04-13T09:30:00",
+// fractional seconds ignored) as civil fields. False for anything else,
+// a time of day alone included.
+bool iso_civil(const std::string& text, docv1::CivilDateTime* when) {
+  int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+  int consumed = 0;
+  if (std::sscanf(text.c_str(), "%4d-%2d-%2d%n", &year, &month, &day, &consumed) != 3
+      || consumed != 10 || month < 1 || month > 12 || day < 1 || day > 31) {
+    return false;
+  }
+  when->set_year(year);
+  when->set_month(month);
+  when->set_day(day);
+  if (text.size() == 10) return true;
+  if (text[10] != 'T'
+      || std::sscanf(text.c_str() + 11, "%2d:%2d:%2d", &hour, &minute, &second) != 3) {
+    return false;
+  }
+  when->set_hour(hour);
+  when->set_minute(minute);
+  when->set_second(second);
+  return true;
 }
 
 // The shortest round-trip spelling of a double ("1", "2.5", "10412459"), not
@@ -250,8 +275,12 @@ class CalamineFold {
         break;
       }
       case calaminev1::CellData::kDateTimeIso:
+        // ODS stores dates as ISO text; a date or date-time it spells is
+        // the same civil value an Excel serial gives, so it is typed the
+        // same way. A bare time of day stays text.
         text = data.date_time_iso();
-        typed = false;
+        typed = iso_civil(text, value.mutable_datetime());
+        if (!typed) value.Clear();
         break;
       case calaminev1::CellData::kDurationIso:
         text = data.duration_iso();
