@@ -726,6 +726,41 @@ void verify_body_order_and_column_anchoring() {
           "the float lands between its own column's lines");
 }
 
+// A text-less float with nothing beside it (a corner logo above a title that
+// never reaches its column) heads the page's body order instead of closing
+// it, and a signature image between a line above and a dated line below
+// reads between them.
+void verify_lonely_floats_anchor_by_their_top_edge() {
+  const auto wide_line = [](std::string text, int left, int top, int width, int height) {
+    return grparse::OcrLine{std::move(text),
+                            {{left, top}, {left + width, top}, {left + width, top + height},
+                             {left, top + height}},
+                            0.9F};
+  };
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage slide{1000, 1500,
+                         {wide_line("EU Network Codes", 60, 300, 500, 40),
+                          wide_line("Mike Thorne", 60, 650, 300, 20)}};
+  slide.regions = {{"picture", 0.8F, 760, 60, 960, 180}};
+  ai::pipestream::parse::v1::PageData slide_data;
+  grparse::append_page_data(slide, 1, &cursor, &slide_data);
+  std::vector<std::string> order;
+  for (const auto& ref : slide_data.body_order()) order.push_back(ref.ref());
+  require(order == std::vector<std::string>{"#/pictures/0", "#/texts/0", "#/texts/1"},
+          "a corner logo above the title reads first");
+
+  grparse::OcrPage signed_page{1000, 1500,
+                               {wide_line("SO ORDERED.", 90, 700, 150, 20),
+                                wide_line("DATE: August 5, 2016", 60, 1200, 300, 20)}};
+  signed_page.regions = {{"picture", 0.8F, 450, 800, 780, 950}};
+  ai::pipestream::parse::v1::PageData signed_data;
+  grparse::append_page_data(signed_page, 2, &cursor, &signed_data);
+  order.clear();
+  for (const auto& ref : signed_data.body_order()) order.push_back(ref.ref());
+  require(order == std::vector<std::string>{"#/texts/2", "#/pictures/1", "#/texts/3"},
+          "a signature image reads between the order and the date");
+}
+
 }  // namespace
 
 // A turn orientation recovery applied reaches the page's typed quality
@@ -847,6 +882,7 @@ int main() {
       verify_numbered_section_header_levels,
       verify_rotated_lines_keep_their_quad,
       verify_body_order_and_column_anchoring,
+      verify_lonely_floats_anchor_by_their_top_edge,
       verify_recovered_rotation_reaches_page_quality,
       verify_list_items_join_a_list_group,
       verify_derived_offsets_match_the_assembled_rows,

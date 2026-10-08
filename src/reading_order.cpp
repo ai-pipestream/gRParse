@@ -67,6 +67,60 @@ bool gutter_has_two_sides(const std::vector<OrderBox>& boxes, const std::vector<
          after.height() >= side_share * whole.height();
 }
 
+using Rows = std::vector<std::pair<double, double>>;
+
+// The rows one side of a vertical gap occupies: the vertical spans of its
+// boxes, sorted and merged where they overlap.
+Rows side_rows(const std::vector<OrderBox>& boxes, const std::vector<size_t>& members,
+               const Gap& gap, bool after) {
+  Rows spans;
+  for (const size_t index : members) {
+    const OrderBox& box = boxes[index];
+    if ((box.left > gap.at) == after) spans.emplace_back(box.top, box.bottom);
+  }
+  std::ranges::sort(spans);
+  Rows merged;
+  for (const auto& [start, finish] : spans) {
+    if (!merged.empty() && start <= merged.back().second) {
+      merged.back().second = std::max(merged.back().second, finish);
+    } else {
+      merged.emplace_back(start, finish);
+    }
+  }
+  return merged;
+}
+
+double total_length(const Rows& rows) {
+  double total = 0;
+  for (const auto& [start, finish] : rows) total += finish - start;
+  return total;
+}
+
+// The length over which two sets of merged rows are level with each other.
+double shared_length(const Rows& a, const Rows& b) {
+  double total = 0;
+  for (const auto& [a_start, a_finish] : a) {
+    for (const auto& [b_start, b_finish] : b) {
+      total += std::max(0.0, std::min(a_finish, b_finish) - std::max(a_start, b_start));
+    }
+  }
+  return total;
+}
+
+// Whether the boxes on each side of a vertical gap run beside each other:
+// the rows the two sides share, as a share of the side with less row
+// length, reach the policy's threshold. Two columns read in parallel; a
+// label whose value sits in the label column's own whitespace does not.
+bool gutter_sides_run_parallel(const std::vector<OrderBox>& boxes, const std::vector<size_t>& members,
+                               const Gap& gap, double share) {
+  if (share <= 0) return true;
+  const Rows before = side_rows(boxes, members, gap, false);
+  const Rows after = side_rows(boxes, members, gap, true);
+  const double shorter = std::min(total_length(before), total_length(after));
+  if (shorter <= 0) return true;
+  return shared_length(before, after) >= share * shorter;
+}
+
 // Recursive cut at the widest whitespace gap on either axis, the policy
 // arbitrating between the two.  Choosing the widest gap (not the first axis
 // that has any gap) is what keeps line spacing inside a column from
@@ -80,7 +134,8 @@ void order_members(const std::vector<OrderBox>& boxes, const std::vector<size_t>
   }
   const auto y_gap = widest_gap(boxes, members, true);
   auto x_gap = widest_gap(boxes, members, false);
-  if (x_gap && !gutter_has_two_sides(boxes, members, *x_gap, policy.gutter_side_share)) {
+  if (x_gap && (!gutter_has_two_sides(boxes, members, *x_gap, policy.gutter_side_share) ||
+                !gutter_sides_run_parallel(boxes, members, *x_gap, policy.gutter_parallel_share))) {
     x_gap.reset();
   }
   const bool cut_horizontal =
@@ -137,8 +192,12 @@ std::vector<size_t> reading_order(const OcrPage& page, bool trust_source_order) 
   std::vector<Unit> units;
   units.reserve(page.regions.size() + page.lines.size());
 
-  // One unit per region; region boxes start from the detection and grow to
-  // cover their member lines so slight under-detection cannot re-split text.
+  // One unit per region. The detection decides membership (region_for_line);
+  // the unit's box for the cut is the hull of its member lines, because a
+  // detector box drawn a line too tall or too wide would otherwise claim its
+  // neighbour's row or cross a gutter, and the cut then reads the two out of
+  // order. A region without lines keeps the detection as its box and drops
+  // out of the order below anyway.
   std::vector<int> region_unit(page.regions.size(), -1);
   for (size_t index = 0; index < page.regions.size(); ++index) {
     const auto& region = page.regions[index];
@@ -154,11 +213,15 @@ std::vector<size_t> reading_order(const OcrPage& page, bool trust_source_order) 
     if (best != nullptr) {
       const auto region_index = static_cast<size_t>(best - page.regions.data());
       Unit& unit = units[static_cast<size_t>(region_unit[region_index])];
+      if (unit.line_indices.empty()) {
+        unit.box = box;
+      } else {
+        unit.box.left = std::min(unit.box.left, box.left);
+        unit.box.top = std::min(unit.box.top, box.top);
+        unit.box.right = std::max(unit.box.right, box.right);
+        unit.box.bottom = std::max(unit.box.bottom, box.bottom);
+      }
       unit.line_indices.push_back(line_index);
-      unit.box.left = std::min(unit.box.left, box.left);
-      unit.box.top = std::min(unit.box.top, box.top);
-      unit.box.right = std::max(unit.box.right, box.right);
-      unit.box.bottom = std::max(unit.box.bottom, box.bottom);
     } else {
       units.push_back(Unit{box, {line_index}});
     }

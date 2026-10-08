@@ -473,7 +473,15 @@ and picture extraction have crops to work from.
 Text streams in reading order: a recursive XY-cut over layout regions (or the
 lines themselves when no model is present) splits pages at the widest
 whitespace gap, so multi-column pages read column by column instead of
-interleaving rows, and UTF offsets follow that order. Control layout with
+interleaving rows, and UTF offsets follow that order. A unit sits where its
+lines are, not where the detector drew its box, and a vertical gap only
+counts as a column gutter when the two sides run beside each other: a
+signature block's "Signed:" / "Dated:" labels with the signer's name in the
+whitespace between them, or a case number beside a caption's party list,
+read row by row. Tables and pictures anchor into that order: before the
+lines they own, else before the first block of their own column that starts
+below them, else (when nothing runs beside them) before the first block
+below their top edge anywhere on the page, else after their column. Control layout with
 `GRPARSE_LAYOUT=auto|on|off` (`auto`, the default, enables layout when the
 selected model's file exists and says so at startup; `on` fails startup if it
 is missing). Full-digital pages are still rasterized when layout is active,
