@@ -11,6 +11,7 @@
 #include "grparse/content_sniff.h"
 #include "grparse/document_collectors.h"
 #include "grparse/document_merge.h"
+#include "grparse/workbook_cells.h"
 
 namespace pipestream = ai::pipestream;
 
@@ -113,8 +114,17 @@ CoordinatorResult run_collectors(std::vector<PlannedCollector> collectors,
     // earlier leg has contributed a body, the leg's own body reading would
     // merge as a second copy of every item. It keeps its document-level
     // account: that is the leg's claims, and the rank order decides the
-    // fields below.
+    // fields below. calamine's cells are the exception: they replace the
+    // cells of the sheet tables already merged (workbook_cells.h), so a
+    // workbook's values are calamine's and its shape is libreoffice's.
     if (collectors[index].office_fanout && result.succeeded > 0) {
+      if (collectors[index].id == pipestream::parse::v1::COLLECTOR_CALAMINE) {
+        std::vector<std::string> warnings;
+        adopt_calamine_cells(outcome.document, &result.document, &warnings);
+        for (auto& warning : warnings) {
+          result.warnings.emplace_back(collectors[index].id, std::move(warning));
+        }
+      }
       retain_claims_only(&outcome.document);
     }
     // The collector's document-level account is kept whole and its

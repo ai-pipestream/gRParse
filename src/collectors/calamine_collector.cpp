@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <format>
 #include <string>
 #include <utility>
@@ -19,6 +20,7 @@
 
 #include "calamine/v1/calamine_service.grpc.pb.h"
 #include "collector_support.h"
+#include "grparse/workbook_cells.h"
 
 namespace calaminev1 = calamine::v1;
 namespace docv1 = ai::pipestream::document::v1;
@@ -90,12 +92,38 @@ std::string civil_text(const docv1::CivilDateTime& when, bool has_time) {
                      when.second());
 }
 
-// The shortest round-trip spelling of a double ("1", "2.5"), not the fixed
-// six decimals of std::to_string.
+// An ISO 8601 date ("2015-04-13") or date-time ("2015-04-13T09:30:00",
+// fractional seconds ignored) as civil fields. False for anything else,
+// a time of day alone included.
+bool iso_civil(const std::string& text, docv1::CivilDateTime* when) {
+  int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+  int consumed = 0;
+  if (std::sscanf(text.c_str(), "%4d-%2d-%2d%n", &year, &month, &day, &consumed) != 3
+      || consumed != 10 || month < 1 || month > 12 || day < 1 || day > 31) {
+    return false;
+  }
+  when->set_year(year);
+  when->set_month(month);
+  when->set_day(day);
+  if (text.size() == 10) return true;
+  if (text[10] != 'T'
+      || std::sscanf(text.c_str() + 11, "%2d:%2d:%2d", &hour, &minute, &second) != 3) {
+    return false;
+  }
+  when->set_hour(hour);
+  when->set_minute(minute);
+  when->set_second(second);
+  return true;
+}
+
+// The shortest round-trip spelling of a double ("1", "2.5", "10412459"), not
+// the fixed six decimals of std::to_string. The plain form of to_chars picks
+// fixed notation unless the exponent form is shorter; chars_format::general
+// would spell an eight-digit reference number "1.0412459e+07".
 std::string double_text(double value) {
   char buffer[32];
   const auto [end, error] =
-      std::to_chars(buffer, buffer + sizeof(buffer), value, std::chars_format::general);
+      std::to_chars(buffer, buffer + sizeof(buffer), value);
   if (error != std::errc()) return std::to_string(value);
   return std::string(buffer, end);
 }
@@ -172,11 +200,30 @@ class CalamineFold {
     num_rows_ = std::max(num_rows_, static_cast<uint64_t>(row.row_index()) + 1);
   }
 
-  void end_sheet() {
-    if (current_ == nullptr) return;
+  // The sheet's merged areas, from the range header.
+  void merged(const calaminev1::RangeStarted& started) {
+    merged_.clear();
+    for (const calaminev1::Dimensions& area : started.merged_regions()) {
+      const auto& start = area.start();
+      const auto& end = area.end();
+      if (end.row() < start.row() || end.col() < start.col()) continue;
+      merged_.push_back({static_cast<int>(start.row()), static_cast<int>(start.col()),
+                         static_cast<int>(end.row() - start.row()) + 1,
+                         static_cast<int>(end.col() - start.col()) + 1});
+    }
+  }
+
+  // Closes the sheet: spans its merged areas and marks its header band.
+  // Returns the number of header cells marked.
+  int end_sheet() {
+    if (current_ == nullptr) return 0;
     current_->set_num_rows(static_cast<int32_t>(num_rows_));
     current_->set_num_cols(static_cast<int32_t>(num_cols_));
+    apply_merged_areas(current_, merged_);
+    merged_.clear();
+    const int marked = mark_sheet_header(current_);
     current_ = nullptr;
+    return marked;
   }
 
   void defined_names(const calaminev1::Metadata& metadata) {
@@ -228,8 +275,12 @@ class CalamineFold {
         break;
       }
       case calaminev1::CellData::kDateTimeIso:
+        // ODS stores dates as ISO text; a date or date-time it spells is
+        // the same civil value an Excel serial gives, so it is typed the
+        // same way. A bare time of day stays text.
         text = data.date_time_iso();
-        typed = false;
+        typed = iso_civil(text, value.mutable_datetime());
+        if (!typed) value.Clear();
         break;
       case calaminev1::CellData::kDurationIso:
         text = data.duration_iso();
@@ -259,6 +310,7 @@ class CalamineFold {
 
   docv1::Document& document_;
   docv1::TableData* current_ = nullptr;
+  std::vector<MergedArea> merged_;
   docv1::ContentLayer layer_ = docv1::CONTENT_LAYER_BODY;
   std::string sheet_name_;
   uint64_t num_rows_ = 0;
@@ -342,6 +394,9 @@ CollectorOutcome collect_calamine_document(const std::shared_ptr<grpc::Channel>&
     calaminev1::StreamWorksheetRangeResponse event;
     while (stream->Read(&event)) {
       switch (event.event_case()) {
+        case calaminev1::StreamWorksheetRangeResponse::kStarted:
+          fold.merged(event.started());
+          break;
         case calaminev1::StreamWorksheetRangeResponse::kRow:
           fold.row(event.row());
           break;
@@ -370,7 +425,11 @@ CollectorOutcome collect_calamine_document(const std::shared_ptr<grpc::Channel>&
       event.Clear();
       if (terminal_error) break;
     }
-    fold.end_sheet();
+    if (fold.end_sheet() > 0) {
+      outcome.warnings.push_back("sheet '" + sheet.name()
+                                 + "': header row inferred by the labels-over-data band "
+                                   "rule; no database range declares it");
+    }
     // A terminal error left the stream unread: Finish would wait on the
     // messages still in flight, so the call is cancelled first.
     if (terminal_error) sheet_context.TryCancel();

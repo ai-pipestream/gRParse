@@ -209,9 +209,20 @@ void WriterFold::on_embedded_image(const officev1::EmbeddedImage& image) {
   // A slide picture belongs under its slide; its geometry is already
   // page-local, unlike a text document's document-absolute anchors.
   bool page_local = false;
+  const bool sheet = arena_.document_type() == "spreadsheet";
   if (arena_.document_type() == "presentation") {
     page_local = true;
     parent = shapes_.slide_group_ref(image.page_index());
+  } else if (sheet) {
+    // A sheet picture comes from the sheet's draw page, page_index being
+    // the sheet index; it belongs under that sheet's group.
+    for (const docv1::GroupItem& group : arena_.document().groups()) {
+      if (group.label() == docv1::GROUP_LABEL_SHEET
+          && group.sheet().index() == image.page_index()) {
+        parent = group.self_ref();
+        break;
+      }
+    }
   } else if (auto container = writer_groups_.find(image.group_path());
              container != writer_groups_.end()) {
     parent = container->second;
@@ -297,6 +308,16 @@ void WriterFold::on_embedded_image(const officev1::EmbeddedImage& image) {
                     0, 0);
   } else if (!image.line_rects().empty()) {
     arena_.add_line_prov(picture->mutable_prov(), image.line_rects(), 0, 0);
+  } else if (sheet) {
+    // A sheet has no page geometry (the sheet table says so once), so the
+    // picture's provenance names its sheet the way the table's does: the
+    // page, and the sheet on the grid, with no box.
+    arena_.add_prov(picture->mutable_prov(), image.page_index(), true, 0, 0, 0, 0, 0, 0,
+                    false);
+    const docv1::GroupItem* group = arena_.group_by_ref(parent);
+    if (picture->prov_size() > 0 && group != nullptr && !group->name().empty()) {
+      picture->mutable_prov(0)->mutable_grid()->set_sheet(group->name());
+    }
   }
 }
 

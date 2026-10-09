@@ -1579,6 +1579,14 @@ class FakeCalamineService final : public calaminev1::CalamineService::Service {
     calaminev1::StreamWorksheetRangeResponse event;
     event.mutable_started()->set_sheet_name(
         request->sheet().sheet_index() == 0 ? "First" : "Second");
+    if (request->sheet().sheet_index() == 1) {
+      // B1:C1 is merged: the ISO date at B1 spans it, C1 is covered.
+      calaminev1::Dimensions* area = event.mutable_started()->add_merged_regions();
+      area->mutable_start()->set_row(0);
+      area->mutable_start()->set_col(1);
+      area->mutable_end()->set_row(0);
+      area->mutable_end()->set_col(2);
+    }
     writer->Write(event);
     if (request->sheet().sheet_index() == 0) {
       event.Clear();
@@ -1617,6 +1625,11 @@ class FakeCalamineService final : public calaminev1::CalamineService::Service {
       calaminev1::WorksheetRow* row = event.mutable_rows()->add_rows();
       row->set_row_index(0);
       row->add_values()->mutable_date_time()->set_value(45000.999999);
+      // ODS spells its dates as ISO text; a bare time of day stays text.
+      row->add_values()->set_date_time_iso("2015-04-13");
+      row->add_values()->set_date_time_iso("09:30:00");
+      // An eight-digit reference keeps plain notation.
+      row->add_values()->set_float_value(10412459);
       writer->Write(event);
     }
     return grpc::Status::OK;
@@ -1741,8 +1754,17 @@ void verify_calamine_folds_sheets() {
               data.row_prov(1).grid().sheet() == "First",
           "rows carry grid provenance in the sheet's absolute addresses");
   const docv1::TableData& second = document.tables(1).data();
-  require(second.table_cells_size() == 1 &&
-              second.table_cells(0).text() == "2023-03-16 00:00:00" &&
+  require(second.table_cells_size() == 3, "the covered cell of a merge is dropped");
+  require(second.table_cells(1).text() == "2015-04-13" &&
+              second.table_cells(1).value().datetime().year() == 2015 &&
+              second.table_cells(1).value().datetime().day() == 13 &&
+              second.table_cells(1).col_span() == 2 &&
+              second.table_cells(1).end_col_offset_idx() == 3,
+          "an ISO date is typed as a date and spans its merged area");
+  require(second.table_cells(2).text() == "10412459" &&
+              second.table_cells(2).value().number() == 10412459,
+          "a large float keeps plain notation");
+  require(second.table_cells(0).text() == "2023-03-16 00:00:00" &&
               second.table_cells(0).value().datetime().day() == 16 &&
               second.table_cells(0).value().datetime().hour() == 0,
           "a time that rounds up to midnight lands on the next day");

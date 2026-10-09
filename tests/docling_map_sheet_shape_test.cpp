@@ -167,7 +167,7 @@ void verify_text_formulas_do_not_make_a_header() {
 // Sheets and pivots own no rectangle: their provenance names the sheet grid
 // and never presents a zero-area box as real geometry, and the absence is
 // named once per item.
-void verify_sheet_and_pivot_provenance_carry_no_fabricated_box() {
+void verify_sheet_provenance_and_pivot_span() {
   grparse::DoclingMapper mapper;
   mapper.consume(info_event(1));
   mapper.consume(sheet_event(0, "Data", true, 1, 1));
@@ -194,14 +194,64 @@ void verify_sheet_and_pivot_provenance_carry_no_fabricated_box() {
   require(sheet_prov.page_no() == 1 && !sheet_prov.has_bbox() &&
               sheet_prov.grid().sheet() == "Data",
           "a sheet's provenance is page and grid, no fabricated box");
-  const docv1::ProvenanceItem& pivot_prov = document.tables(1).prov(0);
-  require(pivot_prov.page_no() == 1 && !pivot_prov.has_bbox(),
-          "a pivot's provenance is the same honest shape");
-  require(mapper.warnings().size() == 2 &&
-              mapper.warnings()[0].contains("has no geometry") &&
-              mapper.warnings()[1].contains("has no geometry"),
-          "each geometry-less item names its absence once");
+  require(document.tables_size() == 1,
+          "a pivot adds no empty table: its output cells are the sheet's own");
+  require(document.pivots_size() == 1 && document.pivots(0).output().start().row() == 5
+              && document.pivots(0).output().start().sheet() == "Data",
+          "the pivot's output is a grid span into its sheet");
+  require(mapper.warnings().size() == 1 && mapper.warnings()[0].contains("has no geometry"),
+          "the sheet's missing geometry is named once");
   require(grparse::docling_integrity_errors(document).empty(), "the fold stays well formed");
+}
+
+// S3 eval finding: a picture on a sheet's draw page arrives keyed to the
+// sheet index with no anchor, and was placed under the body with no
+// provenance at all. It belongs under its sheet's group, with the sheet's
+// own honest provenance: the page and the sheet, no box.
+void verify_sheet_picture_sits_under_its_sheet() {
+  grparse::DoclingMapper mapper;
+  mapper.consume(info_event(2));
+  mapper.consume(sheet_event(0, "Cover", true, 0, 0));
+  mapper.consume(sheet_event(1, "Logo", true, 0, 0));
+  officev1::StreamPagesResponse image;
+  officev1::EmbeddedImage* picture = image.mutable_embedded_image();
+  picture->set_index(0);
+  picture->set_page_index(1);
+  picture->set_name("Picture 1");
+  picture->set_width_twips(1440);
+  picture->set_height_twips(720);
+  mapper.consume(image);
+  mapper.consume(status_event());
+
+  const docv1::Document& document = mapper.document();
+  require(document.pictures_size() == 1, "the picture is placed once");
+  const docv1::PictureItem& placed = document.pictures(0);
+  require(placed.parent().ref() == document.groups(1).self_ref(),
+          "the picture sits under the sheet it was drawn on");
+  require(placed.prov_size() == 1 && placed.prov(0).page_no() == 2
+              && !placed.prov(0).has_bbox() && placed.prov(0).grid().sheet() == "Logo",
+          "its provenance names the sheet's page and grid, no fabricated box");
+  require(grparse::docling_integrity_errors(document).empty(), "the fold stays well formed");
+}
+
+// S3 eval finding: a title merged across twelve columns over a four-column
+// used range came out as a cell outside its own table's grid.
+void verify_merge_past_used_range_grows_the_table() {
+  grparse::DoclingMapper mapper;
+  mapper.consume(info_event(1));
+  mapper.consume(sheet_event(0, "Report", true, 1, 3));
+  officev1::StreamPagesResponse title = row_event(0, 0);
+  text_cell(title.mutable_sheet_row(), 0, "Quarterly report");
+  title.mutable_sheet_row()->mutable_cells(0)->set_merged_columns(12);
+  title.mutable_sheet_row()->mutable_cells(0)->set_merged_rows(3);
+  mapper.consume(title);
+  mapper.consume(status_event());
+
+  const docv1::TableData& data = mapper.document().tables(0).data();
+  require(data.num_cols() == 12 && data.num_rows() == 3,
+          "the table grows to hold the merge");
+  require(grparse::docling_integrity_errors(mapper.document()).empty(),
+          "the fold stays well formed");
 }
 
 }  // namespace
@@ -211,6 +261,8 @@ int main() {
       verify_empty_sheets_fold_to_empty_tables,
       verify_formula_display_counts_as_a_quantity,
       verify_text_formulas_do_not_make_a_header,
-      verify_sheet_and_pivot_provenance_carry_no_fabricated_box,
+      verify_sheet_provenance_and_pivot_span,
+      verify_sheet_picture_sits_under_its_sheet,
+      verify_merge_past_used_range_grows_the_table,
   });
 }

@@ -67,7 +67,7 @@ namespace grparse {
 // honesty is scoped to the wire and the canonical JSON surface: gRParse's
 // own geometry passes branch only on BOTTOMLEFT, so an originless box is
 // read with the TOPLEFT convention inside this process today. Sources with
-// no rectangle of their own (sheets, pivot outputs, a chart no embedded
+// no rectangle of their own (sheets, sheet pictures, a chart no embedded
 // object placed) stamp page and grid only and name the absence; a zero-area
 // box is never presented as real geometry. Draw, Impress, and Calc
 // positions arrive page-local per part. All emitted doubles stay in twips;
