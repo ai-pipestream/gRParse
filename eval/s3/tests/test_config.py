@@ -34,6 +34,12 @@ def test_aws_names_and_defaults() -> None:
     assert config.sniff_per_extension == 1 and not config.require and config.target == "localhost:50051"
     assert config.convert_timeout == 600.0
     assert Config.from_env(dict(env, EVAL_S3_CONVERT_TIMEOUT="45"), Path("/repo")).convert_timeout == 45.0
+    # A long document gets 1.5 s a page past the flat deadline; an unknown
+    # page count keeps the flat deadline.
+    assert config.deadline_for(0) == 600.0 and config.deadline_for(100) == 600.0
+    assert config.deadline_for(955) == 1432.5
+    paced = Config.from_env(dict(env, EVAL_S3_SECONDS_PER_PAGE="2"), Path("/repo"))
+    assert paced.deadline_for(955) == 1910.0
 
 
 def test_bad_integer_is_named() -> None:

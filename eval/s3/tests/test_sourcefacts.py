@@ -88,3 +88,17 @@ def test_csv_grid_counts_a_quoted_newline_once() -> None:
 def test_unknown_family_reads_nothing() -> None:
     facts = source_facts("pdf", "pdf", b"%PDF-1.4")
     assert facts.ok and facts.headings is None
+
+
+def test_pdf_page_count_reads_the_page_tree() -> None:
+    import zlib
+
+    from s3.sourcefacts import pdf_page_count
+    clear = b"%PDF-1.4\n1 0 obj << /Type /Pages /Kids [3 0 R] /Count 3 >> endobj\n"
+    assert pdf_page_count(clear) == 3
+    # The tree inside a compressed object stream, as Aspose writes it; the
+    # largest /Count is the root's.
+    body = zlib.compress(b"<< /Count 955 /Kids [4 0 R] /Type /Pages >> << /Type /Pages /Count 12 >>")
+    packed = b"%PDF-1.5\n7 0 obj << /Type /ObjStm /N 2 /Filter /FlateDecode >> stream\n" + body + b"\nendstream"
+    assert pdf_page_count(packed) == 955
+    assert pdf_page_count(b"%PDF-1.4 no tree") == 0
