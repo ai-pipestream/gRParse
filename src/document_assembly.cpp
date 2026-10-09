@@ -1,6 +1,7 @@
 #include "grparse/document_assembly.h"
 
 #include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <cmath>
 #include <limits>
@@ -391,6 +392,12 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     }
     if (code_points > static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
       throw std::length_error("Text block exceeds document charspan range");
+    }
+    // The recognizer can read a smudge or a stamp as a lone space: a block
+    // with nothing but whitespace is no text, so it is no item (and takes
+    // no index, so the refs stay dense).
+    if (std::ranges::all_of(merged, [](unsigned char c) { return std::isspace(c) != 0; })) {
+      return;
     }
 
     const std::string self_ref = "#/texts/" + std::to_string(cursor->text_index++);

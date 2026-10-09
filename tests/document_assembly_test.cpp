@@ -93,6 +93,22 @@ void verify_offsets_and_provenance() {
           "cross-page running offset");
 }
 
+void verify_whitespace_only_line_is_no_item() {
+  // The recognizer read a stamp on court/4074526 p520 as a lone space; that
+  // line is no text, so it takes no item and no index.
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{100, 200, {line("before", 10), line(" ", 30), line("\t \n", 50),
+                                   line("after", 70)}};
+  google::protobuf::Arena arena;
+  auto* data = google::protobuf::Arena::Create<ai::pipestream::parse::v1::PageData>(&arena);
+  grparse::append_page_data(page, 1, &cursor, data);
+  require(data->texts_size() == 2, "the blank lines leave no item");
+  require(data->texts(0).text().base().text() == "before", "first text kept");
+  require(data->texts(1).text().base().text() == "after", "last text kept");
+  require(data->texts(1).text().base().self_ref() == "#/texts/1", "refs stay dense");
+  require(data->text_offsets_size() == 2, "one offset per kept item");
+}
+
 void verify_layout_regions_map_labels_and_emit_items() {
   grparse::AssemblyCursor cursor;
   grparse::OcrPage page{1000, 1000,
@@ -865,6 +881,7 @@ int main() {
   return grparse_test::run_test_main("document-assembly-test", {
       verify_contract_shape,
       verify_offsets_and_provenance,
+      verify_whitespace_only_line_is_no_item,
       verify_layout_regions_map_labels_and_emit_items,
       verify_unknown_region_label_falls_back_loudly,
       verify_every_region_label_reaches_the_document,
