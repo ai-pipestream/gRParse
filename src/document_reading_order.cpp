@@ -221,26 +221,36 @@ std::optional<int> arena_index(std::string_view ref, std::string_view prefix) {
 }
 
 // Where a float splits a group it sits inside: the position of the first
-// child that starts at or below the float's top edge, when some child
-// starts above it, every child is a placed text on the float's page, and
-// the float overlaps the group's hull horizontally (a figure beside a list
-// in the other column leaves the list whole). Nothing otherwise.
+// placed child that starts at or below the float's top edge, when a placed
+// child starts above it, every child is a text and every placed one is on
+// the float's page, and the float overlaps the group's hull horizontally
+// (a figure beside a list in the other column leaves the list whole).
+// Nothing otherwise. A child without a box rides with the placed child
+// before it, as in the cut itself: it stays in the head, and one before
+// any placed child stays in the head too.
 std::optional<int> split_position(const docv1::Document& document, const docv1::GroupItem& group,
                                   const ItemPlacement& floating,
                                   const std::map<int, double>& heights) {
   std::optional<int> split;
+  bool above = false;
   double left = std::numeric_limits<double>::infinity();
   double right = -std::numeric_limits<double>::infinity();
   for (int index = 0; index < group.children_size(); ++index) {
     const std::string& ref = group.children(index).ref();
     if (!arena_index(ref, "#/texts/").has_value()) return std::nullopt;
     const auto placement = item_placement(document, ref, heights);
-    if (!placement.has_value() || placement->page != floating.page) return std::nullopt;
+    if (!placement.has_value()) continue;
+    if (placement->page != floating.page) return std::nullopt;
     left = std::min(left, placement->box.left);
     right = std::max(right, placement->box.right);
-    if (!split.has_value() && placement->box.top >= floating.box.top) split = index;
+    if (split.has_value()) continue;
+    if (placement->box.top >= floating.box.top) {
+      split = index;
+    } else {
+      above = true;
+    }
   }
-  if (!split.has_value() || *split == 0) return std::nullopt;
+  if (!split.has_value() || !above) return std::nullopt;
   if (std::min(right, floating.box.right) - std::max(left, floating.box.left) <= 0) return std::nullopt;
   return split;
 }

@@ -31,10 +31,12 @@ struct BodyOrderReport {
 };
 
 // Splits every list group a table or picture of the same page sits inside
-// (the float's top edge below the group's first item and at or above a
-// later one, the float overlapping the group's hull horizontally) into the
-// items before the float and a new group of the items after it, placed in
-// the body right after the first. The text layer lists a figure after the
+// (the float's top edge below a placed item of the group and at or above a
+// later placed one, the float overlapping the group's hull horizontally)
+// into the items before the float and a new group of the items after it,
+// placed in the body right after the first. An item without a box rides
+// with the placed item before it (one before any placed item stays in the
+// first group). The text layer lists a figure after the
 // list it interrupts; without the split the list orders as one box that
 // encloses the figure and the figure follows the whole list. Returns the
 // number of splits; a second run finds nothing to split.

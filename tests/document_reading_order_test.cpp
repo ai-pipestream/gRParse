@@ -279,6 +279,78 @@ void verify_a_figure_inside_a_list_splits_the_list() {
           "a second pass splits and moves nothing");
 }
 
+// The same list as the text layer really delivers it: the first item has no
+// box. It rides with the head, the split still happens at the item under
+// the figure, and the pass settles.
+void verify_a_boxless_first_item_rides_with_the_head_of_a_split_list() {
+  docv1::Document document = base_document(1, 612, 792);
+  constexpr auto kBl = docv1::COORD_ORIGIN_BOTTOMLEFT;
+  const std::string p9 = add_text(&document, "one of the two players", 1, 90, 736, 554, 679, kBl);
+  const std::string group_ref = "#/groups/" + std::to_string(document.groups_size());
+  auto* group = document.add_groups();
+  group->set_self_ref(group_ref);
+  group->mutable_parent()->set_ref("#/body");
+  group->set_content_layer(docv1::CONTENT_LAYER_BODY);
+  group->set_label(docv1::GROUP_LABEL_ORDERED_LIST);
+  document.mutable_body()->add_children()->set_ref(group_ref);
+  std::vector<std::string> items;
+  const auto add_item = [&](const std::string& text, int page, double t, double b) {
+    const std::string ref = "#/texts/" + std::to_string(document.texts_size());
+    auto* base = document.add_texts()->mutable_list_item()->mutable_base();
+    base->set_self_ref(ref);
+    base->mutable_parent()->set_ref(group_ref);
+    base->set_label(docv1::DOC_ITEM_LABEL_LIST_ITEM);
+    base->set_content_layer(docv1::CONTENT_LAYER_BODY);
+    base->set_text(text);
+    if (page > 0) set_box(base->add_prov(), page, 67, t, 555, b, kBl);
+    add_source(kPdf, base->mutable_source());
+    group->add_children()->set_ref(ref);
+    items.push_back(ref);
+  };
+  add_item("We demonstrated how to solve", 0, 0, 0);
+  add_item("The map below identifies", 1, 578, 536);
+  add_item("In this chapter, we learned", 1, 173, 69);
+  const std::string map = add_picture(&document, 1, 90, 531, 375, 195, kBl);
+
+  const grparse::BodyOrderReport first = grparse::order_body_by_geometry(&document);
+  require(first.groups_split == 1 && document.groups_size() == 2, "the list splits once");
+  require(body_refs(document) == std::vector<std::string>{p9, group_ref, map, "#/groups/1"},
+          "the figure reads between the halves; got " + joined(body_refs(document)));
+  const auto& head = document.groups(0);
+  require(head.children_size() == 2 && head.children(0).ref() == items[0] &&
+              head.children(1).ref() == items[1],
+          "the boxless first item stays in the head with the item under it");
+  require(document.groups(1).children_size() == 1 && document.groups(1).children(0).ref() == items[2],
+          "the item under the figure forms the tail");
+  const std::vector<std::string> settled = body_refs(document);
+  const grparse::BodyOrderReport second = grparse::order_body_by_geometry(&document);
+  require(second.groups_split == 0 && second.items_moved == 0 && body_refs(document) == settled,
+          "a second pass splits and moves nothing");
+
+  // A list whose only placed item sits under the figure has nothing above
+  // the figure to split from: it stays whole.
+  docv1::Document whole = base_document(1, 612, 792);
+  const std::string whole_group = "#/groups/0";
+  auto* only = whole.add_groups();
+  only->set_self_ref(whole_group);
+  only->mutable_parent()->set_ref("#/body");
+  only->set_label(docv1::GROUP_LABEL_LIST);
+  whole.mutable_body()->add_children()->set_ref(whole_group);
+  for (const int page : {0, 1}) {
+    const std::string ref = "#/texts/" + std::to_string(whole.texts_size());
+    auto* base = whole.add_texts()->mutable_list_item()->mutable_base();
+    base->set_self_ref(ref);
+    base->mutable_parent()->set_ref(whole_group);
+    base->set_label(docv1::DOC_ITEM_LABEL_LIST_ITEM);
+    if (page > 0) set_box(base->add_prov(), page, 67, 173, 555, 69, kBl);
+    add_source(kPdf, base->mutable_source());
+    only->add_children()->set_ref(ref);
+  }
+  add_picture(&whole, 1, 90, 531, 375, 195, kBl);
+  require(grparse::order_body_by_geometry(&whole).groups_split == 0 && whole.groups_size() == 1,
+          "a boxless item before the only placed one does not make a split");
+}
+
 // The pages come out in page order even when the producer appended a
 // page's items late; a group orders by the union of its children.
 void verify_pages_and_groups() {
@@ -525,6 +597,7 @@ int main() {
       verify_figure_between_paragraphs_reads_in_place,
       verify_a_page_with_three_quarters_placed_is_cut,
       verify_a_figure_inside_a_list_splits_the_list,
+      verify_a_boxless_first_item_rides_with_the_head_of_a_split_list,
       verify_pages_and_groups,
       verify_producer_gate,
       verify_coverage_gate_and_aside_attachment,
