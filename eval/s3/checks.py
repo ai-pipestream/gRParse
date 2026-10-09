@@ -870,7 +870,8 @@ def email_shape(ctx: ObjectContext) -> list[Failure]:
     return failures
 
 
-@check("epub_spine", "books: one CHAPTER group per XHTML spine item, in spine order, each with content",
+@check("epub_spine", "books: one CHAPTER group per XHTML spine item, in spine order, each with content unless "
+                     "its spine item shows nothing",
        applies=lambda ctx: has_view(ctx) and ctx.family == "epub")
 def epub_spine(ctx: ObjectContext) -> list[Failure]:
     view = ctx.view
@@ -891,7 +892,11 @@ def epub_spine(ctx: ObjectContext) -> list[Failure]:
             if not in_order:
                 failures.append(_fail("epub_spine", "chapter groups are not in spine order", names=_cap(names),
                                       spine=_cap(xhtml)))
-    empty = [f"{group.ref} {group.item.get('name', '')!r}" for group in groups if not view.children_refs(group)]
+    # A chapter whose spine item has nothing to show stays empty, truthfully.
+    blank = ctx.facts.extra.get("empty_spine") or []
+    empty = [f"{group.ref} {group.item.get('name', '')!r}" for group in groups if not view.children_refs(group)
+             and not any((group.item.get("name") or "").endswith(href) or href.endswith(group.item.get("name") or "\0")
+                         for href in blank)]
     if empty:
         failures.append(_fail("epub_spine", "chapter group without content", groups=_cap(empty)))
     return failures
