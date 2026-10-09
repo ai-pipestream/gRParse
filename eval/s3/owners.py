@@ -18,11 +18,6 @@ class KnownFinding:
 
 KNOWN_FINDINGS: tuple[KnownFinding, ...] = (
     KnownFinding(
-        "warnings_typed", "collector warnings keyed as custom_fields strings", "gRParse (schema follow-on)",
-        "collector warnings land on body.meta.custom_fields[collector_warnings:<name>] because the Document "
-        "has no typed slot for them; the fix is a typed Document.warnings extension, a fleet-wide schema sweep, "
-        "so the check stays red until it lands"),
-    KnownFinding(
         "parse_succeeds", "fastwarc collector is not configured", "fastwarc-grpc (wire dialect)",
         "the stack leaves GRPARSE_FASTWARC_TARGET unset because the vendored fastwarc.v1 dialect is not "
         "wire-compatible with the published image (AGENTS.md, the fastwarc caveat); every WARC object fails "

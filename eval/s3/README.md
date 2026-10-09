@@ -111,7 +111,7 @@ workbook's sheets, a CSV's grid).
 | `integrity` | every Document | `docling_integrity_errors` is empty: references resolve, parents list their children, page-plane provenance names a 1-based page, comment/span/change/anchor targets exist |
 | `placement` | every Document | every arena item is reachable from exactly one of `#/body` or `#/furniture` (through children, captions and footnotes), is listed once, and every captions/footnotes/references entry resolves |
 | `custom_field_keys` | every Document | no `custom_fields` key contains `:` except the pinned `cell:?` |
-| `warnings_typed` | every Document | collector warnings ride a typed slot, never a `collector_warnings:<name>` custom field |
+| `warnings_typed` | every Document | collector warnings ride `Document.warnings`, never a `collector_warnings:<name>` custom field |
 | `claims_resolve` | every Document | every `claims[].source` and every `field_sources[].source` names a known collector, and each `field_sources[].field` exists on the message that lists it |
 | `collector_sources` | every Document | every placed text, table, picture and form item carries a `CollectorSource` naming a known collector |
 | `origin_mimetype` | known extensions | `origin.mimetype` agrees with the extension's declared type (aliases: `text/xml` for `.xml`, `application/gzip` for `.warc.gz`; any `text/*` for `.txt`) and carries `mimetype_evidence` |
@@ -169,7 +169,6 @@ red on purpose so every report says whose they are:
 
 | check | owner | what |
 |---|---|---|
-| `warnings_typed` | gRParse, schema follow-on | collector warnings ride `body.meta.custom_fields[collector_warnings:<name>]`; a typed `Document.warnings` extension is a fleet-wide schema sweep |
 | `parse_succeeds` (WARC) | fastwarc-grpc | the stack leaves `GRPARSE_FASTWARC_TARGET` unset until the vendored `fastwarc.v1` dialect and the published image agree |
 | `parse_succeeds` (`corners.xlsx`) | grpc-libreoffice | a sheet with cells at the far corners of the grid runs past the office core's per-document timeout |
 | `table_grids` (`streaming-markup.html`, `html-spec.html`) | grpc-markup | a header cell spanning columns yields a ragged grid (the 15 MB page parses since the collector channels took the server's message limit; 23 of its tables are ragged) |

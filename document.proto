@@ -153,6 +153,20 @@ message Document {
   // Language analyses run over this document's text, each kept exactly as
   // the analyzer answered. Extension beyond the upstream dialect.
   repeated TextAnalysis analyses = 30;
+
+  // What the collectors warned about while reading this document (an
+  // approximation they made, a part they could not read), each warning
+  // under the collector that raised it, verbatim. Warnings are not
+  // failures: the parse stands. Extension beyond the upstream dialect.
+  repeated CollectorWarning warnings = 31;
+}
+
+// CollectorWarning is one warning a collector raised while reading the
+// document.
+message CollectorWarning {
+  // The collector that raised it ("libreoffice", "calamine", "pdf", ...).
+  CollectorSource source = 1;
+  string message = 2;
 }
 
 // TextAnalysis is one analyzer run over a window of the document's text

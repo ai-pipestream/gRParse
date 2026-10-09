@@ -1841,16 +1841,14 @@ void derender_charts_if_configured(const std::shared_ptr<CollectorEndpoints>& co
   }
 }
 
-// Collector warnings are not failures; they stay on the document, keyed by
-// collector, so nothing the collectors reported is dropped.
+// Collector warnings are not failures; they stay on the document, each
+// under the collector that raised it, so nothing the collectors reported is
+// dropped.
 void stamp_collector_warnings(CoordinatorResult* result) {
   for (const auto& [collector, text] : result->warnings) {
-    auto& fields =
-        *result->document.mutable_body()->mutable_meta()->mutable_custom_fields();
-    *fields[std::string("collector_warnings:") + collector_name(collector)]
-         .mutable_list_value()
-         ->add_values()
-         ->mutable_string_value() = text;
+    auto* warning = result->document.add_warnings();
+    warning->mutable_source()->set_collector(collector_name(collector));
+    warning->set_message(text);
   }
 }
 
