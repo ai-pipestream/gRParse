@@ -11,6 +11,7 @@ import html
 import io
 import re
 import zipfile
+import zlib
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Any
@@ -20,6 +21,29 @@ _HTML_STRIP = re.compile(rb"<(script|style)\b.*?</\1>|<!--.*?-->", re.I | re.S)
 _ATTACHMENT = re.compile(rb"^content-disposition:\s*attachment", re.I | re.M)
 _MULTIPART = re.compile(rb"^content-type:\s*multipart/", re.I | re.M)
 _PIC = re.compile(rb"<pic:pic\b")
+_PDF_PAGES_COUNT = re.compile(rb"/Type\s*/Pages\b[^>]*?/Count\s+(\d+)|/Count\s+(\d+)[^>]*?/Type\s*/Pages\b")
+_PDF_OBJSTM = re.compile(rb"/Type\s*/ObjStm\b.*?stream\r?\n", re.S)
+
+
+def _pages_counts(text: bytes) -> list[int]:
+    return [int(a or b) for a, b in _PDF_PAGES_COUNT.findall(text)]
+
+
+def pdf_page_count(data: bytes) -> int:
+    """The page tree's /Count, for sizing a deadline: the largest count a
+    /Pages node states, read in the clear or inside compressed object
+    streams (where writers like Aspose put the tree). 0 when none is found."""
+    counts = _pages_counts(data)
+    for match in _PDF_OBJSTM.finditer(data):
+        start = match.end()
+        end = data.find(b"endstream", start)
+        if end < 0:
+            continue
+        try:
+            counts += _pages_counts(zlib.decompressobj().decompress(data[start:end], 1 << 22))
+        except zlib.error:
+            continue
+    return max(counts, default=0)
 # Word writes a text box's content twice, once in the drawing (mc:Choice) and
 # once as its VML fallback; a picture inside the box appears in both, and the
 # fallback copy is not a second picture.

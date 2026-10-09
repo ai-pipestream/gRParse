@@ -93,6 +93,10 @@ class Config:
     # Client deadline per conversion, seconds. A document that runs past it
     # is that object's failure; the run moves on instead of waiting.
     convert_timeout: float
+    # Extra deadline per PDF page, seconds: a long document gets
+    # max(convert_timeout, pages x this), so a 955-page scan is held to its
+    # length rather than to the deadline of a two-page letter.
+    seconds_per_page: float = 1.5
     # Candidate passwords sent with every conversion (EVAL_S3_PASSWORDS_FILE);
     # kept out of repr so no log line or report can print them.
     document_passwords: tuple[str, ...] = field(default=(), repr=False)
@@ -126,8 +130,14 @@ class Config:
             sniff_per_extension=_int(env, "EVAL_S3_SNIFF_PER_EXTENSION", 1) or 0,
             require=_flag(env, "EVAL_REQUIRE", False),
             convert_timeout=float(_int(env, "EVAL_S3_CONVERT_TIMEOUT", 600) or 600),
+            seconds_per_page=float(env.get("EVAL_S3_SECONDS_PER_PAGE") or 1.5),
             document_passwords=_passwords(env),
         )
+
+    def deadline_for(self, pages: int) -> float:
+        """The client deadline for a document of `pages` pages (0 when the
+        count is unknown): the flat deadline, raised for long documents."""
+        return max(self.convert_timeout, pages * self.seconds_per_page)
 
     def public_endpoint(self) -> str:
         """The endpoint as a report may print it: scheme and host only."""

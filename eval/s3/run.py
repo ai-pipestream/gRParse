@@ -41,7 +41,7 @@ from s3.document import View  # noqa: E402
 from s3.formats import extension_of, family_of, strip_extension  # noqa: E402
 from s3.report import build_report, write_report  # noqa: E402
 from s3.source import ObjectRef, ObjectSource, SourceUnreachable, select_keys  # noqa: E402
-from s3.sourcefacts import source_facts  # noqa: E402
+from s3.sourcefacts import pdf_page_count, source_facts  # noqa: E402
 
 SKIP = 77
 REPO = EVAL_DIR.parent
@@ -163,7 +163,8 @@ def evaluate_bucket(config: Config, source: ObjectSource, client: Any, results: 
         if do_sniff:
             sniffed_per_ext[ext] = sniffed_per_ext.get(ext, 0) + 1
         runs, sniff, dropped = convert_object(client, ref.key, data, ext, repeat=config.repeat, sniff=do_sniff,
-                                              layout=layout, timeout=config.convert_timeout,
+                                              layout=layout,
+                                              timeout=config.deadline_for(pdf_page_count(data) if ext == "pdf" else 0),
                                               passwords=config.document_passwords)
         if dropped:
             notes.append(f"{ref.key}: over the unary response limit with every export; checked without "
