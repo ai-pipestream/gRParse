@@ -145,3 +145,19 @@ def test_password_file_reaches_every_conversion_and_no_report() -> None:
     sent = clients[0].passwords
     assert sent and all(candidates == ("corpus-secret-1", "corpus-secret-2") for candidates in sent)
     assert "corpus-secret" not in markdown and "corpus-secret" not in json.dumps(report)
+
+
+def test_exports_over_the_unary_limit_are_dropped_one_at_a_time() -> None:
+    limit = ("RESOURCE_EXHAUSTED: ConvertSource: the response is 1028049997 bytes, over the 545259520 byte "
+             "unary response limit (GRPARSE_MAX_RESPONSE_BYTES)")
+
+    def answer(formats: tuple) -> object:
+        if "CANONICAL_JSON" in formats:
+            return result(None, status="RPC_ERROR", rpc_error=limit)
+        return result(word_document())
+
+    code, report, markdown, _, clients, _ = _run({"r/big.docx": b"1"}, {"docx": answer})
+    assert code == 0, report["findings"]
+    assert clients[0].formats[0] == ("MARKDOWN", "CANONICAL_JSON")
+    assert all(formats == ("MARKDOWN",) for formats in clients[0].formats[1:])
+    assert any("r/big.docx" in note and "CANONICAL_JSON" in note for note in report["notes"])

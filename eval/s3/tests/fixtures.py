@@ -309,6 +309,7 @@ class FakeClient:
         self.calls.append((filename, tuple(collectors), ebcdic_layout_json))
         self.timeouts = getattr(self, "timeouts", []) + [timeout]
         self.passwords = getattr(self, "passwords", []) + [tuple(passwords)]
+        self.formats = getattr(self, "formats", []) + [tuple(formats)]
         if self.die_after is not None and len(self.calls) > self.die_after:
             raise Unreachable(f"{self.target}: failed to connect")
         ext = extension_of(filename)
@@ -322,7 +323,9 @@ class FakeClient:
             ext = self.last_ext
         self.last_ext = ext
         if ext in self.answers:
-            return copy.deepcopy(self.answers[ext])
+            answer = self.answers[ext]
+            # A callable answer depends on the export formats requested.
+            return answer(tuple(formats)) if callable(answer) else copy.deepcopy(answer)
         return result(None, status="RPC_ERROR", rpc_error="FAILED_PRECONDITION: no collector")
 
 

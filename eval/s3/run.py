@@ -94,24 +94,45 @@ def ran_out_of_time(result: Any, timeout: float) -> bool:
     return result.elapsed_ms >= timeout * 1000.0 * 0.8
 
 
+def over_unary_limit(result: Any) -> bool:
+    """gRParse refused the unary response as too large, which it does before
+    sending anything and names as the unary response limit."""
+    error = result.rpc_error or ""
+    return error.startswith("RESOURCE_EXHAUSTED") and "unary response limit" in error
+
+
 def convert_object(client: Any, key: str, data: bytes, ext: str, *, repeat: int, sniff: bool,
                    layout: bytes | None, timeout: float,
-                   passwords: tuple[str, ...] = ()) -> tuple[list[Any], Any | None]:
+                   passwords: tuple[str, ...] = ()) -> tuple[list[Any], Any | None, tuple[str, ...]]:
+    """The object's runs, its sniffed run, and the export formats dropped to
+    fit the unary response limit. A document whose Document fits but whose
+    exports do not (a sheet of a million cells renders a canonical JSON of
+    about a gigabyte, its grid spelled out cell by cell) is refused whole;
+    gRParse's own advice is to request fewer formats, so the battery does
+    that, one format at a time, and the report names what it dropped."""
     name = key.rsplit("/", 1)[-1]
-    kwargs: dict[str, Any] = {"formats": FORMATS, "timeout": timeout}
+    formats = FORMATS
+    dropped: tuple[str, ...] = ()
+    kwargs: dict[str, Any] = {"formats": formats, "timeout": timeout}
     if passwords:
         kwargs["passwords"] = passwords
     if layout is not None:
         kwargs.update(collectors=("EBCDIC",), ebcdic_layout_json=layout)
-    runs: list[Any] = []
-    for _ in range(repeat):
-        runs.append(convert_once(client, data, name, kwargs))
-        if ran_out_of_time(runs[-1], timeout):
+    first = convert_once(client, data, name, kwargs)
+    for fewer in ("CANONICAL_JSON", "MARKDOWN"):
+        if not over_unary_limit(first) or fewer not in formats:
             break
+        formats = tuple(f for f in formats if f != fewer)
+        dropped += (fewer,)
+        kwargs["formats"] = formats
+        first = convert_once(client, data, name, kwargs)
+    runs: list[Any] = [first]
+    while len(runs) < repeat and not ran_out_of_time(runs[-1], timeout):
+        runs.append(convert_once(client, data, name, kwargs))
     if ran_out_of_time(runs[0], timeout):
-        return runs, None
+        return runs, None, dropped
     sniffed = convert_once(client, data, strip_extension(name), kwargs) if sniff and ext else None
-    return runs, sniffed
+    return runs, sniffed, dropped
 
 
 def evaluate_bucket(config: Config, source: ObjectSource, client: Any, results: list[ObjectResult],
@@ -141,8 +162,12 @@ def evaluate_bucket(config: Config, source: ObjectSource, client: Any, results: 
         do_sniff = sniffed_per_ext.get(ext, 0) < config.sniff_per_extension and family != "ebcdic"
         if do_sniff:
             sniffed_per_ext[ext] = sniffed_per_ext.get(ext, 0) + 1
-        runs, sniff = convert_object(client, ref.key, data, ext, repeat=config.repeat, sniff=do_sniff, layout=layout,
-                                     timeout=config.convert_timeout, passwords=config.document_passwords)
+        runs, sniff, dropped = convert_object(client, ref.key, data, ext, repeat=config.repeat, sniff=do_sniff,
+                                              layout=layout, timeout=config.convert_timeout,
+                                              passwords=config.document_passwords)
+        if dropped:
+            notes.append(f"{ref.key}: over the unary response limit with every export; checked without "
+                         f"{', '.join(dropped)}")
         first = runs[0]
         view = View(first.document) if first.document and not first.rpc_error else None
         ctx = ObjectContext(key=ref.key, ext=ext, family=family, size=ref.size,
