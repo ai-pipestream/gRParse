@@ -502,41 +502,168 @@ def table_grids(ctx: ObjectContext) -> list[Failure]:
                   count=len(problems))]
 
 
-def _numeric(cell: dict[str, Any]) -> bool:
-    value = cell.get("value") or {}
-    if "number" in value:
-        return True
-    text = (cell.get("text") or "").strip().replace(",", "")
+# The header band of a sheet table, judged the way the fold judges it
+# (src/office_fold/sheet_header_band.cpp): the data starts at the first
+# quantity-bearing row at least half as wide as the widest one; the nearest
+# contiguous run of wide label rows above it is the band, trimmed to the lines
+# that get denser going down (a group line always keeps its leaf line); the
+# band's densest line must name more columns than the first data row fills
+# with labels. A sheet without quantities has a header only at a full-width
+# first row over two consecutive label rows. The check demands column_header
+# on exactly that band, so a plain sheet with its header on row 0 is held to
+# it as before, and a title on row 0 is never mistaken for one.
+
+_QUANTITY_KINDS = ("number", "boolean", "datetime")
+_VALUE_KINDS = _QUANTITY_KINDS + ("formula", "error")
+_MAX_BAND_ROWS = 4
+
+
+def _numeric_display(text: str) -> bool:
+    text = text.strip().replace(",", "")
     try:
         float(text)
-        return bool(text)
     except ValueError:
         return False
+    return bool(text)
+
+
+def _quantity(cell: dict[str, Any]) -> bool:
+    """A typed number, logical or date, or a formula displaying a number: what the fold calls a quantity."""
+    value = cell.get("value") or {}
+    if any(kind in value for kind in _QUANTITY_KINDS):
+        return True
+    return "formula" in value and _numeric_display(cell.get("text") or "")
+
+
+def _label(cell: dict[str, Any]) -> bool:
+    value = cell.get("value") or {}
+    return not any(kind in value for kind in _VALUE_KINDS) and bool((cell.get("text") or "").strip())
+
+
+def _filled(cell: dict[str, Any]) -> bool:
+    value = cell.get("value") or {}
+    return any(kind in value for kind in _VALUE_KINDS) or bool((cell.get("text") or "").strip())
+
+
+@dataclass
+class _RowShape:
+    index: int
+    cells: list[dict[str, Any]]
+    labels: int = 0
+    quantities: int = 0
+    coverage: int = 0
+    group_line: bool = False
+
+    def __post_init__(self) -> None:
+        self.cells = [c for c in self.cells if _filled(c)]
+        for cell in self.cells:
+            span = max(1, int(cell.get("col_span", 1) or 1))
+            self.coverage += span
+            if _quantity(cell):
+                self.quantities += 1
+            if _label(cell):
+                self.labels += 1
+                self.group_line = self.group_line or span >= 2
+
+    def wide_labels(self, width: int) -> bool:
+        return self.labels >= 2 and self.quantities == 0 and self.coverage * 2 >= width
+
+
+def _row_shapes(data: dict[str, Any]) -> list[_RowShape]:
+    by_row: dict[int, list[dict[str, Any]]] = {}
+    for cell in data.get("table_cells", []) or []:
+        by_row.setdefault(int(cell.get("start_row_offset_idx", 0)), []).append(cell)
+    rows = [row for row in (_RowShape(index, by_row[index]) for index in sorted(by_row)) if row.cells]
+    # A lone merged label spanning the width at the top is a section row, not a header.
+    if rows and len(rows[0].cells) == 1:
+        cell = rows[0].cells[0]
+        span = int(cell.get("col_span", 1) or 1)
+        if _label(cell) and span >= 2 and span >= int(data.get("num_cols", 0)):
+            rows = rows[1:]
+    return rows
+
+
+def _band_prefix(run: list[_RowShape]) -> list[_RowShape]:
+    band = run[:1]
+    for above, row in zip(run, run[1:]):
+        if len(band) >= _MAX_BAND_ROWS or (row.labels <= above.labels and not above.group_line):
+            break
+        band.append(row)
+    return band
+
+
+def _text_band(rows: list[_RowShape]) -> list[int]:
+    width = max(row.coverage for row in rows)
+    first = rows[0]
+    if not first.wide_labels(width) or first.coverage < width:
+        return []
+    run = [first]
+    if len(rows) > 1 and rows[1].index == first.index + 1 and rows[1].wide_labels(width):
+        run.append(rows[1])
+    band = _band_prefix(run)
+    records = rows[len(band):len(band) + 2]
+    if len(records) < 2 or any(row.labels < 2 for row in records):
+        return []
+    if [row.index for row in records] != [band[-1].index + 1, band[-1].index + 2]:
+        return []
+    return [row.index for row in band]
+
+
+def _header_band(data: dict[str, Any]) -> list[int]:
+    """The sheet rows the fold should mark column_header; empty when none."""
+    rows = _row_shapes(data)
+    if len(rows) < 2:
+        return []
+    quantity_rows = [row for row in rows if row.quantities > 0]
+    if not quantity_rows:
+        return _text_band(rows)
+    width = max(row.coverage for row in quantity_rows)
+    data_index = next(i for i, row in enumerate(rows) if row.quantities > 0 and row.coverage * 2 >= width)
+    j = data_index - 1
+    while j >= 0 and not rows[j].wide_labels(width):
+        j -= 1
+    run: list[_RowShape] = []
+    while j >= 0 and rows[j].wide_labels(width) and (not run or rows[j].index + 1 == run[0].index):
+        run.insert(0, rows[j])
+        j -= 1
+    if not run:
+        return []
+    band = _band_prefix(run)
+    if max(row.labels for row in band) <= rows[data_index].labels:
+        return []
+    return [row.index for row in band]
+
+
+def _rows_text(rows: list[int]) -> str:
+    return ("row " if len(rows) == 1 else "rows ") + ", ".join(str(row) for row in rows)
 
 
 def _header_problem(table: dict[str, Any]) -> str | None:
-    """A first row of labels over numeric rows must be marked column_header."""
+    """The label band over the first data region carries column_header, and nothing else does."""
     data = table.get("data", {}) or {}
     cells = list(data.get("table_cells", []) or [])
-    rows = int(data.get("num_rows", 0))
-    if rows < 2 or not cells:
+    if int(data.get("num_rows", 0)) < 2 or not cells:
         return None
-    first = [c for c in cells if int(c.get("start_row_offset_idx", 0)) == 0]
-    rest = [c for c in cells if int(c.get("start_row_offset_idx", 0)) > 0]
-    if len(first) < 2 or not rest:
+    band = _header_band(data)
+    marked = sorted({int(c.get("start_row_offset_idx", 0)) for c in cells if c.get("column_header")})
+    if not band:
+        if marked:
+            return f"{_rows_text(marked[:4])} marked column_header but no label band sits over the data"
         return None
-    if any(_numeric(c) or not (c.get("text") or "").strip() for c in first):
-        return None
-    if not any(_numeric(c) for c in rest):
-        return None
-    if all(c.get("column_header") for c in first):
-        return None
-    return f"first row {[snippet(c.get('text', '')) for c in first][:4]} labels numeric rows but is not marked column_header"
+    missing = [c for c in cells if int(c.get("start_row_offset_idx", 0)) in band and _filled(c)
+               and not c.get("column_header")]
+    if missing:
+        texts = [snippet(c.get("text", "")) for c in missing][:4]
+        return f"label {_rows_text(band)} over the data not marked column_header ({texts})"
+    extra = [row for row in marked if row not in band]
+    if extra:
+        return f"{_rows_text(extra[:4])} marked column_header outside the label band ({_rows_text(band)})"
+    return None
 
 
 @check("sheet_tables", "spreadsheets: every SHEET group carries exactly one table, every non-empty source sheet "
-                       "has a group, a CSV's table matches its row and column count, and a label row over "
-                       "numeric rows is marked column_header",
+                       "has a group, a CSV's table matches its row and column count, and the label band over "
+                       "the first data region (and nothing else) is marked column_header",
        applies=lambda ctx: has_view(ctx) and ctx.family == "sheet")
 def sheet_tables(ctx: ObjectContext) -> list[Failure]:
     view = ctx.view
@@ -581,7 +708,7 @@ def sheet_tables(ctx: ObjectContext) -> list[Failure]:
             if problem:
                 header_problems.append(f"{ref}: {problem}")
     if header_problems:
-        failures.append(_fail("sheet_tables", "label row over numeric rows not marked column_header",
+        failures.append(_fail("sheet_tables", "label band over the data not marked column_header",
                               tables=_cap(header_problems)))
     return failures
 

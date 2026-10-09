@@ -696,6 +696,7 @@ add_library(grparse_core STATIC
   src/office_fold/shape_fold.cpp
   src/office_fold/shape_meta.cpp
   src/office_fold/sheet_fold.cpp
+  src/office_fold/sheet_header_band.cpp
   src/office_fold/value_convert.cpp
   src/office_fold/writer_fold.cpp
   src/document_merge.cpp
@@ -1129,7 +1130,8 @@ endif()
 # finding of eval/s3 (the bucket-driven shape battery) from a hand-built
 # collector stream or document and pins the fix: value fields attributed
 # whole by the merge, line-addressed provenance and page destinations in the
-# integrity walk, the sheet fold's empty-sheet and formula-header shapes,
+# integrity walk, the sheet fold's empty-sheet, formula-header and
+# header-band shapes,
 # routing by bytes for names that say nothing, the mimetype ladder's
 # generic-text rule, a failed leg's status text, and the collector channels'
 # message limits. They own no sources.
@@ -1138,6 +1140,7 @@ if(BUILD_TESTING)
     document-merge-value-fields-test
     docling-integrity-destinations-test
     docling-map-sheet-shape-test
+    sheet-header-band-test
     docling-map-trailing-pictures-test
     docling-map-office-layout-test
     collector-route-by-bytes-test

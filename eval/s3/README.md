@@ -122,7 +122,7 @@ workbook's sheets, a CSV's grid).
 | `text_present` | word, deck, html, markdown, xml, email, epub, txt, pdf with a text layer | at least one non-empty text item in the body (an html or markdown source with no visible text is exempt) |
 | `empty_text_items` | every Document | no whitespace-only text item is placed in the body |
 | `table_grids` | Documents with tables | cells fit `num_rows x num_cols`, spans equal their offsets, no two cells overlap, a materialised `grid` is `num_rows` rows of `num_cols` cells |
-| `sheet_tables` | sheet family | every `SHEET` group carries exactly one table, every non-empty source sheet has a group, a CSV's table matches the source grid, a label row over numeric rows is marked `column_header` |
+| `sheet_tables` | sheet family | every `SHEET` group carries exactly one table, every non-empty source sheet has a group, a CSV's table matches the source grid, and the band of label rows over the first data region (and nothing else) is marked `column_header`: the rows directly over the first quantity-bearing row after any title or preamble, judged with the fold's own rule, so a title on row 0 is never taken for the header |
 | `slides` | deck family | at least one `SLIDE` group, one per source slide, in page order, the deck title exactly once and on the first slide |
 | `docx_pictures` | word family | every placed picture has a page, follows an item on the same or an earlier page, pictures come in page order, a docx yields at least as many pictures as inline drawings |
 | `headings` | html, markdown | at most one title; an html `<title>` becomes the title item once with the same text; the section-header level sequence equals the source's heading sequence |

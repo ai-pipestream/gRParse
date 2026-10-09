@@ -48,10 +48,10 @@ class SheetFold {
   // used_end_column are zero for an empty sheet and for a sheet whose only
   // cell is A1 alike, and only the cells tell the two apart).
   void size_empty_tables();
-  // Marks the header row of each sheet table once every row has arrived:
-  // a database range that declares one, else the first row with two or
-  // more text cells directly above a row carrying typed quantities. A lone
-  // merged text cell spanning the width above the header is a section row.
+  // Marks the header rows of each sheet table once every row has arrived:
+  // a database range that declares one, else the band of label rows over
+  // the first data region (sheet_header_band.h). A lone merged text cell
+  // spanning the width at the top is a section row.
   void mark_header_rows();
   // Names the sheet of every range that was declared before its sheet
   // header arrived.
@@ -66,8 +66,8 @@ class SheetFold {
   // True when the sheet declared one at all, which rules the inference out.
   bool mark_declared_headers(int sheet_index, const RowCells& rows,
                              int* marked);
-  // The first row of labels directly above a row of quantities, when no
-  // range declared a header row.
+  // The band of label rows over the first data region, when no range
+  // declared a header row.
   void mark_inferred_header(docv1::TableData* data, const RowCells& rows,
                             int* marked);
 

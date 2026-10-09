@@ -52,9 +52,9 @@ namespace grparse {
 // Approximated, and named once per item in warnings(): series and category
 // labels the chart never declared are invented (positionally, or from the
 // value axis title for a lone series) because the bound table needs
-// addressable names; a sheet header row decided by the
-// labels-above-quantities heuristic without a declaring database range is
-// called a guess; a chart that carried no data binds an empty table; an
+// addressable names; a sheet header band decided by the labels-over-data
+// rule (office_fold/sheet_header_band.h) without a declaring database range
+// is called a guess; a chart that carried no data binds an empty table; an
 // unknown layout region label falls back to TEXT with the raw spelling
 // kept on label_raw (that one is the CV assembly path, which reports
 // through its own warnings channel).
