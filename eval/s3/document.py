@@ -125,14 +125,15 @@ class View:
         """Every page the item has provenance on, in order."""
         return sorted({int(entry.get("page_no", 0)) for entry in self.prov(node)} - {0})
 
-    def box_on(self, node: Node, page: int) -> Box | None:
-        """The union of the item's boxes on one page, top-down; None when it
-        has no box there."""
+    def boxes_on(self, node: Node, page: int) -> list[Box]:
+        """Each of the item's boxes on one page, top-down, in provenance
+        order; zero-area boxes are left out. An item merged across a column
+        break has one box per column."""
         if page <= 0:
-            return None
+            return []
         size = self.page_size(page)
         height = size[1] if size else None
-        left = top = right = bottom = None
+        boxes = []
         for entry in self.prov(node):
             if int(entry.get("page_no", 0)) != page or "bbox" not in entry:
                 continue
@@ -143,13 +144,17 @@ class View:
             box_left, box_right = float(bbox.get("l", 0.0)), float(bbox.get("r", 0.0))
             if box_right - box_left <= 0 or vertical[1] - vertical[0] <= 0:
                 continue
-            left = box_left if left is None else min(left, box_left)
-            right = box_right if right is None else max(right, box_right)
-            top = vertical[0] if top is None else min(top, vertical[0])
-            bottom = vertical[1] if bottom is None else max(bottom, vertical[1])
-        if left is None:
+            boxes.append(Box(page, box_left, vertical[0], box_right, vertical[1]))
+        return boxes
+
+    def box_on(self, node: Node, page: int) -> Box | None:
+        """The union of the item's boxes on one page, top-down; None when it
+        has no box there."""
+        boxes = self.boxes_on(node, page)
+        if not boxes:
             return None
-        return Box(page, left, top, right, bottom)
+        return Box(page, min(b.left for b in boxes), min(b.top for b in boxes),
+                   max(b.right for b in boxes), max(b.bottom for b in boxes))
 
     # ---- collections ----------------------------------------------------
 

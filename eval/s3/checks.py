@@ -963,6 +963,32 @@ def ocr_text(ctx: ObjectContext) -> list[Failure]:
 
 # ---- reading order --------------------------------------------------------------
 
+def _column_parts(boxes: list[Any]) -> list[Any]:
+    """An item's boxes on one page, grouped into the columns they sit in,
+    each part the union of its group. Boxes join when they overlap on
+    either axis: the lines of a paragraph share its width, the word pieces
+    of a line share its row. A paragraph is one part; one merged across a
+    column break (it ends at the foot of one column and goes on at the
+    head of the next) is one part per column, apart on both axes."""
+    parts: list[Any] = []
+    pending = list(boxes)
+    while pending:
+        # A grown part may now reach a part placed earlier, so it goes back
+        # through the same test until nothing joins it.
+        box = pending.pop()
+        joined = [p for p in parts if min(p.right, box.right) > max(p.left, box.left)
+                  or min(p.bottom, box.bottom) > max(p.top, box.top)]
+        if not joined:
+            parts.append(box)
+            continue
+        for p in joined:
+            parts.remove(p)
+        group = joined + [box]
+        pending.append(type(box)(box.page, min(b.left for b in group), min(b.top for b in group),
+                                 max(b.right for b in group), max(b.bottom for b in group)))
+    return parts
+
+
 def _single_column(boxes: list[Any]) -> bool:
     for i, a in enumerate(boxes):
         for b in boxes[i + 1:]:
@@ -980,22 +1006,27 @@ def _single_column(boxes: list[Any]) -> bool:
 def reading_order(ctx: ObjectContext) -> list[Failure]:
     view = ctx.view
     per_page: dict[int, list[tuple[Node, Any]]] = {}
-    # The parts of items that continue from an earlier page: not ordered
-    # here, but they fill a column and so say whether the page has two.
-    continued: dict[int, list[Any]] = {}
+    # The column parts on each page (_column_parts): an item continued from
+    # an earlier page or merged across a column break is not ordered by
+    # those parts, but they fill a column and so say whether the page has
+    # two. A paragraph's own lines stay one part.
+    parts: dict[int, list[Any]] = {}
     for node in view.body.nodes:
         if node.kind == "group" or view.label(node) in ("caption", "footnote") or view.content_layer(node) == "notes":
             continue
-        box = view.box(node)
-        if box is None:
+        first = view.first_page(node)
+        own = view.boxes_on(node, first)
+        if not own:
             continue
-        per_page.setdefault(box.page, []).append((node, box))
+        # An item is read where it starts: its first box on its first page,
+        # not the union with a part further down or across the page.
+        per_page.setdefault(first, []).append((node, own[0]))
         for page in view.pages_of(node):
-            if page > box.page and (part := view.box_on(node, page)) is not None:
-                continued.setdefault(page, []).append(part)
+            if page >= first:
+                parts.setdefault(page, []).extend(_column_parts(view.boxes_on(node, page)))
     violations = []
     for page, placed in sorted(per_page.items()):
-        boxes = [box for _, box in placed] + continued.get(page, [])
+        boxes = parts.get(page, [])
         if len(placed) < 3 or not _single_column(boxes):
             continue
         for (a_node, a), (b_node, b) in zip(placed, placed[1:]):
