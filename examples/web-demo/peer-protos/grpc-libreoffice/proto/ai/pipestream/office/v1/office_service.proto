@@ -1379,15 +1379,17 @@ message SheetCell {
   int32 merged_columns = 8;
   // Row span of a merged region anchored at this cell; 1 when not merged.
   int32 merged_rows = 9;
-  // True when the cell's number format is a date, time, or datetime format,
-  // so number is a date serial rather than a plain quantity.
+  // True when the cell holds a number (a value, or a formula whose result
+  // is a number) under a date, time, or datetime format, so number is a
+  // date serial rather than a plain quantity. Text under such a format,
+  // like a "Date" header over a date column, is never marked.
   bool is_datetime = 10;
   // The cell's wall-clock date and time, resolved from its serial against
   // the document's own null date; set only when is_datetime. A spreadsheet
   // date states no timezone, so neither does this.
   CellDateTime datetime = 11;
-  // True when the cell's number format is a logical format, so number is 0
-  // or 1 standing for false or true.
+  // True when the cell holds a number under a logical format, so number is
+  // 0 or 1 standing for false or true. Text is never marked.
   bool is_boolean = 12;
   // The office core's error code for a formula cell that evaluates to an
   // error; 0 when the cell holds a value. display carries the rendered
