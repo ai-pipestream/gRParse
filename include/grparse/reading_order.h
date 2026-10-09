@@ -30,6 +30,15 @@ struct CutPolicy {
   // at least this share of the block's height; a label beside one row of a
   // taller block does not make a column. Zero accepts any gap.
   double gutter_side_share = 0.0;
+  // A vertical gap is a gutter only when the two sides run beside each
+  // other: the rows the sides share (where a box on one side is level with
+  // a box on the other) must reach this share of the row length of the
+  // side with less. Columns read in parallel even with their baselines
+  // half a line apart; a label column whose values sit in its own
+  // whitespace (the "Signed:" / "Dated:" of a signature block, a case
+  // number beside a caption's party list) does not, and such a block reads
+  // row by row. Zero accepts any gap.
+  double gutter_parallel_share = 0.25;
 };
 
 // Returns the indices of `boxes` in reading order by recursive XY-cut: a set
@@ -47,7 +56,10 @@ std::vector<size_t> xy_cut_order(const std::vector<OrderBox>& boxes, const CutPo
 // Ordering is the XY-cut above over layout units: each text-carrying layout
 // region is one unit holding the lines whose box centers it contains, and
 // every line outside any region is its own unit. Lines inside one unit read
-// top-to-bottom, left-to-right.
+// top-to-bottom, left-to-right. A unit's box for the cut is the hull of its
+// member lines, not the detector's box: the region decides which lines
+// belong together, the text decides where the unit sits, so a detection
+// drawn a line too tall never reads its neighbour's row out of order.
 //
 // Deterministic: the result depends only on line and region geometry.  With
 // no regions the lines themselves still XY-cut, so a clean two-column page

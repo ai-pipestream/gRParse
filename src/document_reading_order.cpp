@@ -1,11 +1,15 @@
 #include "grparse/document_reading_order.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <limits>
 #include <map>
 #include <optional>
 #include <set>
+#include <string>
+#include <string_view>
+#include <system_error>
 #include <utility>
 
 #include "grparse/document_geometry.h"
@@ -32,8 +36,12 @@ constexpr CutPolicy kItemCutPolicy{.band_over_gutter = 2.0, .gutter_side_share =
 
 // A page is re-cut only when at least this share of its body items have a
 // usable box; a collector that drops boxes on most paragraphs leaves no
-// geometry to order by, and its own order stands.
-constexpr double kMinimumPlacedShare = 0.8;
+// geometry to order by, and its own order stands. Half is enough: an item
+// without a box rides with the placed item before it, and a text layer
+// that boxes its paragraphs and floats but not a chart's axis labels or a
+// table's row texts (a quarter of a page's items, often) still says where
+// the paragraphs and floats sit.
+constexpr double kMinimumPlacedShare = 0.5;
 
 // One run of body positions that moves as a unit: a placed item and the
 // unplaced items that follow it.
@@ -202,7 +210,106 @@ bool before(const Mover& a, const Mover& b) {
   return a.position < b.position;
 }
 
+// The arena index a reference such as "#/groups/3" names, for `prefix`.
+std::optional<int> arena_index(std::string_view ref, std::string_view prefix) {
+  if (!ref.starts_with(prefix)) return std::nullopt;
+  const std::string_view digits = ref.substr(prefix.size());
+  int index = 0;
+  const auto [end, error] = std::from_chars(digits.data(), digits.data() + digits.size(), index);
+  if (error != std::errc() || end != digits.data() + digits.size() || index < 0) return std::nullopt;
+  return index;
+}
+
+// Where a float splits a group it sits inside: the position of the first
+// placed child that starts at or below the float's top edge, when a placed
+// child starts above it, every child is a text and every placed one is on
+// the float's page, and the float overlaps the group's hull horizontally
+// (a figure beside a list in the other column leaves the list whole).
+// Nothing otherwise. A child without a box rides with the placed child
+// before it, as in the cut itself: it stays in the head, and one before
+// any placed child stays in the head too.
+std::optional<int> split_position(const docv1::Document& document, const docv1::GroupItem& group,
+                                  const ItemPlacement& floating,
+                                  const std::map<int, double>& heights) {
+  std::optional<int> split;
+  bool above = false;
+  double left = std::numeric_limits<double>::infinity();
+  double right = -std::numeric_limits<double>::infinity();
+  for (int index = 0; index < group.children_size(); ++index) {
+    const std::string& ref = group.children(index).ref();
+    if (!arena_index(ref, "#/texts/").has_value()) return std::nullopt;
+    const auto placement = item_placement(document, ref, heights);
+    if (!placement.has_value()) continue;
+    if (placement->page != floating.page) return std::nullopt;
+    left = std::min(left, placement->box.left);
+    right = std::max(right, placement->box.right);
+    if (split.has_value()) continue;
+    if (placement->box.top >= floating.box.top) {
+      split = index;
+    } else {
+      above = true;
+    }
+  }
+  if (!split.has_value() || !above) return std::nullopt;
+  if (std::min(right, floating.box.right) - std::max(left, floating.box.left) <= 0) return std::nullopt;
+  return split;
+}
+
+// Moves the group's children from `split` on into a new group with the same
+// label, name, layer and parent, placed in the body right after the group.
+void split_group(docv1::Document* document, int body_position, int group_index, int split) {
+  const std::string new_ref = "#/groups/" + std::to_string(document->groups_size());
+  docv1::GroupItem* tail = document->add_groups();
+  docv1::GroupItem* head = document->mutable_groups(group_index);
+  *tail = *head;
+  tail->set_self_ref(new_ref);
+  tail->clear_children();
+  for (int index = split; index < head->children_size(); ++index) {
+    const std::string& ref = head->children(index).ref();
+    *tail->add_children() = head->children(index);
+    if (const auto text = arena_index(ref, "#/texts/");
+        text.has_value() && *text < document->texts_size()) {
+      if (auto* base = mutable_text_base_of(document->mutable_texts(*text)); base != nullptr) {
+        base->mutable_parent()->set_ref(new_ref);
+      }
+    }
+  }
+  head->mutable_children()->DeleteSubrange(split, head->children_size() - split);
+  auto* body = document->mutable_body()->mutable_children();
+  body->Add()->set_ref(new_ref);
+  for (int index = body->size() - 1; index > body_position + 1; --index) body->SwapElements(index, index - 1);
+}
+
+// One split, when a table or picture among the body's children sits inside
+// a list group on its page: the group's first such pair. False when none.
+bool split_one_group_around_a_float(docv1::Document* document, const std::map<int, double>& heights) {
+  const auto& children = document->body().children();
+  for (int position = 0; position < children.size(); ++position) {
+    const std::string& ref = children[position].ref();
+    if (!is_float_label(item_label(*document, ref))) continue;
+    const auto floating = item_placement(*document, ref, heights);
+    if (!floating.has_value()) continue;
+    for (int candidate = 0; candidate < children.size(); ++candidate) {
+      const auto group = arena_index(children[candidate].ref(), "#/groups/");
+      if (!group.has_value() || *group >= document->groups_size()) continue;
+      const auto split = split_position(*document, document->groups(*group), *floating, heights);
+      if (!split.has_value()) continue;
+      split_group(document, candidate, *group, *split);
+      return true;
+    }
+  }
+  return false;
+}
+
 }  // namespace
+
+int split_groups_around_floats(docv1::Document* document) {
+  if (document == nullptr) return 0;
+  const std::map<int, double> heights = document_page_heights(*document);
+  int splits = 0;
+  while (split_one_group_around_a_float(document, heights)) ++splits;
+  return splits;
+}
 
 std::vector<int> body_reading_order(const docv1::Document& document) {
   const std::map<int, double> heights = document_page_heights(document);
@@ -229,6 +336,7 @@ BodyOrderReport order_body_by_geometry(docv1::Document* document, const BodyOrde
   if (document == nullptr || !produced_only_by(*document, options.geometry_collectors)) {
     return report;
   }
+  report.groups_split = split_groups_around_floats(document);
   const std::vector<int> order = body_reading_order(*document);
   const auto& children = document->body().children();
   if (static_cast<int>(order.size()) != children.size()) return report;

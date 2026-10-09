@@ -753,6 +753,9 @@ add_library(grparse_core STATIC
   src/office_cv_enrichment.cpp
   src/figure_classifier.cpp
   src/document_assembly.cpp
+  src/assembly_blocks.cpp
+  src/assembly_headings.cpp
+  src/assembly_table_data.cpp
   src/confidence.cpp
   src/in_memory_document.cpp
   src/consensus_page_source.cpp
@@ -867,6 +870,7 @@ if(BUILD_TESTING)
     prometheus-metrics-test
     raster-source-test
     reading-order-test
+    assembly-blocks-test
     region-geometry-test
     resource-pool-test
     streaming-service-test

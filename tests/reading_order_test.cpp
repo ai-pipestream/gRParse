@@ -143,6 +143,76 @@ void verify_trusted_units_order_by_first_emission() {
           "trusted units order by their first emitted line");
 }
 
+// A signature block: "Signed:" and "Dated:" in a label column, the signer's
+// name beside the gap between them. The whitespace left of the name is
+// wider than any line gap, but the sides never run beside each other, so
+// the block reads row by row rather than labels first.
+void verify_label_column_beside_a_value_block_reads_by_row() {
+  grparse::OcrPage page{1000, 1400, {}};
+  page.lines = {
+      line_at("Signed:", 60, 470, 60, 10),
+      line_at("Philip S Hulland BSc (Hons) MRICS", 140, 484, 300, 10),
+      line_at("For and on the behalf of Bagshaws LLP", 140, 496, 300, 10),
+      line_at("Dated:", 60, 536, 60, 10),
+  };
+  const std::vector<std::string> expected = {"Signed:", "Philip S Hulland BSc (Hons) MRICS",
+                                             "For and on the behalf of Bagshaws LLP", "Dated:"};
+  require(ordered_texts(page) == expected, "a signature block reads signed, name, dated");
+}
+
+// A court caption: the party list on the left, the case number alone on the
+// right in the gap between two parties. It reads where it sits.
+void verify_case_number_beside_a_caption_reads_in_place() {
+  grparse::OcrPage page{1000, 1400, {}};
+  page.lines = {
+      line_at("In re: Raymond B. Yates,", 60, 100, 250, 10),
+      line_at("Debtor.", 150, 115, 100, 10),
+      line_at("No. 00-6023", 500, 132, 100, 10),
+      line_at("William T. Hendon,", 60, 150, 250, 10),
+      line_at("Trustee,", 60, 165, 100, 10),
+      line_at("Plaintiff-Appellee,", 150, 180, 200, 10),
+  };
+  const std::vector<std::string> expected = {"In re: Raymond B. Yates,", "Debtor.", "No. 00-6023",
+                                             "William T. Hendon,", "Trustee,",
+                                             "Plaintiff-Appellee,"};
+  require(ordered_texts(page) == expected, "the case number reads between the parties");
+}
+
+// Two columns stay two columns even when the right one is short (the last
+// paragraph of a two-up scan) or its baselines sit half a line off the
+// left one's.
+void verify_short_or_offset_right_column_still_reads_after_the_left() {
+  grparse::OcrPage page{1000, 1400, {}};
+  std::vector<std::string> expected;
+  for (int row = 0; row < 12; ++row) {
+    page.lines.push_back(line_at("L" + std::to_string(row), 50, 100 + 30 * row, 400, 20));
+    expected.push_back("L" + std::to_string(row));
+  }
+  for (int row = 0; row < 3; ++row) {
+    page.lines.push_back(line_at("R" + std::to_string(row), 550, 115 + 30 * row, 400, 20));
+    expected.push_back("R" + std::to_string(row));
+  }
+  require(ordered_texts(page) == expected, "a short, offset right column still follows the left");
+}
+
+// Units sit where their lines are: a detector box drawn taller than its
+// paragraph must not read that paragraph before the line it overhangs.
+void verify_units_order_by_their_lines_not_their_detector_boxes() {
+  grparse::OcrPage page{1000, 1400, {}};
+  page.lines = {
+      line_at("Users: total 3823", 60, 196, 800, 20),
+      line_at("Non-users: total 829", 60, 172, 800, 20),
+  };
+  // The first region's box starts above the second's and contains both
+  // line centers; the second, more confident, claims the upper line.
+  page.regions = {
+      {"text", 0.90F, 50, 150, 900, 220},
+      {"text", 0.95F, 50, 160, 900, 195},
+  };
+  const std::vector<std::string> expected = {"Non-users: total 829", "Users: total 3823"};
+  require(ordered_texts(page) == expected, "the upper line reads first whatever the boxes say");
+}
+
 // Degenerate inputs must not crash or drop lines.
 void verify_degenerate_inputs() {
   grparse::OcrPage empty{100, 100, {}};
@@ -246,6 +316,10 @@ int main() {
       verify_determinism,
       verify_trusted_page_keeps_emission_order,
       verify_trusted_units_order_by_first_emission,
+      verify_label_column_beside_a_value_block_reads_by_row,
+      verify_case_number_beside_a_caption_reads_in_place,
+      verify_short_or_offset_right_column_still_reads_after_the_left,
+      verify_units_order_by_their_lines_not_their_detector_boxes,
       verify_degenerate_inputs,
   });
 }

@@ -15,8 +15,9 @@
 #include <utility>
 
 #include "render/renderer_base.h"
+#include "grparse/assembly_blocks.h"
+#include "grparse/assembly_table_data.h"
 #include "grparse/base64.h"
-#include "grparse/heading_hierarchy.h"
 #include "grparse/reading_order.h"
 #include "grparse/region_geometry.h"
 #include "grparse/table_structure.h"
@@ -30,14 +31,6 @@ namespace {
 // Attribution when a detector reached assembly without naming itself (test
 // doubles and older callers).
 const std::string kUnnamedLayoutModel = "layout";
-
-void set_bounding_box(const AxisAlignedBox& box, pipestream::document::v1::BoundingBox* output) {
-  output->set_l(box.left);
-  output->set_t(box.top);
-  output->set_r(box.right);
-  output->set_b(box.bottom);
-  output->set_coord_origin(pipestream::document::v1::COORD_ORIGIN_TOPLEFT);
-}
 
 // Every emitted item names the collector and the engine that produced it;
 // additive merges with other collectors' output rely on this attribution to
@@ -111,101 +104,12 @@ pipestream::document::v1::DocItemLabel label_for_region(const std::string& label
   return docv1::DOC_ITEM_LABEL_TEXT;
 }
 
-// Running headers and footers are page furniture, not body prose: they carry
-// the furniture content layer and hang off the furniture group instead of
-// #/body, so renderers that walk the body never fold a page number into the
-// running text.
-bool is_furniture_region(const LayoutRegion* region) {
-  return region != nullptr && (region->label == "page_header" || region->label == "page_footer");
-}
-
 void set_region_bounding_box(const LayoutRegion& region, pipestream::document::v1::BoundingBox* output) {
   output->set_l(region.left);
   output->set_t(region.top);
   output->set_r(region.right);
   output->set_b(region.bottom);
   output->set_coord_origin(pipestream::document::v1::COORD_ORIGIN_TOPLEFT);
-}
-
-// One body block: a run of consecutive reading-order lines bound to the same
-// layout region, or a single unbound line. The block is the unit of item
-// emission: a prose region becomes one item whose provenance keeps every
-// member line's box and charspan, instead of one item per OCR line.
-struct TextBlock {
-  const LayoutRegion* region = nullptr;
-  std::vector<size_t> lines;
-  // The text of these lines already rides inside the region's own item (a
-  // table's cells), so the block anchors ordering but emits nothing.
-  bool suppressed = false;
-};
-
-// Which page lines a table's own item carries, so those lines do not stream
-// a second time as body prose. Structured cells claim a line when its center
-// falls inside a recognized cell; the geometry grid claims every line it
-// clustered. A line neither claims stays ordinary body text.
-std::vector<bool> table_claimed_lines(const OcrPage& page, const LayoutRegion& region) {
-  std::vector<bool> claimed(page.lines.size(), false);
-  if (!region.structured_cells.empty()) {
-    for (size_t index = 0; index < page.lines.size(); ++index) {
-      const auto& line = page.lines[index];
-      if (line.text.empty() || line.polygon.empty()) continue;
-      if (region_for_line(page, line) != &region) continue;
-      const cv::Point center = bounding_box(line).center();
-      for (const auto& cell : region.structured_cells) {
-        if (center.x >= cell.left && center.x <= cell.right && center.y >= cell.top &&
-            center.y <= cell.bottom) {
-          claimed[index] = true;
-          break;
-        }
-      }
-    }
-    return claimed;
-  }
-  const TableGrid grid = build_table_grid(page, region);
-  for (const auto& cell : grid.cells) {
-    for (const size_t line_index : cell.line_indices) claimed[line_index] = true;
-  }
-  return claimed;
-}
-
-// Whether consecutive lines of this region merge into one item. Lists stay
-// per-line (each line is its own item) and unbound lines never merge,
-// because nothing proves either belongs with its neighbor.
-bool region_aggregates(const LayoutRegion* region) {
-  if (region == nullptr) return false;
-  return region->label != "list" && region->label != "list_item" && region->label != "table";
-}
-
-std::vector<TextBlock> build_text_blocks(const OcrPage& page) {
-  // Claim maps are per table region and looked up by line below.
-  std::unordered_map<const LayoutRegion*, std::vector<bool>> claims;
-  for (const auto& region : page.regions) {
-    if (region.label == "table") claims.emplace(&region, table_claimed_lines(page, region));
-  }
-  std::vector<TextBlock> blocks;
-  // A trusted page (consensus vote winner) keeps its emission order; every
-  // other page re-derives the order geometrically.
-  for (const size_t line_index : reading_order(page, page.source_order_trusted)) {
-    const auto& line = page.lines[line_index];
-    if (line.text.empty() || line.polygon.empty()) continue;
-    const LayoutRegion* region = region_for_line(page, line);
-    bool suppressed = false;
-    if (const auto claim = claims.find(region); claim != claims.end()) {
-      suppressed = claim->second[line_index];
-    }
-    const bool merges = suppressed || region_aggregates(region);
-    if (merges && !blocks.empty() && blocks.back().region == region &&
-        blocks.back().suppressed == suppressed) {
-      blocks.back().lines.push_back(line_index);
-      continue;
-    }
-    TextBlock block;
-    block.region = region;
-    block.suppressed = suppressed;
-    block.lines.push_back(line_index);
-    blocks.push_back(std::move(block));
-  }
-  return blocks;
 }
 
 // True when every vertex of the quad lies on a corner of its own hull, so
@@ -217,26 +121,6 @@ bool polygon_is_axis_aligned(const std::vector<cv::Point>& polygon, const AxisAl
     if (!on_x || !on_y) return false;
   }
   return true;
-}
-
-// Where a floating region belongs in the block sequence: before the first
-// block it owns lines of, else before the first block that starts below its
-// top edge IN ITS OWN COLUMN, else after everything on the page. Reading
-// order is column-major, so the text-less fallback must only consider
-// blocks the region horizontally overlaps; comparing tops across columns
-// would anchor a right-column float into the middle of the left column.
-size_t region_anchor(const OcrPage& page, const std::vector<TextBlock>& blocks,
-                     const LayoutRegion& region) {
-  for (size_t index = 0; index < blocks.size(); ++index) {
-    if (blocks[index].region == &region) return index;
-  }
-  for (size_t index = 0; index < blocks.size(); ++index) {
-    const AxisAlignedBox box = bounding_box(page.lines[blocks[index].lines.front()]);
-    const int overlap = std::min(box.right, region.right) - std::max(box.left, region.left);
-    if (overlap <= 0) continue;
-    if (box.top >= region.top) return index;
-  }
-  return blocks.size();
 }
 
 // Big-endian 32-bit read for the PNG IHDR dimensions.
@@ -296,132 +180,6 @@ std::vector<std::string> deviating_legs(const OcrPage& page,
   return names;
 }
 
-// Model table structure (D3): the recognized cells carry real spans and
-// header rows.  Lines bound to the table land in the first cell whose box
-// contains their center; the flat cell list holds each cell once while the
-// row grid repeats spanning cells across every position they cover, with
-// empty unit cells filling positions no recognized cell claims.
-void fill_structured_table_data(const OcrPage& page, const LayoutRegion& region,
-                                pipestream::document::v1::TableData* data) {
-  int rows = 0;
-  int cols = 0;
-  for (const auto& cell : region.structured_cells) {
-    rows = std::max(rows, cell.row + cell.row_span);
-    cols = std::max(cols, cell.col + cell.col_span);
-  }
-  data->set_num_rows(rows);
-  data->set_num_cols(cols);
-
-  struct MemberLine {
-    size_t index = 0;
-    AxisAlignedBox box;
-  };
-  std::vector<MemberLine> lines;
-  for (size_t index = 0; index < page.lines.size(); ++index) {
-    const auto& line = page.lines[index];
-    if (line.text.empty() || line.polygon.empty()) continue;
-    if (region_for_line(page, line) == &region) lines.push_back({index, bounding_box(line)});
-  }
-  std::ranges::sort(lines, [](const MemberLine& a, const MemberLine& b) {
-    if (a.box.top != b.box.top) return a.box.top < b.box.top;
-    return a.box.left < b.box.left;
-  });
-
-  std::vector<int> owner(static_cast<size_t>(rows) * static_cast<size_t>(cols), -1);
-  // Each line belongs to exactly one cell: the first whose box contains its
-  // center, matching table_claimed_lines. Overlapping model boxes must not
-  // duplicate the same text into two cells.
-  std::vector<bool> line_taken(lines.size(), false);
-  std::vector<pipestream::document::v1::TableCell> protos;
-  protos.reserve(region.structured_cells.size());
-  for (const auto& cell : region.structured_cells) {
-    pipestream::document::v1::TableCell proto_cell;
-    proto_cell.set_row_span(cell.row_span);
-    proto_cell.set_col_span(cell.col_span);
-    proto_cell.set_start_row_offset_idx(cell.row);
-    proto_cell.set_end_row_offset_idx(cell.row + cell.row_span);
-    proto_cell.set_start_col_offset_idx(cell.col);
-    proto_cell.set_end_col_offset_idx(cell.col + cell.col_span);
-    proto_cell.set_column_header(cell.header);
-    std::string text;
-    for (size_t member_index = 0; member_index < lines.size(); ++member_index) {
-      if (line_taken[member_index]) continue;
-      const auto& member = lines[member_index];
-      const cv::Point center = member.box.center();
-      const bool contains = center.x >= cell.left && center.x <= cell.right &&
-                            center.y >= cell.top && center.y <= cell.bottom;
-      if (!contains) continue;
-      line_taken[member_index] = true;
-      if (!text.empty()) text.push_back(' ');
-      text += page.lines[member.index].text;
-    }
-    proto_cell.set_text(std::move(text));
-    AxisAlignedBox box{cell.left, cell.top, cell.right, cell.bottom};
-    set_bounding_box(box, proto_cell.mutable_bbox());
-    const int cell_index = static_cast<int>(protos.size());
-    for (int row = cell.row; row < cell.row + cell.row_span && row < rows; ++row) {
-      for (int col = cell.col; col < cell.col + cell.col_span && col < cols; ++col) {
-        auto& slot = owner[static_cast<size_t>(row) * cols + col];
-        if (slot < 0) slot = cell_index;
-      }
-    }
-    *data->add_table_cells() = proto_cell;
-    protos.push_back(std::move(proto_cell));
-  }
-  for (int row = 0; row < rows; ++row) {
-    auto* grid_row = data->add_grid();
-    for (int col = 0; col < cols; ++col) {
-      const int cell_index = owner[static_cast<size_t>(row) * cols + col];
-      if (cell_index >= 0) {
-        *grid_row->add_cells() = protos[static_cast<size_t>(cell_index)];
-      } else {
-        auto* blank = grid_row->add_cells();
-        blank->set_row_span(1);
-        blank->set_col_span(1);
-        blank->set_start_row_offset_idx(row);
-        blank->set_end_row_offset_idx(row + 1);
-        blank->set_start_col_offset_idx(col);
-        blank->set_end_col_offset_idx(col + 1);
-      }
-    }
-  }
-}
-
-// Geometry table structure (D2 v0): every grid position becomes a TableCell
-// with unit spans, mirrored into both the flat cell list and the row grid.
-// Header flags stay false; geometry cannot tell a header from a body row.
-void fill_table_data(const OcrPage& page, const LayoutRegion& region,
-                     pipestream::document::v1::TableData* data) {
-  if (!region.structured_cells.empty()) {
-    fill_structured_table_data(page, region, data);
-    return;
-  }
-  const TableGrid grid = build_table_grid(page, region);
-  data->set_num_rows(grid.rows);
-  data->set_num_cols(grid.cols);
-  std::vector<pipestream::document::v1::TableRow*> rows;
-  rows.reserve(static_cast<size_t>(grid.rows));
-  for (int row = 0; row < grid.rows; ++row) rows.push_back(data->add_grid());
-  for (const auto& cell : grid.cells) {
-    pipestream::document::v1::TableCell proto_cell;
-    proto_cell.set_row_span(1);
-    proto_cell.set_col_span(1);
-    proto_cell.set_start_row_offset_idx(cell.row);
-    proto_cell.set_end_row_offset_idx(cell.row + 1);
-    proto_cell.set_start_col_offset_idx(cell.col);
-    proto_cell.set_end_col_offset_idx(cell.col + 1);
-    std::string text;
-    for (const size_t line_index : cell.line_indices) {
-      if (!text.empty()) text.push_back(' ');
-      text += page.lines[line_index].text;
-    }
-    proto_cell.set_text(std::move(text));
-    if (!cell.line_indices.empty()) set_bounding_box(cell.box, proto_cell.mutable_bbox());
-    *data->add_table_cells() = proto_cell;
-    *rows[static_cast<size_t>(cell.row)]->add_cells() = std::move(proto_cell);
-  }
-}
-
 }  // namespace
 
 // Embed a captured crop as a data URI.  The pixel size comes from the PNG
@@ -437,7 +195,6 @@ void set_picture_image(const std::vector<unsigned char>& png,
   }
   image->set_uri("data:image/png;base64," + encode_base64(png.data(), png.size()));
 }
-
 
 uint64_t utf8_codepoint_count(const std::string& text) {
   uint64_t count = 0;
@@ -1040,108 +797,6 @@ void append_consensus_claim(const std::vector<const OcrPage*>& pages,
   source->set_raw_score(score_sum / static_cast<double>(voted));
   source->set_raw_score_kind("consensus_bigram_agreement");
   source->set_raw_score_samples(static_cast<uint64_t>(voted));
-}
-
-namespace {
-
-double median_of(std::vector<double> values) {
-  if (values.empty()) return 0;
-  const auto middle = values.begin() + static_cast<std::ptrdiff_t>(values.size() / 2);
-  std::nth_element(values.begin(), middle, values.end());
-  return *middle;
-}
-
-// The median prov box height of one heading; one clipped or merged line
-// must not drag a heading into another cluster. Zero means unusable.
-double median_header_height(const pipestream::document::v1::SectionHeaderItem& header) {
-  std::vector<double> heights;
-  for (const auto& provenance : header.base().prov()) {
-    const auto& box = provenance.bbox();
-    const double height = std::abs(box.b() - box.t());
-    if (height > 0) heights.push_back(height);
-  }
-  return median_of(std::move(heights));
-}
-
-// The median declared font size of a heading's runs, in points; zero when
-// the text layer declared none.
-double median_header_font(const pipestream::document::v1::SectionHeaderItem& header) {
-  std::vector<double> sizes;
-  for (const auto& run : header.base().spans()) {
-    if (run.has_font_size_pt() && run.font_size_pt() > 0) sizes.push_back(run.font_size_pt());
-  }
-  return median_of(std::move(sizes));
-}
-
-}  // namespace
-
-// The extent of a heading on its first page in the page's own top-down
-// pixels: the CV path emits every box top-left, so no origin flip applies.
-void place_header(const pipestream::document::v1::SectionHeaderItem& header,
-                  HeaderHeight* entry) {
-  int page = 0;
-  for (const auto& provenance : header.base().prov()) {
-    if (provenance.page_no() > 0 && (page == 0 || provenance.page_no() < page)) {
-      page = provenance.page_no();
-    }
-  }
-  entry->page = page;
-  bool any = false;
-  for (const auto& provenance : header.base().prov()) {
-    if (provenance.page_no() != page || !provenance.has_bbox()) continue;
-    const auto& box = provenance.bbox();
-    const double top = std::min(box.t(), box.b());
-    const double bottom = std::max(box.t(), box.b());
-    entry->top = any ? std::min(entry->top, top) : top;
-    entry->bottom = any ? std::max(entry->bottom, bottom) : bottom;
-    any = true;
-  }
-}
-
-HeaderHeight header_entry(const pipestream::document::v1::SectionHeaderItem& header) {
-  HeaderHeight entry;
-  entry.self_ref = header.base().self_ref();
-  entry.height = median_header_height(header);
-  entry.font_size = median_header_font(header);
-  entry.text = header.base().text();
-  place_header(header, &entry);
-  return entry;
-}
-
-std::map<std::string, int32_t> section_header_levels(std::vector<HeaderHeight> headers) {
-  return infer_heading_levels(std::move(headers));
-}
-
-void collect_header_heights(const pipestream::parse::v1::PageData& page,
-                            std::vector<HeaderHeight>* into) {
-  if (into == nullptr) throw std::invalid_argument("Header height output is required");
-  for (const auto& text : page.texts()) {
-    if (text.item_case() != pipestream::document::v1::BaseTextItem::kSectionHeader) continue;
-    const auto& header = text.section_header();
-    if (header.level() > 0) continue;  // the producer already chose
-    into->push_back(header_entry(header));
-  }
-}
-
-void assign_section_header_levels(pipestream::document::v1::Document* document) {
-  assign_section_header_levels(document, HeadingOptions{});
-}
-
-void assign_section_header_levels(pipestream::document::v1::Document* document,
-                                  const HeadingOptions& requested) {
-  if (document == nullptr) throw std::invalid_argument("Document is required");
-  // Only headers without a level are eligible here: the CV path's own
-  // output, before any collector's levels are in play.
-  HeadingOptions options = requested;
-  options.geometry_collectors.clear();
-  if (!options.enabled) {
-    for (auto& text : *document->mutable_texts()) {
-      if (!text.has_section_header() || text.section_header().level() != 0) continue;
-      text.mutable_section_header()->set_level(1);
-    }
-    return;
-  }
-  infer_heading_hierarchy(document, options);
 }
 
 }  // namespace grparse
