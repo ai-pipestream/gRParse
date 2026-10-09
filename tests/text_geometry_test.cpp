@@ -208,9 +208,30 @@ void verify_read_quality_candidates_and_ranking() {
           "a poor upright read still outranks a confident tall-majority one");
 }
 
+// The detector unclips boxes past the glyphs and a digital page's cells sit
+// wherever the file put them: a line at the raster's edge can reach past it.
+void verify_clip_to_raster() {
+  auto reaching = make_line("The parents", -50, 260, 1011, 520, grparse::TextOrigin::kOcr);
+  reaching.polygon = {{-48, 260}, {1011, 269}, {1010, 520}, {-50, 512}};
+  grparse::clip_to_raster(&reaching, 2339, 1653);
+  const auto box = grparse::bounding_box(reaching);
+  require(box.left == 0 && box.right == 1011 && box.top == 260 && box.bottom == 520,
+          "the vertices past the left edge land on it and the rest stay put");
+
+  auto beyond = make_line("danger", 2113, 912, 2387, 1027, grparse::TextOrigin::kDigitalPdf);
+  grparse::clip_to_raster(&beyond, 2339, 1653);
+  require(grparse::bounding_box(beyond).right == 2339, "a box past the right edge stops at it");
+
+  grparse::OcrLine bare{"x", {}, std::nullopt, std::nullopt};
+  grparse::clip_to_raster(&bare, 10, 10);
+  require(bare.polygon.empty(), "a line with no polygon has nothing to clip");
+  grparse::clip_to_raster(nullptr, 10, 10);
+}
+
 int main() {
   return grparse_test::run_test_main("text-geometry-test", {
       verify_iou_and_overlap,
+      verify_clip_to_raster,
       verify_extreme_coordinates_do_not_overflow,
       verify_merge_dedupes_and_sorts,
       verify_rotation_vote,

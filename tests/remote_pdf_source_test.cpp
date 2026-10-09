@@ -91,12 +91,26 @@ class FakeBackend final : public pdfv1::PdfBackendService::Service {
       cell->set_font_size(12.0);
       y -= 150.0;
     }
+    // A footer placeholder the file put below the sheet, and a line that
+    // runs past the right edge.
+    auto* footer = chunk->add_text_cells();
+    footer->set_text("footer below the sheet");
+    footer->mutable_bbox()->set_x0(400.0);
+    footer->mutable_bbox()->set_y0(-73.0);
+    footer->mutable_bbox()->set_x1(500.0);
+    footer->mutable_bbox()->set_y1(-54.0);
+    auto* overflow = chunk->add_text_cells();
+    overflow->set_text("runs past the right edge");
+    overflow->mutable_bbox()->set_x0(560.0);
+    overflow->mutable_bbox()->set_y0(100.0);
+    overflow->mutable_bbox()->set_x1(700.0);
+    overflow->mutable_bbox()->set_y1(112.0);
     writer->Write(page);
 
     pdfv1::ParseResponse trailer;
     auto* count = trailer.mutable_trailer()->add_counts();
     count->set_family(pdfv1::PDF_FAMILY_TEXT_CELLS);
-    count->set_count(5);
+    count->set_count(7);
     writer->Write(trailer);
     return grpc::Status::OK;
   }
@@ -578,8 +592,12 @@ int main() {
           "page dimensions scale by dpi/72");
   require(page->source == grparse::OcrPage::Source::kDigitalPdf,
           "page is marked digital");
-  require(page->lines.size() == 5, "all cells became lines");
+  require(page->lines.size() == 6, "every cell on the page became a line; the one below it did not");
   require(page->skip_ocr, "five spread-out lines clear the OCR-skip gate");
+  const auto& overflow = page->lines.back();
+  require(overflow.text == "runs past the right edge", "the cell across the edge stays");
+  require(overflow.polygon[0].x == 1120 && overflow.polygon[1].x == 1224,
+          "its box stops at the page edge (612 points = 1224 pixels)");
   const auto& first = page->lines.front();
   require(first.text == "line number 0 of the fixture", "text passes through");
   require(first.font_name.has_value() && *first.font_name == "Times-Roman",

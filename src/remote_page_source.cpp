@@ -196,11 +196,25 @@ class RemotePdfPageSource final : public PageSource {
       result.lines.reserve(cells.size());
       for (const auto& cell : cells) {
         if (cell.text().empty()) continue;
+        // The fold works in the top-left frame of the rendered page. A cell
+        // the file put wholly off the page (a slide's footer placeholder
+        // below the sheet, a title above it) is seen by no reader and is
+        // left out; one across the page edge is cut at the edge, which is
+        // where it is seen.
+        auto [left_pts, top_pts, right_pts, bottom_pts] = frame->place(cell.bbox());
+        const double page_width = frame->display_width();
+        const double page_height = frame->display_height();
+        if (right_pts <= 0.0 || left_pts >= page_width || bottom_pts <= 0.0 ||
+            top_pts >= page_height) {
+          continue;
+        }
+        left_pts = std::clamp(left_pts, 0.0, page_width);
+        right_pts = std::clamp(right_pts, 0.0, page_width);
+        top_pts = std::clamp(top_pts, 0.0, page_height);
+        bottom_pts = std::clamp(bottom_pts, 0.0, page_height);
         for (const unsigned char byte : cell.text()) {
           if (std::isspace(byte) == 0) ++non_whitespace_bytes;
         }
-        // The fold works in the top-left frame of the rendered page.
-        const auto [left_pts, top_pts, right_pts, bottom_pts] = frame->place(cell.bbox());
         text_top = std::min(text_top, top_pts);
         text_bottom = std::max(text_bottom, bottom_pts);
         const int left = scaled(left_pts);

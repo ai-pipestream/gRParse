@@ -1,5 +1,7 @@
 #include "grparse/ocr_engine.h"
 
+#include "grparse/text_geometry.h"
+
 #include <cstdlib>
 #include <optional>
 #include <stdexcept>
@@ -108,6 +110,10 @@ OcrEngine::Page OcrEngine::extract_page(const cv::Mat& image) {
     }
     Line line{block.text, block.boxPoint, confidence, TextOrigin::kOcr};
     line.flipped = block.angleIndex == 1;
+    // The detector's unclip ratio grows a box past the glyphs, so a line
+    // at the edge of the raster can reach outside it; the box is where
+    // the line is seen, and nothing past the edge is.
+    clip_to_raster(&line, image.cols, image.rows);
     page.lines.push_back(std::move(line));
   }
   warmed_ = true;

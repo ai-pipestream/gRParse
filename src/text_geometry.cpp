@@ -21,6 +21,14 @@ AxisAlignedBox bounding_box(const OcrLine& line) {
   return box;
 }
 
+void clip_to_raster(OcrLine* line, int width, int height) {
+  if (line == nullptr) return;
+  for (auto& point : line->polygon) {
+    point.x = std::clamp(point.x, 0, std::max(0, width));
+    point.y = std::clamp(point.y, 0, std::max(0, height));
+  }
+}
+
 float intersection_over_union(const AxisAlignedBox& a, const AxisAlignedBox& b) {
   const int64_t left = std::max<int64_t>(a.left, b.left);
   const int64_t top = std::max<int64_t>(a.top, b.top);

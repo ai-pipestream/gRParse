@@ -31,6 +31,13 @@ struct AxisAlignedBox {
 };
 
 AxisAlignedBox bounding_box(const OcrLine& line);
+
+// Clamp every vertex of the line's polygon onto the raster. The text
+// detector unclips its boxes past the glyph edges and a digital page's
+// cells sit wherever the file put them, so a line at the page edge can
+// reach past it; its box is where a reader sees it, and nothing past the
+// edge is seen.
+void clip_to_raster(OcrLine* line, int width, int height);
 float intersection_over_union(const AxisAlignedBox& a, const AxisAlignedBox& b);
 bool boxes_overlap_significantly(const AxisAlignedBox& a, const AxisAlignedBox& b,
                                  float iou_threshold = 0.25F);
