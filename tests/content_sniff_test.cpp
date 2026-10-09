@@ -365,6 +365,12 @@ void verify_text_signatures() {
   require_sniff("From:\tTransport for London <info@example.org>\r\nSent:\t13 July 2015\r\n\r\n"
                 "Dear Customer,\r\n",
                 "text/plain", "a pasted From/Sent display block is not a mail header block");
+  require_sniff("From:\tJoyce Barrow\r\nSent:\t21 September 2016 11:59\r\nTo:\tGraham White\r\n"
+                "Subject:\tRe: Code of Conduct Complaint\r\n\r\nKind regards\r\n",
+                "text/plain", "a saved message with To and Subject under Sent is still a display");
+  require_sniff("From: a@example.org\r\nDate: Wed, 21 Sep 2016 11:59:00 +0100\r\nTo: b@example.org\r\n"
+                "Subject: hi\r\n\r\nbody\r\n",
+                "message/rfc822", "a Date header is what a transfer agent writes");
   require_sniff("a,b,c\n1,2,3\n4,\"5,5\",6\n", "text/csv", "three lines of three fields");
   require_sniff("name;amount\nx;1\ny;2\n", "text/csv", "semicolon separated values");
   require_sniff("a,b\n1,2\n", "text/plain", "two narrow lines are too few to call csv");
