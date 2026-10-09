@@ -237,8 +237,13 @@ void add_field(const pdfv1::FormField& field, int page, const docv1::BoundingBox
                                                                     : field.name();
   if (!key.empty()) {
     const std::string key_ref = "#/texts/" + std::to_string(document->texts_size());
-    start_text(document->add_texts()->mutable_text()->mutable_base(), key_ref, field_ref,
-               docv1::DOC_ITEM_LABEL_FIELD_KEY, key, engine);
+    // The key is placed with its widget like the value: a push button has
+    // no value item, so its key is the only text the field puts on the
+    // page, and a body item without a page is one no reader can find.
+    auto* key_base = start_text(document->add_texts()->mutable_text()->mutable_base(), key_ref,
+                                field_ref, docv1::DOC_ITEM_LABEL_FIELD_KEY, key, engine);
+    add_prov(page, box, static_cast<int32_t>(utf8_codepoint_count(key)),
+             key_base->mutable_prov());
     item->add_children()->set_ref(key_ref);
   }
 

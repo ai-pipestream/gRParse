@@ -184,6 +184,11 @@ void folds_into_the_cv_page_space() {
   require(key.label() == docv1::DOC_ITEM_LABEL_FIELD_KEY, "key label");
   require_equal(key.text(), std::string("Customer name"), "key reads the tooltip");
   require_equal(key.parent().ref(), std::string("#/field_items/0"), "key parent");
+  require_equal(key.prov_size(), 1, "the key is placed with its widget");
+  require_equal(key.prov(0).page_no(), 1, "key page");
+  require_equal(key.prov(0).bbox().l(), bbox.l(), "key box is the widget's");
+  require_equal(key.prov(0).bbox().t(), bbox.t(), "key top is the widget's");
+  require_equal(key.prov(0).charspan().end(), 13, "key charspan covers its text");
   const int value_index = std::stoi(text.children(1).ref().substr(8));
   require(document.texts(value_index).item_case() == docv1::BaseTextItem::kFieldValue,
           "text value is a field_value item");
@@ -241,6 +246,12 @@ void read_only_values_and_bare_widgets() {
                 "/Ff ReadOnly fixes the value");
   require(document.field_items(0).read_only(), "read-only from the flags alone");
   require_equal(document.field_items(1).children_size(), 1, "a push button has only its key");
+  // That key is the only text the button puts on the page, so it carries
+  // the button's place (napierone pdf 0053: 134 such keys had no page).
+  const auto& push_key = text_at(document, document.field_items(1).children(0).ref());
+  require_equal(push_key.prov_size(), 1, "the push button's key is placed");
+  require_equal(push_key.prov(0).page_no(), 1, "push key page");
+  require(push_key.prov(0).bbox().r() > push_key.prov(0).bbox().l(), "push key box has width");
 }
 
 void deterministic_whatever_the_backend_order() {
