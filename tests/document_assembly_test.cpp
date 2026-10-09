@@ -13,6 +13,7 @@
 #include "grparse/docling_map.h"
 #include "grparse/document_assembly.h"
 #include "grparse/document_repair.h"
+#include "grparse/region_geometry.h"
 #include "support/check.h"
 
 namespace {
@@ -877,6 +878,106 @@ void verify_derived_offsets_match_the_assembled_rows() {
   }
 }
 
+// The scanned general-ledger pages of a court filing, assembled the way
+// the scheduler hands them over: detections settled by
+// resolve_region_overlaps first. Each page reads top to bottom, its table
+// first and the lines no cell claims after it in the order they sit.
+grparse::OcrLine boxed_line(std::string text, int left, int top, int right, int bottom) {
+  return grparse::OcrLine{std::move(text),
+                          {{left, top}, {right, top}, {right, bottom}, {left, bottom}},
+                          0.9F};
+}
+
+std::vector<std::string> body_refs(const ai::pipestream::parse::v1::PageData& data) {
+  std::vector<std::string> order;
+  for (const auto& ref : data.body_order()) order.push_back(ref.ref());
+  return order;
+}
+
+// p772: the detector drew a text box around one End Bal amount, scoring it
+// above the table. The amount belongs to its cell, not after the table's
+// stray ".00" from a lower row.
+void verify_ledger_amount_in_a_nested_box_lands_in_its_cell() {
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{2200, 1701,
+                        {boxed_line("Date", 1290, 210, 1360, 240),
+                         boxed_line("Total for", 1290, 1330, 1400, 1360),
+                         boxed_line("-8,020.00", 1812, 1319, 1900, 1346),
+                         boxed_line(".00", 1733, 1494, 1775, 1530)}};
+  grparse::LayoutRegion table{"table", 0.510F, 93, 200, 1924, 1527};
+  table.structured_cells = {{0, 0, 1, 1, true, 1280, 200, 1400, 250},
+                            {1, 0, 1, 1, false, 1280, 1311, 1400, 1365},
+                            {1, 1, 1, 1, false, 1788, 1311, 1918, 1355}};
+  page.regions = {{"text", 0.551F, 1817, 1322, 1896, 1342}, table};
+  grparse::resolve_region_overlaps(page.regions, page.lines, page.width, page.height);
+
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(page, 1, &cursor, &data);
+  require(data.texts_size() == 1 && data.texts(0).text().base().text() == ".00",
+          "only the line no cell claims stays body text");
+  require(data.tables(0).data().table_cells(2).text() == "-8,020.00",
+          "the amount lives in its End Bal cell");
+  require(body_refs(data) == std::vector<std::string>{"#/tables/0", "#/texts/0"},
+          "the table reads before its stray line");
+}
+
+// p862: the table detected twice, one box inside the other, and text boxes
+// around a GL number inside it. One table remains, and its unclaimed lines
+// follow it top to bottom.
+void verify_ledger_detected_twice_reads_as_one_table() {
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{2200, 1701,
+                        {boxed_line("End Bal", 1792, 223, 1875, 254),
+                         boxed_line("Lender Credits", 400, 310, 700, 340),
+                         boxed_line("42400-1521 80", 124, 1276, 253, 1305),
+                         boxed_line("10/06/14", 1281, 1513, 1362, 1541)}};
+  grparse::LayoutRegion inner{"table", 0.564F, 313, 215, 1880, 1130};
+  inner.structured_cells = {{0, 0, 1, 1, false, 380, 300, 720, 350}};
+  grparse::LayoutRegion outer{"table", 0.554F, 76, 221, 1909, 1543};
+  outer.structured_cells = {{0, 0, 1, 1, false, 380, 300, 720, 350}};
+  page.regions = {{"text", 0.574F, 130, 1282, 249, 1300}, inner, outer,
+                  {"page_header", 0.521F, 2024, 467, 2055, 1285}};
+  grparse::resolve_region_overlaps(page.regions, page.lines, page.width, page.height);
+
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(page, 1, &cursor, &data);
+  require(data.tables_size() == 1 && data.tables(0).prov(0).bbox().l() == 76,
+          "one table remains, the larger box");
+  require(data.tables(0).data().table_cells(0).text() == "Lender Credits",
+          "the kept table carries the shared cell");
+  std::vector<std::string> texts;
+  for (const auto& item : data.texts()) texts.push_back(item.text().base().text());
+  require(texts == std::vector<std::string>{"End Bal", "42400-1521 80", "10/06/14"},
+          "the unclaimed lines read top to bottom");
+  require(body_refs(data) ==
+              std::vector<std::string>{"#/tables/0", "#/texts/0", "#/texts/1", "#/texts/2"},
+          "the table heads its lines");
+}
+
+// p848: the detector boxed the whole scanned ledger as one picture. The
+// picture is the page; its title and text read as the page's prose.
+void verify_page_sized_picture_over_a_ledger_is_dropped() {
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{2200, 1701,
+                        {boxed_line("General Ledger by Branch", 801, 209, 1322, 260),
+                         boxed_line("Company: Ameripro Funding, Inc.", 812, 253, 1315, 297),
+                         boxed_line("41100-152180", 120, 520, 260, 545),
+                         boxed_line("Origination Fees", 320, 520, 500, 545)}};
+  page.regions = {{"section_header", 0.602F, 805, 208, 1317, 250},
+                  {"picture", 0.573F, 0, 3, 2200, 1701},
+                  {"text", 0.507F, 94, 260, 1896, 1499}};
+  grparse::resolve_region_overlaps(page.regions, page.lines, page.width, page.height);
+
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(page, 1, &cursor, &data);
+  require(data.pictures_size() == 0, "the page-sized picture is gone");
+  require(body_refs(data) == std::vector<std::string>{"#/texts/0", "#/texts/1"},
+          "the title reads before the ledger text");
+  require(data.texts(0).has_section_header() &&
+              data.texts(1).text().base().text().starts_with("Company:"),
+          "the title and the ledger text keep their regions");
+}
+
 int main() {
   return grparse_test::run_test_main("document-assembly-test", {
       verify_contract_shape,
@@ -903,5 +1004,8 @@ int main() {
       verify_recovered_rotation_reaches_page_quality,
       verify_list_items_join_a_list_group,
       verify_derived_offsets_match_the_assembled_rows,
+      verify_ledger_amount_in_a_nested_box_lands_in_its_cell,
+      verify_ledger_detected_twice_reads_as_one_table,
+      verify_page_sized_picture_over_a_ledger_is_dropped,
   });
 }

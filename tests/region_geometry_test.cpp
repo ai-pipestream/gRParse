@@ -6,6 +6,7 @@
 #include <print>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include <opencv2/core.hpp>
 
@@ -110,6 +111,84 @@ void verify_crop_region() {
           "crop of a region outside the raster is empty");
 }
 
+std::vector<std::string> labels_of(const std::vector<grparse::LayoutRegion>& regions) {
+  std::vector<std::string> labels;
+  for (const auto& region : regions) labels.push_back(region.label);
+  return labels;
+}
+
+// A scanned ledger the detector boxed as one page-sized picture (court
+// filing p848): the picture is the page, so it goes when text lies inside
+// it and the page's own header and text regions take the lines. A photo
+// scan with no text keeps the picture as its only content, and a picture
+// under the 90% share stays whatever it holds.
+void verify_full_page_picture_with_text_is_dropped() {
+  const std::vector<grparse::OcrLine> lines = {make_line(810, 210, 1310, 255),
+                                               make_line(120, 400, 300, 430)};
+  std::vector<grparse::LayoutRegion> ledger = {
+      make_region("section_header", 0.60F, 805, 208, 1317, 250),
+      make_region("picture", 0.57F, 0, 3, 2200, 1701),
+      make_region("text", 0.51F, 94, 260, 1896, 1499)};
+  grparse::resolve_region_overlaps(ledger, lines, 2200, 1701);
+  require(labels_of(ledger) == std::vector<std::string>{"section_header", "text"},
+          "a page-sized picture over text is dropped");
+
+  std::vector<grparse::LayoutRegion> photo = {make_region("picture", 0.9F, 0, 0, 2200, 1701)};
+  grparse::resolve_region_overlaps(photo, {}, 2200, 1701);
+  require(photo.size() == 1, "a page-sized picture with no text inside stays");
+
+  std::vector<grparse::LayoutRegion> figure = {make_region("picture", 0.9F, 0, 0, 2000, 1600)};
+  grparse::resolve_region_overlaps(figure, lines, 2200, 1701);
+  require(figure.size() == 1, "a picture under 90% of the page stays");
+}
+
+// The same table detected twice, once nested in the other (court filing
+// p862): the group keeps the larger box at a near score, and drops it for a
+// smaller one only when that one scores more than 0.2 higher. Tables that
+// merely touch stay two.
+void verify_overlapping_tables_keep_one() {
+  std::vector<grparse::LayoutRegion> nested = {make_region("table", 0.564F, 313, 215, 1880, 1130),
+                                               make_region("table", 0.554F, 76, 221, 1909, 1543)};
+  grparse::resolve_region_overlaps(nested, {}, 2200, 1701);
+  require(nested.size() == 1 && nested[0].left == 76 && nested[0].bottom == 1543,
+          "a table nested in another one keeps the larger box");
+
+  std::vector<grparse::LayoutRegion> confident = {make_region("table", 0.95F, 313, 215, 1880, 1130),
+                                                  make_region("table", 0.60F, 76, 221, 1909, 1543)};
+  grparse::resolve_region_overlaps(confident, {}, 2200, 1701);
+  require(confident.size() == 1 && confident[0].left == 313,
+          "a much surer inner table wins over the larger box");
+
+  std::vector<grparse::LayoutRegion> apart = {make_region("table", 0.8F, 0, 0, 1000, 500),
+                                              make_region("table", 0.7F, 0, 450, 1000, 1000)};
+  grparse::resolve_region_overlaps(apart, {}, 2200, 1701);
+  require(apart.size() == 2, "tables that only touch stay two");
+}
+
+// A text region the detector drew around one amount inside a table, at a
+// higher score than the table (court filing p772): it is part of the table,
+// so it goes and the line binds to the table. Regions mostly outside the
+// table, and the furniture beside it, stay; so do floats inside it.
+void verify_regions_nested_in_a_table_join_it() {
+  std::vector<grparse::LayoutRegion> regions = {
+      make_region("page_header", 0.556F, 2047, 457, 2079, 1278),
+      make_region("text", 0.551F, 1817, 1322, 1896, 1342),
+      make_region("table", 0.510F, 93, 200, 1924, 1527),
+      make_region("text", 0.6F, 1800, 100, 2000, 300),
+      make_region("picture", 0.7F, 200, 300, 400, 500)};
+  grparse::resolve_region_overlaps(regions, {}, 2200, 1701);
+  require(labels_of(regions) ==
+              std::vector<std::string>{"page_header", "table", "text", "picture"},
+          "only the region nested in the table goes");
+
+  grparse::OcrPage page;
+  page.width = 2200;
+  page.height = 1701;
+  page.regions = regions;
+  const auto* bound = grparse::region_for_line(page, make_line(1812, 1319, 1900, 1346));
+  require(bound != nullptr && bound->label == "table", "the amount binds to the table");
+}
+
 }  // namespace
 
 int main() {
@@ -117,5 +196,8 @@ int main() {
       verify_region_binding,
       verify_clip_region,
       verify_crop_region,
+      verify_full_page_picture_with_text_is_dropped,
+      verify_overlapping_tables_keep_one,
+      verify_regions_nested_in_a_table_join_it,
   });
 }
