@@ -823,6 +823,10 @@ class PageScheduler::Impl final {
             const StageTimer stage(timings.layout_ms);
             regions = region_detector_->detect_regions(job.image);
             layout_model = region_detector_->model_name();
+            // Settle overlapping detections before the table and figure
+            // passes, so a duplicate table or a page-sized picture costs no
+            // structure or classifier call.
+            resolve_region_overlaps(regions, assembled.lines, job.image.cols, job.image.rows);
             pages_layout_labelled_.fetch_add(1);
           }
           // Structure runs on table crops only, grouped with the other device
