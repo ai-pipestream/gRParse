@@ -19,6 +19,7 @@
 #include <google/protobuf/util/message_differencer.h>
 
 #include "ai/pipestream/document/v1/document.pb.h"
+#include "grparse/docling_map.h"
 #include "grparse/document_assembly.h"
 #include "grparse/document_render.h"
 #include "grparse/document_repair.h"
@@ -121,6 +122,17 @@ void verify_pinned_assembly_shape() {
   require(document.pictures(0).captions_size() == 1 &&
               document.pictures(0).captions(0).ref() == "#/texts/6",
           "the caption binds to the figure rather than trailing the body");
+  require(document.pictures(0).children_size() == 1 &&
+              document.pictures(0).children(0).ref() == "#/texts/6" &&
+              document.texts(6).text().base().parent().ref() == "#/pictures/0",
+          "the figure and its caption link each other: parent on the caption, child on the figure");
+  const std::vector<std::string> integrity = grparse::docling_integrity_errors(document);
+  require(integrity.empty(),
+          "an assembled document is well linked, every parent listing its child; got " +
+              joined(integrity));
+  docv1::Document orphan_pass = document;
+  require(grparse::repair_referenced_orphans(&orphan_pass) == 0,
+          "the referenced-orphan repair has nothing to mend in a fresh assembly");
   require(document.furniture().children_size() == 2,
           "the running header and the page number are furniture");
   require(document.texts(0).has_title(), "the first-page title region makes a TITLE item");
