@@ -158,8 +158,14 @@ void verify_read_quality_candidates_and_ranking() {
   }
   require(grparse::rotation_candidates(grparse::page_rotation_vote(turned),
                                        grparse::page_read_quality(turned)) ==
+              std::vector<int>{270, 90},
+          "tall lines the classifier left alone try 270 first, then 90");
+  grparse::OcrPage turned_flipped = turned;
+  for (auto& line : turned_flipped.lines) line.flipped = true;
+  require(grparse::rotation_candidates(grparse::page_rotation_vote(turned_flipped),
+                                       grparse::page_read_quality(turned_flipped)) ==
               std::vector<int>{90, 270},
-          "a quarter-turn vote tries both quarter turns");
+          "tall lines the classifier flipped try 90 first, then 270");
 
   grparse::OcrPage poor = upright;
   for (auto& line : poor.lines) line.confidence = 0.3F;

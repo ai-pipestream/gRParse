@@ -87,7 +87,9 @@ ReadQuality page_read_quality(const OcrPage& page) {
 
 std::vector<int> rotation_candidates(const RotationVote& vote, const ReadQuality& quality,
                                      float confidence_floor, int minimum_lines) {
-  if (vote.quarter_turn) return {90, 270};
+  if (vote.quarter_turn) {
+    return quality.upside_down ? std::vector<int>{90, 270} : std::vector<int>{270, 90};
+  }
   if (quality.upside_down) return {180};
   const bool poor_read = quality.lines >= minimum_lines && quality.scored_lines > 0 &&
                          quality.mean_confidence < confidence_floor;

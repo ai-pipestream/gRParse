@@ -75,9 +75,12 @@ struct ReadQuality {
 
 ReadQuality page_read_quality(const OcrPage& page);
 
-// The clockwise turns worth re-reading a page at, from its first read: 90
-// and 270 when the line boxes vote a quarter turn (the vote cannot tell
-// the two apart), 180 when the classifier flipped most lines, all three
+// The clockwise turns worth re-reading a page at, from its first read, in
+// the order to try them: both quarter turns when the line boxes vote a
+// quarter turn, the one the angle classifier points at first (RapidOCR
+// turns tall crops counter-clockwise before reading, so lines it left
+// alone run top to bottom and want 270, and lines it flipped run bottom to
+// top and want 90), 180 when the classifier flipped most lines, all three
 // when neither says anything but the read is poor (mean confidence below
 // `confidence_floor` over at least `minimum_lines` lines), nothing
 // otherwise.  Each turn appears at most once, so the caller's cost is

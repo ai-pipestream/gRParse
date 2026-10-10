@@ -95,7 +95,10 @@ classifier flipping every line says the page is upside down, and a poor read
 The raster is then recognized again turned 90 and 270 degrees clockwise for a
 quarter-turn vote, 180 for an upside-down one, and all three for a poor read,
 each turn at most once, and the best read wins (text over none, upright over
-turned, then mean confidence). When a turn wins, the turned raster replaces the
+turned, then mean confidence). A quarter turn tries first the direction the
+angle classifier points at (270 when it left the tall lines alone, 90 when it
+flipped them), and the first upright read at or above that confidence ends
+the search, so a sideways page usually costs one extra read. When a turn wins, the turned raster replaces the
 original for everything that follows, so layout regions, table and figure
 crops, the page preview, the page size and every text box are in the upright
 frame together, and the turn is recorded in the page's typed
@@ -417,7 +420,12 @@ one of it. Select the NVIDIA device with
 provider: `cuda` (default, fails startup if CUDA cannot initialize),
 `openvino` (Intel GPU/CPU/NPU through the OpenVINO build — see below), `cpu`
 (explicit CPU inference), or `auto` (prefers CUDA, then OpenVINO, then CPU,
-logging each fallback). Requesting a provider the linked ONNX Runtime does not
+logging each fallback). `GRPARSE_OCR_BATCH` (1 to 256) sets how many line
+crops the angle classifier and recognizer take per call: 16 under CUDA, 1
+under CPU (where padding costs more than batching saves) and OpenVINO (whose
+GPU plugin compiles kernels for every new input shape).
+Crops are sorted by width before batching, and each batch is padded to its
+widest crop; 1 reads one crop per call. Requesting a provider the linked ONNX Runtime does not
 offer fails with the list that is actually available. An OCR session that
 throws during inference is destroyed and rebuilt on next use instead of
 staying in the pool poisoned. Optional RapidOCR detect knobs:

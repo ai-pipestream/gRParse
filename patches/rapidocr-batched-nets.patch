@@ -1,0 +1,212 @@
+diff --git a/include/AngleNet.h b/include/AngleNet.h
+index bb7f7a7..8f65217 100644
+--- a/include/AngleNet.h
++++ b/include/AngleNet.h
+@@ -38,6 +38,10 @@ private:
+     const int dstHeight = 48;
+ 
+     Angle getAngle(cv::Mat &src);
++
++    // gRParse: classifies up to grparse::ocr_batch_size() crops per Run
++    // (patches/rapidocr-batched-nets.patch).
++    std::vector<Angle> getAngleBatch(const std::vector<cv::Mat> &angleImgs);
+ };
+ 
+ 
+diff --git a/include/CrnnNet.h b/include/CrnnNet.h
+index 86ec3d4..ef2811d 100644
+--- a/include/CrnnNet.h
++++ b/include/CrnnNet.h
+@@ -39,6 +39,10 @@ private:
+     TextLine scoreToTextLine(const std::vector<float> &outputData, size_t h, size_t w);
+ 
+     TextLine getTextLine(const cv::Mat &src);
++
++    // gRParse: reads crops of similar width together, padded on the right to
++    // the widest in the batch (patches/rapidocr-batched-nets.patch).
++    std::vector<TextLine> getTextLineBatch(const std::vector<cv::Mat> &srcs);
+ };
+ 
+ 
+diff --git a/src/AngleNet.cpp b/src/AngleNet.cpp
+index dc16b96..9181b18 100644
+--- a/src/AngleNet.cpp
++++ b/src/AngleNet.cpp
+@@ -1,6 +1,7 @@
+ #include "AngleNet.h"
+ #include "OcrUtils.h"
+ #include "grparse_session_ep.h"
++#include <algorithm>
+ #include <numeric>
+ 
+ void AngleNet::setGpuIndex(int gpuIndex) {
+@@ -85,26 +86,58 @@ Angle AngleNet::getAngle(cv::Mat &src) {
+     return scoreToAngle(outputData);
+ }
+ 
++std::vector<Angle> AngleNet::getAngleBatch(const std::vector<cv::Mat> &angleImgs) {
++    const size_t count = angleImgs.size();
++    const size_t channels = angleImgs.front().channels();
++    const size_t imageSize = static_cast<size_t>(dstWidth) * dstHeight * channels;
++    std::vector<float> inputTensorValues;
++    inputTensorValues.reserve(count * imageSize);
++    for (const cv::Mat &angleImg: angleImgs) {
++        cv::Mat img = angleImg;
++        std::vector<float> values = substractMeanNormalize(img, meanValues, normValues);
++        inputTensorValues.insert(inputTensorValues.end(), values.begin(), values.end());
++    }
++    std::array<int64_t, 4> inputShape{static_cast<int64_t>(count), static_cast<int64_t>(channels),
++                                      dstHeight, dstWidth};
++    auto memoryInfo = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
++    Ort::Value inputTensor = Ort::Value::CreateTensor<float>(memoryInfo, inputTensorValues.data(),
++                                                             inputTensorValues.size(), inputShape.data(),
++                                                             inputShape.size());
++    std::vector<const char *> inputNames = {inputNamesPtr.data()->get()};
++    std::vector<const char *> outputNames = {outputNamesPtr.data()->get()};
++    auto outputTensor = session->Run(Ort::RunOptions{nullptr}, inputNames.data(), &inputTensor,
++                                     inputNames.size(), outputNames.data(), outputNames.size());
++    std::vector<int64_t> outputShape = outputTensor[0].GetTensorTypeAndShapeInfo().GetShape();
++    const size_t classes = static_cast<size_t>(outputShape.back());
++    const float *floatArray = outputTensor.front().GetTensorMutableData<float>();
++    std::vector<Angle> angles;
++    angles.reserve(count);
++    for (size_t i = 0; i < count; ++i) {
++        std::vector<float> outputData(floatArray + i * classes, floatArray + (i + 1) * classes);
++        angles.push_back(scoreToAngle(outputData));
++    }
++    return angles;
++}
++
+ std::vector<Angle> AngleNet::getAngles(std::vector<cv::Mat> &partImgs, const char *path,
+                                        const char *imgName, bool doAngle, bool mostAngle) {
+     size_t size = partImgs.size();
+     std::vector<Angle> angles(size);
+     if (doAngle) {
+-        for (size_t i = 0; i < size; ++i) {
+-            double startAngle = getCurrentTime();
+-            cv::Mat angleImg;
+-            cv::resize(partImgs[i], angleImg, cv::Size(dstWidth, dstHeight));
+-            Angle angle = getAngle(angleImg);
+-            double endAngle = getCurrentTime();
+-            angle.time = endAngle - startAngle;
+-
+-            angles[i] = angle;
+-
+-            //OutPut AngleImg
+-            if (isOutputAngleImg) {
+-                std::string angleImgFile = getDebugImgFilePath(path, imgName, i, "-angle-");
+-                saveImg(angleImg, angleImgFile.c_str());
++        // gRParse: every crop resizes to the same 192x48, so batches need no
++        // padding and classify exactly as single crops do.
++        const size_t batch = (std::max)(size_t{1}, grparse::ocr_batch_size());
++        for (size_t first = 0; first < size; first += batch) {
++            const size_t last = (std::min)(size, first + batch);
++            std::vector<cv::Mat> angleImgs;
++            angleImgs.reserve(last - first);
++            for (size_t i = first; i < last; ++i) {
++                cv::Mat angleImg;
++                cv::resize(partImgs[i], angleImg, cv::Size(dstWidth, dstHeight));
++                angleImgs.push_back(std::move(angleImg));
+             }
++            std::vector<Angle> batchAngles = getAngleBatch(angleImgs);
++            for (size_t i = first; i < last; ++i) angles[i] = batchAngles[i - first];
+         }
+     } else {
+         for (size_t i = 0; i < size; ++i) {
+diff --git a/src/CrnnNet.cpp b/src/CrnnNet.cpp
+index 277d5f3..0b346fd 100644
+--- a/src/CrnnNet.cpp
++++ b/src/CrnnNet.cpp
+@@ -1,6 +1,7 @@
+ #include "CrnnNet.h"
+ #include "OcrUtils.h"
+ #include "grparse_session_ep.h"
++#include <algorithm>
+ #include <fstream>
+ #include <numeric>
+ 
+@@ -125,9 +126,84 @@ TextLine CrnnNet::getTextLine(const cv::Mat &src) {
+     return scoreToTextLine(outputData, outputShape[1], outputShape[2]);
+ }
+ 
++std::vector<TextLine> CrnnNet::getTextLineBatch(const std::vector<cv::Mat> &srcs) {
++    const size_t count = srcs.size();
++    std::vector<cv::Mat> resized(count);
++    int batchWidth = 1;
++    for (size_t i = 0; i < count; ++i) {
++        const float scale = (float) dstHeight / (float) srcs[i].rows;
++        const int dstWidth = (std::max)(1, int((float) srcs[i].cols * scale));
++        cv::resize(srcs[i], resized[i], cv::Size(dstWidth, dstHeight));
++        batchWidth = (std::max)(batchWidth, dstWidth);
++    }
++    const size_t channels = resized.front().channels();
++    const size_t plane = static_cast<size_t>(dstHeight) * batchWidth;
++    // Zero after normalization is mid-grey, the padding PaddleOCR's own
++    // batched recognizer uses.
++    std::vector<float> inputTensorValues(count * channels * plane, 0.0f);
++    for (size_t i = 0; i < count; ++i) {
++        std::vector<float> values = substractMeanNormalize(resized[i], meanValues, normValues);
++        const size_t width = resized[i].cols;
++        for (size_t ch = 0; ch < channels; ++ch) {
++            for (size_t row = 0; row < static_cast<size_t>(dstHeight); ++row) {
++                const float *from = values.data() + ch * dstHeight * width + row * width;
++                float *to = inputTensorValues.data() + (i * channels + ch) * plane + row * batchWidth;
++                std::copy(from, from + width, to);
++            }
++        }
++    }
++    std::array<int64_t, 4> inputShape{static_cast<int64_t>(count), static_cast<int64_t>(channels),
++                                      dstHeight, batchWidth};
++    auto memoryInfo = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
++    Ort::Value inputTensor = Ort::Value::CreateTensor<float>(memoryInfo, inputTensorValues.data(),
++                                                             inputTensorValues.size(), inputShape.data(),
++                                                             inputShape.size());
++    std::vector<const char *> inputNames = {inputNamesPtr.data()->get()};
++    std::vector<const char *> outputNames = {outputNamesPtr.data()->get()};
++    auto outputTensor = session->Run(Ort::RunOptions{nullptr}, inputNames.data(), &inputTensor,
++                                     inputNames.size(), outputNames.data(), outputNames.size());
++    std::vector<int64_t> outputShape = outputTensor[0].GetTensorTypeAndShapeInfo().GetShape();
++    const size_t steps = static_cast<size_t>(outputShape[1]);
++    const size_t classes = static_cast<size_t>(outputShape[2]);
++    const float *floatArray = outputTensor.front().GetTensorMutableData<float>();
++    std::vector<TextLine> textLines;
++    textLines.reserve(count);
++    for (size_t i = 0; i < count; ++i) {
++        const float *first = floatArray + i * steps * classes;
++        std::vector<float> outputData(first, first + steps * classes);
++        textLines.push_back(scoreToTextLine(outputData, steps, classes));
++    }
++    return textLines;
++}
++
+ std::vector<TextLine> CrnnNet::getTextLines(std::vector<cv::Mat> &partImg, const char *path, const char *imgName) {
+     int size = partImg.size();
+     std::vector<TextLine> textLines(size);
++    const size_t batch = grparse::ocr_batch_size();
++    if (batch > 1 && !isOutputDebugImg) {
++        // gRParse: crops sorted by aspect ratio go in batches, so each one
++        // pads its narrower crops only a little.
++        std::vector<size_t> order(size);
++        std::iota(order.begin(), order.end(), size_t{0});
++        std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
++            return (float) partImg[a].cols / (float) partImg[a].rows <
++                   (float) partImg[b].cols / (float) partImg[b].rows;
++        });
++        for (size_t first = 0; first < order.size(); first += batch) {
++            const size_t last = (std::min)(order.size(), first + batch);
++            std::vector<cv::Mat> srcs;
++            srcs.reserve(last - first);
++            for (size_t i = first; i < last; ++i) srcs.push_back(partImg[order[i]]);
++            double startCrnnTime = getCurrentTime();
++            std::vector<TextLine> lines = getTextLineBatch(srcs);
++            const double perLine = (getCurrentTime() - startCrnnTime) / (double) srcs.size();
++            for (size_t i = first; i < last; ++i) {
++                lines[i - first].time = perLine;
++                textLines[order[i]] = std::move(lines[i - first]);
++            }
++        }
++        return textLines;
++    }
+     for (int i = 0; i < size; ++i) {
+         //OutPut DebugImg
+         if (isOutputDebugImg) {

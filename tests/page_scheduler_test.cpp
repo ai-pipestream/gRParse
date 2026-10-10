@@ -1439,7 +1439,7 @@ void verify_turned_scan_is_rerecognized_upright() {
                    capturing_callbacks(&result, &delivered));
   wait_until_finished(&result);
   require(!result.failure, "turned scan failed");
-  require(recognizer.calls.load() == 3, "one read plus one per quarter turn, never more");
+  require(recognizer.calls.load() == 2, "one read plus the predicted quarter turn");
 
   std::lock_guard<std::mutex> lock(delivered.mutex);
   require(delivered.page != nullptr, "the page must be delivered");
@@ -1455,7 +1455,7 @@ void verify_turned_scan_is_rerecognized_upright() {
   const auto metrics = scheduler.metrics();
   require(metrics.pages_recognized == 1, "pages_recognized counts pages, not passes");
   require(metrics.pages_rerecognized == 1, "one page was re-read");
-  require(metrics.rerecognition_passes == 2, "two extra passes were spent");
+  require(metrics.rerecognition_passes == 1, "one extra pass was spent");
   require(metrics.rotations_applied == std::array<uint64_t, 3>{0, 0, 1},
           "the 270 degree turn is the one counted");
 }

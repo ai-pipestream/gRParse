@@ -92,6 +92,23 @@ void verify_latest_selection_wins() {
           "the replaced selection still routes through the counting hook");
 }
 
+// With GRPARSE_OCR_BATCH unset, line crops go 16 to a call under CUDA and
+// one at a time under CPU and OpenVINO.
+void verify_ocr_batch_size_follows_provider() {
+  require(std::getenv("GRPARSE_OCR_BATCH") == nullptr, "the test runs without GRPARSE_OCR_BATCH");
+  const grparse::OrtEpSelection kept = grparse::ort_ep_selection();
+  require(kept.ep == grparse::OrtEp::kCpu, "the test starts on the CPU provider");
+  require_equal(grparse::ocr_batch_size(), size_t{1}, "CPU reads one crop per call");
+  grparse::OrtEpSelection other = kept;
+  other.ep = grparse::OrtEp::kOpenVino;
+  grparse::set_ort_ep_selection(other);
+  require_equal(grparse::ocr_batch_size(), size_t{1}, "OpenVINO reads one crop per call");
+  other.ep = grparse::OrtEp::kCuda;
+  grparse::set_ort_ep_selection(other);
+  require_equal(grparse::ocr_batch_size(), size_t{16}, "CUDA reads 16 crops per call");
+  grparse::set_ort_ep_selection(kept);
+}
+
 // The minimal ONNX model a fallback can rebuild on CPU: ir_version 8, opset
 // 13, one Identity from input "x" to output "y", hand-encoded protobuf so the
 // fixture carries no generator dependency.
@@ -284,6 +301,7 @@ int main() {
       verify_selection_round_trips_and_copies,
       verify_explicit_cpu_overrides_legacy_gpu_index,
       verify_latest_selection_wins,
+      verify_ocr_batch_size_follows_provider,
       verify_make_session_falls_back_and_counts,
       verify_cpu_selection_failure_does_not_count,
       verify_make_session_retries_on_openvino_then_falls_back,

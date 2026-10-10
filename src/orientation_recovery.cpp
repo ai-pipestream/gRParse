@@ -54,6 +54,9 @@ OrientationOutcome recover_orientation(PageRecognizer& recognizer, const Orienta
       best_raster = std::move(turned);
       best_page = std::move(read);
       best_degrees = degrees;
+      // An upright, confident read settles the page; the turns after it
+      // are not read.
+      if (best.upright && best.mean_confidence >= options.confidence_floor) break;
     }
   }
   if (best_degrees == 0) return outcome;
