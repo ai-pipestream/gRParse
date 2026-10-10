@@ -92,16 +92,20 @@ void verify_latest_selection_wins() {
           "the replaced selection still routes through the counting hook");
 }
 
-// With GRPARSE_OCR_BATCH unset, line crops go 16 to a call, except under
-// OpenVINO, whose GPU plugin compiles kernels per input shape.
+// With GRPARSE_OCR_BATCH unset, line crops go 16 to a call under CUDA and
+// one at a time under CPU and OpenVINO.
 void verify_ocr_batch_size_follows_provider() {
   require(std::getenv("GRPARSE_OCR_BATCH") == nullptr, "the test runs without GRPARSE_OCR_BATCH");
   const grparse::OrtEpSelection kept = grparse::ort_ep_selection();
-  require_equal(grparse::ocr_batch_size(), size_t{16}, "CPU reads 16 crops per call");
-  grparse::OrtEpSelection openvino = kept;
-  openvino.ep = grparse::OrtEp::kOpenVino;
-  grparse::set_ort_ep_selection(openvino);
+  require(kept.ep == grparse::OrtEp::kCpu, "the test starts on the CPU provider");
+  require_equal(grparse::ocr_batch_size(), size_t{1}, "CPU reads one crop per call");
+  grparse::OrtEpSelection other = kept;
+  other.ep = grparse::OrtEp::kOpenVino;
+  grparse::set_ort_ep_selection(other);
   require_equal(grparse::ocr_batch_size(), size_t{1}, "OpenVINO reads one crop per call");
+  other.ep = grparse::OrtEp::kCuda;
+  grparse::set_ort_ep_selection(other);
+  require_equal(grparse::ocr_batch_size(), size_t{16}, "CUDA reads 16 crops per call");
   grparse::set_ort_ep_selection(kept);
 }
 

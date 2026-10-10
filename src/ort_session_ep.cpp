@@ -171,7 +171,7 @@ size_t ocr_batch_size() {
     return static_cast<size_t>(parsed);
   }();
   if (configured != 0) return configured;
-  return ort_ep_selection().ep == OrtEp::kOpenVino ? 1 : 16;
+  return ort_ep_selection().ep == OrtEp::kCuda ? 16 : 1;
 }
 
 void set_ort_intra_op_threads(int threads) { intra_op_threads.store(threads > 0 ? threads : 0); }
