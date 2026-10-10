@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <mutex>
 #include <print>
 #include <random>
@@ -157,6 +158,21 @@ OvCompileGate::OvCompileGate() {
 }
 
 OvCompileGate::~OvCompileGate() = default;
+
+size_t ocr_batch_size() {
+  static const size_t configured = [] {
+    const char* value = std::getenv("GRPARSE_OCR_BATCH");
+    if (value == nullptr || *value == '\0') return size_t{0};
+    char* end = nullptr;
+    const long parsed = std::strtol(value, &end, 10);
+    if (*end != '\0' || parsed < 1 || parsed > 256) {
+      throw std::invalid_argument("GRPARSE_OCR_BATCH must be an integer between 1 and 256");
+    }
+    return static_cast<size_t>(parsed);
+  }();
+  if (configured != 0) return configured;
+  return ort_ep_selection().ep == OrtEp::kOpenVino ? 1 : 16;
+}
 
 void set_ort_intra_op_threads(int threads) { intra_op_threads.store(threads > 0 ? threads : 0); }
 

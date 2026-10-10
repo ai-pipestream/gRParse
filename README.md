@@ -417,7 +417,11 @@ one of it. Select the NVIDIA device with
 provider: `cuda` (default, fails startup if CUDA cannot initialize),
 `openvino` (Intel GPU/CPU/NPU through the OpenVINO build — see below), `cpu`
 (explicit CPU inference), or `auto` (prefers CUDA, then OpenVINO, then CPU,
-logging each fallback). Requesting a provider the linked ONNX Runtime does not
+logging each fallback). `GRPARSE_OCR_BATCH` (1 to 256) sets how many line
+crops the angle classifier and recognizer take per call: 16 by default, 1
+under OpenVINO, whose GPU plugin compiles kernels for every new input shape.
+Crops are sorted by width before batching, and each batch is padded to its
+widest crop; 1 reads one crop per call. Requesting a provider the linked ONNX Runtime does not
 offer fails with the list that is actually available. An OCR session that
 throws during inference is destroyed and rebuilt on next use instead of
 staying in the pool poisoned. Optional RapidOCR detect knobs:

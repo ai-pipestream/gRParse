@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <mutex>
@@ -56,6 +57,14 @@ inline constexpr int kIntraOpAllCores = 0;
 // Call before building any engine; 0 leaves ONNX Runtime's own default alone.
 void set_ort_intra_op_threads(int threads);
 int ort_intra_op_threads();
+
+// How many line crops the patched angle and recognition nets run per call
+// (patches/rapidocr-batched-nets.patch).  GRPARSE_OCR_BATCH sets it, 1 to
+// 256; the default is 16, or 1 under the OpenVINO provider, whose GPU plugin
+// compiles kernels for each new input shape and a batch dimension multiplies
+// those shapes.  1 reads one crop per call, the upstream behavior.  A
+// malformed value throws std::invalid_argument.
+size_t ocr_batch_size();
 
 // Must be called before any OCR engine is constructed.  Later sessions use
 // the newest selection; sessions already built keep the provider they bound.
