@@ -82,3 +82,14 @@ def test_password_file_is_read_and_never_printed() -> None:
         assert "EVAL_S3_PASSWORDS_FILE" in str(error)
     else:
         raise AssertionError("an unreadable password file must raise")
+
+
+def test_concurrency_defaults_to_one_and_is_bounded() -> None:
+    assert Config.from_env(dict(FULL), Path("/repo")).concurrency == 1
+    assert Config.from_env(dict(FULL, EVAL_S3_CONCURRENCY="4"), Path("/repo")).concurrency == 4
+    try:
+        Config.from_env(dict(FULL, EVAL_S3_CONCURRENCY="17"), Path("/repo"))
+    except ConfigError as error:
+        assert "EVAL_S3_CONCURRENCY" in str(error)
+    else:
+        raise AssertionError("a concurrency over the bound must raise")

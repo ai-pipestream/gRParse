@@ -26,6 +26,8 @@ from __future__ import annotations
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -135,10 +137,69 @@ def convert_object(client: Any, key: str, data: bytes, ext: str, *, repeat: int,
     return runs, sniffed, dropped
 
 
+@dataclass(frozen=True)
+class Planned:
+    """One selected object and what was decided about it before any
+    conversion ran, in selection order, so a concurrent run sniffs and
+    reports the same objects a serial one does."""
+    index: int
+    ref: ObjectRef
+    ext: str
+    family: str
+    layout_key: str | None
+    sniff: bool
+
+
+def plan_objects(selected: list[ObjectRef], listing: list[ObjectRef], sniff_per_extension: int) -> list[Planned]:
+    sniffed_per_ext: dict[str, int] = {}
+    planned = []
+    for index, ref in enumerate(selected, start=1):
+        ext = extension_of(ref.key)
+        family = family_of(ext)
+        layout_key = companion_layout(ref.key, listing) if family == "ebcdic" else None
+        do_sniff = sniffed_per_ext.get(ext, 0) < sniff_per_extension and family != "ebcdic"
+        if do_sniff:
+            sniffed_per_ext[ext] = sniffed_per_ext.get(ext, 0) + 1
+        planned.append(Planned(index, ref, ext, family, layout_key, do_sniff))
+    return planned
+
+
+def evaluate_object(config: Config, source: ObjectSource, client: Any,
+                    plan: Planned) -> tuple[ObjectResult, str | None, str]:
+    """The object's result, the note it adds (if any) and its log line."""
+    ref, ext, family = plan.ref, plan.ext, plan.family
+    if family == "ebcdic" and plan.layout_key is None:
+        return (skipped(ref.key, ext, family, ref.size, "no <stem>.layout.json beside the .ebc object"), None,
+                f"-- {ref.key}: skipped (no layout)")
+    layout = source.fetch(plan.layout_key) if plan.layout_key is not None else None
+    data = source.fetch(ref.key)
+    runs, sniff, dropped = convert_object(client, ref.key, data, ext, repeat=config.repeat, sniff=plan.sniff,
+                                          layout=layout,
+                                          timeout=config.deadline_for(pdf_page_count(data) if ext == "pdf" else 0),
+                                          passwords=config.document_passwords)
+    note = None
+    if dropped:
+        note = (f"{ref.key}: over the unary response limit with every export; checked without "
+                f"{', '.join(dropped)}")
+    first = runs[0]
+    view = View(first.document) if first.document and not first.rpc_error else None
+    ctx = ObjectContext(key=ref.key, ext=ext, family=family, size=ref.size,
+                        facts=source_facts(ext, family, data), runs=runs, sniff=sniff, view=view)
+    del data
+    result = evaluate(ctx)
+    failed = [name for name, verdict in result.checks.items() if verdict == "fail"]
+    mark = "!!" if failed else "=="
+    line = (f"{mark} {ref.key}: {result.parser_type} {result.status} "
+            f"({result.elapsed_ms:.0f} ms){' [' + ', '.join(failed) + ']' if failed else ''}")
+    return result, note, line
+
+
 def evaluate_bucket(config: Config, source: ObjectSource, client: Any, results: list[ObjectResult],
                     matrix: Matrix, notes: list[str]) -> None:
-    """Appends to ``results``/``matrix``/``notes`` as it goes, so an aborted
-    run still reports every object it finished."""
+    """Appends to ``results``/``matrix``/``notes`` in selection order as
+    objects finish, so an aborted run still reports every object it
+    finished. EVAL_S3_CONCURRENCY objects convert at once; results, notes
+    and log lines keep selection order whatever finishes first."""
     listing = source.list_objects()
     selected = [ref for ref in select_keys(listing, config.include, config.exclude, None)
                 if not ref.key.endswith(LAYOUT_SUFFIX)]
@@ -146,41 +207,30 @@ def evaluate_bucket(config: Config, source: ObjectSource, client: Any, results: 
         selected = selected[: config.max_objects]
     if not selected:
         raise SourceUnreachable(f"no objects selected under s3://{config.bucket}/{config.prefix}")
-    sniffed_per_ext: dict[str, int] = {}
-    for index, ref in enumerate(selected, start=1):
-        ext = extension_of(ref.key)
-        family = family_of(ext)
-        layout: bytes | None = None
-        if family == "ebcdic":
-            layout_key = companion_layout(ref.key, listing)
-            if layout_key is None:
-                results.append(skipped(ref.key, ext, family, ref.size, "no <stem>.layout.json beside the .ebc object"))
-                log(f"-- [{index}/{len(selected)}] {ref.key}: skipped (no layout)")
-                continue
-            layout = source.fetch(layout_key)
-        data = source.fetch(ref.key)
-        do_sniff = sniffed_per_ext.get(ext, 0) < config.sniff_per_extension and family != "ebcdic"
-        if do_sniff:
-            sniffed_per_ext[ext] = sniffed_per_ext.get(ext, 0) + 1
-        runs, sniff, dropped = convert_object(client, ref.key, data, ext, repeat=config.repeat, sniff=do_sniff,
-                                              layout=layout,
-                                              timeout=config.deadline_for(pdf_page_count(data) if ext == "pdf" else 0),
-                                              passwords=config.document_passwords)
-        if dropped:
-            notes.append(f"{ref.key}: over the unary response limit with every export; checked without "
-                         f"{', '.join(dropped)}")
-        first = runs[0]
-        view = View(first.document) if first.document and not first.rpc_error else None
-        ctx = ObjectContext(key=ref.key, ext=ext, family=family, size=ref.size,
-                            facts=source_facts(ext, family, data), runs=runs, sniff=sniff, view=view)
-        del data
-        result = evaluate(ctx)
+    planned = plan_objects(selected, listing, config.sniff_per_extension)
+
+    def record(plan: Planned, outcome: tuple[ObjectResult, str | None, str]) -> None:
+        result, note, line = outcome
         results.append(result)
-        matrix.add(result)
-        failed = [name for name, verdict in result.checks.items() if verdict == "fail"]
-        mark = "!!" if failed else "=="
-        log(f"{mark} [{index}/{len(selected)}] {ref.key}: {result.parser_type} {result.status} "
-            f"({result.elapsed_ms:.0f} ms){' [' + ', '.join(failed) + ']' if failed else ''}")
+        if not result.skipped:
+            matrix.add(result)
+        if note:
+            notes.append(note)
+        log(line.replace(" ", f" [{plan.index}/{len(planned)}] ", 1))
+
+    if config.concurrency <= 1:
+        for plan in planned:
+            record(plan, evaluate_object(config, source, client, plan))
+        return
+    with ThreadPoolExecutor(max_workers=config.concurrency) as pool:
+        futures = [pool.submit(evaluate_object, config, source, client, plan) for plan in planned]
+        try:
+            for plan, future in zip(planned, futures):
+                record(plan, future.result())
+        except BaseException:
+            for future in futures:
+                future.cancel()
+            raise
 
 
 def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None,

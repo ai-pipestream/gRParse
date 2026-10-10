@@ -62,6 +62,16 @@ def _passwords(env: Mapping[str, str]) -> tuple[str, ...]:
     return candidates
 
 
+MAX_CONCURRENCY = 16
+
+
+def _concurrency(env: Mapping[str, str]) -> int:
+    value = _int(env, "EVAL_S3_CONCURRENCY", 1) or 1
+    if value > MAX_CONCURRENCY:
+        raise ConfigError(f"EVAL_S3_CONCURRENCY must be at most {MAX_CONCURRENCY}, got {value}")
+    return value
+
+
 def _flag(env: Mapping[str, str], name: str, default: bool) -> bool:
     raw = env.get(name)
     if raw is None:
@@ -97,6 +107,10 @@ class Config:
     # max(convert_timeout, pages x this), so a 955-page scan is held to its
     # length rather than to the deadline of a two-page letter.
     seconds_per_page: float = 1.5
+    # Objects converted at once. Each object's own repeats stay back to
+    # back; only different objects overlap, so a digital PDF can run while a
+    # scan holds the GPU.
+    concurrency: int = 1
     # Candidate passwords sent with every conversion (EVAL_S3_PASSWORDS_FILE);
     # kept out of repr so no log line or report can print them.
     document_passwords: tuple[str, ...] = field(default=(), repr=False)
@@ -131,6 +145,7 @@ class Config:
             require=_flag(env, "EVAL_REQUIRE", False),
             convert_timeout=float(_int(env, "EVAL_S3_CONVERT_TIMEOUT", 600) or 600),
             seconds_per_page=float(env.get("EVAL_S3_SECONDS_PER_PAGE") or 1.5),
+            concurrency=_concurrency(env),
             document_passwords=_passwords(env),
         )
 

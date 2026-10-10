@@ -37,6 +37,7 @@ not a pass.
 | `EVAL_S3_REPEAT` | conversions per object, default 2 (the second is the byte-identity check) |
 | `EVAL_S3_CONVERT_TIMEOUT` | client deadline per conversion in seconds, default 600; a parse that runs past it (or uses most of it) is that object's failure and is not repeated |
 | `EVAL_S3_SECONDS_PER_PAGE` | extra deadline per PDF page, default 1.5: a PDF gets max(`EVAL_S3_CONVERT_TIMEOUT`, pages x this), its page count read from the page tree's `/Count` (also inside compressed object streams) |
+| `EVAL_S3_CONCURRENCY` | objects converted at once, 1 to 16, default 1. Repeats of one object run back to back; the report, findings and log keep selection order. Overlapping objects share the server, so reported latencies include waiting on other objects |
 | `EVAL_S3_SNIFF_PER_EXTENSION` | objects per extension parsed once more under an extension-less name, default 1 |
 | `EVAL_OUT`, `EVAL_LABEL` | output root (default `eval/out`) and run label (default `live`) |
 | `EVAL_REQUIRE` | `1` makes a skipped object (an `.ebc` without a layout) a failure |
