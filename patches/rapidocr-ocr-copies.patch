@@ -13,8 +13,47 @@ index ef2811d..0a111d3 100644
  };
  
  
+diff --git a/src/AngleNet.cpp b/src/AngleNet.cpp
+index 8d78f59..b8e3496 100644
+--- a/src/AngleNet.cpp
++++ b/src/AngleNet.cpp
+@@ -125,19 +125,29 @@ std::vector<Angle> AngleNet::getAngles(std::vector<cv::Mat> &partImgs, const cha
+     std::vector<Angle> angles(size);
+     if (doAngle) {
+         // gRParse: every crop resizes to the same 192x48, so batches need no
+-        // padding and classify exactly as single crops do.
++        // padding.  A crop with no pixels (a degenerate box) gets upright at
++        // score 0, which no vote counts, instead of failing the page.
++        std::vector<size_t> readable;
++        readable.reserve(size);
++        for (size_t i = 0; i < size; ++i) {
++            if (partImgs[i].empty()) {
++                angles[i] = Angle{0, 0.f};
++            } else {
++                readable.push_back(i);
++            }
++        }
+         const size_t batch = (std::max)(size_t{1}, grparse::ocr_batch_size());
+-        for (size_t first = 0; first < size; first += batch) {
+-            const size_t last = (std::min)(size, first + batch);
++        for (size_t first = 0; first < readable.size(); first += batch) {
++            const size_t last = (std::min)(readable.size(), first + batch);
+             std::vector<cv::Mat> angleImgs;
+             angleImgs.reserve(last - first);
+             for (size_t i = first; i < last; ++i) {
+                 cv::Mat angleImg;
+-                cv::resize(partImgs[i], angleImg, cv::Size(dstWidth, dstHeight));
++                cv::resize(partImgs[readable[i]], angleImg, cv::Size(dstWidth, dstHeight));
+                 angleImgs.push_back(std::move(angleImg));
+             }
+             std::vector<Angle> batchAngles = getAngleBatch(angleImgs);
+-            for (size_t i = first; i < last; ++i) angles[i] = batchAngles[i - first];
++            for (size_t i = first; i < last; ++i) angles[readable[i]] = batchAngles[i - first];
+         }
+     } else {
+         for (size_t i = 0; i < size; ++i) {
 diff --git a/src/CrnnNet.cpp b/src/CrnnNet.cpp
-index 0b346fd..27acaaf 100644
+index 0b346fd..8bc7393 100644
 --- a/src/CrnnNet.cpp
 +++ b/src/CrnnNet.cpp
 @@ -169,13 +169,40 @@ std::vector<TextLine> CrnnNet::getTextLineBatch(const std::vector<cv::Mat> &srcs
@@ -61,8 +100,41 @@ index 0b346fd..27acaaf 100644
  std::vector<TextLine> CrnnNet::getTextLines(std::vector<cv::Mat> &partImg, const char *path, const char *imgName) {
      int size = partImg.size();
      std::vector<TextLine> textLines(size);
+@@ -183,12 +210,16 @@ std::vector<TextLine> CrnnNet::getTextLines(std::vector<cv::Mat> &partImg, const
+     if (batch > 1 && !isOutputDebugImg) {
+         // gRParse: crops sorted by aspect ratio go in batches, so each one
+         // pads its narrower crops only a little.
+-        std::vector<size_t> order(size);
+-        std::iota(order.begin(), order.end(), size_t{0});
+-        std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+-            return (float) partImg[a].cols / (float) partImg[a].rows <
+-                   (float) partImg[b].cols / (float) partImg[b].rows;
+-        });
++        // A crop with no pixels (a degenerate box) reads as an empty line
++        // instead of failing the page; the rest are batched.
++        std::vector<size_t> order;
++        order.reserve(size);
++        for (int i = 0; i < size; ++i) {
++            if (!partImg[i].empty()) order.push_back(static_cast<size_t>(i));
++        }
++        auto ratio = [&](size_t i) { return (float) partImg[i].cols / (float) partImg[i].rows; };
++        std::stable_sort(order.begin(), order.end(),
++                         [&](size_t a, size_t b) { return ratio(a) < ratio(b); });
+         for (size_t first = 0; first < order.size(); first += batch) {
+             const size_t last = (std::min)(order.size(), first + batch);
+             std::vector<cv::Mat> srcs;
+@@ -213,7 +244,8 @@ std::vector<TextLine> CrnnNet::getTextLines(std::vector<cv::Mat> &partImg, const
+ 
+         //getTextLine
+         double startCrnnTime = getCurrentTime();
+-        TextLine textLine = getTextLine(partImg[i]);
++        // gRParse: a crop with no pixels reads as an empty line.
++        TextLine textLine = partImg[i].empty() ? TextLine{} : getTextLine(partImg[i]);
+         double endCrnnTime = getCurrentTime();
+         textLine.time = endCrnnTime - startCrnnTime;
+         textLines[i] = textLine;
 diff --git a/src/OcrLite.cpp b/src/OcrLite.cpp
-index 545a92b..db3227c 100755
+index 545a92b..4930772 100755
 --- a/src/OcrLite.cpp
 +++ b/src/OcrLite.cpp
 @@ -133,7 +133,10 @@ OcrResult OcrLite::detect(const char *path, const char *imgName,
@@ -86,6 +158,15 @@ index 545a92b..db3227c 100755
  
      //---------- getPartImages ----------
      std::vector<cv::Mat> partImages = getPartImages(src, textBoxes, path, imgName);
+@@ -174,7 +177,7 @@ OcrResult OcrLite::detect(const char *path, const char *imgName,
+ 
+     //Rotate partImgs
+     for (size_t i = 0; i < partImages.size(); ++i) {
+-        if (angles[i].index == 1) {
++        if (angles[i].index == 1 && !partImages[i].empty()) {
+             partImages.at(i) = matRotateClockWise180(partImages[i]);
+         }
+     }
 @@ -218,7 +221,9 @@ OcrResult OcrLite::detect(const char *path, const char *imgName,
      //cropped to original size
      cv::Mat textBoxImg;
