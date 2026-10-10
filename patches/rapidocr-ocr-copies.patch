@@ -1,0 +1,115 @@
+diff --git a/include/CrnnNet.h b/include/CrnnNet.h
+index ef2811d..0a111d3 100644
+--- a/include/CrnnNet.h
++++ b/include/CrnnNet.h
+@@ -43,6 +43,10 @@ private:
+     // gRParse: reads crops of similar width together, padded on the right to
+     // the widest in the batch (patches/rapidocr-batched-nets.patch).
+     std::vector<TextLine> getTextLineBatch(const std::vector<cv::Mat> &srcs);
++
++    // gRParse: scoreToTextLine over one line's scores in place, one pass per
++    // time step (patches/rapidocr-ocr-copies.patch).
++    TextLine decodeScores(const float *data, size_t h, size_t w) const;
+ };
+ 
+ 
+diff --git a/src/CrnnNet.cpp b/src/CrnnNet.cpp
+index 0b346fd..27acaaf 100644
+--- a/src/CrnnNet.cpp
++++ b/src/CrnnNet.cpp
+@@ -169,13 +169,40 @@ std::vector<TextLine> CrnnNet::getTextLineBatch(const std::vector<cv::Mat> &srcs
+     std::vector<TextLine> textLines;
+     textLines.reserve(count);
+     for (size_t i = 0; i < count; ++i) {
+-        const float *first = floatArray + i * steps * classes;
+-        std::vector<float> outputData(first, first + steps * classes);
+-        textLines.push_back(scoreToTextLine(outputData, steps, classes));
++        textLines.push_back(decodeScores(floatArray + i * steps * classes, steps, classes));
+     }
+     return textLines;
+ }
+ 
++TextLine CrnnNet::decodeScores(const float *data, size_t h, size_t w) const {
++    // Same result as scoreToTextLine, including its last-step quirk: the
++    // final time step's scan stops one class short.
++    const size_t keySize = keys.size();
++    const size_t dataSize = h * w;
++    std::string strRes;
++    std::vector<float> scores;
++    size_t lastIndex = 0;
++    for (size_t i = 0; i < h; i++) {
++        const size_t start = i * w;
++        size_t stop = (i + 1) * w;
++        if (stop > dataSize - 1) stop = (i + 1) * w - 1;
++        size_t maxIndex = 0;
++        float maxValue = data[start];
++        for (size_t j = start + 1; j < stop; ++j) {
++            if (data[j] > maxValue) {
++                maxValue = data[j];
++                maxIndex = j - start;
++            }
++        }
++        if (maxIndex > 0 && maxIndex < keySize && (!(i > 0 && maxIndex == lastIndex))) {
++            scores.emplace_back(maxValue);
++            strRes.append(keys[maxIndex]);
++        }
++        lastIndex = maxIndex;
++    }
++    return {strRes, scores};
++}
++
+ std::vector<TextLine> CrnnNet::getTextLines(std::vector<cv::Mat> &partImg, const char *path, const char *imgName) {
+     int size = partImg.size();
+     std::vector<TextLine> textLines(size);
+diff --git a/src/OcrLite.cpp b/src/OcrLite.cpp
+index 545a92b..db3227c 100755
+--- a/src/OcrLite.cpp
++++ b/src/OcrLite.cpp
+@@ -133,7 +133,10 @@ OcrResult OcrLite::detect(const char *path, const char *imgName,
+                           cv::Mat &src, cv::Rect &originRect, ScaleParam &scale,
+                           float boxScoreThresh, float boxThresh, float unClipRatio, bool doAngle, bool mostAngle) {
+ 
+-    cv::Mat textBoxPaddingImg = src.clone();
++    // gRParse: the page with its boxes drawn is built only when it is
++    // written out (patches/rapidocr-ocr-copies.patch).
++    cv::Mat textBoxPaddingImg;
++    if (isOutputResultImg) textBoxPaddingImg = src.clone();
+     int thickness = getThickness(src);
+ 
+     Logger("=====Start detect=====\n");
+@@ -158,7 +161,7 @@ OcrResult OcrLite::detect(const char *path, const char *imgName,
+     }
+ 
+     Logger("---------- step: drawTextBoxes ----------\n");
+-    drawTextBoxes(textBoxPaddingImg, textBoxes, thickness);
++    if (isOutputResultImg) drawTextBoxes(textBoxPaddingImg, textBoxes, thickness);
+ 
+     //---------- getPartImages ----------
+     std::vector<cv::Mat> partImages = getPartImages(src, textBoxes, path, imgName);
+@@ -218,7 +221,9 @@ OcrResult OcrLite::detect(const char *path, const char *imgName,
+     //cropped to original size
+     cv::Mat textBoxImg;
+ 
+-    if (originRect.x > 0 && originRect.y > 0) {
++    if (!isOutputResultImg) {
++        // No result image: boxImg stays empty.
++    } else if (originRect.x > 0 && originRect.y > 0) {
+         textBoxPaddingImg(originRect).copyTo(textBoxImg);
+     } else {
+         textBoxImg = textBoxPaddingImg;
+diff --git a/src/OcrUtils.cpp b/src/OcrUtils.cpp
+index 8c590ec..92729db 100755
+--- a/src/OcrUtils.cpp
++++ b/src/OcrUtils.cpp
+@@ -115,8 +115,9 @@ cv::Mat matRotateClockWise90(cv::Mat src) {
+ }
+ 
+ cv::Mat getRotateCropImage(const cv::Mat &src, std::vector<cv::Point> box) {
+-    cv::Mat image;
+-    src.copyTo(image);
++    // gRParse: crops the box's bounding rectangle straight from src instead
++    // of copying the whole page first (patches/rapidocr-ocr-copies.patch).
++    const cv::Mat &image = src;
+     std::vector<cv::Point> points = box;
+ 
+     int collectX[4] = {box[0].x, box[1].x, box[2].x, box[3].x};

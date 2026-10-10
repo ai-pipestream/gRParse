@@ -86,7 +86,10 @@ FetchContent_Declare(rapidocr SOURCE_SUBDIR disabled
         COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-batched-nets.patch"
         # The angle model's page vote counts only crops it is at least 0.9
         # sure of, PaddleOCR's own threshold.
-        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-confident-angle-vote.patch")
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-confident-angle-vote.patch"
+        # Line crops cut from the page in place, the debug result image built
+        # only when saved, and recognizer scores decoded in place.
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-ocr-copies.patch")
 FetchContent_MakeAvailable(rapidocr)
 # FetchContent only patches when it populates, so a dependency tree cached
 # before the patch existed would build the upstream provider wiring and the
@@ -145,6 +148,14 @@ if(GRPARSE_ANGLE_VOTE_AT EQUAL -1)
     "directory (or the docker build cache) and re-run CMake.")
 endif()
 unset(GRPARSE_ANGLE_SOURCE)
+file(READ "${rapidocr_SOURCE_DIR}/src/CrnnNet.cpp" GRPARSE_CRNN_SOURCE)
+string(FIND "${GRPARSE_CRNN_SOURCE}" "decodeScores" GRPARSE_CRNN_DECODE_AT)
+if(GRPARSE_CRNN_DECODE_AT EQUAL -1)
+  message(FATAL_ERROR "src/CrnnNet.cpp is unpatched: the rapidocr source tree is from before "
+    "patches/rapidocr-ocr-copies.patch. Delete _deps/rapidocr-* from the build directory "
+    "(or the docker build cache) and re-run CMake.")
+endif()
+unset(GRPARSE_CRNN_SOURCE)
 file(READ "${rapidocr_SOURCE_DIR}/include/DbNet.h" GRPARSE_DBNET_HEADER)
 string(FIND "${GRPARSE_DBNET_HEADER}" "opencv2/geometry.hpp" GRPARSE_DBNET_GEOMETRY_AT)
 if(GRPARSE_DBNET_GEOMETRY_AT EQUAL -1)
