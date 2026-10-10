@@ -83,7 +83,10 @@ FetchContent_Declare(rapidocr SOURCE_SUBDIR disabled
         COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-opencv5-geometry.patch"
         # The angle and recognition nets run line crops in batches
         # (grparse::ocr_batch_size, GRPARSE_OCR_BATCH).
-        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-batched-nets.patch")
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-batched-nets.patch"
+        # The angle model's page vote counts only crops it is at least 0.9
+        # sure of, PaddleOCR's own threshold.
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-confident-angle-vote.patch")
 FetchContent_MakeAvailable(rapidocr)
 # FetchContent only patches when it populates, so a dependency tree cached
 # before the patch existed would build the upstream provider wiring and the
@@ -134,6 +137,14 @@ if(GRPARSE_CRNN_BATCH_AT EQUAL -1)
     "(or the docker build cache) and re-run CMake.")
 endif()
 unset(GRPARSE_CRNN_SOURCE)
+file(READ "${rapidocr_SOURCE_DIR}/src/AngleNet.cpp" GRPARSE_ANGLE_SOURCE)
+string(FIND "${GRPARSE_ANGLE_SOURCE}" "kFlipScore" GRPARSE_ANGLE_VOTE_AT)
+if(GRPARSE_ANGLE_VOTE_AT EQUAL -1)
+  message(FATAL_ERROR "src/AngleNet.cpp is unpatched: the rapidocr source tree predates "
+    "patches/rapidocr-confident-angle-vote.patch. Delete _deps/rapidocr-* from the build "
+    "directory (or the docker build cache) and re-run CMake.")
+endif()
+unset(GRPARSE_ANGLE_SOURCE)
 file(READ "${rapidocr_SOURCE_DIR}/include/DbNet.h" GRPARSE_DBNET_HEADER)
 string(FIND "${GRPARSE_DBNET_HEADER}" "opencv2/geometry.hpp" GRPARSE_DBNET_GEOMETRY_AT)
 if(GRPARSE_DBNET_GEOMETRY_AT EQUAL -1)
