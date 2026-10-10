@@ -161,3 +161,33 @@ def test_exports_over_the_unary_limit_are_dropped_one_at_a_time() -> None:
     assert clients[0].formats[0] == ("MARKDOWN", "CANONICAL_JSON")
     assert all(formats == ("MARKDOWN",) for formats in clients[0].formats[1:])
     assert any("r/big.docx" in note and "CANONICAL_JSON" in note for note in report["notes"])
+
+
+def _comparable(report: dict) -> dict:
+    """The report without timings, which differ from run to run."""
+    objects = [{k: v for k, v in o.items() if k != "elapsed_ms"} for o in report["objects"]]
+    return {"findings": report["findings"], "totals": report["totals"], "matrix": report["matrix"],
+            "objects": objects}
+
+
+def test_concurrent_objects_report_exactly_what_a_serial_run_does() -> None:
+    broken = word_document()
+    broken["body"]["children"].append({"ref": "#/texts/50"})
+    objects = {f"r/{i:02d}.docx": bytes([i]) for i in range(6)}
+    objects.update({"r/scan.png": b"\x89PNG", "r/bad.html": b"<p>", "r/x.ebc": b"\x00"})
+    answers = {"docx": result(word_document()), "png": result(scan_document()), "html": result(broken)}
+    serial = _run(objects, answers)
+    concurrent = _run(objects, answers, {"EVAL_S3_CONCURRENCY": "4"})
+    assert serial[0] == concurrent[0] == 1
+    assert _comparable(serial[1]) == _comparable(concurrent[1])
+    assert [o["key"] for o in concurrent[1]["objects"]] == sorted(objects)
+    serial_calls = sorted(call[0] for call in serial[4][0].calls)
+    assert sorted(call[0] for call in concurrent[4][0].calls) == serial_calls
+
+
+def test_a_dead_service_ends_a_concurrent_run_with_a_partial_report() -> None:
+    objects = {"r/a.docx": b"1", "r/b.docx": b"2", "r/c.docx": b"3"}
+    code, report, *_ = _run(objects, {"docx": result(word_document())}, {"EVAL_S3_CONCURRENCY": "3"},
+                            die_after=3)
+    assert code == SKIP and report is not None
+    assert report["totals"]["evaluated"] <= 1 and any("cut short" in note for note in report["notes"])
