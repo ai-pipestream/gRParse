@@ -94,9 +94,9 @@ void verify_turn_raster_geometry() {
   require(threw, "a turn that is not a multiple of 90 is rejected");
 }
 
-// A raster fed in a quarter turn clockwise: the first read votes tall boxes,
-// both quarter turns are tried, the one that reads upright wins, and the
-// caller's raster and page are the upright ones.
+// A raster fed in a quarter turn clockwise: the first read votes tall boxes
+// the classifier left alone, 270 is tried first and reads upright, so 90 is
+// never read, and the caller's raster and page are the upright ones.
 void verify_quarter_turn_is_recovered() {
   MarkerRecognizer recognizer;
   cv::Mat raster = grparse::turn_raster(upright_raster(), 90);
@@ -104,8 +104,8 @@ void verify_quarter_turn_is_recovered() {
   require(grparse::page_rotation_vote(page).quarter_turn, "the first read must vote a quarter turn");
 
   const auto outcome = grparse::recover_orientation(recognizer, {}, &raster, &page);
-  require(outcome.tried == std::vector<int>{90, 270}, "a quarter-turn vote tries both quarter turns");
-  require(outcome.passes == 2 && recognizer.calls.load() == 3, "two extra reads, no more");
+  require(outcome.tried == std::vector<int>{270}, "the predicted turn reads upright, so it is the only one");
+  require(outcome.passes == 1 && recognizer.calls.load() == 2, "one extra read");
   require(outcome.degrees == 270, "the turn that undoes a 90 clockwise feed is 270");
   require(raster.cols == 4 && raster.rows == 2 && raster.at<unsigned char>(0, 0) == kMarker,
           "the caller's raster is the upright one");
@@ -132,6 +132,20 @@ void verify_half_turn_is_recovered() {
   require(outcome.degrees == 180 && outcome.passes == 1, "the half turn wins in one pass");
   require(raster.at<unsigned char>(0, 0) == kMarker && page.rotation_degrees == 180,
           "raster and page are upright after the half turn");
+}
+
+// When the classifier points the wrong way, the predicted turn reads upside
+// down and the other quarter turn is read and kept.
+void verify_wrong_prediction_falls_back_to_the_other_quarter_turn() {
+  MarkerRecognizer recognizer;
+  cv::Mat raster = grparse::turn_raster(upright_raster(), 90);
+  grparse::OcrPage page = recognizer.extract_page(raster);
+  for (auto& line : page.lines) line.flipped = true;
+
+  const auto outcome = grparse::recover_orientation(recognizer, {}, &raster, &page);
+  require(outcome.tried == std::vector<int>{90, 270}, "90 first, then 270");
+  require(outcome.passes == 2 && outcome.degrees == 270, "the upright 270 read is kept");
+  require(raster.at<unsigned char>(0, 0) == kMarker, "the caller's raster is upright");
 }
 
 // A poor but upright read tries every turn once and keeps itself when no
@@ -189,6 +203,7 @@ int main() {
   return grparse_test::run_test_main("orientation-recovery-test", {
       verify_turn_raster_geometry,
       verify_quarter_turn_is_recovered,
+      verify_wrong_prediction_falls_back_to_the_other_quarter_turn,
       verify_half_turn_is_recovered,
       verify_poor_read_tries_every_turn_once_and_keeps_upright,
       verify_clean_and_disabled_reads_cost_nothing,

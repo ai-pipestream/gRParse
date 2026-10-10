@@ -95,7 +95,10 @@ classifier flipping every line says the page is upside down, and a poor read
 The raster is then recognized again turned 90 and 270 degrees clockwise for a
 quarter-turn vote, 180 for an upside-down one, and all three for a poor read,
 each turn at most once, and the best read wins (text over none, upright over
-turned, then mean confidence). When a turn wins, the turned raster replaces the
+turned, then mean confidence). A quarter turn tries first the direction the
+angle classifier points at (270 when it left the tall lines alone, 90 when it
+flipped them), and the first upright read at or above that confidence ends
+the search, so a sideways page usually costs one extra read. When a turn wins, the turned raster replaces the
 original for everything that follows, so layout regions, table and figure
 crops, the page preview, the page size and every text box are in the upright
 frame together, and the turn is recorded in the page's typed

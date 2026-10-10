@@ -43,9 +43,10 @@ cv::Mat turn_raster(const cv::Mat& raster, int degrees);
 // `page` is the first read of `raster`.  Decides from that read alone
 // (text_geometry.h: page_rotation_vote, page_read_quality,
 // rotation_candidates) whether the raster deserves re-reading turned 90,
-// 180 or 270 degrees clockwise, reads it at each candidate turn once, and
-// keeps the read that scores best (score_read: text over none, upright over
-// turned, then mean confidence).  When a turn wins, `raster` becomes the
+// 180 or 270 degrees clockwise, reads it at each candidate turn once in
+// order, stopping at the first read that is upright with a mean confidence
+// at or above the floor, and keeps the read that scores best (score_read:
+// text over none, upright over turned, then mean confidence).  When a turn wins, `raster` becomes the
 // turned raster and `page` its read with rotation_degrees set, so the
 // caller's layout, crops and preview all happen in the upright frame.  Never
 // call it for a page with a digital text layer: the source already applied
