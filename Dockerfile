@@ -13,7 +13,7 @@ ARG GRPARSE_BUILD_JOBS=2
 ENV CARGO_BUILD_JOBS=${GRPARSE_BUILD_JOBS}
 
 # Native embedding inference; keep the SDK aligned with this CUDA base.
-ARG GRPARSE_TENSORRT_VERSION=11.2.1.2-1+cuda13.3
+ARG GRPARSE_TENSORRT_VERSION=11.4.0.106-1+cuda13.4
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libnvinfer-dev=${GRPARSE_TENSORRT_VERSION} \
     libnvinfer-headers-dev=${GRPARSE_TENSORRT_VERSION} \
