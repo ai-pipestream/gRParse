@@ -55,6 +55,8 @@ enum InputFormat {
   INPUT_FORMAT_MHTML = 33;
   // IBM AFP / MO:DCA print streams (Docling InputFormat.AFP; serve tag 34).
   INPUT_FORMAT_AFP = 34;
+  // Apple Keynote (Docling InputFormat.IWORK_KEYNOTE; serve tag 35).
+  INPUT_FORMAT_IWORK_KEYNOTE = 35;
 }
 
 // Output format types for converted documents.

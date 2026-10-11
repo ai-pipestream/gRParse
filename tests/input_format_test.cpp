@@ -41,6 +41,12 @@ void verify_common_mime_mappings() {
   require_format("application/x-afp", "a.afp", parsev1::INPUT_FORMAT_AFP, "afp");
   require_format("application/vnd.ibm.modcap", "a.afp", parsev1::INPUT_FORMAT_AFP,
                  "modcap");
+  require_format("application/vnd.apple.pages", "a.pages",
+                 parsev1::INPUT_FORMAT_IWORK_PAGES, "pages");
+  require_format("application/vnd.apple.keynote", "a.key",
+                 parsev1::INPUT_FORMAT_IWORK_KEYNOTE, "keynote");
+  require_format("application/x-iwork-keynote-sffkey", "a.key",
+                 parsev1::INPUT_FORMAT_IWORK_KEYNOTE, "keynote-sffkey");
 }
 
 // Formats only the name tells apart from their container, the OOXML macro
@@ -64,6 +70,9 @@ void verify_container_and_variant_mappings() {
   require_format("application/zip", "a.odt", parsev1::INPUT_FORMAT_ODT, ".odt");
   require_format("application/zip", "a.ods", parsev1::INPUT_FORMAT_ODS, ".ods");
   require_format("application/zip", "a.odp", parsev1::INPUT_FORMAT_ODP, ".odp");
+  require_format("application/zip", "a.key", parsev1::INPUT_FORMAT_IWORK_KEYNOTE, ".key");
+  require_format("application/zip", "a.pages", parsev1::INPUT_FORMAT_IWORK_PAGES,
+                 ".pages");
 }
 
 void verify_allowlist() {

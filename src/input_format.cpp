@@ -80,6 +80,10 @@ std::optional<parsev1::InputFormat> input_format_for(
   if (mimetype.starts_with("audio/")) return parsev1::INPUT_FORMAT_AUDIO;
   if (mimetype.starts_with("video/")) return parsev1::INPUT_FORMAT_VIDEO;
   if (mimetype == "application/vnd.apple.pages") return parsev1::INPUT_FORMAT_IWORK_PAGES;
+  if (mimetype == "application/vnd.apple.keynote" ||
+      mimetype == "application/x-iwork-keynote-sffkey") {
+    return parsev1::INPUT_FORMAT_IWORK_KEYNOTE;
+  }
   if (mimetype == "application/x-afp" || mimetype == "application/vnd.ibm.modcap") {
     return parsev1::INPUT_FORMAT_AFP;
   }
@@ -134,6 +138,8 @@ std::optional<parsev1::InputFormat> input_format_for(
   if (ext == ".epub") return parsev1::INPUT_FORMAT_EPUB;
   if (ext == ".eml" || ext == ".msg") return parsev1::INPUT_FORMAT_EMAIL;
   if (ext == ".afp") return parsev1::INPUT_FORMAT_AFP;
+  if (ext == ".key") return parsev1::INPUT_FORMAT_IWORK_KEYNOTE;
+  if (ext == ".pages") return parsev1::INPUT_FORMAT_IWORK_PAGES;
   return std::nullopt;
 }
 
