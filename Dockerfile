@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.27
+# syntax=docker/dockerfile:1.28
 
 # The runtime base is swappable so a hardened mirror can slot in without a
 # Dockerfile change, for example:
@@ -6,14 +6,14 @@
 # The runtime stage asks nothing of the base beyond glibc (matching or newer
 # than the build stage's ubuntu26.04) and the CUDA runtime libraries on the
 # loader path: no shell, no package manager, and no ldconfig run.
-ARG GRPARSE_RUNTIME_IMAGE=nvidia/cuda:13.3.1-runtime-ubuntu26.04
+ARG GRPARSE_RUNTIME_IMAGE=nvidia/cuda:13.4.2-runtime-ubuntu26.04
 
-FROM nvidia/cuda:13.3.1-devel-ubuntu26.04 AS build
+FROM nvidia/cuda:13.4.2-devel-ubuntu26.04 AS build
 ARG GRPARSE_BUILD_JOBS=2
 ENV CARGO_BUILD_JOBS=${GRPARSE_BUILD_JOBS}
 
 # Native embedding inference; keep the SDK aligned with this CUDA base.
-ARG GRPARSE_TENSORRT_VERSION=11.2.1.2-1+cuda13.3
+ARG GRPARSE_TENSORRT_VERSION=11.4.0.106-1+cuda13.4
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libnvinfer-dev=${GRPARSE_TENSORRT_VERSION} \
     libnvinfer-headers-dev=${GRPARSE_TENSORRT_VERSION} \
