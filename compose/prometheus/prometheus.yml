@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: "grparse"
+    scrape_interval: 5s
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["grparse:9464"]
+
+  - job_name: "grparse-corpus-eval"
+    scrape_interval: 5s
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["host.docker.internal:9465"]

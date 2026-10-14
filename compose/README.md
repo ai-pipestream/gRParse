@@ -139,3 +139,21 @@ that, depending on who the clients are:
   Note nginx speaks HTTP/2 on the listen port here, so point gRPC clients
   at the TLS port directly (no path prefixing — gRPC routing is by
   fully-qualified method name, not URL path).
+
+## Prometheus + Grafana observability overlay
+
+`compose.stack.observability.yaml` adds Prometheus (`prom/prometheus:v3.3.0`)
+and Grafana (`grafana/grafana:11.6.0`) under the `observability` profile:
+
+```sh
+docker compose -f compose.stack.yaml -f compose.stack.observability.yaml --profile observability up -d
+```
+
+Prometheus scrapes `grparse:9464` (`job_name: "grparse"`) and
+`host.docker.internal:9465` (`job_name: "grparse-corpus-eval"`) every `5s`
+using `compose/prometheus/prometheus.yml`. Grafana publishes
+`127.0.0.1:${GRAFANA_PORT:-3000}:3000` with anonymous local access and mounts
+the provisioned datasource (`compose/grafana/provisioning/datasources/prometheus.yaml`)
+and dashboards (`compose/grafana/dashboards/grparse-pipeline-overview.json` and
+`compose/grafana/dashboards/grparse-corpus-eval.json`).
+

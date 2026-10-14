@@ -282,3 +282,19 @@ uv run python eval/corpus/analyze.py \
 uv run python eval/corpus/tests/run_tests.py
 ```
 
+### Live Prometheus & Grafana drift dashboard
+
+When running `eval/corpus/run.py` with `--metrics-port 9465` (or
+`EVAL_RUNNER_METRICS_PORT=9465`), layer `compose.stack.observability.yaml` to scrape
+both `grparse:9464` and `host.docker.internal:9465` every `5s`:
+
+```sh
+docker compose -f compose.stack.yaml -f compose.stack.observability.yaml --profile observability up -d
+```
+
+Grafana listens on `http://127.0.0.1:${GRAFANA_PORT:-3000}` (anonymous Admin
+enabled for local dev) with two provisioned dashboards under
+`compose/grafana/dashboards/`:
+- `grparse-pipeline-overview.json` (*gRParse Pipeline & Collector Telemetry*)
+- `grparse-corpus-eval.json` (*gRParse Corpus Evaluation & Drift Tracker*),
+  keyed by the `run_label` template variable (`EVAL_LABEL`).

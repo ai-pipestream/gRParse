@@ -870,6 +870,30 @@ same busy fraction the stdout line prints. The listener is a minimal
 in-process HTTP endpoint (no framework); a configured port that cannot be
 bound fails startup loudly. The compose file wires it to `9464`.
 
+For live local telemetry and corpus drift tracking, layer the opt-in
+`compose.stack.observability.yaml` overlay with the `observability` profile:
+
+```bash
+docker compose -f compose.stack.yaml -f compose.stack.observability.yaml --profile observability up -d
+```
+
+This brings up Prometheus (`prom/prometheus:v3.3.0` on
+`127.0.0.1:${PROMETHEUS_PORT:-9090}`) scraping `grparse:9464` and
+`host.docker.internal:9465` every `5s`, and Grafana (`grafana/grafana:11.6.0`
+on `http://127.0.0.1:${GRAFANA_PORT:-3000}`) with a pre-provisioned Prometheus
+datasource (`compose/grafana/provisioning/datasources/prometheus.yaml`) and two
+dashboards (`compose/grafana/dashboards/`):
+- **gRParse Pipeline & Collector Telemetry** (`grparse-pipeline-overview.json`):
+  document throughput, queue depth, completion/error rates and latency quantiles
+  by `doctype`, downstream collector call rate/errors/warnings and p95 latency,
+  PDF page scheduler stage queues and worker utilization, post-merge repair and
+  data-plane counters, ORT execution-provider fallbacks, and process RSS/CPU.
+- **gRParse Corpus Evaluation & Drift Tracker** (`grparse-corpus-eval.json`):
+  corpus evaluation progress gauge, throughput, outcome breakdown by `doctype`
+  and `parser_type`, shape-battery check failure table by `doctype` and `check`,
+  and per-doctype latency quantiles filtered by `run_label`.
+
+
 ## CPU-only hosts (multi-arch)
 
 `Dockerfile.cpu` builds against ONNX Runtime's plain CPU package, the only
