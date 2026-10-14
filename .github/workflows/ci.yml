@@ -35,19 +35,26 @@ jobs:
       - name: Verify model fetch and real CPU embeddings
         # Exercise the CPU reference through the shipped executable. GPU
         # inference still requires separate tests on physical hardware.
+        # The job runs in a container that talks to the host Docker daemon,
+        # so a bind mount of a job-container path ($RUNNER_TEMP) resolves on
+        # the host and arrives empty. Copy the models into a named volume
+        # through the Docker API instead; this works on hosted runners too.
         run: |
           bash scripts/test/fetch-embedding-model-test.sh
           scripts/fetch-embedding-model.sh --backend all --dir "$RUNNER_TEMP/embedding-model"
-          docker run --rm --read-only --tmpfs /tmp --cpus 2 --memory 2g \
-            -v "$RUNNER_TEMP/embedding-model:/embedding-models:ro" \
-            -e GRPARSE_EMBEDDING_TEST_MODELS=/embedding-models \
-            -e GRPARSE_EMBEDDING_TEST_REQUIRE=1 \
-            --entrypoint grparse-embedding-check grparse-ci-openvino
-          docker run --rm --read-only --tmpfs /tmp --cpus 2 --memory 2g \
-            -v "$RUNNER_TEMP/embedding-model:/embedding-models:ro" \
-            -e GRPARSE_EMBEDDING_TEST_MODELS=/embedding-models \
-            -e GRPARSE_EMBEDDING_TEST_REQUIRE=1 \
-            --entrypoint grparse-embedding-reference grparse-ci-openvino
+          vol="grparse-ci-embedding-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}"
+          trap 'docker volume rm -f "$vol" >/dev/null' EXIT
+          docker volume create "$vol" >/dev/null
+          tar -C "$RUNNER_TEMP/embedding-model" -cf - . | \
+            docker run --rm -i --user 0 -v "$vol:/embedding-models" --entrypoint tar \
+              grparse-ci-openvino -xf - -C /embedding-models
+          for check in grparse-embedding-check grparse-embedding-reference; do
+            docker run --rm --read-only --tmpfs /tmp --cpus 2 --memory 2g \
+              -v "$vol:/embedding-models:ro" \
+              -e GRPARSE_EMBEDDING_TEST_MODELS=/embedding-models \
+              -e GRPARSE_EMBEDDING_TEST_REQUIRE=1 \
+              --entrypoint "$check" grparse-ci-openvino
+          done
 
   # Dockerfile.cpu is the multi-arch :latest-cpu image; publish.yml would
   # otherwise build it first on push to main. amd64 is enough to gate a PR.
@@ -105,9 +112,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install Clang and the ingest-door dependencies
+        # The self-hosted runner image runs jobs as root and ships no sudo;
+        # GitHub-hosted runners need it. Use sudo only when it exists.
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          SUDO=$(command -v sudo || true)
+          $SUDO apt-get update
+          $SUDO apt-get install -y --no-install-recommends \
             clang libclang-rt-dev ninja-build cmake pkg-config \
             libopencv-dev
       - name: Build the fuzzers
