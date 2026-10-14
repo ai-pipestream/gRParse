@@ -206,12 +206,14 @@ class DocumentParserService final
   grpc::Status chunk_hierarchical_source(
       grpc::CallbackServerContext* context,
       const ai::pipestream::parse::v1::HierarchicalChunkRequest& chunk_request,
-      const std::string& surface, std::vector<ai::pipestream::parse::v1::Chunk>* chunks,
+      const std::string& surface, SourceParse* parsed,
+      std::vector<ai::pipestream::parse::v1::Chunk>* chunks,
       ai::pipestream::parse::v1::ChunkDocumentResponse* response);
   grpc::Status chunk_hybrid_source(
       grpc::CallbackServerContext* context,
       const ai::pipestream::parse::v1::HybridChunkRequest& chunk_request,
-      const std::string& surface, std::vector<ai::pipestream::parse::v1::Chunk>* chunks,
+      const std::string& surface, SourceParse* parsed,
+      std::vector<ai::pipestream::parse::v1::Chunk>* chunks,
       ai::pipestream::parse::v1::ChunkDocumentResponse* response);
   grpc::Status parse_chunk_source(
       grpc::CallbackServerContext* context,

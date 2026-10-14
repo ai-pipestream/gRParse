@@ -11,6 +11,7 @@
 #include "grparse/content_sniff.h"
 #include "grparse/document_collectors.h"
 #include "grparse/document_merge.h"
+#include "grparse/prometheus_metrics.h"
 #include "grparse/workbook_cells.h"
 
 namespace pipestream = ai::pipestream;
@@ -93,19 +94,36 @@ CoordinatorResult run_collectors(std::vector<PlannedCollector> collectors,
   CoordinatorResult result;
   result.document = std::move(base);
 
-  std::vector<std::future<CollectorOutcome>> outcomes;
+  struct TimedCollectorOutcome {
+    CollectorOutcome outcome;
+    uint64_t duration_ns = 0;
+  };
+  std::vector<std::future<TimedCollectorOutcome>> outcomes;
   outcomes.reserve(collectors.size());
   for (auto& collector : collectors) {
-    outcomes.push_back(std::async(std::launch::async, collector.run));
+    outcomes.push_back(std::async(std::launch::async, [run = collector.run]() {
+      const auto started = std::chrono::steady_clock::now();
+      CollectorOutcome outcome = run();
+      const auto elapsed_ns = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - started)
+              .count());
+      return TimedCollectorOutcome{std::move(outcome), elapsed_ns};
+    }));
   }
   // The merge happens in plan order once everything has arrived, so the
   // merged arena numbering is deterministic regardless of finish order.
   for (size_t index = 0; index < collectors.size(); ++index) {
-    CollectorOutcome outcome = outcomes[index].get();
+    TimedCollectorOutcome timed = outcomes[index].get();
+    CollectorOutcome& outcome = timed.outcome;
+    uint64_t warning_count = outcome.warnings.size();
     for (auto& warning : outcome.warnings) {
       result.warnings.emplace_back(collectors[index].id, std::move(warning));
     }
     if (!outcome.success) {
+      record_collector_call(collectors[index].id,
+                            collector_call_status_for(false, outcome.code),
+                            timed.duration_ns, warning_count);
       result.failures.push_back(
           {collectors[index].id, std::move(outcome.error), outcome.code});
       continue;
@@ -121,12 +139,15 @@ CoordinatorResult run_collectors(std::vector<PlannedCollector> collectors,
       if (collectors[index].id == pipestream::parse::v1::COLLECTOR_CALAMINE) {
         std::vector<std::string> warnings;
         adopt_calamine_cells(outcome.document, &result.document, &warnings);
+        warning_count += warnings.size();
         for (auto& warning : warnings) {
           result.warnings.emplace_back(collectors[index].id, std::move(warning));
         }
       }
       retain_claims_only(&outcome.document);
     }
+    record_collector_call(collectors[index].id, CollectorCallStatus::kOk,
+                          timed.duration_ns, warning_count);
     // The collector's document-level account is kept whole and its
     // answers are attributed, so a value another collector displaces is
     // still on the wire under the collector that gave it.

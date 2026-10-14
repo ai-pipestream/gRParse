@@ -1,11 +1,17 @@
 #pragma once
 
+#include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <thread>
 
+#include <grpcpp/support/status.h>
+
+#include "ai/pipestream/parse/v1/parse_types.pb.h"
 #include "grparse/data_totals.h"
 #include "grparse/document_repair.h"
 #include "grparse/ocr_engine.h"
@@ -13,6 +19,98 @@
 #include "grparse/page_scheduler.h"
 
 namespace grparse {
+
+inline constexpr std::array<std::string_view, 16> kMetricDoctypes = {
+    "pdf", "docx",  "xlsx",  "pptx", "html",   "md",  "epub", "email",
+    "xml", "image", "audio", "warc", "ebcdic", "csv", "txt",  "other"};
+
+enum class DocumentCompletionStatus : size_t {
+  kSuccess = 0,
+  kPartialSuccess = 1,
+  kFailure = 2,
+  kRejected = 3,
+};
+
+inline constexpr std::array<std::string_view, 4> kDocumentCompletionStatuses = {
+    "success", "partial_success", "failure", "rejected"};
+
+inline constexpr std::array<std::string_view, 15> kMetricCollectors = {
+    "libreoffice", "poi",      "calamine",      "epub",       "markup",
+    "email",       "xml",      "ebcdic",        "asr",        "lol-html",
+    "fastwarc",    "pdf-inspector", "grparse-cv", "confluence", "enrich"};
+
+enum class CollectorCallStatus : size_t {
+  kOk = 0,
+  kError = 1,
+  kTimeout = 2,
+  kUnavailable = 3,
+};
+
+inline constexpr std::array<std::string_view, 4> kCollectorCallStatuses = {
+    "ok", "error", "timeout", "unavailable"};
+
+// Finite upper bounds in seconds for document and collector latency histograms.
+// The final bucket in DurationHistogram::buckets is the +Inf overflow bucket.
+inline constexpr std::array<double, 12> kDurationBoundsSeconds = {
+    0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0};
+
+struct DurationHistogram {
+  // Non-cumulative per-bucket counts (12 finite bounds + 1 +Inf overflow).
+  std::array<uint64_t, kDurationBoundsSeconds.size() + 1> buckets{};
+  uint64_t sum_ns = 0;
+
+  void observe(uint64_t duration_ns);
+  uint64_t count() const;
+};
+
+struct DoctypeMetrics {
+  std::array<uint64_t, kDocumentCompletionStatuses.size()> completed{};
+  DurationHistogram duration{};
+
+  uint64_t& status(DocumentCompletionStatus s) { return completed[static_cast<size_t>(s)]; }
+  uint64_t status(DocumentCompletionStatus s) const { return completed[static_cast<size_t>(s)]; }
+};
+
+struct CollectorMetrics {
+  std::array<uint64_t, kCollectorCallStatuses.size()> calls{};
+  DurationHistogram duration{};
+  uint64_t warnings = 0;
+
+  uint64_t& status(CollectorCallStatus s) { return calls[static_cast<size_t>(s)]; }
+  uint64_t status(CollectorCallStatus s) const { return calls[static_cast<size_t>(s)]; }
+};
+
+struct PipelineTelemetry {
+  std::array<DoctypeMetrics, kMetricDoctypes.size()> doctypes{};
+  std::array<CollectorMetrics, kMetricCollectors.size()> collectors{};
+
+  DoctypeMetrics& doctype(std::string_view name);
+  const DoctypeMetrics& doctype(std::string_view name) const;
+  CollectorMetrics& collector(std::string_view name);
+  const CollectorMetrics& collector(std::string_view name) const;
+};
+
+// Snapshot or reset the process-wide per-doctype and per-collector counters.
+PipelineTelemetry pipeline_telemetry();
+void reset_pipeline_telemetry();
+
+void record_document_completion(std::string_view doctype, DocumentCompletionStatus status,
+                                uint64_t duration_ns);
+void record_collector_call(std::string_view collector, CollectorCallStatus status,
+                           uint64_t duration_ns, uint64_t warnings = 0);
+void record_collector_call(ai::pipestream::parse::v1::Collector collector,
+                           CollectorCallStatus status, uint64_t duration_ns,
+                           uint64_t warnings = 0);
+void record_collector_warnings(std::string_view collector, uint64_t count = 1);
+void record_collector_warnings(ai::pipestream::parse::v1::Collector collector,
+                               uint64_t count = 1);
+
+CollectorCallStatus collector_call_status_for(bool success, grpc::StatusCode code);
+std::string_view metric_collector_name(ai::pipestream::parse::v1::Collector collector);
+std::string_view classify_doctype(ai::pipestream::parse::v1::InputFormat format,
+                                  std::string_view filename = {},
+                                  std::string_view mime_type = {},
+                                  std::string_view content = {});
 
 // One Prometheus text-format exposition (version 0.0.4) of the pipeline
 // counters the stdout metrics line already reports.  Counters and gauges map
@@ -33,8 +131,22 @@ namespace grparse {
 // grparse_ort_ep_fallbacks_total: how many sessions were rebuilt on CPU after
 // their selected provider refused the graph or the device failed, and
 // grparse_ort_ep_build_retries_total counts the session builds retried
-// after a transient OpenVINO provider failure.  This overload is pure in its
-// inputs.
+// after a transient OpenVINO provider failure.  Per-doctype completions and
+// latency export as grparse_documents_completed_total and
+// grparse_document_duration_seconds; per-collector calls, latency, and
+// warnings export as grparse_collector_calls_total,
+// grparse_collector_duration_seconds, and grparse_collector_warnings_total.
+// This overload is pure in its inputs.
+std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
+                                      const OcrEnginePool::Stats& ocr_pool,
+                                      const PageScheduler::Options& options,
+                                      const RepairTotals& repairs, const DataTotals& data,
+                                      const OfficeCvTotals& office_cv, uint64_t ep_fallbacks,
+                                      uint64_t ep_build_retries,
+                                      const PipelineTelemetry& telemetry);
+
+// Same, with the per-doctype and per-collector telemetry read from the live
+// process counters.
 std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
                                       const OcrEnginePool::Stats& ocr_pool,
                                       const PageScheduler::Options& options,

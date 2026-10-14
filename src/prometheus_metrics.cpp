@@ -1,5 +1,6 @@
 #include "grparse/prometheus_metrics.h"
 
+#include "grparse/input_format.h"
 #include "grparse_session_ep.h"
 
 #include <arpa/inet.h>
@@ -11,9 +12,12 @@
 #include <fstream>
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <filesystem>
+#include <optional>
 #include <print>
 #include <sstream>
 #include <stdexcept>
@@ -24,6 +28,181 @@ namespace grparse {
 namespace {
 
 constexpr const char* kContentType = "text/plain; version=0.0.4; charset=utf-8";
+
+constexpr std::array<uint64_t, kDurationBoundsSeconds.size()> kDurationBoundsNs = {
+    10'000'000ULL,     25'000'000ULL,     50'000'000ULL,     100'000'000ULL,
+    250'000'000ULL,    500'000'000ULL,    1'000'000'000ULL,  2'500'000'000ULL,
+    5'000'000'000ULL,  10'000'000'000ULL, 30'000'000'000ULL, 60'000'000'000ULL};
+
+constexpr std::array<std::string_view, kDurationBoundsSeconds.size()> kDurationBoundLabels = {
+    "0.01", "0.025", "0.05", "0.1", "0.25", "0.5", "1", "2.5", "5", "10", "30", "60"};
+
+size_t duration_bucket_index(uint64_t duration_ns) {
+  for (size_t i = 0; i < kDurationBoundsNs.size(); ++i) {
+    if (duration_ns <= kDurationBoundsNs[i]) return i;
+  }
+  return kDurationBoundsNs.size();
+}
+
+struct AtomicDurationHistogram {
+  std::array<std::atomic<uint64_t>, kDurationBoundsSeconds.size() + 1> buckets{};
+  std::atomic<uint64_t> sum_ns{0};
+
+  void observe(uint64_t duration_ns) {
+    buckets[duration_bucket_index(duration_ns)].fetch_add(1, std::memory_order_relaxed);
+    sum_ns.fetch_add(duration_ns, std::memory_order_relaxed);
+  }
+
+  DurationHistogram snapshot() const {
+    DurationHistogram out;
+    for (size_t i = 0; i < buckets.size(); ++i) {
+      out.buckets[i] = buckets[i].load(std::memory_order_relaxed);
+    }
+    out.sum_ns = sum_ns.load(std::memory_order_relaxed);
+    return out;
+  }
+
+  void reset() {
+    for (auto& bucket : buckets) {
+      bucket.store(0, std::memory_order_relaxed);
+    }
+    sum_ns.store(0, std::memory_order_relaxed);
+  }
+};
+
+struct AtomicDoctypeMetrics {
+  std::array<std::atomic<uint64_t>, kDocumentCompletionStatuses.size()> completed{};
+  AtomicDurationHistogram duration{};
+
+  DoctypeMetrics snapshot() const {
+    DoctypeMetrics out;
+    for (size_t i = 0; i < completed.size(); ++i) {
+      out.completed[i] = completed[i].load(std::memory_order_relaxed);
+    }
+    out.duration = duration.snapshot();
+    return out;
+  }
+
+  void reset() {
+    for (auto& count : completed) {
+      count.store(0, std::memory_order_relaxed);
+    }
+    duration.reset();
+  }
+};
+
+struct AtomicCollectorMetrics {
+  std::array<std::atomic<uint64_t>, kCollectorCallStatuses.size()> calls{};
+  AtomicDurationHistogram duration{};
+  std::atomic<uint64_t> warnings{0};
+
+  CollectorMetrics snapshot() const {
+    CollectorMetrics out;
+    for (size_t i = 0; i < calls.size(); ++i) {
+      out.calls[i] = calls[i].load(std::memory_order_relaxed);
+    }
+    out.duration = duration.snapshot();
+    out.warnings = warnings.load(std::memory_order_relaxed);
+    return out;
+  }
+
+  void reset() {
+    for (auto& count : calls) {
+      count.store(0, std::memory_order_relaxed);
+    }
+    duration.reset();
+    warnings.store(0, std::memory_order_relaxed);
+  }
+};
+
+std::array<AtomicDoctypeMetrics, kMetricDoctypes.size()> g_doctypes{};
+std::array<AtomicCollectorMetrics, kMetricCollectors.size()> g_collectors{};
+
+size_t doctype_index(std::string_view name) {
+  for (size_t i = 0; i < kMetricDoctypes.size(); ++i) {
+    if (kMetricDoctypes[i] == name) return i;
+  }
+  return kMetricDoctypes.size() - 1;  // "other"
+}
+
+std::optional<size_t> collector_index(std::string_view name) {
+  if (name == "pdf") name = "pdf-inspector";
+  if (name == "confluence-storage") name = "confluence";
+  for (size_t i = 0; i < kMetricCollectors.size(); ++i) {
+    if (kMetricCollectors[i] == name) return i;
+  }
+  return std::nullopt;
+}
+
+std::string lower_ascii(std::string_view input) {
+  std::string out(input);
+  std::ranges::transform(out, out.begin(),
+                         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return out;
+}
+
+std::string_view trimmed_mime(std::string_view mime_type) {
+  const size_t semi = mime_type.find(';');
+  if (semi != std::string_view::npos) mime_type = mime_type.substr(0, semi);
+  while (!mime_type.empty() && std::isspace(static_cast<unsigned char>(mime_type.front()))) {
+    mime_type.remove_prefix(1);
+  }
+  while (!mime_type.empty() && std::isspace(static_cast<unsigned char>(mime_type.back()))) {
+    mime_type.remove_suffix(1);
+  }
+  return mime_type;
+}
+
+std::optional<std::string_view> doctype_from_input_format(
+    ai::pipestream::parse::v1::InputFormat format) {
+  using ai::pipestream::parse::v1::InputFormat;
+  switch (format) {
+    case InputFormat::INPUT_FORMAT_PDF:
+      return "pdf";
+    case InputFormat::INPUT_FORMAT_DOCX:
+    case InputFormat::INPUT_FORMAT_DOC:
+    case InputFormat::INPUT_FORMAT_ODT:
+    case InputFormat::INPUT_FORMAT_RTF:
+    case InputFormat::INPUT_FORMAT_IWORK_PAGES:
+      return "docx";
+    case InputFormat::INPUT_FORMAT_XLSX:
+    case InputFormat::INPUT_FORMAT_XLS:
+    case InputFormat::INPUT_FORMAT_ODS:
+      return "xlsx";
+    case InputFormat::INPUT_FORMAT_PPTX:
+    case InputFormat::INPUT_FORMAT_PPT:
+    case InputFormat::INPUT_FORMAT_ODP:
+    case InputFormat::INPUT_FORMAT_IWORK_KEYNOTE:
+      return "pptx";
+    case InputFormat::INPUT_FORMAT_HTML:
+    case InputFormat::INPUT_FORMAT_MHTML:
+      return "html";
+    case InputFormat::INPUT_FORMAT_MD:
+    case InputFormat::INPUT_FORMAT_ASCIIDOC:
+    case InputFormat::INPUT_FORMAT_LATEX:
+    case InputFormat::INPUT_FORMAT_VTT:
+    case InputFormat::INPUT_FORMAT_BOXNOTE:
+      return "md";
+    case InputFormat::INPUT_FORMAT_EPUB:
+      return "epub";
+    case InputFormat::INPUT_FORMAT_EMAIL:
+      return "email";
+    case InputFormat::INPUT_FORMAT_XML_JATS:
+    case InputFormat::INPUT_FORMAT_XML_USPTO:
+    case InputFormat::INPUT_FORMAT_XML_XBRL:
+    case InputFormat::INPUT_FORMAT_XML_DOCLANG:
+      return "xml";
+    case InputFormat::INPUT_FORMAT_IMAGE:
+      return "image";
+    case InputFormat::INPUT_FORMAT_AUDIO:
+    case InputFormat::INPUT_FORMAT_VIDEO:
+      return "audio";
+    case InputFormat::INPUT_FORMAT_CSV:
+      return "csv";
+    default:
+      return std::nullopt;
+  }
+}
 
 void counter(std::ostringstream& out, const char* name, const char* help, uint64_t value) {
   out << "# HELP " << name << ' ' << help << "\n# TYPE " << name << " counter\n"
@@ -84,6 +263,202 @@ void write_all(int fd, const std::string& data) {
 
 }  // namespace
 
+void DurationHistogram::observe(uint64_t duration_ns) {
+  ++buckets[duration_bucket_index(duration_ns)];
+  sum_ns += duration_ns;
+}
+
+uint64_t DurationHistogram::count() const {
+  uint64_t total = 0;
+  for (const uint64_t bucket_count : buckets) {
+    total += bucket_count;
+  }
+  return total;
+}
+
+DoctypeMetrics& PipelineTelemetry::doctype(std::string_view name) {
+  return doctypes[doctype_index(name)];
+}
+
+const DoctypeMetrics& PipelineTelemetry::doctype(std::string_view name) const {
+  return doctypes[doctype_index(name)];
+}
+
+CollectorMetrics& PipelineTelemetry::collector(std::string_view name) {
+  const auto index = collector_index(name);
+  if (!index.has_value()) {
+    throw std::out_of_range("unknown collector metric label: " + std::string(name));
+  }
+  return collectors[*index];
+}
+
+const CollectorMetrics& PipelineTelemetry::collector(std::string_view name) const {
+  const auto index = collector_index(name);
+  if (!index.has_value()) {
+    throw std::out_of_range("unknown collector metric label: " + std::string(name));
+  }
+  return collectors[*index];
+}
+
+PipelineTelemetry pipeline_telemetry() {
+  PipelineTelemetry out;
+  for (size_t i = 0; i < kMetricDoctypes.size(); ++i) {
+    out.doctypes[i] = g_doctypes[i].snapshot();
+  }
+  for (size_t i = 0; i < kMetricCollectors.size(); ++i) {
+    out.collectors[i] = g_collectors[i].snapshot();
+  }
+  return out;
+}
+
+void reset_pipeline_telemetry() {
+  for (auto& doctype : g_doctypes) {
+    doctype.reset();
+  }
+  for (auto& collector : g_collectors) {
+    collector.reset();
+  }
+}
+
+void record_document_completion(std::string_view doctype, DocumentCompletionStatus status,
+                                uint64_t duration_ns) {
+  auto& target = g_doctypes[doctype_index(doctype)];
+  target.completed[static_cast<size_t>(status)].fetch_add(1, std::memory_order_relaxed);
+  target.duration.observe(duration_ns);
+}
+
+void record_collector_call(std::string_view collector, CollectorCallStatus status,
+                           uint64_t duration_ns, uint64_t warnings) {
+  const auto index = collector_index(collector);
+  if (!index.has_value()) return;
+  auto& target = g_collectors[*index];
+  target.calls[static_cast<size_t>(status)].fetch_add(1, std::memory_order_relaxed);
+  target.duration.observe(duration_ns);
+  if (warnings > 0) {
+    target.warnings.fetch_add(warnings, std::memory_order_relaxed);
+  }
+}
+
+void record_collector_call(ai::pipestream::parse::v1::Collector collector,
+                           CollectorCallStatus status, uint64_t duration_ns, uint64_t warnings) {
+  record_collector_call(metric_collector_name(collector), status, duration_ns, warnings);
+}
+
+void record_collector_warnings(std::string_view collector, uint64_t count) {
+  if (count == 0) return;
+  const auto index = collector_index(collector);
+  if (!index.has_value()) return;
+  g_collectors[*index].warnings.fetch_add(count, std::memory_order_relaxed);
+}
+
+void record_collector_warnings(ai::pipestream::parse::v1::Collector collector, uint64_t count) {
+  record_collector_warnings(metric_collector_name(collector), count);
+}
+
+CollectorCallStatus collector_call_status_for(bool success, grpc::StatusCode code) {
+  if (success) return CollectorCallStatus::kOk;
+  switch (code) {
+    case grpc::StatusCode::DEADLINE_EXCEEDED:
+      return CollectorCallStatus::kTimeout;
+    case grpc::StatusCode::UNAVAILABLE:
+    case grpc::StatusCode::FAILED_PRECONDITION:
+    case grpc::StatusCode::UNIMPLEMENTED:
+      return CollectorCallStatus::kUnavailable;
+    default:
+      return CollectorCallStatus::kError;
+  }
+}
+
+std::string_view metric_collector_name(ai::pipestream::parse::v1::Collector collector) {
+  using ai::pipestream::parse::v1::Collector;
+  switch (collector) {
+    case Collector::COLLECTOR_GRPARSE_CV:
+      return "grparse-cv";
+    case Collector::COLLECTOR_LIBREOFFICE:
+      return "libreoffice";
+    case Collector::COLLECTOR_ASR:
+      return "asr";
+    case Collector::COLLECTOR_EMAIL:
+      return "email";
+    case Collector::COLLECTOR_XML:
+      return "xml";
+    case Collector::COLLECTOR_EBCDIC:
+      return "ebcdic";
+    case Collector::COLLECTOR_EPUB:
+      return "epub";
+    case Collector::COLLECTOR_MARKUP:
+      return "markup";
+    case Collector::COLLECTOR_LOL_HTML:
+      return "lol-html";
+    case Collector::COLLECTOR_FASTWARC:
+      return "fastwarc";
+    case Collector::COLLECTOR_PDF:
+      return "pdf-inspector";
+    case Collector::COLLECTOR_CONFLUENCE:
+      return "confluence";
+    case Collector::COLLECTOR_CALAMINE:
+      return "calamine";
+    case Collector::COLLECTOR_UNSPECIFIED:
+    default:
+      return "";
+  }
+}
+
+std::string_view classify_doctype(ai::pipestream::parse::v1::InputFormat format,
+                                  std::string_view filename, std::string_view mime_type,
+                                  std::string_view content) {
+  const std::string lower_name = lower_ascii(filename);
+  const std::string lower_mime = lower_ascii(trimmed_mime(mime_type));
+  const std::string ext = std::filesystem::path(lower_name).extension().string();
+
+  const bool is_txt_hint = (ext == ".txt" || lower_mime == "text/plain");
+  if (format == ai::pipestream::parse::v1::INPUT_FORMAT_MD && is_txt_hint) {
+    return "txt";
+  }
+  if (const auto mapped = doctype_from_input_format(format); mapped.has_value()) {
+    return *mapped;
+  }
+  if (format != ai::pipestream::parse::v1::INPUT_FORMAT_UNSPECIFIED) {
+    return "other";
+  }
+
+  if (lower_name.ends_with(".warc") || lower_name.ends_with(".warc.gz") ||
+      lower_mime == "application/warc" || lower_mime == "application/x-warc" ||
+      content.starts_with("WARC/")) {
+    return "warc";
+  }
+  if (ext == ".ebc" || ext == ".ebcdic" || lower_mime == "application/ebcdic" ||
+      lower_mime == "application/x-ebcdic") {
+    return "ebcdic";
+  }
+  if (is_txt_hint) {
+    return "txt";
+  }
+  if (const auto detected = input_format_for(lower_mime, std::filesystem::path(lower_name));
+      detected.has_value()) {
+    if (const auto mapped = doctype_from_input_format(*detected); mapped.has_value()) {
+      return *mapped;
+    }
+    return "other";
+  }
+  if (ext == ".xml" || ext == ".xsd" || ext == ".xsl" || ext == ".xslt" ||
+      lower_mime.ends_with("+xml")) {
+    return "xml";
+  }
+  if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".tif" || ext == ".tiff" ||
+      ext == ".bmp" || ext == ".webp" || ext == ".gif") {
+    return "image";
+  }
+  if (ext == ".wav" || ext == ".mp3" || ext == ".ogg" || ext == ".flac" || ext == ".m4a" ||
+      ext == ".aac" || ext == ".opus" || ext == ".mp4" || ext == ".webm") {
+    return "audio";
+  }
+  if (content.starts_with("%PDF-")) {
+    return "pdf";
+  }
+  return "other";
+}
+
 std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
                                       const OcrEnginePool::Stats& ocr_pool,
                                       const PageScheduler::Options& options,
@@ -113,6 +488,17 @@ std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
                                       const RepairTotals& repairs, const DataTotals& data,
                                       const OfficeCvTotals& office_cv, uint64_t ep_fallbacks,
                                       uint64_t ep_build_retries) {
+  return render_prometheus_metrics(metrics, ocr_pool, options, repairs, data, office_cv,
+                                   ep_fallbacks, ep_build_retries, pipeline_telemetry());
+}
+
+std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
+                                      const OcrEnginePool::Stats& ocr_pool,
+                                      const PageScheduler::Options& options,
+                                      const RepairTotals& repairs, const DataTotals& data,
+                                      const OfficeCvTotals& office_cv, uint64_t ep_fallbacks,
+                                      uint64_t ep_build_retries,
+                                      const PipelineTelemetry& telemetry) {
   std::ostringstream out;
   out.precision(15);
 
@@ -272,6 +658,83 @@ std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
   }
   out << "grparse_page_latency_seconds_sum " << seconds(metrics.page_latency_ns) << '\n'
       << "grparse_page_latency_seconds_count " << cumulative << '\n';
+
+  out << "# HELP grparse_documents_completed_total Completed document conversions by doctype "
+         "and status.\n"
+         "# TYPE grparse_documents_completed_total counter\n";
+  for (size_t i = 0; i < kMetricDoctypes.size(); ++i) {
+    const std::string_view doctype = kMetricDoctypes[i];
+    const DoctypeMetrics& dt = telemetry.doctypes[i];
+    for (size_t s = 0; s < kDocumentCompletionStatuses.size(); ++s) {
+      out << "grparse_documents_completed_total{doctype=\"" << doctype << "\",status=\""
+          << kDocumentCompletionStatuses[s] << "\"} " << dt.completed[s] << '\n';
+    }
+  }
+
+  out << "# HELP grparse_document_duration_seconds End-to-end document conversion latency in "
+         "seconds, by doctype.\n"
+         "# TYPE grparse_document_duration_seconds histogram\n";
+  for (size_t i = 0; i < kMetricDoctypes.size(); ++i) {
+    const std::string_view doctype = kMetricDoctypes[i];
+    const DurationHistogram& hist = telemetry.doctypes[i].duration;
+    uint64_t doc_cumulative = 0;
+    for (size_t bucket = 0; bucket < hist.buckets.size(); ++bucket) {
+      doc_cumulative += hist.buckets[bucket];
+      out << "grparse_document_duration_seconds_bucket{doctype=\"" << doctype << "\",le=\"";
+      if (bucket < kDurationBoundLabels.size()) {
+        out << kDurationBoundLabels[bucket];
+      } else {
+        out << "+Inf";
+      }
+      out << "\"} " << doc_cumulative << '\n';
+    }
+    out << "grparse_document_duration_seconds_sum{doctype=\"" << doctype << "\"} "
+        << seconds(hist.sum_ns) << '\n'
+        << "grparse_document_duration_seconds_count{doctype=\"" << doctype << "\"} "
+        << doc_cumulative << '\n';
+  }
+
+  out << "# HELP grparse_collector_calls_total Collector invocations by collector and status.\n"
+         "# TYPE grparse_collector_calls_total counter\n";
+  for (size_t i = 0; i < kMetricCollectors.size(); ++i) {
+    const std::string_view collector = kMetricCollectors[i];
+    const CollectorMetrics& cm = telemetry.collectors[i];
+    for (size_t s = 0; s < kCollectorCallStatuses.size(); ++s) {
+      out << "grparse_collector_calls_total{collector=\"" << collector << "\",status=\""
+          << kCollectorCallStatuses[s] << "\"} " << cm.calls[s] << '\n';
+    }
+  }
+
+  out << "# HELP grparse_collector_duration_seconds Collector call latency in seconds, by "
+         "collector.\n"
+         "# TYPE grparse_collector_duration_seconds histogram\n";
+  for (size_t i = 0; i < kMetricCollectors.size(); ++i) {
+    const std::string_view collector = kMetricCollectors[i];
+    const DurationHistogram& hist = telemetry.collectors[i].duration;
+    uint64_t col_cumulative = 0;
+    for (size_t bucket = 0; bucket < hist.buckets.size(); ++bucket) {
+      col_cumulative += hist.buckets[bucket];
+      out << "grparse_collector_duration_seconds_bucket{collector=\"" << collector << "\",le=\"";
+      if (bucket < kDurationBoundLabels.size()) {
+        out << kDurationBoundLabels[bucket];
+      } else {
+        out << "+Inf";
+      }
+      out << "\"} " << col_cumulative << '\n';
+    }
+    out << "grparse_collector_duration_seconds_sum{collector=\"" << collector << "\"} "
+        << seconds(hist.sum_ns) << '\n'
+        << "grparse_collector_duration_seconds_count{collector=\"" << collector << "\"} "
+        << col_cumulative << '\n';
+  }
+
+  out << "# HELP grparse_collector_warnings_total Warnings emitted by collector legs, by "
+         "collector.\n"
+         "# TYPE grparse_collector_warnings_total counter\n";
+  for (size_t i = 0; i < kMetricCollectors.size(); ++i) {
+    out << "grparse_collector_warnings_total{collector=\"" << kMetricCollectors[i] << "\"} "
+        << telemetry.collectors[i].warnings << '\n';
+  }
 
   return out.str();
 }

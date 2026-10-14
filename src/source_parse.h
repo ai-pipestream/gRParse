@@ -31,6 +31,8 @@ namespace grparse {
 // from, plus the offset table of its text stream.
 struct SourceParse {
   std::filesystem::path filename;
+  std::string_view doctype = "other";
+  bool collectors_ran = false;
   CoordinatorResult result;
   chunking::OffsetTable offsets;
   // The CV collector's page read quality, when it read any page.

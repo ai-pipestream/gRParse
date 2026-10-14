@@ -17,6 +17,7 @@
 #include "collectors/collector_support.h"
 #include "grparse/base64.h"
 #include "grparse/data_totals.h"
+#include "grparse/prometheus_metrics.h"
 
 namespace grparse {
 
@@ -436,9 +437,12 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
     report.warnings.push_back("document enrich: enrich service is not configured "
                               "(GRPARSE_ENRICH_TARGET)");
     count_skipped(std::max(1, report.candidates));
+    record_collector_call("enrich", CollectorCallStatus::kUnavailable, 0,
+                          report.warnings.size());
     return report;
   }
 
+  const auto enrich_started = std::chrono::steady_clock::now();
   auto stub = enrichv1::EnrichService::NewStub(channel);
   grpc::ClientContext context;
   // The leg ends with the inbound call that asked for it, like every
@@ -648,6 +652,13 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
     report.warnings.push_back("chart derender: " + std::to_string(unanswered - skipped_events) +
                               " chart(s) received no event before the stream ended");
   }
+  const auto enrich_elapsed_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - enrich_started)
+          .count());
+  record_collector_call("enrich",
+                        collector_call_status_for(status.ok(), status.error_code()),
+                        enrich_elapsed_ns, report.warnings.size());
   return report;
 }
 

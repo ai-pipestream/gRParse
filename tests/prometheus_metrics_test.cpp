@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "grparse/collector_coordinator.h"
 #include "grparse/prometheus_metrics.h"
 #include "support/check.h"
 
@@ -253,6 +254,288 @@ void verify_render_histogram_is_cumulative() {
                    "a histogram carries its mandatory _sum series");
 }
 
+void verify_render_doctype_and_collector_families() {
+  grparse::PipelineTelemetry telemetry;
+  auto& pdf = telemetry.doctype("pdf");
+  pdf.completed[static_cast<size_t>(grparse::DocumentCompletionStatus::kSuccess)] = 4;
+  pdf.completed[static_cast<size_t>(grparse::DocumentCompletionStatus::kPartialSuccess)] = 1;
+  pdf.completed[static_cast<size_t>(grparse::DocumentCompletionStatus::kFailure)] = 2;
+  pdf.completed[static_cast<size_t>(grparse::DocumentCompletionStatus::kRejected)] = 3;
+  pdf.duration.buckets[0] = 1;   // <= 0.01 s
+  pdf.duration.buckets[3] = 2;   // <= 0.1 s
+  pdf.duration.buckets[12] = 1;  // +Inf overflow (> 60 s)
+  pdf.duration.sum_ns = 65'250'000'000ULL;
+
+  auto& libreoffice = telemetry.collector("libreoffice");
+  libreoffice.calls[static_cast<size_t>(grparse::CollectorCallStatus::kOk)] = 5;
+  libreoffice.calls[static_cast<size_t>(grparse::CollectorCallStatus::kError)] = 1;
+  libreoffice.calls[static_cast<size_t>(grparse::CollectorCallStatus::kTimeout)] = 2;
+  libreoffice.calls[static_cast<size_t>(grparse::CollectorCallStatus::kUnavailable)] = 3;
+  libreoffice.warnings = 9;
+  libreoffice.duration.buckets[1] = 2;  // <= 0.025 s
+  libreoffice.duration.buckets[6] = 3;  // <= 1 s
+  libreoffice.duration.sum_ns = 2'500'000'000ULL;
+
+  const std::string text = grparse::render_prometheus_metrics(
+      grparse::PageScheduler::Metrics{}, grparse::OcrEnginePool::Stats{},
+      grparse::PageScheduler::Options{}, grparse::RepairTotals{}, grparse::DataTotals{},
+      grparse::OfficeCvTotals{}, 0, 0, telemetry);
+
+  require_contains(text, "# HELP grparse_documents_completed_total ", "completed help line");
+  require_contains(text, "# TYPE grparse_documents_completed_total counter\n",
+                   "completed type line");
+  require_contains(text,
+                   "grparse_documents_completed_total{doctype=\"pdf\",status=\"success\"} 4\n",
+                   "pdf success count");
+  require_contains(
+      text,
+      "grparse_documents_completed_total{doctype=\"pdf\",status=\"partial_success\"} 1\n",
+      "pdf partial_success count");
+  require_contains(text,
+                   "grparse_documents_completed_total{doctype=\"pdf\",status=\"failure\"} 2\n",
+                   "pdf failure count");
+  require_contains(text,
+                   "grparse_documents_completed_total{doctype=\"pdf\",status=\"rejected\"} 3\n",
+                   "pdf rejected count");
+  for (std::string_view doctype : grparse::kMetricDoctypes) {
+    require_contains(text,
+                     "grparse_documents_completed_total{doctype=\"" + std::string(doctype) +
+                         "\",status=\"success\"} ",
+                     std::string("doctype series ") + std::string(doctype));
+  }
+
+  require_contains(text, "# HELP grparse_document_duration_seconds ", "doc duration help line");
+  require_contains(text, "# TYPE grparse_document_duration_seconds histogram\n",
+                   "doc duration type line");
+  require_contains(
+      text, "grparse_document_duration_seconds_bucket{doctype=\"pdf\",le=\"0.01\"} 1\n",
+      "pdf duration 0.01 bucket");
+  require_contains(
+      text, "grparse_document_duration_seconds_bucket{doctype=\"pdf\",le=\"0.05\"} 1\n",
+      "pdf duration 0.05 cumulative bucket");
+  require_contains(
+      text, "grparse_document_duration_seconds_bucket{doctype=\"pdf\",le=\"0.1\"} 3\n",
+      "pdf duration 0.1 cumulative bucket");
+  require_contains(
+      text, "grparse_document_duration_seconds_bucket{doctype=\"pdf\",le=\"60\"} 3\n",
+      "pdf duration 60 cumulative bucket");
+  require_contains(
+      text, "grparse_document_duration_seconds_bucket{doctype=\"pdf\",le=\"+Inf\"} 4\n",
+      "pdf duration +Inf bucket");
+  require_contains(text, "grparse_document_duration_seconds_sum{doctype=\"pdf\"} 65.25\n",
+                   "pdf duration sum");
+  require_contains(text, "grparse_document_duration_seconds_count{doctype=\"pdf\"} 4\n",
+                   "pdf duration count");
+
+  require_contains(text, "# HELP grparse_collector_calls_total ", "collector calls help line");
+  require_contains(text, "# TYPE grparse_collector_calls_total counter\n",
+                   "collector calls type line");
+  require_contains(
+      text, "grparse_collector_calls_total{collector=\"libreoffice\",status=\"ok\"} 5\n",
+      "libreoffice ok calls");
+  require_contains(
+      text, "grparse_collector_calls_total{collector=\"libreoffice\",status=\"error\"} 1\n",
+      "libreoffice error calls");
+  require_contains(
+      text, "grparse_collector_calls_total{collector=\"libreoffice\",status=\"timeout\"} 2\n",
+      "libreoffice timeout calls");
+  require_contains(
+      text,
+      "grparse_collector_calls_total{collector=\"libreoffice\",status=\"unavailable\"} 3\n",
+      "libreoffice unavailable calls");
+  for (std::string_view collector : grparse::kMetricCollectors) {
+    require_contains(text,
+                     "grparse_collector_calls_total{collector=\"" + std::string(collector) +
+                         "\",status=\"ok\"} ",
+                     std::string("collector series ") + std::string(collector));
+  }
+
+  require_contains(text, "# HELP grparse_collector_duration_seconds ",
+                   "collector duration help line");
+  require_contains(text, "# TYPE grparse_collector_duration_seconds histogram\n",
+                   "collector duration type line");
+  require_contains(
+      text,
+      "grparse_collector_duration_seconds_bucket{collector=\"libreoffice\",le=\"0.01\"} 0\n",
+      "libreoffice duration 0.01 bucket");
+  require_contains(
+      text,
+      "grparse_collector_duration_seconds_bucket{collector=\"libreoffice\",le=\"0.025\"} 2\n",
+      "libreoffice duration 0.025 bucket");
+  require_contains(
+      text,
+      "grparse_collector_duration_seconds_bucket{collector=\"libreoffice\",le=\"1\"} 5\n",
+      "libreoffice duration 1s cumulative bucket");
+  require_contains(
+      text,
+      "grparse_collector_duration_seconds_bucket{collector=\"libreoffice\",le=\"+Inf\"} 5\n",
+      "libreoffice duration +Inf bucket");
+  require_contains(
+      text, "grparse_collector_duration_seconds_sum{collector=\"libreoffice\"} 2.5\n",
+      "libreoffice duration sum");
+  require_contains(
+      text, "grparse_collector_duration_seconds_count{collector=\"libreoffice\"} 5\n",
+      "libreoffice duration count");
+
+  require_contains(text, "# HELP grparse_collector_warnings_total ",
+                   "collector warnings help line");
+  require_contains(text, "# TYPE grparse_collector_warnings_total counter\n",
+                   "collector warnings type line");
+  require_contains(text, "grparse_collector_warnings_total{collector=\"libreoffice\"} 9\n",
+                   "libreoffice warnings count");
+}
+
+void verify_doctype_classification_and_collector_status_mapping() {
+  using ai::pipestream::parse::v1::InputFormat;
+  require(grparse::classify_doctype(InputFormat::INPUT_FORMAT_PDF, "report.pdf",
+                                    "application/pdf") == "pdf",
+          "pdf classification");
+  require(grparse::classify_doctype(InputFormat::INPUT_FORMAT_DOCX, "memo.docx", "") == "docx",
+          "docx classification");
+  require(grparse::classify_doctype(InputFormat::INPUT_FORMAT_XLSX, "sheet.ods", "") == "xlsx",
+          "xlsx classification");
+  require(grparse::classify_doctype(InputFormat::INPUT_FORMAT_PPTX, "deck.pptx", "") == "pptx",
+          "pptx classification");
+  require(grparse::classify_doctype(InputFormat::INPUT_FORMAT_HTML, "index.html", "") == "html",
+          "html classification");
+  require(grparse::classify_doctype(InputFormat::INPUT_FORMAT_MD, "README.md",
+                                    "text/markdown") == "md",
+          "markdown classification");
+  require(grparse::classify_doctype(InputFormat::INPUT_FORMAT_MD, "notes.txt",
+                                    "text/plain; charset=utf-8") == "txt",
+          "plain text classified as txt even though input_format_for routes it to MD");
+  require(grparse::classify_doctype(InputFormat::INPUT_FORMAT_CSV, "data.tsv", "text/csv") == "csv",
+          "csv classification");
+  require(grparse::classify_doctype(InputFormat::INPUT_FORMAT_IMAGE, "scan.png", "image/png") ==
+              "image",
+          "image classification");
+  require(grparse::classify_doctype(InputFormat::INPUT_FORMAT_AUDIO, "clip.wav", "audio/wav") ==
+              "audio",
+          "audio classification");
+  require(grparse::classify_doctype(InputFormat::INPUT_FORMAT_UNSPECIFIED, "book.epub",
+                                    "application/epub+zip") == "epub",
+          "epub classification from filename/mimetype");
+  require(grparse::classify_doctype(InputFormat::INPUT_FORMAT_UNSPECIFIED, "mail.eml",
+                                    "message/rfc822") == "email",
+          "email classification");
+  require(grparse::classify_doctype(InputFormat::INPUT_FORMAT_UNSPECIFIED, "feed.xml",
+                                    "application/xml") == "xml",
+          "xml classification");
+  require(grparse::classify_doctype(InputFormat::INPUT_FORMAT_UNSPECIFIED, "crawl.warc.gz", "") ==
+              "warc",
+          "warc classification");
+  require(grparse::classify_doctype(InputFormat::INPUT_FORMAT_UNSPECIFIED, "mainframe.ebcdic",
+                                    "") == "ebcdic",
+          "ebcdic classification");
+  require(grparse::classify_doctype(InputFormat::INPUT_FORMAT_UNSPECIFIED, "unknown.bin",
+                                    "application/octet-stream") == "other",
+          "unknown input falls back to other");
+
+  require(grparse::collector_call_status_for(true, grpc::StatusCode::OK) ==
+              grparse::CollectorCallStatus::kOk,
+          "OK status maps to ok");
+  require(grparse::collector_call_status_for(false, grpc::StatusCode::DEADLINE_EXCEEDED) ==
+              grparse::CollectorCallStatus::kTimeout,
+          "DEADLINE_EXCEEDED maps to timeout");
+  require(grparse::collector_call_status_for(false, grpc::StatusCode::UNAVAILABLE) ==
+              grparse::CollectorCallStatus::kUnavailable,
+          "UNAVAILABLE maps to unavailable");
+  require(grparse::collector_call_status_for(false, grpc::StatusCode::UNIMPLEMENTED) ==
+              grparse::CollectorCallStatus::kUnavailable,
+          "unwired UNIMPLEMENTED collector maps to unavailable");
+  require(grparse::collector_call_status_for(false, grpc::StatusCode::INVALID_ARGUMENT) ==
+              grparse::CollectorCallStatus::kError,
+          "other non-OK status maps to error");
+
+  using ai::pipestream::parse::v1::Collector;
+  require(grparse::metric_collector_name(Collector::COLLECTOR_PDF) == "pdf-inspector",
+          "COLLECTOR_PDF maps to pdf-inspector");
+  require(grparse::metric_collector_name(Collector::COLLECTOR_CONFLUENCE) == "confluence",
+          "COLLECTOR_CONFLUENCE maps to confluence");
+  require(grparse::metric_collector_name(Collector::COLLECTOR_GRPARSE_CV) == "grparse-cv",
+          "COLLECTOR_GRPARSE_CV maps to grparse-cv");
+}
+
+void verify_live_pipeline_telemetry_and_run_collectors() {
+  grparse::reset_pipeline_telemetry();
+
+  grparse::record_document_completion("pdf", grparse::DocumentCompletionStatus::kSuccess,
+                                      50'000'000ULL);
+  grparse::record_document_completion(
+      "pdf", grparse::DocumentCompletionStatus::kPartialSuccess, 200'000'000ULL);
+  grparse::record_collector_call("enrich", grparse::CollectorCallStatus::kTimeout,
+                                 5'000'000'000ULL, 2);
+  grparse::record_collector_warnings("grparse-cv", 3);
+
+  // Exercise run_collectors directly: a Confluence leg succeeds with 1 warning,
+  // and an EPUB leg fails with UNAVAILABLE.
+  std::vector<grparse::PlannedCollector> plan = {
+      {.id = ai::pipestream::parse::v1::COLLECTOR_CONFLUENCE,
+       .run =
+           [] {
+             grparse::CollectorOutcome ok;
+             ok.success = true;
+             ok.code = grpc::StatusCode::OK;
+             ok.warnings = {"minor macro note"};
+             return ok;
+           }},
+      {.id = ai::pipestream::parse::v1::COLLECTOR_EPUB,
+       .run =
+           [] {
+             grparse::CollectorOutcome fail;
+             fail.success = false;
+             fail.code = grpc::StatusCode::UNAVAILABLE;
+             fail.error = "connection refused";
+             return fail;
+           }},
+  };
+  const auto outcome =
+      grparse::run_collectors(std::move(plan), ai::pipestream::document::v1::Document{});
+  require(outcome.succeeded == 1, "one collector leg succeeded");
+  require(outcome.failures.size() == 1, "one collector leg failed");
+
+  grparse::MetricsHttpServer server(0, [] {
+    return grparse::render_prometheus_metrics(
+        grparse::PageScheduler::Metrics{}, grparse::OcrEnginePool::Stats{},
+        grparse::PageScheduler::Options{});
+  });
+  const std::string scraped = http_exchange(
+      server.port(), "GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n");
+  require_contains(scraped, "HTTP/1.1 200 OK", "live metrics scrape succeeds");
+  require_contains(
+      scraped, "grparse_documents_completed_total{doctype=\"pdf\",status=\"success\"} 1\n",
+      "scraped live pdf success count");
+  require_contains(
+      scraped,
+      "grparse_documents_completed_total{doctype=\"pdf\",status=\"partial_success\"} 1\n",
+      "scraped live pdf partial_success count");
+  require_contains(
+      scraped, "grparse_document_duration_seconds_bucket{doctype=\"pdf\",le=\"0.05\"} 1\n",
+      "scraped live pdf 50ms bucket");
+  require_contains(
+      scraped, "grparse_document_duration_seconds_bucket{doctype=\"pdf\",le=\"0.25\"} 2\n",
+      "scraped live pdf 250ms cumulative bucket");
+  require_contains(scraped, "grparse_document_duration_seconds_count{doctype=\"pdf\"} 2\n",
+                   "scraped live pdf duration count");
+  require_contains(
+      scraped, "grparse_collector_calls_total{collector=\"enrich\",status=\"timeout\"} 1\n",
+      "scraped live enrich timeout call");
+  require_contains(scraped, "grparse_collector_warnings_total{collector=\"enrich\"} 2\n",
+                   "scraped live enrich warnings");
+  require_contains(scraped, "grparse_collector_warnings_total{collector=\"grparse-cv\"} 3\n",
+                   "scraped live grparse-cv warnings");
+  require_contains(
+      scraped, "grparse_collector_calls_total{collector=\"confluence\",status=\"ok\"} 1\n",
+      "run_collectors recorded confluence ok call");
+  require_contains(scraped, "grparse_collector_warnings_total{collector=\"confluence\"} 1\n",
+                   "run_collectors recorded confluence warning");
+  require_contains(
+      scraped, "grparse_collector_calls_total{collector=\"epub\",status=\"unavailable\"} 1\n",
+      "run_collectors recorded epub unavailable call");
+
+  grparse::reset_pipeline_telemetry();
+}
+
 void verify_http_listener() {
   grparse::MetricsHttpServer server(0, [] { return std::string("test_metric 1\n"); });
   require(server.port() != 0, "port 0 must resolve to a bound port");
@@ -294,6 +577,9 @@ int main() {
       verify_render_rotation_repair_and_office_cv_families,
       verify_render_histogram_is_cumulative,
       verify_render_ep_fallback_counter,
+      verify_render_doctype_and_collector_families,
+      verify_doctype_classification_and_collector_status_mapping,
+      verify_live_pipeline_telemetry_and_run_collectors,
       verify_http_listener,
       verify_renderer_exception_becomes_500,
   });

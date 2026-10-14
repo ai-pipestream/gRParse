@@ -42,6 +42,7 @@
 #include "grparse/input_format.h"
 #include "grparse/page_previews.h"
 #include "grparse/pdf_form_widgets.h"
+#include "grparse/prometheus_metrics.h"
 #include "grparse/schema_version.h"
 #include "grparse/service_version.h"
 #include "grparse/vlm_convert.h"
@@ -1682,7 +1683,15 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
   if (!parsed.outcome.success) {
     // Degrade, don't sink: an unreachable inspector leaves the parse on
     // exactly the path it would have taken without the collector.
+    const auto cv_started = std::chrono::steady_clock::now();
     CollectorOutcome outcome = run_cv(inputs.tuning);
+    const auto cv_elapsed_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - cv_started)
+            .count());
+    record_collector_call(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
+                          collector_call_status_for(outcome.success, outcome.code),
+                          cv_elapsed_ns, 0);
     outcome.warnings.push_back("pdf collector failed (" + parsed.outcome.error +
                                "); fell back to the in-process CV path");
     return outcome;
@@ -1692,7 +1701,15 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
   const bool forced =
       route.force_ocr && routed_tuning.mode == PageScheduler::OcrTuning::Mode::kSelective;
   if (forced) routed_tuning.mode = PageScheduler::OcrTuning::Mode::kForce;
+  const auto cv_started = std::chrono::steady_clock::now();
   CollectorOutcome outcome = run_cv(routed_tuning);
+  const auto cv_elapsed_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - cv_started)
+          .count());
+  record_collector_call(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
+                        collector_call_status_for(outcome.success, outcome.code),
+                        cv_elapsed_ns, 0);
   lend_source_meta(parsed.outcome, &outcome);
   outcome.warnings.push_back(cv_route_warning(parsed.classification, route, forced));
   return outcome;
@@ -1861,6 +1878,10 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
                           const std::optional<RepairOptions>& server_repair,
                           const std::string& surface, SourceParse* parsed) {
   const auto& sources = request.sources();
+  if (sources.size() == 1 && sources.Get(0).has_file()) {
+    parsed->doctype = classify_doctype(pipestream::parse::v1::INPUT_FORMAT_UNSPECIFIED,
+                                       sources.Get(0).file().filename());
+  }
   if (sources.size() != 1 || !sources.Get(0).has_file()) {
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                         surface + " currently accepts exactly one FileSource containing base64_string");
@@ -1912,6 +1933,8 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
               "; it cannot be read without the password)");
     }
     pipestream::document::v1::Document base = base_document(*bytes, requested_name);
+    parsed->doctype = classify_doctype(pipestream::parse::v1::INPUT_FORMAT_UNSPECIFIED,
+                                       requested_name.string(), base.origin().mimetype(), *bytes);
     // Which build, settings and options produce this document, so anything
     // stored against its items can tell a re-parse that would renumber them.
     // Stamped on the base every path builds on (the VLM pipeline and the
@@ -1961,6 +1984,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
       }
       CoordinatorResult result;
       result.document = std::move(base);
+      parsed->collectors_ran = true;
       const VlmConvertReport report =
           convert_vlm_pages(collectors->vlm_channel(), vlm, bytes, pdf, &result.document,
                             inputs.inbound_deadline, [context] { return context->IsCancelled(); });
@@ -2006,6 +2030,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
                                     "(GRPARSE_PDF_TARGET) for PDF input and does not "
                                     "apply to raster input");
     }
+    parsed->collectors_ran = true;
     CoordinatorResult result = run_collectors(
         build_plan(routed.ids, routed.pdf_routing, routed.office_fanout, inputs, run_cv),
         std::move(base));
@@ -2031,6 +2056,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
                                                             &result.document)) {
         result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
                                      std::move(*warning));
+        record_collector_warnings(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, 1);
       }
     }
     // The document is final here: every surface renders, chunks or delivers

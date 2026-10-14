@@ -17,6 +17,7 @@
 #include "chunking/chunker.h"
 #include "grparse/collector_coordinator.h"
 #include "grparse/document_render.h"
+#include "grparse/prometheus_metrics.h"
 #include "grparse/service_version.h"
 #include "parse_support.h"
 #include "source_parse.h"
@@ -27,6 +28,46 @@ namespace pipestream = ai::pipestream;
 
 namespace grparse {
 namespace {
+
+std::string_view request_doctype(
+    const google::protobuf::RepeatedPtrField<pipestream::parse::v1::Source>& sources) {
+  if (sources.size() == 1 && sources.Get(0).has_file()) {
+    return classify_doctype(pipestream::parse::v1::INPUT_FORMAT_UNSPECIFIED,
+                            sources.Get(0).file().filename());
+  }
+  return "other";
+}
+
+bool is_rejection_code(grpc::StatusCode code) {
+  switch (code) {
+    case grpc::StatusCode::INVALID_ARGUMENT:
+    case grpc::StatusCode::FAILED_PRECONDITION:
+    case grpc::StatusCode::PERMISSION_DENIED:
+    case grpc::StatusCode::UNIMPLEMENTED:
+    case grpc::StatusCode::RESOURCE_EXHAUSTED:
+      return true;
+    default:
+      return false;
+  }
+}
+
+void record_rpc_completion(const SourceParse& parsed, const grpc::Status& status,
+                           bool partial_success,
+                           std::chrono::steady_clock::time_point started) {
+  const auto elapsed_ns = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - started)
+          .count());
+  DocumentCompletionStatus completion = DocumentCompletionStatus::kSuccess;
+  if (!status.ok()) {
+    completion = (!parsed.collectors_ran && is_rejection_code(status.error_code()))
+                     ? DocumentCompletionStatus::kRejected
+                     : DocumentCompletionStatus::kFailure;
+  } else if (partial_success) {
+    completion = DocumentCompletionStatus::kPartialSuccess;
+  }
+  record_document_completion(parsed.doctype, completion, elapsed_ns);
+}
 
 // The document's plain text export: its text items in arena order, which is
 // each collector's emission order.
@@ -254,8 +295,9 @@ class ParseUnaryReactor final : public grpc::ServerUnaryReactor {
  public:
   ParseUnaryReactor(grpc::CallbackServerContext* context, CallExecutor& executor,
                     const std::shared_ptr<InflightBytes>& inflight, uint64_t request_bytes,
-                    std::function<grpc::Status()> work) {
+                    std::string_view initial_doctype, std::function<grpc::Status()> work) {
     if (inflight != nullptr && !inflight->try_acquire(request_bytes)) {
+      record_document_completion(initial_doctype, DocumentCompletionStatus::kRejected, 0);
       Finish(grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
                           "in-flight document bytes would exceed GRPARSE_MAX_INFLIGHT_BYTES"));
       return;
@@ -265,7 +307,7 @@ class ParseUnaryReactor final : public grpc::ServerUnaryReactor {
     std::shared_ptr<void> charge(nullptr, [inflight, request_bytes](void*) {
       if (inflight != nullptr) inflight->release(request_bytes);
     });
-    const bool queued = executor.submit([this, context, work = std::move(work),
+    const bool queued = executor.submit([this, context, initial_doctype, work = std::move(work),
                                          charge = std::move(charge)] {
       // A call can wait in the queue behind every conversion ahead of it, so
       // the first thing a worker does is ask whether anyone is still
@@ -273,6 +315,7 @@ class ParseUnaryReactor final : public grpc::ServerUnaryReactor {
       // parse behind it: the base64 decode of up to a few hundred megabytes,
       // and every collector leg after that.
       if (context->IsCancelled()) {
+        record_document_completion(initial_doctype, DocumentCompletionStatus::kFailure, 0);
         Finish(grpc::Status(grpc::StatusCode::CANCELLED,
                             "request cancelled before conversion started"));
         return;
@@ -281,6 +324,7 @@ class ParseUnaryReactor final : public grpc::ServerUnaryReactor {
       try {
         status = work();
       } catch (...) {
+        record_document_completion(initial_doctype, DocumentCompletionStatus::kFailure, 0);
         status = status_from_exception(std::current_exception());
       }
       // Last statement on purpose: OnDone can delete this reactor from
@@ -290,6 +334,7 @@ class ParseUnaryReactor final : public grpc::ServerUnaryReactor {
     if (queued) return;
     // The reactor holds the call and is the only thing that can answer it, so
     // a refused submission is a status, not a dropped RPC.
+    record_document_completion(initial_doctype, DocumentCompletionStatus::kRejected, 0);
     Finish(grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
                         "conversion executor is saturated"));
   }
@@ -314,40 +359,49 @@ class ParseWriteReactor final
   using Messages = std::vector<pipestream::parse::v1::StreamChunksResponse>;
 
   // A call refused before any work is queued.
-  explicit ParseWriteReactor(grpc::Status refused) { Finish(std::move(refused)); }
+  explicit ParseWriteReactor(grpc::Status refused) {
+    record_document_completion("other", DocumentCompletionStatus::kRejected, 0);
+    Finish(std::move(refused));
+  }
 
   ParseWriteReactor(grpc::CallbackServerContext* context, CallExecutor& executor,
                     const std::shared_ptr<InflightBytes>& inflight, uint64_t request_bytes,
+                    std::string_view initial_doctype,
                     std::function<grpc::Status(Messages*)> work) {
     if (inflight != nullptr && !inflight->try_acquire(request_bytes)) {
+      record_document_completion(initial_doctype, DocumentCompletionStatus::kRejected, 0);
       Finish(grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
                           "in-flight document bytes would exceed GRPARSE_MAX_INFLIGHT_BYTES"));
       return;
     }
     inflight_ = inflight;
     charge_ = request_bytes;
-    const bool queued = executor.submit([this, context, work = std::move(work)] {
-      if (context->IsCancelled()) {
-        Finish(grpc::Status(grpc::StatusCode::CANCELLED,
-                            "request cancelled before conversion started"));
-        return;
-      }
-      grpc::Status status;
-      try {
-        status = work(&messages_);
-      } catch (...) {
-        status = status_from_exception(std::current_exception());
-      }
-      if (!status.ok()) {
-        messages_.clear();
-        Finish(std::move(status));
-        return;
-      }
-      // Last statement on purpose, as in ParseUnaryReactor: once the first
-      // write is started the reactor can finish and be deleted elsewhere.
-      write_next();
-    });
+    const bool queued =
+        executor.submit([this, context, initial_doctype, work = std::move(work)] {
+          if (context->IsCancelled()) {
+            record_document_completion(initial_doctype, DocumentCompletionStatus::kFailure, 0);
+            Finish(grpc::Status(grpc::StatusCode::CANCELLED,
+                                "request cancelled before conversion started"));
+            return;
+          }
+          grpc::Status status;
+          try {
+            status = work(&messages_);
+          } catch (...) {
+            record_document_completion(initial_doctype, DocumentCompletionStatus::kFailure, 0);
+            status = status_from_exception(std::current_exception());
+          }
+          if (!status.ok()) {
+            messages_.clear();
+            Finish(std::move(status));
+            return;
+          }
+          // Last statement on purpose, as in ParseUnaryReactor: once the first
+          // write is started the reactor can finish and be deleted elsewhere.
+          write_next();
+        });
     if (queued) return;
+    record_document_completion(initial_doctype, DocumentCompletionStatus::kRejected, 0);
     Finish(grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
                         "conversion executor is saturated"));
   }
@@ -432,102 +486,115 @@ grpc::ServerUnaryReactor* DocumentParserService::ConvertSource(
   // The wire message and the copy its base64 source decodes to.
   const uint64_t charge =
       request->ByteSizeLong() + decoded_source_bytes(request->request().sources());
-  return new ParseUnaryReactor(context, executor_, inflight_, charge,
-                               [this, context, request, response] {
-    const auto started = std::chrono::steady_clock::now();
-    SourceParse parsed;
-    const grpc::Status parse_status = parse_source(context, request->request(), scheduler_,
-                                                   endpoints_, repair_, "ConvertSource", &parsed);
-    if (!parse_status.ok()) return parse_status;
-    auto& result = parsed.result;
-    auto* converted = response->mutable_response();
-    auto* document_response = converted->mutable_document();
-    document_response->set_filename(parsed.filename.string());
-    auto* document = document_response->mutable_doc();
-    *document = std::move(result.document);
-    report_failures(result.failures, converted->mutable_errors());
-    if (parsed.confidence.has_value()) *converted->mutable_confidence() = *parsed.confidence;
-    converted->mutable_structure_findings()->Swap(&parsed.structure_findings);
-    *converted->mutable_text_offsets() = chunking::offset_rows(parsed.offsets);
-    // Every requested output format renders from the same merged document;
-    // TEXT keeps its arena-order line export, the rest fold the body tree.
-    const auto& options = request->request().options();
-    render_exports(options, *document, document_response->mutable_exports());
-    const bool wants_chunks =
-        std::ranges::find(options.to_formats(), pipestream::parse::v1::OUTPUT_FORMAT_CHUNKS) !=
-        options.to_formats().end();
-    if (wants_chunks) {
-      std::vector<pipestream::parse::v1::Chunk> chunks;
-      if (options.chunking_options_case() ==
-          pipestream::parse::v1::ConvertDocumentOptions::kHybridChunking) {
-        const grpc::Status chunked = chunking::chunk_hybrid(
-            *document, parsed.offsets, options.hybrid_chunking(), parsed.filename.string(),
-            &chunks);
-        if (!chunked.ok()) return chunked;
-      } else {
-        // hierarchical_chunking, chunking_preset, or CHUNKS with no config:
-        // hierarchical defaults (validate_options admits no other preset).
-        pipestream::parse::v1::HierarchicalChunkerOptions hierarchical;
-        if (options.chunking_options_case() ==
-            pipestream::parse::v1::ConvertDocumentOptions::kHierarchicalChunking) {
-          hierarchical = options.hierarchical_chunking();
-        }
-        const chunking::ChunkOptions chunk_opts = chunking::chunk_options_from(hierarchical);
-        chunks = chunking::chunk_hierarchical(*document, parsed.offsets, chunk_opts,
-                                              parsed.filename.string());
-      }
-      for (auto& chunk : chunks) {
-        *converted->add_chunks() = std::move(chunk);
-      }
-    }
-    // The target delivers the same conversion somewhere else; the response
-    // body above keeps everything it already carries either way. It runs
-    // here on the conversion's own worker because it compresses and uploads,
-    // which is not work a gRPC event thread may be handed.
-    const auto& target = request->request().target();
-    bool delivery_failed = false;
-    if (targets::needs_delivery(target)) {
-      const grpc::Status delivered =
-          targets::deliver(target, *document, document_response->exports(),
-                           converted->mutable_target_result());
-      if (!delivered.ok()) {
-        // Delivery is additive, never a replacement: the conversion the
-        // response already carries survives a store that would not take it.
-        // The failure lands as an error item and a partial status, except a
-        // misconfigured target itself, which the caller must fix and gets
-        // told about at the RPC layer.
-        if (delivered.error_code() == grpc::StatusCode::INVALID_ARGUMENT ||
-            delivered.error_code() == grpc::StatusCode::UNIMPLEMENTED) {
-          return delivered;
-        }
-        delivery_failed = true;
-        auto* error = converted->add_errors();
-        error->set_component_type(pipestream::parse::v1::COMPONENT_TYPE_PIPELINE);
-        error->set_module_name("target-delivery");
-        error->set_error_message(delivered.error_message());
-        error->set_category(pipestream::parse::v1::FAILURE_CATEGORY_TARGET_UNAVAILABLE);
-      }
-    }
-    converted->set_status(result.failures.empty() && !delivery_failed
-                              ? pipestream::parse::v1::CONVERSION_STATUS_SUCCESS
-                              : pipestream::parse::v1::CONVERSION_STATUS_PARTIAL_SUCCESS);
-    converted->set_processing_time(
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
-    (*converted->mutable_timings())["total"] = converted->processing_time();
-    // Full ProfilingItem sample matching serve's additive profiling map; totals
-    // stay on timings for older clients.
-    auto& profile = (*converted->mutable_profiling())["total"];
-    profile.set_scope(pipestream::parse::v1::PROFILING_SCOPE_DOCUMENT);
-    profile.set_count(1);
-    profile.add_times(converted->processing_time());
-    // Last, once the response is whole: a response the wire will not carry
-    // is refused here, with a status that says what to do instead, rather
-    // than failing in the transport after the call has done all its work.
-    const grpc::Status fits =
-        refuse_oversized_response(*response, response_byte_cap_, "ConvertSource");
-    if (!fits.ok()) response->Clear();
-    return fits;
-  });
+  const std::string_view initial_doctype = request_doctype(request->request().sources());
+  return new ParseUnaryReactor(
+      context, executor_, inflight_, charge, initial_doctype,
+      [this, context, request, response, initial_doctype] {
+        const auto started = std::chrono::steady_clock::now();
+        SourceParse parsed;
+        parsed.doctype = initial_doctype;
+        bool partial_success = false;
+        const auto run = [&]() -> grpc::Status {
+          const grpc::Status parse_status =
+              parse_source(context, request->request(), scheduler_, endpoints_, repair_,
+                           "ConvertSource", &parsed);
+          if (!parse_status.ok()) return parse_status;
+          auto& result = parsed.result;
+          partial_success = !result.failures.empty();
+          auto* converted = response->mutable_response();
+          auto* document_response = converted->mutable_document();
+          document_response->set_filename(parsed.filename.string());
+          auto* document = document_response->mutable_doc();
+          *document = std::move(result.document);
+          report_failures(result.failures, converted->mutable_errors());
+          if (parsed.confidence.has_value()) *converted->mutable_confidence() = *parsed.confidence;
+          converted->mutable_structure_findings()->Swap(&parsed.structure_findings);
+          *converted->mutable_text_offsets() = chunking::offset_rows(parsed.offsets);
+          // Every requested output format renders from the same merged document;
+          // TEXT keeps its arena-order line export, the rest fold the body tree.
+          const auto& options = request->request().options();
+          render_exports(options, *document, document_response->mutable_exports());
+          const bool wants_chunks =
+              std::ranges::find(options.to_formats(),
+                                pipestream::parse::v1::OUTPUT_FORMAT_CHUNKS) !=
+              options.to_formats().end();
+          if (wants_chunks) {
+            std::vector<pipestream::parse::v1::Chunk> chunks;
+            if (options.chunking_options_case() ==
+                pipestream::parse::v1::ConvertDocumentOptions::kHybridChunking) {
+              const grpc::Status chunked = chunking::chunk_hybrid(
+                  *document, parsed.offsets, options.hybrid_chunking(), parsed.filename.string(),
+                  &chunks);
+              if (!chunked.ok()) return chunked;
+            } else {
+              // hierarchical_chunking, chunking_preset, or CHUNKS with no config:
+              // hierarchical defaults (validate_options admits no other preset).
+              pipestream::parse::v1::HierarchicalChunkerOptions hierarchical;
+              if (options.chunking_options_case() ==
+                  pipestream::parse::v1::ConvertDocumentOptions::kHierarchicalChunking) {
+                hierarchical = options.hierarchical_chunking();
+              }
+              const chunking::ChunkOptions chunk_opts = chunking::chunk_options_from(hierarchical);
+              chunks = chunking::chunk_hierarchical(*document, parsed.offsets, chunk_opts,
+                                                    parsed.filename.string());
+            }
+            for (auto& chunk : chunks) {
+              *converted->add_chunks() = std::move(chunk);
+            }
+          }
+          // The target delivers the same conversion somewhere else; the response
+          // body above keeps everything it already carries either way. It runs
+          // here on the conversion's own worker because it compresses and uploads,
+          // which is not work a gRPC event thread may be handed.
+          const auto& target = request->request().target();
+          bool delivery_failed = false;
+          if (targets::needs_delivery(target)) {
+            const grpc::Status delivered =
+                targets::deliver(target, *document, document_response->exports(),
+                                 converted->mutable_target_result());
+            if (!delivered.ok()) {
+              // Delivery is additive, never a replacement: the conversion the
+              // response already carries survives a store that would not take it.
+              // The failure lands as an error item and a partial status, except a
+              // misconfigured target itself, which the caller must fix and gets
+              // told about at the RPC layer.
+              if (delivered.error_code() == grpc::StatusCode::INVALID_ARGUMENT ||
+                  delivered.error_code() == grpc::StatusCode::UNIMPLEMENTED) {
+                return delivered;
+              }
+              delivery_failed = true;
+              partial_success = true;
+              auto* error = converted->add_errors();
+              error->set_component_type(pipestream::parse::v1::COMPONENT_TYPE_PIPELINE);
+              error->set_module_name("target-delivery");
+              error->set_error_message(delivered.error_message());
+              error->set_category(pipestream::parse::v1::FAILURE_CATEGORY_TARGET_UNAVAILABLE);
+            }
+          }
+          converted->set_status(result.failures.empty() && !delivery_failed
+                                    ? pipestream::parse::v1::CONVERSION_STATUS_SUCCESS
+                                    : pipestream::parse::v1::CONVERSION_STATUS_PARTIAL_SUCCESS);
+          converted->set_processing_time(
+              std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
+          (*converted->mutable_timings())["total"] = converted->processing_time();
+          // Full ProfilingItem sample matching serve's additive profiling map; totals
+          // stay on timings for older clients.
+          auto& profile = (*converted->mutable_profiling())["total"];
+          profile.set_scope(pipestream::parse::v1::PROFILING_SCOPE_DOCUMENT);
+          profile.set_count(1);
+          profile.add_times(converted->processing_time());
+          // Last, once the response is whole: a response the wire will not carry
+          // is refused here, with a status that says what to do instead, rather
+          // than failing in the transport after the call has done all its work.
+          const grpc::Status fits =
+              refuse_oversized_response(*response, response_byte_cap_, "ConvertSource");
+          if (!fits.ok()) response->Clear();
+          return fits;
+        };
+        const grpc::Status status = run();
+        record_rpc_completion(parsed, status, partial_success, started);
+        return status;
+      });
 }
 
 grpc::ServerUnaryReactor* DocumentParserService::ChunkHierarchicalSource(
@@ -535,19 +602,27 @@ grpc::ServerUnaryReactor* DocumentParserService::ChunkHierarchicalSource(
     const pipestream::parse::v1::ChunkHierarchicalSourceRequest* request,
     pipestream::parse::v1::ChunkHierarchicalSourceResponse* response) {
   const uint64_t charge = chunk_charge(*request, request->request().sources());
-  return new ParseUnaryReactor(context, executor_, inflight_, charge,
-                               [this, context, request, response] {
-    std::vector<pipestream::parse::v1::Chunk> chunks;
-    auto* chunked = response->mutable_response();
-    const grpc::Status status = chunk_hierarchical_source(
-        context, request->request(), "ChunkHierarchicalSource", &chunks, chunked);
-    if (!status.ok()) return status;
-    for (auto& chunk : chunks) *chunked->add_chunks() = std::move(chunk);
-    const grpc::Status fits =
-        refuse_oversized_response(*response, response_byte_cap_, "ChunkHierarchicalSource");
-    if (!fits.ok()) response->Clear();
-    return fits;
-  });
+  const std::string_view initial_doctype = request_doctype(request->request().sources());
+  return new ParseUnaryReactor(
+      context, executor_, inflight_, charge, initial_doctype,
+      [this, context, request, response, initial_doctype] {
+        const auto started = std::chrono::steady_clock::now();
+        SourceParse parsed;
+        parsed.doctype = initial_doctype;
+        std::vector<pipestream::parse::v1::Chunk> chunks;
+        auto* chunked = response->mutable_response();
+        grpc::Status status = chunk_hierarchical_source(
+            context, request->request(), "ChunkHierarchicalSource", &parsed, &chunks, chunked);
+        const bool partial_success = !parsed.result.failures.empty();
+        if (status.ok()) {
+          for (auto& chunk : chunks) *chunked->add_chunks() = std::move(chunk);
+          status = refuse_oversized_response(*response, response_byte_cap_,
+                                             "ChunkHierarchicalSource");
+          if (!status.ok()) response->Clear();
+        }
+        record_rpc_completion(parsed, status, partial_success, started);
+        return status;
+      });
 }
 
 grpc::ServerUnaryReactor* DocumentParserService::ChunkHybridSource(
@@ -555,19 +630,26 @@ grpc::ServerUnaryReactor* DocumentParserService::ChunkHybridSource(
     const pipestream::parse::v1::ChunkHybridSourceRequest* request,
     pipestream::parse::v1::ChunkHybridSourceResponse* response) {
   const uint64_t charge = chunk_charge(*request, request->request().sources());
-  return new ParseUnaryReactor(context, executor_, inflight_, charge,
-                               [this, context, request, response] {
-    std::vector<pipestream::parse::v1::Chunk> chunks;
-    auto* chunked = response->mutable_response();
-    const grpc::Status status = chunk_hybrid_source(context, request->request(),
-                                                    "ChunkHybridSource", &chunks, chunked);
-    if (!status.ok()) return status;
-    for (auto& chunk : chunks) *chunked->add_chunks() = std::move(chunk);
-    const grpc::Status fits =
-        refuse_oversized_response(*response, response_byte_cap_, "ChunkHybridSource");
-    if (!fits.ok()) response->Clear();
-    return fits;
-  });
+  const std::string_view initial_doctype = request_doctype(request->request().sources());
+  return new ParseUnaryReactor(
+      context, executor_, inflight_, charge, initial_doctype,
+      [this, context, request, response, initial_doctype] {
+        const auto started = std::chrono::steady_clock::now();
+        SourceParse parsed;
+        parsed.doctype = initial_doctype;
+        std::vector<pipestream::parse::v1::Chunk> chunks;
+        auto* chunked = response->mutable_response();
+        grpc::Status status = chunk_hybrid_source(
+            context, request->request(), "ChunkHybridSource", &parsed, &chunks, chunked);
+        const bool partial_success = !parsed.result.failures.empty();
+        if (status.ok()) {
+          for (auto& chunk : chunks) *chunked->add_chunks() = std::move(chunk);
+          status = refuse_oversized_response(*response, response_byte_cap_, "ChunkHybridSource");
+          if (!status.ok()) response->Clear();
+        }
+        record_rpc_completion(parsed, status, partial_success, started);
+        return status;
+      });
 }
 
 grpc::ServerWriteReactor<pipestream::parse::v1::StreamChunksResponse>*
@@ -582,17 +664,25 @@ DocumentParserService::StreamChunks(grpc::CallbackServerContext* context,
       request->chunker_case() == pipestream::parse::v1::StreamChunksRequest::kHybrid;
   const uint64_t charge = hybrid ? chunk_charge(*request, request->hybrid().sources())
                                  : chunk_charge(*request, request->hierarchical().sources());
+  const std::string_view initial_doctype =
+      hybrid ? request_doctype(request->hybrid().sources())
+             : request_doctype(request->hierarchical().sources());
   return new ParseWriteReactor(
-      context, executor_, inflight_, charge,
-      [this, context, request,
-       hybrid](std::vector<pipestream::parse::v1::StreamChunksResponse>* messages) {
+      context, executor_, inflight_, charge, initial_doctype,
+      [this, context, request, hybrid,
+       initial_doctype](std::vector<pipestream::parse::v1::StreamChunksResponse>* messages) {
+        const auto started = std::chrono::steady_clock::now();
+        SourceParse parsed;
+        parsed.doctype = initial_doctype;
         std::vector<pipestream::parse::v1::Chunk> chunks;
         pipestream::parse::v1::ChunkDocumentResponse rest;
         const grpc::Status status =
-            hybrid ? chunk_hybrid_source(context, request->hybrid(), "StreamChunks",
+            hybrid ? chunk_hybrid_source(context, request->hybrid(), "StreamChunks", &parsed,
                                          &chunks, &rest)
-                   : chunk_hierarchical_source(context, request->hierarchical(),
-                                               "StreamChunks", &chunks, &rest);
+                   : chunk_hierarchical_source(context, request->hierarchical(), "StreamChunks",
+                                               &parsed, &chunks, &rest);
+        const bool partial_success = !parsed.result.failures.empty();
+        record_rpc_completion(parsed, status, partial_success, started);
         if (!status.ok()) return status;
         messages->reserve(chunks.size() + 1);
         for (auto& chunk : chunks) {
@@ -610,33 +700,33 @@ DocumentParserService::StreamChunks(grpc::CallbackServerContext* context,
 grpc::Status DocumentParserService::chunk_hierarchical_source(
     grpc::CallbackServerContext* context,
     const pipestream::parse::v1::HierarchicalChunkRequest& chunk_request,
-    const std::string& surface, std::vector<pipestream::parse::v1::Chunk>* chunks,
+    const std::string& surface, SourceParse* parsed,
+    std::vector<pipestream::parse::v1::Chunk>* chunks,
     pipestream::parse::v1::ChunkDocumentResponse* response) {
   const auto started = std::chrono::steady_clock::now();
   const grpc::Status target_status = refuse_target(chunk_request.target(), surface);
   if (!target_status.ok()) return target_status;
   const auto embedding_status = embedder_.validate(chunk_request.embedding_options());
   if (!embedding_status.ok()) return embedding_status;
-  SourceParse parsed;
   const grpc::Status parse_status =
       parse_chunk_source(context, chunk_request.sources(), chunk_request.convert_options(),
-                         surface, &parsed);
+                         surface, parsed);
   if (!parse_status.ok()) return parse_status;
   const chunking::ChunkOptions options =
       chunking::chunk_options_from(chunk_request.chunking_options());
-  *chunks = chunking::chunk_hierarchical(parsed.result.document, parsed.offsets, options,
-                                         parsed.filename.string());
+  *chunks = chunking::chunk_hierarchical(parsed->result.document, parsed->offsets, options,
+                                         parsed->filename.string());
   const auto embedded = embedder_.embed(chunk_request.embedding_options(),
                                         [context] { return context->IsCancelled(); }, chunks);
   if (!embedded.ok()) return embedded;
-  describe_chunks(chunk_request, started, &parsed, response);
+  describe_chunks(chunk_request, started, parsed, response);
   return grpc::Status::OK;
 }
 
 grpc::Status DocumentParserService::chunk_hybrid_source(
     grpc::CallbackServerContext* context,
     const pipestream::parse::v1::HybridChunkRequest& chunk_request, const std::string& surface,
-    std::vector<pipestream::parse::v1::Chunk>* chunks,
+    SourceParse* parsed, std::vector<pipestream::parse::v1::Chunk>* chunks,
     pipestream::parse::v1::ChunkDocumentResponse* response) {
   const auto started = std::chrono::steady_clock::now();
   const grpc::Status target_status = refuse_target(chunk_request.target(), surface);
@@ -648,19 +738,18 @@ grpc::Status DocumentParserService::chunk_hybrid_source(
   if (!option_status.ok()) return option_status;
   const auto embedding_status = embedder_.validate(chunk_request.embedding_options());
   if (!embedding_status.ok()) return embedding_status;
-  SourceParse parsed;
   const grpc::Status parse_status =
       parse_chunk_source(context, chunk_request.sources(), chunk_request.convert_options(),
-                         surface, &parsed);
+                         surface, parsed);
   if (!parse_status.ok()) return parse_status;
   const grpc::Status chunk_status =
-      chunking::chunk_hybrid(parsed.result.document, parsed.offsets,
-                             chunk_request.chunking_options(), parsed.filename.string(), chunks);
+      chunking::chunk_hybrid(parsed->result.document, parsed->offsets,
+                             chunk_request.chunking_options(), parsed->filename.string(), chunks);
   if (!chunk_status.ok()) return chunk_status;
   const auto embedded = embedder_.embed(chunk_request.embedding_options(),
                                         [context] { return context->IsCancelled(); }, chunks);
   if (!embedded.ok()) return embedded;
-  describe_chunks(chunk_request, started, &parsed, response);
+  describe_chunks(chunk_request, started, parsed, response);
   return grpc::Status::OK;
 }
 

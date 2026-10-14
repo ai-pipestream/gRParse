@@ -32,6 +32,7 @@
 #include "grparse/document_repair.h"
 #include "grparse/page_previews.h"
 #include "grparse/page_projection.h"
+#include "grparse/prometheus_metrics.h"
 #include "grparse/stream_delta.h"
 #include "parse_support.h"
 #include "structure_validation.h"
@@ -47,6 +48,19 @@ namespace {
 constexpr size_t kMaximumDocumentBytes = 500U * 1024U * 1024U;
 // The surface the structural option rejections name.
 constexpr const char* kStreamSurface = "StreamProcessDocument";
+
+bool is_stream_rejection_code(grpc::StatusCode code) {
+  switch (code) {
+    case grpc::StatusCode::INVALID_ARGUMENT:
+    case grpc::StatusCode::FAILED_PRECONDITION:
+    case grpc::StatusCode::PERMISSION_DENIED:
+    case grpc::StatusCode::UNIMPLEMENTED:
+    case grpc::StatusCode::RESOURCE_EXHAUSTED:
+      return true;
+    default:
+      return false;
+  }
+}
 
 class ArenaEvent final {
  public:
@@ -87,6 +101,7 @@ class DocumentStreamReactor final
   // Bytes never handed to a leg return their charge with the call; bytes
   // that were handed off return it when their last holder drops them.
   ~DocumentStreamReactor() override {
+    record_stream_completion_locked();
     if (inflight_ != nullptr) inflight_->release(charged_bytes_);
   }
 
@@ -200,6 +215,8 @@ class DocumentStreamReactor final
       document_id_ = incoming_.document_id();
       filename_ = fs::path(incoming_.filename()).filename();
       content_type_ = incoming_.content_type();
+      doctype_ = classify_doctype(pipestream::parse::v1::INPUT_FORMAT_UNSPECIFIED,
+                                  filename_.string(), content_type_);
       if (document_id_.empty() || filename_.empty()) {
         request_finish_locked(grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                                            "first chunk requires document_id and filename"));
@@ -401,6 +418,8 @@ class DocumentStreamReactor final
     plan.tuning.deadline = context_->deadline();
     plan.tuning.passwords = passwords_;
     plan.bytes = take_bytes_locked();
+    doctype_ = classify_doctype(pipestream::parse::v1::INPUT_FORMAT_UNSPECIFIED,
+                                filename_.string(), content_type_, *plan.bytes);
     plan.pdf = content_type_ == "application/pdf" || is_pdf(*plan.bytes, filename_);
     pdf_ = plan.pdf;
     // The selection validates like the unary options: a value outside the
@@ -459,6 +478,7 @@ class DocumentStreamReactor final
       return plan;
     }
     plan.started = true;
+    plan_started_ = true;
     return plan;
   }
 
@@ -477,6 +497,7 @@ class DocumentStreamReactor final
         plan->remotes.push_back(id);
         ++pending_parts_;
       } else {
+        record_collector_call(id, CollectorCallStatus::kUnavailable, 0, 0);
         record_part_failure_locked(
             id, grpc::Status(grpc::StatusCode::UNIMPLEMENTED,
                              std::string("collector '") + collector_name(id) +
@@ -506,6 +527,20 @@ class DocumentStreamReactor final
     std::lock_guard<std::mutex> lock(mutex_);
     document_bytes_hash_ = origin.hash;
     origin_mimetype_ = origin.mimetype;
+    doctype_ = classify_doctype(pipestream::parse::v1::INPUT_FORMAT_UNSPECIFIED,
+                                filename_.string(), origin.mimetype.mimetype);
+  }
+
+  void record_collector_done_cv_locked(const grpc::Status& status) {
+    if (!cv_active_ || cv_recorded_) return;
+    cv_recorded_ = true;
+    const auto elapsed_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - cv_started_)
+            .count());
+    record_collector_call(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
+                          collector_call_status_for(status.ok(), status.error_code()),
+                          elapsed_ns, assembly_warnings_.size());
   }
 
   // Submits the document to the in-process CV pipeline and wires its
@@ -514,6 +549,11 @@ class DocumentStreamReactor final
   // needing OCR; a submission failure degrades like any CV failure.
   void submit_cv(std::shared_ptr<const std::string> bytes, bool pdf,
                  PageScheduler::OcrTuning tuning) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      cv_started_ = std::chrono::steady_clock::now();
+      cv_active_ = true;
+    }
     try {
       const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
       auto ticket = scheduler_.submit(
@@ -545,8 +585,9 @@ class DocumentStreamReactor final
       if (finish_requested_) cancel_ticket_locked();
     } catch (...) {
       std::lock_guard<std::mutex> lock(mutex_);
-      record_part_failure_locked(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
-                                 status_from_exception(std::current_exception()));
+      const grpc::Status status = status_from_exception(std::current_exception());
+      record_collector_done_cv_locked(status);
+      record_part_failure_locked(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, status);
       part_done_locked();
       pump_locked();
     }
@@ -554,10 +595,11 @@ class DocumentStreamReactor final
 
   static void deliver(const std::weak_ptr<CallbackGate>& weak_gate,
                       pipestream::parse::v1::Collector id, CollectorOutcome outcome,
-                      bool pages_streamed = false) {
-    with_reactor(weak_gate, [id, &outcome, pages_streamed](DocumentStreamReactor& reactor) {
-      reactor.on_collector_done(id, std::move(outcome), pages_streamed);
-    });
+                      bool pages_streamed = false, uint64_t duration_ns = 0) {
+    with_reactor(
+        weak_gate, [id, &outcome, pages_streamed, duration_ns](DocumentStreamReactor& reactor) {
+          reactor.on_collector_done(id, std::move(outcome), pages_streamed, duration_ns);
+        });
   }
 
   // Starts one leg on its own detached thread. A throw inside the leg (an
@@ -658,11 +700,16 @@ class DocumentStreamReactor final
       });
       return accepted;
     };
+    const auto pdf_started = std::chrono::steady_clock::now();
     PdfParseResult parsed = collect_pdf(
         leg.endpoints == nullptr
             ? nullptr
             : leg.endpoints->channel(pipestream::parse::v1::COLLECTOR_PDF),
         *leg.bytes, leg.deadline, leg.tuning.page_range, leg_cancelled(weak_gate), stream_page);
+    const auto pdf_elapsed_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - pdf_started)
+            .count());
     const PdfRouteDecision route = route_pdf_by_classification(parsed.classification);
     const bool streamed = parsed.streamed_pages > 0;
     if (parsed.outcome.success && route.fast_path) {
@@ -682,7 +729,7 @@ class DocumentStreamReactor final
       }
       preview_session.reset();
       deliver(weak_gate, pipestream::parse::v1::COLLECTOR_PDF, std::move(parsed.outcome),
-              streamed);
+              streamed, pdf_elapsed_ns);
       return;
     }
     preview_session.reset();
@@ -705,7 +752,7 @@ class DocumentStreamReactor final
         // the part settles on the collector's outcome, with nothing left
         // to recognize.
         deliver(weak_gate, pipestream::parse::v1::COLLECTOR_PDF, std::move(parsed.outcome),
-                /*pages_streamed=*/true);
+                /*pages_streamed=*/true, pdf_elapsed_ns);
         return;
       }
       leg.tuning.page_range =
@@ -713,6 +760,10 @@ class DocumentStreamReactor final
                                               ? leg.tuning.page_range->second
                                               : std::numeric_limits<int>::max()};
     }
+    record_collector_call(
+        pipestream::parse::v1::COLLECTOR_PDF,
+        collector_call_status_for(parsed.outcome.success, parsed.outcome.code),
+        pdf_elapsed_ns, parsed.outcome.warnings.size());
     if (parsed.outcome.success) {
       leg.tuning.ocr_pages.insert(route.ocr_pages.begin(), route.ocr_pages.end());
       if (route.force_ocr && leg.tuning.mode == PageScheduler::OcrTuning::Mode::kSelective) {
@@ -757,7 +808,13 @@ class DocumentStreamReactor final
   void spawn_local_collector(pipestream::parse::v1::Collector id,
                              std::shared_ptr<const std::string> bytes) {
     start_leg(id, [id, bytes](const std::weak_ptr<CallbackGate>& weak_gate) {
-      deliver(weak_gate, id, run_local_collector(id, *bytes));
+      const auto started = std::chrono::steady_clock::now();
+      CollectorOutcome outcome = run_local_collector(id, *bytes);
+      const auto elapsed_ns = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - started)
+              .count());
+      deliver(weak_gate, id, std::move(outcome), /*pages_streamed=*/false, elapsed_ns);
     });
   }
 
@@ -792,10 +849,15 @@ class DocumentStreamReactor final
     start_leg(id, [endpoints = endpoints_, id, bytes, document_id, filename, content_type,
                    rules = std::move(rules), inbound_deadline = context_->deadline()](
                       const std::weak_ptr<CallbackGate>& weak_gate) {
-      deliver(weak_gate, id,
-              run_remote_collector(id, endpoints, document_id, filename, content_type,
-                                   *bytes, rules, inbound_deadline,
-                                   leg_cancelled(weak_gate)));
+      const auto started = std::chrono::steady_clock::now();
+      CollectorOutcome outcome =
+          run_remote_collector(id, endpoints, document_id, filename, content_type, *bytes,
+                               rules, inbound_deadline, leg_cancelled(weak_gate));
+      const auto elapsed_ns = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - started)
+              .count());
+      deliver(weak_gate, id, std::move(outcome), /*pages_streamed=*/false, elapsed_ns);
     });
   }
 
@@ -887,7 +949,9 @@ class DocumentStreamReactor final
   void on_scheduler_finish(std::exception_ptr failure) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (client_cancelled_ || context_->IsCancelled()) {
-      request_finish_locked(grpc::Status(grpc::StatusCode::CANCELLED, "request cancelled"));
+      const grpc::Status cancelled(grpc::StatusCode::CANCELLED, "request cancelled");
+      record_collector_done_cv_locked(cancelled);
+      request_finish_locked(cancelled);
       return;
     }
     grpc::Status status = status_from_exception(std::move(failure));
@@ -895,6 +959,7 @@ class DocumentStreamReactor final
       status = grpc::Status(grpc::StatusCode::INTERNAL,
                             "scheduler completed before every page was assembled");
     }
+    record_collector_done_cv_locked(status);
     if (status.ok()) {
       ++succeeded_parts_;
     } else {
@@ -908,7 +973,10 @@ class DocumentStreamReactor final
   // (the inspector's streamed fast path), so only the whole Document
   // follows here.
   void on_collector_done(pipestream::parse::v1::Collector collector, CollectorOutcome outcome,
-                         bool pages_streamed = false) {
+                         bool pages_streamed = false, uint64_t duration_ns = 0) {
+    record_collector_call(collector,
+                          collector_call_status_for(outcome.success, outcome.code),
+                          duration_ns, outcome.warnings.size());
     // A collector's Document is complete the moment it lands here, and this
     // is where it is projected and emitted, so the repair pass runs on it
     // first, on the caller's thread and outside the reactor lock: it is
@@ -1106,6 +1174,24 @@ class DocumentStreamReactor final
     document->mutable_furniture()->clear_children();
   }
 
+  void record_stream_completion_locked() {
+    if (metrics_recorded_) return;
+    metrics_recorded_ = true;
+    const auto elapsed_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - stream_started_)
+            .count());
+    DocumentCompletionStatus completion = DocumentCompletionStatus::kSuccess;
+    if (!finish_status_.ok()) {
+      completion = (!plan_started_ && is_stream_rejection_code(finish_status_.error_code()))
+                       ? DocumentCompletionStatus::kRejected
+                       : DocumentCompletionStatus::kFailure;
+    } else if (!collector_failures_.empty()) {
+      completion = DocumentCompletionStatus::kPartialSuccess;
+    }
+    record_document_completion(doctype_, completion, elapsed_ns);
+  }
+
   void request_finish_locked(grpc::Status status) {
     if (finish_started_) return;
     if (finish_requested_) {
@@ -1136,6 +1222,7 @@ class DocumentStreamReactor final
     }
     if (finish_requested_ && !write_in_flight_ && events_.empty() && !finish_started_) {
       finish_started_ = true;
+      record_stream_completion_locked();
       Finish(finish_status_);
     }
   }
@@ -1161,6 +1248,9 @@ class DocumentStreamReactor final
   // teardown.
   uint64_t charged_bytes_ = 0;
   std::mutex mutex_;
+  std::chrono::steady_clock::time_point stream_started_{std::chrono::steady_clock::now()};
+  std::chrono::steady_clock::time_point cv_started_{};
+  std::string_view doctype_ = "other";
   pipestream::parse::v1::DocumentChunk incoming_;
   std::string document_id_;
   fs::path filename_;
@@ -1212,6 +1302,10 @@ class DocumentStreamReactor final
   bool ticket_cancelled_ = false;
   bool finish_requested_ = false;
   bool finish_started_ = false;
+  bool plan_started_ = false;
+  bool metrics_recorded_ = false;
+  bool cv_active_ = false;
+  bool cv_recorded_ = false;
 };
 
 }  // namespace
