@@ -45,6 +45,8 @@ class FakeBackend final : public pdfv1::PdfBackendService::Service {
   bool fail_render = false;
   // Answers Render with a raster whose pixels are short of height * stride.
   bool short_raster = false;
+  std::function<void()> on_probe;
+  std::function<void()> on_parse;
   int probe_calls = 0;
   int parse_calls = 0;
   int render_calls = 0;
@@ -52,6 +54,7 @@ class FakeBackend final : public pdfv1::PdfBackendService::Service {
   grpc::Status Probe(grpc::ServerContext*, const pdfv1::ProbeRequest*,
                      pdfv1::ProbeResponse* response) override {
     ++probe_calls;
+    if (on_probe) on_probe();
     auto* caps = response->mutable_capabilities();
     caps->set_backend_name(name_);
     caps->set_engine_version("test");
@@ -67,6 +70,7 @@ class FakeBackend final : public pdfv1::PdfBackendService::Service {
   grpc::Status Parse(grpc::ServerContext*, const pdfv1::ParseRequest* request,
                      grpc::ServerWriter<pdfv1::ParseResponse>* writer) override {
     ++parse_calls;
+    if (on_parse) on_parse();
     const uint32_t page_index = request->pages().begin();
     if (parse_fail_pages.contains(page_index)) {
       return grpc::Status(grpc::StatusCode::INTERNAL,
@@ -675,6 +679,50 @@ int main() {
         require(rec.missing == 0 && rec.order_breaks == 0, what + ": the legs agree");
       }
     }
+  }
+
+  // Consensus Probe and Parse fan out concurrently across all legs instead of
+  // serializing their RPC latencies.
+  {
+    struct Barrier {
+      std::mutex mutex;
+      std::condition_variable ready;
+      int in_flight = 0;
+      int peak = 0;
+      bool opened = false;
+
+      void enter(int target) {
+        std::unique_lock<std::mutex> lock(mutex);
+        ++in_flight;
+        peak = std::max(peak, in_flight);
+        if (in_flight >= target) {
+          opened = true;
+          ready.notify_all();
+        }
+        ready.wait_for(lock, std::chrono::seconds(5),
+                       [this] { return opened; });
+        --in_flight;
+      }
+    };
+
+    Barrier probe_barrier;
+    Barrier parse_barrier;
+    Server par_a = start("par-a", {reading}, true);
+    Server par_b = start("par-b", {reading}, true);
+    Server par_c = start("par-c", {reading}, true);
+    for (Server* leg : {&par_a, &par_b, &par_c}) {
+      leg->service->on_probe = [&probe_barrier] { probe_barrier.enter(3); };
+      leg->service->on_parse = [&parse_barrier] { parse_barrier.enter(3); };
+    }
+    const auto source = grparse::open_consensus_pdf_document(
+        bytes, {par_a.target, par_b.target, par_c.target}, 144.0);
+    require(probe_barrier.opened && probe_barrier.peak == 3,
+            "all three legs probe concurrently during open");
+    const auto page = source->extract_digital_page(1);
+    require(page.has_value() && joined_text(*page) == expected,
+            "concurrent consensus page extracted");
+    require(parse_barrier.opened && parse_barrier.peak == 3,
+            "all three legs parse concurrently during extract_digital_page");
   }
 
   const auto targets =

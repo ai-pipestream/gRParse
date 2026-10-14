@@ -78,32 +78,20 @@ constexpr size_t kStrongDigitalNonWhitespace = 128;
   }
 }
 
-// One channel per backend target per process; channels multiplex.
-std::shared_ptr<grpc::Channel> channel_for(const std::string& target) {
-  static std::mutex mutex;
-  static std::map<std::string, std::shared_ptr<grpc::Channel>> channels;
-  const std::lock_guard<std::mutex> lock(mutex);
-  auto it = channels.find(target);
-  if (it != channels.end()) return it->second;
-  grpc::ChannelArguments args;
-  args.SetMaxReceiveMessageSize(kMaxMessageBytes);
-  args.SetMaxSendMessageSize(kMaxMessageBytes);
-  auto channel = grpc::CreateCustomChannel(
-      target, grpc::InsecureChannelCredentials(), args);
-  channels.emplace(target, channel);
-  return channel;
-}
-
 class RemotePdfPageSource final : public PageSource {
  public:
   RemotePdfPageSource(std::shared_ptr<const std::string> bytes,
-                      const std::string& target, double render_dpi)
+                      const std::string& target, double render_dpi,
+                      std::string precomputed_sha256)
       : bytes_(std::move(bytes)),
         handshake_(handshake_enabled()),
-        sha256_(handshake_ ? targets::sha256_hex(*bytes_) : std::string()),
+        sha256_(handshake_ ? (precomputed_sha256.empty()
+                                  ? targets::sha256_hex(*bytes_)
+                                  : std::move(precomputed_sha256))
+                           : std::string()),
         render_dpi_(render_dpi),
         render_scale_(render_dpi / kPdfUserSpaceDpi),
-        stub_(pdfv1::PdfBackendService::NewStub(channel_for(target))) {}
+        stub_(pdfv1::PdfBackendService::NewStub(pdf_backend_channel(target))) {}
 
   int page_count() const override {
     open();
@@ -619,11 +607,26 @@ std::optional<std::string> remote_pdf_backend_target() {
   return target;
 }
 
+std::shared_ptr<grpc::Channel> pdf_backend_channel(const std::string& target) {
+  static std::mutex mutex;
+  static std::map<std::string, std::shared_ptr<grpc::Channel>> channels;
+  const std::lock_guard<std::mutex> lock(mutex);
+  auto it = channels.find(target);
+  if (it != channels.end()) return it->second;
+  grpc::ChannelArguments args;
+  args.SetMaxReceiveMessageSize(kMaxMessageBytes);
+  args.SetMaxSendMessageSize(kMaxMessageBytes);
+  auto channel = grpc::CreateCustomChannel(
+      target, grpc::InsecureChannelCredentials(), args);
+  channels.emplace(target, channel);
+  return channel;
+}
+
 std::shared_ptr<PageSource> open_remote_pdf_document(
     std::shared_ptr<const std::string> bytes, const std::string& target,
-    double render_dpi, SourceOpening opening) {
-  auto source = std::make_shared<RemotePdfPageSource>(std::move(bytes), target,
-                                                      render_dpi);
+    double render_dpi, SourceOpening opening, std::string precomputed_sha256) {
+  auto source = std::make_shared<RemotePdfPageSource>(
+      std::move(bytes), target, render_dpi, std::move(precomputed_sha256));
   if (opening == SourceOpening::kNow) static_cast<void>(source->page_count());
   return source;
 }

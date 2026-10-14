@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <limits>
 #include <memory>
@@ -594,6 +595,9 @@ class BookEpubService final : public epubv1::EpubParseService::Service {
 // dial so the test can prove one leg per XHTML chapter.
 class HtmlMarkupService final : public markupv1::MarkupParseService::Service {
  public:
+  explicit HtmlMarkupService(size_t rendezvous_count = 0)
+      : rendezvous_count_(rendezvous_count) {}
+
   grpc::Status ParseMarkup(
       grpc::ServerContext*,
       grpc::ServerReaderWriter<markupv1::ParseMarkupResponse,
@@ -609,9 +613,26 @@ class HtmlMarkupService final : public markupv1::MarkupParseService::Service {
       }
     }
     {
-      std::lock_guard<std::mutex> lock(mutex_);
+      std::unique_lock<std::mutex> lock(mutex_);
       dials_.push_back(bytes);
+      ++in_flight_;
+      if (in_flight_ > peak_concurrent_) {
+        peak_concurrent_ = in_flight_;
+      }
+      if (rendezvous_count_ > 0) {
+        cv_.notify_all();
+        cv_.wait_for(lock, std::chrono::seconds(2), [this] {
+          return peak_concurrent_ >= rendezvous_count_;
+        });
+      }
     }
+    struct Guard {
+      HtmlMarkupService* self;
+      ~Guard() {
+        std::lock_guard<std::mutex> lock(self->mutex_);
+        --self->in_flight_;
+      }
+    } guard{this};
     if (format != markupv1::MARKUP_FORMAT_HTML) {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                           "book chapters must be dialed with the HTML hint");
@@ -655,21 +676,32 @@ class HtmlMarkupService final : public markupv1::MarkupParseService::Service {
     return dials_;
   }
 
+  size_t peak_concurrent() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return peak_concurrent_;
+  }
+
  private:
+  const size_t rendezvous_count_;
   std::mutex mutex_;
+  std::condition_variable cv_;
+  size_t in_flight_ = 0;
+  size_t peak_concurrent_ = 0;
   std::vector<std::string> dials_;
 };
 
 void verify_epub_book_folds_chapters_and_images() {
   BookEpubService epub;
   ServerFixture epub_server(&epub);
-  HtmlMarkupService markup;
+  HtmlMarkupService markup(/*rendezvous_count=*/2);
   ServerFixture markup_server(&markup);
   const auto outcome = grparse::collect_epub_book(epub_server.channel(),
                                                   markup_server.channel(), "PK\x03\x04zip");
   require(outcome.success, "the book collects: " + outcome.error);
   require(markup.dials().size() == 2,
           "the markup collector is dialed once per XHTML chapter and never for the SVG");
+  require(markup.peak_concurrent() == 2,
+          "both XHTML chapters fan out to the markup collector concurrently");
 
   const auto& book = outcome.document;
   require(book.groups_size() == 3 && book.texts_size() == 2 && book.pictures_size() == 2,

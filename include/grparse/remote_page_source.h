@@ -4,6 +4,8 @@
 #include <optional>
 #include <string>
 
+#include <grpcpp/grpcpp.h>
+
 #include "grparse/in_memory_document.h"
 
 namespace grparse {
@@ -15,6 +17,10 @@ namespace grparse {
 // whitespace-only value is a config error.
 std::optional<std::string> remote_pdf_backend_target();
 
+// Returns the shared multiplexed gRPC channel for a PdfBackendService target,
+// configured with the 520 MiB message size ceiling.
+std::shared_ptr<grpc::Channel> pdf_backend_channel(const std::string& target);
+
 // Opens a PageSource whose pages come from a PdfBackendService. Loading is
 // verified through Probe, before this returns (SourceOpening::kNow) or on
 // the source's first use (kOnFirstUse); typed load failures raise
@@ -24,9 +30,12 @@ std::optional<std::string> remote_pdf_backend_target();
 // addresses them by sha256 on every call, uploading the bytes exactly once
 // per backend when a cache miss verdict (LOAD_STATUS_BYTES_REQUIRED) asks
 // for them. GRPARSE_PDF_BACKEND_HANDSHAKE=off restores the old behavior of
-// sending the bytes with every call.
+// sending the bytes with every call. `precomputed_sha256`, when non-empty,
+// supplies the hex SHA-256 digest of `*bytes` so multi-backend callers hash
+// the document once instead of once per leg.
 std::shared_ptr<PageSource> open_remote_pdf_document(
     std::shared_ptr<const std::string> bytes, const std::string& target,
-    double render_dpi, SourceOpening opening = SourceOpening::kNow);
+    double render_dpi, SourceOpening opening = SourceOpening::kNow,
+    std::string precomputed_sha256 = {});
 
 }  // namespace grparse

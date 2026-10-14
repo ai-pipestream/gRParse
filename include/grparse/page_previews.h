@@ -12,8 +12,12 @@
 #include <opencv2/imgcodecs.hpp>
 
 #include "ai/pipestream/document/v1/document.pb.h"
+#include "grparse/document_passwords.h"
 
 namespace grparse {
+
+class PageSource;
+class PageSourceWatch;
 
 // Longest side of a captured page preview. Rasters render at 200 DPI (a
 // letter page is ~1700x2200); previews exist to be painted under boxes, not
@@ -29,6 +33,41 @@ inline const std::vector<int> kPngEncodeParams = {cv::IMWRITE_PNG_COMPRESSION, 6
 // Downscaled copy of the raster for the page preview; the raster itself when
 // it is already within bounds. Never aliases past the encode that follows.
 cv::Mat preview_of(const cv::Mat& raster);
+
+// Renders page previews over a single lazily opened PageSource so a caller
+// that streams a document page by page hashes and probes the PDF at most once
+// instead of once per streamed page.
+class PagePreviewSession {
+ public:
+  PagePreviewSession(
+      std::shared_ptr<const std::string> bytes,
+      std::function<bool()> stop = {},
+      std::chrono::system_clock::time_point deadline =
+          std::chrono::system_clock::time_point::max(),
+      DocumentPasswords passwords = {});
+  ~PagePreviewSession();
+  PagePreviewSession(const PagePreviewSession&) = delete;
+  PagePreviewSession& operator=(const PagePreviewSession&) = delete;
+
+  // Attaches a PNG preview of each page in `page_range` (or all pages when
+  // unset) to `document->mutable_pages()`. Opens and probes the underlying
+  // PageSource on the first call.
+  void attach(ai::pipestream::document::v1::Document* document,
+              std::optional<std::pair<int, int>> page_range = std::nullopt);
+
+ private:
+  bool ensure_open();
+
+  std::shared_ptr<const std::string> bytes_;
+  std::function<bool()> stop_;
+  std::chrono::system_clock::time_point deadline_;
+  DocumentPasswords passwords_;
+  std::shared_ptr<PageSource> source_;
+  std::unique_ptr<PageSourceWatch> watch_;
+  int page_count_ = 0;
+  bool open_attempted_ = false;
+  bool open_succeeded_ = false;
+};
 
 // Attaches a PNG preview of every page to Document.pages for a PDF a
 // collector folded without rasterizing. The in-process CV path captures its

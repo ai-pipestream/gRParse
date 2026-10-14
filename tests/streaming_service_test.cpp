@@ -2751,6 +2751,8 @@ void verify_streaming_pdf_fast_path_renders_previews() {
   }
   const auto& document = run.events.at(2).collector_document().document();
   require(document.pages().at(2).has_image(), "the whole document carries the previews too");
+  require(pdf_backend.backend().probe_calls() == 2,
+          "both streamed pages share one preview session open");
 }
 
 // With previews off nothing is rendered: the fast path stays the fast path.

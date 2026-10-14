@@ -6,6 +6,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <opencv2/imgcodecs.hpp>
@@ -23,6 +24,7 @@ namespace grparse {
 namespace {
 
 constexpr const char kPngDataUriPrefix[] = "data:image/png;base64,";
+constexpr size_t kMaxDecodeWorkers = 8;
 
 // The mapped page image back as pixels.  Empty when the page carries no
 // data-URI image or the bytes do not decode.
@@ -178,6 +180,28 @@ OfficeCvReport enrich_office_document(const OfficeCvEnrichment& enrichment,
   for (const auto& [page_number, _] : document->pages()) page_numbers.push_back(page_number);
   std::ranges::sort(page_numbers);
 
+  std::vector<cv::Mat> rasters(page_numbers.size());
+  if (page_numbers.size() == 1) {
+    rasters[0] = decode_page_image(document->pages().at(page_numbers[0]));
+  } else if (page_numbers.size() > 1) {
+    std::atomic<size_t> next_slot{0};
+    const auto decode_worker = [&] {
+      for (;;) {
+        const size_t slot = next_slot.fetch_add(1, std::memory_order_relaxed);
+        if (slot >= page_numbers.size()) break;
+        rasters[slot] = decode_page_image(document->pages().at(page_numbers[slot]));
+      }
+    };
+    const size_t worker_count = std::min(page_numbers.size(), kMaxDecodeWorkers);
+    std::vector<std::thread> workers;
+    workers.reserve(worker_count - 1);
+    for (size_t w = 1; w < worker_count; ++w) {
+      workers.emplace_back(decode_worker);
+    }
+    decode_worker();
+    for (auto& worker : workers) worker.join();
+  }
+
   // A deck's items sit in one group per slide, in slide order; a figure
   // found on a slide belongs in that slide's group, read among its items,
   // not after the whole slide in the body.
@@ -198,7 +222,7 @@ OfficeCvReport enrich_office_document(const OfficeCvEnrichment& enrichment,
     const int page_number = page_numbers[page_slot];
     const std::string parent = deck ? slide_groups[page_slot] : "#/body";
     const docv1::PageItem& page = document->pages().at(page_number);
-    const cv::Mat raster = decode_page_image(page);
+    const cv::Mat& raster = rasters[page_slot];
     if (raster.empty()) continue;
     // The page's coordinate space (twips for office documents) and the
     // render's pixel space share only their aspect ratio; every typed item's

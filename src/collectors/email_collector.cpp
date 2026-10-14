@@ -1,10 +1,12 @@
 #include "grparse/document_collectors.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -18,6 +20,8 @@ namespace emailv1 = ai::pipestream::email::v1;
 namespace grparse {
 
 namespace {
+
+constexpr size_t kMaxConcurrentBodyDials = 8;
 
 // The body index the HTML body's items belong at: before the email fold's
 // "attachments" list group, so the message reads title, body, attachments
@@ -46,31 +50,66 @@ void fold_html_bodies(const std::shared_ptr<grpc::Channel>& markup,
                       std::vector<emailv1::BodyPart> html_bodies,
                       CollectorDeadline inbound_deadline, const CollectorCancelled& cancelled,
                       CollectorOutcome* outcome) {
+  if (html_bodies.empty()) return;
   const CollectorDeadline bodies_deadline =
       capped_collector_deadline(inbound_deadline, kDeadline);
-  for (auto& body : html_bodies) {
-    if ((cancelled && cancelled()) || std::chrono::system_clock::now() >= bodies_deadline) {
+
+  struct BodySlot {
+    bool skipped_for_deadline = false;
+    CollectorOutcome parsed;
+  };
+  std::vector<BodySlot> slots(html_bodies.size());
+  std::atomic<size_t> next_task{0};
+  std::atomic<bool> deadline_tripped{false};
+  const auto worker_fn = [&] {
+    for (;;) {
+      const size_t idx = next_task.fetch_add(1, std::memory_order_relaxed);
+      if (idx >= html_bodies.size()) break;
+      if (deadline_tripped.load(std::memory_order_relaxed) ||
+          (cancelled && cancelled()) ||
+          std::chrono::system_clock::now() >= bodies_deadline) {
+        deadline_tripped.store(true, std::memory_order_relaxed);
+        slots[idx].skipped_for_deadline = true;
+        continue;
+      }
+      const emailv1::BodyPart& body = html_bodies[idx];
+      slots[idx].parsed =
+          collect_markup_document(markup, "part-" + body.part_id() + ".html", "text/html",
+                                  body.text(), bodies_deadline, cancelled);
+    }
+  };
+  const size_t worker_count =
+      std::min(html_bodies.size(), kMaxConcurrentBodyDials);
+  std::vector<std::thread> workers;
+  workers.reserve(worker_count - 1);
+  for (size_t w = 1; w < worker_count; ++w) {
+    workers.emplace_back(worker_fn);
+  }
+  worker_fn();
+  for (auto& worker : workers) worker.join();
+
+  for (size_t idx = 0; idx < html_bodies.size(); ++idx) {
+    const emailv1::BodyPart& body = html_bodies[idx];
+    BodySlot& slot = slots[idx];
+    if (slot.skipped_for_deadline) {
       outcome->warnings.push_back("HTML body part " + body.part_id() +
                                   " and the ones after it were not parsed: the deadline "
                                   "passed or the call was cancelled");
       break;
     }
-    CollectorOutcome parsed =
-        collect_markup_document(markup, "part-" + body.part_id() + ".html", "text/html",
-                                body.text(), bodies_deadline, cancelled);
-    for (auto& warning : parsed.warnings) {
+    for (auto& warning : slot.parsed.warnings) {
       outcome->warnings.push_back("HTML body part " + body.part_id() + ": " + warning);
     }
-    if (!parsed.success) {
+    if (!slot.parsed.success) {
       outcome->warnings.push_back("HTML body part " + body.part_id() +
                                   " could not be parsed by the markup collector: " +
-                                  parsed.error);
+                                  slot.parsed.error);
       continue;
     }
-    strip_document_identity(&parsed.document);
+    strip_document_identity(&slot.parsed.document);
     const int insert_at = body_insertion_point(outcome->document);
     const int first_new = outcome->document.body().children_size();
-    merge_documents(std::move(parsed.document), &outcome->document);
+    merge_documents(std::move(slot.parsed.document), &outcome->document);
     auto* children = outcome->document.mutable_body()->mutable_children();
     std::rotate(children->begin() + insert_at, children->begin() + first_new, children->end());
   }

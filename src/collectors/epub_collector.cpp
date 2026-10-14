@@ -1,9 +1,11 @@
 #include "grparse/document_collectors.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -17,6 +19,8 @@ namespace epubv1 = ai::pipestream::epub::v1;
 namespace grparse {
 
 namespace {
+
+constexpr size_t kMaxConcurrentChapterDials = 8;
 
 // The epub stream with its typed events kept: the skeleton Document as the
 // outcome, plus every chapter and image resource in arrival order.
@@ -174,16 +178,73 @@ CollectorOutcome collect_epub_book(const std::shared_ptr<grpc::Channel>& epub,
   // would let a long book against a slow markup service run for hours.
   const CollectorDeadline chapters_deadline =
       capped_collector_deadline(inbound_deadline, kDeadline);
+
+  struct ChapterSlot {
+    bool is_image = false;
+    bool is_html = false;
+    bool dialed = false;
+    bool skipped_for_deadline = false;
+    CollectorOutcome parsed;
+  };
+  std::vector<ChapterSlot> slots(stream.chapters.size());
+  std::vector<size_t> html_indices;
+  html_indices.reserve(stream.chapters.size());
+  for (size_t i = 0; i < stream.chapters.size(); ++i) {
+    slots[i].is_image = image_chapter(stream.chapters[i]);
+    if (!slots[i].is_image) {
+      slots[i].is_html = html_chapter(stream.chapters[i]);
+      if (slots[i].is_html) html_indices.push_back(i);
+    }
+  }
+
+  if (!html_indices.empty()) {
+    std::atomic<size_t> next_task{0};
+    std::atomic<bool> deadline_tripped{false};
+    const auto worker_fn = [&] {
+      for (;;) {
+        const size_t task = next_task.fetch_add(1, std::memory_order_relaxed);
+        if (task >= html_indices.size()) break;
+        const size_t idx = html_indices[task];
+        if (deadline_tripped.load(std::memory_order_relaxed) ||
+            (cancelled && cancelled()) ||
+            std::chrono::system_clock::now() >= chapters_deadline) {
+          deadline_tripped.store(true, std::memory_order_relaxed);
+          slots[idx].skipped_for_deadline = true;
+          continue;
+        }
+        const EpubChapter& chapter = stream.chapters[idx];
+        slots[idx].parsed =
+            collect_markup_document(markup, chapter.href, "application/xhtml+xml",
+                                    chapter.content, chapters_deadline, cancelled);
+        slots[idx].dialed = true;
+      }
+    };
+    const size_t worker_count =
+        std::min(html_indices.size(), kMaxConcurrentChapterDials);
+    std::vector<std::thread> workers;
+    workers.reserve(worker_count - 1);
+    for (size_t w = 1; w < worker_count; ++w) {
+      workers.emplace_back(worker_fn);
+    }
+    worker_fn();
+    for (auto& worker : workers) worker.join();
+  }
+
   std::vector<ParsedChapter> chapters;
   chapters.reserve(stream.chapters.size());
-  for (auto& chapter : stream.chapters) {
-    if ((cancelled && cancelled()) || std::chrono::system_clock::now() >= chapters_deadline) {
+  for (size_t i = 0; i < stream.chapters.size(); ++i) {
+    auto& chapter = stream.chapters[i];
+    ChapterSlot& slot = slots[i];
+    if (slot.skipped_for_deadline ||
+        (!slot.dialed &&
+         ((cancelled && cancelled()) ||
+          std::chrono::system_clock::now() >= chapters_deadline))) {
       outcome.warnings.push_back("chapter '" + chapter.href +
                                  "' and the ones after it were not parsed: the book's "
                                  "chapter deadline passed or the call was cancelled");
       break;
     }
-    if (image_chapter(chapter)) {
+    if (slot.is_image) {
       chapters.push_back(ParsedChapter{chapter.href, image_chapter_document(chapter)});
       const bool carried =
           std::ranges::any_of(stream.images, [&chapter](const EpubResource& image) {
@@ -195,24 +256,21 @@ CollectorOutcome collect_epub_book(const std::shared_ptr<grpc::Channel>& epub,
       }
       continue;
     }
-    if (!html_chapter(chapter)) {
+    if (!slot.is_html) {
       outcome.warnings.push_back("chapter '" + chapter.href + "' (" + chapter.media_type +
                                  ") is not XHTML; its group stays empty");
       continue;
     }
-    CollectorOutcome parsed =
-        collect_markup_document(markup, chapter.href, "application/xhtml+xml", chapter.content,
-                                chapters_deadline, cancelled);
-    for (auto& warning : parsed.warnings) {
+    for (auto& warning : slot.parsed.warnings) {
       outcome.warnings.push_back(chapter.href + ": " + warning);
     }
-    if (!parsed.success) {
+    if (!slot.parsed.success) {
       outcome.warnings.push_back("chapter '" + chapter.href +
                                  "' could not be parsed by the markup collector: " +
-                                 parsed.error + "; its group stays empty");
+                                 slot.parsed.error + "; its group stays empty");
       continue;
     }
-    chapters.push_back(ParsedChapter{chapter.href, std::move(parsed.document)});
+    chapters.push_back(ParsedChapter{chapter.href, std::move(slot.parsed.document)});
   }
   fold_epub_book(std::move(chapters), stream.images, &outcome.document, &outcome.warnings);
   return std::move(outcome);

@@ -628,12 +628,25 @@ class DocumentStreamReactor final
 
   static void run_pdf_route(const std::weak_ptr<CallbackGate>& weak_gate, PdfLeg leg) {
     // Previews rendered for streamed pages, kept to dress the whole
-    // Document's pages without rendering them a second time.
+    // Document's pages without rendering them a second time. One lazy
+    // PagePreviewSession serves the whole stream so the PDF is hashed and
+    // probed at most once instead of once per page.
+    std::optional<PagePreviewSession> preview_session;
+    if (leg.previews) {
+      CollectorCancelled gone = leg_cancelled(weak_gate);
+      const CollectorDeadline deadline = leg.deadline;
+      preview_session.emplace(
+          leg.bytes,
+          [gone = std::move(gone), deadline] {
+            return std::chrono::system_clock::now() >= deadline || gone();
+          },
+          deadline, leg.tuning.passwords);
+    }
     std::map<int, pipestream::document::v1::PageItem> previews;
-    const auto stream_page = [&weak_gate, &leg, &previews](PdfPageSlice slice) {
-      if (leg.previews) {
-        attach_previews(weak_gate, leg, &slice.document,
-                        std::pair<int, int>{slice.page_no, slice.page_no});
+    const auto stream_page = [&weak_gate, &preview_session, &previews](PdfPageSlice slice) {
+      if (preview_session.has_value()) {
+        preview_session->attach(&slice.document,
+                                std::pair<int, int>{slice.page_no, slice.page_no});
         if (const auto page = slice.document.pages().find(slice.page_no);
             page != slice.document.pages().end()) {
           previews[slice.page_no] = page->second;
@@ -662,15 +675,17 @@ class DocumentStreamReactor final
           auto& whole = (*parsed.outcome.document.mutable_pages())[page_no];
           if (page.has_image()) *whole.mutable_image() = page.image();
         }
-      } else if (leg.previews) {
+      } else if (preview_session.has_value()) {
         // Rendered before the reactor sees the document, on this thread,
         // where the blocking work already is.
-        attach_previews(weak_gate, leg, &parsed.outcome.document, leg.tuning.page_range);
+        preview_session->attach(&parsed.outcome.document, leg.tuning.page_range);
       }
+      preview_session.reset();
       deliver(weak_gate, pipestream::parse::v1::COLLECTOR_PDF, std::move(parsed.outcome),
               streamed);
       return;
     }
+    preview_session.reset();
     if (streamed) {
       // The run's pages are on the wire; what is left is recognition's,
       // starting at the first page the run did not reach.
@@ -715,19 +730,6 @@ class DocumentStreamReactor final
     with_reactor(weak_gate, [&leg](DocumentStreamReactor& reactor) {
       reactor.submit_cv(std::move(leg.bytes), leg.pdf, std::move(leg.tuning));
     });
-  }
-
-  // Stops once the call is gone (the reactor is torn down on cancel or
-  // finish) or its deadline has passed.
-  static void attach_previews(const std::weak_ptr<CallbackGate>& weak_gate, const PdfLeg& leg,
-                              pipestream::document::v1::Document* document,
-                              std::optional<std::pair<int, int>> page_range) {
-    const CollectorCancelled gone = leg_cancelled(weak_gate);
-    attach_page_previews(leg.bytes, document, page_range,
-                         [&gone, deadline = leg.deadline] {
-                           return std::chrono::system_clock::now() >= deadline || gone();
-                         },
-                         leg.deadline);
   }
 
   // Pages before first_left came from the inspector's text layer as they

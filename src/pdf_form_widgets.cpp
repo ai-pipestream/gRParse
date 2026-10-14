@@ -24,7 +24,6 @@ namespace {
 namespace docv1 = ai::pipestream::document::v1;
 namespace pdfv1 = ai::protomolt::parse::pdf::v1;
 
-constexpr int kMaxMessageBytes = 64 * 1024 * 1024;
 // One family over every page: no rasters, no text, so the budget is the
 // page walk alone.
 constexpr auto kWidgetDeadline = std::chrono::seconds(120);
@@ -383,19 +382,15 @@ void fold_pdf_form_widgets(const std::vector<PdfPageWidgets>& pages, const std::
   *document->mutable_body()->mutable_children() = std::move(children);
 }
 
-PdfWidgetFetch fetch_pdf_form_widgets(const std::string& bytes, const std::string& target,
-                                      std::chrono::system_clock::time_point deadline) {
+namespace {
+
+PdfWidgetFetch fetch_pdf_form_widgets_with_sha256(
+    const std::string& bytes, const std::string& target,
+    std::chrono::system_clock::time_point deadline, bool handshake,
+    const std::string& sha256) {
   PdfWidgetFetch fetch;
   try {
-    grpc::ChannelArguments args;
-    args.SetMaxReceiveMessageSize(kMaxMessageBytes);
-    args.SetMaxSendMessageSize(kMaxMessageBytes);
-    auto stub = pdfv1::PdfBackendService::NewStub(
-        grpc::CreateCustomChannel(target, grpc::InsecureChannelCredentials(), args));
-    const char* handshake_env = std::getenv("GRPARSE_PDF_BACKEND_HANDSHAKE");
-    const bool handshake =
-        handshake_env == nullptr || std::string_view(handshake_env) != "off";
-    const std::string sha256 = handshake ? targets::sha256_hex(bytes) : std::string();
+    auto stub = pdfv1::PdfBackendService::NewStub(pdf_backend_channel(target));
     const auto budget = std::chrono::system_clock::now() + kWidgetDeadline;
     bool sent_bytes = !handshake;
     for (;;) {
@@ -478,6 +473,17 @@ PdfWidgetFetch fetch_pdf_form_widgets(const std::string& bytes, const std::strin
   }
 }
 
+}  // namespace
+
+PdfWidgetFetch fetch_pdf_form_widgets(const std::string& bytes, const std::string& target,
+                                      std::chrono::system_clock::time_point deadline) {
+  const char* handshake_env = std::getenv("GRPARSE_PDF_BACKEND_HANDSHAKE");
+  const bool handshake =
+      handshake_env == nullptr || std::string_view(handshake_env) != "off";
+  const std::string sha256 = handshake ? targets::sha256_hex(bytes) : std::string();
+  return fetch_pdf_form_widgets_with_sha256(bytes, target, deadline, handshake, sha256);
+}
+
 std::optional<std::string> fold_pdf_form_widgets_from_backend(
     const std::string& bytes, std::chrono::system_clock::time_point deadline,
     docv1::Document* document) {
@@ -488,9 +494,16 @@ std::optional<std::string> fold_pdf_form_widgets_from_backend(
     return std::string("AcroForm widgets not read: ") + error.what();
   }
   if (!configured.has_value() || document == nullptr) return std::nullopt;
+  const std::vector<std::string> targets = split_backend_targets(*configured);
+  if (targets.empty()) return std::nullopt;
+  const char* handshake_env = std::getenv("GRPARSE_PDF_BACKEND_HANDSHAKE");
+  const bool handshake =
+      handshake_env == nullptr || std::string_view(handshake_env) != "off";
+  const std::string sha256 = handshake ? targets::sha256_hex(bytes) : std::string();
   std::vector<std::string> failures;
-  for (const std::string& target : split_backend_targets(*configured)) {
-    PdfWidgetFetch fetch = fetch_pdf_form_widgets(bytes, target, deadline);
+  for (const std::string& target : targets) {
+    PdfWidgetFetch fetch =
+        fetch_pdf_form_widgets_with_sha256(bytes, target, deadline, handshake, sha256);
     if (!fetch.ok) {
       failures.push_back(std::move(fetch.error));
       continue;

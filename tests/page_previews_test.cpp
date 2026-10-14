@@ -141,6 +141,29 @@ void verify_stop_cancels_a_hung_open() {
   require(document.pages_size() == 0, "a document that never opened keeps no previews");
 }
 
+// A PagePreviewSession reused across individual page slices opens and probes
+// the backend once for the whole stream instead of once per page.
+void verify_session_probes_once_across_streamed_pages() {
+  grparse_test::ScopedPdfBackend pdf_backend;
+  pdf_backend.backend().add_document(
+      kTwoPagePdf,
+      {grparse_test::text_page({"One"}), grparse_test::text_page({"Two"}),
+       grparse_test::text_page({"Three"})});
+  grparse::PagePreviewSession session(std::make_shared<const std::string>(kTwoPagePdf));
+  require(pdf_backend.backend().probe_calls() == 0,
+          "the session is lazy until the first page slice arrives");
+  for (int page_no = 1; page_no <= 3; ++page_no) {
+    docv1::Document slice;
+    session.attach(&slice, std::make_pair(page_no, page_no));
+    require(slice.pages_size() == 1 && slice.pages().at(page_no).has_image(),
+            "each streamed page slice receives its preview");
+  }
+  require(pdf_backend.backend().probe_calls() == 2,
+          "one content-addressed open handshake (miss + upload) serves all three pages");
+  require(pdf_backend.backend().render_calls() == 3,
+          "each page renders once");
+}
+
 }  // namespace
 
 int main() {
@@ -152,5 +175,6 @@ int main() {
       verify_previews_stop_when_asked,
       verify_stop_cancels_a_render_in_flight,
       verify_stop_cancels_a_hung_open,
+      verify_session_probes_once_across_streamed_pages,
   });
 }

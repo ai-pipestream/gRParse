@@ -2,17 +2,21 @@
 
 #include <algorithm>
 #include <cctype>
-#include <exception>
 #include <chrono>
+#include <cstdlib>
+#include <exception>
 #include <iostream>
 #include <mutex>
 #include <optional>
 #include <sstream>
+#include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 
 #include "grparse/document_assembly.h"
 #include "grparse/remote_page_source.h"
+#include "targets/sha256.h"
 
 namespace grparse {
 namespace {
@@ -240,11 +244,21 @@ class ConsensusPdfPageSource final : public PageSource {
                          const std::vector<std::string>& targets,
                          double render_dpi)
       : render_dpi_(render_dpi) {
+    // Hash the PDF once for the whole consensus group instead of once per leg.
+    const char* configured = std::getenv("GRPARSE_PDF_BACKEND_HANDSHAKE");
+    const bool handshake =
+        configured == nullptr || std::string_view(configured) != "off";
+    const std::string sha256 =
+        (handshake && bytes != nullptr && !targets.empty())
+            ? targets::sha256_hex(*bytes)
+            : std::string();
     // No backend call yet: every leg opens on first use, so the request's
     // deadline and cancel reach the opening Probes too.
+    legs_.reserve(targets.size());
     for (const std::string& target : targets) {
       legs_.push_back({target, open_remote_pdf_document(bytes, target, render_dpi,
-                                                        SourceOpening::kOnFirstUse)});
+                                                        SourceOpening::kOnFirstUse,
+                                                        sha256)});
     }
   }
 
@@ -267,21 +281,58 @@ class ConsensusPdfPageSource final : public PageSource {
 
   std::optional<OcrPage> extract_digital_page(int page_number) const override {
     open();
+    std::vector<const Entry*> active;
+    active.reserve(sources_.size());
+    for (const auto& entry : sources_) {
+      if (page_number <= entry.pages && !leg_disabled(entry)) {
+        active.push_back(&entry);
+      }
+    }
+
+    struct PageSlot {
+      std::optional<OcrPage> page;
+      std::string engine;
+      std::exception_ptr error;
+    };
+    std::vector<PageSlot> slots(active.size());
+    const auto run_slot = [&](size_t index) {
+      try {
+        slots[index].page = active[index]->source->extract_digital_page(page_number);
+        if (slots[index].page.has_value() && !slots[index].page->lines.empty()) {
+          slots[index].engine = active[index]->source->backend_name();
+        }
+      } catch (...) {
+        slots[index].error = std::current_exception();
+      }
+    };
+    if (active.size() == 1) {
+      run_slot(0);
+    } else if (active.size() > 1) {
+      std::vector<std::thread> workers;
+      workers.reserve(active.size() - 1);
+      for (size_t index = 1; index < active.size(); ++index) {
+        workers.emplace_back(run_slot, index);
+      }
+      run_slot(0);
+      for (auto& worker : workers) worker.join();
+    }
+
     std::vector<OcrPage> candidates;
     std::vector<std::string> names;
     std::vector<std::string> engines;
     LegFailures failures;
     bool any_answered = false;
-    for (const auto& entry : sources_) {
-      if (page_number > entry.pages || leg_disabled(entry)) continue;
+    for (size_t index = 0; index < active.size(); ++index) {
+      const Entry& entry = *active[index];
+      PageSlot& slot = slots[index];
       try {
-        auto page = entry.source->extract_digital_page(page_number);
+        if (slot.error) std::rethrow_exception(slot.error);
         record_leg_success(entry);
         any_answered = true;
-        if (page.has_value() && !page->lines.empty()) {
-          candidates.push_back(std::move(*page));
+        if (slot.page.has_value() && !slot.page->lines.empty()) {
+          candidates.push_back(std::move(*slot.page));
           names.push_back(entry.target);
-          engines.push_back(entry.source->backend_name());
+          engines.push_back(std::move(slot.engine));
         }
       } catch (const InvalidDocument& error) {
         // A cancel is the request's, not the leg's: no other leg will
@@ -430,20 +481,47 @@ class ConsensusPdfPageSource final : public PageSource {
     std::shared_ptr<PageSource> source;
   };
 
-  // Opens every leg once, on first use: a leg that cannot load the
-  // document leaves the vote and the others still read it. When none
-  // loads, the open fails the way LegFailures adds the legs up; a cancel
-  // fails it at once.
+  // Opens every leg once, on first use: legs probe concurrently, and any leg
+  // that cannot load the document leaves the vote while the others still read
+  // it. Outcomes fold in configured leg order so error attribution and
+  // page-count logging remain deterministic. When none loads, the open fails
+  // the way LegFailures adds the legs up; a cancel fails it at once.
   void open() const {
     const std::lock_guard<std::mutex> lock(open_mutex_);
     if (open_failure_) std::rethrow_exception(open_failure_);
     if (opened_) return;
     try {
-      LegFailures failures;
-      for (const Leg& leg : legs_) {
+      struct OpenSlot {
+        int pages = 0;
+        std::exception_ptr error;
+      };
+      std::vector<OpenSlot> slots(legs_.size());
+      const auto probe_leg = [&](size_t index) {
         try {
-          const int pages = leg.source->page_count();
-          sources_.push_back({leg.target, leg.source, pages});
+          slots[index].pages = legs_[index].source->page_count();
+        } catch (...) {
+          slots[index].error = std::current_exception();
+        }
+      };
+      if (legs_.size() == 1) {
+        probe_leg(0);
+      } else if (legs_.size() > 1) {
+        std::vector<std::thread> workers;
+        workers.reserve(legs_.size() - 1);
+        for (size_t index = 1; index < legs_.size(); ++index) {
+          workers.emplace_back(probe_leg, index);
+        }
+        probe_leg(0);
+        for (auto& worker : workers) worker.join();
+      }
+
+      LegFailures failures;
+      for (size_t index = 0; index < legs_.size(); ++index) {
+        const Leg& leg = legs_[index];
+        OpenSlot& slot = slots[index];
+        try {
+          if (slot.error) std::rethrow_exception(slot.error);
+          sources_.push_back({leg.target, leg.source, slot.pages});
         } catch (const InvalidDocument& error) {
           if (cancelled(error)) throw;
           failures.record(error);
