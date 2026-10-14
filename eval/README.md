@@ -233,3 +233,52 @@ gRParse is unreachable or the selection is empty. Seeding from the sibling
 repositories' fixtures, the check list, and how to add a check are in
 `eval/s3/README.md`; the tool's own tests run with
 `uv run python eval/s3/tests/run_tests.py`.
+
+## Local directory corpus eval and run-over-run drift analysis (`eval/corpus/`)
+
+`eval/corpus/run.py` runs the `eval/s3/` shape battery directly against a local
+directory corpus (15,000+ documents) without requiring S3 or pre-listing the
+directory tree:
+
+- **Zero-stall streaming discovery (`walk_corpus`)**: walks `corpus_dir` lazily
+  with recursive `os.scandir` (skipping `.git`, `node_modules`, `__pycache__`,
+  `.DS_Store`, `*.layout.json` companions, and hidden entries) and checks
+  `.ebc` companion `<stem>.layout.json` files in $O(1)$ on disk.
+- **Bounded in-flight execution**: keeps at most `2 * workers` futures active in
+  `ThreadPoolExecutor`, harvesting completions with `FIRST_COMPLETED` so memory
+  stays bounded and slow documents do not block checkpointing.
+- **Crash-resumable `results.jsonl` journal and sharded outputs**: appends one
+  JSON line per completed document to `<out>/corpus/<label>/results.jsonl` and
+  flushes immediately. When `--save-outputs` is enabled (the default), markdown
+  and canonical JSON outputs are written atomically under
+  `<out>/corpus/<label>/outputs/<sha256[:2]>/<sha256>.{md,json}`. Passing
+  `--resume` reads `(relpath, size_bytes)` keys from `results.jsonl` in $O(N)$
+  and skips already-evaluated files during the walk.
+- **Live Prometheus telemetry (`eval/corpus/metrics.py`)**: writes
+  `<out>/corpus/<label>/metrics.prom` and serves an optional HTTP `/metrics`
+  endpoint (`--metrics-port 9465` or `0` for an ephemeral port) exporting
+  `grparse_eval_documents_total`, `grparse_eval_check_failures_total`,
+  `grparse_eval_duration_seconds`, `grparse_eval_progress_ratio`, and
+  `grparse_eval_throughput_docs_per_second`.
+
+```sh
+uv run --with grpcio --with grpcio-tools python eval/corpus/run.py \
+  --corpus-dir /path/to/corpus --target localhost:50051 --label run-1 --workers 4 \
+  --metrics-port 9465
+
+# Resume an interrupted run:
+uv run --with grpcio --with grpcio-tools python eval/corpus/run.py \
+  --corpus-dir /path/to/corpus --label run-1 --resume
+
+# Compare two runs and gate on regressions:
+uv run python eval/corpus/analyze.py \
+  --baseline eval/out/corpus/run-1/results.jsonl \
+  --candidate eval/out/corpus/run-2/results.jsonl \
+  --out-json eval/out/corpus/run-2/drift.json \
+  --out-md eval/out/corpus/run-2/drift.md \
+  --fail-on-new-failures --max-error-rate-delta 0.01 --max-p95-regression-pct 20
+
+# Unit and integration tests (no network or running service needed):
+uv run python eval/corpus/tests/run_tests.py
+```
+
