@@ -43,11 +43,13 @@ if(GRPARSE_SANITIZE)
   # GCC's null, nonnull-attribute and returns-nonnull-attribute checks imply
   # -fno-delete-null-pointer-checks, under which abseil's constexpr
   # function-pointer comparisons are "not a constant expression"; protobuf's
-  # MessageDifferencer header instantiates them. Only tests include that
-  # header, so those tests alone build without the three checks.
+  # MessageDifferencer header instantiates them. Translation units that include
+  # that header build without the three checks.
   if(GRPARSE_SANITIZE MATCHES "undefined")
-    file(GLOB GRPARSE_TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp")
-    foreach(source IN LISTS GRPARSE_TEST_SOURCES)
+    file(GLOB GRPARSE_DIFFERENCER_SOURCES
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp")
+    foreach(source IN LISTS GRPARSE_DIFFERENCER_SOURCES)
       file(STRINGS "${source}" uses_differencer REGEX "message_differencer\\.h")
       if(uses_differencer)
         set_source_files_properties("${source}" PROPERTIES COMPILE_OPTIONS

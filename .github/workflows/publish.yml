@@ -65,6 +65,7 @@ env:
 jobs:
   version:
     name: Resolve the version
+    if: ${{ github.server_url == 'https://github.com' }}
     runs-on: ubuntu-latest
     outputs:
       # Empty on a plain main push: only the :latest tags are republished.

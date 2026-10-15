@@ -69,7 +69,7 @@ ARG GRPARSE_BUILD_CACHE_SCOPE=
 # COPY-ed proto as newer than a cached generated header, so a content stamp
 # decides: any proto change discards the staged and generated trees, which
 # forces regeneration; everything else stays warm.
-RUN --mount=type=cache,id=grparse-ubuntu26-cuda13-grpc1.84.0-ort1.30.0-cxx23-sessionep2-static1-simdutf9-ocv500-tokcpp1${GRPARSE_BUILD_CACHE_SCOPE},sharing=locked,target=/build \
+RUN --mount=type=cache,id=grparse-ubuntu26-cuda13.4-trt11.4-grpc1.84.0-ort1.30.0-cxx23-sessionep2-static1-simdutf9-ocv500-tokcpp1${GRPARSE_BUILD_CACHE_SCOPE},sharing=locked,target=/build \
     PROTO_SUM=$(cat *.proto collectors/*.proto | sha256sum | cut -d' ' -f1) \
  && if [ "$(cat /build/.proto-sum 2>/dev/null)" != "$PROTO_SUM" ]; then \
       rm -rf /build/proto /build/generated && printf '%s' "$PROTO_SUM" > /build/.proto-sum; \
