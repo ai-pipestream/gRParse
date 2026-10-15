@@ -1,0 +1,7 @@
+CI status for e8d1c933562c824521d38ba7c19d523cbd289537 (Forgejo run 409), fetched Thu Oct 15 01:38:57 AM EDT 2026
+combined: failure
+C++ build and contract tests / cpu-image (pull_request) | failure | Failing after 24s
+C++ build and contract tests / demo-shell (pull_request) | success | Successful in 16s
+C++ build and contract tests / fuzz-smoke (pull_request) | success | Successful in 8m19s
+C++ build and contract tests / openvino-image (pull_request) | success | Successful in 9m0s
+C++ build and contract tests / cuda-image (pull_request) | success | Successful in 9m0s
