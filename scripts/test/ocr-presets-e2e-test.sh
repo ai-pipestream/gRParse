@@ -66,14 +66,15 @@ call() {
 expect_refusal() {
   local preset=$1 reason=$2 text=$3
   call "$preset"
-  python3 - "$work/out-$preset.json" "$reason" "$text" <<'PY'
+  python3 - "$work/out-$preset.json" "$reason" "$text" "$preset" <<'PY'
 import json, sys
 out = json.load(open(sys.argv[1]))
 print(json.dumps(out, indent=1))
 assert out["code"] == 3, out  # INVALID_ARGUMENT
 detail = out["details"][0]
 assert detail["@type"].endswith("ai.pipestream.parse.v1.OptionRejection"), detail
-assert detail["optionPath"] == "ocr_preset", detail
+assert detail["option_path"] == "ocr_preset", detail
+assert detail["rejected_value_raw"] == sys.argv[4], detail
 assert detail["reason"] == sys.argv[2], detail
 assert sys.argv[3] in out["message"], out["message"]
 PY
