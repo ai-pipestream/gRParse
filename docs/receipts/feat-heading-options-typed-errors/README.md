@@ -20,3 +20,12 @@ Code commit under test: e8d1c933562c824521d38ba7c19d523cbd289537
 | ci-status-c325153.txt | c325153, Forgejo run 419 | cuda-image and cpu-image failed after 4s, the same failure as #20 run 418. fuzz-smoke and demo-shell pass. |
 
 Command for the ctest files: `LD_LIBRARY_PATH=$HOME/.local/opt/opencv5/lib ctest --test-dir <build> --output-on-failure -L grparse` (fresh configure and build, GRPARSE_WERROR=ON, OpenCV 5.0.0).
+
+## Merge of #20 at 7ff5691 (15cf39d)
+
+| File | Result |
+|---|---|
+| ctest-15cf39d.txt | 94/94 passed, exit 0 |
+| ci-status-15cf39d.txt | run 424: all five jobs green (cuda-image 9m03s, cpu-image 11m03s, openvino-image, fuzz-smoke, demo-shell) |
+
+cpu-image results differ between runs of the same ci.yml: run 424 passed (11m03s), while runs 423 and 425 failed within 30s. Job logs are not available through the API. The likely cause: job containers mount only the host docker socket and not ~/.docker/config.json, so a job docker CLI has no dhi.io credentials unless the runner that picks it up already has them. The --target fetch workaround was not restored.
