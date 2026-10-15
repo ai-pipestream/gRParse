@@ -929,6 +929,36 @@ message ChartExtractionPresetRegistry {
 
 // A list-valued server setting (allowed presets, allowed engines) in its
 // JSON array form, read as {"names": [...]}.
+// OcrEngineKind names a Docling OCR factory kind (OcrOptions.kind). This
+// server runs RapidOCR; AUTO resolves to it. The other kinds are declared
+// so a preset naming them is refused by name rather than misread.
+enum OcrEngineKind {
+  OCR_ENGINE_KIND_UNSPECIFIED = 0;
+  OCR_ENGINE_KIND_AUTO = 1;        // "auto"
+  OCR_ENGINE_KIND_RAPIDOCR = 2;    // "rapidocr"
+  OCR_ENGINE_KIND_EASYOCR = 3;     // "easyocr"
+  OCR_ENGINE_KIND_TESSEROCR = 4;   // "tesserocr"
+  OCR_ENGINE_KIND_TESSERACT = 5;   // "tesseract" (the CLI)
+  OCR_ENGINE_KIND_OCRMAC = 6;      // "ocrmac"
+}
+
+// One admin-defined OCR preset, docling-serve's custom_ocr_presets entry
+// ({"kind": ..., "lang": [...]}). Read from GRPARSE_CUSTOM_OCR_PRESETS as an
+// OcrPresetRegistry in protobuf text format at startup; an unknown field
+// (an engine option this server does not honour), a wrong type or an
+// unknown enum value stops the process.
+message OcrPresetSpec {
+  // Required: the OCR engine kind, as upstream requires a "kind" key.
+  OcrEngineKind kind = 1;
+  // Languages for the engine. A request's ocr_lang overrides them, as in
+  // docling-jobkit. Each must be one the installed models read.
+  repeated string lang = 2;
+}
+
+message OcrPresetRegistry {
+  map<string, OcrPresetSpec> presets = 1;
+}
+
 message ServerSettingNameList {
   repeated string names = 1;
 }

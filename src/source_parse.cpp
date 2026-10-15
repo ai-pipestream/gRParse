@@ -30,6 +30,7 @@
 #include "ai/protomolt/parse/pdf/v1/pdf_backend_types.pb.h"
 #include "google/rpc/status.pb.h"
 #include "storage/connectors.h"
+#include "grparse/ocr_preset_policy.h"
 
 #include "grparse/base64.h"
 #include "grparse/chart_derender.h"
@@ -868,11 +869,8 @@ grpc::Status validate_unread_options(const pipestream::parse::v1::ConvertDocumen
   const auto default_preset = [](bool has, const std::string& value) {
     return !has || value.empty() || value == "default";
   };
-  // RapidOCR is the one recognizer here, so its own preset name is honoured.
-  if (!default_preset(options.has_ocr_preset(), options.ocr_preset()) &&
-      options.ocr_preset() != "rapidocr") {
-    return rejected("ocr_preset");
-  }
+  // ocr_preset resolves through the OCR preset policy (ocr_preset_policy.h)
+  // once the server's settings are at hand, in parse_source.
   if (!default_preset(options.has_table_structure_preset(), options.table_structure_preset())) {
     return rejected("table_structure_preset");
   }
@@ -2141,6 +2139,14 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
       request.options(), collectors != nullptr ? collectors->chart_policy() : kDefaultChartPolicy,
       surface);
   if (!chart_extraction.has_value()) return chart_extraction.error();
+  {
+    static const OcrPresetPolicy& kDefaultOcrPolicy = default_ocr_preset_policy();
+    const OcrPresetPolicy& ocr_policy =
+        collectors != nullptr ? collectors->ocr_policy() : kDefaultOcrPolicy;
+    if (auto ocr = ocr_policy.resolve(request.options(), surface); !ocr.has_value()) {
+      return ocr.error();
+    }
+  }
   auto picture_description =
       request_picture_description_call(request.options(), *chart_extraction, surface);
   if (!picture_description.has_value()) return picture_description.error();

@@ -51,3 +51,16 @@ Each enabled output is its own VLM call per chart in grpc-enrich, so a failed su
 
 `StoredObject` gains `store_id` (4), the Drive file id. `OptionRejectionReason` gains `NOT_ALLOWED` (6) and `INVALID` (7).
 
+## OCR presets (docling-serve #723, docling-jobkit OCR registry)
+
+| Docling | gRParse | Notes |
+|---|---|---|
+| `default_ocr_preset` (default `auto`) | `GRPARSE_DEFAULT_OCR_PRESET` | Must be a kind this server runs (`auto`, `rapidocr`), checked at startup. |
+| `default_ocr_kind` (default `auto`) | `GRPARSE_DEFAULT_OCR_KIND` | Always allowed by the kind check. |
+| `allowed_ocr_presets` | `GRPARSE_ALLOWED_OCR_PRESETS` | Narrows the built-in kinds; `default` and custom presets stay selectable (#723). |
+| `custom_ocr_presets` (`{"id": {"kind": ..., "lang": [...]}}`) | `GRPARSE_CUSTOM_OCR_PRESETS`, typed `OcrPresetRegistry` of `OcrPresetSpec` (protobuf text format) | `kind` is the `OcrEngineKind` enum. Only `lang` is accepted beside it; other engine options are unknown fields and stop startup. |
+| `allowed_ocr_kinds` | `GRPARSE_ALLOWED_OCR_KINDS` | Names are checked against the known kinds. |
+| Unset `ocr_preset` | `default` | Upstream's request default is the literal `auto`; here an unset preset means `default`, which resolves to `auto` unless configured. |
+
+Refusals carry a typed `OptionRejection` on `ocr_preset`: `NOT_ALLOWED` for a name outside the registry or an excluded kind, `NOT_IMPLEMENTED` for a kind this server cannot run.
+

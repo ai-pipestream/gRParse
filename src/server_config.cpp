@@ -383,6 +383,10 @@ CollectorTargets read_collector_targets() {
       // Convert request may use (docling-serve's five chart settings).
       .chart_policy = chart_extraction_policy_from_env(
           [](const char* name) -> const char* { return std::getenv(name); }),
+      // Which ocr_preset names a Convert request may use (docling-serve's
+      // OCR preset settings, custom presets included).
+      .ocr_policy = ocr_preset_policy_from_env(
+          [](const char* name) -> const char* { return std::getenv(name); }),
       // The VLM convert leg through grpc-vlm-convert: off unless a target
       // is named; PROCESSING_PIPELINE_VLM requires it.
       .vlm = std::move(vlm),
@@ -422,6 +426,14 @@ void report_collector_targets(const CollectorTargets& targets, bool layout_activ
                      : ", vlm " + redacted_endpoint(targets.derender.vlm_endpoint));
   } else {
     std::println("gRParse chart derender (enrich): not configured");
+  }
+  {
+    std::string presets;
+    for (const std::string& id : targets.ocr_policy.preset_ids()) {
+      presets += (presets.empty() ? "" : ", ") + id;
+    }
+    std::println("gRParse OCR preset policy: default {}, presets [{}]",
+                 ocr_kind_name(targets.ocr_policy.settings().default_preset), presets);
   }
   {
     const ChartExtractionPolicy& policy = targets.chart_policy;

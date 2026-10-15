@@ -185,7 +185,6 @@ void verify_unread_options_are_rejected_unless_default() {
           [](parsev1::ConvertDocumentOptions* o) { o->set_table_cell_matching(false); });
   rejects("abort_on_error",
           [](parsev1::ConvertDocumentOptions* o) { o->set_abort_on_error(true); });
-  rejects("ocr_preset", [](parsev1::ConvertDocumentOptions* o) { o->set_ocr_preset("easyocr"); });
   rejects("table_structure_preset",
           [](parsev1::ConvertDocumentOptions* o) { o->set_table_structure_preset("v2"); });
   rejects("layout_preset", [](parsev1::ConvertDocumentOptions* o) { o->set_layout_preset("egret"); });
