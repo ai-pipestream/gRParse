@@ -27,7 +27,7 @@
 namespace {
 
 namespace docv1 = ai::pipestream::document::v1;
-namespace parsev1 = pipestream::parse::v1;
+namespace parsev1 = ai::pipestream::parse::v1;
 using grparse_test::require;
 
 const char* variable(const char* name) {
@@ -74,8 +74,9 @@ int main() {
     require(png.size() > 8 && png.starts_with("\x89PNG"), "the chart fixture is a PNG");
 
     const std::string presets =
-        R"({"e2e":{"model":"granite-vision-e2e","engine_type":"VLM_ENGINE_TYPE_API_OPENAI",)"
-        R"("chart2csv":true,"chart2summary":true,"chart2code":true}})";
+        R"(presets { key: "e2e" value { model: "granite-vision-e2e")"
+        R"( engine_type: VLM_ENGINE_TYPE_API_OPENAI chart2csv: true chart2summary: true)"
+        R"( chart2code: true } })";
     const grparse::ChartExtractionPolicy policy =
         grparse::chart_extraction_policy_from_env([&](const char* name) -> const char* {
           if (std::string(name) == "GRPARSE_CUSTOM_CHART_EXTRACTION_PRESETS") {

@@ -55,7 +55,7 @@ std::string captured_stderr(Body body) {
 void verify_every_reported_endpoint_is_redacted() {
   const std::map<std::string, std::string> env = {
       {"GRPARSE_CUSTOM_CHART_EXTRACTION_PRESETS",
-       R"({"mine":{"model":"m","url":"https://preset-user:preset-key@vlm.example/v1?api_key=preset-q"}})"},
+       R"(presets { key: "mine" value { model: "m" url: "https://preset-user:preset-key@vlm.example/v1?api_key=preset-q" } })"},
       {"GRPARSE_DEFAULT_CHART_EXTRACTION_PRESET", "mine"},
   };
   grparse::CollectorTargets targets;

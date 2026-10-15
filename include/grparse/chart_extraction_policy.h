@@ -61,15 +61,15 @@ ChartExtractionPolicy default_chart_extraction_policy();
 std::optional<ai::pipestream::parse::v1::VlmEngineType> vlm_engine_from_name(
     std::string_view name);
 
-// Parses GRPARSE_CUSTOM_CHART_EXTRACTION_PRESETS: the protobuf JSON form of
-// ChartExtractionPresetRegistry.presets, an object mapping preset id to a
-// ChartExtractionPresetSpec (model, url, engine_type as a VlmEngineType
-// name such as "VLM_ENGINE_TYPE_API_OLLAMA", chart2csv, chart2summary,
-// chart2code, use_natural_language_prompts). Throws std::invalid_argument
-// on an unknown field, a wrong type, an unknown or unspecified engine, a
-// padded id, or a preset that enables no output.
+// Parses GRPARSE_CUSTOM_CHART_EXTRACTION_PRESETS: a
+// ChartExtractionPresetRegistry in protobuf text format, for example
+//   presets { key: "charts" value { model: "granite-vision-4.1-4b"
+//     engine_type: VLM_ENGINE_TYPE_API_OLLAMA chart2summary: true } }
+// Throws std::invalid_argument on a parse error (unknown field, wrong type,
+// unknown enum value), an unspecified engine, a padded id, or a preset that
+// enables no output.
 std::map<std::string, ChartExtractionPreset> parse_chart_extraction_presets(
-    std::string_view json);
+    std::string_view text);
 
 // The typed form: builds the presets from an already parsed registry, with
 // the same checks.

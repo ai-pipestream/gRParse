@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include <google/protobuf/io/tokenizer.h>
+#include <google/protobuf/text_format.h>
 #include <google/protobuf/util/json_util.h>
 
 namespace grparse {
@@ -148,21 +150,38 @@ std::map<std::string, ChartExtractionPreset> chart_extraction_presets_from_regis
   return presets;
 }
 
-std::map<std::string, ChartExtractionPreset> parse_chart_extraction_presets(
-    std::string_view json) {
-  constexpr const char* kVariable = "GRPARSE_CUSTOM_CHART_EXTRACTION_PRESETS";
-  const std::string text = trimmed(json);
-  if (!text.starts_with('{')) {
-    throw std::invalid_argument(std::string(kVariable) +
-                                " is not a JSON object of ChartExtractionPresetSpec");
+namespace {
+
+// Collects the first text-format parse error so the startup failure can
+// name it.
+class FirstError final : public google::protobuf::io::ErrorCollector {
+ public:
+  void RecordError(int line, google::protobuf::io::ColumnNumber column,
+                   absl::string_view message) override {
+    if (!text_.empty()) return;
+    text_ = "line " + std::to_string(line + 1) + " column " + std::to_string(column + 1) +
+            ": " + std::string(message);
   }
+  const std::string& text() const { return text_; }
+
+ private:
+  std::string text_;
+};
+
+}  // namespace
+
+std::map<std::string, ChartExtractionPreset> parse_chart_extraction_presets(
+    std::string_view text) {
+  constexpr const char* kVariable = "GRPARSE_CUSTOM_CHART_EXTRACTION_PRESETS";
   parsev1::ChartExtractionPresetRegistry registry;
-  const auto status =
-      google::protobuf::util::JsonStringToMessage("{\"presets\":" + text + "}", &registry);
-  if (!status.ok()) {
+  FirstError errors;
+  google::protobuf::TextFormat::Parser parser;
+  parser.RecordErrorsTo(&errors);
+  if (!parser.ParseFromString(std::string(text), &registry)) {
     throw std::invalid_argument(std::string(kVariable) +
-                                " is not a valid ChartExtractionPresetSpec map: " +
-                                std::string(status.message()));
+                                " is not a ChartExtractionPresetRegistry in protobuf text "
+                                "format: " +
+                                errors.text());
   }
   return chart_extraction_presets_from_registry(registry);
 }

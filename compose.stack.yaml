@@ -122,7 +122,7 @@ services:
       # asks with Docling's natural-language prompts and leaves the model
       # name to the endpoint. Name granite_vision_v4 per request (or set it
       # as the default) when the endpoint serves the Granite fine-tune.
-      GRPARSE_CUSTOM_CHART_EXTRACTION_PRESETS: '${GRPARSE_CUSTOM_CHART_EXTRACTION_PRESETS:-{"stack_vlm":{"use_natural_language_prompts":true}}}'
+      GRPARSE_CUSTOM_CHART_EXTRACTION_PRESETS: '${GRPARSE_CUSTOM_CHART_EXTRACTION_PRESETS:-presets { key: "stack_vlm" value { use_natural_language_prompts: true } }}'
       GRPARSE_DEFAULT_CHART_EXTRACTION_PRESET: "${GRPARSE_DEFAULT_CHART_EXTRACTION_PRESET:-stack_vlm}"
       # PROCESSING_PIPELINE_VLM dials grpc-vlm-convert with full-page PNGs.
       GRPARSE_VLM_CONVERT_TARGET: "vlm-convert:50058"
