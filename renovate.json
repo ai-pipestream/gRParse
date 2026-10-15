@@ -34,5 +34,13 @@
       "datasourceTemplate": "github-releases",
       "extractVersionTemplate": "^v(?<version>.*)$"
     }
+  ],
+  "packageRules": [
+    {
+      "description": "onnxruntime==1.31.0 does not publish cp315 wheels yet; keep Dockerfile.models on Python 3.14.",
+      "matchFileNames": ["Dockerfile.models"],
+      "matchPackageNames": ["python"],
+      "allowedVersions": "<=3.14"
+    }
   ]
 }

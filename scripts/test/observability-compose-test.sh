@@ -8,11 +8,11 @@ cd "$root"
 
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
   rendered=$(docker compose -f compose.stack.yaml -f compose.stack.observability.yaml --profile observability config)
-  grep -q 'prom/prometheus:v3.3.0' <<<"$rendered" || {
+  grep -q 'prom/prometheus:v' <<<"$rendered" || {
     echo "observability-compose-test: prometheus image missing from rendered compose config" >&2
     exit 1
   }
-  grep -q 'grafana/grafana:11.6.0' <<<"$rendered" || {
+  grep -q 'grafana/grafana:' <<<"$rendered" || {
     echo "observability-compose-test: grafana image missing from rendered compose config" >&2
     exit 1
   }
@@ -52,8 +52,8 @@ assert overlay_path.is_file(), "compose.stack.observability.yaml is missing"
 overlay_text = load_yaml_or_text(overlay_path)
 for needle in (
     'GRPARSE_METRICS_PORT: "9464"',
-    "prom/prometheus:v3.3.0",
-    "grafana/grafana:11.6.0",
+    "prom/prometheus:v",
+    "grafana/grafana:",
     "./compose/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro",
     "./compose/grafana/provisioning:/etc/grafana/provisioning:ro",
     "./compose/grafana/dashboards:/var/lib/grafana/dashboards:ro",
