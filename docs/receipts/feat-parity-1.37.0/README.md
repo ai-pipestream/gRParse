@@ -17,3 +17,16 @@
   fake enrich server) and `verify_repetition_truncation_folds_typed`,
   input-format-test Numbers mappings, and collector-coordinator-test Numbers
   routing.
+- `docker-cuda-build.txt.gz`: local run of the CI cuda-image step
+  (`docker build --progress=plain -t grparse-pr20-cuda .`) at commit
+  e7fed6acd9892ac369368af8aec2818adac62739. It covers the full image build
+  and the in-build `ctest -L grparse`: 100% passed, 0 failed out of 94, and
+  `docker-build-exit: 0`.
+- `smoke-cuda.txt`: `./scripts/smoke-test.sh grparse-pr20-cuda` on that
+  image, `smoke-exit: 0`.
+- `ci-status-e7fed6a.txt`: Forgejo CI on e7fed6a. demo-shell, fuzz-smoke,
+  openvino-image and cpu-image passed. cuda-image failed after 34s on a
+  remote runner, and Forgejo does not expose that job's log through the API.
+  main (031cc23) shows the same 34-51s cuda-image failure. The local run of
+  the same step above is green. This is a blocker on the runner, not a
+  passing result.

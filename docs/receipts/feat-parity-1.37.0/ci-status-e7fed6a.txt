@@ -1,0 +1,7 @@
+CI statuses for e7fed6acd9892ac369368af8aec2818adac62739 (Forgejo API /commits/<sha>/status), fetched 2026-10-15T00:53:48-04:00:
+combined: failure
+C++ build and contract tests / demo-shell (pull_request) | success | Successful in 10s | /ai-pipestream/gRParse/actions/runs/407/jobs/3
+C++ build and contract tests / cuda-image (pull_request) | failure | Failing after 34s | /ai-pipestream/gRParse/actions/runs/407/jobs/0
+C++ build and contract tests / fuzz-smoke (pull_request) | success | Successful in 3m4s | /ai-pipestream/gRParse/actions/runs/407/jobs/4
+C++ build and contract tests / openvino-image (pull_request) | success | Successful in 8m34s | /ai-pipestream/gRParse/actions/runs/407/jobs/1
+C++ build and contract tests / cpu-image (pull_request) | success | Successful in 11m45s | /ai-pipestream/gRParse/actions/runs/407/jobs/2

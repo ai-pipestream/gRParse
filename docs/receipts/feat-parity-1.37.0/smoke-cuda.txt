@@ -1,0 +1,10 @@
+commit: e7fed6acd9892ac369368af8aec2818adac62739
+date: 2026-10-15T00:53:13-04:00
+$ ./scripts/smoke-test.sh grparse-pr20-cuda
+== smoke: library closure of the shipped binaries
+== smoke: image runs as the non-root user 65532
+== smoke: server reaches main (expects its own model-missing failure)
+gRParse inference threads: 16 per pooled session, 2 workers, 32 cores
+Startup failed: Required OCR model is missing: /models/ch_PP-OCRv3_det_infer.onnx
+smoke-test: OK (grparse-pr20-cuda)
+smoke-exit: 0
