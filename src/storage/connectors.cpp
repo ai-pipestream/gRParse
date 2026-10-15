@@ -264,7 +264,17 @@ grpc::Status resolve_source(const parsev1::Source& source, const std::string& op
 }
 
 grpc::Status check_target_allowed(const parsev1::Target& target) {
-  if (target.target_case() == parsev1::Target::TARGET_NOT_SET) return grpc::Status::OK;
+  // An unset target is inbody; put and presigned_url are not served at all
+  // and stay UNIMPLEMENTED by name in the target step rather than turned
+  // into a policy refusal.
+  switch (target.target_case()) {
+    case parsev1::Target::TARGET_NOT_SET:
+    case parsev1::Target::kPut:
+    case parsev1::Target::kPresignedUrl:
+      return grpc::Status::OK;
+    default:
+      break;
+  }
   const bool plugin = target.has_plugin();
   return check_kind(target_kind(target), plugin, plugin ? "target.plugin" : "target",
                     "GRPARSE_ALLOWED_TARGET_TYPES", builtin_target_kinds(), "target");

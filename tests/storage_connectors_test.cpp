@@ -266,6 +266,10 @@ void target_policy() {
   ScopedEnv allowed("GRPARSE_ALLOWED_TARGET_TYPES", "inbody,zip");
   require(storage::check_target_allowed(inbody).ok(), "inbody listed");
   require(storage::check_target_allowed(parsev1::Target()).ok(), "no target is inbody");
+  parsev1::Target put;
+  put.mutable_put();
+  require(storage::check_target_allowed(put).ok(),
+          "put is left to the target step, which answers UNIMPLEMENTED");
   parsev1::Target gcs;
   gcs.mutable_google_cloud_storage()->mutable_coordinates()->set_bucket("b");
   expect_rejection(storage::check_target_allowed(gcs), "target",
