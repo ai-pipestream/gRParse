@@ -94,9 +94,19 @@ def text_of(item):
                 return found
     return ""
 texts = [text_of(t) for t in out["document"]["doc"].get("texts", [])]
-models = sorted({s["collector"]["model"] for t in out["document"]["doc"].get("texts", [])
-                 for v in t.values() if isinstance(v, dict)
-                 for s in v.get("source", []) if "collector" in s})
+def models_of(node, found):
+    # Every CollectorSource under the item, at whatever depth it sits.
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "collector" and isinstance(value, dict) and "model" in value:
+                found.add(value["model"])
+            else:
+                models_of(value, found)
+    elif isinstance(node, list):
+        for value in node:
+            models_of(value, found)
+    return found
+models = sorted(models_of(out["document"]["doc"].get("texts", []), set()))
 print("status:", out.get("status"), "texts:", len(texts), "models:", models)
 print("first texts:", [t[:60] for t in texts[:5]])
 assert models == ["rapidocr"], models
