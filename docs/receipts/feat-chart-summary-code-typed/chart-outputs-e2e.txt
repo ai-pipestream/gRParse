@@ -1,0 +1,16 @@
+commit: 1a3e87776a9db20483a7d5d4710eea9e1b4751d2
+date: Thu Oct 15 02:24:36 AM EDT 2026
+$ scripts/test/chart-outputs-e2e-test.sh /work/tmp/grparse-a-build grparse-e2e/grpc-enrich:93eedfd
+== grpc-enrich grparse-e2e/grpc-enrich:93eedfd on 127.0.0.1:32863
+== chart-outputs-e2e-test
+report: candidates=1 derendered=1 tables=1 summaries=1 codes=1 skipped=0
+meta.description: Revenue is highest in the North and lowest in the South.
+meta.code (CODE_LANGUAGE_LABEL_PYTHON): import matplotlib.pyplot as plt
+plt.bar(["North", "East", "South"], [120, 95, 80])
+plt.show()
+chart-outputs-e2e-test: all checks passed
+== fake VLM requests
+fake-vlm: model=granite-vision-e2e kind=summary path=/v1/chat/completions
+fake-vlm: model=granite-vision-e2e kind=csv path=/v1/chat/completions
+fake-vlm: model=granite-vision-e2e kind=code path=/v1/chat/completions
+e2e-exit: 0
