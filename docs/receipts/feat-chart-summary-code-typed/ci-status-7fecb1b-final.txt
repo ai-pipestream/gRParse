@@ -1,0 +1,12 @@
+commit: 7fecb1bcf5796aec44bfb6261e84d2325d815a1c
+source: GET api/v1/repos/ai-pipestream/gRParse/commits/7fecb1bcf5796aec44bfb6261e84d2325d815a1c/status
+recorded: 2026-10-15T04:37:49-04:00
+run: 425
+combined: failure
+C++ build and contract tests / cpu-image (pull_request) | failure | Failing after 4s | /ai-pipestream/gRParse/actions/runs/425/jobs/2
+C++ build and contract tests / cuda-image (pull_request) | failure | Has been cancelled | /ai-pipestream/gRParse/actions/runs/425/jobs/0
+C++ build and contract tests / demo-shell (pull_request) | success | Successful in 10s | /ai-pipestream/gRParse/actions/runs/425/jobs/3
+C++ build and contract tests / fuzz-smoke (pull_request) | success | Successful in 2m33s | /ai-pipestream/gRParse/actions/runs/425/jobs/4
+C++ build and contract tests / openvino-image (pull_request) | success | Successful in 11m19s | /ai-pipestream/gRParse/actions/runs/425/jobs/1
+
+cpu-image failed within seconds: the CI job containers lack docker client auth for dhi.io (CI auth is awaiting Kristian and was not changed). This is a blocker, not a pass. cuda-image ended cancelled (the run was superseded by the push of 4b5b25e), so 7fecb1b has no cuda result; run 428 on 4b5b25e below covers the same code.
