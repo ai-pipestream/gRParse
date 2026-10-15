@@ -166,10 +166,16 @@ bool office_format(const std::string& filename, const std::string& content_type)
                    {".doc", ".docx", ".docm", ".dot", ".dotx", ".odt", ".ott",
                     ".fodt", ".rtf", ".xls", ".xlsx", ".xlsm", ".xlsb", ".ods",
                     ".ots", ".fods", ".csv", ".ppt", ".pptx", ".pptm", ".odp",
-                    ".otp", ".fodp"})) {
+                    ".otp", ".fodp", ".numbers"})) {
     return true;
   }
   const std::string type = lowercase(content_type);
+  // Apple Numbers: LibreOffice's Calc import reads it as a workbook, so its
+  // sheets come back as typed tables like any other spreadsheet.
+  if (type == "application/vnd.apple.numbers" ||
+      type == "application/x-iwork-numbers-sffnumbers") {
+    return true;
+  }
   return type.contains("officedocument") || type.contains("msword") ||
          type.contains("ms-excel") || type.contains("ms-powerpoint") ||
          type.contains("opendocument") ||

@@ -339,6 +339,25 @@ docv1::BaseTextItem* text_item_for(const std::string& self_ref, docv1::Document*
   return document->mutable_texts(index);
 }
 
+namespace {
+
+// The element's generation was cancelled for repeating itself: its source
+// names the model with a REPETITION truncation, once per model.
+void mark_repetition_truncated(const std::string& model,
+                               google::protobuf::RepeatedPtrField<docv1::SourceType>* sources) {
+  for (docv1::SourceType& source : *sources) {
+    if (source.has_generation() && source.generation().model() == model) {
+      source.mutable_generation()->set_truncation(docv1::GENERATION_TRUNCATION_REPETITION);
+      return;
+    }
+  }
+  docv1::GenerationSource* generation = sources->Add()->mutable_generation();
+  generation->set_model(model);
+  generation->set_truncation(docv1::GENERATION_TRUNCATION_REPETITION);
+}
+
+}  // namespace
+
 bool fold_code_annotation(const enrichv1::ItemAnnotation& annotation,
                           docv1::Document* document) {
   if (!annotation.has_code() || annotation.code().text().empty()) return false;
@@ -351,6 +370,9 @@ bool fold_code_annotation(const enrichv1::ItemAnnotation& annotation,
   if (!annotation.code().language_raw().empty()) {
     item->mutable_code()->set_code_language_raw(annotation.code().language_raw());
   }
+  if (annotation.code().truncated_on_repetition()) {
+    mark_repetition_truncated(annotation.model(), item->mutable_code()->mutable_source());
+  }
   return true;
 }
 
@@ -360,6 +382,10 @@ bool fold_formula_annotation(const enrichv1::ItemAnnotation& annotation,
   docv1::BaseTextItem* item = text_item_for(annotation.self_ref(), document);
   if (item == nullptr || !item->has_formula()) return false;
   item->mutable_formula()->mutable_base()->set_text(annotation.formula().text());
+  if (annotation.formula().truncated_on_repetition()) {
+    mark_repetition_truncated(annotation.model(),
+                              item->mutable_formula()->mutable_base()->mutable_source());
+  }
   return true;
 }
 
@@ -465,8 +491,15 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
   if (!options.picture_description_preset_raw.empty()) {
     request_options->set_picture_description_preset_raw(options.picture_description_preset_raw);
   }
-  if (!options.code_formula_preset_raw.empty()) {
-    request_options->set_code_formula_preset_raw(options.code_formula_preset_raw);
+  if (options.do_code_enrichment || options.do_formula_enrichment) {
+    request_options->set_code_formula_preset(options.code_formula_preset);
+    if (options.code_formula_expansion_factor.has_value()) {
+      request_options->set_code_formula_expansion_factor(*options.code_formula_expansion_factor);
+    }
+    if (options.code_formula_stop_on_repetition.has_value()) {
+      request_options->set_code_formula_stop_on_repetition(
+          *options.code_formula_stop_on_repetition);
+    }
   }
   const PictureDescriptionCall& call = options.picture_description_call;
   if (!call.prompt.empty()) request_options->set_picture_description_prompt(call.prompt);

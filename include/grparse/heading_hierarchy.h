@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "ai/pipestream/document/v1/document.pb.h"
+#include "ai/pipestream/parse/v1/parse_types.pb.h"
 #include "grparse/document_assembly.h"
 
 namespace grparse {
@@ -45,6 +46,12 @@ struct HeadingOptions {
   // height to found the next depth: below (1 - tolerance) of it. 0.15
   // reproduces the CV path's original 85% rule.
   double style_size_tolerance = 0.15;
+  // Numbering-scheme precedence, highest level first (Docling
+  // numbering_schemes). Empty keeps the built-in vocabulary. Non-empty, a
+  // heading whose numbering is one of these schemes takes depth (position
+  // + 1), plus its dotted sub-groups; any other heading is unnumbered and
+  // left to the style pass.
+  std::vector<ai::pipestream::parse::v1::HeadingNumberingScheme> numbering_schemes;
 
   // The size ratio the style pass compares by.
   double deeper_below() const { return 1.0 - style_size_tolerance; }
@@ -72,6 +79,34 @@ bool heading_reads_as_prose(std::string_view text);
 // Absent for an unnumbered heading and for a bare number with no text
 // after it (a page number).
 std::optional<int> heading_numbering_depth(std::string_view text);
+
+// One heading's numbering under an explicit scheme list: the scheme its
+// leading enumerator belongs to and the dotted sub-groups after it
+// ("2.3.1 Scope" is ARABIC with two). Where a token reads as two schemes
+// ("I." roman or letter, "i." roman or letter), the one listed earlier in
+// `allowed` wins. nullopt when the text opens with no listed scheme.
+struct SchemeNumbering {
+  ai::pipestream::parse::v1::HeadingNumberingScheme scheme =
+      ai::pipestream::parse::v1::HEADING_NUMBERING_SCHEME_UNSPECIFIED;
+  int sub_groups = 0;
+};
+std::optional<SchemeNumbering> heading_scheme_numbering(
+    std::string_view text,
+    const std::vector<ai::pipestream::parse::v1::HeadingNumberingScheme>& allowed);
+
+// The depth a heading takes under an explicit scheme list: the scheme's
+// position plus one, plus its sub-groups. nullopt when no listed scheme
+// numbers it.
+std::optional<int> heading_scheme_depth(
+    std::string_view text,
+    const std::vector<ai::pipestream::parse::v1::HeadingNumberingScheme>& schemes);
+
+// The Docling name of a scheme ("part", "roman_u", ...) and its inverse;
+// the inverse is nullopt for a name Docling does not define.
+std::string_view heading_numbering_scheme_name(
+    ai::pipestream::parse::v1::HeadingNumberingScheme scheme);
+std::optional<ai::pipestream::parse::v1::HeadingNumberingScheme> heading_numbering_scheme_from_name(
+    std::string_view name);
 
 // True for an unnumbered heading of one to three all-caps words
 // (ABSTRACT, RELATED WORK, ACKNOWLEDGMENTS): a peer of the numbered

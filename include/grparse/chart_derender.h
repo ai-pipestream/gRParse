@@ -64,7 +64,14 @@ struct ChartDerenderOptions {
   // Raw preset names when the Convert option carries a string preset or a
   // picture_description_local.repo_id.
   std::string picture_description_preset_raw;
-  std::string code_formula_preset_raw;
+  // The typed code/formula preset; Docling's default (CodeFormulaV2) unless
+  // the request names another.
+  ai::pipestream::enrich::v1::CodeFormulaPreset code_formula_preset =
+      ai::pipestream::enrich::v1::CODE_FORMULA_PRESET_CODE_FORMULA_V2;
+  // code_formula_custom_config.expansion_factor / stop_on_repetition;
+  // unset leaves the enrich service on Docling's defaults (0.18, true).
+  std::optional<double> code_formula_expansion_factor;
+  std::optional<bool> code_formula_stop_on_repetition;
   // The picture_description_api prompt, generation params and headers.
   PictureDescriptionCall picture_description_call;
   // The chart-extraction preset the server policy resolved for this request

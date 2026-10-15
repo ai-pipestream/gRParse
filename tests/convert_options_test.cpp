@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <string>
 #include <system_error>
@@ -671,8 +672,122 @@ void verify_settings_digest_follows_settings_and_models() {
 
 }  // namespace
 
+void verify_parity_1_37_options() {
+  const auto code_config = [] {
+    parsev1::CodeFormulaVlmOptions config;
+    config.mutable_engine_options()->set_engine_type(parsev1::VLM_ENGINE_TYPE_TRANSFORMERS);
+    config.mutable_model_spec()->set_name("CodeFormulaV2");
+    config.mutable_model_spec()->set_default_repo_id("docling-project/CodeFormulaV2");
+    return config;
+  };
+  for (const double bad : {-0.01, std::numeric_limits<double>::quiet_NaN(),
+                           std::numeric_limits<double>::infinity()}) {
+    parsev1::ConvertDocumentOptions options;
+    *options.mutable_code_formula_custom_config() = code_config();
+    options.mutable_code_formula_custom_config()->set_expansion_factor(bad);
+    require_invalid(grparse::validate_options(options, kSurface),
+                    "expansion_factor must be finite and >= 0");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    *options.mutable_code_formula_custom_config() = code_config();
+    options.mutable_code_formula_custom_config()->set_expansion_factor(0.0);
+    options.mutable_code_formula_custom_config()->set_stop_on_repetition(false);
+    require(grparse::validate_options(options, kSurface).ok(),
+            "expansion_factor 0 and stop_on_repetition false are valid");
+  }
+  // GRANITE_VISION_CHART2CSV is CSV only.
+  {
+    parsev1::ConvertDocumentOptions options;
+    auto config = representable_chart_config();
+    config.set_output_format(parsev1::CHART_EXTRACTION_OUTPUT_FORMAT_GRANITE_VISION_CHART2CSV);
+    *options.mutable_chart_extraction_custom_config() = config;
+    require(grparse::validate_options(options, kSurface).ok(), "CHART2CSV with CSV only");
+    options.mutable_chart_extraction_custom_config()->set_chart2summary(true);
+    require_invalid(grparse::validate_options(options, kSurface), "supports CSV output only");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    auto config = representable_chart_config();
+    config.clear_output_format();
+    config.set_output_format_raw("granite_vision_chart2csv");
+    config.set_chart2code(true);
+    *options.mutable_chart_extraction_custom_config() = config;
+    require_invalid(grparse::validate_options(options, kSurface), "supports CSV output only");
+    options.mutable_chart_extraction_custom_config()->set_chart2code(false);
+    require(grparse::validate_options(options, kSurface).ok(),
+            "the raw Docling name granite_vision_chart2csv is known");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    auto config = representable_chart_config();
+    config.set_output_format(parsev1::CHART_EXTRACTION_OUTPUT_FORMAT_GRANITE_VISION_CHART2CSV);
+    config.set_output_format_raw("granite_vision_charts");
+    *options.mutable_chart_extraction_custom_config() = config;
+    require_invalid(grparse::validate_options(options, kSurface), "disagree");
+  }
+  // The code/formula preset is typed; the Docling default is CodeFormulaV2.
+  {
+    parsev1::ConvertDocumentOptions options;
+    require(grparse::resolve_code_formula_preset(options, kSurface).value() ==
+                parsev1::CODE_FORMULA_PRESET_ID_CODEFORMULAV2,
+            "unset resolves to the Docling default");
+    for (const char* name : {"", "default", "codeformulav2"}) {
+      options.set_code_formula_preset(name);
+      require(grparse::resolve_code_formula_preset(options, kSurface).value() ==
+                  parsev1::CODE_FORMULA_PRESET_ID_CODEFORMULAV2,
+              std::string("'") + name + "' resolves to CODEFORMULAV2");
+    }
+    options.set_code_formula_preset("granite_docling");
+    require(grparse::resolve_code_formula_preset(options, kSurface).value() ==
+                parsev1::CODE_FORMULA_PRESET_ID_GRANITE_DOCLING,
+            "granite_docling resolves");
+    require(grparse::enrich_code_formula_preset(parsev1::CODE_FORMULA_PRESET_ID_GRANITE_DOCLING) ==
+                ai::pipestream::enrich::v1::CODE_FORMULA_PRESET_GRANITE_DOCLING,
+            "granite_docling maps to the enrich enum");
+    options.set_code_formula_preset("smoldocling");
+    require_invalid(grparse::validate_options(options, kSurface),
+                    "code_formula_preset 'smoldocling' is not a Docling code/formula preset");
+  }
+  // numbering_schemes: typed, raw names mapped, unknowns rejected by value.
+  {
+    parsev1::ConvertDocumentOptions options;
+    auto* heading = options.mutable_pdf_heading_hierarchy_options();
+    heading->add_numbering_schemes(parsev1::HEADING_NUMBERING_SCHEME_PART);
+    heading->add_numbering_schemes(parsev1::HEADING_NUMBERING_SCHEME_ARABIC);
+    require(grparse::validate_options(options, kSurface).ok(), "typed schemes are valid");
+    const auto resolved = grparse::resolve_numbering_schemes(options, kSurface).value();
+    require(resolved.size() == 2 && resolved[0] == parsev1::HEADING_NUMBERING_SCHEME_PART,
+            "typed order is kept");
+    heading->add_numbering_schemes(parsev1::HEADING_NUMBERING_SCHEME_PART);
+    require_invalid(grparse::validate_options(options, kSurface), "lists");
+    heading->clear_numbering_schemes();
+    heading->add_numbering_schemes(parsev1::HEADING_NUMBERING_SCHEME_UNSPECIFIED);
+    require_invalid(grparse::validate_options(options, kSurface),
+                    "numbering_schemes value 0 is not a known HeadingNumberingScheme");
+    heading->clear_numbering_schemes();
+    heading->add_numbering_schemes(static_cast<parsev1::HeadingNumberingScheme>(99));
+    require_invalid(grparse::validate_options(options, kSurface), "value 99");
+    heading->clear_numbering_schemes();
+    heading->add_numbering_schemes_raw("division");
+    heading->add_numbering_schemes_raw("subdivision");
+    const auto raw = grparse::resolve_numbering_schemes(options, kSurface).value();
+    require(raw.size() == 2 && raw[0] == parsev1::HEADING_NUMBERING_SCHEME_DIVISION &&
+                raw[1] == parsev1::HEADING_NUMBERING_SCHEME_SUBDIVISION,
+            "raw Docling names map to the typed enum in order");
+    heading->add_numbering_schemes_raw("section");
+    require_invalid(grparse::validate_options(options, kSurface),
+                    "numbering_schemes_raw value 'section' is not a Docling numbering scheme");
+    heading->clear_numbering_schemes_raw();
+    heading->add_numbering_schemes_raw("part");
+    heading->add_numbering_schemes(parsev1::HEADING_NUMBERING_SCHEME_PART);
+    require_invalid(grparse::validate_options(options, kSurface), "mutually exclusive");
+  }
+}
+
 int main() {
   return grparse_test::run_test_main("convert-options-test", "ok", {
+      verify_parity_1_37_options,
       verify_chart_and_caption_options,
       verify_hybrid_chunking_is_validated,
       verify_unread_options_are_rejected_unless_default,

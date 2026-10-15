@@ -905,6 +905,84 @@ void verify_off_by_default_dials_nothing() {
           "a configured target gets one lazily created channel");
 }
 
+void verify_code_formula_options_reach_enrich_typed() {
+  FakeEnrichService fake(FakeMode::kAnswer);
+  ServerFixture server(&fake);
+  docv1::Document document = sample_document();
+  grparse::ChartDerenderOptions options = options_for(server.target());
+  options.do_chart_extraction = false;
+  options.do_code_enrichment = true;
+  options.code_formula_preset = enrichv1::CODE_FORMULA_PRESET_GRANITE_DOCLING;
+  options.code_formula_expansion_factor = 0.25;
+  options.code_formula_stop_on_repetition = false;
+  grparse::derender_charts(server.channel(), options, &document);
+  const FakeEnrichService::Seen seen = fake.seen();
+  require(seen.options.do_code_enrichment() &&
+              seen.options.code_formula_preset() == enrichv1::CODE_FORMULA_PRESET_GRANITE_DOCLING &&
+              seen.options.code_formula_preset_raw().empty(),
+          "the code/formula preset travels typed, never as a raw name");
+  require(seen.options.has_code_formula_expansion_factor() &&
+              seen.options.code_formula_expansion_factor() == 0.25,
+          "expansion_factor reaches enrich");
+  require(seen.options.has_code_formula_stop_on_repetition() &&
+              !seen.options.code_formula_stop_on_repetition(),
+          "an explicit stop_on_repetition=false reaches enrich");
+
+  FakeEnrichService defaults_fake(FakeMode::kAnswer);
+  ServerFixture defaults_server(&defaults_fake);
+  docv1::Document second = sample_document();
+  grparse::ChartDerenderOptions defaults = options_for(defaults_server.target());
+  defaults.do_chart_extraction = false;
+  defaults.do_formula_enrichment = true;
+  grparse::derender_charts(defaults_server.channel(), defaults, &second);
+  const FakeEnrichService::Seen default_seen = defaults_fake.seen();
+  require(default_seen.options.code_formula_preset() ==
+              enrichv1::CODE_FORMULA_PRESET_CODE_FORMULA_V2,
+          "the Docling default preset (CodeFormulaV2) is sent typed");
+  require(!default_seen.options.has_code_formula_expansion_factor() &&
+              !default_seen.options.has_code_formula_stop_on_repetition(),
+          "unset tunables stay unset so enrich applies Docling's defaults");
+}
+
+void verify_repetition_truncation_folds_typed() {
+  docv1::Document document;
+  auto* code = document.add_texts()->mutable_code();
+  code->set_self_ref("#/texts/0");
+  code->set_text("x");
+  auto* formula = document.add_texts()->mutable_formula();
+  formula->mutable_base()->set_self_ref("#/texts/1");
+  formula->mutable_base()->set_text("y");
+
+  enrichv1::ItemAnnotation code_ann;
+  code_ann.set_self_ref("#/texts/0");
+  code_ann.set_model("code-formula-v2");
+  code_ann.mutable_code()->set_text("\\quad");
+  code_ann.mutable_code()->set_truncated_on_repetition(true);
+  require(grparse::fold_code_annotation(code_ann, &document), "truncated code still folds");
+  const auto& code_sources = document.texts(0).code().source();
+  require(code_sources.size() == 1 && code_sources[0].has_generation() &&
+              code_sources[0].generation().model() == "code-formula-v2" &&
+              code_sources[0].generation().truncation() ==
+                  docv1::GENERATION_TRUNCATION_REPETITION,
+          "the code item carries a typed REPETITION truncation naming the model");
+
+  enrichv1::ItemAnnotation formula_ann;
+  formula_ann.set_self_ref("#/texts/1");
+  formula_ann.set_model("code-formula-v2");
+  formula_ann.mutable_formula()->set_text("a+b");
+  require(grparse::fold_formula_annotation(formula_ann, &document), "formula folds");
+  require(document.texts(1).formula().base().source().empty(),
+          "an untruncated formula gets no truncation source");
+  formula_ann.mutable_formula()->set_truncated_on_repetition(true);
+  require(grparse::fold_formula_annotation(formula_ann, &document), "truncated formula folds");
+  require(grparse::fold_formula_annotation(formula_ann, &document), "folds again");
+  const auto& formula_sources = document.texts(1).formula().base().source();
+  require(formula_sources.size() == 1 &&
+              formula_sources[0].generation().truncation() ==
+                  docv1::GENERATION_TRUNCATION_REPETITION,
+          "the formula carries one REPETITION truncation per model");
+}
+
 }  // namespace
 
 int main() {
@@ -929,5 +1007,7 @@ int main() {
       verify_one_failed_output_keeps_the_others,
       verify_summary_and_code_fold_once,
       verify_picture_description_api_call_reaches_enrich,
+      verify_code_formula_options_reach_enrich_typed,
+      verify_repetition_truncation_folds_typed,
   });
 }

@@ -13,6 +13,7 @@
 namespace grparse {
 
 namespace docv1 = ai::pipestream::document::v1;
+namespace parsev1 = ai::pipestream::parse::v1;
 
 namespace {
 
@@ -427,6 +428,185 @@ int merge_title_lines(docv1::Document* document, const std::vector<Candidate>& f
 
 }  // namespace
 
+namespace {
+
+bool is_roman_lower(char c) {
+  return c == 'i' || c == 'v' || c == 'x' || c == 'l';
+}
+
+// A bracketed or bare enumerator token at the start of `text`: "(a)",
+// "a.", "a)", "IV.", "12.3". On a match `token` is the enumerator itself
+// and `rest` what follows its closing mark.
+struct Enumerator {
+  std::string_view token;
+  std::string_view rest;
+  bool closed = false;
+  bool bracketed = false;
+};
+
+std::optional<Enumerator> leading_enumerator(std::string_view text) {
+  Enumerator found;
+  if (text.starts_with('(')) {
+    const size_t close = text.find(')');
+    if (close == std::string_view::npos || close < 2 || close > 8) return std::nullopt;
+    found.token = text.substr(1, close - 1);
+    found.rest = text.substr(close + 1);
+    found.closed = true;
+    found.bracketed = true;
+    return found;
+  }
+  size_t end = 0;
+  while (end < text.size() && (is_letter(text[end]) || is_digit(text[end]))) ++end;
+  if (end == 0) return std::nullopt;
+  found.token = text.substr(0, end);
+  found.rest = text.substr(end);
+  return found;
+}
+
+bool all_of_class(std::string_view token, bool (*predicate)(char)) {
+  return !token.empty() && std::ranges::all_of(token, predicate);
+}
+
+bool roman_lower_token(std::string_view token) {
+  if (!all_of_class(token, is_roman_lower)) return false;
+  std::string upper(token);
+  for (char& c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  const auto value = roman_value(upper);
+  return value.has_value() && *value > 0 && *value <= kMaximumRomanValue;
+}
+
+bool roman_upper_token(std::string_view token) {
+  const auto value = roman_value(token);
+  return value.has_value() && *value > 0 && *value <= kMaximumRomanValue;
+}
+
+int position_of(parsev1::HeadingNumberingScheme scheme,
+                const std::vector<parsev1::HeadingNumberingScheme>& allowed) {
+  const auto found = std::ranges::find(allowed, scheme);
+  return found == allowed.end() ? -1 : static_cast<int>(found - allowed.begin());
+}
+
+// The keyword schemes: the word, then an arabic, roman or letter label.
+std::optional<SchemeNumbering> keyword_numbering(std::string_view text) {
+  struct Keyword {
+    std::string_view word;
+    parsev1::HeadingNumberingScheme scheme;
+  };
+  // SUBDIVISION before DIVISION: the longer word is matched whole.
+  static constexpr Keyword kKeywords[] = {
+      {"subdivision", parsev1::HEADING_NUMBERING_SCHEME_SUBDIVISION},
+      {"division", parsev1::HEADING_NUMBERING_SCHEME_DIVISION},
+      {"chapter", parsev1::HEADING_NUMBERING_SCHEME_CHAPTER},
+      {"article", parsev1::HEADING_NUMBERING_SCHEME_ARTICLE},
+      {"part", parsev1::HEADING_NUMBERING_SCHEME_PART},
+  };
+  for (const Keyword& keyword : kKeywords) {
+    if (!starts_with_word(text, keyword.word)) continue;
+    std::string_view rest = trim_left(text.substr(keyword.word.size()));
+    size_t end = 0;
+    while (end < rest.size() && (is_letter(rest[end]) || is_digit(rest[end]))) ++end;
+    if (end == 0 || end > 6) return std::nullopt;
+    const std::string_view label = rest.substr(0, end);
+    const bool numeric = all_of_class(label, is_digit);
+    const bool roman = roman_upper_token(label);
+    const bool letter = label.size() == 1 && is_letter(label.front());
+    if (!numeric && !roman && !letter) return std::nullopt;
+    rest = rest.substr(end);
+    SchemeNumbering numbering;
+    numbering.scheme = keyword.scheme;
+    numbering.sub_groups = take_dotted_groups(&rest);
+    return numbering;
+  }
+  return std::nullopt;
+}
+
+}  // namespace
+
+std::string_view heading_numbering_scheme_name(parsev1::HeadingNumberingScheme scheme) {
+  switch (scheme) {
+    case parsev1::HEADING_NUMBERING_SCHEME_PART: return "part";
+    case parsev1::HEADING_NUMBERING_SCHEME_CHAPTER: return "chapter";
+    case parsev1::HEADING_NUMBERING_SCHEME_DIVISION: return "division";
+    case parsev1::HEADING_NUMBERING_SCHEME_SUBDIVISION: return "subdivision";
+    case parsev1::HEADING_NUMBERING_SCHEME_ARTICLE: return "article";
+    case parsev1::HEADING_NUMBERING_SCHEME_ROMAN_U: return "roman_u";
+    case parsev1::HEADING_NUMBERING_SCHEME_ARABIC: return "arabic";
+    case parsev1::HEADING_NUMBERING_SCHEME_ALPHA_U: return "alpha_u";
+    case parsev1::HEADING_NUMBERING_SCHEME_ALPHA_L: return "alpha_l";
+    case parsev1::HEADING_NUMBERING_SCHEME_ROMAN_L: return "roman_l";
+    default: return "";
+  }
+}
+
+std::optional<parsev1::HeadingNumberingScheme> heading_numbering_scheme_from_name(
+    std::string_view name) {
+  for (int value = parsev1::HeadingNumberingScheme_MIN + 1;
+       value <= parsev1::HeadingNumberingScheme_MAX; ++value) {
+    const auto scheme = static_cast<parsev1::HeadingNumberingScheme>(value);
+    if (!parsev1::HeadingNumberingScheme_IsValid(value)) continue;
+    if (heading_numbering_scheme_name(scheme) == name) return scheme;
+  }
+  return std::nullopt;
+}
+
+std::optional<SchemeNumbering> heading_scheme_numbering(
+    std::string_view text, const std::vector<parsev1::HeadingNumberingScheme>& allowed) {
+  const std::string_view trimmed = trim_left(text);
+  if (trimmed.empty() || allowed.empty()) return std::nullopt;
+  if (const auto keyword = keyword_numbering(trimmed)) {
+    return position_of(keyword->scheme, allowed) >= 0 ? keyword : std::nullopt;
+  }
+  const auto enumerator = leading_enumerator(trimmed);
+  if (!enumerator.has_value()) return std::nullopt;
+  std::string_view rest = enumerator->rest;
+  int sub_groups = 0;
+  bool closed = enumerator->closed;
+  if (!enumerator->bracketed) {
+    sub_groups = take_dotted_groups(&rest);
+    closed = !rest.empty() && (rest.front() == '.' || rest.front() == ')');
+    take_closer(&rest);
+  }
+  if (!followed_by_words(rest)) return std::nullopt;
+  const std::string_view token = enumerator->token;
+  // The schemes this token can be, most specific reading first.
+  std::vector<parsev1::HeadingNumberingScheme> readings;
+  if (all_of_class(token, is_digit) && token.size() <= kMaximumNumberDigits) {
+    readings.push_back(parsev1::HEADING_NUMBERING_SCHEME_ARABIC);
+  }
+  if (word_count(trimmed) <= kMaximumEnumeratedHeadingWords) {
+    if (roman_upper_token(token) && (closed || sub_groups > 0 ||
+                                     is_upper(trim_left(rest).front()))) {
+      readings.push_back(parsev1::HEADING_NUMBERING_SCHEME_ROMAN_U);
+    }
+    if (token.size() == 1 && is_upper(token.front()) && (closed || sub_groups > 0)) {
+      readings.push_back(parsev1::HEADING_NUMBERING_SCHEME_ALPHA_U);
+    }
+    if (roman_lower_token(token) && closed) {
+      readings.push_back(parsev1::HEADING_NUMBERING_SCHEME_ROMAN_L);
+    }
+    if (token.size() == 1 && is_lower(token.front()) && closed) {
+      readings.push_back(parsev1::HEADING_NUMBERING_SCHEME_ALPHA_L);
+    }
+  }
+  int best = -1;
+  for (const auto scheme : readings) {
+    const int position = position_of(scheme, allowed);
+    if (position >= 0 && (best < 0 || position < best)) best = position;
+  }
+  if (best < 0) return std::nullopt;
+  SchemeNumbering numbering;
+  numbering.scheme = allowed[best];
+  numbering.sub_groups = sub_groups;
+  return numbering;
+}
+
+std::optional<int> heading_scheme_depth(
+    std::string_view text, const std::vector<parsev1::HeadingNumberingScheme>& schemes) {
+  const auto numbering = heading_scheme_numbering(text, schemes);
+  if (!numbering.has_value()) return std::nullopt;
+  return position_of(numbering->scheme, schemes) + 1 + numbering->sub_groups;
+}
+
 std::optional<int> heading_numbering_depth(std::string_view text) {
   const std::string_view trimmed = trim_left(text);
   if (trimmed.empty()) return std::nullopt;
@@ -477,7 +657,11 @@ std::vector<std::string> title_lines(const std::vector<HeaderHeight>& input,
   });
   std::vector<const HeaderHeight*> block;
   for (const HeaderHeight* header : opening) {
-    if ((options.use_numbering && heading_numbering_depth(header->text).has_value()) ||
+    const bool numbered =
+        options.numbering_schemes.empty()
+            ? heading_numbering_depth(header->text).has_value()
+            : heading_scheme_depth(header->text, options.numbering_schemes).has_value();
+    if ((options.use_numbering && numbered) ||
         header->height <= 0) {
       break;
     }
@@ -524,7 +708,9 @@ std::map<std::string, int32_t> infer_heading_levels(std::vector<HeaderHeight> in
   for (const auto& header : headers) {
     if (title_set.contains(header.self_ref)) continue;
     std::optional<int> depth;
-    if (options.use_numbering) {
+    if (options.use_numbering && !options.numbering_schemes.empty()) {
+      depth = heading_scheme_depth(header.text, options.numbering_schemes);
+    } else if (options.use_numbering) {
       depth = heading_numbering_depth(header.text);
       if (!depth.has_value() && is_section_word_heading(header.text)) depth = 1;
     }

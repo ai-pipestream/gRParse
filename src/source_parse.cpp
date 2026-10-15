@@ -116,6 +116,31 @@ bool renderable(pipestream::parse::v1::OutputFormat format) {
   }
 }
 
+// Docling's ChartExtractionOutputFormat string values, the raw form a
+// Docling-JSON client sends in output_format_raw.
+std::optional<std::string_view> chart_output_format_name(
+    pipestream::parse::v1::ChartExtractionOutputFormat format) {
+  switch (format) {
+    case pipestream::parse::v1::CHART_EXTRACTION_OUTPUT_FORMAT_GRANITE_VISION_CHARTS:
+      return "granite_vision_charts";
+    case pipestream::parse::v1::CHART_EXTRACTION_OUTPUT_FORMAT_GRANITE_VISION_CHART2CSV:
+      return "granite_vision_chart2csv";
+    default:
+      return std::nullopt;
+  }
+}
+
+std::optional<pipestream::parse::v1::ChartExtractionOutputFormat> chart_output_format_from_name(
+    std::string_view name) {
+  if (name == "granite_vision_charts") {
+    return pipestream::parse::v1::CHART_EXTRACTION_OUTPUT_FORMAT_GRANITE_VISION_CHARTS;
+  }
+  if (name == "granite_vision_chart2csv") {
+    return pipestream::parse::v1::CHART_EXTRACTION_OUTPUT_FORMAT_GRANITE_VISION_CHART2CSV;
+  }
+  return std::nullopt;
+}
+
 // The options every conversion surface implements. Anything else populated
 // on the request is rejected by name (below): an option this server would
 // silently ignore is worse than one it turns down.
@@ -601,6 +626,12 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
     if (auto s = require_model_spec(cfg.model_spec(), "code_formula_custom_config"); !s.ok()) {
       return s;
     }
+    if (cfg.has_expansion_factor() &&
+        (!std::isfinite(cfg.expansion_factor()) || cfg.expansion_factor() < 0.0)) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + ": code_formula_custom_config.expansion_factor must be "
+                                    "finite and >= 0");
+    }
   }
 
   // Open ScalarValue maps: soft-validate well-known keys when present
@@ -664,23 +695,39 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
                                       "is unspecified");
       }
       if (format != pipestream::parse::v1::CHART_EXTRACTION_OUTPUT_FORMAT_UNSPECIFIED &&
-          format != pipestream::parse::v1::
-                        CHART_EXTRACTION_OUTPUT_FORMAT_GRANITE_VISION_CHARTS) {
+          !chart_output_format_name(format).has_value()) {
         return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                             surface + ": chart_extraction_custom_config.output_format "
                                       "is not a known format");
       }
       if (!cfg.output_format_raw().empty() &&
-          cfg.output_format_raw() != "granite_vision_charts") {
+          (format == pipestream::parse::v1::CHART_EXTRACTION_OUTPUT_FORMAT_UNSPECIFIED
+               ? !chart_output_format_from_name(cfg.output_format_raw()).has_value()
+               : cfg.output_format_raw() != *chart_output_format_name(format))) {
         return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                             surface + ": chart_extraction_custom_config.output_format and "
                                       "output_format_raw disagree");
       }
     } else if (!cfg.output_format_raw().empty() &&
-               cfg.output_format_raw() != "granite_vision_charts") {
+               !chart_output_format_from_name(cfg.output_format_raw()).has_value()) {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                           surface + ": chart_extraction_custom_config.output_format_raw "
                                     "is not a known format");
+    }
+    // Docling's validator: the granite_vision_v3_3 Chart2CSV contract
+    // produces CSV only.
+    const auto resolved_format =
+        cfg.has_output_format() &&
+                cfg.output_format() !=
+                    pipestream::parse::v1::CHART_EXTRACTION_OUTPUT_FORMAT_UNSPECIFIED
+            ? std::optional(cfg.output_format())
+            : chart_output_format_from_name(cfg.output_format_raw());
+    if (resolved_format ==
+            pipestream::parse::v1::CHART_EXTRACTION_OUTPUT_FORMAT_GRANITE_VISION_CHART2CSV &&
+        (!chart2csv || chart2summary || chart2code)) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + ": chart_extraction_custom_config.output_format "
+                                    "GRANITE_VISION_CHART2CSV supports CSV output only");
     }
   }
   if (options.has_caption_placement()) {
@@ -719,6 +766,8 @@ grpc::Status validate_heading_options(
                         surface + ": pdf_heading_hierarchy_options.style_size_tolerance must "
                                   "be in [0, 1)");
   }
+  const auto schemes = resolve_numbering_schemes(options, surface);
+  if (!schemes.has_value()) return schemes.error();
   return grpc::Status::OK;
 }
 
@@ -848,6 +897,83 @@ grpc::Status validate_unread_options(const pipestream::parse::v1::ConvertDocumen
 
 }  // namespace
 
+std::expected<std::vector<pipestream::parse::v1::HeadingNumberingScheme>, grpc::Status>
+resolve_numbering_schemes(const pipestream::parse::v1::ConvertDocumentOptions& options,
+                          const std::string& surface) {
+  std::vector<pipestream::parse::v1::HeadingNumberingScheme> schemes;
+  if (!options.has_pdf_heading_hierarchy_options()) return schemes;
+  const auto& heading = options.pdf_heading_hierarchy_options();
+  const auto invalid = [&surface](const std::string& detail) {
+    return std::unexpected(grpc::Status(
+        grpc::StatusCode::INVALID_ARGUMENT,
+        surface + ": pdf_heading_hierarchy_options." + detail));
+  };
+  if (!heading.numbering_schemes().empty() && !heading.numbering_schemes_raw().empty()) {
+    return invalid("numbering_schemes and numbering_schemes_raw are mutually exclusive");
+  }
+  const auto add = [&](pipestream::parse::v1::HeadingNumberingScheme scheme,
+                       const std::string& as_named) -> std::optional<grpc::Status> {
+    if (std::ranges::find(schemes, scheme) != schemes.end()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          surface + ": pdf_heading_hierarchy_options.numbering_schemes lists '" +
+                              as_named + "' twice");
+    }
+    schemes.push_back(scheme);
+    return std::nullopt;
+  };
+  for (const int raw : heading.numbering_schemes()) {
+    if (raw == pipestream::parse::v1::HEADING_NUMBERING_SCHEME_UNSPECIFIED ||
+        !pipestream::parse::v1::HeadingNumberingScheme_IsValid(raw)) {
+      return invalid("numbering_schemes value " + std::to_string(raw) +
+                     " is not a known HeadingNumberingScheme");
+    }
+    const auto scheme = static_cast<pipestream::parse::v1::HeadingNumberingScheme>(raw);
+    if (auto error = add(scheme, pipestream::parse::v1::HeadingNumberingScheme_Name(scheme))) {
+      return std::unexpected(*error);
+    }
+  }
+  for (const std::string& name : heading.numbering_schemes_raw()) {
+    const auto scheme = heading_numbering_scheme_from_name(name);
+    if (!scheme.has_value()) {
+      return invalid("numbering_schemes_raw value '" + name +
+                     "' is not a Docling numbering scheme");
+    }
+    if (auto error = add(*scheme, name)) return std::unexpected(*error);
+  }
+  return schemes;
+}
+
+std::expected<pipestream::parse::v1::CodeFormulaPresetId, grpc::Status>
+resolve_code_formula_preset(const pipestream::parse::v1::ConvertDocumentOptions& options,
+                            const std::string& surface) {
+  // Docling's default code/formula preset is "codeformulav2"; the unset,
+  // empty and "default" spellings all mean it.
+  if (!options.has_code_formula_preset() || options.code_formula_preset().empty() ||
+      options.code_formula_preset() == "default" ||
+      options.code_formula_preset() == "codeformulav2") {
+    return pipestream::parse::v1::CODE_FORMULA_PRESET_ID_CODEFORMULAV2;
+  }
+  if (options.code_formula_preset() == "granite_docling") {
+    return pipestream::parse::v1::CODE_FORMULA_PRESET_ID_GRANITE_DOCLING;
+  }
+  return std::unexpected(grpc::Status(
+      grpc::StatusCode::INVALID_ARGUMENT,
+      surface + ": code_formula_preset '" + options.code_formula_preset() +
+          "' is not a Docling code/formula preset (codeformulav2, granite_docling)"));
+}
+
+ai::pipestream::enrich::v1::CodeFormulaPreset enrich_code_formula_preset(
+    pipestream::parse::v1::CodeFormulaPresetId preset) {
+  switch (preset) {
+    case pipestream::parse::v1::CODE_FORMULA_PRESET_ID_GRANITE_DOCLING:
+      return ai::pipestream::enrich::v1::CODE_FORMULA_PRESET_GRANITE_DOCLING;
+    case pipestream::parse::v1::CODE_FORMULA_PRESET_ID_CODEFORMULAV2:
+    default:
+      return ai::pipestream::enrich::v1::CODE_FORMULA_PRESET_CODE_FORMULA_V2;
+  }
+}
+
+
 uint64_t decoded_source_bytes(
     const google::protobuf::RepeatedPtrField<pipestream::parse::v1::Source>& sources) {
   uint64_t total = 0;
@@ -895,6 +1021,9 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
   if (!custom_config_status.ok()) return custom_config_status;
   const grpc::Status heading_status = validate_heading_options(options, surface);
   if (!heading_status.ok()) return heading_status;
+  if (auto preset = resolve_code_formula_preset(options, surface); !preset.has_value()) {
+    return preset.error();
+  }
   const grpc::Status structure_status =
       validate_structure_request(StructureRequest::from(options), surface);
   if (!structure_status.ok()) return structure_status;
@@ -1331,7 +1460,13 @@ struct ParseInputs {
   bool do_formula_enrichment = false;
   double picture_description_area_threshold = 0.0;
   std::string picture_description_preset;
-  std::string code_formula_preset;
+  // Validated (resolve_code_formula_preset); Docling's default when unset.
+  ai::pipestream::parse::v1::CodeFormulaPresetId code_formula_preset =
+      ai::pipestream::parse::v1::CODE_FORMULA_PRESET_ID_CODEFORMULAV2;
+  // code_formula_custom_config's crop margin and repetition stop, unset
+  // when the request leaves them to the defaults.
+  std::optional<double> code_formula_expansion_factor;
+  std::optional<bool> code_formula_stop_on_repetition;
   // The chart-extraction preset the server policy resolved (outputs,
   // prompts, model, endpoint); nullopt when the request switched charts off
   // without naming a preset.
@@ -1436,6 +1571,10 @@ HeadingOptions heading_options_from(const pipestream::parse::v1::ConvertDocument
   if (requested.has_style_size_tolerance()) {
     heading.style_size_tolerance = requested.style_size_tolerance();
   }
+  // Validated before the parse runs (validate_heading_options).
+  if (auto schemes = resolve_numbering_schemes(options, "heading"); schemes.has_value()) {
+    heading.numbering_schemes = std::move(*schemes);
+  }
   return heading;
 }
 
@@ -1504,8 +1643,17 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   if (options.has_picture_description_preset()) {
     inputs.picture_description_preset = options.picture_description_preset();
   }
-  if (options.has_code_formula_preset()) {
-    inputs.code_formula_preset = options.code_formula_preset();
+  if (auto preset = resolve_code_formula_preset(options, "parse"); preset.has_value()) {
+    inputs.code_formula_preset = *preset;
+  }
+  if (options.has_code_formula_custom_config()) {
+    const auto& code_formula = options.code_formula_custom_config();
+    if (code_formula.has_expansion_factor()) {
+      inputs.code_formula_expansion_factor = code_formula.expansion_factor();
+    }
+    if (code_formula.has_stop_on_repetition()) {
+      inputs.code_formula_stop_on_repetition = code_formula.stop_on_repetition();
+    }
   }
   inputs.chart_extraction = std::move(chart_extraction);
   inputs.picture_description_call = std::move(picture_description_call);
@@ -1834,7 +1982,9 @@ void derender_charts_if_configured(const std::shared_ptr<CollectorEndpoints>& co
   enrich.do_formula_enrichment = inputs.do_formula_enrichment;
   enrich.picture_description_area_threshold = inputs.picture_description_area_threshold;
   enrich.picture_description_preset_raw = inputs.picture_description_preset;
-  enrich.code_formula_preset_raw = inputs.code_formula_preset;
+  enrich.code_formula_preset = enrich_code_formula_preset(inputs.code_formula_preset);
+  enrich.code_formula_expansion_factor = inputs.code_formula_expansion_factor;
+  enrich.code_formula_stop_on_repetition = inputs.code_formula_stop_on_repetition;
   enrich.chart_extraction = inputs.chart_extraction;
   enrich.picture_description_call = inputs.picture_description_call;
   if (!inputs.picture_description_vlm_endpoint.empty()) {

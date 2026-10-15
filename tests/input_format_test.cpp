@@ -47,6 +47,11 @@ void verify_common_mime_mappings() {
                  parsev1::INPUT_FORMAT_IWORK_KEYNOTE, "keynote");
   require_format("application/x-iwork-keynote-sffkey", "a.key",
                  parsev1::INPUT_FORMAT_IWORK_KEYNOTE, "keynote-sffkey");
+  require_format("application/vnd.apple.numbers", "a.numbers",
+                 parsev1::INPUT_FORMAT_IWORK_NUMBERS, "numbers");
+  require_format("application/x-iwork-numbers-sffnumbers", "a.numbers",
+                 parsev1::INPUT_FORMAT_IWORK_NUMBERS, "numbers-sffnumbers");
+  require(parsev1::INPUT_FORMAT_IWORK_NUMBERS == 36, "IWORK_NUMBERS keeps serve tag 36");
 }
 
 // Formats only the name tells apart from their container, the OOXML macro
@@ -73,6 +78,8 @@ void verify_container_and_variant_mappings() {
   require_format("application/zip", "a.key", parsev1::INPUT_FORMAT_IWORK_KEYNOTE, ".key");
   require_format("application/zip", "a.pages", parsev1::INPUT_FORMAT_IWORK_PAGES,
                  ".pages");
+  require_format("application/zip", "a.numbers", parsev1::INPUT_FORMAT_IWORK_NUMBERS,
+                 ".numbers");
 }
 
 void verify_allowlist() {

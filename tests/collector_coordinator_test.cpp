@@ -45,6 +45,16 @@ void verify_routing() {
   require(grparse::office_format("Sheet.XLSX", ""), "extension match is case-insensitive");
   require(grparse::office_format("data.csv", ""), "csv routes to office");
   require(!grparse::office_format("scan.pdf", ""), "pdf stays on the CV path");
+  require(grparse::office_format("Budget.NUMBERS", ""), "Apple Numbers routes to office");
+  require(grparse::office_format("upload.bin", "application/vnd.apple.numbers"),
+          "the Numbers MIME routes to office");
+  require(grparse::office_format("upload.bin", "application/x-iwork-numbers-sffnumbers"),
+          "the legacy Numbers MIME routes to office");
+  require(grparse::route_collector("budget.numbers", "") == parsev1::COLLECTOR_LIBREOFFICE,
+          "a Numbers workbook goes to the libreoffice collector");
+  require(!grparse::calamine_workbook_format("budget.numbers", "application/vnd.apple.numbers"),
+          "calamine reads no Numbers package, so no calamine fan-out");
+  require(!grparse::office_format("deck.key", ""), "Keynote is not routed to office");
   require(!grparse::office_format("page.png", ""), "images stay on the CV path");
   require(grparse::office_format("upload.bin",
                                  "application/vnd.oasis.opendocument.text"),

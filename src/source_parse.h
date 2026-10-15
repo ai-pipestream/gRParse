@@ -12,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <grpcpp/grpcpp.h>
 
@@ -50,6 +51,24 @@ struct SourceParse {
 //
 // `surface` names the RPC in every rejection, so a caller learns which of
 // the conversion surfaces turned its request down.
+// The heading pass's numbering-scheme precedence, typed: numbering_schemes
+// as given, or numbering_schemes_raw mapped by Docling name. Unspecified,
+// unknown, repeated, or both-fields-set is INVALID_ARGUMENT naming the value.
+std::expected<std::vector<ai::pipestream::parse::v1::HeadingNumberingScheme>, grpc::Status>
+resolve_numbering_schemes(const ai::pipestream::parse::v1::ConvertDocumentOptions& options,
+                          const std::string& surface);
+
+// The typed code/formula preset ConvertDocumentOptions.code_formula_preset
+// names. Unset, empty and "default" resolve to Docling's default,
+// CODEFORMULAV2; a name Docling does not register is INVALID_ARGUMENT.
+std::expected<ai::pipestream::parse::v1::CodeFormulaPresetId, grpc::Status>
+resolve_code_formula_preset(const ai::pipestream::parse::v1::ConvertDocumentOptions& options,
+                            const std::string& surface);
+
+// The enrich service's typed preset for a resolved code/formula preset.
+ai::pipestream::enrich::v1::CodeFormulaPreset enrich_code_formula_preset(
+    ai::pipestream::parse::v1::CodeFormulaPresetId preset);
+
 grpc::Status validate_options(const ai::pipestream::parse::v1::ConvertDocumentOptions& options,
                               const std::string& surface);
 

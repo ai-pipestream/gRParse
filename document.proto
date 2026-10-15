@@ -1944,6 +1944,17 @@ message GenerationSource {
   optional uint64 prompt_tokens = 4;
   optional uint64 completion_tokens = 5;
   optional double temperature = 6;
+  // Why the generation ended early, when it did; unset when it ran to its
+  // natural end or the producer does not say.
+  optional GenerationTruncation truncation = 7;
+}
+
+// GenerationTruncation names why a model generation was cut short.
+enum GenerationTruncation {
+  GENERATION_TRUNCATION_UNSPECIFIED = 0;
+  // The generation kept repeating the same short unit and was cancelled
+  // while streaming; the content is the output before the repeated tail.
+  GENERATION_TRUNCATION_REPETITION = 1;
 }
 
 // OutlineEntry is one row of the source's own table of contents.

@@ -399,8 +399,66 @@ void verify_producer_levels_win() {
 
 }  // namespace
 
+void verify_numbering_schemes() {
+  namespace parsev1 = ai::pipestream::parse::v1;
+  using grparse::heading_scheme_depth;
+  const std::vector<parsev1::HeadingNumberingScheme> legal = {
+      parsev1::HEADING_NUMBERING_SCHEME_PART, parsev1::HEADING_NUMBERING_SCHEME_DIVISION,
+      parsev1::HEADING_NUMBERING_SCHEME_SUBDIVISION, parsev1::HEADING_NUMBERING_SCHEME_ARABIC,
+      parsev1::HEADING_NUMBERING_SCHEME_ALPHA_L, parsev1::HEADING_NUMBERING_SCHEME_ROMAN_L};
+  require(heading_scheme_depth("PART I General provisions", legal) == 1, "part");
+  require(heading_scheme_depth("Division 2 Licensing", legal) == 2, "division");
+  require(heading_scheme_depth("Subdivision A Applications", legal) == 3,
+          "subdivision is matched whole, not as division");
+  require(heading_scheme_depth("12 Definitions", legal) == 4, "arabic");
+  require(heading_scheme_depth("12.3 Scope of terms", legal) == 5,
+          "arabic dotted sub-groups deepen");
+  require(heading_scheme_depth("(a) the applicant", legal) == 5, "alpha_l");
+  require(heading_scheme_depth("(iv) the fee", legal) == 6, "roman_l");
+  require(!heading_scheme_depth("CHAPTER 3 Offences", legal).has_value(),
+          "an unlisted scheme does not number");
+  require(!heading_scheme_depth("Introduction", legal).has_value(), "no enumerator");
+  // "(i)" reads as roman_l or alpha_l; the earlier listed scheme wins.
+  const std::vector<parsev1::HeadingNumberingScheme> alpha_first = {
+      parsev1::HEADING_NUMBERING_SCHEME_ALPHA_L, parsev1::HEADING_NUMBERING_SCHEME_ROMAN_L};
+  require(heading_scheme_depth("(i) first item", alpha_first) == 1, "alpha_l listed first");
+  const std::vector<parsev1::HeadingNumberingScheme> roman_first = {
+      parsev1::HEADING_NUMBERING_SCHEME_ROMAN_L, parsev1::HEADING_NUMBERING_SCHEME_ALPHA_L};
+  require(heading_scheme_depth("(i) first item", roman_first) == 1, "roman_l listed first");
+  require(heading_scheme_depth("(b) second item", roman_first) == 2, "b is only alpha_l");
+  const std::vector<parsev1::HeadingNumberingScheme> upper = {
+      parsev1::HEADING_NUMBERING_SCHEME_ROMAN_U, parsev1::HEADING_NUMBERING_SCHEME_ALPHA_U};
+  require(heading_scheme_depth("IV. Remedies", upper) == 1, "roman_u");
+  require(heading_scheme_depth("B. Remedies", upper) == 2, "alpha_u");
+  require(heading_scheme_depth("I. Overview", upper) == 1, "I. prefers the listed roman_u");
+
+  for (int value = 1; value <= 10; ++value) {
+    const auto scheme = static_cast<parsev1::HeadingNumberingScheme>(value);
+    const std::string_view name = grparse::heading_numbering_scheme_name(scheme);
+    require(!name.empty() && grparse::heading_numbering_scheme_from_name(name) == scheme,
+            "every scheme round-trips by its Docling name");
+  }
+  require(!grparse::heading_numbering_scheme_from_name("section").has_value(),
+          "an unknown Docling name has no scheme");
+
+  // The order decides the levels end to end.
+  grparse::HeadingOptions options;
+  options.use_style = false;
+  options.numbering_schemes = {parsev1::HEADING_NUMBERING_SCHEME_ALPHA_U,
+                               parsev1::HEADING_NUMBERING_SCHEME_ARABIC};
+  const auto levels = grparse::infer_heading_levels(
+      {header("#/texts/0", "A. Scope", 12, 1, 10), header("#/texts/1", "1 Terms", 12, 1, 40),
+       header("#/texts/2", "1.1 Defined terms", 12, 1, 70),
+       header("#/texts/3", "Background", 12, 1, 100)},
+      options);
+  require(levels.at("#/texts/0") == 1 && levels.at("#/texts/1") == 2 &&
+              levels.at("#/texts/2") == 3 && levels.at("#/texts/3") == 1,
+          "scheme order sets depth; an unnumbered heading stays at the top without style");
+}
+
 int main() {
   return grparse_test::run_test_main("heading-hierarchy-test", "ok", {
+      verify_numbering_schemes,
       verify_numbering_depths,
       verify_section_words,
       verify_paper_levels,

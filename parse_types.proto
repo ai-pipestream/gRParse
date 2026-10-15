@@ -57,6 +57,10 @@ enum InputFormat {
   INPUT_FORMAT_AFP = 34;
   // Apple Keynote (Docling InputFormat.IWORK_KEYNOTE; serve tag 35).
   INPUT_FORMAT_IWORK_KEYNOTE = 35;
+  // Apple Numbers (Docling InputFormat.IWORK_NUMBERS; serve tag 36).
+  // Routed to the libreoffice collector, whose Calc import reads the
+  // workbook, so each sheet arrives as a typed table.
+  INPUT_FORMAT_IWORK_NUMBERS = 36;
 }
 
 // Output format types for converted documents.
@@ -198,6 +202,49 @@ enum CaptionPlacement {
 enum ChartExtractionOutputFormat {
   CHART_EXTRACTION_OUTPUT_FORMAT_UNSPECIFIED = 0;
   CHART_EXTRACTION_OUTPUT_FORMAT_GRANITE_VISION_CHARTS = 1;
+  // Docling ChartExtractionOutputFormat.GRANITE_VISION_CHART2CSV: the
+  // granite_vision_v3_3 Chart2CSV contract, CSV output only (chart2summary
+  // and chart2code must be off).
+  CHART_EXTRACTION_OUTPUT_FORMAT_GRANITE_VISION_CHART2CSV = 2;
+}
+
+// Code/formula enrichment presets, typed. The Docling preset ids are the
+// string field ConvertDocumentOptions.code_formula_preset; the server maps
+// that string onto this enum and rejects a name it does not know.
+enum CodeFormulaPresetId {
+  CODE_FORMULA_PRESET_ID_UNSPECIFIED = 0;
+  // Docling preset "codeformulav2" (docling-project/CodeFormulaV2), the
+  // Docling default when no preset is named.
+  CODE_FORMULA_PRESET_ID_CODEFORMULAV2 = 1;
+  // Docling preset "granite_docling" (Granite-Docling-CodeFormula).
+  CODE_FORMULA_PRESET_ID_GRANITE_DOCLING = 2;
+}
+
+// Numbering schemes the heading pass recognizes, in Docling's names
+// (PdfHeadingHierarchyOptions.numbering_schemes). The order a request lists
+// them in is the precedence, highest level first.
+enum HeadingNumberingScheme {
+  HEADING_NUMBERING_SCHEME_UNSPECIFIED = 0;
+  // "PART I", "Part 2".
+  HEADING_NUMBERING_SCHEME_PART = 1;
+  // "CHAPTER 1", "Chapter IV".
+  HEADING_NUMBERING_SCHEME_CHAPTER = 2;
+  // "DIVISION A", "Division 1".
+  HEADING_NUMBERING_SCHEME_DIVISION = 3;
+  // "SUBDIVISION 1", "Subdivision A".
+  HEADING_NUMBERING_SCHEME_SUBDIVISION = 4;
+  // "ARTICLE 1", "Article IV".
+  HEADING_NUMBERING_SCHEME_ARTICLE = 5;
+  // Upper-case roman enumerator: "IV.", "XII".
+  HEADING_NUMBERING_SCHEME_ROMAN_U = 6;
+  // Arabic (decimal) enumerator: "1.", "2.3".
+  HEADING_NUMBERING_SCHEME_ARABIC = 7;
+  // Upper-case letter enumerator: "A.", "B)".
+  HEADING_NUMBERING_SCHEME_ALPHA_U = 8;
+  // Lower-case letter enumerator: "(a)", "b.".
+  HEADING_NUMBERING_SCHEME_ALPHA_L = 9;
+  // Lower-case roman enumerator: "(iv)", "ii.".
+  HEADING_NUMBERING_SCHEME_ROMAN_L = 10;
 }
 
 // Preset VLM model types. Names mirror the upstream
@@ -708,6 +755,14 @@ message CodeFormulaVlmOptions {
   optional int32 max_size = 4;
   optional bool extract_code = 5;
   optional bool extract_formulas = 6;
+  // Margin added around each code or formula element when it is cropped,
+  // as a fraction of the element's width and height. Must be finite and
+  // >= 0. Unset applies Docling's default of 0.18.
+  optional double expansion_factor = 7;
+  // Stop a generation that keeps repeating the same short unit, cancel the
+  // element's model call, and mark the element's annotation truncated.
+  // Unset applies Docling's default of true.
+  optional bool stop_on_repetition = 8;
 }
 
 // ChartExtractionVlmEngineOptions mirrors docling's chart extraction stage.
@@ -968,8 +1023,12 @@ message HeadingHierarchyOptions {
   // Cluster measured heading heights (font size, else box height) into
   // depth when numbering does not decide.
   optional bool use_style = 4;
-  // Accepted for wire parity; the numbering vocabulary is fixed.
-  repeated string numbering_schemes = 5;
+  // Raw Docling numbering-scheme names exactly as a Docling-JSON client
+  // sent them (PdfHeadingHierarchyOptions.numbering_schemes is list[str]).
+  // Each must be a known name; the server maps them onto
+  // HeadingNumberingScheme and rejects an unknown name by value. Mutually
+  // exclusive with numbering_schemes.
+  repeated string numbering_schemes_raw = 5;
   // Deepest level assigned; 1..6, default 6.
   optional int32 max_level = 6;
   // Accepted for wire parity; no bookmarks to match.
@@ -980,6 +1039,10 @@ message HeadingHierarchyOptions {
   // a heading is one level deeper when its height falls below
   // (1 - style_size_tolerance) of the founding height. Default 0.15.
   optional double style_size_tolerance = 9;
+  // Numbering-scheme precedence, highest level first. Empty applies the
+  // built-in vocabulary (dotted decimals, letters, roman, Appendix).
+  // Unspecified or unknown values are rejected.
+  repeated HeadingNumberingScheme numbering_schemes = 10;
 }
 
 // ============================================================================
