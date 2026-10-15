@@ -13,6 +13,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Log in to dhi.io
+        # Docker Hardened Images need an authenticated pull (the Dockerfile.models
+        # runtime stage is dhi.io/debian-base). Same secrets as publish-models.yml.
+        uses: docker/login-action@v4
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_TOKEN }}
       - name: Build full image and run non-GPU tests
         # The full build (not just the build stage) also assembles the
         # runtime stage, so a runtime library missing from the staged
@@ -67,9 +75,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Log in to dhi.io
+        # Docker Hardened Images need an authenticated pull (the Dockerfile.models
+        # runtime stage is dhi.io/debian-base). Same secrets as publish-models.yml.
+        uses: docker/login-action@v4
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_TOKEN }}
       - name: Provide the pinned model files
         run: |
-          docker build --progress=plain --target fetch -f Dockerfile.models \
+          docker build --progress=plain -f Dockerfile.models \
             --build-arg MODELS_LAYOUT=all --build-arg MODELS_TOKENIZER=1 -t grparse-ci-models .
           id=$(docker create grparse-ci-models)
           docker cp "$id:/models/." models/
