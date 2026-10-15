@@ -83,9 +83,23 @@ call chinese_doc
 python3 - "$work/out-chinese_doc.json" <<'PY'
 import json, sys
 out = json.load(open(sys.argv[1]))["response"]
-texts = [t.get("text", "") for t in out["document"]["doc"].get("texts", [])]
-print("status:", out.get("status"), "texts:", len(texts))
-print("first texts:", texts[:5])
+def text_of(item):
+    # Each texts entry is a oneof wrapper; the item under it carries "text".
+    if isinstance(item, dict):
+        if isinstance(item.get("text"), str):
+            return item["text"]
+        for value in item.values():
+            found = text_of(value)
+            if found:
+                return found
+    return ""
+texts = [text_of(t) for t in out["document"]["doc"].get("texts", [])]
+models = sorted({s["collector"]["model"] for t in out["document"]["doc"].get("texts", [])
+                 for v in t.values() if isinstance(v, dict)
+                 for s in v.get("source", []) if "collector" in s})
+print("status:", out.get("status"), "texts:", len(texts), "models:", models)
+print("first texts:", [t[:60] for t in texts[:5]])
+assert models == ["rapidocr"], models
 assert out.get("status") == "CONVERSION_STATUS_SUCCESS", out.get("status")
 assert len(texts) > 0 and any(t.strip() for t in texts), "RapidOCR read no text"
 PY
