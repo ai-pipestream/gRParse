@@ -1149,7 +1149,8 @@ target_sources(grparse_core PRIVATE
   src/storage/google_auth.cpp
   src/storage/google_storage.cpp
   src/storage/http_call.cpp
-  src/storage/object_store.cpp)
+  src/storage/object_store.cpp
+  src/storage/remote_sources.cpp)
 target_include_directories(grparse_core PRIVATE "${STORAGE_WIRE_DIR}")
 target_link_libraries(grparse_core PRIVATE crypto)
 if(BUILD_TESTING)
@@ -1169,7 +1170,8 @@ if(BUILD_TESTING)
   add_library(grparse_storage_fixture STATIC "${STORAGE_FIXTURE_DIR}/storage_plugin_fixture.pb.cc")
   target_include_directories(grparse_storage_fixture PUBLIC "${STORAGE_FIXTURE_DIR}")
   target_link_libraries(grparse_storage_fixture PUBLIC grparse_proto)
-  set(GRPARSE_STORAGE_TESTS storage-connectors-test storage-connectors-e2e-test)
+  set(GRPARSE_STORAGE_TESTS storage-connectors-test storage-connectors-e2e-test
+      remote-sources-e2e-test)
   foreach(test_name IN LISTS GRPARSE_STORAGE_TESTS)
     string(REPLACE "-" "_" test_source "${test_name}")
     add_executable(${test_name} "tests/${test_source}.cpp")
@@ -1182,6 +1184,8 @@ if(BUILD_TESTING)
     TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
   # Needs the emulators scripts/test/storage-connectors-e2e-test.sh starts.
   set_tests_properties(storage-connectors-e2e-test PROPERTIES SKIP_RETURN_CODE 77)
+  # Needs MinIO and the HTTP servers scripts/test/remote-sources-e2e-test.sh starts.
+  set_tests_properties(remote-sources-e2e-test PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 # ---- VLM convert leg: grpc-vlm-convert contract, module, and tests ----------

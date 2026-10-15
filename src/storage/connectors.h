@@ -5,8 +5,9 @@
 //
 // Policy, read from the environment per call:
 //   GRPARSE_ALLOWED_SOURCE_TYPES  comma-separated source kinds; unset means
-//                                 the built-in kinds (file, azure_blob,
-//                                 google_cloud_storage, google_drive).
+//                                 the built-in kinds (file, http, s3,
+//                                 azure_blob, google_cloud_storage,
+//                                 google_drive).
 //   GRPARSE_ALLOWED_TARGET_TYPES  comma-separated target kinds; unset means
 //                                 the built-in kinds (inbody, zip, s3,
 //                                 azure_blob, google_cloud_storage,

@@ -12,6 +12,7 @@
 #include "azure_blob.h"
 #include "google_storage.h"
 #include "http_call.h"
+#include "remote_sources.h"
 #include "grparse/base64.h"
 
 namespace grparse::storage {
@@ -20,8 +21,9 @@ namespace {
 namespace parsev1 = ai::pipestream::parse::v1;
 
 const std::set<std::string>& builtin_source_kinds() {
-  static const std::set<std::string> kinds = {"file", "azure_blob", "google_cloud_storage",
-                                              "google_drive"};
+  static const std::set<std::string> kinds = {"file",       "http",
+                                              "s3",         "azure_blob",
+                                              "google_cloud_storage", "google_drive"};
   return kinds;
 }
 
@@ -210,11 +212,6 @@ grpc::Status resolve_source(const parsev1::Source& source, const std::string& op
     return option_rejected(option_path, parsev1::OPTION_REJECTION_REASON_INVALID, std::string(),
                            option_path + " names no source");
   }
-  if (source.has_http() || source.has_s3()) {
-    return option_rejected(option_path + "." + kind, OPTION_REJECTION_REASON_NOT_IMPLEMENTED, kind,
-                           option_path + ": " + kind + " sources are not implemented by this "
-                           "server");
-  }
   const bool plugin = source.has_plugin();
   if (grpc::Status allowed = check_kind(kind, plugin, plugin ? option_path + ".plugin" : option_path,
                                         "GRPARSE_ALLOWED_SOURCE_TYPES", builtin_source_kinds(),
@@ -228,7 +225,11 @@ grpc::Status resolve_source(const parsev1::Source& source, const std::string& op
   }
   try {
     FetchedDocument fetched;
-    if (source.has_azure_blob()) {
+    if (source.has_http()) {
+      fetched = fetch_http_source(source.http(), option_path + ".http", http_source_max_bytes());
+    } else if (source.has_s3()) {
+      fetched = fetch_s3_source(source.s3(), option_path + ".s3");
+    } else if (source.has_azure_blob()) {
       const auto& coordinates = source.azure_blob().coordinates();
       const std::string path = option_path + ".azure_blob.coordinates";
       auto store = open_azure_blob(coordinates, path);

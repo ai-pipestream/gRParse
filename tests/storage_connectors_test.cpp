@@ -22,6 +22,7 @@
 
 #include "../src/storage/azure_blob.h"
 #include "../src/storage/connectors.h"
+#include "../src/storage/remote_sources.h"
 #include "../src/storage/google_auth.h"
 #include "../src/storage/http_call.h"
 #include "../src/storage/object_store.h"
@@ -222,9 +223,9 @@ void source_policy() {
     require(storage::resolve_source(file_source(), "sources[0]", &resolved).ok(), "file passes");
     require_equal(resolved.filename(), std::string("a.txt"), "file passes through");
     parsev1::Source http;
-    http.mutable_http()->set_url("https://example.com/a.pdf");
-    expect_rejection(storage::resolve_source(http, "sources[0]", &resolved), "sources[0].http",
-                     parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED);
+    http.mutable_http()->set_url("ftp://example.com/a.pdf");
+    expect_rejection(storage::resolve_source(http, "sources[0]", &resolved), "sources[0].http.url",
+                     parsev1::OPTION_REJECTION_REASON_INVALID);
     parsev1::Source empty;
     expect_rejection(storage::resolve_source(empty, "sources[0]", &resolved), "sources[0]",
                      parsev1::OPTION_REJECTION_REASON_INVALID);
@@ -265,6 +266,69 @@ void storage_coordinates_checked() {
   expect_rejection(storage::resolve_source(drive, "sources[0]", &resolved),
                    "sources[0].google_drive.coordinates.refresh_token",
                    parsev1::OPTION_REJECTION_REASON_INVALID);
+}
+
+void remote_sources_checked() {
+  ScopedEnv allowed("GRPARSE_ALLOWED_SOURCE_TYPES", nullptr);
+  ScopedEnv ambient("GRPARSE_S3_AMBIENT_CREDENTIALS", nullptr);
+  parsev1::FileSource resolved;
+  parsev1::Source http;
+  http.mutable_http()->set_url("http://127.0.0.1:1/a b.pdf");
+  expect_rejection(storage::resolve_source(http, "sources[0]", &resolved), "sources[0].http.url",
+                   parsev1::OPTION_REJECTION_REASON_INVALID);
+  http.mutable_http()->set_url("http://127.0.0.1:1/a.pdf");
+  (*http.mutable_http()->mutable_headers())["Bad Name"] = "x";
+  expect_rejection(storage::resolve_source(http, "sources[0]", &resolved),
+                   "sources[0].http.headers[Bad Name]", parsev1::OPTION_REJECTION_REASON_INVALID);
+  http.mutable_http()->clear_headers();
+  (*http.mutable_http()->mutable_headers())["Host"] = "elsewhere";
+  expect_rejection(storage::resolve_source(http, "sources[0]", &resolved),
+                   "sources[0].http.headers[Host]", parsev1::OPTION_REJECTION_REASON_INVALID);
+  http.mutable_http()->clear_headers();
+  (*http.mutable_http()->mutable_headers())["X-Token"] = "a\r\nInjected: 1";
+  expect_rejection(storage::resolve_source(http, "sources[0]", &resolved),
+                   "sources[0].http.headers[X-Token]", parsev1::OPTION_REJECTION_REASON_INVALID);
+  http.mutable_http()->clear_headers();
+  const grpc::Status refused = storage::resolve_source(http, "sources[0]", &resolved);
+  require(refused.error_code() == grpc::StatusCode::UNAVAILABLE,
+          "a closed port is UNAVAILABLE: " + refused.error_message());
+
+  parsev1::Source s3;
+  s3.mutable_s3()->set_endpoint("http://127.0.0.1:1");
+  expect_rejection(storage::resolve_source(s3, "sources[0]", &resolved), "sources[0].s3.bucket",
+                   parsev1::OPTION_REJECTION_REASON_INVALID);
+  s3.mutable_s3()->set_bucket("b");
+  s3.mutable_s3()->set_access_key("only-access");
+  expect_rejection(storage::resolve_source(s3, "sources[0]", &resolved), "sources[0].s3",
+                   parsev1::OPTION_REJECTION_REASON_INVALID);
+  s3.mutable_s3()->clear_access_key();
+  const grpc::Status no_credentials = storage::resolve_source(s3, "sources[0]", &resolved);
+  require(no_credentials.error_message().find("S3Source omitted credentials") != std::string::npos,
+          "no credentials and no ambient opt-in names S3Source: " + no_credentials.error_message());
+  s3.mutable_s3()->clear_endpoint();
+  expect_rejection(storage::resolve_source(s3, "sources[0]", &resolved), "sources[0].s3.endpoint",
+                   parsev1::OPTION_REJECTION_REASON_INVALID);
+}
+
+void http_source_filenames() {
+  using storage::http_source_filename;
+  require_equal(http_source_filename("https://h/x/report.pdf?sig=1#p", ""), std::string("report.pdf"),
+                "last path segment, no query");
+  require_equal(http_source_filename("https://h/x/my%20doc.pdf", ""), std::string("my doc.pdf"),
+                "percent-decoded");
+  require_equal(http_source_filename("https://h/", ""), std::string("document"), "no segment");
+  require_equal(http_source_filename("https://h", ""), std::string("document"), "no path");
+  require_equal(http_source_filename("https://h/a.bin", "attachment; filename=\"real.docx\""),
+                std::string("real.docx"), "quoted filename");
+  require_equal(http_source_filename("https://h/a.bin", "attachment; filename=plain.txt"),
+                std::string("plain.txt"), "token filename");
+  require_equal(http_source_filename("https://h/a.bin",
+                                     "attachment; filename=\"x.txt\"; filename*=UTF-8''r%C3%A9sum%C3%A9.pdf"),
+                std::string("r\xC3\xA9sum\xC3\xA9.pdf"), "filename* wins");
+  require_equal(http_source_filename("https://h/a.bin", "attachment; filename=\"../../etc/passwd\""),
+                std::string("passwd"), "directory parts dropped");
+  require_equal(http_source_filename("https://h/a.bin", "attachment; filename=\"..\""),
+                std::string("a.bin"), "a dot-dot name falls back to the URL");
 }
 
 void target_policy() {
@@ -541,7 +605,8 @@ int main() {
   return grparse_test::run_test_main("storage-connectors-test", "ok",
                                      {azure_string_to_sign_vector, azure_connection_strings,
                                       base64url_encoding, rs256_assertion, source_policy,
-                                      storage_coordinates_checked, target_policy, plugin_registry,
+                                      storage_coordinates_checked, remote_sources_checked,
+                                      http_source_filenames, target_policy, plugin_registry,
                                       public_addresses, endpoint_shapes, source_size_setting,
                                       private_peers_refused, connectors_guard_their_endpoints,
                                       single_object_listing_is_bounded});

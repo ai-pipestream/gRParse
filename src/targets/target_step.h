@@ -9,6 +9,10 @@
 
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
+#include "s3_client.h"
+
+#include <optional>
+#include <string>
 
 namespace grparse::targets {
 
@@ -25,6 +29,15 @@ grpc::Status deliver(const ai::pipestream::parse::v1::Target& target,
                      const ai::pipestream::document::v1::Document& document,
                      const ai::pipestream::parse::v1::DocumentExports& exports,
                      ai::pipestream::parse::v1::TargetResult* result);
+
+// The credentials an S3 request signs with: the request's own pair (both or
+// neither), else, only when the deployment opted in, the server's ambient
+// AWS_* identity (GRPARSE_S3_AMBIENT_CREDENTIALS=1, an https endpoint listed
+// in GRPARSE_S3_AMBIENT_ENDPOINTS, and a verified peer). Shared by S3Target
+// and S3Source; the refusals start with config->label.
+grpc::Status resolve_s3_credentials(const std::optional<std::string>& access_key,
+                                    const std::optional<std::string>& secret_key,
+                                    const std::string& endpoint, S3Config* config);
 
 }  // namespace grparse::targets
 

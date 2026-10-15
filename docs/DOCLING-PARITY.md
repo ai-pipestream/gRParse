@@ -46,8 +46,12 @@ Each enabled output is its own VLM call per chart in grpc-enrich, so a failed su
 | `AzureBlobSource` / `AzureBlobTarget` | `Source.azure_blob` (4) / `Target.azure_blob` (6), `AzureBlobCoordinates` | Same five coordinates. Shared Key signing from the connection string. |
 | `GoogleCloudStorageSource` / `GoogleCloudStorageTarget` | `Source.google_cloud_storage` (5) / `Target.google_cloud_storage` (7), `GoogleCloudStorageCoordinates` | Same coordinates; `service_account_key` is the typed ten-field `GoogleCloudStorageServiceAccountInfo`. Adds an optional `endpoint` for emulators. |
 | `GoogleDriveSource` / `GoogleDriveTarget` | `Source.google_drive` (6) / `Target.google_drive` (8), `GoogleDriveCoordinates` | `path_id`, `refresh_token` and typed `credentials` match. `token_path` and `credentials_path` (server file paths) are not accepted. A source names one file, since folders are batch-only upstream. |
+| `S3Source` | `Source.s3` (2), `S3Source` | Implemented: one object under `key_prefix`, SigV4, path style. `verify_ssl` honoured (unset verifies, explicit false skips). Credentials as for `S3Target`. |
+| `HttpSource` | `Source.http` (1), `HttpSource` | Implemented: GET with typed `headers`, certificate always verified, up to 5 http/https redirects, body cap `GRPARSE_HTTP_SOURCE_MAX_BYTES`. Filename from `Content-Disposition`, else the final URL. 4xx is `INVALID_ARGUMENT`, 5xx and transport failures `UNAVAILABLE`. |
 | Connector plugins (docling-serve #652, #660) | `Source.plugin` (7) / `Target.plugin` (9): `kind` plus `google.protobuf.Any` config | The config must be the plugin's registered protobuf message. |
 | `allow_external_plugins`, `allowed_source_types`, `allowed_target_types` | `GRPARSE_ALLOW_EXTERNAL_PLUGINS`, `GRPARSE_ALLOWED_SOURCE_TYPES`, `GRPARSE_ALLOWED_TARGET_TYPES` | Refusals carry `OPTION_REJECTION_REASON_NOT_ALLOWED`. |
+
+`http` and `s3` join the built-in source kinds, allowed by default as upstream.
 
 `StoredObject` gains `store_id` (4), the Drive file id. `OptionRejectionReason` gains `NOT_ALLOWED` (6) and `INVALID` (7).
 

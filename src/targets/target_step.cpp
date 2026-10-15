@@ -61,20 +61,25 @@ bool ambient_endpoint_listed(const std::string& endpoint) {
   return false;
 }
 
-grpc::Status resolve_s3_credentials(const parsev1::S3Target& target, S3Config* config) {
-  const bool has_access = target.has_access_key();
-  const bool has_secret = target.has_secret_key();
+}  // namespace
+
+grpc::Status resolve_s3_credentials(const std::optional<std::string>& access_key,
+                                    const std::optional<std::string>& secret_key,
+                                    const std::string& endpoint, S3Config* config) {
+  const std::string& label = config->label;
+  const bool has_access = access_key.has_value();
+  const bool has_secret = secret_key.has_value();
   if (has_access != has_secret) {
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                        "S3Target: access_key and secret_key must be provided together");
+                        label + ": access_key and secret_key must be provided together");
   }
   if (has_access) {
-    if (target.access_key().empty() || target.secret_key().empty()) {
+    if (access_key->empty() || secret_key->empty()) {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                          "S3Target: access_key and secret_key must be non-empty when set");
+                          label + ": access_key and secret_key must be non-empty when set");
     }
-    config->access_key = target.access_key();
-    config->secret_key = target.secret_key();
+    config->access_key = *access_key;
+    config->secret_key = *secret_key;
     return grpc::Status::OK;
   }
   // The server's own identity signs for a caller-chosen endpoint and bucket
@@ -85,7 +90,7 @@ grpc::Status resolve_s3_credentials(const parsev1::S3Target& target, S3Config* c
   if (ambient == nullptr || std::string_view(ambient) != "1") {
     return grpc::Status(
         grpc::StatusCode::INVALID_ARGUMENT,
-        "S3Target omitted credentials and ambient credentials are disabled "
+        label + " omitted credentials and ambient credentials are disabled "
         "(GRPARSE_S3_AMBIENT_CREDENTIALS=1 enables them)");
   }
   // The server's identity is never handed to a peer whose certificate went
@@ -93,21 +98,21 @@ grpc::Status resolve_s3_credentials(const parsev1::S3Target& target, S3Config* c
   // for the endpoint and read the credential headers.
   if (!config->verify_ssl) {
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                        "S3Target sets verify_ssl false, and ambient credentials are "
+                        label + " sets verify_ssl false, and ambient credentials are "
                         "only sent to a verified peer");
   }
   // Nor signed over cleartext, where anyone on the path reads the access
   // key ID off the request and can replay it, and only for an endpoint the
   // deployment listed: the opt-in alone would let a caller send the
   // server's identity to any host it names.
-  if (parse_s3_endpoint(target.endpoint()).scheme != "https") {
+  if (parse_s3_endpoint(endpoint).scheme != "https") {
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                        "S3Target endpoint is not https, and ambient credentials never "
+                        label + " endpoint is not https, and ambient credentials never "
                         "sign a cleartext request");
   }
-  if (!ambient_endpoint_listed(target.endpoint())) {
+  if (!ambient_endpoint_listed(endpoint)) {
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                        "S3Target endpoint is not listed in GRPARSE_S3_AMBIENT_ENDPOINTS, "
+                        label + " endpoint is not listed in GRPARSE_S3_AMBIENT_ENDPOINTS, "
                         "and ambient credentials sign only for listed endpoints");
   }
   const char* access = std::getenv("AWS_ACCESS_KEY_ID");
@@ -115,7 +120,7 @@ grpc::Status resolve_s3_credentials(const parsev1::S3Target& target, S3Config* c
   if (access == nullptr || access[0] == '\0' || secret == nullptr || secret[0] == '\0') {
     return grpc::Status(
         grpc::StatusCode::INVALID_ARGUMENT,
-        "S3Target omitted credentials and AWS_ACCESS_KEY_ID and "
+        label + " omitted credentials and AWS_ACCESS_KEY_ID and "
         "AWS_SECRET_ACCESS_KEY are not both set");
   }
   config->access_key = access;
@@ -126,6 +131,8 @@ grpc::Status resolve_s3_credentials(const parsev1::S3Target& target, S3Config* c
   }
   return grpc::Status::OK;
 }
+
+namespace {
 
 grpc::Status deliver_s3(const parsev1::S3Target& target, const docv1::Document& document,
                         const parsev1::DocumentExports& exports,
@@ -140,7 +147,10 @@ grpc::Status deliver_s3(const parsev1::S3Target& target, const docv1::Document& 
   if (target.has_region()) {
     config.region = target.region();
   }
-  const grpc::Status credentials = resolve_s3_credentials(target, &config);
+  const grpc::Status credentials =
+      resolve_s3_credentials(target.has_access_key() ? std::optional(target.access_key()) : std::nullopt,
+                             target.has_secret_key() ? std::optional(target.secret_key()) : std::nullopt,
+                             target.endpoint(), &config);
   if (!credentials.ok()) return credentials;
 
   const auto report = [result](const std::vector<UploadedObject>& objects) {

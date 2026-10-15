@@ -13,6 +13,8 @@
 #define GRPARSE_TARGETS_S3_CLIENT_H
 
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace grparse::targets {
 
@@ -31,6 +33,14 @@ struct S3Config {
   bool verify_ssl = true;
   // When non-empty, used for SigV4 instead of inferring from the endpoint.
   std::string region;
+  // What the refusals call the request field this came from.
+  std::string label = "S3Target";
+};
+
+// One signed read: the HTTP status and the body (raw store data).
+struct S3Reply {
+  long status = 0;
+  std::string body;
 };
 
 // The region named by an endpoint host ("s3.eu-west-1.amazonaws.com" ->
@@ -61,6 +71,12 @@ class S3Client final {
   const std::string& signing_region() const { return region_; }
 
   std::string put_object(const std::string& key, const std::string& body) const;
+
+  // A signed GET of `key` (empty for the bucket itself) with `query` as
+  // decoded name/value pairs. Throws std::runtime_error on a transport
+  // failure; an HTTP error status is returned.
+  S3Reply get(const std::string& key,
+              const std::vector<std::pair<std::string, std::string>>& query) const;
 
   // The full key for a bundle member: the configured prefix and the member's
   // path, joined by a single separator.
