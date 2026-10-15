@@ -1,0 +1,7 @@
+Forgejo commit status for 1d56cdf, fetched Thu Oct 15 02:49:47 AM EDT 2026
+combined: failure
+C++ build and contract tests / cuda-image (pull_request) | failure | Failing after 5s | /ai-pipestream/gRParse/actions/runs/418/jobs/0
+C++ build and contract tests / cpu-image (pull_request) | failure | Failing after 19s | /ai-pipestream/gRParse/actions/runs/418/jobs/2
+C++ build and contract tests / demo-shell (pull_request) | success | Successful in 1m8s | /ai-pipestream/gRParse/actions/runs/418/jobs/3
+C++ build and contract tests / fuzz-smoke (pull_request) | pending | Has started running | /ai-pipestream/gRParse/actions/runs/418/jobs/4
+C++ build and contract tests / openvino-image (pull_request) | success | Successful in 8m54s | /ai-pipestream/gRParse/actions/runs/418/jobs/1

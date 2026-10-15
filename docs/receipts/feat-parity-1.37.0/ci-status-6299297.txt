@@ -1,0 +1,7 @@
+Forgejo commit status for 6299297, fetched Thu Oct 15 02:49:47 AM EDT 2026
+combined: success
+C++ build and contract tests / openvino-image (pull_request) | success | Successful in 9m4s | /ai-pipestream/gRParse/actions/runs/414/jobs/1
+C++ build and contract tests / demo-shell (pull_request) | success | Successful in 8s | /ai-pipestream/gRParse/actions/runs/414/jobs/3
+C++ build and contract tests / fuzz-smoke (pull_request) | success | Successful in 2m34s | /ai-pipestream/gRParse/actions/runs/414/jobs/4
+C++ build and contract tests / cpu-image (pull_request) | success | Successful in 12m4s | /ai-pipestream/gRParse/actions/runs/414/jobs/2
+C++ build and contract tests / cuda-image (pull_request) | success | Successful in 24m51s | /ai-pipestream/gRParse/actions/runs/414/jobs/0

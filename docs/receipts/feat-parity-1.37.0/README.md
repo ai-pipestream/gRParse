@@ -30,3 +30,14 @@
   main (031cc23) shows the same 34-51s cuda-image failure. The local run of
   the same step above is green. This is a blocker on the runner, not a
   passing result.
+
+## After merging main (f0f190b) and adding the dhi.io login
+
+Command for both ctest files: `LD_LIBRARY_PATH=$HOME/.local/opt/opencv5/lib ctest --test-dir <build> --output-on-failure -L grparse`, after a fresh configure and build with GRPARSE_WERROR=ON and OpenCV 5.0.0.
+
+| File | Commit | Result |
+|---|---|---|
+| ctest-merge-main-6299297.txt | 6299297 (merge of main f0f190b) | 94/94 passed, exit 0 |
+| ci-status-6299297.txt | 6299297, Forgejo run 414 | all five jobs green: cuda-image 24m51s, cpu-image 12m04s, openvino-image, fuzz-smoke, demo-shell |
+| ctest-1d56cdf.txt | 1d56cdf (dhi.io login step, full Dockerfile.models build) | 94/94 passed, exit 0 |
+| ci-status-1d56cdf.txt | 1d56cdf, Forgejo run 418 | cuda-image failed after 5s and cpu-image after 19s. These are the two jobs that gained the dhi.io login step. openvino-image and demo-shell pass. Blocker: the job logs are not available through the API. |
