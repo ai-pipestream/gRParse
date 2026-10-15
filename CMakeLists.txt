@@ -644,7 +644,22 @@ add_custom_command(
           protoc grpc_cpp_plugin
   VERBATIM)
 # STATIC explicitly, same reason as grparse_core below.
+# google.rpc.Status, the gRPC rich-error envelope. A rejection carries its
+# typed detail (OptionRejection) packed in Status.details, the encoding every
+# gRPC client library decodes; the schema comes from grpc's own googleapis.
+set(RPC_STATUS_PROTO_ROOT "${grpc_SOURCE_DIR}/third_party/googleapis")
+add_custom_command(
+  OUTPUT "${GENERATED_DIR}/google/rpc/status.pb.cc"
+         "${GENERATED_DIR}/google/rpc/status.pb.h"
+  COMMAND $<TARGET_FILE:protoc>
+  ARGS --proto_path=${RPC_STATUS_PROTO_ROOT}
+       --proto_path=${protobuf_SOURCE_DIR}/src
+       --cpp_out=${GENERATED_DIR}
+       ${RPC_STATUS_PROTO_ROOT}/google/rpc/status.proto
+  DEPENDS ${RPC_STATUS_PROTO_ROOT}/google/rpc/status.proto protoc
+  VERBATIM)
 add_library(grparse_proto STATIC
+  "${GENERATED_DIR}/google/rpc/status.pb.cc"
   "${GENERATED_DIR}/ai/pipestream/document/v1/document.pb.cc"
   "${GENERATED_DIR}/ai/pipestream/parse/v1/parse_types.pb.cc"
   "${GENERATED_DIR}/ai/pipestream/parse/v1/parse.pb.cc"

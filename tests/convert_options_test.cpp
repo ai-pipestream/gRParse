@@ -10,6 +10,7 @@
 #include "../src/parse_support.h"
 #include "../src/source_parse.h"
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
+#include "google/rpc/status.pb.h"
 #include "grparse/chart_extraction_policy.h"
 #include "support/check.h"
 
@@ -785,8 +786,86 @@ void verify_parity_1_37_options() {
   }
 }
 
+parsev1::OptionRejection rejection_of(const grpc::Status& status) {
+  google::rpc::Status rich;
+  require(rich.ParseFromString(status.error_details()), "error_details is a google.rpc.Status");
+  require(rich.code() == static_cast<int>(grpc::StatusCode::INVALID_ARGUMENT) &&
+              rich.message() == status.error_message() && rich.details_size() == 1,
+          "the rich status mirrors the status and carries one detail");
+  parsev1::OptionRejection rejection;
+  require(rich.details(0).UnpackTo(&rejection), "the detail is an OptionRejection");
+  return rejection;
+}
+
+void verify_typed_rejections_and_heading_options() {
+  {
+    parsev1::ConvertDocumentOptions options;
+    auto* heading = options.mutable_pdf_heading_hierarchy_options();
+    heading->set_use_bookmarks(true);
+    heading->set_use_font_style(true);
+    heading->set_bookmark_match_threshold(0.0);
+    require(grparse::validate_options(options, kSurface).ok(),
+            "use_bookmarks, use_font_style and a threshold of 0 are implemented and valid");
+    heading->set_bookmark_match_threshold(1.0);
+    require(grparse::validate_options(options, kSurface).ok(), "a threshold of 1 is valid");
+  }
+  for (const double bad : {-0.1, 1.01, std::numeric_limits<double>::quiet_NaN()}) {
+    parsev1::ConvertDocumentOptions options;
+    options.mutable_pdf_heading_hierarchy_options()->set_bookmark_match_threshold(bad);
+    const grpc::Status status = grparse::validate_options(options, kSurface);
+    require_invalid(status, "bookmark_match_threshold must be in [0, 1]");
+    const auto rejection = rejection_of(status);
+    require(rejection.option_path() == "pdf_heading_hierarchy_options.bookmark_match_threshold" &&
+                rejection.reason() == parsev1::OPTION_REJECTION_REASON_OUT_OF_RANGE &&
+                !rejection.rejected_value_raw().empty(),
+            "the threshold rejection is typed");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.mutable_pdf_heading_hierarchy_options()->add_numbering_schemes_raw("section");
+    const auto rejection = rejection_of(grparse::validate_options(options, kSurface));
+    require(rejection.option_path() == "pdf_heading_hierarchy_options.numbering_schemes_raw" &&
+                rejection.reason() == parsev1::OPTION_REJECTION_REASON_UNKNOWN_VALUE &&
+                rejection.rejected_value_raw() == "section",
+            "an unknown scheme name is a typed UNKNOWN_VALUE");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.set_layout_preset("heron");
+    const auto rejection = rejection_of(grparse::validate_options(options, kSurface));
+    require(rejection.option_path() == "layout_preset" &&
+                rejection.reason() == parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED,
+            "an unimplemented option value is a typed NOT_IMPLEMENTED");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.set_do_pdf_heading_hierarchy(true);
+    options.mutable_pdf_heading_hierarchy_options()->set_enabled(false);
+    require(rejection_of(grparse::validate_options(options, kSurface)).reason() ==
+                parsev1::OPTION_REJECTION_REASON_CONFLICT,
+            "disagreeing switches are a typed CONFLICT");
+  }
+  // S3Source.verify_ssl has presence and defaults to verifying.
+  {
+    const auto* field = parsev1::S3Source::descriptor()->FindFieldByName("verify_ssl");
+    require(field != nullptr && field->has_presence() && field->number() == 6,
+            "S3Source.verify_ssl is optional bool, tag 6");
+    parsev1::S3Source source;
+    require(grparse::s3_source_verify_ssl(source), "unset verify_ssl verifies");
+    source.set_verify_ssl(true);
+    require(grparse::s3_source_verify_ssl(source), "true verifies");
+    source.set_verify_ssl(false);
+    require(!grparse::s3_source_verify_ssl(source), "only an explicit false skips verification");
+    parsev1::S3Source wire;
+    require(wire.ParseFromString(source.SerializeAsString()) && wire.has_verify_ssl() &&
+                !wire.verify_ssl(),
+            "an explicit false survives the wire");
+  }
+}
+
 int main() {
   return grparse_test::run_test_main("convert-options-test", "ok", {
+      verify_typed_rejections_and_heading_options,
       verify_parity_1_37_options,
       verify_chart_and_caption_options,
       verify_hybrid_chunking_is_validated,

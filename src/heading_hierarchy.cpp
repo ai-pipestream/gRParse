@@ -206,22 +206,44 @@ double median_of(std::vector<double> values) {
 
 // The legacy clustering: tallest first, a heading founds a deeper depth
 // when visibly smaller than the current depth's founding height.
+// Font-style rank, highest first: bold, then upright, then all-caps.
+int style_rank(const HeaderHeight& header) {
+  const bool has_letters = std::ranges::any_of(header.text, is_letter);
+  const bool all_caps =
+      has_letters && std::ranges::none_of(header.text, [](char c) { return is_lower(c); });
+  return (header.bold ? 4 : 0) + (header.italic ? 0 : 2) + (all_caps ? 1 : 0);
+}
+
+// The legacy clustering: tallest first, a heading founds a deeper depth
+// when visibly smaller than the current depth's founding height. With
+// use_font_style, a heading of the same size but a lower style rank than
+// the depth's founder founds the next depth too.
 void cluster_by_height(const std::vector<const HeaderHeight*>& headers, double deeper_below,
-                       std::map<std::string, int>* depths) {
+                       bool use_font_style, std::map<std::string, int>* depths) {
   std::vector<const HeaderHeight*> sorted = headers;
-  std::ranges::stable_sort(sorted, [](const HeaderHeight* a, const HeaderHeight* b) {
-    return a->height > b->height;
+  const auto ranked = [use_font_style](const HeaderHeight* header) {
+    return use_font_style && header->has_font_style ? style_rank(*header) : -1;
+  };
+  std::ranges::stable_sort(sorted, [&](const HeaderHeight* a, const HeaderHeight* b) {
+    if (a->height != b->height) return a->height > b->height;
+    return ranked(a) > ranked(b);
   });
   int depth = 0;
   double founding = std::numeric_limits<double>::infinity();
+  int founding_rank = -1;
   for (const HeaderHeight* header : sorted) {
     if (header->height <= 0) {
       (*depths)[header->self_ref] = 1;
       continue;
     }
+    const int rank = ranked(header);
     if (header->height < deeper_below * founding) {
       ++depth;
       founding = header->height;
+      founding_rank = rank;
+    } else if (rank >= 0 && founding_rank >= 0 && rank < founding_rank) {
+      ++depth;
+      founding_rank = rank;
     }
     (*depths)[header->self_ref] = std::max(depth, 1);
   }
@@ -330,6 +352,30 @@ double median_font_size(const docv1::TextItemBase& base) {
   return median_of(std::move(sizes));
 }
 
+// A heading is bold (italic) when its item formatting says so or most of
+// its styled runs do.
+void fill_font_style(const docv1::TextItemBase& base, HeaderHeight* entry) {
+  int styled = 0;
+  int bold = 0;
+  int italic = 0;
+  for (const auto& span : base.spans()) {
+    if (!span.has_formatting() && span.font_family().empty()) continue;
+    ++styled;
+    if (span.formatting().bold()) ++bold;
+    if (span.formatting().italic()) ++italic;
+  }
+  if (base.has_formatting()) {
+    entry->has_font_style = true;
+    entry->bold = base.formatting().bold();
+    entry->italic = base.formatting().italic();
+  }
+  if (styled > 0) {
+    entry->has_font_style = true;
+    entry->bold = entry->bold || bold * 2 > styled;
+    entry->italic = entry->italic || italic * 2 > styled;
+  }
+}
+
 std::vector<Candidate> candidates(const docv1::Document& document, const HeadingOptions& options) {
   const std::map<int, double> heights = document_page_heights(document);
   std::vector<Candidate> found;
@@ -344,6 +390,7 @@ std::vector<Candidate> candidates(const docv1::Document& document, const Heading
     entry.height = median_line_height(header.base());
     entry.font_size = median_font_size(header.base());
     entry.text = header.base().text();
+    fill_font_style(header.base(), &entry);
     if (const auto placement = provenance_placement(header.base().prov(), heights)) {
       entry.page = placement->page;
       entry.top = placement->box.top;
@@ -726,7 +773,7 @@ std::map<std::string, int32_t> infer_heading_levels(std::vector<HeaderHeight> in
     // style signal off it stays at the top.
     for (const HeaderHeight* header : unnumbered) depths[header->self_ref] = 1;
   } else if (cluster_heights.empty()) {
-    cluster_by_height(unnumbered, deeper_below, &depths);
+    cluster_by_height(unnumbered, deeper_below, options.use_font_style, &depths);
   } else {
     std::map<int, double> medians;
     for (const auto& [depth, heights] : cluster_heights) medians[depth] = median_of(heights);
@@ -759,6 +806,75 @@ bool heading_reads_as_prose(std::string_view text) {
   return word_count(body) > kMaximumHeadingWords;
 }
 
+namespace {
+
+std::string normalized_title(std::string_view text) {
+  std::string out;
+  bool space = false;
+  for (const char c : text) {
+    const auto u = static_cast<unsigned char>(c);
+    if (std::isalnum(u) || u >= 0x80) {
+      if (space && !out.empty()) out.push_back(' ');
+      space = false;
+      out.push_back(static_cast<char>(std::tolower(u)));
+    } else {
+      space = true;
+    }
+  }
+  return out;
+}
+
+}  // namespace
+
+double heading_title_similarity(std::string_view a, std::string_view b) {
+  const std::string x = normalized_title(a);
+  const std::string y = normalized_title(b);
+  if (x.empty() && y.empty()) return 1.0;
+  if (x.empty() || y.empty()) return 0.0;
+  std::vector<size_t> row(y.size() + 1);
+  for (size_t j = 0; j <= y.size(); ++j) row[j] = j;
+  for (size_t i = 1; i <= x.size(); ++i) {
+    size_t diagonal = row[0];
+    row[0] = i;
+    for (size_t j = 1; j <= y.size(); ++j) {
+      const size_t above = row[j];
+      row[j] = std::min({row[j] + 1, row[j - 1] + 1, diagonal + (x[i - 1] == y[j - 1] ? 0 : 1)});
+      diagonal = above;
+    }
+  }
+  const double longer = static_cast<double>(std::max(x.size(), y.size()));
+  return 1.0 - static_cast<double>(row[y.size()]) / longer;
+}
+
+std::map<std::string, int32_t> bookmark_levels(
+    const std::vector<HeaderHeight>& headers,
+    const google::protobuf::RepeatedPtrField<docv1::OutlineEntry>& outline,
+    const HeadingOptions& options) {
+  std::map<std::string, int32_t> levels;
+  if (!options.use_bookmarks || outline.empty()) return levels;
+  const int ceiling = level_ceiling(options);
+  for (const HeaderHeight& header : headers) {
+    double best = -1.0;
+    int32_t best_level = 0;
+    for (const docv1::OutlineEntry& entry : outline) {
+      if (entry.level() <= 0) continue;
+      if (entry.has_page_no() && entry.page_no() > 0 && header.page > 0 &&
+          entry.page_no() != header.page) {
+        continue;
+      }
+      const double similarity = heading_title_similarity(header.text, entry.title());
+      if (similarity > best) {
+        best = similarity;
+        best_level = entry.level();
+      }
+    }
+    if (best >= options.bookmark_match_threshold && best_level > 0) {
+      levels[header.self_ref] = std::min(ceiling, best_level);
+    }
+  }
+  return levels;
+}
+
 HeadingReport infer_heading_hierarchy(docv1::Document* document, const HeadingOptions& options) {
   HeadingReport report;
   if (document == nullptr) return report;
@@ -785,7 +901,12 @@ HeadingReport infer_heading_hierarchy(docv1::Document* document, const HeadingOp
       found = candidates(*document, options);
     }
   }
-  const auto levels = infer_heading_levels(headers_of(found), options);
+  auto levels = infer_heading_levels(headers_of(found), options);
+  for (const auto& [self_ref, level] :
+       bookmark_levels(headers_of(found), document->outline(), options)) {
+    levels[self_ref] = level;
+    ++report.levels_from_bookmarks;
+  }
   for (const auto& candidate : found) {
     const auto level = levels.find(candidate.header.self_ref);
     if (level == levels.end()) continue;

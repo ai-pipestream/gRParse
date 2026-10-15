@@ -456,8 +456,99 @@ void verify_numbering_schemes() {
           "scheme order sets depth; an unnumbered heading stays at the top without style");
 }
 
+void verify_bookmarks_and_font_style() {
+  require(grparse::heading_title_similarity("1.2 Scope of Work", "1.2  scope of work.") == 1.0,
+          "case, punctuation and spacing do not count");
+  require(grparse::heading_title_similarity("Introduction", "Conclusion") < 0.8,
+          "different titles are dissimilar");
+  require(grparse::heading_title_similarity("Methods", "Method") > 0.8, "a near miss is close");
+
+  google::protobuf::RepeatedPtrField<docv1::OutlineEntry> outline;
+  const auto add = [&outline](const std::string& title, int level, int page) {
+    auto* entry = outline.Add();
+    entry->set_title(title);
+    entry->set_level(level);
+    if (page > 0) entry->set_page_no(page);
+  };
+  add("Background", 1, 2);
+  add("Prior work", 3, 2);
+  add("Results", 2, 0);
+  const std::vector<grparse::HeaderHeight> headers = {
+      header("#/texts/0", "Background", 12, 2, 10), header("#/texts/1", "Prior Work", 12, 2, 40),
+      header("#/texts/2", "Results", 12, 5, 10), header("#/texts/3", "Prior work", 12, 7, 10),
+      header("#/texts/4", "Appendix", 12, 8, 10)};
+  grparse::HeadingOptions options;
+  auto levels = grparse::bookmark_levels(headers, outline, options);
+  require(levels.at("#/texts/0") == 1 && levels.at("#/texts/1") == 3,
+          "matching bookmarks on the same page set the level");
+  require(levels.at("#/texts/2") == 2, "a bookmark without a page matches any page");
+  require(!levels.contains("#/texts/3"), "a bookmark on another page does not match");
+  require(!levels.contains("#/texts/4"), "an unmatched heading is left to the other passes");
+  options.max_level = 2;
+  require(grparse::bookmark_levels(headers, outline, options).at("#/texts/1") == 2,
+          "max_level clamps a bookmark level");
+  options.max_level = 6;
+  options.bookmark_match_threshold = 1.0;
+  require(!grparse::bookmark_levels({header("#/texts/9", "Methods", 12, 0, 0)},
+                                    [] {
+                                      google::protobuf::RepeatedPtrField<docv1::OutlineEntry> o;
+                                      o.Add()->set_title("Method");
+                                      o.Mutable(0)->set_level(1);
+                                      return o;
+                                    }(),
+                                    options)
+               .contains("#/texts/9"),
+          "the threshold is honoured");
+  options.bookmark_match_threshold = 0.8;
+  options.use_bookmarks = false;
+  require(grparse::bookmark_levels(headers, outline, options).empty(),
+          "use_bookmarks false ignores the outline");
+
+  // Document level: the outline overrides numbering and is counted.
+  docv1::Document document;
+  auto* section = document.add_texts()->mutable_section_header();
+  section->mutable_base()->set_self_ref("#/texts/0");
+  section->mutable_base()->set_text("1 Background");
+  auto* entry = document.add_outline();
+  entry->set_title("1 Background");
+  entry->set_level(4);
+  grparse::HeadingOptions doc_options;
+  doc_options.geometry_collectors.clear();
+  const auto report = grparse::infer_heading_hierarchy(&document, doc_options);
+  require(report.levels_from_bookmarks == 1 && document.texts(0).section_header().level() == 4,
+          "infer_heading_hierarchy applies the bookmark level over numbering");
+
+  // Font style: same size, bold founds the upper level.
+  auto styled = [](const std::string& ref, const std::string& text, bool bold, bool italic) {
+    grparse::HeaderHeight entry = header(ref, text, 14, 3, 0);
+    entry.has_font_style = true;
+    entry.bold = bold;
+    entry.italic = italic;
+    return entry;
+  };
+  grparse::HeadingOptions style;
+  const auto ranked = grparse::infer_heading_levels(
+      {styled("#/a", "Overview", false, false), styled("#/b", "Scope", true, false),
+       styled("#/c", "Notes", false, true), styled("#/d", "Terms", true, false)},
+      style);
+  require(ranked.at("#/b") == 1 && ranked.at("#/d") == 1 && ranked.at("#/a") == 2 &&
+              ranked.at("#/c") == 3,
+          "bold above regular above italic at one size");
+  style.use_font_style = false;
+  const auto flat = grparse::infer_heading_levels(
+      {styled("#/a", "Overview", false, false), styled("#/b", "Scope", true, false)}, style);
+  require(flat.at("#/a") == 1 && flat.at("#/b") == 1, "use_font_style false ranks by size only");
+  style.use_font_style = true;
+  grparse::HeaderHeight plain = header("#/p", "Plain", 14, 3, 0);
+  const auto neutral = grparse::infer_heading_levels({styled("#/b", "Scope", true, false), plain},
+                                                     style);
+  require(neutral.at("#/p") == 1 && neutral.at("#/b") == 1,
+          "a heading without font information ranks by size alone");
+}
+
 int main() {
   return grparse_test::run_test_main("heading-hierarchy-test", "ok", {
+      verify_bookmarks_and_font_style,
       verify_numbering_schemes,
       verify_numbering_depths,
       verify_section_words,

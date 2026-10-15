@@ -529,7 +529,10 @@ message S3Source {
   optional string secret_key = 3;
   string bucket = 4;
   optional string key_prefix = 5;
-  bool verify_ssl = 6;
+  // Verify the endpoint's TLS certificate. Unset means true; only an
+  // explicit false turns verification off (proto3 implicit bool could not
+  // tell an unset field from false, which silently disabled TLS checks).
+  optional bool verify_ssl = 6;
   // AWS region for signing (e.g. us-east-2). When unset, inferred from the
   // endpoint host or defaults to us-east-1 for S3-compatible stores.
   optional string region = 7;
@@ -1009,14 +1012,15 @@ message ConvertDocumentOptions {
 }
 
 // HeadingHierarchyOptions mirrors the upstream PdfHeadingHierarchyOptions.
-// gRParse has no outline (bookmark) source, so the bookmark fields are
-// accepted and have no effect; the numbering and style passes are the ones
-// heading_hierarchy.cpp runs.
+// Every field is honoured by heading_hierarchy.cpp: bookmarks come from
+// Document.outline (a document without an outline has no bookmark to match),
+// then numbering, then the style pass refined by font style.
 message HeadingHierarchyOptions {
   // Same switch as ConvertDocumentOptions.do_pdf_heading_hierarchy; when both
   // are set they must agree or the request is rejected.
   optional bool enabled = 1;
-  // Accepted for wire parity; gRParse reads no PDF outline.
+  // Take a heading's level from the matching bookmark of Document.outline.
+  // Unset applies Docling's default of true.
   optional bool use_bookmarks = 2;
   // Read decimal, letter, roman, and Appendix numbering as depth.
   optional bool use_numbering = 3;
@@ -1031,9 +1035,13 @@ message HeadingHierarchyOptions {
   repeated string numbering_schemes_raw = 5;
   // Deepest level assigned; 1..6, default 6.
   optional int32 max_level = 6;
-  // Accepted for wire parity; no bookmarks to match.
+  // Minimum normalized title similarity, in [0, 1], for a bookmark to match
+  // a heading. Unset applies Docling's default of 0.8.
   optional double bookmark_match_threshold = 7;
-  // Accepted for wire parity; weight and slant are not read.
+  // Rank same-size headings by weight, slant and letter case (bold above
+  // regular, upright above italic, all-caps above mixed case), read from the
+  // runs' formatting and font names. Unset applies Docling's default of
+  // true; ignored when use_style is false.
   optional bool use_font_style = 8;
   // Relative size tolerance for treating two heading heights as one level:
   // a heading is one level deeper when its height falls below
@@ -1048,6 +1056,35 @@ message HeadingHierarchyOptions {
 // ============================================================================
 // Error types
 // ============================================================================
+
+// Why a request option was turned down.
+enum OptionRejectionReason {
+  OPTION_REJECTION_REASON_UNSPECIFIED = 0;
+  // The server does not implement the option or this value of it.
+  OPTION_REJECTION_REASON_NOT_IMPLEMENTED = 1;
+  // A numeric value outside the documented range (or not finite).
+  OPTION_REJECTION_REASON_OUT_OF_RANGE = 2;
+  // An enum value or name the contract does not define.
+  OPTION_REJECTION_REASON_UNKNOWN_VALUE = 3;
+  // Two options that must agree, or may not both be set, conflict.
+  OPTION_REJECTION_REASON_CONFLICT = 4;
+  // A list names the same value twice.
+  OPTION_REJECTION_REASON_DUPLICATE = 5;
+}
+
+// OptionRejection is the typed detail of an INVALID_ARGUMENT that turns a
+// request option down. It travels packed in google.rpc.Status.details (the
+// grpc-status-details-bin trailer), so a client reads the option and the
+// reason without parsing the status message.
+message OptionRejection {
+  // The option's field path from ConvertDocumentOptions, for example
+  // "pdf_heading_hierarchy_options.bookmark_match_threshold".
+  string option_path = 1;
+  OptionRejectionReason reason = 2;
+  // The rejected value exactly as the request carried it, rendered as text
+  // (raw caller data, kept only for display).
+  string rejected_value_raw = 3;
+}
 
 // ConversionStatus mirrors the upstream ConversionStatus enum.
 enum ConversionStatus {

@@ -52,10 +52,33 @@ struct HeadingOptions {
   // + 1), plus its dotted sub-groups; any other heading is unnumbered and
   // left to the style pass.
   std::vector<ai::pipestream::parse::v1::HeadingNumberingScheme> numbering_schemes;
+  // Refine the style pass with font weight, slant and letter case: among
+  // headings of one size, bold ranks above regular, upright above italic,
+  // all-caps above mixed case (Docling use_font_style, default true).
+  bool use_font_style = true;
+  // Take a heading's level from the document's own outline (Document.outline)
+  // when a bookmark title matches it (Docling use_bookmarks, default true).
+  // A document without an outline is unaffected.
+  bool use_bookmarks = true;
+  // The minimum normalized title similarity, 0..1, for a bookmark to match
+  // (Docling bookmark_match_threshold, default 0.8).
+  double bookmark_match_threshold = 0.8;
 
   // The size ratio the style pass compares by.
   double deeper_below() const { return 1.0 - style_size_tolerance; }
 };
+
+// Normalized title similarity in [0, 1]: case, punctuation and runs of
+// white space are ignored, then 1 - edit distance / longer length.
+double heading_title_similarity(std::string_view a, std::string_view b);
+
+// The levels the outline decides: each header whose best-matching bookmark
+// (same page when both name one) reaches the threshold takes that
+// bookmark's depth, clamped to max_level.
+std::map<std::string, int32_t> bookmark_levels(
+    const std::vector<HeaderHeight>& headers,
+    const google::protobuf::RepeatedPtrField<ai::pipestream::document::v1::OutlineEntry>& outline,
+    const HeadingOptions& options);
 
 struct HeadingReport {
   // Title lines folded into their predecessor.
@@ -67,6 +90,8 @@ struct HeadingReport {
   // Headers from geometry collectors relabelled as prose: a quoted line, a
   // sentence, or a paragraph a font heuristic called a heading.
   int headings_demoted = 0;
+  // Section headers whose level a matching bookmark decided.
+  int levels_from_bookmarks = 0;
 };
 
 // True when a heading's text reads as prose rather than a heading: it
