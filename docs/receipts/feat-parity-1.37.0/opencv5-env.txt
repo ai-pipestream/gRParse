@@ -1,0 +1,41 @@
+OpenCV 5.0.0 for local ctest on krick (Ubuntu 26.04.1), the same version, checksum and module list as Dockerfile
+No sudo: installed to the user prefix $HOME/.local/opt/opencv5 (a first install into /work/opt failed: root-owned; rerun below).
+
+Commands:
+++ timeout 600 curl -fsSL --retry 5 -o opencv.tar.gz https://github.com/opencv/opencv/archive/refs/tags/5.0.0.tar.gz
+++ echo 'b0528f5a1d379d59d4701cb28c36e22214cc51cf64594e5b56f2d3e6c0233095  opencv.tar.gz'
+++ tar -xzf opencv.tar.gz
+++ timeout 600 cmake -S opencv-5.0.0 -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/work/opt/opencv5 -DBUILD_LIST=core,imgproc,imgcodecs,geometry -DBUILD_SHARED_LIBS=ON -DWITH_GDAL=OFF -DWITH_GTK=OFF -DWITH_QT=OFF -DWITH_FFMPEG=OFF -DWITH_GSTREAMER=OFF -DWITH_V4L=OFF -DWITH_OPENEXR=OFF -DWITH_OPENCL=OFF -DWITH_IPP=OFF -DWITH_JPEG=ON -DWITH_PNG=ON -DWITH_TIFF=ON -DWITH_OPENJPE
+++ timeout 1800 cmake --build build --parallel 24
+++ cmake --install build
+++ cmake -DCMAKE_INSTALL_PREFIX=/home/krickert/.local/opt/opencv5 build
+++ timeout 600 cmake --build build --parallel 24
+++ cmake --install build
+++ echo OPENCV_DONE
+
+Checksum:
+opencv.tar.gz: OK
+
+Final build and install (tail):
+[540/544] Building CXX object modules/imgproc/CMakeFiles/opencv_imgproc.dir/src/imgwarp.cpp.o
+[541/544] Linking CXX shared library lib/libopencv_imgproc.so.5.0.0
+[542/544] Creating library symlink lib/libopencv_imgproc.so.500 lib/libopencv_imgproc.so
+[543/544] Linking CXX shared library lib/libopencv_imgcodecs.so.5.0.0
+[544/544] Creating library symlink lib/libopencv_imgcodecs.so.500 lib/libopencv_imgcodecs.so
+++ echo OPENCV_DONE
+OPENCV_DONE
+exit=0
+
+Installed:
+libopencv_core.so.5.0.0
+libopencv_flann.so.5.0.0
+libopencv_geometry.so.5.0.0
+libopencv_imgcodecs.so.5.0.0
+libopencv_imgproc.so.5.0.0
+OpenCVConfig-version.cmake
+OpenCVConfig.cmake
+OpenCVModules-release.cmake
+OpenCVModules.cmake
+
+gRParse configure found it:
+OpenCV_DIR:UNINITIALIZED=/home/krickert/.local/opt/opencv5/lib/cmake/opencv5
