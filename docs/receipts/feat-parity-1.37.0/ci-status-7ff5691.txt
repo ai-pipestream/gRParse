@@ -1,0 +1,7 @@
+Forgejo commit status for 7ff5691 (run 423), fetched Thu Oct 15 03:34:18 AM EDT 2026
+combined: failure
+C++ build and contract tests / cpu-image (pull_request) | failure | Failing after 30s | /ai-pipestream/gRParse/actions/runs/423/jobs/2
+C++ build and contract tests / demo-shell (pull_request) | success | Successful in 48s | /ai-pipestream/gRParse/actions/runs/423/jobs/3
+C++ build and contract tests / openvino-image (pull_request) | success | Successful in 8m54s | /ai-pipestream/gRParse/actions/runs/423/jobs/1
+C++ build and contract tests / cuda-image (pull_request) | success | Successful in 11m30s | /ai-pipestream/gRParse/actions/runs/423/jobs/0
+C++ build and contract tests / fuzz-smoke (pull_request) | success | Successful in 10m21s | /ai-pipestream/gRParse/actions/runs/423/jobs/4

@@ -41,3 +41,12 @@ Command for both ctest files: `LD_LIBRARY_PATH=$HOME/.local/opt/opencv5/lib ctes
 | ci-status-6299297.txt | 6299297, Forgejo run 414 | all five jobs green: cuda-image 24m51s, cpu-image 12m04s, openvino-image, fuzz-smoke, demo-shell |
 | ctest-1d56cdf.txt | 1d56cdf (dhi.io login step, full Dockerfile.models build) | 94/94 passed, exit 0 |
 | ci-status-1d56cdf.txt | 1d56cdf, Forgejo run 418 | cuda-image failed after 5s and cpu-image after 19s. These are the two jobs that gained the dhi.io login step. openvino-image and demo-shell pass. Blocker: the job logs are not available through the API. |
+
+## Login step removed (7ff5691)
+
+| File | Result |
+|---|---|
+| ctest-7ff5691.txt | 94/94 passed, exit 0 |
+| ci-status-7ff5691.txt | run 423: cuda-image, openvino-image, fuzz-smoke and demo-shell pass. cpu-image failed after 30s. |
+
+cpu-image results differ between runs of the same ci.yml: run 424 passed (11m03s), while runs 423 and 425 failed within 30s. Job logs are not available through the API. The likely cause: job containers mount only the host docker socket and not ~/.docker/config.json, so a job docker CLI has no dhi.io credentials unless the runner that picks it up already has them. The --target fetch workaround was not restored.
