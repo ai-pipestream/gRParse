@@ -107,6 +107,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Log in to dhi.io
+        # web-demo Dockerfile pulls dhi.io/node (digest-pinned).
+        uses: docker/login-action@v4
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_TOKEN }}
       - name: Unit tests for the peer registry and vendored protos
         # The runner's own Node (>= 20, which package.json requires) is enough.
         working-directory: examples/web-demo
