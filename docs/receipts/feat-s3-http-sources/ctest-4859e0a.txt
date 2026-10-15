@@ -1,0 +1,280 @@
+commit: 4859e0a8adc5f6b13909579671a864bbb26664f4
+date: Thu Oct 15 05:46:00 AM EDT 2026
+$ cmake -S /work/tmp/grparse-a -B /work/tmp/grparse-a-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DGRPARSE_WERROR=ON -DOpenCV_DIR=$HOME/.local/opt/opencv5/lib/cmake/opencv5
+CMake Warning (dev) at /work/tmp/grparse-a-build/_deps/tokenizers_cpp-src/CMakeLists.txt:164 (add_custom_command):
+  The following keywords are not supported when using
+  add_custom_command(OUTPUT): POST_BUILD.
+
+  Policy CMP0175 is not set: add_custom_command() rejects invalid arguments.
+  Run "cmake --help-policy CMP0175" for policy details.  Use the cmake_policy
+  command to set the policy and suppress this warning.
+This warning is for project developers.  Use -Wno-dev to suppress it.
+
+CMake Warning (dev) at /usr/share/cmake-4.2/Modules/FetchContent.cmake:1383 (message):
+  The DOWNLOAD_EXTRACT_TIMESTAMP option was not given and policy CMP0135 is
+  not set.  The policy's OLD behavior will be used.  When using a URL
+  download, the timestamps of extracted files should preferably be that of
+  the time of extraction, otherwise code that depends on the extracted
+  contents might not be rebuilt if the URL changes.  The OLD behavior
+  preserves the timestamps from the archive instead, but this is usually not
+  what you want.  Update your project to the NEW behavior or specify the
+  DOWNLOAD_EXTRACT_TIMESTAMP option with a value of true to avoid this
+  robustness issue.
+Call Stack (most recent call first):
+  CMakeLists.txt:353 (FetchContent_Declare)
+This warning is for project developers.  Use -Wno-dev to suppress it.
+
+CMake Deprecation Warning at /work/tmp/grparse-a-build/_deps/grpc-src/third_party/protobuf/CMakeLists.txt:7 (cmake_policy):
+  The OLD behavior for policy CMP0141 will be removed from a future version
+  of CMake.
+
+  The cmake-policies(7) manual explains that the OLD behaviors of all
+  policies are deprecated and that a policy should be set to OLD only under
+  specific short-term circumstances.  Projects should be ported to the NEW
+  behavior and not rely on setting a policy to OLD.
+
+
+CMake Deprecation Warning at /work/tmp/grparse-a-build/_deps/grpc-src/third_party/re2/CMakeLists.txt:6 (cmake_minimum_required):
+  Compatibility with CMake < 3.10 will be removed from a future version of
+  CMake.
+
+  Update the VERSION argument <min> value.  Or, use the <min>...<max> syntax
+  to tell CMake that the project requires at least <min> but has been updated
+  to work with policies introduced by <max> or earlier.
+
+
+CMake Warning at /work/tmp/grparse-a-build/_deps/grpc-src/cmake/ssl.cmake:37 (message):
+  Disabling SSL assembly support because NASM could not be found
+Call Stack (most recent call first):
+  /work/tmp/grparse-a-build/_deps/grpc-src/CMakeLists.txt:385 (include)
+
+
+configure-exit: 0
+$ cmake --build /work/tmp/grparse-a-build --parallel 8
+[351/356] Linking CXX executable embedding-model-test
+[352/356] Linking CXX executable pdf-form-widgets-test
+[353/356] Linking CXX executable render-determinism-test
+[354/356] Linking CXX executable target-step-test
+[355/356] Linking CXX executable server-config-test
+build-exit: 0
+$ LD_LIBRARY_PATH=$HOME/.local/opt/opencv5/lib ctest --test-dir /work/tmp/grparse-a-build --output-on-failure -L grparse
+Test project /work/tmp/grparse-a-build
+      Start   1: barcode-decoder-test
+ 1/99 Test   #1: barcode-decoder-test ..................   Passed    0.01 sec
+      Start   2: base64-test
+ 2/99 Test   #2: base64-test ...........................   Passed    0.02 sec
+      Start   3: call-executor-test
+ 3/99 Test   #3: call-executor-test ....................   Passed    0.02 sec
+      Start   4: canonical-json-test
+ 4/99 Test   #4: canonical-json-test ...................   Passed    0.00 sec
+      Start   5: chunking-test
+ 5/99 Test   #5: chunking-test .........................   Passed    0.00 sec
+      Start   6: chunk-hf-tokenizer-test
+ 6/99 Test   #6: chunk-hf-tokenizer-test ...............   Passed    0.00 sec
+      Start   7: chunk-hf-model-test
+ 7/99 Test   #7: chunk-hf-model-test ...................***Skipped   0.00 sec
+      Start   8: collector-coordinator-test
+ 8/99 Test   #8: collector-coordinator-test ............   Passed    0.01 sec
+      Start   9: confidence-test
+ 9/99 Test   #9: confidence-test .......................   Passed    0.00 sec
+      Start  10: confluence-storage-test
+10/99 Test  #10: confluence-storage-test ...............   Passed    0.09 sec
+      Start  11: docling-map-test
+11/99 Test  #11: docling-map-test ......................   Passed    0.00 sec
+      Start  12: document-assembly-test
+12/99 Test  #12: document-assembly-test ................   Passed    0.00 sec
+      Start  13: convert-options-test
+13/99 Test  #13: convert-options-test ..................   Passed    0.01 sec
+      Start  14: document-collectors-test
+14/99 Test  #14: document-collectors-test ..............   Passed    1.17 sec
+      Start  15: document-merge-test
+15/99 Test  #15: document-merge-test ...................   Passed    0.00 sec
+      Start  16: document-render-test
+16/99 Test  #16: document-render-test ..................   Passed    1.21 sec
+      Start  17: document-repair-test
+17/99 Test  #17: document-repair-test ..................   Passed    0.01 sec
+      Start  18: structure-rules-test
+18/99 Test  #18: structure-rules-test ..................   Passed    0.01 sec
+      Start  19: structure-repair-test
+19/99 Test  #19: structure-repair-test .................   Passed    0.00 sec
+      Start  20: epub-book-test
+20/99 Test  #20: epub-book-test ........................   Passed    0.07 sec
+      Start  21: figure-classifier-test
+21/99 Test  #21: figure-classifier-test ................***Skipped   0.04 sec
+      Start  22: gdocs-renderer-test
+22/99 Test  #22: gdocs-renderer-test ...................   Passed    0.01 sec
+      Start  23: layout-decode-test
+23/99 Test  #23: layout-decode-test ....................   Passed    0.00 sec
+      Start  24: layout-engine-test
+24/99 Test  #24: layout-engine-test ....................***Skipped   0.05 sec
+      Start  25: office-collector-test
+25/99 Test  #25: office-collector-test .................   Passed    0.05 sec
+      Start  26: office-fallback-test
+26/99 Test  #26: office-fallback-test ..................   Passed    0.02 sec
+      Start  27: office-cv-enrichment-test
+27/99 Test  #27: office-cv-enrichment-test .............   Passed    0.01 sec
+      Start  28: ort-session-ep-test
+28/99 Test  #28: ort-session-ep-test ...................   Passed    1.81 sec
+      Start  29: page-previews-test
+29/99 Test  #29: page-previews-test ....................   Passed    0.74 sec
+      Start  30: page-projection-test
+30/99 Test  #30: page-projection-test ..................   Passed    0.00 sec
+      Start  31: stream-delta-test
+31/99 Test  #31: stream-delta-test .....................   Passed    0.00 sec
+      Start  32: page-scheduler-test
+32/99 Test  #32: page-scheduler-test ...................   Passed    0.67 sec
+      Start  33: pdf-source-test
+33/99 Test  #33: pdf-source-test .......................   Passed    0.24 sec
+      Start  34: remote-pdf-source-test
+34/99 Test  #34: remote-pdf-source-test ................   Passed    0.37 sec
+      Start  35: consensus-page-source-test
+35/99 Test  #35: consensus-page-source-test ............   Passed    0.04 sec
+      Start  36: prometheus-metrics-test
+36/99 Test  #36: prometheus-metrics-test ...............   Passed    0.01 sec
+      Start  37: raster-source-test
+37/99 Test  #37: raster-source-test ....................   Passed    0.01 sec
+      Start  38: reading-order-test
+38/99 Test  #38: reading-order-test ....................   Passed    0.00 sec
+      Start  39: assembly-blocks-test
+39/99 Test  #39: assembly-blocks-test ..................   Passed    0.00 sec
+      Start  40: region-geometry-test
+40/99 Test  #40: region-geometry-test ..................   Passed    0.00 sec
+      Start  41: resource-pool-test
+41/99 Test  #41: resource-pool-test ....................   Passed    0.04 sec
+      Start  42: streaming-service-test
+42/99 Test  #42: streaming-service-test ................   Passed    6.16 sec
+      Start  43: table-structure-engine-test
+43/99 Test  #43: table-structure-engine-test ...........***Skipped   0.04 sec
+      Start  44: table-structure-test
+44/99 Test  #44: table-structure-test ..................   Passed    0.00 sec
+      Start  45: targets-test
+45/99 Test  #45: targets-test ..........................   Passed    0.21 sec
+      Start  46: text-geometry-test
+46/99 Test  #46: text-geometry-test ....................   Passed    0.00 sec
+      Start  47: warc-stub-wire-test
+47/99 Test  #47: warc-stub-wire-test ...................   Passed    0.00 sec
+      Start  48: document-reading-order-test
+48/99 Test  #48: document-reading-order-test ...........   Passed    0.00 sec
+      Start  49: heading-hierarchy-test
+49/99 Test  #49: heading-hierarchy-test ................   Passed    0.00 sec
+      Start  50: input-format-test
+50/99 Test  #50: input-format-test .....................   Passed    0.00 sec
+      Start  51: paragraph-split-test
+51/99 Test  #51: paragraph-split-test ..................   Passed    0.00 sec
+      Start  52: stage-runtime-closure-script
+52/99 Test  #52: stage-runtime-closure-script ..........   Passed    0.04 sec
+      Start  55: content-sniff-test
+53/99 Test  #55: content-sniff-test ....................   Passed    0.01 sec
+      Start  56: unary-response-cap-test
+54/99 Test  #56: unary-response-cap-test ...............   Passed    0.01 sec
+      Start  57: assembly-determinism-test
+55/99 Test  #57: assembly-determinism-test .............   Passed    0.00 sec
+      Start  58: geometry-order-determinism-test
+56/99 Test  #58: geometry-order-determinism-test .......   Passed    0.02 sec
+      Start  59: repair-idempotence-test
+57/99 Test  #59: repair-idempotence-test ...............   Passed    0.01 sec
+      Start  60: data-contract-map-test
+58/99 Test  #60: data-contract-map-test ................   Passed    0.00 sec
+      Start  61: data-contract-origin-test
+59/99 Test  #61: data-contract-origin-test .............   Passed    0.01 sec
+      Start  62: chart-composite-test
+60/99 Test  #62: chart-composite-test ..................   Passed    0.00 sec
+      Start  63: chart-derender-test
+61/99 Test  #63: chart-derender-test ...................   Passed    0.83 sec
+      Start  64: chart-extraction-policy-test
+62/99 Test  #64: chart-extraction-policy-test ..........   Passed    0.00 sec
+      Start  65: chart-outputs-e2e-test
+63/99 Test  #65: chart-outputs-e2e-test ................***Skipped   0.01 sec
+      Start  66: ocr-preset-policy-test
+64/99 Test  #66: ocr-preset-policy-test ................   Passed    0.01 sec
+      Start  67: storage-connectors-test
+65/99 Test  #67: storage-connectors-test ...............   Passed    0.12 sec
+      Start  68: storage-connectors-e2e-test
+66/99 Test  #68: storage-connectors-e2e-test ...........***Skipped   0.01 sec
+      Start  69: remote-sources-e2e-test
+67/99 Test  #69: remote-sources-e2e-test ...............***Skipped   0.01 sec
+      Start  70: vlm-convert-test
+68/99 Test  #70: vlm-convert-test ......................   Passed    1.47 sec
+      Start  71: orientation-recovery-test
+69/99 Test  #71: orientation-recovery-test .............   Passed    0.00 sec
+      Start  72: document-merge-value-fields-test
+70/99 Test  #72: document-merge-value-fields-test ......   Passed    0.00 sec
+      Start  73: docling-integrity-destinations-test
+71/99 Test  #73: docling-integrity-destinations-test ...   Passed    0.00 sec
+      Start  74: docling-map-sheet-shape-test
+72/99 Test  #74: docling-map-sheet-shape-test ..........   Passed    0.00 sec
+      Start  75: sheet-header-band-test
+73/99 Test  #75: sheet-header-band-test ................   Passed    0.00 sec
+      Start  76: workbook-cells-test
+74/99 Test  #76: workbook-cells-test ...................   Passed    0.00 sec
+      Start  77: docling-map-trailing-pictures-test
+75/99 Test  #77: docling-map-trailing-pictures-test ....   Passed    0.00 sec
+      Start  78: docling-map-office-layout-test
+76/99 Test  #78: docling-map-office-layout-test ........   Passed    0.00 sec
+      Start  79: collector-route-by-bytes-test
+77/99 Test  #79: collector-route-by-bytes-test .........   Passed    0.00 sec
+      Start  80: content-sniff-precedence-test
+78/99 Test  #80: content-sniff-precedence-test .........   Passed    0.00 sec
+      Start  81: document-collectors-status-test
+79/99 Test  #81: document-collectors-status-test .......   Passed    0.00 sec
+      Start  82: collector-channel-limits-test
+80/99 Test  #82: collector-channel-limits-test .........   Passed    0.00 sec
+      Start  83: content-sniff-ladder-test
+81/99 Test  #83: content-sniff-ladder-test .............   Passed    0.00 sec
+      Start  84: display-width-test
+82/99 Test  #84: display-width-test ....................   Passed    0.00 sec
+      Start  85: doclang-renderer-test
+83/99 Test  #85: doclang-renderer-test .................   Passed    0.00 sec
+      Start  86: doctags-renderer-test
+84/99 Test  #86: doctags-renderer-test .................   Passed    0.00 sec
+      Start  87: document-geometry-test
+85/99 Test  #87: document-geometry-test ................   Passed    0.00 sec
+      Start  88: html-renderer-test
+86/99 Test  #88: html-renderer-test ....................   Passed    0.00 sec
+      Start  89: json-key-order-test
+87/99 Test  #89: json-key-order-test ...................   Passed    0.00 sec
+      Start  90: latex-renderer-test
+88/99 Test  #90: latex-renderer-test ...................   Passed    0.00 sec
+      Start  91: load-normalization-test
+89/99 Test  #91: load-normalization-test ...............   Passed    0.00 sec
+      Start  92: pdf-form-widgets-test
+90/99 Test  #92: pdf-form-widgets-test .................   Passed    0.02 sec
+      Start  93: render-determinism-test
+91/99 Test  #93: render-determinism-test ...............   Passed    0.01 sec
+      Start  94: render-map-order-test
+92/99 Test  #94: render-map-order-test .................   Passed    0.00 sec
+      Start  95: renderer-base-test
+93/99 Test  #95: renderer-base-test ....................   Passed    0.03 sec
+      Start  96: server-config-test
+94/99 Test  #96: server-config-test ....................   Passed    0.01 sec
+      Start  97: target-step-test
+95/99 Test  #97: target-step-test ......................   Passed    0.01 sec
+      Start  98: vtt-renderer-test
+96/99 Test  #98: vtt-renderer-test .....................   Passed    0.00 sec
+      Start  99: embedding-reference-test
+97/99 Test  #99: embedding-reference-test ..............***Skipped   0.00 sec
+      Start 100: embedding-test
+98/99 Test #100: embedding-test ........................   Passed    0.00 sec
+      Start 101: embedding-model-test
+99/99 Test #101: embedding-model-test ..................***Skipped   0.00 sec
+
+100% tests passed, 0 tests failed out of 99
+
+Label Time Summary:
+embedding-model        =   0.00 sec*proc (1 test)
+embedding-reference    =   0.00 sec*proc (1 test)
+grparse                =  15.91 sec*proc (99 tests)
+
+Total Test time (real) =  15.93 sec
+
+The following tests did not run:
+	  7 - chunk-hf-model-test (Skipped)
+	 21 - figure-classifier-test (Skipped)
+	 24 - layout-engine-test (Skipped)
+	 43 - table-structure-engine-test (Skipped)
+	 65 - chart-outputs-e2e-test (Skipped)
+	 68 - storage-connectors-e2e-test (Skipped)
+	 69 - remote-sources-e2e-test (Skipped)
+	 99 - embedding-reference-test (Skipped)
+	101 - embedding-model-test (Skipped)
+ctest-exit: 0

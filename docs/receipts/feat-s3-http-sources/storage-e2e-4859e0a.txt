@@ -1,0 +1,73 @@
+commit: 4859e0a8adc5f6b13909579671a864bbb26664f4
+date: Thu Oct 15 05:49:17 AM EDT 2026
+$ scripts/test/storage-connectors-e2e-test.sh /work/tmp/grparse-a-build
+== fake-gcs-server 127.0.0.1:32883, Azurite 127.0.0.1:32884, MinIO 127.0.0.1:32885, mock Google 127.0.0.1:44901
+seed_azure: PUT /grparse-in -> 201
+seed_azure: PUT /grparse-out -> 201
+seed_azure: PUT /grparse-in/docs/sample.md -> 201
+seed_azure: PUT /grparse-in/two/a.md -> 201
+seed_azure: PUT /grparse-in/two/b.md -> 201
+Bucket created successfully `e2e/grparse-out`.
+== storage-connectors-e2e-test
+source azure_blob: sample.md (55 bytes)
+source google_cloud_storage (anonymous emulator): sample.md (55 bytes)
+source google_cloud_storage (service account): sample.md (55 bytes)
+source google_drive: sample.md (55 bytes)
+source google_cloud_storage empty prefix refused: sources[0].google_cloud_storage.coordinates.key_prefix: no object under 'nothing/'
+source azure_blob two objects refused: sources[0].azure_blob.coordinates.blob_prefix: 2 objects under 'two/'; this endpoint converts one document per call, so the prefix must name exactly one object
+source google_drive folder refused: sources[0].google_drive.coordinates.path_id names a folder; a Google Drive source converts one file (docling-serve accepts folders in batch only)
+source google_drive native doc refused: sources[0].google_drive.coordinates.path_id names a native Google document (application/vnd.google-apps.document), which has no file bytes to download
+source google_drive bad refresh token: google_drive refresh token: the token endpoint answered HTTP 400
+source plugin test_directory: sample.md (55 bytes)
+target azure_blob: run/document.json 802 bytes
+target azure_blob: run/document.pb 132 bytes
+target azure_blob: run/exports/markdown.md 22 bytes
+target azure_blob: run/manifest.json 415 bytes
+read back azure_blob: 4 objects match the bundle
+target google_cloud_storage: run/document.json 802 bytes
+target google_cloud_storage: run/document.pb 132 bytes
+target google_cloud_storage: run/exports/markdown.md 22 bytes
+target google_cloud_storage: run/manifest.json 415 bytes
+read back google_cloud_storage: 4 objects match the bundle
+target google_drive: document.json 802 bytes id up-0
+target google_drive: document.pb 132 bytes id up-1
+target google_drive: exports/markdown.md 22 bytes id up-2
+target google_drive: manifest.json 415 bytes id up-3
+read back google_drive: 4 uploads match the bundle
+target s3: run/document.json 802 bytes
+target s3: run/document.pb 132 bytes
+target s3: run/exports/markdown.md 22 bytes
+target s3: run/manifest.json 415 bytes
+target plugin test_directory: document.json 802 bytes
+target plugin test_directory: document.pb 132 bytes
+target plugin test_directory: exports/markdown.md 22 bytes
+target plugin test_directory: manifest.json 415 bytes
+parity: azure_blob, google_cloud_storage, google_drive and plugin write the same 4 bundle members as s3
+storage-connectors-e2e-test: ok
+== MinIO objects (mc ls --recursive e2e/grparse-out)
+[2026-10-15 09:49:22 UTC]   802B STANDARD run/document.json
+[2026-10-15 09:49:22 UTC]   132B STANDARD run/document.pb
+[2026-10-15 09:49:22 UTC]    22B STANDARD run/exports/markdown.md
+[2026-10-15 09:49:22 UTC]   415B STANDARD run/manifest.json
+== MinIO holds exactly the 4 keys the S3 target reported
+storage-connectors-e2e: ok
+== mock Google log
+mock_google: jwt header={'alg': 'RS256', 'typ': 'JWT', 'kid': 'e2e-kid'} claims={'iss': 'e2e@e2e.iam.gserviceaccount.com', 'scope': 'https://www.googleapis.com/auth/devstorage.read_write', 'aud': 'http://127.0.0.1:44901/token', 'iat': 1792057762, 'exp': 1792061362} ok=True
+mock_google: "POST /token HTTP/1.1" 200 -
+mock_google: "POST /token HTTP/1.1" 200 -
+mock_google: "GET /drive/v3/files/file-sample?fields=id,name,mimeType,size&supportsAllDrives=true HTTP/1.1" 200 -
+mock_google: "GET /drive/v3/files/file-sample?alt=media&supportsAllDrives=true HTTP/1.1" 200 -
+mock_google: "POST /token HTTP/1.1" 200 -
+mock_google: "GET /drive/v3/files/folder-out?fields=id,name,mimeType,size&supportsAllDrives=true HTTP/1.1" 200 -
+mock_google: "POST /token HTTP/1.1" 200 -
+mock_google: "GET /drive/v3/files/gdoc-1?fields=id,name,mimeType,size&supportsAllDrives=true HTTP/1.1" 200 -
+mock_google: "POST /token HTTP/1.1" 400 -
+mock_google: jwt header={'alg': 'RS256', 'typ': 'JWT', 'kid': 'e2e-kid'} claims={'iss': 'e2e@e2e.iam.gserviceaccount.com', 'scope': 'https://www.googleapis.com/auth/devstorage.read_write', 'aud': 'http://127.0.0.1:44901/token', 'iat': 1792057762, 'exp': 1792061362} ok=True
+mock_google: "POST /token HTTP/1.1" 200 -
+mock_google: "POST /token HTTP/1.1" 200 -
+mock_google: "POST /upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,size HTTP/1.1" 200 -
+mock_google: "POST /upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,size HTTP/1.1" 200 -
+mock_google: "POST /upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,size HTTP/1.1" 200 -
+mock_google: "POST /upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,size HTTP/1.1" 200 -
+mock_google: "GET /_test/uploads HTTP/1.1" 200 -
+exit: 0
