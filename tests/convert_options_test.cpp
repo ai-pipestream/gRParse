@@ -386,7 +386,7 @@ void verify_chart_policy_resolution() {
       {"GRPARSE_ALLOW_CUSTOM_CHART_EXTRACTION_CONFIG", "true"},
       {"GRPARSE_ALLOWED_CHART_EXTRACTION_ENGINES", "api_openai,api"},
       {"GRPARSE_CUSTOM_CHART_EXTRACTION_PRESETS",
-       R"({"local":{"model":"m","url":"http://vlm:1","engine_type":"vllm"},)"
+       R"({"local":{"model":"m","url":"http://vlm:1","engine_type":"VLM_ENGINE_TYPE_VLLM"},)"
        R"("summaries":{"chart2csv":false,"chart2summary":true}})"},
   });
   {
@@ -412,7 +412,7 @@ void verify_chart_policy_resolution() {
     const auto resolved = grparse::resolve_chart_extraction(options, permissive, kSurface);
     require(resolved.has_value() && resolved->has_value(), "an allowed custom config resolves");
     const grparse::ChartExtractionPreset& preset = **resolved;
-    require(preset.id == "custom" && preset.engine == "api_openai" &&
+    require(preset.id == "custom" && preset.engine == parsev1::VLM_ENGINE_TYPE_API_OPENAI &&
                 preset.model == "granite-chart-served" && preset.chart2csv &&
                 preset.chart2summary && preset.chart2code &&
                 preset.use_natural_language_prompts && preset.vlm_endpoint.empty(),

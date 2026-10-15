@@ -54,7 +54,9 @@ void verify_lists_parse_as_json_or_comma_separated() {
   const auto json = policy_with(
       {{"GRPARSE_ALLOWED_CHART_EXTRACTION_ENGINES", R"(["api_openai", "api_ollama"])"}});
   require(json.settings().allowed_engines ==
-              std::vector<std::string>{"api_openai", "api_ollama"},
+              std::vector<ai::pipestream::parse::v1::VlmEngineType>{
+                  ai::pipestream::parse::v1::VLM_ENGINE_TYPE_API_OPENAI,
+                  ai::pipestream::parse::v1::VLM_ENGINE_TYPE_API_OLLAMA},
           "a JSON array parses");
   const auto csv =
       policy_with({{"GRPARSE_ALLOWED_CHART_EXTRACTION_ENGINES", "api_openai, api_ollama"}});
@@ -65,25 +67,25 @@ void verify_lists_parse_as_json_or_comma_separated() {
   require_startup_failure({{"GRPARSE_ALLOWED_CHART_EXTRACTION_ENGINES", "openai"}},
                           "names 'openai', which is not a known engine");
   require_startup_failure({{"GRPARSE_ALLOWED_CHART_EXTRACTION_PRESETS", "[1, 2]"}},
-                          "must list non-empty strings only");
+                          "is not a JSON array of non-empty strings");
   require_startup_failure({{"GRPARSE_ALLOWED_CHART_EXTRACTION_PRESETS", "[\"a\""}},
-                          "is not a JSON array");
+                          "is not a JSON array of non-empty strings");
 }
 
 void verify_custom_presets_are_typed() {
   const auto presets = grparse::parse_chart_extraction_presets(
       R"({"full":{"model":"granite-vision-4.1-4b","url":"http://vlm:8000",)"
-      R"("engine_type":"api_ollama","chart2summary":true,"chart2code":true,)"
+      R"("engine_type":"VLM_ENGINE_TYPE_API_OLLAMA","chart2summary":true,"chart2code":true,)"
       R"("use_natural_language_prompts":true}})");
   require(presets.size() == 1, "one preset");
   const grparse::ChartExtractionPreset& full = presets.at("full");
   require(full.id == "full" && full.model == "granite-vision-4.1-4b" &&
-              full.vlm_endpoint == "http://vlm:8000" && full.engine == "api_ollama" &&
+              full.vlm_endpoint == "http://vlm:8000" && full.engine == ai::pipestream::parse::v1::VLM_ENGINE_TYPE_API_OLLAMA &&
               full.chart2csv && full.chart2summary && full.chart2code &&
               full.use_natural_language_prompts,
           "every key lands in its typed field; chart2csv defaults on");
   const auto bare = grparse::parse_chart_extraction_presets(R"({"bare":{}})");
-  require(bare.at("bare").engine == "api_openai" && bare.at("bare").model.empty() &&
+  require(bare.at("bare").engine == ai::pipestream::parse::v1::VLM_ENGINE_TYPE_API_OPENAI && bare.at("bare").model.empty() &&
               bare.at("bare").chart2csv && !bare.at("bare").chart2summary,
           "an empty preset is csv only on the endpoint's default model");
 
@@ -96,12 +98,30 @@ void verify_custom_presets_are_typed() {
     }
     require(false, "expected a rejection mentioning: " + fragment);
   };
-  rejects("not json", "is not a JSON object");
-  rejects(R"({"p":3})", "preset 'p' must be a JSON object");
-  rejects(R"({"p":{"modle":"x"}})", "unknown key 'modle'");
-  rejects(R"({"p":{"chart2csv":"yes"}})", "chart2csv must be true or false");
-  rejects(R"({"p":{"model":1}})", "model must be a string");
-  rejects(R"({"p":{"engine_type":"torch"}})", "engine_type 'torch' is not a known engine");
+  rejects("not json", "is not a JSON object of ChartExtractionPresetSpec");
+  rejects(R"({"p":3})", "is not a valid ChartExtractionPresetSpec map");
+  rejects(R"({"p":{"modle":"x"}})", "is not a valid ChartExtractionPresetSpec map");
+  rejects(R"({"p":{"chart2csv":"yes"}})", "is not a valid ChartExtractionPresetSpec map");
+  rejects(R"({"p":{"engine_type":"torch"}})", "is not a valid ChartExtractionPresetSpec map");
+  rejects(R"({"p":{"engine_type":"api_ollama"}})",
+          "is not a valid ChartExtractionPresetSpec map");
+  rejects(R"({"p":{"engine_type":"VLM_ENGINE_TYPE_UNSPECIFIED"}})",
+          "engine_type VLM_ENGINE_TYPE_UNSPECIFIED is not a usable engine");
+  rejects(R"({" p":{}})", "has an empty or padded preset id");
+
+  // The typed registry builds the same presets without any JSON.
+  ai::pipestream::parse::v1::ChartExtractionPresetRegistry registry;
+  auto& spec = (*registry.mutable_presets())["typed"];
+  spec.set_model("granite-vision-4.1-4b");
+  spec.set_engine_type(ai::pipestream::parse::v1::VLM_ENGINE_TYPE_VLLM);
+  spec.set_chart2csv(false);
+  spec.set_chart2summary(true);
+  spec.set_chart2code(true);
+  const auto typed = grparse::chart_extraction_presets_from_registry(registry);
+  require(typed.at("typed").engine == ai::pipestream::parse::v1::VLM_ENGINE_TYPE_VLLM &&
+              !typed.at("typed").chart2csv && typed.at("typed").chart2summary &&
+              typed.at("typed").chart2code,
+          "the typed registry carries summary and code without csv");
   rejects(R"({"p":{"chart2csv":false}})", "at least one of chart2csv, chart2summary");
 }
 
@@ -147,7 +167,7 @@ void verify_startup_rejections_name_the_setting() {
   require_startup_failure({{"GRPARSE_ALLOW_CUSTOM_CHART_EXTRACTION_CONFIG", "yes"}},
                           "GRPARSE_ALLOW_CUSTOM_CHART_EXTRACTION_CONFIG must be true or false");
   const auto allowed = policy_with({{"GRPARSE_ALLOW_CUSTOM_CHART_EXTRACTION_CONFIG", "true"}});
-  require(allowed.settings().allow_custom_config && allowed.check_custom_config("vllm").ok(),
+  require(allowed.settings().allow_custom_config && allowed.check_custom_config(ai::pipestream::parse::v1::VLM_ENGINE_TYPE_VLLM).ok(),
           "the switch opens custom configs for any engine when engines are unrestricted");
 }
 
@@ -156,7 +176,9 @@ void verify_engine_names_match_docling() {
   require(grparse::vlm_engine_name(parsev1::VLM_ENGINE_TYPE_API_OPENAI) == "api_openai" &&
               grparse::vlm_engine_name(parsev1::VLM_ENGINE_TYPE_TRANSFORMERS) == "transformers" &&
               grparse::vlm_engine_name(parsev1::VLM_ENGINE_TYPE_AUTO_INLINE) == "auto_inline" &&
-              grparse::vlm_engine_name(parsev1::VLM_ENGINE_TYPE_UNSPECIFIED).empty(),
+              grparse::vlm_engine_name(parsev1::VLM_ENGINE_TYPE_UNSPECIFIED).empty() &&
+              grparse::vlm_engine_from_name("api_ollama") == parsev1::VLM_ENGINE_TYPE_API_OLLAMA &&
+              !grparse::vlm_engine_from_name("openai").has_value(),
           "wire engine types map to Docling's VlmEngineType values");
 }
 

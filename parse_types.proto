@@ -768,6 +768,42 @@ message CodeFormulaVlmOptions {
   optional bool stop_on_repetition = 8;
 }
 
+// One admin chart-extraction preset (a docling-serve
+// custom_chart_extraction_presets entry), typed. The server reads a
+// ChartExtractionPresetRegistry from GRPARSE_CUSTOM_CHART_EXTRACTION_PRESETS
+// at startup; an unknown field, a wrong type or an unknown enum value stops
+// the process.
+message ChartExtractionPresetSpec {
+  // Model name sent to the VLM endpoint. Empty leaves the endpoint on its
+  // default model.
+  string model = 1;
+  // VLM endpoint for the chart calls. Empty uses GRPARSE_ENRICH_VLM_ENDPOINT.
+  string url = 2;
+  // Docling engine. Unset means VLM_ENGINE_TYPE_API_OPENAI, the Docling
+  // default for the API presets.
+  optional VlmEngineType engine_type = 3;
+  // Docling chart2csv. Unset means true.
+  optional bool chart2csv = 4;
+  // Docling chart2summary. Unset means false.
+  optional bool chart2summary = 5;
+  // Docling chart2code. Unset means false.
+  optional bool chart2code = 6;
+  // Natural-language prompts instead of the Granite Vision tokens. Unset
+  // means false.
+  optional bool use_natural_language_prompts = 7;
+}
+
+// The admin chart-extraction presets by id.
+message ChartExtractionPresetRegistry {
+  map<string, ChartExtractionPresetSpec> presets = 1;
+}
+
+// A list-valued server setting (allowed presets, allowed engines) in its
+// JSON array form, read as {"names": [...]}.
+message ServerSettingNameList {
+  repeated string names = 1;
+}
+
 // ChartExtractionVlmEngineOptions mirrors docling's chart extraction stage.
 // At least one of chart2csv, chart2summary, chart2code must be true.
 message ChartExtractionVlmEngineOptions {

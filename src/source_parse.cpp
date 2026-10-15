@@ -1205,7 +1205,7 @@ std::expected<std::optional<ChartExtractionPreset>, grpc::Status> resolve_chart_
   if (options.has_chart_extraction_custom_config()) {
     const auto& config = options.chart_extraction_custom_config();
     const grpc::Status allowed =
-        policy.check_custom_config(vlm_engine_name(config.engine_options().engine_type()));
+        policy.check_custom_config(config.engine_options().engine_type());
     if (!allowed.ok()) return rejected(allowed);
     return std::optional<ChartExtractionPreset>(chart_preset_from_custom_config(config));
   }

@@ -1108,7 +1108,8 @@ target_sources(grparse_proto PRIVATE
   "${GENERATED_DIR}/ai/pipestream/enrich/v1/enrich_service.grpc.pb.cc")
 target_sources(grparse_core PRIVATE src/chart_derender.cpp src/chart_extraction_policy.cpp)
 if(BUILD_TESTING)
-  set(GRPARSE_CHART_TESTS chart-composite-test chart-derender-test chart-extraction-policy-test)
+  set(GRPARSE_CHART_TESTS chart-composite-test chart-derender-test chart-extraction-policy-test
+    chart-outputs-e2e-test)
   foreach(test_name IN LISTS GRPARSE_CHART_TESTS)
     string(REPLACE "-" "_" test_source "${test_name}")
     add_executable(${test_name} "tests/${test_source}.cpp")
@@ -1118,6 +1119,8 @@ if(BUILD_TESTING)
   add_dependencies(grparse-tests ${GRPARSE_CHART_TESTS})
   set_tests_properties(${GRPARSE_CHART_TESTS} PROPERTIES
     TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
+  # Needs a running grpc-enrich and a chart PNG; skips without them.
+  set_tests_properties(chart-outputs-e2e-test PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 # ---- VLM convert leg: grpc-vlm-convert contract, module, and tests ----------
