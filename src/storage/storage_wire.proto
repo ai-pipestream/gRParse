@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+// Typed shapes of the JSON the storage connectors exchange with Google's
+// APIs (Cloud Storage JSON API, Drive v3, OAuth 2.0). Replies are parsed
+// into these messages with unknown fields ignored, and requests are
+// rendered from them, so no connector handles a free-form JSON value.
+// Internal to the server; not part of the gRParse API.
+package grparse.storage.wire;
+
+// OAuth 2.0 token endpoint reply (RFC 6749 section 5.1).
+message OAuthTokenReply {
+  string access_token = 1;
+  string token_type = 2;
+  int64 expires_in = 3;
+}
+
+// JWT header for a service-account assertion (RFC 7515).
+message JwtHeader {
+  string alg = 1;
+  string typ = 2;
+  string kid = 3;
+}
+
+// JWT claims for a service-account assertion (RFC 7523). Times are seconds
+// since the epoch; uint32 renders as a JSON number.
+message JwtClaims {
+  string iss = 1;
+  string scope = 2;
+  string aud = 3;
+  uint32 iat = 4;
+  uint32 exp = 5;
+}
+
+// Cloud Storage object resource (the fields gRParse reads).
+message GcsObject {
+  string name = 1;
+  string bucket = 2;
+  // uint64 as a decimal string, the way the API sends it.
+  uint64 size = 3;
+  string etag = 4;
+}
+
+// Cloud Storage objects.list reply.
+message GcsObjectList {
+  repeated GcsObject items = 1;
+  string next_page_token = 2;
+}
+
+// Drive v3 file resource (the fields gRParse reads and writes).
+message DriveFile {
+  string id = 1;
+  string name = 2;
+  string mime_type = 3;
+  // int64 as a decimal string, the way the API sends it.
+  uint64 size = 4;
+  repeated string parents = 5;
+}

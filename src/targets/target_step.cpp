@@ -12,6 +12,7 @@
 #include "s3_client.h"
 #include "s3_uploader.h"
 #include "zip_writer.h"
+#include "../storage/connectors.h"
 
 namespace parsev1 = ai::pipestream::parse::v1;
 namespace docv1 = ai::pipestream::document::v1;
@@ -191,6 +192,16 @@ grpc::Status deliver(const parsev1::Target& target, const docv1::Document& docum
       return unimplemented("put");
     case parsev1::Target::kPresignedUrl:
       return unimplemented("presigned_url");
+    case parsev1::Target::kAzureBlob:
+    case parsev1::Target::kGoogleCloudStorage:
+    case parsev1::Target::kGoogleDrive:
+    case parsev1::Target::kPlugin: {
+      if (grpc::Status allowed = storage::check_target_allowed(target); !allowed.ok()) {
+        return allowed;
+      }
+      bool handled = false;
+      return storage::deliver_to_store(target, build_bundle(document, exports), result, &handled);
+    }
     case parsev1::Target::kInbody:
     case parsev1::Target::TARGET_NOT_SET:
       return grpc::Status::OK;

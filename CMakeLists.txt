@@ -1123,6 +1123,66 @@ if(BUILD_TESTING)
   set_tests_properties(chart-outputs-e2e-test PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
+# ---- Storage connectors: Azure Blob, Google Cloud Storage, Google Drive ----
+# and connector plugins behind Source and Target (src/storage/connectors.h).
+# storage_wire.proto holds the typed shapes of the JSON those services speak
+# (token replies, JWT header and claims, object listings); it is internal and
+# compiled by its own protoc step into its own include directory. RS256 for
+# the Google service account grant uses gRPC's BoringSSL (target crypto), the
+# same TLS stack the server already links.
+set(STORAGE_WIRE_DIR "${CMAKE_CURRENT_BINARY_DIR}/storage_wire")
+file(MAKE_DIRECTORY "${STORAGE_WIRE_DIR}")
+add_custom_command(
+  OUTPUT "${STORAGE_WIRE_DIR}/storage_wire.pb.cc" "${STORAGE_WIRE_DIR}/storage_wire.pb.h"
+  COMMAND $<TARGET_FILE:protoc>
+  ARGS --proto_path=${CMAKE_CURRENT_SOURCE_DIR}/src/storage
+       --proto_path=${protobuf_SOURCE_DIR}/src
+       --cpp_out=${STORAGE_WIRE_DIR}
+       ${CMAKE_CURRENT_SOURCE_DIR}/src/storage/storage_wire.proto
+  DEPENDS src/storage/storage_wire.proto protoc
+  VERBATIM)
+target_sources(grparse_core PRIVATE
+  "${STORAGE_WIRE_DIR}/storage_wire.pb.cc"
+  src/storage/azure_blob.cpp
+  src/storage/connectors.cpp
+  src/storage/google_auth.cpp
+  src/storage/google_storage.cpp
+  src/storage/http_call.cpp
+  src/storage/object_store.cpp)
+target_include_directories(grparse_core PRIVATE "${STORAGE_WIRE_DIR}")
+target_link_libraries(grparse_core PRIVATE crypto)
+if(BUILD_TESTING)
+  # The fixture plugin's typed config, a test-only contract.
+  set(STORAGE_FIXTURE_DIR "${CMAKE_CURRENT_BINARY_DIR}/storage_fixture")
+  file(MAKE_DIRECTORY "${STORAGE_FIXTURE_DIR}")
+  add_custom_command(
+    OUTPUT "${STORAGE_FIXTURE_DIR}/storage_plugin_fixture.pb.cc"
+           "${STORAGE_FIXTURE_DIR}/storage_plugin_fixture.pb.h"
+    COMMAND $<TARGET_FILE:protoc>
+    ARGS --proto_path=${CMAKE_CURRENT_SOURCE_DIR}/tests/support
+         --proto_path=${protobuf_SOURCE_DIR}/src
+         --cpp_out=${STORAGE_FIXTURE_DIR}
+         ${CMAKE_CURRENT_SOURCE_DIR}/tests/support/storage_plugin_fixture.proto
+    DEPENDS tests/support/storage_plugin_fixture.proto protoc
+    VERBATIM)
+  add_library(grparse_storage_fixture STATIC "${STORAGE_FIXTURE_DIR}/storage_plugin_fixture.pb.cc")
+  target_include_directories(grparse_storage_fixture PUBLIC "${STORAGE_FIXTURE_DIR}")
+  target_link_libraries(grparse_storage_fixture PUBLIC grparse_proto)
+  set(GRPARSE_STORAGE_TESTS storage-connectors-test storage-connectors-e2e-test)
+  foreach(test_name IN LISTS GRPARSE_STORAGE_TESTS)
+    string(REPLACE "-" "_" test_source "${test_name}")
+    add_executable(${test_name} "tests/${test_source}.cpp")
+    target_include_directories(${test_name} PRIVATE "${STORAGE_WIRE_DIR}" tests)
+    target_link_libraries(${test_name} PRIVATE grparse_core grparse_storage_fixture grparse_flags crypto)
+    add_test(NAME ${test_name} COMMAND ${test_name})
+  endforeach()
+  add_dependencies(grparse-tests ${GRPARSE_STORAGE_TESTS})
+  set_tests_properties(${GRPARSE_STORAGE_TESTS} PROPERTIES
+    TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
+  # Needs the emulators scripts/test/storage-connectors-e2e-test.sh starts.
+  set_tests_properties(storage-connectors-e2e-test PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+
 # ---- VLM convert leg: grpc-vlm-convert contract, module, and tests ----------
 # Appended as one block, mirroring the enrich chart derender leg. The contract
 # is vendored under collectors/ and compiled by its own protoc step; the stubs

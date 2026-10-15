@@ -4,7 +4,7 @@ package ai.pipestream.parse.v1;
 
 import "ai/pipestream/document/v1/document.proto";
 import "ai/pipestream/ebcdic/v1/ebcdic.proto";
-import "google/protobuf/struct.proto";
+import "google/protobuf/any.proto";
 import "lolhtml/v1/lolhtml_service.proto";
 
 option java_multiple_files = true;
@@ -501,6 +501,10 @@ message Source {
     FileSource file = 1;
     HttpSource http = 2;
     S3Source s3 = 3;
+    AzureBlobSource azure_blob = 4;
+    GoogleCloudStorageSource google_cloud_storage = 5;
+    GoogleDriveSource google_drive = 6;
+    PluginSource plugin = 7;
   }
 }
 
@@ -538,6 +542,103 @@ message S3Source {
   optional string region = 7;
 }
 
+// Docling AzureBlobCoordinates: one Azure Storage container and a blob-name
+// prefix. A source reads the one blob under the prefix; a target writes the
+// result bundle under it.
+message AzureBlobCoordinates {
+  // Azure Storage account name. Must match AccountName in the connection
+  // string.
+  string account_name = 1;
+  string container = 2;
+  // Azure Storage connection string with AccountName and AccountKey (Shared
+  // Key). BlobEndpoint, when present, replaces the public endpoint, which is
+  // how an emulator such as Azurite is reached.
+  string connection_string = 3 [debug_redact = true];
+  string blob_prefix = 4;
+  // Most blobs to consider under the prefix. Unset means no limit.
+  optional uint32 max_num_elements = 5;
+}
+
+message AzureBlobSource {
+  AzureBlobCoordinates coordinates = 1;
+}
+
+// Docling GoogleCloudStorageServiceAccountInfo: the fields of a service
+// account key file, typed.
+message GoogleCloudStorageServiceAccountKey {
+  string project_id = 1;
+  string private_key_id = 2 [debug_redact = true];
+  // RSA private key in PEM (PKCS#8) form.
+  string private_key = 3 [debug_redact = true];
+  string client_email = 4;
+  string client_id = 5;
+  string auth_uri = 6;
+  // OAuth 2.0 token endpoint the signed JWT is exchanged at.
+  string token_uri = 7;
+  string auth_provider_x509_cert_url = 8;
+  string client_x509_cert_url = 9;
+  string universe_domain = 10;
+}
+
+// Docling GoogleCloudStorageCoordinates.
+message GoogleCloudStorageCoordinates {
+  string bucket = 1;
+  string key_prefix = 2;
+  optional uint32 max_num_elements = 3;
+  optional string project = 4;
+  // Unset means anonymous access, which only an explicit endpoint (an
+  // emulator such as fake-gcs-server) accepts.
+  optional GoogleCloudStorageServiceAccountKey service_account_key = 5;
+  // gRParse extension: the JSON API base URL. Unset means
+  // https://storage.googleapis.com. Docling reaches an emulator through
+  // STORAGE_EMULATOR_HOST instead.
+  optional string endpoint = 6;
+}
+
+message GoogleCloudStorageSource {
+  GoogleCloudStorageCoordinates coordinates = 1;
+}
+
+// Docling GoogleDriveCredentials: an OAuth client.
+message GoogleDriveCredentials {
+  string client_id = 1;
+  string project_id = 2;
+  string auth_uri = 3;
+  string token_uri = 4;
+  string auth_provider_x509_cert_url = 5;
+  string client_secret = 6 [debug_redact = true];
+  repeated string redirect_uris = 7;
+}
+
+// Docling GoogleDriveCoordinates. Docling's token_path and credentials_path
+// name files on the server and are not accepted remotely, so they have no
+// field here: credentials and refresh_token travel in the request.
+message GoogleDriveCoordinates {
+  // Drive file id (a source) or folder id (a target).
+  string path_id = 1;
+  string refresh_token = 2 [debug_redact = true];
+  GoogleDriveCredentials credentials = 3;
+  // gRParse extension: the Drive API base URL. Unset means
+  // https://www.googleapis.com.
+  optional string api_endpoint = 4;
+}
+
+message GoogleDriveSource {
+  GoogleDriveCoordinates coordinates = 1;
+}
+
+// A source served by a connector plugin (docling-serve plugin-defined
+// connector sources). The server keeps a registry of plugin kinds, each with
+// its own protobuf config message; `config` must pack exactly that message.
+// A plugin kind is usable only when the server allows external plugins and
+// lists the kind in GRPARSE_ALLOWED_SOURCE_TYPES.
+message PluginSource {
+  // Registered plugin kind, for example "filenet".
+  string kind = 1;
+  // The plugin's own registered config message.
+  google.protobuf.Any config = 2;
+}
+
 // ============================================================================
 // Target Types - where results go
 // ============================================================================
@@ -550,6 +651,10 @@ message Target {
     S3Target s3 = 3;
     ZipTarget zip = 4;
     PreSignedUrlTarget presigned_url = 5;
+    AzureBlobTarget azure_blob = 6;
+    GoogleCloudStorageTarget google_cloud_storage = 7;
+    GoogleDriveTarget google_drive = 8;
+    PluginTarget plugin = 9;
   }
 }
 
@@ -581,6 +686,26 @@ message S3Target {
   optional string region = 7;
 }
 
+message AzureBlobTarget {
+  AzureBlobCoordinates coordinates = 1;
+}
+
+message GoogleCloudStorageTarget {
+  GoogleCloudStorageCoordinates coordinates = 1;
+}
+
+// Writes each bundle member as one file in the Drive folder path_id, named
+// by its bundle path.
+message GoogleDriveTarget {
+  GoogleDriveCoordinates coordinates = 1;
+}
+
+// A target served by a connector plugin; see PluginSource.
+message PluginTarget {
+  string kind = 1;
+  google.protobuf.Any config = 2;
+}
+
 // ZipTarget returns results as a ZIP archive.
 message ZipTarget {}
 
@@ -592,12 +717,16 @@ message PreSignedUrlTarget {}
 
 // StoredObject names one object a target wrote to an object store.
 message StoredObject {
-  // Object key, including the request's key_prefix.
+  // Object key, including the request's key_prefix (the blob name for
+  // Azure, the object name for GCS, the file id for Google Drive).
   string key = 1;
   // The store's entity tag for the written object, verbatim and with its
   // quoting as the store returned it. Empty when the store returned none.
   string etag = 2;
   uint64 size_bytes = 3;
+  // The store's own id for the object when names are not ids: the Google
+  // Drive file id. Empty for stores addressed by key.
+  string store_id = 4;
 }
 
 // TargetResult carries what a non-inbody Target produced. Targets are an
@@ -1106,6 +1235,13 @@ enum OptionRejectionReason {
   OPTION_REJECTION_REASON_CONFLICT = 4;
   // A list names the same value twice.
   OPTION_REJECTION_REASON_DUPLICATE = 5;
+  // The server's policy does not allow the value (a source or target kind
+  // outside GRPARSE_ALLOWED_SOURCE_TYPES / GRPARSE_ALLOWED_TARGET_TYPES, or
+  // a plugin while external plugins are off).
+  OPTION_REJECTION_REASON_NOT_ALLOWED = 6;
+  // A required value is missing or malformed (empty bucket, unparsable
+  // connection string, a config message of the wrong type).
+  OPTION_REJECTION_REASON_INVALID = 7;
 }
 
 // OptionRejection is the typed detail of an INVALID_ARGUMENT that turns a

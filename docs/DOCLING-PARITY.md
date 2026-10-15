@@ -38,3 +38,16 @@ Every INVALID_ARGUMENT that turns an option down carries a typed `OptionRejectio
 | `allowed_chart_extraction_engines` | Mapped to `VlmEngineType` at startup | The variable still takes Docling's engine names, because that is the docling-serve setting. Each name maps to the enum, and an unknown name stops the process. The policy compares enums, not strings. List variables in JSON array form are read as the typed `ServerSettingNameList`. |
 
 Each enabled output is its own VLM call per chart in grpc-enrich, so a failed summary never costs the table. grpc-enrich has implemented the three outputs since 05820b7, so this needed no change there. `scripts/test/chart-outputs-e2e-test.sh` runs a real grpc-enrich container against an emulated OpenAI-compatible VLM, and checks that the table, summary and code arrive in the Document.
+
+## Storage sources and targets (docling-slim 2.139.0 sources.py and targets.py)
+
+| Docling | gRParse | Notes |
+|---|---|---|
+| `AzureBlobSource` / `AzureBlobTarget` | `Source.azure_blob` (4) / `Target.azure_blob` (6), `AzureBlobCoordinates` | Same five coordinates. Shared Key signing from the connection string. |
+| `GoogleCloudStorageSource` / `GoogleCloudStorageTarget` | `Source.google_cloud_storage` (5) / `Target.google_cloud_storage` (7), `GoogleCloudStorageCoordinates` | Same coordinates; `service_account_key` is the typed ten-field `GoogleCloudStorageServiceAccountInfo`. Adds an optional `endpoint` for emulators. |
+| `GoogleDriveSource` / `GoogleDriveTarget` | `Source.google_drive` (6) / `Target.google_drive` (8), `GoogleDriveCoordinates` | `path_id`, `refresh_token` and typed `credentials` match. `token_path` and `credentials_path` (server file paths) are not accepted. A source names one file, since folders are batch-only upstream. |
+| Connector plugins (docling-serve #652, #660) | `Source.plugin` (7) / `Target.plugin` (9): `kind` plus `google.protobuf.Any` config | The config must be the plugin's registered protobuf message. |
+| `allow_external_plugins`, `allowed_source_types`, `allowed_target_types` | `GRPARSE_ALLOW_EXTERNAL_PLUGINS`, `GRPARSE_ALLOWED_SOURCE_TYPES`, `GRPARSE_ALLOWED_TARGET_TYPES` | Refusals carry `OPTION_REJECTION_REASON_NOT_ALLOWED`. |
+
+`StoredObject` gains `store_id` (4), the Drive file id. `OptionRejectionReason` gains `NOT_ALLOWED` (6) and `INVALID` (7).
+

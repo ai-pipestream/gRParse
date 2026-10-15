@@ -29,6 +29,7 @@
 
 #include "ai/protomolt/parse/pdf/v1/pdf_backend_types.pb.h"
 #include "google/rpc/status.pb.h"
+#include "storage/connectors.h"
 
 #include "grparse/base64.h"
 #include "grparse/chart_derender.h"
@@ -2104,13 +2105,30 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
                           const std::optional<RepairOptions>& server_repair,
                           const std::string& surface, SourceParse* parsed) {
   const auto& sources = request.sources();
-  if (sources.size() == 1 && sources.Get(0).has_file()) {
+  if (sources.size() != 1) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        surface + " currently accepts exactly one source");
+  }
+  if (sources.Get(0).has_file()) {
     parsed->doctype = classify_doctype(pipestream::parse::v1::INPUT_FORMAT_UNSPECIFIED,
                                        sources.Get(0).file().filename());
   }
-  if (sources.size() != 1 || !sources.Get(0).has_file()) {
-    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                        surface + " currently accepts exactly one FileSource containing base64_string");
+  // The target policy is checked before any work, so a refused target never
+  // costs a fetch or a conversion.
+  if (grpc::Status target = storage::check_target_allowed(request.target()); !target.ok()) {
+    return target;
+  }
+  // A storage or plugin source resolves to the one document it names; a
+  // FileSource passes through. This runs on the conversion's worker, so the
+  // blocking fetch never holds a gRPC event thread.
+  pipestream::parse::v1::FileSource resolved_file;
+  if (grpc::Status resolved = storage::resolve_source(sources.Get(0), "sources[0]", &resolved_file);
+      !resolved.ok()) {
+    return resolved;
+  }
+  if (!sources.Get(0).has_file()) {
+    parsed->doctype = classify_doctype(pipestream::parse::v1::INPUT_FORMAT_UNSPECIFIED,
+                                       resolved_file.filename());
   }
   const grpc::Status option_status = validate_options(request.options(), surface);
   if (!option_status.ok()) return option_status;
@@ -2137,7 +2155,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     return grpc::Status(read.error_code(), surface + ": " + read.error_message());
   }
   try {
-    const auto& source = sources.Get(0).file();
+    const auto& source = resolved_file;
     auto bytes = std::make_shared<const std::string>(decode_base64(source.base64_string()));
     // A nameless upload gets a name that declares nothing, so the bytes
     // decide its type and route rather than a made-up extension.
