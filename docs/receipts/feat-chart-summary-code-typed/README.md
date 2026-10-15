@@ -9,3 +9,13 @@ Code commit under test: 1a3e87776a9db20483a7d5d4710eea9e1b4751d2 (77eb5eb merged
 | grpc-enrich-image-build.txt.gz | `git archive 93eedfd` of grpc-enrich, then `docker build -t grparse-e2e/grpc-enrich:93eedfd .` | enrich-build-exit 0. Nothing in grpc-enrich was changed. |
 
 CI status for this branch is recorded in ci-status-*.txt once the runs finish.
+
+## Merge of #21 at 15cf39d (7fecb1b)
+
+| File | Result |
+|---|---|
+| ctest-7fecb1b.txt | 95/95 passed, exit 0 |
+| chart-outputs-e2e-7fecb1b.txt | e2e-exit 0 against grpc-enrich 93eedfd |
+| ci-status-7fecb1b.txt | run 425: see the file; cpu-image failed after 4s |
+
+cpu-image results differ between runs of the same ci.yml: run 424 passed (11m03s), while runs 423 and 425 failed within 30s. Job logs are not available through the API. The likely cause: job containers mount only the host docker socket and not ~/.docker/config.json, so a job docker CLI has no dhi.io credentials unless the runner that picks it up already has them. The --target fetch workaround was not restored.
