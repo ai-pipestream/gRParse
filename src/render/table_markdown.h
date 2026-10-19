@@ -28,10 +28,14 @@ std::vector<std::vector<std::string>> table_rows(
     const CellTextResolver& resolve_ref, GridBudget& budget);
 
 // The number of leading grid rows that form the column header, the way the
-// reference resolves a spanned header to the one row GFM allows: rows on
-// which a column_header cell starts; 1 when no cell is flagged at all (the
-// first row stays the header); 0 when flags exist but none starts on row 0
-// (every row is body).
+// reference (docling-core 2.102 TableData._count_column_header_rows, #767)
+// resolves a spanned header to the one row GFM allows: the leading run of
+// rows on which a column_header cell starts, ending at a row after the first
+// that also starts an unflagged, non-empty cell outside the leading column
+// (row 0 too when the leading column carries header flags further down, a
+// column of row headers rather than a stacked header). 1 when no row below
+// row 0 is flagged and row 0 does not form a header (the first row stays the
+// header); 0 when flags exist below but none forms a header block.
 std::size_t count_header_rows(
     const std::vector<std::vector<const ai::pipestream::document::v1::TableCell*>>& grid);
 

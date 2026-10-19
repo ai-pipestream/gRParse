@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <optional>
 #include <print>
 #include <string>
@@ -219,30 +220,71 @@ std::vector<std::vector<std::string>> table_rows(
   return out;
 }
 
+namespace {
+
+// Python str.strip() whitespace for the ASCII range the cell texts use.
+bool blank_text(std::string_view text) {
+  return std::ranges::all_of(text, [](char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
+  });
+}
+
+}  // namespace
+
+// docling-core 2.102 TableData._count_column_header_rows (#767), wrapped the
+// way the Markdown serializer's _count_header_rows wraps it.
 std::size_t count_header_rows(const std::vector<std::vector<const docv1::TableCell*>>& grid) {
-  const auto starts_header_on = [](const std::vector<const docv1::TableCell*>& row,
-                                   std::size_t row_idx) {
-    return std::ranges::any_of(row, [row_idx](const docv1::TableCell* cell) {
-      return cell != nullptr && cell->column_header() &&
-             cell->start_row_offset_idx() == static_cast<int>(row_idx);
-    });
-  };
-  const auto any_header_below_first = [&grid] {
-    for (std::size_t row_idx = 1; row_idx < grid.size(); ++row_idx) {
-      for (const docv1::TableCell* cell : grid[row_idx]) {
-        if (cell != nullptr && cell->column_header()) return true;
+  int first_col = std::numeric_limits<int>::max();
+  bool any_cell = false;
+  for (const auto& row : grid) {
+    for (const docv1::TableCell* cell : row) {
+      if (cell == nullptr) continue;
+      any_cell = true;
+      first_col = std::min(first_col, cell->start_col_offset_idx());
+    }
+  }
+  if (!any_cell) first_col = 0;
+  // A header flag starting in the leading column below row 0 marks a column
+  // of row headers, not a stacked header.
+  bool leading_col_flagged_below = false;
+  for (std::size_t row_idx = 1; row_idx < grid.size() && !leading_col_flagged_below; ++row_idx) {
+    for (const docv1::TableCell* cell : grid[row_idx]) {
+      if (cell != nullptr && cell->column_header() && cell->start_col_offset_idx() == first_col &&
+          cell->start_row_offset_idx() == static_cast<int>(row_idx)) {
+        leading_col_flagged_below = true;
+        break;
       }
     }
-    return false;
-  };
+  }
   std::size_t num_headers = 0;
   for (std::size_t row_idx = 0; row_idx < grid.size(); ++row_idx) {
-    if (starts_header_on(grid[row_idx], row_idx)) {
-      ++num_headers;
-      continue;
+    bool starts_header = false;
+    bool carries_body_text = false;
+    for (const docv1::TableCell* cell : grid[row_idx]) {
+      // A cell spanning rows is repeated into each row it covers; only the
+      // row it starts on decides.
+      if (cell == nullptr || cell->start_row_offset_idx() != static_cast<int>(row_idx)) continue;
+      if (cell->column_header()) {
+        starts_header = true;
+      } else if ((row_idx > 0 || leading_col_flagged_below) && !blank_text(cell->text()) &&
+                 cell->start_col_offset_idx() != first_col) {
+        // Row labels in the leading column stay unflagged even on header
+        // rows, so only body text outside it ends the header block.
+        carries_body_text = true;
+      }
     }
-    if (row_idx == 0 && !any_header_below_first()) return 1;
-    break;
+    if (!starts_header || carries_body_text) break;
+    ++num_headers;
+  }
+  if (num_headers == 0 && !grid.empty()) {
+    // No flag anywhere below row 0: keep the first row as the header, the
+    // way tables from producers that never set the flag render upstream.
+    for (std::size_t row_idx = 1; row_idx < grid.size(); ++row_idx) {
+      for (const docv1::TableCell* cell : grid[row_idx]) {
+        if (cell != nullptr && cell->column_header()) return 0;
+      }
+    }
+    return 1;
   }
   return num_headers;
 }

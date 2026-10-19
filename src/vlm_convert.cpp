@@ -8,10 +8,13 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
 
+#include <google/protobuf/descriptor.h>
+#include <google/protobuf/message.h>
 #include <opencv2/imgcodecs.hpp>
 
 #include "ai/pipestream/vlm/v1/vlm_convert.grpc.pb.h"
@@ -27,6 +30,32 @@ namespace {
 namespace docv1 = ai::pipestream::document::v1;
 namespace vlmv1 = ai::pipestream::vlm::v1;
 namespace parsev1 = ai::pipestream::parse::v1;
+
+void type_stop_reasons_in(google::protobuf::Message* message) {
+  if (auto* generation = dynamic_cast<docv1::GenerationSource*>(message)) {
+    if (generation->stop_reason() == docv1::VLM_STOP_REASON_UNSPECIFIED &&
+        generation->has_finish_reason()) {
+      generation->set_stop_reason(vlm_stop_reason(generation->finish_reason()));
+    }
+    return;
+  }
+  const google::protobuf::Descriptor* descriptor = message->GetDescriptor();
+  const google::protobuf::Reflection* reflection = message->GetReflection();
+  for (int index = 0; index < descriptor->field_count(); ++index) {
+    const google::protobuf::FieldDescriptor* field = descriptor->field(index);
+    if (field->cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE || field->is_map()) {
+      continue;
+    }
+    if (field->is_repeated()) {
+      const int size = reflection->FieldSize(*message, field);
+      for (int item = 0; item < size; ++item) {
+        type_stop_reasons_in(reflection->MutableRepeatedMessage(message, field, item));
+      }
+    } else if (reflection->HasField(*message, field)) {
+      type_stop_reasons_in(reflection->MutableMessage(message, field));
+    }
+  }
+}
 
 vlmv1::VlmPreset preset_for(parsev1::VlmModelType model) {
   switch (model) {
@@ -78,6 +107,19 @@ docv1::CollectorSource vlm_claimant() {
 }
 
 }  // namespace
+
+docv1::VlmStopReason vlm_stop_reason(std::string_view finish_reason) {
+  if (finish_reason == "length") return docv1::VLM_STOP_REASON_LENGTH;
+  if (finish_reason == "stop_sequence") return docv1::VLM_STOP_REASON_STOP_SEQUENCE;
+  if (finish_reason == "end_of_sequence" || finish_reason == "stop") {
+    return docv1::VLM_STOP_REASON_END_OF_SEQUENCE;
+  }
+  if (finish_reason == "content_filter") return docv1::VLM_STOP_REASON_CONTENT_FILTERED;
+  if (finish_reason == "inference_error") return docv1::VLM_STOP_REASON_INFERENCE_ERROR;
+  return docv1::VLM_STOP_REASON_UNSPECIFIED;
+}
+
+void type_generation_stop_reasons(docv1::Document* document) { type_stop_reasons_in(document); }
 
 void apply_vlm_convert_options(const parsev1::ConvertDocumentOptions& convert,
                                VlmConvertOptions* options) {
@@ -269,6 +311,7 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
             answers.warnings.push_back(page_warning_text(page.page_no(), warning));
           }
           docv1::Document fragment = page.document();
+          type_generation_stop_reasons(&fragment);
           merge_documents(std::move(fragment), document, claimant);
           ++answers.pages_ok;
         } else if (event.has_page_raw()) {

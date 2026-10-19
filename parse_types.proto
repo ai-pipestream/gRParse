@@ -1117,6 +1117,8 @@ message PublicFailureInfo {
 //   mean_score    mean over pages of each page's mean of its present axes
 //   low_score     mean over pages of each page's 5th-percentile axis
 // The grades bucket mean_score and low_score (see QualityGrade).
+// `pages` carries the same axes per page (docling 2.139
+// ConfidenceScores.pages, same tag as the docling-serve proto).
 message ConfidenceScores {
   optional double parse_score = 1;
   optional double layout_score = 2;
@@ -1128,6 +1130,14 @@ message ConfidenceScores {
   QualityGrade low_grade = 8;
   optional string mean_grade_raw = 9;
   optional string low_grade_raw = 10;
+  // Per-page scores keyed by 1-based page number. A page entry carries that
+  // page's measured axes, its mean_score (mean of its present axes) and
+  // low_score (5th percentile of its present axes), and the two grades.
+  // Every page the report folded has an entry; a page no model measured has
+  // an entry with no scores and UNSPECIFIED grades, rather than zeros. Page
+  // entries are flat: their own `pages` map is always empty. Absent pages
+  // were not read (for example outside the requested page range).
+  map<int32, ConfidenceScores> pages = 11;
 }
 
 // ProfilingScope mirrors docling.utils.profiling.ProfilingScope.

@@ -994,7 +994,7 @@ std::vector<WorkChunk> split_oversized(std::vector<WorkChunk>&& work, int max_to
       split.push_back(std::move(chunk));
       continue;
     }
-    const int budget = max_tokens - heading_tokens(chunk, counter);
+    int budget = max_tokens - heading_tokens(chunk, counter);
     if (budget <= 0) {
       // The heading trail alone fills the budget, so no piece of the text
       // fits beside it; cutting it to single tokens would only multiply
@@ -1005,7 +1005,34 @@ std::vector<WorkChunk> split_oversized(std::vector<WorkChunk>&& work, int max_to
       continue;
     }
     const std::vector<char32_t> points = decode_utf8(chunk.text);
-    const std::vector<Span> pieces = pack_spans(points, budget, counter);
+    std::vector<Span> pieces = pack_spans(points, budget, counter);
+    // The budget above assumes heading + text counts add up. A tokenizer
+    // whose merges cross the heading's newline breaks that, so each piece is
+    // re-measured in context and the text budget shrinks by the worst
+    // overflow until every piece fits: docling-core #690's convergence loop.
+    // A budget that reaches zero keeps the last packing, logged as unsplit.
+    std::string headings_block;
+    for (const auto& heading : chunk.headings) {
+      headings_block += heading;
+      headings_block.push_back('\n');
+    }
+    while (true) {
+      int overflow = 0;
+      for (const Span& piece : pieces) {
+        const std::string text =
+            encode_utf8(points.data() + piece.begin, points.data() + piece.end);
+        overflow = std::max(overflow, counter.count(headings_block + text) - max_tokens);
+      }
+      if (overflow <= 0) {
+        break;
+      }
+      if (budget - overflow <= 0) {
+        ++unsplit;
+        break;
+      }
+      budget -= overflow;
+      pieces = pack_spans(points, budget, counter);
+    }
     if (pieces.size() <= 1) {
       split.push_back(std::move(chunk));
       continue;

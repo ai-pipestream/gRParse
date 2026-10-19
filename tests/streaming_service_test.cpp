@@ -286,6 +286,14 @@ void verify_ordered_page_stream(TestServer* server) {
               events.at(2).page().text_offsets(0).utf_end() == 13,
           "page three offsets");
   require(events.back().has_complete(), "terminal metadata event");
+  const auto& complete = events.back().complete();
+  require(complete.has_confidence(), "the stream reports the CV pages' confidence");
+  require(complete.confidence().pages_size() == 3, "the stream's report has one entry per page");
+  for (int page_no = 1; page_no <= 3; ++page_no) {
+    require(complete.confidence().pages().contains(page_no) &&
+                std::abs(complete.confidence().pages().at(page_no).ocr_score() - 0.95) < 1e-6,
+            "streamed page entries are keyed by the emitted page number");
+  }
 }
 
 void verify_data_after_complete_is_rejected(TestServer* server) {
@@ -491,6 +499,18 @@ void verify_parity_options_and_confidence(TestServer* server) {
   require(confidence.mean_grade() == pipestream::parse::v1::QUALITY_GRADE_EXCELLENT &&
               confidence.low_grade() == pipestream::parse::v1::QUALITY_GRADE_EXCELLENT,
           "0.95 grades as excellent on both aggregates");
+  require(confidence.pages_size() == 3, "one ConfidenceScores.pages entry per page");
+  for (int page_no = 1; page_no <= 3; ++page_no) {
+    require(confidence.pages().contains(page_no), "pages are keyed by 1-based page number");
+    const auto& page = confidence.pages().at(page_no);
+    require(page.has_ocr_score() && std::abs(page.ocr_score() - 0.95) < 1e-6,
+            "each page carries its own OCR axis");
+    require(!page.has_layout_score() && !page.has_table_score(), "unmeasured page axes stay unset");
+    require(page.mean_grade() == pipestream::parse::v1::QUALITY_GRADE_EXCELLENT &&
+                page.low_grade() == pipestream::parse::v1::QUALITY_GRADE_EXCELLENT,
+            "each page is graded");
+    require(page.pages_size() == 0, "page entries are flat");
+  }
   require(document.exports().has_md(), "markdown was requested");
 
   request = unary_request();

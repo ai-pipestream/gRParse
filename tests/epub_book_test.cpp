@@ -132,6 +132,10 @@ void verify_href_resolution() {
           "climbing past the root stops at the root");
   require(grparse::resolve_epub_href("OPS/ch01.xhtml", "https://example.org/a.jpg").empty(),
           "an absolute URL is not an archive entry");
+  require(grparse::resolve_epub_href("OPS/ch01.xhtml", "file:///etc/passwd").empty(),
+          "a file URI is not an archive entry and is never opened");
+  require(grparse::resolve_epub_href("OPS/ch01.xhtml", "/etc/passwd") == "etc/passwd",
+          "an absolute path names an archive entry, never the server's filesystem");
   require(grparse::resolve_epub_href("OPS/ch01.xhtml", "data:image/png;base64,AAAA").empty(),
           "a data URI is not an archive entry");
   require(grparse::resolve_epub_href("OPS/ch01.xhtml", "#top").empty(),

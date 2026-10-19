@@ -1,0 +1,52 @@
+{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [
+    {
+      "id": 0,
+      "content": "[PAD]",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    }
+  ],
+  "normalizer": null,
+  "pre_tokenizer": null,
+  "post_processor": null,
+  "decoder": null,
+  "model": {
+    "type": "BPE",
+    "dropout": null,
+    "unk_token": null,
+    "continuing_subword_prefix": null,
+    "end_of_word_suffix": null,
+    "fuse_unk": false,
+    "byte_fallback": false,
+    "ignore_merges": false,
+    "vocab": {
+      "[PAD]": 0,
+      "a": 1,
+      "h": 2,
+      "e": 3,
+      "l": 4,
+      "o": 5,
+      " ": 6,
+      "\n": 7,
+      "\nh": 8,
+      "he": 9,
+      "hel": 10,
+      "hell": 11,
+      "hello": 12
+    },
+    "merges": [
+      "\n h",
+      "h e",
+      "he l",
+      "hel l",
+      "hell o"
+    ]
+  }
+}

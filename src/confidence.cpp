@@ -49,8 +49,9 @@ std::optional<double> PageConfidence::mean() const { return mean_of(present(*thi
 
 std::optional<double> PageConfidence::low() const { return quantile_of(present(*this), 0.05); }
 
-PageConfidence page_confidence(const OcrPage& page) {
+PageConfidence page_confidence(const OcrPage& page, int page_no) {
   PageConfidence confidence;
+  confidence.page_no = page_no;
   std::vector<double> ocr;
   for (const OcrLine& line : page.lines) {
     if (line.confidence.has_value() && origin_of(page, line) == TextOrigin::kOcr) {
@@ -80,6 +81,23 @@ pipestream::parse::v1::QualityGrade quality_grade(double score) {
   if (score < 0.8) return pipestream::parse::v1::QUALITY_GRADE_FAIR;
   if (score < 0.9) return pipestream::parse::v1::QUALITY_GRADE_GOOD;
   return pipestream::parse::v1::QUALITY_GRADE_EXCELLENT;
+}
+
+pipestream::parse::v1::ConfidenceScores page_scores(const PageConfidence& page) {
+  pipestream::parse::v1::ConfidenceScores scores;
+  if (page.parse_score) scores.set_parse_score(*page.parse_score);
+  if (page.layout_score) scores.set_layout_score(*page.layout_score);
+  if (page.table_score) scores.set_table_score(*page.table_score);
+  if (page.ocr_score) scores.set_ocr_score(*page.ocr_score);
+  if (const auto mean = page.mean()) {
+    scores.set_mean_score(*mean);
+    scores.set_mean_grade(quality_grade(*mean));
+  }
+  if (const auto low = page.low()) {
+    scores.set_low_score(*low);
+    scores.set_low_grade(quality_grade(*low));
+  }
+  return scores;
 }
 
 std::optional<pipestream::parse::v1::ConfidenceScores> document_confidence(
@@ -112,6 +130,11 @@ std::optional<pipestream::parse::v1::ConfidenceScores> document_confidence(
   scores.set_low_score(low_score);
   scores.set_mean_grade(quality_grade(mean_score));
   scores.set_low_grade(quality_grade(low_score));
+  auto& by_page = *scores.mutable_pages();
+  for (const PageConfidence& page : pages) {
+    if (page.page_no < 1) continue;  // not a document page; no key to file it under
+    by_page[page.page_no] = page_scores(page);
+  }
   return scores;
 }
 

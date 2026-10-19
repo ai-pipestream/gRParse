@@ -931,7 +931,7 @@ class DocumentStreamReactor final
       event->message->set_total_pages(total_pages_);
       append_page_data(*page_it->second, next_page_, &assembly_cursor_, event->message->mutable_page(),
                        &assembly_warnings_);
-      page_scores_.push_back(page_confidence(*page_it->second));
+      page_scores_.push_back(page_confidence(*page_it->second, next_page_));
       stream_fold_.fold(event->message->page());
       fold_has_cv_ = true;
       // Heading depth needs every page's heights; the terminal event ships

@@ -885,6 +885,36 @@ void verify_hybrid_heading_over_budget_leaves_chunk_whole() {
           "the hybrid rules moved to hybrid/2");
 }
 
+// docling-core #690: a table chunk under a heading never exceeds max_tokens
+// once the heading trail is added back. Swept over budgets from just above
+// the heading's own cost; markdown and triplet serializations both.
+void verify_hybrid_table_chunks_under_a_heading_respect_max_tokens() {
+  docv1::Document document = new_document();
+  add_section(&document, "Quarterly results by region", 1);
+  std::vector<std::vector<Cell>> rows{{{"Region", true}, {"Quarter", true}, {"Revenue", true}}};
+  for (int row = 0; row < 12; ++row) {
+    rows.push_back({{"Region " + std::to_string(row)}, {"Q" + std::to_string(row % 4 + 1)},
+                    {std::to_string(1000 + row * 37) + " units"}});
+  }
+  add_table(&document, rows);
+  const int heading_cost = count_tokens("Quarterly results by region\n");
+  for (const bool markdown : {true, false}) {
+    for (int max_tokens = heading_cost + 1; max_tokens <= heading_cost + 40; ++max_tokens) {
+      auto options = hybrid_options(max_tokens);
+      options.set_use_markdown_tables(markdown);
+      const auto chunks = run_hybrid(document, {}, options, "t.pdf");
+      for (const auto& chunk : chunks) {
+        require_eq(chunk.num_tokens(),
+                   count_tokens("Quarterly results by region\n" + chunk.text()),
+                   "num_tokens is the contextualized count");
+        require(chunk.num_tokens() <= max_tokens,
+                std::format("{} table chunk over budget: {} > {}", markdown ? "markdown" : "triplet",
+                            chunk.num_tokens(), max_tokens));
+      }
+    }
+  }
+}
+
 void verify_split_pieces_narrow_offsets_only_when_exact() {
   docv1::Document document = new_document();
   const std::string ref = add_paragraph(&document, "Alpha beta. Gamma delta.", 1);
@@ -1252,6 +1282,8 @@ const Case kCases[] = {
     {"hybrid word and hard-cut fallback", verify_hybrid_falls_back_to_words_then_hard_cuts},
     {"hybrid heading budget", verify_hybrid_headings_count_against_the_budget},
     {"hybrid heading over budget", verify_hybrid_heading_over_budget_leaves_chunk_whole},
+    {"hybrid table chunks under a heading respect max_tokens",
+     verify_hybrid_table_chunks_under_a_heading_respect_max_tokens},
     {"hybrid offset narrowing", verify_split_pieces_narrow_offsets_only_when_exact},
     {"raw text option", verify_raw_text_mirrors_text_when_requested},
     {"hybrid digest", verify_hybrid_digest_reports_the_budget},

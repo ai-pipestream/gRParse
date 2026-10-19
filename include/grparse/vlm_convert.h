@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -64,6 +65,20 @@ struct VlmConvertReport {
   grpc::StatusCode code = grpc::StatusCode::OK;
   std::string error;
 };
+
+// Classifies a provider's verbatim finish_reason as a VlmStopReason the way
+// docling's picture-description engine does: docling's own value names,
+// OpenAI "stop" as END_OF_SEQUENCE. Anything else, including an empty value,
+// is UNSPECIFIED; gRParse does not guess (upstream's API image path calls
+// every unknown value END_OF_SEQUENCE).
+ai::pipestream::document::v1::VlmStopReason vlm_stop_reason(std::string_view finish_reason);
+
+// Sets GenerationSource.stop_reason from finish_reason on every generation in
+// `document` whose producer left stop_reason UNSPECIFIED. A producer's own
+// stop_reason is kept as it is, and finish_reason is never rewritten. Map
+// fields are not walked: no map value in the document schema carries a
+// GenerationSource.
+void type_generation_stop_reasons(ai::pipestream::document::v1::Document* document);
 
 // Rasterize `bytes` and run ConvertPages through `channel`. Merges every
 // PageDocument into `document` under claimant "vlm-convert". Never throws;

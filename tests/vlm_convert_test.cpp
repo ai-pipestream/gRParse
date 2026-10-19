@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <grpcpp/grpcpp.h>
@@ -62,6 +63,11 @@ class FakeVlmConvertService final : public vlmv1::VlmConvertService::Service {
       auto* text = page->mutable_document()->add_texts()->mutable_text();
       text->mutable_base()->set_self_ref("#/texts/" + std::to_string(page_no - 1));
       text->mutable_base()->set_text("page-" + std::to_string(page_no));
+      // The peer names the generation with the provider's verbatim stop
+      // reason only, the way a producer older than VlmStopReason does.
+      auto* generation = text->mutable_base()->add_source()->mutable_generation();
+      generation->set_model("granite-docling");
+      generation->set_finish_reason("length");
       (*page->mutable_document()->mutable_pages())[page_no].set_page_no(page_no);
       auto* warning = page->add_warnings();
       warning->set_code(vlmv1::PAGE_WARNING_CODE_TABLE_TRUNCATED);
@@ -177,6 +183,18 @@ void verify_convert_rasters_dials_and_merges() {
           "one raster page converts: " + report.error);
   require(document.texts_size() == 1 && document.texts(0).text().base().text() == "page-1",
           "page document merges into the target");
+  {
+    const auto& base = document.texts(0).text().base();
+    const docv1::GenerationSource* generation = nullptr;
+    for (const auto& source : base.source()) {
+      if (source.has_generation()) generation = &source.generation();
+    }
+    require(generation != nullptr && generation->model() == "granite-docling",
+            "the fragment's GenerationSource survives the merge");
+    require(generation->stop_reason() == docv1::VLM_STOP_REASON_LENGTH,
+            "a merged VLM fragment carries a typed stop reason");
+    require(generation->finish_reason() == "length", "finish_reason keeps the verbatim value");
+  }
   require(report.warnings.size() == 2 &&
               report.warnings[0] ==
                   "vlm convert: page 1: PAGE_WARNING_CODE_TABLE_TRUNCATED: kept 500 of 90000 "
@@ -188,6 +206,69 @@ void verify_convert_rasters_dials_and_merges() {
               seen.options.endpoint() == "http://vlm.test:9" && seen.page_nos.size() == 1 &&
               seen.page_nos[0] == 1 && seen.page_bytes[0] > 0,
           "options lead and one full-page PNG is sent");
+}
+
+// docling 2.140 VlmStopReason: every upstream value name and OpenAI "stop"
+// classify; anything else stays UNSPECIFIED with no guess.
+void verify_vlm_stop_reason_classifies_like_docling() {
+  const std::vector<std::pair<std::string, docv1::VlmStopReason>> cases{
+      {"length", docv1::VLM_STOP_REASON_LENGTH},
+      {"stop_sequence", docv1::VLM_STOP_REASON_STOP_SEQUENCE},
+      {"end_of_sequence", docv1::VLM_STOP_REASON_END_OF_SEQUENCE},
+      {"stop", docv1::VLM_STOP_REASON_END_OF_SEQUENCE},
+      {"content_filter", docv1::VLM_STOP_REASON_CONTENT_FILTERED},
+      {"inference_error", docv1::VLM_STOP_REASON_INFERENCE_ERROR},
+      {"unspecified", docv1::VLM_STOP_REASON_UNSPECIFIED},
+      {"tool_calls", docv1::VLM_STOP_REASON_UNSPECIFIED},
+      {"LENGTH", docv1::VLM_STOP_REASON_UNSPECIFIED},
+      {"", docv1::VLM_STOP_REASON_UNSPECIFIED},
+  };
+  for (const auto& [raw, expected] : cases) {
+    require(grparse::vlm_stop_reason(raw) == expected,
+            "finish_reason '" + raw + "' classifies as " + docv1::VlmStopReason_Name(expected));
+  }
+}
+
+// The fold reaches every GenerationSource in the document (texts, nested
+// table cells' owners, pictures), keeps a producer's own stop_reason, and
+// leaves a generation without finish_reason unset.
+void verify_type_generation_stop_reasons_walks_the_document() {
+  docv1::Document document;
+  auto* text = document.add_texts()->mutable_text();
+  text->mutable_base()->add_source()->mutable_generation()->set_finish_reason("content_filter");
+  text->mutable_base()->add_source()->mutable_collector()->set_collector("vlm-convert");
+  auto* picture = document.add_pictures();
+  auto* produced = picture->add_source()->mutable_generation();
+  produced->set_finish_reason("length");
+  produced->set_stop_reason(docv1::VLM_STOP_REASON_STOP_SEQUENCE);
+  picture->add_source()->mutable_generation()->set_model("no-finish-reason");
+  auto* table = document.add_tables();
+  table->add_source()->mutable_generation()->set_finish_reason("stop");
+
+  grparse::type_generation_stop_reasons(&document);
+
+  require(document.texts(0).text().base().source(0).generation().stop_reason() ==
+              docv1::VLM_STOP_REASON_CONTENT_FILTERED,
+          "a text item's generation is typed");
+  require(document.texts(0).text().base().source(1).has_collector(),
+          "non-generation sources are untouched");
+  require(document.pictures(0).source(0).generation().stop_reason() ==
+              docv1::VLM_STOP_REASON_STOP_SEQUENCE,
+          "a producer's own stop_reason is kept, not re-derived");
+  require(document.pictures(0).source(0).generation().finish_reason() == "length",
+          "finish_reason is never rewritten");
+  require(document.pictures(0).source(1).generation().stop_reason() ==
+              docv1::VLM_STOP_REASON_UNSPECIFIED,
+          "no finish_reason, no stop_reason");
+  require(document.tables(0).source(0).generation().stop_reason() ==
+              docv1::VLM_STOP_REASON_END_OF_SEQUENCE,
+          "a table's generation is typed");
+
+  docv1::Document wire;
+  require(wire.ParseFromString(document.SerializeAsString()), "parse serialized document");
+  require(wire.tables(0).source(0).generation().stop_reason() ==
+              docv1::VLM_STOP_REASON_END_OF_SEQUENCE,
+          "stop_reason survives the wire");
 }
 
 // Answers the first page with page_raw, then keeps the stream open until the
@@ -435,6 +516,8 @@ void verify_endpoints_lazy_channel() {
 int main() {
   return grparse_test::run_test_main("vlm-convert-test", "all checks passed", {
       verify_apply_maps_granite_docling_and_raw_api_url,
+      verify_vlm_stop_reason_classifies_like_docling,
+      verify_type_generation_stop_reasons_walks_the_document,
       verify_convert_rasters_dials_and_merges,
       verify_missing_target_is_failed_precondition,
       verify_abort_cancels_the_stream,

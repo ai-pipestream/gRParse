@@ -14,6 +14,7 @@
 #include "org/apache/opennlp/grpc/v1/opennlp_annotations.pb.h"
 #include "org/apache/opennlp/grpc/v1/opennlp_document.pb.h"
 #include "grparse/document_render.h"
+#include "../src/render/picture_image.h"
 #include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
@@ -471,6 +472,69 @@ void verify_markdown_flattens_stacked_column_headers() {
   const std::string late_markdown = grparse::render_markdown(late);
   require(late_markdown == "|        |\n|--------|\n| note   |\n| Header |",
           "header flags below row 0 must leave every row in the body:\n" + late_markdown);
+}
+
+// docling-core 2.102 header-row rule (#767). Each expected string is what
+// docling-core 2.103.0 DoclingDocument.export_to_markdown() prints for the
+// same cells (receipt: docs/receipts/feat-parity-core-2.103-slim-2.140/).
+// A client document's image uri is data, never a path to open: only a
+// data: URI decodes to bytes; a file URI, an absolute path and a relative
+// path come back as nothing, so referenced output keeps the uri as text.
+void verify_image_uris_are_never_dereferenced() {
+  for (const std::string uri : {"file:///etc/hostname", "file://localhost/etc/hostname",
+                                "/etc/hostname", "../../etc/hostname", "images/a.png",
+                                "https://example.org/a.png"}) {
+    require(!grparse::render::decode_image_data_uri(uri).has_value(),
+            "not decoded as image bytes: " + uri);
+  }
+  require(grparse::render::decode_image_data_uri("data:image/png;base64,iVBORw0KGgo=").has_value(),
+          "a data URI still decodes");
+}
+
+void verify_markdown_header_rows_follow_docling_core_2_102() {
+  struct Case {
+    std::string name;
+    std::vector<std::vector<std::pair<std::string, bool>>> rows;
+    std::string expected;
+  };
+  const std::vector<Case> cases{
+      {"row labels flagged in the leading column",
+       {{{"", true}, {"2024", true}, {"2025", true}},
+        {{"Revenue", true}, {"10", false}, {"20", false}},
+        {{"Cost", true}, {"5", false}, {"6", false}}},
+       "|         |   2024 |   2025 |\n|---------|--------|--------|\n"
+       "| Revenue |     10 |     20 |\n| Cost    |      5 |      6 |"},
+      {"an unflagged row label beside a stacked header",
+       {{{"Region", true}, {"Q1", true}}, {{"North", false}, {"7", true}}, {{"South", false}, {"9", false}}},
+       "| Region - North   |   Q1 - 7 |\n|------------------|----------|\n| South            |        9 |"},
+      {"a fully flagged second header row",
+       {{{"Region", true}, {"Q1", true}}, {{"", true}, {"units", true}}, {{"South", false}, {"9", false}}},
+       "| Region   |   Q1 - units |\n|----------|--------------|\n| South    |            9 |"},
+      {"a partially flagged first row",
+       {{{"Name", true}, {"Score", false}}, {{"Ann", false}, {"3", false}}},
+       "| Name   |   Score |\n|--------|---------|\n| Ann    |       3 |"},
+      {"body text beside a flagged cell in row 1",
+       {{{"Item", true}, {"Kind", true}, {"Qty", true}},
+        {{"bolt", false}, {"sub", true}, {"42", false}},
+        {{"nut", false}, {"hex", false}, {"7", false}}},
+       "| Item   | Kind   |   Qty |\n|--------|--------|-------|\n"
+       "| bolt   | sub    |    42 |\n| nut    | hex    |     7 |"},
+  };
+  for (const Case& c : cases) {
+    docv1::Document document = base_document("header-rows.pdf");
+    auto* data = add_table(&document, "#/body")->mutable_data();
+    data->set_num_rows(static_cast<int>(c.rows.size()));
+    data->set_num_cols(static_cast<int>(c.rows.front().size()));
+    for (int row = 0; row < static_cast<int>(c.rows.size()); ++row) {
+      auto* grid_row = data->add_grid();
+      for (int col = 0; col < static_cast<int>(c.rows[row].size()); ++col) {
+        grid_cell(data, grid_row, c.rows[row][col].first, c.rows[row][col].second, row, col);
+      }
+    }
+    const std::string markdown = grparse::render_markdown(document);
+    require(markdown == c.expected, c.name + ": markdown differs from docling-core 2.103.0:\n" +
+                                        markdown + "\nexpected:\n" + c.expected);
+  }
 }
 
 void verify_markdown_caption_placement() {
@@ -1439,6 +1503,8 @@ int main() {
       verify_jagged_wire_grid_is_bounded,
       verify_markdown_multiline_cells_stay_single_line,
       verify_markdown_flattens_stacked_column_headers,
+      verify_markdown_header_rows_follow_docling_core_2_102,
+      verify_image_uris_are_never_dereferenced,
       verify_markdown_compact_tables,
       verify_markdown_caption_placement,
       verify_markdown_page_break_placeholder,

@@ -322,6 +322,114 @@ void verify_hybrid_chunks_use_the_hf_counter() {
           "the default digest is unchanged");
 }
 
+// docling-core #690 under a byte-level BPE: counts are not additive (the
+// heading's trailing newline can merge with the text after it), so the split
+// re-measures each contextualized piece and shrinks the text budget until
+// none is over. Swept over budgets; every chunk whose heading alone does not
+// reach the budget must fit.
+void verify_hf_contextualized_chunks_respect_max_tokens() {
+  const TokenCounter counter = load_fixture();
+  docv1::Document document = new_document();
+  const std::string heading = "helloworld abc";
+  {
+    const std::string ref = "#/texts/" + std::to_string(document.texts_size());
+    auto* base = document.add_texts()->mutable_section_header()->mutable_base();
+    document.mutable_texts(document.texts_size() - 1)->mutable_section_header()->set_level(1);
+    base->set_self_ref(ref);
+    base->set_text(heading);
+    base->set_orig(heading);
+    base->set_label(docv1::DOC_ITEM_LABEL_SECTION_HEADER);
+    base->mutable_parent()->set_ref("#/body");
+    document.mutable_body()->add_children()->set_ref(ref);
+  }
+  {
+    auto* table = document.add_tables();
+    table->set_self_ref("#/tables/0");
+    table->set_label(docv1::DOC_ITEM_LABEL_TABLE);
+    table->mutable_parent()->set_ref("#/body");
+    auto* data = table->mutable_data();
+    data->set_num_rows(8);
+    data->set_num_cols(2);
+    for (int row = 0; row < 8; ++row) {
+      auto* grid_row = data->add_grid();
+      for (int col = 0; col < 2; ++col) {
+        auto* cell = grid_row->add_cells();
+        cell->set_text(row == 0 ? (col == 0 ? "hello" : "world")
+                                : (col == 0 ? "abc helloworld" : "world abc hello"));
+        cell->set_column_header(row == 0);
+        cell->set_start_row_offset_idx(row);
+        cell->set_end_row_offset_idx(row + 1);
+        cell->set_start_col_offset_idx(col);
+        cell->set_end_col_offset_idx(col + 1);
+      }
+    }
+    document.mutable_body()->add_children()->set_ref("#/tables/0");
+  }
+  const int heading_cost = counter.count(heading + "\n");
+  int checked = 0;
+  for (const bool markdown : {true, false}) {
+    for (int max_tokens = heading_cost + 1; max_tokens <= heading_cost + 30; ++max_tokens) {
+      auto options = hf_options(max_tokens, fixture_path());
+      options.set_use_markdown_tables(markdown);
+      for (const auto& chunk : hybrid_or_throw(document, options)) {
+        require_eq(chunk.num_tokens(), counter.count(heading + "\n" + chunk.text()),
+                   "num_tokens is the contextualized hf/1 count");
+        require(chunk.num_tokens() <= max_tokens,
+                std::string(markdown ? "markdown" : "triplet") + " chunk over budget: " +
+                    std::to_string(chunk.num_tokens()) + " > " + std::to_string(max_tokens));
+        ++checked;
+      }
+    }
+  }
+  require(checked > 60, "the sweep produced chunks to check");
+}
+
+// The join fixture (tests/data/chunk_tokenizer_join.json) has no
+// pre-tokenizer and ranks the merge "\n h" above "h e", so "hello" is one
+// token alone but six after a heading's newline: the contextualized count is
+// larger than heading + text. A split sized from the separate counts would
+// emit chunks over max_tokens; docling-core #690 re-measures and shrinks the
+// budget by the overflow until each piece fits, and so does gRParse.
+void verify_hf_split_converges_when_the_heading_join_is_not_additive() {
+  const char* data = std::getenv("GRPARSE_TEST_DATA_DIR");
+  require(data != nullptr, "GRPARSE_TEST_DATA_DIR is set");
+  const std::string join_path = std::string(data) + "/chunk_tokenizer_join.json";
+  TokenCounter counter;
+  require(TokenCounter::huggingface(join_path, &counter).ok(), "join fixture loads");
+  require_eq(counter.count("hello"), 1, "hello alone");
+  require_eq(counter.count("a\n"), 2, "heading block");
+  require_eq(counter.count("a\nhello"), 6, "the join is not additive");
+
+  docv1::Document document = new_document();
+  {
+    const std::string ref = "#/texts/" + std::to_string(document.texts_size());
+    auto* header = document.add_texts()->mutable_section_header();
+    header->set_level(1);
+    auto* base = header->mutable_base();
+    base->set_self_ref(ref);
+    base->set_text("a");
+    base->set_orig("a");
+    base->set_label(docv1::DOC_ITEM_LABEL_SECTION_HEADER);
+    base->mutable_parent()->set_ref("#/body");
+    document.mutable_body()->add_children()->set_ref(ref);
+  }
+  add_paragraph(&document, "hello hello hello hello hello hello hello hello");
+  for (int max_tokens = 6; max_tokens <= 14; ++max_tokens) {
+    const auto chunks = hybrid_or_throw(document, hf_options(max_tokens, join_path));
+    require(chunks.size() > 1, "the paragraph is split");
+    std::string joined;
+    for (const auto& chunk : chunks) {
+      require_eq(chunk.num_tokens(), counter.count("a\n" + chunk.text()),
+                 "num_tokens is the contextualized count");
+      require(chunk.num_tokens() <= max_tokens,
+              "chunk over budget: " + std::to_string(chunk.num_tokens()) + " > " +
+                  std::to_string(max_tokens) + " for '" + chunk.text() + "'");
+      joined += chunk.text();
+    }
+    require(joined.find("hello") != std::string::npos, "text survives the split");
+  }
+}
+
 void verify_the_hard_cut_measures_under_hf() {
   // One pretoken over budget: wordish/1 would cut by code point count, which
   // says nothing about a merge-heavy tokenizer, so hf/1 measures each piece
@@ -392,6 +500,8 @@ int main() {
                                          verify_request_tokenizer_path_is_confined,
                                          verify_hybrid_chunks_use_the_hf_counter,
                                          verify_the_hard_cut_measures_under_hf,
+                                         verify_hf_contextualized_chunks_respect_max_tokens,
+                                         verify_hf_split_converges_when_the_heading_join_is_not_additive,
                                          verify_hf_chunking_is_byte_identical_across_runs_and_threads,
                                      });
 }

@@ -1409,8 +1409,10 @@ class CvCollector {
     // A list is one structure: consecutive list items join a LIST group.
     group_list_items(&outcome.document);
     std::vector<PageConfidence> page_scores;
-    page_scores.reserve(assembled_pages.size());
-    for (const OcrPage* page : assembled_pages) page_scores.push_back(page_confidence(*page));
+    page_scores.reserve(collected.pages.size());
+    for (const auto& [page_number, page] : collected.pages) {
+      page_scores.push_back(page_confidence(*page, page_number));
+    }
     *confidence_ = document_confidence(page_scores);
     *offsets_ = std::move(offsets);
     outcome.success = true;
