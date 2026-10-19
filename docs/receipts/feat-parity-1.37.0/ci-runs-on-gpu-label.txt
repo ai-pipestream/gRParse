@@ -1,0 +1,5 @@
+Date: 2026-10-19 (America/New_York)
+Change: .github/workflows/ci.yml runs-on: ubuntu-latest -> gpu for all 5 jobs
+Why: gpu label exists only on krick-host; nas-1/nas-2 lack it. Pins PR CI to krick
+to avoid nas flakes (run 453 openvino failed off-krick; run 455 jobs never executed).
+Jobs remain non-GPU builds (step titles say non-GPU tests). Global --gpus all stays off.

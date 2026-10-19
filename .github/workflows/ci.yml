@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   cuda-image:
-    runs-on: ubuntu-latest
+    runs-on: gpu  # krick-host only (label unique vs nas); jobs remain non-GPU builds
     steps:
       - uses: actions/checkout@v7
       - name: Log in to dhi.io
@@ -33,7 +33,7 @@ jobs:
         run: ./scripts/smoke-test.sh grparse-ci-cuda
 
   openvino-image:
-    runs-on: ubuntu-latest
+    runs-on: gpu  # krick-host only (label unique vs nas); jobs remain non-GPU builds
     steps:
       - uses: actions/checkout@v7
       - name: Build Intel/OpenVINO image and run non-GPU tests
@@ -72,7 +72,7 @@ jobs:
   # the build context's models/, and GRPARSE_TEST_REQUIRE_MODELS=1 makes a
   # missing model fail the in-build ctest instead of skipping.
   cpu-image:
-    runs-on: ubuntu-latest
+    runs-on: gpu  # krick-host only (label unique vs nas); jobs remain non-GPU builds
     steps:
       - uses: actions/checkout@v7
       - name: Log in to dhi.io
@@ -104,7 +104,7 @@ jobs:
   # the sync script. CI has no sibling checkouts, so the sibling-vs-vendored
   # diff (sync-peer-protos.sh --check) stays a developer-side step.
   demo-shell:
-    runs-on: ubuntu-latest
+    runs-on: gpu  # krick-host only (label unique vs nas); jobs remain non-GPU builds
     steps:
       - uses: actions/checkout@v7
       - name: Log in to dhi.io
@@ -131,7 +131,7 @@ jobs:
   # standalone in seconds - no gRPC or ONNX Runtime fetch - so this fits in a
   # PR gate.  Long campaigns run manually; see fuzz/README.md.
   fuzz-smoke:
-    runs-on: ubuntu-latest
+    runs-on: gpu  # krick-host only (label unique vs nas); jobs remain non-GPU builds
     steps:
       - uses: actions/checkout@v7
       - name: Install Clang and the ingest-door dependencies
