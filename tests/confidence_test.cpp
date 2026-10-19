@@ -140,7 +140,7 @@ void verify_pages_map() {
   require(close(first.mean_score(), (0.9 + 0.8 + 0.95) / 3.0), "page mean");
   require(close(first.low_score(), 0.81), "page low is the 5th percentile of its axes");
   require_equal(static_cast<int>(first.mean_grade()),
-                static_cast<int>(parsev1::QUALITY_GRADE_EXCELLENT), "page 1 mean grade");
+                static_cast<int>(parsev1::QUALITY_GRADE_GOOD), "page 1 mean grade (0.883)");
   require_equal(static_cast<int>(first.low_grade()),
                 static_cast<int>(parsev1::QUALITY_GRADE_GOOD), "page 1 low grade");
   require_equal(first.pages_size(), 0, "page entries are flat");
