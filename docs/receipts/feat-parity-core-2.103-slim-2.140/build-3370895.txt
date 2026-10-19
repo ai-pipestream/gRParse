@@ -1,0 +1,6 @@
+commit 3370895
+$ cmake --build /work/tmp/grparse-2140-build --parallel 20
+[0/2] Re-checking globbed directories...
+[1/3] Building CXX object CMakeFiles/confidence-test.dir/tests/confidence_test.cpp.o
+[2/3] Linking CXX executable confidence-test
+build-exit 0

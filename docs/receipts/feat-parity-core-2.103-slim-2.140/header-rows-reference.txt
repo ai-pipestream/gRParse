@@ -1,0 +1,23 @@
+docling-core 2.103.0
+== row labels flagged in the leading column
+|         |   2024 |   2025 |
+|---------|--------|--------|
+| Revenue |     10 |     20 |
+| Cost    |      5 |      6 |
+== an unflagged row label beside a stacked header
+| Region - North   |   Q1 - 7 |
+|------------------|----------|
+| South            |        9 |
+== a fully flagged second header row
+| Region   |   Q1 - units |
+|----------|--------------|
+| South    |            9 |
+== a partially flagged first row
+| Name   |   Score |
+|--------|---------|
+| Ann    |       3 |
+== body text beside a flagged cell in row 1
+| Item   | Kind   |   Qty |
+|--------|--------|-------|
+| bolt   | sub    |    42 |
+| nut    | hex    |     7 |

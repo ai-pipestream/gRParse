@@ -1,0 +1,18 @@
+state: base 6c9d565 plus this branch's new chunk tests and join fixture, chunker.cpp unchanged (fix not applied)
+$ ctest --output-on-failure -R chunk-hf-tokenizer
+Test project /work/tmp/grparse-2140-build
+    Start 6: chunk-hf-tokenizer-test
+1/1 Test #6: chunk-hf-tokenizer-test ..........***Failed    0.02 sec
+chunk-hf-tokenizer-test: chunk over budget: 8 > 6 for 'hello hello'
+
+
+0% tests passed, 1 tests failed out of 1
+
+Label Time Summary:
+grparse    =   0.02 sec*proc (1 test)
+
+Total Test time (real) =   0.03 sec
+
+The following tests FAILED:
+	  6 - chunk-hf-tokenizer-test (Failed)                  grparse
+Errors while running CTest

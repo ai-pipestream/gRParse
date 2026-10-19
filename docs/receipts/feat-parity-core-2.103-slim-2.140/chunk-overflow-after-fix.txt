@@ -1,0 +1,19 @@
+state: same tree with the split_oversized convergence loop applied (committed in ddf42dc)
+$ ctest --output-on-failure -R chunk
+Test project /work/tmp/grparse-2140-build
+    Start 5: chunking-test
+1/3 Test #5: chunking-test ....................   Passed    0.01 sec
+    Start 6: chunk-hf-tokenizer-test
+2/3 Test #6: chunk-hf-tokenizer-test ..........   Passed    0.03 sec
+    Start 7: chunk-hf-model-test
+3/3 Test #7: chunk-hf-model-test ..............***Skipped   0.00 sec
+
+100% tests passed, 0 tests failed out of 3
+
+Label Time Summary:
+grparse    =   0.04 sec*proc (3 tests)
+
+Total Test time (real) =   0.04 sec
+
+The following tests did not run:
+	  7 - chunk-hf-model-test (Skipped)

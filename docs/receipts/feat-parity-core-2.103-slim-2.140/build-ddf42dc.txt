@@ -1,0 +1,8 @@
+commit ddf42dc
+$ cmake --build /work/tmp/grparse-2140-build --parallel 20
+[1347/1352] Linking CXX executable _deps/grpc-build/third_party/boringssl-with-bazel/pki_test
+[1348/1352] Building CXX object _deps/grpc-build/third_party/boringssl-with-bazel/CMakeFiles/crypto_test.dir/crypto/x509/x509_test.cc.o
+[1349/1352] Linking CXX executable _deps/grpc-build/third_party/boringssl-with-bazel/crypto_test
+[1350/1352] Building CXX object _deps/grpc-build/third_party/boringssl-with-bazel/CMakeFiles/ssl_test.dir/ssl/ssl_test.cc.o
+[1351/1352] Linking CXX executable _deps/grpc-build/third_party/boringssl-with-bazel/ssl_test
+build-exit 0
