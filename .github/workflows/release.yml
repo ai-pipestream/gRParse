@@ -72,7 +72,7 @@ jobs:
         run: scripts/test/release-test.sh
 
   release:
-    name: Release ${{ github.event.workflow_run.head_branch || inputs.version }}
+    name: Publish the GitHub Release
     if: >-
       github.server_url == 'https://github.com' &&
       (github.event_name == 'workflow_dispatch' ||
