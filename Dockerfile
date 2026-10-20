@@ -6,9 +6,12 @@
 # The runtime stage asks nothing of the base beyond glibc (matching or newer
 # than the build stage's ubuntu26.04) and the CUDA runtime libraries on the
 # loader path: no shell, no package manager, and no ldconfig run.
+# The build stage starts from the local deps stage unless CI names a published
+# seed image (see the seed stage below).
+ARG GRPARSE_DEPS_IMAGE=deps
 ARG GRPARSE_RUNTIME_IMAGE=nvidia/cuda:13.4.2-runtime-ubuntu26.04
 
-FROM nvidia/cuda:13.4.2-devel-ubuntu26.04 AS build
+FROM nvidia/cuda:13.4.2-devel-ubuntu26.04 AS deps
 ARG GRPARSE_BUILD_JOBS=2
 ENV CARGO_BUILD_JOBS=${GRPARSE_BUILD_JOBS}
 
@@ -54,6 +57,28 @@ RUN curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/opencv.tar.g
  && cmake --install /tmp/opencv-build \
  && rm -rf /tmp/opencv.tar.gz "/tmp/opencv-${OPENCV_VERSION}" /tmp/opencv-build
 
+# The seed: one full build of this tree in the deps toolchain, pruned to
+# its third-party objects by scripts/prune-seed.sh and kept under
+# /opt/grparse-seed. publish-deps.yml publishes deps plus this tree as
+# pipestreamai/grparse-deps:cuda-<arch>-<hash> (scripts/deps-hash.sh), and
+# a build whose GRPARSE_DEPS_IMAGE names that image copies it into an empty
+# /build, so a fresh runner compiles only this repository instead of gRPC and
+# the other fetched dependencies. The sources are bind-mounted, not copied, so
+# the image carries none of them. The configure line matches the build stage's.
+FROM deps AS seed
+ARG GRPARSE_BUILD_JOBS=2
+WORKDIR /src
+RUN --mount=type=bind,target=/src,rw \
+    cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
+      -DGRPARSE_WERROR=ON -DGRPARSE_EMBED_TENSORRT=ON -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv5 \
+ && cmake --build /build --target grparse-server grparse-stream-client grparse-embed-text grparse-tests --parallel ${GRPARSE_BUILD_JOBS} \
+ && sh scripts/prune-seed.sh /build /opt/grparse-seed
+
+# grparse-deps: end of seed inputs
+
+FROM ${GRPARSE_DEPS_IMAGE} AS build
+ARG GRPARSE_BUILD_JOBS=2
+ENV CARGO_BUILD_JOBS=${GRPARSE_BUILD_JOBS}
 WORKDIR /src
 COPY . .
 # The cache id includes ABI-sensitive dependency versions. Update it whenever
@@ -65,12 +90,17 @@ COPY . .
 # concurrent builder its own tree: --build-arg GRPARSE_BUILD_CACHE_SCOPE=ci
 # suffixes the cache id; the default keeps the existing tree.
 ARG GRPARSE_BUILD_CACHE_SCOPE=
+# A /build that is still empty (a fresh runner, a new cache id) is first
+# filled from /opt/grparse-seed when this stage starts from a seed image.
 # Cache-mounted build trees outlive proto changes, and ninja cannot see a
 # COPY-ed proto as newer than a cached generated header, so a content stamp
 # decides: any proto change discards the staged and generated trees, which
 # forces regeneration; everything else stays warm.
 RUN --mount=type=cache,id=grparse-ubuntu26-cuda13.4-trt11.4-grpc1.84.0-ort1.30.0-cxx23-sessionep2-static1-simdutf9-ocv500-tokcpp1${GRPARSE_BUILD_CACHE_SCOPE},sharing=locked,target=/build \
-    PROTO_SUM=$(cat *.proto collectors/*.proto | sha256sum | cut -d' ' -f1) \
+    if [ -d /opt/grparse-seed ] && [ ! -f /build/CMakeCache.txt ]; then \
+      cp -a /opt/grparse-seed/. /build/ && echo "seed: /build seeded from /opt/grparse-seed"; \
+    fi \
+ && PROTO_SUM=$(cat *.proto collectors/*.proto | sha256sum | cut -d' ' -f1) \
  && if [ "$(cat /build/.proto-sum 2>/dev/null)" != "$PROTO_SUM" ]; then \
       rm -rf /build/proto /build/generated && printf '%s' "$PROTO_SUM" > /build/.proto-sum; \
     fi \

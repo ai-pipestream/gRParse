@@ -1,0 +1,160 @@
+name: Publish Deps Seeds
+
+# Builds and publishes the deps seed images: each Dockerfile's `seed` stage,
+# that is its toolchain (base, apt packages, TensorRT, OpenCV, the OpenVINO
+# SDK) plus one finished /build tree pruned to its third-party objects
+# (scripts/prune-seed.sh). A build that names a seed through
+# GRPARSE_DEPS_IMAGE copies that tree into an empty /build and compiles only
+# this repository; on a fresh hosted runner that spares about two thirds of an
+# image job, which otherwise rebuilds gRPC and the other fetched dependencies
+# from source (run 39362730667: 1,424 to 1,978 s per image before the first
+# gRParse edge).
+#
+# Tags are content-addressed: docker.io/pipestreamai/grparse-deps:
+# <flavor>-<arch>-<hash>, with <hash> from scripts/deps-hash.sh over every
+# input that could make a seeded build differ from an unseeded one. The same
+# inputs always name the same tag, so a seed built from a pull request is the
+# seed main would build, and a build whose inputs have no seed yet falls back
+# to the local deps stage and compiles everything, as before.
+#
+# When it runs:
+#   push to main, or a pull request from this repository, that touches a seed
+#     input: builds each leg whose tag does not exist yet. Pull requests from
+#     forks get no secrets and are skipped.
+#   weekly schedule and workflow_dispatch with `rebuild`: rebuilds every leg
+#     and overwrites its tag, so the apt layers pick up security updates.
+# Docker Hub credentials come from the DOCKER_USER / DOCKER_TOKEN org secrets,
+# so the workflow runs on GitHub only.
+on:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - Dockerfile.cpu
+      - Dockerfile.openvino
+      - CMakeLists.txt
+      - cmake/**
+      - patches/**
+      - scripts/deps-hash.sh
+      - scripts/prune-seed.sh
+      - scripts/build-jobs.sh
+      - .github/workflows/publish-deps.yml
+  pull_request:
+    # The same list as push above.
+    paths:
+      - Dockerfile
+      - Dockerfile.cpu
+      - Dockerfile.openvino
+      - CMakeLists.txt
+      - cmake/**
+      - patches/**
+      - scripts/deps-hash.sh
+      - scripts/prune-seed.sh
+      - scripts/build-jobs.sh
+      - .github/workflows/publish-deps.yml
+  schedule:
+    - cron: "41 4 * * 0"
+  workflow_dispatch:
+    inputs:
+      rebuild:
+        description: Rebuild and overwrite every seed tag even when it exists
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  DEPS_REPO: docker.io/pipestreamai/grparse-deps
+
+jobs:
+  seed:
+    name: Seed ${{ matrix.flavor }} ${{ matrix.arch }}
+    if: >-
+      ${{ github.server_url == 'https://github.com' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flavor: cuda
+            dockerfile: Dockerfile
+            arch: amd64
+            runner: ubuntu-latest
+          - flavor: cpu
+            dockerfile: Dockerfile.cpu
+            arch: amd64
+            runner: ubuntu-latest
+          - flavor: cpu
+            dockerfile: Dockerfile.cpu
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - flavor: openvino
+            dockerfile: Dockerfile.openvino
+            arch: amd64
+            runner: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Name the seed
+        id: seed
+        env:
+          DOCKERFILE: ${{ matrix.dockerfile }}
+          FLAVOR: ${{ matrix.flavor }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          hash=$(sh scripts/deps-hash.sh "$DOCKERFILE" "$ARCH")
+          echo "ref=$DEPS_REPO:$FLAVOR-$ARCH-$hash" >> "$GITHUB_OUTPUT"
+          echo "seed $DEPS_REPO:$FLAVOR-$ARCH-$hash"
+      - name: Log in to Docker Hub (docker.io)
+        uses: docker/login-action@v4
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Skip a seed that is already published
+        id: exists
+        env:
+          REF: ${{ steps.seed.outputs.ref }}
+          REBUILD: ${{ github.event_name == 'schedule' || inputs.rebuild == true }}
+        run: |
+          set -euo pipefail
+          if [ "$REBUILD" != true ] && docker buildx imagetools inspect "$REF" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "$REF is already published; nothing to build"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Free runner disk for the CUDA toolchain
+        # The CUDA devel base, TensorRT and the build tree outgrow the hosted
+        # runner's free space only on this leg; the preinstalled SDKs removed
+        # here are not used by any step of this job.
+        if: ${{ steps.exists.outputs.skip != 'true' && matrix.flavor == 'cuda' }}
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Choose the build parallelism
+        if: ${{ steps.exists.outputs.skip != 'true' }}
+        id: jobs
+        run: echo "n=$(scripts/build-jobs.sh)" >> "$GITHUB_OUTPUT"
+      - name: Build the seed stage and push it
+        if: ${{ steps.exists.outputs.skip != 'true' }}
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          target: seed
+          platforms: linux/${{ matrix.arch }}
+          build-args: GRPARSE_BUILD_JOBS=${{ steps.jobs.outputs.n }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          tags: ${{ steps.seed.outputs.ref }}
+          push: true

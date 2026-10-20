@@ -24,9 +24,12 @@
 # does not load on trixie (glibc 2.41). dhi.io publishes no ubuntu base.
 # Intel's own Ubuntu .deb releases of NEO installed onto a trixie build
 # stage are the route to a hardened default; the ARG above is the seam.
+# The build stage starts from the local deps stage unless CI names a published
+# seed image (see the seed stage below).
+ARG GRPARSE_DEPS_IMAGE=deps
 ARG GRPARSE_RUNTIME_IMAGE=ubuntu:26.04
 
-FROM ubuntu:26.04 AS build
+FROM ubuntu:26.04 AS deps
 ARG GRPARSE_BUILD_JOBS=2
 ENV CARGO_BUILD_JOBS=${GRPARSE_BUILD_JOBS}
 
@@ -79,6 +82,32 @@ RUN curl -fsSL --retry 5 -o /tmp/openvino.tgz \
  && tar -xzf /tmp/openvino.tgz -C /opt/openvino-sdk --strip-components=1 \
       --wildcards '*/runtime/include/*' '*/runtime/lib/intel64/libopenvino_ir_frontend.so*' \
  && rm /tmp/openvino.tgz
+
+# The seed: one full build of this tree in the deps toolchain, pruned to
+# its third-party objects by scripts/prune-seed.sh and kept under
+# /opt/grparse-seed. publish-deps.yml publishes deps plus this tree as
+# pipestreamai/grparse-deps:openvino-<arch>-<hash> (scripts/deps-hash.sh), and
+# a build whose GRPARSE_DEPS_IMAGE names that image copies it into an empty
+# /build, so a fresh runner compiles only this repository instead of gRPC and
+# the other fetched dependencies. The sources are bind-mounted, not copied, so
+# the image carries none of them. The configure line matches the build stage's.
+FROM deps AS seed
+ARG GRPARSE_BUILD_JOBS=2
+WORKDIR /src
+RUN --mount=type=bind,target=/src,rw \
+    cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
+      -DGRPARSE_WERROR=ON -DGRPARSE_ORT_PACKAGE=openvino \
+      -DGRPARSE_EMBED_OPENVINO=ON -DGRPARSE_OPENVINO_ROOT=/opt/openvino-sdk/runtime \
+      -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv5 \
+ && cmake --build /build --target grparse-server grparse-stream-client grparse-embed-text grparse-tests --parallel ${GRPARSE_BUILD_JOBS} \
+ && sh scripts/prune-seed.sh /build /opt/grparse-seed
+
+# grparse-deps: end of seed inputs
+
+FROM ${GRPARSE_DEPS_IMAGE} AS build
+ARG GRPARSE_BUILD_JOBS=2
+ENV CARGO_BUILD_JOBS=${GRPARSE_BUILD_JOBS}
+WORKDIR /src
 COPY . .
 # Separate cache from the CUDA image: different ONNX Runtime package and ABI.
 # Two builders that share this cache mount (a developer build and a local CI
@@ -87,12 +116,17 @@ COPY . .
 # concurrent builder its own tree: --build-arg GRPARSE_BUILD_CACHE_SCOPE=ci
 # suffixes the cache id; the default keeps the existing tree.
 ARG GRPARSE_BUILD_CACHE_SCOPE=
+# A /build that is still empty (a fresh runner, a new cache id) is first
+# filled from /opt/grparse-seed when this stage starts from a seed image.
 # Cache-mounted build trees outlive proto changes, and ninja cannot see a
 # COPY-ed proto as newer than a cached generated header, so a content stamp
 # decides: any proto change discards the staged and generated trees, which
 # forces regeneration; everything else stays warm.
 RUN --mount=type=cache,id=grparse-openvino-ubuntu26-grpc1.84.0-ort1.24.1-cxx23-sessionep2-static1-simdutf9-ocv500-tokcpp1${GRPARSE_BUILD_CACHE_SCOPE},sharing=locked,target=/build \
-    PROTO_SUM=$(cat *.proto collectors/*.proto | sha256sum | cut -d' ' -f1) \
+    if [ -d /opt/grparse-seed ] && [ ! -f /build/CMakeCache.txt ]; then \
+      cp -a /opt/grparse-seed/. /build/ && echo "seed: /build seeded from /opt/grparse-seed"; \
+    fi \
+ && PROTO_SUM=$(cat *.proto collectors/*.proto | sha256sum | cut -d' ' -f1) \
  && if [ "$(cat /build/.proto-sum 2>/dev/null)" != "$PROTO_SUM" ]; then \
       rm -rf /build/proto /build/generated && printf '%s' "$PROTO_SUM" > /build/.proto-sum; \
     fi \
