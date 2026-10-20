@@ -89,9 +89,46 @@ jobs:
           echo "served=$served" >> "$GITHUB_OUTPUT"
           echo "publishing version '${version:-<latest only>}' (served version $served)"
 
+  # Fails the run in a minute when the Docker Hub credentials cannot do what
+  # the legs need, instead of after an hour of building: run 39362730565
+  # (2026-10-20) built every leg and then failed every push on a read-only
+  # token. The token service grants only what a token may do, so asking it
+  # for each scope proves push on the published repository and pull on every
+  # public base the Dockerfiles name (an organization token without "Read
+  # public repositories" logs in but cannot pull them). dhi.io is checked by
+  # logging in, because the cpu legs build the models image from it.
+  preflight:
+    name: Check the registry credentials
+    if: ${{ github.server_url == 'https://github.com' }}
+    runs-on: ubuntu-latest
+    env:
+      CICD_TOKEN: ${{ secrets.CICD_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Docker Hub grants push on the image and pull on the bases
+        env:
+          DOCKER_USER: ${{ secrets.DOCKER_USER }}
+          DOCKER_TOKEN: ${{ secrets.DOCKER_TOKEN }}
+        run: |
+          scripts/registry-preflight.sh --push pipestreamai/grparse \
+            --pull docker/dockerfile --pull library/ubuntu --pull nvidia/cuda
+      - name: Log in to Docker Hardened Images (dhi.io)
+        uses: docker/login-action@v4
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+      - name: Log in to Forgejo container registry
+        if: ${{ env.CICD_TOKEN != '' }}
+        uses: docker/login-action@v4
+        with:
+          registry: git.rokkon.com
+          username: ${{ github.actor }}
+          password: ${{ secrets.CICD_TOKEN }}
+
   build:
     name: Build ${{ matrix.variant }} ${{ matrix.platform }}
-    needs: version
+    needs: [version, preflight]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     strategy:
@@ -145,6 +182,42 @@ jobs:
           fi
           echo "names=$names" >> "$GITHUB_OUTPUT"
           echo "platform_pair=${PLATFORM//\//-}" >> "$GITHUB_OUTPUT"
+      - name: Log in to Docker Hardened Images (dhi.io)
+        # Dockerfile.models pulls its bases from dhi.io; only the cpu legs build it.
+        if: ${{ matrix.variant == 'cpu' }}
+        uses: docker/login-action@v4
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+      - name: Provide the pinned model files
+        # The same step as ci.yml's cpu-image job, so the published cpu image
+        # runs the model-backed goldens (layout, table structure, figure
+        # classifier, hf/1 tokenizer) in its build stage instead of skipping
+        # them: GRPARSE_TEST_REQUIRE_MODELS=1 below turns a missing model into
+        # a failing test. The CUDA and OpenVINO legs build exactly as their
+        # ci.yml jobs do.
+        if: ${{ matrix.variant == 'cpu' }}
+        run: |
+          set -euo pipefail
+          docker build --progress=plain -f Dockerfile.models \
+            --build-arg MODELS_LAYOUT=all --build-arg MODELS_TOKENIZER=1 -t grparse-publish-models .
+          id=$(docker create grparse-publish-models)
+          docker cp "$id:/models/." models/
+          docker rm "$id"
+          scripts/fetch-models.sh --verify --dir models --layout all --tokenizer
+      - name: Choose the build parallelism and test flags
+        id: args
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          {
+            echo "build_args<<EOF"
+            echo "GRPARSE_BUILD_JOBS=$(scripts/build-jobs.sh)"
+            if [ "$VARIANT" = cpu ]; then echo "GRPARSE_TEST_REQUIRE_MODELS=1"; fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
       - name: Build (runs the test suite in the build stage) and push by digest
         id: build
         uses: docker/build-push-action@v7
@@ -152,6 +225,7 @@ jobs:
           context: .
           file: ${{ matrix.dockerfile }}
           platforms: ${{ matrix.platform }}
+          build-args: ${{ steps.args.outputs.build_args }}
           provenance: mode=max
           sbom: true
           labels: |

@@ -28,7 +28,9 @@ jobs:
         # The full build (not just the build stage) also assembles the
         # runtime stage, so a runtime library missing from the staged
         # closure fails here instead of at deploy time.
-        run: docker build --progress=plain -t grparse-ci-cuda .
+        run: |
+          docker build --progress=plain \
+            --build-arg GRPARSE_BUILD_JOBS="$(scripts/build-jobs.sh)" -t grparse-ci-cuda .
       - name: Boot-proof the runtime image
         # Library closure + boot-to-main.  A green build with an unbootable
         # binary has shipped before (ZXing flipping BUILD_SHARED_LIBS); this
@@ -43,7 +45,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Build Intel/OpenVINO image and run non-GPU tests
-        run: docker build --progress=plain -f Dockerfile.openvino -t grparse-ci-openvino .
+        run: |
+          docker build --progress=plain -f Dockerfile.openvino \
+            --build-arg GRPARSE_BUILD_JOBS="$(scripts/build-jobs.sh)" -t grparse-ci-openvino .
       - name: Boot-proof the runtime image
         run: ./scripts/smoke-test.sh grparse-ci-openvino
       - name: Verify model fetch and real CPU embeddings
@@ -103,6 +107,7 @@ jobs:
       - name: Build CPU image and run the tests, model goldens included
         run: |
           docker build --progress=plain -f Dockerfile.cpu \
+            --build-arg GRPARSE_BUILD_JOBS="$(scripts/build-jobs.sh)" \
             --build-arg GRPARSE_TEST_REQUIRE_MODELS=1 -t grparse-ci-cpu .
       - name: Boot-proof the runtime image
         run: ./scripts/smoke-test.sh grparse-ci-cpu
