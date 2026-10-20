@@ -24,9 +24,11 @@ jobs:
           registry: dhi.io
           username: ${{ secrets.DOCKER_USER }}
           password: ${{ secrets.DOCKER_TOKEN }}
-      - name: Free runner disk for the CUDA toolchain
-        # GitHub's hosted runner only: the CUDA devel base, the seed tree and
-        # the build outgrow its free space. The SDKs removed are unused here.
+      - name: Free runner disk for the seeded build
+        # GitHub's hosted runner only: the seed image (about 9 GB unpacked
+        # for cpu, more with the CUDA devel base), its 4.4 GB tree copied
+        # into /build and the build outgrow the runner's free space. The
+        # preinstalled SDKs removed here are unused by this job.
         if: ${{ github.server_url == 'https://github.com' }}
         run: |
           df -h /
@@ -65,6 +67,16 @@ jobs:
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'heavy' }}
     steps:
       - uses: actions/checkout@v7
+      - name: Free runner disk for the seeded build
+        # GitHub's hosted runner only: the seed image (about 9 GB unpacked
+        # for cpu, more with the CUDA devel base), its 4.4 GB tree copied
+        # into /build and the build outgrow the runner's free space. The
+        # preinstalled SDKs removed here are unused by this job.
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
       - name: Log in to Docker Hub (docker.io)
         # The deps seeds live on Docker Hub; logging in also lifts the
         # anonymous pull rate limit for the public bases.
@@ -138,6 +150,16 @@ jobs:
           docker cp "$id:/models/." models/
           docker rm "$id"
           scripts/fetch-models.sh --verify --dir models --layout all --tokenizer
+      - name: Free runner disk for the seeded build
+        # GitHub's hosted runner only: the seed image (about 9 GB unpacked
+        # for cpu, more with the CUDA devel base), its 4.4 GB tree copied
+        # into /build and the build outgrow the runner's free space. The
+        # preinstalled SDKs removed here are unused by this job.
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
       - name: Log in to Docker Hub (docker.io)
         # The deps seeds live on Docker Hub; logging in also lifts the
         # anonymous pull rate limit for the public bases.
