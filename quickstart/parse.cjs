@@ -150,9 +150,11 @@ async function main() {
   const seconds = ((Date.now() - started) / 1000).toFixed(1);
   process.stderr.write(`parse: ${options.filename}: ${status.replace("CONVERSION_STATUS_", "").toLowerCase()}, ${pages} page(s), ${seconds} s\n`);
   client.close();
-  if (status === "CONVERSION_STATUS_SUCCESS" && typeof output === "string") process.exit(0);
-  if (status === "CONVERSION_STATUS_PARTIAL_SUCCESS") process.exit(2);
-  process.exit(1);
+  // exitCode, not process.exit(): exiting at once would cut off a large
+  // export still draining into a pipe.
+  if (status === "CONVERSION_STATUS_SUCCESS" && typeof output === "string") process.exitCode = 0;
+  else if (status === "CONVERSION_STATUS_PARTIAL_SUCCESS") process.exitCode = 2;
+  else process.exitCode = 1;
 }
 
 main().catch((error) => fail(error.stack || String(error), 1));
