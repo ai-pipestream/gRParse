@@ -1,0 +1,115 @@
+name: Publish Demo Shell Image
+
+# Builds pipestreamai/grparse-demo-shell (examples/web-demo/Dockerfile): the
+# demo shell the compose stack fronts, with every peer contract baked in.
+# Its build gate is `node server.js --check-protos`: every contract in
+# peers.js must load offline, or the image does not exist (ci.yml runs the
+# same build on every pull request).
+#
+# When it runs and what it tags:
+#   push to main touching the shell or a contract   republishes :latest
+#   push of a v* tag (the fleet release)             :latest plus :<version>,
+#                                                    <version> = the tag minus
+#                                                    its v (docs/RELEASING.md)
+#   workflow_dispatch                                :latest, plus :<version>
+#                                                    when the input is given
+# Multi-arch (amd64 + arm64): the dhi.io node base is published for both and
+# the build is npm plus file copies, so the arm64 leg runs under QEMU.
+#
+# Same login and tag pattern as publish-models.yml: Docker Hub (and dhi.io,
+# for the base image) through the DOCKER_USER / DOCKER_TOKEN org secrets,
+# the Forgejo registry (git.rokkon.com) only when its CICD_TOKEN secret
+# exists.
+on:
+  push:
+    branches: [main]
+    paths:
+      - examples/web-demo/**
+      - '*.proto'
+      - collectors/**
+      - .github/workflows/publish-demo-shell.yml
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Extra version tag (for example 0.3.0); optional'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish-demo-shell:
+    if: ${{ github.server_url == 'https://github.com' }}
+    runs-on: ubuntu-latest
+    env:
+      CICD_TOKEN: ${{ secrets.CICD_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Log in to Docker Hub (docker.io)
+        uses: docker/login-action@v4
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+      - name: Log in to Docker Hardened Images (dhi.io)
+        uses: docker/login-action@v4
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+      - name: Log in to Forgejo container registry
+        if: ${{ env.CICD_TOKEN != '' }}
+        uses: docker/login-action@v4
+        with:
+          registry: git.rokkon.com
+          username: ${{ github.actor }}
+          password: ${{ secrets.CICD_TOKEN }}
+      - name: Resolve the version
+        id: version
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          case "$GITHUB_REF" in
+            refs/tags/v*) version="${GITHUB_REF_NAME#v}" ;;
+            *) version="${INPUT_VERSION:-}" ;;
+          esac
+          if [ -n "$version" ] && ! [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z][0-9A-Za-z.-]{0,63})?$ ]]; then
+            echo "::error::version '$version' is not a semantic version such as 0.3.0"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Compute tags
+        id: tags
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          tags="docker.io/pipestreamai/grparse-demo-shell:latest"
+          if [ -n "$VERSION" ]; then
+            tags="$tags,docker.io/pipestreamai/grparse-demo-shell:${VERSION}"
+          fi
+          if [ -n "$CICD_TOKEN" ]; then
+            tags="$tags,git.rokkon.com/ai-pipestream/grparse-demo-shell:latest"
+            if [ -n "$VERSION" ]; then
+              tags="$tags,git.rokkon.com/ai-pipestream/grparse-demo-shell:${VERSION}"
+            fi
+          fi
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+      - name: Build and push the multi-arch image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: examples/web-demo/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          sbom: false
+          tags: ${{ steps.tags.outputs.tags }}

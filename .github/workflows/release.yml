@@ -1,0 +1,198 @@
+name: Release
+
+# Turns a fleet tag into a GitHub Release (docs/RELEASING.md).
+#
+# When the Publish Image run for a v<version> tag push succeeds, the
+# `release` job checks out that tag and
+#   1. confirms the tag is the CMake version (scripts/cmake-version.sh),
+#   2. confirms every repository in release/fleet.tsv carries the same tag
+#      on GitHub and records the commit each one points at,
+#   3. waits (up to 90 minutes, the parser publishes finish at their own
+#      pace) until every image fleet.tsv names exists on Docker Hub with
+#      the version tag, and records each digest,
+#   4. writes the notes: how to pull the stack at this version, the gRParse
+#      commits since the previous tag (scripts/release-notes.sh), the fleet
+#      commits and the image digests, and attaches stack-<version>.lock,
+#   5. creates or updates the Release. If any repository lacks the tag or
+#      any image is missing, the Release is left as a draft that names what
+#      is missing and the job fails; once the stragglers are published,
+#      run this workflow by hand with the version and it publishes.
+# workflow_dispatch with a version input runs the same job for an existing
+# tag. Tags themselves are only ever cut by a human (scripts/release.sh).
+#
+# On pull requests and main pushes that touch the release machinery, the
+# `check` job runs offline: every ${STACK_TAG} image in the compose stack
+# must have a publisher in fleet.tsv, the release scripts must pass
+# shellcheck, and scripts/test/release-test.sh tags a throwaway fleet.
+on:
+  pull_request:
+    paths:
+      - release/**
+      - scripts/release.sh
+      - scripts/release-notes.sh
+      - scripts/release-stack.py
+      - scripts/test/release-test.sh
+      - compose.stack*.yaml
+      - .github/workflows/release.yml
+  push:
+    branches: [main]
+    paths:
+      - release/**
+      - scripts/release.sh
+      - scripts/release-notes.sh
+      - scripts/release-stack.py
+      - scripts/test/release-test.sh
+      - compose.stack*.yaml
+      - .github/workflows/release.yml
+  workflow_run:
+    workflows: [Publish Image]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Fleet version to release (for example 0.3.0); v<version> must already be tagged'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Release machinery
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Every stack image has a publisher
+        run: python3 scripts/release-stack.py check
+      - name: shellcheck
+        run: shellcheck scripts/release.sh scripts/release-notes.sh scripts/test/release-test.sh
+      - name: Tag a throwaway fleet
+        run: scripts/test/release-test.sh
+
+  release:
+    name: Release ${{ github.event.workflow_run.head_branch || inputs.version }}
+    if: >-
+      github.server_url == 'https://github.com' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        startsWith(github.event.workflow_run.head_branch, 'v')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    permissions:
+      contents: write
+    concurrency:
+      group: release-${{ github.event.workflow_run.head_branch || inputs.version }}
+    steps:
+      - name: Resolve the version
+        id: version
+        shell: bash
+        env:
+          RUN_TAG: ${{ github.event.workflow_run.head_branch }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = workflow_run ]; then version="${RUN_TAG#v}"; else version="$INPUT_VERSION"; fi
+          if ! [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z][0-9A-Za-z.-]{0,63})?$ ]]; then
+            echo "::error::version '$version' is not a semantic version such as 0.3.0"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/v${{ steps.version.outputs.version }}
+          fetch-depth: 0
+          fetch-tags: true
+      - name: The tag is the CMake version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: ./scripts/cmake-version.sh --expect "$VERSION"
+      - name: Every fleet repository carries the tag
+        id: tags
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if python3 scripts/release-stack.py git-tags --version "$VERSION" --markdown fleet.md; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Every fleet image is on Docker Hub
+        id: images
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if python3 scripts/release-stack.py resolve --version "$VERSION" --wait 5400 --interval 120 \
+              --lock "stack-$VERSION.lock" --markdown images.md; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Write the notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAGS_OK: ${{ steps.tags.outputs.ok }}
+          IMAGES_OK: ${{ steps.images.outputs.ok }}
+        run: |
+          set -euo pipefail
+          previous=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "v$VERSION^" 2>/dev/null || true)
+          {
+            if [ "$TAGS_OK" != true ] || [ "$IMAGES_OK" != true ]; then
+              echo "> **Draft:** not every fleet repository or image carries $VERSION yet (marked below)."
+              echo "> Rerun the Release workflow with version $VERSION once they do."
+              echo
+            fi
+            echo "One version across gRParse and its parsers. From a checkout of this tag, the CPU stack with the models volume:"
+            echo
+            echo '```sh'
+            echo "git checkout v$VERSION"
+            echo "STACK_TAG=$VERSION docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml -f compose.stack.models.yaml pull"
+            echo "STACK_TAG=$VERSION docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml -f compose.stack.models.yaml up -d"
+            echo '```'
+            echo
+            echo "Drop \`-f compose.stack.cpu.yaml\` for the NVIDIA image, or use \`compose.stack.openvino.yaml\` for Intel. \`stack-$VERSION.lock\` lists every image of this release by digest."
+            echo
+            if [ -n "$previous" ]; then
+              ./scripts/release-notes.sh "$previous" "v$VERSION"
+            else
+              echo "## gRParse"
+              echo
+              echo "First tag; no previous release to compare against."
+            fi
+            echo
+            echo "## Fleet commits tagged v$VERSION"
+            echo
+            cat fleet.md
+            echo
+            echo "## Images"
+            echo
+            cat images.md
+          } > notes.md
+          touch "stack-$VERSION.lock"
+      - name: Create or update the Release
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAGS_OK: ${{ steps.tags.outputs.ok }}
+          IMAGES_OK: ${{ steps.images.outputs.ok }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          draft=true
+          if [ "$TAGS_OK" = true ] && [ "$IMAGES_OK" = true ]; then draft=false; fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --title "gRParse fleet $VERSION" --notes-file notes.md --draft="$draft"
+            gh release upload "$tag" "stack-$VERSION.lock" --clobber
+          else
+            gh release create "$tag" --verify-tag --title "gRParse fleet $VERSION" \
+              --notes-file notes.md --draft="$draft" "stack-$VERSION.lock"
+          fi
+          if [ "$draft" = true ]; then
+            echo "::error::left $tag as a draft: a fleet tag or image is missing (see the notes)"
+            exit 1
+          fi
+          echo "published $tag"
