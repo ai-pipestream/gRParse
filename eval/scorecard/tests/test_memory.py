@@ -73,17 +73,18 @@ def test_real_docker_call_never_raises() -> None:
     assert ip is None
 
 
-def test_invalid_ip_from_docker_means_not_sampled(monkeypatch) -> None:
+def test_invalid_ip_from_docker_means_not_sampled() -> None:
     # docker 29 prints "invalid IP" for a stopped container; it is not an
-    # address and must not become a metrics URL.
-    import subprocess
+    # address and must not become a metrics URL. mock.patch rather than the
+    # pytest monkeypatch fixture, so run_tests.py (no fixtures) runs it too.
+    from unittest import mock
 
     class Completed:
         returncode = 0
         stdout = "invalid IP\n"
 
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: Completed())
-    assert docker_container_ip(CONTAINER) is None
+    with mock.patch("subprocess.run", lambda *a, **k: Completed()):
+        assert docker_container_ip(CONTAINER) is None
 
 
 def test_unopenable_url_is_a_note_not_an_exception() -> None:
