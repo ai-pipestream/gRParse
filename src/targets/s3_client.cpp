@@ -14,6 +14,7 @@
 
 #include <curl/curl.h>
 
+#include "../storage/http_call.h"
 #include "sha256.h"
 #include "sigv4.h"
 
@@ -300,7 +301,16 @@ std::string S3Client::put_object(const std::string& key, const std::string& body
     curl_easy_setopt(handle.get(), CURLOPT_SSL_VERIFYHOST, 0L);
   }
 
+  bool peer_refused = false;
+  storage::guard_public_peers(handle.get(), &peer_refused);
+
   const CURLcode transfer = curl_easy_perform(handle.get());
+  if (peer_refused) {
+    throw storage::HttpPeerRefused("s3 target could not write '" + key +
+                                   "': the endpoint is a loopback, private, link-local or "
+                                   "otherwise non-public address "
+                                   "(GRPARSE_STORAGE_ALLOW_PRIVATE_ENDPOINTS=1 allows it)");
+  }
   if (transfer != CURLE_OK) {
     throw std::runtime_error("s3 target could not write '" + key + "': " +
                              curl_easy_strerror(transfer));

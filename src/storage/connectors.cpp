@@ -11,6 +11,7 @@
 #include "../source_parse.h"
 #include "azure_blob.h"
 #include "google_storage.h"
+#include "http_call.h"
 #include "grparse/base64.h"
 
 namespace grparse::storage {
@@ -118,6 +119,10 @@ open_plugin(const std::string& kind, const google::protobuf::Any& config,
   }
   const google::protobuf::Message* prototype =
       google::protobuf::MessageFactory::generated_factory()->GetPrototype(plugin->config_type);
+  if (prototype == nullptr) {
+    throw std::logic_error("connector plugin '" + kind + "' registered a config type with no "
+                           "generated class");
+  }
   std::unique_ptr<google::protobuf::Message> message(prototype->New());
   const std::string expected = std::string(plugin->config_type->full_name());
   const std::string_view type_url = config.type_url();
@@ -258,6 +263,8 @@ grpc::Status resolve_source(const parsev1::Source& source, const std::string& op
     return grpc::Status::OK;
   } catch (const StorageRequestError& invalid) {
     return from_request_error(invalid);
+  } catch (const HttpPeerRefused& refused) {
+    return from_request_error(StorageRequestError(option_path, option_path + ": " + refused.what()));
   } catch (const std::exception& failed) {
     return grpc::Status(grpc::StatusCode::UNAVAILABLE, failed.what());
   }
@@ -312,6 +319,8 @@ grpc::Status deliver_to_store(const parsev1::Target& target,
     }
   } catch (const StorageRequestError& invalid) {
     return from_request_error(invalid);
+  } catch (const HttpPeerRefused& refused) {
+    return from_request_error(StorageRequestError("target", std::string("target: ") + refused.what()));
   } catch (const PartialWrite& failed) {
     report(failed.written(), result);
     return grpc::Status(grpc::StatusCode::UNAVAILABLE, failed.what());

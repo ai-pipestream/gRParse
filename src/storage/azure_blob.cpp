@@ -104,7 +104,7 @@ class AzureBlobStore final : public ObjectStore {
   }
 
   std::string get(const std::string& name) override {
-    const HttpResponse reply = send("GET", name, {}, "", "get blob");
+    const HttpResponse reply = send("GET", name, {}, "", "get blob", source_max_bytes());
     if (!reply.ok()) {
       throw std::runtime_error("azure_blob: reading '" + name + "' answered HTTP " +
                                std::to_string(reply.status));
@@ -125,7 +125,8 @@ class AzureBlobStore final : public ObjectStore {
  private:
   HttpResponse send(const std::string& method, const std::string& blob,
                     std::vector<std::pair<std::string, std::string>> query,
-                    const std::string& body, const std::string& what) const {
+                    const std::string& body, const std::string& what,
+                    uint64_t max_body_bytes = HttpRequest::kDefaultMaxResponseBytes) const {
     std::string path_tail = "/" + percent_encode(container_, false);
     if (!blob.empty()) path_tail += "/" + percent_encode(blob, true);
     // The URL path as sent: the endpoint's own path (the emulator's account
@@ -157,6 +158,7 @@ class AzureBlobStore final : public ObjectStore {
     request.headers.emplace_back("Authorization",
                                  "SharedKey " + connection_.account_name + ":" + signature);
     request.body = body;
+    request.max_body_bytes = max_body_bytes;
     return http_call(request, "azure_blob: " + what);
   }
 
@@ -240,10 +242,9 @@ AzureConnection parse_azure_connection_string(const std::string& connection_stri
     connection.blob_endpoint = protocol + "://" + connection.account_name + ".blob." + suffix;
   }
   while (connection.blob_endpoint.ends_with('/')) connection.blob_endpoint.pop_back();
-  if (!connection.blob_endpoint.starts_with("https://") &&
-      !connection.blob_endpoint.starts_with("http://")) {
+  if (const std::string problem = endpoint_problem(connection.blob_endpoint); !problem.empty()) {
     throw StorageRequestError(option_path + ".connection_string",
-                              option_path + ".connection_string BlobEndpoint must be http or https");
+                              option_path + ".connection_string BlobEndpoint " + problem);
   }
   return connection;
 }

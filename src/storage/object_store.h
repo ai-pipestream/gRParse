@@ -73,7 +73,9 @@ std::string join_prefix(const std::string& prefix, const std::string& path);
 
 // The single document under `prefix`: the prefix may name the object itself
 // or a "folder" holding exactly one object. Names ending in '/' (folder
-// markers) do not count. StorageRequestError naming `option_path` when there
+// markers) do not count. At most 1000 names are listed (fewer when `limit`
+// says so), so a prefix over a large store costs at most one page or two.
+// StorageRequestError naming `option_path` when there
 // is none, or more than one (gRParse converts one document per call).
 FetchedDocument fetch_single(ObjectStore& store, const std::string& prefix,
                              std::optional<uint32_t> limit, const std::string& option_path);

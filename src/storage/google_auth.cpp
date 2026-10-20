@@ -71,12 +71,20 @@ std::string base64url(const std::string& bytes) {
   return out;
 }
 
+namespace {
+
+// An encrypted key fails to load instead of OpenSSL prompting on a terminal
+// for its passphrase.
+int refuse_passphrase(char*, int, int, void*) { return 0; }
+
+}  // namespace
+
 std::string rs256_sign(const std::string& private_key_pem, const std::string& data) {
   const std::unique_ptr<BIO, decltype(&BIO_free)> bio(
       BIO_new_mem_buf(private_key_pem.data(), static_cast<int>(private_key_pem.size())), BIO_free);
   if (bio == nullptr) throw std::runtime_error("could not read the private key");
   const std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> key(
-      PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr), EVP_PKEY_free);
+      PEM_read_bio_PrivateKey(bio.get(), nullptr, refuse_passphrase, nullptr), EVP_PKEY_free);
   if (key == nullptr) throw std::invalid_argument("private_key is not a PEM private key");
   const std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> context(EVP_MD_CTX_new(),
                                                                          EVP_MD_CTX_free);

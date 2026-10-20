@@ -35,8 +35,21 @@ std::string trimmed_base(std::string base) {
 }
 
 void require_http(const std::string& url, const std::string& option_path) {
-  if (!url.starts_with("https://") && !url.starts_with("http://")) {
-    throw StorageRequestError(option_path, option_path + " must be an http or https URL");
+  if (const std::string problem = endpoint_problem(url); !problem.empty()) {
+    throw StorageRequestError(option_path, option_path + " " + problem);
+  }
+}
+
+// A token endpoint receives the private-key assertion or the client secret
+// and refresh token: https only, unless the deployment allows private
+// endpoints (an emulator's token server).
+void require_token_uri(const std::string& url, const std::string& option_path) {
+  require_http(url, option_path);
+  if (!url.starts_with("https://") && !private_endpoints_allowed()) {
+    throw StorageRequestError(option_path,
+                              option_path + " must be https: it receives the credential "
+                              "(GRPARSE_STORAGE_ALLOW_PRIVATE_ENDPOINTS=1 allows http for "
+                              "emulators)");
   }
 }
 
@@ -71,7 +84,7 @@ class GcsStore final : public ObjectStore {
         send("GET",
              base_ + "/storage/v1/b/" + percent_encode(bucket_, false) + "/o/" +
                  percent_encode(name, false) + "?alt=media",
-             "", "", "get object");
+             "", "", "get object", source_max_bytes());
     if (!reply.ok()) {
       throw std::runtime_error("google_cloud_storage: reading '" + name + "' answered HTTP " +
                                std::to_string(reply.status));
@@ -96,11 +109,13 @@ class GcsStore final : public ObjectStore {
 
  private:
   HttpResponse send(const std::string& method, const std::string& url, const std::string& body,
-                    const std::string& content_type, const std::string& what) const {
+                    const std::string& content_type, const std::string& what,
+                    uint64_t max_body_bytes = HttpRequest::kDefaultMaxResponseBytes) const {
     HttpRequest request;
     request.method = method;
     request.url = url;
     request.body = body;
+    request.max_body_bytes = max_body_bytes;
     if (!content_type.empty()) request.headers.emplace_back("Content-Type", content_type);
     if (!bearer_.empty()) request.headers.emplace_back("Authorization", "Bearer " + bearer_);
     return http_call(request, "google_cloud_storage: " + what);
@@ -136,17 +151,19 @@ std::string drive_token(const parsev1::GoogleDriveCoordinates& coordinates,
                               option_path + ".credentials needs client_id, client_secret and "
                               "token_uri");
   }
-  require_http(credentials.token_uri(), option_path + ".credentials.token_uri");
+  require_token_uri(credentials.token_uri(), option_path + ".credentials.token_uri");
   return refresh_access_token(credentials, coordinates.refresh_token());
 }
 
 HttpResponse drive_send(const std::string& method, const std::string& url, const std::string& bearer,
                         const std::string& body, const std::string& content_type,
-                        const std::string& what) {
+                        const std::string& what,
+                        uint64_t max_body_bytes = HttpRequest::kDefaultMaxResponseBytes) {
   HttpRequest request;
   request.method = method;
   request.url = url;
   request.body = body;
+  request.max_body_bytes = max_body_bytes;
   request.headers.emplace_back("Authorization", "Bearer " + bearer);
   if (!content_type.empty()) request.headers.emplace_back("Content-Type", content_type);
   return http_call(request, "google_drive: " + what);
@@ -216,7 +233,7 @@ std::unique_ptr<ObjectStore> open_google_cloud_storage(
                                 option_path + ".service_account_key needs client_email, "
                                 "private_key and token_uri");
     }
-    require_http(key.token_uri(), option_path + ".service_account_key.token_uri");
+    require_token_uri(key.token_uri(), option_path + ".service_account_key.token_uri");
     try {
       bearer = service_account_access_token(key, kGcsScope);
     } catch (const std::invalid_argument& bad_key) {
@@ -255,7 +272,8 @@ FetchedDocument fetch_google_drive_file(const parsev1::GoogleDriveCoordinates& c
                                   file.mime_type() + "), which has no file bytes to download");
   }
   const HttpResponse media =
-      drive_send("GET", file_url + "?alt=media&supportsAllDrives=true", bearer, "", "", "download");
+      drive_send("GET", file_url + "?alt=media&supportsAllDrives=true", bearer, "", "", "download",
+                 source_max_bytes());
   if (!media.ok()) {
     throw std::runtime_error("google_drive: downloading '" + coordinates.path_id() +
                              "' answered HTTP " + std::to_string(media.status));

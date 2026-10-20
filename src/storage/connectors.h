@@ -13,6 +13,10 @@
 //                                 google_drive).
 //   GRPARSE_ALLOW_EXTERNAL_PLUGINS  "true" enables plugin kinds, which must
 //                                 also be listed explicitly above.
+//   GRPARSE_STORAGE_ALLOW_PRIVATE_ENDPOINTS  "1" lets requests name loopback
+//                                 and private-network endpoints and http
+//                                 token endpoints (see http_call.h).
+//   GRPARSE_SOURCE_MAX_BYTES      largest document a source downloads.
 #ifndef GRPARSE_STORAGE_CONNECTORS_H
 #define GRPARSE_STORAGE_CONNECTORS_H
 

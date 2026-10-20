@@ -69,6 +69,7 @@ mc mb e2e/grparse-out
 
 mkdir -p "$work/out"
 echo "== storage-connectors-e2e-test"
+GRPARSE_STORAGE_ALLOW_PRIVATE_ENDPOINTS=1 \
 GRPARSE_E2E_STORAGE=1 \
 GRPARSE_E2E_SAMPLE="$work/sample.md" \
 GRPARSE_E2E_SA_KEY="$work/sa.pem" \

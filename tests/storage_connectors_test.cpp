@@ -2,7 +2,11 @@
 // sign, connection string parsing, base64url, the RS256 service account
 // assertion (signed with a key generated here and verified with its public
 // half), the source and target policy, and the typed plugin registry
-// (google.protobuf.Any configs unpacked to the registered message type).
+// (google.protobuf.Any configs unpacked to the registered message type),
+// and the fetch hardening every connector shares: the public-peer guard
+// against a live loopback origin, endpoint shape, https token endpoints,
+// the response and document size caps, and the bounded single-object
+// listing.
 
 #include <cstdlib>
 #include <filesystem>
@@ -19,10 +23,13 @@
 #include "../src/storage/azure_blob.h"
 #include "../src/storage/connectors.h"
 #include "../src/storage/google_auth.h"
+#include "../src/storage/http_call.h"
+#include "../src/storage/object_store.h"
 #include "google/rpc/status.pb.h"
 #include "grparse/base64.h"
 #include "storage_wire.pb.h"
 #include "support/check.h"
+#include "support/loopback_http.h"
 #include "support/storage_fixture_plugin.h"
 
 namespace {
@@ -357,11 +364,185 @@ void plugin_registry() {
   storage::unregister_connector_plugin("test_directory");
 }
 
+void public_addresses() {
+  const std::vector<std::pair<std::string, bool>> cases = {
+      {"8.8.8.8", true},          {"1.1.1.1", true},         {"172.32.0.1", true},
+      {"100.128.0.1", true},      {"2606:4700::1111", true}, {"::ffff:8.8.8.8", true},
+      {"127.0.0.1", false},       {"127.255.0.9", false},    {"10.1.2.3", false},
+      {"172.16.0.1", false},      {"172.31.255.255", false}, {"192.168.1.1", false},
+      {"169.254.169.254", false}, {"100.64.0.1", false},     {"0.0.0.0", false},
+      {"224.0.0.1", false},       {"255.255.255.255", false}, {"198.18.0.1", false},
+      {"::1", false},             {"::", false},             {"fe80::1", false},
+      {"fd00::1", false},         {"fc00::1", false},        {"ff02::1", false},
+      {"2001:db8::1", false},     {"::ffff:127.0.0.1", false}, {"::ffff:10.0.0.1", false},
+      {"64:ff9b::a9fe:a9fe", false}, {"not-an-address", false}, {"", false}};
+  for (const auto& [ip, expected] : cases) {
+    require(storage::public_address(ip) == expected,
+            "public_address(" + ip + ") should be " + (expected ? "true" : "false"));
+  }
+}
+
+void endpoint_shapes() {
+  require_equal(storage::endpoint_problem("https://storage.example.com"), std::string(), "plain https");
+  require_equal(storage::endpoint_problem("http://127.0.0.1:10000/devstoreaccount1"), std::string(),
+                "http with a path");
+  for (const char* bad : {"ftp://h", "h.example.com", "http://h/a?x=1", "http://h#f",
+                                "http://user:pw@h/", "http://h /a"}) {
+    require(!storage::endpoint_problem(bad).empty(), std::string("endpoint_problem refuses ") + bad);
+  }
+  require_equal(storage::url_origin("HTTP://Example.COM/a/b?c"), std::string("http://example.com:80"),
+                "default http port, lowercased");
+  require_equal(storage::url_origin("https://h.example.com:8443/"),
+                std::string("https://h.example.com:8443"), "explicit port");
+  require_equal(storage::url_origin("https://h.example.com"), std::string("https://h.example.com:443"),
+                "default https port");
+}
+
+void source_size_setting() {
+  {
+    ScopedEnv unset("GRPARSE_SOURCE_MAX_BYTES", nullptr);
+    require(storage::source_max_bytes() == 256ull * 1024 * 1024, "default 256 MiB");
+  }
+  {
+    ScopedEnv set("GRPARSE_SOURCE_MAX_BYTES", "1024");
+    require(storage::source_max_bytes() == 1024, "set value");
+  }
+  for (const char* bad : {"0", "-1", "12k", "x"}) {
+    ScopedEnv set("GRPARSE_SOURCE_MAX_BYTES", bad);
+    bool refused = false;
+    try {
+      storage::source_max_bytes();
+    } catch (const std::invalid_argument&) {
+      refused = true;
+    }
+    require(refused, std::string("GRPARSE_SOURCE_MAX_BYTES=") + bad + " is refused");
+  }
+}
+
+// The guard runs on the connected socket, before a byte of the request is
+// sent: the origin sees a connection and no request.
+void private_peers_refused() {
+  grparse_test::LoopbackHttp origin([](const auto&) {
+    return grparse_test::LoopbackHttp::response(200, "hello");
+  });
+  storage::HttpRequest request;
+  request.url = origin.base() + "/secret";
+  request.headers = {{"Authorization", "Bearer must-not-leave"}};
+  {
+    ScopedEnv guarded("GRPARSE_STORAGE_ALLOW_PRIVATE_ENDPOINTS", nullptr);
+    bool refused = false;
+    try {
+      storage::http_call(request, "probe");
+    } catch (const storage::HttpPeerRefused& error) {
+      refused = true;
+      require(std::string(error.what()).find("non-public") != std::string::npos, error.what());
+    }
+    require(refused, "a loopback peer is refused by default");
+    require(origin.received().empty(), "no request reached the refused peer");
+    request.url = origin.base("localhost") + "/secret";
+    refused = false;
+    try {
+      storage::http_call(request, "probe");
+    } catch (const storage::HttpPeerRefused&) {
+      refused = true;
+    }
+    require(refused, "a name that resolves to loopback is refused too");
+    require(origin.received().empty(), "still no request");
+  }
+  {
+    ScopedEnv allowed("GRPARSE_STORAGE_ALLOW_PRIVATE_ENDPOINTS", "1");
+    const storage::HttpResponse reply = storage::http_call(request, "probe");
+    require(reply.status == 200 && reply.body == "hello", "allowed private endpoints are reached");
+    request.max_body_bytes = 4;
+    bool capped = false;
+    try {
+      storage::http_call(request, "probe");
+    } catch (const std::runtime_error& error) {
+      capped = std::string(error.what()).find("larger than 4 bytes") != std::string::npos;
+    }
+    require(capped, "a body past max_body_bytes fails the exchange");
+  }
+}
+
+void connectors_guard_their_endpoints() {
+  grparse_test::LoopbackHttp origin([](const auto&) {
+    return grparse_test::LoopbackHttp::response(200, "{}");
+  });
+  ScopedEnv allowed("GRPARSE_ALLOWED_SOURCE_TYPES", nullptr);
+  ScopedEnv guarded("GRPARSE_STORAGE_ALLOW_PRIVATE_ENDPOINTS", nullptr);
+  parsev1::FileSource resolved;
+  parsev1::Source gcs;
+  auto* coordinates = gcs.mutable_google_cloud_storage()->mutable_coordinates();
+  coordinates->set_bucket("b");
+  coordinates->set_endpoint(origin.base());
+  expect_rejection(storage::resolve_source(gcs, "sources[0]", &resolved), "sources[0]",
+                   parsev1::OPTION_REJECTION_REASON_INVALID);
+  require(origin.received().empty(), "the GCS listing never reached the loopback store");
+
+  coordinates->set_endpoint(origin.base() + "/storage?");
+  expect_rejection(storage::resolve_source(gcs, "sources[0]", &resolved),
+                   "sources[0].google_cloud_storage.coordinates.endpoint",
+                   parsev1::OPTION_REJECTION_REASON_INVALID);
+
+  coordinates->set_endpoint("https://storage.example.com");
+  auto* key = coordinates->mutable_service_account_key();
+  key->set_client_email("svc@example.iam.gserviceaccount.com");
+  key->set_private_key("unused");
+  key->set_token_uri("http://oauth2.example.com/token");
+  expect_rejection(storage::resolve_source(gcs, "sources[0]", &resolved),
+                   "sources[0].google_cloud_storage.coordinates.service_account_key.token_uri",
+                   parsev1::OPTION_REJECTION_REASON_INVALID);
+}
+
+// A store that records the limit fetch_single asked for.
+class CountingStore final : public storage::ObjectStore {
+ public:
+  explicit CountingStore(std::vector<std::string> names) : names_(std::move(names)) {}
+  std::vector<std::string> list(const std::string&, std::optional<uint32_t> limit) override {
+    asked = limit;
+    std::vector<std::string> out = names_;
+    if (limit.has_value() && out.size() > *limit) out.resize(*limit);
+    return out;
+  }
+  std::string get(const std::string&) override { return "bytes"; }
+  storage::WrittenObject put(const std::string&, const std::string&) override { return {}; }
+  std::optional<uint32_t> asked;
+
+ private:
+  std::vector<std::string> names_;
+};
+
+void single_object_listing_is_bounded() {
+  std::vector<std::string> many;
+  for (int i = 0; i < 5000; ++i) many.push_back("p/" + std::to_string(i));
+  CountingStore store(many);
+  bool refused = false;
+  try {
+    storage::fetch_single(store, "p/", std::nullopt, "prefix");
+  } catch (const storage::StorageRequestError& error) {
+    refused = std::string(error.what()).find("1000 or more objects") != std::string::npos;
+  }
+  require(refused, "a prefix over many objects is refused after one bounded listing");
+  require(store.asked == std::optional<uint32_t>(1000), "no limit asks for 1000");
+  try {
+    storage::fetch_single(store, "p/", 100000u, "prefix");
+  } catch (const storage::StorageRequestError&) {
+  }
+  require(store.asked == std::optional<uint32_t>(1000), "a larger limit is capped at 1000");
+  CountingStore one({"p/", "p/only.pdf"});
+  const storage::FetchedDocument fetched = storage::fetch_single(one, "p/", 5u, "prefix");
+  require_equal(fetched.filename, std::string("only.pdf"), "folder marker skipped");
+  require(one.asked == std::optional<uint32_t>(5), "a smaller limit is kept");
+}
+
 }  // namespace
 
 int main() {
   return grparse_test::run_test_main("storage-connectors-test", "ok",
                                      {azure_string_to_sign_vector, azure_connection_strings,
                                       base64url_encoding, rs256_assertion, source_policy,
-                                      storage_coordinates_checked, target_policy, plugin_registry});
+                                      storage_coordinates_checked, target_policy, plugin_registry,
+                                      public_addresses, endpoint_shapes, source_size_setting,
+                                      private_peers_refused, connectors_guard_their_endpoints,
+                                      single_object_listing_is_bounded});
 }
