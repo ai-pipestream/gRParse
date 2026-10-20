@@ -74,7 +74,10 @@ double heading_title_similarity(std::string_view a, std::string_view b);
 
 // The levels the outline decides: each header whose best-matching bookmark
 // (same page when both name one) reaches the threshold takes that
-// bookmark's depth, clamped to max_level.
+// bookmark's depth, clamped to max_level. An equal normalized title matches
+// without an edit distance; fuzzy matching computes only distances that
+// could reach the threshold and stops once a per-document cell budget is
+// spent, so the cost stays bounded for large outlines.
 std::map<std::string, int32_t> bookmark_levels(
     const std::vector<HeaderHeight>& headers,
     const google::protobuf::RepeatedPtrField<ai::pipestream::document::v1::OutlineEntry>& outline,

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <set>
 #include <utility>
@@ -204,8 +205,6 @@ double median_of(std::vector<double> values) {
   return *middle;
 }
 
-// The legacy clustering: tallest first, a heading founds a deeper depth
-// when visibly smaller than the current depth's founding height.
 // Font-style rank, highest first: bold, then upright, then all-caps.
 int style_rank(const HeaderHeight& header) {
   const bool has_letters = std::ranges::any_of(header.text, is_letter);
@@ -214,38 +213,47 @@ int style_rank(const HeaderHeight& header) {
   return (header.bold ? 4 : 0) + (header.italic ? 0 : 2) + (all_caps ? 1 : 0);
 }
 
-// The legacy clustering: tallest first, a heading founds a deeper depth
-// when visibly smaller than the current depth's founding height. With
-// use_font_style, a heading of the same size but a lower style rank than
-// the depth's founder founds the next depth too.
+// The size clustering used when nothing is numbered. Tallest first, a
+// heading founds a new size bucket when visibly smaller than the current
+// bucket's founding height; each bucket takes the depths below the previous
+// one. With use_font_style, a bucket spans one depth per distinct style
+// rank among its styled headings (highest rank shallowest), so headings of
+// one size and one style share a depth whatever their exact heights. A
+// heading without font information takes the bucket's first depth.
 void cluster_by_height(const std::vector<const HeaderHeight*>& headers, double deeper_below,
                        bool use_font_style, std::map<std::string, int>* depths) {
-  std::vector<const HeaderHeight*> sorted = headers;
+  std::vector<const HeaderHeight*> sorted;
+  for (const HeaderHeight* header : headers) {
+    if (header->height <= 0) {
+      (*depths)[header->self_ref] = 1;
+    } else {
+      sorted.push_back(header);
+    }
+  }
+  std::ranges::stable_sort(sorted, [](const HeaderHeight* a, const HeaderHeight* b) {
+    return a->height > b->height;
+  });
   const auto ranked = [use_font_style](const HeaderHeight* header) {
     return use_font_style && header->has_font_style ? style_rank(*header) : -1;
   };
-  std::ranges::stable_sort(sorted, [&](const HeaderHeight* a, const HeaderHeight* b) {
-    if (a->height != b->height) return a->height > b->height;
-    return ranked(a) > ranked(b);
-  });
-  int depth = 0;
-  double founding = std::numeric_limits<double>::infinity();
-  int founding_rank = -1;
-  for (const HeaderHeight* header : sorted) {
-    if (header->height <= 0) {
-      (*depths)[header->self_ref] = 1;
-      continue;
+  int base = 1;
+  size_t at = 0;
+  while (at < sorted.size()) {
+    const double founding = sorted[at]->height;
+    size_t end = at;
+    while (end < sorted.size() && !(sorted[end]->height < deeper_below * founding)) ++end;
+    std::set<int, std::greater<>> ranks;
+    for (size_t i = at; i < end; ++i) {
+      if (const int rank = ranked(sorted[i]); rank >= 0) ranks.insert(rank);
     }
-    const int rank = ranked(header);
-    if (header->height < deeper_below * founding) {
-      ++depth;
-      founding = header->height;
-      founding_rank = rank;
-    } else if (rank >= 0 && founding_rank >= 0 && rank < founding_rank) {
-      ++depth;
-      founding_rank = rank;
+    for (size_t i = at; i < end; ++i) {
+      const int rank = ranked(sorted[i]);
+      const int offset =
+          rank < 0 ? 0 : static_cast<int>(std::distance(ranks.begin(), ranks.find(rank)));
+      (*depths)[sorted[i]->self_ref] = base + offset;
     }
-    (*depths)[header->self_ref] = std::max(depth, 1);
+    base += std::max<int>(1, static_cast<int>(ranks.size()));
+    at = end;
   }
 }
 
@@ -846,6 +854,55 @@ double heading_title_similarity(std::string_view a, std::string_view b) {
   return 1.0 - static_cast<double>(row[y.size()]) / longer;
 }
 
+namespace {
+
+// Edit-distance cells bookmark matching may spend on one document. Exact
+// (normalized) matches cost nothing; fuzzy matching stops once the budget
+// is spent, so an outline of thousands of entries against thousands of
+// headings stays bounded. A heading left unmatched falls to the other
+// passes, as any unmatched heading does.
+constexpr size_t kBookmarkEditCellBudget = 128'000'000;
+
+// Levenshtein distance between `x` and `y` when it is at most `limit`,
+// otherwise limit + 1. Only the diagonal band of width 2 * limit + 1 is
+// computed, and the scan stops once every cell of a row exceeds the limit.
+// `cells` accumulates the cells computed.
+size_t bounded_edit_distance(std::string_view x, std::string_view y, size_t limit,
+                             size_t* cells) {
+  if (x.size() > y.size()) std::swap(x, y);
+  const size_t n = x.size();
+  const size_t m = y.size();
+  const size_t over = limit + 1;
+  if (m - n > limit) return over;
+  std::vector<size_t> previous(m + 1, over);
+  std::vector<size_t> current(m + 1, over);
+  for (size_t j = 0; j <= std::min(m, limit); ++j) previous[j] = j;
+  for (size_t i = 1; i <= n; ++i) {
+    const size_t low = i > limit ? i - limit : 1;
+    const size_t high = std::min(m, i + limit);
+    current[low - 1] = low == 1 && i <= limit ? i : over;
+    size_t row_minimum = current[low - 1];
+    for (size_t j = low; j <= high; ++j) {
+      const size_t substitution = previous[j - 1] + (x[i - 1] == y[j - 1] ? 0 : 1);
+      const size_t value = std::min({previous[j] + 1, current[j - 1] + 1, substitution});
+      current[j] = std::min(value, over);
+      row_minimum = std::min(row_minimum, current[j]);
+    }
+    if (high < m) current[high + 1] = over;
+    *cells += high - low + 1;
+    if (row_minimum > limit) return over;
+    std::swap(previous, current);
+  }
+  return std::min(previous[m], over);
+}
+
+bool page_compatible(const docv1::OutlineEntry& entry, const HeaderHeight& header) {
+  return !(entry.has_page_no() && entry.page_no() > 0 && header.page > 0 &&
+           entry.page_no() != header.page);
+}
+
+}  // namespace
+
 std::map<std::string, int32_t> bookmark_levels(
     const std::vector<HeaderHeight>& headers,
     const google::protobuf::RepeatedPtrField<docv1::OutlineEntry>& outline,
@@ -853,19 +910,56 @@ std::map<std::string, int32_t> bookmark_levels(
   std::map<std::string, int32_t> levels;
   if (!options.use_bookmarks || outline.empty()) return levels;
   const int ceiling = level_ceiling(options);
+  // Normalized once; exact titles indexed so an equal title is found
+  // without an edit distance.
+  std::vector<std::string> titles;
+  titles.reserve(static_cast<size_t>(outline.size()));
+  std::map<std::string, std::vector<int>> by_title;
+  for (int index = 0; index < outline.size(); ++index) {
+    titles.push_back(normalized_title(outline.Get(index).title()));
+    if (outline.Get(index).level() > 0) by_title[titles.back()].push_back(index);
+  }
+  size_t cells = 0;
   for (const HeaderHeight& header : headers) {
+    const std::string text = normalized_title(header.text);
     double best = -1.0;
     int32_t best_level = 0;
-    for (const docv1::OutlineEntry& entry : outline) {
-      if (entry.level() <= 0) continue;
-      if (entry.has_page_no() && entry.page_no() > 0 && header.page > 0 &&
-          entry.page_no() != header.page) {
-        continue;
+    // The first page-compatible entry with an equal normalized title is the
+    // best match outright: similarity 1, and no earlier entry can beat it.
+    if (const auto exact = by_title.find(text); exact != by_title.end()) {
+      for (const int index : exact->second) {
+        if (page_compatible(outline.Get(index), header)) {
+          best = 1.0;
+          best_level = outline.Get(index).level();
+          break;
+        }
       }
-      const double similarity = heading_title_similarity(header.text, entry.title());
-      if (similarity > best) {
-        best = similarity;
-        best_level = entry.level();
+    }
+    if (best < 1.0 && cells <= kBookmarkEditCellBudget) {
+      for (int index = 0; index < outline.size(); ++index) {
+        const docv1::OutlineEntry& entry = outline.Get(index);
+        if (entry.level() <= 0 || !page_compatible(entry, header)) continue;
+        const std::string& title = titles[static_cast<size_t>(index)];
+        double similarity = 0.0;
+        if (text.empty() || title.empty()) {
+          similarity = text.empty() && title.empty() ? 1.0 : 0.0;
+        } else {
+          const double longer = static_cast<double>(std::max(text.size(), title.size()));
+          // Only a distance that could reach the threshold and beat the best
+          // so far matters; anything larger is cut off early.
+          const double floor_similarity = std::max(options.bookmark_match_threshold, best);
+          if (floor_similarity > 1.0) continue;
+          const auto limit =
+              static_cast<size_t>(std::floor((1.0 - floor_similarity) * longer + 1e-9));
+          const size_t distance = bounded_edit_distance(text, title, limit, &cells);
+          if (distance > limit) continue;
+          similarity = 1.0 - static_cast<double>(distance) / longer;
+        }
+        if (similarity > best) {
+          best = similarity;
+          best_level = entry.level();
+        }
+        if (cells > kBookmarkEditCellBudget) break;
       }
     }
     if (best >= options.bookmark_match_threshold && best_level > 0) {
