@@ -12,6 +12,7 @@
 #ifndef GRPARSE_TARGETS_S3_CLIENT_H
 #define GRPARSE_TARGETS_S3_CLIENT_H
 
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -73,10 +74,12 @@ class S3Client final {
   std::string put_object(const std::string& key, const std::string& body) const;
 
   // A signed GET of `key` (empty for the bucket itself) with `query` as
-  // decoded name/value pairs. Throws std::runtime_error on a transport
-  // failure; an HTTP error status is returned.
+  // decoded name/value pairs, under the storage network policy
+  // (storage/http_call.h). Throws std::runtime_error on a transport failure
+  // or a body past `max_body_bytes`; an HTTP error status is returned.
   S3Reply get(const std::string& key,
-              const std::vector<std::pair<std::string, std::string>>& query) const;
+              const std::vector<std::pair<std::string, std::string>>& query,
+              uint64_t max_body_bytes) const;
 
   // The full key for a bundle member: the configured prefix and the member's
   // path, joined by a single separator.

@@ -21,15 +21,15 @@ FetchedDocument fetch_s3_source(const ai::pipestream::parse::v1::S3Source& sourc
 
 // The bytes at source.url (http or https, certificate always verified),
 // with the request's headers, following up to 5 redirects within http and
-// https. The filename comes from Content-Disposition, else the last
-// segment of the URL the body came from (after redirects), else
-// "document". A body past `max_bytes` fails. 4xx is a StorageRequestError
-// on the url; 5xx and transport failures are std::runtime_error.
+// https. Each hop is its own call under the public-peer guard
+// (http_call.h), and the request's headers go only to the origin
+// source.url names: a hop to another origin is made without them. The
+// filename comes from Content-Disposition, else the last segment of the URL
+// the body came from (after redirects), else "document". A body past
+// `max_bytes` fails. 4xx and a blocked peer are a StorageRequestError on
+// the url; 5xx and transport failures are std::runtime_error.
 FetchedDocument fetch_http_source(const ai::pipestream::parse::v1::HttpSource& source,
                                   const std::string& option_path, uint64_t max_bytes);
-
-// GRPARSE_HTTP_SOURCE_MAX_BYTES (bytes; default 268435456, 256 MiB).
-uint64_t http_source_max_bytes();
 
 // The filename a response names (exposed for tests): Content-Disposition's
 // filename* or filename, else the last segment of the URL path,

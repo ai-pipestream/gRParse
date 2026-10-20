@@ -1,7 +1,5 @@
 #include "s3_client.h"
 
-#include "../storage/http_call.h"
-
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -327,7 +325,8 @@ std::string S3Client::put_object(const std::string& key, const std::string& body
 }
 
 S3Reply S3Client::get(const std::string& key,
-                     const std::vector<std::pair<std::string, std::string>>& query) const {
+                     const std::vector<std::pair<std::string, std::string>>& query,
+                     uint64_t max_body_bytes) const {
   const std::string canonical_uri =
       uri_encode(base_path_ + "/" + config_.bucket + (key.empty() ? "" : "/" + key), true);
   std::vector<std::pair<std::string, std::string>> encoded;
@@ -364,6 +363,7 @@ S3Reply S3Client::get(const std::string& key,
   request.url = scheme_ + "://" + authority_ + canonical_uri +
                 (canonical_query.empty() ? "" : "?" + canonical_query);
   request.verify_ssl = config_.verify_ssl;
+  request.max_body_bytes = max_body_bytes;
   request.headers = {{"x-amz-content-sha256", payload_hash}, {"x-amz-date", timestamp}};
   if (!config_.session_token.empty()) {
     request.headers.emplace_back("x-amz-security-token", config_.session_token);

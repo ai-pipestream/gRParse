@@ -1,5 +1,6 @@
 #include "remote_sources.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
@@ -9,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include "../source_parse.h"
 #include "../targets/s3_client.h"
 #include "../targets/target_step.h"
 #include "http_call.h"
@@ -19,7 +21,7 @@ namespace {
 
 namespace parsev1 = ai::pipestream::parse::v1;
 
-constexpr uint64_t kDefaultHttpSourceMaxBytes = 256ull * 1024 * 1024;
+constexpr int kMaxRedirects = 5;
 
 std::string lowercase(std::string text) {
   for (char& c : text) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -38,7 +40,8 @@ class S3SourceStore final : public ObjectStore {
                                                                  {"prefix", prefix}};
       if (limit.has_value()) query.emplace_back("max-keys", std::to_string(*limit));
       if (!token.empty()) query.emplace_back("continuation-token", token);
-      const targets::S3Reply reply = client_.get("", query);
+      const targets::S3Reply reply =
+          client_.get("", query, HttpRequest::kDefaultMaxResponseBytes);
       if (reply.status < 200 || reply.status >= 300) {
         throw std::runtime_error("S3Source: listing the bucket answered HTTP " +
                                  std::to_string(reply.status));
@@ -54,7 +57,7 @@ class S3SourceStore final : public ObjectStore {
   }
 
   std::string get(const std::string& name) override {
-    const targets::S3Reply reply = client_.get(name, {});
+    const targets::S3Reply reply = client_.get(name, {}, source_max_bytes());
     if (reply.status < 200 || reply.status >= 300) {
       throw std::runtime_error("S3Source: reading '" + name + "' answered HTTP " +
                                std::to_string(reply.status));
@@ -150,24 +153,13 @@ std::string http_source_filename(const std::string& url, const std::string& cont
   return name.empty() ? std::string("document") : name;
 }
 
-uint64_t http_source_max_bytes() {
-  const char* value = std::getenv("GRPARSE_HTTP_SOURCE_MAX_BYTES");
-  if (value == nullptr || *value == '\0') return kDefaultHttpSourceMaxBytes;
-  char* end = nullptr;
-  const unsigned long long parsed = std::strtoull(value, &end, 10);
-  if (end == value || *end != '\0' || parsed == 0) {
-    throw std::invalid_argument("GRPARSE_HTTP_SOURCE_MAX_BYTES must be a positive byte count");
-  }
-  return parsed;
-}
-
 FetchedDocument fetch_s3_source(const parsev1::S3Source& source, const std::string& option_path) {
   targets::S3Config config;
   config.label = "S3Source";
   config.endpoint = source.endpoint();
   config.bucket = source.bucket();
   config.key_prefix = source.key_prefix();
-  config.verify_ssl = !source.has_verify_ssl() || source.verify_ssl();
+  config.verify_ssl = s3_source_verify_ssl(source);
   if (source.has_region()) config.region = source.region();
   if (source.endpoint().empty()) {
     throw StorageRequestError(option_path + ".endpoint", option_path + ".endpoint is required");
@@ -202,10 +194,7 @@ FetchedDocument fetch_http_source(const parsev1::HttpSource& source, const std::
   if (std::ranges::any_of(source.url(), [](unsigned char c) { return c <= 0x20 || c == 0x7F; })) {
     throw StorageRequestError(url_path, url_path + " carries whitespace or a control character");
   }
-  HttpRequest request;
-  request.url = source.url();
-  request.max_redirects = 5;
-  request.max_body_bytes = max_bytes;
+  std::vector<std::pair<std::string, std::string>> headers;
   static constexpr std::string_view kReserved[] = {
       "host", "content-length", "transfer-encoding", "connection", "expect", "te", "upgrade",
       "keep-alive", "proxy-connection", "trailer"};
@@ -220,17 +209,46 @@ FetchedDocument fetch_http_source(const parsev1::HttpSource& source, const std::
     if (std::ranges::any_of(value, [](unsigned char c) { return (c < 0x20 && c != '\t') || c == 0x7F; })) {
       throw StorageRequestError(where, where + ": the value carries a control character");
     }
-    request.headers.emplace_back(name, value);
+    headers.emplace_back(name, value);
   }
-  const HttpResponse reply = http_call(request, "HttpSource");
-  if (reply.status >= 400 && reply.status < 500) {
-    throw StorageRequestError(url_path, url_path + " answered HTTP " + std::to_string(reply.status));
+  // The caller's headers (often a credential) are meant for the origin the
+  // caller named; a redirect elsewhere is followed without them.
+  const std::string origin = url_origin(source.url());
+  if (origin.empty()) throw StorageRequestError(url_path, url_path + " names no host");
+  std::string url = source.url();
+  for (int hop = 0;; ++hop) {
+    HttpRequest request;
+    request.url = url;
+    request.max_body_bytes = max_bytes;
+    if (url_origin(url) == origin) request.headers = headers;
+    HttpResponse reply;
+    try {
+      reply = http_call(request, "HttpSource");
+    } catch (const HttpPeerRefused& refused) {
+      throw StorageRequestError(url_path, url_path + (hop == 0 ? "" : " (after a redirect)") +
+                                              ": " + refused.what());
+    }
+    if (reply.status >= 300 && reply.status < 400 && !reply.redirect_url.empty()) {
+      if (hop == kMaxRedirects) {
+        throw std::runtime_error("HttpSource: more than " + std::to_string(kMaxRedirects) +
+                                 " redirects");
+      }
+      const std::string next = lowercase(reply.redirect_url.substr(0, reply.redirect_url.find("://")));
+      if (reply.redirect_url.find("://") == std::string::npos || (next != "http" && next != "https")) {
+        throw std::runtime_error("HttpSource: redirected to a URL that is not http or https");
+      }
+      url = reply.redirect_url;
+      continue;
+    }
+    if (reply.status >= 400 && reply.status < 500) {
+      throw StorageRequestError(url_path, url_path + " answered HTTP " + std::to_string(reply.status));
+    }
+    if (!reply.ok()) {
+      throw std::runtime_error("HttpSource: the server answered HTTP " + std::to_string(reply.status));
+    }
+    return FetchedDocument{.filename = http_source_filename(url, reply.header("content-disposition")),
+                           .bytes = std::move(reply.body)};
   }
-  if (!reply.ok()) {
-    throw std::runtime_error("HttpSource: the server answered HTTP " + std::to_string(reply.status));
-  }
-  return FetchedDocument{.filename = http_source_filename(reply.effective_url, reply.header("content-disposition")),
-                         .bytes = reply.body};
 }
 
 }  // namespace grparse::storage

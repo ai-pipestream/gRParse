@@ -83,6 +83,7 @@ if curl -sS --max-time 10 "https://127.0.0.1:$minio_tls_port/minio/health/live" 
 fi
 
 echo "== remote-sources-e2e-test"
+GRPARSE_STORAGE_ALLOW_PRIVATE_ENDPOINTS=1 \
 GRPARSE_E2E_REMOTE=1 \
 GRPARSE_E2E_SAMPLE="$work/sample.md" \
 GRPARSE_E2E_S3_HTTP_ENDPOINT="http://127.0.0.1:$minio_port" \

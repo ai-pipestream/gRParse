@@ -1171,7 +1171,7 @@ if(BUILD_TESTING)
   target_include_directories(grparse_storage_fixture PUBLIC "${STORAGE_FIXTURE_DIR}")
   target_link_libraries(grparse_storage_fixture PUBLIC grparse_proto)
   set(GRPARSE_STORAGE_TESTS storage-connectors-test storage-connectors-e2e-test
-      remote-sources-e2e-test)
+      remote-sources-test remote-sources-e2e-test)
   foreach(test_name IN LISTS GRPARSE_STORAGE_TESTS)
     string(REPLACE "-" "_" test_source "${test_name}")
     add_executable(${test_name} "tests/${test_source}.cpp")

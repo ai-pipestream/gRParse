@@ -520,8 +520,9 @@ message FileSource {
 message HttpSource {
   // URL to fetch the document from
   string url = 1;
-  // Optional HTTP headers (e.g., authentication)
-  map<string, string> headers = 2;
+  // Optional HTTP headers (e.g., authentication). Sent only to the origin
+  // `url` names; a redirect to another origin is followed without them.
+  map<string, string> headers = 2 [debug_redact = true];
 }
 
 // S3Source provides a document from an S3-compatible store.
@@ -530,7 +531,7 @@ message S3Source {
   // Both set, or both omitted (ambient credentials). One without the other
   // is rejected.
   optional string access_key = 2;
-  optional string secret_key = 3;
+  optional string secret_key = 3 [debug_redact = true];
   string bucket = 4;
   optional string key_prefix = 5;
   // Verify the endpoint's TLS certificate. Unset means true; only an
@@ -673,7 +674,7 @@ message S3Target {
   // Both set, or both omitted (ambient credentials). One without the other
   // is rejected.
   optional string access_key = 2;
-  optional string secret_key = 3;
+  optional string secret_key = 3 [debug_redact = true];
   string bucket = 4;
   optional string key_prefix = 5;
   // TLS peer and hostname verification. UNSET MEANS VERIFY: a plain bool

@@ -226,7 +226,7 @@ grpc::Status resolve_source(const parsev1::Source& source, const std::string& op
   try {
     FetchedDocument fetched;
     if (source.has_http()) {
-      fetched = fetch_http_source(source.http(), option_path + ".http", http_source_max_bytes());
+      fetched = fetch_http_source(source.http(), option_path + ".http", source_max_bytes());
     } else if (source.has_s3()) {
       fetched = fetch_s3_source(source.s3(), option_path + ".s3");
     } else if (source.has_azure_blob()) {

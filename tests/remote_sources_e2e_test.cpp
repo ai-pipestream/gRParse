@@ -117,10 +117,10 @@ void http_sources() {
                  "HttpSource");
   expect_refused(http(base + "/redirect-file"), "http redirect to file://",
                  grpc::StatusCode::UNAVAILABLE, "HttpSource");
-  ::setenv("GRPARSE_HTTP_SOURCE_MAX_BYTES", "1048576", 1);
+  ::setenv("GRPARSE_SOURCE_MAX_BYTES", "1048576", 1);
   expect_refused(http(base + "/big"), "http body cap", grpc::StatusCode::UNAVAILABLE,
                  "larger than 1048576 bytes");
-  ::unsetenv("GRPARSE_HTTP_SOURCE_MAX_BYTES");
+  ::unsetenv("GRPARSE_SOURCE_MAX_BYTES");
   expect_refused(http(env("GRPARSE_E2E_HTTPS_BASE") + "/sample.md"), "https self-signed",
                  grpc::StatusCode::UNAVAILABLE, "certificate");
 }
