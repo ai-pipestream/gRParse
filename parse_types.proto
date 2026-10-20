@@ -927,8 +927,6 @@ message ChartExtractionPresetRegistry {
   map<string, ChartExtractionPresetSpec> presets = 1;
 }
 
-// A list-valued server setting (allowed presets, allowed engines) in its
-// JSON array form, read as {"names": [...]}.
 // OcrEngineKind names a Docling OCR factory kind (OcrOptions.kind). This
 // server runs RapidOCR; AUTO resolves to it. The other kinds are declared
 // so a preset naming them is refused by name rather than misread.
@@ -950,8 +948,9 @@ enum OcrEngineKind {
 message OcrPresetSpec {
   // Required: the OCR engine kind, as upstream requires a "kind" key.
   OcrEngineKind kind = 1;
-  // Languages for the engine. A request's ocr_lang overrides them, as in
-  // docling-jobkit. Each must be one the installed models read.
+  // Languages for the engine. Each must be one the installed models read;
+  // that one model set reads Chinese and English whatever is named, so the
+  // list is validated at startup and selects no model.
   repeated string lang = 2;
 }
 
@@ -959,6 +958,8 @@ message OcrPresetRegistry {
   map<string, OcrPresetSpec> presets = 1;
 }
 
+// A list-valued server setting (allowed presets, allowed engines) in its
+// JSON array form, read as {"names": [...]}.
 message ServerSettingNameList {
   repeated string names = 1;
 }

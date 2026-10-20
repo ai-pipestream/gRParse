@@ -56,9 +56,9 @@ Each enabled output is its own VLM call per chart in grpc-enrich, so a failed su
 | Docling | gRParse | Notes |
 |---|---|---|
 | `default_ocr_preset` (default `auto`) | `GRPARSE_DEFAULT_OCR_PRESET` | Must be a kind this server runs (`auto`, `rapidocr`), checked at startup. |
-| `default_ocr_kind` (default `auto`) | `GRPARSE_DEFAULT_OCR_KIND` | Always allowed by the kind check. |
+| `default_ocr_kind` (default `auto`) | `GRPARSE_DEFAULT_OCR_KIND` | Must be a kind this server runs (`auto`, `rapidocr`), checked at startup; always allowed by the kind check. |
 | `allowed_ocr_presets` | `GRPARSE_ALLOWED_OCR_PRESETS` | Narrows the built-in kinds; `default` and custom presets stay selectable (#723). |
-| `custom_ocr_presets` (`{"id": {"kind": ..., "lang": [...]}}`) | `GRPARSE_CUSTOM_OCR_PRESETS`, typed `OcrPresetRegistry` of `OcrPresetSpec` (protobuf text format) | `kind` is the `OcrEngineKind` enum. Only `lang` is accepted beside it; other engine options are unknown fields and stop startup. |
+| `custom_ocr_presets` (`{"id": {"kind": ..., "lang": [...]}}`) | `GRPARSE_CUSTOM_OCR_PRESETS`, typed `OcrPresetRegistry` of `OcrPresetSpec` (protobuf text format) | `kind` is the `OcrEngineKind` enum. Only `lang` is accepted beside it; other engine options are unknown fields and stop startup. `lang` is validated against the installed PP-OCRv3 set (Chinese and English) and selects no model, so a preset is a name and policy gate rather than an engine configuration. |
 | `allowed_ocr_kinds` | `GRPARSE_ALLOWED_OCR_KINDS` | Names are checked against the known kinds. |
 | Unset `ocr_preset` | `default` | Upstream's request default is the literal `auto`; here an unset preset means `default`, which resolves to `auto` unless configured. |
 

@@ -98,10 +98,15 @@ OcrPresetPolicy::OcrPresetPolicy(OcrPresetPolicySettings settings) : settings_(s
                                 ocr_kind_name(settings_.default_preset) +
                                 "' is not an OCR kind this server runs (auto, rapidocr)");
   }
-  registry_["default"] = OcrPreset{.id = "default", .kind = settings_.default_preset, .lang = {}};
+  if (!served(settings_.default_kind)) {
+    throw std::invalid_argument("GRPARSE_DEFAULT_OCR_KIND '" +
+                                ocr_kind_name(settings_.default_kind) +
+                                "' is not an OCR kind this server runs (auto, rapidocr)");
+  }
+  registry_["default"] = OcrPreset{.id = "default", .kind = settings_.default_preset};
   for (const parsev1::OcrEngineKind kind : kServedKinds) {
     const std::string id = ocr_kind_name(kind);
-    registry_[id] = OcrPreset{.id = id, .kind = kind, .lang = {}};
+    registry_[id] = OcrPreset{.id = id, .kind = kind};
   }
   if (settings_.allowed_presets.has_value()) {
     std::set<std::string> allowed(settings_.allowed_presets->begin(),
@@ -124,9 +129,7 @@ OcrPresetPolicy::OcrPresetPolicy(OcrPresetPolicySettings settings) : settings_(s
                                     "(en, english, ch, chinese, zh)");
       }
     }
-    registry_[id] = OcrPreset{.id = id,
-                              .kind = spec.kind(),
-                              .lang = std::vector<std::string>(spec.lang().begin(), spec.lang().end())};
+    registry_[id] = OcrPreset{.id = id, .kind = spec.kind()};
   }
 }
 
@@ -163,9 +166,6 @@ std::expected<OcrPreset, grpc::Status> OcrPresetPolicy::resolve(
         "ocr_preset", parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED, requested,
         surface + ": OCR kind '" + kind + "' (preset " + requested +
             ") is not available. Available kinds: ['auto', 'rapidocr']."));
-  }
-  if (options.ocr_lang_size() > 0) {
-    preset.lang.assign(options.ocr_lang().begin(), options.ocr_lang().end());
   }
   return preset;
 }

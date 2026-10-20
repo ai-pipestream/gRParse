@@ -2143,6 +2143,10 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     static const OcrPresetPolicy& kDefaultOcrPolicy = default_ocr_preset_policy();
     const OcrPresetPolicy& ocr_policy =
         collectors != nullptr ? collectors->ocr_policy() : kDefaultOcrPolicy;
+    // A name and policy gate only: every kind this server runs is the one
+    // RapidOCR set, which reads Chinese and English whatever the preset's
+    // lang says, so the resolved preset selects nothing further
+    // (ocr_preset_policy.h).
     if (auto ocr = ocr_policy.resolve(request.options(), surface); !ocr.has_value()) {
       return ocr.error();
     }

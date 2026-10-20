@@ -80,7 +80,6 @@ void custom_presets_stay_selectable() {
   const auto resolved = open.resolve(preset("chinese_doc"), "s");
   require(resolved.has_value(), "a custom preset is allowed by default");
   require_equal(parsev1::OcrEngineKind_Name(resolved->kind), std::string("OCR_ENGINE_KIND_RAPIDOCR"), "custom kind");
-  require(resolved->lang == std::vector<std::string>{"ch"}, "custom lang");
   // docling-serve test_allowed_ocr_presets_keeps_custom_ocr_presets_selectable.
   const auto narrowed = from({{"GRPARSE_ALLOWED_OCR_PRESETS", "rapidocr"},
                               {"GRPARSE_CUSTOM_OCR_PRESETS", kKorean}});
@@ -96,13 +95,16 @@ void custom_presets_stay_selectable() {
   require(json.preset_ids() == std::vector<std::string>{"auto", "default"}, "JSON list");
 }
 
-void request_lang_overrides() {
+// A preset is a name and policy gate: ocr_lang beside a custom preset
+// resolves to the same preset, whose id and kind are all it carries.
+void lang_selects_no_model() {
   const auto policy = from({{"GRPARSE_CUSTOM_OCR_PRESETS", kKorean}});
   auto options = preset("chinese_doc");
   options.add_ocr_lang("en");
   const auto resolved = policy.resolve(options, "s");
-  require(resolved.has_value() && resolved->lang == std::vector<std::string>{"en"},
-          "ocr_lang overrides the preset's lang");
+  require(resolved.has_value() && resolved->id == "chinese_doc" &&
+              resolved->kind == parsev1::OCR_ENGINE_KIND_RAPIDOCR,
+          "ocr_lang beside a preset resolves that preset unchanged");
 }
 
 void kinds() {
@@ -148,6 +150,10 @@ void startup_errors() {
          "empty or padded preset id");
   throws({{"GRPARSE_DEFAULT_OCR_PRESET", "easyocr"}}, "is not an OCR kind this server runs");
   throws({{"GRPARSE_DEFAULT_OCR_PRESET", "korean"}}, "which is not an OCR kind");
+  throws({{"GRPARSE_DEFAULT_OCR_KIND", "easyocr"}},
+         "GRPARSE_DEFAULT_OCR_KIND 'easyocr' is not an OCR kind this server runs");
+  throws({{"GRPARSE_DEFAULT_OCR_KIND", "korean"}},
+         "GRPARSE_DEFAULT_OCR_KIND names 'korean', which is not an OCR kind");
   throws({{"GRPARSE_ALLOWED_OCR_KINDS", "auto,,rapidocr"}}, "has an empty entry");
   throws({{"GRPARSE_ALLOWED_OCR_KINDS", "paddle"}}, "names 'paddle', which is not an OCR kind");
 }
@@ -157,5 +163,5 @@ void startup_errors() {
 int main() {
   return grparse_test::run_test_main("ocr-preset-policy-test", "ok",
                                      {defaults, custom_presets_stay_selectable,
-                                      request_lang_overrides, kinds, startup_errors});
+                                      lang_selects_no_model, kinds, startup_errors});
 }

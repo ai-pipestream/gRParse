@@ -16,6 +16,13 @@
 // (GRPARSE_DEFAULT_OCR_KIND is always allowed) and against the kinds this
 // server can run. Everything is decided at startup except the per-request
 // lookup.
+//
+// A preset is a name and policy gate: it decides which ids a request may
+// name and which kinds they map to. It selects no model. Every kind this
+// server runs is RapidOCR with the one installed PP-OCRv3 set, which reads
+// Chinese and English whatever a preset's lang or a request's ocr_lang
+// names, so a preset's lang is validated at startup (each entry must be a
+// language that set reads) and carries no further.
 #include <expected>
 #include <functional>
 #include <map>
@@ -36,8 +43,6 @@ struct OcrPreset {
   std::string id;
   ai::pipestream::parse::v1::OcrEngineKind kind =
       ai::pipestream::parse::v1::OCR_ENGINE_KIND_AUTO;
-  // The preset's languages, or the request's ocr_lang when it sets any.
-  std::vector<std::string> lang;
 };
 
 struct OcrPresetPolicySettings {
@@ -53,13 +58,13 @@ struct OcrPresetPolicySettings {
 class OcrPresetPolicy {
  public:
   // Throws std::invalid_argument naming the setting when the settings are
-  // unusable (a default that is not a kind this server runs, a custom preset
-  // without a kind, with a padded id, or with a language the models cannot
-  // read).
+  // unusable (a default preset or default kind that is not a kind this
+  // server runs, a custom preset without a kind, with a padded id, or with a
+  // language the models cannot read).
   explicit OcrPresetPolicy(OcrPresetPolicySettings settings);
 
-  // The preset `options.ocr_preset` names (unset or empty means "default"),
-  // with ocr_lang applied. INVALID_ARGUMENT carrying an OptionRejection on
+  // The preset `options.ocr_preset` names (unset or empty means "default").
+  // INVALID_ARGUMENT carrying an OptionRejection on
   // "ocr_preset": NOT_ALLOWED for a name outside the registry (docling-serve
   // policy.py wording) or a kind GRPARSE_ALLOWED_OCR_KINDS excludes,
   // NOT_IMPLEMENTED for a kind this server cannot run.
