@@ -14,10 +14,8 @@
 
 #include <functional>
 #include <map>
-#include <string>
-#include <string_view>
-
 #include <optional>
+#include <string>
 #include <string_view>
 
 #include "ai/pipestream/parse/v1/parse_types.pb.h"

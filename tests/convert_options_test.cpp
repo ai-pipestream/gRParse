@@ -864,6 +864,48 @@ void verify_typed_rejections_and_heading_options() {
   }
 }
 
+// A chart extraction custom configuration with no engine is refused by
+// field, both when the options are validated and when the "custom" preset
+// is resolved against a policy that allows custom configurations.
+void verify_unspecified_chart_engine_is_refused_by_field() {
+  constexpr const char* kField = "chart_extraction_custom_config.engine_options.engine_type";
+  parsev1::ConvertDocumentOptions options;
+  *options.mutable_chart_extraction_custom_config() = representable_chart_config();
+  options.mutable_chart_extraction_custom_config()->mutable_engine_options()->set_engine_type(
+      parsev1::VLM_ENGINE_TYPE_UNSPECIFIED);
+  {
+    const grpc::Status status = grparse::validate_options(options, kSurface);
+    require_invalid(status, std::string(kField) + " is required");
+    const parsev1::OptionRejection rejection = rejection_of(status);
+    require(rejection.option_path() == kField &&
+                rejection.reason() == parsev1::OPTION_REJECTION_REASON_UNKNOWN_VALUE &&
+                rejection.rejected_value_raw() == "VLM_ENGINE_TYPE_UNSPECIFIED",
+            "validation names the engine field and the unspecified value");
+  }
+  const grparse::ChartExtractionPolicy permissive = policy_with({
+      {"GRPARSE_ALLOW_CUSTOM_CHART_EXTRACTION_CONFIG", "true"},
+  });
+  {
+    const auto resolved = grparse::resolve_chart_extraction(options, permissive, kSurface);
+    require(!resolved.has_value(), "an engine-less custom config does not resolve");
+    require_invalid(resolved.error(), "chart extraction preset 'custom': " + std::string(kField) +
+                                          " names no engine");
+    const parsev1::OptionRejection rejection = rejection_of(resolved.error());
+    require(rejection.option_path() == kField &&
+                rejection.reason() == parsev1::OPTION_REJECTION_REASON_UNKNOWN_VALUE &&
+                rejection.rejected_value_raw() == "VLM_ENGINE_TYPE_UNSPECIFIED",
+            "resolution names the engine field and the unspecified value");
+  }
+  {
+    // A number outside the enum is named as the number the request carried.
+    options.mutable_chart_extraction_custom_config()->mutable_engine_options()->set_engine_type(
+        static_cast<parsev1::VlmEngineType>(97));
+    const auto resolved = grparse::resolve_chart_extraction(options, permissive, kSurface);
+    require(!resolved.has_value() && rejection_of(resolved.error()).rejected_value_raw() == "97",
+            "an out-of-enum engine is refused with its raw number");
+  }
+}
+
 int main() {
   return grparse_test::run_test_main("convert-options-test", "ok", {
       verify_typed_rejections_and_heading_options,
@@ -876,6 +918,7 @@ int main() {
       verify_status_from_exception_covers_every_throw,
       verify_outcome_from_exception_is_a_failure,
       verify_chart_policy_resolution,
+      verify_unspecified_chart_engine_is_refused_by_field,
       verify_doclang_export_options,
       verify_picture_description_api_call_is_typed,
       verify_picture_description_headers_stay_on_their_endpoint,

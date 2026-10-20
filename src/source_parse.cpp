@@ -573,9 +573,12 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
   const auto require_engine = [&](pipestream::parse::v1::VlmEngineType engine_type,
                                   const char* name) -> grpc::Status {
     if (engine_type == pipestream::parse::v1::VLM_ENGINE_TYPE_UNSPECIFIED) {
-      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                          surface + ": " + std::string(name) +
-                              ".engine_options.engine_type is required");
+      return option_rejected(std::string(name) + ".engine_options.engine_type",
+                             pipestream::parse::v1::OPTION_REJECTION_REASON_UNKNOWN_VALUE,
+                             "VLM_ENGINE_TYPE_UNSPECIFIED",
+                             surface + ": " + std::string(name) +
+                                 ".engine_options.engine_type is required "
+                                 "(VLM_ENGINE_TYPE_UNSPECIFIED names no engine)");
     }
     return grpc::Status::OK;
   };
@@ -1204,6 +1207,22 @@ std::expected<std::optional<ChartExtractionPreset>, grpc::Status> resolve_chart_
   };
   if (options.has_chart_extraction_custom_config()) {
     const auto& config = options.chart_extraction_custom_config();
+    // A request's own configuration resolves to the preset "custom"; an
+    // engine with no Docling name (UNSPECIFIED or a value outside the enum)
+    // cannot be checked against the allowed engines, so it is refused by
+    // field before the policy runs.
+    if (const auto engine = config.engine_options().engine_type();
+        vlm_engine_name(engine).empty()) {
+      return std::unexpected(option_rejected(
+          "chart_extraction_custom_config.engine_options.engine_type",
+          pipestream::parse::v1::OPTION_REJECTION_REASON_UNKNOWN_VALUE,
+          pipestream::parse::v1::VlmEngineType_IsValid(engine)
+              ? pipestream::parse::v1::VlmEngineType_Name(engine)
+              : std::to_string(static_cast<int>(engine)),
+          surface + ": chart extraction preset 'custom': "
+                    "chart_extraction_custom_config.engine_options.engine_type names no "
+                    "engine"));
+    }
     const grpc::Status allowed =
         policy.check_custom_config(config.engine_options().engine_type());
     if (!allowed.ok()) return rejected(allowed);
