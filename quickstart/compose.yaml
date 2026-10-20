@@ -27,9 +27,11 @@
 # CUDA and OpenVINO images, local builds) is compose.stack.yaml in the repo
 # root; see the README.
 #
-# GRPARSE_TAG pins the gRParse and models images (default latest; releases
-# publish <version>-cpu, see docs/RELEASING.md). The collectors publish only
-# :latest today.
+# GRPARSE_TAG pins the gRParse, models and demo shell images (default
+# latest; a release publishes <version>-cpu for gRParse and <version> for
+# the others, see docs/RELEASING.md). The shell carries version tags from
+# the first release after it joined publish.yml (only 0.2.0 exists before
+# that), and the collectors publish only :latest today.
 name: grparse-quickstart
 
 x-hardened: &hardened
@@ -141,7 +143,7 @@ services:
 
   shell:
     <<: *hardened
-    image: pipestreamai/grparse-demo-shell:latest
+    image: pipestreamai/grparse-demo-shell:${GRPARSE_TAG:-latest}
     ports:
       - "127.0.0.1:8080:8080"
     environment:
@@ -156,7 +158,7 @@ services:
   # shell image, which already carries Node, gRPC and the gRParse contracts.
   parse:
     <<: *hardened
-    image: pipestreamai/grparse-demo-shell:latest
+    image: pipestreamai/grparse-demo-shell:${GRPARSE_TAG:-latest}
     profiles: ["cli"]
     entrypoint: ["node", "/quickstart/parse.cjs"]
     environment:
