@@ -90,7 +90,11 @@ A tag is never created or pushed by automation; a human cuts it.
 linux/arm64, each leg built and tested natively on its own runner
 (`ubuntu-latest`, `ubuntu-24.04-arm`), no emulation. `latest-openvino` /
 `<version>-openvino` is the Intel image (`Dockerfile.openvino`,
-linux/amd64). Every published image carries SLSA provenance (`mode=max`)
+linux/amd64). The demo shell (`examples/web-demo/Dockerfile`) publishes
+in the same run as `docker.io/pipestreamai/grparse-demo-shell:latest`, and
+`:<version>` on a release, a linux/amd64 + linux/arm64 manifest list whose
+legs each load every peer contract inside the pushed digest before it is
+named. Every published image carries SLSA provenance (`mode=max`)
 and an SBOM attestation, visible in `imagetools inspect` as one
 attestation manifest per platform.
 
