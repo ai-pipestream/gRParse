@@ -206,14 +206,26 @@ jobs:
           docker cp "$id:/models/." models/
           docker rm "$id"
           scripts/fetch-models.sh --verify --dir models --layout all --tokenizer
-      - name: Choose the build parallelism and test flags
+      - name: Free runner disk for the CUDA toolchain
+        # The CUDA devel base, the seed tree and the build outgrow the hosted
+        # runner's free space. The SDKs removed are unused here.
+        if: ${{ matrix.variant == 'cuda' }}
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Choose the deps seed, build parallelism and test flags
         id: args
         env:
           VARIANT: ${{ matrix.variant }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
+          PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
+          seed=$(sh scripts/find-seed.sh "$DOCKERFILE" "$VARIANT" "${PLATFORM#linux/}")
           {
             echo "build_args<<EOF"
+            echo "GRPARSE_DEPS_IMAGE=${seed#image=}"
             echo "GRPARSE_BUILD_JOBS=$(scripts/build-jobs.sh)"
             if [ "$VARIANT" = cpu ]; then echo "GRPARSE_TEST_REQUIRE_MODELS=1"; fi
             echo "EOF"
