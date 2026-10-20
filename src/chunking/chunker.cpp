@@ -989,6 +989,7 @@ std::vector<WorkChunk> split_oversized(std::vector<WorkChunk>&& work, int max_to
                                        const TokenCounter& counter) {
   std::vector<WorkChunk> split;
   int unsplit = 0;
+  int still_over = 0;
   for (auto& chunk : work) {
     if (counter.count(contextualized(chunk)) <= max_tokens) {
       split.push_back(std::move(chunk));
@@ -1010,7 +1011,10 @@ std::vector<WorkChunk> split_oversized(std::vector<WorkChunk>&& work, int max_to
     // whose merges cross the heading's newline breaks that, so each piece is
     // re-measured in context and the text budget shrinks by the worst
     // overflow until every piece fits: docling-core #690's convergence loop.
-    // A budget that reaches zero keeps the last packing, logged as unsplit.
+    // When shrinking would take the budget to zero, the loop stops and the
+    // last packing ships as it is: its pieces (or the whole chunk, when the
+    // packing is one piece) are still over max_tokens, counted apart from
+    // the heading-trail case above.
     std::string headings_block;
     for (const auto& heading : chunk.headings) {
       headings_block += heading;
@@ -1027,7 +1031,7 @@ std::vector<WorkChunk> split_oversized(std::vector<WorkChunk>&& work, int max_to
         break;
       }
       if (budget - overflow <= 0) {
-        ++unsplit;
+        ++still_over;
         break;
       }
       budget -= overflow;
@@ -1054,6 +1058,12 @@ std::vector<WorkChunk> split_oversized(std::vector<WorkChunk>&& work, int max_to
                  "gRParse chunker: {} chunk(s) left unsplit over max_tokens={}: the heading "
                  "trail alone reaches the budget",
                  unsplit, max_tokens);
+  }
+  if (still_over > 0) {
+    std::println(stderr,
+                 "gRParse chunker: {} chunk(s) still over max_tokens={} after splitting: the "
+                 "contextualized pieces did not converge under the budget",
+                 still_over, max_tokens);
   }
   return split;
 }

@@ -2,12 +2,14 @@
 #include <chrono>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
 
+#include <google/protobuf/descriptor.h>
 #include <grpcpp/grpcpp.h>
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -271,6 +273,58 @@ void verify_type_generation_stop_reasons_walks_the_document() {
           "stop_reason survives the wire");
 }
 
+// True when `message`, or any message reachable from it through its fields
+// (map entries included), is GenerationSource.
+bool reaches_generation_source(const google::protobuf::Descriptor* message,
+                               std::set<const google::protobuf::Descriptor*>* seen) {
+  if (message == docv1::GenerationSource::descriptor()) return true;
+  if (!seen->insert(message).second) return false;
+  for (int index = 0; index < message->field_count(); ++index) {
+    const google::protobuf::FieldDescriptor* field = message->field(index);
+    if (field->cpp_type() == google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE &&
+        reaches_generation_source(field->message_type(), seen)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Collects every map field reachable from `message` through message fields.
+void collect_map_fields(const google::protobuf::Descriptor* message,
+                        std::set<const google::protobuf::Descriptor*>* seen,
+                        std::vector<const google::protobuf::FieldDescriptor*>* maps) {
+  if (!seen->insert(message).second) return;
+  for (int index = 0; index < message->field_count(); ++index) {
+    const google::protobuf::FieldDescriptor* field = message->field(index);
+    if (field->cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE) continue;
+    if (field->is_map()) maps->push_back(field);
+    collect_map_fields(field->message_type(), seen, maps);
+  }
+}
+
+// type_generation_stop_reasons does not walk map fields, which is only
+// sound while no map reachable from Document can hold a GenerationSource.
+// A schema change that adds one fails here instead of leaving that
+// generation's stop_reason silently unset.
+void verify_no_map_in_document_reaches_a_generation_source() {
+  std::set<const google::protobuf::Descriptor*> walked;
+  require(reaches_generation_source(docv1::Document::descriptor(), &walked),
+          "the guard sees the GenerationSource fields the fold does walk");
+
+  std::set<const google::protobuf::Descriptor*> visited;
+  std::vector<const google::protobuf::FieldDescriptor*> maps;
+  collect_map_fields(docv1::Document::descriptor(), &visited, &maps);
+  require(!maps.empty(), "the Document schema has map fields to check");
+  for (const google::protobuf::FieldDescriptor* map : maps) {
+    const google::protobuf::FieldDescriptor* value = map->message_type()->map_value();
+    if (value->cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE) continue;
+    std::set<const google::protobuf::Descriptor*> seen;
+    require(!reaches_generation_source(value->message_type(), &seen),
+            "map field " + std::string(map->full_name()) +
+                " can hold a GenerationSource, which type_generation_stop_reasons skips");
+  }
+}
+
 // Answers the first page with page_raw, then keeps the stream open until the
 // client cancels it (or ten seconds pass), standing in for a peer still busy
 // with the rest of the document.
@@ -518,6 +572,7 @@ int main() {
       verify_apply_maps_granite_docling_and_raw_api_url,
       verify_vlm_stop_reason_classifies_like_docling,
       verify_type_generation_stop_reasons_walks_the_document,
+      verify_no_map_in_document_reaches_a_generation_source,
       verify_convert_rasters_dials_and_merges,
       verify_missing_target_is_failed_precondition,
       verify_abort_cancels_the_stream,

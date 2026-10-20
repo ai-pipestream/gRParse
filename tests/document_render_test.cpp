@@ -474,9 +474,6 @@ void verify_markdown_flattens_stacked_column_headers() {
           "header flags below row 0 must leave every row in the body:\n" + late_markdown);
 }
 
-// docling-core 2.102 header-row rule (#767). Each expected string is what
-// docling-core 2.103.0 DoclingDocument.export_to_markdown() prints for the
-// same cells (receipt: docs/receipts/feat-parity-core-2.103-slim-2.140/).
 // A client document's image uri is data, never a path to open: only a
 // data: URI decodes to bytes; a file URI, an absolute path and a relative
 // path come back as nothing, so referenced output keeps the uri as text.
@@ -491,6 +488,9 @@ void verify_image_uris_are_never_dereferenced() {
           "a data URI still decodes");
 }
 
+// docling-core 2.102 header-row rule (#767). Each expected string is what
+// docling-core 2.103.0 DoclingDocument.export_to_markdown() prints for the
+// same cells (receipt: docs/receipts/feat-parity-core-2.103-slim-2.140/).
 void verify_markdown_header_rows_follow_docling_core_2_102() {
   struct Case {
     std::string name;
