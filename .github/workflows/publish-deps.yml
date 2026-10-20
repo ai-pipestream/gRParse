@@ -38,6 +38,7 @@ on:
       - scripts/deps-hash.sh
       - scripts/prune-seed.sh
       - scripts/build-jobs.sh
+      - scripts/registry-preflight.sh
       - .github/workflows/publish-deps.yml
   pull_request:
     # The same list as push above.
@@ -51,6 +52,7 @@ on:
       - scripts/deps-hash.sh
       - scripts/prune-seed.sh
       - scripts/build-jobs.sh
+      - scripts/registry-preflight.sh
       - .github/workflows/publish-deps.yml
   schedule:
     - cron: "41 4 * * 0"
@@ -110,6 +112,13 @@ jobs:
           hash=$(sh scripts/deps-hash.sh "$DOCKERFILE" "$ARCH")
           echo "ref=$DEPS_REPO:$FLAVOR-$ARCH-$hash" >> "$GITHUB_OUTPUT"
           echo "seed $DEPS_REPO:$FLAVOR-$ARCH-$hash"
+      - name: Docker Hub grants push on the seeds and pull on the bases
+        env:
+          DOCKER_USER: ${{ secrets.DOCKER_USER }}
+          DOCKER_TOKEN: ${{ secrets.DOCKER_TOKEN }}
+        run: |
+          scripts/registry-preflight.sh --push pipestreamai/grparse-deps \
+            --pull docker/dockerfile --pull library/ubuntu --pull nvidia/cuda
       - name: Log in to Docker Hub (docker.io)
         uses: docker/login-action@v4
         with:
