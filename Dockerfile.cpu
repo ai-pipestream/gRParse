@@ -151,6 +151,11 @@ RUN LD_LIBRARY_PATH=/out/ort-libs:/opt/opencv/lib \
 # without a passwd entry (65532 is the conventional nonroot uid in hardened
 # images).
 FROM ${GRPARSE_RUNTIME_IMAGE}
+# The commit this image was built from, so a consumer (the corpus eval's run
+# record, for one) can read it from a local build as it does from a published
+# one, where publish.yml sets the same label. CI passes the commit SHA.
+ARG GRPARSE_REVISION=
+LABEL org.opencontainers.image.revision=${GRPARSE_REVISION}
 # The layout model is the same one the CUDA and OpenVINO images run, so a
 # document parses to the same items on every accelerator: measured on a real
 # corpus, the lighter picodet detector left a receipt as one word per

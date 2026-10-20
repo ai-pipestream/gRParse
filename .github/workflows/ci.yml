@@ -50,7 +50,8 @@ jobs:
         run: |
           docker build --progress=plain \
             --build-arg GRPARSE_BUILD_JOBS="$(scripts/build-jobs.sh)" \
-            --build-arg GRPARSE_DEPS_IMAGE="${{ steps.seed.outputs.image }}" -t grparse-ci-cuda .
+            --build-arg GRPARSE_DEPS_IMAGE="${{ steps.seed.outputs.image }}" \
+            --build-arg GRPARSE_REVISION="${{ github.sha }}" -t grparse-ci-cuda .
       - name: Boot-proof the runtime image
         # Library closure + boot-to-main.  A green build with an unbootable
         # binary has shipped before (ZXing flipping BUILD_SHARED_LIBS); this
@@ -79,7 +80,8 @@ jobs:
         run: |
           docker build --progress=plain -f Dockerfile.openvino \
             --build-arg GRPARSE_BUILD_JOBS="$(scripts/build-jobs.sh)" \
-            --build-arg GRPARSE_DEPS_IMAGE="${{ steps.seed.outputs.image }}" -t grparse-ci-openvino .
+            --build-arg GRPARSE_DEPS_IMAGE="${{ steps.seed.outputs.image }}" \
+            --build-arg GRPARSE_REVISION="${{ github.sha }}" -t grparse-ci-openvino .
       - name: Boot-proof the runtime image
         run: ./scripts/smoke-test.sh grparse-ci-openvino
       - name: Verify model fetch and real CPU embeddings
@@ -152,6 +154,7 @@ jobs:
           docker build --progress=plain -f Dockerfile.cpu \
             --build-arg GRPARSE_BUILD_JOBS="$(scripts/build-jobs.sh)" \
             --build-arg GRPARSE_DEPS_IMAGE="${{ steps.seed.outputs.image }}" \
+            --build-arg GRPARSE_REVISION="${{ github.sha }}" \
             --build-arg GRPARSE_TEST_REQUIRE_MODELS=1 -t grparse-ci-cpu .
       - name: Boot-proof the runtime image
         run: ./scripts/smoke-test.sh grparse-ci-cpu

@@ -148,6 +148,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends libcudnn9-cuda-
 # without a passwd entry (65532 is the conventional nonroot uid in hardened
 # images).
 FROM ${GRPARSE_RUNTIME_IMAGE}
+# The commit this image was built from, so a consumer (the corpus eval's run
+# record, for one) can read it from a local build as it does from a published
+# one, where publish.yml sets the same label. CI passes the commit SHA.
+ARG GRPARSE_REVISION=
+LABEL org.opencontainers.image.revision=${GRPARSE_REVISION}
 ENV GRPARSE_LISTEN_ADDRESS=0.0.0.0:50051 GRPARSE_MODELS_DIR=/models GRPARSE_PAGE_WORKERS=2 GRPARSE_CUDA_DEVICE=0 \
     LD_LIBRARY_PATH=/usr/local/lib
 COPY --from=build /out/runtime-libs/ /usr/local/lib/
