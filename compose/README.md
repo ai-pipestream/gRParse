@@ -143,7 +143,7 @@ that, depending on who the clients are:
 ## Prometheus + Grafana observability overlay
 
 `compose.stack.observability.yaml` adds Prometheus (`prom/prometheus:v3.3.0`)
-and Grafana (`grafana/grafana:11.6.0`) under the `observability` profile:
+and Grafana (`grafana/grafana:13.2.4`) under the `observability` profile:
 
 ```sh
 docker compose -f compose.stack.yaml -f compose.stack.observability.yaml --profile observability up -d

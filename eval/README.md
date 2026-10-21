@@ -346,7 +346,7 @@ both `grparse:9464` and `host.docker.internal:9465` every `5s`:
 docker compose -f compose.stack.yaml -f compose.stack.observability.yaml --profile observability up -d
 ```
 
-Grafana listens on `http://127.0.0.1:${GRAFANA_PORT:-3000}` (anonymous Admin
+Grafana listens on `http://127.0.0.1:${GRAFANA_PORT:-3000}` (anonymous Viewer
 enabled for local dev) with two provisioned dashboards under
 `compose/grafana/dashboards/`:
 - `grparse-pipeline-overview.json` (*gRParse Pipeline & Collector Telemetry*)
