@@ -1,0 +1,174 @@
+# Quickstart: gRParse on the CPU from published images. No build, no GPU,
+# no sibling checkouts. From this directory:
+#
+#   docker compose pull           # about 0.9 GB compressed, once
+#   docker compose up -d          # parser, models, PDF and office collectors, demo shell
+#   ./parse sample.pdf            # markdown on stdout
+#
+# Then open http://localhost:8080 for the demo shell, or dial gRPC on
+# localhost:50051 (ai.pipestream.parse.v1.ParseService). Both ports bind to
+# 127.0.0.1 only.
+#
+# What runs, and what it handles:
+#   grparse        the parser (pipestreamai/grparse:<tag>-cpu, amd64 and arm64)
+#   models         one-shot init that copies the verified layout/OCR models
+#                  into a volume; gRParse starts only after it succeeds
+#   pdfium         the PDF backend every PDF page is read through
+#   pdf-inspector  classifies PDFs; text PDFs take its fast path
+#   libreoffice    Word, PowerPoint, Excel, OpenDocument, RTF and friends
+#   calamine       spreadsheets (the primary reading; libreoffice adds charts)
+#   markup         Markdown, HTML, AsciiDoc, LaTeX, WebVTT, JSON
+#   epub, xml      EPUB books (chapters go through markup), XML, JATS, XBRL
+#   email          .eml and .msg, attachments included
+#   shell          the demo web UI on http://localhost:8080
+#   parse          the command-line client behind ./parse (not started by up)
+#
+# The full stack (EBCDIC, WARC, ASR, VLM, the per-collector UIs, the
+# CUDA and OpenVINO images, local builds) is compose.stack.yaml in the repo
+# root; see the README.
+#
+# GRPARSE_TAG pins the gRParse, models and demo shell images (default
+# latest; a release publishes <version>-cpu for gRParse and <version> for
+# the others, see docs/RELEASING.md). The shell carries version tags from
+# the first release after it joined publish.yml (only 0.2.0 exists before
+# that), and the collectors publish only :latest today.
+name: grparse-quickstart
+
+x-hardened: &hardened
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  models:
+    image: pipestreamai/grparse-models:${GRPARSE_TAG:-latest}
+    volumes:
+      - grparse-models:/target
+    restart: "no"
+
+  grparse:
+    <<: *hardened
+    image: pipestreamai/grparse:${GRPARSE_TAG:-latest}-cpu
+    ports:
+      - "127.0.0.1:50051:50051"
+    volumes:
+      - grparse-models:/models:ro
+    environment:
+      GRPARSE_ORT_EP: cpu
+      GRPARSE_PAGE_IMAGES: "on"   # page previews for the shell's box overlay
+      GRPARSE_PDF_BACKEND: "pdfium:50069"
+      GRPARSE_PDF_TARGET: "pdf-inspector:50067"
+      GRPARSE_LIBREOFFICE_TARGET: "libreoffice:50053"
+      GRPARSE_CALAMINE_TARGET: "calamine:50062"
+      GRPARSE_MARKUP_TARGET: "markup:50065"
+      GRPARSE_EPUB_TARGET: "epub:50064"
+      GRPARSE_XML_TARGET: "xml:50066"
+      GRPARSE_EMAIL_TARGET: "email:50054"
+    tmpfs:
+      - /tmp:size=256m
+    depends_on:
+      models:
+        condition: service_completed_successfully
+      pdfium:
+        condition: service_started
+      pdf-inspector:
+        condition: service_started
+    restart: unless-stopped
+
+  pdfium:
+    <<: *hardened
+    image: pipestreamai/grpc-pdfium:latest
+    expose:
+      - "50069"
+    # The front process spawns its worker pool over Unix sockets under /tmp.
+    tmpfs:
+      - /tmp:size=64m
+    restart: unless-stopped
+
+  pdf-inspector:
+    <<: *hardened
+    image: pipestreamai/grpc-pdf-inspector:latest
+    expose:
+      - "50067"
+    restart: unless-stopped
+
+  libreoffice:
+    <<: *hardened
+    image: pipestreamai/grpc-libreoffice:latest
+    expose:
+      - "50053"
+    # The server refuses to boot without a tmpfs at /tmp (uploads stay in RAM).
+    tmpfs:
+      - /tmp:size=512m
+    restart: unless-stopped
+
+  calamine:
+    <<: *hardened
+    image: pipestreamai/grpc-calamine:latest
+    expose:
+      - "50062"
+    restart: unless-stopped
+
+  markup:
+    <<: *hardened
+    image: pipestreamai/grpc-markup:latest
+    expose:
+      - "50065"
+    restart: unless-stopped
+
+  epub:
+    <<: *hardened
+    image: pipestreamai/grpc-epub:latest
+    expose:
+      - "50064"
+    restart: unless-stopped
+
+  xml:
+    <<: *hardened
+    image: pipestreamai/grpc-xml:latest
+    expose:
+      - "50066"
+    restart: unless-stopped
+
+  email:
+    <<: *hardened
+    image: pipestreamai/grpc-email:latest
+    expose:
+      - "50054"
+    tmpfs:
+      - /tmp:size=64m   # JVM scratch (hsperfdata, temp attachments)
+    restart: unless-stopped
+
+  shell:
+    <<: *hardened
+    image: pipestreamai/grparse-demo-shell:${GRPARSE_TAG:-latest}
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      GRPARSE_TARGET: "grparse:50051"
+    tmpfs:
+      - /tmp:size=16m   # the shell stages the contract protos here at boot
+    depends_on:
+      - grparse
+    restart: unless-stopped
+
+  # ./parse runs this service with the document on stdin. It reuses the
+  # shell image, which already carries Node, gRPC and the gRParse contracts.
+  parse:
+    <<: *hardened
+    image: pipestreamai/grparse-demo-shell:${GRPARSE_TAG:-latest}
+    profiles: ["cli"]
+    entrypoint: ["node", "/quickstart/parse.cjs"]
+    environment:
+      GRPARSE_TARGET: "grparse:50051"
+    volumes:
+      - ./parse.cjs:/quickstart/parse.cjs:ro
+    tmpfs:
+      - /tmp:size=16m
+    depends_on:
+      - grparse
+
+volumes:
+  grparse-models:

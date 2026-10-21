@@ -77,11 +77,9 @@ def stage_stubs() -> Path:
 
 def load_stubs(gen_dir: Path):
     sys.path.insert(0, str(gen_dir))
-    from ai.protomolt.parse.pdf.v1 import (  # noqa: E402
-        pdf_backend_service_pb2 as svc,
-        pdf_backend_service_pb2_grpc as svc_grpc,
-        pdf_backend_types_pb2 as types,
-    )
+    from ai.protomolt.parse.pdf.v1 import pdf_backend_service_pb2 as svc
+    from ai.protomolt.parse.pdf.v1 import pdf_backend_service_pb2_grpc as svc_grpc
+    from ai.protomolt.parse.pdf.v1 import pdf_backend_types_pb2 as types
 
     return svc, svc_grpc, types
 

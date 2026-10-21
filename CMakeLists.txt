@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(gRParse VERSION 0.2.1 LANGUAGES CXX C)
+project(gRParse VERSION 0.3.0 LANGUAGES CXX C)
 
 include(CTest)
 
@@ -790,6 +790,7 @@ add_library(grparse_core STATIC
   src/office_cv_enrichment.cpp
   src/figure_classifier.cpp
   src/document_assembly.cpp
+  src/list_marker.cpp
   src/assembly_blocks.cpp
   src/assembly_headings.cpp
   src/assembly_table_data.cpp
@@ -918,6 +919,7 @@ if(BUILD_TESTING)
     warc-stub-wire-test
     document-reading-order-test
     heading-hierarchy-test
+    list-marker-test
     input-format-test
     paragraph-split-test)
   foreach(test_name IN LISTS GRPARSE_TESTS)

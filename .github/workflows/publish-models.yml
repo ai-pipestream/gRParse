@@ -4,9 +4,12 @@ name: Publish Models Image
 # gRParse loads, fetched from upstream and pinned by sha256 in
 # models/MANIFEST, under /models, as an init container that fills a volume.
 # Runs on a push to main that touches the manifest, the fetch or patch
-# scripts, or the Dockerfile; a manual dispatch with a version input also
-# tags that version. Multi-arch (amd64 + arm64) without emulation: the
-# fetch stage runs on the build platform and the final stage only copies.
+# scripts, or the Dockerfile. A push of a v<version> tag (the fleet release,
+# docs/RELEASING.md) also tags <version>, the tag minus its v, whatever the
+# tag's commit touched (path filters do not apply to tag pushes); so does a
+# manual dispatch with a version input. Multi-arch (amd64 + arm64) without
+# emulation: the fetch stage runs on the build platform and the final stage
+# only copies.
 #
 # Same login and tag pattern as publish.yml: Docker Hub through the
 # DOCKER_USER / DOCKER_TOKEN org secrets, the Forgejo registry
@@ -21,6 +24,7 @@ on:
       - scripts/models-populate.sh
       - scripts/patch_figure_classifier.py
       - .github/workflows/publish-models.yml
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       version:
@@ -57,10 +61,26 @@ jobs:
           registry: git.rokkon.com
           username: ${{ github.actor }}
           password: ${{ secrets.CICD_TOKEN }}
+      - name: Resolve the version
+        id: version
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          case "$GITHUB_REF" in
+            refs/tags/v*) version="${GITHUB_REF_NAME#v}" ;;
+            *) version="${INPUT_VERSION:-}" ;;
+          esac
+          if [ -n "$version" ] && ! [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z][0-9A-Za-z.-]{0,63})?$ ]]; then
+            echo "::error::version '$version' is not a semantic version such as 0.3.0"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Compute tags
         id: tags
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           tags="docker.io/pipestreamai/grparse-models:latest"
