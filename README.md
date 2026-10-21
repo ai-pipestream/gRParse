@@ -923,7 +923,7 @@ docker compose -f compose.stack.yaml -f compose.stack.observability.yaml --profi
 
 This brings up Prometheus (`prom/prometheus:v3.3.0` on
 `127.0.0.1:${PROMETHEUS_PORT:-9090}`) scraping `grparse:9464` and
-`host.docker.internal:9465` every `5s`, and Grafana (`grafana/grafana:11.6.0`
+`host.docker.internal:9465` every `5s`, and Grafana (`grafana/grafana:13.2.4`
 on `http://127.0.0.1:${GRAFANA_PORT:-3000}`) with a pre-provisioned Prometheus
 datasource (`compose/grafana/provisioning/datasources/prometheus.yaml`) and two
 dashboards (`compose/grafana/dashboards/`):

@@ -6,7 +6,7 @@
 # Enables GRPARSE_METRICS_PORT=9464 on grparse inside the parse-stack network,
 # scrapes grparse:9464 and host.docker.internal:9465 (corpus eval runner with
 # --metrics-port 9465) every 5s, and publishes Grafana on
-# http://127.0.0.1:${GRAFANA_PORT:-3000} with anonymous Admin access for local
+# http://127.0.0.1:${GRAFANA_PORT:-3000} with anonymous Viewer access for local
 # inspection.
 
 services:
@@ -34,10 +34,10 @@ services:
 
   grafana:
     profiles: ["observability"]
-    image: grafana/grafana:11.6.16
+    image: grafana/grafana:13.2.4
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
       GF_USERS_ALLOW_SIGN_UP: "false"
     ports:
       - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
