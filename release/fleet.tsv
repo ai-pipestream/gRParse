@@ -1,0 +1,31 @@
+# The fleet: every repository a release tags, the branch the tag goes on
+# (that repo's publish branch), and the images its publish workflow pushes
+# for a v<version> tag. {v} is the version without its v. One tab-free line
+# per repository; fields are separated by runs of spaces.
+#
+# scripts/release.sh reads this to tag the fleet; scripts/release-stack.py
+# reads it to check that every pipestreamai/* image in the compose stack
+# has a publisher, and to verify the published tags before the GitHub
+# Release is cut (docs/RELEASING.md).
+#
+# Several GitHub repos default to a stale Renovate-only `development`
+# branch; the branch column, not GitHub's default, is where the tag goes.
+#
+# repo              branch       images
+gRParse             main         grparse:{v} grparse:{v}-cpu grparse:{v}-openvino grparse-models:{v} grparse-demo-shell:{v}
+grpc-asr            main         grpc-asr:{v} grpc-asr:{v}-cpu grpc-asr:{v}-openvino
+grpc-calamine       main         grpc-calamine:{v} grpc-calamine-ui:{v}
+grpc-ebcdic         main         grpc-ebcdic:{v} grpc-ebcdic-ui:{v}
+grpc-email          main         grpc-email:{v} grpc-email-ui:{v}
+grpc-enrich         main         grpc-enrich:{v}
+grpc-epub           main         grpc-epub:{v} grpc-epub-ui:{v}
+grpc-libreoffice    main         grpc-libreoffice:{v} grpc-libreoffice-ui:{v}
+grpc-lol-html       master       grpc-lol-html:{v} grpc-lol-html-ui:{v}
+grpc-markup         main         grpc-markup:{v} grpc-markup-ui:{v}
+grpc-pdf-inspector  main         grpc-pdf-inspector:{v} grpc-pdf-inspector-ui:{v}
+grpc-pdfium         main         grpc-pdfium:{v}
+grpc-poppler        main         grpc-poppler:{v}
+grpc-qparse         main         grpc-qparse:{v}
+grpc-vlm-convert    main         grpc-vlm-convert:{v}
+grpc-xml            main         grpc-xml:{v} grpc-xml-ui:{v}
+fastwarc-grpc       main         fastwarc-grpc:{v}

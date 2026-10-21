@@ -42,8 +42,8 @@ OUT = HERE / "out"
 sys.path.insert(0, str(REPO / "eval" / "pdf_diff"))
 sys.path.insert(0, str(REPO / "eval" / "scorecard"))
 
-from runner import load_stubs, stage_stubs  # noqa: E402  (eval/pdf_diff)
 import truth_metrics  # noqa: E402  (eval/scorecard)
+from runner import load_stubs, stage_stubs  # noqa: E402  (eval/pdf_diff)
 
 TRUTH_DIR = REPO / "eval" / "scorecard" / "truth"
 CORPUS_DIR = REPO / "tests" / "golden" / "corpus"

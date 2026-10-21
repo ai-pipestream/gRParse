@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 """Zero-stall streaming local-directory corpus runner for gRParse.
 
-    uv run --with grpcio --with grpcio-tools python eval/corpus/run.py --corpus-dir /path/to/corpus
+    uv run --with grpcio --with grpcio-tools python eval/corpus/run.py --corpus-dir /path/to/corpus \
+        --compose-project parse-stack
 
 Streams documents lazily via recursive os.scandir without pre-listing or
 sorting the directory tree, bounds in-flight worker tasks to 2 * workers,
 journals every completed document immediately to results.jsonl, writes
 sharded outputs under outputs/<sha256[:2]>/<sha256>.{md,json}, and exports
 live Prometheus telemetry.
+
+Every run writes run.json beside results.jsonl (eval/corpus/provenance.py):
+the gRParse commit, the image of every container in --compose-project with
+its digest and revision label, the corpus hash and file count, the runner
+config and UTC times, so two runs can be compared by what produced them.
+scripts/eval-corpus.sh is the one-command wrapper that brings a stack up
+from published images and runs this plus analyze.py.
 
 Exit codes: 0 every check passed on every evaluated document; 1 any failure
 (or a skip under EVAL_REQUIRE / --require); 77 when configuration is missing,
@@ -43,6 +51,7 @@ from s3.formats import extension_of, family_of  # noqa: E402
 from s3.run import LAYOUT_SUFFIX, convert_object, skip  # noqa: E402
 from s3.sourcefacts import pdf_page_count, source_facts  # noqa: E402
 
+from corpus import analyze, provenance  # noqa: E402
 from corpus.metrics import MetricsCollector, MetricsServer, normalize_status  # noqa: E402
 
 SKIP = 77
@@ -95,6 +104,9 @@ class CorpusConfig:
     convert_timeout: float = 600.0
     seconds_per_page: float = 1.5
     checkpoint_interval: int = 50
+    compose_project: str | None = None
+    grparse_commit: str | None = None
+    wait_seconds: float = 0.0
     document_passwords: tuple[str, ...] = field(default=(), repr=False)
 
     @property
@@ -159,6 +171,21 @@ class CorpusConfig:
             help="treat skipped documents or missing prerequisites as failure (or EVAL_REQUIRE)",
         )
         parser.add_argument("--passwords-file", help="optional UTF-8 file of candidate document passwords")
+        parser.add_argument(
+            "--compose-project",
+            help="compose project the stack runs as; every container's image is recorded in run.json "
+            "(or EVAL_COMPOSE_PROJECT; unset records no images)",
+        )
+        parser.add_argument(
+            "--grparse-commit",
+            help="gRParse commit of a locally built image without a revision label (or EVAL_GRPARSE_COMMIT)",
+        )
+        parser.add_argument(
+            "--wait-seconds",
+            type=float,
+            default=None,
+            help="keep dialing GetServiceInfo this long before calling gRParse unreachable (or EVAL_WAIT_SECONDS, default 0)",
+        )
 
         args = parser.parse_args(argv or [])
 
@@ -229,6 +256,12 @@ class CorpusConfig:
             pwd_env["EVAL_S3_PASSWORDS_FILE"] = env["EVAL_CORPUS_PASSWORDS_FILE"]
         passwords = _passwords(pwd_env)
 
+        wait_seconds = (
+            float(args.wait_seconds)
+            if args.wait_seconds is not None
+            else float(env.get("EVAL_WAIT_SECONDS") or 0)
+        )
+
         return cls(
             corpus_dir=corpus_dir,
             target=target,
@@ -246,6 +279,9 @@ class CorpusConfig:
             require=require,
             convert_timeout=timeout,
             seconds_per_page=spp,
+            compose_project=(args.compose_project or env.get("EVAL_COMPOSE_PROJECT") or "").strip() or None,
+            grparse_commit=(args.grparse_commit or env.get("EVAL_GRPARSE_COMMIT") or "").strip() or None,
+            wait_seconds=wait_seconds,
             document_passwords=passwords,
         )
 
@@ -546,6 +582,7 @@ def build_corpus_report(
     exit_code: int,
     resumed_count: int = 0,
     metrics_url: str | None = None,
+    manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     evaluated = [r for r in results if not r.skipped]
     failed_objects = sum(1 for r in evaluated if r.failed)
@@ -575,6 +612,8 @@ def build_corpus_report(
     }
     if metrics_url:
         report["metrics_url"] = metrics_url
+    if manifest is not None:
+        report["provenance"] = manifest
     return report
 
 
@@ -595,6 +634,11 @@ def render_corpus_markdown(report: dict[str, Any]) -> str:
         f"{totals['checks_failed']} failed; wall {report['wall_seconds']}s; exit {report['exit_code']}",
         "",
     ]
+    if report.get("provenance"):
+        manifest = report["provenance"]
+        lines += ["## Provenance", ""] + provenance.render_markdown(manifest) + [""]
+        if manifest.get("headline"):
+            lines += analyze.headline_lines(manifest["headline"]) + [""]
     for note in report.get("notes", []):
         lines.append(f"- {note}")
     if report.get("notes"):
@@ -682,6 +726,7 @@ def evaluate_corpus(
     started: float,
     metrics_url: str | None = None,
     on_start: Callable[[str | None], None] | None = None,
+    manifest: dict[str, Any] | None = None,
 ) -> int:
     """Stream walk_corpus through a bounded ThreadPoolExecutor (max_in_flight = 2 * workers)."""
     run_out.mkdir(parents=True, exist_ok=True)
@@ -800,6 +845,7 @@ def evaluate_corpus(
                                 exit_code=0,
                                 resumed_count=resumed_count,
                                 metrics_url=metrics_url,
+                                manifest=manifest,
                             )
                             write_corpus_report(run_out, snap, metrics)
 
@@ -820,11 +866,79 @@ def evaluate_corpus(
     return resumed_count
 
 
+def start_manifest(
+    config: CorpusConfig, run_out: Path, docker_runner: provenance.Runner | None = None
+) -> dict[str, Any]:
+    """Record what is about to run, and refuse to resume a run on a different stack."""
+    if config.compose_project:
+        stack = provenance.stack_provenance(config.compose_project, docker_runner or provenance.docker_cli)
+    else:
+        stack = {"recorded": False, "reason": "no --compose-project given"}
+    started_at = provenance.utc_now()
+    manifest: dict[str, Any] = {
+        "schema": provenance.SCHEMA,
+        "label": config.label,
+        "started_at": started_at,
+        "finished_at": None,
+        "target": config.target,
+        "service": None,
+        "grparse": provenance.grparse_commit(stack, config.grparse_commit),
+        "stack": stack,
+        "harness": provenance.harness_provenance(REPO),
+        "host": provenance.host_provenance(),
+        "config": provenance.config_provenance(config),
+    }
+    prior = provenance.load_manifest(run_out / provenance.MANIFEST_NAME)
+    if config.resume and prior is not None and (run_out / "results.jsonl").is_file():
+        if provenance.stack_fingerprint(prior) != provenance.stack_fingerprint(manifest):
+            raise provenance.ProvenanceError(
+                f"refusing to resume {run_out}: the stack or gRParse commit differs from the run being resumed "
+                "(start a new --label instead)"
+            )
+        manifest["started_at"] = prior.get("started_at") or started_at
+        manifest["resumed_at"] = [*(prior.get("resumed_at") or []), started_at]
+    manifest["run_id"] = provenance.run_id(manifest["started_at"], manifest["grparse"]["commit"], None)
+    provenance.write_manifest(run_out, manifest)
+    return manifest
+
+
+def finish_manifest(manifest: dict[str, Any], run_out: Path, *, exit_code: int, wall_seconds: float) -> None:
+    """Hash the documents the run covered, add the headline rates, and stamp the finish."""
+    journal = run_out / "results.jsonl"
+    _, raw_records = load_resume_journal(journal)
+    identity, corpus_text = provenance.corpus_identity(raw_records)
+    manifest["corpus"] = identity
+    manifest["run_id"] = provenance.run_id(manifest["started_at"], manifest["grparse"]["commit"], identity["sha256"])
+    overall = analyze.summarize_run(analyze.load_journal(journal))["overall"] if journal.is_file() else None
+    keys = ("evaluated", "skipped", "status_success_count", "success_count", "error_count",
+            "clean_count", "clean_battery_count")
+    manifest["headline"] = {key: (overall or {}).get(key, 0) for key in keys}
+    manifest["finished_at"] = provenance.utc_now()
+    manifest["wall_seconds"] = round(wall_seconds, 2)
+    manifest["exit_code"] = exit_code
+    provenance.write_manifest(run_out, manifest, corpus_text)
+
+
+def wait_for_service(client: Any, wait_seconds: float) -> Any:
+    """GetServiceInfo, retried for up to ``wait_seconds`` while a fresh stack boots."""
+    from scorecard.client import Unreachable
+
+    deadline = time.monotonic() + max(0.0, wait_seconds)
+    while True:
+        try:
+            return client.service_info()
+        except Unreachable:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(2.0)
+
+
 def main(
     argv: list[str] | None = None,
     env: Mapping[str, str] | None = None,
     client_factory: Callable[[str], Any] | None = None,
     on_start: Callable[[str | None], None] | None = None,
+    docker_runner: provenance.Runner | None = None,
 ) -> int:
     env = os.environ if env is None else env
     require = (env.get("EVAL_REQUIRE") or "").strip().lower() not in ("", "0", "off", "false", "no")
@@ -852,6 +966,11 @@ def main(
 
     started = time.monotonic()
     run_out = config.out / "corpus" / config.label
+
+    try:
+        manifest = start_manifest(config, run_out, docker_runner)
+    except provenance.ProvenanceError as error:
+        return skip(f"run provenance: {error}", config.require)
     results: list[ObjectResult] = []
     matrix = Matrix()
     notes: list[str] = []
@@ -868,8 +987,10 @@ def main(
 
     try:
         with client_factory(config.target) as client:
-            info = client.service_info()
+            info = wait_for_service(client, config.wait_seconds)
             service = f"{info.name} {info.version}"
+            manifest["service"] = service
+            provenance.write_manifest(run_out, manifest)
             resumed_count = evaluate_corpus(
                 config,
                 client,
@@ -882,6 +1003,7 @@ def main(
                 started=started,
                 metrics_url=metrics_url,
                 on_start=on_start,
+                manifest=manifest,
             )
     except Unreachable as error:
         exit_code = skip(f"gRParse unreachable: {error}", config.require)
@@ -906,6 +1028,7 @@ def main(
             exit_code = 1
             notes.append("EVAL_REQUIRE: skipped documents count as failures")
 
+    finish_manifest(manifest, run_out, exit_code=exit_code, wall_seconds=time.monotonic() - started)
     report = build_corpus_report(
         label=config.label,
         target=config.target,
@@ -918,6 +1041,7 @@ def main(
         exit_code=exit_code,
         resumed_count=resumed_count,
         metrics_url=metrics_url,
+        manifest=manifest,
     )
     path = write_corpus_report(run_out, report, metrics)
     totals = report["totals"]
@@ -926,6 +1050,10 @@ def main(
         f"{totals['skipped']} skipped, {totals['failed_objects']} with failures; "
         f"checks: {totals['checks_run']} run, {totals['checks_failed']} failed; report: {path}"
     )
+    for line in analyze.headline_lines(manifest["headline"]):
+        log(line.lstrip("- "))
+    log(f"run {manifest['run_id']}: gRParse {manifest['grparse'].get('commit') or 'commit not recorded'}, "
+        f"corpus {manifest['corpus']['sha256'][:12]} ({manifest['corpus']['files']} files)")
     return exit_code
 
 

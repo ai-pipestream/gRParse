@@ -19,6 +19,7 @@
 #include "grparse/assembly_blocks.h"
 #include "grparse/assembly_table_data.h"
 #include "grparse/base64.h"
+#include "grparse/list_marker.h"
 #include "grparse/reading_order.h"
 #include "grparse/region_geometry.h"
 #include "grparse/table_structure.h"
@@ -413,6 +414,7 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     pipestream::document::v1::TextItemBase staged_code_base;
     pipestream::document::v1::CodeItem* code_item = nullptr;
     pipestream::document::v1::TextItemBase* base = nullptr;
+    pipestream::document::v1::ListItem* list_item = nullptr;
     switch (label) {
       case pipestream::document::v1::DOC_ITEM_LABEL_TITLE:
         base = item->mutable_title()->mutable_base();
@@ -423,7 +425,8 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
         base = item->mutable_section_header()->mutable_base();
         break;
       case pipestream::document::v1::DOC_ITEM_LABEL_LIST_ITEM:
-        base = item->mutable_list_item()->mutable_base();
+        list_item = item->mutable_list_item();
+        base = list_item->mutable_base();
         break;
       case pipestream::document::v1::DOC_ITEM_LABEL_FORMULA:
         base = item->mutable_formula()->mutable_base();
@@ -455,8 +458,25 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
                               "label_raw");
       }
     }
+    // A list item's leading bullet or numbering moves to the marker, the
+    // reference's list marker rule: orig keeps the raw line, text loses the
+    // marker and its separator, so no renderer prints the bullet twice.
+    // Provenance charspans keep indexing orig; spans and the offset row
+    // follow text.
+    uint64_t text_code_points = code_points;
+    uint64_t marker_shift = 0;
+    std::optional<ListMarkerSplit> marker_split;
+    if (list_item != nullptr) marker_split = split_list_marker(merged);
     base->set_orig(merged);
-    base->set_text(merged);
+    if (marker_split.has_value()) {
+      list_item->set_marker(marker_split->marker);
+      list_item->set_enumerated(marker_split->enumerated);
+      marker_shift = marker_split->prefix_code_points;
+      text_code_points -= marker_shift;
+      base->set_text(std::move(marker_split->text));
+    } else {
+      base->set_text(merged);
+    }
     // One provenance entry per member line: its own box, its own charspan
     // into the merged text (code points), so nothing about where each line
     // sat on the page is lost to the merge.
@@ -491,10 +511,15 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
         if (next.font_name != first.font_name || next.font_size_pt != first.font_size_pt) break;
         ++end;
       }
-      if (first.font_name.has_value() || first.font_size_pt.has_value()) {
+      // Runs index text, so a stripped list marker shifts them left; a run
+      // that covered only the marker has nothing left to style.
+      const uint64_t run_start = std::max(spans[begin].start, marker_shift) - marker_shift;
+      const uint64_t run_end = std::max(spans[end - 1].end, marker_shift) - marker_shift;
+      if ((first.font_name.has_value() || first.font_size_pt.has_value()) &&
+          run_end > run_start) {
         auto* run = base->add_spans();
-        run->mutable_range()->set_start(static_cast<int32_t>(spans[begin].start));
-        run->mutable_range()->set_end(static_cast<int32_t>(spans[end - 1].end));
+        run->mutable_range()->set_start(static_cast<int32_t>(run_start));
+        run->mutable_range()->set_end(static_cast<int32_t>(run_end));
         if (first.font_name.has_value()) {
           run->set_font_family(*first.font_name);
           if (first.font_name->contains("Bold")) run->mutable_formatting()->set_bold(true);
@@ -511,7 +536,7 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     auto* offset = output->add_text_offsets();
     offset->set_self_ref(self_ref);
     offset->set_utf_start(cursor->utf_offset);
-    cursor->utf_offset += code_points;
+    cursor->utf_offset += text_code_points;
     offset->set_utf_end(cursor->utf_offset);
     cursor->has_text = true;
 
