@@ -1,10 +1,34 @@
 # gRParse
 
-C++ gRPC document parse service: **diskless PDF/image to page-streamed protobuf** with boxes and stable offsets. RapidOCR and document layout detection run through **ONNX Runtime** on NVIDIA GPUs (CUDA) or Intel GPUs (OpenVINO). Layout labels, reading order, table items with model or geometry cell grids, picture items, and figure classification are live.
+C++ gRPC document parse service: **diskless document to page-streamed protobuf** with boxes and stable offsets. PDFs and images go through RapidOCR and document layout detection on **ONNX Runtime** (CPU, NVIDIA CUDA or Intel OpenVINO); office files, email, EPUB, XML and markup go to sister collector services, and everything merges into one `ai.pipestream.document.v1.Document`. Layout labels, reading order, table items with model or geometry cell grids, picture items, and figure classification are live.
+
+## Quickstart (no build, no GPU)
+
+Docker with Compose v2 is all it takes; every image is published for amd64 and arm64, so this runs natively on Linux, macOS (Apple Silicon included) and WSL.
+
+```sh
+git clone --depth 1 https://github.com/ai-pipestream/gRParse.git && cd gRParse/quickstart
+docker compose pull      # about 0.9 GB, once
+docker compose up -d     # gRParse on the CPU, models, PDF, office, markup, EPUB, XML and email collectors
+./parse sample.pdf       # Markdown on stdout
+```
+
+`./parse` takes any document on this machine and prints Markdown; `--to text|html|json|doctags|yaml` picks another export. It runs its client in a container, so nothing is installed on the host, and it starts the stack itself if `up` has not been run.
+
+```sh
+./parse ~/Downloads/report.docx --to text > report.txt
+```
+
+Open <http://localhost:8080> for the demo shell: drop a PDF and watch pages stream in with their boxes, tables, figures and barcodes. gRPC clients dial `localhost:50051` (`ai.pipestream.parse.v1.ParseService`; see [examples/](examples/)). Both ports bind to 127.0.0.1 only. `docker compose down` stops everything (`-v` also drops the models volume).
+
+Scanned pages run OCR on the CPU at roughly 10 to 30 s a page on a 4-core machine; for throughput use a GPU image (below). [quickstart/compose.yaml](quickstart/compose.yaml) says what each service does and how to pin a release with `GRPARSE_TAG`. On Windows without WSL, run the client directly: `docker compose run --rm -T parse --filename my.pdf < my.pdf` from `cmd`.
+
+## More
 
 - Architecture (runtime split, anti-seesaw pipeline, offset contract): [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - Collector strategy (gRPC-first fleet, coordination, stream joining): [docs/COLLECTORS.md](docs/COLLECTORS.md)
 - Epics & tasks (C++ vs Java ownership, milestones): [docs/EPICS.md](docs/EPICS.md)
+- The full stack (every collector, their UIs, CUDA and OpenVINO images, local builds): `compose.stack.yaml`, [Run](#run) below, [CPU-only hosts](#cpu-only-hosts-multi-arch), [Intel GPUs](#intel-gpus-openvino)
 
 **Speed thesis:** pipelined pages, warm ORT session pools, selective OCR, and early page emission keep CPU and GPU busy.
 
@@ -54,6 +78,8 @@ live page stream with provenance boxes, and table and figure extraction on a
 real paper. [Watch it here](docs/images/demo-shell-screencast.mp4).
 
 ## Run
+
+Building from source with an NVIDIA GPU. For a pull-only start on any host, see the [Quickstart](#quickstart-no-build-no-gpu) above.
 
 1. Fetch the model files: `scripts/fetch-models.sh` downloads every file in
    [models/MANIFEST](models/MANIFEST) into `models/`, sha256-checked
@@ -1100,6 +1126,19 @@ pinned models (the `grparse-models` fetch stage) and builds with
 `GRPARSE_TEST_REQUIRE_MODELS=1`, so the layout, table-structure,
 figure-classifier and hf/1 tokenizer goldens run on every PR instead of
 skipping.
+
+Each image Dockerfile has a `seed` stage: one full build in the `deps`
+toolchain, pruned to its third-party objects (`scripts/prune-seed.sh`).
+`publish-deps.yml` publishes it as
+`pipestreamai/grparse-deps:<flavor>-<arch>-<hash>`, where
+`scripts/deps-hash.sh` hashes every input that could make a seeded build
+differ (the Dockerfile above its seed marker, the cache-mount id, the
+FetchContent declarations, `patches/`). The CI and publish image jobs pass
+the matching seed as `GRPARSE_DEPS_IMAGE` when it exists
+(`scripts/find-seed.sh`), so a fresh runner starts with gRPC and the other
+fetched dependencies already built and compiles only this repository; a
+change to a seed input builds them inline until its seed is published. A
+local `docker build` names no seed and builds exactly as before.
 
 The build compiles with `-DGRPARSE_WERROR=ON` and runs the full `grparse`-labelled
 CTest set: barcode decoder (QR fixture payload, stride-safe region views),
