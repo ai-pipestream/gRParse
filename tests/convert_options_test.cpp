@@ -10,6 +10,7 @@
 #include "../src/parse_support.h"
 #include "../src/source_parse.h"
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
+#include "google/rpc/status.pb.h"
 #include "grparse/chart_extraction_policy.h"
 #include "support/check.h"
 
@@ -184,7 +185,6 @@ void verify_unread_options_are_rejected_unless_default() {
           [](parsev1::ConvertDocumentOptions* o) { o->set_table_cell_matching(false); });
   rejects("abort_on_error",
           [](parsev1::ConvertDocumentOptions* o) { o->set_abort_on_error(true); });
-  rejects("ocr_preset", [](parsev1::ConvertDocumentOptions* o) { o->set_ocr_preset("easyocr"); });
   rejects("table_structure_preset",
           [](parsev1::ConvertDocumentOptions* o) { o->set_table_structure_preset("v2"); });
   rejects("layout_preset", [](parsev1::ConvertDocumentOptions* o) { o->set_layout_preset("egret"); });
@@ -385,8 +385,9 @@ void verify_chart_policy_resolution() {
       {"GRPARSE_ALLOW_CUSTOM_CHART_EXTRACTION_CONFIG", "true"},
       {"GRPARSE_ALLOWED_CHART_EXTRACTION_ENGINES", "api_openai,api"},
       {"GRPARSE_CUSTOM_CHART_EXTRACTION_PRESETS",
-       R"({"local":{"model":"m","url":"http://vlm:1","engine_type":"vllm"},)"
-       R"("summaries":{"chart2csv":false,"chart2summary":true}})"},
+       R"(presets { key: "local" value { model: "m" url: "http://vlm:1")"
+       R"( engine_type: VLM_ENGINE_TYPE_VLLM } })"
+       R"(presets { key: "summaries" value { chart2csv: false chart2summary: true } })"},
   });
   {
     parsev1::ConvertDocumentOptions options;
@@ -411,7 +412,7 @@ void verify_chart_policy_resolution() {
     const auto resolved = grparse::resolve_chart_extraction(options, permissive, kSurface);
     require(resolved.has_value() && resolved->has_value(), "an allowed custom config resolves");
     const grparse::ChartExtractionPreset& preset = **resolved;
-    require(preset.id == "custom" && preset.engine == "api_openai" &&
+    require(preset.id == "custom" && preset.engine == parsev1::VLM_ENGINE_TYPE_API_OPENAI &&
                 preset.model == "granite-chart-served" && preset.chart2csv &&
                 preset.chart2summary && preset.chart2code &&
                 preset.use_natural_language_prompts && preset.vlm_endpoint.empty(),
@@ -785,8 +786,128 @@ void verify_parity_1_37_options() {
   }
 }
 
+parsev1::OptionRejection rejection_of(const grpc::Status& status) {
+  google::rpc::Status rich;
+  require(rich.ParseFromString(status.error_details()), "error_details is a google.rpc.Status");
+  require(rich.code() == static_cast<int>(grpc::StatusCode::INVALID_ARGUMENT) &&
+              rich.message() == status.error_message() && rich.details_size() == 1,
+          "the rich status mirrors the status and carries one detail");
+  parsev1::OptionRejection rejection;
+  require(rich.details(0).UnpackTo(&rejection), "the detail is an OptionRejection");
+  return rejection;
+}
+
+void verify_typed_rejections_and_heading_options() {
+  {
+    parsev1::ConvertDocumentOptions options;
+    auto* heading = options.mutable_pdf_heading_hierarchy_options();
+    heading->set_use_bookmarks(true);
+    heading->set_use_font_style(true);
+    heading->set_bookmark_match_threshold(0.0);
+    require(grparse::validate_options(options, kSurface).ok(),
+            "use_bookmarks, use_font_style and a threshold of 0 are implemented and valid");
+    heading->set_bookmark_match_threshold(1.0);
+    require(grparse::validate_options(options, kSurface).ok(), "a threshold of 1 is valid");
+  }
+  for (const double bad : {-0.1, 1.01, std::numeric_limits<double>::quiet_NaN()}) {
+    parsev1::ConvertDocumentOptions options;
+    options.mutable_pdf_heading_hierarchy_options()->set_bookmark_match_threshold(bad);
+    const grpc::Status status = grparse::validate_options(options, kSurface);
+    require_invalid(status, "bookmark_match_threshold must be in [0, 1]");
+    const auto rejection = rejection_of(status);
+    require(rejection.option_path() == "pdf_heading_hierarchy_options.bookmark_match_threshold" &&
+                rejection.reason() == parsev1::OPTION_REJECTION_REASON_OUT_OF_RANGE &&
+                !rejection.rejected_value_raw().empty(),
+            "the threshold rejection is typed");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.mutable_pdf_heading_hierarchy_options()->add_numbering_schemes_raw("section");
+    const auto rejection = rejection_of(grparse::validate_options(options, kSurface));
+    require(rejection.option_path() == "pdf_heading_hierarchy_options.numbering_schemes_raw" &&
+                rejection.reason() == parsev1::OPTION_REJECTION_REASON_UNKNOWN_VALUE &&
+                rejection.rejected_value_raw() == "section",
+            "an unknown scheme name is a typed UNKNOWN_VALUE");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.set_layout_preset("heron");
+    const auto rejection = rejection_of(grparse::validate_options(options, kSurface));
+    require(rejection.option_path() == "layout_preset" &&
+                rejection.reason() == parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED,
+            "an unimplemented option value is a typed NOT_IMPLEMENTED");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.set_do_pdf_heading_hierarchy(true);
+    options.mutable_pdf_heading_hierarchy_options()->set_enabled(false);
+    require(rejection_of(grparse::validate_options(options, kSurface)).reason() ==
+                parsev1::OPTION_REJECTION_REASON_CONFLICT,
+            "disagreeing switches are a typed CONFLICT");
+  }
+  // S3Source.verify_ssl has presence and defaults to verifying.
+  {
+    const auto* field = parsev1::S3Source::descriptor()->FindFieldByName("verify_ssl");
+    require(field != nullptr && field->has_presence() && field->number() == 6,
+            "S3Source.verify_ssl is optional bool, tag 6");
+    parsev1::S3Source source;
+    require(grparse::s3_source_verify_ssl(source), "unset verify_ssl verifies");
+    source.set_verify_ssl(true);
+    require(grparse::s3_source_verify_ssl(source), "true verifies");
+    source.set_verify_ssl(false);
+    require(!grparse::s3_source_verify_ssl(source), "only an explicit false skips verification");
+    parsev1::S3Source wire;
+    require(wire.ParseFromString(source.SerializeAsString()) && wire.has_verify_ssl() &&
+                !wire.verify_ssl(),
+            "an explicit false survives the wire");
+  }
+}
+
+// A chart extraction custom configuration with no engine is refused by
+// field, both when the options are validated and when the "custom" preset
+// is resolved against a policy that allows custom configurations.
+void verify_unspecified_chart_engine_is_refused_by_field() {
+  constexpr const char* kField = "chart_extraction_custom_config.engine_options.engine_type";
+  parsev1::ConvertDocumentOptions options;
+  *options.mutable_chart_extraction_custom_config() = representable_chart_config();
+  options.mutable_chart_extraction_custom_config()->mutable_engine_options()->set_engine_type(
+      parsev1::VLM_ENGINE_TYPE_UNSPECIFIED);
+  {
+    const grpc::Status status = grparse::validate_options(options, kSurface);
+    require_invalid(status, std::string(kField) + " is required");
+    const parsev1::OptionRejection rejection = rejection_of(status);
+    require(rejection.option_path() == kField &&
+                rejection.reason() == parsev1::OPTION_REJECTION_REASON_UNKNOWN_VALUE &&
+                rejection.rejected_value_raw() == "VLM_ENGINE_TYPE_UNSPECIFIED",
+            "validation names the engine field and the unspecified value");
+  }
+  const grparse::ChartExtractionPolicy permissive = policy_with({
+      {"GRPARSE_ALLOW_CUSTOM_CHART_EXTRACTION_CONFIG", "true"},
+  });
+  {
+    const auto resolved = grparse::resolve_chart_extraction(options, permissive, kSurface);
+    require(!resolved.has_value(), "an engine-less custom config does not resolve");
+    require_invalid(resolved.error(), "chart extraction preset 'custom': " + std::string(kField) +
+                                          " names no engine");
+    const parsev1::OptionRejection rejection = rejection_of(resolved.error());
+    require(rejection.option_path() == kField &&
+                rejection.reason() == parsev1::OPTION_REJECTION_REASON_UNKNOWN_VALUE &&
+                rejection.rejected_value_raw() == "VLM_ENGINE_TYPE_UNSPECIFIED",
+            "resolution names the engine field and the unspecified value");
+  }
+  {
+    // A number outside the enum is named as the number the request carried.
+    options.mutable_chart_extraction_custom_config()->mutable_engine_options()->set_engine_type(
+        static_cast<parsev1::VlmEngineType>(97));
+    const auto resolved = grparse::resolve_chart_extraction(options, permissive, kSurface);
+    require(!resolved.has_value() && rejection_of(resolved.error()).rejected_value_raw() == "97",
+            "an out-of-enum engine is refused with its raw number");
+  }
+}
+
 int main() {
   return grparse_test::run_test_main("convert-options-test", "ok", {
+      verify_typed_rejections_and_heading_options,
       verify_parity_1_37_options,
       verify_chart_and_caption_options,
       verify_hybrid_chunking_is_validated,
@@ -796,6 +917,7 @@ int main() {
       verify_status_from_exception_covers_every_throw,
       verify_outcome_from_exception_is_a_failure,
       verify_chart_policy_resolution,
+      verify_unspecified_chart_engine_is_refused_by_field,
       verify_doclang_export_options,
       verify_picture_description_api_call_is_typed,
       verify_picture_description_headers_stay_on_their_endpoint,

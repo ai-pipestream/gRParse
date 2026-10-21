@@ -14,6 +14,7 @@
 
 #include <curl/curl.h>
 
+#include "../storage/http_call.h"
 #include "sha256.h"
 #include "sigv4.h"
 
@@ -178,35 +179,35 @@ S3Endpoint parse_s3_endpoint(const std::string& endpoint) {
 
 S3Client::S3Client(S3Config config) : config_(std::move(config)) {
   if (config_.endpoint.empty()) {
-    throw std::invalid_argument("S3Target requires an endpoint");
+    throw std::invalid_argument(config_.label + " requires an endpoint");
   }
-  if (config_.bucket.empty()) throw std::invalid_argument("S3Target requires a bucket");
+  if (config_.bucket.empty()) throw std::invalid_argument(config_.label + " requires a bucket");
   if (config_.access_key.empty() || config_.secret_key.empty()) {
-    throw std::invalid_argument("S3Target requires an access key and a secret key");
+    throw std::invalid_argument(config_.label + " requires an access key and a secret key");
   }
   // The endpoint goes into the URL and the signed Host header as is: a
   // control character or space could split a header, and userinfo would
   // make the host the caller sees differ from the one that is dialled.
   if (std::ranges::any_of(config_.endpoint,
                           [](unsigned char c) { return c <= 0x20 || c == 0x7F; })) {
-    throw std::invalid_argument("S3Target endpoint carries whitespace or a control character");
+    throw std::invalid_argument(config_.label + " endpoint carries whitespace or a control character");
   }
   split_endpoint(config_.endpoint, &scheme_, &authority_, &base_path_);
-  if (authority_.empty()) throw std::invalid_argument("S3Target endpoint names no host");
+  if (authority_.empty()) throw std::invalid_argument(config_.label + " endpoint names no host");
   if (authority_.find('@') != std::string::npos) {
-    throw std::invalid_argument("S3Target endpoint carries userinfo, which is never sent");
+    throw std::invalid_argument(config_.label + " endpoint carries userinfo, which is never sent");
   }
   // A session token is a bearer credential on its own: it never crosses the
   // wire in cleartext, whatever the endpoint asks for.
   if (!config_.session_token.empty() && scheme_ != "https") {
     throw std::invalid_argument(
-        "S3Target endpoint is not https, and a session token is never sent in cleartext");
+        config_.label + " endpoint is not https, and a session token is never sent in cleartext");
   }
   // Nor to a peer nobody checked: without verification any host on the path
   // can answer for the endpoint and read the token off the request.
   if (!config_.session_token.empty() && !config_.verify_ssl) {
     throw std::invalid_argument(
-        "S3Target sets verify_ssl false, and a session token is never sent to an "
+        config_.label + " sets verify_ssl false, and a session token is never sent to an "
         "unverified peer");
   }
   host_header_ = host_header_for(scheme_, authority_);
@@ -300,7 +301,16 @@ std::string S3Client::put_object(const std::string& key, const std::string& body
     curl_easy_setopt(handle.get(), CURLOPT_SSL_VERIFYHOST, 0L);
   }
 
+  bool peer_refused = false;
+  storage::guard_public_peers(handle.get(), &peer_refused);
+
   const CURLcode transfer = curl_easy_perform(handle.get());
+  if (peer_refused) {
+    throw storage::HttpPeerRefused("s3 target could not write '" + key +
+                                   "': the endpoint is a loopback, private, link-local or "
+                                   "otherwise non-public address "
+                                   "(GRPARSE_STORAGE_ALLOW_PRIVATE_ENDPOINTS=1 allows it)");
+  }
   if (transfer != CURLE_OK) {
     throw std::runtime_error("s3 target could not write '" + key + "': " +
                              curl_easy_strerror(transfer));
@@ -312,6 +322,56 @@ std::string S3Client::put_object(const std::string& key, const std::string& body
                              std::to_string(status));
   }
   return etag;
+}
+
+S3Reply S3Client::get(const std::string& key,
+                     const std::vector<std::pair<std::string, std::string>>& query,
+                     uint64_t max_body_bytes) const {
+  const std::string canonical_uri =
+      uri_encode(base_path_ + "/" + config_.bucket + (key.empty() ? "" : "/" + key), true);
+  std::vector<std::pair<std::string, std::string>> encoded;
+  for (const auto& [name, value] : query) {
+    encoded.emplace_back(uri_encode(name, false), uri_encode(value, false));
+  }
+  std::ranges::sort(encoded);
+  std::string canonical_query;
+  for (const auto& [name, value] : encoded) {
+    if (!canonical_query.empty()) canonical_query += '&';
+    canonical_query += name + "=" + value;
+  }
+  const std::string payload_hash = sha256_hex("");
+  const std::string timestamp = amz_timestamp(
+      std::chrono::duration_cast<std::chrono::seconds>(
+          std::chrono::system_clock::now().time_since_epoch())
+          .count());
+  SigV4Request signable;
+  signable.method = "GET";
+  signable.canonical_uri = canonical_uri;
+  signable.canonical_query = canonical_query;
+  signable.payload_sha256_hex = payload_hash;
+  signable.region = region_;
+  signable.service = std::string(kService);
+  signable.amz_date = timestamp;
+  signable.headers = {{"host", host_header_},
+                      {"x-amz-content-sha256", payload_hash},
+                      {"x-amz-date", timestamp}};
+  if (!config_.session_token.empty()) {
+    signable.headers.emplace_back("x-amz-security-token", config_.session_token);
+  }
+  storage::HttpRequest request;
+  request.method = "GET";
+  request.url = scheme_ + "://" + authority_ + canonical_uri +
+                (canonical_query.empty() ? "" : "?" + canonical_query);
+  request.verify_ssl = config_.verify_ssl;
+  request.max_body_bytes = max_body_bytes;
+  request.headers = {{"x-amz-content-sha256", payload_hash}, {"x-amz-date", timestamp}};
+  if (!config_.session_token.empty()) {
+    request.headers.emplace_back("x-amz-security-token", config_.session_token);
+  }
+  request.headers.emplace_back(
+      "Authorization", authorization_header(config_.access_key, config_.secret_key, signable));
+  const storage::HttpResponse reply = storage::http_call(request, config_.label + " GET");
+  return S3Reply{.status = reply.status, .body = reply.body};
 }
 
 }  // namespace grparse::targets

@@ -1,0 +1,7 @@
+Forgejo commit status for 15cf39d (run 424), fetched Thu Oct 15 03:34:19 AM EDT 2026
+combined: success
+C++ build and contract tests / cuda-image (pull_request) | success | Successful in 9m3s | /ai-pipestream/gRParse/actions/runs/424/jobs/0
+C++ build and contract tests / demo-shell (pull_request) | success | Successful in 58s | /ai-pipestream/gRParse/actions/runs/424/jobs/3
+C++ build and contract tests / fuzz-smoke (pull_request) | success | Successful in 2m42s | /ai-pipestream/gRParse/actions/runs/424/jobs/4
+C++ build and contract tests / openvino-image (pull_request) | success | Successful in 8m49s | /ai-pipestream/gRParse/actions/runs/424/jobs/1
+C++ build and contract tests / cpu-image (pull_request) | success | Successful in 11m3s | /ai-pipestream/gRParse/actions/runs/424/jobs/2

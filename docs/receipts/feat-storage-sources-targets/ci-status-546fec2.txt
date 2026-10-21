@@ -1,0 +1,12 @@
+commit: 546fec2e099f8a46555f811146ab608f4a27dcf9
+source: GET api/v1/repos/ai-pipestream/gRParse/commits/546fec2e099f8a46555f811146ab608f4a27dcf9/status
+recorded: 2026-10-15T05:37:36-04:00
+run: 434
+combined: success
+C++ build and contract tests / cpu-image (pull_request) | success | Successful in 11m54s | /ai-pipestream/gRParse/actions/runs/434/jobs/2
+C++ build and contract tests / cuda-image (pull_request) | success | Successful in 12m31s | /ai-pipestream/gRParse/actions/runs/434/jobs/0
+C++ build and contract tests / demo-shell (pull_request) | success | Successful in 1m8s | /ai-pipestream/gRParse/actions/runs/434/jobs/3
+C++ build and contract tests / fuzz-smoke (pull_request) | success | Successful in 9m57s | /ai-pipestream/gRParse/actions/runs/434/jobs/4
+C++ build and contract tests / openvino-image (pull_request) | success | Successful in 9m24s | /ai-pipestream/gRParse/actions/runs/434/jobs/1
+
+All five jobs passed, cpu-image included.

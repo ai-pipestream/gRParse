@@ -28,11 +28,17 @@
 
 #include <grpcpp/grpcpp.h>
 
+#include "ai/pipestream/parse/v1/parse_types.pb.h"
+
 namespace grparse {
 
+// Docling's engine name for a wire VlmEngineType ("transformers", "mlx",
+// "vllm", "api", "api_ollama", "api_lmstudio", "api_openai",
+// "auto_inline"); empty for UNSPECIFIED or an unknown value.
+std::string vlm_engine_name(ai::pipestream::parse::v1::VlmEngineType engine);
+
 // The five docling-serve settings of one stage, already parsed. `Preset` is
-// the stage's typed preset and must expose `std::string engine` (the
-// docling engine name, for example "api_openai").
+// the stage's typed preset and must expose `VlmEngineType engine`.
 template <typename Preset>
 struct PresetPolicySettings {
   // default_<stage>_preset: what "default" (and an unnamed preset) means. A
@@ -45,7 +51,7 @@ struct PresetPolicySettings {
   std::map<std::string, Preset> custom_presets;
   // allowed_<stage>_engines: engines a resolved preset or a custom
   // configuration may use. nullopt allows every engine.
-  std::optional<std::vector<std::string>> allowed_engines;
+  std::optional<std::vector<ai::pipestream::parse::v1::VlmEngineType>> allowed_engines;
   // allow_custom_<stage>_config: whether a request may carry its own
   // configuration instead of naming a preset. Off by default, as upstream.
   bool allow_custom_config = false;
@@ -95,7 +101,7 @@ class PresetPolicy {
     }
     if (!engine_allowed(registry_.at("default").engine)) {
       throw std::invalid_argument(stage_ + " default preset '" + settings_.default_preset +
-                                  "' uses engine '" + registry_.at("default").engine +
+                                  "' uses engine '" + vlm_engine_name(registry_.at("default").engine) +
                                   "', which the allowed engines exclude");
     }
   }
@@ -120,7 +126,7 @@ class PresetPolicy {
   // A request-supplied configuration using `engine`: PERMISSION_DENIED when
   // the switch is off (docling-serve policy.py wording) or the engine is
   // excluded.
-  grpc::Status check_custom_config(std::string_view engine) const {
+  grpc::Status check_custom_config(ai::pipestream::parse::v1::VlmEngineType engine) const {
     if (!settings_.allow_custom_config) {
       return grpc::Status(grpc::StatusCode::PERMISSION_DENIED,
                           "Custom " + lowercase_stage() +
@@ -139,16 +145,16 @@ class PresetPolicy {
     if (registry_.insert_or_assign(id, preset).second) order_.push_back(id);
   }
 
-  bool engine_allowed(std::string_view engine) const {
+  bool engine_allowed(ai::pipestream::parse::v1::VlmEngineType engine) const {
     return !settings_.allowed_engines.has_value() ||
            std::ranges::find(*settings_.allowed_engines, engine) !=
                settings_.allowed_engines->end();
   }
 
-  grpc::Status check_engine(std::string_view engine) const {
+  grpc::Status check_engine(ai::pipestream::parse::v1::VlmEngineType engine) const {
     if (engine_allowed(engine)) return grpc::Status::OK;
     return grpc::Status(grpc::StatusCode::PERMISSION_DENIED,
-                        "Engine '" + std::string(engine) +
+                        "Engine '" + vlm_engine_name(engine) +
                             "' is not allowed. Allowed engines: " +
                             joined(*settings_.allowed_engines));
   }
@@ -164,6 +170,15 @@ class PresetPolicy {
     for (const std::string& value : values) {
       if (!out.empty()) out += ", ";
       out += value;
+    }
+    return out;
+  }
+
+  static std::string joined(const std::vector<ai::pipestream::parse::v1::VlmEngineType>& values) {
+    std::string out;
+    for (const auto value : values) {
+      if (!out.empty()) out += ", ";
+      out += vlm_engine_name(value);
     }
     return out;
   }
