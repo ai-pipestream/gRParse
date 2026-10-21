@@ -1,0 +1,9 @@
+# Overlay for scripts/eval-corpus.sh: publish only gRParse's gRPC port, on
+# a port of its own, so an eval stack (project grparse-eval) runs beside the
+# demo stack (project parse-stack, which owns 8080 and, with the
+# expose-grpc overlay, 50051) without either noticing the other. The eval
+# brings up the parsers alone: no UIs, no shell, no proxy.
+services:
+  grparse:
+    ports:
+      - "${EVAL_GRPC_PORT:-50151}:50051"
