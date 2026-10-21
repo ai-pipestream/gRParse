@@ -1,0 +1,31 @@
+// The typed config of the connector plugin the storage tests register: a
+// directory on the local disk acting as a store. Test-only.
+syntax = "proto3";
+
+package grparse.test.storage;
+
+message DirectoryConnectorConfig {
+  // The directory the plugin reads from and writes into.
+  string root = 1;
+  // The file a source reads, relative to root.
+  string name = 2;
+}
+
+// A second message, to prove a config of the wrong type is refused.
+message OtherConfig {
+  string value = 1;
+}
+
+// What the e2e mock Drive API (scripts/test/storage-connectors-e2e/
+// mock_google.py) reports at /_test/uploads.
+message MockDriveUpload {
+  string id = 1;
+  string name = 2;
+  repeated string parents = 3;
+  // The uploaded media bytes (base64 in the mock's JSON).
+  bytes content = 4;
+}
+
+message MockDriveUploads {
+  repeated MockDriveUpload uploads = 1;
+}

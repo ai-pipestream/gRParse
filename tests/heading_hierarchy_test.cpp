@@ -7,6 +7,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <format>
 #include <print>
 #include <stdexcept>
 #include <string>
@@ -456,8 +457,171 @@ void verify_numbering_schemes() {
           "scheme order sets depth; an unnumbered heading stays at the top without style");
 }
 
+void verify_bookmarks_and_font_style() {
+  require(grparse::heading_title_similarity("1.2 Scope of Work", "1.2  scope of work.") == 1.0,
+          "case, punctuation and spacing do not count");
+  require(grparse::heading_title_similarity("Introduction", "Conclusion") < 0.8,
+          "different titles are dissimilar");
+  require(grparse::heading_title_similarity("Methods", "Method") > 0.8, "a near miss is close");
+
+  google::protobuf::RepeatedPtrField<docv1::OutlineEntry> outline;
+  const auto add = [&outline](const std::string& title, int level, int page) {
+    auto* entry = outline.Add();
+    entry->set_title(title);
+    entry->set_level(level);
+    if (page > 0) entry->set_page_no(page);
+  };
+  add("Background", 1, 2);
+  add("Prior work", 3, 2);
+  add("Results", 2, 0);
+  const std::vector<grparse::HeaderHeight> headers = {
+      header("#/texts/0", "Background", 12, 2, 10), header("#/texts/1", "Prior Work", 12, 2, 40),
+      header("#/texts/2", "Results", 12, 5, 10), header("#/texts/3", "Prior work", 12, 7, 10),
+      header("#/texts/4", "Appendix", 12, 8, 10)};
+  grparse::HeadingOptions options;
+  auto levels = grparse::bookmark_levels(headers, outline, options);
+  require(levels.at("#/texts/0") == 1 && levels.at("#/texts/1") == 3,
+          "matching bookmarks on the same page set the level");
+  require(levels.at("#/texts/2") == 2, "a bookmark without a page matches any page");
+  require(!levels.contains("#/texts/3"), "a bookmark on another page does not match");
+  require(!levels.contains("#/texts/4"), "an unmatched heading is left to the other passes");
+  options.max_level = 2;
+  require(grparse::bookmark_levels(headers, outline, options).at("#/texts/1") == 2,
+          "max_level clamps a bookmark level");
+  options.max_level = 6;
+  options.bookmark_match_threshold = 1.0;
+  require(!grparse::bookmark_levels({header("#/texts/9", "Methods", 12, 0, 0)},
+                                    [] {
+                                      google::protobuf::RepeatedPtrField<docv1::OutlineEntry> o;
+                                      o.Add()->set_title("Method");
+                                      o.Mutable(0)->set_level(1);
+                                      return o;
+                                    }(),
+                                    options)
+               .contains("#/texts/9"),
+          "the threshold is honoured");
+  options.bookmark_match_threshold = 0.8;
+  options.use_bookmarks = false;
+  require(grparse::bookmark_levels(headers, outline, options).empty(),
+          "use_bookmarks false ignores the outline");
+
+  // Document level: the outline overrides numbering and is counted.
+  docv1::Document document;
+  auto* section = document.add_texts()->mutable_section_header();
+  section->mutable_base()->set_self_ref("#/texts/0");
+  section->mutable_base()->set_text("1 Background");
+  auto* entry = document.add_outline();
+  entry->set_title("1 Background");
+  entry->set_level(4);
+  grparse::HeadingOptions doc_options;
+  doc_options.geometry_collectors.clear();
+  const auto report = grparse::infer_heading_hierarchy(&document, doc_options);
+  require(report.levels_from_bookmarks == 1 && document.texts(0).section_header().level() == 4,
+          "infer_heading_hierarchy applies the bookmark level over numbering");
+
+  // Font style: same size, bold founds the upper level.
+  auto styled = [](const std::string& ref, const std::string& text, bool bold, bool italic) {
+    grparse::HeaderHeight entry = header(ref, text, 14, 3, 0);
+    entry.has_font_style = true;
+    entry.bold = bold;
+    entry.italic = italic;
+    return entry;
+  };
+  grparse::HeadingOptions style;
+  const auto ranked = grparse::infer_heading_levels(
+      {styled("#/a", "Overview", false, false), styled("#/b", "Scope", true, false),
+       styled("#/c", "Notes", false, true), styled("#/d", "Terms", true, false)},
+      style);
+  require(ranked.at("#/b") == 1 && ranked.at("#/d") == 1 && ranked.at("#/a") == 2 &&
+              ranked.at("#/c") == 3,
+          "bold above regular above italic at one size");
+  style.use_font_style = false;
+  const auto flat = grparse::infer_heading_levels(
+      {styled("#/a", "Overview", false, false), styled("#/b", "Scope", true, false)}, style);
+  require(flat.at("#/a") == 1 && flat.at("#/b") == 1, "use_font_style false ranks by size only");
+  style.use_font_style = true;
+  grparse::HeaderHeight plain = header("#/p", "Plain", 14, 3, 0);
+  const auto neutral = grparse::infer_heading_levels({styled("#/b", "Scope", true, false), plain},
+                                                     style);
+  require(neutral.at("#/p") == 1 && neutral.at("#/b") == 1,
+          "a heading without font information ranks by size alone");
+}
+
+// Thousands of headings against thousands of bookmarks of the same shape:
+// every pair is a candidate, which a full edit distance per pair cannot
+// finish in the test's time. Exact titles match through the index, near
+// misses still match fuzzily, and the wrong page still refuses a match.
+void verify_bookmark_matching_scales() {
+  constexpr int kCount = 4000;
+  const auto title = [](int i) {
+    return std::format("Part {:04} the measured behaviour of subsystem {:04}", i, kCount - i);
+  };
+  google::protobuf::RepeatedPtrField<docv1::OutlineEntry> outline;
+  for (int i = 0; i < kCount; ++i) {
+    auto* entry = outline.Add();
+    entry->set_title(title(i));
+    entry->set_level(1 + i % 5);
+  }
+  std::vector<grparse::HeaderHeight> headers;
+  for (int i = 0; i < kCount; ++i) {
+    std::string text = title(i);
+    // Every four hundredth heading carries a typo, so only a fuzzy match
+    // finds it.
+    if (i % 400 == 7) text.replace(text.find("measured"), 8, "measurd");
+    headers.push_back(header(std::format("#/texts/{}", i), text, 12, 0, 0));
+  }
+  grparse::HeadingOptions options;
+  const auto levels = grparse::bookmark_levels(headers, outline, options);
+  require(static_cast<int>(levels.size()) == kCount, "every heading finds its bookmark");
+  for (int i = 0; i < kCount; ++i) {
+    require(levels.at(std::format("#/texts/{}", i)) == 1 + i % 5,
+            std::format("heading {} takes its own bookmark's level", i));
+  }
+
+  // A threshold of zero makes every bookmark a candidate for every heading;
+  // the cell budget still bounds the work and exact titles still match.
+  options.bookmark_match_threshold = 0.0;
+  const auto loose = grparse::bookmark_levels(headers, outline, options);
+  require(loose.at("#/texts/0") == 1 &&
+              loose.at(std::format("#/texts/{}", kCount - 1)) == 1 + (kCount - 1) % 5,
+          "exact titles match whatever the threshold");
+}
+
+// Exact heights differ inside one size bucket: style decides the depth
+// within the bucket, so both bold headings share a depth above the regular
+// one whatever order their exact heights put them in.
+void verify_font_style_within_a_size_bucket() {
+  // No page, so no first-page title block is elected and only the size
+  // clustering decides.
+  auto styled = [](const std::string& ref, const std::string& text, double height, bool bold) {
+    grparse::HeaderHeight entry = header(ref, text, height, 0, 0);
+    entry.has_font_style = true;
+    entry.bold = bold;
+    return entry;
+  };
+  grparse::HeadingOptions options;
+  const auto levels = grparse::infer_heading_levels(
+      {styled("#/bold-tall", "Scope", 12.0, true), styled("#/regular", "Overview", 11.98, false),
+       styled("#/bold-short", "Terms", 11.96, true)},
+      options);
+  require(levels.at("#/bold-tall") == 1 && levels.at("#/bold-short") == 1,
+          "both bold headings of one size share the top depth");
+  require(levels.at("#/regular") == 2, "the regular heading of that size sits below them");
+
+  // A visibly smaller bucket starts below every depth the larger one used.
+  const auto two_sizes = grparse::infer_heading_levels(
+      {styled("#/a", "Scope", 16.0, true), styled("#/b", "Overview", 15.9, false),
+       styled("#/c", "Detail", 11.0, true)},
+      options);
+  require(two_sizes.at("#/a") == 1 && two_sizes.at("#/b") == 2 && two_sizes.at("#/c") == 3,
+          "a smaller size bucket starts below the larger bucket's style depths");
+}
+
 int main() {
   return grparse_test::run_test_main("heading-hierarchy-test", "ok", {
+      verify_bookmarks_and_font_style,
+      verify_font_style_within_a_size_bucket,
+      verify_bookmark_matching_scales,
       verify_numbering_schemes,
       verify_numbering_depths,
       verify_section_words,

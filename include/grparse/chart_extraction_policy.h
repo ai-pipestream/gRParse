@@ -14,6 +14,7 @@
 
 #include <functional>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -31,10 +32,11 @@ struct ChartExtractionPreset {
   // VLM endpoint for the chart calls only; empty falls back to the
   // request's or the server's enrich endpoint.
   std::string vlm_endpoint;
-  // Docling engine name ("api_openai", "transformers", ...), checked
-  // against allowed_chart_extraction_engines. grpc-enrich always reaches the
-  // model over the OpenAI-compatible HTTP API; the name is policy input.
-  std::string engine = "api_openai";
+  // Docling engine, checked against allowed_chart_extraction_engines.
+  // grpc-enrich always reaches the model over the OpenAI-compatible HTTP
+  // API; the engine is policy input.
+  ai::pipestream::parse::v1::VlmEngineType engine =
+      ai::pipestream::parse::v1::VLM_ENGINE_TYPE_API_OPENAI;
   bool chart2csv = true;
   bool chart2summary = false;
   bool chart2code = false;
@@ -52,18 +54,25 @@ std::map<std::string, ChartExtractionPreset> builtin_chart_extraction_presets();
 // built-in preset and engine allowed, no custom presets, custom configs off.
 ChartExtractionPolicy default_chart_extraction_policy();
 
-// Docling's engine name for a wire VlmEngineType ("transformers", "mlx",
-// "vllm", "api", "api_ollama", "api_lmstudio", "api_openai",
-// "auto_inline"); empty for UNSPECIFIED or an unknown value.
-std::string vlm_engine_name(ai::pipestream::parse::v1::VlmEngineType engine);
+// The VlmEngineType for a Docling engine name ("api_openai", ...); nullopt
+// for a name Docling does not define.
+std::optional<ai::pipestream::parse::v1::VlmEngineType> vlm_engine_from_name(
+    std::string_view name);
 
-// Parses GRPARSE_CUSTOM_CHART_EXTRACTION_PRESETS: a JSON object mapping
-// preset id to an object with the optional keys model, url, engine_type,
-// chart2csv, chart2summary, chart2code, use_natural_language_prompts.
-// Throws std::invalid_argument naming the preset and key on an unknown key,
-// a wrong type, an unknown engine, or a preset that enables no output.
+// Parses GRPARSE_CUSTOM_CHART_EXTRACTION_PRESETS: a
+// ChartExtractionPresetRegistry in protobuf text format, for example
+//   presets { key: "charts" value { model: "granite-vision-4.1-4b"
+//     engine_type: VLM_ENGINE_TYPE_API_OLLAMA chart2summary: true } }
+// Throws std::invalid_argument on a parse error (unknown field, wrong type,
+// unknown enum value), an unspecified engine, a padded id, or a preset that
+// enables no output.
 std::map<std::string, ChartExtractionPreset> parse_chart_extraction_presets(
-    std::string_view json);
+    std::string_view text);
+
+// The typed form: builds the presets from an already parsed registry, with
+// the same checks.
+std::map<std::string, ChartExtractionPreset> chart_extraction_presets_from_registry(
+    const ai::pipestream::parse::v1::ChartExtractionPresetRegistry& registry);
 
 // Reads the five GRPARSE_*CHART_EXTRACTION* variables through `lookup`
 // (std::getenv in the server, a map in tests) and builds the policy. Lists

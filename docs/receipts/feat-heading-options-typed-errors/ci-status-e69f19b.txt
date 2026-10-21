@@ -1,0 +1,12 @@
+commit: e69f19bad1df9c4fc9ac465da254000736a2ea58
+source: GET api/v1/repos/ai-pipestream/gRParse/commits/e69f19bad1df9c4fc9ac465da254000736a2ea58/status
+recorded: 2026-10-15T04:37:49-04:00
+run: 427
+combined: failure
+C++ build and contract tests / cpu-image (pull_request) | failure | Failing after 6s | /ai-pipestream/gRParse/actions/runs/427/jobs/2
+C++ build and contract tests / cuda-image (pull_request) | success | Successful in 8m58s | /ai-pipestream/gRParse/actions/runs/427/jobs/0
+C++ build and contract tests / demo-shell (pull_request) | success | Successful in 9s | /ai-pipestream/gRParse/actions/runs/427/jobs/3
+C++ build and contract tests / fuzz-smoke (pull_request) | success | Successful in 2m35s | /ai-pipestream/gRParse/actions/runs/427/jobs/4
+C++ build and contract tests / openvino-image (pull_request) | success | Successful in 8m59s | /ai-pipestream/gRParse/actions/runs/427/jobs/1
+
+cpu-image failed within seconds: the CI job containers lack docker client auth for dhi.io (CI auth is awaiting Kristian and was not changed). This is a blocker, not a pass.

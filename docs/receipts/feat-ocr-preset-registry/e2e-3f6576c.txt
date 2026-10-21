@@ -1,0 +1,87 @@
+commit: 3f6576ca15057c342e2a0c53d7e829c08305957b
+image: grparse-e2e/grparse:3f6576c (git archive HEAD | docker build -t grparse-e2e/grparse:3f6576c -), id sha256:1099a46ed85abe109df3a45c9024e85069bfdda9e214d662018fb70855d3dbc4
+models: grparse-ci-models:latest /models extracted to /work/tmp/e2e-models/models
+command: scripts/test/ocr-presets-e2e-test.sh grparse-e2e/grparse:3f6576c /work/tmp/e2e-models/models
+date: 2026-10-15T05:24:51-04:00
+== startup with an unreadable custom preset language must fail
+gRParse OCR execution provider: CUDA (device 0)
+gRParse OCR orientation recovery: enabled
+Startup failed: OCR preset policy: GRPARSE_CUSTOM_OCR_PRESETS preset 'k': lang 'korean' is not a language the installed OCR models read (en, english, ch, chinese, zh)
+refused at startup, exit 1
+== grparse-e2e/grparse:3f6576c on 127.0.0.1:32878
+gRParse OCR preset policy: default auto, presets [chinese_doc, default, easy, rapidocr]
+-- ocr_preset chinese_doc: grpcurl exit 0
+status: CONVERSION_STATUS_SUCCESS texts: 4 models: ['rapidocr']
+first texts: ['Quarterly Throughput Report', 'The streaming parser sustained page pipeline overlap across ', 'The streaming parser sustained page pipeline overlap across ', 'Figure 1: sustained overlap']
+-- ocr_preset auto: grpcurl exit 67
+{
+ "code": 3,
+ "message": "ConvertSource: ocr_preset 'auto' is not allowed. Allowed values: ['chinese_doc', 'default', 'easy', 'rapidocr'].",
+ "details": [
+  {
+   "@type": "type.googleapis.com/ai.pipestream.parse.v1.OptionRejection",
+   "option_path": "ocr_preset",
+   "reason": "OPTION_REJECTION_REASON_NOT_ALLOWED",
+   "rejected_value_raw": "auto"
+  }
+ ]
+}
+-- ocr_preset easyocr: grpcurl exit 67
+{
+ "code": 3,
+ "message": "ConvertSource: ocr_preset 'easyocr' is not allowed. Allowed values: ['chinese_doc', 'default', 'easy', 'rapidocr'].",
+ "details": [
+  {
+   "@type": "type.googleapis.com/ai.pipestream.parse.v1.OptionRejection",
+   "option_path": "ocr_preset",
+   "reason": "OPTION_REJECTION_REASON_NOT_ALLOWED",
+   "rejected_value_raw": "easyocr"
+  }
+ ]
+}
+-- ocr_preset easy: grpcurl exit 67
+{
+ "code": 3,
+ "message": "ConvertSource: OCR kind 'easyocr' (preset easy) is not available. Available kinds: ['auto', 'rapidocr'].",
+ "details": [
+  {
+   "@type": "type.googleapis.com/ai.pipestream.parse.v1.OptionRejection",
+   "option_path": "ocr_preset",
+   "reason": "OPTION_REJECTION_REASON_NOT_IMPLEMENTED",
+   "rejected_value_raw": "easy"
+  }
+ ]
+}
+ocr-presets-e2e: ok
+== server log
+gRParse inference threads: 16 per pooled session, 2 workers, 32 cores
+total keys size(6625)
+total keys size(6625)
+gRParse OCR execution provider: CUDA (device 0)
+gRParse layout: enabled (heron, 17 labels, one shared session, /models/layout_heron.onnx)
+gRParse table structure: enabled (2 sessions, /models/slanet_plus.onnx)
+gRParse figure classes: enabled (2 sessions, /models/figure_classifier.onnx)
+gRParse barcodes: enabled for bar_code/qr_code figure classes
+gRParse OCR orientation recovery: enabled
+gRParse libreoffice collector: not configured
+gRParse asr collector: not configured
+gRParse email collector: not configured
+gRParse xml collector: not configured
+gRParse ebcdic collector: not configured
+gRParse epub collector: not configured
+gRParse markup collector: not configured
+gRParse lol-html collector: not configured
+gRParse fastwarc collector: not configured
+gRParse pdf collector: not configured
+gRParse calamine collector: not configured
+gRParse chart derender (enrich): not configured
+gRParse OCR preset policy: default auto, presets [chinese_doc, default, easy, rapidocr]
+gRParse chart extraction policy: default granite_vision_v4 (granite-vision-4.1-4b), presets [default, granite_vision_v4], engines any, custom config disabled
+gRParse vlm convert: not configured
+gRParse request-named remote services: disabled (picture_description_api.url and an http(s) vlm_pipeline_model_api.url are refused)
+gRParse unary executor: 16 workers, queue 64
+gRParse document repair: enabled
+gRParse in-flight document bytes: at most 4096 MiB (GRPARSE_MAX_INFLIGHT_BYTES)
+gRParse unary response: at most 520 MiB (GRPARSE_MAX_RESPONSE_BYTES)
+gRParse listening on 0.0.0.0:50051 (RapidOCR / ONNX Runtime)
+e2e-exit: 0

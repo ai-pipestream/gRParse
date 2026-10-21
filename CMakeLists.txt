@@ -644,7 +644,22 @@ add_custom_command(
           protoc grpc_cpp_plugin
   VERBATIM)
 # STATIC explicitly, same reason as grparse_core below.
+# google.rpc.Status, the gRPC rich-error envelope. A rejection carries its
+# typed detail (OptionRejection) packed in Status.details, the encoding every
+# gRPC client library decodes; the schema comes from grpc's own googleapis.
+set(RPC_STATUS_PROTO_ROOT "${grpc_SOURCE_DIR}/third_party/googleapis")
+add_custom_command(
+  OUTPUT "${GENERATED_DIR}/google/rpc/status.pb.cc"
+         "${GENERATED_DIR}/google/rpc/status.pb.h"
+  COMMAND $<TARGET_FILE:protoc>
+  ARGS --proto_path=${RPC_STATUS_PROTO_ROOT}
+       --proto_path=${protobuf_SOURCE_DIR}/src
+       --cpp_out=${GENERATED_DIR}
+       ${RPC_STATUS_PROTO_ROOT}/google/rpc/status.proto
+  DEPENDS ${RPC_STATUS_PROTO_ROOT}/google/rpc/status.proto protoc
+  VERBATIM)
 add_library(grparse_proto STATIC
+  "${GENERATED_DIR}/google/rpc/status.pb.cc"
   "${GENERATED_DIR}/ai/pipestream/document/v1/document.pb.cc"
   "${GENERATED_DIR}/ai/pipestream/parse/v1/parse_types.pb.cc"
   "${GENERATED_DIR}/ai/pipestream/parse/v1/parse.pb.cc"
@@ -1093,9 +1108,11 @@ add_custom_command(
 target_sources(grparse_proto PRIVATE
   "${GENERATED_DIR}/ai/pipestream/enrich/v1/enrich_service.pb.cc"
   "${GENERATED_DIR}/ai/pipestream/enrich/v1/enrich_service.grpc.pb.cc")
-target_sources(grparse_core PRIVATE src/chart_derender.cpp src/chart_extraction_policy.cpp)
+target_sources(grparse_core PRIVATE src/chart_derender.cpp src/chart_extraction_policy.cpp
+  src/ocr_preset_policy.cpp)
 if(BUILD_TESTING)
-  set(GRPARSE_CHART_TESTS chart-composite-test chart-derender-test chart-extraction-policy-test)
+  set(GRPARSE_CHART_TESTS chart-composite-test chart-derender-test chart-extraction-policy-test
+    chart-outputs-e2e-test ocr-preset-policy-test)
   foreach(test_name IN LISTS GRPARSE_CHART_TESTS)
     string(REPLACE "-" "_" test_source "${test_name}")
     add_executable(${test_name} "tests/${test_source}.cpp")
@@ -1105,6 +1122,72 @@ if(BUILD_TESTING)
   add_dependencies(grparse-tests ${GRPARSE_CHART_TESTS})
   set_tests_properties(${GRPARSE_CHART_TESTS} PROPERTIES
     TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
+  # Needs a running grpc-enrich and a chart PNG; skips without them.
+  set_tests_properties(chart-outputs-e2e-test PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+
+# ---- Storage connectors: Azure Blob, Google Cloud Storage, Google Drive ----
+# and connector plugins behind Source and Target (src/storage/connectors.h).
+# storage_wire.proto holds the typed shapes of the JSON those services speak
+# (token replies, JWT header and claims, object listings); it is internal and
+# compiled by its own protoc step into its own include directory. RS256 for
+# the Google service account grant uses gRPC's BoringSSL (target crypto), the
+# same TLS stack the server already links.
+set(STORAGE_WIRE_DIR "${CMAKE_CURRENT_BINARY_DIR}/storage_wire")
+file(MAKE_DIRECTORY "${STORAGE_WIRE_DIR}")
+add_custom_command(
+  OUTPUT "${STORAGE_WIRE_DIR}/storage_wire.pb.cc" "${STORAGE_WIRE_DIR}/storage_wire.pb.h"
+  COMMAND $<TARGET_FILE:protoc>
+  ARGS --proto_path=${CMAKE_CURRENT_SOURCE_DIR}/src/storage
+       --proto_path=${protobuf_SOURCE_DIR}/src
+       --cpp_out=${STORAGE_WIRE_DIR}
+       ${CMAKE_CURRENT_SOURCE_DIR}/src/storage/storage_wire.proto
+  DEPENDS src/storage/storage_wire.proto protoc
+  VERBATIM)
+target_sources(grparse_core PRIVATE
+  "${STORAGE_WIRE_DIR}/storage_wire.pb.cc"
+  src/storage/azure_blob.cpp
+  src/storage/connectors.cpp
+  src/storage/google_auth.cpp
+  src/storage/google_storage.cpp
+  src/storage/http_call.cpp
+  src/storage/object_store.cpp
+  src/storage/remote_sources.cpp)
+target_include_directories(grparse_core PRIVATE "${STORAGE_WIRE_DIR}")
+target_link_libraries(grparse_core PRIVATE crypto)
+if(BUILD_TESTING)
+  # The fixture plugin's typed config, a test-only contract.
+  set(STORAGE_FIXTURE_DIR "${CMAKE_CURRENT_BINARY_DIR}/storage_fixture")
+  file(MAKE_DIRECTORY "${STORAGE_FIXTURE_DIR}")
+  add_custom_command(
+    OUTPUT "${STORAGE_FIXTURE_DIR}/storage_plugin_fixture.pb.cc"
+           "${STORAGE_FIXTURE_DIR}/storage_plugin_fixture.pb.h"
+    COMMAND $<TARGET_FILE:protoc>
+    ARGS --proto_path=${CMAKE_CURRENT_SOURCE_DIR}/tests/support
+         --proto_path=${protobuf_SOURCE_DIR}/src
+         --cpp_out=${STORAGE_FIXTURE_DIR}
+         ${CMAKE_CURRENT_SOURCE_DIR}/tests/support/storage_plugin_fixture.proto
+    DEPENDS tests/support/storage_plugin_fixture.proto protoc
+    VERBATIM)
+  add_library(grparse_storage_fixture STATIC "${STORAGE_FIXTURE_DIR}/storage_plugin_fixture.pb.cc")
+  target_include_directories(grparse_storage_fixture PUBLIC "${STORAGE_FIXTURE_DIR}")
+  target_link_libraries(grparse_storage_fixture PUBLIC grparse_proto)
+  set(GRPARSE_STORAGE_TESTS storage-connectors-test storage-connectors-e2e-test
+      remote-sources-test remote-sources-e2e-test)
+  foreach(test_name IN LISTS GRPARSE_STORAGE_TESTS)
+    string(REPLACE "-" "_" test_source "${test_name}")
+    add_executable(${test_name} "tests/${test_source}.cpp")
+    target_include_directories(${test_name} PRIVATE "${STORAGE_WIRE_DIR}" tests)
+    target_link_libraries(${test_name} PRIVATE grparse_core grparse_storage_fixture grparse_flags crypto)
+    add_test(NAME ${test_name} COMMAND ${test_name})
+  endforeach()
+  add_dependencies(grparse-tests ${GRPARSE_STORAGE_TESTS})
+  set_tests_properties(${GRPARSE_STORAGE_TESTS} PROPERTIES
+    TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
+  # Needs the emulators scripts/test/storage-connectors-e2e-test.sh starts.
+  set_tests_properties(storage-connectors-e2e-test PROPERTIES SKIP_RETURN_CODE 77)
+  # Needs MinIO and the HTTP servers scripts/test/remote-sources-e2e-test.sh starts.
+  set_tests_properties(remote-sources-e2e-test PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 # ---- VLM convert leg: grpc-vlm-convert contract, module, and tests ----------

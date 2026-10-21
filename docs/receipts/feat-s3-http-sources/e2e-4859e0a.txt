@@ -1,0 +1,98 @@
+commit: 4859e0a8adc5f6b13909579671a864bbb26664f4
+date: Thu Oct 15 05:49:00 AM EDT 2026
+$ scripts/test/remote-sources-e2e-test.sh /work/tmp/grparse-a-build
+subject=CN=localhost
+issuer=CN=localhost
+X509v3 Subject Alternative Name: 
+    IP Address:127.0.0.1, DNS:localhost, DNS:minio-tls
+== MinIO http 127.0.0.1:32881, MinIO https (self-signed) 127.0.0.1:32882, http origin 127.0.0.1:53189, https origin (self-signed) 127.0.0.1:40235
+Bucket created successfully `plain/grparse-in`.
+`/work/sample.md` -> `plain/grparse-in/docs/sample.md`
+┌───────┬─────────────┬──────────┬────────────┐
+│ Total │ Transferred │ Duration │ Speed      │
+│ 55 B  │ 55 B        │ 00m00s   │ 4.10 KiB/s │
+└───────┴─────────────┴──────────┴────────────┘
+`/work/sample.md` -> `plain/grparse-in/two/a.md`
+┌───────┬─────────────┬──────────┬────────────┐
+│ Total │ Transferred │ Duration │ Speed      │
+│ 55 B  │ 55 B        │ 00m00s   │ 6.04 KiB/s │
+└───────┴─────────────┴──────────┴────────────┘
+`/work/sample.md` -> `plain/grparse-in/two/b.md`
+┌───────┬─────────────┬──────────┬────────────┐
+│ Total │ Transferred │ Duration │ Speed      │
+│ 55 B  │ 55 B        │ 00m00s   │ 6.00 KiB/s │
+└───────┴─────────────┴──────────┴────────────┘
+[2026-10-15 09:49:06 UTC]    55B STANDARD docs/sample.md
+[2026-10-15 09:49:06 UTC]    55B STANDARD two/a.md
+[2026-10-15 09:49:07 UTC]    55B STANDARD two/b.md
+Bucket created successfully `tls/grparse-in`.
+`/work/sample.md` -> `tls/grparse-in/docs/sample.md`
+┌───────┬─────────────┬──────────┬────────────┐
+│ Total │ Transferred │ Duration │ Speed      │
+│ 55 B  │ 55 B        │ 00m00s   │ 4.56 KiB/s │
+└───────┴─────────────┴──────────┴────────────┘
+`/work/sample.md` -> `tls/grparse-in/two/a.md`
+┌───────┬─────────────┬──────────┬────────────┐
+│ Total │ Transferred │ Duration │ Speed      │
+│ 55 B  │ 55 B        │ 00m00s   │ 4.85 KiB/s │
+└───────┴─────────────┴──────────┴────────────┘
+`/work/sample.md` -> `tls/grparse-in/two/b.md`
+┌───────┬─────────────┬──────────┬────────────┐
+│ Total │ Transferred │ Duration │ Speed      │
+│ 55 B  │ 55 B        │ 00m00s   │ 5.54 KiB/s │
+└───────┴─────────────┴──────────┴────────────┘
+[2026-10-15 09:49:08 UTC]    55B STANDARD docs/sample.md
+[2026-10-15 09:49:09 UTC]    55B STANDARD two/a.md
+[2026-10-15 09:49:09 UTC]    55B STANDARD two/b.md
+== the self-signed certificate is refused by a verifying client (curl, no -k)
+curl: (60) SSL certificate OpenSSL verify result: self-signed certificate (18)
+More details here: https://curl.se/docs/sslcerts.html
+
+curl failed to verify the legitimacy of the server and therefore could not
+establish a secure connection to it. To learn more about this situation and
+how to fix it, please visit the webpage mentioned above.
+== remote-sources-e2e-test
+source s3 http docs/: sample.md (55 bytes)
+source s3 http exact key: sample.md (55 bytes)
+source s3 two objects refused (3): sources[0].s3.key_prefix: 2 objects under 'two/'; this endpoint converts one document per call, so the prefix must name exactly one object
+source s3 empty prefix refused (3): sources[0].s3.key_prefix: no object under 'nothing/'
+source s3 wrong secret refused (14): S3Source: listing the bucket answered HTTP 403
+source s3 https verify_ssl unset refused (14): S3Source GET: SSL peer certificate or SSH remote key was not OK
+source s3 https verify_ssl true refused (14): S3Source GET: SSL peer certificate or SSH remote key was not OK
+source s3 https verify_ssl false: sample.md (55 bytes)
+source http plain: sample.md (55 bytes)
+source http redirect: sample.md (55 bytes)
+source http content-disposition: sample.md (55 bytes)
+source http request header: needs-header (55 bytes)
+source http 401 refused (3): sources[0].http.url answered HTTP 401
+source http 404 refused (3): sources[0].http.url answered HTTP 404
+source http 500 refused (14): HttpSource: the server answered HTTP 500
+source http redirect loop refused (14): HttpSource: Number of redirects hit maximum amount
+source http redirect to file:// refused (14): HttpSource: Unsupported protocol
+source http body cap refused (14): HttpSource: the body is larger than 1048576 bytes
+source https self-signed refused (14): HttpSource: SSL peer certificate or SSH remote key was not OK
+remote-sources-e2e-test: ok
+== remote-sources-e2e-test passed
+== http origin log
+serving http on 127.0.0.1:53189
+127.0.0.1 - - [15/Oct/2026 05:49:10] "GET /sample.md HTTP/1.1" 200 -
+127.0.0.1 - - [15/Oct/2026 05:49:10] "GET /redirect HTTP/1.1" 302 -
+127.0.0.1 - - [15/Oct/2026 05:49:10] "GET /sample.md HTTP/1.0" 200 -
+127.0.0.1 - - [15/Oct/2026 05:49:10] "GET /download?id=1 HTTP/1.1" 200 -
+127.0.0.1 - - [15/Oct/2026 05:49:10] "GET /needs-header HTTP/1.1" 200 -
+127.0.0.1 - - [15/Oct/2026 05:49:10] "GET /needs-header HTTP/1.1" 401 -
+127.0.0.1 - - [15/Oct/2026 05:49:10] "GET /missing HTTP/1.1" 404 -
+127.0.0.1 - - [15/Oct/2026 05:49:10] "GET /error HTTP/1.1" 500 -
+127.0.0.1 - - [15/Oct/2026 05:49:10] "GET /redirect-loop HTTP/1.1" 302 -
+127.0.0.1 - - [15/Oct/2026 05:49:10] "GET /redirect-loop HTTP/1.0" 302 -
+127.0.0.1 - - [15/Oct/2026 05:49:10] "GET /redirect-loop HTTP/1.0" 302 -
+127.0.0.1 - - [15/Oct/2026 05:49:10] "GET /redirect-loop HTTP/1.0" 302 -
+127.0.0.1 - - [15/Oct/2026 05:49:10] "GET /redirect-loop HTTP/1.0" 302 -
+127.0.0.1 - - [15/Oct/2026 05:49:10] "GET /redirect-loop HTTP/1.0" 302 -
+127.0.0.1 - - [15/Oct/2026 05:49:10] "GET /redirect-file HTTP/1.1" 302 -
+127.0.0.1 - - [15/Oct/2026 05:49:10] "GET /big HTTP/1.1" 200 -
+== https origin log
+serving https on 127.0.0.1:40235
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 59696)
+exit: 0

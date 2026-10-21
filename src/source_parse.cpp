@@ -28,6 +28,9 @@
 #include <google/protobuf/util/json_util.h>
 
 #include "ai/protomolt/parse/pdf/v1/pdf_backend_types.pb.h"
+#include "google/rpc/status.pb.h"
+#include "storage/connectors.h"
+#include "grparse/ocr_preset_policy.h"
 
 #include "grparse/base64.h"
 #include "grparse/chart_derender.h"
@@ -572,9 +575,12 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
   const auto require_engine = [&](pipestream::parse::v1::VlmEngineType engine_type,
                                   const char* name) -> grpc::Status {
     if (engine_type == pipestream::parse::v1::VLM_ENGINE_TYPE_UNSPECIFIED) {
-      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                          surface + ": " + std::string(name) +
-                              ".engine_options.engine_type is required");
+      return option_rejected(std::string(name) + ".engine_options.engine_type",
+                             pipestream::parse::v1::OPTION_REJECTION_REASON_UNKNOWN_VALUE,
+                             "VLM_ENGINE_TYPE_UNSPECIFIED",
+                             surface + ": " + std::string(name) +
+                                 ".engine_options.engine_type is required "
+                                 "(VLM_ENGINE_TYPE_UNSPECIFIED names no engine)");
     }
     return grpc::Status::OK;
   };
@@ -628,9 +634,11 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
     }
     if (cfg.has_expansion_factor() &&
         (!std::isfinite(cfg.expansion_factor()) || cfg.expansion_factor() < 0.0)) {
-      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                          surface + ": code_formula_custom_config.expansion_factor must be "
-                                    "finite and >= 0");
+      return option_rejected("code_formula_custom_config.expansion_factor",
+                             pipestream::parse::v1::OPTION_REJECTION_REASON_OUT_OF_RANGE,
+                             std::format("{}", cfg.expansion_factor()),
+                             surface + ": code_formula_custom_config.expansion_factor must be "
+                                       "finite and >= 0");
     }
   }
 
@@ -750,21 +758,37 @@ grpc::Status validate_heading_options(
     const pipestream::parse::v1::ConvertDocumentOptions& options, const std::string& surface) {
   if (!options.has_pdf_heading_hierarchy_options()) return grpc::Status::OK;
   const auto& heading = options.pdf_heading_hierarchy_options();
+  using pipestream::parse::v1::OPTION_REJECTION_REASON_CONFLICT;
+  using pipestream::parse::v1::OPTION_REJECTION_REASON_OUT_OF_RANGE;
   if (options.has_do_pdf_heading_hierarchy() && heading.has_enabled() &&
       options.do_pdf_heading_hierarchy() != heading.enabled()) {
-    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                        surface + ": do_pdf_heading_hierarchy and "
-                                  "pdf_heading_hierarchy_options.enabled disagree");
+    return option_rejected("pdf_heading_hierarchy_options.enabled",
+                           OPTION_REJECTION_REASON_CONFLICT,
+                           heading.enabled() ? "true" : "false",
+                           surface + ": do_pdf_heading_hierarchy and "
+                                     "pdf_heading_hierarchy_options.enabled disagree");
   }
   if (heading.has_max_level() && (heading.max_level() < 1 || heading.max_level() > 6)) {
-    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                        surface + ": pdf_heading_hierarchy_options.max_level must be in [1, 6]");
+    return option_rejected("pdf_heading_hierarchy_options.max_level",
+                           OPTION_REJECTION_REASON_OUT_OF_RANGE,
+                           std::to_string(heading.max_level()),
+                           surface + ": pdf_heading_hierarchy_options.max_level must be in [1, 6]");
   }
   if (heading.has_style_size_tolerance() &&
-      (heading.style_size_tolerance() < 0.0 || heading.style_size_tolerance() >= 1.0)) {
-    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                        surface + ": pdf_heading_hierarchy_options.style_size_tolerance must "
-                                  "be in [0, 1)");
+      !(heading.style_size_tolerance() >= 0.0 && heading.style_size_tolerance() < 1.0)) {
+    return option_rejected("pdf_heading_hierarchy_options.style_size_tolerance",
+                           OPTION_REJECTION_REASON_OUT_OF_RANGE,
+                           std::format("{}", heading.style_size_tolerance()),
+                           surface + ": pdf_heading_hierarchy_options.style_size_tolerance must "
+                                     "be in [0, 1)");
+  }
+  if (heading.has_bookmark_match_threshold() &&
+      !(heading.bookmark_match_threshold() >= 0.0 && heading.bookmark_match_threshold() <= 1.0)) {
+    return option_rejected("pdf_heading_hierarchy_options.bookmark_match_threshold",
+                           OPTION_REJECTION_REASON_OUT_OF_RANGE,
+                           std::format("{}", heading.bookmark_match_threshold()),
+                           surface + ": pdf_heading_hierarchy_options.bookmark_match_threshold "
+                                     "must be in [0, 1]");
   }
   const auto schemes = resolve_numbering_schemes(options, surface);
   if (!schemes.has_value()) return schemes.error();
@@ -818,8 +842,8 @@ grpc::Status resolve_collector_rules(const pipestream::parse::v1::ConvertDocumen
 grpc::Status validate_unread_options(const pipestream::parse::v1::ConvertDocumentOptions& options,
                                      const std::string& surface) {
   const auto rejected = [&surface](const std::string& what) {
-    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                        surface + " does not implement option '" + what + "'");
+    return option_rejected(what, pipestream::parse::v1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED,
+                           "", surface + " does not implement option '" + what + "'");
   };
   // The installed PP-OCRv3 "ch" models read Chinese and English and nothing
   // else, which is also RapidOCR's own default language list.
@@ -845,11 +869,8 @@ grpc::Status validate_unread_options(const pipestream::parse::v1::ConvertDocumen
   const auto default_preset = [](bool has, const std::string& value) {
     return !has || value.empty() || value == "default";
   };
-  // RapidOCR is the one recognizer here, so its own preset name is honoured.
-  if (!default_preset(options.has_ocr_preset(), options.ocr_preset()) &&
-      options.ocr_preset() != "rapidocr") {
-    return rejected("ocr_preset");
-  }
+  // ocr_preset resolves through the OCR preset policy (ocr_preset_policy.h)
+  // once the server's settings are at hand, in parse_source.
   if (!default_preset(options.has_table_structure_preset(), options.table_structure_preset())) {
     return rejected("table_structure_preset");
   }
@@ -897,26 +918,52 @@ grpc::Status validate_unread_options(const pipestream::parse::v1::ConvertDocumen
 
 }  // namespace
 
+bool s3_source_verify_ssl(const pipestream::parse::v1::S3Source& source) {
+  return !source.has_verify_ssl() || source.verify_ssl();
+}
+
+grpc::Status option_rejected(const std::string& option_path,
+                             pipestream::parse::v1::OptionRejectionReason reason,
+                             const std::string& rejected_value_raw, const std::string& message) {
+  pipestream::parse::v1::OptionRejection rejection;
+  rejection.set_option_path(option_path);
+  rejection.set_reason(reason);
+  rejection.set_rejected_value_raw(rejected_value_raw);
+  google::rpc::Status status;
+  status.set_code(static_cast<int>(grpc::StatusCode::INVALID_ARGUMENT));
+  status.set_message(message);
+  if (!status.add_details()->PackFrom(rejection)) {
+    // Packing a generated message cannot fail; if it ever does the people
+    // message still stands, without the typed detail.
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, message);
+  }
+  return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, message, status.SerializeAsString());
+}
+
 std::expected<std::vector<pipestream::parse::v1::HeadingNumberingScheme>, grpc::Status>
 resolve_numbering_schemes(const pipestream::parse::v1::ConvertDocumentOptions& options,
                           const std::string& surface) {
   std::vector<pipestream::parse::v1::HeadingNumberingScheme> schemes;
   if (!options.has_pdf_heading_hierarchy_options()) return schemes;
   const auto& heading = options.pdf_heading_hierarchy_options();
-  const auto invalid = [&surface](const std::string& detail) {
-    return std::unexpected(grpc::Status(
-        grpc::StatusCode::INVALID_ARGUMENT,
+  const auto invalid = [&surface](std::string_view field,
+                                  pipestream::parse::v1::OptionRejectionReason reason,
+                                  const std::string& value, const std::string& detail) {
+    return std::unexpected(option_rejected(
+        "pdf_heading_hierarchy_options." + std::string(field), reason, value,
         surface + ": pdf_heading_hierarchy_options." + detail));
   };
   if (!heading.numbering_schemes().empty() && !heading.numbering_schemes_raw().empty()) {
-    return invalid("numbering_schemes and numbering_schemes_raw are mutually exclusive");
+    return invalid("numbering_schemes_raw", pipestream::parse::v1::OPTION_REJECTION_REASON_CONFLICT,
+                   "", "numbering_schemes and numbering_schemes_raw are mutually exclusive");
   }
   const auto add = [&](pipestream::parse::v1::HeadingNumberingScheme scheme,
                        const std::string& as_named) -> std::optional<grpc::Status> {
     if (std::ranges::find(schemes, scheme) != schemes.end()) {
-      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                          surface + ": pdf_heading_hierarchy_options.numbering_schemes lists '" +
-                              as_named + "' twice");
+      return option_rejected("pdf_heading_hierarchy_options.numbering_schemes",
+                             pipestream::parse::v1::OPTION_REJECTION_REASON_DUPLICATE, as_named,
+                             surface + ": pdf_heading_hierarchy_options.numbering_schemes lists '" +
+                                 as_named + "' twice");
     }
     schemes.push_back(scheme);
     return std::nullopt;
@@ -924,8 +971,10 @@ resolve_numbering_schemes(const pipestream::parse::v1::ConvertDocumentOptions& o
   for (const int raw : heading.numbering_schemes()) {
     if (raw == pipestream::parse::v1::HEADING_NUMBERING_SCHEME_UNSPECIFIED ||
         !pipestream::parse::v1::HeadingNumberingScheme_IsValid(raw)) {
-      return invalid("numbering_schemes value " + std::to_string(raw) +
-                     " is not a known HeadingNumberingScheme");
+      return invalid("numbering_schemes", pipestream::parse::v1::OPTION_REJECTION_REASON_UNKNOWN_VALUE,
+                     std::to_string(raw),
+                     "numbering_schemes value " + std::to_string(raw) +
+                         " is not a known HeadingNumberingScheme");
     }
     const auto scheme = static_cast<pipestream::parse::v1::HeadingNumberingScheme>(raw);
     if (auto error = add(scheme, pipestream::parse::v1::HeadingNumberingScheme_Name(scheme))) {
@@ -935,8 +984,10 @@ resolve_numbering_schemes(const pipestream::parse::v1::ConvertDocumentOptions& o
   for (const std::string& name : heading.numbering_schemes_raw()) {
     const auto scheme = heading_numbering_scheme_from_name(name);
     if (!scheme.has_value()) {
-      return invalid("numbering_schemes_raw value '" + name +
-                     "' is not a Docling numbering scheme");
+      return invalid("numbering_schemes_raw",
+                     pipestream::parse::v1::OPTION_REJECTION_REASON_UNKNOWN_VALUE, name,
+                     "numbering_schemes_raw value '" + name +
+                         "' is not a Docling numbering scheme");
     }
     if (auto error = add(*scheme, name)) return std::unexpected(*error);
   }
@@ -956,8 +1007,9 @@ resolve_code_formula_preset(const pipestream::parse::v1::ConvertDocumentOptions&
   if (options.code_formula_preset() == "granite_docling") {
     return pipestream::parse::v1::CODE_FORMULA_PRESET_ID_GRANITE_DOCLING;
   }
-  return std::unexpected(grpc::Status(
-      grpc::StatusCode::INVALID_ARGUMENT,
+  return std::unexpected(option_rejected(
+      "code_formula_preset", pipestream::parse::v1::OPTION_REJECTION_REASON_UNKNOWN_VALUE,
+      options.code_formula_preset(),
       surface + ": code_formula_preset '" + options.code_formula_preset() +
           "' is not a Docling code/formula preset (codeformulav2, granite_docling)"));
 }
@@ -991,8 +1043,10 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
   options.GetReflection()->ListFields(options, &populated);
   for (const auto* field : populated) {
     if (!implemented_option(field->name())) {
-      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                          surface + " does not implement option '" + std::string(field->name()) + "'");
+      return option_rejected(std::string(field->name()),
+                             pipestream::parse::v1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED, "",
+                             surface + " does not implement option '" +
+                                 std::string(field->name()) + "'");
     }
   }
   const grpc::Status tuning_status =
@@ -1152,8 +1206,24 @@ std::expected<std::optional<ChartExtractionPreset>, grpc::Status> resolve_chart_
   };
   if (options.has_chart_extraction_custom_config()) {
     const auto& config = options.chart_extraction_custom_config();
+    // A request's own configuration resolves to the preset "custom"; an
+    // engine with no Docling name (UNSPECIFIED or a value outside the enum)
+    // cannot be checked against the allowed engines, so it is refused by
+    // field before the policy runs.
+    if (const auto engine = config.engine_options().engine_type();
+        vlm_engine_name(engine).empty()) {
+      return std::unexpected(option_rejected(
+          "chart_extraction_custom_config.engine_options.engine_type",
+          pipestream::parse::v1::OPTION_REJECTION_REASON_UNKNOWN_VALUE,
+          pipestream::parse::v1::VlmEngineType_IsValid(engine)
+              ? pipestream::parse::v1::VlmEngineType_Name(engine)
+              : std::to_string(static_cast<int>(engine)),
+          surface + ": chart extraction preset 'custom': "
+                    "chart_extraction_custom_config.engine_options.engine_type names no "
+                    "engine"));
+    }
     const grpc::Status allowed =
-        policy.check_custom_config(vlm_engine_name(config.engine_options().engine_type()));
+        policy.check_custom_config(config.engine_options().engine_type());
     if (!allowed.ok()) return rejected(allowed);
     return std::optional<ChartExtractionPreset>(chart_preset_from_custom_config(config));
   }
@@ -1571,6 +1641,11 @@ HeadingOptions heading_options_from(const pipestream::parse::v1::ConvertDocument
   if (requested.has_style_size_tolerance()) {
     heading.style_size_tolerance = requested.style_size_tolerance();
   }
+  if (requested.has_use_bookmarks()) heading.use_bookmarks = requested.use_bookmarks();
+  if (requested.has_bookmark_match_threshold()) {
+    heading.bookmark_match_threshold = requested.bookmark_match_threshold();
+  }
+  if (requested.has_use_font_style()) heading.use_font_style = requested.use_font_style();
   // Validated before the parse runs (validate_heading_options).
   if (auto schemes = resolve_numbering_schemes(options, "heading"); schemes.has_value()) {
     heading.numbering_schemes = std::move(*schemes);
@@ -2028,13 +2103,30 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
                           const std::optional<RepairOptions>& server_repair,
                           const std::string& surface, SourceParse* parsed) {
   const auto& sources = request.sources();
-  if (sources.size() == 1 && sources.Get(0).has_file()) {
+  if (sources.size() != 1) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        surface + " currently accepts exactly one source");
+  }
+  if (sources.Get(0).has_file()) {
     parsed->doctype = classify_doctype(pipestream::parse::v1::INPUT_FORMAT_UNSPECIFIED,
                                        sources.Get(0).file().filename());
   }
-  if (sources.size() != 1 || !sources.Get(0).has_file()) {
-    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                        surface + " currently accepts exactly one FileSource containing base64_string");
+  // The target policy is checked before any work, so a refused target never
+  // costs a fetch or a conversion.
+  if (grpc::Status target = storage::check_target_allowed(request.target()); !target.ok()) {
+    return target;
+  }
+  // A storage or plugin source resolves to the one document it names; a
+  // FileSource passes through. This runs on the conversion's worker, so the
+  // blocking fetch never holds a gRPC event thread.
+  pipestream::parse::v1::FileSource resolved_file;
+  if (grpc::Status resolved = storage::resolve_source(sources.Get(0), "sources[0]", &resolved_file);
+      !resolved.ok()) {
+    return resolved;
+  }
+  if (!sources.Get(0).has_file()) {
+    parsed->doctype = classify_doctype(pipestream::parse::v1::INPUT_FORMAT_UNSPECIFIED,
+                                       resolved_file.filename());
   }
   const grpc::Status option_status = validate_options(request.options(), surface);
   if (!option_status.ok()) return option_status;
@@ -2047,6 +2139,18 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
       request.options(), collectors != nullptr ? collectors->chart_policy() : kDefaultChartPolicy,
       surface);
   if (!chart_extraction.has_value()) return chart_extraction.error();
+  {
+    static const OcrPresetPolicy& kDefaultOcrPolicy = default_ocr_preset_policy();
+    const OcrPresetPolicy& ocr_policy =
+        collectors != nullptr ? collectors->ocr_policy() : kDefaultOcrPolicy;
+    // A name and policy gate only: every kind this server runs is the one
+    // RapidOCR set, which reads Chinese and English whatever the preset's
+    // lang says, so the resolved preset selects nothing further
+    // (ocr_preset_policy.h).
+    if (auto ocr = ocr_policy.resolve(request.options(), surface); !ocr.has_value()) {
+      return ocr.error();
+    }
+  }
   auto picture_description =
       request_picture_description_call(request.options(), *chart_extraction, surface);
   if (!picture_description.has_value()) return picture_description.error();
@@ -2061,7 +2165,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     return grpc::Status(read.error_code(), surface + ": " + read.error_message());
   }
   try {
-    const auto& source = sources.Get(0).file();
+    const auto& source = resolved_file;
     auto bytes = std::make_shared<const std::string>(decode_base64(source.base64_string()));
     // A nameless upload gets a name that declares nothing, so the bytes
     // decide its type and route rather than a made-up extension.

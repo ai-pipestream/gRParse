@@ -68,6 +68,12 @@ struct HeaderHeight {
   int page = 0;
   double top = 0;
   double bottom = 0;
+  // Font styling the heading's runs declare (use_font_style). has_font_style
+  // is false when no run names a font or formatting; such a heading ranks by
+  // size alone.
+  bool has_font_style = false;
+  bool bold = false;
+  bool italic = false;
 };
 
 // Heading depths for the whole document (see heading_hierarchy.h):

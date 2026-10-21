@@ -7,8 +7,11 @@
 #include <string>
 #include <vector>
 
-#include <google/protobuf/struct.pb.h>
+#include <google/protobuf/io/tokenizer.h>
+#include <google/protobuf/text_format.h>
 #include <google/protobuf/util/json_util.h>
+
+#include "setting_values.h"
 
 namespace grparse {
 
@@ -18,62 +21,15 @@ namespace {
 
 constexpr std::string_view kStage = "Chart extraction";
 
-constexpr std::array<std::string_view, 8> kEngineNames = {
-    "transformers", "mlx", "vllm", "api", "api_ollama", "api_lmstudio", "api_openai",
-    "auto_inline"};
+constexpr std::array<parsev1::VlmEngineType, 8> kEngines = {
+    parsev1::VLM_ENGINE_TYPE_TRANSFORMERS, parsev1::VLM_ENGINE_TYPE_MLX,
+    parsev1::VLM_ENGINE_TYPE_VLLM,         parsev1::VLM_ENGINE_TYPE_API,
+    parsev1::VLM_ENGINE_TYPE_API_OLLAMA,   parsev1::VLM_ENGINE_TYPE_API_LMSTUDIO,
+    parsev1::VLM_ENGINE_TYPE_API_OPENAI,   parsev1::VLM_ENGINE_TYPE_AUTO_INLINE};
 
-bool known_engine(std::string_view name) {
-  return std::ranges::find(kEngineNames, name) != kEngineNames.end();
-}
-
-std::string trimmed(std::string_view text) {
-  const auto first = text.find_first_not_of(" \t\r\n");
-  if (first == std::string_view::npos) return std::string();
-  const auto last = text.find_last_not_of(" \t\r\n");
-  return std::string(text.substr(first, last - first + 1));
-}
-
-// A list setting: a JSON array of strings, or comma-separated words.
-std::vector<std::string> parse_list(const char* variable, std::string_view value) {
-  std::vector<std::string> items;
-  const std::string text = trimmed(value);
-  if (text.starts_with('[')) {
-    google::protobuf::ListValue list;
-    if (!google::protobuf::util::JsonStringToMessage(text, &list).ok()) {
-      throw std::invalid_argument(std::string(variable) + " is not a JSON array");
-    }
-    for (const google::protobuf::Value& entry : list.values()) {
-      if (!entry.has_string_value() || trimmed(entry.string_value()).empty()) {
-        throw std::invalid_argument(std::string(variable) +
-                                    " must list non-empty strings only");
-      }
-      items.push_back(trimmed(entry.string_value()));
-    }
-    return items;
-  }
-  size_t start = 0;
-  while (start <= text.size()) {
-    const size_t comma = text.find(',', start);
-    const std::string item =
-        trimmed(std::string_view(text).substr(start, comma == std::string::npos
-                                                         ? std::string::npos
-                                                         : comma - start));
-    if (item.empty()) {
-      throw std::invalid_argument(std::string(variable) + " has an empty entry");
-    }
-    items.push_back(item);
-    if (comma == std::string::npos) break;
-    start = comma + 1;
-  }
-  return items;
-}
-
-std::optional<std::string> configured(const std::function<const char*(const char*)>& lookup,
-                                      const char* variable) {
-  const char* value = lookup(variable);
-  if (value == nullptr || trimmed(value).empty()) return std::nullopt;
-  return std::string(value);
-}
+using settings::configured;
+using settings::parse_list;
+using settings::trimmed;
 
 }  // namespace
 
@@ -81,7 +37,7 @@ std::map<std::string, ChartExtractionPreset> builtin_chart_extraction_presets() 
   ChartExtractionPreset granite;
   granite.id = "granite_vision_v4";
   granite.model = "granite-vision-4.1-4b";
-  granite.engine = "api_openai";
+  granite.engine = parsev1::VLM_ENGINE_TYPE_API_OPENAI;
   return {{granite.id, granite}};
 }
 
@@ -90,6 +46,13 @@ ChartExtractionPolicy default_chart_extraction_policy() {
   settings.default_preset = "granite_vision_v4";
   return ChartExtractionPolicy(std::string(kStage), builtin_chart_extraction_presets(),
                                std::move(settings));
+}
+
+std::optional<parsev1::VlmEngineType> vlm_engine_from_name(std::string_view name) {
+  for (const parsev1::VlmEngineType engine : kEngines) {
+    if (vlm_engine_name(engine) == name) return engine;
+  }
+  return std::nullopt;
 }
 
 std::string vlm_engine_name(parsev1::VlmEngineType engine) {
@@ -106,61 +69,32 @@ std::string vlm_engine_name(parsev1::VlmEngineType engine) {
   }
 }
 
-std::map<std::string, ChartExtractionPreset> parse_chart_extraction_presets(
-    std::string_view json) {
+std::map<std::string, ChartExtractionPreset> chart_extraction_presets_from_registry(
+    const parsev1::ChartExtractionPresetRegistry& registry) {
   constexpr const char* kVariable = "GRPARSE_CUSTOM_CHART_EXTRACTION_PRESETS";
-  google::protobuf::Struct root;
-  if (!google::protobuf::util::JsonStringToMessage(std::string(json), &root).ok()) {
-    throw std::invalid_argument(std::string(kVariable) + " is not a JSON object");
-  }
   std::map<std::string, ChartExtractionPreset> presets;
-  for (const auto& [id, value] : root.fields()) {
+  for (const auto& [id, spec] : registry.presets()) {
     const std::string where = std::string(kVariable) + " preset '" + id + "'";
     if (trimmed(id).empty() || trimmed(id) != id) {
       throw std::invalid_argument(std::string(kVariable) + " has an empty or padded preset id");
     }
-    if (!value.has_struct_value()) {
-      throw std::invalid_argument(where + " must be a JSON object");
-    }
     ChartExtractionPreset preset;
     preset.id = id;
-    for (const auto& [key, field] : value.struct_value().fields()) {
-      const auto text = [&]() -> std::string {
-        if (!field.has_string_value()) {
-          throw std::invalid_argument(where + ": " + key + " must be a string");
-        }
-        return field.string_value();
-      };
-      const auto flag = [&]() -> bool {
-        if (!field.has_bool_value()) {
-          throw std::invalid_argument(where + ": " + key + " must be true or false");
-        }
-        return field.bool_value();
-      };
-      if (key == "model") {
-        preset.model = text();
-      } else if (key == "url") {
-        preset.vlm_endpoint = text();
-      } else if (key == "engine_type") {
-        preset.engine = text();
-        if (!known_engine(preset.engine)) {
-          throw std::invalid_argument(where + ": engine_type '" + preset.engine +
-                                      "' is not a known engine");
-        }
-      } else if (key == "chart2csv") {
-        preset.chart2csv = flag();
-      } else if (key == "chart2summary") {
-        preset.chart2summary = flag();
-      } else if (key == "chart2code") {
-        preset.chart2code = flag();
-      } else if (key == "use_natural_language_prompts") {
-        preset.use_natural_language_prompts = flag();
-      } else {
-        throw std::invalid_argument(where + ": unknown key '" + key +
-                                    "' (known: model, url, engine_type, chart2csv, "
-                                    "chart2summary, chart2code, use_natural_language_prompts)");
+    preset.model = spec.model();
+    preset.vlm_endpoint = spec.url();
+    if (spec.has_engine_type()) {
+      if (vlm_engine_name(spec.engine_type()).empty()) {
+        throw std::invalid_argument(where + ": engine_type " +
+                                    parsev1::VlmEngineType_Name(spec.engine_type()) +
+                                    " is not a usable engine");
       }
+      preset.engine = spec.engine_type();
     }
+    preset.chart2csv = !spec.has_chart2csv() || spec.chart2csv();
+    preset.chart2summary = spec.has_chart2summary() && spec.chart2summary();
+    preset.chart2code = spec.has_chart2code() && spec.chart2code();
+    preset.use_natural_language_prompts =
+        spec.has_use_natural_language_prompts() && spec.use_natural_language_prompts();
     if (!preset.chart2csv && !preset.chart2summary && !preset.chart2code) {
       throw std::invalid_argument(where +
                                   ": at least one of chart2csv, chart2summary, or chart2code "
@@ -169,6 +103,42 @@ std::map<std::string, ChartExtractionPreset> parse_chart_extraction_presets(
     presets.emplace(id, std::move(preset));
   }
   return presets;
+}
+
+namespace {
+
+// Collects the first text-format parse error so the startup failure can
+// name it.
+class FirstError final : public google::protobuf::io::ErrorCollector {
+ public:
+  void RecordError(int line, google::protobuf::io::ColumnNumber column,
+                   absl::string_view message) override {
+    if (!text_.empty()) return;
+    text_ = "line " + std::to_string(line + 1) + " column " + std::to_string(column + 1) +
+            ": " + std::string(message);
+  }
+  const std::string& text() const { return text_; }
+
+ private:
+  std::string text_;
+};
+
+}  // namespace
+
+std::map<std::string, ChartExtractionPreset> parse_chart_extraction_presets(
+    std::string_view text) {
+  constexpr const char* kVariable = "GRPARSE_CUSTOM_CHART_EXTRACTION_PRESETS";
+  parsev1::ChartExtractionPresetRegistry registry;
+  FirstError errors;
+  google::protobuf::TextFormat::Parser parser;
+  parser.RecordErrorsTo(&errors);
+  if (!parser.ParseFromString(std::string(text), &registry)) {
+    throw std::invalid_argument(std::string(kVariable) +
+                                " is not a ChartExtractionPresetRegistry in protobuf text "
+                                "format: " +
+                                errors.text());
+  }
+  return chart_extraction_presets_from_registry(registry);
 }
 
 ChartExtractionPolicy chart_extraction_policy_from_env(
@@ -185,13 +155,15 @@ ChartExtractionPolicy chart_extraction_policy_from_env(
     settings.custom_presets = parse_chart_extraction_presets(*custom);
   }
   if (const auto engines = configured(lookup, "GRPARSE_ALLOWED_CHART_EXTRACTION_ENGINES")) {
-    settings.allowed_engines =
-        parse_list("GRPARSE_ALLOWED_CHART_EXTRACTION_ENGINES", *engines);
-    for (const std::string& engine : *settings.allowed_engines) {
-      if (!known_engine(engine)) {
-        throw std::invalid_argument("GRPARSE_ALLOWED_CHART_EXTRACTION_ENGINES names '" + engine +
+    settings.allowed_engines.emplace();
+    for (const std::string& name :
+         parse_list("GRPARSE_ALLOWED_CHART_EXTRACTION_ENGINES", *engines)) {
+      const auto engine = vlm_engine_from_name(name);
+      if (!engine.has_value()) {
+        throw std::invalid_argument("GRPARSE_ALLOWED_CHART_EXTRACTION_ENGINES names '" + name +
                                     "', which is not a known engine");
       }
+      settings.allowed_engines->push_back(*engine);
     }
   }
   if (const auto allow = configured(lookup, "GRPARSE_ALLOW_CUSTOM_CHART_EXTRACTION_CONFIG")) {
@@ -215,7 +187,7 @@ ChartExtractionPreset chart_preset_from_custom_config(
   ChartExtractionPreset preset;
   preset.id = "custom";
   const parsev1::VlmEngineType engine = config.engine_options().engine_type();
-  preset.engine = vlm_engine_name(engine);
+  preset.engine = engine;
   // Docling's VlmModelSpec.get_api_params: {"model": default_repo_id},
   // overridden by the engine's api_overrides entry.
   preset.model = config.model_spec().default_repo_id();

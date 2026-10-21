@@ -1,0 +1,12 @@
+commit: 4aadfdadc4dce01632df1c610b3e5597e63ab462
+source: GET api/v1/repos/ai-pipestream/gRParse/commits/4aadfdadc4dce01632df1c610b3e5597e63ab462/status
+recorded: 2026-10-15T04:37:49-04:00
+run: 429
+combined: failure
+C++ build and contract tests / cpu-image (pull_request) | failure | Failing after 8s | /ai-pipestream/gRParse/actions/runs/429/jobs/2
+C++ build and contract tests / cuda-image (pull_request) | success | Successful in 11m38s | /ai-pipestream/gRParse/actions/runs/429/jobs/0
+C++ build and contract tests / demo-shell (pull_request) | success | Successful in 12s | /ai-pipestream/gRParse/actions/runs/429/jobs/3
+C++ build and contract tests / fuzz-smoke (pull_request) | success | Successful in 2m27s | /ai-pipestream/gRParse/actions/runs/429/jobs/4
+C++ build and contract tests / openvino-image (pull_request) | failure | Has been cancelled | /ai-pipestream/gRParse/actions/runs/429/jobs/1
+
+cpu-image failed within seconds: the CI job containers lack docker client auth for dhi.io (CI auth is awaiting Kristian and was not changed). This is a blocker, not a pass. openvino-image ended cancelled: the run was superseded by the push of fe9cfdf (run 430).

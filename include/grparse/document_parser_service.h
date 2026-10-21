@@ -16,6 +16,7 @@
 #include "grparse/call_executor.h"
 #include "grparse/chart_derender.h"
 #include "grparse/chart_extraction_policy.h"
+#include "grparse/ocr_preset_policy.h"
 #include "grparse/chunk_embeddings.h"
 #include "grparse/document_repair.h"
 #include "grparse/inflight_bytes.h"
@@ -57,6 +58,10 @@ struct CollectorTargets {
   // carry its own chart_extraction_custom_config. Checked when the options
   // are validated, whether or not the enrich leg is configured.
   ChartExtractionPolicy chart_policy = default_chart_extraction_policy();
+  // The server-side OCR preset policy (GRPARSE_*OCR_PRESET*, *OCR_KIND*):
+  // which ocr_preset names a Convert request may use, custom presets
+  // included (docling-serve #723).
+  OcrPresetPolicy ocr_policy = default_ocr_preset_policy();
   // The VLM convert leg (grpc-vlm-convert, GRPARSE_VLM_CONVERT_TARGET): the
   // PROCESSING_PIPELINE_VLM body producer. Empty target means that pipeline
   // is unavailable.
@@ -121,6 +126,7 @@ class CollectorEndpoints {
   bool has_derender() const { return targets_.derender.enabled(); }
   std::shared_ptr<grpc::Channel> enrich_channel();
   const ChartExtractionPolicy& chart_policy() const { return targets_.chart_policy; }
+  const OcrPresetPolicy& ocr_policy() const { return targets_.ocr_policy; }
 
   // The VLM convert leg's options and its lazily created channel; null when
   // GRPARSE_VLM_CONVERT_TARGET is unset.

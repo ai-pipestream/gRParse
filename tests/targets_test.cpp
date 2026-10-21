@@ -776,7 +776,32 @@ void verify_incomplete_targets_are_rejected() {
 
 }  // namespace
 
+// The fake stores below listen on loopback, which the public-peer guard
+// refuses unless the deployment allows private endpoints. This test proves
+// the refusal; main() allows them for the rest.
+void verify_a_loopback_store_is_refused_by_default() {
+  FakeStore store;
+  const docv1::Document document = sample_document("guarded");
+  const auto files = targets::build_bundle(document, sample_exports(document));
+  targets::S3Config config;
+  config.endpoint = store.endpoint();
+  config.access_key = "AKIAIOSFODNN7EXAMPLE";
+  config.secret_key = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
+  config.bucket = "conversions";
+  ::unsetenv("GRPARSE_STORAGE_ALLOW_PRIVATE_ENDPOINTS");
+  bool refused = false;
+  try {
+    targets::upload_bundle(config, files);
+  } catch (const std::exception& error) {
+    refused = std::string(error.what()).contains("non-public");
+  }
+  ::setenv("GRPARSE_STORAGE_ALLOW_PRIVATE_ENDPOINTS", "1", 1);
+  require(refused, "an upload to a loopback store is refused by default");
+  require(store.received().empty(), "no request reached the loopback store");
+}
+
 int main() {
+  ::setenv("GRPARSE_STORAGE_ALLOW_PRIVATE_ENDPOINTS", "1", 1);
   return grparse_test::run_test_main("targets-test", {
       verify_sha256_matches_the_published_vectors,
       verify_bundles_are_reproducible,
@@ -794,5 +819,6 @@ int main() {
       verify_a_partial_failure_reports_the_written_objects,
       verify_a_refused_upload_fails_without_leaking,
       verify_incomplete_targets_are_rejected,
+      verify_a_loopback_store_is_refused_by_default,
   });
 }
