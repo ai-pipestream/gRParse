@@ -13,6 +13,19 @@
         --out-md eval/out/corpus/cand/drift.md \
         --fail-on-new-failures --max-error-rate-delta 0.01 --max-p95-regression-pct 20
 
+    # Against the newest earlier run over the same corpus, and the run history:
+    uv run python eval/corpus/analyze.py eval/out/corpus/cand/results.jsonl --baseline-auto eval/out/corpus
+    uv run python eval/corpus/analyze.py --list-runs eval/out/corpus
+
+Every summary leads with the clean-output rate (every check passes, and the
+battery ledger's rule that ignores warnings_typed and custom_field_keys)
+beside the SUCCESS rate, per class (the directory holding each document).
+When both runs carry a run.json (eval/corpus/provenance.py) the drift report
+opens with what changed: gRParse commit, every image digest, corpus hash,
+config. Runs over different corpus hashes are refused unless
+--allow-corpus-mismatch. An eval/s3 report.json (the realdata battery's
+format) is accepted as a baseline; it has no provenance and no hashes.
+
 Exit codes: 0 when all regression gates pass (or no gates failed), 1 when any
 configured regression gate triggers, 2 on invalid arguments or missing files.
 """
@@ -23,6 +36,7 @@ import argparse
 import json
 import math
 import os
+import re
 import sys
 import threading
 from pathlib import Path
@@ -32,10 +46,15 @@ EVAL_DIR = Path(__file__).resolve().parents[1]
 if str(EVAL_DIR) not in sys.path:
     sys.path.insert(0, str(EVAL_DIR))
 
+from corpus import provenance  # noqa: E402
 from corpus.metrics import normalize_status  # noqa: E402
 
 FAILURE_STATUSES = frozenset({"failure", "rpc_error"})
 SUCCESS_STATUSES = frozenset({"success", "partial_success"})
+# The realdata battery ledger (2026-10-07, 1,565 of 1,810 on c8ff4ce) counted a
+# document clean when it failed no check outside these two; the strict rate
+# counts every check. Both are reported so a new run reads against that ledger.
+BATTERY_IGNORED_CHECKS = frozenset({"warnings_typed", "custom_field_keys"})
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -60,40 +79,84 @@ def percentile(sorted_vals: list[float], q: float) -> float:
     return round(sorted_vals[lo] * (1.0 - weight) + sorted_vals[hi] * weight, 2)
 
 
-def load_journal(path: Path) -> list[dict[str, Any]]:
-    """Read a results.jsonl file, deduplicating by relpath (latest entry wins)."""
-    if not path.is_file():
-        raise FileNotFoundError(f"journal file not found: {path}")
-    by_relpath: dict[str, dict[str, Any]] = {}
+def _journal_lines(path: Path) -> list[tuple[int, dict[str, Any]]]:
+    """(line number, record) pairs of a results.jsonl, or of the ``objects`` of an
+    eval/s3 report.json, which is how the realdata battery wrote its runs."""
+    if path.suffix == ".json":
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as err:
+            raise ValueError(f"{path}: invalid JSON: {err}") from err
+        if not isinstance(data, dict) or not isinstance(data.get("objects"), list):
+            raise ValueError(f"{path}: not a report.json with an objects list")
+        rows = []
+        for index, obj in enumerate(data["objects"], start=1):
+            rec = dict(obj)
+            rec.setdefault("relpath", rec.get("key"))
+            rec.setdefault("ext", rec.get("extension"))
+            rec.setdefault("size_bytes", rec.get("size"))
+            raw = str(rec.get("status") or "")
+            if raw.startswith("rpc error") and not rec.get("rpc_error"):
+                rec["rpc_error"] = raw
+            rows.append((index, rec))
+        return rows
+    rows = []
     with path.open("r", encoding="utf-8") as handle:
         for line_no, raw_line in enumerate(handle, start=1):
             line = raw_line.strip()
             if not line:
                 continue
             try:
-                rec = json.loads(line)
+                rows.append((line_no, json.loads(line)))
             except json.JSONDecodeError as err:
                 raise ValueError(f"{path}:{line_no}: invalid JSON: {err}") from err
-            relpath = str(rec.get("relpath") or rec.get("key") or f"line-{line_no}")
-            rec = dict(rec)
-            rec["relpath"] = relpath
-            rec["doctype"] = str(rec.get("doctype") or rec.get("ext") or rec.get("family") or "unknown")
-            rec["parser_type"] = str(rec.get("parser_type") or "none")
-            rec["status"] = normalize_status(
-                rec.get("status"),
-                rec.get("rpc_error"),
-                skipped=bool(rec.get("skipped")) or rec.get("status") == "skipped",
-            )
-            failed = rec.get("failed_checks")
-            if failed is None:
-                checks = rec.get("checks") or {}
-                failed = sorted(k for k, v in checks.items() if v == "fail")
-            rec["failed_checks"] = sorted(set(str(c) for c in failed))
-            rec["elapsed_ms"] = float(rec.get("elapsed_ms") or 0.0)
-            rec["sha256"] = str(rec.get("sha256") or "")
-            rec["output_sha256"] = str(rec.get("output_sha256") or "")
-            by_relpath[relpath] = rec
+    return rows
+
+
+def load_journal(path: Path) -> list[dict[str, Any]]:
+    """Read a results.jsonl (or an eval/s3 report.json), deduplicating by relpath (latest entry wins)."""
+    if not path.is_file():
+        raise FileNotFoundError(f"journal file not found: {path}")
+    by_relpath: dict[str, dict[str, Any]] = {}
+    for line_no, rec in _journal_lines(path):
+        relpath = str(rec.get("relpath") or rec.get("key") or f"line-{line_no}")
+        rec = dict(rec)
+        rec["relpath"] = relpath
+        rec["doctype"] = str(rec.get("doctype") or rec.get("ext") or rec.get("family") or "unknown")
+        rec["parser_type"] = str(rec.get("parser_type") or "none")
+        rec["status"] = normalize_status(
+            rec.get("status"),
+            rec.get("rpc_error"),
+            skipped=bool(rec.get("skipped")) or rec.get("status") == "skipped",
+        )
+        failed = rec.get("failed_checks")
+        if failed is None:
+            checks = rec.get("checks") or {}
+            failed = sorted(k for k, v in checks.items() if v == "fail")
+        rec["failed_checks"] = sorted(set(str(c) for c in failed))
+        rec["elapsed_ms"] = float(rec.get("elapsed_ms") or 0.0)
+        rec["sha256"] = str(rec.get("sha256") or "")
+        rec["output_sha256"] = str(rec.get("output_sha256") or "")
+        rec["doc_class"] = doc_class(relpath)
+        by_relpath[relpath] = rec
     return [by_relpath[k] for k in sorted(by_relpath)]
+
+
+def doc_class(relpath: str) -> str:
+    """A document's class is the directory holding it (``napierone/doc``, ``court``),
+    the set the battery ledger reports by; files at the corpus root are ``.``."""
+    parent = relpath.rsplit("/", 1)[0] if "/" in relpath else "."
+    return parent or "."
+
+
+def is_clean(rec: dict[str, Any], ignored: frozenset[str] = frozenset()) -> bool:
+    """Evaluated and failed no check (parse_succeeds is a check, so a failed parse is never clean)."""
+    return rec["status"] != "skipped" and not (set(rec["failed_checks"]) - ignored)
+
+
+def _cause(rec: dict[str, Any]) -> str:
+    raw = str(rec.get("rpc_error") or rec.get("raw_status") or rec.get("status") or "")
+    return re.sub(r"\d+", "#", raw)[:160] or rec["status"]
 
 
 def _summarize_slice(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -105,6 +168,12 @@ def _summarize_slice(records: list[dict[str, Any]]) -> dict[str, Any]:
     success_count = sum(1 for r in evaluated if r["status"] in SUCCESS_STATUSES)
     error_count = sum(1 for r in evaluated if r["status"] in FAILURE_STATUSES)
     check_fail_docs = sum(1 for r in evaluated if r["failed_checks"])
+    status_success = sum(1 for r in evaluated if r["status"] == "success")
+    clean = sum(1 for r in evaluated if is_clean(r))
+    clean_battery = sum(1 for r in evaluated if is_clean(r, BATTERY_IGNORED_CHECKS))
+
+    def rate(count: int) -> float:
+        return round(count / eval_count, 6) if eval_count > 0 else 0.0
 
     success_rate = round(success_count / eval_count, 6) if eval_count > 0 else 0.0
     error_rate = round(error_count / eval_count, 6) if eval_count > 0 else 0.0
@@ -114,9 +183,13 @@ def _summarize_slice(records: list[dict[str, Any]]) -> dict[str, Any]:
 
     check_failures: dict[str, int] = {}
     status_counts: dict[str, int] = {}
+    failure_causes: dict[str, int] = {}
     for r in records:
         st = r["status"]
         status_counts[st] = status_counts.get(st, 0) + 1
+        if st != "skipped" and st != "success":
+            cause = f"{st}: {_cause(r)}"
+            failure_causes[cause] = failure_causes.get(cause, 0) + 1
         for chk in r["failed_checks"]:
             check_failures[chk] = check_failures.get(chk, 0) + 1
 
@@ -129,6 +202,12 @@ def _summarize_slice(records: list[dict[str, Any]]) -> dict[str, Any]:
         "docs_with_check_failures": check_fail_docs,
         "success_rate": success_rate,
         "error_rate": error_rate,
+        "status_success_count": status_success,
+        "status_success_rate": rate(status_success),
+        "clean_count": clean,
+        "clean_rate": rate(clean),
+        "clean_battery_count": clean_battery,
+        "clean_battery_rate": rate(clean_battery),
         "latency_ms": {
             "p50": percentile(latencies, 50.0),
             "p90": percentile(latencies, 90.0),
@@ -139,6 +218,7 @@ def _summarize_slice(records: list[dict[str, Any]]) -> dict[str, Any]:
         },
         "status_counts": dict(sorted(status_counts.items())),
         "check_failures": dict(sorted(check_failures.items())),
+        "failure_causes": dict(sorted(failure_causes.items(), key=lambda kv: (-kv[1], kv[0]))),
     }
 
 
@@ -146,15 +226,18 @@ def summarize_run(records: list[dict[str, Any]], *, label: str = "run") -> dict[
     """Compute overall, per-doctype, and per-parser_type statistics for one journal."""
     by_doctype: dict[str, list[dict[str, Any]]] = {}
     by_parser: dict[str, list[dict[str, Any]]] = {}
+    by_class: dict[str, list[dict[str, Any]]] = {}
     for rec in records:
         by_doctype.setdefault(rec["doctype"], []).append(rec)
         by_parser.setdefault(rec["parser_type"], []).append(rec)
+        by_class.setdefault(rec.get("doc_class") or doc_class(rec["relpath"]), []).append(rec)
 
     return {
         "label": label,
         "overall": _summarize_slice(records),
         "by_doctype": {dt: _summarize_slice(rows) for dt, rows in sorted(by_doctype.items())},
         "by_parser_type": {pt: _summarize_slice(rows) for pt, rows in sorted(by_parser.items())},
+        "by_class": {dc: _summarize_slice(rows) for dc, rows in sorted(by_class.items())},
     }
 
 
@@ -176,6 +259,14 @@ def _compare_slices(base_slice: dict[str, Any], cand_slice: dict[str, Any]) -> d
         "baseline_error_rate": base_slice["error_rate"],
         "candidate_error_rate": cand_slice["error_rate"],
         "error_rate_delta": round(cand_slice["error_rate"] - base_slice["error_rate"], 6),
+        "baseline_status_success_rate": base_slice["status_success_rate"],
+        "candidate_status_success_rate": cand_slice["status_success_rate"],
+        "baseline_clean_rate": base_slice["clean_rate"],
+        "candidate_clean_rate": cand_slice["clean_rate"],
+        "clean_rate_delta": round(cand_slice["clean_rate"] - base_slice["clean_rate"], 6),
+        "baseline_clean_battery_rate": base_slice["clean_battery_rate"],
+        "candidate_clean_battery_rate": cand_slice["clean_battery_rate"],
+        "clean_battery_rate_delta": round(cand_slice["clean_battery_rate"] - base_slice["clean_battery_rate"], 6),
         "latency_ms": {
             "p50_baseline": base_lat["p50"],
             "p50_candidate": cand_lat["p50"],
@@ -206,6 +297,9 @@ def compare_runs(
     max_error_rate_delta: float | None = None,
     max_p95_regression_pct: float | None = None,
     fail_on_new_failures: bool = False,
+    max_clean_rate_drop: float | None = None,
+    baseline_manifest: dict[str, Any] | None = None,
+    candidate_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compare baseline and candidate journals, detecting regressions and content drift."""
     base_summary = summarize_run(baseline_records, label=baseline_label)
@@ -332,6 +426,15 @@ def compare_runs(
         for pt in all_parsers
     }
 
+    all_classes = sorted(set(base_summary["by_class"]) | set(cand_summary["by_class"]))
+    class_deltas = {
+        dc: _compare_slices(
+            base_summary["by_class"].get(dc, empty_slice),
+            cand_summary["by_class"].get(dc, empty_slice),
+        )
+        for dc in all_classes
+    }
+
     overall_delta = _compare_slices(base_summary["overall"], cand_summary["overall"])
 
     gate_failures: list[str] = []
@@ -353,10 +456,18 @@ def compare_runs(
                 f"p95 latency regression {actual_p95_pct:+.2f}% exceeds --max-p95-regression-pct {max_p95_regression_pct:.2f}%"
             )
 
+    if max_clean_rate_drop is not None:
+        drop = -overall_delta["clean_rate_delta"]
+        if drop > max_clean_rate_drop:
+            gate_failures.append(
+                f"clean rate fell {drop * 100:.2f} points, over --max-clean-rate-drop {max_clean_rate_drop * 100:.2f}"
+            )
+
     exit_code = 1 if gate_failures else 0
 
     return {
         "mode": "comparison",
+        "provenance": provenance.compare(baseline_manifest, candidate_manifest),
         "exit_code": exit_code,
         "gate_failures": gate_failures,
         "baseline": base_summary,
@@ -365,6 +476,7 @@ def compare_runs(
             "overall": overall_delta,
             "by_doctype": doctype_deltas,
             "by_parser_type": parser_deltas,
+            "by_class": class_deltas,
         },
         "new_failures": new_failures,
         "fixed_documents": fixed_documents,
@@ -380,6 +492,54 @@ def _md_escape(text: str) -> str:
     return str(text).replace("|", "\\|").replace("\n", " ")
 
 
+def _pct(count: int, total: int) -> str:
+    return f"{count / total * 100:.1f}%" if total else "-"
+
+
+def headline_lines(ov: dict[str, Any]) -> list[str]:
+    """Clean output beside call success: the headline every run reports."""
+    n = ov["evaluated"]
+    return [
+        f"- Clean output (every check passes): {ov['clean_count']}/{n} ({_pct(ov['clean_count'], n)})",
+        f"- Clean output, battery rule (ignores {', '.join(sorted(BATTERY_IGNORED_CHECKS))}): "
+        f"{ov['clean_battery_count']}/{n} ({_pct(ov['clean_battery_count'], n)})",
+        f"- SUCCESS status (CONVERSION_STATUS_SUCCESS): {ov['status_success_count']}/{n} "
+        f"({_pct(ov['status_success_count'], n)})",
+    ]
+
+
+def _class_table(by_class: dict[str, Any]) -> list[str]:
+    lines = [
+        "| class | evaluated | SUCCESS | clean | clean (battery rule) |",
+        "|---|---|---|---|---|",
+    ]
+    for dc, st in by_class.items():
+        n = st["evaluated"]
+        lines.append(
+            f"| `{_md_escape(dc)}` | {n} | {st['status_success_count']} ({_pct(st['status_success_count'], n)}) | "
+            f"{st['clean_count']} ({_pct(st['clean_count'], n)}) | "
+            f"{st['clean_battery_count']} ({_pct(st['clean_battery_count'], n)}) |"
+        )
+    return lines
+
+
+def _failure_lines(ov: dict[str, Any]) -> list[str]:
+    """Every failure class with its count: status causes, then failed checks."""
+    lines = ["## Failure classes", "", "### Parse status (non-SUCCESS)", ""]
+    if not ov["failure_causes"]:
+        lines.append("none")
+    for cause, count in ov["failure_causes"].items():
+        lines.append(f"- {count} x `{_md_escape(cause)}`")
+    lines += ["", "### Failed checks (documents)", ""]
+    if not ov["check_failures"]:
+        lines.append("none")
+    for check, count in sorted(ov["check_failures"].items(), key=lambda kv: (-kv[1], kv[0])):
+        note = " (ignored by the battery rule)" if check in BATTERY_IGNORED_CHECKS else ""
+        lines.append(f"- {check}: {count}{note}")
+    lines += ["", "Causes and owners per check are in the run's report.md (Findings)."]
+    return lines + [""]
+
+
 def render_analysis_markdown(report: dict[str, Any]) -> str:
     if report.get("mode") == "single":
         summary = report["summary"]
@@ -388,8 +548,14 @@ def render_analysis_markdown(report: dict[str, Any]) -> str:
         lines = [
             f"# Corpus evaluation analysis: {summary['label']}",
             "",
+        ]
+        if report.get("manifest"):
+            lines += provenance.render_markdown(report["manifest"]) + [""]
+        else:
+            lines += ["- provenance: not recorded (no run.json beside the journal)", ""]
+        lines += headline_lines(ov) + [
             f"- Documents: {ov['total']} total, {ov['evaluated']} evaluated, {ov['skipped']} skipped",
-            f"- Success rate: {ov['success_rate'] * 100:.2f}% ({ov['success_count']}/{ov['evaluated']})",
+            f"- Success rate (SUCCESS or PARTIAL_SUCCESS): {ov['success_rate'] * 100:.2f}% ({ov['success_count']}/{ov['evaluated']})",
             f"- Error rate: {ov['error_rate'] * 100:.2f}% ({ov['error_count']}/{ov['evaluated']})",
             f"- Latency (ms): p50={lat['p50']:.1f}, p90={lat['p90']:.1f}, p95={lat['p95']:.1f}, p99={lat['p99']:.1f}, max={lat['max']:.1f}",
             f"- Exit code: {report['exit_code']}",
@@ -402,6 +568,8 @@ def render_analysis_markdown(report: dict[str, Any]) -> str:
                 lines.append(f"- {gf}")
             lines.append("")
 
+        lines += ["## By class (directory)", ""] + _class_table(summary["by_class"]) + [""]
+        lines += _failure_lines(ov)
         lines += [
             "## By doctype",
             "",
@@ -438,6 +606,12 @@ def render_analysis_markdown(report: dict[str, Any]) -> str:
     lines = [
         f"# Corpus drift report: {report['baseline']['label']} vs {report['candidate']['label']}",
         "",
+        f"- Clean output: {ov_delta['baseline_clean_rate'] * 100:.2f}% -> {ov_delta['candidate_clean_rate'] * 100:.2f}% "
+        f"(delta {ov_delta['clean_rate_delta'] * 100:+.2f} points)",
+        f"- Clean output, battery rule: {ov_delta['baseline_clean_battery_rate'] * 100:.2f}% -> "
+        f"{ov_delta['candidate_clean_battery_rate'] * 100:.2f}% (delta {ov_delta['clean_battery_rate_delta'] * 100:+.2f} points)",
+        f"- SUCCESS status: {ov_delta['baseline_status_success_rate'] * 100:.2f}% -> "
+        f"{ov_delta['candidate_status_success_rate'] * 100:.2f}%",
         f"- Evaluated: {ov_delta['baseline_evaluated']} (baseline) -> {ov_delta['candidate_evaluated']} (candidate)",
         f"- Success rate: {ov_delta['baseline_success_rate'] * 100:.2f}% -> {ov_delta['candidate_success_rate'] * 100:.2f}% "
         f"(delta {ov_delta['success_rate_delta'] * 100:+.2f}%)",
@@ -462,6 +636,24 @@ def render_analysis_markdown(report: dict[str, Any]) -> str:
         for gf in report["gate_failures"]:
             lines.append(f"- {gf}")
         lines.append("")
+
+    if report.get("provenance"):
+        lines += provenance.render_comparison(report["provenance"])
+
+    lines += [
+        "## Per-class comparison (clean output)",
+        "",
+        "| class | base eval | cand eval | base clean % | cand clean % | delta (points) | base battery-rule % | cand battery-rule % |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for dc, d in report["deltas"]["by_class"].items():
+        lines.append(
+            f"| `{_md_escape(dc)}` | {d['baseline_evaluated']} | {d['candidate_evaluated']} | "
+            f"{d['baseline_clean_rate'] * 100:.1f}% | {d['candidate_clean_rate'] * 100:.1f}% | "
+            f"{d['clean_rate_delta'] * 100:+.1f} | {d['baseline_clean_battery_rate'] * 100:.1f}% | "
+            f"{d['candidate_clean_battery_rate'] * 100:.1f}% |"
+        )
+    lines.append("")
 
     lines += [
         "## Per-doctype comparison",
@@ -536,14 +728,40 @@ def render_analysis_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def render_run_list(runs: list[tuple[Path, dict[str, Any]]]) -> str:
+    lines = [
+        "| run | started | gRParse commit | corpus | files | SUCCESS | clean | clean (battery rule) |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for run_dir, manifest in runs:
+        head = manifest.get("headline") or {}
+        n = int(head.get("evaluated") or 0)
+        lines.append(
+            f"| `{run_dir.name}` | {manifest.get('started_at', '-')} | "
+            f"`{provenance.short((manifest.get('grparse') or {}).get('commit'))}` | "
+            f"`{provenance.short((manifest.get('corpus') or {}).get('sha256'))}` | "
+            f"{(manifest.get('corpus') or {}).get('files', '-')} | "
+            f"{_pct(int(head.get('status_success_count') or 0), n)} | {_pct(int(head.get('clean_count') or 0), n)} | "
+            f"{_pct(int(head.get('clean_battery_count') or 0), n)} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("paths", nargs="*", type=Path, help="one or two results.jsonl paths")
-    parser.add_argument("--baseline", type=Path, help="baseline results.jsonl path")
+    parser.add_argument("paths", nargs="*", type=Path, help="one or two results.jsonl (or eval/s3 report.json) paths")
+    parser.add_argument("--baseline", type=Path, help="baseline results.jsonl path (an eval/s3 report.json works too)")
     parser.add_argument("--candidate", type=Path, help="candidate results.jsonl path")
+    parser.add_argument(
+        "--baseline-auto",
+        type=Path,
+        metavar="RUNS_ROOT",
+        help="compare the candidate with the newest earlier run under RUNS_ROOT over the same corpus hash",
+    )
+    parser.add_argument("--list-runs", type=Path, metavar="RUNS_ROOT", help="print every recorded run under RUNS_ROOT and exit")
     parser.add_argument("--out-json", type=Path, help="write JSON analysis report to this path")
     parser.add_argument("--out-md", type=Path, help="write Markdown analysis report to this path")
     parser.add_argument(
@@ -559,11 +777,26 @@ def main(argv: list[str] | None = None) -> int:
         help="fail if overall p95 latency regression percentage exceeds this threshold",
     )
     parser.add_argument(
+        "--max-clean-rate-drop",
+        type=float,
+        default=None,
+        help="fail if the overall clean-output rate falls by more than this fraction (0.01 is one point)",
+    )
+    parser.add_argument(
         "--fail-on-new-failures",
         action="store_true",
         help="fail if any document regresses to failure/rpc_error or has new shape-check failures",
     )
+    parser.add_argument(
+        "--allow-corpus-mismatch",
+        action="store_true",
+        help="compare runs whose corpus hashes differ (only common documents are paired)",
+    )
     args = parser.parse_args(argv)
+
+    if args.list_runs is not None:
+        print(render_run_list(provenance.find_runs(args.list_runs)), end="")
+        return 0
 
     base_path = args.baseline
     cand_path = args.candidate
@@ -578,11 +811,36 @@ def main(argv: list[str] | None = None) -> int:
     elif base_path is None and cand_path is not None:
         base_path, cand_path = cand_path, None
 
+    notes: list[str] = []
+    if args.baseline_auto is not None and cand_path is None:
+        assert base_path is not None
+        own = provenance.manifest_beside(base_path)
+        found = provenance.latest_comparable(args.baseline_auto, own) if own else None
+        if found is not None:
+            base_path, cand_path = found / "results.jsonl", base_path
+        else:
+            notes.append(
+                f"no earlier run over the same corpus under {args.baseline_auto}"
+                + ("" if own else " (the run has no run.json)")
+                + ": single-run summary only"
+            )
+
     try:
         assert base_path is not None
         base_records = load_journal(base_path)
+        base_manifest = provenance.manifest_beside(base_path)
         if cand_path is not None:
             cand_records = load_journal(cand_path)
+            cand_manifest = provenance.manifest_beside(cand_path)
+            b_corpus = ((base_manifest or {}).get("corpus") or {}).get("sha256")
+            c_corpus = ((cand_manifest or {}).get("corpus") or {}).get("sha256")
+            if b_corpus and c_corpus and b_corpus != c_corpus and not args.allow_corpus_mismatch:
+                print(
+                    f"error: corpus hashes differ ({b_corpus[:12]} vs {c_corpus[:12]}); the rates are not comparable. "
+                    "Pass --allow-corpus-mismatch to pair the common documents anyway.",
+                    file=sys.stderr,
+                )
+                return 2
             report = compare_runs(
                 base_records,
                 cand_records,
@@ -591,6 +849,9 @@ def main(argv: list[str] | None = None) -> int:
                 max_error_rate_delta=args.max_error_rate_delta,
                 max_p95_regression_pct=args.max_p95_regression_pct,
                 fail_on_new_failures=args.fail_on_new_failures,
+                max_clean_rate_drop=args.max_clean_rate_drop,
+                baseline_manifest=base_manifest,
+                candidate_manifest=cand_manifest,
             )
         else:
             summary = summarize_run(base_records, label=base_path.parent.name or "run")
@@ -607,12 +868,16 @@ def main(argv: list[str] | None = None) -> int:
                 "exit_code": 1 if gate_failures else 0,
                 "gate_failures": gate_failures,
                 "summary": summary,
+                "manifest": base_manifest,
             }
     except (FileNotFoundError, ValueError, OSError) as err:
         print(f"error: {err}", file=sys.stderr)
         return 2
 
+    report["notes"] = notes
     md_text = render_analysis_markdown(report)
+    if notes:
+        md_text += "\n" + "\n".join(f"- note: {n}" for n in notes) + "\n"
     if args.out_json is not None:
         _atomic_write_text(
             args.out_json,

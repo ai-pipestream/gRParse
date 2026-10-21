@@ -24,11 +24,36 @@ jobs:
           registry: dhi.io
           username: ${{ secrets.DOCKER_USER }}
           password: ${{ secrets.DOCKER_TOKEN }}
+      - name: Free runner disk for the seeded build
+        # GitHub's hosted runner only: the seed image (about 9 GB unpacked
+        # for cpu, more with the CUDA devel base), its 4.4 GB tree copied
+        # into /build and the build outgrow the runner's free space. The
+        # preinstalled SDKs removed here are unused by this job.
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Log in to Docker Hub (docker.io)
+        # The deps seeds live on Docker Hub; logging in also lifts the
+        # anonymous pull rate limit for the public bases.
+        uses: docker/login-action@v4
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+      - name: Find the deps seed for this build
+        id: seed
+        run: sh scripts/find-seed.sh Dockerfile cuda amd64 >> "$GITHUB_OUTPUT"
       - name: Build full image and run non-GPU tests
         # The full build (not just the build stage) also assembles the
         # runtime stage, so a runtime library missing from the staged
         # closure fails here instead of at deploy time.
-        run: docker build --progress=plain -t grparse-ci-cuda .
+        run: |
+          docker build --progress=plain \
+            --build-arg GRPARSE_BUILD_JOBS="$(scripts/build-jobs.sh)" \
+            --build-arg GRPARSE_DEPS_IMAGE="${{ steps.seed.outputs.image }}" \
+            --build-arg GRPARSE_REVISION="${{ github.sha }}" -t grparse-ci-cuda .
       - name: Boot-proof the runtime image
         # Library closure + boot-to-main.  A green build with an unbootable
         # binary has shipped before (ZXing flipping BUILD_SHARED_LIBS); this
@@ -42,8 +67,33 @@ jobs:
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'heavy' }}
     steps:
       - uses: actions/checkout@v7
+      - name: Free runner disk for the seeded build
+        # GitHub's hosted runner only: the seed image (about 9 GB unpacked
+        # for cpu, more with the CUDA devel base), its 4.4 GB tree copied
+        # into /build and the build outgrow the runner's free space. The
+        # preinstalled SDKs removed here are unused by this job.
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Log in to Docker Hub (docker.io)
+        # The deps seeds live on Docker Hub; logging in also lifts the
+        # anonymous pull rate limit for the public bases.
+        uses: docker/login-action@v4
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+      - name: Find the deps seed for this build
+        id: seed
+        run: sh scripts/find-seed.sh Dockerfile.openvino openvino amd64 >> "$GITHUB_OUTPUT"
       - name: Build Intel/OpenVINO image and run non-GPU tests
-        run: docker build --progress=plain -f Dockerfile.openvino -t grparse-ci-openvino .
+        run: |
+          docker build --progress=plain -f Dockerfile.openvino \
+            --build-arg GRPARSE_BUILD_JOBS="$(scripts/build-jobs.sh)" \
+            --build-arg GRPARSE_DEPS_IMAGE="${{ steps.seed.outputs.image }}" \
+            --build-arg GRPARSE_REVISION="${{ github.sha }}" -t grparse-ci-openvino .
       - name: Boot-proof the runtime image
         run: ./scripts/smoke-test.sh grparse-ci-openvino
       - name: Verify model fetch and real CPU embeddings
@@ -100,9 +150,33 @@ jobs:
           docker cp "$id:/models/." models/
           docker rm "$id"
           scripts/fetch-models.sh --verify --dir models --layout all --tokenizer
+      - name: Free runner disk for the seeded build
+        # GitHub's hosted runner only: the seed image (about 9 GB unpacked
+        # for cpu, more with the CUDA devel base), its 4.4 GB tree copied
+        # into /build and the build outgrow the runner's free space. The
+        # preinstalled SDKs removed here are unused by this job.
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Log in to Docker Hub (docker.io)
+        # The deps seeds live on Docker Hub; logging in also lifts the
+        # anonymous pull rate limit for the public bases.
+        uses: docker/login-action@v4
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+      - name: Find the deps seed for this build
+        id: seed
+        run: sh scripts/find-seed.sh Dockerfile.cpu cpu amd64 >> "$GITHUB_OUTPUT"
       - name: Build CPU image and run the tests, model goldens included
         run: |
           docker build --progress=plain -f Dockerfile.cpu \
+            --build-arg GRPARSE_BUILD_JOBS="$(scripts/build-jobs.sh)" \
+            --build-arg GRPARSE_DEPS_IMAGE="${{ steps.seed.outputs.image }}" \
+            --build-arg GRPARSE_REVISION="${{ github.sha }}" \
             --build-arg GRPARSE_TEST_REQUIRE_MODELS=1 -t grparse-ci-cpu .
       - name: Boot-proof the runtime image
         run: ./scripts/smoke-test.sh grparse-ci-cpu
@@ -163,3 +237,29 @@ jobs:
           mkdir -p corpus-raster
           ./build-fuzz/raster-source-fuzzer corpus-raster tests/data \
             -max_total_time=90 -max_len=1048576 -rss_limit_mb=4096 -print_final_stats=1
+
+  # The Python under eval/: the corpus runner and drift analyzer, the S3
+  # battery checks, the scorecard metrics, ruff, and the one-command corpus
+  # eval wrapper's dry run. Stdlib only; no service, no network beyond ruff.
+  eval-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Python
+        # Same sudo rule as fuzz-smoke: the self-hosted image runs as root.
+        run: |
+          SUDO=$(command -v sudo || true)
+          $SUDO apt-get update
+          $SUDO apt-get install -y --no-install-recommends python3 python3-venv
+          python3 -m venv /tmp/eval-venv
+          /tmp/eval-venv/bin/pip install --quiet 'ruff==0.17.1'
+      - name: eval/corpus tests
+        run: python3 eval/corpus/tests/run_tests.py
+      - name: eval/s3 tests
+        run: python3 eval/s3/tests/run_tests.py
+      - name: eval/scorecard tests
+        run: python3 eval/scorecard/tests/run_tests.py
+      - name: ruff over eval/
+        run: /tmp/eval-venv/bin/ruff check eval/
+      - name: eval-corpus.sh dry run
+        run: scripts/test/eval-corpus-test.sh

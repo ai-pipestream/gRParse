@@ -26,9 +26,9 @@ from __future__ import annotations
 import os
 import sys
 import time
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
