@@ -9,9 +9,9 @@
 # The build stage starts from the local deps stage unless CI names a published
 # seed image (see the seed stage below).
 ARG GRPARSE_DEPS_IMAGE=deps
-ARG GRPARSE_RUNTIME_IMAGE=nvidia/cuda:13.4.2-runtime-ubuntu26.04
+ARG GRPARSE_RUNTIME_IMAGE=nvidia/cuda:13.4.3-runtime-ubuntu26.04
 
-FROM nvidia/cuda:13.4.2-devel-ubuntu26.04 AS deps
+FROM nvidia/cuda:13.4.3-devel-ubuntu26.04 AS deps
 ARG GRPARSE_BUILD_JOBS=2
 ENV CARGO_BUILD_JOBS=${GRPARSE_BUILD_JOBS}
 
