@@ -282,6 +282,60 @@ uv run python eval/corpus/analyze.py \
 uv run python eval/corpus/tests/run_tests.py
 ```
 
+### One command, and runs that say what produced them
+
+`GetServiceInfo` reads the same version string for every commit between two
+tags, so a number from it cannot be pinned to code. Every run now writes
+`run.json` beside `results.jsonl` (`eval/corpus/provenance.py`):
+
+- `grparse.commit`: from the image label `org.opencontainers.image.revision`
+  (publish.yml sets it), or `--grparse-commit` for a local build without the
+  label; `null` with the reason when neither exists, never a guess
+- `stack.services`: with `--compose-project`, every container of that compose
+  project: image reference, image id, repo digests, revision and version
+  labels, and gRParse's `GRPARSE_*` environment minus anything credential-shaped
+- `corpus`: sha256 over the sorted `relpath<TAB>size<TAB>sha256` lines of the
+  documents in the run (written as `corpus-manifest.tsv`, so anyone can rehash
+  it), with the file count and bytes
+- `config` (passwords counted, never stored), `harness` (the eval code's own
+  commit, and whether `eval/` had uncommitted changes, since a changed check
+  moves verdicts too), `host`, `started_at` and `finished_at` in UTC, and a
+  `headline` of the counts below
+
+`--resume` refuses to continue a run on a different stack or gRParse commit.
+`report.md` and `report.json` carry the same block.
+
+`analyze.py` leads every summary with the **clean-output rate** (a document is
+clean when it fails no check; `parse_succeeds` is a check, so a failed parse is
+never clean) beside the **SUCCESS rate** (`CONVERSION_STATUS_SUCCESS`), overall
+and per class, where a class is the directory holding the document
+(`napierone/doc`, `court`). It also prints the battery-rule clean rate, which
+ignores `warnings_typed` and `custom_field_keys` the way the realdata ledger of
+2026-10-07 did (1,565 of 1,810 on c8ff4ce), and lists every failure class:
+non-SUCCESS statuses grouped by cause, then documents per failed check. A
+drift report opens with what changed between the runs (gRParse commit, each
+service's image, corpus hash, config, gRParse env), refuses runs over
+different corpus hashes unless `--allow-corpus-mismatch`, and gates on
+`--max-clean-rate-drop`. An eval/s3 `report.json`, the battery's own format,
+is accepted as a baseline; it carries no provenance and no hashes.
+
+`scripts/eval-corpus.sh` does all of it in one command: it brings the parsers
+up from published images as compose project `grparse-eval` (gRPC on
+`EVAL_GRPC_PORT`, default 50151, nothing else published, never built, so it
+runs beside `parse-stack`), runs the corpus with `--repeat 2` as the battery
+did, writes `analysis.md`, compares with the newest earlier run over the same
+corpus hash (`drift.md`), prints the headline and tears the stack down.
+
+```sh
+scripts/eval-corpus.sh --corpus /data/realdata --passwords-file ~/passwords.txt     # :latest, CUDA
+scripts/eval-corpus.sh --corpus /data/realdata --flavor cpu --models-image --tag 0.2.1
+scripts/eval-corpus.sh --corpus /data/realdata --existing parse-stack                 # the running stack
+scripts/eval-corpus.sh --corpus /data/realdata --flavor cpu --grparse-image grparse-ci-cpu \
+  --grparse-commit "$(git rev-parse HEAD)"                                            # a local build
+scripts/eval-corpus.sh --corpus /data/realdata --baseline eval/out/s3/realdata-1/report.json
+uv run python eval/corpus/analyze.py --list-runs eval/out/corpus                     # run history
+```
+
 ### Live Prometheus & Grafana drift dashboard
 
 When running `eval/corpus/run.py` with `--metrics-port 9465` (or
