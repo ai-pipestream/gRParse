@@ -96,7 +96,7 @@ ARG GRPARSE_BUILD_CACHE_SCOPE=
 # COPY-ed proto as newer than a cached generated header, so a content stamp
 # decides: any proto change discards the staged and generated trees, which
 # forces regeneration; everything else stays warm.
-RUN --mount=type=cache,id=grparse-ubuntu26-cuda13.4-trt11.4-grpc1.84.0-ort1.30.0-cxx23-sessionep2-static1-simdutf9-ocv500-tokcpp1${GRPARSE_BUILD_CACHE_SCOPE},sharing=locked,target=/build \
+RUN --mount=type=cache,id=grparse-ubuntu26-cuda13.4-trt11.4-grpc1.84.1-ort1.30.0-cxx23-sessionep2-static1-simdutf9-ocv500-tokcpp1${GRPARSE_BUILD_CACHE_SCOPE},sharing=locked,target=/build \
     if [ -d /opt/grparse-seed ] && [ ! -f /build/CMakeCache.txt ]; then \
       cp -a /opt/grparse-seed/. /build/ && echo "seed: /build seeded from /opt/grparse-seed"; \
     fi \
