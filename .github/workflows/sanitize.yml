@@ -43,8 +43,11 @@ jobs:
         # ONNX Runtime suppression in tests/lsan.supp names the first frame
         # outside that stripped library, which the frame-pointer unwinder
         # never reaches.
+        # The checkout is copied into the container rather than bind-mounted:
+        # on Forgejo the job itself runs in a container and the Docker daemon
+        # is the host's, so "$PWD" names a path the daemon cannot see.
         run: |
-          docker run --rm --cap-add SYS_PTRACE -v "$PWD:/src" -w /src \
+          cid=$(docker create --cap-add SYS_PTRACE -w /src \
             -e ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1:detect_container_overflow=0:fast_unwind_on_malloc=0 \
             -e UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
             -e LSAN_OPTIONS=suppressions=/src/tests/lsan.supp \
@@ -54,4 +57,7 @@ jobs:
                 -DBUILD_TESTING=ON -DGRPARSE_SANITIZE=address,undefined \
                 -DGRPARSE_ORT_PACKAGE=cpu -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv5 &&
               cmake --build build-asan --target grparse-tests --parallel 4 &&
-              ctest --test-dir build-asan --output-on-failure -L grparse'
+              ctest --test-dir build-asan --output-on-failure -L grparse')
+          trap 'docker rm -f "$cid" >/dev/null' EXIT
+          docker cp "$PWD/." "$cid:/src"
+          docker start -a "$cid"
