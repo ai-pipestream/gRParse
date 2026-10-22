@@ -66,8 +66,12 @@ jobs:
       - uses: actions/checkout@v7
       - name: Every stack image has a publisher
         run: python3 scripts/release-stack.py check
+      # GitHub's runner image carries shellcheck; the Forgejo runner image
+      # (Ubuntu, root) installs it from apt.
       - name: shellcheck
-        run: shellcheck scripts/release.sh scripts/release-notes.sh scripts/test/release-test.sh
+        run: |
+          command -v shellcheck >/dev/null || { apt-get update && apt-get install -y --no-install-recommends shellcheck; }
+          shellcheck scripts/release.sh scripts/release-notes.sh scripts/test/release-test.sh
       - name: Tag a throwaway fleet
         run: scripts/test/release-test.sh
 
