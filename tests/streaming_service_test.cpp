@@ -1601,6 +1601,10 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
   // document-wide judgement that OCR reads the document better than its
   // text layer does.
   void set_ocr_recommended(bool recommended) { ocr_recommended_ = recommended; }
+  // Sets PdfInfo.ocr_recommendation_reasons: why detection recommends OCR.
+  void set_ocr_recommendation_reasons(std::vector<pdfv1::OcrRecommendationReason> reasons) {
+    ocr_recommendation_reasons_ = std::move(reasons);
+  }
 
   grpc::Status ParsePdf(
       grpc::ServerContext*,
@@ -1626,6 +1630,7 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
     info->set_pdf_type(type_);
     info->set_page_count(3);
     info->set_ocr_recommended(ocr_recommended_);
+    for (const auto reason : ocr_recommendation_reasons_) info->add_ocr_recommendation_reasons(reason);
     for (const uint32_t page : pages_needing_ocr_) info->add_pages_needing_ocr(page);
     stream->Write(event);
     event.Clear();
@@ -1699,6 +1704,7 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
   bool paged_document_;
   bool searchable_scan_;
   bool ocr_recommended_ = false;
+  std::vector<pdfv1::OcrRecommendationReason> ocr_recommendation_reasons_;
   std::atomic<int> dials_{0};
 };
 
@@ -2396,12 +2402,13 @@ void verify_pdf_classification_restricts_recognition() {
 }
 
 // What the inspector really sends for a born-digital page beside a scan
-// (the quickstart sample): MIXED, the scan named, and ocr_recommended set,
-// as detection sets it for every MIXED document. Only the named page is
-// recognized; the others keep their exact embedded layers.
+// (the quickstart sample): MIXED, the scan named, ocr_recommended set, and
+// SCANNED_PAGES its only reason. Only the named page is recognized; the
+// others keep their exact embedded layers.
 void verify_pdf_mixed_recommendation_stays_on_named_pages() {
   FakePdfInspector inspector(pdfv1::PDF_TYPE_MIXED, {2});
   inspector.set_ocr_recommended(true);
+  inspector.set_ocr_recommendation_reasons({pdfv1::OCR_RECOMMENDATION_REASON_SCANNED_PAGES});
   PdfInspectorServer inspector_server(&inspector);
   const UnaryPdfRun run = run_unary_pdf(inspector_server.target());
   require(run.status.ok(), "recommended mixed parse failed: " + run.status.error_message());
@@ -2411,8 +2418,42 @@ void verify_pdf_mixed_recommendation_stays_on_named_pages() {
   const std::string& text = run.response.response().document().exports().text();
   require(text.contains("native-one") && text.contains("native-three"),
           "the pages the inspector did not name settle on their embedded layers");
-  require(warned(run.response.response().document().doc(), "pdf", "restricted to the 1 page(s)"),
+  const auto& document = run.response.response().document().doc();
+  require(warned(document, "pdf", "restricted to the 1 page(s)"),
           "the warning says recognition was restricted, not forced");
+  require(warned(document, "pdf", "the other pages keep their text layers"),
+          "the warning says the recommendation stayed on the scanned pages");
+}
+
+// A form whose text sits over a page-sized background image: MIXED with the
+// scan named, but TEXT_OVER_PAGE_IMAGE says the recommendation covers the
+// other pages too, so every page is recognized as before the reasons field.
+void verify_pdf_template_form_recommendation_forces_every_page() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_MIXED, {2});
+  inspector.set_ocr_recommended(true);
+  inspector.set_ocr_recommendation_reasons({pdfv1::OCR_RECOMMENDATION_REASON_SCANNED_PAGES,
+                                            pdfv1::OCR_RECOMMENDATION_REASON_TEXT_OVER_PAGE_IMAGE});
+  PdfInspectorServer inspector_server(&inspector);
+  const UnaryPdfRun run = run_unary_pdf(inspector_server.target());
+  require(run.status.ok(), "template form parse failed: " + run.status.error_message());
+  require(run.recognizer_calls == 3,
+          "a template form recommended for OCR is recognized on every page, got " +
+              std::to_string(run.recognizer_calls));
+  require(warned(run.response.response().document().doc(), "pdf", "recommended OCR over the text layer"),
+          "the warning says the recommendation covered the text layer");
+}
+
+// An inspector older than the reasons field sends a MIXED recommendation
+// with no reason; every page is recognized, as the route did before.
+void verify_pdf_mixed_recommendation_without_reasons_forces_every_page() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_MIXED, {2});
+  inspector.set_ocr_recommended(true);
+  PdfInspectorServer inspector_server(&inspector);
+  const UnaryPdfRun run = run_unary_pdf(inspector_server.target());
+  require(run.status.ok(), "reasonless mixed parse failed: " + run.status.error_message());
+  require(run.recognizer_calls == 3,
+          "a mixed recommendation that gives no reason is recognized on every page, got " +
+              std::to_string(run.recognizer_calls));
 }
 
 void verify_pdf_collector_failure_degrades_to_the_cv_path() {
@@ -3185,6 +3226,7 @@ void verify_streaming_pdf_classification_restricts_recognition() {
 void verify_streaming_pdf_mixed_recommendation_stays_on_named_pages() {
   FakePdfInspector inspector(pdfv1::PDF_TYPE_MIXED, {2});
   inspector.set_ocr_recommended(true);
+  inspector.set_ocr_recommendation_reasons({pdfv1::OCR_RECOMMENDATION_REASON_SCANNED_PAGES});
   PdfInspectorServer inspector_server(&inspector);
   const StreamPdfRun run = run_stream_pdf(inspector_server.target());
   require(run.status.ok(), "recommended mixed stream failed: " + run.status.error_message());
@@ -3785,6 +3827,8 @@ int main() {
         verify_pdf_ocr_recommendation_takes_the_cv_path();
         verify_streaming_pdf_ocr_recommendation_takes_the_cv_path();
         verify_pdf_mixed_recommendation_stays_on_named_pages();
+        verify_pdf_template_form_recommendation_forces_every_page();
+        verify_pdf_mixed_recommendation_without_reasons_forces_every_page();
         verify_streaming_pdf_mixed_recommendation_stays_on_named_pages();
         verify_pdf_collector_failure_degrades_to_the_cv_path();
         verify_queued_then_cancelled_call_never_dials_a_collector();

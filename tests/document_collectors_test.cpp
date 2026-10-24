@@ -2011,6 +2011,10 @@ class FakePdfService final : public pdfv1::PdfParseService::Service {
 
   // Sets PdfInfo.ocr_recommended on the info event.
   void set_ocr_recommended(bool recommended) { ocr_recommended_ = recommended; }
+  // Sets PdfInfo.ocr_recommendation_reasons on the info event.
+  void set_ocr_recommendation_reasons(std::vector<pdfv1::OcrRecommendationReason> reasons) {
+    ocr_recommendation_reasons_ = std::move(reasons);
+  }
 
   // Pages the last dial asked for (PdfOptions.pages). Empty means the
   // client left the field unset and the collector extracts every page.
@@ -2051,6 +2055,7 @@ class FakePdfService final : public pdfv1::PdfParseService::Service {
     info->set_confidence(0.95F);
     info->set_page_count(3);
     info->set_ocr_recommended(ocr_recommended_);
+    for (const auto reason : ocr_recommendation_reasons_) info->add_ocr_recommendation_reasons(reason);
     for (const uint32_t page : pages_needing_ocr_) info->add_pages_needing_ocr(page);
     stream->Write(event);
     event.Clear();
@@ -2079,6 +2084,7 @@ class FakePdfService final : public pdfv1::PdfParseService::Service {
   std::vector<uint32_t> pages_needing_ocr_;
   bool encoding_issues_;
   bool ocr_recommended_ = false;
+  std::vector<pdfv1::OcrRecommendationReason> ocr_recommendation_reasons_;
   std::vector<uint32_t> last_pages_;
   std::optional<uint32_t> first_page_;
   std::optional<uint32_t> last_page_;
@@ -2188,8 +2194,9 @@ void verify_pdf_routing_decision_logic() {
 
 // PdfInfo.ocr_recommended answers about the whole document, so it refuses
 // the fast path and forces recognition on every page, except on a MIXED
-// document that names its pages: detection recommends OCR for every MIXED
-// document, and the named pages are what it recommends it for.
+// document that names its pages and whose only reason is SCANNED_PAGES: the
+// named pages are then all the recommendation covers. Any other reason, or
+// none (an inspector older than the reasons field), keeps the forced route.
 void verify_pdf_ocr_recommendation_routing() {
   grparse::PdfClassification newspaper;
   newspaper.pdf_class = grparse::PdfClass::kTextBased;
@@ -2204,16 +2211,45 @@ void verify_pdf_ocr_recommendation_routing() {
   text_beside_scan.pdf_class = grparse::PdfClass::kMixed;
   text_beside_scan.pages_needing_ocr = {2};
   text_beside_scan.ocr_recommended = true;
+  text_beside_scan.ocr_recommendation_reasons = {grparse::OcrRecommendationReason::kScannedPages};
   const auto mixed = grparse::route_pdf_by_classification(text_beside_scan);
   require(!mixed.fast_path && !mixed.force_ocr && mixed.ocr_pages == std::vector<int>({2}),
-          "a mixed document's recommendation stays on the pages it names, and the text "
-          "pages keep their layers");
+          "a mixed document recommended for its scanned pages alone keeps the recommendation "
+          "on the pages it names, and the text pages keep their layers");
 
-  grparse::PdfClassification template_form;
-  template_form.pdf_class = grparse::PdfClass::kMixed;
-  template_form.ocr_recommended = true;
-  const auto unnamed = grparse::route_pdf_by_classification(template_form);
-  require(!unnamed.fast_path && unnamed.force_ocr && unnamed.ocr_pages.empty(),
+  // A form whose text sits over a page-sized background image: detection
+  // names the scanned page, but the recommendation also covers the others.
+  grparse::PdfClassification template_form = text_beside_scan;
+  template_form.ocr_recommendation_reasons = {
+      grparse::OcrRecommendationReason::kScannedPages,
+      grparse::OcrRecommendationReason::kTextOverPageImage};
+  const auto form = grparse::route_pdf_by_classification(template_form);
+  require(!form.fast_path && form.force_ocr && form.ocr_pages == std::vector<int>({2}),
+          "a mixed document whose recommendation covers text over a page image forces "
+          "recognition on every page");
+
+  grparse::PdfClassification older_inspector = text_beside_scan;
+  older_inspector.ocr_recommendation_reasons.clear();
+  require(grparse::route_pdf_by_classification(older_inspector).force_ocr,
+          "a recommendation that gives no reason, as an older inspector sends it, forces "
+          "recognition on every page");
+
+  grparse::PdfClassification ocr_layer = text_beside_scan;
+  ocr_layer.ocr_recommendation_reasons = {grparse::OcrRecommendationReason::kScannedPages,
+                                          grparse::OcrRecommendationReason::kScanOcrLayer};
+  require(grparse::route_pdf_by_classification(ocr_layer).force_ocr,
+          "a scan's own OCR layer is recommended over on every page");
+
+  grparse::PdfClassification unknown_reason = text_beside_scan;
+  unknown_reason.ocr_recommendation_reasons = {grparse::OcrRecommendationReason::kUnknown};
+  require(grparse::route_pdf_by_classification(unknown_reason).force_ocr,
+          "a reason this build does not know forces recognition on every page");
+
+  grparse::PdfClassification unnamed = template_form;
+  unnamed.pages_needing_ocr.clear();
+  unnamed.ocr_recommendation_reasons = {grparse::OcrRecommendationReason::kScannedPages};
+  const auto unnamed_route = grparse::route_pdf_by_classification(unnamed);
+  require(!unnamed_route.fast_path && unnamed_route.force_ocr && unnamed_route.ocr_pages.empty(),
           "a mixed document recommended for OCR that names no page forces recognition on "
           "every page");
 
@@ -2229,13 +2265,35 @@ void verify_pdf_ocr_recommendation_routing() {
 
   FakePdfService service(pdfv1::PDF_TYPE_TEXT_BASED, {});
   service.set_ocr_recommended(true);
+  service.set_ocr_recommendation_reasons({pdfv1::OCR_RECOMMENDATION_REASON_DENSE_LAYOUT});
   ServerFixture server(&service);
   const auto result = grparse::collect_pdf(server.channel(), "%PDF-fake");
   require(result.outcome.success, "pdf collection succeeds: " + result.outcome.error);
   require(result.classification.ocr_recommended && result.classification.pages_needing_ocr.empty(),
           "the info event's ocr_recommended rides the classification without naming pages");
+  require(result.classification.ocr_recommendation_reasons ==
+              std::vector<grparse::OcrRecommendationReason>(
+                  {grparse::OcrRecommendationReason::kDenseLayout}),
+          "the info event's reasons ride the classification");
   require(!grparse::route_pdf_by_classification(result.classification).fast_path,
           "the collected recommendation refuses the fast path");
+
+  FakePdfService scanned(pdfv1::PDF_TYPE_MIXED, {2});
+  scanned.set_ocr_recommended(true);
+  scanned.set_ocr_recommendation_reasons({pdfv1::OCR_RECOMMENDATION_REASON_SCANNED_PAGES,
+                                          pdfv1::OCR_RECOMMENDATION_REASON_TEXT_OVER_PAGE_IMAGE,
+                                          pdfv1::OCR_RECOMMENDATION_REASON_UNSPECIFIED});
+  ServerFixture scanned_server(&scanned);
+  const auto mapped = grparse::collect_pdf(scanned_server.channel(), "%PDF-fake");
+  require(mapped.outcome.success, "pdf collection succeeds: " + mapped.outcome.error);
+  require(mapped.classification.ocr_recommendation_reasons ==
+              std::vector<grparse::OcrRecommendationReason>(
+                  {grparse::OcrRecommendationReason::kScannedPages,
+                   grparse::OcrRecommendationReason::kTextOverPageImage,
+                   grparse::OcrRecommendationReason::kUnknown}),
+          "each wire reason maps to its typed reason, and an unspecified one to unknown");
+  require(grparse::route_pdf_by_classification(mapped.classification).force_ocr,
+          "the collected template-form recommendation forces recognition on every page");
 }
 
 void verify_pdf_encoding_issues_defeat_the_fast_path() {
