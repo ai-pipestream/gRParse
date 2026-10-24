@@ -187,6 +187,10 @@ LABEL org.opencontainers.image.revision=${GRPARSE_REVISION}
 ENV GRPARSE_LISTEN_ADDRESS=0.0.0.0:50051 GRPARSE_MODELS_DIR=/models GRPARSE_PAGE_WORKERS=2 \
     GRPARSE_ORT_EP=openvino GRPARSE_OPENVINO_DEVICE=GPU \
     LD_LIBRARY_PATH=/usr/local/lib
+# The base carries no CA bundle, and libcurl (https S3, HTTP and storage
+# sources and targets) refuses every TLS peer without one; the build stage's
+# ca-certificates bundle is the one its tests verified against.
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/runtime-libs/ /usr/local/lib/
 COPY --from=build /out/ort-libs/ /usr/local/lib/
 # NEO's OpenCL implementation at the path the ICD registration names.

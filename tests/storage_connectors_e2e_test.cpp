@@ -2,7 +2,7 @@
 // Azure Blob through Azurite, Google Cloud Storage through fake-gcs-server
 // (anonymously and with a service account whose RS256 assertion the mock
 // token endpoint verifies), Google Drive through a mock Drive v3 API with a
-// refresh-token grant, the S3 target through MinIO for the bundle layout
+// refresh-token grant, the S3 target through RustFS for the bundle layout
 // parity check, and a registered plugin with a typed config.
 //
 // Sources go through storage::resolve_source, the call parse_source makes
