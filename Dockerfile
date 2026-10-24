@@ -170,6 +170,10 @@ ARG GRPARSE_REVISION=
 LABEL org.opencontainers.image.revision=${GRPARSE_REVISION}
 ENV GRPARSE_LISTEN_ADDRESS=0.0.0.0:50051 GRPARSE_MODELS_DIR=/models GRPARSE_PAGE_WORKERS=2 GRPARSE_CUDA_DEVICE=0 \
     LD_LIBRARY_PATH=/usr/local/lib
+# The base carries no CA bundle, and libcurl (https S3, HTTP and storage
+# sources and targets) refuses every TLS peer without one; the build stage's
+# ca-certificates bundle is the one its tests verified against.
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/runtime-libs/ /usr/local/lib/
 COPY --from=build /out/onnxruntime-lib/ /usr/local/lib/
 COPY --from=build /out/grparse-server /usr/local/bin/grparse-server
