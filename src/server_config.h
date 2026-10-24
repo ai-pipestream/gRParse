@@ -67,6 +67,10 @@ GrpcLimits read_grpc_limits();
 // document bytes the parsing surfaces hold at once (see InflightBytes).
 uint64_t read_inflight_byte_budget();
 
+// GRPARSE_REMOTE_FETCH_CONCURRENCY (default 4): how many remote source
+// fetches run at once (see RemoteFetchSlots).
+size_t read_remote_fetch_concurrency();
+
 // GRPARSE_MAX_RESPONSE_BYTES (default kMaxMessageBytes, 520 MiB): the largest
 // serialized response a unary surface sends (see refuse_oversized_response).
 uint64_t read_response_byte_cap();

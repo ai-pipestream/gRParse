@@ -204,21 +204,24 @@ std::string target_kind(const parsev1::Target& target) {
   return std::string();
 }
 
-grpc::Status resolve_source(const parsev1::Source& source, const std::string& option_path,
-                            parsev1::FileSource* resolved) {
-  using parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED;
-  const std::string kind = source_kind(source);
+grpc::Status check_source_allowed(const parsev1::Source& source, const std::string& option_path) {
   if (source.source_case() == parsev1::Source::SOURCE_NOT_SET) {
     return option_rejected(option_path, parsev1::OPTION_REJECTION_REASON_INVALID, std::string(),
                            option_path + " names no source");
   }
   const bool plugin = source.has_plugin();
-  if (grpc::Status allowed = check_kind(kind, plugin, plugin ? option_path + ".plugin" : option_path,
-                                        "GRPARSE_ALLOWED_SOURCE_TYPES", builtin_source_kinds(),
-                                        "source");
-      !allowed.ok()) {
+  return check_kind(source_kind(source), plugin, plugin ? option_path + ".plugin" : option_path,
+                    "GRPARSE_ALLOWED_SOURCE_TYPES", builtin_source_kinds(), "source");
+}
+
+grpc::Status resolve_source(const parsev1::Source& source, const std::string& option_path,
+                            parsev1::FileSource* resolved) {
+  using parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED;
+  if (grpc::Status allowed = check_source_allowed(source, option_path); !allowed.ok()) {
     return allowed;
   }
+  const std::string kind = source_kind(source);
+  const bool plugin = source.has_plugin();
   if (source.has_file()) {
     *resolved = source.file();
     return grpc::Status::OK;

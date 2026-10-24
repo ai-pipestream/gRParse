@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <map>
+#include <stdexcept>
 #include <string>
 
 #include "grparse/chart_extraction_policy.h"
@@ -95,11 +96,32 @@ void verify_retired_poi_target_is_reported() {
   require(std::ranges::count(out, '\n') == 1, "the warning is one line:\n" + out);
 }
 
+// GRPARSE_REMOTE_FETCH_CONCURRENCY defaults to four slots, takes a count,
+// and refuses a value that would leave no fetch able to run.
+void verify_remote_fetch_concurrency_setting() {
+  ::unsetenv("GRPARSE_REMOTE_FETCH_CONCURRENCY");
+  require(grparse::read_remote_fetch_concurrency() == 4, "unset, four fetches run at once");
+  ::setenv("GRPARSE_REMOTE_FETCH_CONCURRENCY", "2", 1);
+  require(grparse::read_remote_fetch_concurrency() == 2, "the setting sizes the slots");
+  for (const char* refused : {"0", "-1", "four", "2048"}) {
+    ::setenv("GRPARSE_REMOTE_FETCH_CONCURRENCY", refused, 1);
+    bool threw = false;
+    try {
+      grparse::read_remote_fetch_concurrency();
+    } catch (const std::invalid_argument& error) {
+      threw = std::string(error.what()).contains("GRPARSE_REMOTE_FETCH_CONCURRENCY");
+    }
+    require(threw, std::string("'") + refused + "' is refused at startup, naming the variable");
+  }
+  ::unsetenv("GRPARSE_REMOTE_FETCH_CONCURRENCY");
+}
+
 }  // namespace
 
 int main() {
   return grparse_test::run_test_main("server-config-test", "all checks passed", {
       verify_every_reported_endpoint_is_redacted,
       verify_retired_poi_target_is_reported,
+      verify_remote_fetch_concurrency_setting,
   });
 }

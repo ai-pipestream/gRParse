@@ -322,7 +322,7 @@ A source resolves to exactly one document, because `ConvertSource` converts one:
 
 Plugins follow docling-serve's connector plugin design: `PluginSource` and `PluginTarget` carry a `kind` and a `google.protobuf.Any` config that must pack the protobuf message the plugin registered (`storage::register_connector_plugin` in `src/storage/connectors.h`); any other type is `INVALID_ARGUMENT` naming `config` with the packed type URL, and an unregistered kind is `UNKNOWN_VALUE`. The policy mirrors docling-serve's settings: `GRPARSE_ALLOWED_SOURCE_TYPES` and `GRPARSE_ALLOWED_TARGET_TYPES` (comma-separated kinds; unset allows the built-in kinds and no plugin) and `GRPARSE_ALLOW_EXTERNAL_PLUGINS=true`, without which no plugin kind is usable even when listed. A refused kind is `INVALID_ARGUMENT` with `OPTION_REJECTION_REASON_NOT_ALLOWED`, checked before any fetch or conversion.
 
-Every endpoint a request names is fetched under one network policy (`src/storage/http_call.h`), the S3 target's uploads included. The peer is checked on the socket libcurl actually connected, before any byte of the request is sent: a loopback, private (RFC 1918, IPv6 unique local), link-local (cloud metadata at 169.254.169.254), CGNAT, multicast or reserved address is refused as `INVALID_ARGUMENT`, so a hostname that resolves inward is refused too, and redirects are never followed. `GRPARSE_STORAGE_ALLOW_PRIVATE_ENDPOINTS=1` lifts that for deployments whose stores are emulators or in-cluster services (RustFS, MinIO, Azurite), and it is also what lets a Google token endpoint be plain `http://`; without it a `token_uri` must be https, because it receives the private-key assertion or the client secret. Behind an HTTP proxy the check sees the proxy's address, so such a deployment sets the variable and enforces egress at the proxy. An endpoint with userinfo, a query or a fragment is refused, since the request path is appended to it. A downloaded document is capped at `GRPARSE_SOURCE_MAX_BYTES` (default 268435456, 256 MiB; past it the source fails `UNAVAILABLE`), every other reply (listings, metadata, tokens) at 16 MiB, and finding the single object under a prefix lists at most 1000 names.
+Every endpoint a request names is fetched under one network policy (`src/storage/http_call.h`), the S3 target's uploads included. The peer is checked on the socket libcurl actually connected, before any byte of the request is sent: a loopback, private (RFC 1918, IPv6 unique local), link-local (cloud metadata at 169.254.169.254), CGNAT, multicast or reserved address is refused as `INVALID_ARGUMENT`, so a hostname that resolves inward is refused too, and redirects are never followed. `GRPARSE_STORAGE_ALLOW_PRIVATE_ENDPOINTS=1` lifts that for deployments whose stores are emulators or in-cluster services (RustFS, MinIO, Azurite), and it is also what lets a Google token endpoint be plain `http://`; without it a `token_uri` must be https, because it receives the private-key assertion or the client secret. Behind an HTTP proxy the check sees the proxy's address, so such a deployment sets the variable and enforces egress at the proxy. An endpoint with userinfo, a query or a fragment is refused, since the request path is appended to it. A downloaded document is capped at `GRPARSE_SOURCE_MAX_BYTES` (default 268435456, 256 MiB; past it the source fails `UNAVAILABLE`), every other reply (listings, metadata, tokens) at 16 MiB, and finding the single object under a prefix lists at most 1000 names. At most `GRPARSE_REMOTE_FETCH_CONCURRENCY` sources (default 4) fetch at once, and a fetched document is charged to `GRPARSE_MAX_INFLIGHT_BYTES` before it is parsed (see the in-flight budget under Page-streaming OCR).
 
 `scripts/test/storage-connectors-e2e-test.sh <build-dir>` proves the connectors against fake-gcs-server, Azurite, MinIO (the S3 layout parity check) and a mock Google token endpoint and Drive API.
 
@@ -484,8 +484,28 @@ printed at startup) caps the document bytes every parse holds at once across
 the process: a unary call is charged on admission for its request message
 plus the copy its base64 source decodes to (the chunk RPCs also for the
 sources they copy into the parse), a stream each chunk as it arrives, and a
-call that would pass the cap is refused with `RESOURCE_EXHAUSTED`. The merged
-Document a parse builds is not charged.
+call that would pass the cap is refused with `RESOURCE_EXHAUSTED`. A remote
+source (S3, HTTP, Azure Blob, Cloud Storage, Drive, a plugin) is a small
+request whose document is only known once fetched, so the parse charges the
+fetched copy the moment the fetch returns: its base64 copy plus the bytes
+it decodes to, about 2.3 times the document, held until the call is done.
+A fetched copy the cap has no room for fails the call with
+`RESOURCE_EXHAUSTED` before anything parses it. While a fetch runs, its body
+and base64 copy (up to `GRPARSE_SOURCE_MAX_BYTES` and a third more) are not
+yet charged; `GRPARSE_REMOTE_FETCH_CONCURRENCY` (default 4, 1 to 1024,
+printed at startup) bounds how many fetches run at once, so at most that
+many times about 2.3 x `GRPARSE_SOURCE_MAX_BYTES` sits outside the cap. A
+remote source waits on its unary worker for a free slot, and gives up with
+`CANCELLED` (the client sees its own deadline) once its call is cancelled
+or its deadline passes. Slots are not handed out in arrival order. The wait
+parks that worker: with the defaults, while four slow fetches hold the
+slots (a fetch may hold one for up to 300 seconds, the transfer timeout),
+each further remote request parks one of the sixteen
+`GRPARSE_UNARY_WORKERS`, up to all twelve that are left, and inline uploads
+then queue behind them in `GRPARSE_UNARY_QUEUE`. Keep the slot count well
+under the worker count, so that inline uploads always find a worker, and
+raise both together for a remote-heavy load; the memory bound above is what
+the slot count costs. The merged Document a parse builds is not charged.
 
 A unary call returns the whole conversion in one message: the Document, every
 requested export and the chunks. `GRPARSE_MAX_RESPONSE_BYTES` (default 520 MiB,
