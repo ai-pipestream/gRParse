@@ -183,11 +183,12 @@ jobs:
       # The storage connector, remote source and chart end to end suites
       # skip in the in-build ctest because they need emulators. Here the
       # scripts developers run locally start those emulators (fake-gcs-server,
-      # Azurite, MinIO over http and self-signed https, the mock Google token
+      # Azurite, RustFS over http and self-signed https, the mock Google token
       # endpoint and Drive API, local http and https origins, the published
       # grpc-enrich in front of an emulated OpenAI-compatible VLM) and run
       # each suite from the e2e image. A script fails when an emulator never
-      # opens its port, and a binary's skip (exit 77) fails the step too.
+      # opens its port (or RustFS never answers /health), and a binary's skip
+      # (exit 77) fails the step too.
       # GitHub's hosted runner only: the scripts bind-mount host temporary
       # directories into the emulators and reach them on 127.0.0.1, which a
       # Forgejo job container talking to the host daemon cannot do.
@@ -209,10 +210,10 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y --no-install-recommends python3-cryptography
           }
-      - name: Storage connectors end to end (fake-gcs-server, Azurite, MinIO, mock Google)
+      - name: Storage connectors end to end (fake-gcs-server, Azurite, RustFS, mock Google)
         if: ${{ github.server_url == 'https://github.com' }}
         run: scripts/test/storage-connectors-e2e-test.sh grparse-ci-cpu-e2e
-      - name: Remote sources end to end (MinIO http and https, http and https origins)
+      - name: Remote sources end to end (RustFS http and https, http and https origins)
         if: ${{ github.server_url == 'https://github.com' }}
         run: scripts/test/remote-sources-e2e-test.sh grparse-ci-cpu-e2e
       - name: Chart outputs end to end (grpc-enrich and an emulated VLM)

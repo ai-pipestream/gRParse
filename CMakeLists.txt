@@ -1186,7 +1186,7 @@ if(BUILD_TESTING)
     TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
   # Needs the emulators scripts/test/storage-connectors-e2e-test.sh starts.
   set_tests_properties(storage-connectors-e2e-test PROPERTIES SKIP_RETURN_CODE 77)
-  # Needs MinIO and the HTTP servers scripts/test/remote-sources-e2e-test.sh starts.
+  # Needs RustFS and the HTTP servers scripts/test/remote-sources-e2e-test.sh starts.
   set_tests_properties(remote-sources-e2e-test PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 

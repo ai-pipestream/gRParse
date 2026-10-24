@@ -1,4 +1,4 @@
-// End to end proof of the S3 and HTTP sources: S3Source against MinIO over
+// End to end proof of the S3 and HTTP sources: S3Source against RustFS over
 // http and over https with a self-signed certificate (verify_ssl unset and
 // true refuse the certificate, false accepts it), and HttpSource against a
 // local http origin (plain fetch, redirect, Content-Disposition, request
