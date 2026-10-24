@@ -4,12 +4,15 @@
 # localhost, so the only fault is that no trusted CA signed it), seeds both,
 # starts a local http origin and a self-signed https origin
 # (remote-sources-e2e/http_server.py), then runs remote-sources-e2e-test
-# from the build directory against them.
+# from the build directory, or from an image built with
+# `docker build -f Dockerfile.cpu --target e2e`, against them.
 #
-# usage: scripts/test/remote-sources-e2e-test.sh <build-dir>
+# usage: scripts/test/remote-sources-e2e-test.sh <build-dir|image>
 set -euo pipefail
-build=${1:?build dir}
+build=${1:?build dir or image}
 here=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=scripts/test/e2e-binary.sh
+. "$here/e2e-binary.sh"
 id=$$
 net=grparse-remote-e2e-$id
 work=$(mktemp -d)
@@ -83,14 +86,14 @@ if curl -sS --max-time 10 "https://127.0.0.1:$minio_tls_port/minio/health/live" 
 fi
 
 echo "== remote-sources-e2e-test"
-GRPARSE_STORAGE_ALLOW_PRIVATE_ENDPOINTS=1 \
-GRPARSE_E2E_REMOTE=1 \
-GRPARSE_E2E_SAMPLE="$work/sample.md" \
-GRPARSE_E2E_S3_HTTP_ENDPOINT="http://127.0.0.1:$minio_port" \
-GRPARSE_E2E_S3_HTTPS_ENDPOINT="https://127.0.0.1:$minio_tls_port" \
-GRPARSE_E2E_S3_ACCESS_KEY=e2e-access \
-GRPARSE_E2E_S3_SECRET_KEY=e2e-secret-key \
-GRPARSE_E2E_HTTP_BASE="http://127.0.0.1:$http_port" \
-GRPARSE_E2E_HTTPS_BASE="https://127.0.0.1:$https_port" \
-  "$build/remote-sources-e2e-test"
+run_e2e_binary "$build" "$work" remote-sources-e2e-test \
+  GRPARSE_STORAGE_ALLOW_PRIVATE_ENDPOINTS=1 \
+  GRPARSE_E2E_REMOTE=1 \
+  GRPARSE_E2E_SAMPLE="$work/sample.md" \
+  GRPARSE_E2E_S3_HTTP_ENDPOINT="http://127.0.0.1:$minio_port" \
+  GRPARSE_E2E_S3_HTTPS_ENDPOINT="https://127.0.0.1:$minio_tls_port" \
+  GRPARSE_E2E_S3_ACCESS_KEY=e2e-access \
+  GRPARSE_E2E_S3_SECRET_KEY=e2e-secret-key \
+  GRPARSE_E2E_HTTP_BASE="http://127.0.0.1:$http_port" \
+  GRPARSE_E2E_HTTPS_BASE="https://127.0.0.1:$https_port"
 echo "== remote-sources-e2e-test passed"

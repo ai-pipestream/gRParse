@@ -2,13 +2,16 @@
 # End to end receipt for the storage connectors: starts fake-gcs-server,
 # Azurite and MinIO on a private docker network and the mock Google token
 # endpoint and Drive v3 API on the host, seeds the inputs, then runs
-# storage-connectors-e2e-test from the build directory against them and
+# storage-connectors-e2e-test from the build directory, or from an image
+# built with `docker build -f Dockerfile.cpu --target e2e`, against them and
 # checks the S3 (MinIO) objects it wrote with mc.
 #
-# usage: scripts/test/storage-connectors-e2e-test.sh <build-dir>
+# usage: scripts/test/storage-connectors-e2e-test.sh <build-dir|image>
 set -euo pipefail
-build=${1:?build dir}
+build=${1:?build dir or image}
 here=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=scripts/test/e2e-binary.sh
+. "$here/e2e-binary.sh"
 id=$$
 net=grparse-storage-e2e-$id
 work=$(mktemp -d)
@@ -69,19 +72,19 @@ mc mb e2e/grparse-out
 
 mkdir -p "$work/out"
 echo "== storage-connectors-e2e-test"
-GRPARSE_STORAGE_ALLOW_PRIVATE_ENDPOINTS=1 \
-GRPARSE_E2E_STORAGE=1 \
-GRPARSE_E2E_SAMPLE="$work/sample.md" \
-GRPARSE_E2E_SA_KEY="$work/sa.pem" \
-GRPARSE_E2E_GCS_ENDPOINT="http://127.0.0.1:$gcs_port" \
-GRPARSE_E2E_AZURE_CONNECTION_STRING="DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=$azure_endpoint" \
-GRPARSE_E2E_GOOGLE="http://127.0.0.1:$mock_port" \
-GRPARSE_E2E_DRIVE_FILE_ID=file-sample \
-GRPARSE_E2E_S3_ENDPOINT="http://127.0.0.1:$minio_port" \
-GRPARSE_E2E_S3_ACCESS_KEY=e2e-access \
-GRPARSE_E2E_S3_SECRET_KEY=e2e-secret-key \
-GRPARSE_E2E_OUT_DIR="$work/out" \
-  "$build/storage-connectors-e2e-test"
+run_e2e_binary "$build" "$work" storage-connectors-e2e-test \
+  GRPARSE_STORAGE_ALLOW_PRIVATE_ENDPOINTS=1 \
+  GRPARSE_E2E_STORAGE=1 \
+  GRPARSE_E2E_SAMPLE="$work/sample.md" \
+  GRPARSE_E2E_SA_KEY="$work/sa.pem" \
+  GRPARSE_E2E_GCS_ENDPOINT="http://127.0.0.1:$gcs_port" \
+  GRPARSE_E2E_AZURE_CONNECTION_STRING="DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=$azure_endpoint" \
+  GRPARSE_E2E_GOOGLE="http://127.0.0.1:$mock_port" \
+  GRPARSE_E2E_DRIVE_FILE_ID=file-sample \
+  GRPARSE_E2E_S3_ENDPOINT="http://127.0.0.1:$minio_port" \
+  GRPARSE_E2E_S3_ACCESS_KEY=e2e-access \
+  GRPARSE_E2E_S3_SECRET_KEY=e2e-secret-key \
+  GRPARSE_E2E_OUT_DIR="$work/out"
 
 echo "== MinIO objects (mc ls --recursive e2e/grparse-out)"
 mc ls --recursive e2e/grparse-out | tee "$work/mc-ls.txt"

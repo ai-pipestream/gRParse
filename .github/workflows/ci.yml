@@ -180,6 +180,44 @@ jobs:
             --build-arg GRPARSE_TEST_REQUIRE_MODELS=1 -t grparse-ci-cpu .
       - name: Boot-proof the runtime image
         run: ./scripts/smoke-test.sh grparse-ci-cpu
+      # The storage connector, remote source and chart end to end suites
+      # skip in the in-build ctest because they need emulators. Here the
+      # scripts developers run locally start those emulators (fake-gcs-server,
+      # Azurite, MinIO over http and self-signed https, the mock Google token
+      # endpoint and Drive API, local http and https origins, the published
+      # grpc-enrich in front of an emulated OpenAI-compatible VLM) and run
+      # each suite from the e2e image. A script fails when an emulator never
+      # opens its port, and a binary's skip (exit 77) fails the step too.
+      # GitHub's hosted runner only: the scripts bind-mount host temporary
+      # directories into the emulators and reach them on 127.0.0.1, which a
+      # Forgejo job container talking to the host daemon cannot do.
+      - name: Build the end to end image
+        # Same arguments as the build above, so BuildKit reuses its build
+        # stage; the e2e target adds only the three test binaries on the
+        # runtime base and is never published.
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: |
+          docker build --progress=plain -f Dockerfile.cpu --target e2e \
+            --build-arg GRPARSE_BUILD_JOBS="$(scripts/build-jobs.sh)" \
+            --build-arg GRPARSE_DEPS_IMAGE="${{ steps.seed.outputs.image }}" \
+            --build-arg GRPARSE_REVISION="${{ github.sha }}" \
+            --build-arg GRPARSE_TEST_REQUIRE_MODELS=1 -t grparse-ci-cpu-e2e .
+      - name: Install the mock Google endpoint's dependency
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: |
+          python3 -c 'import cryptography' 2>/dev/null || {
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends python3-cryptography
+          }
+      - name: Storage connectors end to end (fake-gcs-server, Azurite, MinIO, mock Google)
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: scripts/test/storage-connectors-e2e-test.sh grparse-ci-cpu-e2e
+      - name: Remote sources end to end (MinIO http and https, http and https origins)
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: scripts/test/remote-sources-e2e-test.sh grparse-ci-cpu-e2e
+      - name: Chart outputs end to end (grpc-enrich and an emulated VLM)
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: scripts/test/chart-outputs-e2e-test.sh grparse-ci-cpu-e2e pipestreamai/grpc-enrich:latest
 
   # The demo shell image carries every peer's proto contract (vendored under
   # examples/web-demo/peer-protos); the Dockerfile's own build gate loads
