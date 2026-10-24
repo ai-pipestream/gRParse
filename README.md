@@ -1150,7 +1150,12 @@ the matching seed as `GRPARSE_DEPS_IMAGE` when it exists
 (`scripts/find-seed.sh`), so a fresh runner starts with gRPC and the other
 fetched dependencies already built and compiles only this repository; a
 change to a seed input builds them inline until its seed is published. A
-local `docker build` names no seed and builds exactly as before.
+local `docker build` names no seed and builds exactly as before. A seed
+already in the local image store is used without asking the registry, and
+Forgejo's runner passes `--no-pull`: its Docker daemon persists between jobs,
+so the deps stage sits in its build cache and `/build` stays filled in its
+cache mount, and the ~3.4 GB seed pull would only refill a tree that is
+already warm.
 
 The build compiles with `-DGRPARSE_WERROR=ON` and runs the full `grparse`-labelled
 CTest set: barcode decoder (QR fixture payload, stride-safe region views),

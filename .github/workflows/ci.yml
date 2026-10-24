@@ -44,7 +44,12 @@ jobs:
           password: ${{ secrets.DOCKER_TOKEN }}
       - name: Find the deps seed for this build
         id: seed
-        run: sh scripts/find-seed.sh Dockerfile cuda amd64 >> "$GITHUB_OUTPUT"
+        # Forgejo's runner keeps its Docker daemon between jobs, and with it
+        # the deps stage and a filled /build, so it never pulls a seed it does
+        # not already hold (scripts/find-seed.sh --no-pull).
+        env:
+          SEED_FLAGS: ${{ github.server_url != 'https://github.com' && '--no-pull' || '' }}
+        run: sh scripts/find-seed.sh $SEED_FLAGS Dockerfile cuda amd64 >> "$GITHUB_OUTPUT"
       - name: Build full image and run non-GPU tests
         # The full build (not just the build stage) also assembles the
         # runtime stage, so a runtime library missing from the staged
@@ -87,7 +92,12 @@ jobs:
           password: ${{ secrets.DOCKER_TOKEN }}
       - name: Find the deps seed for this build
         id: seed
-        run: sh scripts/find-seed.sh Dockerfile.openvino openvino amd64 >> "$GITHUB_OUTPUT"
+        # Forgejo's runner keeps its Docker daemon between jobs, and with it
+        # the deps stage and a filled /build, so it never pulls a seed it does
+        # not already hold (scripts/find-seed.sh --no-pull).
+        env:
+          SEED_FLAGS: ${{ github.server_url != 'https://github.com' && '--no-pull' || '' }}
+        run: sh scripts/find-seed.sh $SEED_FLAGS Dockerfile.openvino openvino amd64 >> "$GITHUB_OUTPUT"
       - name: Build Intel/OpenVINO image and run non-GPU tests
         run: |
           docker build --progress=plain -f Dockerfile.openvino \
@@ -170,7 +180,12 @@ jobs:
           password: ${{ secrets.DOCKER_TOKEN }}
       - name: Find the deps seed for this build
         id: seed
-        run: sh scripts/find-seed.sh Dockerfile.cpu cpu amd64 >> "$GITHUB_OUTPUT"
+        # Forgejo's runner keeps its Docker daemon between jobs, and with it
+        # the deps stage and a filled /build, so it never pulls a seed it does
+        # not already hold (scripts/find-seed.sh --no-pull).
+        env:
+          SEED_FLAGS: ${{ github.server_url != 'https://github.com' && '--no-pull' || '' }}
+        run: sh scripts/find-seed.sh $SEED_FLAGS Dockerfile.cpu cpu amd64 >> "$GITHUB_OUTPUT"
       - name: Build CPU image and run the tests, model goldens included
         run: |
           docker build --progress=plain -f Dockerfile.cpu \
