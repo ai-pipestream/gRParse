@@ -1,0 +1,97 @@
+{
+ "doc_id": "pdf-quickstart-sample",
+ "source": "page 1 from its text layer (pdftotext -layout -f 1 -l 1, line heights from pdftotext -bbox-layout); page 2 has no text layer and was read off its 150 dpi JPEG (pdfimages -j) by eye",
+ "notes": [
+  "Page 1 is born-digital and page 2 is a scan, so the inspector classifies the document MIXED with page 2 named; page 1 must be read from its layer, page 2 by OCR (ai-pipestream/gRParse#162).",
+  "The PDF carries no style information. 'gRParse sample document' (20 pt) is level 0 by its role; the two 12 pt section headings on page 1 and page 2's heading are level 1.",
+  "Anchors are the paragraph openings and list items in source order across both pages, the two captions included. 'Figure 1: quarterly volume' is the anchor the shipped PP-OCRv3 recognizer misreads as 'Figure l', so its truth scores sit below 1.0 until the model reads it.",
+  "Anchors are compared case-folded, so the scan's 'RapidOCR' read as 'RapidoCR' does not show here; it shows in the baseline text.",
+  "The table is the 4 x 3 'Pipeline stages' grid on page 1, header row first.",
+  "Page 2 has two figures: the bar chart between the OCR paragraph and its caption, and the QR code between the first caption and its own caption."
+ ],
+ "headings": [
+  {
+   "text": "gRParse sample document",
+   "level": 0
+  },
+  {
+   "text": "What the stream carries",
+   "level": 1
+  },
+  {
+   "text": "Pipeline stages",
+   "level": 1
+  },
+  {
+   "text": "Scanned page: OCR, figures, barcode",
+   "level": 1
+  }
+ ],
+ "anchors": [
+  "This page carries a digital text layer",
+  "One page event per page",
+  "Provenance boxes and append-only UTF offsets",
+  "Table cell grids, picture classifications",
+  "The next page is a scanned-style raster",
+  "This page has no digital text layer",
+  "Figure 1: quarterly volume",
+  "Figure 2: the QR payload decodes"
+ ],
+ "tables": [
+  {
+   "table": "Pipeline stages",
+   "cells": [
+    [
+     0,
+     0,
+     "Stage"
+    ],
+    [
+     0,
+     1,
+     "Backing"
+    ],
+    [
+     0,
+     2,
+     "Bound"
+    ],
+    [
+     1,
+     0,
+     "Render"
+    ],
+    [
+     1,
+     1,
+     "Poppler"
+    ],
+    [
+     2,
+     1,
+     "ONNX Runtime"
+    ],
+    [
+     3,
+     0,
+     "Assembly"
+    ],
+    [
+     3,
+     2,
+     "Page window"
+    ]
+   ]
+  }
+ ],
+ "figures": [
+  {
+   "after": "This page has no digital text layer",
+   "caption": "Figure 1: quarterly volume"
+  },
+  {
+   "after": "Figure 1: quarterly volume",
+   "caption": "Figure 2: the QR payload decodes"
+  }
+ ]
+}
