@@ -37,7 +37,8 @@
   "xlsx-charts",
   "pptx-charts",
   "pdf-rotated-scan-180",
-  "pdf-rotated-scan-mixed"
+  "pdf-rotated-scan-mixed",
+  "pdf-quickstart-sample"
  ],
  "gates": {
   "docx-figures": {
@@ -179,6 +180,18 @@
   "pdf-mixed": {
    "latency_ms": 176.9,
    "stable": true
+  },
+  "pdf-quickstart-sample": {
+   "latency_ms": 5429.5,
+   "stable": true,
+   "truth": {
+    "truth_anchors_found": 0.875,
+    "truth_figures": 0.5,
+    "truth_heading_levels": 0.5,
+    "truth_headings": 1.0,
+    "truth_order": 1.0,
+    "truth_table_cells": 1.0
+   }
   },
   "pdf-rotated-scan": {
    "latency_ms": 5137.0,
@@ -860,6 +873,15 @@
    "reason": "9f58494: PDFs now rasterize in grpc-pdfium instead of in-process poppler; pdfium resamples the 150 dpi scan differently, so OCR splits page 3 (turned 270) into finer paragraphs, closer to the source's dialogue lines; truth scores unchanged at 1.000",
    "service": "gRParse grparse-0.2.1-cuda",
    "timestamp": "2026-10-02T05:49:15+00:00"
+  },
+  {
+   "documents": [
+    "pdf-quickstart-sample"
+   ],
+   "partial": true,
+   "reason": "e92a567: new document, the quickstart sample (ai-pipestream/gRParse#162); page 1 read from its text layer, page 2 by PP-OCRv3, which reads 'Figure l' for 'Figure 1'; recorded on the CPU image, so its latency budget is the CPU one",
+   "service": "gRParse grparse-0.3.0-cpu",
+   "timestamp": "2026-10-24T08:24:19+00:00"
   }
  ],
  "manifest": "eval/scorecard/corpus.json",

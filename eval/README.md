@@ -193,7 +193,15 @@ green result cannot be an empty one.
 
 `long-text.pdf`, `mixed.pdf` and `scanned-image.pdf` are copied from
 `grpc-pdf-inspector/demos/sample-data/`, which generates them itself
-(`node-client`, `npm run samples`). Gatsby prose is public domain (Project
+(`node-client`, `npm run samples`). `quickstart-sample.pdf` (`pdf-quickstart-sample`) is a byte copy of
+`quickstart/sample.pdf`, the first document a new user parses, and a corpus
+test keeps the two identical: a born-digital page that must be read from its
+text layer beside a 150 dpi scan that only OCR reads (ai-pipestream/gRParse#162).
+Its latency gate was recorded on a CPU host, where OCR of the scan is most
+of the time; on another host score it with `EVAL_LATENCY=off`. A CPU and a
+CUDA host may also read page 2 differently (the recognizer runs on a
+different execution provider), so its OCR floors hold for the CPU stack the
+baseline was recorded on. Gatsby prose is public domain (Project
 Gutenberg transcription); every other fixture text was written for the
 fixture. Fixtures stay under 2 MB each.
 

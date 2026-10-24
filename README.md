@@ -21,7 +21,7 @@ docker compose up -d     # gRParse on the CPU, models, PDF, office, markup, EPUB
 
 Open <http://localhost:8080> for the demo shell: drop a PDF and watch pages stream in with their boxes, tables, figures and barcodes. gRPC clients dial `localhost:50051` (`ai.pipestream.parse.v1.ParseService`; see [examples/](examples/)). Both ports bind to 127.0.0.1 only. `docker compose down` stops everything (`-v` also drops the models volume).
 
-Scanned pages run OCR on the CPU at roughly 10 to 30 s a page on a 4-core machine; for throughput use a GPU image (below). [quickstart/compose.yaml](quickstart/compose.yaml) says what each service does and how to pin a release with `GRPARSE_TAG`. On Windows without WSL, run the client directly: `docker compose run --rm -T parse --filename my.pdf < my.pdf` from `cmd`.
+Scanned pages run OCR on the CPU at roughly 10 to 30 s a page on a 4-core machine; for throughput use a GPU image (below). The sample's first page has a text layer and is read from it; its second page is a 150 dpi scan, read by the installed PP-OCRv3 recognizer, which on that page returns `Figure l` for `Figure 1` and `RapidoCR` for `RapidOCR`. Those are the model's reads, not the render's: each line crop is rescaled to the recognizer's 48 px input height, a scan carries no detail beyond its own 150 dpi, and a sweep of `render_scale` from 108 to 432 dpi leaves `Figure l` at every setting from 150 dpi up while `RapidoCR` comes and goes between neighbouring settings. The scorecard scores the page as `pdf-quickstart-sample` ([eval/README.md](eval/README.md)), so a recognizer change that reads it correctly shows up there. [quickstart/compose.yaml](quickstart/compose.yaml) says what each service does and how to pin a release with `GRPARSE_TAG`. On Windows without WSL, run the client directly: `docker compose run --rm -T parse --filename my.pdf < my.pdf` from `cmd`.
 
 ## More
 
@@ -722,7 +722,14 @@ a dense newspaper layout whose reading order the text layer cannot be
 trusted to keep), the answer covers the whole document: a text-based
 document does not take the fast path even with no page named, and the CV
 path recognizes every page in place of the embedded layer, as it does when
-the trailer reports encoding issues. Explicit `do_ocr`/`force_ocr`
+the trailer reports encoding issues. A mixed document that names its pages
+is the exception when `ocr_recommendation_reasons` gives `SCANNED_PAGES`
+as its only reason: the named pages are then all the recommendation covers,
+so only they are recognized and the born-digital pages keep their exact
+layers (the quickstart sample is this shape). Any other reason (text over a
+page-sized image, a scan's own OCR layer, a dense layout), or no reason at
+all from an inspector older than that field, keeps every page recognized.
+Explicit `do_ocr`/`force_ocr`
 request options still outrank the classification. If the inspector is
 unreachable or errors, the parse degrades to the unrouted CV path with the
 failure noted, never to a failed parse; unconfigured, nothing changes at
