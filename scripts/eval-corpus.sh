@@ -46,7 +46,7 @@
 # Exit code: with a baseline, analyze.py's (0 no gate tripped, 1 a gate
 # tripped, 2 runs not comparable); without one, run.py's (0 every check
 # passed, 1 any document failed a check); 77 when the corpus or gRParse is
-# missing. Nothing here greps output.
+# missing. Exit codes come directly from run.py and analyze.py.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -126,6 +126,7 @@ run() {
 }
 
 started=0
+# shellcheck disable=SC2329 # invoked by trap EXIT
 cleanup() {
   if [ "$started" = 1 ] && [ "$keep" = 0 ]; then
     run "${compose[@]}" --profile parsers --profile calamine down --remove-orphans || true
@@ -144,7 +145,9 @@ if [ -z "$existing" ]; then
   files+=(-f eval/corpus/compose.eval.yaml)
   if [ -n "$grparse_image" ]; then
     override=$(mktemp "${TMPDIR:-/tmp}/eval-corpus-override.XXXXXX")
-    printf 'services:\n  grparse:\n    image: %s\n    pull_policy: never\n' "$grparse_image" >"$override"
+    escaped_image=${grparse_image//\\/\\\\}
+    escaped_image=${escaped_image//\"/\\\"}
+    printf 'services:\n  grparse:\n    image: "%s"\n    pull_policy: never\n' "$escaped_image" >"$override"
     files+=(-f "$override")
   fi
   compose=(docker compose -p "$project" "${files[@]}")
@@ -160,7 +163,7 @@ run_args=(
 )
 if [ -n "$grparse_commit" ]; then run_args+=(--grparse-commit "$grparse_commit"); fi
 if [ -n "$passwords_file" ]; then run_args+=(--passwords-file "$passwords_file"); fi
-run_args+=("${passthrough[@]}")
+if [ ${#passthrough[@]} -gt 0 ]; then run_args+=("${passthrough[@]}"); fi
 
 set +e
 run "${python[@]}" "${run_args[@]}"
@@ -194,9 +197,13 @@ fi
 if [ "$dry_run" = 0 ]; then
   echo
   sed -n '1,/^## By class/p' "$run_dir/analysis.md" | sed '$d'
-  if [ -f "$run_dir/drift.md" ] && head -n 1 "$run_dir/drift.md" | grep -q '^# Corpus drift report'; then
-    echo
-    sed -n '1,/^## Per-class/p' "$run_dir/drift.md" | sed '$d'
+  if [ -f "$run_dir/drift.md" ]; then
+    case $(head -n 1 "$run_dir/drift.md") in
+      "# Corpus drift report"*)
+        echo
+        sed -n '1,/^## Per-class/p' "$run_dir/drift.md" | sed '$d'
+        ;;
+    esac
   fi
   echo "[eval-corpus] results in $run_dir (exit $status)"
 fi

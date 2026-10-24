@@ -13,7 +13,7 @@ docker compose up -d     # gRParse on the CPU, models, PDF, office, markup, EPUB
 ./parse sample.pdf       # Markdown on stdout
 ```
 
-`./parse` takes any document on this machine and prints Markdown; `--to text|html|json|doctags|yaml` picks another export. It runs its client in a container, so nothing is installed on the host, and it starts the stack itself if `up` has not been run.
+`./parse` takes any document on this machine and prints Markdown; `--to text|html|json|proto-json|doctags|yaml` picks another export (`json` is canonical Docling JSON; `proto-json` is the protobuf wire JSON). It runs its client in a container, so nothing is installed on the host, and it starts the stack itself if `up` has not been run.
 
 ```sh
 ./parse ~/Downloads/report.docx --to text > report.txt

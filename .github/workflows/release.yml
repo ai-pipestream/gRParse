@@ -33,6 +33,7 @@ on:
       - scripts/release-stack.py
       - scripts/test/release-test.sh
       - compose.stack*.yaml
+      - quickstart/compose.yaml
       - .github/workflows/release.yml
   push:
     branches: [main]
@@ -43,6 +44,7 @@ on:
       - scripts/release-stack.py
       - scripts/test/release-test.sh
       - compose.stack*.yaml
+      - quickstart/compose.yaml
       - .github/workflows/release.yml
   workflow_run:
     workflows: [Publish Image]
@@ -100,7 +102,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$GITHUB_EVENT_NAME" = workflow_run ]; then version="${RUN_TAG#v}"; else version="$INPUT_VERSION"; fi
-          if ! [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z][0-9A-Za-z.-]{0,63})?$ ]]; then
+          if ! [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
             echo "::error::version '$version' is not a semantic version such as 0.3.0"
             exit 1
           fi

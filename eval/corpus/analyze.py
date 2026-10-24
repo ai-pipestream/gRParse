@@ -39,6 +39,7 @@ import os
 import re
 import sys
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -92,10 +93,13 @@ def _journal_lines(path: Path) -> list[tuple[int, dict[str, Any]]]:
         rows = []
         for index, obj in enumerate(data["objects"], start=1):
             rec = dict(obj)
-            rec.setdefault("relpath", rec.get("key"))
-            rec.setdefault("ext", rec.get("extension"))
-            rec.setdefault("size_bytes", rec.get("size"))
-            raw = str(rec.get("status") or "")
+            if "relpath" not in rec:
+                rec["relpath"] = obj["key"]
+            if "ext" not in rec:
+                rec["ext"] = obj["extension"]
+            if "size_bytes" not in rec:
+                rec["size_bytes"] = obj["size"]
+            raw = str(rec["status"]) if "status" in rec and rec["status"] is not None else ""
             if raw.startswith("rpc error") and not rec.get("rpc_error"):
                 rec["rpc_error"] = raw
             rows.append((index, rec))
@@ -298,8 +302,8 @@ def compare_runs(
     max_p95_regression_pct: float | None = None,
     fail_on_new_failures: bool = False,
     max_clean_rate_drop: float | None = None,
-    baseline_manifest: dict[str, Any] | None = None,
-    candidate_manifest: dict[str, Any] | None = None,
+    baseline_manifest: provenance.RunManifest | Mapping[str, Any] | None = None,
+    candidate_manifest: provenance.RunManifest | Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compare baseline and candidate journals, detecting regressions and content drift."""
     base_summary = summarize_run(baseline_records, label=baseline_label)
@@ -467,7 +471,7 @@ def compare_runs(
 
     return {
         "mode": "comparison",
-        "provenance": provenance.compare(baseline_manifest, candidate_manifest),
+        "provenance": provenance.compare(baseline_manifest, candidate_manifest).to_dict(),
         "exit_code": exit_code,
         "gate_failures": gate_failures,
         "baseline": base_summary,
@@ -496,7 +500,7 @@ def _pct(count: int, total: int) -> str:
     return f"{count / total * 100:.1f}%" if total else "-"
 
 
-def headline_lines(ov: dict[str, Any]) -> list[str]:
+def headline_lines(ov: provenance.RunHeadline | Mapping[str, Any]) -> list[str]:
     """Clean output beside call success: the headline every run reports."""
     n = ov["evaluated"]
     return [
@@ -728,21 +732,22 @@ def render_analysis_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def render_run_list(runs: list[tuple[Path, dict[str, Any]]]) -> str:
+def render_run_list(runs: list[tuple[Path, provenance.RunManifest]]) -> str:
     lines = [
         "| run | started | gRParse commit | corpus | files | SUCCESS | clean | clean (battery rule) |",
         "|---|---|---|---|---|---|---|---|",
     ]
     for run_dir, manifest in runs:
-        head = manifest.get("headline") or {}
-        n = int(head.get("evaluated") or 0)
+        assert manifest.headline is not None and manifest.corpus is not None
+        head = manifest.headline
+        n = head.evaluated
         lines.append(
-            f"| `{run_dir.name}` | {manifest.get('started_at', '-')} | "
-            f"`{provenance.short((manifest.get('grparse') or {}).get('commit'))}` | "
-            f"`{provenance.short((manifest.get('corpus') or {}).get('sha256'))}` | "
-            f"{(manifest.get('corpus') or {}).get('files', '-')} | "
-            f"{_pct(int(head.get('status_success_count') or 0), n)} | {_pct(int(head.get('clean_count') or 0), n)} | "
-            f"{_pct(int(head.get('clean_battery_count') or 0), n)} |"
+            f"| `{run_dir.name}` | {manifest.started_at} | "
+            f"`{provenance.short(manifest.grparse.commit)}` | "
+            f"`{provenance.short(manifest.corpus.sha256)}` | "
+            f"{manifest.corpus.files} | "
+            f"{_pct(head.status_success_count, n)} | {_pct(head.clean_count, n)} | "
+            f"{_pct(head.clean_battery_count, n)} |"
         )
     return "\n".join(lines) + "\n"
 
@@ -832,8 +837,8 @@ def main(argv: list[str] | None = None) -> int:
         if cand_path is not None:
             cand_records = load_journal(cand_path)
             cand_manifest = provenance.manifest_beside(cand_path)
-            b_corpus = ((base_manifest or {}).get("corpus") or {}).get("sha256")
-            c_corpus = ((cand_manifest or {}).get("corpus") or {}).get("sha256")
+            b_corpus = base_manifest.corpus.sha256 if (base_manifest is not None and base_manifest.corpus is not None) else None
+            c_corpus = cand_manifest.corpus.sha256 if (cand_manifest is not None and cand_manifest.corpus is not None) else None
             if b_corpus and c_corpus and b_corpus != c_corpus and not args.allow_corpus_mismatch:
                 print(
                     f"error: corpus hashes differ ({b_corpus[:12]} vs {c_corpus[:12]}); the rates are not comparable. "
@@ -868,7 +873,7 @@ def main(argv: list[str] | None = None) -> int:
                 "exit_code": 1 if gate_failures else 0,
                 "gate_failures": gate_failures,
                 "summary": summary,
-                "manifest": base_manifest,
+                "manifest": base_manifest.to_dict() if base_manifest is not None else None,
             }
     except (FileNotFoundError, ValueError, OSError) as err:
         print(f"error: {err}", file=sys.stderr)
