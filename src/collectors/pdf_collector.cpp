@@ -62,8 +62,16 @@ PdfRouteDecision route_pdf_by_classification(const PdfClassification& classifica
   // Document-wide encoding issues make the embedded layer untrustworthy for
   // every class, and a detection that recommends OCR judged recognition the
   // better reading of the whole document; either way the CV run recognizes
-  // all pages rather than reading the layer.
-  decision.force_ocr = classification.encoding_issues || classification.ocr_recommended;
+  // all pages rather than reading the layer. Except a MIXED document that
+  // names its pages: detection recommends OCR for every MIXED document
+  // (the scanned pages beside the text ones are why it is MIXED), and the
+  // MIXED contract scopes that to the pages it names, the text pages
+  // extracting normally. Widening it would recognize born-digital pages in
+  // place of their exact layer and put OCR misreads into them.
+  const bool recommendation_names_its_pages =
+      classification.pdf_class == PdfClass::kMixed && !classification.pages_needing_ocr.empty();
+  decision.force_ocr = classification.encoding_issues ||
+                       (classification.ocr_recommended && !recommendation_names_its_pages);
   switch (classification.pdf_class) {
     case PdfClass::kTextBased:
       // The whole text layer is usable: the collector's own Document is the

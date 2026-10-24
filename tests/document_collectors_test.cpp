@@ -2187,8 +2187,9 @@ void verify_pdf_routing_decision_logic() {
 }
 
 // PdfInfo.ocr_recommended answers about the whole document, so it refuses
-// the fast path and forces recognition on every page, whether or not any
-// page is named and whatever the classification.
+// the fast path and forces recognition on every page, except on a MIXED
+// document that names its pages: detection recommends OCR for every MIXED
+// document, and the named pages are what it recommends it for.
 void verify_pdf_ocr_recommendation_routing() {
   grparse::PdfClassification newspaper;
   newspaper.pdf_class = grparse::PdfClass::kTextBased;
@@ -2198,13 +2199,33 @@ void verify_pdf_ocr_recommendation_routing() {
           "a text-based document recommended for OCR is not the fast path and forces "
           "recognition on every page");
 
+  // The quickstart sample's shape: a born-digital page and a scanned one.
+  grparse::PdfClassification text_beside_scan;
+  text_beside_scan.pdf_class = grparse::PdfClass::kMixed;
+  text_beside_scan.pages_needing_ocr = {2};
+  text_beside_scan.ocr_recommended = true;
+  const auto mixed = grparse::route_pdf_by_classification(text_beside_scan);
+  require(!mixed.fast_path && !mixed.force_ocr && mixed.ocr_pages == std::vector<int>({2}),
+          "a mixed document's recommendation stays on the pages it names, and the text "
+          "pages keep their layers");
+
   grparse::PdfClassification template_form;
   template_form.pdf_class = grparse::PdfClass::kMixed;
-  template_form.pages_needing_ocr = {2};
   template_form.ocr_recommended = true;
-  const auto mixed = grparse::route_pdf_by_classification(template_form);
-  require(!mixed.fast_path && mixed.force_ocr && mixed.ocr_pages == std::vector<int>({2}),
-          "the document-wide recommendation widens a named page set to every page");
+  const auto unnamed = grparse::route_pdf_by_classification(template_form);
+  require(!unnamed.fast_path && unnamed.force_ocr && unnamed.ocr_pages.empty(),
+          "a mixed document recommended for OCR that names no page forces recognition on "
+          "every page");
+
+  grparse::PdfClassification newspaper_with_scan = newspaper;
+  newspaper_with_scan.pages_needing_ocr = {2};
+  require(grparse::route_pdf_by_classification(newspaper_with_scan).force_ocr,
+          "a text-based document's recommendation covers every page even when it names one");
+
+  grparse::PdfClassification garbled_beside_scan = text_beside_scan;
+  garbled_beside_scan.encoding_issues = true;
+  require(grparse::route_pdf_by_classification(garbled_beside_scan).force_ocr,
+          "encoding issues still force recognition on a mixed document that names its pages");
 
   FakePdfService service(pdfv1::PDF_TYPE_TEXT_BASED, {});
   service.set_ocr_recommended(true);

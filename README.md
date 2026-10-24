@@ -702,7 +702,11 @@ a dense newspaper layout whose reading order the text layer cannot be
 trusted to keep), the answer covers the whole document: a text-based
 document does not take the fast path even with no page named, and the CV
 path recognizes every page in place of the embedded layer, as it does when
-the trailer reports encoding issues. Explicit `do_ocr`/`force_ocr`
+the trailer reports encoding issues. A mixed document that names its pages
+is the exception: detection recommends OCR for every mixed document, the
+named pages are what it recommends it for, so only they are recognized and
+the born-digital pages keep their exact layers (the quickstart sample is
+this shape). Explicit `do_ocr`/`force_ocr`
 request options still outrank the classification. If the inspector is
 unreachable or errors, the parse degrades to the unrouted CV path with the
 failure noted, never to a failed parse; unconfigured, nothing changes at

@@ -2395,6 +2395,26 @@ void verify_pdf_classification_restricts_recognition() {
           "the CV route keeps the language the inspector read from the file's catalog");
 }
 
+// What the inspector really sends for a born-digital page beside a scan
+// (the quickstart sample): MIXED, the scan named, and ocr_recommended set,
+// as detection sets it for every MIXED document. Only the named page is
+// recognized; the others keep their exact embedded layers.
+void verify_pdf_mixed_recommendation_stays_on_named_pages() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_MIXED, {2});
+  inspector.set_ocr_recommended(true);
+  PdfInspectorServer inspector_server(&inspector);
+  const UnaryPdfRun run = run_unary_pdf(inspector_server.target());
+  require(run.status.ok(), "recommended mixed parse failed: " + run.status.error_message());
+  require(run.recognizer_calls == 1,
+          "only the named page of a mixed document recommended for OCR is recognized, got " +
+              std::to_string(run.recognizer_calls));
+  const std::string& text = run.response.response().document().exports().text();
+  require(text.contains("native-one") && text.contains("native-three"),
+          "the pages the inspector did not name settle on their embedded layers");
+  require(warned(run.response.response().document().doc(), "pdf", "restricted to the 1 page(s)"),
+          "the warning says recognition was restricted, not forced");
+}
+
 void verify_pdf_collector_failure_degrades_to_the_cv_path() {
   FailingPdfInspector inspector;
   PdfInspectorServer inspector_server(&inspector);
@@ -3161,6 +3181,28 @@ void verify_streaming_pdf_classification_restricts_recognition() {
   }
 }
 
+// The streaming leg scopes a mixed document's recommendation the same way.
+void verify_streaming_pdf_mixed_recommendation_stays_on_named_pages() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_MIXED, {2});
+  inspector.set_ocr_recommended(true);
+  PdfInspectorServer inspector_server(&inspector);
+  const StreamPdfRun run = run_stream_pdf(inspector_server.target());
+  require(run.status.ok(), "recommended mixed stream failed: " + run.status.error_message());
+  require(run.recognizer_calls == 1,
+          "the streamed leg recognizes only the named page, got " +
+              std::to_string(run.recognizer_calls));
+  require(run.events.size() == 4 && run.events.back().has_complete(),
+          "three page events then complete");
+  const auto& first = run.events.at(0).page();
+  require(first.page_number() == 1 && first.texts_size() >= 1 &&
+              first.texts(0).text().base().text() == "native-one",
+          "page one keeps its embedded layer");
+  const auto& third = run.events.at(2).page();
+  require(third.page_number() == 3 && third.texts_size() >= 1 &&
+              third.texts(0).text().base().text() == "native-three",
+          "page three keeps its embedded layer");
+}
+
 // One real parse through the chunking RPCs: the same source ConvertSource
 // takes, chunked instead of exported.
 void verify_hierarchical_chunk_rpc_carries_digest_and_offsets(TestServer* server) {
@@ -3742,6 +3784,8 @@ int main() {
         verify_pdf_classification_restricts_recognition();
         verify_pdf_ocr_recommendation_takes_the_cv_path();
         verify_streaming_pdf_ocr_recommendation_takes_the_cv_path();
+        verify_pdf_mixed_recommendation_stays_on_named_pages();
+        verify_streaming_pdf_mixed_recommendation_stays_on_named_pages();
         verify_pdf_collector_failure_degrades_to_the_cv_path();
         verify_queued_then_cancelled_call_never_dials_a_collector();
         verify_remote_legs_get_a_per_call_document_id();

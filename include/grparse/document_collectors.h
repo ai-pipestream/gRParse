@@ -206,7 +206,9 @@ struct PdfClassification {
   // context, or a dense newspaper layout whose reading order the layer
   // cannot be trusted to keep). It is a document-wide answer and can be set
   // on a TEXT_BASED document that names no OCR page, so the routing
-  // consults it independently of pages_needing_ocr.
+  // consults it independently of pages_needing_ocr. Detection sets it on
+  // every MIXED document, where pages_needing_ocr already says which pages
+  // it is about.
   bool ocr_recommended = false;
   // The trailer's has_invisible_text flag: some page drew text in rendering
   // mode 3 (typically an OCR layer behind a scan), which never reaches the
@@ -232,9 +234,11 @@ struct PdfRouteDecision {
   // path should recognize every page and let the recognized text replace
   // that layer (kForce) instead of reading it. Reading a layer the contract
   // says to distrust at best folds mojibake into the result, and reading one
-  // the detection judged OCR to beat keeps the reading it judged worse. An
-  // explicit kOff request still outranks this, as it outranks every
-  // classification hint.
+  // the detection judged OCR to beat keeps the reading it judged worse. A
+  // MIXED document's recommendation is the exception when it names pages:
+  // those pages are what it recommends OCR for, so they are recognized and
+  // the rest keep their layers. An explicit kOff request still outranks
+  // this, as it outranks every classification hint.
   bool force_ocr = false;
 };
 
