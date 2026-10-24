@@ -1,5 +1,6 @@
 #include "grparse/list_marker.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 
@@ -108,31 +109,32 @@ size_t number_letter(std::string_view s, size_t at, char close) {  // \d+\.?[a-z
   return then_char(s, at + 1, close);
 }
 
+using Pattern = size_t (*)(std::string_view);
+constexpr std::array<Pattern, 14> kNumberedPatterns = {
+    dotted_outline,
+    [](std::string_view t) { return number_letter(t, 0, '.'); },
+    [](std::string_view t) { return number_letter(t, 0, ')'); },
+    [](std::string_view t) {  // \(\d+\.?[a-zA-Z]\)
+      return is_char(t, 0, '(') ? number_letter(t, 1, ')') : kNoMatch;
+    },
+    [](std::string_view t) { return then_char(t, digits(t, 0), '.'); },
+    [](std::string_view t) { return then_char(t, digits(t, 0), ')'); },
+    [](std::string_view t) {  // \(\d+\)
+      return is_char(t, 0, '(') ? then_char(t, digits(t, 1), ')') : kNoMatch;
+    },
+    [](std::string_view t) {  // \[\d+\]
+      return is_char(t, 0, '[') ? then_char(t, digits(t, 1), ']') : kNoMatch;
+    },
+    [](std::string_view t) { return then_char(t, run_of(t, 0, "ivxlcdm"), '.'); },
+    [](std::string_view t) { return then_char(t, run_of(t, 0, "IVXLCDM"), '.'); },
+    [](std::string_view t) { return is_lower(t, 0) ? then_char(t, 1, '.') : kNoMatch; },
+    [](std::string_view t) { return is_upper(t, 0) ? then_char(t, 1, '.') : kNoMatch; },
+    [](std::string_view t) { return is_lower(t, 0) ? then_char(t, 1, ')') : kNoMatch; },
+    [](std::string_view t) { return is_upper(t, 0) ? then_char(t, 1, ')') : kNoMatch; },
+};
+
 size_t numbered_marker_end(std::string_view s) {
-  using Pattern = size_t (*)(std::string_view);
-  static constexpr std::array<Pattern, 14> kPatterns = {
-      dotted_outline,
-      [](std::string_view t) { return number_letter(t, 0, '.'); },
-      [](std::string_view t) { return number_letter(t, 0, ')'); },
-      [](std::string_view t) {  // \(\d+\.?[a-zA-Z]\)
-        return is_char(t, 0, '(') ? number_letter(t, 1, ')') : kNoMatch;
-      },
-      [](std::string_view t) { return then_char(t, digits(t, 0), '.'); },
-      [](std::string_view t) { return then_char(t, digits(t, 0), ')'); },
-      [](std::string_view t) {  // \(\d+\)
-        return is_char(t, 0, '(') ? then_char(t, digits(t, 1), ')') : kNoMatch;
-      },
-      [](std::string_view t) {  // \[\d+\]
-        return is_char(t, 0, '[') ? then_char(t, digits(t, 1), ']') : kNoMatch;
-      },
-      [](std::string_view t) { return then_char(t, run_of(t, 0, "ivxlcdm"), '.'); },
-      [](std::string_view t) { return then_char(t, run_of(t, 0, "IVXLCDM"), '.'); },
-      [](std::string_view t) { return is_lower(t, 0) ? then_char(t, 1, '.') : kNoMatch; },
-      [](std::string_view t) { return is_upper(t, 0) ? then_char(t, 1, '.') : kNoMatch; },
-      [](std::string_view t) { return is_lower(t, 0) ? then_char(t, 1, ')') : kNoMatch; },
-      [](std::string_view t) { return is_upper(t, 0) ? then_char(t, 1, ')') : kNoMatch; },
-  };
-  for (const Pattern pattern : kPatterns) {
+  for (const Pattern pattern : kNumberedPatterns) {
     const size_t end = pattern(s);
     if (end == kNoMatch || end >= s.size()) continue;
     // `^(marker)\s(.+)`: one whitespace code point, then content.
@@ -142,7 +144,42 @@ size_t numbered_marker_end(std::string_view s) {
   return kNoMatch;
 }
 
+// Form check boxes, empty, checked and crossed (U+2610..U+2612). Not list
+// markers to the split rule, but each opens its own choice on a line.
+bool is_choice_box(char32_t c) { return c >= U'\u2610' && c <= U'\u2612'; }
+
+// The shape a whole token has as a list marker: a bullet glyph as itself,
+// any check box as the empty one, and a numbering form with each digit run
+// read as "0" and each letter run as "a" or "A" ("12)" is "0)", "iv." and
+// "c." are both "a."). Nothing when the token is no marker on its own.
+std::optional<std::string> marker_shape(std::string_view token) {
+  if (token.empty()) return std::nullopt;
+  const CodePoint first = decode_at(token, 0);
+  if (first.length == token.size()) {
+    if (is_bullet(first.value)) return std::string(token);
+    if (is_choice_box(first.value)) return std::string("\u2610");
+  }
+  const bool numbering = std::ranges::any_of(
+      kNumberedPatterns, [&](Pattern pattern) { return pattern(token) == token.size(); });
+  if (!numbering) return std::nullopt;
+  std::string shape;
+  for (size_t at = 0; at < token.size(); ++at) {
+    const char read = is_digit(token, at)   ? '0'
+                      : is_lower(token, at) ? 'a'
+                      : is_upper(token, at) ? 'A'
+                                            : token[at];
+    const bool run = read == '0' || read == 'a' || read == 'A';
+    if (!run || shape.empty() || shape.back() != read) shape.push_back(read);
+  }
+  return shape;
+}
+
 }  // namespace
+
+bool is_sibling_list_marker(std::string_view lead, std::string_view token) {
+  const std::optional<std::string> lead_shape = marker_shape(lead);
+  return lead_shape.has_value() && marker_shape(token) == lead_shape;
+}
 
 std::optional<ListMarkerSplit> split_list_marker(std::string_view orig) {
   if (orig.empty()) return std::nullopt;

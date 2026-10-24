@@ -44,6 +44,28 @@ void expect_no_split(const std::string& orig) {
   require(!grparse::split_list_marker(orig).has_value(), "'" + orig + "' keeps its text");
 }
 
+// Which words open another item of the list a lead marker opened: the same
+// bullet glyph, any check box after a check box, or a numbering form of the
+// lead's shape. Words of an item's own text are not.
+void verify_sibling_markers() {
+  using grparse::is_sibling_list_marker;
+  require(is_sibling_list_marker("\xE2\x80\xA2", "\xE2\x80\xA2"), "a bullet after the same bullet");
+  require(is_sibling_list_marker("-", "-"), "a dash after a dash");
+  require(is_sibling_list_marker("\xE2\x98\x90", "\xE2\x98\x92"), "a crossed box after an empty one");
+  require(is_sibling_list_marker("a)", "b)"), "b) after a)");
+  require(is_sibling_list_marker("1.", "12."), "12. after 1.");
+  require(is_sibling_list_marker("(1)", "(2)"), "(2) after (1)");
+  require(is_sibling_list_marker("i.", "iv."), "iv. after i.");
+  require(is_sibling_list_marker("a.", "c."), "c. after a., though c. also reads as roman");
+  require(!is_sibling_list_marker("\xE2\x80\xA2", "-"), "a dash is not a bullet's sibling");
+  require(!is_sibling_list_marker("1.", "1.5"), "a decimal is not a numbered item");
+  require(!is_sibling_list_marker("1.", "J."), "an initial is not a numbered item");
+  require(!is_sibling_list_marker("a)", "A)"), "case is part of the shape");
+  require(!is_sibling_list_marker("Red", "Red"), "a word is no marker");
+  require(!is_sibling_list_marker("- x", "- x"), "a marker is a whole word");
+  require(!is_sibling_list_marker("", ""), "an empty word is no marker");
+}
+
 // The reference's pattern table, case by case, including its first-match
 // order (compound numbering before simple, roman before single letters).
 void verify_marker_patterns() {
@@ -210,6 +232,7 @@ void verify_sample_exports_agree() {
 int main() {
   return grparse_test::run_test_main("list-marker-test", "ok", {
       verify_marker_patterns,
+      verify_sibling_markers,
       verify_assembled_list_items,
       verify_sample_exports_agree,
   });

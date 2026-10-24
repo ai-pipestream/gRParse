@@ -29,4 +29,14 @@ struct ListMarkerSplit {
 // simple ones, first match wins, as in the reference.
 std::optional<ListMarkerSplit> split_list_marker(std::string_view orig);
 
+// Whether `token`, a whole word with nothing after it, opens another item
+// of the list that `lead` opened: both are the same one of split_list_marker's
+// bullet glyphs, both are form check boxes (U+2610..U+2612), or both are its
+// numbering forms with one shape ("1." and "2.", "a)" and "b)", "iv." and
+// "v."). A text layer's word cells carry a marker as its own word, so this
+// tells where an item starts inside one visual line, and a decimal or an
+// initial in an item's text ("1.5", "J.") is no marker of a bulleted or
+// "1)" list.
+bool is_sibling_list_marker(std::string_view lead, std::string_view token);
+
 }  // namespace grparse

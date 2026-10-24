@@ -164,6 +164,55 @@ void verify_list_words_on_one_line_make_one_item() {
           "one block per bullet line; the far list on the same baseline is its own");
 }
 
+std::vector<std::vector<size_t>> sorted_block_lines(const grparse::OcrPage& page) {
+  std::vector<std::vector<size_t>> lines;
+  for (const auto& block : grparse::build_text_blocks(page)) lines.push_back(block.lines);
+  std::ranges::sort(lines);
+  return lines;
+}
+
+// Items written inline on one line, each opened by a marker like the
+// line's first, stay separate items; a decimal, an initial or a dash in an
+// item's text is no marker of its list.
+void verify_inline_list_markers_split_items() {
+  grparse::OcrPage page{1000, 1000,
+                        {line_at("\u2022", 50, 100, 6), line_at("Red", 62, 100, 20),
+                         line_at("\u2022", 88, 100, 6), line_at("Green", 100, 100, 30),
+                         line_at("\u2022", 136, 100, 6), line_at("Blue", 148, 100, 25),
+                         line_at("\u2610", 50, 130, 8), line_at("Yes", 62, 130, 20),
+                         line_at("\u2610", 88, 130, 8), line_at("No", 100, 130, 15),
+                         line_at("a)", 50, 160, 10), line_at("foo", 64, 160, 20),
+                         line_at("b)", 90, 160, 10), line_at("bar", 104, 160, 20),
+                         line_at("1.", 50, 190, 10), line_at("Size", 64, 190, 25),
+                         line_at("1.5", 93, 190, 15), line_at("mm", 112, 190, 15),
+                         line_at("\u2022", 50, 220, 6), line_at("J.", 60, 220, 10),
+                         line_at("Smith", 74, 220, 30), line_at("-", 108, 220, 5),
+                         line_at("warm", 117, 220, 25)}};
+  page.regions = {{"list", 0.9F, 40, 90, 960, 240}};
+  const std::vector<std::vector<size_t>> expected = {
+      {0, 1}, {2, 3}, {4, 5}, {6, 7}, {8, 9}, {10, 11}, {12, 13}, {14, 15, 16, 17},
+      {18, 19, 20, 21, 22}};
+  require(sorted_block_lines(page) == expected,
+          "each inline bullet, check box and lettered item is its own item, and an item's "
+          "own decimal, initial and dash stay in its text");
+}
+
+// A bullet's hanging indent is wider than a line height (Word's default puts
+// about 13pt between the glyph and a 12.6pt line), so the word after a lone
+// marker joins it across two line heights; between words the reach stays one.
+void verify_marker_reaches_across_its_hanging_indent() {
+  grparse::OcrPage page{1000, 1000,
+                        {line_at("\u2022", 50, 100, 6), line_at("Hanging", 74, 100, 50),
+                         line_at("indent", 130, 100, 30), line_at("Text", 50, 130, 20),
+                         line_at("apart", 88, 130, 30), line_at("\u2022", 50, 160, 6),
+                         line_at("Far", 90, 160, 20)}};
+  page.regions = {{"list", 0.9F, 40, 90, 960, 175}};
+  const std::vector<std::vector<size_t>> expected = {{0, 1, 2}, {3}, {4}, {5}, {6}};
+  require(sorted_block_lines(page) == expected,
+          "a lone marker reaches its text across the hanging indent, words do not, and a "
+          "marker's reach ends at two line heights");
+}
+
 }  // namespace
 
 int main() {
@@ -178,5 +227,7 @@ int main() {
       verify_cover_photo_precedes_the_next_block_in_any_column,
       verify_page_without_blocks_anchors_at_end,
       verify_list_words_on_one_line_make_one_item,
+      verify_inline_list_markers_split_items,
+      verify_marker_reaches_across_its_hanging_indent,
   });
 }

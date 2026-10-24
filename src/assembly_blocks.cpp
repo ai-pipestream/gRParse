@@ -4,6 +4,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "grparse/list_marker.h"
 #include "grparse/reading_order.h"
 #include "grparse/region_geometry.h"
 #include "grparse/table_structure.h"
@@ -54,8 +55,14 @@ bool region_aggregates(const LayoutRegion* region) {
 // height) and starting right after it, within one line height. A PDF
 // backend's text cells are words or segments, not lines, so without this a
 // list region of the text layer turns every word into its own item; an
-// item two columns away, or the next bullet below, stays its own.
+// item two columns away, or the next bullet below, stays its own. A block
+// that so far is only its marker reaches across two line heights, the
+// hanging indent between a bullet and its text, and a word that is a
+// marker like the block's own ("\u2022 Red \u2022 Green", "a) foo b) bar")
+// starts the next item of the same line.
 bool continues_visual_line(const OcrPage& page, const TextBlock& block, const OcrLine& line) {
+  const OcrLine& lead = page.lines[block.lines.front()];
+  if (is_sibling_list_marker(lead.text, line.text)) return false;
   const AxisAlignedBox last = bounding_box(page.lines[block.lines.back()]);
   const AxisAlignedBox next = bounding_box(line);
   const int64_t shorter = std::min(last.height(), next.height());
@@ -63,7 +70,9 @@ bool continues_visual_line(const OcrPage& page, const TextBlock& block, const Oc
   const int64_t overlap = static_cast<int64_t>(std::min(last.bottom, next.bottom)) -
                           std::max(last.top, next.top);
   const int64_t gap = static_cast<int64_t>(next.left) - last.right;
-  return 2 * overlap > shorter && next.left >= last.left && gap <= std::max(last.height(), next.height());
+  const bool only_marker = block.lines.size() == 1 && is_sibling_list_marker(lead.text, lead.text);
+  const int64_t reach = (only_marker ? 2 : 1) * std::max(last.height(), next.height());
+  return 2 * overlap > shorter && next.left >= last.left && gap <= reach;
 }
 
 bool is_list_region(const LayoutRegion* region) {
