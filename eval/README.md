@@ -193,7 +193,15 @@ green result cannot be an empty one.
 
 `long-text.pdf`, `mixed.pdf` and `scanned-image.pdf` are copied from
 `grpc-pdf-inspector/demos/sample-data/`, which generates them itself
-(`node-client`, `npm run samples`). Gatsby prose is public domain (Project
+(`node-client`, `npm run samples`). `quickstart-sample.pdf` (`pdf-quickstart-sample`) is a byte copy of
+`quickstart/sample.pdf`, the first document a new user parses, and a corpus
+test keeps the two identical: a born-digital page that must be read from its
+text layer beside a 150 dpi scan that only OCR reads (ai-pipestream/gRParse#162).
+Its latency gate was recorded on a CPU host, where OCR of the scan is most
+of the time; on another host score it with `EVAL_LATENCY=off`. A CPU and a
+CUDA host may also read page 2 differently (the recognizer runs on a
+different execution provider), so its OCR floors hold for the CPU stack the
+baseline was recorded on. Gatsby prose is public domain (Project
 Gutenberg transcription); every other fixture text was written for the
 fixture. Fixtures stay under 2 MB each.
 
@@ -289,8 +297,11 @@ tags, so a number from it cannot be pinned to code. Every run now writes
 `run.json` beside `results.jsonl` (`eval/corpus/provenance.py`):
 
 - `grparse.commit`: from the image label `org.opencontainers.image.revision`
-  (publish.yml sets it), or `--grparse-commit` for a local build without the
-  label; `null` with the reason when neither exists, never a guess
+  (publish.yml and ci.yml set it, and so do local builds through
+  `scripts/build-image.sh` or `GRPARSE_REVISION=$(scripts/revision.sh) docker
+  compose build`; an uncommitted tree reads `<sha>-dirty`), or
+  `--grparse-commit` for an image built without it; `null` with the reason
+  when neither exists, never a guess
 - `stack.services`: with `--compose-project`, every container of that compose
   project: image reference, image id, repo digests, revision and version
   labels, and gRParse's `GRPARSE_*` environment minus anything credential-shaped
@@ -330,8 +341,8 @@ corpus hash (`drift.md`), prints the headline and tears the stack down.
 scripts/eval-corpus.sh --corpus /data/realdata --passwords-file ~/passwords.txt     # :latest, CUDA
 scripts/eval-corpus.sh --corpus /data/realdata --flavor cpu --models-image --tag 0.2.1
 scripts/eval-corpus.sh --corpus /data/realdata --existing parse-stack                 # the running stack
-scripts/eval-corpus.sh --corpus /data/realdata --flavor cpu --grparse-image grparse-ci-cpu \
-  --grparse-commit "$(git rev-parse HEAD)"                                            # a local build
+scripts/build-image.sh cpu                                                          # a local build, labelled
+scripts/eval-corpus.sh --corpus /data/realdata --flavor cpu --grparse-image grparse-local-cpu
 scripts/eval-corpus.sh --corpus /data/realdata --baseline eval/out/s3/realdata-1/report.json
 uv run python eval/corpus/analyze.py --list-runs eval/out/corpus                     # run history
 ```

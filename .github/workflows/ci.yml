@@ -44,7 +44,25 @@ jobs:
           password: ${{ secrets.DOCKER_TOKEN }}
       - name: Find the deps seed for this build
         id: seed
-        run: sh scripts/find-seed.sh Dockerfile cuda amd64 >> "$GITHUB_OUTPUT"
+        # Forgejo's runner keeps its Docker daemon between jobs, and with it
+        # the deps stage and a filled /build, so it never pulls a seed it does
+        # not already hold (scripts/find-seed.sh --no-pull).
+        env:
+          SEED_FLAGS: ${{ github.server_url != 'https://github.com' && '--no-pull' || '' }}
+        run: sh scripts/find-seed.sh $SEED_FLAGS Dockerfile cuda amd64 >> "$GITHUB_OUTPUT"
+      - name: Restore the compile cache
+        # GitHub's hosted runner only: its builder starts empty, so the ccache
+        # mount the build compiles through travels in the Actions cache
+        # (scripts/ccache-mount.sh). Forgejo's daemon keeps the mount itself.
+        if: ${{ github.server_url == 'https://github.com' }}
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-cuda-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-cuda-amd64-
+      - name: Load the compile cache into the build's ccache mount
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: sh scripts/ccache-mount.sh load cuda amd64 "$RUNNER_TEMP/ccache"
       - name: Build full image and run non-GPU tests
         # The full build (not just the build stage) also assembles the
         # runtime stage, so a runtime library missing from the staged
@@ -54,6 +72,15 @@ jobs:
             --build-arg GRPARSE_BUILD_JOBS="$(scripts/build-jobs.sh)" \
             --build-arg GRPARSE_DEPS_IMAGE="${{ steps.seed.outputs.image }}" \
             --build-arg GRPARSE_REVISION="${{ github.sha }}" -t grparse-ci-cuda .
+      - name: Copy the compile cache out of the ccache mount
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: sh scripts/ccache-mount.sh save cuda amd64 "$RUNNER_TEMP/ccache"
+      - name: Save the compile cache
+        if: ${{ github.server_url == 'https://github.com' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-cuda-amd64-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Boot-proof the runtime image
         # Library closure + boot-to-main.  A green build with an unbootable
         # binary has shipped before (ZXing flipping BUILD_SHARED_LIBS); this
@@ -87,13 +114,40 @@ jobs:
           password: ${{ secrets.DOCKER_TOKEN }}
       - name: Find the deps seed for this build
         id: seed
-        run: sh scripts/find-seed.sh Dockerfile.openvino openvino amd64 >> "$GITHUB_OUTPUT"
+        # Forgejo's runner keeps its Docker daemon between jobs, and with it
+        # the deps stage and a filled /build, so it never pulls a seed it does
+        # not already hold (scripts/find-seed.sh --no-pull).
+        env:
+          SEED_FLAGS: ${{ github.server_url != 'https://github.com' && '--no-pull' || '' }}
+        run: sh scripts/find-seed.sh $SEED_FLAGS Dockerfile.openvino openvino amd64 >> "$GITHUB_OUTPUT"
+      - name: Restore the compile cache
+        # GitHub's hosted runner only: its builder starts empty, so the ccache
+        # mount the build compiles through travels in the Actions cache
+        # (scripts/ccache-mount.sh). Forgejo's daemon keeps the mount itself.
+        if: ${{ github.server_url == 'https://github.com' }}
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-openvino-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-openvino-amd64-
+      - name: Load the compile cache into the build's ccache mount
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: sh scripts/ccache-mount.sh load openvino amd64 "$RUNNER_TEMP/ccache"
       - name: Build Intel/OpenVINO image and run non-GPU tests
         run: |
           docker build --progress=plain -f Dockerfile.openvino \
             --build-arg GRPARSE_BUILD_JOBS="$(scripts/build-jobs.sh)" \
             --build-arg GRPARSE_DEPS_IMAGE="${{ steps.seed.outputs.image }}" \
             --build-arg GRPARSE_REVISION="${{ github.sha }}" -t grparse-ci-openvino .
+      - name: Copy the compile cache out of the ccache mount
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: sh scripts/ccache-mount.sh save openvino amd64 "$RUNNER_TEMP/ccache"
+      - name: Save the compile cache
+        if: ${{ github.server_url == 'https://github.com' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-openvino-amd64-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Boot-proof the runtime image
         run: ./scripts/smoke-test.sh grparse-ci-openvino
       - name: Verify model fetch and real CPU embeddings
@@ -170,7 +224,25 @@ jobs:
           password: ${{ secrets.DOCKER_TOKEN }}
       - name: Find the deps seed for this build
         id: seed
-        run: sh scripts/find-seed.sh Dockerfile.cpu cpu amd64 >> "$GITHUB_OUTPUT"
+        # Forgejo's runner keeps its Docker daemon between jobs, and with it
+        # the deps stage and a filled /build, so it never pulls a seed it does
+        # not already hold (scripts/find-seed.sh --no-pull).
+        env:
+          SEED_FLAGS: ${{ github.server_url != 'https://github.com' && '--no-pull' || '' }}
+        run: sh scripts/find-seed.sh $SEED_FLAGS Dockerfile.cpu cpu amd64 >> "$GITHUB_OUTPUT"
+      - name: Restore the compile cache
+        # GitHub's hosted runner only: its builder starts empty, so the ccache
+        # mount the build compiles through travels in the Actions cache
+        # (scripts/ccache-mount.sh). Forgejo's daemon keeps the mount itself.
+        if: ${{ github.server_url == 'https://github.com' }}
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-cpu-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-cpu-amd64-
+      - name: Load the compile cache into the build's ccache mount
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: sh scripts/ccache-mount.sh load cpu amd64 "$RUNNER_TEMP/ccache"
       - name: Build CPU image and run the tests, model goldens included
         run: |
           docker build --progress=plain -f Dockerfile.cpu \
@@ -178,8 +250,58 @@ jobs:
             --build-arg GRPARSE_DEPS_IMAGE="${{ steps.seed.outputs.image }}" \
             --build-arg GRPARSE_REVISION="${{ github.sha }}" \
             --build-arg GRPARSE_TEST_REQUIRE_MODELS=1 -t grparse-ci-cpu .
+      - name: Copy the compile cache out of the ccache mount
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: sh scripts/ccache-mount.sh save cpu amd64 "$RUNNER_TEMP/ccache"
+      - name: Save the compile cache
+        if: ${{ github.server_url == 'https://github.com' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-cpu-amd64-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Boot-proof the runtime image
         run: ./scripts/smoke-test.sh grparse-ci-cpu
+      # The storage connector, remote source and chart end to end suites
+      # skip in the in-build ctest because they need emulators. Here the
+      # scripts developers run locally start those emulators (fake-gcs-server,
+      # Azurite, RustFS over http and self-signed https, the mock Google token
+      # endpoint and Drive API, local http and https origins, the published
+      # grpc-enrich in front of an emulated OpenAI-compatible VLM) and run
+      # each suite from the e2e image. A script fails when an emulator never
+      # opens its port (or RustFS never answers /health), and a binary's skip
+      # (exit 77) fails the step too.
+      # GitHub's hosted runner only: the scripts bind-mount host temporary
+      # directories into the emulators and reach them on 127.0.0.1, which a
+      # Forgejo job container talking to the host daemon cannot do.
+      - name: Build the end to end image
+        # Same arguments as the build above, so BuildKit reuses its build
+        # stage; the e2e target adds only the three test binaries on the
+        # runtime base and is never published.
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: |
+          docker build --progress=plain -f Dockerfile.cpu --target e2e \
+            --build-arg GRPARSE_BUILD_JOBS="$(scripts/build-jobs.sh)" \
+            --build-arg GRPARSE_DEPS_IMAGE="${{ steps.seed.outputs.image }}" \
+            --build-arg GRPARSE_REVISION="${{ github.sha }}" \
+            --build-arg GRPARSE_TEST_REQUIRE_MODELS=1 -t grparse-ci-cpu-e2e .
+      - name: Install the mock Google endpoint's dependency
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: |
+          python3 -c 'import cryptography' 2>/dev/null || {
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends python3-cryptography
+          }
+      - name: Storage connectors end to end (fake-gcs-server, Azurite, RustFS, mock Google)
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: scripts/test/storage-connectors-e2e-test.sh grparse-ci-cpu-e2e
+      - name: Remote sources end to end (RustFS http and https, http and https origins)
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: scripts/test/remote-sources-e2e-test.sh grparse-ci-cpu-e2e
+      - name: Chart outputs end to end (grpc-enrich and an emulated VLM)
+        if: ${{ github.server_url == 'https://github.com' }}
+        # A released grpc-enrich, so a push to that repo cannot turn this
+        # repo's PRs red; move the tag when the chart contract moves.
+        run: scripts/test/chart-outputs-e2e-test.sh grparse-ci-cpu-e2e pipestreamai/grpc-enrich:0.3.0
 
   # The demo shell image carries every peer's proto contract (vendored under
   # examples/web-demo/peer-protos); the Dockerfile's own build gate loads

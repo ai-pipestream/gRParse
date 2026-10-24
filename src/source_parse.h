@@ -24,7 +24,9 @@
 #include "grparse/document_parser_service.h"
 #include "grparse/document_render.h"
 #include "grparse/document_repair.h"
+#include "grparse/inflight_bytes.h"
 #include "grparse/page_scheduler.h"
+#include "grparse/remote_fetch_slots.h"
 
 namespace grparse {
 
@@ -41,6 +43,17 @@ struct SourceParse {
   // The structural rule findings, when the request asked for a REPORT.
   google::protobuf::RepeatedPtrField<ai::pipestream::parse::v1::StructureFinding>
       structure_findings;
+  // A remote source's fetched copy, charged once the fetch returned; held
+  // until the surface is done with this parse.
+  InflightCharge fetched_charge;
+};
+
+// What a remote source is admitted under: the slots that bound the fetches
+// running at once, and the in-flight budget the fetched copy is charged to.
+// A null member leaves that bound off.
+struct SourceAdmission {
+  std::shared_ptr<InflightBytes> inflight;
+  std::shared_ptr<RemoteFetchSlots> fetch_slots;
 };
 
 // The parse every unary surface shares: decode the single FileSource, plan
@@ -146,11 +159,17 @@ const std::string& settings_digest();
 // directory; settings_digest() caches its first answer.
 std::string read_settings_digest();
 
+// A remote source is fetched holding one of `admission`'s fetch slots
+// (waiting for one while the call is still wanted, CANCELLED once it is
+// not), and its fetched copy is then charged to the in-flight budget before
+// anything parses it: RESOURCE_EXHAUSTED when the budget refuses, else the
+// charge rides `parsed->fetched_charge`.
 grpc::Status parse_source(grpc::CallbackServerContext* context,
                           const ai::pipestream::parse::v1::ConvertDocumentRequest& request,
                           PageScheduler& scheduler,
                           const std::shared_ptr<CollectorEndpoints>& collectors,
                           const std::optional<RepairOptions>& server_repair,
-                          const std::string& surface, SourceParse* parsed);
+                          const SourceAdmission& admission, const std::string& surface,
+                          SourceParse* parsed);
 
 }  // namespace grparse

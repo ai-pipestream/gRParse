@@ -306,6 +306,14 @@ uint64_t read_inflight_byte_budget() {
   return configured_size("GRPARSE_MAX_INFLIGHT_BYTES", kDefaultBytes, kMaximumBytes);
 }
 
+size_t read_remote_fetch_concurrency() {
+  // A fetch holds its body and the body's base64 copy, up to
+  // GRPARSE_SOURCE_MAX_BYTES and a third more, before the in-flight budget
+  // can be charged for them; the slot count is what bounds those bytes.
+  return configured_size("GRPARSE_REMOTE_FETCH_CONCURRENCY", kDefaultRemoteFetchConcurrency,
+                         1024);
+}
+
 uint64_t read_response_byte_cap() {
   // What the server accepts on its own port is what it sends by default: a
   // client built to the same limit can take everything it is sent. The

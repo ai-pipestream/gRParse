@@ -39,6 +39,7 @@
 #include "grparse/structure_rules.h"
 #include "support/check.h"
 #include "support/fake_pdf_backend.h"
+#include "support/loopback_http.h"
 
 namespace {
 
@@ -1601,6 +1602,10 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
   // document-wide judgement that OCR reads the document better than its
   // text layer does.
   void set_ocr_recommended(bool recommended) { ocr_recommended_ = recommended; }
+  // Sets PdfInfo.ocr_recommendation_reasons: why detection recommends OCR.
+  void set_ocr_recommendation_reasons(std::vector<pdfv1::OcrRecommendationReason> reasons) {
+    ocr_recommendation_reasons_ = std::move(reasons);
+  }
 
   grpc::Status ParsePdf(
       grpc::ServerContext*,
@@ -1626,6 +1631,7 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
     info->set_pdf_type(type_);
     info->set_page_count(3);
     info->set_ocr_recommended(ocr_recommended_);
+    for (const auto reason : ocr_recommendation_reasons_) info->add_ocr_recommendation_reasons(reason);
     for (const uint32_t page : pages_needing_ocr_) info->add_pages_needing_ocr(page);
     stream->Write(event);
     event.Clear();
@@ -1699,6 +1705,7 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
   bool paged_document_;
   bool searchable_scan_;
   bool ocr_recommended_ = false;
+  std::vector<pdfv1::OcrRecommendationReason> ocr_recommendation_reasons_;
   std::atomic<int> dials_{0};
 };
 
@@ -2047,6 +2054,283 @@ void verify_inflight_byte_budget() {
   require(inflight->in_use() == 0, "every charge is returned");
 }
 
+// A wiki storage page long enough to chunk into hundreds of messages.
+std::string handbook_body() {
+  std::string body = "<h1>Handbook</h1>";
+  const std::string paragraph = "<p>" + std::string(4000, 'x') + "</p>";
+  for (int index = 0; index < 400; ++index) body += paragraph;
+  return body;
+}
+
+// A remote source's request is small and its document is only known once
+// fetched: a loopback origin serving image.png ("memory"), large.png and
+// handbook.confluence (handbook_body()).
+class RemoteSourceOrigin final {
+ public:
+  RemoteSourceOrigin()
+      : origin_([](const grparse_test::LoopbackHttp::Request& request) {
+          if (request.target == "/image.png") {
+            return grparse_test::LoopbackHttp::response(200, "memory");
+          }
+          if (request.target == "/large.png") {
+            return grparse_test::LoopbackHttp::response(200, std::string(4096, 'x'));
+          }
+          if (request.target == "/handbook.confluence") {
+            return grparse_test::LoopbackHttp::response(200, handbook_body());
+          }
+          return grparse_test::LoopbackHttp::response(404, "missing");
+        }) {
+    ::setenv("GRPARSE_STORAGE_ALLOW_PRIVATE_ENDPOINTS", "1", 1);
+    ::unsetenv("GRPARSE_ALLOWED_SOURCE_TYPES");
+  }
+  ~RemoteSourceOrigin() { ::unsetenv("GRPARSE_STORAGE_ALLOW_PRIVATE_ENDPOINTS"); }
+
+  std::string url(const std::string& path) const { return origin_.base() + path; }
+
+  pipestream::parse::v1::ConvertSourceRequest request(const std::string& path) const {
+    pipestream::parse::v1::ConvertSourceRequest request;
+    request.mutable_request()->add_sources()->mutable_http()->set_url(origin_.base() + path);
+    request.mutable_request()->mutable_options()->add_to_formats(
+        pipestream::parse::v1::OUTPUT_FORMAT_TEXT);
+    return request;
+  }
+
+  int connections() const { return origin_.connections(); }
+
+ private:
+  grparse_test::LoopbackHttp origin_;
+};
+
+// One ParseService over a fake CV scheduler, with the budget and fetch slots
+// a test hands it.
+class BudgetedParseServer final {
+ public:
+  BudgetedParseServer(std::shared_ptr<grparse::InflightBytes> inflight,
+                      std::shared_ptr<grparse::RemoteFetchSlots> slots,
+                      std::chrono::milliseconds inference_delay = 0ms)
+      : recognizer_(inference_delay),
+        scheduler_(recognizer_, {2, 3, 2, 3, 2, 2, 2},
+                   [](std::shared_ptr<const std::string>, bool, double) {
+                     return std::make_shared<FakeSource>();
+                   }),
+        service_(scheduler_,
+                 std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{}),
+                 grparse::CallExecutor::Options{}, grparse::RepairOptions{}, {}, {},
+                 std::move(inflight)) {
+    service_.set_remote_fetch_slots(std::move(slots));
+    grpc::ServerBuilder builder;
+    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port_);
+    builder.RegisterService(&service_);
+    server_ = builder.BuildAndStart();
+    require(server_ && port_ != 0, "budgeted parse server failed to start");
+    stub_ = pipestream::parse::v1::ParseService::NewStub(
+        grpc::CreateChannel(target(), grpc::InsecureChannelCredentials()));
+  }
+
+  std::string target() const { return "127.0.0.1:" + std::to_string(port_); }
+
+  ~BudgetedParseServer() {
+    server_->Shutdown(std::chrono::system_clock::now() + 2s);
+    server_->Wait();
+  }
+
+  grpc::Status convert(const pipestream::parse::v1::ConvertSourceRequest& request,
+                       std::chrono::milliseconds deadline = 10s) {
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + deadline);
+    pipestream::parse::v1::ConvertSourceResponse response;
+    return stub_->ConvertSource(&context, request, &response);
+  }
+
+  pipestream::parse::v1::ParseService::Stub& stub() { return *stub_; }
+
+ private:
+  FakeRecognizer recognizer_;
+  grparse::PageScheduler scheduler_;
+  grparse::DocumentParserService service_;
+  int port_ = 0;
+  std::unique_ptr<grpc::Server> server_;
+  std::unique_ptr<pipestream::parse::v1::ParseService::Stub> stub_;
+};
+
+// Polls `done` until it holds, failing with `label` after ten seconds.
+void wait_until(const std::function<bool()>& done, const std::string& label) {
+  for (int attempt = 0; attempt < 10000 && !done(); ++attempt) {
+    std::this_thread::sleep_for(1ms);
+  }
+  require(done(), label);
+}
+
+void wait_for_charges_returned(const grparse::InflightBytes& inflight, const std::string& label) {
+  for (int attempt = 0; attempt < 200 && inflight.in_use() != 0; ++attempt) {
+    std::this_thread::sleep_for(10ms);
+  }
+  require(inflight.in_use() == 0, label);
+}
+
+// A remote source is charged for what it fetched once the fetch returns:
+// the base64 copy and the bytes it decodes to, held while the parse runs
+// and returned after it. A fetched copy the budget has no room for is
+// refused with RESOURCE_EXHAUSTED before anything parses it, on the chunk
+// surfaces as on ConvertSource, though its small request was admitted.
+void verify_remote_source_is_charged_after_the_fetch() {
+  RemoteSourceOrigin origin;
+  const auto request = origin.request("/image.png");
+  require(grparse::decoded_source_bytes(request.request().sources()) == 0,
+          "admission charges a remote source for its request alone");
+  const std::string encoded = grparse::encode_base64("memory", 6);
+  const uint64_t fetched = encoded.size() + encoded.size() / 4 * 3 + 3;
+  // Room for the request and its fetched copy, and not a byte more.
+  const auto inflight = std::make_shared<grparse::InflightBytes>(request.ByteSizeLong() + fetched);
+  BudgetedParseServer server(inflight, std::make_shared<grparse::RemoteFetchSlots>(4), 200ms);
+
+  grpc::Status status;
+  std::thread call([&] { status = server.convert(request); });
+  uint64_t peak = 0;
+  for (int attempt = 0; attempt < 500 && peak < inflight->limit(); ++attempt) {
+    peak = std::max(peak, inflight->in_use());
+    std::this_thread::sleep_for(2ms);
+  }
+  call.join();
+  require(status.ok(), "a fetched source that fits is parsed: " + status.error_message());
+  require(peak == inflight->limit(),
+          "the parse holds the request and the fetched copy: peak " + std::to_string(peak) +
+              " of " + std::to_string(inflight->limit()));
+  wait_for_charges_returned(*inflight, "the fetched copy's charge is returned with the call's");
+
+  const auto large = origin.request("/large.png");
+  require(large.ByteSizeLong() == request.ByteSizeLong(), "the two requests weigh the same");
+  status = server.convert(large);
+  require(status.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED &&
+              status.error_message().contains("fetched") &&
+              status.error_message().contains("GRPARSE_MAX_INFLIGHT_BYTES"),
+          "a fetched copy past the budget is refused: " + status.error_message());
+  wait_for_charges_returned(*inflight, "a refused fetched copy leaves nothing charged");
+  require(server.convert(request).ok(), "the budget admits the small source again");
+  wait_for_charges_returned(*inflight, "every charge is returned");
+
+  // The chunk surfaces also charge the sources they copy on admission, so
+  // their budget has room for that and the small fetched copy alone.
+  pipestream::parse::v1::ChunkHierarchicalSourceRequest chunk;
+  *chunk.mutable_request()->mutable_sources() = large.request().sources();
+  const auto chunk_inflight = std::make_shared<grparse::InflightBytes>(
+      chunk.ByteSizeLong() + chunk.request().sources(0).ByteSizeLong() + fetched);
+  BudgetedParseServer chunk_server(chunk_inflight,
+                                   std::make_shared<grparse::RemoteFetchSlots>(4));
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  pipestream::parse::v1::ChunkHierarchicalSourceResponse response;
+  const grpc::Status chunked =
+      chunk_server.stub().ChunkHierarchicalSource(&context, chunk, &response);
+  require(chunked.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED &&
+              chunked.error_message().contains("fetched") &&
+              chunked.error_message().contains("GRPARSE_MAX_INFLIGHT_BYTES"),
+          "the chunk surfaces charge the fetched copy too: " + chunked.error_message());
+  wait_for_charges_returned(*chunk_inflight, "the chunk surface returns every charge");
+}
+
+// StreamChunks writes its messages after the work returns, one at a time
+// as the reader takes them, and they are as large as what the parse held:
+// a remote source's fetched copy stays charged until the stream is done,
+// not just until the parse is.
+void verify_stream_chunks_holds_the_fetched_charge_until_written() {
+  RemoteSourceOrigin origin;
+  const auto inflight = std::make_shared<grparse::InflightBytes>(256ULL << 20U);
+  BudgetedParseServer server(inflight, std::make_shared<grparse::RemoteFetchSlots>(4));
+  grpc::ChannelArguments arguments;
+  arguments.SetInt(GRPC_ARG_HTTP2_BDP_PROBE, 0);
+  arguments.SetMaxReceiveMessageSize(64 << 20);
+  auto client = pipestream::parse::v1::ParseService::NewStub(
+      grpc::CreateCustomChannel(server.target(), grpc::InsecureChannelCredentials(), arguments));
+
+  pipestream::parse::v1::StreamChunksRequest request;
+  request.mutable_hierarchical()->add_sources()->mutable_http()->set_url(
+      origin.url("/handbook.confluence"));
+  const uint64_t admitted =
+      request.ByteSizeLong() + request.hierarchical().sources(0).ByteSizeLong();
+  const std::string body = handbook_body();
+  const std::string encoded = grparse::encode_base64(body.data(), body.size());
+  const uint64_t fetched = encoded.size() + encoded.size() / 4 * 3 + 3;
+
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 20s);
+  auto reader = client->StreamChunks(&context, request);
+  pipestream::parse::v1::StreamChunksResponse first;
+  if (!reader->Read(&first)) {
+    const grpc::Status failed = reader->Finish();
+    require(false, "the stream starts with a chunk: " + failed.error_message());
+  }
+  require(first.has_chunk(), "the stream starts with a chunk");
+  require(inflight->in_use() == admitted + fetched,
+          "the unread stream holds its request and the fetched copy: " +
+              std::to_string(inflight->in_use()) + " of " + std::to_string(admitted + fetched));
+  context.TryCancel();
+  pipestream::parse::v1::StreamChunksResponse rest;
+  while (reader->Read(&rest)) {
+  }
+  require(reader->Finish().error_code() == grpc::StatusCode::CANCELLED,
+          "a cancelled reader sees CANCELLED");
+  wait_for_charges_returned(*inflight, "the stream returns the fetched copy's charge in OnDone");
+}
+
+// GRPARSE_REMOTE_FETCH_CONCURRENCY bounds the fetches running at once: a
+// remote source waits for a free slot, gives up without fetching when its
+// call goes away, and fetches once a slot frees. The slots themselves admit
+// exactly their count.
+void verify_remote_fetches_wait_for_a_slot() {
+  {
+    grparse::RemoteFetchSlots slots(2);
+    auto first = slots.acquire([] { return true; });
+    auto second = slots.acquire([] { return true; });
+    require(first.held() && second.held() && slots.in_use() == 2,
+            "free slots are taken without waiting");
+    int asked = 0;
+    require(!slots.acquire([&asked] { return ++asked == 3; }).held() && asked == 3,
+            "a full set waits, asking stop each time, and gives up when told");
+    grparse::RemoteFetchSlots::Slot third;
+    std::thread waiter([&] { third = slots.acquire([] { return false; }); });
+    wait_until([&] { return slots.waiting() == 1; }, "the third acquire waits");
+    require(slots.in_use() == 2, "the waiter holds nothing while every slot is taken");
+    first.reset();
+    waiter.join();
+    require(third.held() && slots.in_use() == 2, "a freed slot goes to the waiter");
+    second.reset();
+    third.reset();
+    require(slots.in_use() == 0, "every slot is returned");
+  }
+
+  RemoteSourceOrigin origin;
+  const auto inflight = std::make_shared<grparse::InflightBytes>(64ULL << 20U);
+  const auto slots = std::make_shared<grparse::RemoteFetchSlots>(1);
+  BudgetedParseServer server(inflight, slots);
+  auto held = slots->acquire([] { return true; });
+  require(held.held(), "the test holds the only fetch slot");
+  {
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 20s);
+    pipestream::parse::v1::ConvertSourceResponse response;
+    grpc::Status waited;
+    std::thread call([&] {
+      waited = server.stub().ConvertSource(&context, origin.request("/image.png"), &response);
+    });
+    wait_until([&] { return slots->waiting() == 1; }, "the remote source waits for the slot");
+    context.TryCancel();
+    call.join();
+    require(waited.error_code() == grpc::StatusCode::CANCELLED,
+            "the cancelled call ends while it waits: " + waited.error_message());
+  }
+  // The parse gives up on its own once it sees the cancel; only then is the
+  // slot freed, so a parse that was still waiting could not take it.
+  wait_until([&] { return slots->waiting() == 0; }, "the cancelled parse stops waiting");
+  held.reset();
+  require(origin.connections() == 0, "the call that went away never fetched");
+  const grpc::Status fetched = server.convert(origin.request("/image.png"));
+  require(fetched.ok(), "a free slot lets the fetch run: " + fetched.error_message());
+  require(origin.connections() == 1, "the source was fetched once");
+  require(slots->in_use() == 0, "the fetch returned its slot");
+  wait_for_charges_returned(*inflight, "every charge is returned");
+}
+
 // The chunk RPCs have nowhere to report a delivery, so a target is refused
 // rather than skipped; and a collector that failed beside a surviving one
 // shows up even when the converted document was not asked for.
@@ -2393,6 +2677,61 @@ void verify_pdf_classification_restricts_recognition() {
           "the cleared pages settle on their embedded layers");
   require(run.response.response().document().doc().source_meta().language() == "fr-FR",
           "the CV route keeps the language the inspector read from the file's catalog");
+}
+
+// What the inspector really sends for a born-digital page beside a scan
+// (the quickstart sample): MIXED, the scan named, ocr_recommended set, and
+// SCANNED_PAGES its only reason. Only the named page is recognized; the
+// others keep their exact embedded layers.
+void verify_pdf_mixed_recommendation_stays_on_named_pages() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_MIXED, {2});
+  inspector.set_ocr_recommended(true);
+  inspector.set_ocr_recommendation_reasons({pdfv1::OCR_RECOMMENDATION_REASON_SCANNED_PAGES});
+  PdfInspectorServer inspector_server(&inspector);
+  const UnaryPdfRun run = run_unary_pdf(inspector_server.target());
+  require(run.status.ok(), "recommended mixed parse failed: " + run.status.error_message());
+  require(run.recognizer_calls == 1,
+          "only the named page of a mixed document recommended for OCR is recognized, got " +
+              std::to_string(run.recognizer_calls));
+  const std::string& text = run.response.response().document().exports().text();
+  require(text.contains("native-one") && text.contains("native-three"),
+          "the pages the inspector did not name settle on their embedded layers");
+  const auto& document = run.response.response().document().doc();
+  require(warned(document, "pdf", "restricted to the 1 page(s)"),
+          "the warning says recognition was restricted, not forced");
+  require(warned(document, "pdf", "the other pages keep their text layers"),
+          "the warning says the recommendation stayed on the scanned pages");
+}
+
+// A form whose text sits over a page-sized background image: MIXED with the
+// scan named, but TEXT_OVER_PAGE_IMAGE says the recommendation covers the
+// other pages too, so every page is recognized as before the reasons field.
+void verify_pdf_template_form_recommendation_forces_every_page() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_MIXED, {2});
+  inspector.set_ocr_recommended(true);
+  inspector.set_ocr_recommendation_reasons({pdfv1::OCR_RECOMMENDATION_REASON_SCANNED_PAGES,
+                                            pdfv1::OCR_RECOMMENDATION_REASON_TEXT_OVER_PAGE_IMAGE});
+  PdfInspectorServer inspector_server(&inspector);
+  const UnaryPdfRun run = run_unary_pdf(inspector_server.target());
+  require(run.status.ok(), "template form parse failed: " + run.status.error_message());
+  require(run.recognizer_calls == 3,
+          "a template form recommended for OCR is recognized on every page, got " +
+              std::to_string(run.recognizer_calls));
+  require(warned(run.response.response().document().doc(), "pdf", "recommended OCR over the text layer"),
+          "the warning says the recommendation covered the text layer");
+}
+
+// An inspector older than the reasons field sends a MIXED recommendation
+// with no reason; every page is recognized, as the route did before.
+void verify_pdf_mixed_recommendation_without_reasons_forces_every_page() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_MIXED, {2});
+  inspector.set_ocr_recommended(true);
+  PdfInspectorServer inspector_server(&inspector);
+  const UnaryPdfRun run = run_unary_pdf(inspector_server.target());
+  require(run.status.ok(), "reasonless mixed parse failed: " + run.status.error_message());
+  require(run.recognizer_calls == 3,
+          "a mixed recommendation that gives no reason is recognized on every page, got " +
+              std::to_string(run.recognizer_calls));
 }
 
 void verify_pdf_collector_failure_degrades_to_the_cv_path() {
@@ -3161,6 +3500,29 @@ void verify_streaming_pdf_classification_restricts_recognition() {
   }
 }
 
+// The streaming leg scopes a mixed document's recommendation the same way.
+void verify_streaming_pdf_mixed_recommendation_stays_on_named_pages() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_MIXED, {2});
+  inspector.set_ocr_recommended(true);
+  inspector.set_ocr_recommendation_reasons({pdfv1::OCR_RECOMMENDATION_REASON_SCANNED_PAGES});
+  PdfInspectorServer inspector_server(&inspector);
+  const StreamPdfRun run = run_stream_pdf(inspector_server.target());
+  require(run.status.ok(), "recommended mixed stream failed: " + run.status.error_message());
+  require(run.recognizer_calls == 1,
+          "the streamed leg recognizes only the named page, got " +
+              std::to_string(run.recognizer_calls));
+  require(run.events.size() == 4 && run.events.back().has_complete(),
+          "three page events then complete");
+  const auto& first = run.events.at(0).page();
+  require(first.page_number() == 1 && first.texts_size() >= 1 &&
+              first.texts(0).text().base().text() == "native-one",
+          "page one keeps its embedded layer");
+  const auto& third = run.events.at(2).page();
+  require(third.page_number() == 3 && third.texts_size() >= 1 &&
+              third.texts(0).text().base().text() == "native-three",
+          "page three keeps its embedded layer");
+}
+
 // One real parse through the chunking RPCs: the same source ConvertSource
 // takes, chunked instead of exported.
 void verify_hierarchical_chunk_rpc_carries_digest_and_offsets(TestServer* server) {
@@ -3742,6 +4104,10 @@ int main() {
         verify_pdf_classification_restricts_recognition();
         verify_pdf_ocr_recommendation_takes_the_cv_path();
         verify_streaming_pdf_ocr_recommendation_takes_the_cv_path();
+        verify_pdf_mixed_recommendation_stays_on_named_pages();
+        verify_pdf_template_form_recommendation_forces_every_page();
+        verify_pdf_mixed_recommendation_without_reasons_forces_every_page();
+        verify_streaming_pdf_mixed_recommendation_stays_on_named_pages();
         verify_pdf_collector_failure_degrades_to_the_cv_path();
         verify_queued_then_cancelled_call_never_dials_a_collector();
         verify_remote_legs_get_a_per_call_document_id();
@@ -3753,6 +4119,9 @@ int main() {
         verify_stream_rejects_invalid_collectors(&server);
         verify_document_timeout_bounds_the_cv_leg();
         verify_inflight_byte_budget();
+        verify_remote_source_is_charged_after_the_fetch();
+        verify_remote_fetches_wait_for_a_slot();
+        verify_stream_chunks_holds_the_fetched_charge_until_written();
         verify_streaming_pdf_fast_path_emits_the_collector_document();
         verify_streaming_pdf_fast_path_projects_pages();
         verify_streaming_pdf_fast_path_streams_page_by_page();
