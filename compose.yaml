@@ -1,6 +1,11 @@
 services:
   grparse:
-    build: .
+    build:
+      context: .
+      args:
+        # The commit for the image's revision label, which eval/corpus reads:
+        # GRPARSE_REVISION=$(scripts/revision.sh) docker compose build
+        GRPARSE_REVISION: ${GRPARSE_REVISION:-}
     ports:
       - "50051:50051"
       - "9464:9464"   # Prometheus /metrics

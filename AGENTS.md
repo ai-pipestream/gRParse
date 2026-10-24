@@ -223,7 +223,8 @@ Runtime GPU, gRPC; see README "Development"). Three images exist:
 `latest-cpu`), `Dockerfile.openvino` (Intel GPUs, `latest-openvino`).
 
 ```bash
-docker compose build                                   # CUDA image + tests
+GRPARSE_REVISION=$(scripts/revision.sh) docker compose build   # CUDA image + tests, commit labelled
+scripts/build-image.sh cpu                             # one flavor, labelled, tag grparse-local-cpu
 ctest --test-dir /build --output-on-failure -L grparse # inside the build; the label scopes it
 scripts/smoke-test.sh pipestreamai/grparse:latest      # boot-proof a built image
 ```
@@ -281,7 +282,10 @@ unchanged tree). Still give a second builder its own tree with
 `--build-arg GRPARSE_BUILD_CACHE_SCOPE=-<feature>` so parallel lanes do not
 serialise on the shared lock, and still read `grep 'Building CXX'` for the
 file you changed: the stamp covers content, not a CMake list that forgot the
-file. Build with an absolute context path (`docker build ... -f
+file. The ccache mount (`grparse-ccache-<flavor>-<arch>`) is deliberately
+not scoped: ccache keys objects on content, flags and compiler, so a fresh
+scope reuses its hits safely, and `ccache --show-stats` in the build log says
+how many it found. Build with an absolute context path (`docker build ... -f
 /work/main/grpc-services/gRParse/Dockerfile /work/main/grpc-services/gRParse`);
 a shell whose cwd drifted into a worktree once built the wrong tree.
 
