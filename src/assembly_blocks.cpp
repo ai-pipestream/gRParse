@@ -49,6 +49,27 @@ bool region_aggregates(const LayoutRegion* region) {
   return region->label != "list" && region->label != "list_item" && region->label != "table";
 }
 
+// Whether a list line goes on reading the visual line the block ended on:
+// level with that last line (vertical overlap above half the shorter
+// height) and starting right after it, within one line height. A PDF
+// backend's text cells are words or segments, not lines, so without this a
+// list region of the text layer turns every word into its own item; an
+// item two columns away, or the next bullet below, stays its own.
+bool continues_visual_line(const OcrPage& page, const TextBlock& block, const OcrLine& line) {
+  const AxisAlignedBox last = bounding_box(page.lines[block.lines.back()]);
+  const AxisAlignedBox next = bounding_box(line);
+  const int64_t shorter = std::min(last.height(), next.height());
+  if (shorter <= 0) return false;
+  const int64_t overlap = static_cast<int64_t>(std::min(last.bottom, next.bottom)) -
+                          std::max(last.top, next.top);
+  const int64_t gap = static_cast<int64_t>(next.left) - last.right;
+  return 2 * overlap > shorter && next.left >= last.left && gap <= std::max(last.height(), next.height());
+}
+
+bool is_list_region(const LayoutRegion* region) {
+  return region != nullptr && (region->label == "list" || region->label == "list_item");
+}
+
 // The hull of a block's lines.
 AxisAlignedBox block_box(const OcrPage& page, const TextBlock& block) {
   AxisAlignedBox box = bounding_box(page.lines[block.lines.front()]);
@@ -117,8 +138,10 @@ std::vector<TextBlock> build_text_blocks(const OcrPage& page) {
       suppressed = claim->second[line_index];
     }
     const bool merges = suppressed || region_aggregates(region);
-    if (merges && !blocks.empty() && blocks.back().region == region &&
-        blocks.back().suppressed == suppressed) {
+    const bool same_region =
+        !blocks.empty() && blocks.back().region == region && blocks.back().suppressed == suppressed;
+    if (same_region &&
+        (merges || (is_list_region(region) && continues_visual_line(page, blocks.back(), line)))) {
       blocks.back().lines.push_back(line_index);
       continue;
     }

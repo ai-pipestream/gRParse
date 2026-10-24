@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -144,6 +145,25 @@ void verify_page_without_blocks_anchors_at_end() {
   require(grparse::region_anchor(page, {}, page.regions[0]) == 0, "an empty page anchors at 0");
 }
 
+// A text layer hands a list over as word cells: the words of one bullet
+// line make one block, each bullet line its own, and a list two columns
+// away on the same baseline stays apart.
+void verify_list_words_on_one_line_make_one_item() {
+  grparse::OcrPage page{1000, 1000,
+                        {line_at("-", 50, 100, 6), line_at("One", 62, 100, 30),
+                         line_at("page", 98, 100, 36), line_at("event", 140, 100, 40),
+                         line_at("-", 50, 130, 6), line_at("Provenance", 62, 130, 80),
+                         line_at("-", 600, 100, 6), line_at("Far", 612, 100, 30)}};
+  page.regions = {{"list", 0.9F, 40, 90, 960, 145}};
+  const std::vector<grparse::TextBlock> blocks = grparse::build_text_blocks(page);
+  std::vector<std::vector<size_t>> lines;
+  for (const auto& block : blocks) lines.push_back(block.lines);
+  std::ranges::sort(lines);
+  const std::vector<std::vector<size_t>> expected = {{0, 1, 2, 3}, {4, 5}, {6, 7}};
+  require(lines == expected,
+          "one block per bullet line; the far list on the same baseline is its own");
+}
+
 }  // namespace
 
 int main() {
@@ -157,5 +177,6 @@ int main() {
       verify_float_column_uses_block_hulls,
       verify_cover_photo_precedes_the_next_block_in_any_column,
       verify_page_without_blocks_anchors_at_end,
+      verify_list_words_on_one_line_make_one_item,
   });
 }
