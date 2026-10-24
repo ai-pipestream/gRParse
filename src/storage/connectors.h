@@ -69,6 +69,12 @@ grpc::Status resolve_source(const ai::pipestream::parse::v1::Source& source,
                             const std::string& option_path,
                             ai::pipestream::parse::v1::FileSource* resolved);
 
+// The source policy check alone (a source is named, and its kind is
+// allowed), which resolve_source also applies; for a request's source
+// before anything waits on or starts a fetch.
+grpc::Status check_source_allowed(const ai::pipestream::parse::v1::Source& source,
+                                  const std::string& option_path);
+
 // The target policy check alone, for a request's target before the
 // conversion runs.
 grpc::Status check_target_allowed(const ai::pipestream::parse::v1::Target& target);

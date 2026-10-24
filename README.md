@@ -497,7 +497,15 @@ printed at startup) bounds how many fetches run at once, so at most that
 many times about 2.3 x `GRPARSE_SOURCE_MAX_BYTES` sits outside the cap. A
 remote source waits on its unary worker for a free slot, and gives up with
 `CANCELLED` (the client sees its own deadline) once its call is cancelled
-or its deadline passes. The merged Document a parse builds is not charged.
+or its deadline passes. Slots are not handed out in arrival order. The wait
+parks that worker: with the defaults, while four slow fetches hold the
+slots (a fetch may hold one for up to 300 seconds, the transfer timeout),
+each further remote request parks one of the sixteen
+`GRPARSE_UNARY_WORKERS`, up to all twelve that are left, and inline uploads
+then queue behind them in `GRPARSE_UNARY_QUEUE`. Keep the slot count well
+under the worker count, so that inline uploads always find a worker, and
+raise both together for a remote-heavy load; the memory bound above is what
+the slot count costs. The merged Document a parse builds is not charged.
 
 A unary call returns the whole conversion in one message: the Document, every
 requested export and the chunks. `GRPARSE_MAX_RESPONSE_BYTES` (default 520 MiB,

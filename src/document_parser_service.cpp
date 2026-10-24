@@ -354,11 +354,13 @@ class ParseUnaryReactor final : public grpc::ServerUnaryReactor {
 // The in-flight charge is held by the reactor itself and returned in
 // OnDone: the messages waiting to be written are as large as what the
 // parse held, so the budget covers the call until its last write is done
-// (or refused), not just until the work returns.
+// (or refused), not just until the work returns. The work hands a remote
+// source's fetched charge to the reactor for the same reason.
 class ParseWriteReactor final
     : public grpc::ServerWriteReactor<pipestream::parse::v1::StreamChunksResponse> {
  public:
   using Messages = std::vector<pipestream::parse::v1::StreamChunksResponse>;
+  using Work = std::function<grpc::Status(Messages*, InflightCharge* fetched_charge)>;
 
   // A call refused before any work is queued.
   explicit ParseWriteReactor(grpc::Status refused) {
@@ -368,8 +370,7 @@ class ParseWriteReactor final
 
   ParseWriteReactor(grpc::CallbackServerContext* context, CallExecutor& executor,
                     const std::shared_ptr<InflightBytes>& inflight, uint64_t request_bytes,
-                    std::string_view initial_doctype,
-                    std::function<grpc::Status(Messages*)> work) {
+                    std::string_view initial_doctype, Work work) {
     if (inflight != nullptr && !inflight->try_acquire(request_bytes)) {
       record_document_completion(initial_doctype, DocumentCompletionStatus::kRejected, 0);
       Finish(grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
@@ -388,7 +389,7 @@ class ParseWriteReactor final
           }
           grpc::Status status;
           try {
-            status = work(&messages_);
+            status = work(&messages_, &fetched_charge_);
           } catch (...) {
             record_document_completion(initial_doctype, DocumentCompletionStatus::kFailure, 0);
             status = status_from_exception(std::current_exception());
@@ -441,6 +442,9 @@ class ParseWriteReactor final
   // Set only once the charge is taken, so a refused call returns nothing.
   std::shared_ptr<InflightBytes> inflight_;
   uint64_t charge_ = 0;
+  // A remote source's fetched copy, handed over by the work; returned when
+  // OnDone deletes the reactor.
+  InflightCharge fetched_charge_;
 };
 
 // The trivial surfaces answer on the reaction thread through the context's own
@@ -672,8 +676,9 @@ DocumentParserService::StreamChunks(grpc::CallbackServerContext* context,
              : request_doctype(request->hierarchical().sources());
   return new ParseWriteReactor(
       context, executor_, inflight_, charge, initial_doctype,
-      [this, context, request, hybrid,
-       initial_doctype](std::vector<pipestream::parse::v1::StreamChunksResponse>* messages) {
+      [this, context, request, hybrid, initial_doctype](
+          std::vector<pipestream::parse::v1::StreamChunksResponse>* messages,
+          InflightCharge* fetched_charge) {
         const auto started = std::chrono::steady_clock::now();
         SourceParse parsed;
         parsed.doctype = initial_doctype;
@@ -687,6 +692,9 @@ DocumentParserService::StreamChunks(grpc::CallbackServerContext* context,
         const bool partial_success = !parsed.result.failures.empty();
         record_rpc_completion(parsed, status, partial_success, started);
         if (!status.ok()) return status;
+        // The messages below outlive this work until the last write, so the
+        // fetched copy's charge goes with them to the reactor.
+        *fetched_charge = std::move(parsed.fetched_charge);
         messages->reserve(chunks.size() + 1);
         for (auto& chunk : chunks) {
           *messages->emplace_back().mutable_chunk() = std::move(chunk);

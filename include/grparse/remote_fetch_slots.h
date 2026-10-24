@@ -20,7 +20,9 @@ inline constexpr std::size_t kDefaultRemoteFetchConcurrency = 4;
 // held before the in-flight byte budget can be charged for them, so the
 // number of fetches is what bounds those bytes. A parse waits for a free
 // slot on its executor worker and gives up when `stop` says so (the call
-// was cancelled or its deadline passed).
+// was cancelled or its deadline passed). Slots are not handed out in
+// arrival order: a freed slot wakes one waiter, and a fetch that arrives
+// in the meantime may take it first, so a waiter can be overtaken.
 class RemoteFetchSlots final {
  public:
   // One held slot, returned when it is destroyed or reset. Move-only; an
@@ -64,9 +66,16 @@ class RemoteFetchSlots final {
   // asking.
   Slot acquire(const std::function<bool()>& stop) {
     std::unique_lock lock(mutex_);
-    while (in_use_ == limit_) {
-      if (stop()) return Slot();
-      freed_.wait_for(lock, kStopPoll);
+    if (in_use_ == limit_) {
+      ++waiting_;
+      while (in_use_ == limit_) {
+        if (stop()) {
+          --waiting_;
+          return Slot();
+        }
+        freed_.wait_for(lock, kStopPoll);
+      }
+      --waiting_;
     }
     ++in_use_;
     return Slot(this);
@@ -76,6 +85,11 @@ class RemoteFetchSlots final {
   std::size_t in_use() const {
     std::lock_guard lock(mutex_);
     return in_use_;
+  }
+  // The acquires waiting for a slot right now.
+  std::size_t waiting() const {
+    std::lock_guard lock(mutex_);
+    return waiting_;
   }
 
  private:
@@ -94,6 +108,7 @@ class RemoteFetchSlots final {
   mutable std::mutex mutex_;
   std::condition_variable freed_;
   std::size_t in_use_ = 0;
+  std::size_t waiting_ = 0;
 };
 
 }  // namespace grparse

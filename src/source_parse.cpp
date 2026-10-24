@@ -2129,50 +2129,6 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
   if (grpc::Status target = storage::check_target_allowed(request.target()); !target.ok()) {
     return target;
   }
-  // A storage or plugin source resolves to the one document it names; a
-  // FileSource passes through. This runs on the conversion's worker, so the
-  // blocking fetch never holds a gRPC event thread.
-  pipestream::parse::v1::FileSource resolved_file;
-  const bool remote = !sources.Get(0).has_file();
-  {
-    // Admission charged a remote source for its request alone. Until the
-    // fetch returns, the body it downloads is bounded only by the number of
-    // fetches running at once, so the fetch holds a slot, and keeps it until
-    // the fetched copy is charged.
-    RemoteFetchSlots::Slot slot;
-    if (remote && admission.fetch_slots != nullptr) {
-      slot = admission.fetch_slots->acquire([context] { return context->IsCancelled(); });
-      if (!slot.held()) {
-        return grpc::Status(grpc::StatusCode::CANCELLED,
-                            surface + ": request cancelled while waiting for a remote fetch "
-                                      "slot (GRPARSE_REMOTE_FETCH_CONCURRENCY)");
-      }
-    }
-    if (grpc::Status resolved =
-            storage::resolve_source(sources.Get(0), "sources[0]", &resolved_file);
-        !resolved.ok()) {
-      return resolved;
-    }
-    if (remote) {
-      // The parse holds the fetched document twice over: the base64 copy in
-      // the resolved FileSource and the bytes it decodes to, the same pair
-      // an inline source is charged for on admission.
-      const uint64_t held =
-          resolved_file.base64_string().size() + decoded_file_bytes(resolved_file);
-      std::optional<InflightCharge> charge = InflightCharge::acquire(admission.inflight, held);
-      if (!charge.has_value()) {
-        return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
-                            surface + ": the fetched sources[0] (" + std::to_string(held) +
-                                " bytes held) would take in-flight document bytes past "
-                                "GRPARSE_MAX_INFLIGHT_BYTES");
-      }
-      parsed->fetched_charge = std::move(*charge);
-    }
-  }
-  if (remote) {
-    parsed->doctype = classify_doctype(pipestream::parse::v1::INPUT_FORMAT_UNSPECIFIED,
-                                       resolved_file.filename());
-  }
   const grpc::Status option_status = validate_options(request.options(), surface);
   if (!option_status.ok()) return option_status;
   if (auto remote = validate_remote_services(request.options(), collectors.get(), surface);
@@ -2208,6 +2164,57 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
   DocumentPasswords passwords;
   if (const grpc::Status read = read_document_passwords(*context, &passwords); !read.ok()) {
     return grpc::Status(read.error_code(), surface + ": " + read.error_message());
+  }
+  // A storage or plugin source resolves to the one document it names; a
+  // FileSource passes through. This runs on the conversion's worker, so the
+  // blocking fetch never holds a gRPC event thread. Everything above that
+  // can refuse the request without its bytes has run, and the source policy
+  // runs here, so a refused request never waits for a fetch slot or
+  // downloads anything.
+  if (grpc::Status allowed = storage::check_source_allowed(sources.Get(0), "sources[0]");
+      !allowed.ok()) {
+    return allowed;
+  }
+  pipestream::parse::v1::FileSource resolved_file;
+  const bool remote_source = !sources.Get(0).has_file();
+  {
+    // Admission charged a remote source for its request alone. Until the
+    // fetch returns, the body it downloads is bounded only by the number of
+    // fetches running at once, so the fetch holds a slot, and keeps it until
+    // the fetched copy is charged.
+    RemoteFetchSlots::Slot slot;
+    if (remote_source && admission.fetch_slots != nullptr) {
+      slot = admission.fetch_slots->acquire([context] { return context->IsCancelled(); });
+      if (!slot.held()) {
+        return grpc::Status(grpc::StatusCode::CANCELLED,
+                            surface + ": request cancelled while waiting for a remote fetch "
+                                      "slot (GRPARSE_REMOTE_FETCH_CONCURRENCY)");
+      }
+    }
+    if (grpc::Status resolved =
+            storage::resolve_source(sources.Get(0), "sources[0]", &resolved_file);
+        !resolved.ok()) {
+      return resolved;
+    }
+    if (remote_source) {
+      // The parse holds the fetched document twice over: the base64 copy in
+      // the resolved FileSource and the bytes it decodes to, the same pair
+      // an inline source is charged for on admission.
+      const uint64_t held =
+          resolved_file.base64_string().size() + decoded_file_bytes(resolved_file);
+      std::optional<InflightCharge> charge = InflightCharge::acquire(admission.inflight, held);
+      if (!charge.has_value()) {
+        return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
+                            surface + ": the fetched sources[0] (" + std::to_string(held) +
+                                " bytes held) would take in-flight document bytes past "
+                                "GRPARSE_MAX_INFLIGHT_BYTES");
+      }
+      parsed->fetched_charge = std::move(*charge);
+    }
+  }
+  if (remote_source) {
+    parsed->doctype = classify_doctype(pipestream::parse::v1::INPUT_FORMAT_UNSPECIFIED,
+                                       resolved_file.filename());
   }
   try {
     const auto& source = resolved_file;

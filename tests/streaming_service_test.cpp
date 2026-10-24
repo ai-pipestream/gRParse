@@ -2048,8 +2048,17 @@ void verify_inflight_byte_budget() {
   require(inflight->in_use() == 0, "every charge is returned");
 }
 
+// A wiki storage page long enough to chunk into hundreds of messages.
+std::string handbook_body() {
+  std::string body = "<h1>Handbook</h1>";
+  const std::string paragraph = "<p>" + std::string(4000, 'x') + "</p>";
+  for (int index = 0; index < 400; ++index) body += paragraph;
+  return body;
+}
+
 // A remote source's request is small and its document is only known once
-// fetched: a loopback origin serving image.png ("memory") and large.png.
+// fetched: a loopback origin serving image.png ("memory"), large.png and
+// handbook.confluence (handbook_body()).
 class RemoteSourceOrigin final {
  public:
   RemoteSourceOrigin()
@@ -2060,12 +2069,17 @@ class RemoteSourceOrigin final {
           if (request.target == "/large.png") {
             return grparse_test::LoopbackHttp::response(200, std::string(4096, 'x'));
           }
+          if (request.target == "/handbook.confluence") {
+            return grparse_test::LoopbackHttp::response(200, handbook_body());
+          }
           return grparse_test::LoopbackHttp::response(404, "missing");
         }) {
     ::setenv("GRPARSE_STORAGE_ALLOW_PRIVATE_ENDPOINTS", "1", 1);
     ::unsetenv("GRPARSE_ALLOWED_SOURCE_TYPES");
   }
   ~RemoteSourceOrigin() { ::unsetenv("GRPARSE_STORAGE_ALLOW_PRIVATE_ENDPOINTS"); }
+
+  std::string url(const std::string& path) const { return origin_.base() + path; }
 
   pipestream::parse::v1::ConvertSourceRequest request(const std::string& path) const {
     pipestream::parse::v1::ConvertSourceRequest request;
@@ -2098,15 +2112,16 @@ class BudgetedParseServer final {
                  grparse::CallExecutor::Options{}, grparse::RepairOptions{}, {}, {},
                  std::move(inflight)) {
     service_.set_remote_fetch_slots(std::move(slots));
-    int port = 0;
     grpc::ServerBuilder builder;
-    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port_);
     builder.RegisterService(&service_);
     server_ = builder.BuildAndStart();
-    require(server_ && port != 0, "budgeted parse server failed to start");
-    stub_ = pipestream::parse::v1::ParseService::NewStub(grpc::CreateChannel(
-        "127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+    require(server_ && port_ != 0, "budgeted parse server failed to start");
+    stub_ = pipestream::parse::v1::ParseService::NewStub(
+        grpc::CreateChannel(target(), grpc::InsecureChannelCredentials()));
   }
+
+  std::string target() const { return "127.0.0.1:" + std::to_string(port_); }
 
   ~BudgetedParseServer() {
     server_->Shutdown(std::chrono::system_clock::now() + 2s);
@@ -2127,9 +2142,18 @@ class BudgetedParseServer final {
   FakeRecognizer recognizer_;
   grparse::PageScheduler scheduler_;
   grparse::DocumentParserService service_;
+  int port_ = 0;
   std::unique_ptr<grpc::Server> server_;
   std::unique_ptr<pipestream::parse::v1::ParseService::Stub> stub_;
 };
+
+// Polls `done` until it holds, failing with `label` after ten seconds.
+void wait_until(const std::function<bool()>& done, const std::string& label) {
+  for (int attempt = 0; attempt < 10000 && !done(); ++attempt) {
+    std::this_thread::sleep_for(1ms);
+  }
+  require(done(), label);
+}
 
 void wait_for_charges_returned(const grparse::InflightBytes& inflight, const std::string& label) {
   for (int attempt = 0; attempt < 200 && inflight.in_use() != 0; ++attempt) {
@@ -2199,6 +2223,50 @@ void verify_remote_source_is_charged_after_the_fetch() {
   wait_for_charges_returned(*chunk_inflight, "the chunk surface returns every charge");
 }
 
+// StreamChunks writes its messages after the work returns, one at a time
+// as the reader takes them, and they are as large as what the parse held:
+// a remote source's fetched copy stays charged until the stream is done,
+// not just until the parse is.
+void verify_stream_chunks_holds_the_fetched_charge_until_written() {
+  RemoteSourceOrigin origin;
+  const auto inflight = std::make_shared<grparse::InflightBytes>(256ULL << 20U);
+  BudgetedParseServer server(inflight, std::make_shared<grparse::RemoteFetchSlots>(4));
+  grpc::ChannelArguments arguments;
+  arguments.SetInt(GRPC_ARG_HTTP2_BDP_PROBE, 0);
+  arguments.SetMaxReceiveMessageSize(64 << 20);
+  auto client = pipestream::parse::v1::ParseService::NewStub(
+      grpc::CreateCustomChannel(server.target(), grpc::InsecureChannelCredentials(), arguments));
+
+  pipestream::parse::v1::StreamChunksRequest request;
+  request.mutable_hierarchical()->add_sources()->mutable_http()->set_url(
+      origin.url("/handbook.confluence"));
+  const uint64_t admitted =
+      request.ByteSizeLong() + request.hierarchical().sources(0).ByteSizeLong();
+  const std::string body = handbook_body();
+  const std::string encoded = grparse::encode_base64(body.data(), body.size());
+  const uint64_t fetched = encoded.size() + encoded.size() / 4 * 3 + 3;
+
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 20s);
+  auto reader = client->StreamChunks(&context, request);
+  pipestream::parse::v1::StreamChunksResponse first;
+  if (!reader->Read(&first)) {
+    const grpc::Status failed = reader->Finish();
+    require(false, "the stream starts with a chunk: " + failed.error_message());
+  }
+  require(first.has_chunk(), "the stream starts with a chunk");
+  require(inflight->in_use() == admitted + fetched,
+          "the unread stream holds its request and the fetched copy: " +
+              std::to_string(inflight->in_use()) + " of " + std::to_string(admitted + fetched));
+  context.TryCancel();
+  pipestream::parse::v1::StreamChunksResponse rest;
+  while (reader->Read(&rest)) {
+  }
+  require(reader->Finish().error_code() == grpc::StatusCode::CANCELLED,
+          "a cancelled reader sees CANCELLED");
+  wait_for_charges_returned(*inflight, "the stream returns the fetched copy's charge in OnDone");
+}
+
 // GRPARSE_REMOTE_FETCH_CONCURRENCY bounds the fetches running at once: a
 // remote source waits for a free slot, gives up without fetching when its
 // call goes away, and fetches once a slot frees. The slots themselves admit
@@ -2215,7 +2283,7 @@ void verify_remote_fetches_wait_for_a_slot() {
             "a full set waits, asking stop each time, and gives up when told");
     grparse::RemoteFetchSlots::Slot third;
     std::thread waiter([&] { third = slots.acquire([] { return false; }); });
-    std::this_thread::sleep_for(50ms);
+    wait_until([&] { return slots.waiting() == 1; }, "the third acquire waits");
     require(slots.in_use() == 2, "the waiter holds nothing while every slot is taken");
     first.reset();
     waiter.join();
@@ -2231,12 +2299,24 @@ void verify_remote_fetches_wait_for_a_slot() {
   BudgetedParseServer server(inflight, slots);
   auto held = slots->acquire([] { return true; });
   require(held.held(), "the test holds the only fetch slot");
-  const grpc::Status waited = server.convert(origin.request("/image.png"), 300ms);
-  require(waited.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED,
-          "a remote source waits for a slot: " + waited.error_message());
-  std::this_thread::sleep_for(100ms);
+  {
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 20s);
+    pipestream::parse::v1::ConvertSourceResponse response;
+    grpc::Status waited;
+    std::thread call([&] {
+      waited = server.stub().ConvertSource(&context, origin.request("/image.png"), &response);
+    });
+    wait_until([&] { return slots->waiting() == 1; }, "the remote source waits for the slot");
+    context.TryCancel();
+    call.join();
+    require(waited.error_code() == grpc::StatusCode::CANCELLED,
+            "the cancelled call ends while it waits: " + waited.error_message());
+  }
+  // The parse gives up on its own once it sees the cancel; only then is the
+  // slot freed, so a parse that was still waiting could not take it.
+  wait_until([&] { return slots->waiting() == 0; }, "the cancelled parse stops waiting");
   held.reset();
-  std::this_thread::sleep_for(100ms);
   require(origin.connections() == 0, "the call that went away never fetched");
   const grpc::Status fetched = server.convert(origin.request("/image.png"));
   require(fetched.ok(), "a free slot lets the fetch run: " + fetched.error_message());
@@ -3953,6 +4033,7 @@ int main() {
         verify_inflight_byte_budget();
         verify_remote_source_is_charged_after_the_fetch();
         verify_remote_fetches_wait_for_a_slot();
+        verify_stream_chunks_holds_the_fetched_charge_until_written();
         verify_streaming_pdf_fast_path_emits_the_collector_document();
         verify_streaming_pdf_fast_path_projects_pages();
         verify_streaming_pdf_fast_path_streams_page_by_page();
