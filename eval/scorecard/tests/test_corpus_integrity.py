@@ -142,3 +142,12 @@ def test_corpus_root_is_where_the_manifest_says() -> None:
     assert json.loads(FIXTURE_MANIFEST.read_text())["corpus_root"] == declared, (
         "the fixture manifest pins digests under a different root than corpus.json reads"
     )
+
+
+def test_quickstart_fixture_is_the_quickstart_sample() -> None:
+    fixture = CORPUS_ROOT / "quickstart-sample.pdf"
+    sample = REPO / "quickstart" / "sample.pdf"
+    assert fixture.read_bytes() == sample.read_bytes(), (
+        "tests/golden/corpus/quickstart-sample.pdf must stay a byte copy of quickstart/sample.pdf, "
+        "the page pdf-quickstart-sample scores; copy the sample over, then " + REGENERATE
+    )

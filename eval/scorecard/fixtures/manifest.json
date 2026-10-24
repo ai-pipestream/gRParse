@@ -82,6 +82,10 @@
    "sha256": "84a944a341be6a6b08fb62096dde82ac800d6caf7a9ac8a2f2eac977a16cbb75",
    "bytes": 457
   },
+  "quickstart-sample.pdf": {
+   "sha256": "c9f0f065fdd2b965080b7cfba532c4058e4c0798715acdaff9e849f7ca3484a6",
+   "bytes": 117620
+  },
   "report_page.png": {
    "sha256": "00fc5b5f9c156130285f684c3cc73f526992384286c8d0e647a7235a618f615f",
    "bytes": 126710

@@ -51,6 +51,21 @@ bool has_body_content(const docv1::Document& document) {
   });
 }
 
+OcrRecommendationReason ocr_recommendation_reason(pdfv1::OcrRecommendationReason reason) {
+  switch (reason) {
+    case pdfv1::OCR_RECOMMENDATION_REASON_SCANNED_PAGES:
+      return OcrRecommendationReason::kScannedPages;
+    case pdfv1::OCR_RECOMMENDATION_REASON_SCAN_OCR_LAYER:
+      return OcrRecommendationReason::kScanOcrLayer;
+    case pdfv1::OCR_RECOMMENDATION_REASON_TEXT_OVER_PAGE_IMAGE:
+      return OcrRecommendationReason::kTextOverPageImage;
+    case pdfv1::OCR_RECOMMENDATION_REASON_DENSE_LAYOUT:
+      return OcrRecommendationReason::kDenseLayout;
+    default:
+      return OcrRecommendationReason::kUnknown;
+  }
+}
+
 }  // namespace
 
 bool pdf_page_is_clean(bool needs_ocr, bool encoding_issues, const std::string& markdown) {
@@ -62,8 +77,23 @@ PdfRouteDecision route_pdf_by_classification(const PdfClassification& classifica
   // Document-wide encoding issues make the embedded layer untrustworthy for
   // every class, and a detection that recommends OCR judged recognition the
   // better reading of the whole document; either way the CV run recognizes
-  // all pages rather than reading the layer.
-  decision.force_ocr = classification.encoding_issues || classification.ocr_recommended;
+  // all pages rather than reading the layer. Except a MIXED document that
+  // names its pages and recommends OCR for its scanned pages and nothing
+  // else: detection recommends OCR for every MIXED document, and when its
+  // only reason is the scans it names, widening it would recognize
+  // born-digital pages in place of their exact layer and put OCR misreads
+  // into them. A text page over a page-sized image (a form whose labels
+  // are pixels), a scan's OCR layer, a dense layout, a reason this build
+  // cannot name, or no reason at all (an inspector older than the field)
+  // keeps the recommendation on every page.
+  const auto& reasons = classification.ocr_recommendation_reasons;
+  const bool recommendation_names_its_pages =
+      classification.pdf_class == PdfClass::kMixed && !classification.pages_needing_ocr.empty() &&
+      !reasons.empty() && std::ranges::all_of(reasons, [](OcrRecommendationReason reason) {
+        return reason == OcrRecommendationReason::kScannedPages;
+      });
+  decision.force_ocr = classification.encoding_issues ||
+                       (classification.ocr_recommended && !recommendation_names_its_pages);
   switch (classification.pdf_class) {
     case PdfClass::kTextBased:
       // The whole text layer is usable: the collector's own Document is the
@@ -183,6 +213,10 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
       }
       page_count = info.page_count();
       result.classification.ocr_recommended = info.ocr_recommended();
+      for (const int reason : info.ocr_recommendation_reasons()) {
+        result.classification.ocr_recommendation_reasons.push_back(
+            ocr_recommendation_reason(static_cast<pdfv1::OcrRecommendationReason>(reason)));
+      }
       for (const uint32_t page : info.pages_needing_ocr()) add_ocr_page(page, &ocr_pages);
       // The same document-wide conditions route_pdf_by_classification
       // reads off the info event; anything the pages or the trailer add is

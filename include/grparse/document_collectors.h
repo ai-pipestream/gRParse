@@ -184,6 +184,23 @@ CollectorOutcome collect_calamine_document(const std::shared_ptr<grpc::Channel>&
 // kUnknown also covers "the stream carried no info event at all".
 enum class PdfClass { kUnknown, kTextBased, kScanned, kImageBased, kMixed };
 
+// Why grpc-pdf-inspector recommends OCR (PdfInfo.ocr_recommendation_reasons),
+// mapped off the wire enum the same way. kUnknown is a reason this build has
+// no name for.
+enum class OcrRecommendationReason {
+  kUnknown,
+  // Scans, image-only pages, outlined text: the pages pages_needing_ocr
+  // names.
+  kScannedPages,
+  // Scans carrying an invisible OCR layer, which recognition replaces.
+  kScanOcrLayer,
+  // A text page drawn over a page-sized image (a form on its scanned
+  // blank), which pages_needing_ocr does not name.
+  kTextOverPageImage,
+  // A dense newspaper layout; no page is named.
+  kDenseLayout,
+};
+
 struct PdfClassification {
   PdfClass pdf_class = PdfClass::kUnknown;
   // 1-indexed pages the inspector reported as needing OCR — the same
@@ -206,8 +223,14 @@ struct PdfClassification {
   // context, or a dense newspaper layout whose reading order the layer
   // cannot be trusted to keep). It is a document-wide answer and can be set
   // on a TEXT_BASED document that names no OCR page, so the routing
-  // consults it independently of pages_needing_ocr.
+  // consults it independently of pages_needing_ocr. Detection sets it on
+  // every MIXED document; ocr_recommendation_reasons says whether that is
+  // about the named pages alone.
   bool ocr_recommended = false;
+  // The info event's ocr_recommendation_reasons, in wire order: why OCR is
+  // recommended. Empty beside a set ocr_recommended means the inspector
+  // predates the field and the reasons are unknown.
+  std::vector<OcrRecommendationReason> ocr_recommendation_reasons;
   // The trailer's has_invisible_text flag: some page drew text in rendering
   // mode 3 (typically an OCR layer behind a scan), which never reaches the
   // markdown or the folded body.
@@ -232,7 +255,10 @@ struct PdfRouteDecision {
   // path should recognize every page and let the recognized text replace
   // that layer (kForce) instead of reading it. Reading a layer the contract
   // says to distrust at best folds mojibake into the result, and reading one
-  // the detection judged OCR to beat keeps the reading it judged worse. An
+  // the detection judged OCR to beat keeps the reading it judged worse. A
+  // MIXED document whose only reason is its scanned pages, and which names
+  // them, is the exception: those pages are what the recommendation is
+  // about, so they are recognized and the rest keep their layers. An
   // explicit kOff request still outranks this, as it outranks every
   // classification hint.
   bool force_ocr = false;

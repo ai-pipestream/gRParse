@@ -1840,9 +1840,11 @@ std::string cv_route_warning(const PdfClassification& classification,
          (classification.empty_body
               ? "; its extraction carried no body text, so it was not taken"
               : "") +
-         (classification.ocr_recommended
+         (!classification.ocr_recommended ? ""
+          : route.force_ocr
               ? "; it recommended OCR over the text layer, so its extraction was not taken"
-              : "") +
+              : "; it recommended OCR for the scanned pages it named, and the other pages "
+                "keep their text layers") +
          (forced ? "; recognition was forced on every page in place of the embedded layer"
           : route.ocr_pages.empty()
               ? "; the CV path's own per-page heuristic decided recognition"
