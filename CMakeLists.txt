@@ -404,6 +404,20 @@ FetchContent_Declare(grpc
   GIT_SUBMODULES_RECURSE TRUE)
 FetchContent_MakeAvailable(grpc)
 
+# A compiler launcher (the image builds pass ccache) for first-party targets
+# only. It is set after the last fetched dependency, so their compile
+# commands stay what a seed's /build recorded and ninja keeps their objects;
+# the three first-party targets defined above take it explicitly.
+set(GRPARSE_COMPILER_LAUNCHER "" CACHE STRING
+  "Compiler launcher for gRParse targets, for example ccache")
+if(GRPARSE_COMPILER_LAUNCHER)
+  set(CMAKE_C_COMPILER_LAUNCHER "${GRPARSE_COMPILER_LAUNCHER}")
+  set(CMAKE_CXX_COMPILER_LAUNCHER "${GRPARSE_COMPILER_LAUNCHER}")
+  set_target_properties(miniz grparse_ort_ep rapidocr PROPERTIES
+    C_COMPILER_LAUNCHER "${GRPARSE_COMPILER_LAUNCHER}"
+    CXX_COMPILER_LAUNCHER "${GRPARSE_COMPILER_LAUNCHER}")
+endif()
+
 set(GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set(STAGED_PROTO_DIR "${CMAKE_CURRENT_BINARY_DIR}/proto")
 file(MAKE_DIRECTORY "${GENERATED_DIR}")

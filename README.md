@@ -1101,8 +1101,16 @@ Docker installation. A CUDA-capable ONNX Runtime build is required for the
 provider to exist; a CPU-only runtime cannot activate the GPU.
 
 ```bash
-docker compose build
+GRPARSE_REVISION=$(scripts/revision.sh) docker compose build
+scripts/build-image.sh cpu        # or one image by flavor (cuda, cpu, openvino), tagged grparse-local-<flavor>
 ```
+
+`GRPARSE_REVISION` becomes the image's `org.opencontainers.image.revision`
+label, the commit `eval/corpus` records for a run. `scripts/revision.sh`
+prints HEAD, with `-dirty` appended when tracked files differ from it, and
+nothing outside a git checkout; `scripts/build-image.sh` and
+`scripts/stack-e2e.sh` pass it by themselves, and a plain `docker compose
+build` without it leaves the label empty.
 
 CI builds both images (CUDA and OpenVINO) and then boot-proofs each runtime
 stage with `scripts/smoke-test.sh`: library closure of the shipped binaries
@@ -1142,7 +1150,43 @@ the matching seed as `GRPARSE_DEPS_IMAGE` when it exists
 (`scripts/find-seed.sh`), so a fresh runner starts with gRPC and the other
 fetched dependencies already built and compiles only this repository; a
 change to a seed input builds them inline until its seed is published. A
-local `docker build` names no seed and builds exactly as before.
+local `docker build` names no seed and builds exactly as before. A seed
+already in the local image store is used without asking the registry, and
+Forgejo's runner passes `--no-pull`: its Docker daemon persists between jobs,
+so the deps stage sits in its build cache and `/build` stays filled in its
+cache mount, and the ~3.4 GB seed pull would only refill a tree that is
+already warm.
+
+The first-party sources compile through ccache (`GRPARSE_COMPILER_LAUNCHER`,
+set after the last fetched dependency, so the seed's third-party objects keep
+their recorded commands). Its directory is a cache mount of its own,
+`grparse-ccache-<flavor>-<arch>`, shared by every `GRPARSE_BUILD_CACHE_SCOPE`:
+ccache keys each object on its preprocessed source, flags and compiler, so a
+fresh scope compiles from verified hits instead of from a reused tree whose
+objects can be newer than their sources. A persistent daemon keeps the mount
+by itself; a hosted GitHub runner starts empty, so the image jobs carry it in
+the Actions cache under `ccache-<flavor>-<arch>-` keys and copy it in and out
+of the builder with `scripts/ccache-mount.sh`. ccache is installed in the
+build stage, below the seed marker, so no seed hash moved for it.
+
+Image job times on GitHub's hosted runners, main, before ccache (seeded
+builds; the build step is pull, seed copy, compile and the in-build ctest):
+
+| Job (run) | Job | Build step | Seed pull + unpack | Compile + link | ctest |
+|---|---|---|---|---|---|
+| ci `cpu-image` (39787774980, 0802516) | 14.3 min | 11.7 min | 61 s | 9.9 min (432 edges) | 21 s |
+| ci `cuda-image` (39787774980) | 23.1 min | 20.9 min | 134 s | 16.6 min (464 edges) | 22 s |
+| ci `openvino-image` (39787774980) | 21.7 min | 19.6 min | 54 s | 16.7 min (464 edges) | 19 s |
+| publish cpu amd64 / arm64 (39787775017) | 22.6 / 12.9 min | 16.7 / 11.7 min | | | |
+| publish cuda / openvino (39787775017) | 27.2 / 13.7 min | 24.0 / 11.4 min | | | |
+| ci, the same three, 3cc4014 (39774574849) | 18.2 / 22.2 / 25.6 min | | | | |
+
+Right after the nvidia/cuda 13.4.3 bump changed the CUDA seed's inputs, and
+before publish-deps.yml (39601315894) had published the new seed, the CUDA
+legs took 58.7 min (ci, 39605184214, whose build-stage RUN alone ran 2,767 s)
+and 65.8 min (publish, 39605184222); before seeds existed, at `-j2`, every leg
+took 48 to 60 min (39362730667). Compiling gRParse is two thirds or more of a
+seeded job, and that is the part ccache spares.
 
 The build compiles with `-DGRPARSE_WERROR=ON` and runs the full `grparse`-labelled
 CTest set: barcode decoder (QR fixture payload, stride-safe region views),

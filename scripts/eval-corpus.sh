@@ -4,8 +4,8 @@
 #   scripts/eval-corpus.sh --corpus /data/realdata                 # :latest images, CUDA
 #   scripts/eval-corpus.sh --corpus /data/realdata --flavor cpu --tag 0.2.1
 #   scripts/eval-corpus.sh --corpus /data/realdata --existing parse-stack --target localhost:50051
-#   scripts/eval-corpus.sh --corpus /data/realdata --grparse-image grparse-ci-cpu --flavor cpu \
-#       --grparse-commit "$(git rev-parse HEAD)"
+#   scripts/eval-corpus.sh --corpus /data/realdata --grparse-image grparse-local-cpu --flavor cpu
+#       (built by scripts/build-image.sh cpu, which stamps the revision label)
 #
 # Brings the parser stack up from published images (compose project
 # grparse-eval, gRPC on EVAL_GRPC_PORT, nothing else published, never built),

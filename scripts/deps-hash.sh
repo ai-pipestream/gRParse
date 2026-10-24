@@ -12,8 +12,10 @@
 #   - the Dockerfile up to its "grparse-deps: end of seed inputs" marker
 #     (base image, apt packages, TensorRT, OpenCV, the OpenVINO SDK, the
 #     seed stage itself),
-#   - the build stage's cache-mount id, which encodes the ABI-sensitive
-#     dependency versions and is bumped by hand when they change,
+#   - the build stage's /build cache-mount id, which encodes the
+#     ABI-sensitive dependency versions and is bumped by hand when they
+#     change (the ccache mount beside it is not an input: ccache keys every
+#     object on its preprocessed source, flags and compiler),
 #   - every FetchContent declaration line in CMakeLists.txt and cmake/
 #     (repository, tag, URL, hash): FetchContent repopulates a changed
 #     declaration by itself, but a seed that predates it would rebuild it
@@ -37,7 +39,7 @@ grep -qxF "$marker" "$dockerfile" || {
 {
   echo "arch $arch"
   sed "/^$marker\$/q" "$dockerfile"
-  grep -F 'type=cache,id=' "$dockerfile"
+  grep -F 'type=cache,id=' "$dockerfile" | grep -F 'target=/build'
   grep -hE '^[[:space:]]*(FetchContent_Declare|GIT_REPOSITORY|GIT_TAG|URL|URL_HASH)\b' \
     CMakeLists.txt cmake/*.cmake
   find patches -type f | LC_ALL=C sort | xargs -r sha256sum

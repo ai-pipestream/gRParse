@@ -188,6 +188,7 @@ jobs:
           fi
           echo "names=$names" >> "$GITHUB_OUTPUT"
           echo "platform_pair=${PLATFORM//\//-}" >> "$GITHUB_OUTPUT"
+          echo "arch=${PLATFORM#linux/}" >> "$GITHUB_OUTPUT"
       - name: Log in to Docker Hardened Images (dhi.io)
         # Dockerfile.models pulls its bases from dhi.io; only the cpu legs build it.
         if: ${{ matrix.variant == 'cpu' }}
@@ -236,6 +237,20 @@ jobs:
             if [ "$VARIANT" = cpu ]; then echo "GRPARSE_TEST_REQUIRE_MODELS=1"; fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+      - name: Restore the compile cache
+        # The builder starts empty, so the ccache mount the build compiles
+        # through travels in the Actions cache (scripts/ccache-mount.sh),
+        # under the same keys as ci.yml's image jobs.
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-${{ matrix.variant }}-${{ steps.names.outputs.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-${{ matrix.variant }}-${{ steps.names.outputs.arch }}-
+      - name: Load the compile cache into the build's ccache mount
+        env:
+          VARIANT: ${{ matrix.variant }}
+          ARCH: ${{ steps.names.outputs.arch }}
+        run: sh scripts/ccache-mount.sh load "$VARIANT" "$ARCH" "$RUNNER_TEMP/ccache"
       - name: Build (runs the test suite in the build stage) and push by digest
         id: build
         uses: docker/build-push-action@v7
@@ -251,6 +266,16 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ needs.version.outputs.served }}
           outputs: type=image,"name=${{ steps.names.outputs.names }}",push-by-digest=true,name-canonical=true,push=true
+      - name: Copy the compile cache out of the ccache mount
+        env:
+          VARIANT: ${{ matrix.variant }}
+          ARCH: ${{ steps.names.outputs.arch }}
+        run: sh scripts/ccache-mount.sh save "$VARIANT" "$ARCH" "$RUNNER_TEMP/ccache"
+      - name: Save the compile cache
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-${{ matrix.variant }}-${{ steps.names.outputs.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Boot-proof the pushed digest before it gets a name
         # A build is not done until the artifact has started up for real:
         # library closure plus boot-to-main, no GPU or models needed. The

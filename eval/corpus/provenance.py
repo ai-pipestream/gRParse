@@ -6,7 +6,8 @@ GetServiceInfo alone cannot say it (it reads the same version string for
 every commit between two tags), so every run records:
 
 - the gRParse commit, from the image's ``org.opencontainers.image.revision``
-  label (publish.yml sets it), or from ``--grparse-commit`` for a local build
+  label (CI, publish.yml and scripts/build-image.sh set it), or from
+  ``--grparse-commit`` for an image built without it
 - every container of the compose project the stack runs as: image reference,
   image id, repo digests and OCI labels, plus gRParse's non-secret
   ``GRPARSE_*`` environment (backend list, OCR batch, execution provider)
