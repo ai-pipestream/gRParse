@@ -93,6 +93,10 @@ void verify_marker_patterns() {
   expect_split("IV. Roman", "IV.", "Roman", true);
   expect_split("b. letter", "b.", "letter", true);
   expect_split("B) Letter", "B)", "Letter", true);
+  expect_split("\xEF\xBC\x91. fullwidth one", "\xEF\xBC\x91.", "fullwidth one", true);   // U+FF11
+  expect_split("\xD9\xA3) arabic-indic three", "\xD9\xA3)", "arabic-indic three", true);  // U+0663
+  expect_split("\xEF\xBC\x91.\xEF\xBC\x92\xE3\x80\x80section", "\xEF\xBC\x91.\xEF\xBC\x92",
+               "section", true);
 
   expect_no_split("");
   expect_no_split("-");
@@ -174,15 +178,29 @@ void verify_assembled_list_items() {
   // A numbered list item takes its numbering and the enumerated flag; a
   // list item with no marker keeps its text and no marker.
   grparse::AssemblyCursor numbered_cursor;
-  grparse::OcrPage numbered{1000, 1000, {line("2. Second step", 100), line("No marker here", 140)}};
-  numbered.regions = {{"list_item", 0.9F, 30, 95, 950, 125}, {"list_item", 0.9F, 30, 135, 950, 165}};
+  grparse::OcrPage numbered{
+      1000,
+      1000,
+      {line("2. Second step", 100), line("\xEF\xBC\x91. Fullwidth step", 120),
+       line("No marker here", 140)}};
+  numbered.regions = {{"list_item", 0.9F, 30, 95, 950, 115},
+                      {"list_item", 0.9F, 30, 115, 950, 135},
+                      {"list_item", 0.9F, 30, 135, 950, 165}};
   ai::pipestream::parse::v1::PageData numbered_data;
   grparse::append_page_data(numbered, 1, &numbered_cursor, &numbered_data);
-  require(numbered_data.texts_size() == 2, "two numbered-page items");
+  require(numbered_data.texts_size() == 3, "three numbered-page items");
   const auto& second = numbered_data.texts(0).list_item();
   require(second.marker() == "2." && second.enumerated() && second.base().text() == "Second step",
           "numbering becomes an enumerated marker");
-  const auto& unmarked = numbered_data.texts(1).list_item();
+  const auto& fullwidth = numbered_data.texts(1).list_item();
+  require(fullwidth.marker() == "\xEF\xBC\x91." && fullwidth.enumerated() &&
+              fullwidth.base().text() == "Fullwidth step",
+          "fullwidth numbering becomes an enumerated marker");
+  require(fullwidth.base().prov_size() == 1 &&
+              fullwidth.base().prov(0).charspan().end() ==
+                  static_cast<int32_t>(grparse::utf8_codepoint_count(fullwidth.base().orig())),
+          "fullwidth marker provenance charspan counts code points, not bytes");
+  const auto& unmarked = numbered_data.texts(2).list_item();
   require(!unmarked.has_marker() && unmarked.base().text() == "No marker here",
           "an item without a marker is unchanged");
 }

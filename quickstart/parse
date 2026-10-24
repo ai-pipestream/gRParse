@@ -1,7 +1,7 @@
 #!/bin/sh
 # Parse one document with the quickstart stack and print the result.
 #
-#   ./parse FILE [--to md|text|html|json|doctags|yaml]    (default: md)
+#   ./parse FILE [--to md|text|html|json|proto-json|doctags|yaml]    (default: md)
 #
 # Starts the stack's services if they are not running yet. The document goes
 # in on stdin, so any path on this machine works; the client runs in a
@@ -9,7 +9,7 @@
 set -eu
 
 if [ $# -lt 1 ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
-  echo "usage: $0 FILE [--to md|text|html|json|doctags|yaml]" >&2
+  echo "usage: $0 FILE [--to md|text|html|json|proto-json|doctags|yaml]" >&2
   exit 64
 fi
 file=$1
@@ -19,5 +19,6 @@ if [ ! -f "$file" ]; then
   exit 66
 fi
 here=$(cd "$(dirname "$0")" && pwd)
+name=$(basename "$file")
 exec docker compose -f "$here/compose.yaml" run --rm -T --quiet-pull parse \
-  --filename "$(basename "$file")" "$@" < "$file"
+  --filename "$name" "$@" < "$file"

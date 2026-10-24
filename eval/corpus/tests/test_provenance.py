@@ -94,16 +94,18 @@ def _run(corpus_dir: Path, out_dir: Path, label: str, *extra: str, docker: Any =
 
 def test_stack_provenance_records_images_revision_and_safe_env() -> None:
     stack = provenance.stack_provenance("grparse-eval", fake_docker())
-    assert stack["recorded"] is True
+    assert isinstance(stack, provenance.StackProvenance)
+    assert stack.recorded is True
     assert sorted(stack["services"]) == ["grparse", "pdfium"]
     grparse = stack["services"]["grparse"]
+    assert isinstance(grparse, provenance.ServiceProvenance)
     assert grparse["revision"] == COMMIT_A
-    assert grparse["repo_digests"] == ["pipestreamai/grparse@sha256:" + "c" * 64]
+    assert list(grparse["repo_digests"]) == ["pipestreamai/grparse@sha256:" + "c" * 64]
     assert grparse["env"] == {"GRPARSE_ORT_EP": "cpu", "GRPARSE_PDF_BACKEND": "pdfium:50069"}
-    assert "hunter2" not in json.dumps(stack)
-    assert provenance.grparse_commit(stack, None) == {
-        "commit": COMMIT_A, "source": f"image label {provenance.REVISION_LABEL}",
-    }
+    assert "hunter2" not in json.dumps(stack.to_dict())
+    assert provenance.grparse_commit(stack, None) == provenance.GrparseProvenance(
+        commit=COMMIT_A, source=f"image label {provenance.REVISION_LABEL}",
+    )
     assert provenance.grparse_commit(stack, "deadbeef")["commit"] == "deadbeef"
     assert provenance.grparse_commit({}, None)["commit"] is None
 

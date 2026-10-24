@@ -31,8 +31,8 @@ fleet_file=${FLEET_FILE:-$root/release/fleet.tsv}
 fleet_root=${FLEET_ROOT:-$(dirname "$root")}
 forgejo=${FORGEJO_REMOTE:-origin}
 github=${GITHUB_REMOTE:-github}
-owner=ai-pipestream
-semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z][0-9A-Za-z.-]{0,63})?$'
+owner=${GITHUB_OWNER:-ai-pipestream}
+semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 
 usage() {
   sed -n '7,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
@@ -54,7 +54,9 @@ cmd_bump() {
   local version=$1 push=${2:-}
   [[ -z $(git -C "$root" status --porcelain) ]] || die "gRParse checkout is not clean"
   [[ $(git -C "$root" rev-parse --abbrev-ref HEAD) == main ]] || die "gRParse is not on main"
-  sed -i "s/^project(gRParse VERSION [0-9.]*/project(gRParse VERSION $version/" "$root/CMakeLists.txt"
+  sed "s/^project(gRParse VERSION [0-9.]*/project(gRParse VERSION $version/" \
+    "$root/CMakeLists.txt" >"$root/CMakeLists.txt.tmp"
+  mv "$root/CMakeLists.txt.tmp" "$root/CMakeLists.txt"
   "$root/scripts/cmake-version.sh" --expect "$version" >/dev/null \
     || die "CMakeLists.txt did not take version $version"
   git -C "$root" commit -q -am "Release $version"
@@ -68,8 +70,9 @@ cmd_bump() {
 }
 
 # Every check run on a GitHub commit must have finished, and none may have
-# failed. A commit with no check runs at all is reported, not failed: some
-# repos run CI only on pull requests.
+# failed. A commit with no check runs at all fails preflight unless
+# ALLOW_NO_CI=1 is set, so a freshly pushed commit whose workflow has not
+# registered check runs yet cannot slip past preflight.
 ci_state() {
   local repo=$1 sha=$2
   # shellcheck disable=SC2016 # a jq program, not shell
@@ -84,7 +87,7 @@ ci_state() {
 }
 
 cmd_preflight() {
-  local version=$1 tag=v$1 problems=0 repo branch dir head remote_sha state
+  local version=$1 tag=v$1 problems=0 repo branch dir head remote_sha state ci
   command -v gh >/dev/null || die "gh is needed to read CI state on GitHub"
   "$root/scripts/cmake-version.sh" --expect "$version" >/dev/null \
     || { echo "gRParse: CMakeLists.txt is $("$root/scripts/cmake-version.sh"), not $version (run bump first)"; problems=$((problems + 1)); }
@@ -114,7 +117,7 @@ cmd_preflight() {
     ci=$(ci_state "$repo" "$head" 2>/dev/null || echo "unreadable")
     case $ci in
       green) ;;
-      none) ;;
+      none) [[ ${ALLOW_NO_CI:-0} == 1 ]] || state+=("CI none (no check runs on GitHub)") ;;
       *) state+=("CI $ci") ;;
     esac
     if [[ ${#state[@]} -eq 0 ]]; then
