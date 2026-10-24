@@ -3,7 +3,7 @@
 // stdout. Runs inside the demo shell image (Node, @grpc/grpc-js and the
 // contract protos under /protos); ./parse is the wrapper that feeds it.
 //
-//   node parse.cjs --filename report.pdf [--to md|text|html|json|doctags|yaml] < report.pdf
+//   node parse.cjs --filename report.pdf [--to md|text|html|json|proto-json|doctags|yaml] < report.pdf
 //
 // The filename matters: gRParse routes office, markup and other formats by
 // name as well as by content. Status and per-collector errors go to stderr;
@@ -24,7 +24,9 @@ const FORMATS = {
   markdown: ["OUTPUT_FORMAT_MARKDOWN", "md"],
   text: ["OUTPUT_FORMAT_TEXT", "text"],
   html: ["OUTPUT_FORMAT_HTML", "html"],
-  json: ["OUTPUT_FORMAT_JSON", "json"],
+  json: ["OUTPUT_FORMAT_CANONICAL_JSON", "canonicalJson"],
+  "canonical-json": ["OUTPUT_FORMAT_CANONICAL_JSON", "canonicalJson"],
+  "proto-json": ["OUTPUT_FORMAT_JSON", "json"],
   doctags: ["OUTPUT_FORMAT_DOCTAGS", "doctags"],
   yaml: ["OUTPUT_FORMAT_YAML", "yaml"],
 };
@@ -35,7 +37,7 @@ function fail(message, code = 64) {
 }
 
 function parseArgs(argv) {
-  const options = { filename: "document", to: "md" };
+  const options = { filename: null, to: "md" };
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
     const value = argv[index + 1];
@@ -43,6 +45,7 @@ function parseArgs(argv) {
     else if (flag === "--to" && value) { options.to = value.toLowerCase(); index += 1; }
     else fail(`unknown argument ${flag}; usage: parse FILE [--to ${Object.keys(FORMATS).join("|")}]`);
   }
+  if (!options.filename) fail(`missing --filename; usage: parse FILE [--to ${Object.keys(FORMATS).join("|")}]`);
   if (!FORMATS[options.to]) fail(`--to must be one of ${Object.keys(FORMATS).join(", ")}`);
   return options;
 }
@@ -138,15 +141,20 @@ async function main() {
     }
   }
 
-  const response = converted.response || {};
-  const status = response.status || "CONVERSION_STATUS_UNSPECIFIED";
-  for (const item of response.errors || []) {
-    process.stderr.write(`parse: ${item.moduleName || item.componentType || "error"}: ${item.errorMessage}\n`);
+  if (!converted || !converted.response) {
+    fail("ConvertSource returned an empty response", 1);
   }
-  const document = response.document || {};
-  const output = (document.exports || {})[exportKey];
+  const response = converted.response;
+  const status = response.status || "CONVERSION_STATUS_UNSPECIFIED";
+  if (Array.isArray(response.errors)) {
+    for (const item of response.errors) {
+      process.stderr.write(`parse: ${item.moduleName || item.componentType || "error"}: ${item.errorMessage}\n`);
+    }
+  }
+  const document = response.document;
+  const output = document && document.exports ? document.exports[exportKey] : undefined;
   if (typeof output === "string") process.stdout.write(output.endsWith("\n") ? output : `${output}\n`);
-  const pages = document.doc && document.doc.pages ? Object.keys(document.doc.pages).length : 0;
+  const pages = document && document.doc && document.doc.pages ? Object.keys(document.doc.pages).length : 0;
   const seconds = ((Date.now() - started) / 1000).toFixed(1);
   process.stderr.write(`parse: ${options.filename}: ${status.replace("CONVERSION_STATUS_", "").toLowerCase()}, ${pages} page(s), ${seconds} s\n`);
   client.close();

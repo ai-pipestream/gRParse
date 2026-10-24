@@ -19,7 +19,10 @@ build_dir="${1:?build dir}"
 seed_dir="${2:?seed dir}"
 
 mv "$build_dir" "$seed_dir"
-find "$seed_dir" -path "$seed_dir/_deps" -prune -o -type f -name '*.o' -exec rm -f {} +
+find "$seed_dir" \
+  \( -path "$seed_dir/_deps" -o -path "$seed_dir/CMakeFiles/miniz.dir" -o -path "$seed_dir/CMakeFiles/rapidocr.dir" \) -prune \
+  -o -type f -name '*.o' -exec rm -f {} +
+rm -f "$seed_dir"/libgrparse*.a
 find "$seed_dir" -maxdepth 1 -type f -perm -u+x -exec rm -f {} +
 rm -rf "$seed_dir/proto" "$seed_dir/generated" "$seed_dir/.proto-sum" "$seed_dir/.src-sums"
 echo "seed: $(du -sh "$seed_dir" | cut -f1) in $seed_dir"

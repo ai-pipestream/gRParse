@@ -39,14 +39,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 FLEET = ROOT / "release" / "fleet.tsv"
 NAMESPACE = "pipestreamai"
-GITHUB_OWNER = "ai-pipestream"
+GITHUB_OWNER = os.environ.get("GITHUB_OWNER", "ai-pipestream")
 SEMVER = re.compile(
-    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z][0-9A-Za-z.-]{0,63})?$"
+    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
 )
 # An image template is <name>:{v}<suffix>, the suffix a variant such as -cpu.
 TEMPLATE = re.compile(r"^[a-z0-9][a-z0-9-]*:\{v\}(-[a-z0-9]+)?$")
 STACK_IMAGE = re.compile(
-    r"^\s*image:\s*[\"']?" + NAMESPACE + r"/([a-z0-9][a-z0-9-]*):\$\{STACK_TAG:-latest\}([-a-z0-9]*)[\"']?\s*$"
+    r"^\s*image:\s*[\"']?" + NAMESPACE + r"/([a-z0-9][a-z0-9-]*):\$\{(?:STACK_TAG|GRPARSE_TAG):-latest\}([-a-z0-9]*)[\"']?\s*$"
 )
 MANIFEST_TYPES = ", ".join([
     "application/vnd.oci.image.index.v1+json",
@@ -86,17 +86,19 @@ def load_fleet(path=FLEET):
 
 
 def stack_templates(root=ROOT):
-    """Every ${STACK_TAG} image in the compose stack, as fleet templates."""
+    """Every ${STACK_TAG} / ${GRPARSE_TAG} image in the compose files, as fleet templates."""
     found = {}
-    for compose in sorted(root.glob("compose.stack*.yaml")):
+    composes = [*sorted(root.glob("compose.stack*.yaml")), root / "quickstart" / "compose.yaml"]
+    for compose in composes:
+        label = str(compose.relative_to(root))
         for number, line in enumerate(compose.read_text().splitlines(), 1):
             match = STACK_IMAGE.match(line)
             if match:
                 template = f"{match.group(1)}:{{v}}{match.group(2)}"
-                found.setdefault(template, f"{compose.name}:{number}")
+                found.setdefault(template, f"{label}:{number}")
             elif re.match(rf"^\s*image:\s*[\"']?{NAMESPACE}/", line):
-                fail(f"{compose.name}:{number}: a {NAMESPACE} image not pinned by "
-                     f"${{STACK_TAG:-latest}}: {line.strip()}")
+                fail(f"{label}:{number}: a {NAMESPACE} image not pinned by "
+                     f"${{STACK_TAG:-latest}} or ${{GRPARSE_TAG:-latest}}: {line.strip()}")
     return found
 
 

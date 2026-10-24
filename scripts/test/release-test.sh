@@ -49,6 +49,7 @@ expect_fail() { # description command...
 }
 
 expect_fail "a bad version" release preflight 0.3
+expect_fail "a prerelease suffix CMake rejects" release preflight 0.3.0-rc.1
 expect_fail "preflight before the bump" release preflight 0.3.0
 grep -q "not 0.3.0" "$work/out"
 
@@ -59,6 +60,11 @@ grep -q 'VERSION 0.3.0' "$work/fleet/gRParse/CMakeLists.txt"
 echo "failed: build=failure" >"$work/ci"
 expect_fail "preflight with red CI" release preflight 0.3.0
 grep -q "CI failed: build=failure" "$work/out"
+echo "none" >"$work/ci"
+expect_fail "preflight with no CI check runs" release preflight 0.3.0
+grep -q "CI none" "$work/out"
+ALLOW_NO_CI=1 release preflight 0.3.0 >"$work/out"
+grep -q "every repository is ready for v0.3.0" "$work/out"
 echo green >"$work/ci"
 
 echo local >"$work/fleet/grpc-sib/README" && git -C "$work/fleet/grpc-sib" commit -qam ahead

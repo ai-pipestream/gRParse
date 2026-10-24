@@ -21,28 +21,36 @@ set -euo pipefail
 scopes=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --push) scopes+=("$2:pull,push"); shift 2 ;;
-    --pull) scopes+=("$2:pull"); shift 2 ;;
+    --push)
+      [ $# -ge 2 ] && [ -n "$2" ] || { echo "registry-preflight: --push requires a repository" >&2; exit 2; }
+      scopes+=("$2:pull,push"); shift 2 ;;
+    --pull)
+      [ $# -ge 2 ] && [ -n "$2" ] || { echo "registry-preflight: --pull requires a repository" >&2; exit 2; }
+      scopes+=("$2:pull"); shift 2 ;;
     *) echo "registry-preflight: unknown argument $1" >&2; exit 2 ;;
   esac
 done
 [ ${#scopes[@]} -gt 0 ] || { echo "registry-preflight: no --push or --pull scope given" >&2; exit 2; }
 
+tmp=$(mktemp "${TMPDIR:-/tmp}/registry-preflight.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+
 failed=0
 for scope in "${scopes[@]}"; do
   repo=${scope%%:*}
   wanted=${scope#*:}
-  status=$(curl -sS -o /tmp/registry-preflight.json -w '%{http_code}' \
-    -u "$DOCKER_USER:$DOCKER_TOKEN" \
-    "https://auth.docker.io/token?service=registry.docker.io&scope=repository:$repo:$wanted")
+  status=$(printf 'Authorization: Basic %s\n' "$(printf '%s:%s' "$DOCKER_USER" "$DOCKER_TOKEN" | base64 | tr -d '\n')" \
+    | curl -sS -H @- -o "$tmp" -w '%{http_code}' \
+        "https://auth.docker.io/token?service=registry.docker.io&scope=repository:$repo:$wanted")
   if [ "$status" != 200 ]; then
     echo "registry-preflight: Docker Hub refused the login for $repo (HTTP $status): check DOCKER_USER and DOCKER_TOKEN" >&2
     failed=1
     continue
   fi
-  granted=$(python3 - "$repo" <<'PY'
-import base64, json, sys
-token = json.load(open("/tmp/registry-preflight.json"))["token"]
+  granted=$(python3 - "$repo" "$tmp" <<'PY'
+import base64, json, pathlib, sys
+body = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+token = body["token"]
 payload = token.split(".")[1]
 payload += "=" * (-len(payload) % 4)
 claims = json.loads(base64.urlsafe_b64decode(payload))
@@ -67,5 +75,4 @@ PY
     echo "registry-preflight: $repo: $wanted granted"
   fi
 done
-rm -f /tmp/registry-preflight.json
 exit "$failed"
