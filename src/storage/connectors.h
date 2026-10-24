@@ -18,6 +18,9 @@
 //                                 and private-network endpoints and http
 //                                 token endpoints (see http_call.h).
 //   GRPARSE_SOURCE_MAX_BYTES      largest document a source downloads.
+// How many fetches run at once (GRPARSE_REMOTE_FETCH_CONCURRENCY) and the
+// in-flight charge for what they fetched are the caller's: parse_source
+// holds a RemoteFetchSlots slot around resolve_source.
 #ifndef GRPARSE_STORAGE_CONNECTORS_H
 #define GRPARSE_STORAGE_CONNECTORS_H
 

@@ -1026,11 +1026,21 @@ ai::pipestream::enrich::v1::CodeFormulaPreset enrich_code_formula_preset(
 }
 
 
+namespace {
+
+// What one FileSource's base64 payload decodes to (three bytes per four
+// characters, rounded up).
+uint64_t decoded_file_bytes(const pipestream::parse::v1::FileSource& file) {
+  return file.base64_string().size() / 4 * 3 + 3;
+}
+
+}  // namespace
+
 uint64_t decoded_source_bytes(
     const google::protobuf::RepeatedPtrField<pipestream::parse::v1::Source>& sources) {
   uint64_t total = 0;
   for (const auto& source : sources) {
-    if (source.has_file()) total += source.file().base64_string().size() / 4 * 3 + 3;
+    if (source.has_file()) total += decoded_file_bytes(source.file());
   }
   return total;
 }
@@ -2103,7 +2113,8 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
                           PageScheduler& scheduler,
                           const std::shared_ptr<CollectorEndpoints>& collectors,
                           const std::optional<RepairOptions>& server_repair,
-                          const std::string& surface, SourceParse* parsed) {
+                          const SourceAdmission& admission, const std::string& surface,
+                          SourceParse* parsed) {
   const auto& sources = request.sources();
   if (sources.size() != 1) {
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
@@ -2122,11 +2133,43 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
   // FileSource passes through. This runs on the conversion's worker, so the
   // blocking fetch never holds a gRPC event thread.
   pipestream::parse::v1::FileSource resolved_file;
-  if (grpc::Status resolved = storage::resolve_source(sources.Get(0), "sources[0]", &resolved_file);
-      !resolved.ok()) {
-    return resolved;
+  const bool remote = !sources.Get(0).has_file();
+  {
+    // Admission charged a remote source for its request alone. Until the
+    // fetch returns, the body it downloads is bounded only by the number of
+    // fetches running at once, so the fetch holds a slot, and keeps it until
+    // the fetched copy is charged.
+    RemoteFetchSlots::Slot slot;
+    if (remote && admission.fetch_slots != nullptr) {
+      slot = admission.fetch_slots->acquire([context] { return context->IsCancelled(); });
+      if (!slot.held()) {
+        return grpc::Status(grpc::StatusCode::CANCELLED,
+                            surface + ": request cancelled while waiting for a remote fetch "
+                                      "slot (GRPARSE_REMOTE_FETCH_CONCURRENCY)");
+      }
+    }
+    if (grpc::Status resolved =
+            storage::resolve_source(sources.Get(0), "sources[0]", &resolved_file);
+        !resolved.ok()) {
+      return resolved;
+    }
+    if (remote) {
+      // The parse holds the fetched document twice over: the base64 copy in
+      // the resolved FileSource and the bytes it decodes to, the same pair
+      // an inline source is charged for on admission.
+      const uint64_t held =
+          resolved_file.base64_string().size() + decoded_file_bytes(resolved_file);
+      std::optional<InflightCharge> charge = InflightCharge::acquire(admission.inflight, held);
+      if (!charge.has_value()) {
+        return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
+                            surface + ": the fetched sources[0] (" + std::to_string(held) +
+                                " bytes held) would take in-flight document bytes past "
+                                "GRPARSE_MAX_INFLIGHT_BYTES");
+      }
+      parsed->fetched_charge = std::move(*charge);
+    }
   }
-  if (!sources.Get(0).has_file()) {
+  if (remote) {
     parsed->doctype = classify_doctype(pipestream::parse::v1::INPUT_FORMAT_UNSPECIFIED,
                                        resolved_file.filename());
   }

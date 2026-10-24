@@ -291,6 +291,8 @@ void describe_chunks(const ChunkRequest& chunk_request,
 // The request's bytes are charged to the in-flight budget before anything
 // queues, and returned when the task that owns the call is gone (run, or
 // refused by the executor); a charge past the budget is refused outright.
+// A remote source's fetched copy is charged later, by parse_source, once
+// the fetch has said how large it is.
 class ParseUnaryReactor final : public grpc::ServerUnaryReactor {
  public:
   ParseUnaryReactor(grpc::CallbackServerContext* context, CallExecutor& executor,
@@ -483,7 +485,8 @@ grpc::ServerUnaryReactor* DocumentParserService::ConvertSource(
     grpc::CallbackServerContext* context,
     const pipestream::parse::v1::ConvertSourceRequest* request,
     pipestream::parse::v1::ConvertSourceResponse* response) {
-  // The wire message and the copy its base64 source decodes to.
+  // The wire message and the copy its base64 source decodes to; a remote
+  // source's fetched copy is charged after the fetch (parse_source).
   const uint64_t charge =
       request->ByteSizeLong() + decoded_source_bytes(request->request().sources());
   const std::string_view initial_doctype = request_doctype(request->request().sources());
@@ -497,7 +500,7 @@ grpc::ServerUnaryReactor* DocumentParserService::ConvertSource(
         const auto run = [&]() -> grpc::Status {
           const grpc::Status parse_status =
               parse_source(context, request->request(), scheduler_, endpoints_, repair_,
-                           "ConvertSource", &parsed);
+                           SourceAdmission{inflight_, fetch_slots_}, "ConvertSource", &parsed);
           if (!parse_status.ok()) return parse_status;
           auto& result = parsed.result;
           partial_success = !result.failures.empty();
@@ -761,7 +764,8 @@ grpc::Status DocumentParserService::parse_chunk_source(
   pipestream::parse::v1::ConvertDocumentRequest convert;
   *convert.mutable_sources() = sources;
   *convert.mutable_options() = options;
-  return parse_source(context, convert, scheduler_, endpoints_, repair_, surface, parsed);
+  return parse_source(context, convert, scheduler_, endpoints_, repair_,
+                      SourceAdmission{inflight_, fetch_slots_}, surface, parsed);
 }
 
 grpc::ServerUnaryReactor* DocumentParserService::Health(

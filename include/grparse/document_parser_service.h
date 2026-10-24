@@ -6,6 +6,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <google/protobuf/message_lite.h>
@@ -22,6 +23,7 @@
 #include "grparse/inflight_bytes.h"
 #include "grparse/office_cv_enrichment.h"
 #include "grparse/page_scheduler.h"
+#include "grparse/remote_fetch_slots.h"
 #include "grparse/vlm_convert.h"
 
 namespace grparse {
@@ -177,6 +179,15 @@ class DocumentParserService final
   void set_response_byte_cap(uint64_t bytes) { response_byte_cap_ = bytes; }
   uint64_t response_byte_cap() const { return response_byte_cap_; }
 
+  // The slots every remote source fetch holds while it runs
+  // (GRPARSE_REMOTE_FETCH_CONCURRENCY, see RemoteFetchSlots);
+  // kDefaultRemoteFetchConcurrency of them until set. Set before serving;
+  // null leaves fetches unbounded.
+  void set_remote_fetch_slots(std::shared_ptr<RemoteFetchSlots> slots) {
+    fetch_slots_ = std::move(slots);
+  }
+  const std::shared_ptr<RemoteFetchSlots>& remote_fetch_slots() const { return fetch_slots_; }
+
   grpc::ServerUnaryReactor* ConvertSource(
       grpc::CallbackServerContext* context,
       const ai::pipestream::parse::v1::ConvertSourceRequest* request,
@@ -234,6 +245,8 @@ class DocumentParserService final
   // The process-wide in-flight byte budget; null admits by call count alone.
   std::shared_ptr<InflightBytes> inflight_;
   uint64_t response_byte_cap_ = static_cast<uint64_t>(kMaxMessageBytes);
+  std::shared_ptr<RemoteFetchSlots> fetch_slots_ =
+      std::make_shared<RemoteFetchSlots>(kDefaultRemoteFetchConcurrency);
   // Declared last so it is torn down first: joining the workers before the
   // endpoints and the scheduler reference go away is what keeps an in-flight
   // parse from outliving what it reads.

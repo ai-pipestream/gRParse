@@ -311,6 +311,11 @@ int main() {
                  inflight->limit() / (1024 * 1024));
     grparse::DocumentParserService service(scheduler, endpoints, executor_options, repair,
                                           embedding_engine, embedding_config, inflight);
+    service.set_remote_fetch_slots(
+        std::make_shared<grparse::RemoteFetchSlots>(grparse::read_remote_fetch_concurrency()));
+    std::println("gRParse remote source fetches: at most {} at once "
+                 "(GRPARSE_REMOTE_FETCH_CONCURRENCY)",
+                 service.remote_fetch_slots()->limit());
     service.set_response_byte_cap(grparse::read_response_byte_cap());
     std::println("gRParse unary response: at most {} MiB (GRPARSE_MAX_RESPONSE_BYTES)",
                  service.response_byte_cap() / (1024 * 1024));
