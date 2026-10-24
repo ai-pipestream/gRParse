@@ -164,6 +164,7 @@ RUN LD_LIBRARY_PATH=/out/ort-libs:/opt/opencv/lib \
 
 FROM ${GRPARSE_RUNTIME_IMAGE} AS e2e
 ENV LD_LIBRARY_PATH=/usr/local/lib
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=e2e-closure /out/e2e-libs/ /usr/local/lib/
 COPY --from=build /out/ort-libs/ /usr/local/lib/
 COPY --from=build /out/e2e/ /usr/local/bin/
@@ -188,6 +189,10 @@ ENV GRPARSE_LISTEN_ADDRESS=0.0.0.0:50051 GRPARSE_MODELS_DIR=/models GRPARSE_PAGE
     GRPARSE_ORT_EP=cpu \
     GRPARSE_LAYOUT_MODEL=heron \
     LD_LIBRARY_PATH=/usr/local/lib
+# The base carries no CA bundle, and libcurl (https S3, HTTP and storage
+# sources and targets) refuses every TLS peer without one; the build stage's
+# ca-certificates bundle is the one its tests verified against.
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/runtime-libs/ /usr/local/lib/
 COPY --from=build /out/ort-libs/ /usr/local/lib/
 COPY --from=build /out/grparse-server /usr/local/bin/grparse-server
