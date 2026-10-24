@@ -218,7 +218,9 @@ jobs:
         run: scripts/test/remote-sources-e2e-test.sh grparse-ci-cpu-e2e
       - name: Chart outputs end to end (grpc-enrich and an emulated VLM)
         if: ${{ github.server_url == 'https://github.com' }}
-        run: scripts/test/chart-outputs-e2e-test.sh grparse-ci-cpu-e2e pipestreamai/grpc-enrich:latest
+        # A released grpc-enrich, so a push to that repo cannot turn this
+        # repo's PRs red; move the tag when the chart contract moves.
+        run: scripts/test/chart-outputs-e2e-test.sh grparse-ci-cpu-e2e pipestreamai/grpc-enrich:0.3.0
 
   # The demo shell image carries every peer's proto contract (vendored under
   # examples/web-demo/peer-protos); the Dockerfile's own build gate loads
