@@ -50,6 +50,19 @@ jobs:
         env:
           SEED_FLAGS: ${{ github.server_url != 'https://github.com' && '--no-pull' || '' }}
         run: sh scripts/find-seed.sh $SEED_FLAGS Dockerfile cuda amd64 >> "$GITHUB_OUTPUT"
+      - name: Restore the compile cache
+        # GitHub's hosted runner only: its builder starts empty, so the ccache
+        # mount the build compiles through travels in the Actions cache
+        # (scripts/ccache-mount.sh). Forgejo's daemon keeps the mount itself.
+        if: ${{ github.server_url == 'https://github.com' }}
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-cuda-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-cuda-amd64-
+      - name: Load the compile cache into the build's ccache mount
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: sh scripts/ccache-mount.sh load cuda amd64 "$RUNNER_TEMP/ccache"
       - name: Build full image and run non-GPU tests
         # The full build (not just the build stage) also assembles the
         # runtime stage, so a runtime library missing from the staged
@@ -59,6 +72,15 @@ jobs:
             --build-arg GRPARSE_BUILD_JOBS="$(scripts/build-jobs.sh)" \
             --build-arg GRPARSE_DEPS_IMAGE="${{ steps.seed.outputs.image }}" \
             --build-arg GRPARSE_REVISION="${{ github.sha }}" -t grparse-ci-cuda .
+      - name: Copy the compile cache out of the ccache mount
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: sh scripts/ccache-mount.sh save cuda amd64 "$RUNNER_TEMP/ccache"
+      - name: Save the compile cache
+        if: ${{ github.server_url == 'https://github.com' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-cuda-amd64-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Boot-proof the runtime image
         # Library closure + boot-to-main.  A green build with an unbootable
         # binary has shipped before (ZXing flipping BUILD_SHARED_LIBS); this
@@ -98,12 +120,34 @@ jobs:
         env:
           SEED_FLAGS: ${{ github.server_url != 'https://github.com' && '--no-pull' || '' }}
         run: sh scripts/find-seed.sh $SEED_FLAGS Dockerfile.openvino openvino amd64 >> "$GITHUB_OUTPUT"
+      - name: Restore the compile cache
+        # GitHub's hosted runner only: its builder starts empty, so the ccache
+        # mount the build compiles through travels in the Actions cache
+        # (scripts/ccache-mount.sh). Forgejo's daemon keeps the mount itself.
+        if: ${{ github.server_url == 'https://github.com' }}
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-openvino-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-openvino-amd64-
+      - name: Load the compile cache into the build's ccache mount
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: sh scripts/ccache-mount.sh load openvino amd64 "$RUNNER_TEMP/ccache"
       - name: Build Intel/OpenVINO image and run non-GPU tests
         run: |
           docker build --progress=plain -f Dockerfile.openvino \
             --build-arg GRPARSE_BUILD_JOBS="$(scripts/build-jobs.sh)" \
             --build-arg GRPARSE_DEPS_IMAGE="${{ steps.seed.outputs.image }}" \
             --build-arg GRPARSE_REVISION="${{ github.sha }}" -t grparse-ci-openvino .
+      - name: Copy the compile cache out of the ccache mount
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: sh scripts/ccache-mount.sh save openvino amd64 "$RUNNER_TEMP/ccache"
+      - name: Save the compile cache
+        if: ${{ github.server_url == 'https://github.com' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-openvino-amd64-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Boot-proof the runtime image
         run: ./scripts/smoke-test.sh grparse-ci-openvino
       - name: Verify model fetch and real CPU embeddings
@@ -186,6 +230,19 @@ jobs:
         env:
           SEED_FLAGS: ${{ github.server_url != 'https://github.com' && '--no-pull' || '' }}
         run: sh scripts/find-seed.sh $SEED_FLAGS Dockerfile.cpu cpu amd64 >> "$GITHUB_OUTPUT"
+      - name: Restore the compile cache
+        # GitHub's hosted runner only: its builder starts empty, so the ccache
+        # mount the build compiles through travels in the Actions cache
+        # (scripts/ccache-mount.sh). Forgejo's daemon keeps the mount itself.
+        if: ${{ github.server_url == 'https://github.com' }}
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-cpu-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-cpu-amd64-
+      - name: Load the compile cache into the build's ccache mount
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: sh scripts/ccache-mount.sh load cpu amd64 "$RUNNER_TEMP/ccache"
       - name: Build CPU image and run the tests, model goldens included
         run: |
           docker build --progress=plain -f Dockerfile.cpu \
@@ -193,6 +250,15 @@ jobs:
             --build-arg GRPARSE_DEPS_IMAGE="${{ steps.seed.outputs.image }}" \
             --build-arg GRPARSE_REVISION="${{ github.sha }}" \
             --build-arg GRPARSE_TEST_REQUIRE_MODELS=1 -t grparse-ci-cpu .
+      - name: Copy the compile cache out of the ccache mount
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: sh scripts/ccache-mount.sh save cpu amd64 "$RUNNER_TEMP/ccache"
+      - name: Save the compile cache
+        if: ${{ github.server_url == 'https://github.com' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-cpu-amd64-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Boot-proof the runtime image
         run: ./scripts/smoke-test.sh grparse-ci-cpu
 

@@ -77,6 +77,17 @@ RUN --mount=type=bind,target=/src,rw \
 # grparse-deps: end of seed inputs
 
 FROM ${GRPARSE_DEPS_IMAGE} AS build
+# ccache compiles the first-party sources (GRPARSE_COMPILER_LAUNCHER below;
+# the fetched dependencies keep their compile commands, so a seeded /build
+# keeps their objects). It is installed here and not in deps so the seed and
+# its hash stay as they are. Its cache mount is keyed on flavor and
+# architecture only, so every build scope shares it: ccache keys each object
+# on its preprocessed source, flags and compiler, so an entry cannot go stale
+# the way an object in a reused build tree can. A hosted CI runner, whose
+# cache mounts start empty, restores and saves it (scripts/ccache-mount.sh).
+RUN apt-get update && apt-get install -y --no-install-recommends ccache \
+    && rm -rf /var/lib/apt/lists/*
+ENV CCACHE_DIR=/ccache CCACHE_MAXSIZE=2G
 ARG GRPARSE_BUILD_JOBS=2
 ENV CARGO_BUILD_JOBS=${GRPARSE_BUILD_JOBS}
 WORKDIR /src
@@ -97,6 +108,7 @@ ARG GRPARSE_BUILD_CACHE_SCOPE=
 # decides: any proto change discards the staged and generated trees, which
 # forces regeneration; everything else stays warm.
 RUN --mount=type=cache,id=grparse-ubuntu26-cuda13.4-trt11.4-grpc1.84.0-ort1.30.0-cxx23-sessionep2-static1-simdutf9-ocv500-tokcpp1${GRPARSE_BUILD_CACHE_SCOPE},sharing=locked,target=/build \
+    --mount=type=cache,id=grparse-ccache-cuda-amd64,target=/ccache \
     if [ -d /opt/grparse-seed ] && [ ! -f /build/CMakeCache.txt ]; then \
       cp -a /opt/grparse-seed/. /build/ && echo "seed: /build seeded from /opt/grparse-seed"; \
     fi \
@@ -105,9 +117,12 @@ RUN --mount=type=cache,id=grparse-ubuntu26-cuda13.4-trt11.4-grpc1.84.0-ort1.30.0
       rm -rf /build/proto /build/generated && printf '%s' "$PROTO_SUM" > /build/.proto-sum; \
     fi \
  && sh scripts/stamp-sources.sh /build \
+ && ccache --zero-stats \
  && cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
       -DGRPARSE_WERROR=ON -DGRPARSE_EMBED_TENSORRT=ON -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv5 \
+      -DGRPARSE_COMPILER_LAUNCHER=ccache \
  && cmake --build /build --target grparse-server grparse-stream-client grparse-embed-text grparse-tests --parallel ${GRPARSE_BUILD_JOBS} \
+ && ccache --show-stats \
  && LD_LIBRARY_PATH=/opt/opencv/lib ctest --test-dir /build --output-on-failure -L grparse \
  && mkdir -p /out \
  && cp /build/grparse-server /out/grparse-server \
