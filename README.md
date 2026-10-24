@@ -1101,8 +1101,16 @@ Docker installation. A CUDA-capable ONNX Runtime build is required for the
 provider to exist; a CPU-only runtime cannot activate the GPU.
 
 ```bash
-docker compose build
+GRPARSE_REVISION=$(scripts/revision.sh) docker compose build
+scripts/build-image.sh cpu        # or one image by flavor (cuda, cpu, openvino), tagged grparse-local-<flavor>
 ```
+
+`GRPARSE_REVISION` becomes the image's `org.opencontainers.image.revision`
+label, the commit `eval/corpus` records for a run. `scripts/revision.sh`
+prints HEAD, with `-dirty` appended when tracked files differ from it, and
+nothing outside a git checkout; `scripts/build-image.sh` and
+`scripts/stack-e2e.sh` pass it by themselves, and a plain `docker compose
+build` without it leaves the label empty.
 
 CI builds both images (CUDA and OpenVINO) and then boot-proofs each runtime
 stage with `scripts/smoke-test.sh`: library closure of the shipped binaries

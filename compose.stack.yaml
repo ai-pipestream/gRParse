@@ -62,7 +62,12 @@ name: parse-stack
 services:
   grparse:
     image: pipestreamai/grparse:${STACK_TAG:-latest}
-    build: .
+    build:
+      context: .
+      args:
+        # The commit for the image's revision label, which eval/corpus reads:
+        # GRPARSE_REVISION=$(scripts/revision.sh) docker compose build
+        GRPARSE_REVISION: ${GRPARSE_REVISION:-}
     expose:
       - "50051"
       - "9464"   # Prometheus /metrics

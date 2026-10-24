@@ -223,7 +223,8 @@ Runtime GPU, gRPC; see README "Development"). Three images exist:
 `latest-cpu`), `Dockerfile.openvino` (Intel GPUs, `latest-openvino`).
 
 ```bash
-docker compose build                                   # CUDA image + tests
+GRPARSE_REVISION=$(scripts/revision.sh) docker compose build   # CUDA image + tests, commit labelled
+scripts/build-image.sh cpu                             # one flavor, labelled, tag grparse-local-cpu
 ctest --test-dir /build --output-on-failure -L grparse # inside the build; the label scopes it
 scripts/smoke-test.sh pipestreamai/grparse:latest      # boot-proof a built image
 ```

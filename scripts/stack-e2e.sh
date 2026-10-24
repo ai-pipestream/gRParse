@@ -9,7 +9,8 @@
 #   E2E_PROJECT        compose project name (default parse-stack, the name
 #                      compose.stack.yaml declares, so an already-running
 #                      stack is reused rather than duplicated)
-#   E2E_BUILD=1        pass --build to `up`
+#   E2E_BUILD=1        pass --build to `up`; the gRParse image is stamped
+#                      with scripts/revision.sh unless GRPARSE_REVISION is set
 #   E2E_DOWN=1         tear the project down after the run
 #   E2E_WAIT_SECONDS   `up --wait` timeout (default 600)
 #   E2E_WORKERS        Playwright workers (default 1; see e2e/playwright.config.ts)
@@ -21,7 +22,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
-  sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit 0
 fi
 
@@ -34,6 +35,8 @@ files+=(-f compose.stack.e2e.yaml)
 E2E_UID=$(id -u)
 E2E_GID=$(id -g)
 export E2E_UID E2E_GID
+GRPARSE_REVISION=${GRPARSE_REVISION:-$(sh scripts/revision.sh)}
+export GRPARSE_REVISION
 
 compose=(docker compose -p "$PROJECT" "${files[@]}")
 stack_profiles=(--profile parsers --profile heavy)
