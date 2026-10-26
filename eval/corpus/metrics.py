@@ -8,7 +8,10 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .journal import JournalRecord
 
 DURATION_BUCKETS: tuple[float, ...] = (
     0.01,
@@ -136,14 +139,14 @@ class MetricsCollector:
                 self._duration_count[dtype] = self._duration_count.get(dtype, 0) + 1
                 self._duration_sum[dtype] = self._duration_sum.get(dtype, 0.0) + duration_s
 
-    def record_journal_entry(self, entry: dict[str, Any]) -> None:
-        """Fold a deserialized results.jsonl record into the collector."""
+    def record_journal_entry(self, entry: JournalRecord) -> None:
+        """Fold a results.jsonl record into the collector."""
         self.record_document(
-            doctype=str(entry.get("doctype") or entry.get("ext") or "unknown"),
-            parser_type=str(entry.get("parser_type") or "none"),
-            status=str(entry.get("status") or "failure"),
-            elapsed_ms=float(entry.get("elapsed_ms") or 0.0),
-            failed_checks=entry.get("failed_checks") or (),
+            doctype=entry.doctype,
+            parser_type=entry.parser_type,
+            status=entry.status,
+            elapsed_ms=entry.elapsed_ms,
+            failed_checks=entry.failed_checks,
         )
 
     def render(self, *, now_monotonic: float | None = None) -> str:

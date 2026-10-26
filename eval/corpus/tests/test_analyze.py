@@ -10,9 +10,17 @@ from typing import Any
 from corpus.analyze import main
 
 
+def _complete(entry: dict[str, Any]) -> dict[str, Any]:
+    """A full journal line: the fields these tests do not vary, then the entry's own."""
+    return {
+        "raw_status": entry["status"], "artifact_md": None, "artifact_json": None,
+        "counts": {}, "collectors": [], "failures": [], "skipped": "",
+    } | entry
+
+
 def _write_journal(path: Path, entries: list[dict[str, Any]]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    lines = [json.dumps(e, separators=(",", ":")) for e in entries]
+    lines = [json.dumps(_complete(e), separators=(",", ":")) for e in entries]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 

@@ -29,12 +29,26 @@ import re
 import subprocess
 import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA = "grparse.corpus-run/v1"
+from .run_manifest import (
+    SCHEMA,
+    ConfigValue,
+    CorpusIdentity,
+    GrparseCommit,
+    Harness,
+    Host,
+    ManifestError,
+    RunManifest,
+    ServiceImage,
+    Stack,
+)
+
+__all__ = ["SCHEMA", "ManifestError", "RunManifest"]
+
 MANIFEST_NAME = "run.json"
 CORPUS_MANIFEST_NAME = "corpus-manifest.tsv"
 REVISION_LABEL = "org.opencontainers.image.revision"
@@ -79,22 +93,15 @@ def _git(repo: Path, *args: str) -> str | None:
     return done.stdout.strip()
 
 
-def harness_provenance(repo: Path) -> dict[str, Any]:
+def harness_provenance(repo: Path) -> Harness:
     """The eval code's own commit: a check that changed moves the numbers too."""
     commit = _git(repo, "rev-parse", "HEAD")
     status = _git(repo, "status", "--porcelain", "--", "eval")
-    return {
-        "commit": commit,
-        "eval_dirty": bool(status) if status is not None else None,
-    }
+    return Harness(commit=commit, eval_dirty=bool(status) if status is not None else None)
 
 
-def host_provenance() -> dict[str, Any]:
-    return {
-        "hostname": platform.node(),
-        "platform": platform.platform(),
-        "python": sys.version.split()[0],
-    }
+def host_provenance() -> Host:
+    return Host(hostname=platform.node(), platform=platform.platform(), python=sys.version.split()[0])
 
 
 def _safe_env(env_list: Iterable[str]) -> dict[str, str]:
@@ -106,78 +113,85 @@ def _safe_env(env_list: Iterable[str]) -> dict[str, str]:
     return dict(sorted(out.items()))
 
 
-def stack_provenance(project: str, runner: Runner = docker_cli) -> dict[str, Any]:
-    """Inspect every container of a compose project and the image each runs."""
+def stack_provenance(project: str, runner: Runner = docker_cli) -> Stack:
+    """Inspect every container of a compose project and the image each runs.
+
+    The docker inspect documents are the Docker Engine API's own; a field the
+    engine leaves out reads as absent here, never as a made-up value."""
     ids = [line.strip() for line in runner(
         ["ps", "-a", "--no-trunc", "--filter", f"label={COMPOSE_PROJECT_LABEL}={project}", "--format", "{{.ID}}"]
     ).splitlines() if line.strip()]
     if not ids:
         raise ProvenanceError(f"no containers in compose project {project!r}")
-    containers = json.loads(runner(["inspect", *ids]) or "[]")
-    image_ids = sorted({c.get("Image", "") for c in containers if c.get("Image")})
-    images = {img.get("Id"): img for img in json.loads(runner(["image", "inspect", *image_ids]) or "[]")} if image_ids else {}
+    containers = json.loads(runner(["inspect", *ids]))
+    image_ids = sorted({c["Image"] for c in containers})
+    images = {img["Id"]: img for img in json.loads(runner(["image", "inspect", *image_ids]))}
 
-    services: dict[str, dict[str, Any]] = {}
+    services: dict[str, ServiceImage] = {}
     for container in containers:
-        labels = (container.get("Config") or {}).get("Labels") or {}
-        service = labels.get(COMPOSE_SERVICE_LABEL) or (container.get("Name") or "").lstrip("/")
-        image = images.get(container.get("Image"), {})
-        image_labels = (image.get("Config") or {}).get("Labels") or {}
-        entry: dict[str, Any] = {
-            "image": (container.get("Config") or {}).get("Image"),
-            "image_id": container.get("Image"),
-            "repo_digests": sorted(image.get("RepoDigests") or []),
-            "revision": image_labels.get(REVISION_LABEL),
-            "version": image_labels.get(VERSION_LABEL),
-            "created": image_labels.get(CREATED_LABEL) or image.get("Created"),
-            "state": (container.get("State") or {}).get("Status"),
-        }
-        if service == GRPARSE_SERVICE:
-            entry["env"] = _safe_env((container.get("Config") or {}).get("Env") or [])
-        services[service] = entry
-    return {"recorded": True, "compose_project": project, "services": dict(sorted(services.items()))}
+        config = container["Config"]
+        labels = config.get("Labels") or {}
+        service = labels.get(COMPOSE_SERVICE_LABEL) or container["Name"].lstrip("/")
+        image = images[container["Image"]]
+        image_labels = image["Config"].get("Labels") or {}
+        services[service] = ServiceImage(
+            image=config["Image"],
+            image_id=container["Image"],
+            repo_digests=tuple(sorted(image.get("RepoDigests") or [])),
+            revision=image_labels.get(REVISION_LABEL),
+            version=image_labels.get(VERSION_LABEL),
+            created=image_labels.get(CREATED_LABEL) or image.get("Created"),
+            state=container["State"]["Status"],
+            env=_safe_env(config.get("Env") or []) if service == GRPARSE_SERVICE else None,
+        )
+    return Stack(recorded=True, compose_project=project, services=dict(sorted(services.items())))
 
 
-def grparse_commit(stack: Mapping[str, Any], explicit: str | None) -> dict[str, Any]:
+def grparse_commit(stack: Stack, explicit: str | None) -> GrparseCommit:
     """The gRParse commit and where it came from; never guessed."""
     if explicit:
-        return {"commit": explicit, "source": "--grparse-commit"}
-    service = (stack.get("services") or {}).get(GRPARSE_SERVICE) or {}
-    if service.get("revision"):
-        return {"commit": service["revision"], "source": f"image label {REVISION_LABEL}"}
-    return {"commit": None, "source": "not recorded: no image label and no --grparse-commit"}
+        return GrparseCommit(commit=explicit, source="--grparse-commit")
+    service = stack.services.get(GRPARSE_SERVICE)
+    if service is not None and service.revision:
+        return GrparseCommit(commit=service.revision, source=f"image label {REVISION_LABEL}")
+    return GrparseCommit(commit=None, source="not recorded: no image label and no --grparse-commit")
 
 
-def config_provenance(config: Any) -> dict[str, Any]:
-    """The runner config, JSON-safe; passwords become a count."""
-    raw = asdict(config) if is_dataclass(config) else dict(config)
-    out: dict[str, Any] = {}
-    for key, value in raw.items():
+def config_provenance(config: Any) -> dict[str, ConfigValue]:
+    """The runner config (a dataclass), JSON-safe; passwords become a count."""
+    out: dict[str, ConfigValue] = {}
+    for key, value in asdict(config).items():
         if key == "document_passwords":
-            out["document_password_count"] = len(value or ())
+            out["document_password_count"] = len(value)
             continue
         out[key] = str(value) if isinstance(value, Path) else (list(value) if isinstance(value, tuple) else value)
     return out
 
 
-def corpus_identity(records: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any], str]:
+@dataclass(frozen=True)
+class CorpusFile:
+    """One document of a run as the journal records it."""
+
+    relpath: str
+    size_bytes: int
+    sha256: str
+
+
+def corpus_identity(files: Iterable[CorpusFile]) -> tuple[CorpusIdentity, str]:
     """sha256 over the sorted ``relpath\\tsize\\tsha256`` lines of a run's documents.
 
     Returns the identity block and the manifest text it hashes, so the
-    manifest can be written beside the run and rehashed by anyone."""
-    rows = sorted({
-        (str(r.get("relpath") or ""), int(r.get("size_bytes") or 0), str(r.get("sha256") or ""))
-        for r in records
-    })
+    manifest can be written beside the run and rehashed by anyone. A document
+    the runner could not read has an empty sha256 and counts as unhashed."""
+    rows = sorted({(f.relpath, f.size_bytes, f.sha256) for f in files})
     text = "".join(f"{relpath}\t{size}\t{sha}\n" for relpath, size, sha in rows)
-    unhashed = sum(1 for _, _, sha in rows if not sha)
-    identity = {
-        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-        "files": len(rows),
-        "bytes": sum(size for _, size, _ in rows),
-        "unhashed_files": unhashed,
-        "manifest": CORPUS_MANIFEST_NAME,
-    }
+    identity = CorpusIdentity(
+        sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        files=len(rows),
+        bytes=sum(size for _, size, _ in rows),
+        unhashed_files=sum(1 for _, _, sha in rows if not sha),
+        manifest=CORPUS_MANIFEST_NAME,
+    )
     return identity, text
 
 
@@ -186,33 +200,37 @@ def run_id(started_at: str, commit: str | None, corpus_sha: str | None) -> str:
     return f"{stamp}-{(commit or 'nocommit')[:12]}-{(corpus_sha or 'nocorpus')[:12]}"
 
 
-def stack_fingerprint(manifest: Mapping[str, Any]) -> dict[str, Any]:
+def stack_fingerprint(manifest: RunManifest) -> tuple[str | None, dict[str, str]]:
     """What must not change inside one run: the gRParse commit and every image id."""
-    services = (manifest.get("stack") or {}).get("services") or {}
-    return {
-        "grparse_commit": (manifest.get("grparse") or {}).get("commit"),
-        "images": {name: svc.get("image_id") for name, svc in sorted(services.items())},
-    }
+    return manifest.grparse.commit, {name: svc.image_id for name, svc in sorted(manifest.stack.services.items())}
 
 
-def load_manifest(path: Path) -> dict[str, Any] | None:
+def load_manifest(path: Path) -> RunManifest | None:
+    """The manifest at ``path``; None when there is none, ManifestError when it is malformed."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
         return None
-    return data if isinstance(data, dict) else None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise ManifestError(f"{path}: invalid JSON: {error}") from error
+    try:
+        return RunManifest.from_json(data)
+    except ManifestError as error:
+        raise ManifestError(f"{path}: {error}") from error
 
 
-def manifest_beside(journal: Path) -> dict[str, Any] | None:
+def manifest_beside(journal: Path) -> RunManifest | None:
     """run.json in the journal's directory, when the run wrote one."""
     return load_manifest(journal.parent / MANIFEST_NAME)
 
 
-def write_manifest(run_out: Path, manifest: Mapping[str, Any], corpus_text: str | None = None) -> Path:
+def write_manifest(run_out: Path, manifest: RunManifest, corpus_text: str | None = None) -> Path:
     run_out.mkdir(parents=True, exist_ok=True)
     path = run_out / MANIFEST_NAME
     tmp = run_out / f".{MANIFEST_NAME}.tmp.{os.getpid()}"
-    tmp.write_text(json.dumps(manifest, indent=1, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.write_text(json.dumps(manifest.to_json(), indent=1, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
     os.replace(tmp, path)
     if corpus_text is not None:
         (run_out / CORPUS_MANIFEST_NAME).write_text(corpus_text, encoding="utf-8")
@@ -225,37 +243,28 @@ def short(value: str | None, width: int = 12) -> str:
     return value.split(":", 1)[-1][:width] if value.startswith("sha256:") else value[:width]
 
 
-def digest_of(service: Mapping[str, Any]) -> str:
-    """The most portable identity of a service's image: a repo digest, else the image id."""
-    digests = service.get("repo_digests") or []
-    if digests:
-        return str(digests[0])
-    return str(service.get("image_id") or "")
-
-
-def render_markdown(manifest: Mapping[str, Any]) -> list[str]:
+def render_markdown(manifest: RunManifest) -> list[str]:
     """The provenance block report.md and analysis.md open with."""
-    grparse = manifest.get("grparse") or {}
-    corpus = manifest.get("corpus") or {}
-    harness = manifest.get("harness") or {}
-    stack = manifest.get("stack") or {}
+    grparse, corpus, harness, stack = manifest.grparse, manifest.corpus, manifest.harness, manifest.stack
+    corpus_line = (
+        f"- corpus: `{corpus.sha256}`, {corpus.files} files, {corpus.bytes} bytes"
+        if corpus is not None else "- corpus: not hashed yet (the run has not finished)"
+    )
     lines = [
-        f"- run: `{manifest.get('run_id', '-')}`, {manifest.get('started_at', '-')} to {manifest.get('finished_at', '-')}",
-        f"- gRParse commit: `{grparse.get('commit') or 'not recorded'}` ({grparse.get('source', '-')}); "
-        f"service `{manifest.get('service', '-')}`",
-        f"- corpus: `{corpus.get('sha256', '-')}`, {corpus.get('files', 0)} files, {corpus.get('bytes', 0)} bytes "
-        f"(`{manifest.get('config', {}).get('corpus_dir', '-')}`)",
-        f"- eval harness: `{harness.get('commit') or '-'}`" + (" (eval/ has uncommitted changes)" if harness.get("eval_dirty") else ""),
+        f"- run: `{manifest.run_id}`, {manifest.started_at} to {manifest.finished_at or 'unfinished'}",
+        f"- gRParse commit: `{grparse.commit or 'not recorded'}` ({grparse.source}); "
+        f"service `{manifest.service or '-'}`",
+        f"{corpus_line} (`{manifest.config['corpus_dir']}`)",
+        f"- eval harness: `{harness.commit or '-'}`" + (" (eval/ has uncommitted changes)" if harness.eval_dirty else ""),
     ]
-    if stack.get("recorded"):
+    if stack.recorded:
         lines += ["", "| service | image | digest | revision |", "|---|---|---|---|"]
-        for name, svc in (stack.get("services") or {}).items():
+        for name, svc in stack.services.items():
             lines.append(
-                f"| {name} | `{svc.get('image') or '-'}` | `{short(digest_of(svc).rsplit('@', 1)[-1], 19)}` | "
-                f"`{short(svc.get('revision'))}` |"
+                f"| {name} | `{svc.image}` | `{short(svc.digest().rsplit('@', 1)[-1], 19)}` | `{short(svc.revision)}` |"
             )
     else:
-        lines.append(f"- stack images: not recorded ({stack.get('reason', 'no compose project given')})")
+        lines.append(f"- stack images: not recorded ({stack.reason})")
     return lines
 
 
@@ -265,62 +274,58 @@ CONFIG_KEYS_THAT_MOVE_RESULTS = (
 )
 
 
-
-
-def compare(baseline: Mapping[str, Any] | None, candidate: Mapping[str, Any] | None) -> dict[str, Any]:
+def compare(baseline: RunManifest | None, candidate: RunManifest | None) -> dict[str, Any]:
     """What differs between the code, images, corpus and config of two runs."""
     warnings: list[str] = []
     if baseline is None:
         warnings.append("baseline has no run.json: what produced it is not recorded")
     if candidate is None:
         warnings.append("candidate has no run.json: what produced it is not recorded")
-    b = baseline or {}
-    c = candidate or {}
 
-    def pick(manifest: Mapping[str, Any], *path: str) -> Any:
-        node: Any = manifest
-        for part in path:
-            node = node.get(part) if isinstance(node, Mapping) else None
-        return node
+    def corpus_of(manifest: RunManifest | None) -> CorpusIdentity | None:
+        return manifest.corpus if manifest is not None else None
 
-    b_corpus, c_corpus = pick(b, "corpus", "sha256"), pick(c, "corpus", "sha256")
-    same_corpus = (b_corpus == c_corpus) if b_corpus and c_corpus else None
+    b_corpus, c_corpus = corpus_of(baseline), corpus_of(candidate)
+    same_corpus = (b_corpus.sha256 == c_corpus.sha256) if b_corpus and c_corpus else None
     if same_corpus is False:
         warnings.append("the runs cover different corpora: rates are not comparable, only common documents are")
 
-    b_commit, c_commit = pick(b, "grparse", "commit"), pick(c, "grparse", "commit")
-    b_harness, c_harness = pick(b, "harness", "commit"), pick(c, "harness", "commit")
-    if b_harness and c_harness and b_harness != c_harness:
+    b_commit = baseline.grparse.commit if baseline else None
+    c_commit = candidate.grparse.commit if candidate else None
+    b_harness = baseline.harness if baseline else None
+    c_harness = candidate.harness if candidate else None
+    if b_harness and c_harness and b_harness.commit and c_harness.commit and b_harness.commit != c_harness.commit:
         warnings.append("the eval harness commit differs: a changed check moves verdicts without a parser change")
-    if pick(c, "harness", "eval_dirty") or pick(b, "harness", "eval_dirty"):
+    if any(h is not None and h.eval_dirty for h in (b_harness, c_harness)):
         warnings.append("a run was made with uncommitted changes under eval/")
 
-    b_services = pick(b, "stack", "services") or {}
-    c_services = pick(c, "stack", "services") or {}
+    b_services = baseline.stack.services if baseline else {}
+    c_services = candidate.stack.services if candidate else {}
     services = []
     for name in sorted(set(b_services) | set(c_services)):
-        b_digest = digest_of(b_services[name]) if name in b_services else None
-        c_digest = digest_of(c_services[name]) if name in c_services else None
-        b_id = (b_services.get(name) or {}).get("image_id")
-        c_id = (c_services.get(name) or {}).get("image_id")
+        b_svc, c_svc = b_services.get(name), c_services.get(name)
         services.append({
             "service": name,
-            "baseline": b_digest,
-            "candidate": c_digest,
-            "changed": (b_id or b_digest) != (c_id or c_digest),
+            "baseline": b_svc.digest() if b_svc else None,
+            "candidate": c_svc.digest() if c_svc else None,
+            "changed": (b_svc.image_id if b_svc else None) != (c_svc.image_id if c_svc else None),
         })
 
-    b_config, c_config = pick(b, "config") or {}, pick(c, "config") or {}
-    config_changes = {
-        key: [b_config.get(key), c_config.get(key)]
-        for key in CONFIG_KEYS_THAT_MOVE_RESULTS
-        if (b_config or c_config) and b_config.get(key) != c_config.get(key)
-    }
+    config_changes: dict[str, list[ConfigValue]] = {}
+    if baseline is not None and candidate is not None:
+        config_changes = {
+            key: [baseline.config.get(key), candidate.config.get(key)]
+            for key in CONFIG_KEYS_THAT_MOVE_RESULTS
+            if baseline.config.get(key) != candidate.config.get(key)
+        }
     if config_changes:
         warnings.append("runner config differs: " + ", ".join(sorted(config_changes)))
 
-    b_env = pick(b, "stack", "services", GRPARSE_SERVICE, "env") or {}
-    c_env = pick(c, "stack", "services", GRPARSE_SERVICE, "env") or {}
+    def env_of(manifest: RunManifest | None) -> dict[str, str]:
+        service = manifest.stack.services.get(GRPARSE_SERVICE) if manifest else None
+        return dict(service.env) if service is not None and service.env is not None else {}
+
+    b_env, c_env = env_of(baseline), env_of(candidate)
     env_changes = {
         name: [b_env.get(name), c_env.get(name)]
         for name in sorted(set(b_env) | set(c_env))
@@ -328,14 +333,18 @@ def compare(baseline: Mapping[str, Any] | None, candidate: Mapping[str, Any] | N
     }
 
     return {
-        "baseline_run_id": b.get("run_id"),
-        "candidate_run_id": c.get("run_id"),
+        "baseline_run_id": baseline.run_id if baseline else None,
+        "candidate_run_id": candidate.run_id if candidate else None,
         "grparse_commit": {"baseline": b_commit, "candidate": c_commit,
                            "changed": None if not (b_commit and c_commit) else b_commit != c_commit},
-        "harness_commit": {"baseline": b_harness, "candidate": c_harness},
+        "harness_commit": {"baseline": b_harness.commit if b_harness else None,
+                           "candidate": c_harness.commit if c_harness else None},
         "corpus": {
-            "baseline": b_corpus, "candidate": c_corpus, "same": same_corpus,
-            "baseline_files": pick(b, "corpus", "files"), "candidate_files": pick(c, "corpus", "files"),
+            "baseline": b_corpus.sha256 if b_corpus else None,
+            "candidate": c_corpus.sha256 if c_corpus else None,
+            "same": same_corpus,
+            "baseline_files": b_corpus.files if b_corpus else None,
+            "candidate_files": c_corpus.files if c_corpus else None,
         },
         "services": services,
         "config_changes": config_changes,
@@ -351,7 +360,7 @@ def render_comparison(diff: Mapping[str, Any]) -> list[str]:
     lines = [
         "## What changed between the runs",
         "",
-        f"- runs: `{diff.get('baseline_run_id') or '-'}` -> `{diff.get('candidate_run_id') or '-'}`",
+        f"- runs: `{diff['baseline_run_id'] or '-'}` -> `{diff['candidate_run_id'] or '-'}`",
         f"- gRParse commit: `{commit['baseline'] or 'not recorded'}` -> `{commit['candidate'] or 'not recorded'}`",
         f"- corpus: {same} (`{short(corpus['baseline'])}` {corpus['baseline_files'] or '-'} files -> "
         f"`{short(corpus['candidate'])}` {corpus['candidate_files'] or '-'} files)",
@@ -373,27 +382,27 @@ def render_comparison(diff: Mapping[str, Any]) -> list[str]:
     return lines + [""]
 
 
-def find_runs(root: Path) -> list[tuple[Path, dict[str, Any]]]:
+def find_runs(root: Path) -> list[tuple[Path, RunManifest]]:
     """Every finished run under ``root`` (one directory per run), oldest first."""
     found = []
     for path in sorted(root.glob(f"*/{MANIFEST_NAME}")):
         manifest = load_manifest(path)
-        if manifest and manifest.get("finished_at") and (path.parent / "results.jsonl").is_file():
+        if manifest is not None and manifest.finished_at and (path.parent / "results.jsonl").is_file():
             found.append((path.parent, manifest))
-    return sorted(found, key=lambda item: str(item[1].get("started_at") or ""))
+    return sorted(found, key=lambda item: item[1].started_at)
 
 
-def latest_comparable(root: Path, candidate: Mapping[str, Any]) -> Path | None:
+def latest_comparable(root: Path, candidate: RunManifest) -> Path | None:
     """The newest earlier run over the same corpus, the default baseline."""
-    corpus = (candidate.get("corpus") or {}).get("sha256")
-    started = str(candidate.get("started_at") or "")
+    if candidate.corpus is None:
+        return None
     best = None
     for run_dir, manifest in find_runs(root):
-        if manifest.get("run_id") == candidate.get("run_id"):
+        if manifest.run_id == candidate.run_id or manifest.corpus is None:
             continue
-        if (manifest.get("corpus") or {}).get("sha256") != corpus:
+        if manifest.corpus.sha256 != candidate.corpus.sha256:
             continue
-        if started and str(manifest.get("started_at") or "") >= started:
+        if manifest.started_at >= candidate.started_at:
             continue
         best = run_dir
     return best

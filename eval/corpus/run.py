@@ -35,7 +35,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -52,7 +52,10 @@ from s3.run import LAYOUT_SUFFIX, convert_object, skip  # noqa: E402
 from s3.sourcefacts import pdf_page_count, source_facts  # noqa: E402
 
 from corpus import analyze, provenance  # noqa: E402
+from corpus.journal import JournalError, JournalRecord  # noqa: E402
 from corpus.metrics import MetricsCollector, MetricsServer, normalize_status  # noqa: E402
+from corpus.provenance import CorpusFile  # noqa: E402
+from corpus.run_manifest import Headline, RunManifest, Stack  # noqa: E402
 
 SKIP = 77
 REPO = EVAL_DIR.parent
@@ -382,43 +385,50 @@ def walk_corpus(
     yield from _scan_dir(root, "")
 
 
-def load_resume_journal(journal_path: Path) -> tuple[set[tuple[str, int]], list[dict[str, Any]]]:
-    """Read existing results.jsonl in O(N), returning ((relpath, size_bytes) set, records)."""
+def load_resume_journal(journal_path: Path) -> tuple[set[tuple[str, int]], list[JournalRecord]]:
+    """Read existing results.jsonl in O(N), returning ((relpath, size_bytes) set, records).
+
+    Only the final line may be cut short (the runner was killed mid-write);
+    it is dropped and the document runs again. Any other malformed line is a
+    JournalError."""
     keys: set[tuple[str, int]] = set()
-    records: list[dict[str, Any]] = []
+    records: list[JournalRecord] = []
     if not journal_path.is_file():
         return keys, records
-    with journal_path.open("r", encoding="utf-8") as handle:
-        for raw_line in handle:
-            line = raw_line.strip()
-            if not line:
+    lines = [
+        (line_no, raw_line.strip())
+        for line_no, raw_line in enumerate(journal_path.read_text(encoding="utf-8").splitlines(), start=1)
+        if raw_line.strip()
+    ]
+    for index, (line_no, line) in enumerate(lines):
+        where = f"{journal_path}:{line_no}"
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError as error:
+            if index == len(lines) - 1:
+                log(f"{where}: dropping a cut-short final line; that document runs again")
                 continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            relpath = record.get("relpath")
-            size_bytes = record.get("size_bytes")
-            if isinstance(relpath, str) and isinstance(size_bytes, int):
-                keys.add((relpath, size_bytes))
-                records.append(record)
+            raise JournalError(f"{where}: invalid JSON: {error}") from error
+        record = JournalRecord.from_json(data, where)
+        keys.add((record.relpath, record.size_bytes))
+        records.append(record)
     return keys, records
 
 
-def _record_to_object_result(record: dict[str, Any]) -> ObjectResult:
+def _record_to_object_result(record: JournalRecord) -> ObjectResult:
     return ObjectResult(
-        key=str(record.get("relpath") or ""),
-        extension=str(record.get("ext") or ""),
-        family=str(record.get("family") or "other"),
-        size=int(record.get("size_bytes") or 0),
-        parser_type=str(record.get("parser_type") or "none"),
-        collectors=list(record.get("collectors") or []),
-        status=str(record.get("raw_status") or record.get("status") or ""),
-        elapsed_ms=float(record.get("elapsed_ms") or 0.0),
-        counts=dict(record.get("counts") or {}),
-        checks=dict(record.get("checks") or {}),
-        failures=list(record.get("failures") or []),
-        skipped=str(record.get("skipped") or ""),
+        key=record.relpath,
+        extension=record.ext,
+        family=record.family,
+        size=record.size_bytes,
+        parser_type=record.parser_type,
+        collectors=list(record.collectors),
+        status=record.raw_status,
+        elapsed_ms=record.elapsed_ms,
+        counts=dict(record.counts),
+        checks=dict(record.checks),
+        failures=list(record.failures),
+        skipped=record.skipped,
     )
 
 
@@ -429,7 +439,7 @@ def evaluate_corpus_entry(
     *,
     do_sniff: bool,
     run_out: Path,
-) -> tuple[dict[str, Any], ObjectResult, str | None, str]:
+) -> tuple[JournalRecord, ObjectResult, str | None, str]:
     """Convert and evaluate one local file, writing sharded outputs when enabled."""
     doctype = entry.ext or entry.family or "unknown"
     if entry.family == "ebcdic" and entry.layout_path is None:
@@ -444,31 +454,31 @@ def evaluate_corpus_entry(
             raw_bytes = entry.path.read_bytes()
             input_sha256 = hashlib.sha256(raw_bytes).hexdigest()
         except OSError:
-            input_sha256 = ""
-        record: dict[str, Any] = {
-            "relpath": entry.relpath,
-            "sha256": input_sha256,
-            "size_bytes": entry.size_bytes,
-            "ext": entry.ext,
-            "family": entry.family,
-            "doctype": doctype,
-            "parser_type": "none",
-            "status": "skipped",
-            "raw_status": "skipped",
-            "rpc_error": None,
-            "elapsed_ms": 0.0,
-            "page_count": 0,
-            "warnings_count": 0,
-            "checks": {},
-            "failed_checks": [],
-            "output_sha256": "",
-            "artifact_md": None,
-            "artifact_json": None,
-            "counts": {},
-            "collectors": [],
-            "failures": [],
-            "skipped": obj_res.skipped,
-        }
+            input_sha256 = ""  # counted as unhashed in the corpus identity
+        record = JournalRecord(
+            relpath=entry.relpath,
+            sha256=input_sha256,
+            size_bytes=entry.size_bytes,
+            ext=entry.ext,
+            family=entry.family,
+            doctype=doctype,
+            parser_type="none",
+            status="skipped",
+            raw_status="skipped",
+            rpc_error=None,
+            elapsed_ms=0.0,
+            page_count=0,
+            warnings_count=0,
+            checks={},
+            failed_checks=(),
+            output_sha256="",
+            artifact_md=None,
+            artifact_json=None,
+            counts={},
+            collectors=(),
+            failures=(),
+            skipped=obj_res.skipped,
+        )
         return record, obj_res, None, f"-- {entry.relpath}: skipped (no layout)"
 
     data = entry.path.read_bytes()
@@ -539,30 +549,30 @@ def evaluate_corpus_entry(
     warnings_count = len((doc_dict.get("warnings") if isinstance(doc_dict, dict) else None) or [])
     page_count = int(obj_res.counts.get("pages", 0))
 
-    record = {
-        "relpath": entry.relpath,
-        "sha256": input_sha256,
-        "size_bytes": entry.size_bytes,
-        "ext": entry.ext,
-        "family": entry.family,
-        "doctype": doctype,
-        "parser_type": obj_res.parser_type,
-        "status": norm_status,
-        "raw_status": obj_res.status,
-        "rpc_error": first.rpc_error,
-        "elapsed_ms": obj_res.elapsed_ms,
-        "page_count": page_count,
-        "warnings_count": warnings_count,
-        "checks": obj_res.checks,
-        "failed_checks": failed_checks,
-        "output_sha256": output_sha256,
-        "artifact_md": artifact_md,
-        "artifact_json": artifact_json,
-        "counts": obj_res.counts,
-        "collectors": obj_res.collectors,
-        "failures": obj_res.failures,
-        "skipped": "",
-    }
+    record = JournalRecord(
+        relpath=entry.relpath,
+        sha256=input_sha256,
+        size_bytes=entry.size_bytes,
+        ext=entry.ext,
+        family=entry.family,
+        doctype=doctype,
+        parser_type=obj_res.parser_type,
+        status=norm_status,
+        raw_status=obj_res.status,
+        rpc_error=first.rpc_error,
+        elapsed_ms=obj_res.elapsed_ms,
+        page_count=page_count,
+        warnings_count=warnings_count,
+        checks=dict(obj_res.checks),
+        failed_checks=tuple(failed_checks),
+        output_sha256=output_sha256,
+        artifact_md=artifact_md,
+        artifact_json=artifact_json,
+        counts=dict(obj_res.counts),
+        collectors=tuple(obj_res.collectors),
+        failures=tuple(obj_res.failures),
+        skipped="",
+    )
     mark = "!!" if failed_checks else "=="
     suffix = f" [{', '.join(failed_checks)}]" if failed_checks else ""
     line = f"{mark} {entry.relpath}: {obj_res.parser_type} {obj_res.status} ({obj_res.elapsed_ms:.0f} ms){suffix}"
@@ -582,7 +592,7 @@ def build_corpus_report(
     exit_code: int,
     resumed_count: int = 0,
     metrics_url: str | None = None,
-    manifest: dict[str, Any] | None = None,
+    manifest: RunManifest | None = None,
 ) -> dict[str, Any]:
     evaluated = [r for r in results if not r.skipped]
     failed_objects = sum(1 for r in evaluated if r.failed)
@@ -613,7 +623,7 @@ def build_corpus_report(
     if metrics_url:
         report["metrics_url"] = metrics_url
     if manifest is not None:
-        report["provenance"] = manifest
+        report["provenance"] = manifest.to_json()
     return report
 
 
@@ -628,20 +638,20 @@ def render_corpus_markdown(report: dict[str, Any]) -> str:
         "",
         f"target `{report['target']}` service `{report['service']}` corpus `{report['corpus_dir']}`",
         "",
-        f"documents: {totals['objects']} total ({report.get('resumed', 0)} resumed), "
+        f"documents: {totals['objects']} total ({report['resumed']} resumed), "
         f"{totals['evaluated']} evaluated, {totals['skipped']} skipped, "
         f"{totals['failed_objects']} with failures; checks: {totals['checks_run']} run, "
         f"{totals['checks_failed']} failed; wall {report['wall_seconds']}s; exit {report['exit_code']}",
         "",
     ]
-    if report.get("provenance"):
-        manifest = report["provenance"]
+    if "provenance" in report:
+        manifest = RunManifest.from_json(report["provenance"])
         lines += ["## Provenance", ""] + provenance.render_markdown(manifest) + [""]
-        if manifest.get("headline"):
-            lines += analyze.headline_lines(manifest["headline"]) + [""]
-    for note in report.get("notes", []):
+        if manifest.headline is not None:
+            lines += analyze.headline_lines(manifest.headline.to_json()) + [""]
+    for note in report["notes"]:
         lines.append(f"- {note}")
-    if report.get("notes"):
+    if report["notes"]:
         lines.append("")
     lines += ["## Checks", "", "| check | files | pass | fail |", "|---|---|---|---|"]
     for name, cell in report["per_check"].items():
@@ -686,7 +696,7 @@ def render_corpus_markdown(report: dict[str, Any]) -> str:
         "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for obj in report["objects"]:
-        counts = obj.get("counts") or {}
+        counts = obj["counts"]
         failed = ", ".join(name for name, verdict in obj["checks"].items() if verdict == "fail")
         status = obj["skipped"] and f"skipped: {obj['skipped']}" or obj["status"]
         lines.append(
@@ -726,7 +736,7 @@ def evaluate_corpus(
     started: float,
     metrics_url: str | None = None,
     on_start: Callable[[str | None], None] | None = None,
-    manifest: dict[str, Any] | None = None,
+    manifest: RunManifest | None = None,
 ) -> int:
     """Stream walk_corpus through a bounded ThreadPoolExecutor (max_in_flight = 2 * workers)."""
     run_out.mkdir(parents=True, exist_ok=True)
@@ -784,7 +794,7 @@ def evaluate_corpus(
     try:
         with journal_path.open("a", encoding="utf-8") as journal_file:
             with ThreadPoolExecutor(max_workers=config.workers) as pool:
-                in_flight: dict[Future[tuple[dict[str, Any], ObjectResult, str | None, str]], CorpusEntry] = {}
+                in_flight: dict[Future[tuple[JournalRecord, ObjectResult, str | None, str]], CorpusEntry] = {}
 
                 def _top_up() -> None:
                     nonlocal walker_exhausted
@@ -819,7 +829,7 @@ def evaluate_corpus(
                         if fut.cancelled():
                             continue
                         record, obj_res, note, line = fut.result()
-                        journal_file.write(json.dumps(record, separators=(",", ":"), ensure_ascii=False) + "\n")
+                        journal_file.write(json.dumps(record.to_json(), separators=(",", ":"), ensure_ascii=False) + "\n")
                         journal_file.flush()
 
                         results.append(obj_res)
@@ -868,26 +878,25 @@ def evaluate_corpus(
 
 def start_manifest(
     config: CorpusConfig, run_out: Path, docker_runner: provenance.Runner | None = None
-) -> dict[str, Any]:
+) -> RunManifest:
     """Record what is about to run, and refuse to resume a run on a different stack."""
     if config.compose_project:
         stack = provenance.stack_provenance(config.compose_project, docker_runner or provenance.docker_cli)
     else:
-        stack = {"recorded": False, "reason": "no --compose-project given"}
+        stack = Stack.not_recorded("no --compose-project given")
     started_at = provenance.utc_now()
-    manifest: dict[str, Any] = {
-        "schema": provenance.SCHEMA,
-        "label": config.label,
-        "started_at": started_at,
-        "finished_at": None,
-        "target": config.target,
-        "service": None,
-        "grparse": provenance.grparse_commit(stack, config.grparse_commit),
-        "stack": stack,
-        "harness": provenance.harness_provenance(REPO),
-        "host": provenance.host_provenance(),
-        "config": provenance.config_provenance(config),
-    }
+    grparse = provenance.grparse_commit(stack, config.grparse_commit)
+    manifest = RunManifest(
+        label=config.label,
+        started_at=started_at,
+        target=config.target,
+        grparse=grparse,
+        stack=stack,
+        harness=provenance.harness_provenance(REPO),
+        host=provenance.host_provenance(),
+        config=provenance.config_provenance(config),
+        run_id=provenance.run_id(started_at, grparse.commit, None),
+    )
     prior = provenance.load_manifest(run_out / provenance.MANIFEST_NAME)
     if config.resume and prior is not None and (run_out / "results.jsonl").is_file():
         if provenance.stack_fingerprint(prior) != provenance.stack_fingerprint(manifest):
@@ -895,28 +904,39 @@ def start_manifest(
                 f"refusing to resume {run_out}: the stack or gRParse commit differs from the run being resumed "
                 "(start a new --label instead)"
             )
-        manifest["started_at"] = prior.get("started_at") or started_at
-        manifest["resumed_at"] = [*(prior.get("resumed_at") or []), started_at]
-    manifest["run_id"] = provenance.run_id(manifest["started_at"], manifest["grparse"]["commit"], None)
+        manifest = replace(
+            manifest,
+            started_at=prior.started_at,
+            resumed_at=(*prior.resumed_at, started_at),
+            run_id=provenance.run_id(prior.started_at, grparse.commit, None),
+        )
     provenance.write_manifest(run_out, manifest)
     return manifest
 
 
-def finish_manifest(manifest: dict[str, Any], run_out: Path, *, exit_code: int, wall_seconds: float) -> None:
-    """Hash the documents the run covered, add the headline rates, and stamp the finish."""
+def finish_manifest(manifest: RunManifest, run_out: Path, *, exit_code: int, wall_seconds: float) -> RunManifest:
+    """Hash the documents the run covered, add the headline counts, and stamp the finish."""
     journal = run_out / "results.jsonl"
-    _, raw_records = load_resume_journal(journal)
-    identity, corpus_text = provenance.corpus_identity(raw_records)
-    manifest["corpus"] = identity
-    manifest["run_id"] = provenance.run_id(manifest["started_at"], manifest["grparse"]["commit"], identity["sha256"])
-    overall = analyze.summarize_run(analyze.load_journal(journal))["overall"] if journal.is_file() else None
-    keys = ("evaluated", "skipped", "status_success_count", "success_count", "error_count",
-            "clean_count", "clean_battery_count")
-    manifest["headline"] = {key: (overall or {}).get(key, 0) for key in keys}
-    manifest["finished_at"] = provenance.utc_now()
-    manifest["wall_seconds"] = round(wall_seconds, 2)
-    manifest["exit_code"] = exit_code
+    _, records = load_resume_journal(journal)
+    identity, corpus_text = provenance.corpus_identity(
+        CorpusFile(r.relpath, r.size_bytes, r.sha256) for r in records
+    )
+    if journal.is_file():
+        overall = analyze.summarize_run(analyze.load_journal(journal))["overall"]
+        headline = Headline(**{key: overall[key] for key in Headline.KEYS})
+    else:
+        headline = Headline.empty()
+    manifest = replace(
+        manifest,
+        corpus=identity,
+        run_id=provenance.run_id(manifest.started_at, manifest.grparse.commit, identity.sha256),
+        headline=headline,
+        finished_at=provenance.utc_now(),
+        wall_seconds=round(wall_seconds, 2),
+        exit_code=exit_code,
+    )
     provenance.write_manifest(run_out, manifest, corpus_text)
+    return manifest
 
 
 def wait_for_service(client: Any, wait_seconds: float) -> Any:
@@ -969,7 +989,7 @@ def main(
 
     try:
         manifest = start_manifest(config, run_out, docker_runner)
-    except provenance.ProvenanceError as error:
+    except (provenance.ProvenanceError, provenance.ManifestError) as error:
         return skip(f"run provenance: {error}", config.require)
     results: list[ObjectResult] = []
     matrix = Matrix()
@@ -989,7 +1009,7 @@ def main(
         with client_factory(config.target) as client:
             info = wait_for_service(client, config.wait_seconds)
             service = f"{info.name} {info.version}"
-            manifest["service"] = service
+            manifest = replace(manifest, service=service)
             provenance.write_manifest(run_out, manifest)
             resumed_count = evaluate_corpus(
                 config,
@@ -1028,7 +1048,7 @@ def main(
             exit_code = 1
             notes.append("EVAL_REQUIRE: skipped documents count as failures")
 
-    finish_manifest(manifest, run_out, exit_code=exit_code, wall_seconds=time.monotonic() - started)
+    manifest = finish_manifest(manifest, run_out, exit_code=exit_code, wall_seconds=time.monotonic() - started)
     report = build_corpus_report(
         label=config.label,
         target=config.target,
@@ -1050,10 +1070,11 @@ def main(
         f"{totals['skipped']} skipped, {totals['failed_objects']} with failures; "
         f"checks: {totals['checks_run']} run, {totals['checks_failed']} failed; report: {path}"
     )
-    for line in analyze.headline_lines(manifest["headline"]):
+    assert manifest.headline is not None and manifest.corpus is not None  # finish_manifest sets both
+    for line in analyze.headline_lines(manifest.headline.to_json()):
         log(line.lstrip("- "))
-    log(f"run {manifest['run_id']}: gRParse {manifest['grparse'].get('commit') or 'commit not recorded'}, "
-        f"corpus {manifest['corpus']['sha256'][:12]} ({manifest['corpus']['files']} files)")
+    log(f"run {manifest.run_id}: gRParse {manifest.grparse.commit or 'commit not recorded'}, "
+        f"corpus {manifest.corpus.sha256[:12]} ({manifest.corpus.files} files)")
     return exit_code
 
 

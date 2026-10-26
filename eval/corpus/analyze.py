@@ -47,7 +47,9 @@ if str(EVAL_DIR) not in sys.path:
     sys.path.insert(0, str(EVAL_DIR))
 
 from corpus import provenance  # noqa: E402
+from corpus.journal import JournalRecord  # noqa: E402
 from corpus.metrics import normalize_status  # noqa: E402
+from corpus.run_manifest import RunManifest  # noqa: E402
 
 FAILURE_STATUSES = frozenset({"failure", "rpc_error"})
 SUCCESS_STATUSES = frozenset({"success", "partial_success"})
@@ -79,9 +81,36 @@ def percentile(sorted_vals: list[float], q: float) -> float:
     return round(sorted_vals[lo] * (1.0 - weight) + sorted_vals[hi] * weight, 2)
 
 
-def _journal_lines(path: Path) -> list[tuple[int, dict[str, Any]]]:
-    """(line number, record) pairs of a results.jsonl, or of the ``objects`` of an
-    eval/s3 report.json, which is how the realdata battery wrote its runs."""
+def _battery_row(index: int, obj: dict[str, Any]) -> dict[str, Any]:
+    """An eval/s3 report.json object (battery.ObjectResult) as a journal row.
+
+    That format predates the journal and has no input or output hash, no
+    doctype and no separate RPC error, so those are derived here from the
+    fields it does carry, explicitly, rather than defaulted downstream."""
+    status = obj["status"]
+    return {
+        "relpath": obj["key"],
+        "ext": obj["extension"],
+        "family": obj["family"],
+        "size_bytes": obj["size"],
+        "doctype": obj["extension"] or obj["family"],
+        "parser_type": obj["parser_type"],
+        "status": status,
+        "raw_status": status,
+        "rpc_error": status if status.startswith("rpc error") else None,
+        "skipped": obj["skipped"],
+        "elapsed_ms": float(obj["elapsed_ms"]),
+        "checks": obj["checks"],
+        "failed_checks": sorted(name for name, verdict in obj["checks"].items() if verdict == "fail"),
+        "sha256": "",
+        "output_sha256": "",
+    }
+
+
+def _journal_rows(path: Path) -> list[dict[str, Any]]:
+    """The rows of a results.jsonl (each checked as a JournalRecord), or of the
+    ``objects`` of an eval/s3 report.json, which is how the realdata battery
+    wrote its runs."""
     if path.suffix == ".json":
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -89,17 +118,10 @@ def _journal_lines(path: Path) -> list[tuple[int, dict[str, Any]]]:
             raise ValueError(f"{path}: invalid JSON: {err}") from err
         if not isinstance(data, dict) or not isinstance(data.get("objects"), list):
             raise ValueError(f"{path}: not a report.json with an objects list")
-        rows = []
-        for index, obj in enumerate(data["objects"], start=1):
-            rec = dict(obj)
-            rec.setdefault("relpath", rec.get("key"))
-            rec.setdefault("ext", rec.get("extension"))
-            rec.setdefault("size_bytes", rec.get("size"))
-            raw = str(rec.get("status") or "")
-            if raw.startswith("rpc error") and not rec.get("rpc_error"):
-                rec["rpc_error"] = raw
-            rows.append((index, rec))
-        return rows
+        try:
+            return [_battery_row(index, obj) for index, obj in enumerate(data["objects"], start=1)]
+        except (KeyError, TypeError, AttributeError) as err:
+            raise ValueError(f"{path}: an object lacks a battery field: {err}") from err
     rows = []
     with path.open("r", encoding="utf-8") as handle:
         for line_no, raw_line in enumerate(handle, start=1):
@@ -107,9 +129,10 @@ def _journal_lines(path: Path) -> list[tuple[int, dict[str, Any]]]:
             if not line:
                 continue
             try:
-                rows.append((line_no, json.loads(line)))
+                data = json.loads(line)
             except json.JSONDecodeError as err:
                 raise ValueError(f"{path}:{line_no}: invalid JSON: {err}") from err
+            rows.append(JournalRecord.from_json(data, f"{path}:{line_no}").to_json())
     return rows
 
 
@@ -118,27 +141,16 @@ def load_journal(path: Path) -> list[dict[str, Any]]:
     if not path.is_file():
         raise FileNotFoundError(f"journal file not found: {path}")
     by_relpath: dict[str, dict[str, Any]] = {}
-    for line_no, rec in _journal_lines(path):
-        relpath = str(rec.get("relpath") or rec.get("key") or f"line-{line_no}")
+    for rec in _journal_rows(path):
         rec = dict(rec)
-        rec["relpath"] = relpath
-        rec["doctype"] = str(rec.get("doctype") or rec.get("ext") or rec.get("family") or "unknown")
-        rec["parser_type"] = str(rec.get("parser_type") or "none")
         rec["status"] = normalize_status(
-            rec.get("status"),
-            rec.get("rpc_error"),
-            skipped=bool(rec.get("skipped")) or rec.get("status") == "skipped",
+            rec["status"],
+            rec["rpc_error"],
+            skipped=bool(rec["skipped"]) or rec["status"] == "skipped",
         )
-        failed = rec.get("failed_checks")
-        if failed is None:
-            checks = rec.get("checks") or {}
-            failed = sorted(k for k, v in checks.items() if v == "fail")
-        rec["failed_checks"] = sorted(set(str(c) for c in failed))
-        rec["elapsed_ms"] = float(rec.get("elapsed_ms") or 0.0)
-        rec["sha256"] = str(rec.get("sha256") or "")
-        rec["output_sha256"] = str(rec.get("output_sha256") or "")
-        rec["doc_class"] = doc_class(relpath)
-        by_relpath[relpath] = rec
+        rec["failed_checks"] = sorted(set(rec["failed_checks"]))
+        rec["doc_class"] = doc_class(rec["relpath"])
+        by_relpath[rec["relpath"]] = rec
     return [by_relpath[k] for k in sorted(by_relpath)]
 
 
@@ -155,7 +167,7 @@ def is_clean(rec: dict[str, Any], ignored: frozenset[str] = frozenset()) -> bool
 
 
 def _cause(rec: dict[str, Any]) -> str:
-    raw = str(rec.get("rpc_error") or rec.get("raw_status") or rec.get("status") or "")
+    raw = rec["rpc_error"] or rec["raw_status"] or rec["status"]
     return re.sub(r"\d+", "#", raw)[:160] or rec["status"]
 
 
@@ -298,8 +310,8 @@ def compare_runs(
     max_p95_regression_pct: float | None = None,
     fail_on_new_failures: bool = False,
     max_clean_rate_drop: float | None = None,
-    baseline_manifest: dict[str, Any] | None = None,
-    candidate_manifest: dict[str, Any] | None = None,
+    baseline_manifest: RunManifest | None = None,
+    candidate_manifest: RunManifest | None = None,
 ) -> dict[str, Any]:
     """Compare baseline and candidate journals, detecting regressions and content drift."""
     base_summary = summarize_run(baseline_records, label=baseline_label)
@@ -549,8 +561,8 @@ def render_analysis_markdown(report: dict[str, Any]) -> str:
             f"# Corpus evaluation analysis: {summary['label']}",
             "",
         ]
-        if report.get("manifest"):
-            lines += provenance.render_markdown(report["manifest"]) + [""]
+        if report["manifest"] is not None:
+            lines += provenance.render_markdown(RunManifest.from_json(report["manifest"])) + [""]
         else:
             lines += ["- provenance: not recorded (no run.json beside the journal)", ""]
         lines += headline_lines(ov) + [
@@ -728,21 +740,22 @@ def render_analysis_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def render_run_list(runs: list[tuple[Path, dict[str, Any]]]) -> str:
+def render_run_list(runs: list[tuple[Path, RunManifest]]) -> str:
     lines = [
         "| run | started | gRParse commit | corpus | files | SUCCESS | clean | clean (battery rule) |",
         "|---|---|---|---|---|---|---|---|",
     ]
     for run_dir, manifest in runs:
-        head = manifest.get("headline") or {}
-        n = int(head.get("evaluated") or 0)
+        # find_runs lists finished runs only, and a finished run has both blocks.
+        head, corpus = manifest.headline, manifest.corpus
+        if head is None or corpus is None:
+            raise ValueError(f"{run_dir}: finished run without a headline or corpus block")
+        n = head.evaluated
         lines.append(
-            f"| `{run_dir.name}` | {manifest.get('started_at', '-')} | "
-            f"`{provenance.short((manifest.get('grparse') or {}).get('commit'))}` | "
-            f"`{provenance.short((manifest.get('corpus') or {}).get('sha256'))}` | "
-            f"{(manifest.get('corpus') or {}).get('files', '-')} | "
-            f"{_pct(int(head.get('status_success_count') or 0), n)} | {_pct(int(head.get('clean_count') or 0), n)} | "
-            f"{_pct(int(head.get('clean_battery_count') or 0), n)} |"
+            f"| `{run_dir.name}` | {manifest.started_at} | "
+            f"`{provenance.short(manifest.grparse.commit)}` | `{provenance.short(corpus.sha256)}` | {corpus.files} | "
+            f"{_pct(head.status_success_count, n)} | {_pct(head.clean_count, n)} | "
+            f"{_pct(head.clean_battery_count, n)} |"
         )
     return "\n".join(lines) + "\n"
 
@@ -832,8 +845,8 @@ def main(argv: list[str] | None = None) -> int:
         if cand_path is not None:
             cand_records = load_journal(cand_path)
             cand_manifest = provenance.manifest_beside(cand_path)
-            b_corpus = ((base_manifest or {}).get("corpus") or {}).get("sha256")
-            c_corpus = ((cand_manifest or {}).get("corpus") or {}).get("sha256")
+            b_corpus = base_manifest.corpus.sha256 if base_manifest and base_manifest.corpus else None
+            c_corpus = cand_manifest.corpus.sha256 if cand_manifest and cand_manifest.corpus else None
             if b_corpus and c_corpus and b_corpus != c_corpus and not args.allow_corpus_mismatch:
                 print(
                     f"error: corpus hashes differ ({b_corpus[:12]} vs {c_corpus[:12]}); the rates are not comparable. "
@@ -868,7 +881,7 @@ def main(argv: list[str] | None = None) -> int:
                 "exit_code": 1 if gate_failures else 0,
                 "gate_failures": gate_failures,
                 "summary": summary,
-                "manifest": base_manifest,
+                "manifest": base_manifest.to_json() if base_manifest else None,
             }
     except (FileNotFoundError, ValueError, OSError) as err:
         print(f"error: {err}", file=sys.stderr)
