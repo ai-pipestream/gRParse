@@ -102,8 +102,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$GITHUB_EVENT_NAME" = workflow_run ]; then version="${RUN_TAG#v}"; else version="$INPUT_VERSION"; fi
-          if ! [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "::error::version '$version' is not a semantic version such as 0.3.0"
+          if ! [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z][0-9A-Za-z.-]{0,63})?$ ]]; then
+            echo "::error::version '$version' is not a semantic version such as 0.3.0 or 0.3.0-rc.1"
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -190,12 +190,16 @@ jobs:
           tag="v$VERSION"
           draft=true
           if [ "$TAGS_OK" = true ] && [ "$IMAGES_OK" = true ]; then draft=false; fi
+          # A prerelease version (0.3.0-rc.1) is a GitHub prerelease.
+          prerelease=false
+          case "$VERSION" in *-*) prerelease=true ;; esac
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release edit "$tag" --title "gRParse fleet $VERSION" --notes-file notes.md --draft="$draft"
+            gh release edit "$tag" --title "gRParse fleet $VERSION" --notes-file notes.md \
+              --draft="$draft" --prerelease="$prerelease"
             gh release upload "$tag" "stack-$VERSION.lock" --clobber
           else
             gh release create "$tag" --verify-tag --title "gRParse fleet $VERSION" \
-              --notes-file notes.md --draft="$draft" "stack-$VERSION.lock"
+              --notes-file notes.md --draft="$draft" --prerelease="$prerelease" "stack-$VERSION.lock"
           fi
           if [ "$draft" = true ]; then
             echo "::error::left $tag as a draft: a fleet tag or image is missing (see the notes)"

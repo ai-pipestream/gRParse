@@ -9,6 +9,9 @@
 # :<version> that would serve a different one: a `v<version>` git tag or a
 # dispatch input has to agree with the source it tags. An empty --expect is
 # a plain print (a main push publishes only :latest and has no version).
+# A prerelease such as 0.3.0-rc.1 matches the CMake version 0.3.0: CMake
+# holds no prerelease suffix, so the image serves 0.3.0 under the tag
+# :0.3.0-rc.1.
 set -euo pipefail
 
 usage() {
@@ -30,9 +33,9 @@ case "${1:-}" in
   *) usage ;;
 esac
 
-if [[ -n "$expect" && "$expect" != "$version" ]]; then
+if [[ -n "$expect" && "${expect%%-*}" != "$version" ]]; then
   echo "requested version '$expect' does not match the CMakeLists.txt project version '$version'" >&2
-  echo "bump project(gRParse VERSION ...) first, then tag v$expect (docs/RELEASING.md)" >&2
+  echo "bump project(gRParse VERSION ...) to ${expect%%-*} first, then tag v$expect (docs/RELEASING.md)" >&2
   exit 1
 fi
 echo "$version"

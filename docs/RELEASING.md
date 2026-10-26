@@ -35,10 +35,14 @@ crate or Gradle versions, and the fleet tag is what names their images.
 - **Versioning.** Semver, 0.x for now: bump the minor version when a
   contract changes (a `.proto` field, the output shape), the patch version
   otherwise. The release notes put every commit that touched a `.proto`
-  under "Contract", so the call is easy to check.
+  under "Contract", so the call is easy to check. A prerelease is
+  `<x.y.z>-<suffix>`, such as `0.3.0-rc.1`: CMake holds only `0.3.0`, so the
+  images are tagged `:0.3.0-rc.1` and serve `0.3.0`, and the GitHub
+  Release is marked a prerelease. The final `0.3.0` tags the same CMake
+  version without another bump.
 - **Cadence.** Every two weeks, or sooner after a clean battery run. Cut a
   release only from commits whose CI is green on both forges;
-  `scripts/release.sh preflight` refuses anything else.
+  `scripts/release.sh preflight` reads both and refuses anything else.
 - **Who.** One person, from krick, about 30 minutes of attention plus the
   publish runs. Nothing creates a tag on its own.
 - **Order.** Forgejo first, then GitHub, for every tag: the push mirror
@@ -65,7 +69,8 @@ a `${STACK_TAG}` image no fleet repository publishes.
 The one-person checklist. Run it from the gRParse checkout on krick, with
 the sibling checkouts next to it (the layout `compose.stack.yaml`'s
 `build:` lines expect; `FLEET_ROOT` overrides), remotes `origin` (Forgejo)
-and `github` in each, and `gh` logged in.
+and `github` in each, `gh` logged in, and a Forgejo token in
+`FORGEJO_TOKEN` or as `FORGEJO_PAT` in `~/.config/forgejo/env`.
 
 1. Land what belongs in the release on every repository's publish branch,
    Forgejo first, and let each branch's CI finish green.
@@ -90,9 +95,21 @@ and `github` in each, and `gh` logged in.
 
    For every repository it fetches both remotes and fails on a missing
    checkout, a dirty tree, the wrong branch, a branch that differs between
-   local, Forgejo and GitHub, a tag that already exists, or a GitHub check
-   run on the head commit that is pending or failed. It prints the commit
-   each tag will point at. Fix what it names and run it again.
+   local, Forgejo and GitHub, a tag that already exists, or CI on the head
+   commit that is not green on either forge. It prints the commit each tag
+   will point at. Fix what it names and run it again.
+
+   CI is green on GitHub when every check run on the commit (all pages)
+   completed with conclusion `success`, `skipped` or `neutral`: a job
+   whose `if:` was false is skipped, and a neutral check passed no
+   judgement. Any other conclusion (`failure`, `cancelled`, `timed_out`,
+   `action_required`, `stale`, `startup_failure`) fails, and a run still
+   queued or in progress is pending. On Forgejo, every commit status
+   (all pages) must be `success` or `skipped`; `pending` is pending and
+   `failure`, `error` or `warning` fails. A commit with no check runs or no
+   statuses on a forge fails too, since a workflow that has not registered
+   yet looks the same; `ALLOW_NO_CI=1` accepts that for a repository that
+   has no CI on a forge.
 
 4. Tag and push:
 
@@ -102,6 +119,10 @@ and `github` in each, and `gh` logged in.
    ```
 
    Every repository's publish workflow starts on GitHub as its tag lands.
+   The tags go on one repository after another. If a tag or a push fails,
+   the script stops and prints the repositories tagged on both forges and
+   the ones not tagged; push the rest by hand (Forgejo, then GitHub) rather
+   than rerunning `tag`, whose preflight now refuses the existing tags.
 
 5. Watch the `Publish Image` run on GitHub. It resolves the version from
    the tag (leading `v` stripped), refuses to continue if it is not the

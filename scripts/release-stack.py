@@ -41,7 +41,7 @@ FLEET = ROOT / "release" / "fleet.tsv"
 NAMESPACE = "pipestreamai"
 GITHUB_OWNER = os.environ.get("GITHUB_OWNER", "ai-pipestream")
 SEMVER = re.compile(
-    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
+    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z][0-9A-Za-z.-]{0,63})?$"
 )
 # An image template is <name>:{v}<suffix>, the suffix a variant such as -cpu.
 TEMPLATE = re.compile(r"^[a-z0-9][a-z0-9-]*:\{v\}(-[a-z0-9]+)?$")
@@ -127,7 +127,7 @@ def cmd_check(_args):
 
 def version_arg(value):
     if not SEMVER.match(value):
-        raise argparse.ArgumentTypeError(f"{value!r} is not a semantic version such as 0.3.0")
+        raise argparse.ArgumentTypeError(f"{value!r} is not a semantic version such as 0.3.0 or 0.3.0-rc.1")
     return value
 
 

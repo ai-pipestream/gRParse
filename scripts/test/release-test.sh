@@ -2,7 +2,9 @@
 # Exercises scripts/release.sh against throwaway repositories: a copy of
 # this checkout's CMake version line as gRParse, one sibling, and two bare
 # remotes per repository standing in for Forgejo and GitHub. gh is a fake
-# that reports the CI state named in $work/ci. No network.
+# that prints the GitHub check runs in $work/ci (name, status, conclusion
+# per line), curl a fake Forgejo API serving $work/forgejo-<page>.json.
+# No network.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -15,10 +17,28 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 
 cat >"$work/bin/gh" <<FAKE
 #!/usr/bin/env bash
+echo "\$*" >>"$work/gh-args"
 cat "$work/ci"
 FAKE
-chmod +x "$work/bin/gh"
-echo green >"$work/ci"
+cat >"$work/bin/curl" <<FAKE
+#!/usr/bin/env bash
+echo "\$*" >>"$work/curl-args"
+url=\${*: -1}
+cat "$work/forgejo-\${url##*page=}.json"
+FAKE
+chmod +x "$work/bin/gh" "$work/bin/curl"
+export FORGEJO_TOKEN=release-test-token
+ci() { printf '%s\n' "$@" >"$work/ci"; }
+forgejo() { # page total status...
+  local page=$1 total=$2; shift 2
+  local IFS=,
+  local -a items=()
+  local s
+  for s in "$@"; do items+=("{\"context\":\"ci / ${s%%=*}\",\"status\":\"${s#*=}\"}"); done
+  echo "{\"state\":\"x\",\"total_count\":$total,\"statuses\":[${items[*]}]}" >"$work/forgejo-$page.json"
+}
+green() { ci $'build\tcompleted\tsuccess'; forgejo 1 1 build=success; }
+green
 
 make_repo() { # name branch
   local dir=$work/fleet/$1
@@ -49,23 +69,55 @@ expect_fail() { # description command...
 }
 
 expect_fail "a bad version" release preflight 0.3
-expect_fail "a prerelease suffix CMake rejects" release preflight 0.3.0-rc.1
+expect_fail "a bad prerelease suffix" release preflight 0.3.0-
 expect_fail "preflight before the bump" release preflight 0.3.0
+grep -q "not 0.3.0" "$work/out"
+expect_fail "a prerelease before the bump" release preflight 0.3.0-rc.1
 grep -q "not 0.3.0" "$work/out"
 
 release bump 0.3.0 --push >/dev/null
 grep -q 'VERSION 0.3.0' "$work/fleet/gRParse/CMakeLists.txt"
 [[ $(git -C "$work/remotes/gRParse-github.git" log -1 --format=%s main) == "Release 0.3.0" ]]
 
-echo "failed: build=failure" >"$work/ci"
-expect_fail "preflight with red CI" release preflight 0.3.0
-grep -q "CI failed: build=failure" "$work/out"
-echo "none" >"$work/ci"
-expect_fail "preflight with no CI check runs" release preflight 0.3.0
-grep -q "CI none" "$work/out"
+expect_fail "bumping to the version it already has" release bump 0.3.0
+grep -q "already 0.3.0" "$work/out"
+
+ci $'build\tcompleted\tfailure' $'lint\tcompleted\tsuccess'
+expect_fail "preflight with red GitHub CI" release preflight 0.3.0
+grep -q "GitHub CI failed: build=failure" "$work/out"
+ci $'build\tin_progress\tnone'
+expect_fail "preflight with pending GitHub CI" release preflight 0.3.0
+grep -q "GitHub CI pending: build" "$work/out"
+ci $'build\tcompleted\tcancelled'
+expect_fail "preflight with cancelled GitHub CI" release preflight 0.3.0
+grep -q "GitHub CI failed: build=cancelled" "$work/out"
+ci
+expect_fail "preflight with no GitHub check runs" release preflight 0.3.0
+grep -q "GitHub CI none" "$work/out"
 ALLOW_NO_CI=1 release preflight 0.3.0 >"$work/out"
 grep -q "every repository is ready for v0.3.0" "$work/out"
-echo green >"$work/ci"
+: >"$work/gh-args"
+ci $'build\tcompleted\tsuccess' $'seed\tcompleted\tskipped' $'report\tcompleted\tneutral'
+release preflight 0.3.0 >"$work/out"
+grep -q "every repository is ready for v0.3.0" "$work/out"
+grep -q -- "--paginate" "$work/gh-args"
+
+forgejo 1 2 build=success
+forgejo 2 2 image=failure
+expect_fail "preflight with red Forgejo CI on a second page" release preflight 0.3.0
+grep -q "Forgejo CI failed: ci / image=failure" "$work/out"
+forgejo 1 2 build=success seed=skipped
+release preflight 0.3.0 >"$work/out"
+forgejo 1 1 build=pending
+expect_fail "preflight with pending Forgejo CI" release preflight 0.3.0
+grep -q "Forgejo CI pending: ci / build" "$work/out"
+forgejo 1 0
+expect_fail "preflight with no Forgejo statuses" release preflight 0.3.0
+grep -q "Forgejo CI none" "$work/out"
+if grep -q "$FORGEJO_TOKEN" "$work/curl-args"; then
+  echo "release-test: the Forgejo token was on curl's command line" >&2; exit 1
+fi
+green
 
 echo local >"$work/fleet/grpc-sib/README" && git -C "$work/fleet/grpc-sib" commit -qam ahead
 expect_fail "preflight with an unpushed commit" release preflight 0.3.0
@@ -74,6 +126,17 @@ git -C "$work/fleet/grpc-sib" push -q origin master && git -C "$work/fleet/grpc-
 
 release preflight 0.3.0 >"$work/out"
 grep -q "every repository is ready for v0.3.0" "$work/out"
+
+release preflight 0.3.0-rc.1 >"$work/out"
+grep -q "every repository is ready for v0.3.0-rc.1" "$work/out"
+printf '#!/bin/sh\nexit 1\n' >"$work/remotes/grpc-sib-github.git/hooks/pre-receive"
+chmod +x "$work/remotes/grpc-sib-github.git/hooks/pre-receive"
+expect_fail "a tag push that fails partway" release tag 0.3.0-rc.1 --yes
+grep -q "grpc-sib failed at pushing to github (it is on origin)" "$work/out"
+grep -q "tagged and pushed to both: gRParse" "$work/out"
+grep -q "not tagged: grpc-sib" "$work/out"
+[[ $(git -C "$work/remotes/gRParse-github.git" cat-file -t v0.3.0-rc.1) == tag ]]
+rm "$work/remotes/grpc-sib-github.git/hooks/pre-receive"
 
 release tag 0.3.0 >"$work/out"
 grep -q "dry run" "$work/out"
