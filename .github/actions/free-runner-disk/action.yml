@@ -1,0 +1,14 @@
+name: Free hosted runner disk
+description: >-
+  Removes the preinstalled SDKs (.NET, Android, GHC, CodeQL) that no gRParse
+  job uses and prints the free space before and after. For GitHub's hosted
+  runners; the caller says which of its builds needs the room.
+runs:
+  using: composite
+  steps:
+    - name: Remove unused preinstalled SDKs
+      shell: bash
+      run: |
+        df -h /
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+        df -h /

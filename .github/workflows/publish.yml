@@ -216,13 +216,10 @@ jobs:
           docker rm "$id"
           scripts/fetch-models.sh --verify --dir models --layout all --tokenizer
       - name: Free runner disk for the seeded build
-        # The seed image (about 9 GB unpacked for cpu, more with the CUDA
-        # devel base), its tree copied into /build and the build outgrow the
-        # hosted runner's free space. The SDKs removed are unused here.
-        run: |
-          df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h /
+        # The leg's seed image (about 9 GB unpacked for cpu, more with the
+        # CUDA devel base), its tree copied into /build and the build outgrow
+        # the hosted runner's free space.
+        uses: ./.github/actions/free-runner-disk
       - name: Choose the deps seed, build parallelism and test flags
         id: args
         env:

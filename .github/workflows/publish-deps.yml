@@ -127,10 +127,7 @@ jobs:
         # runner's free space only on this leg; the preinstalled SDKs removed
         # here are not used by any step of this job.
         if: ${{ steps.exists.outputs.skip != 'true' && matrix.flavor == 'cuda' }}
-        run: |
-          df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h /
+        uses: ./.github/actions/free-runner-disk
       - name: Choose the build parallelism
         if: ${{ steps.exists.outputs.skip != 'true' }}
         id: jobs
