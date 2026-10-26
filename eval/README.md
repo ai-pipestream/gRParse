@@ -304,7 +304,10 @@ tags, so a number from it cannot be pinned to code. Every run now writes
   when neither exists, never a guess
 - `stack.services`: with `--compose-project`, every container of that compose
   project: image reference, image id, repo digests, revision and version
-  labels, and gRParse's `GRPARSE_*` environment minus anything credential-shaped
+  labels, and the values of the gRParse settings listed in
+  `RECORDED_GRPARSE_ENV` (targets, OCR, layout and the like); any other
+  `GRPARSE_*` variable, endpoints and S3 settings included, is recorded by
+  name only
 - `corpus`: sha256 over the sorted `relpath<TAB>size<TAB>sha256` lines of the
   documents in the run (written as `corpus-manifest.tsv`, so anyone can rehash
   it), with the file count and bytes
@@ -314,6 +317,9 @@ tags, so a number from it cannot be pinned to code. Every run now writes
   `headline` of the counts below
 
 `--resume` refuses to continue a run on a different stack or gRParse commit.
+A `run.json` that is not valid JSON, lacks a key or holds a value of the wrong
+type stops `run.py --resume` and `analyze.py` instead of being read as a run
+without provenance; the schema is `grparse.corpus-run/v2`.
 `report.md` and `report.json` carry the same block.
 
 `analyze.py` leads every summary with the **clean-output rate** (a document is

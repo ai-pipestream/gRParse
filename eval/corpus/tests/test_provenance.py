@@ -25,7 +25,7 @@ def _write_files(root: Path, files: dict[str, bytes]) -> None:
         target.write_bytes(content)
 
 
-def fake_docker(revision: str = COMMIT_A, grparse_image_id: str = "sha256:" + "1" * 64) -> Any:
+def fake_docker(revision: str = COMMIT_A, grparse_image_id: str = "sha256:" + "1" * 64) -> provenance.Runner:
     """A docker CLI stand-in answering ps, inspect and image inspect for a two-service project."""
     containers = [
         {
@@ -39,6 +39,7 @@ def fake_docker(revision: str = COMMIT_A, grparse_image_id: str = "sha256:" + "1
                     "GRPARSE_PDF_BACKEND=pdfium:50069",
                     "GRPARSE_ORT_EP=cpu",
                     "GRPARSE_S3_SECRET_KEY=hunter2",
+                    "GRPARSE_VLM_CONVERT_ENDPOINT=http://user:pass@vlm:8000",
                     "PATH=/usr/bin",
                 ],
             },
@@ -66,10 +67,7 @@ def fake_docker(revision: str = COMMIT_A, grparse_image_id: str = "sha256:" + "1
             "Config": {"Labels": {}},
         },
     ]
-    calls: list[list[str]] = []
-
     def runner(args: Sequence[str]) -> str:
-        calls.append(list(args))
         if args[0] == "ps":
             return "id-grparse\nid-pdfium\n"
         if args[0] == "inspect":
@@ -78,7 +76,6 @@ def fake_docker(revision: str = COMMIT_A, grparse_image_id: str = "sha256:" + "1
             return json.dumps(images)
         raise AssertionError(f"unexpected docker call {args}")
 
-    runner.calls = calls  # type: ignore[attr-defined]
     return runner
 
 
@@ -92,22 +89,50 @@ def _run(corpus_dir: Path, out_dir: Path, label: str, *extra: str, docker: Any =
     )
 
 
-def test_stack_provenance_records_images_revision_and_safe_env() -> None:
+def test_stack_provenance_records_images_revision_and_listed_env() -> None:
     stack = provenance.stack_provenance("grparse-eval", fake_docker())
-    assert isinstance(stack, provenance.StackProvenance)
-    assert stack.recorded is True
-    assert sorted(stack["services"]) == ["grparse", "pdfium"]
-    grparse = stack["services"]["grparse"]
-    assert isinstance(grparse, provenance.ServiceProvenance)
-    assert grparse["revision"] == COMMIT_A
-    assert list(grparse["repo_digests"]) == ["pipestreamai/grparse@sha256:" + "c" * 64]
-    assert grparse["env"] == {"GRPARSE_ORT_EP": "cpu", "GRPARSE_PDF_BACKEND": "pdfium:50069"}
-    assert "hunter2" not in json.dumps(stack.to_dict())
+    assert isinstance(stack, provenance.RecordedStack)
+    assert sorted(stack.services) == ["grparse", "pdfium"]
+    grparse = stack.services["grparse"]
+    assert grparse.revision == COMMIT_A
+    assert grparse.repo_digests == ("pipestreamai/grparse@sha256:" + "c" * 64,)
+    assert grparse.env == provenance.GrparseEnv(
+        values={"GRPARSE_ORT_EP": "cpu", "GRPARSE_PDF_BACKEND": "pdfium:50069"},
+        unrecorded=("GRPARSE_S3_SECRET_KEY", "GRPARSE_VLM_CONVERT_ENDPOINT"),
+    )
+    assert stack.services["pdfium"].env is None
+    stored = json.dumps(stack.to_json())
+    assert "hunter2" not in stored and "user:pass" not in stored
     assert provenance.grparse_commit(stack, None) == provenance.GrparseProvenance(
         commit=COMMIT_A, source=f"image label {provenance.REVISION_LABEL}",
     )
-    assert provenance.grparse_commit(stack, "deadbeef")["commit"] == "deadbeef"
-    assert provenance.grparse_commit({}, None)["commit"] is None
+    assert provenance.grparse_commit(stack, "deadbeef").commit == "deadbeef"
+    assert provenance.grparse_commit(provenance.UnrecordedStack(reason="none"), None).commit is None
+
+
+def test_grparse_env_records_values_only_for_listed_names() -> None:
+    env = provenance.grparse_env([
+        "GRPARSE_OCR_BATCH=8",
+        "GRPARSE_TOKEN_BUDGET=1",  # not listed, whatever the name says
+        "GRPARSE_NEW_SETTING=x",
+        "GRPARSE_ENRICH_VLM_ENDPOINT=https://key@vlm.example",
+        "HOME=/root",
+        "GRPARSE_LAYOUT",  # no '=': set to the empty string
+    ])
+    assert env.values == {"GRPARSE_LAYOUT": "", "GRPARSE_OCR_BATCH": "8"}
+    assert env.unrecorded == ("GRPARSE_ENRICH_VLM_ENDPOINT", "GRPARSE_NEW_SETTING", "GRPARSE_TOKEN_BUDGET")
+
+
+def test_docker_output_that_is_not_a_json_array_stops_provenance() -> None:
+    def runner(args: Sequence[str]) -> str:
+        return "id-1\n" if args[0] == "ps" else ""
+
+    try:
+        provenance.stack_provenance("p", runner)
+    except provenance.ProvenanceError as error:
+        assert "printed no JSON" in str(error)
+    else:
+        raise AssertionError("empty docker inspect output was accepted")
 
 
 def test_run_writes_run_json_with_commit_digests_corpus_hash_and_headline() -> None:
@@ -159,6 +184,7 @@ def test_run_without_compose_project_says_images_were_not_recorded() -> None:
         assert _run(base / "corpus", base / "out", "plain") == 0
         manifest = json.loads((base / "out" / "corpus" / "plain" / "run.json").read_text(encoding="utf-8"))
         assert manifest["stack"] == {"recorded": False, "reason": "no --compose-project given"}
+        assert manifest["corpus"]["files"] == 1 and manifest["exit_code"] == 0
         assert manifest["grparse"]["commit"] is None
 
 
@@ -289,3 +315,72 @@ def test_battery_report_json_is_a_baseline_and_the_battery_rule_ignores_two_chec
         text = md.read_text(encoding="utf-8")
         assert "provenance: not recorded" in text
         assert "Clean output, battery rule (ignores custom_field_keys, warnings_typed): 2/3 (66.7%)" in text
+
+
+def _finished_manifest(base: Path) -> tuple[Path, dict[str, Any]]:
+    _write_files(base / "corpus", {"a.docx": b"doc-a"})
+    assert _run(base / "corpus", base / "out", "typed", "--compose-project", "p", docker=fake_docker()) == 0
+    path = base / "out" / "corpus" / "typed" / provenance.MANIFEST_NAME
+    return path, json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_run_json_round_trips_through_the_typed_manifest() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path, raw = _finished_manifest(Path(tmp))
+        manifest = provenance.load_manifest(path)
+        assert manifest is not None
+        assert manifest.to_json() == raw
+        assert isinstance(manifest.config, provenance.RunConfig)
+        assert manifest.config.document_password_count == 0
+        assert manifest.headline == provenance.RunHeadline(
+            evaluated=1, skipped=0, status_success_count=1, success_count=1, error_count=0,
+            clean_count=1, clean_battery_count=1,
+        )
+
+
+def test_malformed_run_json_raises() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        path, raw = _finished_manifest(base)
+        assert provenance.load_manifest(base / "absent.json") is None
+
+        def expect_error(text: str, needle: str) -> None:
+            path.write_text(text, encoding="utf-8")
+            try:
+                provenance.load_manifest(path)
+            except provenance.ManifestError as error:
+                assert needle in str(error), str(error)
+            else:
+                raise AssertionError(f"accepted a run.json without {needle!r}")
+
+        expect_error("", "invalid JSON")
+        expect_error("[]", "expected a JSON object")
+        expect_error(json.dumps({**raw, "schema": "grparse.corpus-run/v1"}), "is not")
+        expect_error(json.dumps({k: v for k, v in raw.items() if k != "config"}), "missing key 'config'")
+        headline = {k: v for k, v in raw["headline"].items() if k != "clean_count"}
+        expect_error(json.dumps({**raw, "headline": headline}), "missing key 'clean_count'")
+        expect_error(json.dumps({**raw, "headline": {**raw["headline"], "evaluated": "1"}}), "expected an integer")
+        expect_error(json.dumps({**raw, "headline": {**raw["headline"], "evaluated": True}}), "expected an integer")
+        corpus = {k: v for k, v in raw["corpus"].items() if k != "sha256"}
+        expect_error(json.dumps({**raw, "corpus": corpus}), "missing key 'sha256'")
+
+        # The tools that read run.json stop on it rather than treating the run as unrecorded.
+        assert analyze.main(["--list-runs", str(path.parent.parent)]) == 2
+        assert analyze.main([str(path.parent / "results.jsonl"), "--out-md", str(base / "a.md")]) == 2
+
+
+def test_journal_record_without_a_written_key_raises() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        _write_files(base / "corpus", {"a.docx": b"doc-a"})
+        assert _run(base / "corpus", base / "out", "j") == 0
+        journal = base / "out" / "corpus" / "j" / "results.jsonl"
+        record = json.loads(journal.read_text(encoding="utf-8").splitlines()[0])
+        for key in ("elapsed_ms", "sha256", "parser_type", "raw_status"):
+            journal.write_text(json.dumps({k: v for k, v in record.items() if k != key}) + "\n", encoding="utf-8")
+            try:
+                analyze.load_journal(journal)
+            except ValueError as error:
+                assert f"missing key {key!r}" in str(error), str(error)
+            else:
+                raise AssertionError(f"a record without {key!r} was read")

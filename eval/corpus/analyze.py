@@ -39,7 +39,6 @@ import os
 import re
 import sys
 import threading
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +79,42 @@ def percentile(sorted_vals: list[float], q: float) -> float:
     return round(sorted_vals[lo] * (1.0 - weight) + sorted_vals[hi] * weight, 2)
 
 
+def _battery_record(obj: object, where: str) -> dict[str, Any]:
+    """One eval/s3 report.json object (battery.ObjectResult) as a journal record.
+
+    The battery writes no input or output hash, so both are ``None``; its
+    status is the raw ConversionStatus name, or ``rpc error: ...`` for a
+    failed call, which is what ``rpc_error`` holds in a journal."""
+    if not isinstance(obj, dict):
+        raise ValueError(f"{where}: expected a JSON object")
+    for key in ("key", "extension", "family", "size", "parser_type", "status", "elapsed_ms", "checks", "skipped"):
+        if key not in obj:
+            raise ValueError(f"{where}: missing key {key!r}")
+    status = obj["status"]
+    if not isinstance(status, str):
+        raise ValueError(f"{where}.status: expected a string")
+    checks = obj["checks"]
+    if not isinstance(checks, dict):
+        raise ValueError(f"{where}.checks: expected a JSON object")
+    return {
+        "relpath": obj["key"],
+        "ext": obj["extension"],
+        "family": obj["family"],
+        "size_bytes": obj["size"],
+        "doctype": obj["extension"] if obj["extension"] else obj["family"],
+        "parser_type": obj["parser_type"],
+        "status": "skipped" if obj["skipped"] else status,
+        "raw_status": status,
+        "rpc_error": status if status.startswith("rpc error") else None,
+        "elapsed_ms": obj["elapsed_ms"],
+        "checks": checks,
+        "failed_checks": sorted(name for name, verdict in checks.items() if verdict == "fail"),
+        "skipped": obj["skipped"],
+        "sha256": None,
+        "output_sha256": None,
+    }
+
+
 def _journal_lines(path: Path) -> list[tuple[int, dict[str, Any]]]:
     """(line number, record) pairs of a results.jsonl, or of the ``objects`` of an
     eval/s3 report.json, which is how the realdata battery wrote its runs."""
@@ -90,20 +125,10 @@ def _journal_lines(path: Path) -> list[tuple[int, dict[str, Any]]]:
             raise ValueError(f"{path}: invalid JSON: {err}") from err
         if not isinstance(data, dict) or not isinstance(data.get("objects"), list):
             raise ValueError(f"{path}: not a report.json with an objects list")
-        rows = []
-        for index, obj in enumerate(data["objects"], start=1):
-            rec = dict(obj)
-            if "relpath" not in rec:
-                rec["relpath"] = obj["key"]
-            if "ext" not in rec:
-                rec["ext"] = obj["extension"]
-            if "size_bytes" not in rec:
-                rec["size_bytes"] = obj["size"]
-            raw = str(rec["status"]) if "status" in rec and rec["status"] is not None else ""
-            if raw.startswith("rpc error") and not rec.get("rpc_error"):
-                rec["rpc_error"] = raw
-            rows.append((index, rec))
-        return rows
+        return [
+            (index, _battery_record(obj, f"{path} objects[{index - 1}]"))
+            for index, obj in enumerate(data["objects"], start=1)
+        ]
     rows = []
     with path.open("r", encoding="utf-8") as handle:
         for line_no, raw_line in enumerate(handle, start=1):
@@ -117,32 +142,52 @@ def _journal_lines(path: Path) -> list[tuple[int, dict[str, Any]]]:
     return rows
 
 
+# The keys every journal record carries (run.py's evaluate_corpus_entry
+# writes them all) and the JSON types each may hold.
+JOURNAL_KEYS: dict[str, tuple[type, ...]] = {
+    "relpath": (str,),
+    "doctype": (str,),
+    "parser_type": (str,),
+    "status": (str,),
+    "raw_status": (str,),
+    "rpc_error": (str, type(None)),
+    "elapsed_ms": (int, float),
+    "failed_checks": (list,),
+    "skipped": (str,),
+    "sha256": (str, type(None)),
+    "output_sha256": (str, type(None)),
+}
+
+
+def _checked_record(rec: object, where: str) -> dict[str, Any]:
+    if not isinstance(rec, dict):
+        raise ValueError(f"{where}: expected a JSON object")
+    for key, types in JOURNAL_KEYS.items():
+        if key not in rec:
+            raise ValueError(f"{where}: missing key {key!r}")
+        value = rec[key]
+        if isinstance(value, bool) or not isinstance(value, types):
+            raise ValueError(f"{where}.{key}: expected {' or '.join(t.__name__ for t in types)}")
+    if not all(isinstance(name, str) for name in rec["failed_checks"]):
+        raise ValueError(f"{where}.failed_checks: expected a list of strings")
+    return rec
+
+
 def load_journal(path: Path) -> list[dict[str, Any]]:
-    """Read a results.jsonl (or an eval/s3 report.json), deduplicating by relpath (latest entry wins)."""
+    """Read a results.jsonl (or an eval/s3 report.json), deduplicating by relpath (latest entry wins).
+
+    A record missing a key of ``JOURNAL_KEYS``, or holding the wrong type,
+    raises ``ValueError`` naming the line."""
     if not path.is_file():
         raise FileNotFoundError(f"journal file not found: {path}")
     by_relpath: dict[str, dict[str, Any]] = {}
-    for line_no, rec in _journal_lines(path):
-        relpath = str(rec.get("relpath") or rec.get("key") or f"line-{line_no}")
-        rec = dict(rec)
-        rec["relpath"] = relpath
-        rec["doctype"] = str(rec.get("doctype") or rec.get("ext") or rec.get("family") or "unknown")
-        rec["parser_type"] = str(rec.get("parser_type") or "none")
-        rec["status"] = normalize_status(
-            rec.get("status"),
-            rec.get("rpc_error"),
-            skipped=bool(rec.get("skipped")) or rec.get("status") == "skipped",
-        )
-        failed = rec.get("failed_checks")
-        if failed is None:
-            checks = rec.get("checks") or {}
-            failed = sorted(k for k, v in checks.items() if v == "fail")
-        rec["failed_checks"] = sorted(set(str(c) for c in failed))
-        rec["elapsed_ms"] = float(rec.get("elapsed_ms") or 0.0)
-        rec["sha256"] = str(rec.get("sha256") or "")
-        rec["output_sha256"] = str(rec.get("output_sha256") or "")
-        rec["doc_class"] = doc_class(relpath)
-        by_relpath[relpath] = rec
+    for line_no, raw in _journal_lines(path):
+        rec = dict(_checked_record(raw, f"{path}:{line_no}"))
+        rec["status"] = normalize_status(rec["status"], rec["rpc_error"], skipped=rec["status"] == "skipped")
+        rec["failed_checks"] = sorted(set(rec["failed_checks"]))
+        rec["elapsed_ms"] = float(rec["elapsed_ms"])
+        rec["doc_class"] = doc_class(rec["relpath"])
+        by_relpath[rec["relpath"]] = rec
     return [by_relpath[k] for k in sorted(by_relpath)]
 
 
@@ -159,8 +204,10 @@ def is_clean(rec: dict[str, Any], ignored: frozenset[str] = frozenset()) -> bool
 
 
 def _cause(rec: dict[str, Any]) -> str:
-    raw = str(rec.get("rpc_error") or rec.get("raw_status") or rec.get("status") or "")
-    return re.sub(r"\d+", "#", raw)[:160] or rec["status"]
+    """The failure text a document's failures group by: the RPC error of a failed
+    call, else the ConversionStatus gRParse returned, with digits masked."""
+    raw = rec["rpc_error"] if rec["rpc_error"] is not None else rec["raw_status"]
+    return re.sub(r"\d+", "#", raw)[:160]
 
 
 def _summarize_slice(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -234,7 +281,7 @@ def summarize_run(records: list[dict[str, Any]], *, label: str = "run") -> dict[
     for rec in records:
         by_doctype.setdefault(rec["doctype"], []).append(rec)
         by_parser.setdefault(rec["parser_type"], []).append(rec)
-        by_class.setdefault(rec.get("doc_class") or doc_class(rec["relpath"]), []).append(rec)
+        by_class.setdefault(rec["doc_class"], []).append(rec)
 
     return {
         "label": label,
@@ -302,8 +349,8 @@ def compare_runs(
     max_p95_regression_pct: float | None = None,
     fail_on_new_failures: bool = False,
     max_clean_rate_drop: float | None = None,
-    baseline_manifest: provenance.RunManifest | Mapping[str, Any] | None = None,
-    candidate_manifest: provenance.RunManifest | Mapping[str, Any] | None = None,
+    baseline_manifest: provenance.RunManifest | None = None,
+    candidate_manifest: provenance.RunManifest | None = None,
 ) -> dict[str, Any]:
     """Compare baseline and candidate journals, detecting regressions and content drift."""
     base_summary = summarize_run(baseline_records, label=baseline_label)
@@ -341,7 +388,7 @@ def compare_runs(
                 "parser_type": c_rec["parser_type"],
                 "baseline_status": b_status,
                 "candidate_status": c_status,
-                "rpc_error": c_rec.get("rpc_error"),
+                "rpc_error": c_rec["rpc_error"],
             })
         elif b_status in FAILURE_STATUSES and c_status in SUCCESS_STATUSES:
             fixed_documents.append({
@@ -471,7 +518,7 @@ def compare_runs(
 
     return {
         "mode": "comparison",
-        "provenance": provenance.compare(baseline_manifest, candidate_manifest).to_dict(),
+        "provenance": provenance.compare(baseline_manifest, candidate_manifest).to_json(),
         "exit_code": exit_code,
         "gate_failures": gate_failures,
         "baseline": base_summary,
@@ -500,15 +547,28 @@ def _pct(count: int, total: int) -> str:
     return f"{count / total * 100:.1f}%" if total else "-"
 
 
-def headline_lines(ov: provenance.RunHeadline | Mapping[str, Any]) -> list[str]:
+def headline_of(overall: dict[str, Any]) -> provenance.RunHeadline:
+    """The headline counts of a ``summarize_run(...)["overall"]`` slice."""
+    return provenance.RunHeadline(
+        evaluated=overall["evaluated"],
+        skipped=overall["skipped"],
+        status_success_count=overall["status_success_count"],
+        success_count=overall["success_count"],
+        error_count=overall["error_count"],
+        clean_count=overall["clean_count"],
+        clean_battery_count=overall["clean_battery_count"],
+    )
+
+
+def headline_lines(head: provenance.RunHeadline) -> list[str]:
     """Clean output beside call success: the headline every run reports."""
-    n = ov["evaluated"]
+    n = head.evaluated
     return [
-        f"- Clean output (every check passes): {ov['clean_count']}/{n} ({_pct(ov['clean_count'], n)})",
+        f"- Clean output (every check passes): {head.clean_count}/{n} ({_pct(head.clean_count, n)})",
         f"- Clean output, battery rule (ignores {', '.join(sorted(BATTERY_IGNORED_CHECKS))}): "
-        f"{ov['clean_battery_count']}/{n} ({_pct(ov['clean_battery_count'], n)})",
-        f"- SUCCESS status (CONVERSION_STATUS_SUCCESS): {ov['status_success_count']}/{n} "
-        f"({_pct(ov['status_success_count'], n)})",
+        f"{head.clean_battery_count}/{n} ({_pct(head.clean_battery_count, n)})",
+        f"- SUCCESS status (CONVERSION_STATUS_SUCCESS): {head.status_success_count}/{n} "
+        f"({_pct(head.status_success_count, n)})",
     ]
 
 
@@ -544,8 +604,15 @@ def _failure_lines(ov: dict[str, Any]) -> list[str]:
     return lines + [""]
 
 
-def render_analysis_markdown(report: dict[str, Any]) -> str:
-    if report.get("mode") == "single":
+def render_analysis_markdown(
+    report: dict[str, Any],
+    *,
+    manifest: provenance.RunManifest | None = None,
+    comparison: provenance.RunComparison | None = None,
+) -> str:
+    """analysis.md (single run, with ``manifest`` from its run.json) or drift.md
+    (comparison, with ``comparison`` of the two runs' manifests)."""
+    if report["mode"] == "single":
         summary = report["summary"]
         ov = summary["overall"]
         lat = ov["latency_ms"]
@@ -553,11 +620,11 @@ def render_analysis_markdown(report: dict[str, Any]) -> str:
             f"# Corpus evaluation analysis: {summary['label']}",
             "",
         ]
-        if report.get("manifest"):
-            lines += provenance.render_markdown(report["manifest"]) + [""]
+        if manifest is not None:
+            lines += provenance.render_markdown(manifest) + [""]
         else:
             lines += ["- provenance: not recorded (no run.json beside the journal)", ""]
-        lines += headline_lines(ov) + [
+        lines += headline_lines(headline_of(ov)) + [
             f"- Documents: {ov['total']} total, {ov['evaluated']} evaluated, {ov['skipped']} skipped",
             f"- Success rate (SUCCESS or PARTIAL_SUCCESS): {ov['success_rate'] * 100:.2f}% ({ov['success_count']}/{ov['evaluated']})",
             f"- Error rate: {ov['error_rate'] * 100:.2f}% ({ov['error_count']}/{ov['evaluated']})",
@@ -641,8 +708,8 @@ def render_analysis_markdown(report: dict[str, Any]) -> str:
             lines.append(f"- {gf}")
         lines.append("")
 
-    if report.get("provenance"):
-        lines += provenance.render_comparison(report["provenance"])
+    if comparison is not None:
+        lines += provenance.render_comparison(comparison)
 
     lines += [
         "## Per-class comparison (clean output)",
@@ -696,7 +763,7 @@ def render_analysis_markdown(report: dict[str, Any]) -> str:
     if not report["new_failures"]:
         lines.append("none")
     for item in report["new_failures"]:
-        err = f" ({item['rpc_error']})" if item.get("rpc_error") else ""
+        err = f" ({item['rpc_error']})" if item["rpc_error"] is not None else ""
         lines.append(
             f"- `{_md_escape(item['relpath'])}` (`{item['doctype']}`, `{item['parser_type']}`): "
             f"{item['baseline_status']} -> {item['candidate_status']}{err}"
@@ -732,20 +799,19 @@ def render_analysis_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def render_run_list(runs: list[tuple[Path, provenance.RunManifest]]) -> str:
+def render_run_list(runs: list[provenance.FinishedRun]) -> str:
     lines = [
         "| run | started | gRParse commit | corpus | files | SUCCESS | clean | clean (battery rule) |",
         "|---|---|---|---|---|---|---|---|",
     ]
-    for run_dir, manifest in runs:
-        assert manifest.headline is not None and manifest.corpus is not None
-        head = manifest.headline
+    for run in runs:
+        head = run.headline
         n = head.evaluated
         lines.append(
-            f"| `{run_dir.name}` | {manifest.started_at} | "
-            f"`{provenance.short(manifest.grparse.commit)}` | "
-            f"`{provenance.short(manifest.corpus.sha256)}` | "
-            f"{manifest.corpus.files} | "
+            f"| `{run.run_dir.name}` | {run.manifest.started_at} | "
+            f"`{provenance.short(run.manifest.grparse.commit)}` | "
+            f"`{provenance.short(run.corpus.sha256)}` | "
+            f"{run.corpus.files} | "
             f"{_pct(head.status_success_count, n)} | {_pct(head.clean_count, n)} | "
             f"{_pct(head.clean_battery_count, n)} |"
         )
@@ -800,7 +866,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.list_runs is not None:
-        print(render_run_list(provenance.find_runs(args.list_runs)), end="")
+        try:
+            runs = provenance.find_runs(args.list_runs)
+        except provenance.ManifestError as err:
+            print(f"error: {err}", file=sys.stderr)
+            return 2
+        print(render_run_list(runs), end="")
         return 0
 
     base_path = args.baseline
@@ -813,25 +884,27 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print("provide --baseline and --candidate (or 1 or 2 positional results.jsonl paths)", file=sys.stderr)
             return 2
-    elif base_path is None and cand_path is not None:
+    elif base_path is None:
         base_path, cand_path = cand_path, None
+    if base_path is None:
+        print("provide --baseline or a results.jsonl path", file=sys.stderr)
+        return 2
 
     notes: list[str] = []
-    if args.baseline_auto is not None and cand_path is None:
-        assert base_path is not None
-        own = provenance.manifest_beside(base_path)
-        found = provenance.latest_comparable(args.baseline_auto, own) if own else None
-        if found is not None:
-            base_path, cand_path = found / "results.jsonl", base_path
-        else:
-            notes.append(
-                f"no earlier run over the same corpus under {args.baseline_auto}"
-                + ("" if own else " (the run has no run.json)")
-                + ": single-run summary only"
-            )
-
+    comparison: provenance.RunComparison | None = None
     try:
-        assert base_path is not None
+        if args.baseline_auto is not None and cand_path is None:
+            own = provenance.manifest_beside(base_path)
+            found = provenance.latest_comparable(args.baseline_auto, own) if own is not None else None
+            if found is not None:
+                base_path, cand_path = found / "results.jsonl", base_path
+            else:
+                notes.append(
+                    f"no earlier run over the same corpus under {args.baseline_auto}"
+                    + ("" if own is not None else " (the run has no run.json)")
+                    + ": single-run summary only"
+                )
+
         base_records = load_journal(base_path)
         base_manifest = provenance.manifest_beside(base_path)
         if cand_path is not None:
@@ -858,6 +931,7 @@ def main(argv: list[str] | None = None) -> int:
                 baseline_manifest=base_manifest,
                 candidate_manifest=cand_manifest,
             )
+            comparison = provenance.compare(base_manifest, cand_manifest)
         else:
             summary = summarize_run(base_records, label=base_path.parent.name or "run")
             gate_failures: list[str] = []
@@ -873,14 +947,18 @@ def main(argv: list[str] | None = None) -> int:
                 "exit_code": 1 if gate_failures else 0,
                 "gate_failures": gate_failures,
                 "summary": summary,
-                "manifest": base_manifest.to_dict() if base_manifest is not None else None,
+                "manifest": base_manifest.to_json() if base_manifest is not None else None,
             }
     except (FileNotFoundError, ValueError, OSError) as err:
         print(f"error: {err}", file=sys.stderr)
         return 2
 
     report["notes"] = notes
-    md_text = render_analysis_markdown(report)
+    md_text = render_analysis_markdown(
+        report,
+        manifest=base_manifest if cand_path is None else None,
+        comparison=comparison,
+    )
     if notes:
         md_text += "\n" + "\n".join(f"- note: {n}" for n in notes) + "\n"
     if args.out_json is not None:

@@ -28,6 +28,7 @@ def _sample_baseline() -> list[dict[str, Any]]:
             "doctype": "pdf",
             "parser_type": "pdf",
             "status": "success",
+            "raw_status": "CONVERSION_STATUS_SUCCESS",
             "rpc_error": None,
             "elapsed_ms": 20.0,
             "page_count": 2,
@@ -35,6 +36,7 @@ def _sample_baseline() -> list[dict[str, Any]]:
             "checks": {"parse_succeeds": "pass", "integrity": "pass"},
             "failed_checks": [],
             "output_sha256": "out_a_v1",
+            "skipped": "",
         },
         {
             "relpath": "b.docx",
@@ -45,6 +47,7 @@ def _sample_baseline() -> list[dict[str, Any]]:
             "doctype": "docx",
             "parser_type": "libreoffice",
             "status": "success",
+            "raw_status": "CONVERSION_STATUS_SUCCESS",
             "rpc_error": None,
             "elapsed_ms": 50.0,
             "page_count": 1,
@@ -52,6 +55,7 @@ def _sample_baseline() -> list[dict[str, Any]]:
             "checks": {"parse_succeeds": "pass", "integrity": "pass"},
             "failed_checks": [],
             "output_sha256": "out_b_v1",
+            "skipped": "",
         },
         {
             "relpath": "c.html",
@@ -62,6 +66,7 @@ def _sample_baseline() -> list[dict[str, Any]]:
             "doctype": "html",
             "parser_type": "markup",
             "status": "failure",
+            "raw_status": "CONVERSION_STATUS_FAILURE",
             "rpc_error": "INTERNAL: parse error",
             "elapsed_ms": 10.0,
             "page_count": 0,
@@ -69,6 +74,7 @@ def _sample_baseline() -> list[dict[str, Any]]:
             "checks": {"parse_succeeds": "fail"},
             "failed_checks": ["parse_succeeds"],
             "output_sha256": "",
+            "skipped": "",
         },
         {
             "relpath": "d.png",
@@ -79,6 +85,7 @@ def _sample_baseline() -> list[dict[str, Any]]:
             "doctype": "png",
             "parser_type": "grparse-cv",
             "status": "success",
+            "raw_status": "CONVERSION_STATUS_SUCCESS",
             "rpc_error": None,
             "elapsed_ms": 100.0,
             "page_count": 1,
@@ -86,6 +93,7 @@ def _sample_baseline() -> list[dict[str, Any]]:
             "checks": {"parse_succeeds": "pass", "integrity": "pass"},
             "failed_checks": [],
             "output_sha256": "out_d_v1",
+            "skipped": "",
         },
     ]
 
@@ -102,6 +110,7 @@ def _sample_candidate() -> list[dict[str, Any]]:
             "doctype": "pdf",
             "parser_type": "pdf",
             "status": "success",
+            "raw_status": "CONVERSION_STATUS_SUCCESS",
             "rpc_error": None,
             "elapsed_ms": 30.0,
             "page_count": 2,
@@ -109,6 +118,7 @@ def _sample_candidate() -> list[dict[str, Any]]:
             "checks": {"parse_succeeds": "pass", "integrity": "pass"},
             "failed_checks": [],
             "output_sha256": "out_a_v2",
+            "skipped": "",
         },
         # b.docx: regressed from success to rpc_error
         {
@@ -120,6 +130,7 @@ def _sample_candidate() -> list[dict[str, Any]]:
             "doctype": "docx",
             "parser_type": "libreoffice",
             "status": "rpc_error",
+            "raw_status": "rpc error: DEADLINE_EXCEEDED: timeout",
             "rpc_error": "DEADLINE_EXCEEDED: timeout",
             "elapsed_ms": 600.0,
             "page_count": 0,
@@ -127,6 +138,7 @@ def _sample_candidate() -> list[dict[str, Any]]:
             "checks": {"parse_succeeds": "fail"},
             "failed_checks": ["parse_succeeds"],
             "output_sha256": "",
+            "skipped": "",
         },
         # c.html: fixed in candidate
         {
@@ -138,6 +150,7 @@ def _sample_candidate() -> list[dict[str, Any]]:
             "doctype": "html",
             "parser_type": "markup",
             "status": "success",
+            "raw_status": "CONVERSION_STATUS_SUCCESS",
             "rpc_error": None,
             "elapsed_ms": 12.0,
             "page_count": 1,
@@ -145,6 +158,7 @@ def _sample_candidate() -> list[dict[str, Any]]:
             "checks": {"parse_succeeds": "pass", "integrity": "pass"},
             "failed_checks": [],
             "output_sha256": "out_c_v2",
+            "skipped": "",
         },
         # d.png: status still success, but gained a new shape-check failure
         {
@@ -156,6 +170,7 @@ def _sample_candidate() -> list[dict[str, Any]]:
             "doctype": "png",
             "parser_type": "grparse-cv",
             "status": "success",
+            "raw_status": "CONVERSION_STATUS_SUCCESS",
             "rpc_error": None,
             "elapsed_ms": 200.0,
             "page_count": 1,
@@ -163,6 +178,7 @@ def _sample_candidate() -> list[dict[str, Any]]:
             "checks": {"parse_succeeds": "pass", "integrity": "fail"},
             "failed_checks": ["integrity"],
             "output_sha256": "out_d_v1",
+            "skipped": "",
         },
     ]
 

@@ -405,20 +405,35 @@ def load_resume_journal(journal_path: Path) -> tuple[set[tuple[str, int]], list[
     return keys, records
 
 
+class JournalError(ValueError):
+    """A results.jsonl record without a key evaluate_corpus_entry writes."""
+
+
 def _record_to_object_result(record: dict[str, Any]) -> ObjectResult:
+    """A journal record (written by evaluate_corpus_entry) back as the battery's ObjectResult."""
+    expected: dict[str, tuple[type, ...]] = {
+        "relpath": (str,), "ext": (str,), "family": (str,), "size_bytes": (int,), "parser_type": (str,),
+        "collectors": (list,), "raw_status": (str,), "elapsed_ms": (int, float), "counts": (dict,),
+        "checks": (dict,), "failures": (list,), "skipped": (str,),
+    }
+    for key, types in expected.items():
+        if key not in record:
+            raise JournalError(f"results.jsonl record {record['relpath']!r}: missing key {key!r}")
+        if isinstance(record[key], bool) or not isinstance(record[key], types):
+            raise JournalError(f"results.jsonl record {record['relpath']!r}: {key!r} has the wrong type")
     return ObjectResult(
-        key=str(record.get("relpath") or ""),
-        extension=str(record.get("ext") or ""),
-        family=str(record.get("family") or "other"),
-        size=int(record.get("size_bytes") or 0),
-        parser_type=str(record.get("parser_type") or "none"),
-        collectors=list(record.get("collectors") or []),
-        status=str(record.get("raw_status") or record.get("status") or ""),
-        elapsed_ms=float(record.get("elapsed_ms") or 0.0),
-        counts=dict(record.get("counts") or {}),
-        checks=dict(record.get("checks") or {}),
-        failures=list(record.get("failures") or []),
-        skipped=str(record.get("skipped") or ""),
+        key=record["relpath"],
+        extension=record["ext"],
+        family=record["family"],
+        size=record["size_bytes"],
+        parser_type=record["parser_type"],
+        collectors=list(record["collectors"]),
+        status=record["raw_status"],
+        elapsed_ms=float(record["elapsed_ms"]),
+        counts=dict(record["counts"]),
+        checks=dict(record["checks"]),
+        failures=list(record["failures"]),
+        skipped=record["skipped"],
     )
 
 
@@ -582,7 +597,7 @@ def build_corpus_report(
     exit_code: int,
     resumed_count: int = 0,
     metrics_url: str | None = None,
-    manifest: provenance.RunManifest | Mapping[str, Any] | None = None,
+    manifest: provenance.RunManifest | None = None,
 ) -> dict[str, Any]:
     evaluated = [r for r in results if not r.skipped]
     failed_objects = sum(1 for r in evaluated if r.failed)
@@ -613,9 +628,7 @@ def build_corpus_report(
     if metrics_url:
         report["metrics_url"] = metrics_url
     if manifest is not None:
-        report["provenance"] = (
-            manifest.to_dict() if isinstance(manifest, provenance.RunManifest) else dict(manifest)
-        )
+        report["provenance"] = manifest.to_json()
     return report
 
 
@@ -623,7 +636,7 @@ def _md_escape(text: str) -> str:
     return str(text).replace("|", "\\|").replace("\n", " ")
 
 
-def render_corpus_markdown(report: dict[str, Any]) -> str:
+def render_corpus_markdown(report: dict[str, Any], manifest: provenance.RunManifest | None) -> str:
     totals = report["totals"]
     lines = [
         f"# gRParse corpus eval: {report['label']}",
@@ -636,11 +649,10 @@ def render_corpus_markdown(report: dict[str, Any]) -> str:
         f"{totals['checks_failed']} failed; wall {report['wall_seconds']}s; exit {report['exit_code']}",
         "",
     ]
-    if report.get("provenance"):
-        manifest = report["provenance"]
+    if manifest is not None:
         lines += ["## Provenance", ""] + provenance.render_markdown(manifest) + [""]
-        if manifest.get("headline"):
-            lines += analyze.headline_lines(manifest["headline"]) + [""]
+        if manifest.headline is not None:
+            lines += analyze.headline_lines(manifest.headline) + [""]
     for note in report.get("notes", []):
         lines.append(f"- {note}")
     if report.get("notes"):
@@ -704,13 +716,15 @@ def render_corpus_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_corpus_report(out: Path, report: dict[str, Any], metrics: MetricsCollector) -> Path:
+def write_corpus_report(
+    out: Path, report: dict[str, Any], metrics: MetricsCollector, manifest: provenance.RunManifest | None
+) -> Path:
     out.mkdir(parents=True, exist_ok=True)
     _atomic_write_text(
         out / "report.json",
         json.dumps(report, indent=1, sort_keys=True, ensure_ascii=False) + "\n",
     )
-    _atomic_write_text(out / "report.md", render_corpus_markdown(report))
+    _atomic_write_text(out / "report.md", render_corpus_markdown(report, manifest))
     metrics.write_prom_file(out / "metrics.prom")
     return out / "report.md"
 
@@ -728,7 +742,7 @@ def evaluate_corpus(
     started: float,
     metrics_url: str | None = None,
     on_start: Callable[[str | None], None] | None = None,
-    manifest: provenance.RunManifest | Mapping[str, Any] | None = None,
+    manifest: provenance.RunManifest | None = None,
 ) -> int:
     """Stream walk_corpus through a bounded ThreadPoolExecutor (max_in_flight = 2 * workers)."""
     run_out.mkdir(parents=True, exist_ok=True)
@@ -849,7 +863,7 @@ def evaluate_corpus(
                                 metrics_url=metrics_url,
                                 manifest=manifest,
                             )
-                            write_corpus_report(run_out, snap, metrics)
+                            write_corpus_report(run_out, snap, metrics, manifest)
 
                     if interrupted.is_set():
                         for pending in list(in_flight.keys()):
@@ -868,6 +882,33 @@ def evaluate_corpus(
     return resumed_count
 
 
+def run_config(config: CorpusConfig) -> provenance.RunConfig:
+    """The config as run.json records it: passwords become their count."""
+    return provenance.RunConfig(
+        corpus_dir=str(config.corpus_dir),
+        target=config.target,
+        out=str(config.out),
+        label=config.label,
+        workers=config.workers,
+        repeat=config.repeat,
+        include=config.include,
+        exclude=config.exclude,
+        max_docs=config.max_docs,
+        resume=config.resume,
+        save_outputs=config.save_outputs,
+        metrics_port=config.metrics_port,
+        sniff_per_extension=config.sniff_per_extension,
+        require=config.require,
+        convert_timeout=config.convert_timeout,
+        seconds_per_page=config.seconds_per_page,
+        checkpoint_interval=config.checkpoint_interval,
+        compose_project=config.compose_project,
+        grparse_commit=config.grparse_commit,
+        wait_seconds=config.wait_seconds,
+        document_password_count=len(config.document_passwords),
+    )
+
+
 def start_manifest(
     config: CorpusConfig, run_out: Path, docker_runner: provenance.Runner | None = None
 ) -> provenance.RunManifest:
@@ -875,7 +916,7 @@ def start_manifest(
     if config.compose_project:
         stack = provenance.stack_provenance(config.compose_project, docker_runner or provenance.docker_cli)
     else:
-        stack = provenance.StackProvenance(recorded=False, reason="no --compose-project given")
+        stack = provenance.UnrecordedStack(reason="no --compose-project given")
     started_at = provenance.utc_now()
     grparse_prov = provenance.grparse_commit(stack, config.grparse_commit)
     manifest = provenance.RunManifest(
@@ -890,10 +931,15 @@ def start_manifest(
         stack=stack,
         harness=provenance.harness_provenance(REPO),
         host=provenance.host_provenance(),
-        config=provenance.config_provenance(config),
+        config=run_config(config),
+        corpus=None,
+        headline=None,
+        resumed_at=(),
+        wall_seconds=None,
+        exit_code=None,
     )
-    prior = provenance.load_manifest(run_out / provenance.MANIFEST_NAME)
-    if config.resume and prior is not None and (run_out / "results.jsonl").is_file():
+    prior = provenance.load_manifest(run_out / provenance.MANIFEST_NAME) if config.resume else None
+    if prior is not None and (run_out / "results.jsonl").is_file():
         if provenance.stack_fingerprint(prior) != provenance.stack_fingerprint(manifest):
             raise provenance.ProvenanceError(
                 f"refusing to resume {run_out}: the stack or gRParse commit differs from the run being resumed "
@@ -911,21 +957,17 @@ def start_manifest(
 
 def finish_manifest(
     manifest: provenance.RunManifest, run_out: Path, *, exit_code: int, wall_seconds: float
-) -> provenance.RunManifest:
+) -> provenance.FinishedRun:
     """Hash the documents the run covered, add the headline rates, and stamp the finish."""
     journal = run_out / "results.jsonl"
     _, raw_records = load_resume_journal(journal)
-    identity, corpus_text = provenance.corpus_identity(raw_records)
-    overall = analyze.summarize_run(analyze.load_journal(journal))["overall"]
-    headline = provenance.RunHeadline(
-        evaluated=int(overall["evaluated"]),
-        skipped=int(overall["skipped"]),
-        status_success_count=int(overall["status_success_count"]),
-        success_count=int(overall["success_count"]),
-        error_count=int(overall["error_count"]),
-        clean_count=int(overall["clean_count"]),
-        clean_battery_count=int(overall["clean_battery_count"]),
+    for record in raw_records:
+        if "sha256" not in record or not isinstance(record["sha256"], str):
+            raise JournalError(f"results.jsonl record {record['relpath']!r}: 'sha256' is not a string")
+    identity, corpus_text = provenance.corpus_identity(
+        (record["relpath"], record["size_bytes"], record["sha256"]) for record in raw_records
     )
+    headline = analyze.headline_of(analyze.summarize_run(analyze.load_journal(journal))["overall"])
     finished = replace(
         manifest,
         corpus=identity,
@@ -936,7 +978,7 @@ def finish_manifest(
         exit_code=exit_code,
     )
     provenance.write_manifest(run_out, finished, corpus_text)
-    return finished
+    return provenance.FinishedRun(run_out, finished, identity, headline)
 
 
 def wait_for_service(client: Any, wait_seconds: float) -> Any:
@@ -991,6 +1033,9 @@ def main(
         manifest = start_manifest(config, run_out, docker_runner)
     except provenance.ProvenanceError as error:
         return skip(f"run provenance: {error}", config.require)
+    except provenance.ManifestError as error:
+        log(f"error: the run being resumed has a bad run.json: {error}")
+        return 1
     results: list[ObjectResult] = []
     matrix = Matrix()
     notes: list[str] = []
@@ -1048,7 +1093,7 @@ def main(
             exit_code = 1
             notes.append("EVAL_REQUIRE: skipped documents count as failures")
 
-    manifest = finish_manifest(manifest, run_out, exit_code=exit_code, wall_seconds=time.monotonic() - started)
+    finished = finish_manifest(manifest, run_out, exit_code=exit_code, wall_seconds=time.monotonic() - started)
     report = build_corpus_report(
         label=config.label,
         target=config.target,
@@ -1061,21 +1106,21 @@ def main(
         exit_code=exit_code,
         resumed_count=resumed_count,
         metrics_url=metrics_url,
-        manifest=manifest,
+        manifest=finished.manifest,
     )
-    path = write_corpus_report(run_out, report, metrics)
+    path = write_corpus_report(run_out, report, metrics, finished.manifest)
     totals = report["totals"]
     log(
         f"documents: {totals['evaluated']} evaluated ({resumed_count} resumed), "
         f"{totals['skipped']} skipped, {totals['failed_objects']} with failures; "
         f"checks: {totals['checks_run']} run, {totals['checks_failed']} failed; report: {path}"
     )
-    assert manifest.headline is not None and manifest.corpus is not None
-    for line in analyze.headline_lines(manifest.headline):
+    for line in analyze.headline_lines(finished.headline):
         log(line.lstrip("- "))
-    commit_label = manifest.grparse.commit if manifest.grparse.commit is not None else "commit not recorded"
-    log(f"run {manifest.run_id}: gRParse {commit_label}, "
-        f"corpus {manifest.corpus.sha256[:12]} ({manifest.corpus.files} files)")
+    commit = finished.manifest.grparse.commit
+    commit_label = commit if commit is not None else "commit not recorded"
+    log(f"run {finished.manifest.run_id}: gRParse {commit_label}, "
+        f"corpus {finished.corpus.sha256[:12]} ({finished.corpus.files} files)")
     return exit_code
 
 
