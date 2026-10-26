@@ -6,12 +6,15 @@
 // offset row), and the Markdown, DocTags and canonical JSON exports of the
 // sample's list.
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <format>
 #include <optional>
 #include <print>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ai/pipestream/document/v1/document.pb.h"
@@ -19,6 +22,7 @@
 #include "grparse/document_assembly.h"
 #include "grparse/document_render.h"
 #include "grparse/list_marker.h"
+#include "grparse/unicode_digits.h"
 #include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
@@ -64,6 +68,11 @@ void verify_sibling_markers() {
   require(!is_sibling_list_marker("Red", "Red"), "a word is no marker");
   require(!is_sibling_list_marker("- x", "- x"), "a marker is a whole word");
   require(!is_sibling_list_marker("", ""), "an empty word is no marker");
+  require(is_sibling_list_marker("\xEF\xBC\x91.", "\xEF\xBC\x92."), "U+FF12. after U+FF11.");
+  require(is_sibling_list_marker("1.", "\xEF\xBC\x91\xEF\xBC\x92."),
+          "any Nd digit run has the digit shape");
+  require(is_sibling_list_marker("(\xD9\xA1)", "(\xD9\xA2)"), "(U+0662) after (U+0661)");
+  require(!is_sibling_list_marker("\xEF\xBC\x91.", "\xEF\xBC\x91)"), "the punctuation is shape");
 }
 
 // The reference's pattern table, case by case, including its first-match
@@ -97,6 +106,11 @@ void verify_marker_patterns() {
   expect_split("\xD9\xA3) arabic-indic three", "\xD9\xA3)", "arabic-indic three", true);  // U+0663
   expect_split("\xEF\xBC\x91.\xEF\xBC\x92\xE3\x80\x80section", "\xEF\xBC\x91.\xEF\xBC\x92",
                "section", true);
+  expect_split("\xE0\xA5\xA7. devanagari one", "\xE0\xA5\xA7.", "devanagari one", true);  // U+0967
+  expect_split("(\xE0\xB9\x93) thai three", "(\xE0\xB9\x93)", "thai three", true);       // U+0E53
+  expect_split("[\xF0\x9D\x9F\x8F] math bold one", "[\xF0\x9D\x9F\x8F]", "math bold one",
+               true);  // U+1D7CF, four UTF-8 bytes
+  expect_split("\xEF\xBC\x91\xEF\xBC\x90" "a. sub", "\xEF\xBC\x91\xEF\xBC\x90" "a.", "sub", true);
 
   expect_no_split("");
   expect_no_split("-");
@@ -108,6 +122,72 @@ void verify_marker_patterns() {
   expect_no_split("Plain prose");
   expect_no_split("ab. two letters");
   expect_no_split("\xE2\x80\x94 em dash");  // U+2014 is not in the reference's set
+  expect_no_split("\xEF\xBC\x91\xEF\xBC\x8E fullwidth stop");  // U+FF11 U+FF0E: `\\.` is ASCII
+  expect_no_split("\xEF\xBC\x91\xEF\xBC\x89 fullwidth paren");  // U+FF11 U+FF09
+  expect_no_split("\xC2\xB2. superscript");                       // U+00B2 is No, not Nd
+  expect_no_split("\xE2\x91\xA0 circled");                       // U+2460 is No
+}
+
+// The generated Nd table (scripts/gen-unicode-digits.py, Unicode 16.0.0):
+// digits of several scripts read as their values, and look-alikes that are
+// not category Nd read as nothing.
+void verify_unicode_digit_table() {
+  using grparse::unicode::decimal_digit_value;
+  require(grparse::unicode::kDecimalDigitUnicodeVersion == "16.0.0", "the table's Unicode version");
+  require(grparse::unicode::kDecimalRuns.size() == 76, "Unicode 16.0.0 has 76 Nd runs");
+  const std::vector<std::pair<char32_t, int>> digits = {
+      {U'0', 0},      {U'9', 9},      {0x0663U, 3},  // ARABIC-INDIC DIGIT THREE
+      {0x06F5U, 5},                                  // EXTENDED ARABIC-INDIC DIGIT FIVE
+      {0x096DU, 7},                                  // DEVANAGARI DIGIT SEVEN
+      {0x09E8U, 2},                                  // BENGALI DIGIT TWO
+      {0x0E52U, 2},                                  // THAI DIGIT TWO
+      {0x0F29U, 9},                                  // TIBETAN DIGIT NINE
+      {0x1810U, 0},                                  // MONGOLIAN DIGIT ZERO
+      {0xFF10U, 0},   {0xFF11U, 1},  {0xFF19U, 9},   // FULLWIDTH DIGITS
+      {0x104A4U, 4},                                 // OSMANYA DIGIT FOUR
+      {0x10D41U, 1},                                 // GARAY DIGIT ONE (Unicode 16)
+      {0x16D73U, 3},                                 // KIRAT RAI DIGIT THREE (Unicode 16)
+      {0x1CCF8U, 8},                                 // OUTLINED DIGIT EIGHT (Unicode 16)
+      {0x1D7CFU, 1},                                 // MATHEMATICAL BOLD DIGIT ONE
+      {0x1D7D8U, 0},                                 // MATHEMATICAL DOUBLE-STRUCK DIGIT ZERO
+      {0x1D7FFU, 9},                                 // MATHEMATICAL MONOSPACE DIGIT NINE
+      {0x1FBF5U, 5},                                 // SEGMENTED DIGIT FIVE
+  };
+  for (const auto& [code_point, value] : digits) {
+    const std::optional<int> read = decimal_digit_value(code_point);
+    require(read.has_value() && *read == value,
+            "U+" + std::format("{:04X}", static_cast<uint32_t>(code_point)) + " reads as " +
+                std::to_string(value));
+  }
+  for (const char32_t not_digit : {U'/', U':', U'a', char32_t{0x00B2U} /* SUPERSCRIPT TWO, No */,
+                                   char32_t{0x2460U} /* CIRCLED DIGIT ONE, No */,
+                                   char32_t{0x2167U} /* ROMAN NUMERAL EIGHT, Nl */,
+                                   char32_t{0xFF0EU} /* FULLWIDTH FULL STOP */,
+                                   char32_t{0xFF1AU} /* FULLWIDTH COLON, after U+FF19 */,
+                                   char32_t{0x1ECE0U} /* unassigned in Unicode 16.0.0 */,
+                                   char32_t{0x1ECE5U}, char32_t{0x10FFFFU}}) {
+    require(!decimal_digit_value(not_digit).has_value(),
+            "U+" + std::format("{:04X}", static_cast<uint32_t>(not_digit)) + " is no Nd digit");
+  }
+}
+
+// Nd numbering as an ASCII ordered marker, for the Markdown export.
+void verify_ascii_ordered_marker() {
+  using grparse::ascii_ordered_marker;
+  require(ascii_ordered_marker("12.") == std::optional<std::string>("12."), "ASCII is unchanged");
+  require(ascii_ordered_marker("\xEF\xBC\x91.") == std::optional<std::string>("1."),
+          "U+FF11. is 1.");
+  require(ascii_ordered_marker("\xD9\xA3\xD9\xA4.") == std::optional<std::string>("34."),
+          "U+0663 U+0664. is 34.");
+  require(ascii_ordered_marker("\xEF\xBC\x91\x32.") == std::optional<std::string>("12."),
+          "mixed scripts read digit by digit, as \\d+ does");
+  for (const char* other : {"", ".", "1", "1)", "(1)", "a.", "1.2.", "-",
+                            "\xEF\xBC\x91\xEF\xBC\x8E" /* U+FF11 U+FF0E */}) {
+    require(!ascii_ordered_marker(other).has_value(),
+            std::string("'") + other + "' is no \\d+\\. marker");
+  }
+  require(grparse::contains_decimal_digit("(\xEF\xBC\x92)"), "(U+FF12) holds a digit");
+  require(!grparse::contains_decimal_digit("\xE2\x80\xA2"), "a bullet holds no digit");
 }
 
 grparse::OcrLine line(std::string text, int top, std::string font = "Helvetica") {
@@ -250,6 +330,8 @@ void verify_sample_exports_agree() {
 int main() {
   return grparse_test::run_test_main("list-marker-test", "ok", {
       verify_marker_patterns,
+      verify_unicode_digit_table,
+      verify_ascii_ordered_marker,
       verify_sibling_markers,
       verify_assembled_list_items,
       verify_sample_exports_agree,

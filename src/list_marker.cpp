@@ -1,5 +1,7 @@
 #include "grparse/list_marker.h"
 
+#include "grparse/unicode_digits.h"
+
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -67,26 +69,9 @@ bool is_space(char32_t c) {
          c == 0x202F || c == 0x205F || c == 0x3000;
 }
 
-// Python's `\d` on str: every Unicode Decimal_Number (Nd) range, each ten
-// consecutive code points starting at its zero digit.
-bool is_unicode_digit(char32_t c) {
-  static constexpr std::array<char32_t, 75> kDecimalZeros = {
-      0x0030U,  0x0660U,  0x06F0U,  0x07C0U,  0x0966U,  0x09E6U,  0x0A66U,  0x0AE6U,  0x0B66U,
-      0x0BE6U,  0x0C66U,  0x0CE6U,  0x0D66U,  0x0DE6U,  0x0E50U,  0x0ED0U,  0x0F20U,  0x1040U,
-      0x1090U,  0x17E0U,  0x1810U,  0x1946U,  0x19D0U,  0x1A80U,  0x1A90U,  0x1B50U,  0x1BB0U,
-      0x1C40U,  0x1C50U,  0xA620U,  0xA8D0U,  0xA900U,  0xA9D0U,  0xA9F0U,  0xAA50U,  0xABF0U,
-      0xFF10U,  0x104A0U, 0x10D30U, 0x10D40U, 0x11066U, 0x110F0U, 0x11136U, 0x111D0U, 0x112F0U,
-      0x11450U, 0x114D0U, 0x11650U, 0x116C0U, 0x116D0U, 0x116DAU, 0x11730U, 0x118E0U, 0x11950U,
-      0x11BF0U, 0x11C50U, 0x11D50U, 0x11DA0U, 0x11F50U, 0x16130U, 0x16A60U, 0x16AC0U, 0x16B50U,
-      0x1CCF0U, 0x1D7CEU, 0x1D7D8U, 0x1D7E2U, 0x1D7ECU, 0x1D7F6U, 0x1E140U, 0x1E2F0U, 0x1E4F0U,
-      0x1E950U, 0x1ECE0U, 0x1FBF0U,
-  };
-  for (const char32_t zero : kDecimalZeros) {
-    if (c < zero) return false;
-    if (c <= zero + 9) return true;
-  }
-  return false;
-}
+// Python's `\d` on str: every Unicode Nd digit, from the generated table
+// (scripts/gen-unicode-digits.py).
+bool is_unicode_digit(char32_t c) { return unicode::decimal_digit_value(c).has_value(); }
 
 size_t digit_length(std::string_view s, size_t at) {
   if (at >= s.size()) return 0;
@@ -182,8 +167,9 @@ bool is_choice_box(char32_t c) { return c >= U'\u2610' && c <= U'\u2612'; }
 
 // The shape a whole token has as a list marker: a bullet glyph as itself,
 // any check box as the empty one, and a numbering form with each digit run
-// read as "0" and each letter run as "a" or "A" ("12)" is "0)", "iv." and
-// "c." are both "a."). Nothing when the token is no marker on its own.
+// (any Nd digits) read as "0" and each letter run as "a" or "A" ("12)" and
+// "\uFF11\uFF12)" are "0)", "iv." and "c." are both "a."). Nothing when the
+// token is no marker on its own.
 std::optional<std::string> marker_shape(std::string_view token) {
   if (token.empty()) return std::nullopt;
   const CodePoint first = decode_at(token, 0);
@@ -195,13 +181,15 @@ std::optional<std::string> marker_shape(std::string_view token) {
       kNumberedPatterns, [&](Pattern pattern) { return pattern(token) == token.size(); });
   if (!numbering) return std::nullopt;
   std::string shape;
-  for (size_t at = 0; at < token.size(); ++at) {
-    const char read = digit_length(token, at) == 1 ? '0'
-                      : is_lower(token, at) ? 'a'
-                      : is_upper(token, at) ? 'A'
-                                            : token[at];
-    const bool run = read == '0' || read == 'a' || read == 'A';
-    if (!run || shape.empty() || shape.back() != read) shape.push_back(read);
+  for (size_t at = 0; at < token.size();) {
+    const CodePoint cp = decode_at(token, at);
+    const std::string_view read = is_unicode_digit(cp.value) ? std::string_view("0")
+                                  : is_lower(token, at)      ? std::string_view("a")
+                                  : is_upper(token, at)      ? std::string_view("A")
+                                                             : token.substr(at, cp.length);
+    const bool run = read == "0" || read == "a" || read == "A";
+    if (!run || shape.empty() || shape.back() != read.front()) shape.append(read);
+    at += cp.length;
   }
   return shape;
 }
@@ -241,6 +229,29 @@ std::optional<ListMarkerSplit> split_list_marker(std::string_view orig) {
   }
   split.prefix_code_points = marker_code_points + 1;
   return split;
+}
+
+std::optional<std::string> ascii_ordered_marker(std::string_view marker) {
+  if (marker.size() < 2 || marker.back() != '.') return std::nullopt;
+  std::string ascii;
+  for (size_t at = 0; at + 1 < marker.size();) {
+    const CodePoint cp = decode_at(marker, at);
+    const std::optional<int> value = unicode::decimal_digit_value(cp.value);
+    if (!value.has_value()) return std::nullopt;
+    ascii.push_back(static_cast<char>('0' + *value));
+    at += cp.length;
+  }
+  ascii.push_back('.');
+  return ascii;
+}
+
+bool contains_decimal_digit(std::string_view text) {
+  for (size_t at = 0; at < text.size();) {
+    const CodePoint cp = decode_at(text, at);
+    if (is_unicode_digit(cp.value)) return true;
+    at += cp.length;
+  }
+  return false;
 }
 
 }  // namespace grparse

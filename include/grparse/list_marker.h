@@ -39,4 +39,14 @@ std::optional<ListMarkerSplit> split_list_marker(std::string_view orig);
 // "1)" list.
 bool is_sibling_list_marker(std::string_view lead, std::string_view token);
 
+// `marker` as an ASCII ordered list marker when it is one or more Nd digits
+// (Python `\d`) and a final '.', the form the Markdown export keeps as an
+// ordered item: each digit becomes its ASCII decimal value ("12." stays
+// "12.", "\uFF11." becomes "1.", "\u0663." becomes "3."). Nothing for any
+// other marker.
+std::optional<std::string> ascii_ordered_marker(std::string_view marker);
+
+// Whether `text` holds any Nd digit (Python `\d`), ASCII or not.
+bool contains_decimal_digit(std::string_view text);
+
 }  // namespace grparse

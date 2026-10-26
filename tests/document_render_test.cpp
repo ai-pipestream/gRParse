@@ -702,6 +702,50 @@ void verify_markdown_escaping_marker_and_formatting_rules() {
           "markdown escaping/marker/formatting rules differ:\n" + markdown);
 }
 
+// A numbered marker of Nd digits and '.' renders as an ASCII ordered item
+// with the digits' values ("\uFF11." is "1.", "\u0663\u0664." is "34."),
+// since CommonMark reads only ASCII digits as an ordered list marker. An
+// ASCII numbered marker is unchanged, and a non-ASCII digit in any other
+// marker counts as alphanumeric, so the marker rides behind a "-".
+void verify_markdown_unicode_digit_markers() {
+  docv1::Document document = base_document("digits.pdf");
+  const auto set_marker = [&](const std::string& ref, const std::string& marker) {
+    const std::string prefix = "#/texts/";
+    document.mutable_texts(std::stoi(ref.substr(prefix.size())))
+        ->mutable_list_item()
+        ->set_marker(marker);
+  };
+  const std::string list = add_group(&document, "#/body", docv1::GROUP_LABEL_LIST);
+  set_marker(add_text(&document, list, docv1::BaseTextItem::kListItem,
+                      docv1::DOC_ITEM_LABEL_LIST_ITEM, "step", 0, true),
+             "\xEF\xBC\x91.");  // U+FF11 FULLWIDTH DIGIT ONE
+  set_marker(add_text(&document, list, docv1::BaseTextItem::kListItem,
+                      docv1::DOC_ITEM_LABEL_LIST_ITEM, "arabic-indic", 0, true),
+             "\xD9\xA3\xD9\xA4.");  // U+0663 U+0664
+  set_marker(add_text(&document, list, docv1::BaseTextItem::kListItem,
+                      docv1::DOC_ITEM_LABEL_LIST_ITEM, "devanagari", 0, true),
+             "\xE0\xA5\xAD.");  // U+096D DEVANAGARI DIGIT SEVEN
+  set_marker(add_text(&document, list, docv1::BaseTextItem::kListItem,
+                      docv1::DOC_ITEM_LABEL_LIST_ITEM, "ascii", 0, true),
+             "12.");
+  set_marker(add_text(&document, list, docv1::BaseTextItem::kListItem,
+                      docv1::DOC_ITEM_LABEL_LIST_ITEM, "parenthesized", 0, true),
+             "(\xEF\xBC\x92)");  // (U+FF12)
+  set_marker(add_text(&document, list, docv1::BaseTextItem::kListItem,
+                      docv1::DOC_ITEM_LABEL_LIST_ITEM, "fullwidth stop", 0, true),
+             "\xEF\xBC\x93\xEF\xBC\x8E");  // U+FF13 U+FF0E: not "\d+\."
+
+  const std::string markdown = grparse::render_markdown(document);
+  const std::string expected =
+      "1. step\n"
+      "34. arabic-indic\n"
+      "7. devanagari\n"
+      "12. ascii\n"
+      "- (\xEF\xBC\x92) parenthesized\n"
+      "- \xEF\xBC\x93\xEF\xBC\x8E fullwidth stop";
+  require(markdown == expected, "Nd digit markers differ:\n" + markdown);
+}
+
 // Custom meta fields render in the order the exports give them: a name
 // already carrying a namespace first, then the pipestream-namespaced folds of
 // the rest, with a collision between two folded names broken by a numeric
@@ -1509,6 +1553,7 @@ int main() {
       verify_markdown_caption_placement,
       verify_markdown_page_break_placeholder,
       verify_markdown_escaping_marker_and_formatting_rules,
+      verify_markdown_unicode_digit_markers,
       verify_markdown_custom_meta_field_order,
       verify_html_renders_structure_and_escapes,
       verify_non_body_layers_are_excluded,

@@ -3,12 +3,14 @@
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "ai/pipestream/document/v1/document.pb.h"
+#include "grparse/list_marker.h"
 #include "markdown_text.h"
 #include "renderer_base.h"
 #include "text_class.h"
@@ -466,15 +468,19 @@ std::string MarkdownWalk::list_item_prefix(const std::string& ref,
     marker = text.list_item().marker();
   }
 
+  // Python's str.isalnum() in the reference also counts non-ASCII digits;
+  // non-ASCII letters are not counted here.
   const bool has_alnum = std::ranges::any_of(marker, [](unsigned char c) {
     return std::isalnum(c) != 0;
-  });
-  const bool numeric_marker =
-      marker.size() > 1 && marker.back() == '.' &&
-      std::ranges::all_of(marker.substr(0, marker.size() - 1),
-                          [](unsigned char c) { return std::isdigit(c) != 0; });
+  }) || contains_decimal_digit(marker);
+  // The reference keeps any `\d+\.` marker verbatim, so "\uFF11." would
+  // reach the Markdown as "\uFF11. step", which CommonMark does not read as
+  // an ordered item (it takes ASCII digits only). Here the digits are
+  // rewritten to their ASCII values instead: "\uFF11. step" is "1. step".
+  const std::optional<std::string> ordered = ascii_ordered_marker(marker);
+  if (ordered.has_value()) marker = *ordered;
   const bool already_valid =
-      marker == "-" || marker == "*" || marker == "+" || numeric_marker;
+      marker == "-" || marker == "*" || marker == "+" || ordered.has_value();
 
   std::vector<std::string> pieces;
   if (!already_valid) {
