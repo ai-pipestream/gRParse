@@ -128,14 +128,16 @@ def parse_succeeds(ctx: ObjectContext) -> list[Failure]:
 
 @check("expected_collector", "the collector the router hands the file type to answered with items (both epub "
                              "and markup for a book; calamine beside libreoffice for a workbook when the stack runs "
-                             "it and the workbook is not an encrypted package; an image whose page came back with "
-                             "nothing on it counts as the CV path answering)",
+                             "it and the workbook is not an encrypted package; when pages came back with no items "
+                             "on them, a blank raster or scan, the collectors that claimed the Document count)",
        applies=lambda ctx: has_view(ctx) and bool(expected_collectors(ctx.ext, ctx.family, ctx.calamine_leg)))
 def expected_collector(ctx: ObjectContext) -> list[Failure]:
     doc = ctx.view.doc
     answered = collectors_of(doc)
-    if ctx.family == "image" and doc.get("pages"):
-        answered.add("grparse")
+    if not answered and doc.get("pages"):
+        # A blank raster or scan: pages came back with nothing on them, so the
+        # collectors that claimed the document are the ones that replied.
+        answered = {(claim.get("source") or {}).get("collector", "") for claim in doc.get("claims", []) or []}
     # gRParse never fans an encrypted workbook out to calamine.
     calamine_leg = ctx.calamine_leg and not ctx.facts.encrypted_package
     missing = [sorted(wanted) for wanted in expected_collectors(ctx.ext, ctx.family, calamine_leg)

@@ -485,7 +485,7 @@ def test_expected_collector() -> None:
         group["source"] = [{"collector": {"collector": "markup"}}]
     found, _ = failing(doc, "b.epub")
     assert found["expected_collector"].cause == "epub did not answer"
-    # A blank raster answers with its page alone; no page means the CV path never ran.
+    # A blank raster replies with its page and its claims; no page means nothing ran.
     doc = scan_document()
     doc["texts"], doc["body"]["children"] = [], []
     assert failing(doc, "s.png")[1]["expected_collector"] == "pass"
