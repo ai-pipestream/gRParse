@@ -1404,7 +1404,8 @@ message ProfilingItem {
 
 // DocumentExports contains optional serialized output formats.
 message DocumentExports {
-  // Canonical JSON form of the document (same serialization as upstream REST).
+  // Protobuf JSON of the wire Document (OUTPUT_FORMAT_JSON). The upstream
+  // canonical dialect is canonical_json.
   optional string json = 1;
   optional string md = 2;
   optional string html = 3;

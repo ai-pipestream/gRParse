@@ -29,7 +29,9 @@
 #
 # GRPARSE_TAG pins every image in this file (default latest; a release
 # publishes <version>-cpu for gRParse and <version> for the models,
-# collectors and demo shell, see docs/RELEASING.md).
+# collectors and demo shell, see docs/RELEASING.md). The models and
+# collector images carry version tags from 0.3.0 on, so GRPARSE_TAG=0.3.0
+# or later; an earlier version has no tag for them to pull.
 name: grparse-quickstart
 
 x-hardened: &hardened
