@@ -8,8 +8,9 @@ STACK_TAG, so a release is only usable when each of those images carries
 the version tag. This script holds the two to each other.
 
   check                      every ${STACK_TAG} image in the compose stack
-                             has a publisher in fleet.tsv, and fleet.tsv
-                             parses; no network
+                             and every ${GRPARSE_TAG} image in
+                             quickstart/compose.yaml has a publisher in
+                             fleet.tsv, and fleet.tsv parses; no network
   images --version V         prints the fleet's image references for V
   resolve --version V        looks every fleet image up on Docker Hub and
                              writes the digest lock; exits 1 naming each
@@ -45,9 +46,16 @@ SEMVER = re.compile(
 )
 # An image template is <name>:{v}<suffix>, the suffix a variant such as -cpu.
 TEMPLATE = re.compile(r"^[a-z0-9][a-z0-9-]*:\{v\}(-[a-z0-9]+)?$")
-STACK_IMAGE = re.compile(
-    r"^\s*image:\s*[\"']?" + NAMESPACE + r"/([a-z0-9][a-z0-9-]*):\$\{STACK_TAG:-latest\}([-a-z0-9]*)[\"']?\s*$"
-)
+# The compose files that pin pipestreamai/* images, each with its own tag
+# variable: the stack with STACK_TAG, the quickstart with GRPARSE_TAG.
+PINNED_COMPOSE = (("compose.stack*.yaml", "STACK_TAG"), ("quickstart/compose.yaml", "GRPARSE_TAG"))
+
+
+def pinned_image(variable):
+    return re.compile(
+        r"^\s*image:\s*[\"']?" + NAMESPACE + r"/([a-z0-9][a-z0-9-]*):\$\{" + variable
+        + r":-latest\}([-a-z0-9]*)[\"']?\s*$"
+    )
 MANIFEST_TYPES = ", ".join([
     "application/vnd.oci.image.index.v1+json",
     "application/vnd.docker.distribution.manifest.list.v2+json",
@@ -86,17 +94,20 @@ def load_fleet(path=FLEET):
 
 
 def stack_templates(root=ROOT):
-    """Every ${STACK_TAG} image in the compose stack, as fleet templates."""
+    """Every tag-pinned image in the compose stack and the quickstart, as fleet templates."""
     found = {}
-    for compose in sorted(root.glob("compose.stack*.yaml")):
-        for number, line in enumerate(compose.read_text().splitlines(), 1):
-            match = STACK_IMAGE.match(line)
-            if match:
-                template = f"{match.group(1)}:{{v}}{match.group(2)}"
-                found.setdefault(template, f"{compose.name}:{number}")
-            elif re.match(rf"^\s*image:\s*[\"']?{NAMESPACE}/", line):
-                fail(f"{compose.name}:{number}: a {NAMESPACE} image not pinned by "
-                     f"${{STACK_TAG:-latest}}: {line.strip()}")
+    for pattern, variable in PINNED_COMPOSE:
+        image = pinned_image(variable)
+        for compose in sorted(root.glob(pattern)):
+            name = compose.relative_to(root)
+            for number, line in enumerate(compose.read_text().splitlines(), 1):
+                match = image.match(line)
+                if match:
+                    template = f"{match.group(1)}:{{v}}{match.group(2)}"
+                    found.setdefault(template, f"{name}:{number}")
+                elif re.match(rf"^\s*image:\s*[\"']?{NAMESPACE}/", line):
+                    fail(f"{name}:{number}: a {NAMESPACE} image not pinned by "
+                         f"${{{variable}:-latest}}: {line.strip()}")
     return found
 
 
@@ -109,7 +120,7 @@ def cmd_check(_args):
     published = {t for _, _, templates in fleet for t in templates}
     stack = stack_templates()
     if not stack:
-        fail("found no ${STACK_TAG} images in compose.stack*.yaml")
+        fail("found no tag-pinned images in compose.stack*.yaml or quickstart/compose.yaml")
     orphans = sorted(set(stack) - published)
     for template in orphans:
         print(f"release-stack: {stack[template]}: {render(template, '<version>')} "
