@@ -1,46 +1,34 @@
 {
  "agreement": {
-  "agreed": 5,
+  "agreed": 2,
   "claimed_fields": {
    "grparse": 4,
-   "libreoffice": 11,
-   "poi": 4
+   "libreoffice": 11
   },
   "collectors": [
    "grparse",
-   "libreoffice",
-   "poi"
+   "libreoffice"
   ],
-  "conflicts": [
-   {
-    "field": "source_meta.user_properties",
-    "values": {
-     "libreoffice": "[{\"name\": \"AppVersion\", \"text\": \"14.0000\"}, {\"name\": \"PresentationFormat\", \"text",
-     "poi": "[{\"name\": \"description\", \"text\": \"generated using python-pptx\"}, {\"name\": \"revis"
-    },
-    "winner": ""
-   }
-  ],
-  "shared": 6,
+  "conflicts": [],
+  "shared": 2,
   "winners": {
    "origin.binary_hash": "grparse",
    "origin.filename": "grparse",
    "origin.mimetype": "grparse",
    "origin.mimetype_evidence": "grparse",
-   "source_meta.created": "poi",
+   "source_meta.created": "libreoffice",
    "source_meta.editing_cycles": "libreoffice",
    "source_meta.editing_duration_seconds": "libreoffice",
    "source_meta.generator": "libreoffice",
-   "source_meta.modified": "poi",
+   "source_meta.modified": "libreoffice",
    "source_meta.statistics.paragraphs": "libreoffice",
    "source_meta.statistics.words": "libreoffice",
-   "source_meta.title": "poi"
+   "source_meta.title": "libreoffice"
   }
  },
  "collectors": [
   "grparse",
-  "libreoffice",
-  "poi"
+  "libreoffice"
  ],
  "content_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
  "counts": {

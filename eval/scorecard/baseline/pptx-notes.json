@@ -1,54 +1,42 @@
 {
  "agreement": {
-  "agreed": 5,
+  "agreed": 2,
   "claimed_fields": {
    "grparse": 4,
-   "libreoffice": 11,
-   "poi": 4
+   "libreoffice": 11
   },
   "collectors": [
    "grparse",
-   "libreoffice",
-   "poi"
+   "libreoffice"
   ],
-  "conflicts": [
-   {
-    "field": "source_meta.user_properties",
-    "values": {
-     "libreoffice": "[{\"name\": \"AppVersion\", \"text\": \"14.0000\"}, {\"name\": \"PresentationFormat\", \"text",
-     "poi": "[{\"name\": \"description\", \"text\": \"generated using python-pptx\"}, {\"name\": \"revis"
-    },
-    "winner": ""
-   }
-  ],
-  "shared": 6,
+  "conflicts": [],
+  "shared": 2,
   "winners": {
    "origin.binary_hash": "grparse",
    "origin.filename": "grparse",
    "origin.mimetype": "grparse",
    "origin.mimetype_evidence": "grparse",
-   "source_meta.created": "poi",
+   "source_meta.created": "libreoffice",
    "source_meta.editing_cycles": "libreoffice",
    "source_meta.editing_duration_seconds": "libreoffice",
    "source_meta.generator": "libreoffice",
-   "source_meta.modified": "poi",
+   "source_meta.modified": "libreoffice",
    "source_meta.statistics.paragraphs": "libreoffice",
    "source_meta.statistics.words": "libreoffice",
-   "source_meta.title": "poi"
+   "source_meta.title": "libreoffice"
   }
  },
  "collectors": [
   "grparse",
-  "libreoffice",
-  "poi"
+  "libreoffice"
  ],
  "content_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
  "counts": {
   "body_items": 19,
   "by_label": {
    "group:slide": 4,
-   "list_item": 4,
-   "section_header": 5,
+   "list_item": 6,
+   "section_header": 3,
    "table": 1,
    "text": 4,
    "title": 1
@@ -56,7 +44,7 @@
   "form_items": 0,
   "furniture_items": 0,
   "groups": 4,
-  "headings": 6,
+  "headings": 4,
   "key_value_items": 0,
   "orphans": 0,
   "pages": 4,
@@ -112,16 +100,6 @@
   },
   {
    "level": 1,
-   "ref": "#/texts/4",
-   "text": "Three kinds of slide content"
-  },
-  {
-   "level": 1,
-   "ref": "#/texts/8",
-   "text": "Speaker notes on every content slide"
-  },
-  {
-   "level": 1,
    "ref": "#/texts/11",
    "text": "Stations by Line"
   },
@@ -132,10 +110,10 @@
   }
  ],
  "markdown": {
-  "chars": 673,
-  "headings": 6,
+  "chars": 671,
+  "headings": 4,
   "images": 0,
-  "sha256": "8a68bb182282f4bc30eebf6efd3c1258474430d395c3fec4740af1b5af6dd4eb",
+  "sha256": "92bff79dda3cbd766ea7634da52496e21706a2286d12e5d22cb1103144566d7c",
   "table_rows": 5
  },
  "origin_mimetype": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -190,8 +168,7 @@
   {
    "hash": "652804f5d3a4c07d",
    "key": "three kinds of slide content",
-   "label": "section_header",
-   "level": 1,
+   "label": "list_item",
    "ref": "#/texts/4",
    "text": "Three kinds of slide content"
   },
@@ -219,8 +196,7 @@
   {
    "hash": "d816a9240c1376e7",
    "key": "speaker notes on every content slide",
-   "label": "section_header",
-   "level": 1,
+   "label": "list_item",
    "ref": "#/texts/8",
    "text": "Speaker notes on every content slide"
   },
