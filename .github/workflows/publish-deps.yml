@@ -11,10 +11,11 @@ name: Publish Deps Seeds
 # gRParse edge).
 #
 # Tags are content-addressed: docker.io/pipestreamai/grparse-deps:
-# <flavor>-<arch>-<hash>, with <hash> from scripts/deps-hash.sh over every
-# input that could make a seeded build differ from an unseeded one. A build
-# whose inputs have no seed yet falls back to the local deps stage and compiles
-# everything, as before.
+# <flavor>-<arch>-<hash>, with <hash> from scripts/deps-hash.sh over the seed
+# inputs it lists (the Dockerfile's seed prefix, all CMake files, patches,
+# prune-seed.sh). Builds name a seed by that tag resolved to its manifest
+# digest (scripts/find-seed.sh). A build whose inputs have no seed yet falls
+# back to the local deps stage and compiles everything, as before.
 #
 # When it runs:
 #   push to main that touches a seed input: builds each leg whose tag does not

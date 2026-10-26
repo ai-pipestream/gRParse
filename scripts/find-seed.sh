@@ -32,29 +32,47 @@ flavor="${2:?flavor}"
 arch="${3:?arch}"
 ref="docker.io/pipestreamai/grparse-deps:$flavor-$arch-$(sh scripts/deps-hash.sh "$dockerfile" "$arch")"
 
-if docker image inspect "$ref" >/dev/null 2>&1; then
-  echo "find-seed: building from $ref, already local" >&2
-  echo "image=$ref"
-elif [ "$no_pull" = 1 ]; then
-  echo "find-seed: $ref is not local and --no-pull is set; building on the deps stage" >&2
-  echo "image=deps"
-elif manifest=$(docker manifest inspect -v "$ref" 2>/dev/null) &&
-   pinned=$(printf '%s' "$manifest" | python3 -c '
+# The digest of the platform manifest for $arch in `docker manifest inspect -v`
+# output on stdin. That output is a list for an image index (one entry per
+# platform, attestation entries carry platform "unknown") and a single object
+# for a plain manifest, which has no platform field. Fails when no entry is
+# for $arch.
+platform_digest() {
+  python3 -c '
 import json, sys
 arch = sys.argv[1]
 data = json.load(sys.stdin)
 entries = data if isinstance(data, list) else [data]
 for entry in entries:
-    desc = entry.get("Descriptor") or {}
-    plat = desc.get("platform") or {}
-    digest = desc.get("digest") or ""
-    if digest and (plat.get("architecture") in (None, arch)):
-        print(entry.get("Ref") or f"{sys.argv[2]}@{digest}")
+    descriptor = entry["Descriptor"]
+    platform = descriptor.get("platform")
+    if platform is None or platform["architecture"] == arch:
+        print(descriptor["digest"])
         sys.exit(0)
-sys.exit(1)
-' "$arch" "$ref"); then
-  echo "find-seed: building from $pinned" >&2
-  echo "image=$pinned"
+sys.exit(f"find-seed: no {arch} manifest in the index")
+' "$arch"
+}
+
+if docker image inspect "$ref" >/dev/null 2>&1; then
+  # A pulled seed keeps the digest it was pulled by. A seed built on this
+  # host and never pushed has none; it is named by tag, and that tag lives
+  # only in this host's own image store.
+  local_digest=$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$ref" |
+    sed -n 's|^.*grparse-deps@\(sha256:[0-9a-f]*\)$|\1|p' | head -n 1)
+  if [ -n "$local_digest" ]; then
+    echo "find-seed: building from $ref@$local_digest, already local" >&2
+    echo "image=$ref@$local_digest"
+  else
+    echo "find-seed: building from $ref, already local and built here" >&2
+    echo "image=$ref"
+  fi
+elif [ "$no_pull" = 1 ]; then
+  echo "find-seed: $ref is not local and --no-pull is set; building on the deps stage" >&2
+  echo "image=deps"
+elif manifest=$(docker manifest inspect -v "$ref" 2>/dev/null); then
+  digest=$(printf '%s' "$manifest" | platform_digest)
+  echo "find-seed: building from $ref@$digest" >&2
+  echo "image=$ref@$digest"
 else
   echo "find-seed: $ref is not published; building the dependencies inline" >&2
   echo "image=deps"

@@ -186,9 +186,11 @@ jobs:
           if [ -n "$CICD_TOKEN" ]; then
             names="$names,$FORGEJO_REPO"
           fi
-          echo "names=$names" >> "$GITHUB_OUTPUT"
-          echo "platform_pair=${PLATFORM//\//-}" >> "$GITHUB_OUTPUT"
-          echo "arch=${PLATFORM#linux/}" >> "$GITHUB_OUTPUT"
+          {
+            echo "names=$names"
+            echo "platform_pair=${PLATFORM//\//-}"
+            echo "arch=${PLATFORM#linux/}"
+          } >> "$GITHUB_OUTPUT"
       - name: Log in to Docker Hardened Images (dhi.io)
         # Dockerfile.models pulls its bases from dhi.io; only the cpu legs build it.
         if: ${{ matrix.variant == 'cpu' }}

@@ -49,7 +49,7 @@ jobs:
         # not already hold (scripts/find-seed.sh --no-pull).
         env:
           SEED_FLAGS: ${{ github.server_url != 'https://github.com' && '--no-pull' || '' }}
-        run: sh scripts/find-seed.sh $SEED_FLAGS Dockerfile cuda amd64 >> "$GITHUB_OUTPUT"
+        run: sh scripts/find-seed.sh ${SEED_FLAGS:+"$SEED_FLAGS"} Dockerfile cuda amd64 >> "$GITHUB_OUTPUT"
       - name: Restore the compile cache
         # GitHub's hosted runner only: its builder starts empty, so the ccache
         # mount the build compiles through travels in the Actions cache
@@ -119,7 +119,7 @@ jobs:
         # not already hold (scripts/find-seed.sh --no-pull).
         env:
           SEED_FLAGS: ${{ github.server_url != 'https://github.com' && '--no-pull' || '' }}
-        run: sh scripts/find-seed.sh $SEED_FLAGS Dockerfile.openvino openvino amd64 >> "$GITHUB_OUTPUT"
+        run: sh scripts/find-seed.sh ${SEED_FLAGS:+"$SEED_FLAGS"} Dockerfile.openvino openvino amd64 >> "$GITHUB_OUTPUT"
       - name: Restore the compile cache
         # GitHub's hosted runner only: its builder starts empty, so the ccache
         # mount the build compiles through travels in the Actions cache
@@ -229,7 +229,7 @@ jobs:
         # not already hold (scripts/find-seed.sh --no-pull).
         env:
           SEED_FLAGS: ${{ github.server_url != 'https://github.com' && '--no-pull' || '' }}
-        run: sh scripts/find-seed.sh $SEED_FLAGS Dockerfile.cpu cpu amd64 >> "$GITHUB_OUTPUT"
+        run: sh scripts/find-seed.sh ${SEED_FLAGS:+"$SEED_FLAGS"} Dockerfile.cpu cpu amd64 >> "$GITHUB_OUTPUT"
       - name: Restore the compile cache
         # GitHub's hosted runner only: its builder starts empty, so the ccache
         # mount the build compiles through travels in the Actions cache
@@ -363,6 +363,7 @@ jobs:
   # The Python under eval/: the corpus runner and drift analyzer, the S3
   # battery checks, the scorecard metrics, ruff, and the one-command corpus
   # eval wrapper's dry run. Stdlib only; no service, no network beyond ruff.
+  # The seed naming scripts' test rides along: it needs only sh and python3.
   eval-tests:
     runs-on: ubuntu-latest
     steps:
@@ -385,3 +386,5 @@ jobs:
         run: /tmp/eval-venv/bin/ruff check eval/
       - name: eval-corpus.sh dry run
         run: scripts/test/eval-corpus-test.sh
+      - name: deps-hash.sh and find-seed.sh
+        run: scripts/test/seed-scripts-test.sh

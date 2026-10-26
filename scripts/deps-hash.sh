@@ -7,8 +7,8 @@
 # Dockerfile.openvino) is that Dockerfile's toolchain plus one finished
 # /build tree with its third-party objects kept and first-party objects
 # removed. It is published as pipestreamai/grparse-deps:<flavor>-<arch>-<hash>
-# and a later build seeds an empty /build from it. The hash covers every input
-# that could make a seeded build differ from an unseeded one:
+# and a later build seeds an empty /build from it. The tag names these inputs,
+# so a change to any of them names a new seed:
 #   - the Dockerfile up to its "grparse-deps: end of seed inputs" marker
 #     (base image, apt packages, TensorRT, OpenCV, the OpenVINO SDK, the
 #     seed stage itself),
@@ -16,15 +16,17 @@
 #     ABI-sensitive dependency versions and is bumped by hand when they
 #     change (the ccache mount beside it is not an input: ccache keys every
 #     object on its preprocessed source, flags and compiler),
-#   - every FetchContent declaration line in CMakeLists.txt and cmake/
-#     (repository, tag, URL, hash): FetchContent repopulates a changed
-#     declaration by itself, but a seed that predates it would rebuild it
-#     every run,
+#   - all of CMakeLists.txt and cmake/*.cmake, whole files: a FetchContent
+#     URL or hash can come from a set() or an option elsewhere in the file,
+#     and a non-FORCE cache default stays in the seed's CMakeCache.txt, so
+#     any CMake edit names a new seed,
 #   - every file under patches/: FetchContent does not reapply a changed
 #     patch to an already populated tree,
+#   - scripts/prune-seed.sh, which decides what the seed keeps, and this
+#     script,
 #   - the target architecture.
-# Anything else (first-party sources, protos, other CMake changes) is rebuilt
-# by ninja and the content stamps in every build, seeded or not.
+# First-party sources and protos are not inputs: ninja and the content stamps
+# rebuild them in every build, seeded or not.
 set -eu
 
 dockerfile="${1:?Dockerfile}"
@@ -40,7 +42,11 @@ grep -qxF "$marker" "$dockerfile" || {
   echo "arch $arch"
   sed "/^$marker\$/q" "$dockerfile"
   grep -F 'type=cache,id=' "$dockerfile" | grep -F 'target=/build'
-  grep -hE '^[[:space:]]*(FetchContent_Declare|GIT_REPOSITORY|GIT_TAG|URL|URL_HASH)\b' \
-    CMakeLists.txt cmake/*.cmake
-  find patches -type f | LC_ALL=C sort | xargs -r sha256sum
+  {
+    echo CMakeLists.txt
+    find cmake -name '*.cmake' -type f
+    find patches -type f
+    echo scripts/prune-seed.sh
+    echo scripts/deps-hash.sh
+  } | LC_ALL=C sort | xargs sha256sum
 } | sha256sum | cut -c1-16

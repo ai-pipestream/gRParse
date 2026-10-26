@@ -70,7 +70,8 @@ ARG GRPARSE_BUILD_JOBS=2
 WORKDIR /src
 RUN --mount=type=bind,target=/src,rw \
     cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
-      -DGRPARSE_WERROR=ON -DGRPARSE_EMBED_TENSORRT=ON -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv5 \
+      -DGRPARSE_WERROR=ON -DGRPARSE_ORT_PACKAGE=cuda -DGRPARSE_EMBED_TENSORRT=ON \
+      -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv5 \
  && cmake --build /build --target grparse-server grparse-stream-client grparse-embed-text grparse-tests --parallel ${GRPARSE_BUILD_JOBS} \
  && sh scripts/prune-seed.sh /build /opt/grparse-seed
 
@@ -119,7 +120,8 @@ RUN --mount=type=cache,id=grparse-ubuntu26-cuda13.4-trt11.4-grpc1.84.1-ort1.30.0
  && sh scripts/stamp-sources.sh /build \
  && ccache --zero-stats \
  && cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
-      -DGRPARSE_WERROR=ON -DGRPARSE_EMBED_TENSORRT=ON -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv5 \
+      -DGRPARSE_WERROR=ON -DGRPARSE_ORT_PACKAGE=cuda -DGRPARSE_EMBED_TENSORRT=ON \
+      -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv5 \
       -DGRPARSE_COMPILER_LAUNCHER=ccache \
  && cmake --build /build --target grparse-server grparse-stream-client grparse-embed-text grparse-tests --parallel ${GRPARSE_BUILD_JOBS} \
  && ccache --show-stats \
