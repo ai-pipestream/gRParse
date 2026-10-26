@@ -243,7 +243,14 @@
   },
   "png-report-page": {
    "latency_ms": 594.9,
-   "stable": true
+   "stable": true,
+   "truth": {
+    "truth_anchors_found": 1.0,
+    "truth_heading_levels": 0.0,
+    "truth_headings": 1.0,
+    "truth_order": 1.0,
+    "truth_table_cells": 0.65
+   }
   },
   "png-span-table": {
    "latency_ms": 208.5,
@@ -267,7 +274,7 @@
    "truth": {
     "truth_anchors_found": 1.0,
     "truth_heading_levels": 1.0,
-    "truth_headings": 0.8,
+    "truth_headings": 1.0,
     "truth_order": 1.0,
     "truth_table_cells": 1.0
    }
@@ -882,6 +889,37 @@
    "reason": "e92a567: new document, the quickstart sample (ai-pipestream/gRParse#162); page 1 read from its text layer, page 2 by PP-OCRv3, which reads 'Figure l' for 'Figure 1'; recorded on the CPU image, so its latency budget is the CPU one",
    "service": "gRParse grparse-0.3.0-cpu",
    "timestamp": "2026-10-24T08:24:19+00:00"
+  },
+  {
+   "documents": [
+    "docx-sample3",
+    "xlsx-sample3",
+    "xlsx-formula-issue",
+    "pptx-sample1",
+    "png-report-page",
+    "epub-great-gatsby",
+    "pdf-diffusion-paper",
+    "pdf-scanned-image",
+    "pptx-notes",
+    "docx-figures",
+    "xlsx-sixty-sheets",
+    "docx-form",
+    "xlsx-charts",
+    "pptx-charts"
+   ],
+   "gate_changes": [
+    {
+     "after": 1.0,
+     "before": 0.8,
+     "doc_id": "pptx-notes",
+     "metric": "truth_headings",
+     "reason": "raised"
+    }
+   ],
+   "partial": true,
+   "reason": "grpc-pdf-inspector eda6d6b builds a table from a printed pipe block with no detected grid (diffusion paper Figure 1 and 2 panels are tables, no text item carries pipe syntax); 6204d3d dropped grPOIc, so agreement no longer names poi; 309a0bc splits inline list items at their markers; with libreoffice as the only office collector, level-0 pptx bullets are list items, which the truth file agrees with; gatsby loses an empty text item; blank scanned pages render no markdown; png-report-page gains a truth file and is recorded on CUDA with OCR recognition batched 16 (header cells read colo/col2, see the batch note in the PR); latency budgets are kept from their earlier recordings because krick was at load 30 to 45 during this one",
+   "service": "gRParse grparse-0.3.0-cuda",
+   "timestamp": "2026-10-26T20:05:41+00:00"
   }
  ],
  "manifest": "eval/scorecard/corpus.json",

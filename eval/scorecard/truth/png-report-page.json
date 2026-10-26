@@ -1,0 +1,129 @@
+{
+ "doc_id": "png-report-page",
+ "source": "read off tests/data/report_page.png itself (1240x1754 raster, no text layer)",
+ "notes": [
+  "One page: a title line, two paragraphs of seven identical lines each (cut at the right page edge), a ruled 5x4 table, then a hatched figure with its caption to its right.",
+  "The title is the page's only heading and is level 0. The paragraphs repeat one sentence, so they give no anchor that tells them apart.",
+  "Header cells read 'col 0' to 'col 3' with a space. Body cells read 'cell r,c' with no space after the comma; the wide side bearing of the '1' glyph makes 'cell 1,1' look spaced, but the comma is set tight in every other cell.",
+  "No figure placement is asserted: the only text before the figure is the second of two identical paragraphs, so an anchor cannot say which one it follows."
+ ],
+ "headings": [
+  {
+   "text": "Quarterly Throughput Report",
+   "level": 0
+  }
+ ],
+ "anchors": [
+  "Quarterly Throughput Report",
+  "The streaming parser sustained",
+  "Figure 1: sustained overlap"
+ ],
+ "tables": [
+  {
+   "table": "5x4",
+   "cells": [
+    [
+     0,
+     0,
+     "col 0"
+    ],
+    [
+     0,
+     1,
+     "col 1"
+    ],
+    [
+     0,
+     2,
+     "col 2"
+    ],
+    [
+     0,
+     3,
+     "col 3"
+    ],
+    [
+     1,
+     0,
+     "cell 1,0"
+    ],
+    [
+     1,
+     1,
+     "cell 1,1"
+    ],
+    [
+     1,
+     2,
+     "cell 1,2"
+    ],
+    [
+     1,
+     3,
+     "cell 1,3"
+    ],
+    [
+     2,
+     0,
+     "cell 2,0"
+    ],
+    [
+     2,
+     1,
+     "cell 2,1"
+    ],
+    [
+     2,
+     2,
+     "cell 2,2"
+    ],
+    [
+     2,
+     3,
+     "cell 2,3"
+    ],
+    [
+     3,
+     0,
+     "cell 3,0"
+    ],
+    [
+     3,
+     1,
+     "cell 3,1"
+    ],
+    [
+     3,
+     2,
+     "cell 3,2"
+    ],
+    [
+     3,
+     3,
+     "cell 3,3"
+    ],
+    [
+     4,
+     0,
+     "cell 4,0"
+    ],
+    [
+     4,
+     1,
+     "cell 4,1"
+    ],
+    [
+     4,
+     2,
+     "cell 4,2"
+    ],
+    [
+     4,
+     3,
+     "cell 4,3"
+    ]
+   ]
+  }
+ ],
+ "figures": []
+}

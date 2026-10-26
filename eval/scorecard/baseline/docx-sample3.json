@@ -1,38 +1,27 @@
 {
  "agreement": {
-  "agreed": 6,
+  "agreed": 2,
   "claimed_fields": {
    "grparse": 4,
-   "libreoffice": 19,
-   "poi": 5
+   "libreoffice": 19
   },
   "collectors": [
    "grparse",
-   "libreoffice",
-   "poi"
+   "libreoffice"
   ],
-  "conflicts": [
-   {
-    "field": "source_meta.user_properties",
-    "values": {
-     "libreoffice": "[{\"name\": \"AppVersion\", \"text\": \"14.0000\"}, {\"name\": \"Company\", \"text\": \"State o",
-     "poi": "[{\"name\": \"revision\", \"text\": \"3\"}, {\"name\": \"application\", \"text\": \"Microsoft O"
-    },
-    "winner": ""
-   }
-  ],
-  "shared": 7,
+  "conflicts": [],
+  "shared": 2,
   "winners": {
    "origin.binary_hash": "grparse",
    "origin.filename": "grparse",
    "origin.mimetype": "grparse",
    "origin.mimetype_evidence": "grparse",
-   "source_meta.created": "poi",
+   "source_meta.created": "libreoffice",
    "source_meta.editing_cycles": "libreoffice",
    "source_meta.editing_duration_seconds": "libreoffice",
    "source_meta.generator": "libreoffice",
-   "source_meta.modified": "poi",
-   "source_meta.modified_by": "poi",
+   "source_meta.modified": "libreoffice",
+   "source_meta.modified_by": "libreoffice",
    "source_meta.statistics.characters": "libreoffice",
    "source_meta.statistics.images": "libreoffice",
    "source_meta.statistics.objects": "libreoffice",
@@ -45,8 +34,7 @@
  },
  "collectors": [
   "grparse",
-  "libreoffice",
-  "poi"
+  "libreoffice"
  ],
  "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
  "counts": {
@@ -126,11 +114,29 @@
   "chars": 3634,
   "headings": 9,
   "images": 0,
-  "sha256": "a3d5b524f313663695e4521949f6dc97cfd8f8b9eea5dc03ca59198110943964",
+  "sha256": "50bfe1b733a0d5b3fe5db0f41242ddac61ab5190d107477e7b06123e78b043e0",
   "table_rows": 15
  },
  "origin_mimetype": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
  "pictures": [
+  {
+   "caption": "",
+   "classification": "",
+   "collectors": [
+    "libreoffice"
+   ],
+   "image": {
+    "bytes": 5427,
+    "mimetype": "image/gif",
+    "sha256": "76c54832054db6f2c79175939585067cc8e7ea7ba55e1f4fcec995eeb06a6622"
+   },
+   "page": 1,
+   "parent": "#/body",
+   "parent_label": "body",
+   "parent_name": "",
+   "preceding_heading": "Images",
+   "ref": "#/pictures/0"
+  },
   {
    "caption": "",
    "classification": "engineering_drawing",
@@ -144,24 +150,6 @@
    "parent_name": "",
    "preceding_heading": "Images",
    "ref": "#/pictures/2"
-  },
-  {
-   "caption": "",
-   "classification": "",
-   "collectors": [
-    "libreoffice"
-   ],
-   "image": {
-    "bytes": 5427,
-    "mimetype": "image/gif",
-    "sha256": "9bd151e32c7e17c2986bbbee33648291ccac84d2400e4b5d35b565e292bffe98"
-   },
-   "page": 1,
-   "parent": "#/body",
-   "parent_label": "body",
-   "parent_name": "",
-   "preceding_heading": "Images",
-   "ref": "#/pictures/0"
   },
   {
    "caption": "",
@@ -336,6 +324,13 @@
    "text": "Documents may contain images. For example, there is an image"
   },
   {
+   "hash": "76c54832054db6f2",
+   "key": "",
+   "label": "picture",
+   "ref": "#/pictures/0",
+   "text": ""
+  },
+  {
    "hash": "",
    "key": "",
    "label": "picture",
@@ -348,13 +343,6 @@
    "label": "text",
    "ref": "#/texts/19",
    "text": "Alt text should communicate what an image means, not how it "
-  },
-  {
-   "hash": "9bd151e32c7e17c2",
-   "key": "",
-   "label": "picture",
-   "ref": "#/pictures/0",
-   "text": ""
   },
   {
    "hash": "46812db81bf07dd2",

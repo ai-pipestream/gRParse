@@ -2,21 +2,30 @@
  "agreement": {
   "agreed": 0,
   "claimed_fields": {
-   "grparse": 3
+   "grparse": 4,
+   "pdf": 5
   },
   "collectors": [
-   "grparse"
+   "grparse",
+   "pdf"
   ],
   "conflicts": [],
   "shared": 0,
   "winners": {
    "origin.binary_hash": "grparse",
    "origin.filename": "grparse",
-   "origin.mimetype": "grparse"
+   "origin.mimetype": "grparse",
+   "origin.mimetype_evidence": "grparse",
+   "source_meta.format_version": "pdf",
+   "source_meta.protection.allows_extraction": "pdf",
+   "source_meta.protection.allows_printing": "pdf",
+   "source_meta.protection.opened_without_password": "pdf",
+   "source_meta.structured": "pdf"
   }
  },
  "collectors": [
-  "grparse"
+  "grparse",
+  "pdf"
  ],
  "content_type": "application/pdf",
  "counts": {
@@ -41,10 +50,10 @@
  "groups": [],
  "headings": [],
  "markdown": {
-  "chars": 105,
+  "chars": 0,
   "headings": 0,
   "images": 0,
-  "sha256": "5f37d581c8ffc027dbd6f88ddd9267ba7ba2562785da0b5ad5594d53dbc90971",
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "table_rows": 0
  },
  "origin_mimetype": "application/pdf",
@@ -55,6 +64,7 @@
  "status": "CONVERSION_STATUS_SUCCESS",
  "tables": [],
  "warnings": [
-  "no-reading-text"
+  "no-reading-text",
+  "no-markdown"
  ]
 }
