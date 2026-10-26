@@ -75,6 +75,9 @@ class SourceFacts:
     sheets: list[tuple[str, bool]] | None = None   # (name, non-empty)
     csv_rows: int | None = None
     csv_cols: int | None = None
+    # a zip-container office name holding an OLE2 compound file: the
+    # EncryptedPackage form a password-protected OOXML or ODF file takes
+    encrypted_package: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -287,7 +290,13 @@ def csv_facts(data: bytes) -> SourceFacts:
     return SourceFacts(csv_rows=last_row + 1, csv_cols=last_col + 1)
 
 
+OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+ZIP_CONTAINER_OFFICE = frozenset({"docx", "docm", "xlsx", "xlsm", "xlsb", "pptx", "pptm", "odt", "ods", "odp"})
+
+
 def source_facts(ext: str, family: str, data: bytes) -> SourceFacts:
+    if ext in ZIP_CONTAINER_OFFICE and data.startswith(OLE2_MAGIC):
+        return SourceFacts(encrypted_package=True)
     try:
         if family == "html":
             return html_facts(data)

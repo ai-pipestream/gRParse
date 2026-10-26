@@ -462,3 +462,33 @@ def test_repeat_identical_masks_only_the_derender_title() -> None:
     other["pictures"][0]["meta"]["tabular_chart"]["title"] = "B"
     assert mask_descriptive(chart) == mask_descriptive(other)
     assert mask_descriptive({"title": "keep"}) == {"title": "keep"}
+
+
+def test_expected_collector() -> None:
+    assert failing(word_document(), "a.docx")[1]["expected_collector"] == "pass"
+    found, _ = failing(word_document(), "a.eml")
+    assert found["expected_collector"].cause == "email did not answer"
+    assert found["expected_collector"].evidence["answered"] == ["libreoffice"]
+    # A workbook needs the calamine leg beside libreoffice unless the stack runs without it.
+    doc = sheet_document()
+    doc["tables"][0]["source"] = doc["tables"][0]["source"][:1]
+    found, _ = failing(doc, "q.xlsx")
+    assert found["expected_collector"].cause == "calamine did not answer"
+    ctx = context(doc, "q.xlsx")
+    ctx.calamine_leg = False
+    assert run_checks(ctx)[0]["expected_collector"] == "pass"
+    assert failing(doc, "q.xlsx", facts=SourceFacts(encrypted_package=True))[1]["expected_collector"] == "pass"
+    assert failing(doc, "q.csv")[1]["expected_collector"] == "pass"
+    # A book needs its chapters folded through markup as well as the epub skeleton.
+    doc = epub_document()
+    for group in doc["groups"]:
+        group["source"] = [{"collector": {"collector": "markup"}}]
+    found, _ = failing(doc, "b.epub")
+    assert found["expected_collector"].cause == "epub did not answer"
+    # A blank raster answers with its page alone; no page means the CV path never ran.
+    doc = scan_document()
+    doc["texts"], doc["body"]["children"] = [], []
+    assert failing(doc, "s.png")[1]["expected_collector"] == "pass"
+    doc["pages"] = {}
+    assert "expected_collector" in failing(doc, "s.png")[0]
+    assert failing(word_document(), "a.bin")[1]["expected_collector"] == "n/a"

@@ -10,7 +10,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from s3.tests.fixtures import FakeClient, result, scan_document, word_document
+from s3.tests.fixtures import FakeClient, ebcdic_document, result, scan_document, word_document
 
 from corpus.run import SKIP, load_resume_journal, main
 
@@ -66,6 +66,15 @@ def test_run_writes_results_jsonl_sharded_outputs_and_reports() -> None:
         assert (run_out / "report.md").is_file()
         assert (run_out / "metrics.prom").is_file()
         assert (run_out / "results.jsonl").is_file()
+
+        report = json.loads((run_out / "report.json").read_text(encoding="utf-8"))
+        rows = {row["extension"]: row for row in report["by_type"]}
+        assert sorted(rows) == ["docx", "png"]
+        assert rows["docx"]["documents"] == rows["docx"]["passed"] == 1 and rows["docx"]["failed"] == 0
+        assert rows["docx"]["collectors"] == ["libreoffice"] and rows["docx"]["ms_p50"] == 12.0
+        assert rows["png"]["collectors"] == ["grparse"]
+        assert "| docx | 1 | 1 | 0 | 0 | 12.0 | 12.0 | 12.0 | libreoffice | - |" in (
+            run_out / "report.md").read_text(encoding="utf-8")
 
         _, records = load_resume_journal(run_out / "results.jsonl")
         assert len(records) == 2
@@ -195,7 +204,7 @@ def test_ebcdic_companion_and_error_exit_codes() -> None:
         clients: list[FakeClient] = []
 
         def client_factory(target: str) -> FakeClient:
-            clients.append(FakeClient(target, {"ebc": result(word_document())}))
+            clients.append(FakeClient(target, {"ebc": result(ebcdic_document())}))
             return clients[-1]
 
         code = main(

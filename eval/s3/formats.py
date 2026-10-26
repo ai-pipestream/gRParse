@@ -87,6 +87,32 @@ KNOWN_COLLECTORS = frozenset({
     "asr", "fastwarc", "confluence", "calamine", "enrich",
 })
 
+# The collector the router hands each family to (route_collector in
+# src/collector_coordinator.cpp): any one of a set must answer with items.
+# A pdf goes to the inspector's fast path or the CV path; an epub's chapters
+# fold through markup, so both must answer.
+PRIMARY_COLLECTORS: dict[str, tuple[frozenset[str], ...]] = {
+    "pdf": (frozenset({"pdf", "grparse"}),),
+    "image": (frozenset({"grparse"}),),
+    "word": (frozenset({"libreoffice"}),),
+    "sheet": (frozenset({"libreoffice"}),),
+    "deck": (frozenset({"libreoffice"}),),
+    "html": (frozenset({"markup"}),),
+    "markdown": (frozenset({"markup"}),),
+    "text": (frozenset({"markup"}),),
+    "json": (frozenset({"markup"}),),
+    "xml": (frozenset({"xml"}),),
+    "email": (frozenset({"email"}),),
+    "epub": (frozenset({"epub"}), frozenset({"markup"})),
+    "warc": (frozenset({"fastwarc"}),),
+    "audio": (frozenset({"asr"}),),
+    "video": (frozenset({"asr"}),),
+    "ebcdic": (frozenset({"ebcdic"}),),
+}
+# Workbooks the routed libreoffice plan fans a calamine leg out for when the
+# stack configures one (calamine_workbook_format; never CSV).
+CALAMINE_WORKBOOKS = frozenset({"xls", "xlsx", "xlsm", "xlsb", "ods"})
+
 ARENAS = ("texts", "tables", "pictures", "groups", "key_value_items", "form_items",
           "field_regions", "field_items")
 
@@ -162,6 +188,15 @@ def collectors_of(document: dict[str, Any]) -> set[str]:
     for _, node in arena_nodes(document):
         names |= item_collectors(node)
     return names
+
+
+def expected_collectors(ext: str, family: str, calamine_leg: bool) -> tuple[frozenset[str], ...]:
+    """The collector sets that must each answer for this file type; empty
+    when the router has no fixed answer for it."""
+    expected = PRIMARY_COLLECTORS.get(family, ())
+    if calamine_leg and ext in CALAMINE_WORKBOOKS:
+        expected += (frozenset({"calamine"}),)
+    return expected
 
 
 def parser_type(document: dict[str, Any]) -> str:
