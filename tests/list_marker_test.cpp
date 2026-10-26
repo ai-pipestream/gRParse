@@ -64,6 +64,8 @@ void verify_sibling_markers() {
   require(!is_sibling_list_marker("Red", "Red"), "a word is no marker");
   require(!is_sibling_list_marker("- x", "- x"), "a marker is a whole word");
   require(!is_sibling_list_marker("", ""), "an empty word is no marker");
+  require(is_sibling_list_marker("\xEF\xBC\x91.", "\xEF\xBC\x92."), "fullwidth 2. after 1.");
+  require(is_sibling_list_marker("1)", "\xD9\xA3)"), "a digit is a digit in any script");
 }
 
 // The reference's pattern table, case by case, including its first-match
@@ -93,6 +95,27 @@ void verify_marker_patterns() {
   expect_split("IV. Roman", "IV.", "Roman", true);
   expect_split("b. letter", "b.", "letter", true);
   expect_split("B) Letter", "B)", "Letter", true);
+  // Digits are any Unicode decimal digit; the prefix counts code points, so
+  // spans after a multi-byte numbering form shift by its length in
+  // characters, not bytes.
+  expect_split("\xEF\xBC\x91. fullwidth", "\xEF\xBC\x91.", "fullwidth", true);  // U+FF11
+  expect_split("\xD9\xA3) arabic-indic", "\xD9\xA3)", "arabic-indic", true);      // U+0663
+  expect_split("(\xE0\xA5\xAA) devanagari", "(\xE0\xA5\xAA)", "devanagari", true);  // U+096A
+  expect_split("\xEF\xBC\x91\xEF\xBC\x92.\xEF\xBC\x93 outline",
+               "\xEF\xBC\x91\xEF\xBC\x92.\xEF\xBC\x93", "outline", true);
+  expect_split("\xF0\x9D\x9F\x8F.a) math", "\xF0\x9D\x9F\x8F.a)", "math", true);  // U+1D7CF
+  {
+    const auto split = grparse::split_list_marker("\xEF\xBC\x91\xEF\xBC\x92. twelve");
+    require(split.has_value() && split->prefix_code_points == 4,
+            "fullwidth 12. plus its separator is four code points");
+  }
+  // Malformed UTF-8 is no marker and no separator.
+  expect_no_split("\xC0\xAD x");          // overlong '-'
+  expect_no_split("\xE0\x80\xAD x");     // overlong '-', three bytes
+  expect_no_split("\xED\xA0\x80. x");    // U+D800, a surrogate
+  expect_no_split("\xF4\x90\x80\x80. x");  // past U+10FFFF
+  expect_no_split("-\xC1\xA0x");          // overlong space is no separator
+  expect_no_split("\xC2\xB2. superscript");  // U+00B2 is no decimal digit (Nd)
 
   expect_no_split("");
   expect_no_split("-");

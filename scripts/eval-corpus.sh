@@ -144,7 +144,10 @@ if [ -z "$existing" ]; then
   files+=(-f eval/corpus/compose.eval.yaml)
   if [ -n "$grparse_image" ]; then
     override=$(mktemp "${TMPDIR:-/tmp}/eval-corpus-override.XXXXXX")
-    printf 'services:\n  grparse:\n    image: %s\n    pull_policy: never\n' "$grparse_image" >"$override"
+    # A single-quoted YAML scalar, its own quotes doubled, so no image
+    # reference can break out of the value.
+    printf "services:\n  grparse:\n    image: '%s'\n    pull_policy: never\n" \
+      "${grparse_image//\'/\'\'}" >"$override"
     files+=(-f "$override")
   fi
   compose=(docker compose -p "$project" "${files[@]}")
@@ -160,7 +163,8 @@ run_args=(
 )
 if [ -n "$grparse_commit" ]; then run_args+=(--grparse-commit "$grparse_commit"); fi
 if [ -n "$passwords_file" ]; then run_args+=(--passwords-file "$passwords_file"); fi
-run_args+=("${passthrough[@]}")
+# Bash 3.2 (macOS) treats an empty array as unset under set -u.
+run_args+=(${passthrough[@]+"${passthrough[@]}"})
 
 set +e
 run "${python[@]}" "${run_args[@]}"

@@ -13,14 +13,14 @@ name: Publish Deps Seeds
 # Tags are content-addressed: docker.io/pipestreamai/grparse-deps:
 # <flavor>-<arch>-<hash>, with <hash> from scripts/deps-hash.sh over every
 # input that could make a seeded build differ from an unseeded one. The same
-# inputs always name the same tag, so a seed built from a pull request is the
-# seed main would build, and a build whose inputs have no seed yet falls back
-# to the local deps stage and compiles everything, as before.
+# inputs always name the same tag, and a build whose inputs have no seed yet
+# falls back to the local deps stage and compiles everything, as before.
 #
 # When it runs:
-#   push to main, or a pull request from this repository, that touches a seed
-#     input: builds each leg whose tag does not exist yet. Pull requests from
-#     forks get no secrets and are skipped.
+#   push to main that touches a seed input: builds each leg whose tag does
+#     not exist yet. Pull requests never publish: a seed tag is shared by
+#     every build with the same inputs, so only reviewed code may write one.
+#     A pull request that changes a seed input builds inline until it lands.
 #   weekly schedule and workflow_dispatch with `rebuild`: rebuilds every leg
 #     and overwrites its tag, so the apt layers pick up security updates.
 # Docker Hub credentials come from the DOCKER_USER / DOCKER_TOKEN org secrets,
@@ -28,20 +28,6 @@ name: Publish Deps Seeds
 on:
   push:
     branches: [main]
-    paths:
-      - Dockerfile
-      - Dockerfile.cpu
-      - Dockerfile.openvino
-      - CMakeLists.txt
-      - cmake/**
-      - patches/**
-      - scripts/deps-hash.sh
-      - scripts/prune-seed.sh
-      - scripts/build-jobs.sh
-      - scripts/registry-preflight.sh
-      - .github/workflows/publish-deps.yml
-  pull_request:
-    # The same list as push above.
     paths:
       - Dockerfile
       - Dockerfile.cpu
@@ -73,10 +59,7 @@ env:
 jobs:
   seed:
     name: Seed ${{ matrix.flavor }} ${{ matrix.arch }}
-    if: >-
-      ${{ github.server_url == 'https://github.com' &&
-          (github.event_name != 'pull_request' ||
-           github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ github.server_url == 'https://github.com' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     strategy:

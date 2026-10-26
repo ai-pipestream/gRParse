@@ -21,28 +21,37 @@ set -euo pipefail
 scopes=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --push) scopes+=("$2:pull,push"); shift 2 ;;
-    --pull) scopes+=("$2:pull"); shift 2 ;;
+    --push | --pull)
+      [ $# -ge 2 ] || { echo "registry-preflight: $1 needs a repository" >&2; exit 2; }
+      if [ "$1" = --push ]; then scopes+=("$2:pull,push"); else scopes+=("$2:pull"); fi
+      shift 2 ;;
     *) echo "registry-preflight: unknown argument $1" >&2; exit 2 ;;
   esac
 done
 [ ${#scopes[@]} -gt 0 ] || { echo "registry-preflight: no --push or --pull scope given" >&2; exit 2; }
 
+# The token response goes to a private temporary file, and the credentials
+# reach curl as a header on stdin, never on its command line where any
+# process on the runner could read them.
+response=$(mktemp)
+trap 'rm -f "$response"' EXIT
+basic=$(printf '%s:%s' "$DOCKER_USER" "$DOCKER_TOKEN" | base64 | tr -d '\n')
+
 failed=0
 for scope in "${scopes[@]}"; do
   repo=${scope%%:*}
   wanted=${scope#*:}
-  status=$(curl -sS -o /tmp/registry-preflight.json -w '%{http_code}' \
-    -u "$DOCKER_USER:$DOCKER_TOKEN" \
+  status=$(printf 'Authorization: Basic %s\n' "$basic" | curl -sS -o "$response" -w '%{http_code}' \
+    -H @- \
     "https://auth.docker.io/token?service=registry.docker.io&scope=repository:$repo:$wanted")
   if [ "$status" != 200 ]; then
     echo "registry-preflight: Docker Hub refused the login for $repo (HTTP $status): check DOCKER_USER and DOCKER_TOKEN" >&2
     failed=1
     continue
   fi
-  granted=$(python3 - "$repo" <<'PY'
+  granted=$(python3 - "$repo" "$response" <<'PY'
 import base64, json, sys
-token = json.load(open("/tmp/registry-preflight.json"))["token"]
+token = json.load(open(sys.argv[2]))["token"]
 payload = token.split(".")[1]
 payload += "=" * (-len(payload) % 4)
 claims = json.loads(base64.urlsafe_b64decode(payload))
@@ -67,5 +76,4 @@ PY
     echo "registry-preflight: $repo: $wanted granted"
   fi
 done
-rm -f /tmp/registry-preflight.json
 exit "$failed"

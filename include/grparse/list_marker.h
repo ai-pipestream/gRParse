@@ -6,9 +6,8 @@
 
 namespace grparse {
 
-// A list item's leading marker split off its text, the reference's
-// ListItemMarkerProcessor.process_list_item rule (docling-ibm-models
-// list_item_normalizer): a bullet glyph or a numbering form at the very
+// A list item's leading marker split off its text: a bullet glyph or a
+// numbering form (digits are any Unicode decimal digit) at the very
 // start of the raw text, one whitespace character, then at least one more
 // character. `marker` is the glyph or numbering verbatim ("-", "•", "1.",
 // "(a)"), `text` is everything after the single separator (leading spaces

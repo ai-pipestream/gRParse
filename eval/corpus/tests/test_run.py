@@ -69,27 +69,27 @@ def test_run_writes_results_jsonl_sharded_outputs_and_reports() -> None:
 
         _, records = load_resume_journal(run_out / "results.jsonl")
         assert len(records) == 2
-        by_rel = {r["relpath"]: r for r in records}
+        by_rel = {r.relpath: r for r in records}
         assert sorted(by_rel) == ["img/b.png", "sub/a.docx"]
 
         docx_sha = hashlib.sha256(docx_bytes).hexdigest()
         docx_rec = by_rel["sub/a.docx"]
-        assert docx_rec["sha256"] == docx_sha
-        assert docx_rec["size_bytes"] == len(docx_bytes)
-        assert docx_rec["ext"] == "docx"
-        assert docx_rec["family"] == "word"
-        assert docx_rec["doctype"] == "docx"
-        assert docx_rec["parser_type"] == "libreoffice"
-        assert docx_rec["status"] == "success"
-        assert docx_rec["rpc_error"] is None
-        assert docx_rec["page_count"] == 2
-        assert docx_rec["warnings_count"] == 0
-        assert docx_rec["failed_checks"] == []
-        assert docx_rec["output_sha256"] != ""
-        assert docx_rec["artifact_md"] == f"outputs/{docx_sha[:2]}/{docx_sha}.md"
-        assert docx_rec["artifact_json"] == f"outputs/{docx_sha[:2]}/{docx_sha}.json"
-        assert (run_out / docx_rec["artifact_md"]).is_file()
-        assert (run_out / docx_rec["artifact_json"]).is_file()
+        assert docx_rec.sha256 == docx_sha
+        assert docx_rec.size_bytes == len(docx_bytes)
+        assert docx_rec.ext == "docx"
+        assert docx_rec.family == "word"
+        assert docx_rec.doctype == "docx"
+        assert docx_rec.parser_type == "libreoffice"
+        assert docx_rec.status == "success"
+        assert docx_rec.rpc_error is None
+        assert docx_rec.page_count == 2
+        assert docx_rec.warnings_count == 0
+        assert docx_rec.failed_checks == ()
+        assert docx_rec.output_sha256 != ""
+        assert docx_rec.artifact_md == f"outputs/{docx_sha[:2]}/{docx_sha}.md"
+        assert docx_rec.artifact_json == f"outputs/{docx_sha[:2]}/{docx_sha}.json"
+        assert (run_out / docx_rec.artifact_md).is_file()
+        assert (run_out / docx_rec.artifact_json).is_file()
 
         prom_text = (run_out / "metrics.prom").read_text(encoding="utf-8")
         assert 'grparse_eval_documents_total{run_label="unit",doctype="docx",parser_type="libreoffice",status="success"} 1' in prom_text
@@ -135,8 +135,8 @@ def test_resume_skips_already_journaled_documents() -> None:
         assert report["totals"]["objects"] == 3
         assert report["totals"]["evaluated"] == 3
         _, records = load_resume_journal(run_out / "results.jsonl")
-        assert sorted(r["relpath"] for r in records) == ["a.docx", "b.docx", "c.docx"]
-        assert all(r["artifact_md"] is None and r["artifact_json"] is None for r in records)
+        assert sorted(r.relpath for r in records) == ["a.docx", "b.docx", "c.docx"]
+        assert all(r.artifact_md is None and r.artifact_json is None for r in records)
 
 
 def test_bounded_in_flight_execution_respects_two_times_workers() -> None:

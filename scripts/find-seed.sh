@@ -5,7 +5,9 @@
 #
 # Prints "image=<ref>" for GitHub's step output: the published seed
 # pipestreamai/grparse-deps:<flavor>-<arch>-<hash> (scripts/deps-hash.sh) when
-# the registry has it, otherwise "image=deps", the Dockerfile's own deps
+# the registry has it, pinned to the digest of its linux/<arch> manifest
+# (<ref>@sha256:...) so a tag rewritten after this step cannot change what
+# the build starts from, otherwise "image=deps", the Dockerfile's own deps
 # stage, which builds the dependencies inline exactly as an unseeded build
 # always has. A seed is missing when this change touched a seed input and
 # publish-deps.yml has not published that hash yet; the build is then slow,
@@ -37,9 +39,20 @@ if docker image inspect "$ref" >/dev/null 2>&1; then
 elif [ "$no_pull" = 1 ]; then
   echo "find-seed: $ref is not local and --no-pull is set; building on the deps stage" >&2
   echo "image=deps"
-elif docker manifest inspect "$ref" >/dev/null 2>&1; then
-  echo "find-seed: building from $ref" >&2
-  echo "image=$ref"
+elif manifest=$(docker manifest inspect -v "$ref" 2>/dev/null); then
+  # One entry per manifest under the tag; build attestations sit beside the
+  # image with an unknown platform, so pick the image by its platform.
+  pinned=$(printf '%s' "$manifest" | jq -r --arg arch "$arch" '
+    [if type == "array" then .[] else . end
+     | select(.Descriptor.platform.os == "linux" and .Descriptor.platform.architecture == $arch)
+     | .Ref][0] // empty')
+  if [ -z "$pinned" ]; then
+    echo "find-seed: $ref has no linux/$arch manifest; building the dependencies inline" >&2
+    echo "image=deps"
+  else
+    echo "find-seed: building from $pinned" >&2
+    echo "image=$pinned"
+  fi
 else
   echo "find-seed: $ref is not published; building the dependencies inline" >&2
   echo "image=deps"

@@ -10,37 +10,73 @@ namespace {
 constexpr size_t kNoMatch = std::string_view::npos;
 
 // One code point at `at`: its value and its encoded length. A malformed
-// lead or continuation byte reads as a one-byte U+FFFD, which matches no
-// marker and no separator.
+// sequence reads as a one-byte U+FFFD, which matches no marker and no
+// separator: a bad lead or continuation byte, a truncated tail, an overlong
+// form, a UTF-16 surrogate (U+D800..U+DFFF), or a value past U+10FFFF.
 struct CodePoint {
   char32_t value = 0;
   size_t length = 0;
 };
+
+constexpr CodePoint kMalformed = {0xFFFD, 1};
 
 CodePoint decode_at(std::string_view text, size_t at) {
   const auto byte = [&](size_t i) { return static_cast<unsigned char>(text[i]); };
   const unsigned char lead = byte(at);
   size_t length = 0;
   char32_t value = 0;
+  char32_t smallest = 0;  // below this the sequence is overlong
   if (lead < 0x80) return {lead, 1};
   if ((lead & 0xE0) == 0xC0) {
     length = 2;
     value = lead & 0x1F;
+    smallest = 0x80;
   } else if ((lead & 0xF0) == 0xE0) {
     length = 3;
     value = lead & 0x0F;
+    smallest = 0x800;
   } else if ((lead & 0xF8) == 0xF0) {
     length = 4;
     value = lead & 0x07;
+    smallest = 0x10000;
   } else {
-    return {0xFFFD, 1};
+    return kMalformed;
   }
-  if (at + length > text.size()) return {0xFFFD, 1};
+  if (at + length > text.size()) return kMalformed;
   for (size_t i = 1; i < length; ++i) {
-    if ((byte(at + i) & 0xC0) != 0x80) return {0xFFFD, 1};
+    if ((byte(at + i) & 0xC0) != 0x80) return kMalformed;
     value = (value << 6) | (byte(at + i) & 0x3F);
   }
+  if (value < smallest || value > 0x10FFFF || (value >= 0xD800 && value <= 0xDFFF)) {
+    return kMalformed;
+  }
   return {value, length};
+}
+
+size_t count_code_points(std::string_view text) {
+  size_t count = 0;
+  for (size_t at = 0; at < text.size(); at += decode_at(text, at).length) ++count;
+  return count;
+}
+
+// The zero of every Unicode decimal digit set (general category Nd,
+// Unicode 16.0). Each set is ten consecutive code points, zero to nine, so
+// a code point is a decimal digit when it sits within nine of one of these.
+// The numbered patterns read `\d` as any Nd digit ("１." is a marker), and
+// only letters stay ASCII.
+constexpr std::array<char32_t, 76> kDecimalZeros = {
+    0x30,    0x660,   0x6F0,   0x7C0,   0x966,   0x9E6,   0xA66,   0xAE6,   0xB66,   0xBE6,
+    0xC66,   0xCE6,   0xD66,   0xDE6,   0xE50,   0xED0,   0xF20,   0x1040,  0x1090,  0x17E0,
+    0x1810,  0x1946,  0x19D0,  0x1A80,  0x1A90,  0x1B50,  0x1BB0,  0x1C40,  0x1C50,  0xA620,
+    0xA8D0,  0xA900,  0xA9D0,  0xA9F0,  0xAA50,  0xABF0,  0xFF10,  0x104A0, 0x10D30, 0x10D40,
+    0x11066, 0x110F0, 0x11136, 0x111D0, 0x112F0, 0x11450, 0x114D0, 0x11650, 0x116C0, 0x116D0,
+    0x116DA, 0x11730, 0x118E0, 0x11950, 0x11BF0, 0x11C50, 0x11D50, 0x11DA0, 0x11F50, 0x16130,
+    0x16A60, 0x16AC0, 0x16B50, 0x16D70, 0x1CCF0, 0x1D7CE, 0x1D7D8, 0x1D7E2, 0x1D7EC, 0x1D7F6,
+    0x1E140, 0x1E2F0, 0x1E4F0, 0x1E5F1, 0x1E950, 0x1FBF0};
+
+bool is_decimal(char32_t c) {
+  const auto zero = std::ranges::upper_bound(kDecimalZeros, c);
+  return zero != kDecimalZeros.begin() && c - *(zero - 1) <= 9;
 }
 
 // The reference's bullet character classes, all four patterns together:
@@ -63,7 +99,13 @@ bool is_space(char32_t c) {
          c == 0x202F || c == 0x205F || c == 0x3000;
 }
 
-bool is_digit(std::string_view s, size_t at) { return at < s.size() && s[at] >= '0' && s[at] <= '9'; }
+// The encoded length of the decimal digit at `at`, or 0 when there is none.
+size_t digit_length(std::string_view s, size_t at) {
+  if (at >= s.size()) return 0;
+  const CodePoint c = decode_at(s, at);
+  return is_decimal(c.value) ? c.length : 0;
+}
+bool is_digit(std::string_view s, size_t at) { return digit_length(s, at) != 0; }
 bool is_lower(std::string_view s, size_t at) { return at < s.size() && s[at] >= 'a' && s[at] <= 'z'; }
 bool is_upper(std::string_view s, size_t at) { return at < s.size() && s[at] >= 'A' && s[at] <= 'Z'; }
 bool is_letter(std::string_view s, size_t at) { return is_lower(s, at) || is_upper(s, at); }
@@ -71,7 +113,7 @@ bool is_char(std::string_view s, size_t at, char c) { return at < s.size() && s[
 
 size_t digits(std::string_view s, size_t at) {
   if (!is_digit(s, at)) return kNoMatch;
-  while (is_digit(s, at)) ++at;
+  while (const size_t length = digit_length(s, at)) at += length;
   return at;
 }
 
@@ -163,11 +205,13 @@ std::optional<std::string> marker_shape(std::string_view token) {
       kNumberedPatterns, [&](Pattern pattern) { return pattern(token) == token.size(); });
   if (!numbering) return std::nullopt;
   std::string shape;
-  for (size_t at = 0; at < token.size(); ++at) {
-    const char read = is_digit(token, at)   ? '0'
+  for (size_t at = 0; at < token.size();) {
+    const size_t digit = digit_length(token, at);
+    const char read = digit != 0            ? '0'
                       : is_lower(token, at) ? 'a'
                       : is_upper(token, at) ? 'A'
                                             : token[at];
+    at += digit != 0 ? digit : 1;
     const bool run = read == '0' || read == 'a' || read == 'A';
     if (!run || shape.empty() || shape.back() != read) shape.push_back(read);
   }
@@ -203,9 +247,9 @@ std::optional<ListMarkerSplit> split_list_marker(std::string_view orig) {
   split.marker = std::string(orig.substr(0, marker_end));
   split.text = std::string(orig.substr(marker_end + separator.length));
   split.enumerated = enumerated;
-  // A bullet is one code point and a numbering form is ASCII, so the prefix
-  // is the marker's code points plus the separator's one.
-  split.prefix_code_points = (enumerated ? marker_end : 1) + 1;
+  // The marker's code points plus the separator's one. A numbering form's
+  // digits need not be ASCII, so its byte length is no code point count.
+  split.prefix_code_points = count_code_points(split.marker) + 1;
   return split;
 }
 

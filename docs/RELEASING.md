@@ -169,7 +169,7 @@ attestation manifest per platform.
 
 A `v<version>` tag push also publishes `pipestreamai/grparse-models:<version>`
 (`publish-models.yml`) and `pipestreamai/grparse-demo-shell:<version>`
-(`publish-demo-shell.yml`) beside their `:latest`, so the models volume and
+(the demo shell job in `publish.yml`) beside their `:latest`, so the models volume and
 the demo shell pin with the rest of the stack.
 
 The same tags land on the Forgejo registry,

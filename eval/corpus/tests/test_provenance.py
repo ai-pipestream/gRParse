@@ -13,6 +13,7 @@ from s3.tests.fixtures import FakeClient, result, word_document
 
 from corpus import analyze, provenance
 from corpus.run import SKIP, main
+from corpus.run_manifest import Stack
 
 COMMIT_A = "a" * 40
 COMMIT_B = "b" * 40
@@ -94,18 +95,21 @@ def _run(corpus_dir: Path, out_dir: Path, label: str, *extra: str, docker: Any =
 
 def test_stack_provenance_records_images_revision_and_safe_env() -> None:
     stack = provenance.stack_provenance("grparse-eval", fake_docker())
-    assert stack["recorded"] is True
-    assert sorted(stack["services"]) == ["grparse", "pdfium"]
-    grparse = stack["services"]["grparse"]
-    assert grparse["revision"] == COMMIT_A
-    assert grparse["repo_digests"] == ["pipestreamai/grparse@sha256:" + "c" * 64]
-    assert grparse["env"] == {"GRPARSE_ORT_EP": "cpu", "GRPARSE_PDF_BACKEND": "pdfium:50069"}
-    assert "hunter2" not in json.dumps(stack)
-    assert provenance.grparse_commit(stack, None) == {
-        "commit": COMMIT_A, "source": f"image label {provenance.REVISION_LABEL}",
-    }
-    assert provenance.grparse_commit(stack, "deadbeef")["commit"] == "deadbeef"
-    assert provenance.grparse_commit({}, None)["commit"] is None
+    assert stack.recorded is True
+    assert sorted(stack.services) == ["grparse", "pdfium"]
+    grparse = stack.services["grparse"]
+    assert grparse.revision == COMMIT_A
+    assert grparse.repo_digests == ("pipestreamai/grparse@sha256:" + "c" * 64,)
+    assert grparse.env == {"GRPARSE_ORT_EP": "cpu", "GRPARSE_PDF_BACKEND": "pdfium:50069"}
+    assert stack.services["pdfium"].env is None
+    assert "hunter2" not in json.dumps(stack.to_json())
+    assert provenance.grparse_commit(stack, None) == provenance.GrparseCommit(
+        commit=COMMIT_A, source=f"image label {provenance.REVISION_LABEL}",
+    )
+    assert provenance.grparse_commit(stack, "deadbeef").commit == "deadbeef"
+    assert provenance.grparse_commit(Stack.not_recorded("none"), None).commit is None
+    # run.json reads back as the same typed record it was written from.
+    assert Stack.from_json(json.loads(json.dumps(stack.to_json()))) == stack
 
 
 def test_run_writes_run_json_with_commit_digests_corpus_hash_and_headline() -> None:
