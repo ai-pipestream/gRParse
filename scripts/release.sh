@@ -12,8 +12,11 @@
 #       Read-only. For every fleet checkout: it exists, is clean, is on its
 #       release branch, and that branch is identical locally, on Forgejo
 #       and on GitHub; no remote has the tag yet; every GitHub check run on
-#       the head commit finished green (gh api). For gRParse, the CMake
-#       version equals VERSION. Prints the commit each tag would point at.
+#       the head commit finished green (gh api). A head with no check runs
+#       at all fails too, since right after a push GitHub has not
+#       registered them yet; ALLOW_NO_CI=1 accepts it for a repository that
+#       runs CI only on pull requests. For gRParse, the CMake version
+#       equals VERSION. Prints the commit each tag would point at.
 #   scripts/release.sh tag VERSION [--yes]
 #       Runs preflight, then (only with --yes) creates the annotated tags
 #       and pushes each one to Forgejo, then to GitHub. Without --yes it
@@ -22,7 +25,10 @@
 # The sibling checkouts sit next to this one, named after their
 # repositories (FLEET_ROOT, default: the parent of this checkout, the same
 # layout compose.stack.yaml's build: lines expect). Remote names default to
-# origin (Forgejo) and github; FORGEJO_REMOTE and GITHUB_REMOTE override.
+# origin (Forgejo) and github; FORGEJO_REMOTE and GITHUB_REMOTE override,
+# and GITHUB_OWNER names the GitHub organization (default ai-pipestream).
+# VERSION is MAJOR.MINOR.PATCH, digits only: CMake's project(VERSION) takes
+# no pre-release suffix.
 # Nothing here deletes or moves a tag; a mistake is fixed by hand.
 set -euo pipefail
 
@@ -31,11 +37,11 @@ fleet_file=${FLEET_FILE:-$root/release/fleet.tsv}
 fleet_root=${FLEET_ROOT:-$(dirname "$root")}
 forgejo=${FORGEJO_REMOTE:-origin}
 github=${GITHUB_REMOTE:-github}
-owner=ai-pipestream
-semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z][0-9A-Za-z.-]{0,63})?$'
+owner=${GITHUB_OWNER:-ai-pipestream}
+semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 
 usage() {
-  sed -n '7,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  sed -n '7,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
   exit 64
 }
 
@@ -54,7 +60,12 @@ cmd_bump() {
   local version=$1 push=${2:-}
   [[ -z $(git -C "$root" status --porcelain) ]] || die "gRParse checkout is not clean"
   [[ $(git -C "$root" rev-parse --abbrev-ref HEAD) == main ]] || die "gRParse is not on main"
-  sed -i "s/^project(gRParse VERSION [0-9.]*/project(gRParse VERSION $version/" "$root/CMakeLists.txt"
+  # Through a temporary file, since GNU and BSD sed take -i differently.
+  local cmake=$root/CMakeLists.txt edited
+  edited=$(mktemp)
+  sed "s/^project(gRParse VERSION [0-9.]*/project(gRParse VERSION $version/" "$cmake" >"$edited"
+  cat "$edited" >"$cmake"
+  rm -f "$edited"
   "$root/scripts/cmake-version.sh" --expect "$version" >/dev/null \
     || die "CMakeLists.txt did not take version $version"
   git -C "$root" commit -q -am "Release $version"
@@ -68,8 +79,8 @@ cmd_bump() {
 }
 
 # Every check run on a GitHub commit must have finished, and none may have
-# failed. A commit with no check runs at all is reported, not failed: some
-# repos run CI only on pull requests.
+# failed. A commit with no check runs at all yields "none", which preflight
+# fails unless ALLOW_NO_CI=1.
 ci_state() {
   local repo=$1 sha=$2
   # shellcheck disable=SC2016 # a jq program, not shell
@@ -84,7 +95,7 @@ ci_state() {
 }
 
 cmd_preflight() {
-  local version=$1 tag=v$1 problems=0 repo branch dir head remote_sha state
+  local version=$1 tag=v$1 problems=0 repo branch dir head remote remote_sha state ci
   command -v gh >/dev/null || die "gh is needed to read CI state on GitHub"
   "$root/scripts/cmake-version.sh" --expect "$version" >/dev/null \
     || { echo "gRParse: CMakeLists.txt is $("$root/scripts/cmake-version.sh"), not $version (run bump first)"; problems=$((problems + 1)); }
@@ -114,7 +125,7 @@ cmd_preflight() {
     ci=$(ci_state "$repo" "$head" 2>/dev/null || echo "unreadable")
     case $ci in
       green) ;;
-      none) ;;
+      none) [[ ${ALLOW_NO_CI:-0} == 1 ]] || state+=("CI none (no check runs yet; ALLOW_NO_CI=1 accepts it)") ;;
       *) state+=("CI $ci") ;;
     esac
     if [[ ${#state[@]} -eq 0 ]]; then
@@ -150,7 +161,7 @@ cmd_tag() {
 [[ $# -ge 2 ]] || usage
 command=$1 version=$2
 shift 2
-[[ $version =~ $semver ]] || die "'$version' is not a semantic version such as 0.3.0"
+[[ $version =~ $semver ]] || die "'$version' is not MAJOR.MINOR.PATCH such as 0.3.0 (no pre-release suffix)"
 [[ -f $fleet_file ]] || die "no fleet file at $fleet_file"
 case $command in
   bump) [[ $# -le 1 ]] || usage; cmd_bump "$version" "${1:-}" ;;

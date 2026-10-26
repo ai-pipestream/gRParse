@@ -41,9 +41,9 @@ ROOT = Path(__file__).resolve().parent.parent
 FLEET = ROOT / "release" / "fleet.tsv"
 NAMESPACE = "pipestreamai"
 GITHUB_OWNER = "ai-pipestream"
-SEMVER = re.compile(
-    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z][0-9A-Za-z.-]{0,63})?$"
-)
+# MAJOR.MINOR.PATCH, digits only, as scripts/release.sh takes it: CMake's
+# project(VERSION) has no pre-release suffix.
+SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 # An image template is <name>:{v}<suffix>, the suffix a variant such as -cpu.
 TEMPLATE = re.compile(r"^[a-z0-9][a-z0-9-]*:\{v\}(-[a-z0-9]+)?$")
 # The compose files that pin pipestreamai/* images, each with its own tag
