@@ -372,6 +372,16 @@ void verify_formatting_and_hyperlinks_wrap_the_escaped_text() {
                 "escapes its target");
 }
 
+// docling-core #920: a hyperlink with an unsafe scheme keeps only its text.
+void verify_an_unsafe_hyperlink_keeps_only_its_text() {
+  docv1::Document document = base_document("unsafe.tex");
+  add_paragraph(&document, "#/body", "c");
+  document.mutable_texts(0)->mutable_text()->mutable_base()->set_hyperlink(
+      "javascript:alert(1)");
+  require_equal(grparse::render_latex(document), wrapped("c"),
+                "an unsafe hyperlink scheme renders no \\href");
+}
+
 }  // namespace
 
 int main() {
@@ -392,5 +402,6 @@ int main() {
       verify_missing_items_degrade_to_comments,
       verify_a_non_body_layer_item_inside_a_group_stays_out,
       verify_formatting_and_hyperlinks_wrap_the_escaped_text,
+      verify_an_unsafe_hyperlink_keeps_only_its_text,
   });
 }

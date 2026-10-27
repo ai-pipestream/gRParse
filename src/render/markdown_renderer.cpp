@@ -240,7 +240,12 @@ class MarkdownRenderer : public MarkdownWalk {
       // Underline, subscript, and superscript have no Markdown rendering.
       if (formatting->strikethrough()) out = "~~" + out + "~~";
     }
-    if (hyperlink != nullptr) out = "[" + out + "](" + normalized_uri(*hyperlink) + ")";
+    // An unsafe scheme keeps only the text; a kept destination is encoded so
+    // it cannot end the link early (docling-core #920).
+    if (hyperlink != nullptr) {
+      const std::string uri = normalized_uri(*hyperlink);
+      if (is_safe_hyperlink(uri)) out = "[" + out + "](" + markdown_link_destination(uri) + ")";
+    }
     return out;
   }
 
@@ -607,7 +612,7 @@ class MarkdownRenderer : public MarkdownWalk {
     // Both EMBEDDED and REFERENCED use the ImageRef uri: ConvertSource has
     // no sidecar file tree for referenced paths, so a data URI is the
     // honest embedded form and a path uri is the referenced form.
-    return "![](" + picture.image().uri() + ")";
+    return "![](" + markdown_link_destination(picture.image().uri()) + ")";
   }
 
   // -- meta -----------------------------------------------------------------

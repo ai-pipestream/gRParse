@@ -1,6 +1,7 @@
 // The Markdown export, piece by piece, for the behavior added after the
 // whole-document parity cases in document_render_test.cpp: footnotes on
-// tables, pictures and code (docling-core #675).
+// tables, pictures and code (docling-core #675), and hyperlink and image
+// destinations (docling-core #920).
 
 #include <string>
 
@@ -15,6 +16,7 @@ using grparse::render_markdown;
 using grparse_test::add_cell;
 using grparse_test::add_code;
 using grparse_test::add_owned_text;
+using grparse_test::add_paragraph;
 using grparse_test::add_picture;
 using grparse_test::add_table;
 using grparse_test::base_document;
@@ -88,6 +90,36 @@ void verify_code_footnotes_follow_the_code() {
                 "code footnotes follow the fenced block");
 }
 
+std::string linked_paragraph(const std::string& hyperlink) {
+  docv1::Document document = base_document("links.md");
+  add_paragraph(&document, "#/body", "c");
+  document.mutable_texts(0)->mutable_text()->mutable_base()->set_hyperlink(hyperlink);
+  return render_markdown(document);
+}
+
+void verify_hyperlinks_are_filtered_and_encoded() {
+  require_equal(linked_paragraph("javascript:alert(1)"), std::string("c"),
+                "an unsafe scheme keeps only the link text");
+  require_equal(linked_paragraph("data:text/html,<script>1</script>"), std::string("c"),
+                "a data: link keeps only the link text");
+  require_equal(linked_paragraph("https://example.com/x"),
+                std::string("[c](https://example.com/x)"), "an http link is kept");
+  require_equal(linked_paragraph("sub/next.html"), std::string("[c](sub/next.html)"),
+                "a relative reference is kept");
+  require_equal(linked_paragraph("a(b)c d"), std::string("[c](a%28b%29c%20d)"),
+                "destination characters that end a link are percent-encoded");
+}
+
+void verify_image_destinations_are_encoded() {
+  docv1::Document document = base_document("image.md");
+  add_picture(&document, "#/body", "data:image/png;base64,x\"><script>1</script>)<b>(");
+  grparse::MarkdownOptions embedded;
+  embedded.image_export_mode = grparse::MarkdownOptions::ImageExportMode::kEmbedded;
+  require_equal(render_markdown(document, embedded),
+                std::string("![](data:image/png;base64,x%22%3E%3Cscript%3E1%3C/script%3E%29%3Cb%3E%28)"),
+                "an embedded image uri cannot end the image destination");
+}
+
 }  // namespace
 
 int main() {
@@ -97,5 +129,7 @@ int main() {
       verify_table_footnotes_follow_the_body_under_a_caption,
       verify_picture_footnotes_follow_the_image,
       verify_code_footnotes_follow_the_code,
+      verify_hyperlinks_are_filtered_and_encoded,
+      verify_image_destinations_are_encoded,
   });
 }

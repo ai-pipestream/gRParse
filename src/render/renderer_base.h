@@ -11,6 +11,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -132,6 +133,23 @@ derived_table_grid(const ai::pipestream::document::v1::TableData& data, GridBudg
 // normalizations (percent-encoding, IDNA) are out of scope and would surface
 // in the validation oracles if a producer ever hit them.
 std::string normalized_uri(const std::string& uri);
+
+// docling-core's is_safe_hyperlink (#920): whether a hyperlink destination
+// may render as a live link. The scheme is read as browsers read it: leading
+// controls and spaces are ignored and tab, CR and LF removed anywhere. No
+// scheme is a relative reference and a one-letter scheme is a Windows drive;
+// both are safe. Otherwise the scheme must be http, https, ftp, ftps, sftp,
+// mailto, tel or file. An unsafe destination keeps only the link text.
+bool is_safe_hyperlink(std::string_view uri);
+
+// docling-core's markdown_link_destination (#920): an '&' that starts an
+// entity ("&name;" or "&#n;") becomes "&amp;", then controls, space, DEL,
+// parentheses, angle brackets, double quote and backslash are
+// percent-encoded (uppercase hex). Other bytes pass through. A UTF-8
+// sequence counts as a word character for the entity check, where Python's
+// \w is Unicode-aware; non-letter non-ASCII entity names are the only
+// place the two can differ.
+std::string markdown_link_destination(std::string_view uri);
 
 // The canonical spelling of a code language tag ("C++", "Python"), or empty
 // for an unset, unspecified, or unknown tag.

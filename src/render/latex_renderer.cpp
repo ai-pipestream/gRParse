@@ -100,7 +100,9 @@ std::string post_process(const std::string& text, const docv1::Formatting* forma
   if (hyperlink != nullptr) {
     // The model layer parses the hyperlink into a URL type whose serializer
     // normalizes it; the escape is the reference's own for the URL argument.
-    out = "\\href{" + escape_latex(normalized_uri(*hyperlink)) + "}{" + out + "}";
+    // An unsafe scheme keeps only the text (docling-core #920).
+    const std::string uri = normalized_uri(*hyperlink);
+    if (is_safe_hyperlink(uri)) out = "\\href{" + escape_latex(uri) + "}{" + out + "}";
   }
   return out;
 }

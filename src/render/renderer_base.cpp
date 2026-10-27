@@ -242,6 +242,65 @@ bool is_special_scheme(std::string_view scheme) {
 
 }  // namespace
 
+bool is_safe_hyperlink(std::string_view uri) {
+  std::string cleaned;
+  cleaned.reserve(uri.size());
+  for (const char c : uri) {
+    if (c == '\t' || c == '\r' || c == '\n') continue;
+    if (cleaned.empty() && static_cast<unsigned char>(c) <= 0x20) continue;
+    cleaned.push_back(c);
+  }
+  if (cleaned.empty() || std::isalpha(static_cast<unsigned char>(cleaned.front())) == 0) {
+    return true;
+  }
+  std::size_t end = 1;
+  while (end < cleaned.size()) {
+    const auto c = static_cast<unsigned char>(cleaned[end]);
+    if (std::isalnum(c) == 0 && c != '+' && c != '.' && c != '-') break;
+    ++end;
+  }
+  if (end >= cleaned.size() || cleaned[end] != ':') return true;
+  if (end == 1) return true;
+  std::string scheme = cleaned.substr(0, end);
+  for (char& c : scheme) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  static constexpr std::string_view kSafe[] = {"http", "https", "ftp",  "ftps",
+                                               "sftp", "mailto", "tel", "file"};
+  return std::ranges::find(kSafe, scheme) != std::end(kSafe);
+}
+
+std::string markdown_link_destination(std::string_view uri) {
+  const auto word = [](unsigned char c) {
+    return std::isalnum(c) != 0 || c == '_' || c >= 0x80;
+  };
+  std::string out;
+  out.reserve(uri.size());
+  for (std::size_t i = 0; i < uri.size(); ++i) {
+    const auto c = static_cast<unsigned char>(uri[i]);
+    if (c == '&') {
+      std::size_t j = i + 1;
+      if (j < uri.size() && uri[j] == '#') ++j;
+      const std::size_t name = j;
+      while (j < uri.size() && word(static_cast<unsigned char>(uri[j]))) ++j;
+      if (j > name && j < uri.size() && uri[j] == ';') {
+        out.append("&amp;");
+        continue;
+      }
+      out.push_back('&');
+      continue;
+    }
+    if (c <= 0x20 || c == 0x7f || c == '(' || c == ')' || c == '<' || c == '>' ||
+        c == '"' || c == '\\') {
+      static constexpr char kHex[] = "0123456789ABCDEF";
+      out.push_back('%');
+      out.push_back(kHex[c >> 4]);
+      out.push_back(kHex[c & 0xF]);
+      continue;
+    }
+    out.push_back(static_cast<char>(c));
+  }
+  return out;
+}
+
 std::string normalized_uri(const std::string& uri) {
   // Scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":"
   std::size_t colon = std::string::npos;
