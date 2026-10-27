@@ -262,6 +262,21 @@ void verify_a_rich_cell_renders_its_blocks_inside_the_cell() {
                 "deeper: a list, a heading, and a nested table");
 }
 
+// docling-core #880 (DocLang 0.8) keeps every caption of a floating item.
+void verify_every_caption_is_kept() {
+  docv1::Document document = base_document("captions.pdf");
+  auto* picture = add_picture(&document, "#/body", "figs/a.png");
+  picture->add_captions()->set_ref(add_owned_text(&document, picture->self_ref(),
+                                                  docv1::DOC_ITEM_LABEL_CAPTION, "First"));
+  picture->add_captions()->set_ref(add_owned_text(&document, picture->self_ref(),
+                                                  docv1::DOC_ITEM_LABEL_CAPTION, "Second"));
+  require_equal(body_of(document),
+                "  <caption>First</caption>\n"
+                "  <caption>Second</caption>\n"
+                "  <picture uri=\"figs/a.png\"/>\n",
+                "every picture caption is its own element");
+}
+
 void verify_a_linked_caption_takes_the_block_form() {
   docv1::Document document = base_document("linked-figure.pdf");
   auto* figure = add_picture(&document, "#/body", "figs/a.png");
@@ -943,6 +958,7 @@ int main() {
       verify_a_rich_cell_renders_its_blocks_inside_the_cell,
       verify_a_table_with_no_grid_writes_only_its_caption,
       verify_a_linked_caption_takes_the_block_form,
+      verify_every_caption_is_kept,
       verify_a_linked_table_caption_normalizes_its_href,
       verify_a_picture_element_states_its_uri_and_description,
       verify_the_unserved_arenas_leave_a_comment,
