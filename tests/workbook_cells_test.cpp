@@ -7,6 +7,8 @@
 // header band is marked over the adopted cells, and a sheet with no table
 // to land in is named, not dropped silently.
 
+#include <cstdint>
+#include <limits>
 #include <print>
 #include <string>
 #include <vector>
@@ -200,6 +202,22 @@ void verify_apply_merged_areas() {
   require_equal(at(data, 2, 0)->row_span(), 1, "a cell below a blank merge keeps its span");
 }
 
+// A merged area is the collector's word: the wire can size one across the
+// whole 32-bit grid, by mistake or on purpose. Applying it must visit the
+// cells placed inside the area, never every slot of it, or one such range
+// holds the parse for good.
+void verify_vast_merged_area_visits_only_its_cells() {
+  docv1::TableData data;
+  text(&data, 0, 0, "Title");
+  text(&data, 0, 1, "");
+  text(&data, 3, 2, "x");
+  constexpr int kEdge = std::numeric_limits<int32_t>::max();
+  grparse::apply_merged_areas(&data, {{0, 0, kEdge, kEdge}});
+  require_equal(data.table_cells_size(), 1, "every other cell lies inside the area");
+  require_equal(at(data, 0, 0)->row_span(), kEdge, "the title takes the area's row span");
+  require_equal(at(data, 0, 0)->col_span(), kEdge, "and its column span");
+}
+
 void verify_sheet_without_table_is_named() {
   Workbook libre("libreoffice");
   report_libre(libre.sheet("Report"));
@@ -267,6 +285,7 @@ int main() {
       verify_libre_merges_fill_in_for_calamine,
       verify_calamine_merges_win,
       verify_apply_merged_areas,
+      verify_vast_merged_area_visits_only_its_cells,
       verify_sheet_without_table_is_named,
       verify_coordinator_adopts_calamine_cells,
       verify_calamine_alone_is_the_body,
