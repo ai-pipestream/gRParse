@@ -26,6 +26,12 @@ namespace {
 // reports the full size for the truncation note.
 constexpr size_t kPayloadTextBytes = 64U * 1024U;
 
+// Events per gRPC message. Small records (warcinfo, request, metadata) are a
+// few hundred bytes each, so one message per event is mostly framing; the
+// server packs this many into a `batch` arm instead. Payload chunks are at
+// most 64 KiB, which bounds a batch near 1 MiB.
+constexpr uint32_t kResponseBatchSize = 16;
+
 // A record reads as text when its embedded HTTP Content-Type says so, or
 // when the record was not an HTTP message at all (warcinfo, metadata, and
 // DNS records are text by convention). Binary HTTP payloads stay out; the
@@ -94,6 +100,10 @@ class WarcFold {
   // outside a record are a server bug and dropped.
   void handle(const warcv1::ParseWarcResponse& event) {
     switch (event.kind_case()) {
+      case warcv1::ParseWarcResponse::kBatch:
+        // Batches hold events in stream order and are never nested.
+        for (const auto& item : event.batch().items()) handle(item);
+        break;
       case warcv1::ParseWarcResponse::kRecordStart:
         if (record_open_) {
           // A start while a record is open means a record_end was lost;
@@ -297,11 +307,13 @@ CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>&
 
   warcv1::ParseWarcRequest request;
   warcv1::ParseWarcConfig* config = request.mutable_config();
-  // The server's proto3 default for parse_http is false, unlike the Python
-  // and Rust iterators it mirrors, and the fold reads the embedded HTTP
-  // message; ask for it explicitly. Compression detection stays unset, which
-  // enables magic-byte sniffing of gzip/zstd/lz4 streams.
+  // The fold reads the embedded HTTP message. parse_http already defaults to
+  // true when unset; it is set anyway so the request says what the fold
+  // depends on. Compression detection, payloads and header blocks stay at
+  // their defaults (on), which enables magic-byte sniffing of gzip/zstd/lz4
+  // streams.
   config->set_parse_http(true);
+  config->set_response_batch_size(kResponseBatchSize);
   ConcurrentUpload upload(
       context, *stream, request, bytes, /*always_send_chunk=*/false,
       [&bytes](warcv1::ParseWarcRequest& frame, size_t offset, size_t length, bool /*last*/) {

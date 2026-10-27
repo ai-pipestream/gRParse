@@ -82,10 +82,7 @@ services:
       # though those services may be down: an unreachable collector fails a
       # matching upload loudly (UNAVAILABLE), where an unconfigured one fails
       # it just as loudly (FAILED_PRECONDITION) - but with the profile up the
-      # routing works with no config change. GRPARSE_FASTWARC_TARGET is
-      # deliberately absent: the vendored chatnoir fastwarc.v1 dialect the
-      # collector client speaks is not wire-compatible with the fastwarc
-      # service in this stack (same proto package, different field numbers).
+      # routing works with no config change.
       GRPARSE_LOL_HTML_TARGET: "lol-html:50057"
       GRPARSE_LIBREOFFICE_TARGET: "libreoffice:50053"
       GRPARSE_MARKUP_TARGET: "markup:50065"
@@ -94,6 +91,10 @@ services:
       GRPARSE_EBCDIC_TARGET: "ebcdic:50063"
       GRPARSE_EMAIL_TARGET: "email:50054"
       GRPARSE_ASR_TARGET: "asr:50055"
+      # WARC archives (.warc, .warc.gz/.zst/.lz4, application/warc). The
+      # service is the fastwarc-grpc crate pinned below; collectors/warc*.proto
+      # is that crate's contract.
+      GRPARSE_FASTWARC_TARGET: "fastwarc:50060"
       # The PDF routing oracle: text-based PDFs take the inspector's fast
       # path and the in-process CV/ONNX pipeline is skipped; scanned pages
       # fall through with OCR restricted to the pages the inspector names.
@@ -304,7 +305,13 @@ services:
   fastwarc:
     profiles: ["parsers"]
     image: pipestreamai/fastwarc-grpc:${STACK_TAG:-latest}
-    build: ../fastwarc-grpc
+    build:
+      context: ../fastwarc-grpc
+      args:
+        # The crates.io release the image installs. collectors/warc.proto and
+        # collectors/warc_service.proto must be that release's protos; bump
+        # all three together.
+        FASTWARC_GRPC_VERSION: "1.1.0"
     expose:
       - "50060"
     read_only: true

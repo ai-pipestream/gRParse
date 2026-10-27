@@ -17,9 +17,12 @@ const syncScript = path.join(demoDir, "sync-peer-protos.sh");
 
 test("every registry entry is complete and its proto sits under its include root", () => {
   for (const [name, known] of Object.entries(peers.KNOWN_UIS)) {
-    for (const key of ["repo", "proto", "include", "service", "method"]) {
+    for (const key of ["repo", "proto", "include", "service"]) {
       assert.ok(known[key], `${name}.${key} is set`);
     }
+    // The info RPC is optional: fastwarc's contract has none and its native
+    // tab probes grpc.health.v1 instead.
+    if (name !== "fastwarc") assert.ok(known.method, `${name}.method is set`);
     assert.ok(known.proto.startsWith(`${known.include}/`), `${name}: ${known.proto} is under ${known.include}`);
   }
 });

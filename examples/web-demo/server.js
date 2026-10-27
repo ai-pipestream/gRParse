@@ -438,12 +438,11 @@ async function documentTabStatus() {
 // FastWARC bridge: the standalone fastwarc-grpc server (fastwarc.v1.WarcService)
 // has no web UI of its own, so the shell carries it as a native tab
 // (public/fastwarc.html) backed by the two /api/fastwarc endpoints below: a
-// GetServiceInfo probe for the status badge (grpc.health.v1 as fallback) and
-// an NDJSON relay of the bidirectional ParseWarc stream. The contract loads
-// from the sibling fastwarc-grpc checkout through KNOWN_UIS/resolveServiceProto
-// like the other native tabs; the vendored collectors/*.proto copies speak the
-// legacy chatnoir dialect (same package, incompatible wire) and stay reserved
-// for the C++ collector's own client.
+// grpc.health.v1 probe for the status badge and an NDJSON relay of the
+// bidirectional ParseWarc stream. The contract loads from the sibling
+// fastwarc-grpc checkout through KNOWN_UIS/resolveServiceProto like the other
+// native tabs; it is the same 1.1.0 crate contract the C++ collector vendors
+// as collectors/warc*.proto.
 // ---------------------------------------------------------------------------
 
 const FASTWARC_CHUNK_BYTES = 256 * 1024;
@@ -502,11 +501,10 @@ function fastwarcClients() {
   return fastwarcClientsCache;
 }
 
-// One live info call behind a short cache, mirroring the other native tabs:
-// GetServiceInfo carries the name/version/UiInfo for the badge; when it
-// fails (an older server without the RPC) the standard health check decides
-// plain reachability. 1.5s deadline so a dead server costs the badge that
-// long at most, and failure reports unreachable instead of breaking the page.
+// One health check behind a short cache, mirroring the other native tabs.
+// The 1.1.0 contract has no info RPC, so the badge reports reachability
+// only. 1.5s deadline so a dead server costs the badge that long at most,
+// and failure reports unreachable instead of breaking the page.
 let fastwarcStatusCache = null;
 const FASTWARC_STATUS_CACHE_MS = 5000;
 
@@ -517,27 +515,13 @@ function probeFastwarc() {
   return new Promise((resolve) => {
     let settled = false;
     const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
-    const healthCheck = () => {
-      try {
-        clients.health.Check({ service: "" }, { deadline: Date.now() + 1500 }, (error, health) => {
-          if (error) { finish(unreachable(fallback, error)); return; }
-          finish({ reachable: health.status === "SERVING" });
-        });
-      } catch (error) {
-        finish(unreachable(fallback, error));
-      }
-    };
     try {
-      clients.warc.GetServiceInfo({}, { deadline: Date.now() + 1500 }, (error, info) => {
-        if (error) { healthCheck(); return; }
-        finish({
-          reachable: true,
-          name: info.name || undefined,
-          version: info.version || undefined,
-        });
+      clients.health.Check({ service: "" }, { deadline: Date.now() + 1500 }, (error, health) => {
+        if (error) { finish(unreachable(fallback, error)); return; }
+        finish({ reachable: health.status === "SERVING" });
       });
-    } catch (_error) {
-      healthCheck();
+    } catch (error) {
+      finish(unreachable(fallback, error));
     }
     setTimeout(() => finish(unreachable(fallback)), 2000).unref();
   });
@@ -552,13 +536,6 @@ async function fastwarcStatus() {
 
 function recordTypeLabel(value) {
   return typeof value === "string" ? value.replace("WARC_RECORD_TYPE_", "").toLowerCase() : "unknown";
-}
-
-// Digest verification outcome for the page's digests column; unspecified
-// (verification not requested) stays off the wire entirely.
-function digestStatusLabel(value) {
-  if (typeof value !== "string" || value === "DIGEST_STATUS_UNSPECIFIED") return undefined;
-  return value.replace("DIGEST_STATUS_", "").toLowerCase();
 }
 
 // A payload is previewed only when it reads as text: an HTTP content type of
@@ -1037,16 +1014,21 @@ surface.post(
     const deadline = Date.now() + 10 * 60 * 1000;
     const call = clients.warc.ParseWarc({ deadline });
 
-    // Responses arrive one protocol event per message, ordered per record:
-    // record_start, payload chunks, record_end; record_error for failures.
-    call.on("data", (event) => {
+    // Events are ordered per record: record_start, payload chunks,
+    // record_end; record_error for failures. With response_batch_size set the
+    // server packs several into one batch message, never nested.
+    const handle = (event) => {
+      if (event.batch) {
+        for (const item of event.batch.items || []) handle(item);
+        return;
+      }
       if (event.recordStart) {
         const metadata = event.recordStart.metadata || {};
         records += 1;
         preview = { wanted: previewable(metadata), chunks: [], bytes: 0 };
         send({
           type: "start",
-          recordIndex: Number(metadata.recordIndex) || 0,
+          recordIndex: records - 1,
           recordType: recordTypeLabel(metadata.recordType),
           streamPos: metadata.streamPos,
           contentLength: metadata.contentLength,
@@ -1077,11 +1059,8 @@ surface.post(
         payloadBytes += Number(event.recordEnd.payloadLength) || 0;
         send({
           type: "end",
-          recordIndex: Number(event.recordEnd.recordIndex) || 0,
+          recordIndex: records - 1,
           payloadLength: event.recordEnd.payloadLength,
-          blockDigest: digestStatusLabel(event.recordEnd.blockDigestStatus),
-          payloadDigest: digestStatusLabel(event.recordEnd.payloadDigestStatus),
-          digestDetail: event.recordEnd.digestDetail || undefined,
         });
         return;
       }
@@ -1094,7 +1073,8 @@ surface.post(
           message: failure.message,
         });
       }
-    });
+    };
+    call.on("data", handle);
     // A non-recoverable record_error already ended the upstream stream; the
     // done line reports whatever arrived before it.
     call.on("end", finish);
@@ -1108,6 +1088,7 @@ surface.post(
       config: {
         parseHttp: flag("parse_http", true),
         verifyDigests: flag("verify_digests", false),
+        responseBatchSize: 16,
       },
     });
     for (let offset = 0; offset < body.length; offset += FASTWARC_CHUNK_BYTES) {

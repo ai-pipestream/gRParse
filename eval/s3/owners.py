@@ -18,14 +18,6 @@ class KnownFinding:
 
 KNOWN_FINDINGS: tuple[KnownFinding, ...] = (
     KnownFinding(
-        "parse_succeeds", "fastwarc collector is not configured", "fastwarc-grpc (wire dialect)",
-        "the stack leaves GRPARSE_FASTWARC_TARGET unset because the vendored fastwarc.v1 dialect is not "
-        "wire-compatible with the published image (AGENTS.md, the fastwarc caveat); every WARC object fails "
-        "until the two contracts are reconciled"),
-    KnownFinding(
-        "sniff_route", "fastwarc collector is not configured", "fastwarc-grpc (wire dialect)",
-        "the extension-less WARC routes by its bytes to the same unconfigured collector"),
-    KnownFinding(
         "parse_succeeds", "render exceeded the per-document timeout", "grpc-libreoffice",
         "a sparse sheet with cells at the far corners of the grid (calamine's corners.xlsx) makes the office "
         "core render the whole used range and run past its per-document timeout"),

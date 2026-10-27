@@ -1222,6 +1222,7 @@ class FakeWarcService final : public warcv1::WarcService::Service {
     if (mode_ == Mode::kTransportError) {
       return grpc::Status(grpc::StatusCode::INTERNAL, "socket went away");
     }
+    std::vector<warcv1::ParseWarcResponse> out;
     warcv1::ParseWarcResponse event;
     if (mode_ == Mode::kTruncated) {
       // One textual record past the 64 KiB fold cap, in two chunks.
@@ -1231,41 +1232,39 @@ class FakeWarcService final : public warcv1::WarcService::Service {
       start->set_content_length(71680);
       start->set_is_http(true);
       start->set_http_content_type("text/plain");
-      stream->Write(event);
+      out.push_back(event);
       event.Clear();
       auto* chunk = event.mutable_payload_chunk();
       chunk->set_offset(0);
       chunk->set_data(std::string(65536, 'a'));
-      stream->Write(event);
+      out.push_back(event);
       event.Clear();
       chunk = event.mutable_payload_chunk();
       chunk->set_offset(65536);
       chunk->set_data(std::string(6144, 'b'));
-      stream->Write(event);
+      out.push_back(event);
       event.Clear();
       event.mutable_record_end()->set_payload_length(71680);
-      stream->Write(event);
-      return grpc::Status::OK;
+      out.push_back(event);
+      return send(*stream, out, config.response_batch_size());
     }
     if (mode_ == Mode::kRequestBeforeResponse) {
       // The request record precedes its response and declares the same
       // target: the fold must let the response supersede it.
       auto* asked = event.mutable_record_start()->mutable_metadata();
-      asked->set_record_index(0);
       asked->set_record_type(warcv1::WARC_RECORD_TYPE_REQUEST);
       asked->set_stream_pos(0);
       add_header(asked->mutable_warc_headers(), "WARC-Target-URI",
                  "https://example.com/page");
-      stream->Write(event);
+      out.push_back(event);
       event.Clear();
-      event.mutable_record_end()->set_record_index(0);
-      stream->Write(event);
+      event.mutable_record_end()->set_payload_length(0);
+      out.push_back(event);
       event.Clear();
     }
     // The response record, with both lossless header blocks the server
     // transmits.
     auto* start = event.mutable_record_start()->mutable_metadata();
-    start->set_record_index(mode_ == Mode::kRequestBeforeResponse ? 1 : 0);
     start->set_record_type(warcv1::WARC_RECORD_TYPE_RESPONSE);
     start->set_stream_pos(0);
     start->set_content_length(23);
@@ -1275,40 +1274,38 @@ class FakeWarcService final : public warcv1::WarcService::Service {
     start->set_record_id("<urn:uuid:test-1>");
     start->mutable_record_date()->set_seconds(1704164645);  // 2024-01-02T03:04:05Z
     auto* warc_headers = start->mutable_warc_headers();
-    warc_headers->set_encoding(warcv1::HEADER_ENCODING_UNICODE);
     add_header(warc_headers, "WARC-Type", "response");
     add_header(warc_headers, "WARC-Target-URI", "https://example.com/page");
     add_header(warc_headers, "WARC-Payload-Digest", "sha1:PAYLOAD");
     add_header(warc_headers, "WARC-Block-Digest", "sha1:BLOCK");
     auto* http_headers = start->mutable_http_headers();
-    http_headers->set_encoding(warcv1::HEADER_ENCODING_LATIN1);
     http_headers->set_status_line("HTTP/1.1 200 OK");
     add_header(http_headers, "Content-Type", "text/html; charset=utf-8");
     add_header(http_headers, "Last-Modified", "Tue, 02 Jan 2024 03:00:00 GMT");
     add_header(http_headers, "Content-Language", "en-GB");
     add_header(http_headers, "ETag", "\"deadbeef\"");
     add_header(http_headers, "Server", "fake/1.0");
-    stream->Write(event);
+    out.push_back(event);
     event.Clear();
     auto* chunk = event.mutable_payload_chunk();
     chunk->set_offset(0);
     chunk->set_data("<html>hello");
-    stream->Write(event);
+    out.push_back(event);
     event.Clear();
     chunk = event.mutable_payload_chunk();
     chunk->set_offset(11);
     chunk->set_data(" warc</html>");
-    stream->Write(event);
+    out.push_back(event);
     event.Clear();
     event.mutable_record_end()->set_payload_length(23);
-    stream->Write(event);
+    out.push_back(event);
     event.Clear();
-    if (mode_ == Mode::kRequestBeforeResponse) return grpc::Status::OK;
+    if (mode_ == Mode::kRequestBeforeResponse) return send(*stream, out, config.response_batch_size());
     auto* skipped = event.mutable_record_error();
     skipped->set_stream_pos(64);
     skipped->set_recoverable(true);
     skipped->set_message("bad http headers");
-    stream->Write(event);
+    out.push_back(event);
     event.Clear();
     if (mode_ == Mode::kFramingError) {
       // Terminal by contract: the server sends this last and ends OK.
@@ -1316,29 +1313,49 @@ class FakeWarcService final : public warcv1::WarcService::Service {
       fatal->set_stream_pos(128);
       fatal->set_recoverable(false);
       fatal->set_message("warc framing lost");
-      stream->Write(event);
-      return grpc::Status::OK;
+      out.push_back(event);
+      return send(*stream, out, config.response_batch_size());
     }
     // Second record: a warcinfo with no HTTP metadata and no target URI, so
     // it must not disturb the web provenance the response established.
     auto* meta = event.mutable_record_start()->mutable_metadata();
-    meta->set_record_index(1);
     meta->set_record_type(warcv1::WARC_RECORD_TYPE_WARCINFO);
     meta->set_stream_pos(100);
     meta->set_content_length(14);
-    stream->Write(event);
+    out.push_back(event);
     event.Clear();
     chunk = event.mutable_payload_chunk();
     chunk->set_offset(0);
     chunk->set_data("software: fake");
-    stream->Write(event);
+    out.push_back(event);
     event.Clear();
     event.mutable_record_end()->set_payload_length(14);
-    stream->Write(event);
-    return grpc::Status::OK;
+    out.push_back(event);
+    return send(*stream, out, config.response_batch_size());
   }
 
  private:
+  // Writes the canned events the way the server does: one per message, or
+  // packed `batch_size` at a time into the batch arm when the client asked.
+  static grpc::Status send(
+      grpc::ServerReaderWriter<warcv1::ParseWarcResponse, warcv1::ParseWarcRequest>& stream,
+      const std::vector<warcv1::ParseWarcResponse>& events, uint32_t batch_size) {
+    if (batch_size == 0) {
+      for (const auto& event : events) stream.Write(event);
+      return grpc::Status::OK;
+    }
+    warcv1::ParseWarcResponse batch;
+    for (const auto& event : events) {
+      *batch.mutable_batch()->add_items() = event;
+      if (static_cast<uint32_t>(batch.batch().items_size()) == batch_size) {
+        stream.Write(batch);
+        batch.Clear();
+      }
+    }
+    if (batch.has_batch()) stream.Write(batch);
+    return grpc::Status::OK;
+  }
+
   static void add_header(warcv1::HeaderBlock* block, const std::string& name,
                          const std::string& value) {
     auto* field = block->add_fields();
