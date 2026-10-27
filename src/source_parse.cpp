@@ -549,8 +549,9 @@ grpc::Status validate_response_format(const Message& message, const std::string&
     return option_rejected(typed ? path + ".response_format" : path + ".response_format_raw",
                            parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED, name,
                            surface + ": " + path + " response format '" + name +
-                               "' is not one the VLM convert collector maps (doctags, "
-                               "markdown, html, otsl, plaintext)");
+                               "' is not one the VLM convert collector maps (it maps every "
+                               "docling format except mineru2, whose two-pass protocol "
+                               "it does not drive)");
   }
   return grpc::Status::OK;
 }
@@ -1371,10 +1372,33 @@ std::expected<PictureDescriptionCall, grpc::Status> picture_description_call(
   return call;
 }
 
+std::string picture_description_repo_id(
+    const pipestream::parse::v1::ConvertDocumentOptions& options) {
+  if (options.has_picture_description_local()) return options.picture_description_local().repo_id();
+  if (options.has_picture_description_preset() && !options.picture_description_preset().empty()) {
+    return options.picture_description_preset();
+  }
+  if (options.has_picture_description_custom_config()) {
+    return options.picture_description_custom_config().model_spec().default_repo_id();
+  }
+  return "";
+}
+
 std::expected<PictureDescriptionCall, grpc::Status> request_picture_description_call(
     const pipestream::parse::v1::ConvertDocumentOptions& options,
     const std::optional<ChartExtractionPreset>& chart_extraction, const std::string& surface) {
-  if (!options.has_picture_description_api()) return PictureDescriptionCall{};
+  if (!options.has_picture_description_api()) {
+    PictureDescriptionCall call;
+    if (options.has_picture_description_custom_config()) {
+      const auto& cfg = options.picture_description_custom_config();
+      if (cfg.has_prompt()) {
+        call.prompt = cfg.prompt();
+      } else if (cfg.model_spec().has_prompt()) {
+        call.prompt = cfg.model_spec().prompt();
+      }
+    }
+    return call;
+  }
   const auto& api = options.picture_description_api();
   auto call = picture_description_call(api, surface);
   if (!call.has_value() || call->headers.empty()) return call;
@@ -1812,9 +1836,7 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   if (options.has_picture_description_area_threshold()) {
     inputs.picture_description_area_threshold = options.picture_description_area_threshold();
   }
-  if (options.has_picture_description_preset()) {
-    inputs.picture_description_preset = options.picture_description_preset();
-  }
+  inputs.picture_description_preset = picture_description_repo_id(options);
   if (auto preset = resolve_code_formula_preset(options, "parse"); preset.has_value()) {
     inputs.code_formula_preset = *preset;
   }
@@ -1833,7 +1855,6 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
     // repo_id is the enrich raw preset name; presence of local does not force
     // do_picture_description — the Convert bool still gates the job.
     const auto& local = options.picture_description_local();
-    inputs.picture_description_preset = local.repo_id();
     inputs.picture_description_allow = classification_class_names(local.classification_allow());
     inputs.picture_description_deny = classification_class_names(local.classification_deny());
     if (local.has_classification_min_confidence()) {

@@ -13,6 +13,7 @@
 #include <mutex>
 #include <print>
 #include <stdexcept>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -1378,6 +1379,115 @@ void verify_structure_validation_on_the_wire(TestServer* server) {
   const auto& streamed = events.at(0).collector_document();
   require(wire_findings(streamed.structure_findings()) == local_findings(streamed.document()),
           "the stream reports the findings of the document it emits");
+}
+
+// The table cell limits reach the wire on both surfaces: unary through
+// ConvertDocumentOptions.structure_table_cell_limits (field 66), the stream
+// through DocumentChunk.structure_table_cell_limits (field 14). A 2x2 table
+// is over a per-table limit of 3 (TABLE_CELLS_OVER_LIMIT) and over a total
+// limit of 3 with a per-table limit of 10 (TOTAL_TABLE_CELLS_OVER_LIMIT);
+// the default limits find nothing.
+constexpr char kStorageTable[] =
+    "<p>before</p><table><tbody><tr><th>a</th><th>b</th></tr>"
+    "<tr><td>c</td><td>d</td></tr></tbody></table>";
+
+std::vector<int> rules_on_the_wire(
+    const google::protobuf::RepeatedPtrField<pipestream::parse::v1::StructureFinding>& findings) {
+  std::vector<int> out;
+  for (const auto& finding : findings) {
+    if (finding.rule() == pipestream::parse::v1::STRUCTURE_RULE_TABLE_CELLS_OVER_LIMIT ||
+        finding.rule() == pipestream::parse::v1::STRUCTURE_RULE_TOTAL_TABLE_CELLS_OVER_LIMIT) {
+      out.push_back(finding.rule());
+    }
+  }
+  return out;
+}
+
+void verify_table_cell_limits_on_the_wire(TestServer* server) {
+  struct Case {
+    std::optional<uint64_t> per_table;
+    std::optional<uint64_t> total;
+    std::vector<int> expected;
+  };
+  const Case cases[] = {
+      {std::nullopt, std::nullopt, {}},
+      {3, std::nullopt, {pipestream::parse::v1::STRUCTURE_RULE_TABLE_CELLS_OVER_LIMIT}},
+      {10, 3, {pipestream::parse::v1::STRUCTURE_RULE_TOTAL_TABLE_CELLS_OVER_LIMIT}},
+  };
+  for (const Case& c : cases) {
+    pipestream::parse::v1::StructureTableCellLimits limits;
+    if (c.per_table) limits.set_max_table_cells(*c.per_table);
+    if (c.total) limits.set_max_total_table_cells(*c.total);
+    const bool set = c.per_table.has_value() || c.total.has_value();
+    const std::string label = "limits " + std::to_string(c.per_table.value_or(0)) + "/" +
+                              std::to_string(c.total.value_or(0));
+
+    pipestream::parse::v1::ConvertDocumentOptions options;
+    options.set_structure_validation(pipestream::parse::v1::STRUCTURE_VALIDATION_REPORT);
+    if (set) *options.mutable_structure_table_cell_limits() = limits;
+    auto client = server->unary_stub();
+    grpc::ClientContext unary_context;
+    unary_context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ConvertSourceRequest request;
+    auto* file = request.mutable_request()->add_sources()->mutable_file();
+    file->set_filename("table.confluence");
+    file->set_base64_string(grparse::encode_base64(kStorageTable, sizeof(kStorageTable) - 1));
+    *request.mutable_request()->mutable_options() = options;
+    pipestream::parse::v1::ConvertSourceResponse response;
+    const grpc::Status status = client->ConvertSource(&unary_context, request, &response);
+    require(status.ok(), "unary " + label + ": " + status.error_message());
+    require(response.response().document().doc().tables_size() == 1,
+            "the storage table converts to one table");
+    require(rules_on_the_wire(response.response().structure_findings()) == c.expected,
+            "unary field 66 decides the cell findings: " + label);
+
+    auto stub = server->stub();
+    grpc::ClientContext stream_context;
+    stream_context.set_deadline(std::chrono::system_clock::now() + 10s);
+    auto stream = stub->StreamProcessDocument(&stream_context);
+    pipestream::parse::v1::DocumentChunk chunk;
+    chunk.set_document_id("cell-limits");
+    chunk.set_filename("table.bin");
+    chunk.set_content_type(grparse::kConfluenceStorageMimetype);
+    chunk.set_data(kStorageTable);
+    chunk.set_complete(true);
+    chunk.set_structure_validation(pipestream::parse::v1::STRUCTURE_VALIDATION_REPORT);
+    if (set) *chunk.mutable_structure_table_cell_limits() = limits;
+    require(stream->Write(chunk), "could not write the cell-limits chunk");
+    stream->WritesDone();
+    std::vector<pipestream::parse::v1::DocumentStreamEvent> events;
+    pipestream::parse::v1::DocumentStreamEvent event;
+    while (stream->Read(&event)) events.push_back(event);
+    const grpc::Status finished = stream->Finish();
+    require(finished.ok(), "stream " + label + ": " + finished.error_message());
+    require(!events.empty() && events.at(0).has_collector_document(), "a collector document");
+    require(rules_on_the_wire(events.at(0).collector_document().structure_findings()) ==
+                c.expected,
+            "DocumentChunk field 14 decides the cell findings: " + label);
+  }
+
+  // ENFORCE with a per-table limit the table breaks fails the stream.
+  auto stub = server->stub();
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  auto stream = stub->StreamProcessDocument(&context);
+  pipestream::parse::v1::DocumentChunk chunk;
+  chunk.set_document_id("cell-limits-enforce");
+  chunk.set_filename("table.bin");
+  chunk.set_content_type(grparse::kConfluenceStorageMimetype);
+  chunk.set_data(kStorageTable);
+  chunk.set_complete(true);
+  chunk.set_structure_validation(pipestream::parse::v1::STRUCTURE_VALIDATION_ENFORCE);
+  chunk.mutable_structure_table_cell_limits()->set_max_table_cells(3);
+  require(stream->Write(chunk), "could not write the enforce chunk");
+  stream->WritesDone();
+  pipestream::parse::v1::DocumentStreamEvent event;
+  while (stream->Read(&event)) {
+  }
+  const grpc::Status enforced = stream->Finish();
+  require(enforced.error_code() == grpc::StatusCode::FAILED_PRECONDITION &&
+              enforced.error_message().contains("table_cells_over_limit"),
+          "ENFORCE with field 14 fails the stream: " + enforced.error_message());
 }
 
 void verify_get_service_info(TestServer* server) {
@@ -4096,6 +4206,7 @@ int main() {
         verify_unary_storage_suffix_routes_in_process(&server);
         verify_stream_storage_content_type_routes_in_process(&server);
         verify_structure_validation_on_the_wire(&server);
+        verify_table_cell_limits_on_the_wire(&server);
         verify_get_service_info(&server);
         verify_unary_callback_path_admits_concurrent_conversions();
         verify_unary_cancellation_finishes_without_wedging();

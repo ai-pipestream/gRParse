@@ -539,7 +539,8 @@ class ParseServer final {
     server_->Shutdown(std::chrono::system_clock::now() + std::chrono::seconds(2));
     server_->Wait();
   }
-  grpc::Status convert(const std::string& filename, const std::string& base64, bool extract,
+  grpc::Status convert(const std::string& filename, const std::string& base64,
+                       std::optional<bool> extract,
                        parsev1::ConvertSourceResponse* response) const {
     auto stub = parsev1::ParseService::NewStub(grpc::CreateChannel(
         "127.0.0.1:" + std::to_string(port_), grpc::InsecureChannelCredentials()));
@@ -547,7 +548,9 @@ class ParseServer final {
     auto* source = request.mutable_request()->add_sources()->mutable_file();
     source->set_filename(filename);
     source->set_base64_string(base64);
-    request.mutable_request()->mutable_options()->set_extract_form_fields(extract);
+    if (extract.has_value()) {
+      request.mutable_request()->mutable_options()->set_extract_form_fields(*extract);
+    }
     grpc::ClientContext context;
     context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
     return stub->ConvertSource(&context, request, response);
@@ -601,6 +604,38 @@ void extract_form_fields_is_typed() {
   }
 }
 
+// Unset, true and false on a PDF, with a widget backend configured that
+// cannot be reached so every fold attempt leaves a warning naming it. Unset
+// folds (gRParse keeps the AcroForm widgets by default; docling's unset is
+// false, which would drop field_items that downstream readers rely on), true
+// folds, and false never dials the backend.
+void extract_form_fields_unset_true_false_on_a_pdf() {
+  ::setenv("GRPARSE_PDF_BACKEND", "127.0.0.1:1", 1);
+  ParseServer server;
+  auto folded = [&](std::optional<bool> extract) {
+    parsev1::ConvertSourceResponse response;
+    const grpc::Status status = server.convert("form.pdf", "JVBERi0xLjQK", extract, &response);
+    require(status.ok(), "a PDF converts with extract_form_fields " +
+                             std::string(!extract.has_value() ? "unset"
+                                         : *extract            ? "true"
+                                                               : "false") +
+                             ": " + status.error_message());
+    bool attempted = false;
+    for (const auto& warning : response.response().document().doc().warnings()) {
+      attempted = attempted || (warning.message().contains("AcroForm widgets not read") ||
+                                warning.message().contains("127.0.0.1:1"));
+    }
+    return attempted;
+  };
+  const bool unset_folds = folded(std::nullopt);
+  const bool true_folds = folded(true);
+  const bool false_folds = folded(false);
+  ::unsetenv("GRPARSE_PDF_BACKEND");
+  require(unset_folds, "unset extract_form_fields folds AcroForm widgets (gRParse default)");
+  require(true_folds, "true extract_form_fields folds AcroForm widgets");
+  require(!false_folds, "false extract_form_fields never dials the widget backend");
+}
+
 }  // namespace
 
 int main() {
@@ -610,5 +645,6 @@ int main() {
        read_only_values_and_bare_widgets, deterministic_whatever_the_backend_order,
        canonical_json_keeps_extensions_out, nothing_to_fold, fetches_over_the_wire,
        absent_and_unsupported_families, folds_from_the_configured_backends,
-       widget_frames_agree_on_cropped_and_rotated_pages, extract_form_fields_is_typed});
+       widget_frames_agree_on_cropped_and_rotated_pages, extract_form_fields_is_typed,
+       extract_form_fields_unset_true_false_on_a_pdf});
 }

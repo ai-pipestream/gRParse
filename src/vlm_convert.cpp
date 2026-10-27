@@ -169,6 +169,19 @@ std::optional<vlmv1::ResponseFormat> vlm_collector_response_format(
     case parsev1::RESPONSE_FORMAT_HTML: return vlmv1::RESPONSE_FORMAT_HTML;
     case parsev1::RESPONSE_FORMAT_OTSL: return vlmv1::RESPONSE_FORMAT_OTSL;
     case parsev1::RESPONSE_FORMAT_PLAINTEXT: return vlmv1::RESPONSE_FORMAT_PLAINTEXT;
+    case parsev1::RESPONSE_FORMAT_DOCLANG: return vlmv1::RESPONSE_FORMAT_DOCLANG;
+    case parsev1::RESPONSE_FORMAT_DEEPSEEKOCR_MARKDOWN:
+      return vlmv1::RESPONSE_FORMAT_DEEPSEEKOCR_MARKDOWN;
+    case parsev1::RESPONSE_FORMAT_UNLIMITED_OCR_MARKDOWN:
+      return vlmv1::RESPONSE_FORMAT_UNLIMITED_OCR_MARKDOWN;
+    case parsev1::RESPONSE_FORMAT_CHANDRA_HTML: return vlmv1::RESPONSE_FORMAT_CHANDRA_HTML;
+    case parsev1::RESPONSE_FORMAT_DOTS_JSON: return vlmv1::RESPONSE_FORMAT_DOTS_JSON;
+    case parsev1::RESPONSE_FORMAT_NEMOTRON_PARSE_V2:
+      return vlmv1::RESPONSE_FORMAT_NEMOTRON_PARSE_V2;
+    case parsev1::RESPONSE_FORMAT_NEMOTRON_PARSE_V3_5:
+      return vlmv1::RESPONSE_FORMAT_NEMOTRON_PARSE_V3_5;
+    // MinerU2 is a two-pass protocol the collector does not drive; the
+    // option is refused NOT_IMPLEMENTED by field before any page is sent.
     default: return std::nullopt;
   }
 }
@@ -176,6 +189,21 @@ std::optional<vlmv1::ResponseFormat> vlm_collector_response_format(
 void apply_vlm_convert_options(const parsev1::ConvertDocumentOptions& convert,
                                VlmConvertOptions* options) {
   if (options == nullptr) return;
+  // docling's VlmConvertOptions as a custom config: the spec's repo is the
+  // model (VlmModelSpec.get_repo_id with no engine override), its prompt the
+  // prompt, and scale the image scale. Any explicit selection below (model,
+  // local, api, preset) still wins.
+  if (convert.has_vlm_pipeline_custom_config()) {
+    const auto& custom = convert.vlm_pipeline_custom_config();
+    if (!custom.model_spec().default_repo_id().empty()) {
+      options->preset = vlmv1::VLM_PRESET_RAW;
+      options->preset_raw = custom.model_spec().default_repo_id();
+    }
+    if (custom.model_spec().has_prompt() && !custom.model_spec().prompt().empty()) {
+      options->prompt = custom.model_spec().prompt();
+    }
+    if (custom.has_scale() && custom.scale() > 0.0) options->scale = custom.scale();
+  }
   if (convert.has_vlm_pipeline_model() &&
       convert.vlm_pipeline_model() != parsev1::VLM_MODEL_TYPE_UNSPECIFIED) {
     options->preset = preset_for(convert.vlm_pipeline_model());
@@ -219,6 +247,9 @@ void apply_vlm_convert_options(const parsev1::ConvertDocumentOptions& convert,
   if (format.has_value()) {
     if (const auto collector = vlm_collector_response_format(*format); collector.has_value()) {
       options->response_format = *collector;
+      // docling's spelling rides along for the collector to check against
+      // the typed value (ConvertOptions.response_format_raw).
+      options->response_format_raw = std::string(response_format_name(*format).value_or(""));
     }
   }
   if (convert.has_vlm_pipeline_preset() && !convert.vlm_pipeline_preset().empty()) {
@@ -457,6 +488,9 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
       request_options->set_preset(options.preset);
       if (!options.preset_raw.empty()) request_options->set_preset_raw(options.preset_raw);
       request_options->set_response_format(options.response_format);
+      if (!options.response_format_raw.empty()) {
+        request_options->set_response_format_raw(options.response_format_raw);
+      }
       if (!options.prompt.empty()) request_options->set_prompt(options.prompt);
       if (options.scale > 0.0) request_options->set_scale(options.scale);
       if (!options.endpoint.empty()) request_options->set_endpoint(options.endpoint);
@@ -509,8 +543,38 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
     report.code = grpc::StatusCode::INTERNAL;
     return report;
   }
+  if (raw_heading_depth_format(options.response_format)) {
+    normalize_section_header_levels(document);
+  }
   report.success = true;
   return report;
+}
+
+bool raw_heading_depth_format(vlmv1::ResponseFormat format) {
+  switch (format) {
+    case vlmv1::RESPONSE_FORMAT_CHANDRA_HTML:
+    case vlmv1::RESPONSE_FORMAT_DEEPSEEKOCR_MARKDOWN:
+    case vlmv1::RESPONSE_FORMAT_DOTS_JSON:
+    case vlmv1::RESPONSE_FORMAT_NEMOTRON_PARSE_V2:
+    case vlmv1::RESPONSE_FORMAT_NEMOTRON_PARSE_V3_5:
+    case vlmv1::RESPONSE_FORMAT_UNLIMITED_OCR_MARKDOWN:
+      return true;
+    default:
+      return false;
+  }
+}
+
+void normalize_section_header_levels(docv1::Document* document) {
+  if (document == nullptr) return;
+  for (const auto& item : document->texts()) {
+    if (item.has_section_header() && item.section_header().level() <= 1) return;
+  }
+  for (auto& item : *document->mutable_texts()) {
+    if (item.has_section_header()) {
+      auto* header = item.mutable_section_header();
+      header->set_level(header->level() - 1);
+    }
+  }
 }
 
 }  // namespace grparse

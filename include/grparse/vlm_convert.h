@@ -35,6 +35,9 @@ struct VlmConvertOptions {
   std::string preset_raw;
   ai::pipestream::vlm::v1::ResponseFormat response_format =
       ai::pipestream::vlm::v1::RESPONSE_FORMAT_UNSPECIFIED;
+  // docling's string value for response_format ("dots_json"), forwarded
+  // as ConvertOptions.response_format_raw; empty when no format is named.
+  std::string response_format_raw;
   std::string prompt;
   // Rasterization DPI for PDF pages; rasters ignore it. Zero keeps 200 DPI.
   double render_dpi = 0.0;
@@ -59,7 +62,8 @@ std::optional<ai::pipestream::parse::v1::ResponseFormat> response_format_from_na
     std::string_view name);
 
 // The VLM convert collector's format for a parse ResponseFormat; nullopt for
-// a format the collector's mapper cannot read (everything past PLAINTEXT).
+// a format the collector's mapper cannot read (MINERU2, UNSPECIFIED, and a
+// number outside the enum).
 std::optional<ai::pipestream::vlm::v1::ResponseFormat> vlm_collector_response_format(
     ai::pipestream::parse::v1::ResponseFormat format);
 
@@ -115,6 +119,19 @@ ai::pipestream::document::v1::VlmStopReason vlm_stop_reason(std::string_view fin
 // fields are not walked: no map value in the document schema carries a
 // GenerationSource.
 void type_generation_stop_reasons(ai::pipestream::document::v1::Document* document);
+
+// The formats whose collector mappers keep the model's raw heading depth
+// per page (docling's _RAW_HEADING_DEPTH_FORMATS): Chandra HTML,
+// DeepSeek-OCR and Unlimited-OCR markdown, dots.ocr JSON, Nemotron Parse
+// 2.0 and 3.5.
+bool raw_heading_depth_format(ai::pipestream::vlm::v1::ResponseFormat format);
+
+// docling's normalize_section_header_levels, once per joined document: when
+// no section header sits at level 1 (a document with none counts), every
+// section header moves up one level; otherwise nothing changes.
+// convert_vlm_pages applies it after the last page merges when the leg's
+// format is a raw-heading-depth one.
+void normalize_section_header_levels(ai::pipestream::document::v1::Document* document);
 
 // Rasterize `bytes` and run ConvertPages through `channel`. Merges every
 // PageDocument into `document` under claimant "vlm-convert". Never throws;
