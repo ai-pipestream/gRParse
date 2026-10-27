@@ -253,7 +253,10 @@ void verify_contract_shape() {
           "the 1.1.0 config knobs sit at 13 through 16");
   require(warcv1::ParseWarcResponse::descriptor()->FindFieldByName("batch")->number() == 5,
           "the response stream has its batch arm at 5");
-  require(warcv1::WarcService::descriptor()->FindMethodByName("GetServiceInfo") == nullptr,
+  const auto* service =
+      warcv1::ParseWarcRequest::descriptor()->file()->FindServiceByName("WarcService");
+  require(service != nullptr && service->method_count() == 2 &&
+              service->FindMethodByName("GetServiceInfo") == nullptr,
           "1.1.0 serves ParseWarc and ParseArchive only");
 }
 
