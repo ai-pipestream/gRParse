@@ -1,7 +1,7 @@
 #include "grparse/epub_book.h"
 
 #include <algorithm>
-#include <cctype>
+#include <charconv>
 #include <map>
 #include <optional>
 #include <set>
@@ -97,19 +97,22 @@ std::string arena_ref(std::string_view prefix, int index) {
   return std::string(prefix) + std::to_string(index);
 }
 
+// The arena index `ref` names under `prefix`, or -1 when it names none:
+// no digits, a sign, or more digits than an int holds (a collector can
+// send any string here, and an out of range one must not end the fold).
+int arena_index(std::string_view ref, std::string_view prefix) {
+  if (!ref.starts_with(prefix)) return -1;
+  const std::string_view digits = ref.substr(prefix.size());
+  int index = 0;
+  const auto [end, error] = std::from_chars(digits.data(), digits.data() + digits.size(), index);
+  if (error != std::errc() || end != digits.data() + digits.size() || index < 0) return -1;
+  return index;
+}
+
 // The parent slot of the item `ref` names, across every arena an item can
 // live in; nullptr for a reference that names nothing here.
 docv1::RefItem* mutable_parent_of(docv1::Document* document, const std::string& ref) {
-  const auto parse = [&ref](std::string_view prefix) -> int {
-    if (!ref.starts_with(prefix)) return -1;
-    const std::string_view rest(ref.data() + prefix.size(), ref.size() - prefix.size());
-    if (rest.empty() || !std::ranges::all_of(rest, [](char c) {
-          return std::isdigit(static_cast<unsigned char>(c)) != 0;
-        })) {
-      return -1;
-    }
-    return std::stoi(std::string(rest));
-  };
+  const auto parse = [&ref](std::string_view prefix) { return arena_index(ref, prefix); };
   if (const int index = parse("#/texts/"); index >= 0 && index < document->texts_size()) {
     auto* item = document->mutable_texts(index);
     switch (item->item_case()) {
