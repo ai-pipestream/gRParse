@@ -38,7 +38,8 @@
   "pptx-charts",
   "pdf-rotated-scan-180",
   "pdf-rotated-scan-mixed",
-  "pdf-quickstart-sample"
+  "pdf-quickstart-sample",
+  "warc-commoncrawl"
  ],
  "gates": {
   "docx-figures": {
@@ -282,6 +283,14 @@
   "pptx-sample1": {
    "latency_ms": 276.2,
    "stable": true
+  },
+  "warc-commoncrawl": {
+   "latency_ms": 108.3,
+   "stable": true,
+   "truth": {
+    "truth_anchors_found": 1.0,
+    "truth_order": 1.0
+   }
   },
   "xlsx-charts": {
    "latency_ms": 369.1,
@@ -920,6 +929,15 @@
    "reason": "grpc-pdf-inspector eda6d6b builds a table from a printed pipe block with no detected grid (diffusion paper Figure 1 and 2 panels are tables, no text item carries pipe syntax); 6204d3d dropped grPOIc, so agreement no longer names poi; 309a0bc splits inline list items at their markers; with libreoffice as the only office collector, level-0 pptx bullets are list items, which the truth file agrees with; gatsby loses an empty text item; blank scanned pages render no markdown; png-report-page gains a truth file and is recorded on CUDA with OCR recognition batched 16 (header cells read colo/col2, see the batch note in the PR); latency budgets are kept from their earlier recordings because krick was at load 30 to 45 during this one",
    "service": "gRParse grparse-0.3.0-cuda",
    "timestamp": "2026-10-26T20:05:41+00:00"
+  },
+  {
+   "documents": [
+    "warc-commoncrawl"
+   ],
+   "partial": true,
+   "reason": "new document: Common Crawl WARC sample for the fastwarc-grpc 1.1.0 collector, recorded on the krick-1 CPU image",
+   "service": "gRParse grparse-0.3.0-cpu",
+   "timestamp": "2026-10-27T04:47:39+00:00"
   }
  ],
  "manifest": "eval/scorecard/corpus.json",
