@@ -484,6 +484,15 @@ PdfWidgetFetch fetch_pdf_form_widgets(const std::string& bytes, const std::strin
   return fetch_pdf_form_widgets_with_sha256(bytes, target, deadline, handshake, sha256);
 }
 
+bool pdf_form_widget_backend_configured() {
+  try {
+    const std::optional<std::string> configured = remote_pdf_backend_target();
+    return configured.has_value() && !split_backend_targets(*configured).empty();
+  } catch (const std::exception&) {
+    return true;
+  }
+}
+
 std::optional<std::string> fold_pdf_form_widgets_from_backend(
     const std::string& bytes, std::chrono::system_clock::time_point deadline,
     docv1::Document* document) {

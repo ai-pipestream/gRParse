@@ -1274,6 +1274,13 @@ message ConvertDocumentOptions {
   // collector extracts what its CSS selector rules name, and this client
   // never invents rules.
   optional lolhtml.v1.ExtractOptions lol_html_options = 64;
+  // docling's extract_form_fields: AcroForm widgets on a PDF as field
+  // items. gRParse folds them whenever GRPARSE_PDF_BACKEND names a backend,
+  // so unset keeps that fold (docling's own default is false; unset here
+  // leaves existing outputs unchanged). false skips the fold. true on a PDF
+  // with no backend configured is NOT_IMPLEMENTED; true on input that is not
+  // a PDF adds a warning, since there are no widgets to read.
+  optional bool extract_form_fields = 65;
   // The cell limits the two table-cell structure rules check; unset limits
   // are docling-core's defaults. Setting it while structure_validation is
   // OFF is rejected as contradictory.

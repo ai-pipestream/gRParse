@@ -217,6 +217,7 @@ bool implemented_option(std::string_view name) {
       "structure_validation_rules",
       "structure_repairs",
       "structure_table_cell_limits",
+      "extract_form_fields",
   };
   return std::ranges::find(kImplemented, name) != std::end(kImplemented);
 }
@@ -2360,6 +2361,18 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     const auto cv_confidence =
         std::make_shared<std::optional<pipestream::parse::v1::ConfidenceScores>>();
     const bool pdf = is_pdf(*bytes, requested_name);
+    const auto& form_options = request.options();
+    const bool form_fields_requested =
+        form_options.has_extract_form_fields() && form_options.extract_form_fields();
+    const bool form_fields_off =
+        form_options.has_extract_form_fields() && !form_options.extract_form_fields();
+    if (pdf && form_fields_requested && !pdf_form_widget_backend_configured()) {
+      return option_rejected("extract_form_fields",
+                             pipestream::parse::v1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED,
+                             "true",
+                             surface + ": extract_form_fields needs a PDF backend that reads "
+                                       "AcroForm widgets (GRPARSE_PDF_BACKEND names none)");
+    }
     if (inputs.vlm_pipeline) {
       if (collectors == nullptr || !collectors->has_vlm()) {
         return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
@@ -2398,6 +2411,22 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
       (void)repaired_text;
       derender_charts_if_configured(collectors, context, inputs.inbound_deadline, inputs,
                                     &result);
+      // The VLM body gets AcroForm widgets only when the request asks:
+      // unset keeps this path's output as it was.
+      if (pdf && form_fields_requested && !context->IsCancelled()) {
+        if (auto warning = fold_pdf_form_widgets_from_backend(*bytes, inputs.inbound_deadline,
+                                                              &result.document)) {
+          result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
+                                       std::move(*warning));
+          record_collector_warnings(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, 1);
+        }
+      }
+      if (!pdf && form_fields_requested) {
+        result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
+                                     "extract_form_fields: the input is not a PDF, so it has "
+                                     "no AcroForm widgets to read");
+        record_collector_warnings(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, 1);
+      }
       const grpc::Status structure_status = check_structure(
           result.document, structure, surface, &parsed->structure_findings);
       if (!structure_status.ok()) return structure_status;
@@ -2443,7 +2472,13 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     // path produced it; the backend that owns the PDF layer supplies them
     // (pdf_form_widgets.h). Appending to the arenas leaves the offset table
     // below describing the same items.
-    if (pdf && !context->IsCancelled()) {
+    if (!pdf && form_fields_requested) {
+      result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
+                                   "extract_form_fields: the input is not a PDF, so it has no "
+                                   "AcroForm widgets to read");
+      record_collector_warnings(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, 1);
+    }
+    if (pdf && !form_fields_off && !context->IsCancelled()) {
       if (auto warning = fold_pdf_form_widgets_from_backend(*bytes, inputs.inbound_deadline,
                                                             &result.document)) {
         result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
