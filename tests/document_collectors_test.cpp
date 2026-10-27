@@ -1608,11 +1608,12 @@ void verify_fastwarc_payload_text_is_utf8() {
   require(outcome.success && outcome.document.groups_size() == 3,
           "the three records fold: " + outcome.error);
   std::vector<std::string> payloads;
-  for (const auto& item : outcome.document.texts()) {
-    const std::string& text = item.text().base().text();
-    if (!text.contains(": ")) payloads.push_back(text);
+  // The payload is the last item of each record's group.
+  for (const auto& group : outcome.document.groups()) {
+    const std::string& ref = group.children(group.children_size() - 1).ref();
+    const int index = std::stoi(ref.substr(ref.rfind('/') + 1));
+    payloads.push_back(outcome.document.texts(index).text().base().text());
   }
-  require(payloads.size() == 3, "each record folds its payload text");
   require(payloads[0] == "\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD ok",
           "undecoded GBK bytes become U+FFFD, the ASCII around them stays");
   require(payloads[1] == "caf\xC3\xA9", "a declared latin-1 payload is transcoded");
