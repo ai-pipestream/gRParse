@@ -1,6 +1,7 @@
 #include "grparse/workbook_cells.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <map>
 #include <optional>
 #include <set>
@@ -144,24 +145,34 @@ void adopt_table(const docv1::TableData& calamine, docv1::TableData* libre) {
 
 }  // namespace
 
+// Whether `position` lies inside `area`, other than at its top-left cell.
+// The sums are 64-bit: an area reported across the 32-bit grid must not
+// wrap.
+bool covered_by(const MergedArea& area, Position position) {
+  const auto [row, column] = position;
+  if (row == area.row && column == area.column) return false;
+  return row >= area.row && static_cast<int64_t>(row) < static_cast<int64_t>(area.row) + area.rows &&
+         column >= area.column &&
+         static_cast<int64_t>(column) < static_cast<int64_t>(area.column) + area.columns;
+}
+
 void apply_merged_areas(docv1::TableData* data, const std::vector<MergedArea>& areas) {
   if (areas.empty()) return;
   std::map<Position, int> index_at;
   for (int index = 0; index < data->table_cells_size(); ++index) {
     index_at.emplace(position_of(data->table_cells(index)), index);
   }
+  // The cells placed are visited, never the area's positions: a collector
+  // can size an area across the grid, and the work must stay proportional
+  // to the sheet's cells.
   std::set<int> covered;
   for (const MergedArea& area : areas) {
     if (area.rows < 1 || area.columns < 1 || (area.rows == 1 && area.columns == 1)) continue;
     const auto top_left = index_at.find({area.row, area.column});
     if (top_left == index_at.end()) continue;
     set_spans(data->mutable_table_cells(top_left->second), area.rows, area.columns);
-    for (int row = area.row; row < area.row + area.rows; ++row) {
-      for (int column = area.column; column < area.column + area.columns; ++column) {
-        if (row == area.row && column == area.column) continue;
-        const auto inside = index_at.find({row, column});
-        if (inside != index_at.end()) covered.insert(inside->second);
-      }
+    for (const auto& [position, index] : index_at) {
+      if (covered_by(area, position)) covered.insert(index);
     }
   }
   if (covered.empty()) return;
