@@ -905,9 +905,89 @@ void verify_unspecified_chart_engine_is_refused_by_field() {
   }
 }
 
+// The VLM model messages' response formats are typed and checked: unknown
+// numbers and names, disagreeing typed and raw values, and a format the VLM
+// convert collector cannot map are each refused by field.
+void verify_vlm_response_formats_are_typed() {
+  {
+    parsev1::ConvertDocumentOptions options;
+    auto* local = options.mutable_vlm_pipeline_model_local();
+    local->set_repo_id("ibm-granite/granite-docling-258M");
+    local->set_response_format(parsev1::RESPONSE_FORMAT_DOCTAGS);
+    local->set_response_format_raw("doctags");
+    require(grparse::validate_options(options, kSurface).ok(),
+            "an agreeing typed and raw format is accepted");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    auto* local = options.mutable_vlm_pipeline_model_local();
+    local->set_repo_id("nvidia/NVIDIA-Nemotron-Parse-v3.5");
+    local->set_response_format(parsev1::RESPONSE_FORMAT_NEMOTRON_PARSE_V3_5);
+    const auto rejection = rejection_of(grparse::validate_options(options, kSurface));
+    require(rejection.option_path() == "vlm_pipeline_model_local.response_format" &&
+                rejection.reason() == parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED &&
+                rejection.rejected_value_raw() == "nemotron_parse_v3_5",
+            "a format the collector cannot map is a typed NOT_IMPLEMENTED");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    auto* api = options.mutable_vlm_pipeline_model_api();
+    api->set_url("granite-docling");
+    api->set_response_format(parsev1::RESPONSE_FORMAT_MARKDOWN);
+    api->set_response_format_raw("html");
+    const auto rejection = rejection_of(grparse::validate_options(options, kSurface));
+    require(rejection.option_path() == "vlm_pipeline_model_api.response_format_raw" &&
+                rejection.reason() == parsev1::OPTION_REJECTION_REASON_CONFLICT,
+            "disagreeing typed and raw formats are a typed CONFLICT");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    auto* api = options.mutable_vlm_pipeline_model_api();
+    api->set_url("granite-docling");
+    api->set_response_format_raw("Markdown");
+    const auto rejection = rejection_of(grparse::validate_options(options, kSurface));
+    require(rejection.option_path() == "vlm_pipeline_model_api.response_format_raw" &&
+                rejection.reason() == parsev1::OPTION_REJECTION_REASON_UNKNOWN_VALUE &&
+                rejection.rejected_value_raw() == "Markdown",
+            "a name docling does not define is a typed UNKNOWN_VALUE");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    auto* local = options.mutable_vlm_pipeline_model_local();
+    local->set_repo_id("ibm-granite/granite-docling-258M");
+    local->set_response_format(static_cast<parsev1::ResponseFormat>(99));
+    const auto rejection = rejection_of(grparse::validate_options(options, kSurface));
+    require(rejection.option_path() == "vlm_pipeline_model_local.response_format" &&
+                rejection.reason() == parsev1::OPTION_REJECTION_REASON_UNKNOWN_VALUE &&
+                rejection.rejected_value_raw() == "99",
+            "a number outside the enum is a typed UNKNOWN_VALUE");
+  }
+  {
+    // The enrich legs' specs take any docling format, checked for being
+    // one; only the VLM pipeline's spec is held to what its collector maps.
+    parsev1::ConvertDocumentOptions options;
+    *options.mutable_chart_extraction_custom_config() = representable_chart_config();
+    options.mutable_chart_extraction_custom_config()->mutable_model_spec()->set_response_format_raw(
+        "dots_json");
+    require(grparse::validate_options(options, kSurface).ok(),
+            "an enrich spec may name any docling format");
+    auto* spec = options.mutable_vlm_pipeline_custom_config()->mutable_model_spec();
+    options.mutable_vlm_pipeline_custom_config()->mutable_engine_options()->set_engine_type(
+        parsev1::VLM_ENGINE_TYPE_API_OPENAI);
+    spec->set_name("dots");
+    spec->set_default_repo_id("rednote-hilab/dots.ocr");
+    spec->set_response_format_raw("dots_json");
+    const auto rejection = rejection_of(grparse::validate_options(options, kSurface));
+    require(rejection.option_path() == "vlm_pipeline_custom_config.model_spec.response_format_raw" &&
+                rejection.reason() == parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED,
+            "the VLM pipeline spec is held to the collector's formats");
+  }
+}
+
 int main() {
   return grparse_test::run_test_main("convert-options-test", "ok", {
       verify_typed_rejections_and_heading_options,
+      verify_vlm_response_formats_are_typed,
       verify_parity_1_37_options,
       verify_chart_and_caption_options,
       verify_hybrid_chunking_is_validated,

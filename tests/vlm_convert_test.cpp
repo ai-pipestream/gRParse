@@ -5,6 +5,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -158,6 +159,75 @@ void verify_apply_maps_granite_docling_and_raw_api_url() {
               local_options.preset_raw == "ibm-granite/granite-vision" &&
               local_options.scale == 1.5,
           "typed local model maps repo_id and scale");
+}
+
+// Every docling 2.142.1 ResponseFormat has a member and a name; the five the
+// collector maps reach it from local, api, and the custom config's spec, and
+// the raw docling name stands in for an unset typed field.
+void verify_response_formats_cover_docling_and_reach_the_collector() {
+  const std::pair<parsev1::ResponseFormat, const char*> docling[] = {
+      {parsev1::RESPONSE_FORMAT_DOCTAGS, "doctags"},
+      {parsev1::RESPONSE_FORMAT_DOCLANG, "doclang"},
+      {parsev1::RESPONSE_FORMAT_MARKDOWN, "markdown"},
+      {parsev1::RESPONSE_FORMAT_DEEPSEEKOCR_MARKDOWN, "deepseekocr_markdown"},
+      {parsev1::RESPONSE_FORMAT_UNLIMITED_OCR_MARKDOWN, "unlimited_ocr_markdown"},
+      {parsev1::RESPONSE_FORMAT_HTML, "html"},
+      {parsev1::RESPONSE_FORMAT_OTSL, "otsl"},
+      {parsev1::RESPONSE_FORMAT_PLAINTEXT, "plaintext"},
+      {parsev1::RESPONSE_FORMAT_CHANDRA_HTML, "chandra_html"},
+      {parsev1::RESPONSE_FORMAT_DOTS_JSON, "dots_json"},
+      {parsev1::RESPONSE_FORMAT_NEMOTRON_PARSE_V2, "nemotron_parse_v2"},
+      {parsev1::RESPONSE_FORMAT_NEMOTRON_PARSE_V3_5, "nemotron_parse_v3_5"},
+      {parsev1::RESPONSE_FORMAT_MINERU2, "mineru2"},
+  };
+  require(parsev1::ResponseFormat_descriptor()->value_count() == 14,
+          "ResponseFormat is UNSPECIFIED plus docling's 13 members");
+  for (const auto& [format, name] : docling) {
+    require(grparse::response_format_name(format) == std::string_view(name) &&
+                grparse::response_format_from_name(name) == format,
+            std::string("docling name round-trips: ") + name);
+  }
+  require(!grparse::response_format_name(parsev1::RESPONSE_FORMAT_UNSPECIFIED).has_value() &&
+              !grparse::response_format_from_name("DOCTAGS").has_value(),
+          "UNSPECIFIED has no name and names are docling's lowercase values");
+  require(grparse::vlm_collector_response_format(parsev1::RESPONSE_FORMAT_OTSL) ==
+                  vlmv1::RESPONSE_FORMAT_OTSL &&
+              !grparse::vlm_collector_response_format(parsev1::RESPONSE_FORMAT_DOCLANG)
+                   .has_value(),
+          "the collector maps the five it reads and nothing else");
+
+  parsev1::ConvertDocumentOptions local;
+  local.mutable_vlm_pipeline_model_local()->set_repo_id("ibm-granite/granite-docling-258M");
+  local.mutable_vlm_pipeline_model_local()->set_response_format(parsev1::RESPONSE_FORMAT_DOCTAGS);
+  grparse::VlmConvertOptions local_options;
+  grparse::apply_vlm_convert_options(local, &local_options);
+  require(local_options.response_format == vlmv1::RESPONSE_FORMAT_DOCTAGS,
+          "the local model's typed format reaches the collector");
+
+  parsev1::ConvertDocumentOptions api;
+  api.mutable_vlm_pipeline_model_api()->set_url("http://vlm.example:8080/v1");
+  api.mutable_vlm_pipeline_model_api()->set_response_format_raw("markdown");
+  grparse::VlmConvertOptions api_options;
+  grparse::apply_vlm_convert_options(api, &api_options);
+  require(api_options.response_format == vlmv1::RESPONSE_FORMAT_MARKDOWN,
+          "the api model's raw docling name reaches the collector");
+
+  parsev1::ConvertDocumentOptions custom;
+  auto* spec = custom.mutable_vlm_pipeline_custom_config()->mutable_model_spec();
+  spec->set_name("granite_docling");
+  spec->set_default_repo_id("ibm-granite/granite-docling-258M");
+  spec->set_response_format(parsev1::RESPONSE_FORMAT_HTML);
+  grparse::VlmConvertOptions custom_options;
+  grparse::apply_vlm_convert_options(custom, &custom_options);
+  require(custom_options.response_format == vlmv1::RESPONSE_FORMAT_HTML,
+          "the custom config's spec format reaches the collector");
+
+  parsev1::ConvertDocumentOptions none;
+  none.set_vlm_pipeline_model(parsev1::VLM_MODEL_TYPE_GRANITEDOCLING);
+  grparse::VlmConvertOptions none_options;
+  grparse::apply_vlm_convert_options(none, &none_options);
+  require(none_options.response_format == vlmv1::RESPONSE_FORMAT_UNSPECIFIED,
+          "no format named leaves the preset's own");
 }
 
 void verify_convert_rasters_dials_and_merges() {
@@ -570,6 +640,7 @@ void verify_endpoints_lazy_channel() {
 int main() {
   return grparse_test::run_test_main("vlm-convert-test", "all checks passed", {
       verify_apply_maps_granite_docling_and_raw_api_url,
+      verify_response_formats_cover_docling_and_reach_the_collector,
       verify_vlm_stop_reason_classifies_like_docling,
       verify_type_generation_stop_reasons_walks_the_document,
       verify_no_map_in_document_reaches_a_generation_source,

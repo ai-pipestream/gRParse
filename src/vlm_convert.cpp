@@ -121,6 +121,58 @@ docv1::VlmStopReason vlm_stop_reason(std::string_view finish_reason) {
 
 void type_generation_stop_reasons(docv1::Document* document) { type_stop_reasons_in(document); }
 
+namespace {
+
+struct ResponseFormatName {
+  parsev1::ResponseFormat format;
+  std::string_view name;
+};
+
+// docling's ResponseFormat values (docling 2.142.1), in its declaration order.
+constexpr ResponseFormatName kResponseFormatNames[] = {
+    {parsev1::RESPONSE_FORMAT_DOCTAGS, "doctags"},
+    {parsev1::RESPONSE_FORMAT_DOCLANG, "doclang"},
+    {parsev1::RESPONSE_FORMAT_MARKDOWN, "markdown"},
+    {parsev1::RESPONSE_FORMAT_DEEPSEEKOCR_MARKDOWN, "deepseekocr_markdown"},
+    {parsev1::RESPONSE_FORMAT_UNLIMITED_OCR_MARKDOWN, "unlimited_ocr_markdown"},
+    {parsev1::RESPONSE_FORMAT_HTML, "html"},
+    {parsev1::RESPONSE_FORMAT_OTSL, "otsl"},
+    {parsev1::RESPONSE_FORMAT_PLAINTEXT, "plaintext"},
+    {parsev1::RESPONSE_FORMAT_CHANDRA_HTML, "chandra_html"},
+    {parsev1::RESPONSE_FORMAT_DOTS_JSON, "dots_json"},
+    {parsev1::RESPONSE_FORMAT_NEMOTRON_PARSE_V2, "nemotron_parse_v2"},
+    {parsev1::RESPONSE_FORMAT_NEMOTRON_PARSE_V3_5, "nemotron_parse_v3_5"},
+    {parsev1::RESPONSE_FORMAT_MINERU2, "mineru2"},
+};
+
+}  // namespace
+
+std::optional<std::string_view> response_format_name(parsev1::ResponseFormat format) {
+  for (const ResponseFormatName& entry : kResponseFormatNames) {
+    if (entry.format == format) return entry.name;
+  }
+  return std::nullopt;
+}
+
+std::optional<parsev1::ResponseFormat> response_format_from_name(std::string_view name) {
+  for (const ResponseFormatName& entry : kResponseFormatNames) {
+    if (entry.name == name) return entry.format;
+  }
+  return std::nullopt;
+}
+
+std::optional<vlmv1::ResponseFormat> vlm_collector_response_format(
+    parsev1::ResponseFormat format) {
+  switch (format) {
+    case parsev1::RESPONSE_FORMAT_DOCTAGS: return vlmv1::RESPONSE_FORMAT_DOCTAGS;
+    case parsev1::RESPONSE_FORMAT_MARKDOWN: return vlmv1::RESPONSE_FORMAT_MARKDOWN;
+    case parsev1::RESPONSE_FORMAT_HTML: return vlmv1::RESPONSE_FORMAT_HTML;
+    case parsev1::RESPONSE_FORMAT_OTSL: return vlmv1::RESPONSE_FORMAT_OTSL;
+    case parsev1::RESPONSE_FORMAT_PLAINTEXT: return vlmv1::RESPONSE_FORMAT_PLAINTEXT;
+    default: return std::nullopt;
+  }
+}
+
 void apply_vlm_convert_options(const parsev1::ConvertDocumentOptions& convert,
                                VlmConvertOptions* options) {
   if (options == nullptr) return;
@@ -153,6 +205,20 @@ void apply_vlm_convert_options(const parsev1::ConvertDocumentOptions& convert,
     }
     if (api.has_scale() && api.scale() > 0.0 && options->scale <= 0.0) {
       options->scale = api.scale();
+    }
+  }
+  std::optional<parsev1::ResponseFormat> format;
+  if (convert.has_vlm_pipeline_model_local()) {
+    format = named_response_format(convert.vlm_pipeline_model_local());
+  } else if (convert.has_vlm_pipeline_model_api()) {
+    format = named_response_format(convert.vlm_pipeline_model_api());
+  }
+  if (!format.has_value() && convert.has_vlm_pipeline_custom_config()) {
+    format = named_response_format(convert.vlm_pipeline_custom_config().model_spec());
+  }
+  if (format.has_value()) {
+    if (const auto collector = vlm_collector_response_format(*format); collector.has_value()) {
+      options->response_format = *collector;
     }
   }
   if (convert.has_vlm_pipeline_preset() && !convert.vlm_pipeline_preset().empty()) {

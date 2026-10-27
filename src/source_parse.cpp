@@ -505,6 +505,54 @@ grpc::Status validate_remote_services(const pipestream::parse::v1::ConvertDocume
   return grpc::Status::OK;
 }
 
+// A VLM model message's response format: the typed field must be a
+// member, response_format_raw must be one of docling's names, and the two
+// must name the same format when both are set. A format bound for the VLM
+// convert leg (`vlm_leg`) must also be one that leg's collector maps; any
+// other is refused by field rather than replaced with the preset default.
+template <typename Message>
+grpc::Status validate_response_format(const Message& message, const std::string& path,
+                                      const std::string& surface, bool vlm_leg) {
+  namespace parsev1 = pipestream::parse::v1;
+  const bool typed = message.has_response_format() &&
+                     message.response_format() != parsev1::RESPONSE_FORMAT_UNSPECIFIED;
+  if (message.has_response_format() && !parsev1::ResponseFormat_IsValid(message.response_format())) {
+    return option_rejected(path + ".response_format",
+                           parsev1::OPTION_REJECTION_REASON_UNKNOWN_VALUE,
+                           std::to_string(static_cast<int>(message.response_format())),
+                           surface + ": " + path + ".response_format is not a known ResponseFormat");
+  }
+  if (message.has_response_format_raw()) {
+    const auto named = response_format_from_name(message.response_format_raw());
+    if (!named.has_value()) {
+      return option_rejected(path + ".response_format_raw",
+                             parsev1::OPTION_REJECTION_REASON_UNKNOWN_VALUE,
+                             message.response_format_raw(),
+                             surface + ": " + path + ".response_format_raw '" +
+                                 message.response_format_raw() +
+                                 "' is not a docling ResponseFormat value");
+    }
+    if (typed && *named != message.response_format()) {
+      return option_rejected(path + ".response_format_raw",
+                             parsev1::OPTION_REJECTION_REASON_CONFLICT,
+                             message.response_format_raw(),
+                             surface + ": " + path + ".response_format and " + path +
+                                 ".response_format_raw disagree");
+    }
+  }
+  if (!vlm_leg) return grpc::Status::OK;
+  const auto format = named_response_format(message);
+  if (format.has_value() && !vlm_collector_response_format(*format).has_value()) {
+    const std::string name(response_format_name(*format).value_or(""));
+    return option_rejected(typed ? path + ".response_format" : path + ".response_format_raw",
+                           parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED, name,
+                           surface + ": " + path + " response format '" + name +
+                               "' is not one the VLM convert collector maps (doctags, "
+                               "markdown, html, otsl, plaintext)");
+  }
+  return grpc::Status::OK;
+}
+
 // VLM selection fields are accepted so Docling clients that always set them
 // are not turned away. They are mutually exclusive (preset / enum / local /
 // api). PROCESSING_PIPELINE_VLM uses them when the convert peer is configured.
@@ -556,6 +604,16 @@ grpc::Status validate_vlm_selection(const pipestream::parse::v1::ConvertDocument
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                           surface + ": vlm_pipeline_model_api.concurrency must be >= 1");
     }
+    if (auto s = validate_response_format(api, "vlm_pipeline_model_api", surface, true); !s.ok()) {
+      return s;
+    }
+  }
+  if (options.has_vlm_pipeline_model_local()) {
+    if (auto s = validate_response_format(options.vlm_pipeline_model_local(),
+                                          "vlm_pipeline_model_local", surface, true);
+        !s.ok()) {
+      return s;
+    }
   }
   return grpc::Status::OK;
 }
@@ -591,7 +649,10 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
                           surface + ": " + std::string(name) +
                               ".model_spec requires name and default_repo_id");
     }
-    return grpc::Status::OK;
+    // Only the VLM pipeline's spec format reaches a collector that reads
+    // it; the enrich legs' specs are checked for a known, agreeing value.
+    return validate_response_format(spec, std::string(name) + ".model_spec", surface,
+                                    std::string_view(name) == "vlm_pipeline_custom_config");
   };
 
   if (options.has_vlm_pipeline_custom_config()) {

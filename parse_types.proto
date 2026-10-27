@@ -269,7 +269,12 @@ enum VlmModelType {
   VLM_MODEL_TYPE_LIGHTONOCR_VLLM = 16;
 }
 
-// Response format for VLM model output.
+// Response format for VLM model output: every member of docling's
+// ResponseFormat as of docling 2.142.1. Values 1 to 5 predate the rest; 6 to
+// 13 follow in docling's declaration order. The VLM convert leg
+// (grpc-vlm-convert) maps DOCTAGS, MARKDOWN, HTML, OTSL and PLAINTEXT; a
+// request that sends it any other format is refused by field
+// (OPTION_REJECTION_REASON_NOT_IMPLEMENTED), never sent as a default.
 enum ResponseFormat {
   RESPONSE_FORMAT_UNSPECIFIED = 0;
   RESPONSE_FORMAT_DOCTAGS = 1;
@@ -277,6 +282,22 @@ enum ResponseFormat {
   RESPONSE_FORMAT_HTML = 3;
   RESPONSE_FORMAT_OTSL = 4;
   RESPONSE_FORMAT_PLAINTEXT = 5;
+  // "doclang"
+  RESPONSE_FORMAT_DOCLANG = 6;
+  // "deepseekocr_markdown"
+  RESPONSE_FORMAT_DEEPSEEKOCR_MARKDOWN = 7;
+  // "unlimited_ocr_markdown"
+  RESPONSE_FORMAT_UNLIMITED_OCR_MARKDOWN = 8;
+  // "chandra_html"
+  RESPONSE_FORMAT_CHANDRA_HTML = 9;
+  // "dots_json"
+  RESPONSE_FORMAT_DOTS_JSON = 10;
+  // "nemotron_parse_v2"
+  RESPONSE_FORMAT_NEMOTRON_PARSE_V2 = 11;
+  // "nemotron_parse_v3_5"
+  RESPONSE_FORMAT_NEMOTRON_PARSE_V3_5 = 12;
+  // "mineru2"
+  RESPONSE_FORMAT_MINERU2 = 13;
 }
 
 // Inference framework for local VLM models.
@@ -803,6 +824,10 @@ message VlmModelLocal {
   optional TransformersModelType transformers_model_type = 6;
   map<string, ScalarValue> extra_generation_config = 7;
   optional double temperature = 8;
+  // docling's ResponseFormat string value ("nemotron_parse_v3_5"), for a
+  // client that forwards docling JSON. Must name a docling format; with
+  // response_format set, both must name the same one.
+  optional string response_format_raw = 9;
 }
 
 // VlmModelApi configures an API-based vision-language model for the VLM pipeline.
@@ -816,6 +841,10 @@ message VlmModelApi {
   optional double scale = 7;
   optional ResponseFormat response_format = 8;
   optional double temperature = 9;
+  // docling's ResponseFormat string value ("nemotron_parse_v3_5"), for a
+  // client that forwards docling JSON. Must name a docling format; with
+  // response_format set, both must name the same one.
+  optional string response_format_raw = 10;
 }
 
 message BaseVlmEngineOptions {
@@ -857,6 +886,10 @@ message VlmModelSpec {
   optional double temperature = 11;
   optional int32 max_new_tokens = 12;
   map<string, ScalarValue> extra_generation_config = 13;
+  // docling's ResponseFormat string value ("nemotron_parse_v3_5"), for a
+  // client that forwards docling JSON. Must name a docling format; with
+  // response_format set, both must name the same one.
+  optional string response_format_raw = 14;
 }
 
 message VlmConvertOptions {
