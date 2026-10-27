@@ -426,6 +426,44 @@ void verify_picture_chunks_carry_captions_only() {
           "an uncaptioned picture emits no placeholder chunk");
 }
 
+// docling-core #675: a table's, picture's or code block's footnotes chunk
+// with it, after the body (before the captions for a picture), and never on
+// their own. They are not reported as captions.
+void verify_footnotes_chunk_with_their_item() {
+  docv1::Document document = new_document();
+  const std::string table_note = add_paragraph(&document, "Values in grams.");
+  add_table(&document, {{{"A", true, false}, {"B", true, false}},
+                        {{"x", false, false}, {"1", false, false}}});
+  document.mutable_tables(0)->add_footnotes()->set_ref(table_note);
+  const std::string picture_caption = add_paragraph(&document, "Figure 1.");
+  const std::string picture_note = add_paragraph(&document, "Photo credit.");
+  add_picture(&document, {picture_caption});
+  document.mutable_pictures(0)->add_footnotes()->set_ref(picture_note);
+  const std::string code_ref = next_text_ref(document);
+  auto* code = document.add_texts()->mutable_code();
+  code->set_self_ref(code_ref);
+  code->set_text("x = 1");
+  code->set_label(docv1::DOC_ITEM_LABEL_CODE);
+  code->mutable_parent()->set_ref("#/body");
+  document.mutable_body()->add_children()->set_ref(code_ref);
+  const std::string code_note = add_paragraph(&document, "Python 3.");
+  document.mutable_texts(static_cast<int>(document.texts_size()) - 2)
+      ->mutable_code()
+      ->add_footnotes()
+      ->set_ref(code_note);
+
+  const auto chunks = chunk_hierarchical(document, {}, {}, "notes.pdf");
+  require_eq(static_cast<int>(chunks.size()), 3, "one chunk each for table, picture and code");
+  require_eq(chunks[0].text(), "A = x. B = 1\nValues in grams.",
+             "a table's footnote follows its body");
+  require_eq(static_cast<int>(chunks[0].captions().size()), 0,
+             "a footnote is not reported as a caption");
+  require_eq(chunks[1].text(), "Photo credit.\nFigure 1.",
+             "a picture's footnote sits before its captions");
+  require_eq(static_cast<int>(chunks[1].captions().size()), 1, "the picture caption only");
+  require_eq(chunks[2].text(), "x = 1\nPython 3.", "a code block's footnote follows it");
+}
+
 void verify_picture_chunks_emit_markdown_image_placeholder() {
   docv1::Document bare = new_document();
   add_picture(&bare, {});
@@ -1268,6 +1306,7 @@ const Case kCases[] = {
     {"nesting depth cap", verify_deep_nesting_is_bounded},
     {"table serialization", verify_table_serialization_and_its_degradations},
     {"picture captions", verify_picture_chunks_carry_captions_only},
+    {"footnotes chunk with their item", verify_footnotes_chunk_with_their_item},
     {"picture markdown images", verify_picture_chunks_emit_markdown_image_placeholder},
     {"shared caption claiming", verify_a_shared_caption_is_claimed_once},
     {"pages, items and offsets", verify_pages_items_and_offsets_propagate},

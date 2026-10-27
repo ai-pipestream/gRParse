@@ -1319,6 +1319,7 @@ if(BUILD_TESTING)
     html-renderer-test
     json-key-order-test
     latex-renderer-test
+    markdown-renderer-test
     load-normalization-test
     pdf-form-widgets-test
     render-determinism-test
