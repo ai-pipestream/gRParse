@@ -188,6 +188,36 @@ enum StructureRule {
   STRUCTURE_RULE_PARENT_MISSING = 6;
   // An item whose parent does not list it among its children (an orphan).
   STRUCTURE_RULE_NOT_LISTED_BY_PARENT = 7;
+  // A node reached through more than one children reference in the walk
+  // from #/body or from #/furniture: a DAG or a cycle (docling-core
+  // validate_tree, "already reachable through another reference").
+  // self_ref is the node listing it again, related_ref the repeated node.
+  STRUCTURE_RULE_REPEATED_REFERENCE = 8;
+  // A rich table cell (TableCell.ref) the table does not own: another cell
+  // of the same table names the same item, the item's parent is not the
+  // table, or the table does not list it among its children (docling-core
+  // validate_tree on a TableItem). self_ref is the table, related_ref the
+  // cell's item.
+  STRUCTURE_RULE_RICH_CELL_NOT_OWNED = 9;
+  // A table whose num_rows, num_cols, or num_rows * num_cols exceeds the
+  // per-table cell limit (docling-core TableData._validate_grid_size).
+  STRUCTURE_RULE_TABLE_CELLS_OVER_LIMIT = 10;
+  // The sum of num_rows * num_cols over every table exceeds the document
+  // cell limit (docling-core _validate_total_table_cells). self_ref is
+  // #/tables.
+  STRUCTURE_RULE_TOTAL_TABLE_CELLS_OVER_LIMIT = 11;
+}
+
+// The table cell limits STRUCTURE_RULE_TABLE_CELLS_OVER_LIMIT and
+// STRUCTURE_RULE_TOTAL_TABLE_CELLS_OVER_LIMIT check, docling-core's
+// max_table_cells and max_total_table_cells settings. An unset limit is
+// docling-core's default (1,000,000 and 5,000,000); a limit of 0 is
+// refused as OUT_OF_RANGE.
+message StructureTableCellLimits {
+  // Per table: num_rows, num_cols, and num_rows * num_cols may not exceed it.
+  optional uint64 max_table_cells = 1;
+  // Per document: the sum of num_rows * num_cols over every table.
+  optional uint64 max_total_table_cells = 2;
 }
 
 // Where captions sit relative to the item they caption (docling-core
@@ -1244,6 +1274,10 @@ message ConvertDocumentOptions {
   // collector extracts what its CSS selector rules name, and this client
   // never invents rules.
   optional lolhtml.v1.ExtractOptions lol_html_options = 64;
+  // The cell limits the two table-cell structure rules check; unset limits
+  // are docling-core's defaults. Setting it while structure_validation is
+  // OFF is rejected as contradictory.
+  optional StructureTableCellLimits structure_table_cell_limits = 66;
 }
 
 // HeadingHierarchyOptions mirrors the upstream PdfHeadingHierarchyOptions.

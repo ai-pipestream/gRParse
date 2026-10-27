@@ -261,6 +261,9 @@ class DocumentStreamReactor final
     if (!structure_.repairs.has_value() && incoming_.has_structure_repairs()) {
       structure_.repairs = incoming_.structure_repairs();
     }
+    if (!structure_.cell_limits.has_value() && incoming_.has_structure_table_cell_limits()) {
+      structure_.cell_limits = incoming_.structure_table_cell_limits();
+    }
     if (!slim_collector_documents_.has_value() && incoming_.has_slim_collector_documents()) {
       slim_collector_documents_ = incoming_.slim_collector_documents();
     }

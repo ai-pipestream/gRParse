@@ -75,6 +75,8 @@ message DocumentChunk {
   optional StructureValidation structure_validation = 10;
   repeated StructureRule structure_validation_rules = 11;
   optional StructureRepairs structure_repairs = 12;
+  // ConvertDocumentOptions.structure_table_cell_limits, resolved the same way.
+  optional StructureTableCellLimits structure_table_cell_limits = 14;
   // Slims each collector_document event whose collector's pages already
   // went out as page events: its Document then carries no texts, tables,
   // pictures, groups, page map, or body and furniture children, since the

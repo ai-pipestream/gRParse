@@ -216,6 +216,7 @@ bool implemented_option(std::string_view name) {
       "structure_validation",
       "structure_validation_rules",
       "structure_repairs",
+      "structure_table_cell_limits",
   };
   return std::ranges::find(kImplemented, name) != std::end(kImplemented);
 }
@@ -2567,6 +2568,7 @@ std::string options_digest(const pipestream::parse::v1::ConvertDocumentOptions& 
   decisive.clear_chunking_options();
   decisive.clear_structure_validation();
   decisive.clear_structure_validation_rules();
+  decisive.clear_structure_table_cell_limits();
   if (decisive.has_picture_description_api()) {
     auto* api = decisive.mutable_picture_description_api();
     api->clear_headers();

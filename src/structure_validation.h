@@ -28,6 +28,7 @@ struct StructureRequest {
       ai::pipestream::parse::v1::STRUCTURE_VALIDATION_UNSPECIFIED;
   google::protobuf::RepeatedField<int> rules;
   std::optional<ai::pipestream::parse::v1::StructureRepairs> repairs;
+  std::optional<ai::pipestream::parse::v1::StructureTableCellLimits> cell_limits;
 
   static StructureRequest from(const ai::pipestream::parse::v1::ConvertDocumentOptions& options);
 
@@ -38,8 +39,9 @@ struct StructureRequest {
 };
 
 // INVALID_ARGUMENT naming the offender for a value outside either enum, an
-// UNSPECIFIED rule, or a rule list given while validation is off (a
-// filter on a check that does not run is a contradiction, not a no-op).
+// UNSPECIFIED rule, a rule list or cell limits given while validation is
+// off (a filter on a check that does not run is a contradiction, not a
+// no-op), or a cell limit of 0 (OUT_OF_RANGE).
 grpc::Status validate_structure_request(const StructureRequest& request,
                                         const std::string& surface);
 

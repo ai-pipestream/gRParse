@@ -14,6 +14,7 @@
 #ifndef GRPARSE_STRUCTURE_RULES_H
 #define GRPARSE_STRUCTURE_RULES_H
 
+#include <cstdint>
 #include <set>
 #include <string>
 #include <string_view>
@@ -33,13 +34,26 @@ enum class StructureRule {
   kEmptyGroup = 5,
   kParentMissing = 6,
   kNotListedByParent = 7,
+  kRepeatedReference = 8,
+  kRichCellNotOwned = 9,
+  kTableCellsOverLimit = 10,
+  kTotalTableCellsOverLimit = 11,
 };
 
 inline constexpr StructureRule kAllStructureRules[] = {
     StructureRule::kDeprecatedFurnitureTree,   StructureRule::kKeyValueOrFormItem,
     StructureRule::kListGroupNonListItemChild, StructureRule::kListItemOutsideListGroup,
     StructureRule::kEmptyGroup,                StructureRule::kParentMissing,
-    StructureRule::kNotListedByParent,
+    StructureRule::kNotListedByParent,         StructureRule::kRepeatedReference,
+    StructureRule::kRichCellNotOwned,          StructureRule::kTableCellsOverLimit,
+    StructureRule::kTotalTableCellsOverLimit,
+};
+
+// The table cell limits (docling-core settings max_table_cells and
+// max_total_table_cells, with its defaults).
+struct StructureCellLimits {
+  std::uint64_t max_table_cells = 1'000'000;
+  std::uint64_t max_total_table_cells = 5'000'000;
 };
 
 struct StructureFinding {
@@ -62,11 +76,14 @@ std::string_view structure_rule_name(StructureRule rule);
 // still a list item. The order is fixed: the furniture tree, then key-value
 // and form items in arena order, then each node's list, parent and empty
 // group findings in arena order (body, furniture, groups, texts, pictures,
-// tables, key-value items, form items, field regions, field items). Empty
-// means the document follows every checked rule.
+// tables, key-value items, form items, field regions, field items), then
+// the repeated references in walk order from #/body and then #/furniture,
+// then each table's rich cell and cell limit findings in arena order, then
+// the document cell total. Empty means the document follows every checked
+// rule.
 std::vector<StructureFinding> docling_structure_findings(
     const ai::pipestream::document::v1::Document& document,
-    const std::set<StructureRule>& rules = {});
+    const std::set<StructureRule>& rules = {}, const StructureCellLimits& limits = {});
 
 }  // namespace grparse
 
