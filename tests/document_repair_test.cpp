@@ -647,6 +647,33 @@ void verify_continuation_shifts_spans_by_code_points() {
           "a reference into the tail follows it to the survivor's body reference");
 }
 
+// Provenance charspans measure code points from the item's start, as the
+// inline spans do; a tail line's charspan follows its text into the merged
+// item by the same shift.
+void verify_continuation_shifts_charspans_by_code_points() {
+  docv1::Document document = base_document();
+  add_pages(&document, 2);
+  const std::string head =
+      add_prose(&document, "Die Pr\xC3\xBC" "fung \xC3\xBC" "ber die", 1, 900.0, 920.0);
+  add_prose(&document, "  weiteren Schritte folgen.", 2, 100.0, 120.0);
+  auto* head_line = document.mutable_texts(0)->mutable_text()->mutable_base()->mutable_prov(0);
+  head_line->mutable_charspan()->set_start(0);
+  head_line->mutable_charspan()->set_end(20);
+  auto* tail_line = document.mutable_texts(1)->mutable_text()->mutable_base()->mutable_prov(0);
+  tail_line->mutable_charspan()->set_start(2);  // "weiteren Schritte folgen."
+  tail_line->mutable_charspan()->set_end(27);
+
+  require(grparse::merge_continuations(&document, {}) == 1, "the continuation merges");
+  const auto& merged = base_at(document, head);
+  require(merged.text() == "Die Pr\xC3\xBC" "fung \xC3\xBC" "ber die weiteren Schritte folgen.",
+          "texts join with one space");
+  require(merged.prov_size() == 2, "the tail's provenance appends to the head's");
+  require(merged.prov(0).charspan().start() == 0 && merged.prov(0).charspan().end() == 20,
+          "the head's line keeps its charspan");
+  require(merged.prov(1).charspan().start() == 21 && merged.prov(1).charspan().end() == 46,
+          "the tail's line lands on its text in code points");
+}
+
 void set_column(docv1::Document* document, int index, double left, double right) {
   auto* box = document->mutable_texts(index)->mutable_text()->mutable_base()->mutable_prov(0)->mutable_bbox();
   box->set_l(left);
@@ -881,6 +908,7 @@ int main() {
       verify_continuation_applies_hyphen_rule,
       verify_continuation_keeps_suspended_hyphen,
       verify_continuation_shifts_spans_by_code_points,
+      verify_continuation_shifts_charspans_by_code_points,
       verify_continuation_merges_within_a_page,
       verify_side_by_side_captions_do_not_merge,
       verify_next_page_caption_does_not_merge,
