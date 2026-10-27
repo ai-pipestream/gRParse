@@ -2699,6 +2699,7 @@ int main() {
       verify_fastwarc_framing_error_keeps_records,
       verify_fastwarc_transport_failure_without_records,
       verify_fastwarc_truncates_payload_text,
+      verify_fastwarc_payload_text_is_utf8,
       verify_fastwarc_streams_both_ways_without_deadlock,
       verify_fastwarc_deadline_is_a_failure,
       verify_calamine_folds_sheets,
