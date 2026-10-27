@@ -984,10 +984,55 @@ void verify_vlm_response_formats_are_typed() {
   }
 }
 
+// trust_remote_code is docling's inline-engine setting: false is accepted
+// on an inline engine, true is NOT_IMPLEMENTED (nothing here runs repository
+// code), and either value with an API engine is CONFLICT.
+void verify_trust_remote_code_is_inline_only() {
+  const auto with = [](parsev1::VlmEngineType engine, bool trust) {
+    parsev1::ConvertDocumentOptions options;
+    *options.mutable_chart_extraction_custom_config() = representable_chart_config();
+    auto* engine_options = options.mutable_chart_extraction_custom_config()->mutable_engine_options();
+    engine_options->set_engine_type(engine);
+    engine_options->set_trust_remote_code(trust);
+    return grparse::validate_options(options, kSurface);
+  };
+  for (const auto engine : {parsev1::VLM_ENGINE_TYPE_TRANSFORMERS, parsev1::VLM_ENGINE_TYPE_MLX,
+                            parsev1::VLM_ENGINE_TYPE_VLLM, parsev1::VLM_ENGINE_TYPE_AUTO_INLINE}) {
+    require(with(engine, false).ok(),
+            "trust_remote_code = false is accepted on " + parsev1::VlmEngineType_Name(engine));
+    const auto rejection = rejection_of(with(engine, true));
+    require(rejection.option_path() ==
+                    "chart_extraction_custom_config.engine_options.trust_remote_code" &&
+                rejection.reason() == parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED &&
+                rejection.rejected_value_raw() == "true",
+            "trust_remote_code = true is NOT_IMPLEMENTED on " +
+                parsev1::VlmEngineType_Name(engine));
+  }
+  for (const auto engine : {parsev1::VLM_ENGINE_TYPE_API, parsev1::VLM_ENGINE_TYPE_API_OLLAMA,
+                            parsev1::VLM_ENGINE_TYPE_API_LMSTUDIO,
+                            parsev1::VLM_ENGINE_TYPE_API_OPENAI}) {
+    for (const bool trust : {false, true}) {
+      const auto rejection = rejection_of(with(engine, trust));
+      require(rejection.reason() == parsev1::OPTION_REJECTION_REASON_CONFLICT,
+              "trust_remote_code is CONFLICT on " + parsev1::VlmEngineType_Name(engine));
+    }
+  }
+  parsev1::ConvertDocumentOptions vlm;
+  auto* config = vlm.mutable_vlm_pipeline_custom_config();
+  config->mutable_engine_options()->set_engine_type(parsev1::VLM_ENGINE_TYPE_API_OPENAI);
+  config->mutable_engine_options()->set_trust_remote_code(false);
+  config->mutable_model_spec()->set_name("granite_docling");
+  config->mutable_model_spec()->set_default_repo_id("ibm-granite/granite-docling-258M");
+  require(rejection_of(grparse::validate_options(vlm, kSurface)).option_path() ==
+              "vlm_pipeline_custom_config.engine_options.trust_remote_code",
+          "the VLM pipeline custom config is checked the same way");
+}
+
 int main() {
   return grparse_test::run_test_main("convert-options-test", "ok", {
       verify_typed_rejections_and_heading_options,
       verify_vlm_response_formats_are_typed,
+      verify_trust_remote_code_is_inline_only,
       verify_parity_1_37_options,
       verify_chart_and_caption_options,
       verify_hybrid_chunking_is_validated,

@@ -630,15 +630,37 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
     if (value.has_uint_value()) return static_cast<double>(value.uint_value());
     return std::nullopt;
   };
-  const auto require_engine = [&](pipestream::parse::v1::VlmEngineType engine_type,
+  const auto require_engine = [&](const pipestream::parse::v1::BaseVlmEngineOptions& engine,
                                   const char* name) -> grpc::Status {
-    if (engine_type == pipestream::parse::v1::VLM_ENGINE_TYPE_UNSPECIFIED) {
+    namespace parsev1 = pipestream::parse::v1;
+    const parsev1::VlmEngineType engine_type = engine.engine_type();
+    if (engine_type == parsev1::VLM_ENGINE_TYPE_UNSPECIFIED) {
       return option_rejected(std::string(name) + ".engine_options.engine_type",
-                             pipestream::parse::v1::OPTION_REJECTION_REASON_UNKNOWN_VALUE,
+                             parsev1::OPTION_REJECTION_REASON_UNKNOWN_VALUE,
                              "VLM_ENGINE_TYPE_UNSPECIFIED",
                              surface + ": " + std::string(name) +
                                  ".engine_options.engine_type is required "
                                  "(VLM_ENGINE_TYPE_UNSPECIFIED names no engine)");
+    }
+    if (engine.has_trust_remote_code()) {
+      const std::string path = std::string(name) + ".engine_options.trust_remote_code";
+      const std::string raw = engine.trust_remote_code() ? "true" : "false";
+      const bool api = engine_type == parsev1::VLM_ENGINE_TYPE_API ||
+                       engine_type == parsev1::VLM_ENGINE_TYPE_API_OLLAMA ||
+                       engine_type == parsev1::VLM_ENGINE_TYPE_API_LMSTUDIO ||
+                       engine_type == parsev1::VLM_ENGINE_TYPE_API_OPENAI;
+      if (api) {
+        return option_rejected(path, parsev1::OPTION_REJECTION_REASON_CONFLICT, raw,
+                               surface + ": " + path + " is an inline-engine setting; " +
+                                   parsev1::VlmEngineType_Name(engine_type) +
+                                   " runs no model-repository code");
+      }
+      if (engine.trust_remote_code()) {
+        return option_rejected(path, parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED, raw,
+                               surface + ": " + path +
+                                   " = true is not implemented; no gRParse leg runs "
+                                   "model-repository code");
+      }
     }
     return grpc::Status::OK;
   };
@@ -657,7 +679,7 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
 
   if (options.has_vlm_pipeline_custom_config()) {
     const auto& cfg = options.vlm_pipeline_custom_config();
-    if (auto s = require_engine(cfg.engine_options().engine_type(), "vlm_pipeline_custom_config");
+    if (auto s = require_engine(cfg.engine_options(), "vlm_pipeline_custom_config");
         !s.ok()) {
       return s;
     }
@@ -668,7 +690,7 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
   if (options.has_picture_description_custom_config()) {
     const auto& cfg = options.picture_description_custom_config();
     if (auto s =
-            require_engine(cfg.engine_options().engine_type(), "picture_description_custom_config");
+            require_engine(cfg.engine_options(), "picture_description_custom_config");
         !s.ok()) {
       return s;
     }
@@ -686,7 +708,7 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
   }
   if (options.has_code_formula_custom_config()) {
     const auto& cfg = options.code_formula_custom_config();
-    if (auto s = require_engine(cfg.engine_options().engine_type(), "code_formula_custom_config");
+    if (auto s = require_engine(cfg.engine_options(), "code_formula_custom_config");
         !s.ok()) {
       return s;
     }
@@ -730,7 +752,7 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
   }
   if (has_chart_config) {
     const auto& cfg = options.chart_extraction_custom_config();
-    if (auto s = require_engine(cfg.engine_options().engine_type(),
+    if (auto s = require_engine(cfg.engine_options(),
                                 "chart_extraction_custom_config");
         !s.ok()) {
       return s;
