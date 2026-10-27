@@ -1197,6 +1197,7 @@ class FakeWarcService final : public warcv1::WarcService::Service {
     kFramingError,
     kTransportError,
     kTruncated,
+    kCharsets,
     kRequestBeforeResponse
   };
   explicit FakeWarcService(Mode mode) : mode_(mode) {}
@@ -1246,6 +1247,32 @@ class FakeWarcService final : public warcv1::WarcService::Service {
       event.Clear();
       event.mutable_record_end()->set_payload_length(71680);
       out.push_back(event);
+      return send(*stream, out, config.response_batch_size());
+    }
+    if (mode_ == Mode::kCharsets) {
+      // Three payloads that are not UTF-8 as sent: GBK, declared latin-1,
+      // and UTF-8 cut inside a character by the 64 KiB fold cap.
+      const auto record = [&](const std::string& charset, const std::string& data,
+                               uint64_t length) {
+        auto* meta = event.mutable_record_start()->mutable_metadata();
+        meta->set_record_type(warcv1::WARC_RECORD_TYPE_RESPONSE);
+        meta->set_is_http(true);
+        meta->set_http_parsed(true);
+        meta->set_http_content_type("text/html");
+        meta->set_http_charset(charset);
+        meta->set_content_length(length);
+        out.push_back(event);
+        event.Clear();
+        event.mutable_payload_chunk()->set_data(data);
+        out.push_back(event);
+        event.Clear();
+        event.mutable_record_end()->set_payload_length(length);
+        out.push_back(event);
+        event.Clear();
+      };
+      record("gbk", "\xC4\xE3\xBA\xC3 ok", 7);
+      record("ISO-8859-1", "caf\xE9", 4);
+      record("utf-8", std::string(65535, 'a') + "\xC3\xA9", 65537);
       return send(*stream, out, config.response_batch_size());
     }
     if (mode_ == Mode::kRequestBeforeResponse) {
@@ -1571,6 +1598,30 @@ void verify_fastwarc_truncates_payload_text() {
               payload.starts_with(std::string(16, 'a')) &&
               payload.ends_with(suffix),
           "the payload folds to the 64 KiB cap with the truncation noted");
+}
+
+void verify_fastwarc_payload_text_is_utf8() {
+  FakeWarcService service(FakeWarcService::Mode::kCharsets);
+  ServerFixture server(&service);
+  const auto outcome =
+      grparse::collect_fastwarc_document(server.channel(), "WARC/1.0 fake bytes");
+  require(outcome.success && outcome.document.groups_size() == 3,
+          "the three records fold: " + outcome.error);
+  std::vector<std::string> payloads;
+  for (const auto& item : outcome.document.texts()) {
+    const std::string& text = item.text().base().text();
+    if (!text.contains(": ")) payloads.push_back(text);
+  }
+  require(payloads.size() == 3, "each record folds its payload text");
+  require(payloads[0] == "\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD ok",
+          "undecoded GBK bytes become U+FFFD, the ASCII around them stays");
+  require(payloads[1] == "caf\xC3\xA9", "a declared latin-1 payload is transcoded");
+  require(payloads[2].starts_with(std::string(65535, 'a') + "\n[fastwarc: payload truncated"),
+          "a character split by the cap is dropped, not replaced");
+  std::string serialized;
+  require(outcome.document.SerializeToString(&serialized), "the document serializes");
+  require(outcome.warnings.size() == 1 && outcome.warnings[0].contains("charset gbk"),
+          "the undecoded charset is named once");
 }
 
 }  // namespace

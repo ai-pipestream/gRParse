@@ -4,12 +4,14 @@
 #include <cctype>
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
 #include <google/protobuf/util/time_util.h>
+#include <simdutf.h>
 
 #include "collector_support.h"
 #include "fastwarc/v1/warc_service.grpc.pb.h"
@@ -43,6 +45,64 @@ bool looks_textual(const warcv1::RecordMetadata& metadata) {
          type.contains("xml") || type.contains("html");
 }
 
+// Document text is a proto3 string, which must be UTF-8; a strict decoder
+// (Python's, for one) rejects the whole message over a single bad byte.
+// WARC payloads are whatever the crawled server sent, so every byte string
+// that reaches the Document passes through here. Bytes that start no valid
+// sequence become U+FFFD.
+std::string utf8_text(std::string_view bytes) {
+  std::string out;
+  out.reserve(bytes.size());
+  while (true) {
+    const simdutf::result valid = simdutf::validate_utf8_with_errors(bytes.data(), bytes.size());
+    if (valid.error == simdutf::error_code::SUCCESS) {
+      out.append(bytes);
+      return out;
+    }
+    out.append(bytes.substr(0, valid.count));
+    out.append("\xEF\xBF\xBD");
+    bytes.remove_prefix(valid.count + 1);
+  }
+}
+
+// Bytes truncated at the fold cap can end inside a UTF-8 character; that
+// incomplete tail is dropped rather than turned into U+FFFD.
+std::string_view drop_split_tail(std::string_view bytes) {
+  for (size_t back = 1; back <= 3 && back <= bytes.size(); ++back) {
+    const auto byte = static_cast<unsigned char>(bytes[bytes.size() - back]);
+    if ((byte & 0xC0U) == 0x80U) continue;
+    // The last lead byte: keep it only if its sequence is complete.
+    const size_t needed = byte >= 0xF0U ? 4 : byte >= 0xE0U ? 3 : byte >= 0xC0U ? 2 : 1;
+    if (needed > back) bytes.remove_suffix(back);
+    break;
+  }
+  return bytes;
+}
+
+bool is_latin1_charset(std::string charset) {
+  std::ranges::transform(charset, charset.begin(),
+                         [](unsigned char letter) { return std::tolower(letter); });
+  return charset == "iso-8859-1" || charset == "iso8859-1" || charset == "latin1" ||
+         charset == "latin-1" || charset == "l1";
+}
+
+// A payload as Document text. UTF-8 (and ASCII) passes through; a declared
+// ISO-8859-1 payload is transcoded, since every byte maps to one code
+// point. Any other charset is not decoded here: its invalid bytes become
+// U+FFFD and `undecoded` names the charset for the caller's warning.
+std::string payload_text(const warcv1::RecordMetadata& metadata, std::string_view bytes,
+                         bool cut, std::optional<std::string>& undecoded) {
+  const std::string_view whole = cut ? drop_split_tail(bytes) : bytes;
+  if (simdutf::validate_utf8(whole.data(), whole.size())) return std::string(whole);
+  if (metadata.has_http_charset() && is_latin1_charset(metadata.http_charset())) {
+    std::string out(simdutf::utf8_length_from_latin1(bytes.data(), bytes.size()), '\0');
+    out.resize(simdutf::convert_latin1_to_utf8(bytes.data(), bytes.size(), out.data()));
+    return out;
+  }
+  undecoded = metadata.has_http_charset() ? metadata.http_charset() : "undeclared";
+  return utf8_text(whole);
+}
+
 // Header blocks arrive lossless: ordered name/value byte pairs, original
 // case preserved, duplicates kept. Both WARC and HTTP define names
 // case-insensitively, so the lookup does too, and returns the first match.
@@ -59,7 +119,7 @@ std::optional<std::string> header_value(const warcv1::HeaderBlock& block,
     return true;
   };
   for (const auto& field : block.fields()) {
-    if (same_name(field.name())) return field.value();
+    if (same_name(field.name())) return utf8_text(field.value());
   }
   return std::nullopt;
 }
@@ -262,7 +322,13 @@ class WarcFold {
     add_text(index, "content-length: " + std::to_string(metadata.content_length()));
     add_text(index, "payload-length: " + std::to_string(payload_length));
     if (looks_textual(metadata) && payload_length > 0) {
-      std::string text = payload;
+      std::optional<std::string> undecoded;
+      std::string text =
+          payload_text(metadata, payload, payload_length > payload.size(), undecoded);
+      if (undecoded && undecoded_charsets_.insert(*undecoded).second) {
+        outcome_.warnings.push_back("payload text in charset " + *undecoded +
+                                    " is not decoded; invalid UTF-8 bytes became U+FFFD");
+      }
       if (payload_length > payload.size()) {
         text += "\n[fastwarc: payload truncated to the first " +
                 std::to_string(kPayloadTextBytes) + " of " +
@@ -291,6 +357,8 @@ class WarcFold {
   bool record_open_ = false;
   bool web_captured_ = false;
   bool web_from_response_ = false;
+  // Charsets already warned about, so a crawl of one site warns once.
+  std::set<std::string> undecoded_charsets_;
 };
 
 }  // namespace
