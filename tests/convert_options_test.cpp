@@ -4,14 +4,17 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <optional>
 #include <string>
 #include <system_error>
+#include <utility>
 
 #include "../src/parse_support.h"
 #include "../src/source_parse.h"
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
 #include "google/rpc/status.pb.h"
 #include "grparse/chart_extraction_policy.h"
+#include "grparse/vlm_convert.h"
 #include "support/check.h"
 
 namespace parsev1 = ai::pipestream::parse::v1;
@@ -905,9 +908,243 @@ void verify_unspecified_chart_engine_is_refused_by_field() {
   }
 }
 
+// The VLM model messages' response formats are typed and checked: unknown
+// numbers and names, disagreeing typed and raw values, and a format the VLM
+// convert collector cannot map are each refused by field.
+void verify_vlm_response_formats_are_typed() {
+  {
+    parsev1::ConvertDocumentOptions options;
+    auto* local = options.mutable_vlm_pipeline_model_local();
+    local->set_repo_id("ibm-granite/granite-docling-258M");
+    local->set_response_format(parsev1::RESPONSE_FORMAT_DOCTAGS);
+    local->set_response_format_raw("doctags");
+    require(grparse::validate_options(options, kSurface).ok(),
+            "an agreeing typed and raw format is accepted");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    auto* local = options.mutable_vlm_pipeline_model_local();
+    local->set_repo_id("nvidia/NVIDIA-Nemotron-Parse-v3.5");
+    local->set_response_format(parsev1::RESPONSE_FORMAT_NEMOTRON_PARSE_V3_5);
+    require(grparse::validate_options(options, kSurface).ok(),
+            "nemotron_parse_v3_5 reaches the collector");
+  }
+  {
+    // Every docling format but mineru2 is one the collector maps, typed or
+    // raw, on every VLM pipeline leg.
+    for (int value = parsev1::ResponseFormat_MIN + 1; value <= parsev1::ResponseFormat_MAX;
+         ++value) {
+      const auto format = static_cast<parsev1::ResponseFormat>(value);
+      const std::string name(grparse::response_format_name(format).value_or(""));
+      parsev1::ConvertDocumentOptions typed;
+      typed.mutable_vlm_pipeline_model_api()->set_url("http://vlm.test:8000/v1");
+      typed.mutable_vlm_pipeline_model_api()->set_response_format(format);
+      parsev1::ConvertDocumentOptions raw;
+      raw.mutable_vlm_pipeline_model_local()->set_repo_id("example/model");
+      raw.mutable_vlm_pipeline_model_local()->set_response_format_raw(name);
+      for (const auto& [options, path] :
+           {std::pair{&typed, std::string("vlm_pipeline_model_api.response_format")},
+            std::pair{&raw, std::string("vlm_pipeline_model_local.response_format_raw")}}) {
+        const grpc::Status status = grparse::validate_options(*options, kSurface);
+        if (format == parsev1::RESPONSE_FORMAT_MINERU2) {
+          const auto rejection = rejection_of(status);
+          require(rejection.option_path() == path &&
+                      rejection.reason() == parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED &&
+                      rejection.rejected_value_raw() == "mineru2",
+                  "mineru2 is a typed NOT_IMPLEMENTED at " + path);
+        } else {
+          require(status.ok(), "the VLM pipeline accepts " + name + " at " + path + ": " +
+                                   status.error_message());
+        }
+      }
+    }
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    auto* api = options.mutable_vlm_pipeline_model_api();
+    api->set_url("granite-docling");
+    api->set_response_format(parsev1::RESPONSE_FORMAT_MARKDOWN);
+    api->set_response_format_raw("html");
+    const auto rejection = rejection_of(grparse::validate_options(options, kSurface));
+    require(rejection.option_path() == "vlm_pipeline_model_api.response_format_raw" &&
+                rejection.reason() == parsev1::OPTION_REJECTION_REASON_CONFLICT,
+            "disagreeing typed and raw formats are a typed CONFLICT");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    auto* api = options.mutable_vlm_pipeline_model_api();
+    api->set_url("granite-docling");
+    api->set_response_format_raw("Markdown");
+    const auto rejection = rejection_of(grparse::validate_options(options, kSurface));
+    require(rejection.option_path() == "vlm_pipeline_model_api.response_format_raw" &&
+                rejection.reason() == parsev1::OPTION_REJECTION_REASON_UNKNOWN_VALUE &&
+                rejection.rejected_value_raw() == "Markdown",
+            "a name docling does not define is a typed UNKNOWN_VALUE");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    auto* local = options.mutable_vlm_pipeline_model_local();
+    local->set_repo_id("ibm-granite/granite-docling-258M");
+    local->set_response_format(static_cast<parsev1::ResponseFormat>(99));
+    const auto rejection = rejection_of(grparse::validate_options(options, kSurface));
+    require(rejection.option_path() == "vlm_pipeline_model_local.response_format" &&
+                rejection.reason() == parsev1::OPTION_REJECTION_REASON_UNKNOWN_VALUE &&
+                rejection.rejected_value_raw() == "99",
+            "a number outside the enum is a typed UNKNOWN_VALUE");
+  }
+  {
+    // The enrich legs' specs take any docling format, checked for being
+    // one; only the VLM pipeline's spec is held to what its collector maps.
+    parsev1::ConvertDocumentOptions options;
+    *options.mutable_chart_extraction_custom_config() = representable_chart_config();
+    options.mutable_chart_extraction_custom_config()->mutable_model_spec()->set_response_format_raw(
+        "dots_json");
+    require(grparse::validate_options(options, kSurface).ok(),
+            "an enrich spec may name any docling format");
+    auto* spec = options.mutable_vlm_pipeline_custom_config()->mutable_model_spec();
+    options.mutable_vlm_pipeline_custom_config()->mutable_engine_options()->set_engine_type(
+        parsev1::VLM_ENGINE_TYPE_API_OPENAI);
+    spec->set_name("dots");
+    spec->set_default_repo_id("rednote-hilab/dots.ocr");
+    spec->set_response_format_raw("dots_json");
+    require(grparse::validate_options(options, kSurface).ok(),
+            "the VLM pipeline spec may name dots_json");
+    spec->set_response_format_raw("mineru2");
+    const auto rejection = rejection_of(grparse::validate_options(options, kSurface));
+    require(rejection.option_path() == "vlm_pipeline_custom_config.model_spec.response_format_raw" &&
+                rejection.reason() == parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED,
+            "the VLM pipeline spec is held to the collector's formats");
+  }
+  {
+    // docling's enrich stages (picture description, chart extraction, code
+    // and formula) read the model's answer as text whatever the spec names;
+    // only vlm_convert reads response_format. So the enrich specs take every
+    // docling format, mineru2 included, checked for being one and agreeing.
+    for (int value = parsev1::ResponseFormat_MIN; value <= parsev1::ResponseFormat_MAX; ++value) {
+      const auto format = static_cast<parsev1::ResponseFormat>(value);
+      parsev1::ConvertDocumentOptions options;
+      options.mutable_picture_description_custom_config()->mutable_engine_options()->set_engine_type(
+          parsev1::VLM_ENGINE_TYPE_TRANSFORMERS);
+      auto* picture = options.mutable_picture_description_custom_config()->mutable_model_spec();
+      picture->set_name("granite_vision");
+      picture->set_default_repo_id("ibm-granite/granite-vision-3.3-2b");
+      picture->set_response_format(format);
+      if (auto name = grparse::response_format_name(format)) {
+        picture->set_response_format_raw(std::string(*name));
+      }
+      const grpc::Status status = grparse::validate_options(options, kSurface);
+      require(status.ok(), "picture_description_custom_config accepts " +
+                               parsev1::ResponseFormat_Name(format) + ": " +
+                               status.error_message());
+    }
+    parsev1::ConvertDocumentOptions conflict;
+    conflict.mutable_picture_description_custom_config()->mutable_engine_options()->set_engine_type(
+        parsev1::VLM_ENGINE_TYPE_TRANSFORMERS);
+    auto* picture = conflict.mutable_picture_description_custom_config()->mutable_model_spec();
+    picture->set_name("granite_vision");
+    picture->set_default_repo_id("ibm-granite/granite-vision-3.3-2b");
+    picture->set_response_format(parsev1::RESPONSE_FORMAT_PLAINTEXT);
+    picture->set_response_format_raw("markdown");
+    require(rejection_of(grparse::validate_options(conflict, kSurface)).reason() ==
+                parsev1::OPTION_REJECTION_REASON_CONFLICT,
+            "an enrich spec's disagreeing typed and raw formats are CONFLICT");
+    picture->clear_response_format();
+    picture->set_response_format_raw("Plaintext");
+    require(rejection_of(grparse::validate_options(conflict, kSurface)).reason() ==
+                parsev1::OPTION_REJECTION_REASON_UNKNOWN_VALUE,
+            "an enrich spec's unknown raw name is UNKNOWN_VALUE");
+  }
+}
+
+// trust_remote_code is docling's inline-engine setting: false is accepted
+// on an inline engine, true is NOT_IMPLEMENTED (nothing here runs repository
+// code), and either value with an API engine is CONFLICT.
+void verify_trust_remote_code_is_inline_only() {
+  const auto with = [](parsev1::VlmEngineType engine, bool trust) {
+    parsev1::ConvertDocumentOptions options;
+    *options.mutable_chart_extraction_custom_config() = representable_chart_config();
+    auto* engine_options = options.mutable_chart_extraction_custom_config()->mutable_engine_options();
+    engine_options->set_engine_type(engine);
+    engine_options->set_trust_remote_code(trust);
+    return grparse::validate_options(options, kSurface);
+  };
+  for (const auto engine : {parsev1::VLM_ENGINE_TYPE_TRANSFORMERS, parsev1::VLM_ENGINE_TYPE_MLX,
+                            parsev1::VLM_ENGINE_TYPE_VLLM, parsev1::VLM_ENGINE_TYPE_AUTO_INLINE}) {
+    require(with(engine, false).ok(),
+            "trust_remote_code = false is accepted on " + parsev1::VlmEngineType_Name(engine));
+    const auto rejection = rejection_of(with(engine, true));
+    require(rejection.option_path() ==
+                    "chart_extraction_custom_config.engine_options.trust_remote_code" &&
+                rejection.reason() == parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED &&
+                rejection.rejected_value_raw() == "true",
+            "trust_remote_code = true is NOT_IMPLEMENTED on " +
+                parsev1::VlmEngineType_Name(engine));
+  }
+  for (const auto engine : {parsev1::VLM_ENGINE_TYPE_API, parsev1::VLM_ENGINE_TYPE_API_OLLAMA,
+                            parsev1::VLM_ENGINE_TYPE_API_LMSTUDIO,
+                            parsev1::VLM_ENGINE_TYPE_API_OPENAI}) {
+    for (const bool trust : {false, true}) {
+      const auto rejection = rejection_of(with(engine, trust));
+      require(rejection.reason() == parsev1::OPTION_REJECTION_REASON_CONFLICT,
+              "trust_remote_code is CONFLICT on " + parsev1::VlmEngineType_Name(engine));
+    }
+  }
+  parsev1::ConvertDocumentOptions vlm;
+  auto* config = vlm.mutable_vlm_pipeline_custom_config();
+  config->mutable_engine_options()->set_engine_type(parsev1::VLM_ENGINE_TYPE_API_OPENAI);
+  config->mutable_engine_options()->set_trust_remote_code(false);
+  config->mutable_model_spec()->set_name("granite_docling");
+  config->mutable_model_spec()->set_default_repo_id("ibm-granite/granite-docling-258M");
+  require(rejection_of(grparse::validate_options(vlm, kSurface)).option_path() ==
+              "vlm_pipeline_custom_config.engine_options.trust_remote_code",
+          "the VLM pipeline custom config is checked the same way");
+}
+
+// picture_description_custom_config is wired the way docling's
+// PictureDescriptionVlmEngineModel reads it: the model is
+// model_spec.get_repo_id() (default_repo_id), the prompt is the options'
+// prompt, and an explicit local engine or preset still wins.
+void verify_picture_description_custom_config_is_wired() {
+  parsev1::ConvertDocumentOptions options;
+  auto* config = options.mutable_picture_description_custom_config();
+  config->mutable_engine_options()->set_engine_type(parsev1::VLM_ENGINE_TYPE_TRANSFORMERS);
+  config->mutable_model_spec()->set_name("granite_vision");
+  config->mutable_model_spec()->set_default_repo_id("ibm-granite/granite-vision-3.3-2b");
+  config->mutable_model_spec()->set_prompt("spec prompt");
+  {
+    const grpc::Status accepted = grparse::validate_options(options, kSurface);
+    require(accepted.ok(), "a custom config is accepted: " + accepted.error_message());
+  }
+  require(grparse::picture_description_repo_id(options) == "ibm-granite/granite-vision-3.3-2b",
+          "the spec's default_repo_id names the enrich model");
+  auto call = grparse::request_picture_description_call(options, std::nullopt, kSurface);
+  require(call.has_value() && call->prompt == "spec prompt" && call->headers.empty() &&
+              !call->params.has_value(),
+          "without an options prompt the spec's prompt is sent");
+  config->set_prompt("Describe this image in a few sentences.");
+  call = grparse::request_picture_description_call(options, std::nullopt, kSurface);
+  require(call.has_value() && call->prompt == "Describe this image in a few sentences.",
+          "the options prompt wins over the spec's, as in docling");
+
+  options.set_picture_description_preset("smolvlm");
+  require(grparse::picture_description_repo_id(options) == "smolvlm",
+          "an explicit preset wins over the custom config's repo");
+  options.mutable_picture_description_local()->set_repo_id("HuggingFaceTB/SmolVLM-256M");
+  require(grparse::picture_description_repo_id(options) == "HuggingFaceTB/SmolVLM-256M",
+          "the local engine's repo_id wins over both");
+
+  parsev1::ConvertDocumentOptions none;
+  require(grparse::picture_description_repo_id(none).empty(), "nothing set names no model");
+  call = grparse::request_picture_description_call(none, std::nullopt, kSurface);
+  require(call.has_value() && call->prompt.empty(), "nothing set sends no prompt");
+}
+
 int main() {
   return grparse_test::run_test_main("convert-options-test", "ok", {
+      verify_picture_description_custom_config_is_wired,
       verify_typed_rejections_and_heading_options,
+      verify_vlm_response_formats_are_typed,
+      verify_trust_remote_code_is_inline_only,
       verify_parity_1_37_options,
       verify_chart_and_caption_options,
       verify_hybrid_chunking_is_validated,

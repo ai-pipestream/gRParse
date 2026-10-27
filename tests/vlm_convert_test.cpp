@@ -5,7 +5,9 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -18,6 +20,7 @@
 #include "grparse/document_parser_service.h"
 #include "grparse/page_previews.h"
 #include "grparse/vlm_convert.h"
+#include "../src/source_parse.h"
 #include "support/check.h"
 #include "support/fake_pdf_backend.h"
 
@@ -70,6 +73,12 @@ class FakeVlmConvertService final : public vlmv1::VlmConvertService::Service {
       auto* generation = text->mutable_base()->add_source()->mutable_generation();
       generation->set_model("granite-docling");
       generation->set_finish_reason("length");
+      if (const int level = heading_level_.load(); level != 0) {
+        auto* header = page->mutable_document()->add_texts()->mutable_section_header();
+        header->mutable_base()->set_self_ref("#/texts/" + std::to_string(page_no));
+        header->mutable_base()->set_text("heading-" + std::to_string(page_no));
+        header->set_level(level);
+      }
       (*page->mutable_document()->mutable_pages())[page_no].set_page_no(page_no);
       auto* warning = page->add_warnings();
       warning->set_code(vlmv1::PAGE_WARNING_CODE_TABLE_TRUNCATED);
@@ -97,11 +106,15 @@ class FakeVlmConvertService final : public vlmv1::VlmConvertService::Service {
     return seen_;
   }
   int calls() const { return calls_.load(); }
+  // Non-zero: every page document also carries one section header at this
+  // raw depth, the way a raw-heading-depth peer format answers.
+  void set_heading_level(int level) { heading_level_.store(level); }
 
  private:
   mutable std::mutex mutex_;
   Seen seen_;
   std::atomic<int> calls_{0};
+  std::atomic<int> heading_level_{0};
 };
 
 class ServerFixture {
@@ -160,6 +173,132 @@ void verify_apply_maps_granite_docling_and_raw_api_url() {
           "typed local model maps repo_id and scale");
 }
 
+// Every docling 2.142.1 ResponseFormat has a member and a name; the five the
+// collector maps reach it from local, api, and the custom config's spec, and
+// the raw docling name stands in for an unset typed field.
+void verify_response_formats_cover_docling_and_reach_the_collector() {
+  const std::pair<parsev1::ResponseFormat, const char*> docling[] = {
+      {parsev1::RESPONSE_FORMAT_DOCTAGS, "doctags"},
+      {parsev1::RESPONSE_FORMAT_DOCLANG, "doclang"},
+      {parsev1::RESPONSE_FORMAT_MARKDOWN, "markdown"},
+      {parsev1::RESPONSE_FORMAT_DEEPSEEKOCR_MARKDOWN, "deepseekocr_markdown"},
+      {parsev1::RESPONSE_FORMAT_UNLIMITED_OCR_MARKDOWN, "unlimited_ocr_markdown"},
+      {parsev1::RESPONSE_FORMAT_HTML, "html"},
+      {parsev1::RESPONSE_FORMAT_OTSL, "otsl"},
+      {parsev1::RESPONSE_FORMAT_PLAINTEXT, "plaintext"},
+      {parsev1::RESPONSE_FORMAT_CHANDRA_HTML, "chandra_html"},
+      {parsev1::RESPONSE_FORMAT_DOTS_JSON, "dots_json"},
+      {parsev1::RESPONSE_FORMAT_NEMOTRON_PARSE_V2, "nemotron_parse_v2"},
+      {parsev1::RESPONSE_FORMAT_NEMOTRON_PARSE_V3_5, "nemotron_parse_v3_5"},
+      {parsev1::RESPONSE_FORMAT_MINERU2, "mineru2"},
+  };
+  require(parsev1::ResponseFormat_descriptor()->value_count() == 14,
+          "ResponseFormat is UNSPECIFIED plus docling's 13 members");
+  for (const auto& [format, name] : docling) {
+    require(grparse::response_format_name(format) == std::string_view(name) &&
+                grparse::response_format_from_name(name) == format,
+            std::string("docling name round-trips: ") + name);
+  }
+  require(!grparse::response_format_name(parsev1::RESPONSE_FORMAT_UNSPECIFIED).has_value() &&
+              !grparse::response_format_from_name("DOCTAGS").has_value(),
+          "UNSPECIFIED has no name and names are docling's lowercase values");
+  // Every docling format but mineru2 maps to the collector's member of the
+  // same name, and apply_vlm_convert_options forwards the docling name as
+  // response_format_raw beside the typed value.
+  for (const auto& [format, name] : docling) {
+    const auto mapped = grparse::vlm_collector_response_format(format);
+    if (format == parsev1::RESPONSE_FORMAT_MINERU2) {
+      require(!mapped.has_value(), "mineru2 has no collector format (its two-pass protocol)");
+      continue;
+    }
+    vlmv1::ResponseFormat expected = vlmv1::RESPONSE_FORMAT_UNSPECIFIED;
+    require(vlmv1::ResponseFormat_Parse(parsev1::ResponseFormat_Name(format), &expected) &&
+                mapped == expected,
+            std::string("the collector maps docling's ") + name + " to its own member");
+    parsev1::ConvertDocumentOptions typed;
+    typed.mutable_vlm_pipeline_model_api()->set_url("http://vlm.example:8080/v1");
+    typed.mutable_vlm_pipeline_model_api()->set_response_format(format);
+    grparse::VlmConvertOptions typed_options;
+    grparse::apply_vlm_convert_options(typed, &typed_options);
+    require(typed_options.response_format == expected &&
+                typed_options.response_format_raw == name,
+            std::string("the typed format and its docling name reach the collector: ") + name);
+    parsev1::ConvertDocumentOptions raw;
+    raw.mutable_vlm_pipeline_model_api()->set_url("http://vlm.example:8080/v1");
+    raw.mutable_vlm_pipeline_model_api()->set_response_format_raw(name);
+    grparse::VlmConvertOptions raw_options;
+    grparse::apply_vlm_convert_options(raw, &raw_options);
+    require(raw_options.response_format == expected && raw_options.response_format_raw == name,
+            std::string("the raw docling name reaches the collector: ") + name);
+  }
+  {
+    parsev1::ConvertDocumentOptions mineru;
+    mineru.mutable_vlm_pipeline_model_api()->set_url("http://vlm.example:8080/v1");
+    mineru.mutable_vlm_pipeline_model_api()->set_response_format(parsev1::RESPONSE_FORMAT_MINERU2);
+    const grpc::Status status = grparse::validate_options(mineru, "parse");
+    require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+                status.error_message().contains("mineru2"),
+            "a mineru2 VLM leg is refused by field before any page: " + status.error_message());
+  }
+
+  parsev1::ConvertDocumentOptions local;
+  local.mutable_vlm_pipeline_model_local()->set_repo_id("ibm-granite/granite-docling-258M");
+  local.mutable_vlm_pipeline_model_local()->set_response_format(parsev1::RESPONSE_FORMAT_DOCTAGS);
+  grparse::VlmConvertOptions local_options;
+  grparse::apply_vlm_convert_options(local, &local_options);
+  require(local_options.response_format == vlmv1::RESPONSE_FORMAT_DOCTAGS,
+          "the local model's typed format reaches the collector");
+
+  parsev1::ConvertDocumentOptions api;
+  api.mutable_vlm_pipeline_model_api()->set_url("http://vlm.example:8080/v1");
+  api.mutable_vlm_pipeline_model_api()->set_response_format_raw("markdown");
+  grparse::VlmConvertOptions api_options;
+  grparse::apply_vlm_convert_options(api, &api_options);
+  require(api_options.response_format == vlmv1::RESPONSE_FORMAT_MARKDOWN,
+          "the api model's raw docling name reaches the collector");
+
+  parsev1::ConvertDocumentOptions custom;
+  auto* spec = custom.mutable_vlm_pipeline_custom_config()->mutable_model_spec();
+  spec->set_name("granite_docling");
+  spec->set_default_repo_id("ibm-granite/granite-docling-258M");
+  spec->set_response_format(parsev1::RESPONSE_FORMAT_HTML);
+  grparse::VlmConvertOptions custom_options;
+  grparse::apply_vlm_convert_options(custom, &custom_options);
+  require(custom_options.response_format == vlmv1::RESPONSE_FORMAT_HTML,
+          "the custom config's spec format reaches the collector");
+  {
+    // The custom config's spec names the model, prompt and scale; an
+    // explicit local engine still picks the model.
+    parsev1::ConvertDocumentOptions wired;
+    auto* config = wired.mutable_vlm_pipeline_custom_config();
+    config->mutable_model_spec()->set_name("dots");
+    config->mutable_model_spec()->set_default_repo_id("rednote-hilab/dots.ocr");
+    config->mutable_model_spec()->set_prompt("Convert the page.");
+    config->mutable_model_spec()->set_response_format(parsev1::RESPONSE_FORMAT_DOTS_JSON);
+    config->set_scale(1.25);
+    grparse::VlmConvertOptions wired_options;
+    grparse::apply_vlm_convert_options(wired, &wired_options);
+    require(wired_options.preset == vlmv1::VLM_PRESET_RAW &&
+                wired_options.preset_raw == "rednote-hilab/dots.ocr" &&
+                wired_options.prompt == "Convert the page." && wired_options.scale == 1.25 &&
+                wired_options.response_format == vlmv1::RESPONSE_FORMAT_DOTS_JSON &&
+                wired_options.response_format_raw == "dots_json",
+            "vlm_pipeline_custom_config's spec names model, prompt, scale and format");
+    wired.mutable_vlm_pipeline_model_local()->set_repo_id("ibm-granite/granite-docling-258M");
+    grparse::VlmConvertOptions explicit_options;
+    grparse::apply_vlm_convert_options(wired, &explicit_options);
+    require(explicit_options.preset_raw == "ibm-granite/granite-docling-258M",
+            "an explicit local model wins over the custom config's repo");
+  }
+
+  parsev1::ConvertDocumentOptions none;
+  none.set_vlm_pipeline_model(parsev1::VLM_MODEL_TYPE_GRANITEDOCLING);
+  grparse::VlmConvertOptions none_options;
+  grparse::apply_vlm_convert_options(none, &none_options);
+  require(none_options.response_format == vlmv1::RESPONSE_FORMAT_UNSPECIFIED,
+          "no format named leaves the preset's own");
+}
+
 void verify_convert_rasters_dials_and_merges() {
   FakeVlmConvertService fake;
   ServerFixture server(&fake);
@@ -212,6 +351,90 @@ void verify_convert_rasters_dials_and_merges() {
 
 // docling 2.140 VlmStopReason: every upstream value name and OpenAI "stop"
 // classify; anything else stays UNSPECIFIED with no guess.
+// docling's vlm_utils.normalize_section_header_levels: the six formats that
+// emit raw heading depth (h1 is the document title) have every section
+// header shifted up one when none is already at level 1, once per document.
+void verify_section_header_levels_normalize_like_docling() {
+  const vlmv1::ResponseFormat raw_depth[] = {
+      vlmv1::RESPONSE_FORMAT_CHANDRA_HTML,       vlmv1::RESPONSE_FORMAT_DEEPSEEKOCR_MARKDOWN,
+      vlmv1::RESPONSE_FORMAT_DOTS_JSON,          vlmv1::RESPONSE_FORMAT_NEMOTRON_PARSE_V2,
+      vlmv1::RESPONSE_FORMAT_NEMOTRON_PARSE_V3_5, vlmv1::RESPONSE_FORMAT_UNLIMITED_OCR_MARKDOWN,
+  };
+  for (const auto format : raw_depth) {
+    require(grparse::raw_heading_depth_format(format),
+            "raw heading depth format: " + vlmv1::ResponseFormat_Name(format));
+  }
+  for (const auto format : {vlmv1::RESPONSE_FORMAT_UNSPECIFIED, vlmv1::RESPONSE_FORMAT_DOCTAGS,
+                            vlmv1::RESPONSE_FORMAT_DOCLANG, vlmv1::RESPONSE_FORMAT_MARKDOWN,
+                            vlmv1::RESPONSE_FORMAT_HTML, vlmv1::RESPONSE_FORMAT_OTSL,
+                            vlmv1::RESPONSE_FORMAT_PLAINTEXT}) {
+    require(!grparse::raw_heading_depth_format(format),
+            "not a raw heading depth format: " + vlmv1::ResponseFormat_Name(format));
+  }
+
+  auto headed = [](std::initializer_list<int> levels) {
+    docv1::Document document;
+    for (const int level : levels) document.add_texts()->mutable_section_header()->set_level(level);
+    document.add_texts()->mutable_text()->mutable_base()->set_text("body");
+    return document;
+  };
+  docv1::Document deep = headed({2, 3, 2});
+  grparse::normalize_section_header_levels(&deep);
+  require(deep.texts(0).section_header().level() == 1 &&
+              deep.texts(1).section_header().level() == 2 &&
+              deep.texts(2).section_header().level() == 1 && deep.texts(3).has_text(),
+          "all headers below level 1 shift up one");
+  docv1::Document has_top = headed({1, 3});
+  grparse::normalize_section_header_levels(&has_top);
+  require(has_top.texts(0).section_header().level() == 1 &&
+              has_top.texts(1).section_header().level() == 3,
+          "a document with a level-1 header is left alone");
+  docv1::Document none = headed({});
+  grparse::normalize_section_header_levels(&none);
+  require(none.texts_size() == 1 && none.texts(0).has_text(), "no headers is a no-op");
+  grparse::normalize_section_header_levels(nullptr);
+}
+
+// End to end: the collector forwards the typed format and its docling name,
+// and the converted document's raw depths are normalized for a raw-depth
+// format but not for one that is not (DocLang), matching docling.
+void verify_raw_heading_formats_normalize_the_converted_document() {
+  cv::Mat image(16, 12, CV_8UC3, cv::Scalar(1, 2, 3));
+  std::vector<unsigned char> png;
+  require(cv::imencode(".png", image, png, grparse::kPngEncodeParams), "encode fixture");
+  auto bytes = std::make_shared<const std::string>(reinterpret_cast<const char*>(png.data()),
+                                                   png.size());
+  for (const auto& [format, name, expected_level] :
+       {std::tuple{vlmv1::RESPONSE_FORMAT_CHANDRA_HTML, "chandra_html", 1},
+        std::tuple{vlmv1::RESPONSE_FORMAT_DOCLANG, "doclang", 2}}) {
+    FakeVlmConvertService fake;
+    fake.set_heading_level(2);
+    ServerFixture server(&fake);
+    grparse::VlmConvertOptions options;
+    options.target = server.target();
+    options.timeout = std::chrono::milliseconds(5000);
+    options.preset = vlmv1::VLM_PRESET_RAW;
+    options.preset_raw = "datalab-to/chandra";
+    options.response_format = format;
+    options.response_format_raw = name;
+    docv1::Document document;
+    document.mutable_body()->set_self_ref("#/body");
+    const grparse::VlmConvertReport report =
+        grparse::convert_vlm_pages(server.channel(), options, bytes, /*pdf=*/false, &document);
+    require(report.success, std::string("converts: ") + name + ": " + report.error);
+    const auto seen = fake.seen();
+    require(seen.options.response_format() == format &&
+                seen.options.response_format_raw() == name,
+            std::string("the peer sees the typed format and the docling name: ") + name);
+    const docv1::SectionHeaderItem* header = nullptr;
+    for (const auto& item : document.texts()) {
+      if (item.has_section_header()) header = &item.section_header();
+    }
+    require(header != nullptr && header->level() == expected_level,
+            std::string("heading level after convert: ") + name);
+  }
+}
+
 void verify_vlm_stop_reason_classifies_like_docling() {
   const std::vector<std::pair<std::string, docv1::VlmStopReason>> cases{
       {"length", docv1::VLM_STOP_REASON_LENGTH},
@@ -570,6 +793,9 @@ void verify_endpoints_lazy_channel() {
 int main() {
   return grparse_test::run_test_main("vlm-convert-test", "all checks passed", {
       verify_apply_maps_granite_docling_and_raw_api_url,
+      verify_response_formats_cover_docling_and_reach_the_collector,
+      verify_section_header_levels_normalize_like_docling,
+      verify_raw_heading_formats_normalize_the_converted_document,
       verify_vlm_stop_reason_classifies_like_docling,
       verify_type_generation_stop_reasons_walks_the_document,
       verify_no_map_in_document_reaches_a_generation_source,

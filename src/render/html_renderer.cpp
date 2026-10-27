@@ -154,6 +154,32 @@ class HtmlRenderer : RendererBase {
     return out;
   }
 
+  // docling-core's HTML serialize_footnotes: one <div class="footnote"> per
+  // footnote, its text escaped as Python's html.escape does (quotes
+  // included), joined with nothing. Each footnote is consumed so the tree
+  // walk skips it, as the captions are. docling-core also adds dir="rtl"
+  // to a right-to-left footnote; this renderer marks no direction on any
+  // element, so it does not on these either.
+  std::string footnote_divs(
+      const google::protobuf::RepeatedPtrField<docv1::RefItem>& footnotes) {
+    std::string out;
+    for (const auto* base : caption_bases(footnotes)) {
+      std::string escaped;
+      for (const char c : base->text()) {
+        switch (c) {
+          case '&': escaped.append("&amp;"); break;
+          case '<': escaped.append("&lt;"); break;
+          case '>': escaped.append("&gt;"); break;
+          case '"': escaped.append("&quot;"); break;
+          case '\'': escaped.append("&#x27;"); break;
+          default: escaped.push_back(c);
+        }
+      }
+      out.append("<div class=\"footnote\">" + escaped + "</div>");
+    }
+    return out;
+  }
+
   void render_children(const docv1::GroupItem& group) {
     for (const auto& child : group.children()) render_ref(child.ref());
   }
@@ -205,7 +231,22 @@ class HtmlRenderer : RendererBase {
       const auto& code = item.code();
       if (excluded_layer(code.content_layer())) return;
       note_page(code.prov());
-      add_element("<pre><code>" + escape_html_text(code.text()) + "</code></pre>");
+      std::string out = "<pre><code>" + escape_html_text(code.text()) + "</code></pre>";
+      // A code block with captions or footnotes is a <figure>, where
+      // <figcaption> is valid (docling-core #675).
+      const std::vector<std::string> captions = caption_texts(code.captions());
+      const std::string footnotes = footnote_divs(code.footnotes());
+      if (!captions.empty() || !footnotes.empty()) {
+        std::string caption;
+        for (const auto& text : captions) {
+          if (!caption.empty()) caption.push_back(' ');
+          caption.append(paragraph_text(text));
+        }
+        out = "<figure>" + out + (captions.empty() ? std::string() : "<figcaption>" + caption +
+                                                                        "</figcaption>") +
+              footnotes + "</figure>";
+      }
+      add_element(std::move(out));
       return;
     }
     const auto* base = text_base(item);
@@ -309,8 +350,12 @@ class HtmlRenderer : RendererBase {
     if (excluded_layer(table.content_layer())) return;
     note_page(table.prov());
     const std::vector<std::string> captions = caption_texts(table.captions());
+    const std::string footnotes = footnote_divs(table.footnotes());
     const auto grid = table_grid(table.data(), grid_budget_);
-    if (grid.empty() && captions.empty()) return;
+    if (grid.empty() && captions.empty()) {
+      if (!footnotes.empty()) add_element(footnotes);
+      return;
+    }
     std::string out = "<table>";
     if (!captions.empty()) {
       std::string caption;
@@ -356,6 +401,8 @@ class HtmlRenderer : RendererBase {
       out.append("</tr>");
     }
     out.append("</tbody></table>");
+    // Footnotes follow the closing tag (docling-core #675).
+    out.append(footnotes);
     add_element(std::move(out));
   }
 
@@ -385,6 +432,8 @@ class HtmlRenderer : RendererBase {
     if (captions.empty() && !description.empty()) {
       out.append("<p>" + paragraph_text(description) + "</p>");
     }
+    // Footnotes close the figure (docling-core #675).
+    out.append(footnote_divs(picture.footnotes()));
     out.append("</figure>");
     add_element(std::move(out));
   }

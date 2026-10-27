@@ -408,10 +408,38 @@ void verify_a_null_payload_is_dropped() {
   require_equal(ordered[0].first, "a__kept", "the surviving entry is the one with a value");
 }
 
+// docling-core #920: the vectors its own tests use.
+void verify_hyperlink_schemes_and_markdown_destinations() {
+  for (const char* unsafe : {"javascript:alert(1)", "JaVaScRiPt:alert(1)",
+                             "  javascript:alert(1)", "java\tscript:alert(1)",
+                             "data:text/html,<script>1</script>", "vbscript:msgbox(1)",
+                             "\x01javascript:x", "java\nscript:x"}) {
+    require(!render::is_safe_hyperlink(unsafe), std::string("unsafe: ") + unsafe);
+  }
+  for (const char* safe : {"https://example.com/x", "mailto:a@example.com", "sub/next.html",
+                           "C:/docs/a.pdf", "#anchor", "//[::1/x", "HTTP://x", "tel:1",
+                           "file:///a", "ftp://a", "ftps://a", "sftp://a", "a/b:c", ""}) {
+    require(render::is_safe_hyperlink(safe), std::string("safe: ") + safe);
+  }
+  require_equal(render::markdown_link_destination("x\">\n<script>1</script>\n<a href=\""),
+                std::string("x%22%3E%0A%3Cscript%3E1%3C/script%3E%0A%3Ca%20href=%22"),
+                "breakout characters are percent-encoded");
+  require_equal(render::markdown_link_destination("a(b)c d"), std::string("a%28b%29c%20d"),
+                "parentheses and spaces are percent-encoded");
+  require_equal(render::markdown_link_destination("&#106;avascript:alert(1)"),
+                std::string("&amp;#106;avascript:alert%281%29"),
+                "an entity-shaped ampersand is escaped");
+  require_equal(render::markdown_link_destination("a?x=1&y=2"), std::string("a?x=1&y=2"),
+                "a query ampersand is kept");
+  require_equal(render::markdown_link_destination("a\\b\x7f"), std::string("a%5Cb%7F"),
+                "backslash and DEL are percent-encoded");
+}
+
 }  // namespace
 
 int main() {
   return grparse_test::run_test_main("renderer-base-test", "ok", {
+      verify_hyperlink_schemes_and_markdown_destinations,
       verify_every_arena_prefix_parses,
       verify_a_reference_that_names_no_arena_slot_is_unknown,
       verify_text_base_is_null_only_for_code_and_unset,

@@ -128,6 +128,14 @@ void verify_routing() {
           "video routes to the asr collector");
   require(grparse::route_collector("upload.bin", "audio/flac") == parsev1::COLLECTOR_ASR,
           "audio content type routes to the asr collector");
+  // docling #905 admits audio/flac and audio/ogg; both already reach ASR by
+  // content type and by extension.
+  require(grparse::route_collector("upload.bin", "audio/ogg") == parsev1::COLLECTOR_ASR,
+          "audio/ogg routes to the asr collector");
+  require(grparse::route_collector("take.flac", "") == parsev1::COLLECTOR_ASR,
+          ".flac routes to the asr collector");
+  require(grparse::route_collector("take.ogg", "") == parsev1::COLLECTOR_ASR,
+          ".ogg routes to the asr collector");
   require(grparse::route_collector("upload.bin", "video/webm") == parsev1::COLLECTOR_ASR,
           "video content type routes to the asr collector");
   require(grparse::route_collector("EXTRACT.DAT", "") == parsev1::COLLECTOR_GRPARSE_CV,

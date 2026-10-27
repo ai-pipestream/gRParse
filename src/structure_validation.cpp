@@ -1,10 +1,12 @@
 #include "structure_validation.h"
 
+#include <cstdint>
 #include <set>
 #include <string>
 #include <vector>
 
 #include "grparse/structure_rules.h"
+#include "source_parse.h"
 
 namespace grparse {
 
@@ -27,6 +29,9 @@ StructureRequest StructureRequest::from(const parsev1::ConvertDocumentOptions& o
   if (options.has_structure_validation()) request.validation = options.structure_validation();
   request.rules = options.structure_validation_rules();
   if (options.has_structure_repairs()) request.repairs = options.structure_repairs();
+  if (options.has_structure_table_cell_limits()) {
+    request.cell_limits = options.structure_table_cell_limits();
+  }
   return request;
 }
 
@@ -60,6 +65,30 @@ grpc::Status validate_structure_request(const StructureRequest& request,
                         surface + ": structure_validation_rules needs structure_validation "
                                   "REPORT or ENFORCE");
   }
+  if (request.cell_limits.has_value()) {
+    if (!request.validates()) {
+      return option_rejected("structure_table_cell_limits",
+                             parsev1::OPTION_REJECTION_REASON_CONFLICT, "",
+                             surface + ": structure_table_cell_limits needs "
+                                       "structure_validation REPORT or ENFORCE");
+    }
+    const auto positive = [&](bool has, std::uint64_t value, const char* field) {
+      if (!has || value > 0) return grpc::Status::OK;
+      const std::string path = std::string("structure_table_cell_limits.") + field;
+      return option_rejected(path, parsev1::OPTION_REJECTION_REASON_OUT_OF_RANGE, "0",
+                             surface + ": " + path + " must be at least 1");
+    };
+    if (auto s = positive(request.cell_limits->has_max_table_cells(),
+                          request.cell_limits->max_table_cells(), "max_table_cells");
+        !s.ok()) {
+      return s;
+    }
+    if (auto s = positive(request.cell_limits->has_max_total_table_cells(),
+                          request.cell_limits->max_total_table_cells(), "max_total_table_cells");
+        !s.ok()) {
+      return s;
+    }
+  }
   return grpc::Status::OK;
 }
 
@@ -92,7 +121,16 @@ grpc::Status check_structure(const ai::pipestream::document::v1::Document& docum
   if (!request.validates()) return grpc::Status::OK;
   std::set<StructureRule> rules;
   for (const int raw : request.rules) rules.insert(static_cast<StructureRule>(raw));
-  const std::vector<StructureFinding> found = docling_structure_findings(document, rules);
+  StructureCellLimits limits;
+  if (request.cell_limits.has_value()) {
+    if (request.cell_limits->has_max_table_cells()) {
+      limits.max_table_cells = request.cell_limits->max_table_cells();
+    }
+    if (request.cell_limits->has_max_total_table_cells()) {
+      limits.max_total_table_cells = request.cell_limits->max_total_table_cells();
+    }
+  }
+  const std::vector<StructureFinding> found = docling_structure_findings(document, rules, limits);
   if (request.validation == parsev1::STRUCTURE_VALIDATION_ENFORCE) {
     if (found.empty()) return grpc::Status::OK;
     std::string message = surface + ": the document breaks " + std::to_string(found.size()) +

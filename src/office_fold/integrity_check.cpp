@@ -5,6 +5,7 @@
 #include "grparse/structure_rules.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <map>
 #include <set>
 #include <string>
@@ -402,12 +403,17 @@ std::string_view structure_rule_name(StructureRule rule) {
     case StructureRule::kEmptyGroup: return "empty_group";
     case StructureRule::kParentMissing: return "parent_missing";
     case StructureRule::kNotListedByParent: return "not_listed_by_parent";
+    case StructureRule::kRepeatedReference: return "repeated_reference";
+    case StructureRule::kRichCellNotOwned: return "rich_cell_not_owned";
+    case StructureRule::kTableCellsOverLimit: return "table_cells_over_limit";
+    case StructureRule::kTotalTableCellsOverLimit: return "total_table_cells_over_limit";
   }
   return "unknown";
 }
 
 std::vector<StructureFinding> docling_structure_findings(
-    const docv1::Document& document, const std::set<StructureRule>& rules) {
+    const docv1::Document& document, const std::set<StructureRule>& rules,
+    const StructureCellLimits& limits) {
   const auto checked = [&rules](StructureRule rule) {
     return rules.empty() || rules.contains(rule);
   };
@@ -484,6 +490,96 @@ std::vector<StructureFinding> docling_structure_findings(
         && checked(StructureRule::kEmptyGroup)) {
       add(StructureRule::kEmptyGroup, view.ref, "", "Group " + view.ref + " has no children");
     }
+  }
+
+  if (checked(StructureRule::kRepeatedReference)) {
+    // docling-core's validate_tree: a depth-first walk from each root with
+    // the root already visited; a child seen before is a repeated
+    // reference and is not descended into again, so a cycle ends the walk
+    // down that edge. Iterative so a deep or cyclic tree cannot exhaust the
+    // stack.
+    for (const char* root : {"#/body", "#/furniture"}) {
+      std::set<std::string> visited{root};
+      struct Frame {
+        const NodeView* node;
+        size_t next = 0;
+      };
+      std::vector<Frame> stack;
+      if (const auto found = by_ref.find(root); found != by_ref.end()) {
+        stack.push_back({found->second});
+      }
+      while (!stack.empty()) {
+        Frame& frame = stack.back();
+        if (frame.next >= frame.node->children.size()) {
+          stack.pop_back();
+          continue;
+        }
+        const NodeView* node = frame.node;
+        const std::string& child_ref = node->children[frame.next++];
+        if (!visited.insert(child_ref).second) {
+          add(StructureRule::kRepeatedReference, node->ref, child_ref,
+              "Document hierarchy is inconsistent. " + node->ref + " references " + child_ref +
+                  ", which is already reachable through another reference");
+          continue;
+        }
+        // A child that resolves to nothing is the integrity check's finding.
+        if (const auto child = by_ref.find(child_ref); child != by_ref.end()) {
+          stack.push_back({child->second});
+        }
+      }
+    }
+  }
+
+  std::uint64_t total_cells = 0;
+  for (const docv1::TableItem& table : document.tables()) {
+    const docv1::TableData& data = table.data();
+    const std::uint64_t rows = static_cast<std::uint64_t>(std::max(data.num_rows(), 0));
+    const std::uint64_t cols = static_cast<std::uint64_t>(std::max(data.num_cols(), 0));
+    // rows * cols fits (each is below 2^31); the sum saturates.
+    const std::uint64_t cells = rows * cols;
+    total_cells = cells > UINT64_MAX - total_cells ? UINT64_MAX : total_cells + cells;
+    if (table.self_ref().empty()) continue;
+    if (checked(StructureRule::kRichCellNotOwned)) {
+      std::set<std::string> listed;
+      for (const docv1::RefItem& child : table.children()) listed.insert(child.ref());
+      std::set<std::string> seen;
+      for (const docv1::TableCell& cell : data.table_cells()) {
+        if (!cell.has_ref()) continue;
+        const std::string& cell_ref = cell.ref().ref();
+        const bool shared = !seen.insert(cell_ref).second;
+        const auto item = by_ref.find(cell_ref);
+        const std::string parent = item == by_ref.end() || !item->second->has_parent
+                                       ? std::string()
+                                       : item->second->parent;
+        if (shared) {
+          add(StructureRule::kRichCellNotOwned, table.self_ref(), cell_ref,
+              "Document hierarchy is inconsistent. " + table.self_ref() + " has cell " +
+                  cell_ref + " shared with another cell of the table");
+        } else if (parent != table.self_ref()) {
+          add(StructureRule::kRichCellNotOwned, table.self_ref(), cell_ref,
+              "Document hierarchy is inconsistent. " + table.self_ref() + " has cell " +
+                  cell_ref + " with parent " + (parent.empty() ? std::string("none") : parent));
+        } else if (!listed.contains(cell_ref)) {
+          add(StructureRule::kRichCellNotOwned, table.self_ref(), cell_ref,
+              "Document hierarchy is inconsistent. " + table.self_ref() + " has cell " +
+                  cell_ref + " that it does not list among its children");
+        }
+      }
+    }
+    const std::uint64_t limit = limits.max_table_cells;
+    if (checked(StructureRule::kTableCellsOverLimit) &&
+        (rows > limit || cols > limit || rows * cols > limit)) {
+      add(StructureRule::kTableCellsOverLimit, table.self_ref(), "",
+          "Table of " + std::to_string(data.num_rows()) + "x" + std::to_string(data.num_cols()) +
+              " cells exceeds the limit of " + std::to_string(limit) + " cells");
+    }
+  }
+  if (checked(StructureRule::kTotalTableCellsOverLimit) &&
+      total_cells > limits.max_total_table_cells) {
+    add(StructureRule::kTotalTableCellsOverLimit, "#/tables", "",
+        "Document tables declare " + std::to_string(total_cells) +
+            " cells in total, exceeding the limit of " +
+            std::to_string(limits.max_total_table_cells));
   }
   return findings;
 }

@@ -81,3 +81,47 @@ Each enabled output is its own VLM call per chart in grpc-enrich, so a failed su
 | Unset `ocr_preset` | `default` | Upstream's request default is the literal `auto`; here an unset preset means `default`, which resolves to `auto` unless configured. |
 
 Refusals carry a typed `OptionRejection` on `ocr_preset`: `NOT_ALLOWED` for a name outside the registry or an excluded kind, `NOT_IMPLEMENTED` for a kind this server cannot run.
+
+## docling 2.142.1 / docling-core 2.104.0 (2026-10-26)
+
+### New typed fields
+
+| Upstream change | gRParse | Notes |
+|---|---|---|
+| `ResponseFormat` gains `doclang`, `deepseekocr_markdown`, `unlimited_ocr_markdown`, `chandra_html`, `dots_json`, `nemotron_parse_v2`, `nemotron_parse_v3_5`, `mineru2` | `RESPONSE_FORMAT_DOCLANG = 6` through `RESPONSE_FORMAT_MINERU2 = 13`, in docling's declaration order. `optional string response_format_raw` on `VlmModelLocal` (9), `VlmModelApi` (10) and `VlmModelSpec` (14) takes docling's string name. | An unknown number or name is `UNKNOWN_VALUE`; a typed value and a raw name that disagree is `CONFLICT` on `.response_format_raw`. On the VLM conversion leg (`vlm_pipeline_model_local`, `vlm_pipeline_model_api`, `vlm_pipeline_custom_config.model_spec`) every format but `mineru2` reaches grpc-vlm-convert (vendored `vlm_convert.proto` carries 6 to 12 and `response_format_raw`; gRParse sends the typed value and the docling name). `mineru2` is `NOT_IMPLEMENTED`: its two-pass layout-then-content protocol is not driven by the collector. For `chandra_html`, `deepseekocr_markdown`, `dots_json`, `nemotron_parse_v2`, `nemotron_parse_v3_5` and `unlimited_ocr_markdown` gRParse applies docling's `normalize_section_header_levels` once per converted document (all headers shift up one level when none is at level 1); `doclang` is not normalized, as in docling. The enrichment legs' specs (`picture_description_custom_config`, `chart_extraction_custom_config`, `code_formula_custom_config`) accept every format, `mineru2` included, checked for a known and agreeing value and otherwise unread, which matches docling: only `vlm_convert` reads `response_format`. docling-serve's proto at the time of writing (bbe5ed1) has values 1 to 5 only, so 6 to 13 are numbered here first; if serve numbers them differently, the names are the contract. |
+| `trust_remote_code` on VLM engine options | `BaseVlmEngineOptions.trust_remote_code = 2` | An API engine (`API`, `API_OLLAMA`, `API_LMSTUDIO`, `API_OPENAI`) with the field set is `CONFLICT`: the model runs remotely. An inline engine with `true` is `NOT_IMPLEMENTED` (gRParse loads no remote model code); `false` is accepted. Not added to `VlmModelLocal`. |
+| `picture_description_custom_config` (`PictureDescriptionVlmEngineOptions`) | Existing field | Wired as docling's `PictureDescriptionVlmEngineModel` reads it: the enrich model is `model_spec.default_repo_id` (docling's `get_repo_id` with no engine override) unless `picture_description_local.repo_id` or `picture_description_preset` names one, and the prompt is the options' `prompt`, else `model_spec.prompt`. `classification_allow`, `classification_deny` and `classification_min_confidence` are forwarded as before. `scale`, `batch_size`, `picture_area_threshold`, `generation_config` and engine overrides are accepted and not forwarded (the enrich service owns rendering and batching). |
+| docling-core #899 structure checks | `StructureRule` `REPEATED_REFERENCE = 8`, `RICH_CELL_NOT_OWNED = 9`, `TABLE_CELLS_OVER_LIMIT = 10`, `TOTAL_TABLE_CELLS_OVER_LIMIT = 11`. `message StructureTableCellLimits { max_table_cells = 1; max_total_table_cells = 2; }` on `ConvertDocumentOptions.structure_table_cell_limits = 66` and `DocumentChunk.structure_table_cell_limits = 14`. | Defaults are docling-core's settings (1,000,000 and 5,000,000). A limit of 0 is `OUT_OF_RANGE`; limits with validation `OFF` are `CONFLICT`. The limits are not part of the cache digest (findings are recomputed). |
+| `target_document_version` (docling-serve / jobkit, from the `Accept-Docling-Document-Version` header) | None | Serve-only: docling-serve reads the header and jobkit down-projects the exported JSON with `docling_core.compat.project_to`. It is not a `ConvertDocumentsOptions` field in docling 2.142.1, so it has no gRParse option. gRParse's wire is protobuf, where an older reader ignores unknown fields. |
+| `extract_form_fields` (PDF widgets) | `ConvertDocumentOptions.extract_form_fields = 65` | Unset keeps the existing fold (PDF form widgets folded when a widget backend is configured). `false` skips the fold. `true` on a PDF with no widget backend is `NOT_IMPLEMENTED` on `extract_form_fields`; `true` on a non-PDF adds a document warning. `true` also folds widgets on the VLM pipeline branch; unset does not. Deviation: docling's default is `false`; gRParse keeps its pre-existing unset behavior so current callers do not change. |
+
+### Exporter and router checks (review action 8)
+
+| Upstream change | gRParse | Proof |
+|---|---|---|
+| DocLang 0.8 keeps every caption (#880) | Already does this. Each caption is its own `<caption>` element. Captions are written as siblings before the host element, not inside its head; that placement predates 0.8 and is unchanged. | `verify_every_caption_is_kept` (doclang-renderer-test) |
+| Table, picture and code footnotes (#675) | Fixed. Markdown: after the body, one paragraph each, before captions that go after. HTML: one `<div class="footnote">` per footnote (text escaped as Python's `html.escape`), after `</table>`, inside `<figure>` for a picture, and a code block with captions or footnotes becomes a `<figure>`. Chunks: footnotes join the table, picture (before its captions) and code chunk, and never chunk on their own; they are not reported as captions. | markdown-renderer-test, `verify_table_footnotes_follow_the_table` and siblings (html-renderer-test), `verify_footnotes_chunk_with_their_item` (chunking-test) |
+| Hyperlink escaping and scheme filter (#920) | Fixed for Markdown and LaTeX: `is_safe_hyperlink` and `markdown_link_destination` in renderer_base. Markdown image destinations are encoded too. DocLang already escaped `&`, `"`, `<`, `>` in `href` and `uri` attributes. The HTML export renders no hyperlinks, so there is no `href` to escape. | `verify_hyperlink_schemes_and_markdown_destinations` (renderer-base-test), `verify_hyperlinks_are_filtered_and_encoded`, `verify_image_destinations_are_encoded` (markdown-renderer-test), `verify_an_unsafe_hyperlink_keeps_only_its_text` (latex-renderer-test) |
+| WebVTT ignores tags that are not cue spans (#896) | Already does this, in grpc-markup (`src/vtt.rs` `open_span`): an unknown start tag opens an unstyled run, so its text is kept and the cue survives. | Code reading only; grpc-markup has no dedicated unknown-tag test. |
+| `audio/flac` and `audio/ogg` (#905) | Already does this: any `audio/` or `video/` content type and the `.flac`, `.ogg`, `.oga` extensions route to `COLLECTOR_ASR`. | collector-coordinator-test (audio/ogg, .flac, .ogg cases) |
+
+Deviations kept: HTML footnotes carry no `dir="rtl"` (this HTML export marks direction on no element). `normalized_uri` lowercases a one-letter scheme, so a hyperlink `C:/x` renders as `c:/x` (pre-existing). The entity check in `markdown_link_destination` counts any UTF-8 byte as a word character where Python's `\w` is Unicode-aware. Footnotes of key-value and form items are not rendered.
+
+### Not taken
+
+| Upstream change | Why |
+|---|---|
+| JSON down-projection of new fields for older readers | gRParse's wire is protobuf; older readers ignore unknown fields. |
+| Pillow mode `I` image handling | gRParse decodes images with OpenCV, not Pillow. |
+| RQ and Ray orchestrator settings | gRParse has neither orchestrator; requests run in process. |
+| transformers ASR model families | ASR runs in grpc-asr, not through transformers. |
+| EPUB images on by default | Already on: grpc-epub `ParseOptions.include_images = 5` (vendored `collectors/epub_types.proto`) is absent-means-true. |
+
+### Open
+
+- `mineru2` stays `NOT_IMPLEMENTED` on the VLM leg (two-pass protocol), here and in grpc-vlm-convert.
+- grpc-vlm-convert PR #24 (formats 6 to 12, `response_format_raw`) must merge for a deployed peer to serve them; an older peer answers `UNIMPLEMENTED` or ignores the field.
+- `trust_remote_code = true` on an inline engine stays `NOT_IMPLEMENTED`; docling's Nemotron Parse v2 spec defaults it to true, so a client copying that spec must send false or omit it.
+- `vlm_pipeline_custom_config`: `model_spec.default_repo_id` (the model, unless `vlm_pipeline_model`, `_local`, `_api` or `vlm_pipeline_preset` names one), `model_spec.prompt`, `model_spec.response_format` and `scale` are forwarded to grpc-vlm-convert. `engine_options` beyond `engine_type` and `trust_remote_code`, the spec's `revision`, `stop_strings`, `temperature`, `max_new_tokens`, `extra_generation_config` and engine overrides, plus `max_size`, `batch_size` and `force_backend_text`, are accepted and not forwarded: `ConvertOptions` has no field for them.
+- `extract_form_fields` unset folds widgets (gRParse default); docling's unset is false. Kept so existing callers keep `field_items`.
+- docling-serve numbering for `ResponseFormat` 6 to 13 is not yet confirmed.

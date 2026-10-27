@@ -212,6 +212,194 @@ void verify_orphans() {
           "the integrity check's wording is unchanged");
 }
 
+// docling-core validate_tree: a node listed twice (a DAG) or a child that
+// lists an ancestor (a cycle) is a repeated reference, named at the node
+// that lists it again; the walk does not descend twice, so a cycle ends.
+void verify_repeated_references() {
+  const std::set<StructureRule> only{StructureRule::kRepeatedReference};
+  {
+    docv1::Document document = empty_document();
+    const std::string section = add_group(&document, docv1::GROUP_LABEL_SECTION);
+    const std::string text = add_text(&document, section);
+    document.mutable_body()->add_children()->set_ref(text);
+    const auto finding =
+        only_finding(grparse::docling_structure_findings(document, only),
+                     StructureRule::kRepeatedReference);
+    require(finding.self_ref == "#/body" && finding.related_ref == text &&
+                finding.message.contains("already reachable through another reference"),
+            "a node listed by two parents is found where the walk meets it again: " +
+                finding.message);
+  }
+  {
+    docv1::Document document = empty_document();
+    const std::string outer = add_group(&document, docv1::GROUP_LABEL_SECTION);
+    const std::string inner = add_group(&document, docv1::GROUP_LABEL_SECTION, outer);
+    document.mutable_groups(1)->mutable_parent()->set_ref(outer);
+    document.mutable_groups(0)->add_children()->set_ref(inner);
+    document.mutable_groups(1)->add_children()->set_ref(outer);
+    const auto finding =
+        only_finding(grparse::docling_structure_findings(document, only),
+                     StructureRule::kRepeatedReference);
+    require(finding.self_ref == inner && finding.related_ref == outer,
+            "a cycle is found at the back edge and the walk ends");
+  }
+  {
+    docv1::Document document = empty_document();
+    const std::string text = add_text(&document, "#/body");
+    document.mutable_body()->add_children()->set_ref("#/body");
+    document.mutable_body()->add_children()->set_ref(text);
+    const auto findings = grparse::docling_structure_findings(document, only);
+    require(findings.size() == 2 && findings[0].related_ref == "#/body" &&
+                findings[1].related_ref == text,
+            "the root is visited from the start, and each repeat is its own finding");
+  }
+}
+
+// A rich cell is owned by its table: one item per cell, parented by the
+// table, and listed among its children (docling-core validate_tree).
+void verify_rich_cells_are_owned_by_their_table() {
+  const std::set<StructureRule> only{StructureRule::kRichCellNotOwned};
+  const auto table_with = [](docv1::Document* document) {
+    auto* table = document->add_tables();
+    table->set_self_ref("#/tables/0");
+    table->mutable_parent()->set_ref("#/body");
+    table->set_label(docv1::DOC_ITEM_LABEL_TABLE);
+    table->mutable_data()->set_num_rows(1);
+    table->mutable_data()->set_num_cols(2);
+    document->mutable_body()->add_children()->set_ref("#/tables/0");
+    return table;
+  };
+  {
+    docv1::Document document = empty_document();
+    auto* table = table_with(&document);
+    const std::string cell = add_text(&document, "#/tables/0", false);
+    table->add_children()->set_ref(cell);
+    table->mutable_data()->add_table_cells()->mutable_ref()->set_ref(cell);
+    require(grparse::docling_structure_findings(document, only).empty(),
+            "an owned rich cell breaks nothing");
+    document.mutable_tables(0)->mutable_data()->add_table_cells()->mutable_ref()->set_ref(cell);
+    const auto finding = only_finding(grparse::docling_structure_findings(document, only),
+                                      StructureRule::kRichCellNotOwned);
+    require(finding.self_ref == "#/tables/0" && finding.related_ref == cell &&
+                finding.message.contains("shared"),
+            "two cells naming one item are a shared rich cell");
+  }
+  {
+    docv1::Document document = empty_document();
+    auto* table = table_with(&document);
+    const std::string cell = add_text(&document, "#/body");
+    table->mutable_data()->add_table_cells()->mutable_ref()->set_ref(cell);
+    const auto finding = only_finding(grparse::docling_structure_findings(document, only),
+                                      StructureRule::kRichCellNotOwned);
+    require(finding.message.contains("with parent #/body"),
+            "a cell item parented elsewhere is not owned: " + finding.message);
+  }
+  {
+    docv1::Document document = empty_document();
+    auto* table = table_with(&document);
+    const std::string cell = add_text(&document, "#/tables/0", false);
+    table->mutable_data()->add_table_cells()->mutable_ref()->set_ref(cell);
+    const auto finding = only_finding(grparse::docling_structure_findings(document, only),
+                                      StructureRule::kRichCellNotOwned);
+    require(finding.message.contains("does not list"),
+            "a cell item the table does not list is not owned: " + finding.message);
+  }
+}
+
+// docling-core's grid limits: per table on rows, columns and their product,
+// and per document on the sum; defaults 1,000,000 and 5,000,000.
+void verify_table_cell_limits() {
+  const auto add_table = [](docv1::Document* document, int rows, int cols) {
+    const std::string ref = "#/tables/" + std::to_string(document->tables_size());
+    auto* table = document->add_tables();
+    table->set_self_ref(ref);
+    table->mutable_parent()->set_ref("#/body");
+    table->set_label(docv1::DOC_ITEM_LABEL_TABLE);
+    table->mutable_data()->set_num_rows(rows);
+    table->mutable_data()->set_num_cols(cols);
+    document->mutable_body()->add_children()->set_ref(ref);
+    return ref;
+  };
+  const std::set<StructureRule> per_table{StructureRule::kTableCellsOverLimit};
+  const std::set<StructureRule> total{StructureRule::kTotalTableCellsOverLimit};
+  {
+    docv1::Document document = empty_document();
+    add_table(&document, 1000, 1000);
+    add_table(&document, 1'000'000, 0);
+    require(grparse::docling_structure_findings(document, per_table).empty(),
+            "exactly the limit, and a limit-sized dimension with an empty other, pass");
+    const std::string over = add_table(&document, 1000, 1001);
+    const auto finding = only_finding(grparse::docling_structure_findings(document, per_table),
+                                      StructureRule::kTableCellsOverLimit);
+    require(finding.self_ref == over &&
+                finding.message == "Table of 1000x1001 cells exceeds the limit of 1000000 cells",
+            "docling-core's wording: " + finding.message);
+    add_table(&document, 1'000'001, 0);
+    add_table(&document, -5, 10);
+    require_equal(grparse::docling_structure_findings(document, per_table).size(), size_t{2},
+                  "a dimension alone over the limit counts, a negative one is zero");
+  }
+  {
+    docv1::Document document = empty_document();
+    for (int index = 0; index < 5; ++index) add_table(&document, 1000, 1000);
+    require(grparse::docling_structure_findings(document, total).empty(),
+            "five tables at the per-table limit are exactly the total limit");
+    add_table(&document, 1, 1);
+    const auto finding = only_finding(grparse::docling_structure_findings(document, total),
+                                      StructureRule::kTotalTableCellsOverLimit);
+    require(finding.self_ref == "#/tables" &&
+                finding.message ==
+                    "Document tables declare 5000001 cells in total, exceeding the limit of "
+                    "5000000",
+            "docling-core's wording: " + finding.message);
+  }
+  {
+    docv1::Document document = empty_document();
+    add_table(&document, 3, 4);
+    add_table(&document, 2, 2);
+    grparse::StructureCellLimits limits;
+    limits.max_table_cells = 10;
+    limits.max_total_table_cells = 15;
+    const std::set<StructureRule> both{StructureRule::kTableCellsOverLimit,
+                                       StructureRule::kTotalTableCellsOverLimit};
+    require(rules_of(grparse::docling_structure_findings(document, both, limits)) ==
+                std::vector<StructureRule>{StructureRule::kTableCellsOverLimit,
+                                           StructureRule::kTotalTableCellsOverLimit},
+            "the request's limits replace the defaults");
+  }
+  {
+    const std::string surface = "ConvertSource";
+    parsev1::ConvertDocumentOptions options;
+    options.set_structure_validation(parsev1::STRUCTURE_VALIDATION_REPORT);
+    options.mutable_structure_table_cell_limits()->set_max_table_cells(10);
+    require(grparse::validate_options(options, surface).ok(), "positive limits are accepted");
+    options.mutable_structure_table_cell_limits()->set_max_total_table_cells(0);
+    const grpc::Status zero = grparse::validate_options(options, surface);
+    require(zero.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+                zero.error_message().contains("max_total_table_cells must be at least 1"),
+            "a zero limit is OUT_OF_RANGE: " + zero.error_message());
+    parsev1::ConvertDocumentOptions off;
+    off.mutable_structure_table_cell_limits()->set_max_table_cells(10);
+    const grpc::Status contradiction = grparse::validate_options(off, surface);
+    require(contradiction.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+                contradiction.error_message().contains("needs structure_validation"),
+            "limits without validation are contradictory: " + contradiction.error_message());
+
+    docv1::Document document = empty_document();
+    add_table(&document, 4, 4);
+    google::protobuf::RepeatedPtrField<parsev1::StructureFinding> findings;
+    parsev1::ConvertDocumentOptions report;
+    report.set_structure_validation(parsev1::STRUCTURE_VALIDATION_REPORT);
+    report.mutable_structure_table_cell_limits()->set_max_table_cells(10);
+    require(grparse::check_structure(document, grparse::StructureRequest::from(report), surface,
+                                     &findings)
+                    .ok() &&
+                findings.size() == 1 &&
+                findings[0].rule() == parsev1::STRUCTURE_RULE_TABLE_CELLS_OVER_LIMIT,
+            "REPORT reads the request's limits");
+  }
+}
+
 void verify_rule_filter_and_order() {
   docv1::Document document = empty_document();
   add_text(&document, "#/furniture", true, docv1::DOC_ITEM_LABEL_PAGE_FOOTER);
@@ -372,6 +560,9 @@ int main() {
       verify_list_item_outside_list_group,
       verify_empty_group,
       verify_orphans,
+      verify_repeated_references,
+      verify_rich_cells_are_owned_by_their_table,
+      verify_table_cell_limits,
       verify_rule_filter_and_order,
       verify_rule_ids_match_the_wire,
       verify_request_validation,

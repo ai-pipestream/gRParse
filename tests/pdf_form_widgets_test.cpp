@@ -8,13 +8,19 @@
 #include <chrono>
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include <google/protobuf/util/message_differencer.h>
 #include <grpcpp/grpcpp.h>
+#include <opencv2/core.hpp>
 
 #include "ai/pipestream/document/v1/document.pb.h"
+#include "ai/pipestream/parse/v1/parse.grpc.pb.h"
+#include "google/rpc/status.pb.h"
+#include "grparse/document_parser_service.h"
+#include "grparse/page_scheduler.h"
 #include "ai/protomolt/parse/pdf/v1/pdf_backend_service.grpc.pb.h"
 #include "grparse/document_geometry.h"
 #include "grparse/document_render.h"
@@ -25,6 +31,7 @@
 
 namespace docv1 = ai::pipestream::document::v1;
 namespace pdfv1 = ai::protomolt::parse::pdf::v1;
+namespace parsev1 = ai::pipestream::parse::v1;
 
 using grparse_test::add_page;
 using grparse_test::add_paragraph;
@@ -491,6 +498,144 @@ void widget_frames_agree_on_cropped_and_rotated_pages() {
   }
 }
 
+// ConvertDocumentOptions.extract_form_fields over the service: true on a
+// PDF with no widget backend is a typed NOT_IMPLEMENTED rejection, true on
+// other input is a warning, and the backend check reads
+// GRPARSE_PDF_BACKEND the way the fold does.
+class BlankSource final : public grparse::PageSource {
+ public:
+  int page_count() const override { return 1; }
+  std::optional<grparse::OcrPage> extract_digital_page(int) const override {
+    return std::nullopt;
+  }
+  cv::Mat render_page(int) const override {
+    return cv::Mat(1, 1, CV_8UC1, cv::Scalar(1)).clone();
+  }
+};
+
+class OneWordRecognizer final : public grparse::PageRecognizer {
+ public:
+  grparse::OcrPage extract_page(const cv::Mat&) override {
+    return {100, 200, {{"one", {{1, 2}, {20, 2}, {20, 12}, {1, 12}}}}};
+  }
+};
+
+class ParseServer final {
+ public:
+  ParseServer()
+      : scheduler_(recognizer_, {},
+                   [](std::shared_ptr<const std::string>, bool, double) {
+                     return std::make_shared<BlankSource>();
+                   }),
+        service_(scheduler_,
+                 std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{})) {
+    grpc::ServerBuilder builder;
+    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port_);
+    builder.RegisterService(&service_);
+    server_ = builder.BuildAndStart();
+    require(server_ != nullptr && port_ != 0, "test server started");
+  }
+  ~ParseServer() {
+    server_->Shutdown(std::chrono::system_clock::now() + std::chrono::seconds(2));
+    server_->Wait();
+  }
+  grpc::Status convert(const std::string& filename, const std::string& base64,
+                       std::optional<bool> extract,
+                       parsev1::ConvertSourceResponse* response) const {
+    auto stub = parsev1::ParseService::NewStub(grpc::CreateChannel(
+        "127.0.0.1:" + std::to_string(port_), grpc::InsecureChannelCredentials()));
+    parsev1::ConvertSourceRequest request;
+    auto* source = request.mutable_request()->add_sources()->mutable_file();
+    source->set_filename(filename);
+    source->set_base64_string(base64);
+    if (extract.has_value()) {
+      request.mutable_request()->mutable_options()->set_extract_form_fields(*extract);
+    }
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
+    return stub->ConvertSource(&context, request, response);
+  }
+
+ private:
+  OneWordRecognizer recognizer_;
+  grparse::PageScheduler scheduler_;
+  grparse::DocumentParserService service_;
+  int port_ = 0;
+  std::unique_ptr<grpc::Server> server_;
+};
+
+void extract_form_fields_is_typed() {
+  ::unsetenv("GRPARSE_PDF_BACKEND");
+  require(!grparse::pdf_form_widget_backend_configured(), "unset names no backend");
+  ::setenv("GRPARSE_PDF_BACKEND", "127.0.0.1:1", 1);
+  require(grparse::pdf_form_widget_backend_configured(), "a target is a backend");
+  ::unsetenv("GRPARSE_PDF_BACKEND");
+
+  ParseServer server;
+  parsev1::ConvertSourceResponse refused;
+  // "%PDF-1.4\n"
+  const grpc::Status status = server.convert("form.pdf", "JVBERi0xLjQK", true, &refused);
+  require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
+          "true on a PDF without a widget backend is refused: " + status.error_message());
+  google::rpc::Status rich;
+  parsev1::OptionRejection rejection;
+  require(rich.ParseFromString(status.error_details()) && rich.details_size() == 1 &&
+              rich.details(0).UnpackTo(&rejection),
+          "the refusal carries an OptionRejection");
+  require(rejection.option_path() == "extract_form_fields" &&
+              rejection.reason() == parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED &&
+              rejection.rejected_value_raw() == "true",
+          "the refusal is NOT_IMPLEMENTED on extract_form_fields");
+
+  parsev1::ConvertSourceResponse image;
+  const grpc::Status image_status = server.convert("image.png", "bWVtb3J5", true, &image);
+  require(image_status.ok(), "true on an image still converts: " + image_status.error_message());
+  bool warned = false;
+  for (const auto& warning : image.response().document().doc().warnings()) {
+    warned = warned || warning.message().contains("extract_form_fields");
+  }
+  require(warned, "true on input that is not a PDF is a document warning");
+
+  parsev1::ConvertSourceResponse quiet;
+  require(server.convert("image.png", "bWVtb3J5", false, &quiet).ok(),
+          "false on an image converts");
+  for (const auto& warning : quiet.response().document().doc().warnings()) {
+    require(!warning.message().contains("extract_form_fields"), "false warns about nothing");
+  }
+}
+
+// Unset, true and false on a PDF, with a widget backend configured that
+// cannot be reached so every fold attempt leaves a warning naming it. Unset
+// folds (gRParse keeps the AcroForm widgets by default; docling's unset is
+// false, which would drop field_items that downstream readers rely on), true
+// folds, and false never dials the backend.
+void extract_form_fields_unset_true_false_on_a_pdf() {
+  ::setenv("GRPARSE_PDF_BACKEND", "127.0.0.1:1", 1);
+  ParseServer server;
+  auto folded = [&](std::optional<bool> extract) {
+    parsev1::ConvertSourceResponse response;
+    const grpc::Status status = server.convert("form.pdf", "JVBERi0xLjQK", extract, &response);
+    require(status.ok(), "a PDF converts with extract_form_fields " +
+                             std::string(!extract.has_value() ? "unset"
+                                         : *extract            ? "true"
+                                                               : "false") +
+                             ": " + status.error_message());
+    bool attempted = false;
+    for (const auto& warning : response.response().document().doc().warnings()) {
+      attempted = attempted || (warning.message().contains("AcroForm widgets not read") ||
+                                warning.message().contains("127.0.0.1:1"));
+    }
+    return attempted;
+  };
+  const bool unset_folds = folded(std::nullopt);
+  const bool true_folds = folded(true);
+  const bool false_folds = folded(false);
+  ::unsetenv("GRPARSE_PDF_BACKEND");
+  require(unset_folds, "unset extract_form_fields folds AcroForm widgets (gRParse default)");
+  require(true_folds, "true extract_form_fields folds AcroForm widgets");
+  require(!false_folds, "false extract_form_fields never dials the widget backend");
+}
+
 }  // namespace
 
 int main() {
@@ -500,5 +645,6 @@ int main() {
        read_only_values_and_bare_widgets, deterministic_whatever_the_backend_order,
        canonical_json_keeps_extensions_out, nothing_to_fold, fetches_over_the_wire,
        absent_and_unsupported_families, folds_from_the_configured_backends,
-       widget_frames_agree_on_cropped_and_rotated_pages});
+       widget_frames_agree_on_cropped_and_rotated_pages, extract_form_fields_is_typed,
+       extract_form_fields_unset_true_false_on_a_pdf});
 }

@@ -216,6 +216,8 @@ bool implemented_option(std::string_view name) {
       "structure_validation",
       "structure_validation_rules",
       "structure_repairs",
+      "structure_table_cell_limits",
+      "extract_form_fields",
   };
   return std::ranges::find(kImplemented, name) != std::end(kImplemented);
 }
@@ -505,6 +507,55 @@ grpc::Status validate_remote_services(const pipestream::parse::v1::ConvertDocume
   return grpc::Status::OK;
 }
 
+// A VLM model message's response format: the typed field must be a
+// member, response_format_raw must be one of docling's names, and the two
+// must name the same format when both are set. A format bound for the VLM
+// convert leg (`vlm_leg`) must also be one that leg's collector maps; any
+// other is refused by field rather than replaced with the preset default.
+template <typename Message>
+grpc::Status validate_response_format(const Message& message, const std::string& path,
+                                      const std::string& surface, bool vlm_leg) {
+  namespace parsev1 = pipestream::parse::v1;
+  const bool typed = message.has_response_format() &&
+                     message.response_format() != parsev1::RESPONSE_FORMAT_UNSPECIFIED;
+  if (message.has_response_format() && !parsev1::ResponseFormat_IsValid(message.response_format())) {
+    return option_rejected(path + ".response_format",
+                           parsev1::OPTION_REJECTION_REASON_UNKNOWN_VALUE,
+                           std::to_string(static_cast<int>(message.response_format())),
+                           surface + ": " + path + ".response_format is not a known ResponseFormat");
+  }
+  if (message.has_response_format_raw()) {
+    const auto named = response_format_from_name(message.response_format_raw());
+    if (!named.has_value()) {
+      return option_rejected(path + ".response_format_raw",
+                             parsev1::OPTION_REJECTION_REASON_UNKNOWN_VALUE,
+                             message.response_format_raw(),
+                             surface + ": " + path + ".response_format_raw '" +
+                                 message.response_format_raw() +
+                                 "' is not a docling ResponseFormat value");
+    }
+    if (typed && *named != message.response_format()) {
+      return option_rejected(path + ".response_format_raw",
+                             parsev1::OPTION_REJECTION_REASON_CONFLICT,
+                             message.response_format_raw(),
+                             surface + ": " + path + ".response_format and " + path +
+                                 ".response_format_raw disagree");
+    }
+  }
+  if (!vlm_leg) return grpc::Status::OK;
+  const auto format = named_response_format(message);
+  if (format.has_value() && !vlm_collector_response_format(*format).has_value()) {
+    const std::string name(response_format_name(*format).value_or(""));
+    return option_rejected(typed ? path + ".response_format" : path + ".response_format_raw",
+                           parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED, name,
+                           surface + ": " + path + " response format '" + name +
+                               "' is not one the VLM convert collector maps (it maps every "
+                               "docling format except mineru2, whose two-pass protocol "
+                               "it does not drive)");
+  }
+  return grpc::Status::OK;
+}
+
 // VLM selection fields are accepted so Docling clients that always set them
 // are not turned away. They are mutually exclusive (preset / enum / local /
 // api). PROCESSING_PIPELINE_VLM uses them when the convert peer is configured.
@@ -556,6 +607,16 @@ grpc::Status validate_vlm_selection(const pipestream::parse::v1::ConvertDocument
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                           surface + ": vlm_pipeline_model_api.concurrency must be >= 1");
     }
+    if (auto s = validate_response_format(api, "vlm_pipeline_model_api", surface, true); !s.ok()) {
+      return s;
+    }
+  }
+  if (options.has_vlm_pipeline_model_local()) {
+    if (auto s = validate_response_format(options.vlm_pipeline_model_local(),
+                                          "vlm_pipeline_model_local", surface, true);
+        !s.ok()) {
+      return s;
+    }
   }
   return grpc::Status::OK;
 }
@@ -572,15 +633,37 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
     if (value.has_uint_value()) return static_cast<double>(value.uint_value());
     return std::nullopt;
   };
-  const auto require_engine = [&](pipestream::parse::v1::VlmEngineType engine_type,
+  const auto require_engine = [&](const pipestream::parse::v1::BaseVlmEngineOptions& engine,
                                   const char* name) -> grpc::Status {
-    if (engine_type == pipestream::parse::v1::VLM_ENGINE_TYPE_UNSPECIFIED) {
+    namespace parsev1 = pipestream::parse::v1;
+    const parsev1::VlmEngineType engine_type = engine.engine_type();
+    if (engine_type == parsev1::VLM_ENGINE_TYPE_UNSPECIFIED) {
       return option_rejected(std::string(name) + ".engine_options.engine_type",
-                             pipestream::parse::v1::OPTION_REJECTION_REASON_UNKNOWN_VALUE,
+                             parsev1::OPTION_REJECTION_REASON_UNKNOWN_VALUE,
                              "VLM_ENGINE_TYPE_UNSPECIFIED",
                              surface + ": " + std::string(name) +
                                  ".engine_options.engine_type is required "
                                  "(VLM_ENGINE_TYPE_UNSPECIFIED names no engine)");
+    }
+    if (engine.has_trust_remote_code()) {
+      const std::string path = std::string(name) + ".engine_options.trust_remote_code";
+      const std::string raw = engine.trust_remote_code() ? "true" : "false";
+      const bool api = engine_type == parsev1::VLM_ENGINE_TYPE_API ||
+                       engine_type == parsev1::VLM_ENGINE_TYPE_API_OLLAMA ||
+                       engine_type == parsev1::VLM_ENGINE_TYPE_API_LMSTUDIO ||
+                       engine_type == parsev1::VLM_ENGINE_TYPE_API_OPENAI;
+      if (api) {
+        return option_rejected(path, parsev1::OPTION_REJECTION_REASON_CONFLICT, raw,
+                               surface + ": " + path + " is an inline-engine setting; " +
+                                   parsev1::VlmEngineType_Name(engine_type) +
+                                   " runs no model-repository code");
+      }
+      if (engine.trust_remote_code()) {
+        return option_rejected(path, parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED, raw,
+                               surface + ": " + path +
+                                   " = true is not implemented; no gRParse leg runs "
+                                   "model-repository code");
+      }
     }
     return grpc::Status::OK;
   };
@@ -591,12 +674,15 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
                           surface + ": " + std::string(name) +
                               ".model_spec requires name and default_repo_id");
     }
-    return grpc::Status::OK;
+    // Only the VLM pipeline's spec format reaches a collector that reads
+    // it; the enrich legs' specs are checked for a known, agreeing value.
+    return validate_response_format(spec, std::string(name) + ".model_spec", surface,
+                                    std::string_view(name) == "vlm_pipeline_custom_config");
   };
 
   if (options.has_vlm_pipeline_custom_config()) {
     const auto& cfg = options.vlm_pipeline_custom_config();
-    if (auto s = require_engine(cfg.engine_options().engine_type(), "vlm_pipeline_custom_config");
+    if (auto s = require_engine(cfg.engine_options(), "vlm_pipeline_custom_config");
         !s.ok()) {
       return s;
     }
@@ -607,7 +693,7 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
   if (options.has_picture_description_custom_config()) {
     const auto& cfg = options.picture_description_custom_config();
     if (auto s =
-            require_engine(cfg.engine_options().engine_type(), "picture_description_custom_config");
+            require_engine(cfg.engine_options(), "picture_description_custom_config");
         !s.ok()) {
       return s;
     }
@@ -625,7 +711,7 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
   }
   if (options.has_code_formula_custom_config()) {
     const auto& cfg = options.code_formula_custom_config();
-    if (auto s = require_engine(cfg.engine_options().engine_type(), "code_formula_custom_config");
+    if (auto s = require_engine(cfg.engine_options(), "code_formula_custom_config");
         !s.ok()) {
       return s;
     }
@@ -669,7 +755,7 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
   }
   if (has_chart_config) {
     const auto& cfg = options.chart_extraction_custom_config();
-    if (auto s = require_engine(cfg.engine_options().engine_type(),
+    if (auto s = require_engine(cfg.engine_options(),
                                 "chart_extraction_custom_config");
         !s.ok()) {
       return s;
@@ -1286,10 +1372,33 @@ std::expected<PictureDescriptionCall, grpc::Status> picture_description_call(
   return call;
 }
 
+std::string picture_description_repo_id(
+    const pipestream::parse::v1::ConvertDocumentOptions& options) {
+  if (options.has_picture_description_local()) return options.picture_description_local().repo_id();
+  if (options.has_picture_description_preset() && !options.picture_description_preset().empty()) {
+    return options.picture_description_preset();
+  }
+  if (options.has_picture_description_custom_config()) {
+    return options.picture_description_custom_config().model_spec().default_repo_id();
+  }
+  return "";
+}
+
 std::expected<PictureDescriptionCall, grpc::Status> request_picture_description_call(
     const pipestream::parse::v1::ConvertDocumentOptions& options,
     const std::optional<ChartExtractionPreset>& chart_extraction, const std::string& surface) {
-  if (!options.has_picture_description_api()) return PictureDescriptionCall{};
+  if (!options.has_picture_description_api()) {
+    PictureDescriptionCall call;
+    if (options.has_picture_description_custom_config()) {
+      const auto& cfg = options.picture_description_custom_config();
+      if (cfg.has_prompt()) {
+        call.prompt = cfg.prompt();
+      } else if (cfg.model_spec().has_prompt()) {
+        call.prompt = cfg.model_spec().prompt();
+      }
+    }
+    return call;
+  }
   const auto& api = options.picture_description_api();
   auto call = picture_description_call(api, surface);
   if (!call.has_value() || call->headers.empty()) return call;
@@ -1727,9 +1836,7 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   if (options.has_picture_description_area_threshold()) {
     inputs.picture_description_area_threshold = options.picture_description_area_threshold();
   }
-  if (options.has_picture_description_preset()) {
-    inputs.picture_description_preset = options.picture_description_preset();
-  }
+  inputs.picture_description_preset = picture_description_repo_id(options);
   if (auto preset = resolve_code_formula_preset(options, "parse"); preset.has_value()) {
     inputs.code_formula_preset = *preset;
   }
@@ -1748,7 +1855,6 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
     // repo_id is the enrich raw preset name; presence of local does not force
     // do_picture_description — the Convert bool still gates the job.
     const auto& local = options.picture_description_local();
-    inputs.picture_description_preset = local.repo_id();
     inputs.picture_description_allow = classification_class_names(local.classification_allow());
     inputs.picture_description_deny = classification_class_names(local.classification_deny());
     if (local.has_classification_min_confidence()) {
@@ -2276,6 +2382,18 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     const auto cv_confidence =
         std::make_shared<std::optional<pipestream::parse::v1::ConfidenceScores>>();
     const bool pdf = is_pdf(*bytes, requested_name);
+    const auto& form_options = request.options();
+    const bool form_fields_requested =
+        form_options.has_extract_form_fields() && form_options.extract_form_fields();
+    const bool form_fields_off =
+        form_options.has_extract_form_fields() && !form_options.extract_form_fields();
+    if (pdf && form_fields_requested && !pdf_form_widget_backend_configured()) {
+      return option_rejected("extract_form_fields",
+                             pipestream::parse::v1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED,
+                             "true",
+                             surface + ": extract_form_fields needs a PDF backend that reads "
+                                       "AcroForm widgets (GRPARSE_PDF_BACKEND names none)");
+    }
     if (inputs.vlm_pipeline) {
       if (collectors == nullptr || !collectors->has_vlm()) {
         return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
@@ -2314,6 +2432,22 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
       (void)repaired_text;
       derender_charts_if_configured(collectors, context, inputs.inbound_deadline, inputs,
                                     &result);
+      // The VLM body gets AcroForm widgets only when the request asks:
+      // unset keeps this path's output as it was.
+      if (pdf && form_fields_requested && !context->IsCancelled()) {
+        if (auto warning = fold_pdf_form_widgets_from_backend(*bytes, inputs.inbound_deadline,
+                                                              &result.document)) {
+          result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
+                                       std::move(*warning));
+          record_collector_warnings(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, 1);
+        }
+      }
+      if (!pdf && form_fields_requested) {
+        result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
+                                     "extract_form_fields: the input is not a PDF, so it has "
+                                     "no AcroForm widgets to read");
+        record_collector_warnings(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, 1);
+      }
       const grpc::Status structure_status = check_structure(
           result.document, structure, surface, &parsed->structure_findings);
       if (!structure_status.ok()) return structure_status;
@@ -2359,7 +2493,13 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     // path produced it; the backend that owns the PDF layer supplies them
     // (pdf_form_widgets.h). Appending to the arenas leaves the offset table
     // below describing the same items.
-    if (pdf && !context->IsCancelled()) {
+    if (!pdf && form_fields_requested) {
+      result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
+                                   "extract_form_fields: the input is not a PDF, so it has no "
+                                   "AcroForm widgets to read");
+      record_collector_warnings(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, 1);
+    }
+    if (pdf && !form_fields_off && !context->IsCancelled()) {
       if (auto warning = fold_pdf_form_widgets_from_backend(*bytes, inputs.inbound_deadline,
                                                             &result.document)) {
         result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
@@ -2484,6 +2624,7 @@ std::string options_digest(const pipestream::parse::v1::ConvertDocumentOptions& 
   decisive.clear_chunking_options();
   decisive.clear_structure_validation();
   decisive.clear_structure_validation_rules();
+  decisive.clear_structure_table_cell_limits();
   if (decisive.has_picture_description_api()) {
     auto* api = decisive.mutable_picture_description_api();
     api->clear_headers();

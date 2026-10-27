@@ -133,14 +133,28 @@ DoclangOptions doclang_options(const ai::pipestream::parse::v1::ConvertDocumentO
 std::expected<PictureDescriptionCall, grpc::Status> picture_description_call(
     const ai::pipestream::parse::v1::PictureDescriptionApi& api, const std::string& surface);
 
-// The request's picture-description call, resolved once per parse (empty
-// without picture_description_api). grpc-enrich sends the headers to every
+// The request's picture-description call, resolved once per parse. With
+// picture_description_api it carries the api's prompt, params and headers;
+// without it, picture_description_custom_config's prompt (or, unset, its
+// model_spec.prompt, as docling's from-spec options default it) is the
+// prompt, and nothing else is set. grpc-enrich sends the headers to every
 // per-request endpoint of the job, so headers alongside a chart-extraction
 // preset that names a different endpoint, with the chart leg on, are
 // INVALID_ARGUMENT rather than handed to that endpoint.
 std::expected<PictureDescriptionCall, grpc::Status> request_picture_description_call(
     const ai::pipestream::parse::v1::ConvertDocumentOptions& options,
     const std::optional<ChartExtractionPreset>& chart_extraction, const std::string& surface);
+
+// The model the picture-description leg names to grpc-enrich (its raw
+// preset): picture_description_local.repo_id, else picture_description_preset,
+// else picture_description_custom_config.model_spec.default_repo_id (docling's
+// VlmModelSpec.get_repo_id with no engine override). Empty when none is set.
+// model_spec.response_format is validated (a known value, agreeing with
+// response_format_raw) and otherwise unread, as in docling, whose
+// picture-description stage reads the answer as plain text whatever the spec
+// names.
+std::string picture_description_repo_id(
+    const ai::pipestream::parse::v1::ConvertDocumentOptions& options);
 
 // The identity parse_source stamps on every Document it returns
 // (Document.parse): this build, its settings, and the request's options.

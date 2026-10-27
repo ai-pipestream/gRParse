@@ -336,9 +336,12 @@ class Chunker {
   // Subtrees the walk left out for nesting past kMaximumNesting.
   int too_deep_ = 0;
 
+  // Captions and footnotes both chunk through the floating item that names
+  // them, never on their own.
   void collect_caption_refs() {
     const auto claim = [this](const auto& item) {
       for (const auto& ref : item.captions()) caption_refs_.insert(ref.ref());
+      for (const auto& ref : item.footnotes()) caption_refs_.insert(ref.ref());
     };
     for (const auto& item : document_.tables()) claim(item);
     for (const auto& item : document_.pictures()) claim(item);
@@ -584,7 +587,7 @@ class Chunker {
   }
 
   void emit_text(const std::string& ref, const docv1::BaseTextItem& item) {
-    // A caption chunks through the table or picture that claims it.
+    // A caption or footnote chunks through the item that claims it.
     if (caption_refs_.contains(ref)) return;
     if (item.item_case() == docv1::BaseTextItem::kTitle) {
       record_heading(0, item.title().base().text());
@@ -598,6 +601,14 @@ class Chunker {
     chunk.headings = trail_texts();
     absorb(&chunk, ref);
     chunk.text = text_of(item);
+    if (item.item_case() == docv1::BaseTextItem::kCode) {
+      // A code block's footnotes follow it in its chunk (docling-core #675).
+      std::vector<std::string> lines{chunk.text};
+      for (std::string& footnote : caption_texts(item.code().footnotes(), &chunk)) {
+        lines.push_back(std::move(footnote));
+      }
+      chunk.text = join(lines, "\n");
+    }
     if (trimmed(chunk.text).empty()) return;
     mark_exact(&chunk);
     chunks_.push_back(std::move(chunk));
@@ -698,6 +709,11 @@ class Chunker {
                                  ? serialize_table_markdown(table.data(), grid_budget_)
                                  : serialize_table_triplets(table.data(), grid_budget_);
     if (!body.empty()) lines.push_back(body);
+    // The table's footnotes follow its body (docling-core #675); they are
+    // absorbed like the captions but are not captions.
+    for (std::string& footnote : caption_texts(table.footnotes(), &chunk)) {
+      lines.push_back(std::move(footnote));
+    }
     chunk.text = join(lines, "\n");
     if (trimmed(chunk.text).empty()) return;
     chunks_.push_back(std::move(chunk));
@@ -716,6 +732,11 @@ class Chunker {
       const std::string placeholder =
           options_.image_placeholder_set ? options_.image_placeholder : "![IMAGE]";
       if (!placeholder.empty()) lines.push_back(placeholder);
+    }
+    // Footnotes sit between the image and the captions, the order the
+    // Markdown export gives a picture (docling-core #675).
+    for (std::string& footnote : caption_texts(picture.footnotes(), &chunk)) {
+      lines.push_back(std::move(footnote));
     }
     lines.insert(lines.end(), chunk.captions.begin(), chunk.captions.end());
     chunk.text = join(lines, "\n");

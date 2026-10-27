@@ -217,6 +217,70 @@ void verify_code_rides_a_preformatted_block() {
                "code is escaped and carries no language attribute");
 }
 
+// docling-core #675: a table's footnotes follow its closing tag, a
+// picture's close its figure, and a code block with either captions or
+// footnotes becomes a figure. Each footnote is its own div, escaped the way
+// Python's html.escape escapes (quotes included), joined with nothing.
+void verify_table_footnotes_follow_the_table() {
+  docv1::Document document = base_document("footnotes.pdf");
+  auto* table = add_table(&document, "#/body");
+  auto* data = table->mutable_data();
+  data->set_num_rows(1);
+  data->set_num_cols(1);
+  docv1::TableRow row;
+  add_cell(data, &row, "X", false, 0, 0);
+  table->add_footnotes()->set_ref(add_owned_text(&document, table->self_ref(),
+                                                 docv1::DOC_ITEM_LABEL_FOOTNOTE, "a < \"b\""));
+  table->add_footnotes()->set_ref(add_owned_text(&document, table->self_ref(),
+                                                 docv1::DOC_ITEM_LABEL_FOOTNOTE, "it's"));
+  require_body(document,
+               "<table><tbody><tr><td>X</td></tr></tbody></table>"
+               "<div class=\"footnote\">a &lt; &quot;b&quot;</div>"
+               "<div class=\"footnote\">it&#x27;s</div>\n",
+               "table footnotes are escaped divs after the closing tag");
+}
+
+void verify_a_footnote_linked_in_the_body_renders_once() {
+  docv1::Document document = base_document("footnotes.pdf");
+  auto* table = add_table(&document, "#/body");
+  const std::string footnote = add_owned_text(&document, table->self_ref(),
+                                              docv1::DOC_ITEM_LABEL_FOOTNOTE, "note");
+  table->add_footnotes()->set_ref(footnote);
+  document.mutable_body()->add_children()->set_ref(footnote);
+  require_body(document, "<div class=\"footnote\">note</div>\n",
+               "a footnote the table claims renders with the table even with no grid, and "
+               "the body link to it does not render it a second time");
+}
+
+void verify_picture_footnotes_close_the_figure() {
+  docv1::Document document = base_document("footnotes.pdf");
+  auto* picture = add_picture(&document, "#/body", "");
+  picture->add_captions()->set_ref(
+      add_owned_text(&document, picture->self_ref(), docv1::DOC_ITEM_LABEL_CAPTION, "Figure 1"));
+  picture->add_footnotes()->set_ref(
+      add_owned_text(&document, picture->self_ref(), docv1::DOC_ITEM_LABEL_FOOTNOTE, "n1"));
+  require_body(document,
+               "<figure><!-- image --><figcaption>Figure 1</figcaption>"
+               "<div class=\"footnote\">n1</div></figure>\n",
+               "picture footnotes sit inside the figure after its captions");
+}
+
+void verify_code_with_captions_or_footnotes_is_a_figure() {
+  docv1::Document document = base_document("code.md");
+  const std::string ref =
+      add_code(&document, "#/body", "x < y", docv1::CODE_LANGUAGE_LABEL_C_PLUS_PLUS);
+  auto* code = document.mutable_texts(std::stoi(ref.substr(std::string("#/texts/").size())))
+                   ->mutable_code();
+  code->add_captions()->set_ref(
+      add_owned_text(&document, ref, docv1::DOC_ITEM_LABEL_CAPTION, "Listing 1"));
+  code->add_footnotes()->set_ref(
+      add_owned_text(&document, ref, docv1::DOC_ITEM_LABEL_FOOTNOTE, "n1"));
+  require_body(document,
+               "<figure><pre><code>x &lt; y</code></pre><figcaption>Listing 1</figcaption>"
+               "<div class=\"footnote\">n1</div></figure>\n",
+               "code with a caption and a footnote is wrapped in a figure");
+}
+
 void verify_an_inline_group_joins_its_children_into_one_paragraph() {
   docv1::Document document = base_document("inline.docx");
   const std::string inline_group = add_group(&document, "#/body", docv1::GROUP_LABEL_INLINE);
@@ -290,6 +354,10 @@ int main() {
       verify_two_captions_each_get_their_own_figcaption,
       verify_an_undecoded_formula_says_so,
       verify_code_rides_a_preformatted_block,
+      verify_table_footnotes_follow_the_table,
+      verify_a_footnote_linked_in_the_body_renders_once,
+      verify_picture_footnotes_close_the_figure,
+      verify_code_with_captions_or_footnotes_is_a_figure,
       verify_an_inline_group_joins_its_children_into_one_paragraph,
       verify_unserved_arenas_leave_a_comment,
       verify_a_group_with_no_list_label_renders_only_its_children,

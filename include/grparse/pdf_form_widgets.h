@@ -87,6 +87,11 @@ PdfWidgetFetch fetch_pdf_form_widgets(const std::string& bytes, const std::strin
 // naming the failure when every backend failed; the document is then left
 // as it was. With GRPARSE_PDF_BACKEND unset no PDF is read at all, so
 // there are no widgets to fold.
+// False when GRPARSE_PDF_BACKEND names no backend, so no PDF is read here
+// and fold_pdf_form_widgets_from_backend has nothing to ask. A malformed
+// setting counts as configured: the fold then names the failure.
+bool pdf_form_widget_backend_configured();
+
 std::optional<std::string> fold_pdf_form_widgets_from_backend(
     const std::string& bytes, std::chrono::system_clock::time_point deadline,
     ai::pipestream::document::v1::Document* document);

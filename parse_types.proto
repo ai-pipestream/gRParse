@@ -188,6 +188,36 @@ enum StructureRule {
   STRUCTURE_RULE_PARENT_MISSING = 6;
   // An item whose parent does not list it among its children (an orphan).
   STRUCTURE_RULE_NOT_LISTED_BY_PARENT = 7;
+  // A node reached through more than one children reference in the walk
+  // from #/body or from #/furniture: a DAG or a cycle (docling-core
+  // validate_tree, "already reachable through another reference").
+  // self_ref is the node listing it again, related_ref the repeated node.
+  STRUCTURE_RULE_REPEATED_REFERENCE = 8;
+  // A rich table cell (TableCell.ref) the table does not own: another cell
+  // of the same table names the same item, the item's parent is not the
+  // table, or the table does not list it among its children (docling-core
+  // validate_tree on a TableItem). self_ref is the table, related_ref the
+  // cell's item.
+  STRUCTURE_RULE_RICH_CELL_NOT_OWNED = 9;
+  // A table whose num_rows, num_cols, or num_rows * num_cols exceeds the
+  // per-table cell limit (docling-core TableData._validate_grid_size).
+  STRUCTURE_RULE_TABLE_CELLS_OVER_LIMIT = 10;
+  // The sum of num_rows * num_cols over every table exceeds the document
+  // cell limit (docling-core _validate_total_table_cells). self_ref is
+  // #/tables.
+  STRUCTURE_RULE_TOTAL_TABLE_CELLS_OVER_LIMIT = 11;
+}
+
+// The table cell limits STRUCTURE_RULE_TABLE_CELLS_OVER_LIMIT and
+// STRUCTURE_RULE_TOTAL_TABLE_CELLS_OVER_LIMIT check, docling-core's
+// max_table_cells and max_total_table_cells settings. An unset limit is
+// docling-core's default (1,000,000 and 5,000,000); a limit of 0 is
+// refused as OUT_OF_RANGE.
+message StructureTableCellLimits {
+  // Per table: num_rows, num_cols, and num_rows * num_cols may not exceed it.
+  optional uint64 max_table_cells = 1;
+  // Per document: the sum of num_rows * num_cols over every table.
+  optional uint64 max_total_table_cells = 2;
 }
 
 // Where captions sit relative to the item they caption (docling-core
@@ -269,7 +299,12 @@ enum VlmModelType {
   VLM_MODEL_TYPE_LIGHTONOCR_VLLM = 16;
 }
 
-// Response format for VLM model output.
+// Response format for VLM model output: every member of docling's
+// ResponseFormat as of docling 2.142.1. Values 1 to 5 predate the rest; 6 to
+// 13 follow in docling's declaration order. The VLM convert leg
+// (grpc-vlm-convert) maps DOCTAGS, MARKDOWN, HTML, OTSL and PLAINTEXT; a
+// request that sends it any other format is refused by field
+// (OPTION_REJECTION_REASON_NOT_IMPLEMENTED), never sent as a default.
 enum ResponseFormat {
   RESPONSE_FORMAT_UNSPECIFIED = 0;
   RESPONSE_FORMAT_DOCTAGS = 1;
@@ -277,6 +312,22 @@ enum ResponseFormat {
   RESPONSE_FORMAT_HTML = 3;
   RESPONSE_FORMAT_OTSL = 4;
   RESPONSE_FORMAT_PLAINTEXT = 5;
+  // "doclang"
+  RESPONSE_FORMAT_DOCLANG = 6;
+  // "deepseekocr_markdown"
+  RESPONSE_FORMAT_DEEPSEEKOCR_MARKDOWN = 7;
+  // "unlimited_ocr_markdown"
+  RESPONSE_FORMAT_UNLIMITED_OCR_MARKDOWN = 8;
+  // "chandra_html"
+  RESPONSE_FORMAT_CHANDRA_HTML = 9;
+  // "dots_json"
+  RESPONSE_FORMAT_DOTS_JSON = 10;
+  // "nemotron_parse_v2"
+  RESPONSE_FORMAT_NEMOTRON_PARSE_V2 = 11;
+  // "nemotron_parse_v3_5"
+  RESPONSE_FORMAT_NEMOTRON_PARSE_V3_5 = 12;
+  // "mineru2"
+  RESPONSE_FORMAT_MINERU2 = 13;
 }
 
 // Inference framework for local VLM models.
@@ -803,6 +854,10 @@ message VlmModelLocal {
   optional TransformersModelType transformers_model_type = 6;
   map<string, ScalarValue> extra_generation_config = 7;
   optional double temperature = 8;
+  // docling's ResponseFormat string value ("nemotron_parse_v3_5"), for a
+  // client that forwards docling JSON. Must name a docling format; with
+  // response_format set, both must name the same one.
+  optional string response_format_raw = 9;
 }
 
 // VlmModelApi configures an API-based vision-language model for the VLM pipeline.
@@ -816,10 +871,19 @@ message VlmModelApi {
   optional double scale = 7;
   optional ResponseFormat response_format = 8;
   optional double temperature = 9;
+  // docling's ResponseFormat string value ("nemotron_parse_v3_5"), for a
+  // client that forwards docling JSON. Must name a docling format; with
+  // response_format set, both must name the same one.
+  optional string response_format_raw = 10;
 }
 
 message BaseVlmEngineOptions {
   VlmEngineType engine_type = 1;
+  // docling's trust_remote_code on the inline engines (TRANSFORMERS, MLX,
+  // VLLM, AUTO_INLINE): whether model-repository code may run. API engines
+  // have no such setting, so setting it with one is CONFLICT. No gRParse leg
+  // runs repository code, so true is NOT_IMPLEMENTED; false is accepted.
+  optional bool trust_remote_code = 2;
 }
 
 message EngineModelConfig {
@@ -857,6 +921,10 @@ message VlmModelSpec {
   optional double temperature = 11;
   optional int32 max_new_tokens = 12;
   map<string, ScalarValue> extra_generation_config = 13;
+  // docling's ResponseFormat string value ("nemotron_parse_v3_5"), for a
+  // client that forwards docling JSON. Must name a docling format; with
+  // response_format set, both must name the same one.
+  optional string response_format_raw = 14;
 }
 
 message VlmConvertOptions {
@@ -1206,6 +1274,17 @@ message ConvertDocumentOptions {
   // collector extracts what its CSS selector rules name, and this client
   // never invents rules.
   optional lolhtml.v1.ExtractOptions lol_html_options = 64;
+  // docling's extract_form_fields: AcroForm widgets on a PDF as field
+  // items. gRParse folds them whenever GRPARSE_PDF_BACKEND names a backend,
+  // so unset keeps that fold (docling's own default is false; unset here
+  // leaves existing outputs unchanged). false skips the fold. true on a PDF
+  // with no backend configured is NOT_IMPLEMENTED; true on input that is not
+  // a PDF adds a warning, since there are no widgets to read.
+  optional bool extract_form_fields = 65;
+  // The cell limits the two table-cell structure rules check; unset limits
+  // are docling-core's defaults. Setting it while structure_validation is
+  // OFF is rejected as contradictory.
+  optional StructureTableCellLimits structure_table_cell_limits = 66;
 }
 
 // HeadingHierarchyOptions mirrors the upstream PdfHeadingHierarchyOptions.

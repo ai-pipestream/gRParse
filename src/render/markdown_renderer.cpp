@@ -240,7 +240,12 @@ class MarkdownRenderer : public MarkdownWalk {
       // Underline, subscript, and superscript have no Markdown rendering.
       if (formatting->strikethrough()) out = "~~" + out + "~~";
     }
-    if (hyperlink != nullptr) out = "[" + out + "](" + normalized_uri(*hyperlink) + ")";
+    // An unsafe scheme keeps only the text; a kept destination is encoded so
+    // it cannot end the link early (docling-core #920).
+    if (hyperlink != nullptr) {
+      const std::string uri = normalized_uri(*hyperlink);
+      if (is_safe_hyperlink(uri)) out = "[" + out + "](" + markdown_link_destination(uri) + ")";
+    }
     return out;
   }
 
@@ -366,6 +371,8 @@ class MarkdownRenderer : public MarkdownWalk {
     res_parts.push_back(backticks ? "`" + text + "`" : "```\n" + text + "\n```");
     *first_span = ref;
     if (own_variant) {
+      const std::string footnotes = serialize_footnotes(item.code().footnotes());
+      if (!footnotes.empty()) res_parts.push_back(footnotes);
       const std::string captions = serialize_captions(item.code().captions());
       if (!captions.empty()) {
         if (caption_goes_after(item.code().prov(), item.code().captions(), true)) {
@@ -488,6 +495,27 @@ class MarkdownRenderer : public MarkdownWalk {
     return post_process(joined, true, true, nullptr, nullptr);
   }
 
+  // docling-core's serialize_footnotes: each footnote's text (excluded ones
+  // skipped), one paragraph each, post-processed like the captions. Placed
+  // after the item's body and before a caption that goes after it.
+  std::string serialize_footnotes(
+      const google::protobuf::RepeatedPtrField<docv1::RefItem>& footnotes) {
+    std::string joined;
+    bool any = false;
+    for (const auto& ref : footnotes) {
+      const auto* text = text_at(ref.ref());
+      if (text == nullptr || excluded(ref.ref())) continue;
+      const auto* base = text_base(*text);
+      const std::string& own = text->item_case() == docv1::BaseTextItem::kCode ? text->code().text()
+                               : base != nullptr ? base->text()
+                                                 : std::string();
+      if (any) joined.append("\n\n");
+      joined.append(own);
+      any = true;
+    }
+    return post_process(joined, true, true, nullptr, nullptr);
+  }
+
   // -- tables ---------------------------------------------------------------
 
   std::string serialize_table(const std::string& ref, const docv1::TableItem& table,
@@ -511,6 +539,9 @@ class MarkdownRenderer : public MarkdownWalk {
         *first_span = ref;
       }
     }
+    // Footnotes render even when the table itself is excluded, as the
+    // captions do (docling-core #675).
+    parts.push_back(serialize_footnotes(table.footnotes()));
     if (after && !captions.empty()) parts.push_back(captions);
     return join(parts, "\n\n");
   }
@@ -568,6 +599,7 @@ class MarkdownRenderer : public MarkdownWalk {
       parts.emplace_back(picture_image_markdown(picture));
       if (first_span->empty()) *first_span = ref;
     }
+    parts.push_back(serialize_footnotes(picture.footnotes()));
     if (after && !captions.empty()) parts.push_back(captions);
     return join(parts, "\n\n");
   }
@@ -580,7 +612,7 @@ class MarkdownRenderer : public MarkdownWalk {
     // Both EMBEDDED and REFERENCED use the ImageRef uri: ConvertSource has
     // no sidecar file tree for referenced paths, so a data URI is the
     // honest embedded form and a path uri is the referenced form.
-    return "![](" + picture.image().uri() + ")";
+    return "![](" + markdown_link_destination(picture.image().uri()) + ")";
   }
 
   // -- meta -----------------------------------------------------------------
