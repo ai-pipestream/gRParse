@@ -355,6 +355,24 @@ Hailo is a tier-2 backend.
   question 2 in section 11. HailoRT itself is MIT; the PCIe driver is a
   host kernel module and is never linked into the service.
 
+**The fleet's Hailo hardware** (checked 2026-10-29):
+
+| Host | Board | Hailo part | Host memory | Software |
+|---|---|---|---|---|
+| pi5ai2p | Raspberry Pi 5, Debian 13, aarch64 | Hailo-10H (PCIe `0001:01:00.0`, firmware 5.1.1, 8 GB on module) | 16 GB | HailoRT 5.1.1, `/dev/hailo0`, `hailo10h` HEFs already present |
+| to be confirmed | | Hailo-8 | | |
+
+pi5ai2p is the edge deployment this backend is for: the vision encoder
+runs on the 10H, the decoder runs on the Pi's four Cortex-A76 cores
+through the CPU backend with int4 weights (about 2.3 GB of the 16 GB).
+The Pi's memory bandwidth (about 17 GB/s) caps decode near 45 tokens a
+second in theory and well under that in practice, so this is a
+slow-but-real configuration for small documents, and the place the Hailo
+offload is measured. HailoRT 5.x also ships a GenAI API for vendor-
+compiled LLMs and VLMs on the 10H; it runs only models Hailo has
+compiled, so it is not a path for this model, but it is worth rechecking
+as Hailo's supported list grows.
+
 ### 4.7 Correctness gates
 
 1. The reference backend reproduces upstream's greedy token ids exactly
@@ -842,6 +860,7 @@ about 14 weeks.
    Hailo's Python-based, vendor-licensed Dataflow Compiler. Accept that
    one offline vendor step (the HEF is then pinned by sha256 like the
    weights), or drop the Hailo backend?
-3. **Which Hailo part, and where.** Hailo-8, 8L or 10H decides what fits
-   (4.4), and no Hailo device is visible on krick or krick-1 today. Which
+3. **Where the Hailo-8 lives.** The Hailo-10H is on pi5ai2p (4.6). The
+   Hailo-8 host is not yet known; it runs the vision encoder only, with
+   no on-module memory, so it pairs best with nano1 or an x86 box. Which
    host carries it?
