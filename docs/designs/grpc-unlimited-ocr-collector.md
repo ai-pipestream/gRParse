@@ -444,9 +444,20 @@ byte-identical like every other Document-plane collector.
 The rule for this contract: **every fact is a typed field.** No JSON
 strings, no `map<string,string>`, no `google.protobuf.Struct`, no opaque
 bytes standing in for structure. Boxes are messages, labels are enums,
-tables are rows of cells, errors carry an enum code. The model's raw text
-appears only in an opt-in diagnostics event that nothing downstream
-parses.
+tables are rows of cells, errors carry an enum code.
+
+The second rule: **nothing the model returns is lost.** Every decode step
+is on the wire, always, not behind an option: the token id, its text
+piece, its log-probability, the model's own top token and its
+log-probability when a logit rule overrode it, and which rule did
+(`PageTokens`). Every block points back at the exact steps it came from
+(`first_step`, `last_step`), keeps the label exactly as the model spelled
+it next to the enum, keeps every box coordinate the model wrote (out of
+range, negative or extra ones included) next to the clamped box, and a
+table keeps its HTML verbatim next to its typed cells. Text the block
+grammar cannot place becomes a block of kind UNRECOGNISED with the text
+verbatim, never a dropped span. The closing EOS step is recorded too. The
+parsed views are conveniences over the tokens; the tokens are the record.
 
 ```proto
 service UnlimitedOcrService {
@@ -472,7 +483,7 @@ message ParseOptions {
   bool emit_blocks = 5;              // stream Block events
   bool emit_page_documents = 6;      // stream PageDocument fragments
   bool emit_document = 7;            // send the folded Document at the end
-  bool emit_diagnostics = 8;         // RawPageOutput, for debugging only
+  reserved 8;                        // was emit_diagnostics: token steps are always sent
   bool abort_on_error = 9;
 }
 
@@ -497,7 +508,7 @@ message ParseDocumentResponse {
     PageFailure page_failure = 4;
     ContinuationLink continuation = 5;
     ai.pipestream.document.v1.Document document = 6;
-    RawPageOutput diagnostics = 7;
+    PageTokens tokens = 7;           // always sent, one per page as it closes
     ParseComplete complete = 8;
   }
 }
@@ -518,6 +529,10 @@ message Block {
   optional uint32 heading_level = 5; // TITLE blocks only
   NormalizedBox box = 6;
   bool merges_with_previous = 7;     // same-page <MERGE>
+  string label_text = 8;             // the label exactly as generated ("cross_table", "foo")
+  repeated int32 raw_box = 9;        // every coordinate as generated, before clamping
+  uint32 first_step = 14;            // index into the document's decode steps
+  uint32 last_step = 15;             // inclusive
   oneof content {
     TextContent text = 10;
     TableContent table = 11;
@@ -566,6 +581,7 @@ message FormulaContent { string latex = 1; }
 message PictureRegion { }            // the box is the payload; gRParse crops
 
 message TableContent {
+  string source_html = 5;            // verbatim, as generated
   uint32 row_count = 1;
   uint32 column_count = 2;
   repeated TableCellContent cells = 3;
@@ -610,9 +626,29 @@ enum PageFailureCode {
   PAGE_FAILURE_CODE_INFERENCE = 5;
 }
 
-message RawPageOutput {              // diagnostics only
+// Every decode step of one page, in order: the page's <PAGE> step first,
+// and after the last page the closing EOS step.
+message PageTokens {
   uint32 page_no = 1;
-  string model_output = 2;
+  uint32 first_step = 2;             // document-wide index of steps[0]
+  repeated TokenStep steps = 3;
+  string text = 4;                   // the steps decoded, special tokens kept
+}
+
+message TokenStep {
+  uint32 token = 1;
+  string piece = 2;                  // the vocabulary entry, before byte decoding
+  float logprob = 3;                 // under the raw logits
+  uint32 model_token = 4;            // the model's top token
+  float model_logprob = 5;
+  Intervention intervention = 6;
+}
+
+enum Intervention {
+  INTERVENTION_UNSPECIFIED = 0;
+  INTERVENTION_NONE = 1;
+  INTERVENTION_REPEAT_BAN = 2;       // the no-repeat n-gram rule
+  INTERVENTION_PAGE_GUARD = 3;       // the page-count guard or the per-page token cap
 }
 
 message ParseComplete {
@@ -689,6 +725,12 @@ and stop reason, so the merge keeps attribution.
   takes the collector's own `Document`, the majority fold shape.
 - **Merge.** A normal collector leg: additive, source-tagged, failure is a
   failure entry naming the collector and its gRPC status.
+- **Keeping the record.** gRParse persists every `PageTokens` with the
+  Document, not only the folded items, so the model's full output
+  survives the merge. That needs a typed home in the fleet
+  `document.proto` (an additive `GenerationTrace` on the page or the
+  collector contribution, carrying the same `TokenStep` fields), landed as
+  a fleet sweep before the collector is wired in P4.
 - **Later, scanned-page routing.** When grpc-pdf-inspector's typed
   `ocr_recommendation_reasons` say a page is scanned and the target is
   configured, a request option can fan those pages out to this collector
@@ -780,6 +822,11 @@ and the existing compose-driven gates in gRParse.
   table parser; `logit_policy` and `page_router` against values recorded
   from upstream's reference; the prompt builder's token layout; the
   Document fold and its cross-page joins.
+- **Losslessness:** for every run the page `PageTokens` cover each decode
+  step exactly once, in order, the EOS step included; their pieces decode
+  back to the raw output byte for byte; every block's step range lies
+  inside its page and the blocks plus UNRECOGNISED spans cover every text
+  step. A fuzzed model output must still satisfy all of this.
 - **Service (no model):** the gRPC server against an in-process fake
   engine behind the engine interface, covering ordering, back-pressure,
   caps, cancellation, `abort_on_error`, and failure codes, the way
