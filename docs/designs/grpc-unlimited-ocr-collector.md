@@ -2,15 +2,18 @@
 
 **Status:** design, no implementation yet. The service does not exist; this
 document is the agreement to build against.
-**Updated:** 2026-10-28
+**Updated:** 2026-10-29 (revised from an ONNX Runtime engine to a native one)
 **Upstream studied:** `baidu/Unlimited-OCR` at `48ff432` (2026-10-28) and the
 Hugging Face model repos `baidu/Unlimited-OCR-2` and `baidu/Unlimited-OCR`.
 
 ## 0. Recommendation in one paragraph
 
 Build it as its own C++23 gRPC collector, `grpc-unlimited-ocr`, on port
-50073, running the model in process on ONNX Runtime (CUDA, OpenVINO, CPU)
-with no Python at build or run time. It takes a document as a stream of
+50073, running the model on a native engine of its own: weights loaded
+straight from the upstream safetensors, the forward pass written in C++,
+our own CUDA and SYCL kernels, vendor libraries (cuBLASLt, oneDNN) only
+for dense matrix multiply. No ONNX, no inference runtime, no Python at
+build or run time. It takes a document as a stream of
 page rasters and streams back typed blocks and per-page `Document`
 fragments as the decoder crosses each page boundary, then a folded
 `Document` with cross-page tables and paragraphs joined. gRParse dials it
@@ -87,8 +90,8 @@ recognizer or through grpc-vlm-convert's one-call-per-page contract.
 | Training data | not stated by upstream | no licence obligation on us; noted as a provenance gap in the README |
 | Custom SGLang wheel in upstream | Apache-2.0 | not used |
 | PyMuPDF in upstream's client example | **AGPL-3.0** | not used, not ported. gRParse renders pages through its PDF backend fleet and sends rasters |
-| Our runtime: ONNX Runtime (MIT), OpenVINO (Apache-2.0), gRPC (Apache-2.0), protobuf (BSD-3), abseil (Apache-2.0), OpenCV (Apache-2.0), tokenizers-cpp and the `tokenizers` crate (Apache-2.0) | permissive | the same set gRParse already ships |
-| CUDA and cuDNN runtime libraries | NVIDIA redistributable EULA | the same posture as gRParse's CUDA image; CPU and OpenVINO images carry none |
+| Our dependencies: gRPC (Apache-2.0), protobuf (BSD-3), abseil (Apache-2.0), OpenCV (Apache-2.0), oneDNN (Apache-2.0), Intel oneAPI DPC++ / SYCL open-source compiler (Apache-2.0 with LLVM exception), Level Zero loader (MIT), CUTLASS if adopted (BSD-3) | permissive | no copyleft |
+| CUDA runtime and cuBLAS/cuBLASLt | NVIDIA redistributable EULA | the same posture as gRParse's CUDA image; no cuDNN needed. The Intel and CPU images carry none |
 
 Nothing copyleft enters the build, the image or the request path. The
 repository is Apache-2.0 like the rest of the fleet.
@@ -134,98 +137,168 @@ the collector owns its contract like every other collector, and gRParse
 vendors it byte-identical into `collectors/`. If a second whole-document
 OCR engine appears, promoting the contract into parser-protos is additive.
 
-**Language: C++23, not Rust.** The request mentioned "our rust project";
-the parts this service is made of already exist in C++ in this family:
-ORT session and execution-provider plumbing (`gRParse/src/ort_session_ep.cpp`
-and the three Dockerfiles), OpenVINO kernel-cache handling, the HTML
-table mapper and `Document` building in grpc-vlm-convert, and the
-tokenizers-cpp integration in gRParse. Copying a sibling beats inventing.
-The `ort` Rust crate would work, but every EP lesson (fp16 defaults
-breaking real pages, kernel cache on a real disk, Jetson ORT builds)
-would have to be relearned there.
+**Language: C++23 (with CUDA C++ and SYCL for kernels), not Rust.** With
+a native engine the choice is clearer than before: CUDA kernels are CUDA
+C++, SYCL is C++, and cuBLASLt and oneDNN are C and C++ APIs. In Rust
+every kernel would sit behind an FFI boundary, and the device code would
+still be C++. Every model-running service in this family is already
+C++ (gRParse, grpc-asr, grpc-vlm-convert), and the Rust collectors run no
+models. The pieces outside the engine (the HTML table mapper and
+`Document` building) can be copied from grpc-vlm-convert.
 
-## 4. Running the model: C++ on ONNX Runtime
+## 4. Running the model: a native engine, no inference runtime
 
-### 4.1 Model artifacts, built without Python
+No ONNX, no graph export, no inference runtime in between. The service
+owns the forward pass: weights load straight from the upstream
+safetensors into device memory, and every layer is our own C++ calling our
+own kernels, with vendor math libraries used only for dense matrix
+multiply. This was chosen over an ONNX Runtime design (an earlier revision
+of this document); section 4.6 compares the two.
 
-A C++ tool in the repo, `uocr-export`, reads the upstream safetensors and
-writes ONNX graphs directly through the ONNX protobuf schema. It is a
-graph builder, not a tracer: each module (SAM block, CLIP block, MoE
-layer, sparse attention) is a function that emits nodes, so per-EP
-variants and quantisation are flags instead of re-exports. Output:
+### 4.1 Weights straight from upstream
 
-| Graph | Inputs | Outputs |
+- The two upstream safetensors shards and `tokenizer.json` are the model
+  artifacts. `models/MANIFEST` pins each by sha256 and size, the way
+  gRParse's manifest does; `scripts/fetch-models.sh` fetches and verifies.
+  There is no export step and no derived file.
+- The loader memory-maps each shard, reads its header (a fixed file
+  format header, read once at startup; nothing on the wire), checks every
+  tensor's name, dtype and shape against a compiled-in table of the
+  architecture, and uploads to the device. A tensor that is missing or the
+  wrong shape fails startup with its name.
+- Weights stay bf16 by default: Ada (4080), Battlemage (B70) and Zen 5
+  (AVX-512 BF16) all do bf16 math natively, so the fp16 overflow risk of
+  the DeepSeek family never arises. Optional int8 or int4 weight-only
+  quantisation happens at load time in C++ (round-to-nearest, 32-wide
+  groups), selected by `GRPC_UOCR_WEIGHT_FORMAT`; no quantised file is
+  ever written.
+
+### 4.2 Engine layout
+
+Model code is written once against a narrow backend interface; each
+backend implements the same small op set. No unit is a god class.
+
+```text
+src/
+  tensor/        Tensor view, dtype, device buffer, arena allocator
+  weights/       safetensors mmap loader, architecture table, load-time quantiser
+  model/         vision_sam.cpp  vision_clip.cpp  projector.cpp
+                 decoder_layer.cpp  moe.cpp  sparse_attention.cpp  rope.cpp
+  runtime/       prompt_builder  kv_cache  page_router  logit_policy  scheduler
+  backend/
+    backend.h    the op interface below
+    reference/   plain C++23, fp32, single thread: the correctness oracle
+    cuda/        CUDA C++ kernels + cuBLASLt
+    intel/       SYCL kernels + oneDNN (Arc GPU and x86 CPU)
+```
+
+The op set the whole model needs, and nothing more:
+
+| Op | Used by | CUDA | Intel (GPU and CPU) |
+|---|---|---|---|
+| dense GEMM / GEMV (bf16, int8, int4 weights) | every projection, lm_head | cuBLASLt; own GEMV for q=1 int4 | oneDNN matmul |
+| grouped expert GEMM | MoE layers 1 to 11 | own kernel over token-sorted experts (CUTLASS grouped GEMM as the upgrade path) | oneDNN matmul per active expert, batched |
+| block-sparse attention, decode (q=1) | decoder SR-SWA | own kernel: gather ~21 blocks x 32 keys, fused softmax | SYCL kernel |
+| block-sparse attention, prefill | decoder prefill | own flash-style kernel with a block mask | SYCL kernel |
+| windowed and global attention | SAM ViT-B, CLIP-L | own flash-style kernel with relative position bias | SYCL kernel / oneDNN SDPA |
+| conv2d | SAM patch embed and neck | own im2col + GEMM | oneDNN convolution |
+| RMSNorm, LayerNorm, SiLU-mul, quick-GELU, softmax, top-k, embedding gather, YaRN and page2d RoPE | everywhere | own kernels, fused where they sit next to each other | SYCL kernels |
+
+The page router, logit policy and prompt builder (section 4.3) run on the
+host; everything else stays on the device for the whole decode, with the
+step captured as a CUDA graph on NVIDIA.
+
+### 4.3 What is ported from upstream, and how
+
+- **Preprocess:** letterbox to 1024, aspect-ratio tiling to 640,
+  mean/std 0.5, from `_uocr_build_inputs` and `dynamic_preprocess`, with
+  OpenCV doing the resize so it matches PIL's bicubic to the tested
+  tolerance (checked against recorded tensors, below).
+- **Prompt:** token ids and image-token mask per page window.
+- **Page router:** the per-block page bookkeeping that limits a decode
+  step to the image blocks of its own page, from `_uocr_dash_decode_allow`.
+- **Sparse attention:** the indexer scoring, block top-k and candidate
+  restriction from the reference (non-Triton) path of upstream's DASH
+  attention, as a first-class kernel rather than an emulation.
+- **Logit policy:** no-repeat n-gram and page-count guard, from
+  `_uocr_no_repeat_ngram` and `_uocr_page_count_guard`, then argmax on
+  the device (the ban list is uploaded, the logits are not downloaded).
+- **Scheduler:** page windows with the KV tail carried over, the policy
+  upstream's server uses.
+- **Tokenizer:** the `tokenizer.json` byte-level BPE with the layout
+  control tokens; decoding needs only the vocabulary and merges, so a
+  small native decoder is enough and tokenizers-cpp is optional.
+
+### 4.4 Device notes
+
+- **CUDA** (`latest`, 4080 SUPER): about 6.7 GB of bf16 weights plus
+  about 61 KB of KV per token (12 layers x 2 x 1280 x bf16); a 10-page
+  window with about 2,700 image tokens and 15,000 output tokens is about
+  1.1 GB of cache. Decode at q=1 is memory-bound: about 1.1 GB of active
+  weights read per token, so the ceiling on a 736 GB/s card is several
+  hundred tokens a second, and the kernels are judged against that
+  ceiling, not against a runtime.
+- **Intel Arc B70** (`latest-intel`): SYCL kernels plus oneDNN through
+  Level Zero; same bf16 weights. No kernel cache to manage beyond the SYCL
+  ahead-of-time build for the target.
+- **CPU** (`latest-cpu`, multi-arch): the Intel backend's oneDNN CPU path
+  (AVX-512 BF16 on Zen 5, AMX where present, NEON on arm64), int4 weights
+  by default. Slow, correct, for small documents and correctness runs.
+- **Later:** Apple Metal, and Vulkan as a catch-all, are new backends
+  behind the same interface. See 4.7 for where those may come from.
+
+### 4.5 Correctness gates
+
+1. The reference backend reproduces upstream's greedy token ids exactly
+   on the golden pages (fp32). This is the phase 0 gate.
+2. Every fast backend matches the reference backend layer by layer within
+   a stated tolerance (per-op tests on random and recorded inputs), then
+   on decoded output for the golden pages: edit distance and block-label
+   agreement, judged on real rendered pages, never only on random tensors.
+3. Determinism: the same document twice gives the same token stream on
+   every backend (fixed reduction order in our kernels; cuBLASLt pinned to
+   a deterministic algorithm).
+
+The single place Python touches the project is outside it: the goldens
+(input tensors, per-layer activations for one page, and the final token
+ids for a fixed page set) are recorded once from upstream's reference
+implementation on a GPU box and committed as data. No build step and no
+test runs Python.
+
+### 4.6 Cost against the ONNX design
+
+| | ONNX Runtime design (previous revision) | Native engine (this revision) |
 |---|---|---|
-| `vision.onnx` | `global_views [N,3,1024,1024]`, `tiles [M,3,640,640]`, tile grid | image embeddings `[T,1280]` |
-| `decoder.onnx` | `inputs_embeds [1,q,1280]`, page and in-page position ids, per-layer K/V and indexer-key caches (bound on device), `allowed_blocks [1,nblk]` | last-position logits `[1,129280]`, the q new K/V/indexer rows per layer |
-| `embed.onnx` | token ids | embeddings (or a raw tensor file the engine gathers from) |
+| Model artifacts | C++ graph builder, exported graphs, a second manifest | upstream safetensors as is |
+| SR-SWA attention | emulated with TopK and Gather nodes | its own kernel, exact control |
+| MoE | contrib op on CUDA only, decomposed elsewhere | one grouped kernel per backend |
+| Precision | fp16 on CUDA (overflow risk), fp32 on OpenVINO | bf16 everywhere |
+| KV cache | copies through IOBinding | in place, CUDA graph per step |
+| Code we own | engine glue plus graph builder | the whole forward pass and its kernels |
+| Backend reach | whatever ORT ships (CUDA, OpenVINO, CPU) | what we write (CUDA, Intel, CPU first) |
+| Effort | about 10 weeks | about 16 weeks |
+| First usable (CUDA) | about 8.5 weeks | about 11 weeks |
 
-The artifacts are published as a models image and a `models/MANIFEST`
-with sha256 and size per file, the way `pipestreamai/grparse-models` and
-`scripts/fetch-models.sh` already work. The service never downloads.
+The extra six weeks buy a faster decode, no export pipeline, exact
+fidelity to the new attention, and a kernel layer that is ours to reuse.
+The price is permanent: every new model architecture is new forward code,
+and every backend is kernels we maintain.
 
-The single place Python touches the project is outside it: parity goldens
-(the reference token ids and decoded output for a fixed set of pages) are
-recorded once from upstream's own reference implementation on a GPU box
-and committed as data files. No build step and no test runs Python.
+**Considered: ggml (MIT).** It has CUDA, SYCL, Vulkan, Metal and CPU
+backends with MoE and convolution already written, so it would be the
+fastest route to a multi-backend engine. It is still a graph runtime
+between us and the hardware, and SR-SWA, page2d RoPE and the page router
+would be custom ops added to each of its backends anyway, which is most of
+the hard work. Its kernels remain a useful reading reference.
 
-### 4.2 The engine
+### 4.7 Shared kernel layer
 
-Inside the service the model is five small units, none of them a god
-class:
-
-- `page_preprocess`: OpenCV letterbox to 1024, aspect-ratio tiling to
-  640, normalise to the upstream mean and std, in memory.
-- `prompt_builder`: token ids and the image-token mask for a page window,
-  ported from `_uocr_build_inputs`.
-- `kv_cache`: device buffers per layer, appended through ORT IOBinding;
-  window rollover carries the tail, as upstream's page-window scheduler
-  does.
-- `page_router`: the per-block page bookkeeping that decides which image
-  blocks a decode step may attend to, ported from
-  `_uocr_dash_decode_allow` and fed to the graph as `allowed_blocks`. The
-  top-k block choice itself stays inside the graph (TopK plus Gather).
-- `logit_policy`: no-repeat n-gram and page-count guard, ported from
-  `_uocr_no_repeat_ngram` and `_uocr_page_count_guard`, then argmax.
-
-The split between C++ and graph is deliberate: bookkeeping with branches
-lives in C++ where it is testable without a model; tensor math lives in
-the graph where every EP can run it.
-
-### 4.3 Execution providers
-
-`GRPC_UOCR_ORT_EP=cuda|openvino|cpu`, the same switch gRParse uses.
-
-- **CUDA** (`latest`): fp16 weights (bf16 converted at export), the
-  contrib `MoE` op for the expert layers, about 7 GB of VRAM for weights
-  plus about 61 KB of KV per token (12 layers x 2 x 1280 x fp16). A
-  10-page window with about 2,700 image tokens and 15,000 output tokens is
-  about 1.1 GB of cache, so a 16 GB card serves it with room to spare.
-- **OpenVINO** (`latest-openvino`, Arc B70 on krick-1): the contrib MoE op
-  is not available, so the export emits the portable form (router TopK,
-  Gather of the six chosen experts' weights, batched MatMul), which is
-  cheap at q=1 during decode and runs grouped-by-expert for prefill. FP32
-  first: the fleet has already seen the GPU plugin's fp16 default break
-  accuracy on real pages, so fp16 and int8 are promoted only after the
-  real-input gate in 4.4 passes. Kernel cache on the named volume.
-- **CPU** (`latest-cpu`, multi-arch): int4 weight-only `MatMulNBits`
-  (about 2 GB) built by `uocr-export`. It works, and it is slow; it is for
-  correctness runs and small documents, not throughput.
-
-Throughput is measured in phase 0, not promised here. For scale: the
-fleet's North Micro Vision numbers (2.4 B dense, transformers-served) were
-79 tok/s on the 4080 and 58 on the B70; this model activates about a
-quarter of that per token.
-
-### 4.4 Correctness gates for the engine
-
-1. Greedy token parity with the recorded goldens: identical token ids on
-   the fp32 CPU path for the golden pages; fp16 and int4 paths judged on
-   decoded output against the same goldens (edit distance and block-label
-   agreement), never on random tensors.
-2. Determinism: the same document twice gives the same token stream on
-   every EP.
-3. Every EP gate runs on real rendered pages from `tests/golden/corpus`.
+The fleet already has an in-progress native library that unifies CUDA,
+Apple Metal and Intel GPUs behind one zero-copy API for embeddings. The
+backend interface in 4.2 is the same problem. The right shape is for
+`backend/` to be that library's kernel layer (or to become it), not a
+second one; that is a decision for the owner of that library and is
+recorded as open question 1 in section 11.
 
 ## 5. Wire contract
 
@@ -419,7 +492,7 @@ message ParseComplete {
 }
 ```
 
-`GetServiceInfoResponse` carries the version, the active EP and device,
+`GetServiceInfoResponse` carries the version, the active backend and device,
 the model id and its manifest sha256, the window and token caps, and the
 `UiInfo` block with the shape every service in the family uses.
 
@@ -512,14 +585,15 @@ running on a CPU box.
 Repo `grpc-unlimited-ocr`, default branch `main`, on GitHub
 `ai-pipestream` and mirrored on Forgejo, both remotes pushed. Layout copied
 from grpc-vlm-convert: `proto/`, `buf.yaml`, `src/`, `tests/`,
-`Dockerfile` (CUDA), `Dockerfile.openvino`, `Dockerfile.cpu`,
+`Dockerfile` (CUDA), `Dockerfile.intel`, `Dockerfile.cpu`,
 `models/MANIFEST`, `scripts/fetch-models.sh`, `AGENTS.md`, `README.md`,
-`NOTICE`. Image `pipestreamai/grpc-unlimited-ocr:latest` (`-openvino`,
+`NOTICE`. Image `pipestreamai/grpc-unlimited-ocr:latest` (`-intel`,
 `-cpu`) built by its own CI with per-arch buildx cache ids.
 
 Configuration, all `GRPC_UOCR_*` environment variables: listen address
-(default `0.0.0.0:50073`), `ORT_EP`, OpenVINO device and cache dir,
-models dir, page window, per-page token cap, max pages and max page bytes
+(default `0.0.0.0:50073`), `BACKEND` (`cuda`, `intel-gpu`, `cpu`,
+`reference`), device index, `WEIGHT_FORMAT` (`bf16`, `int8`, `int4`),
+device memory cap, models dir, page window, per-page token cap, max pages and max page bytes
 per stream, buffered-bytes budgets per stream and per server, documents
 in flight.
 
@@ -535,7 +609,7 @@ services:
     expose:
       - "50073"
     environment:
-      GRPC_UOCR_ORT_EP: "cuda"
+      GRPC_UOCR_BACKEND: "cuda"
       GRPC_UOCR_MODELS_DIR: "/models"
     volumes:
       - ${UOCR_MODELS_DIR:-./models/unlimited-ocr}:/models:ro
@@ -553,10 +627,9 @@ services:
 ```
 
 The OpenVINO and CPU overlays already in the stack get matching entries
-(`/dev/dri` and the kernel-cache named volume for OpenVINO). Diskless
-while parsing: pages, tensors and output stay in memory; only the
-read-only model mount and the OpenVINO kernel cache touch disk, and
-neither is document data.
+(the `-intel` image with `/dev/dri` on krick-1). Diskless while parsing:
+pages, tensors and output stay in memory; only the read-only model mount
+touches disk, and it is not document data.
 
 ## 8. Tests
 
@@ -573,8 +646,13 @@ and the existing compose-driven gates in gRParse.
   engine behind the engine interface, covering ordering, back-pressure,
   caps, cancellation, `abort_on_error`, and failure codes, the way
   grpc-vlm-convert tests its server against a fake endpoint.
+- **Kernels (no model):** every op on every backend built into the image
+  against the reference backend, on random inputs and on the recorded
+  activations, within a stated tolerance per dtype. A backend whose
+  device is absent skips with 77, like the other tiers.
 - **Model tier:** a golden test that runs real pages through the real
-  graphs and checks parity with the committed goldens. It exits 77 (skip)
+  weights and checks parity with the committed goldens (exact token ids
+  on the reference backend, decoded-output agreement on fast ones). It exits 77 (skip)
   without the model directory, like gRParse's layout golden, and a
   release run sets the require flag so a skip is a failure.
 - **gRParse side:** a collector test against a fake built from the
@@ -590,31 +668,49 @@ both remotes and CI green.
 
 | Phase | Work | Weeks | Exit gate |
 |---|---|---|---|
-| P0 spike | `uocr-export` for the vision encoder and a decoder step; parity on 5 golden pages; tok/s on 4080 CUDA, B70 OpenVINO, 9950X CPU | 1.5 | exact greedy parity on fp32 CPU; a measured tok/s row per EP. If SR-SWA cannot be expressed faithfully, fall back to Unlimited-OCR v1 (dense sliding-window attention) and re-plan |
-| P1 engine | preprocess, tokenizer, KV cache with window rollover, page router, logit policy, MoE variants per EP | 2.5 | 20-page document decodes with parity to the goldens on CUDA |
+| P0 reference engine | tensor core, safetensors loader and architecture table, the whole forward pass on the plain C++ reference backend (SAM, CLIP, projector, MoE decoder, SR-SWA, page2d RoPE), prompt builder, page router, logit policy | 4 | exact greedy token parity with upstream on the golden pages. If SR-SWA cannot be reproduced exactly, fall back to Unlimited-OCR v1 (dense sliding-window attention) and re-plan |
+| P1 CUDA backend | cuBLASLt GEMMs, int4 GEMV, grouped MoE kernel, sparse decode and prefill attention, vision attention, fused elementwise kernels, in-place KV cache with window rollover, CUDA graph per step | 3 | per-op parity suite green; 20-page document matches the goldens; tok/s measured against the bandwidth ceiling on the 4080 |
 | P2 output | contract under buf, incremental block parser, HTML tables, Document fold | 1.5 | unit and fuzz suites green; fold matches the goldens' structure |
-| P3 service | gRPC server, budgets, `GetServiceInfo`, three Dockerfiles, CI, models manifest and image | 1.5 | service tests green; images published |
+| P3 service | gRPC server, budgets, `GetServiceInfo`, Dockerfiles, CI, models manifest | 1.5 | service tests green; CUDA image published |
 | P4 gRParse | vendored contract, collector client, `COLLECTOR_UNLIMITED_OCR`, overlay, shell tab, scorecard documents | 1.5 | stack e2e green with the overlay; scorecard runs recorded |
-| P5 EP hardening | OpenVINO fp32 then fp16/int8 on real pages, CPU int4, perf baselines recorded | 1.5 | each EP passes the real-input gate or is documented as fp32-only |
+| P5 Intel and CPU backends | SYCL kernels and oneDNN for the B70 and for x86/arm64 CPUs, load-time int8/int4 | 3 | per-op parity suite and golden pages green on each; perf rows recorded |
+| P6 hardening | determinism across runs, memory caps, long-document soak (hundreds of pages), perf baselines in memory | 1.5 | soak clean; numbers recorded |
 
-About ten weeks in total; first usable (CUDA, explicit selection) at the
-end of P4, about eight and a half weeks in. P0 is the only phase whose
-outcome can change the plan, so nothing else starts until its gate is read.
+About sixteen weeks in total; first usable (CUDA, explicit selection) at
+the end of P4, about eleven and a half weeks in. P0 is the phase that can
+change the plan, so nothing else starts until its gate is read. P5 can run
+beside P2 to P4 if a second lane is available, which brings the total
+down to about thirteen.
 
 ## 10. Risks
 
 - **Sparse attention fidelity.** SR-SWA is new, partly Triton kernels
   upstream, with a PyTorch reference path. The plan ports the reference
-  path's semantics into the graph and proves them by token parity; v1 is
-  the fallback.
-- **MoE on OpenVINO.** No contrib op; the portable form may be slow for
-  prefill. Measured in P0.
-- **bf16 to fp16.** DeepSeek-family activations can overflow fp16. fp32
-  is the reference on every EP until parity says otherwise.
+  path's semantics into our reference backend and proves them by token
+  parity before any fast kernel exists; v1 is the fallback.
+- **Kernel ownership.** Every op on every backend is ours to keep fast
+  and correct, and every future model is new forward code. The per-op
+  parity suite against the reference backend is what keeps that honest.
+- **Kernel performance.** Hand-written attention and MoE kernels can lose
+  to tuned libraries at first. Decode is judged against the memory
+  bandwidth ceiling; CUTLASS grouped GEMM is the planned upgrade for MoE
+  prefill if our kernel falls short.
+- **Intel toolchain.** SYCL ahead-of-time builds for Battlemage and Level
+  Zero inside containers need the same care the OpenVINO image needed;
+  it is measured on krick-1 in P5.
 - **Upstream churn.** Version 2 is a day old. The manifest pins exact
   weight hashes; a new upstream release is a deliberate bump with new
   goldens.
 - **Training-data provenance** is unstated upstream. The licence is clear;
   the README says the provenance is not.
 - **GPU sharing** with gRParse's own models on one card: separate
-  processes with explicit ORT arena limits, documented in the overlay.
+  processes, and this service allocates one arena up front under
+  `GRPC_UOCR_DEVICE_MEMORY_CAP`, documented in the overlay.
+
+## 11. Open questions
+
+1. **Shared kernel layer.** Should `backend/` become the kernel layer of
+   the in-progress native embedding library (CUDA, Metal, Intel, zero
+   copy), or stay private to this service and be merged later? The
+   design works either way; sharing it from the start avoids two kernel
+   layers.
