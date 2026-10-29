@@ -360,7 +360,14 @@ Hailo is a tier-2 backend.
 | Host | Board | Hailo part | Host memory | Software |
 |---|---|---|---|---|
 | pi5ai2p | Raspberry Pi 5, Debian 13, aarch64 | Hailo-10H (PCIe `0001:01:00.0`, firmware 5.1.1, 8 GB on module) | 16 GB | HailoRT 5.1.1, `/dev/hailo0`, `hailo10h` HEFs already present |
-| to be confirmed | | Hailo-8 | | |
+| cm5ai1 | Raspberry Pi Compute Module 5, aarch64 | Hailo-8 (firmware 4.23.0, no on-module memory) | 16 GB | HailoRT 4.23.0, `/dev/hailo0` |
+| rpiai1 | Raspberry Pi, Hailo-8 per the owner | Hailo-8 | not checked | not reachable by name on 2026-10-29 |
+
+The two Hailo-8 hosts run the HailoRT 4.x line and the 10H runs 5.x; the
+backend builds against both majors (the HEF format and the 8/10H device
+families differ), so the vision-encoder HEF is compiled once per part.
+nano1 (Jetson Orin Nano Super, 7.3 GB usable, L4T R39.2.1, CUDA present)
+carries no Hailo device, so it stays a pure CUDA target.
 
 pi5ai2p is the edge deployment this backend is for: the vision encoder
 runs on the 10H, the decoder runs on the Pi's four Cortex-A76 cores
@@ -860,7 +867,7 @@ about 14 weeks.
    Hailo's Python-based, vendor-licensed Dataflow Compiler. Accept that
    one offline vendor step (the HEF is then pinned by sha256 like the
    weights), or drop the Hailo backend?
-3. **Where the Hailo-8 lives.** The Hailo-10H is on pi5ai2p (4.6). The
-   Hailo-8 host is not yet known; it runs the vision encoder only, with
-   no on-module memory, so it pairs best with nano1 or an x86 box. Which
-   host carries it?
+3. **Hailo-8 placement.** The Hailo-10H is on pi5ai2p and the Hailo-8s
+   are on cm5ai1 and rpiai1 (4.6). A Hailo-8 runs the vision encoder
+   only. Measure it with the Pi CPU doing the decode, or move one next to
+   nano1 or an x86 box?
