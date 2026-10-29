@@ -11,9 +11,13 @@ Hugging Face model repos `baidu/Unlimited-OCR-2` and `baidu/Unlimited-OCR`.
 Build it as its own C++23 gRPC collector, `grpc-unlimited-ocr`, on port
 50073, running the model on a native engine of its own: weights loaded
 straight from the upstream safetensors, the forward pass written in C++,
-our own CUDA and SYCL kernels, vendor libraries (cuBLASLt, oneDNN) only
-for dense matrix multiply. No ONNX, no inference runtime, no Python at
-build or run time. It takes a document as a stream of
+one compute layer with a backend per target written at that target's
+lowest level: CUDA kernels for desktop GPUs and the Jetson (nano1), SYCL
+and oneDNN for Intel GPUs and CPUs, Metal kernels for Apple Silicon, and
+HailoRT for offloading the vision encoder to a Hailo NPU. Vendor
+libraries (cuBLASLt, oneDNN, MPS) are used only for dense matrix
+multiply. No ONNX, no inference runtime, no Python at build or run time.
+It takes a document as a stream of
 page rasters and streams back typed blocks and per-page `Document`
 fragments as the decoder crosses each page boundary, then a folded
 `Document` with cross-page tables and paragraphs joined. gRParse dials it
@@ -92,6 +96,9 @@ recognizer or through grpc-vlm-convert's one-call-per-page contract.
 | PyMuPDF in upstream's client example | **AGPL-3.0** | not used, not ported. gRParse renders pages through its PDF backend fleet and sends rasters |
 | Our dependencies: gRPC (Apache-2.0), protobuf (BSD-3), abseil (Apache-2.0), OpenCV (Apache-2.0), oneDNN (Apache-2.0), Intel oneAPI DPC++ / SYCL open-source compiler (Apache-2.0 with LLVM exception), Level Zero loader (MIT), CUTLASS if adopted (BSD-3) | permissive | no copyleft |
 | CUDA runtime and cuBLAS/cuBLASLt | NVIDIA redistributable EULA | the same posture as gRParse's CUDA image; no cuDNN needed. The Intel and CPU images carry none |
+| metal-cpp (Apache-2.0); Metal and MPS (macOS system frameworks) | permissive / OS | linked from the OS, nothing redistributed |
+| HailoRT (MIT) | permissive | compatible; the Hailo PCIe driver is a host kernel module, never linked |
+| Hailo Dataflow Compiler (vendor licence, Python) | proprietary tool | only to produce the vision-encoder HEF, outside our build; open question 2 |
 
 Nothing copyleft enters the build, the image or the request path. The
 repository is Apache-2.0 like the rest of the fleet.
@@ -153,7 +160,7 @@ owns the forward pass: weights load straight from the upstream
 safetensors into device memory, and every layer is our own C++ calling our
 own kernels, with vendor math libraries used only for dense matrix
 multiply. This was chosen over an ONNX Runtime design (an earlier revision
-of this document); section 4.6 compares the two.
+of this document); section 4.8 compares the two.
 
 ### 4.1 Weights straight from upstream
 
@@ -173,40 +180,68 @@ of this document); section 4.6 compares the two.
   groups), selected by `GRPC_UOCR_WEIGHT_FORMAT`; no quantised file is
   ever written.
 
-### 4.2 Engine layout
+### 4.2 The compute layer and its backends
 
-Model code is written once against a narrow backend interface; each
-backend implements the same small op set. No unit is a god class.
+Model code is written once against a compute layer; each hardware target
+is one backend under it, written at the lowest level that target exposes.
+No unit is a god class.
 
 ```text
 src/
-  tensor/        Tensor view, dtype, device buffer, arena allocator
+  tensor/        Tensor view, dtype, Buffer, arena allocator
   weights/       safetensors mmap loader, architecture table, load-time quantiser
-  model/         vision_sam.cpp  vision_clip.cpp  projector.cpp
-                 decoder_layer.cpp  moe.cpp  sparse_attention.cpp  rope.cpp
+  model/         vision_sam  vision_clip  projector  decoder_layer  moe
+                 sparse_attention  rope
   runtime/       prompt_builder  kv_cache  page_router  logit_policy  scheduler
+  compute/
+    device.h     Device, Buffer, Queue, Event: allocation, upload, zero-copy
+                 import of host memory, ordering between queues
+    ops.h        tier 1: the op set below (every programmable backend)
+    offload.h    tier 2: run one precompiled network (fixed-function NPUs)
   backend/
-    backend.h    the op interface below
-    reference/   plain C++23, fp32, single thread: the correctness oracle
-    cuda/        CUDA C++ kernels + cuBLASLt
-    intel/       SYCL kernels + oneDNN (Arc GPU and x86 CPU)
+    reference/   plain C++23, fp32, one thread: the correctness oracle
+    cuda/        CUDA C++ kernels, cuBLASLt for GEMM; one source tree built
+                 for desktop GPUs and for Jetson (sm_87)
+    intel/       SYCL kernels (ESIMD and joint_matrix for the hot ones) on
+                 Level Zero, oneDNN for GEMM and convolution; Arc GPUs and
+                 x86/arm64 CPUs
+    metal/       Metal Shading Language kernels driven through metal-cpp;
+                 MPS matrix multiply only where it beats ours
+    hailo/       tier 2 only: HailoRT running a compiled vision encoder
 ```
 
-The op set the whole model needs, and nothing more:
+Two tiers exist because the targets are two different kinds of machine.
+CUDA, Intel and Metal devices run kernels we write, so they implement the
+op set. A Hailo NPU runs only networks its vendor compiler has turned
+into a HEF file; there is no kernel interface to write against. It plugs
+in at tier 2 as "this backend can run the whole vision encoder", and the
+model code asks for tier 2 first and falls back to tier 1 ops.
 
-| Op | Used by | CUDA | Intel (GPU and CPU) |
-|---|---|---|---|
-| dense GEMM / GEMV (bf16, int8, int4 weights) | every projection, lm_head | cuBLASLt; own GEMV for q=1 int4 | oneDNN matmul |
-| grouped expert GEMM | MoE layers 1 to 11 | own kernel over token-sorted experts (CUTLASS grouped GEMM as the upgrade path) | oneDNN matmul per active expert, batched |
-| block-sparse attention, decode (q=1) | decoder SR-SWA | own kernel: gather ~21 blocks x 32 keys, fused softmax | SYCL kernel |
-| block-sparse attention, prefill | decoder prefill | own flash-style kernel with a block mask | SYCL kernel |
-| windowed and global attention | SAM ViT-B, CLIP-L | own flash-style kernel with relative position bias | SYCL kernel / oneDNN SDPA |
-| conv2d | SAM patch embed and neck | own im2col + GEMM | oneDNN convolution |
-| RMSNorm, LayerNorm, SiLU-mul, quick-GELU, softmax, top-k, embedding gather, YaRN and page2d RoPE | everywhere | own kernels, fused where they sit next to each other | SYCL kernels |
+Tier 1, the op set the whole model needs and nothing more:
+
+| Op | Used by | CUDA (desktop and Jetson) | Intel (GPU and CPU) | Metal |
+|---|---|---|---|---|
+| dense GEMM / GEMV (bf16, int8, int4 weights) | every projection, lm_head | cuBLASLt; own GEMV for q=1 int4 | oneDNN matmul; own ESIMD GEMV for q=1 | own simdgroup-matrix kernel; MPS where faster |
+| grouped expert GEMM | MoE layers 1 to 11 | own kernel over token-sorted experts (CUTLASS grouped GEMM as the upgrade path) | own joint_matrix kernel | own kernel |
+| block-sparse attention, decode (q=1) | decoder SR-SWA | own kernel: gather ~21 blocks x 32 keys, fused softmax | ESIMD kernel | MSL kernel |
+| block-sparse attention, prefill | decoder prefill | own flash-style kernel with a block mask | SYCL kernel | MSL kernel |
+| windowed and global attention | SAM ViT-B, CLIP-L | own flash-style kernel with relative position bias | SYCL kernel | MSL kernel |
+| conv2d | SAM patch embed and neck | own im2col + GEMM | oneDNN convolution | im2col + GEMM |
+| RMSNorm, LayerNorm, SiLU-mul, quick-GELU, softmax, top-k, embedding gather, YaRN and page2d RoPE | everywhere | own kernels, fused where they sit next to each other | SYCL kernels | MSL kernels |
 
 The page router, logit policy and prompt builder (section 4.3) run on the
 host; everything else stays on the device for the whole decode, with the
-step captured as a CUDA graph on NVIDIA.
+step captured as a CUDA graph on NVIDIA and as an indirect command buffer
+on Metal.
+
+**Why these layers.** cuBLASLt and oneDNN are where NVIDIA and Intel put
+their tuned tensor-core and XMX paths; writing below them (PTX, Xe ISA)
+buys little for dense GEMM and costs a great deal, so the kernels that are
+ours are the ones no library has: the sparse attention, the MoE grouping,
+the fused elementwise chains, the int4 decode GEMV. Level Zero is used
+directly only where SYCL hides something we need (memory residency,
+queue priorities). On Apple, Metal compute with metal-cpp (Apache-2.0,
+Apple's own C++ binding) is the lowest public level.
 
 ### 4.3 What is ported from upstream, and how
 
@@ -229,25 +264,98 @@ step captured as a CUDA graph on NVIDIA.
   control tokens; decoding needs only the vocabulary and merges, so a
   small native decoder is enough and tokenizers-cpp is optional.
 
-### 4.4 Device notes
+### 4.4 Targets and what fits
 
-- **CUDA** (`latest`, 4080 SUPER): about 6.7 GB of bf16 weights plus
-  about 61 KB of KV per token (12 layers x 2 x 1280 x bf16); a 10-page
-  window with about 2,700 image tokens and 15,000 output tokens is about
-  1.1 GB of cache. Decode at q=1 is memory-bound: about 1.1 GB of active
-  weights read per token, so the ceiling on a 736 GB/s card is several
-  hundred tokens a second, and the kernels are judged against that
-  ceiling, not against a runtime.
-- **Intel Arc B70** (`latest-intel`): SYCL kernels plus oneDNN through
-  Level Zero; same bf16 weights. No kernel cache to manage beyond the SYCL
-  ahead-of-time build for the target.
-- **CPU** (`latest-cpu`, multi-arch): the Intel backend's oneDNN CPU path
-  (AVX-512 BF16 on Zen 5, AMX where present, NEON on arm64), int4 weights
-  by default. Slow, correct, for small documents and correctness runs.
-- **Later:** Apple Metal, and Vulkan as a catch-all, are new backends
-  behind the same interface. See 4.7 for where those may come from.
+The model is about 3.3 B parameters: 6.7 GB in bf16, about 3.6 GB with
+int8 weights, about 2.3 GB with int4 MoE and projection weights (the
+vision encoder and norms kept in bf16). KV cache is about 61 KB per token
+in bf16, so the page window sets the cache size: a 10-page window (about
+2,700 image tokens and 15,000 output tokens) is about 1.1 GB, a 2-page
+window about 0.25 GB. Decode reads about 0.57 B active parameters per
+token, so it is bound by memory bandwidth, and each target's ceiling is
+its bandwidth divided by the bytes of active weights.
 
-### 4.5 Correctness gates
+| Target | Memory | Fits | Weights | Window | Decode ceiling |
+|---|---|---|---|---|---|
+| RTX 4080 SUPER (krick) | 16 GB, 736 GB/s | yes | bf16 | 10 pages | about 640 tok/s |
+| Arc Pro B70 (krick-1) | 30 GiB, about 608 GB/s | yes | bf16 | 10 pages | about 530 tok/s |
+| Jetson Orin Nano 8 GB (nano1) | 8 GB shared with the OS, 68 GB/s | only quantised | int4 decoder, bf16 vision | 2 to 4 pages | about 200 tok/s at int4 |
+| Apple Silicon, 16 GB or more | unified, 100 to 800 GB/s by chip | yes | bf16 (int4 on 8 GB machines) | by memory | bandwidth over 1.1 GB (bf16) |
+| x86 or arm64 CPU | system RAM | yes | int4 or bf16 | any | tens of tok/s on a 9950X |
+| Hailo-8 / 8L | no on-module DRAM; weights stream over PCIe | vision encoder at most | int8 via vendor compiler | not applicable | decoder cannot run there |
+| Hailo-10H | 8 GB on-module DRAM | vision encoder; decoder only if the vendor compiler accepts MoE and SR-SWA, which is unlikely | int4/int8 via vendor compiler | not applicable | not known |
+
+Ceilings are arithmetic, not measurements; real numbers land in the perf
+baselines after each backend's phase. Notes per target:
+
+- **CUDA desktop** (`latest`): the reference fast backend; everything is
+  measured here first.
+- **Jetson, nano1** (`latest-jetson`, aarch64, L4T r39.2, CUDA 13.2, sm_87):
+  the same CUDA source tree built for Orin. bf16 does not fit next to the
+  OS, so the image defaults to int4 decoder weights and a 2-page window,
+  `PAGE_WORKERS`-style single document in flight, and the arena cap set
+  from the board's free memory. The host stays stock; all CUDA userland is
+  in the image and it runs with the NVIDIA runtime, as gRParse's Jetson
+  work established. It is slow next to the desktop card and that is fine:
+  it proves the edge story and the memory discipline.
+- **Intel** (`latest-intel`, krick-1): SYCL ahead-of-time build for
+  Battlemage, oneDNN through Level Zero, bf16 weights. The CPU image
+  (`latest-cpu`, multi-arch) is the same backend's oneDNN CPU path
+  (AVX-512 BF16 on Zen 5, AMX where present, NEON on arm64).
+- **Apple** (native macOS build, no container): see 4.5.
+- **Hailo**: see 4.6.
+
+### 4.5 Apple Silicon
+
+There is no off-the-shelf Apple library that loads this model, and the
+ones that come close are runtimes, which this design rules out:
+
+| Option | What it is | Verdict |
+|---|---|---|
+| Metal compute + metal-cpp (Apache-2.0) | MSL kernels we write, dispatched from C++ | **the backend.** Lowest public level, same shape as the CUDA backend |
+| MPS (`MPSMatrixMultiplication`) | Apple's tuned GEMM, part of the OS | used inside the Metal backend where it beats our GEMM, the way cuBLASLt is used on NVIDIA |
+| MPSGraph | Apple's graph compiler and runtime | no: a runtime between us and the GPU, and SR-SWA would not map to it |
+| MLX C++ core (MIT) | Apple's array framework with lazy graphs and good Metal kernels | no as a dependency (a runtime); yes as a reference. Its Metal kernels (GEMM, quantised GEMV, attention) are MIT and can be read or adapted with the notice |
+| ggml Metal backend (MIT) | ggml's MSL kernels | reference only, same reasoning as 4.8 |
+
+Unified memory is the Apple advantage: the safetensors shards are
+memory-mapped and handed to Metal as no-copy buffers, so loading is close
+to free and nothing is duplicated. Apple GPUs from M1 take bf16 through
+Metal 3.1 or later; on older OS releases the backend falls back to fp16,
+held to the same parity gate (4.7) before it is allowed.
+
+Metal is not reachable from a Linux container on macOS (the fleet already
+found the same for Core ML), so the Apple backend ships as a native macOS
+build of the same service, built and tested with ctest on a Mac. The
+compose stack on a Mac can point gRParse at it through
+`GRPARSE_UNLIMITED_OCR_TARGET=host.docker.internal:50073`.
+
+### 4.6 Hailo
+
+Hailo parts are dataflow NPUs: the vendor's compiler maps a whole network
+onto the chip and HailoRT (MIT) loads and runs the resulting HEF file.
+There is no lower level to write against and no per-op interface, so
+Hailo is a tier-2 backend.
+
+- **What can go there.** The vision encoder (SAM ViT-B + CLIP-L, about
+  0.4 B parameters, convolution, attention and MLP) is the kind of network
+  the compiler targets, and it is the part of each page that is pure
+  compute. Offloading it frees the host GPU or CPU for the decoder. On a
+  Jetson or a small x86 box with a Hailo card this is a real win.
+- **What cannot.** The decoder needs MoE routing, the SR-SWA block
+  selection and a growing KV cache: data-dependent control flow that a
+  dataflow compiler does not map. Hailo-8 and 8L also have no on-module
+  memory for 2.9 B parameters. Hailo-10H has 8 GB and runs vendor-compiled
+  LLMs, but only architectures its compiler supports; this one is not
+  expected to be among them.
+- **The catch.** Producing the HEF needs Hailo's Dataflow Compiler, which
+  is Python-based and under Hailo's own licence. That is a vendor
+  toolchain step outside our build, like a firmware blob, and it breaks the
+  no-Python rule for that one artifact. Whether to accept it is open
+  question 2 in section 11. HailoRT itself is MIT; the PCIe driver is a
+  host kernel module and is never linked into the service.
+
+### 4.7 Correctness gates
 
 1. The reference backend reproduces upstream's greedy token ids exactly
    on the golden pages (fp32). This is the phase 0 gate.
@@ -265,7 +373,7 @@ ids for a fixed page set) are recorded once from upstream's reference
 implementation on a GPU box and committed as data. No build step and no
 test runs Python.
 
-### 4.6 Cost against the ONNX design
+### 4.8 Cost against the ONNX design
 
 | | ONNX Runtime design (previous revision) | Native engine (this revision) |
 |---|---|---|
@@ -275,9 +383,9 @@ test runs Python.
 | Precision | fp16 on CUDA (overflow risk), fp32 on OpenVINO | bf16 everywhere |
 | KV cache | copies through IOBinding | in place, CUDA graph per step |
 | Code we own | engine glue plus graph builder | the whole forward pass and its kernels |
-| Backend reach | whatever ORT ships (CUDA, OpenVINO, CPU) | what we write (CUDA, Intel, CPU first) |
-| Effort | about 10 weeks | about 16 weeks |
-| First usable (CUDA) | about 8.5 weeks | about 11 weeks |
+| Backend reach | whatever ORT ships (CUDA, OpenVINO, CPU) | what we write: CUDA (desktop and Jetson), Intel GPU and CPU, Metal, Hailo offload |
+| Effort | about 10 weeks | about 16 weeks for CUDA, Intel and CPU; about 22 with Jetson, Metal and Hailo |
+| First usable (CUDA) | about 8.5 weeks | about 11.5 weeks |
 
 The extra six weeks buy a faster decode, no export pipeline, exact
 fidelity to the new attention, and a kernel layer that is ours to reuse.
@@ -291,7 +399,7 @@ between us and the hardware, and SR-SWA, page2d RoPE and the page router
 would be custom ops added to each of its backends anyway, which is most of
 the hard work. Its kernels remain a useful reading reference.
 
-### 4.7 Shared kernel layer
+### 4.9 Shared kernel layer
 
 The fleet already has an in-progress native library that unifies CUDA,
 Apple Metal and Intel GPUs behind one zero-copy API for embeddings. The
@@ -585,13 +693,18 @@ running on a CPU box.
 Repo `grpc-unlimited-ocr`, default branch `main`, on GitHub
 `ai-pipestream` and mirrored on Forgejo, both remotes pushed. Layout copied
 from grpc-vlm-convert: `proto/`, `buf.yaml`, `src/`, `tests/`,
-`Dockerfile` (CUDA), `Dockerfile.intel`, `Dockerfile.cpu`,
-`models/MANIFEST`, `scripts/fetch-models.sh`, `AGENTS.md`, `README.md`,
-`NOTICE`. Image `pipestreamai/grpc-unlimited-ocr:latest` (`-intel`,
-`-cpu`) built by its own CI with per-arch buildx cache ids.
+`Dockerfile` (CUDA), `Dockerfile.jetson`, `Dockerfile.intel`,
+`Dockerfile.cpu`, a native CMake preset for macOS, `models/MANIFEST`,
+`scripts/fetch-models.sh`, `AGENTS.md`, `README.md`, `NOTICE`. Images
+`pipestreamai/grpc-unlimited-ocr:latest` (`-jetson`, `-intel`, `-cpu`)
+built by its own CI with per-arch buildx cache ids; the Jetson image is
+built and tested on nano1 itself, and the macOS build is a release
+artifact rather than an image. Hailo support is a build option
+(`-DUOCR_WITH_HAILO=ON`) on the CPU and Jetson images, active only when a
+HEF is in the models directory and `/dev/hailo0` is passed in.
 
 Configuration, all `GRPC_UOCR_*` environment variables: listen address
-(default `0.0.0.0:50073`), `BACKEND` (`cuda`, `intel-gpu`, `cpu`,
+(default `0.0.0.0:50073`), `BACKEND` (`cuda`, `intel-gpu`, `metal`, `cpu`,
 `reference`), device index, `WEIGHT_FORMAT` (`bf16`, `int8`, `int4`),
 device memory cap, models dir, page window, per-page token cap, max pages and max page bytes
 per stream, buffered-bytes budgets per stream and per server, documents
@@ -674,13 +787,17 @@ both remotes and CI green.
 | P3 service | gRPC server, budgets, `GetServiceInfo`, Dockerfiles, CI, models manifest | 1.5 | service tests green; CUDA image published |
 | P4 gRParse | vendored contract, collector client, `COLLECTOR_UNLIMITED_OCR`, overlay, shell tab, scorecard documents | 1.5 | stack e2e green with the overlay; scorecard runs recorded |
 | P5 Intel and CPU backends | SYCL kernels and oneDNN for the B70 and for x86/arm64 CPUs, load-time int8/int4 | 3 | per-op parity suite and golden pages green on each; perf rows recorded |
-| P6 hardening | determinism across runs, memory caps, long-document soak (hundreds of pages), perf baselines in memory | 1.5 | soak clean; numbers recorded |
+| P6 Jetson | the CUDA tree built for sm_87 on L4T, int4 decoder default, small-window and arena tuning for 8 GB, image built and tested on nano1 | 1 | golden pages pass on nano1 inside the memory cap; perf row recorded |
+| P7 Metal | metal-cpp device layer, MSL kernels for the op set, MPS GEMM where faster, no-copy weight mapping, native macOS build and ctest | 3.5 | per-op parity suite and golden pages green on an M-series Mac |
+| P8 Hailo | tier-2 offload interface, HailoRT loading the vision-encoder HEF, host fallback when absent | 2 | encoder output matches the reference within int8 tolerance; golden pages pass with the encoder on the NPU. Starts only after open questions 2 and 3 are answered |
+| P9 hardening | determinism across runs, memory caps, long-document soak (hundreds of pages), perf baselines in memory | 1.5 | soak clean; numbers recorded |
 
-About sixteen weeks in total; first usable (CUDA, explicit selection) at
-the end of P4, about eleven and a half weeks in. P0 is the phase that can
-change the plan, so nothing else starts until its gate is read. P5 can run
-beside P2 to P4 if a second lane is available, which brings the total
-down to about thirteen.
+About 22 weeks in one lane; first usable (CUDA, explicit selection) at the
+end of P4, about eleven and a half weeks in. P0 is the phase that can
+change the plan, so nothing else starts until its gate is read. After P1
+the backends are independent of each other and of P2 to P4: with three
+lanes (Intel, Metal, Jetson then Hailo) beside the main one, the total is
+about 14 weeks.
 
 ## 10. Risks
 
@@ -698,6 +815,13 @@ down to about thirteen.
 - **Intel toolchain.** SYCL ahead-of-time builds for Battlemage and Level
   Zero inside containers need the same care the OpenVINO image needed;
   it is measured on krick-1 in P5.
+- **Jetson memory.** 8 GB shared with the OS leaves little slack; the
+  int4 path and a small page window are required there, and long
+  documents run slower because windows are shorter.
+- **Backend count.** Five backends means five sets of kernels to keep in
+  parity. The per-op suite runs on every backend the image carries, and a
+  backend that falls behind is dropped from the release, not shipped
+  stale.
 - **Upstream churn.** Version 2 is a day old. The manifest pins exact
   weight hashes; a new upstream release is a deliberate bump with new
   goldens.
@@ -714,3 +838,10 @@ down to about thirteen.
    copy), or stay private to this service and be merged later? The
    design works either way; sharing it from the start avoids two kernel
    layers.
+2. **Hailo compiler.** The vision-encoder HEF can only be produced with
+   Hailo's Python-based, vendor-licensed Dataflow Compiler. Accept that
+   one offline vendor step (the HEF is then pinned by sha256 like the
+   weights), or drop the Hailo backend?
+3. **Which Hailo part, and where.** Hailo-8, 8L or 10H decides what fits
+   (4.4), and no Hailo device is visible on krick or krick-1 today. Which
+   host carries it?
