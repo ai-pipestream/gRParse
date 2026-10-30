@@ -1161,10 +1161,343 @@ void verify_lol_html_captures_page_identity() {
               "<a title=\"na\xC3\xAFve \xE2\x98\x83\" href=\"/na\xC3\xAFve\">",
           "the anchor folds as its verbatim pseudo-tag");
   require(anchor.spans_size() == 1 && anchor.spans(0).hyperlink() == "/na\xC3\xAFve" &&
+              anchor.spans(0).link_title() == "na\xC3\xAFve \xE2\x98\x83" &&
               anchor.spans(0).range().start() == 25 &&
               anchor.spans(0).range().end() == 31,
           "hyperlink runs are code-point ranges, unshifted by a multi-byte "
-          "attribute value before them");
+          "attribute value before them, and carry the link title");
+}
+
+class FullApiLolHtmlService final : public lolv1::LolHtmlService::Service {
+ public:
+  explicit FullApiLolHtmlService(bool raw_chunks) : raw_chunks_(raw_chunks) {}
+
+  grpc::Status Extract(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<lolv1::ExtractResponse, lolv1::ExtractRequest>*
+          stream) override {
+    lolv1::ExtractRequest request;
+    while (stream->Read(&request)) {
+    }
+
+    lolv1::ExtractResponse event;
+    event.mutable_started()->set_rule_count(3);
+    event.mutable_started()->set_encoding("UTF-8");
+    stream->Write(event);
+    event.Clear();
+
+    if (raw_chunks_) {
+      auto* el = event.mutable_element();
+      el->set_rule_id("body");
+      el->set_tag_name("p");
+      el->set_tag_name_raw("P");
+      el->set_namespace_(lolv1::NAMESPACE_HTML);
+      el->set_can_have_content(true);
+      stream->Write(event);
+      event.Clear();
+
+      auto* t1 = event.mutable_text();
+      t1->set_rule_id("body");
+      t1->set_text("Tom &amp; ");
+      t1->set_text_type(lolv1::TEXT_TYPE_DATA);
+      t1->set_last_in_node(false);
+      t1->mutable_span()->set_start(3);
+      t1->mutable_span()->set_end(13);
+      stream->Write(event);
+      event.Clear();
+
+      auto* t2 = event.mutable_text();
+      t2->set_rule_id("body");
+      t2->set_text("Jerry &#x2603;");
+      t2->set_text_type(lolv1::TEXT_TYPE_DATA);
+      t2->set_last_in_node(false);
+      t2->mutable_span()->set_start(13);
+      t2->mutable_span()->set_end(27);
+      stream->Write(event);
+      event.Clear();
+
+      // lol_html frequently closes a text node with an empty final chunk.
+      auto* t3 = event.mutable_text();
+      t3->set_rule_id("body");
+      t3->set_text("");
+      t3->set_text_type(lolv1::TEXT_TYPE_DATA);
+      t3->set_last_in_node(true);
+      stream->Write(event);
+      event.Clear();
+
+      auto* end = event.mutable_end_tag();
+      end->set_rule_id("body");
+      end->set_name("p");
+      end->set_name_raw("P");
+      end->mutable_span()->set_start(27);
+      end->mutable_span()->set_end(31);
+      stream->Write(event);
+      event.Clear();
+
+      auto* done = event.mutable_finished();
+      done->set_bytes_parsed(31);
+      (*done->mutable_matches_by_rule())["body"] = 1;
+      stream->Write(event);
+      return grpc::Status::OK;
+    }
+
+    // 1. DoctypeFound with name, public_id, system_id, and span.
+    auto* dt = event.mutable_doctype();
+    dt->set_rule_id("doc");
+    dt->set_name("html");
+    dt->set_public_id("-//W3C//DTD XHTML 1.0 Strict//EN");
+    dt->set_system_id("http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd");
+    dt->mutable_span()->set_start(0);
+    dt->mutable_span()->set_end(109);
+    stream->Write(event);
+    event.Clear();
+
+    // 2. CommentFound with span.
+    auto* cm = event.mutable_comment();
+    cm->set_rule_id("doc");
+    cm->set_text(" header note ");
+    cm->mutable_span()->set_start(110);
+    cm->mutable_span()->set_end(130);
+    stream->Write(event);
+    event.Clear();
+
+    // 3. Meta tags: charset, author, generator, keywords, subject, content-language.
+    auto write_meta = [&](const std::vector<std::pair<std::string, std::string>>& attrs) {
+      lolv1::ExtractResponse m;
+      auto* el = m.mutable_element();
+      el->set_rule_id("meta");
+      el->set_tag_name("meta");
+      el->set_namespace_(lolv1::NAMESPACE_HTML);
+      el->set_can_have_content(false);
+      for (const auto& [k, v] : attrs) {
+        auto* a = el->add_attributes();
+        a->set_name(k);
+        a->set_value(v);
+      }
+      stream->Write(m);
+    };
+    write_meta({{"charset", "utf-8"}});
+    write_meta({{"name", "Author"}, {"content", "Ada Lovelace"}});
+    write_meta({{"name", "generator"}, {"content", "Hugo 0.135"}});
+    write_meta({{"name", "keywords"}, {"content", "html, streaming, parser"}});
+    write_meta({{"name", "subject"}, {"content", "Web Parsing"}});
+    write_meta({{"http-equiv", "Content-Language"}, {"content", "en-US"}});
+
+    // 4. SVG foreign-namespace element with case-sensitive tag/attribute names,
+    // self_closing = true, element span, and attribute name/value spans.
+    auto* svg = event.mutable_element();
+    svg->set_rule_id("svg");
+    svg->set_tag_name("lineargradient");
+    svg->set_tag_name_raw("linearGradient");
+    svg->set_namespace_(lolv1::NAMESPACE_SVG);
+    svg->set_self_closing(true);
+    svg->set_can_have_content(false);
+    svg->mutable_span()->set_start(200);
+    svg->mutable_span()->set_end(244);
+    auto* vb = svg->add_attributes();
+    vb->set_name("gradientunits");
+    vb->set_name_raw("gradientUnits");
+    vb->set_value("userSpaceOnUse");
+    vb->mutable_name_span()->set_start(216);
+    vb->mutable_name_span()->set_end(229);
+    vb->mutable_value_span()->set_start(231);
+    vb->mutable_value_span()->set_end(245);
+    stream->Write(event);
+    event.Clear();
+
+    // 5. JSON-LD <script type="application/ld+json; charset=utf-8"> + TEXT_TYPE_SCRIPT_DATA + EndTagFound.
+    auto* script = event.mutable_element();
+    script->set_rule_id("ld");
+    script->set_tag_name("script");
+    script->set_tag_name_raw("SCRIPT");
+    script->set_namespace_(lolv1::NAMESPACE_HTML);
+    script->set_can_have_content(true);
+    auto* stype = script->add_attributes();
+    stype->set_name("type");
+    stype->set_name_raw("TYPE");
+    stype->set_value("application/ld+json; charset=utf-8");
+    stream->Write(event);
+    event.Clear();
+
+    auto* ld_text = event.mutable_text();
+    ld_text->set_rule_id("ld");
+    ld_text->set_text("  {\"@context\":\"https://schema.org\",\"@type\":\"Article\"}  ");
+    ld_text->set_text_type(lolv1::TEXT_TYPE_SCRIPT_DATA);
+    ld_text->set_last_in_node(true);
+    ld_text->mutable_span()->set_start(300);
+    ld_text->mutable_span()->set_end(355);
+    stream->Write(event);
+    event.Clear();
+
+    auto* script_end = event.mutable_end_tag();
+    script_end->set_rule_id("ld");
+    script_end->set_name("script");
+    script_end->set_name_raw("SCRIPT");
+    script_end->mutable_span()->set_start(355);
+    script_end->mutable_span()->set_end(364);
+    stream->Write(event);
+    event.Clear();
+
+    // Text arriving on rule "ld" after EndTagFound must no longer be treated as script data.
+    auto* trailing = event.mutable_text();
+    trailing->set_rule_id("ld");
+    trailing->set_text("outside script");
+    trailing->set_text_type(lolv1::TEXT_TYPE_DATA);
+    trailing->set_last_in_node(true);
+    stream->Write(event);
+    event.Clear();
+
+    auto* done = event.mutable_finished();
+    done->set_bytes_parsed(512);
+    done->set_bailed_out(true);
+    done->set_bail_out_reason("budget reached");
+    (*done->mutable_matches_by_rule())["doc"] = 2;
+    (*done->mutable_matches_by_rule())["meta"] = 6;
+    (*done->mutable_matches_by_rule())["svg"] = 1;
+    (*done->mutable_matches_by_rule())["ld"] = 1;
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+
+ private:
+  bool raw_chunks_;
+};
+
+void verify_lol_html_folds_full_api_surface() {
+  FullApiLolHtmlService service(/*raw_chunks=*/false);
+  ServerFixture server(&service);
+  const auto outcome = grparse::collect_lol_html_document(
+      server.channel(), lol_html_options(), "<!DOCTYPE html>");
+  require(outcome.success, "full lol-html API collection succeeds: " + outcome.error);
+
+  const auto& custom = outcome.document.body().meta().custom_fields();
+  const auto enc = custom.find("lol_html.encoding");
+  require(enc != custom.end() && enc->second.string_value() == "UTF-8",
+          "ExtractStarted.encoding lands in body.meta.custom_fields");
+
+  // Doctype with public_id, system_id, and byte span.
+  const auto& dt = outcome.document.texts(0).text().base();
+  require(dt.text() ==
+              "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" "
+              "\"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\">",
+          "DoctypeFound renders name, public_id, and system_id");
+  require(dt.prov_size() == 1 && dt.prov(0).byte_range().start() == 0 &&
+              dt.prov(0).byte_range().end() == 109 &&
+              dt.prov(0).charspan().end() == static_cast<int32_t>(dt.text().size()),
+          "DoctypeFound span lands in ProvenanceItem.byte_range");
+
+  // Comment with byte span.
+  const auto& cm = outcome.document.texts(1).text().base();
+  require(cm.text() == "<!-- header note -->" && cm.prov_size() == 1 &&
+              cm.prov(0).byte_range().start() == 110 &&
+              cm.prov(0).byte_range().end() == 130,
+          "CommentFound span lands in ProvenanceItem.byte_range");
+
+  // Promoted DocumentMeta and WebMeta fields from <meta>.
+  const auto& sm = outcome.document.source_meta();
+  require(sm.authors_size() == 1 && sm.authors(0) == "Ada Lovelace",
+          "meta author populates source_meta.authors");
+  require(sm.generator() == "Hugo 0.135",
+          "meta generator populates source_meta.generator");
+  require(sm.keywords_size() == 3 && sm.keywords(0) == "html" &&
+              sm.keywords(1) == "streaming" && sm.keywords(2) == "parser",
+          "meta keywords split into source_meta.keywords");
+  require(sm.subject() == "Web Parsing",
+          "meta subject populates source_meta.subject");
+  require(sm.language() == "en-US" &&
+              outcome.document.origin().web().content_language() == "en-US",
+          "meta http-equiv Content-Language populates source_meta.language and web.content_language");
+  require(outcome.document.meta_tags_size() == 6 &&
+              outcome.document.meta_tags(0).name() == "charset" &&
+              outcome.document.meta_tags(0).content() == "utf-8",
+          "meta charset is captured alongside name/property/http-equiv pairs");
+
+  // Foreign-namespace SVG element with raw casing, self_closing, and attribute spans.
+  const auto& svg = outcome.document.texts(8).text().base();
+  require(svg.text() == "<linearGradient gradientUnits=\"userSpaceOnUse\"/>" &&
+              svg.orig() == "<linearGradient gradientUnits=\"userSpaceOnUse\"/>",
+          "SVG foreign element preserves raw tag/attribute casing and self-closing syntax");
+  require(svg.source_element_name() == "linearGradient" &&
+              svg.source_namespace() == "http://www.w3.org/2000/svg",
+          "SVG element stamps source_element_name and source_namespace");
+  require(svg.prov_size() == 3 &&
+              svg.prov(0).byte_range().start() == 200 &&
+              svg.prov(0).byte_range().end() == 244 &&
+              svg.prov(1).byte_range().start() == 216 &&
+              svg.prov(1).charspan().start() == 16 &&
+              svg.prov(1).charspan().end() == 29 &&
+              svg.prov(2).byte_range().start() == 231 &&
+              svg.prov(2).charspan().start() == 31 &&
+              svg.prov(2).charspan().end() == 45,
+          "element span, attribute name_span, and value_span map to ProvenanceItems");
+
+  // HTML <SCRIPT TYPE="..."> normalizes text while keeping raw casing in orig.
+  const auto& script_open = outcome.document.texts(9).text().base();
+  require(script_open.text() ==
+              "<script type=\"application/ld+json; charset=utf-8\">" &&
+              script_open.orig() ==
+                  "<SCRIPT TYPE=\"application/ld+json; charset=utf-8\">" &&
+              script_open.source_element_name() == "script" &&
+              script_open.source_namespace() == "http://www.w3.org/1999/xhtml",
+          "HTML element normalizes text, keeps raw casing in orig, and stamps XHTML namespace");
+
+  // JSON-LD text node stamps source_element_name, byte_range, and structured_data.
+  const auto& ld_node = outcome.document.texts(10).text().base();
+  require(ld_node.source_element_name() == "script" &&
+              ld_node.source_namespace() == "http://www.w3.org/1999/xhtml" &&
+              ld_node.prov_size() == 1 &&
+              ld_node.prov(0).byte_range().start() == 300 &&
+              ld_node.prov(0).byte_range().end() == 355,
+          "text node inherits active element origin and records its byte span");
+  require(outcome.document.structured_data_size() == 1 &&
+              outcome.document.structured_data(0).kind() == "json-ld" &&
+              outcome.document.structured_data(0).json() ==
+                  "{\"@context\":\"https://schema.org\",\"@type\":\"Article\"}",
+          "JSON-LD script text populates Document.structured_data");
+
+  // EndTagFound folds as closing tag and clears active element state.
+  const auto& script_close = outcome.document.texts(11).text().base();
+  require(script_close.text() == "</script>" &&
+              script_close.orig() == "</SCRIPT>" &&
+              script_close.source_element_name() == "script" &&
+              script_close.source_namespace() == "http://www.w3.org/1999/xhtml" &&
+              script_close.prov_size() == 1 &&
+              script_close.prov(0).byte_range().start() == 355 &&
+              script_close.prov(0).byte_range().end() == 364,
+          "EndTagFound folds with normalized text, raw orig, element origin, and byte span");
+
+  const auto& after_close = outcome.document.texts(12).text().base();
+  require(!after_close.has_source_element_name() &&
+              outcome.document.structured_data_size() == 1,
+          "EndTagFound clears the active element on the rule");
+
+  require(outcome.warnings.size() == 1 &&
+              outcome.warnings[0] ==
+                  "bailed out before the end of the document after 512 bytes: budget reached",
+          "bail-out warning reports bytes_parsed");
+}
+
+void verify_lol_html_reassembles_raw_text_chunks() {
+  FullApiLolHtmlService service(/*raw_chunks=*/true);
+  ServerFixture server(&service);
+  auto options = lol_html_options();
+  options->set_raw_text_chunks(true);
+  const auto outcome = grparse::collect_lol_html_document(
+      server.channel(), options, "<P>Tom &amp; Jerry &#x2603;</P>");
+  require(outcome.success, "raw_text_chunks collection succeeds: " + outcome.error);
+  require(outcome.document.texts_size() == 3,
+          "open tag, reassembled text node (empty final chunk dropped), and end tag");
+  const auto& text = outcome.document.texts(1).text().base();
+  require(text.text() == "Tom & Jerry \xE2\x98\x83" &&
+              text.orig() == "Tom &amp; Jerry &#x2603;",
+          "raw text chunks reassemble until last_in_node, decoding entities in text and keeping raw in orig");
+  require(text.prov_size() == 1 &&
+              text.prov(0).byte_range().start() == 3 &&
+              text.prov(0).byte_range().end() == 27,
+          "reassembled raw text chunks merge their byte span from first to last fragment");
+  require(text.source_element_name() == "p" &&
+              text.source_namespace() == "http://www.w3.org/1999/xhtml",
+          "reassembled text node inherits the enclosing element's name and namespace");
 }
 
 void verify_lol_html_without_rules_never_dials() {
@@ -2625,6 +2958,8 @@ int main() {
       verify_lol_html_without_rules_never_dials,
       verify_lol_html_in_band_error_is_terminal,
       verify_lol_html_captures_page_identity,
+      verify_lol_html_folds_full_api_surface,
+      verify_lol_html_reassembles_raw_text_chunks,
       verify_fastwarc_folds_records_and_warnings,
       verify_fastwarc_captures_web_provenance,
       verify_fastwarc_response_supersedes_the_request_record,
