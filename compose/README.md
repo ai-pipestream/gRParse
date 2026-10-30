@@ -28,6 +28,8 @@ anywhere Docker does - Apple Silicon included, with no emulation:
 ```sh
 ./compose/clone-siblings.sh   # fresh machine: fetch the sibling checkouts
                               # the build: lines expect (published images need none)
+# Or bootstrap the entire grpc-services workspace (gRParse + siblings) on a new machine:
+# curl -fsSL https://raw.githubusercontent.com/ai-pipestream/gRParse/main/compose/clone-siblings.sh | sh -s -- --full ./grpc-services
 docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml up
 docker compose -f compose.stack.yaml -f compose.stack.cpu.yaml --profile parsers up
 ```
