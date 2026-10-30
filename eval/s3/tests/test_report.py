@@ -38,7 +38,9 @@ def test_known_findings_name_their_owner() -> None:
     from s3.owners import KNOWN_FINDINGS, owner_of
 
     assert owner_of("warnings_typed", "collector warnings keyed as custom_fields strings") is None
-    assert owner_of("parse_succeeds", "fastwarc collector is not configured").owner.startswith("fastwarc")
+    # The fastwarc collector is wired since the 1.1.0 crate; a WARC failure is
+    # a live finding now, not a known caveat.
+    assert owner_of("parse_succeeds", "fastwarc collector is not configured") is None
     assert owner_of("table_grids", "grid rows have [#, #] cells, num_cols says #").owner == "grpc-markup"
     assert owner_of("integrity", "anything") is None
     assert all(entry.note for entry in KNOWN_FINDINGS)

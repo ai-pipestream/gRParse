@@ -51,7 +51,7 @@ function resetRun() {
   table.className = "warc-table";
   const header = document.createElement("thead");
   header.innerHTML = "<tr><th>type</th><th>stream pos</th><th>declared length</th>"
-    + "<th>payload length</th><th>digests</th><th>record id</th><th>HTTP content type</th></tr>";
+    + "<th>payload length</th><th>record id</th><th>HTTP content type</th></tr>";
   table.appendChild(header);
   tableBody = document.createElement("tbody");
   table.appendChild(tableBody);
@@ -80,7 +80,7 @@ function attachPreview(text) {
   previewRow.className = "preview-row";
   previewRow.hidden = true;
   const wrapper = document.createElement("td");
-  wrapper.colSpan = 7;
+  wrapper.colSpan = 6;
   const pre = document.createElement("pre");
   pre.textContent = text;
   wrapper.appendChild(pre);
@@ -98,15 +98,6 @@ function banner(kind, message) {
   results.appendChild(element);
 }
 
-// Digest verification outcome, e.g. "block valid · payload mismatch"; the
-// bridge omits the fields entirely when verification was not requested.
-function digestSummary(event) {
-  const parts = [];
-  if (event.blockDigest) parts.push(`block ${event.blockDigest}`);
-  if (event.payloadDigest) parts.push(`payload ${event.payloadDigest}`);
-  return parts.join(" · ");
-}
-
 function handleEvent(event) {
   if (event.type === "start") {
     const row = document.createElement("tr");
@@ -114,7 +105,6 @@ function handleEvent(event) {
     cell(row, `${event.streamPos}`);
     cell(row, formatBytes(event.contentLength || 0));
     cell(row, "…");
-    cell(row, "");
     cell(row, event.recordId || "");
     cell(row, event.httpContentType || (event.isHttp ? "(none declared)" : ""));
     tableBody.appendChild(row);
@@ -126,8 +116,6 @@ function handleEvent(event) {
   } else if (event.type === "end") {
     if (currentRow) {
       currentRow.cells[3].textContent = formatBytes(event.payloadLength || 0);
-      currentRow.cells[4].textContent = digestSummary(event);
-      if (event.digestDetail) currentRow.cells[4].title = event.digestDetail;
     }
     totals.payloadBytes += event.payloadLength || 0;
     updateStats();
@@ -137,7 +125,7 @@ function handleEvent(event) {
       const row = document.createElement("tr");
       row.className = "warn-row";
       const td = document.createElement("td");
-      td.colSpan = 7;
+      td.colSpan = 6;
       td.textContent = `recoverable error at stream pos ${event.streamPos}: ${event.message}`;
       row.appendChild(td);
       tableBody.appendChild(row);

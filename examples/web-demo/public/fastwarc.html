@@ -21,7 +21,7 @@
     <p class="hint">.warc, .warc.gz, .warc.zst, .warc.lz4 — compression is detected from magic bytes; records stream in below as they parse.</p>
     <div class="warc-options" id="warc-options">
       <label><input type="checkbox" id="opt-parse-http" checked /> parse HTTP</label>
-      <label><input type="checkbox" id="opt-verify-digests" /> verify digests</label>
+      <label title="records with a missing or invalid WARC-Block-Digest are dropped"><input type="checkbox" id="opt-verify-digests" /> skip records failing the block digest</label>
     </div>
   </section>
 
