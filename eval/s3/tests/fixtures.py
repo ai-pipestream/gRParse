@@ -150,7 +150,8 @@ def sheet_document() -> dict[str, Any]:
     b.page(1, 24000, 15000)
     sheet = b.group("SHEET", "Revenue", sheet={"index": 0, "visible": True})
     b.table([(0, 0, 1, 1, "Region"), (0, 1, 1, 1, "Q1"), (1, 0, 1, 1, "North"), (1, 1, 1, 1, "12"),
-             (2, 0, 1, 1, "South"), (2, 1, 1, 1, "9")], 3, 2, sheet, page=1, box=(0, 0, 0, 0), header_rows=1)
+             (2, 0, 1, 1, "South"), (2, 1, 1, 1, "9")], 3, 2, sheet, page=1, box=(0, 0, 0, 0), header_rows=1,
+            source=LIBRE + [{"collector": {"collector": "calamine"}}])
     chart = b.picture(sheet, page=1, box=(4779, 299, 13849, 4833), label="CHART")
     b.doc["pictures"][-1]["chart"] = {"has_column_headers": True}
     table = b.table([(0, 0, 1, 1, ""), (0, 1, 1, 1, "Q1"), (1, 0, 1, 1, "North"), (1, 1, 1, 1, "12")], 2, 2, chart,
@@ -190,12 +191,19 @@ def email_document() -> dict[str, Any]:
 def epub_document() -> dict[str, Any]:
     b = Builder("application/epub+zip", "book.epub", collectors=("epub",))
     src = [{"collector": {"collector": "markup"}}]
-    one = b.group("CHAPTER", "OEBPS/text/chap1.xhtml")
+    book = [{"collector": {"collector": "epub"}}]
+    one = b.group("CHAPTER", "OEBPS/text/chap1.xhtml", source=book)
     b.text("title", "Chapter One", one, source=src)
     b.text("text", "First.", one, source=src)
-    two = b.group("CHAPTER", "OEBPS/text/chap2.xhtml")
+    two = b.group("CHAPTER", "OEBPS/text/chap2.xhtml", source=book)
     b.text("section_header", "Chapter Two", two, level=1, source=src)
     b.text("text", "Second.", two, source=src)
+    return b.build()
+
+
+def ebcdic_document() -> dict[str, Any]:
+    b = Builder("application/octet-stream", "statement.ebc", collectors=("ebcdic",))
+    b.text("text", "ACCOUNT 0001 BALANCE 12.00", source=[{"collector": {"collector": "ebcdic"}}])
     return b.build()
 
 

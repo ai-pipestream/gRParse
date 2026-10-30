@@ -111,6 +111,7 @@ class CorpusConfig:
     grparse_commit: str | None = None
     wait_seconds: float = 0.0
     document_passwords: tuple[str, ...] = field(default=(), repr=False)
+    calamine_leg: bool = True
 
     @property
     def max_in_flight(self) -> int:
@@ -173,6 +174,13 @@ class CorpusConfig:
             default=None,
             help="treat skipped documents or missing prerequisites as failure (or EVAL_REQUIRE)",
         )
+        parser.add_argument(
+            "--calamine-leg",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help="workbooks must show the calamine leg beside libreoffice (or EVAL_CALAMINE_LEG, default true; "
+            "--no-calamine-leg for a stack without the calamine profile)",
+        )
         parser.add_argument("--passwords-file", help="optional UTF-8 file of candidate document passwords")
         parser.add_argument(
             "--compose-project",
@@ -223,6 +231,9 @@ class CorpusConfig:
         resume = args.resume if args.resume is not None else _flag(env, "EVAL_CORPUS_RESUME", False)
         save_outputs = args.save_outputs if args.save_outputs is not None else _flag(env, "EVAL_CORPUS_SAVE_OUTPUTS", True)
         require = args.require if args.require is not None else _flag(env, "EVAL_REQUIRE", False)
+        calamine_leg = (
+            args.calamine_leg if args.calamine_leg is not None else _flag(env, "EVAL_CALAMINE_LEG", True)
+        )
 
         if args.metrics_port is not None:
             metrics_port: int | None = args.metrics_port
@@ -286,6 +297,7 @@ class CorpusConfig:
             grparse_commit=(args.grparse_commit or env.get("EVAL_GRPARSE_COMMIT") or "").strip() or None,
             wait_seconds=wait_seconds,
             document_passwords=passwords,
+            calamine_leg=calamine_leg,
         )
 
 
@@ -514,6 +526,7 @@ def evaluate_corpus_entry(
         runs=runs,
         sniff=sniff_res,
         view=view,
+        calamine_leg=config.calamine_leg,
     )
     del data
     obj_res = evaluate(ctx)
@@ -579,6 +592,42 @@ def evaluate_corpus_entry(
     return record, obj_res, note, line
 
 
+def _percentile(values: list[float], share: float) -> float:
+    ordered = sorted(values)
+    return ordered[min(len(ordered) - 1, int(share * len(ordered)))]
+
+
+def by_type(results: list[ObjectResult]) -> list[dict[str, Any]]:
+    """One row per file type: documents, how many passed every check, the
+    checks that failed, client latency and the collectors that answered."""
+    rows: dict[str, dict[str, Any]] = {}
+    for result in results:
+        ext = result.extension or "(none)"
+        row = rows.setdefault(ext, {"extension": ext, "family": result.family, "documents": 0, "passed": 0,
+                                    "failed": 0, "skipped": 0, "latencies": [], "failing_checks": {},
+                                    "collectors": set()})
+        row["documents"] += 1
+        if result.skipped:
+            row["skipped"] += 1
+            continue
+        row["latencies"].append(result.elapsed_ms)
+        row["collectors"].update(result.collectors)
+        failing = [name for name, verdict in result.checks.items() if verdict == "fail"]
+        row["failed" if failing else "passed"] += 1
+        for name in failing:
+            row["failing_checks"][name] = row["failing_checks"].get(name, 0) + 1
+    table = []
+    for ext in sorted(rows):
+        row = rows[ext]
+        latencies = row.pop("latencies")
+        row["collectors"] = sorted(row["collectors"])
+        row["ms_p50"] = round(_percentile(latencies, 0.5), 1) if latencies else None
+        row["ms_p95"] = round(_percentile(latencies, 0.95), 1) if latencies else None
+        row["ms_max"] = round(max(latencies), 1) if latencies else None
+        table.append(row)
+    return table
+
+
 def build_corpus_report(
     *,
     label: str,
@@ -615,6 +664,7 @@ def build_corpus_report(
         },
         "per_check": {name: {"files": c.files, "pass": c.passed, "fail": c.failed} for name, c in per_check.items()},
         "matrix": matrix.as_list(),
+        "by_type": by_type(results),
         "findings": findings(results),
         "notes": list(notes),
         "objects": [r.__dict__ for r in results],
@@ -653,7 +703,22 @@ def render_corpus_markdown(report: dict[str, Any]) -> str:
         lines.append(f"- {note}")
     if report["notes"]:
         lines.append("")
-    lines += ["## Checks", "", "| check | files | pass | fail |", "|---|---|---|---|"]
+    lines += [
+        "## By file type",
+        "",
+        "| ext | docs | pass | fail | skipped | p50 ms | p95 ms | max ms | collectors answered | failing checks |",
+        "|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for row in report.get("by_type", []):
+        failing = ", ".join(f"{name} {count}" for name, count in sorted(row["failing_checks"].items()))
+        lines.append(
+            f"| {row['extension']} | {row['documents']} | {row['passed']} | {row['failed']} | {row['skipped']} | "
+            f"{row['ms_p50'] if row['ms_p50'] is not None else '-'} | "
+            f"{row['ms_p95'] if row['ms_p95'] is not None else '-'} | "
+            f"{row['ms_max'] if row['ms_max'] is not None else '-'} | "
+            f"{', '.join(row['collectors']) or '-'} | {failing or '-'} |"
+        )
+    lines += ["", "## Checks", "", "| check | files | pass | fail |", "|---|---|---|---|"]
     for name, cell in report["per_check"].items():
         lines.append(f"| {name} | {cell['files']} | {cell['pass']} | {cell['fail']} |")
     lines += [

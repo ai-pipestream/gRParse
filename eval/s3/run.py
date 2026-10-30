@@ -184,7 +184,8 @@ def evaluate_object(config: Config, source: ObjectSource, client: Any,
     first = runs[0]
     view = View(first.document) if first.document and not first.rpc_error else None
     ctx = ObjectContext(key=ref.key, ext=ext, family=family, size=ref.size,
-                        facts=source_facts(ext, family, data), runs=runs, sniff=sniff, view=view)
+                        facts=source_facts(ext, family, data), runs=runs, sniff=sniff, view=view,
+                        calamine_leg=config.calamine_leg)
     del data
     result = evaluate(ctx)
     failed = [name for name, verdict in result.checks.items() if verdict == "fail"]

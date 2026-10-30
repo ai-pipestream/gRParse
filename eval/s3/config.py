@@ -114,6 +114,9 @@ class Config:
     # Candidate passwords sent with every conversion (EVAL_S3_PASSWORDS_FILE);
     # kept out of repr so no log line or report can print them.
     document_passwords: tuple[str, ...] = field(default=(), repr=False)
+    # The stack runs grpc-calamine, so a workbook must also show its leg
+    # (EVAL_CALAMINE_LEG=0 for a stack without the calamine profile).
+    calamine_leg: bool = True
 
     @classmethod
     def from_env(cls, env: Mapping[str, str], repo_root: Path) -> Config:
@@ -147,6 +150,7 @@ class Config:
             seconds_per_page=float(env.get("EVAL_S3_SECONDS_PER_PAGE") or 1.5),
             concurrency=_concurrency(env),
             document_passwords=_passwords(env),
+            calamine_leg=_flag(env, "EVAL_CALAMINE_LEG", True),
         )
 
     def deadline_for(self, pages: int) -> float:
