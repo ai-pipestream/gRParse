@@ -485,7 +485,10 @@ void retain_claims_only(docv1::Document* source) {
   const auto* reflection = source->GetReflection();
   for (int index = 0; index < descriptor->field_count(); ++index) {
     const auto* field = descriptor->field(index);
-    if (!is_claim_field(field->name())) reflection->ClearField(source, field);
+    // A model's decode record is not a reading of the body: it is kept so
+    // no generated output is lost even when the leg's items are.
+    if (is_claim_field(field->name()) || field->name() == "generation_traces") continue;
+    reflection->ClearField(source, field);
   }
 }
 
