@@ -260,20 +260,31 @@ class FakeXmlService final : public xmlv1::XmlParseService::Service {
       override {
     xmlv1::ParseXmlRequest request;
     bool emit_document = false;
+    bool emit_inline_spans = false;
+    bool emit_source_metadata = false;
     std::string bytes;
     while (stream->Read(&request)) {
       if (request.has_options()) {
         emit_document = request.options().emit_document();
+        emit_inline_spans = request.options().emit_inline_spans();
+        emit_source_metadata = request.options().emit_source_metadata();
       } else {
         bytes += request.chunk();
       }
     }
-    if (!emit_document || bytes.empty()) {
+    if (!emit_document || !emit_inline_spans || !emit_source_metadata || bytes.empty()) {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                          "fake xml expects emit_document and bytes");
+                          "fake xml expects document, inline spans, source metadata, and bytes");
     }
     xmlv1::ParseXmlResponse event;
-    *event.mutable_document() = canned_document("xml");
+    auto* document = event.mutable_document();
+    *document = canned_document("xml");
+    auto* span = document->mutable_texts(0)->mutable_text()->mutable_base()->add_spans();
+    span->mutable_range()->set_start(0);
+    span->mutable_range()->set_end(4);
+    span->set_hyperlink("https://example.org/reference");
+    span->mutable_formatting()->set_italic(true);
+    document->mutable_source_meta()->mutable_license()->set_statement("CC BY 4.0");
     stream->Write(event);
     event.Clear();
     auto* warning = event.mutable_status()->add_warnings();
@@ -305,6 +316,11 @@ void verify_xml_collects_document_and_formats_warnings() {
   require(outcome.success, "xml collection succeeds: " + outcome.error);
   require(outcome.document.texts(0).text().base().text() == "from xml",
           "the xml Document arrives unchanged");
+  const auto& span = outcome.document.texts(0).text().base().spans(0);
+  require(span.hyperlink() == "https://example.org/reference" && span.formatting().italic(),
+          "XML links and inline formatting survive collection");
+  require(outcome.document.source_meta().license().statement() == "CC BY 4.0",
+          "XML structured source metadata survives collection");
   require(outcome.warnings.size() == 1 &&
               outcome.warnings[0] ==
                   "WARNING_CODE_UNMAPPED_ELEMENT: mystery element (x3)",
@@ -1500,6 +1516,152 @@ void verify_lol_html_reassembles_raw_text_chunks() {
           "reassembled text node inherits the enclosing element's name and namespace");
 }
 
+class IdentityLolHtmlService final : public lolv1::LolHtmlService::Service {
+ public:
+  grpc::Status Extract(grpc::ServerContext*,
+      grpc::ServerReaderWriter<lolv1::ExtractResponse, lolv1::ExtractRequest>* stream) override {
+    lolv1::ExtractRequest request;
+    while (stream->Read(&request)) {}
+    const auto element = [&](uint64_t ordinal, uint32_t open, const std::string& tag) {
+      lolv1::ExtractResponse event;
+      auto* el = event.mutable_element();
+      el->set_rule_id("links");
+      el->set_match_ordinal(ordinal);
+      el->set_open_matches(open);
+      el->set_tag_name(tag);
+      el->set_tag_name_raw(tag);
+      el->set_namespace_(lolv1::NAMESPACE_HTML);
+      el->set_can_have_content(tag != "img");
+      if (tag == "a") {
+        auto* attr = el->add_attributes();
+        attr->set_name("href");
+        attr->set_name_raw("HREF");
+        attr->set_value("/about");
+        attr->set_value_present(true);
+        attr = el->add_attributes();
+        attr->set_name("disabled");
+        attr->set_name_raw("DISABLED");
+        attr->set_value_present(false);
+        attr->mutable_name_span()->set_start(3);
+        attr->mutable_name_span()->set_end(11);
+        attr = el->add_attributes();
+        attr->set_name("data-empty");
+        attr->set_value_present(true);
+        attr->mutable_name_span()->set_start(12);
+        attr->mutable_name_span()->set_end(22);
+        attr->mutable_value_span()->set_start(24);
+        attr->mutable_value_span()->set_end(24);
+      }
+      if (tag == "img") {
+        auto* attr = el->add_attributes();
+        attr->set_name("alt");
+        attr->set_value("An image");
+        attr->set_value_present(true);
+      }
+      stream->Write(event);
+    };
+    const auto text = [&](uint64_t ordinal, const std::string& value, bool last,
+                           lolv1::TextType type = lolv1::TEXT_TYPE_DATA) {
+      lolv1::ExtractResponse event;
+      auto* node = event.mutable_text();
+      node->set_rule_id("links");
+      node->set_match_ordinal(ordinal);
+      node->set_text(value);
+      node->set_last_in_node(last);
+      node->set_text_type(type);
+      stream->Write(event);
+    };
+    const auto end = [&](uint64_t ordinal, const std::string& name) {
+      lolv1::ExtractResponse event;
+      event.mutable_end_tag()->set_rule_id("links");
+      event.mutable_end_tag()->set_match_ordinal(ordinal);
+      event.mutable_end_tag()->set_name(name);
+      stream->Write(event);
+    };
+    element(1, 0, "a");
+    text(1, "Abo", false);
+    element(2, 1, "a");
+    text(2, "Nested", true);
+    // Delivery names the enclosing instance, rather than whichever match
+    // happened to arrive most recently on the same rule.
+    text(1, "ut &am", false);
+    text(1, "p; us", true);
+    end(2, "a");
+    end(1, "a");
+    element(3, 0, "title");
+    text(3, "A ti", false, lolv1::TEXT_TYPE_RCDATA);
+    element(4, 1, "img");
+    text(3, "tle &copy;", true, lolv1::TEXT_TYPE_RCDATA);
+    end(3, "title");
+    element(5, 0, "script");
+    text(5, "const x='&am", false, lolv1::TEXT_TYPE_SCRIPT_DATA);
+    text(5, "p;';", true, lolv1::TEXT_TYPE_SCRIPT_DATA);
+    end(5, "script");
+    // Document-rule copy must not create a second body reading.
+    lolv1::ExtractResponse duplicate;
+    duplicate.mutable_text()->set_rule_id("document");
+    duplicate.mutable_text()->set_text("About &amp; us");
+    duplicate.mutable_text()->set_also_reported_by_rule(true);
+    duplicate.mutable_text()->set_last_in_node(true);
+    stream->Write(duplicate);
+    lolv1::ExtractResponse event;
+    event.mutable_finished()->set_bytes_parsed(300);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+};
+
+void verify_lol_html_instance_identity_and_raw_nodes() {
+  IdentityLolHtmlService service;
+  ServerFixture server(&service);
+  auto options = lol_html_options();
+  options->set_raw_text_chunks(true);
+  const auto outcome = grparse::collect_lol_html_document(server.channel(), options, "<a/>");
+  require(outcome.success, "identity-aware lol-html parse succeeds: " + outcome.error);
+  require(outcome.warnings.empty(), "valid identity-aware events produce no warnings");
+  const docv1::TextItemBase* anchor = nullptr;
+  const docv1::TextItemBase* nested = nullptr;
+  bool script = false;
+  bool image = false;
+  int body_items = 0;
+  for (const auto& item : outcome.document.texts()) {
+    const auto& base = item.text().base();
+    if (base.content_layer() == docv1::CONTENT_LAYER_FURNITURE) {
+      require(base.label() == docv1::DOC_ITEM_LABEL_CODE && base.parent().ref() == "#/furniture",
+              "tag transcripts are code in furniture");
+      require(!base.text().contains("DISABLED=\"\""), "bare attributes gain no invented value");
+      continue;
+    }
+    ++body_items;
+    if (base.text() == "About & us") anchor = &base;
+    if (base.text() == "Nested") nested = &base;
+    script = script || base.text() == "const x='&amp;';";
+    image = image || base.text() == "An image";
+  }
+  require(body_items == 5 && anchor && nested && script && image,
+          "each match owns one visible item; raw script text stays verbatim and document copies drop");
+  require(anchor->hyperlink() == "/about" && anchor->spans_size() == 1 &&
+              anchor->spans(0).range().start() == 0 && anchor->spans(0).range().end() == 10,
+          "anchor link range covers visible coalesced text");
+  require(anchor->source_attributes_size() == 3 &&
+              anchor->source_attributes(0).name_raw() == "HREF" &&
+              anchor->source_attributes(1).has_name_span() &&
+              !anchor->source_attributes(1).has_value_span() &&
+              !anchor->source_attributes(1).value_present() &&
+              !anchor->source_attributes(1).has_value() &&
+              anchor->source_attributes(2).value_present() &&
+              anchor->source_attributes(2).has_value() &&
+              anchor->source_attributes(2).value().empty() &&
+              anchor->source_attributes(2).value_span().start() == 24,
+          "typed ordered attributes preserve bare vs explicit empty values and exact source spans");
+  require(outcome.document.source_meta().title() == "A title ©",
+          "title fragments retain their instance despite an unrelated element event");
+  const auto group_index = [](const std::string& ref) { return std::stoi(ref.substr(9)); };
+  const auto& nested_group = outcome.document.groups(group_index(nested->parent().ref()));
+  require(nested_group.parent().ref() == anchor->parent().ref(),
+          "nested match group is parented to the enclosing instance group");
+}
+
 void verify_lol_html_without_rules_never_dials() {
   const auto outcome =
       grparse::collect_lol_html_document(nullptr, std::nullopt, "<p>hi</p>");
@@ -1921,6 +2083,14 @@ class FakeCalamineService final : public calaminev1::CalamineService::Service {
     response->set_workbook_id("wb-1");
     response->set_detected_format(calaminev1::WORKBOOK_FORMAT_XLSX);
     calaminev1::Metadata* metadata = response->mutable_metadata();
+    auto* properties = metadata->mutable_properties();
+    properties->set_title("Quarterly totals");
+    properties->set_creator("Example author");
+    properties->set_created("2026-01-02T03:04:05Z");
+    properties->set_modified("source-specific date");
+    properties->set_revision("003");
+    properties->set_company("Example Ltd");
+    properties->set_description("Declared workbook metadata");
     calaminev1::Sheet* first = metadata->add_sheets();
     first->set_name("First");
     first->set_typ(calaminev1::SHEET_TYPE_WORKSHEET);
@@ -1941,9 +2111,29 @@ class FakeCalamineService final : public calaminev1::CalamineService::Service {
     if (request->workbook_id() != "wb-1") {
       return grpc::Status(grpc::StatusCode::NOT_FOUND, "unknown handle");
     }
+    if (!request->include_formulas()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "formulas must be requested");
+    }
     calaminev1::StreamWorksheetRangeResponse event;
     event.mutable_started()->set_sheet_name(
         request->sheet().sheet_index() == 0 ? "First" : "Second");
+    if (request->sheet().sheet_index() == 0) {
+      auto* declared = event.mutable_started()->add_tables();
+      declared->set_name("Scores");
+      declared->mutable_range()->mutable_start()->set_row(0);
+      declared->mutable_range()->mutable_start()->set_col(0);
+      declared->mutable_range()->mutable_end()->set_row(2);
+      declared->mutable_range()->mutable_end()->set_col(5);
+      declared->set_header_row_count(1);
+      for (const auto* name : {"Name", "Score", "Enabled", "When", "Date", "Error"}) {
+        declared->add_columns(name);
+      }
+      auto* format = event.mutable_started()->add_number_formats();
+      format->set_style_id(2);
+      format->set_format_id(2);
+      format->set_code("0.00");
+      format->set_kind(calaminev1::NUMBER_FORMAT_KIND_OTHER);
+    }
     if (request->sheet().sheet_index() == 1) {
       // B1:C1 is merged: the ISO date at B1 spans it, C1 is covered.
       calaminev1::Dimensions* area = event.mutable_started()->add_merged_regions();
@@ -1960,6 +2150,9 @@ class FakeCalamineService final : public calaminev1::CalamineService::Service {
       header->set_row_index(0);
       header->add_values()->set_string_value("Name");
       header->add_values()->set_string_value("Score");
+      auto* styled_empty = header->add_values();
+      styled_empty->mutable_empty();
+      styled_empty->set_style_id(2);
       writer->Write(event);
       // Row 1 holds nothing: the contract says so with one row_gap event
       // rather than a blank row, and the fold must not count it as data.
@@ -1973,7 +2166,10 @@ class FakeCalamineService final : public calaminev1::CalamineService::Service {
       calaminev1::WorksheetRow* data = batch->add_rows();
       data->set_row_index(2);
       data->add_values()->set_int_value(7);
-      data->add_values()->set_float_value(2.5);
+      auto* formula_cell = data->add_values();
+      formula_cell->set_float_value(2.5);
+      formula_cell->set_formula("5/2");
+      formula_cell->set_style_id(2);
       data->add_values()->set_bool_value(true);
       // 45943.5 is 2025-10-13 12:00:00 in the 1900 date system (the
       // contract's own example); 45000 is 2023-03-15 with no time of day.
@@ -2078,12 +2274,30 @@ void verify_calamine_folds_sheets() {
               document.named_ranges(0).kind() == "named",
           "defined names fold into named ranges");
 
+  require(document.source_meta().title() == "Quarterly totals"
+              && document.source_meta().authors(0) == "Example author"
+              && document.source_meta().has_created()
+              && document.source_meta().created_raw() == "2026-01-02T03:04:05Z"
+              && !document.source_meta().has_modified()
+              && document.source_meta().modified_raw() == "source-specific date"
+              && document.source_meta().revision() == "003"
+              && document.source_meta().company() == "Example Ltd",
+          "workbook metadata preserves typed facts and unparseable raw dates");
   const docv1::TableData& data = document.tables(0).data();
   require(document.tables(0).source(0).collector().collector() == "calamine",
           "the sheet table carries the calamine collector source");
+  require(data.declared_tables_size() == 1 && data.declared_tables(0).name() == "Scores"
+              && data.columns_size() == 6 && data.columns(1).name() == "Score"
+              && data.table_cells(0).column_header(),
+          "declared table headers and column names replace inference");
+  require(outcome.warnings.empty(), "declared headers produce no inference warning");
   require(data.num_rows() == 3 && data.num_cols() == 6,
           "the table sizes from the populated cells, gaps included");
-  require(data.table_cells_size() == 8, "empty cells fold to nothing");
+  require(data.table_cells_size() == 9, "only unstyled empty cells fold to nothing");
+  require(data.table_cells(2).text().empty()
+              && data.table_cells(2).value().style_id() == 2
+              && data.table_cells(2).value().number_format() == "0.00",
+          "styled empty cells retain their source format");
 
   const docv1::TableCell* cells[6] = {nullptr};
   for (const auto& cell : data.table_cells()) {
@@ -2096,8 +2310,12 @@ void verify_calamine_folds_sheets() {
               cells[0]->value().number() == 7,
           "an int cell folds as a number");
   require(cells[1] != nullptr && cells[1]->text() == "2.5" &&
-              cells[1]->value().number() == 2.5,
+              cells[1]->value().number() == 2.5 && cells[1]->value().formula_source() == "5/2",
           "a float cell folds as a number with its shortest spelling");
+  require(cells[1]->value().number_format() == "0.00"
+              && cells[1]->value().style_id() == 2
+              && cells[1]->value().number_format_id() == 2,
+          "calamine-only cells retain format code and source style identity");
   require(cells[2] != nullptr && cells[2]->text() == "TRUE" &&
               cells[2]->value().boolean(),
           "a bool cell folds as a boolean");
@@ -2287,11 +2505,17 @@ void verify_calamine_fanout_merges_without_a_second_body() {
               result.document.named_ranges_size() == 0,
           "the fan-out leg's sheet groups, tables and named ranges drop with its "
           "body reading");
-  require(result.document.source_meta().title() == "Office Title" &&
+  require(result.document.source_meta().title() == "Quarterly totals" &&
               meta_source_of(result.document.source_meta(), "title") != nullptr &&
               meta_source_of(result.document.source_meta(), "title")->source().collector() ==
-                  "libreoffice",
-          "the primary's metadata stands, attributed to libreoffice");
+                  "calamine",
+          "source workbook metadata follows the existing spreadsheet claim rank");
+  bool kept_office_title = false;
+  for (const auto& claim : result.document.claims()) {
+    if (claim.source().collector() == "libreoffice"
+        && claim.source_meta().title() == "Office Title") kept_office_title = true;
+  }
+  require(kept_office_title, "the competing office title remains a typed claim");
 }
 
 // A workbook whose libreoffice leg fails still parses: the calamine leg is
@@ -2960,6 +3184,7 @@ int main() {
       verify_lol_html_captures_page_identity,
       verify_lol_html_folds_full_api_surface,
       verify_lol_html_reassembles_raw_text_chunks,
+      verify_lol_html_instance_identity_and_raw_nodes,
       verify_fastwarc_folds_records_and_warnings,
       verify_fastwarc_captures_web_provenance,
       verify_fastwarc_response_supersedes_the_request_record,

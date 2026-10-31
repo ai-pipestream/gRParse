@@ -134,7 +134,7 @@ void verify_values_and_text_are_calamine() {
   require_equal(reference->text(), std::string("1-31-16"), "reference text");
   require(!reference->has_value(), "a text cell carries no date value");
   const docv1::TableCell* amount = at(table.data(), 2, 2);
-  require_equal(amount->text(), std::string("3495"), "amount text is calamine's");
+  require_equal(amount->text(), std::string("3495.00"), "equal numeric value keeps the source display");
   require_equal(amount->value().number(), 3495.0, "amount value");
   require_equal(amount->value().number_format(), std::string("0.00"),
                 "libreoffice's number format stays");
@@ -235,8 +235,8 @@ void verify_coordinator_adopts_calamine_cells() {
   const grparse::CoordinatorResult result = grparse::run_collectors(std::move(plan), {});
   require_equal(result.succeeded, 2, "both legs merged");
   require_equal(result.document.tables_size(), 1, "one table, not a second copy");
-  require_equal(at(result.document.tables(0).data(), 2, 2)->text(), std::string("3495"),
-                "the merged table holds calamine's cells");
+  require_equal(at(result.document.tables(0).data(), 2, 2)->text(), std::string("3495.00"),
+                "the merged table retains the source numeric display");
 }
 
 void verify_calamine_alone_is_the_body() {
@@ -259,11 +259,73 @@ void verify_calamine_alone_is_the_body() {
   require_equal(result.document.tables_size(), 1, "its table is the body");
 }
 
+void verify_formatted_values_and_formula_caches() {
+  Workbook libre("libreoffice");
+  auto* left = libre.sheet("S");
+  number(left, 0, 0, 0.125, "12.5%")->mutable_value()->set_number_format("0.0%");
+  number(left, 0, 1, 1234.5, "$1,234.50")->mutable_value()->set_number_format("$#,##0.00");
+  number(left, 0, 2, 9, "9.00")->mutable_value()->set_number_format("0.00");
+  text(left, 1, 0, "3")->mutable_value()->set_formula("SUM(A1:A2)");
+  Workbook calamine("calamine");
+  auto* right = calamine.sheet("S");
+  number(right, 0, 0, 0.125, "0.125");
+  number(right, 0, 1, 1234.5, "1234.5");
+  number(right, 0, 2, 10, "10");
+  auto* formula = number(right, 1, 0, 3, "3");
+  formula->mutable_value()->set_formula_source("SUM(A1:A2)");
+  auto* only = number(right, 1, 1, 42, "42");
+  only->mutable_value()->set_formula_source("6*7");
+  std::vector<std::string> warnings;
+  grparse::adopt_calamine_cells(calamine.document(), &libre.document(), &warnings);
+  const auto& result = libre.document().tables(0).data();
+  require_equal(at(result, 0, 0)->text(), std::string("12.5%"), "percent display retained");
+  require_equal(at(result, 0, 1)->text(), std::string("$1,234.50"), "currency display retained");
+  require_equal(at(result, 0, 2)->text(), std::string("10"), "different value uses calamine text");
+  require_equal(at(result, 1, 0)->value().number(), 3.0, "formula cached value retained");
+  require_equal(at(result, 1, 0)->value().formula_source(), std::string("SUM(A1:A2)"),
+                "formula and cache coexist");
+  require_equal(at(result, 1, 1)->value().formula_source(), std::string("6*7"),
+                "calamine-only formula retained");
+}
+
+void verify_declared_headers_survive_adoption() {
+  Workbook libre("libreoffice");
+  auto* left = libre.sheet("S");
+  text(left, 0, 0, "A"); text(left, 0, 1, "B");
+  number(left, 1, 0, 1, "1"); number(left, 1, 1, 2, "2");
+  Workbook calamine("calamine");
+  auto* right = calamine.sheet("S");
+  *right = *left;
+  auto* table = right->add_declared_tables();
+  table->set_name("Declared");
+  table->mutable_range()->mutable_start()->set_row(0);
+  table->mutable_range()->mutable_start()->set_col(0);
+  table->mutable_range()->mutable_end()->set_row(1);
+  table->mutable_range()->mutable_end()->set_col(1);
+  table->set_header_row_count(1);
+  table->add_columns("Alpha"); table->add_columns("Beta");
+  std::vector<std::string> warnings;
+  grparse::adopt_calamine_cells(calamine.document(), &libre.document(), &warnings);
+  const auto& result = libre.document().tables(0).data();
+  require(result.declared_tables_size() == 1 && result.columns(1).name() == "Beta",
+          "table declarations and named columns survive adoption");
+  require(at(result, 0, 0)->column_header() && !at(result, 1, 0)->column_header(),
+          "declared range controls headers");
+  // Explicitly headerless declarations must suppress inference and the
+  // primary's old header flags, including on small all-text tables.
+  right->mutable_declared_tables(0)->set_header_row_count(0);
+  grparse::adopt_calamine_cells(calamine.document(), &libre.document(), &warnings);
+  require(!at(libre.document().tables(0).data(), 0, 0)->column_header(),
+          "explicit zero headers is not overwritten by inference");
+}
+
 }  // namespace
 
 int main() {
   return grparse_test::run_test_main("workbook_cells_test", "ok", {
       verify_values_and_text_are_calamine,
+      verify_formatted_values_and_formula_caches,
+      verify_declared_headers_survive_adoption,
       verify_libre_merges_fill_in_for_calamine,
       verify_calamine_merges_win,
       verify_apply_merged_areas,

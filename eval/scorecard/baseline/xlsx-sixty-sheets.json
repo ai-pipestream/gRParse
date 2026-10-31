@@ -1,27 +1,34 @@
 {
  "agreement": {
-  "agreed": 2,
+  "agreed": 4,
   "claimed_fields": {
+   "calamine": 6,
    "grparse": 4,
    "libreoffice": 6
   },
   "collectors": [
+   "calamine",
    "grparse",
    "libreoffice"
   ],
   "conflicts": [],
-  "shared": 2,
+  "shared": 4,
   "winners": {
    "origin.binary_hash": "grparse",
    "origin.filename": "grparse",
    "origin.mimetype": "grparse",
    "origin.mimetype_evidence": "grparse",
-   "source_meta.created": "libreoffice",
+   "source_meta.application_version": "calamine",
+   "source_meta.authoring_tool": "calamine",
+   "source_meta.created": "calamine",
+   "source_meta.created_raw": "calamine",
    "source_meta.generator": "libreoffice",
-   "source_meta.modified": "libreoffice"
+   "source_meta.modified": "calamine",
+   "source_meta.modified_raw": "calamine"
   }
  },
  "collectors": [
+  "calamine",
   "grparse",
   "libreoffice"
  ],

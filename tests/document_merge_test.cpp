@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <print>
@@ -570,6 +571,56 @@ void verify_retain_claims_only_keeps_the_document_account() {
           "the document-level account survives whole");
 }
 
+// One page of a generative collector's decode, `steps` steps long.
+docv1::GenerationTrace trace_of(const std::string& collector, int page, int steps) {
+  docv1::GenerationTrace trace;
+  trace.set_page_no(page);
+  trace.set_first_step(7);
+  trace.mutable_source()->set_collector(collector);
+  for (int step = 0; step < steps; ++step) {
+    auto* s = trace.add_steps();
+    s->set_token(static_cast<std::uint32_t>(100 + step));
+    s->set_piece("p" + std::to_string(step));
+    s->set_logprob(-0.25f * static_cast<float>(step));
+    s->set_model_token(static_cast<std::uint32_t>(step == 2 ? 999 : 100 + step));
+    s->set_model_logprob(-0.1f);
+    s->set_intervention(step == 2 ? docv1::GENERATION_INTERVENTION_REPEAT_BAN
+                                  : docv1::GENERATION_INTERVENTION_NONE);
+    trace.mutable_text()->append(s->piece());
+  }
+  return trace;
+}
+
+// A generative collector's trace arrives whole: every step, in order, under
+// its own source, beside a trace another collector already contributed for
+// the same page; and a fan-out leg reduced to its claims still keeps it.
+void verify_generation_traces_survive_the_merge() {
+  constexpr int kSteps = 41;
+  docv1::Document target = base_document();
+  *target.add_generation_traces() = trace_of("vlm-convert", 1, 3);
+  docv1::Document source = collector_document();
+  const docv1::GenerationTrace sent = trace_of("unlimited-ocr", 1, kSteps);
+  *source.add_generation_traces() = sent;
+  docv1::CollectorSource claimant;
+  claimant.set_collector("unlimited-ocr");
+  grparse::merge_documents(std::move(source), &target, claimant);
+
+  require(target.generation_traces_size() == 2, "both collectors' traces are kept");
+  require(target.generation_traces(0).source().collector() == "vlm-convert" &&
+              target.generation_traces(0).steps_size() == 3,
+          "the trace already merged is untouched");
+  const auto& arrived = target.generation_traces(1);
+  require(arrived.steps_size() == kSteps, "every step of the trace arrives");
+  require(google::protobuf::util::MessageDifferencer::Equals(arrived, sent),
+          "the trace arrives exactly as the collector sent it");
+
+  docv1::Document leg = collector_document();
+  *leg.add_generation_traces() = sent;
+  grparse::retain_claims_only(&leg);
+  require(leg.generation_traces_size() == 1 && leg.generation_traces(0).steps_size() == kSteps,
+          "a leg reduced to its claims keeps its trace");
+}
+
 }  // namespace
 
 int main() {
@@ -586,5 +637,6 @@ int main() {
       verify_protomolt_standing,
       verify_unnamed_merge_records_nothing,
       verify_retain_claims_only_keeps_the_document_account,
+      verify_generation_traces_survive_the_merge,
   });
 }

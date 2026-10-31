@@ -1,5 +1,6 @@
 #include "grparse/document_collectors.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <limits>
@@ -99,99 +100,59 @@ void append_utf8_codepoint(uint32_t cp, std::string* out) {
   }
 }
 
-// Decodes HTML character references when `raw_text_chunks` streams un-decoded
-// lexer fragments for DATA and RCDATA text nodes.
+#include "html_entities.h"
+
+// Decode after reassembly, matching the producer's HTML text-context decode.
+// Longest-prefix matching also handles legacy names without a semicolon.
 std::string decode_html_entities(std::string_view input) {
+  static const std::map<std::string_view, std::string_view> named(
+      std::begin(kHtmlEntities), std::end(kHtmlEntities));
+  static constexpr uint32_t kC1[] = {
+      0x20AC, 0x81, 0x201A, 0x192, 0x201E, 0x2026, 0x2020, 0x2021,
+      0x2C6, 0x2030, 0x160, 0x2039, 0x152, 0x8D, 0x17D, 0x8F,
+      0x90, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+      0x2DC, 0x2122, 0x161, 0x203A, 0x153, 0x9D, 0x17E, 0x178};
   std::string out;
   out.reserve(input.size());
-  for (size_t i = 0; i < input.size(); ++i) {
-    if (input[i] != '&') {
-      out.push_back(input[i]);
-      continue;
-    }
-    const size_t semi = input.find(';', i + 1);
-    if (semi == std::string_view::npos || semi - i > 32) {
-      out.push_back(input[i]);
-      continue;
-    }
-    const std::string_view entity = input.substr(i + 1, semi - i - 1);
-    if (entity.size() >= 2 && entity[0] == '#') {
+  for (size_t i = 0; i < input.size();) {
+    if (input[i] != '&') { out.push_back(input[i++]); continue; }
+    if (i + 1 < input.size() && input[i + 1] == '#') {
+      size_t at = i + 2;
+      const bool hex = at < input.size() && (input[at] == 'x' || input[at] == 'X');
+      if (hex) ++at;
+      const size_t digits = at;
       uint32_t cp = 0;
-      bool valid = true;
-      if (entity[1] == 'x' || entity[1] == 'X') {
-        if (entity.size() == 2) valid = false;
-        for (size_t k = 2; k < entity.size(); ++k) {
-          const auto c = static_cast<unsigned char>(entity[k]);
-          if (std::isxdigit(c) == 0) {
-            valid = false;
-            break;
-          }
-          const uint32_t digit =
-              std::isdigit(c) != 0 ? static_cast<uint32_t>(c - '0')
-                                   : static_cast<uint32_t>(std::tolower(c) - 'a' + 10);
-          cp = cp <= 0x10FFFFU ? (cp * 16U + digit) : 0x110000U;
-        }
-      } else {
-        for (size_t k = 1; k < entity.size(); ++k) {
-          const auto c = static_cast<unsigned char>(entity[k]);
-          if (std::isdigit(c) == 0) {
-            valid = false;
-            break;
-          }
-          cp = cp <= 0x10FFFFU ? (cp * 10U + static_cast<uint32_t>(c - '0')) : 0x110000U;
-        }
+      while (at < input.size()) {
+        const unsigned char ch = static_cast<unsigned char>(input[at]);
+        const int value = ch >= '0' && ch <= '9' ? ch - '0'
+                          : hex && ch >= 'a' && ch <= 'f' ? ch - 'a' + 10
+                          : hex && ch >= 'A' && ch <= 'F' ? ch - 'A' + 10 : -1;
+        if (value < 0) break;
+        cp = cp <= 0x10FFFFU ? cp * (hex ? 16U : 10U) + static_cast<uint32_t>(value)
+                            : 0x110000U;
+        ++at;
       }
-      if (valid) {
+      if (at != digits) {
+        if (at < input.size() && input[at] == ';') ++at;
+        if (cp >= 0x80 && cp <= 0x9F) cp = kC1[cp - 0x80];
         append_utf8_codepoint(cp, &out);
-        i = semi;
+        i = at;
         continue;
       }
-    } else if (entity == "amp") {
-      out.push_back('&');
-      i = semi;
-      continue;
-    } else if (entity == "lt") {
-      out.push_back('<');
-      i = semi;
-      continue;
-    } else if (entity == "gt") {
-      out.push_back('>');
-      i = semi;
-      continue;
-    } else if (entity == "quot") {
-      out.push_back('"');
-      i = semi;
-      continue;
-    } else if (entity == "apos" || entity == "#39") {
-      out.push_back('\'');
-      i = semi;
-      continue;
-    } else if (entity == "nbsp") {
-      out.append("\xC2\xA0");
-      i = semi;
-      continue;
-    } else if (entity == "copy") {
-      out.append("\xC2\xA9");
-      i = semi;
-      continue;
-    } else if (entity == "reg") {
-      out.append("\xC2\xAE");
-      i = semi;
-      continue;
-    } else if (entity == "ndash") {
-      out.append("\xE2\x80\x93");
-      i = semi;
-      continue;
-    } else if (entity == "mdash") {
-      out.append("\xE2\x80\x94");
-      i = semi;
-      continue;
-    } else if (entity == "hellip") {
-      out.append("\xE2\x80\xA6");
-      i = semi;
-      continue;
+    } else {
+      const size_t available = std::min<size_t>(32, input.size() - i - 1);
+      bool found = false;
+      for (size_t length = available; length != 0; --length) {
+        const auto at = named.find(input.substr(i + 1, length));
+        if (at == named.end()) continue;
+        out.append(at->second);
+        i += length + 1;
+        found = true;
+        break;
+      }
+      if (found) continue;
     }
-    out.push_back(input[i]);
+    out.push_back(input[i++]);
   }
   return out;
 }
@@ -208,14 +169,15 @@ void add_byte_provenance(docv1::TextItemBase* base, const lolv1::SourceSpan& spa
 }
 
 // The one collector wire with no document event: the match stream IS the
-// product, so the fold happens here. One group per rule, its matches and
-// text as source-tagged text items in arrival order. Instance nesting is
-// not reconstructed: matches are a transcript, not a tree; a caller who
-// wants document structure runs the markup collector instead.
+// product, so the fold happens here. Identified matches each own a group
+// and one visible text item; nested matches retain their parent group. Tag
+// transcripts stay in furniture. Ordinal zero retains the legacy transcript
+// path for servers predating match identity and for document-scope events.
 class LolHtmlFold {
  public:
-  LolHtmlFold(docv1::Document& document, const lolv1::ExtractOptions& options)
-      : document_(document), raw_text_chunks_(options.raw_text_chunks()) {
+  LolHtmlFold(docv1::Document& document, const lolv1::ExtractOptions& options,
+              std::vector<std::string>& warnings)
+      : document_(document), raw_text_chunks_(options.raw_text_chunks()), warnings_(warnings) {
     document_.mutable_body()->set_self_ref("#/body");
     document_.mutable_body()->set_content_layer(docv1::CONTENT_LAYER_BODY);
     document_.mutable_furniture()->set_self_ref("#/furniture");
@@ -237,6 +199,10 @@ class LolHtmlFold {
   }
 
   void element(const lolv1::ElementMatched& matched) {
+    if (matched.match_ordinal() != 0) {
+      instance_element(matched);
+      return;
+    }
     flush_raw_text(matched.rule_id());
     const bool foreign = is_foreign_namespace(matched.namespace_());
     const std::string lower_tag = !matched.tag_name().empty()
@@ -306,13 +272,19 @@ class LolHtmlFold {
   // same rule. When `raw_text_chunks` is enabled on the request, raw lexer
   // fragments accumulate per rule until `last_in_node` closes the node.
   void text_node(const lolv1::TextNode& node) {
+    if (node.match_ordinal() != 0) {
+      instance_text(node);
+      return;
+    }
+    // A document rule can report the same bytes as a selected element rule.
+    if (node.also_reported_by_rule()) return;
     if (raw_text_chunks_) {
       RawTextBuffer& buf = raw_text_by_rule_[node.rule_id()];
       if (!buf.active) {
         buf.active = true;
         buf.text_type = node.text_type();
       }
-      buf.raw += node.text();
+      append_bounded(node.text(), &buf.raw);
       if (node.has_span()) {
         if (!buf.has_span) {
           buf.span = node.span();
@@ -333,6 +305,14 @@ class LolHtmlFold {
   }
 
   void comment(const lolv1::CommentFound& found) {
+    if (found.match_ordinal() != 0) {
+      const auto it = instances_.find({found.rule_id(), found.match_ordinal()});
+      if (it != instances_.end()) flush_instance_text(it->second);
+      auto* base = add_furniture("<!--" + found.text() + "-->");
+      if (found.has_span()) add_byte_provenance(base, found.span(), 0,
+                                               utf8_codepoint_count(base->text()));
+      return;
+    }
     flush_raw_text(found.rule_id());
     std::string rendered = "<!--" + found.text() + "-->";
     const uint64_t points = utf8_codepoint_count(rendered);
@@ -365,6 +345,21 @@ class LolHtmlFold {
   }
 
   void end_tag(const lolv1::EndTagFound& found) {
+    if (found.match_ordinal() != 0) {
+      const auto it = instances_.find({found.rule_id(), found.match_ordinal()});
+      if (it != instances_.end()) close_instance(it->second);
+      auto& stack = open_by_rule_[found.rule_id()];
+      const auto at = std::find(stack.begin(), stack.end(), found.match_ordinal());
+      if (at != stack.end()) {
+        for (auto child = at; child != stack.end(); ++child)
+          close_instance(instances_.at({found.rule_id(), *child}));
+        stack.erase(at, stack.end());
+      }
+      auto* base = add_furniture("</" + (!found.name_raw().empty() ? found.name_raw() : found.name()) + ">");
+      if (found.has_span()) add_byte_provenance(base, found.span(), 0,
+                                               utf8_codepoint_count(base->text()));
+      return;
+    }
     flush_raw_text(found.rule_id());
     lolv1::Namespace ns = lolv1::NAMESPACE_UNSPECIFIED;
     if (const auto active = element_by_rule_.find(found.rule_id());
@@ -390,12 +385,239 @@ class LolHtmlFold {
   }
 
   void finish() {
-    for (auto& [rule_id, _] : raw_text_by_rule_) {
-      flush_raw_text(rule_id);
-    }
+    while (!raw_text_by_rule_.empty()) flush_raw_text(raw_text_by_rule_.begin()->first);
+    for (auto& [_, instance] : instances_) close_instance(instance);
   }
 
  private:
+  using InstanceKey = std::pair<std::string, uint64_t>;
+  static constexpr size_t kBufferedTextBytes = 16U * 1024U * 1024U;
+  struct Instance {
+    int group = -1;
+    int item = -1;
+    std::string tag;
+    std::string fallback;
+    std::string href;
+    std::string title;
+    std::string lang;
+    bool json_ld = false;
+    bool closed = false;
+    std::string raw;
+    lolv1::TextType type = lolv1::TEXT_TYPE_UNSPECIFIED;
+    std::optional<lolv1::SourceSpan> span;
+  };
+
+  docv1::TextItemBase* item_base(const Instance& instance) {
+    return document_.mutable_texts(instance.item)->mutable_text()->mutable_base();
+  }
+
+  void note_text_limit() {
+    if (!text_limit_warned_) {
+      warnings_.push_back("lol-html text truncated at the collector's 16 MiB text budget");
+      text_limit_warned_ = true;
+    }
+  }
+
+  void append_bounded(std::string_view text, std::string* output) {
+    size_t take = std::min(text.size(), kBufferedTextBytes - buffered_text_bytes_);
+    // Keep a truncated UTF-8 item well formed; a split entity remains literal.
+    while (take < text.size() && take != 0 &&
+           (static_cast<unsigned char>(text[take]) & 0xC0U) == 0x80U) --take;
+    output->append(text.data(), take);
+    buffered_text_bytes_ += take;
+    if (take != text.size()) note_text_limit();
+  }
+
+  docv1::TextItemBase* add_furniture(std::string text) {
+    auto* base = document_.add_texts()->mutable_text()->mutable_base();
+    base->set_self_ref("#/texts/" + std::to_string(document_.texts_size() - 1));
+    base->mutable_parent()->set_ref("#/furniture");
+    base->set_content_layer(docv1::CONTENT_LAYER_FURNITURE);
+    base->set_label(docv1::DOC_ITEM_LABEL_CODE);
+    base->set_text(text);
+    base->set_orig(std::move(text));
+    base->add_source()->mutable_collector()->set_collector("lol-html");
+    document_.mutable_furniture()->add_children()->set_ref(base->self_ref());
+    return base;
+  }
+
+  static void attributes(const lolv1::ElementMatched& matched, docv1::TextItemBase* base) {
+    for (const auto& attribute : matched.attributes()) {
+      auto* out = base->add_source_attributes();
+      out->set_name(attribute.name());
+      out->set_name_raw(attribute.name_raw());
+      if (attribute.has_value_present()) out->set_value_present(attribute.value_present());
+      // A name-only source location identifies a bare attribute even with an
+      // older producer; unavailable locations do not prove a missing value.
+      const bool bare = attribute.has_value_present() ? !attribute.value_present()
+                          : attribute.has_name_span() && !attribute.has_value_span();
+      if (!bare) out->set_value(attribute.value());
+      if (bare && !out->has_value_present()) out->set_value_present(false);
+      if (attribute.has_name_span()) {
+        out->mutable_name_span()->set_start(attribute.name_span().start());
+        out->mutable_name_span()->set_end(attribute.name_span().end());
+      }
+      if (attribute.has_value_span()) {
+        out->mutable_value_span()->set_start(attribute.value_span().start());
+        out->mutable_value_span()->set_end(attribute.value_span().end());
+      }
+    }
+  }
+
+  void instance_element(const lolv1::ElementMatched& matched) {
+    const InstanceKey key{matched.rule_id(), matched.match_ordinal()};
+    if (instances_.contains(key)) return;
+    auto& stack = open_by_rule_[matched.rule_id()];
+    // EndTag capture is optional. The count closes prior siblings even when
+    // the server did not emit their end tags.
+    while (stack.size() > matched.open_matches()) {
+      close_instance(instances_.at({matched.rule_id(), stack.back()}));
+      stack.pop_back();
+    }
+    const int parent = stack.empty() ? group_ref(matched.rule_id())
+                                     : instances_.at({matched.rule_id(), stack.back()}).group;
+    const int group_index = document_.groups_size();
+    auto* group = document_.add_groups();
+    group->set_self_ref("#/groups/" + std::to_string(group_index));
+    group->mutable_parent()->set_ref("#/groups/" + std::to_string(parent));
+    group->set_content_layer(docv1::CONTENT_LAYER_BODY);
+    group->set_label(docv1::GROUP_LABEL_SECTION);
+    group->set_name(matched.rule_id() + ":" + std::to_string(matched.match_ordinal()));
+    document_.mutable_groups(parent)->add_children()->set_ref(group->self_ref());
+    const int item = document_.texts_size();
+    auto* base = document_.add_texts()->mutable_text()->mutable_base();
+    base->set_self_ref("#/texts/" + std::to_string(item));
+    base->mutable_parent()->set_ref(group->self_ref());
+    base->set_content_layer(docv1::CONTENT_LAYER_BODY);
+    base->set_label(docv1::DOC_ITEM_LABEL_TEXT);
+    base->add_source()->mutable_collector()->set_collector("lol-html");
+    group->add_children()->set_ref(base->self_ref());
+    const std::string tag = !matched.tag_name().empty() ? lowercase_ascii(matched.tag_name())
+                                                      : lowercase_ascii(matched.tag_name_raw());
+    const std::string display = is_foreign_namespace(matched.namespace_()) && !matched.tag_name_raw().empty()
+                                  ? matched.tag_name_raw() : tag;
+    stamp_element_origin(base, display, matched.namespace_());
+    attributes(matched, base);
+    capture_page_identity(tag, matched);
+    Instance instance;
+    instance.group = group_index;
+    instance.item = item;
+    instance.tag = tag;
+    if (tag == "a" || tag == "area" || tag == "link")
+      instance.href = attribute_value(matched, "href").value_or("");
+    instance.title = attribute_value(matched, "title").value_or("");
+    instance.lang = attribute_value(matched, "lang").value_or("");
+    for (const auto name : {"alt", "title", "aria-label"}) {
+      if (const auto value = attribute_value(matched, name); value && !value->empty()) {
+        instance.fallback = *value;
+        break;
+      }
+    }
+    instance.json_ld = tag == "script" &&
+        (is_json_ld_mime(attribute_value(matched, "type").value_or("")) ||
+         json_ld_rules_.contains(matched.rule_id()));
+    instances_.emplace(key, std::move(instance));
+    std::vector<Link> links;
+    std::vector<AttrProv> provs;
+    uint64_t points = 0;
+    std::string orig;
+    std::string rendered = pseudo_tag(display, matched, &orig, &links, &provs, &points);
+    auto* transcript = add_furniture(std::move(rendered));
+    transcript->set_orig(std::move(orig));
+    stamp_element_origin(transcript, display, matched.namespace_());
+    attributes(matched, transcript);
+    if (matched.has_span()) add_byte_provenance(transcript, matched.span(), 0, points);
+    for (const auto& prov : provs)
+      add_byte_provenance(transcript, prov.span, prov.cp_start, prov.cp_end);
+    const bool void_element = matched.namespace_() == lolv1::NAMESPACE_HTML && is_void_html_element(tag);
+    if (void_element || !matched.can_have_content()) close_instance(instances_.at(key));
+    else stack.push_back(matched.match_ordinal());
+  }
+
+  void instance_text(const lolv1::TextNode& node) {
+    const auto at = instances_.find({node.rule_id(), node.match_ordinal()});
+    if (at == instances_.end()) {
+      warnings_.push_back("lol-html text named an unknown match ordinal");
+      return;
+    }
+    auto& instance = at->second;
+    if (instance.closed) {
+      warnings_.push_back("lol-html text arrived after its match closed");
+      return;
+    }
+    if (raw_text_chunks_) {
+      instance.type = node.text_type();
+      append_bounded(node.text(), &instance.raw);
+      if (node.has_span()) {
+        if (!instance.span) instance.span = node.span();
+        else instance.span->set_end(node.span().end());
+      }
+      if (node.last_in_node()) flush_instance_text(instance);
+    } else {
+      append_instance_node(instance, node.text(), node.text(),
+                           node.has_span() ? std::optional(node.span()) : std::nullopt);
+    }
+  }
+
+  void append_instance_node(Instance& instance, std::string_view text, std::string_view orig,
+                             const std::optional<lolv1::SourceSpan>& span) {
+    auto* base = item_base(instance);
+    const uint64_t start = utf8_codepoint_count(base->text());
+    std::string appended;
+    append_bounded(text, &appended);
+    base->mutable_text()->append(appended);
+    const size_t orig_room = kBufferedTextBytes - base->orig().size();
+    size_t orig_take = std::min(orig_room, orig.size());
+    while (orig_take < orig.size() && orig_take != 0 &&
+           (static_cast<unsigned char>(orig[orig_take]) & 0xC0U) == 0x80U) --orig_take;
+    base->mutable_orig()->append(orig.data(), orig_take);
+    if (orig_take != orig.size()) note_text_limit();
+    if (span) add_byte_provenance(base, *span, start, start + utf8_codepoint_count(appended));
+  }
+
+  void flush_instance_text(Instance& instance) {
+    if (instance.raw.empty()) return;
+    std::string raw = std::move(instance.raw);
+    instance.raw.clear();
+    buffered_text_bytes_ -= raw.size();
+    const std::string decoded = instance.type == lolv1::TEXT_TYPE_DATA || instance.type == lolv1::TEXT_TYPE_RCDATA
+                                    ? decode_html_entities(raw) : raw;
+    append_instance_node(instance, decoded, raw, instance.span);
+    instance.span.reset();
+  }
+
+  void close_instance(Instance& instance) {
+    if (instance.closed) return;
+    flush_instance_text(instance);
+    auto* base = item_base(instance);
+    if (base->text().empty() && !instance.fallback.empty()) {
+      base->set_text(instance.fallback);
+      base->set_orig(instance.fallback);
+    }
+    if (!instance.href.empty()) {
+      base->set_hyperlink(instance.href);
+      auto* span = base->add_spans();
+      span->mutable_range()->set_start(0);
+      span->mutable_range()->set_end(static_cast<int32_t>(utf8_codepoint_count(base->text())));
+      span->set_hyperlink(instance.href);
+      if (!instance.title.empty()) span->set_link_title(instance.title);
+      if (!instance.lang.empty()) span->set_language(instance.lang);
+    }
+    if (instance.tag == "title" && !base->text().empty() && !document_.source_meta().has_title()) {
+      document_.set_name(base->text());
+      document_.mutable_source_meta()->set_title(base->text());
+      auto* meta = document_.add_meta_tags();
+      meta->set_name("title");
+      meta->set_content(base->text());
+    }
+    if (instance.json_ld && !trim_ascii(base->text()).empty()) {
+      auto* data = document_.add_structured_data();
+      data->set_kind("json-ld");
+      data->set_json(std::string(trim_ascii(base->text())));
+    }
+    instance.closed = true;
+  }
+
   // One hyperlink run: the code-point range it occupies in the item's text,
   // and the href itself.
   using Link = std::pair<std::pair<uint64_t, uint64_t>, std::string>;
@@ -437,6 +659,7 @@ class LolHtmlFold {
     if (found == raw_text_by_rule_.end() || !found->second.active) return;
     RawTextBuffer buf = std::move(found->second);
     raw_text_by_rule_.erase(found);
+    buffered_text_bytes_ -= buf.raw.size();
     if (buf.raw.empty()) return;
     std::string decoded =
         (buf.text_type == lolv1::TEXT_TYPE_DATA || buf.text_type == lolv1::TEXT_TYPE_RCDATA)
@@ -557,6 +780,9 @@ class LolHtmlFold {
             .cp_end = name_end,
         });
       }
+      const bool bare = attribute.has_value_present() ? !attribute.value_present()
+                          : attribute.has_name_span() && !attribute.has_value_span();
+      if (bare) continue;
       text += "=\"";
       orig += "=\"";
       points += 2;
@@ -699,8 +925,13 @@ class LolHtmlFold {
     }
   }
 
+  std::map<InstanceKey, Instance> instances_;
+  std::map<std::string, std::vector<uint64_t>> open_by_rule_;
+  size_t buffered_text_bytes_ = 0;
+  bool text_limit_warned_ = false;
   docv1::Document& document_;
   bool raw_text_chunks_ = false;
+  std::vector<std::string>& warnings_;
   std::map<std::string, int> groups_by_rule_;
   std::map<std::string, ActiveElement> element_by_rule_;
   std::map<std::string, RawTextBuffer> raw_text_by_rule_;
@@ -764,7 +995,7 @@ CollectorOutcome collect_lol_html_document(const std::shared_ptr<grpc::Channel>&
         frame.set_chunk(bytes.data() + offset, length);
       });
 
-  LolHtmlFold fold(outcome.document, *options);
+  LolHtmlFold fold(outcome.document, *options, outcome.warnings);
   bool finished_seen = false;
   bool error_seen = false;
   lolv1::ExtractResponse event;
