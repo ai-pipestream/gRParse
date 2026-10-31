@@ -23,6 +23,10 @@ CollectorOutcome collect_xml_document(const std::shared_ptr<grpc::Channel>& chan
 
   xmlv1::ParseXmlRequest request;
   request.mutable_options()->set_emit_document(true);
+  // Both enrich the server's Document projection; leaving them off drops
+  // links and formatting, citations, licences, dates and funding metadata.
+  request.mutable_options()->set_emit_inline_spans(true);
+  request.mutable_options()->set_emit_source_metadata(true);
   ConcurrentUpload upload(
       context, *stream, request, bytes, /*always_send_chunk=*/false,
       [&bytes](xmlv1::ParseXmlRequest& frame, size_t offset, size_t length, bool /*last*/) {

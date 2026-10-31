@@ -920,6 +920,18 @@
    "reason": "grpc-pdf-inspector eda6d6b builds a table from a printed pipe block with no detected grid (diffusion paper Figure 1 and 2 panels are tables, no text item carries pipe syntax); 6204d3d dropped grPOIc, so agreement no longer names poi; 309a0bc splits inline list items at their markers; with libreoffice as the only office collector, level-0 pptx bullets are list items, which the truth file agrees with; gatsby loses an empty text item; blank scanned pages render no markdown; png-report-page gains a truth file and is recorded on CUDA with OCR recognition batched 16 (header cells read colo/col2, see the batch note in the PR); latency budgets are kept from their earlier recordings because krick was at load 30 to 45 during this one",
    "service": "gRParse grparse-0.3.0-cuda",
    "timestamp": "2026-10-26T20:05:41+00:00"
+  },
+  {
+   "documents": [
+    "xlsx-sample3",
+    "xlsx-formula-issue",
+    "xlsx-sixty-sheets",
+    "xlsx-charts"
+   ],
+   "partial": true,
+   "reason": "Review ticket fixes: Calamine now retains source workbook properties; existing spreadsheet rank selects matching metadata and preserves LibreOffice claims. Verified core.xml source metadata, unchanged content/truth, stable repeated output.",
+   "service": "gRParse grparse-0.3.0-cpu",
+   "timestamp": "2026-10-31T04:56:01+00:00"
   }
  ],
  "manifest": "eval/scorecard/corpus.json",
