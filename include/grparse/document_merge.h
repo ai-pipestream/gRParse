@@ -41,8 +41,9 @@ int document_claim_rank(const std::string& collector, const std::string& mimetyp
 
 // Reduces `source` to the document-level account the claims machinery keeps
 // (the same set claim_of carries onto Document.claims: source_meta, origin,
-// page_styles, email, media). Arenas, body and furniture children,
-// attachments, named ranges and pages drop. The coordinator applies it to a
+// page_styles, email, media), plus the leg's generation_traces, which are
+// the model's own output rather than a reading of the body. Arenas, body
+// and furniture children, attachments, named ranges and pages drop. The coordinator applies it to a
 // routed office fan-out leg once the plan's primary has contributed a body:
 // the leg read the same bytes, and merging its reading would print the body
 // a second time, while its claims still merge and rank.
