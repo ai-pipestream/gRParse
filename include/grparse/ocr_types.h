@@ -180,6 +180,9 @@ struct OcrPage {
   // geometry. Anything that re-sorts the lines (the digital+OCR merge)
   // builds a fresh page and leaves this false.
   bool source_order_trusted = false;
+  // Set when replace_broken_text_layer caused this page's embedded layer to
+  // be dropped and replaced by full-page OCR. Wire: PageQuality.text_layer_replaced.
+  bool text_layer_replaced = false;
 };
 
 // Merge OCR lines into a digital page without duplicating geometry-overlapping text.

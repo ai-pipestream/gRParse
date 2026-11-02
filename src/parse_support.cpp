@@ -140,7 +140,7 @@ CollectorOutcome run_remote_collector(
         return outcome;
       }
       return collect_asr_document(endpoints->channel(id), endpoints->asr_model(), filename, bytes,
-                                  inbound_deadline, cancelled);
+                                  rules.asr_options, inbound_deadline, cancelled);
     case pipestream::parse::v1::COLLECTOR_EMAIL:
       // An HTML-only message's body folds through the markup collector
       // when one is configured, and the leg says so when not.
@@ -222,6 +222,96 @@ PageScheduler::OcrTuning ocr_tuning(bool has_do_ocr, bool do_ocr, bool force_ocr
   if (has_render_scale) tuning.render_dpi = render_scale * 72.0;
   return tuning;
 }
+
+namespace {
+
+const ai::pipestream::parse::v1::OcrOptionsBase* ocr_options_base(
+    const ai::pipestream::parse::v1::ConvertDocumentOptions& options) {
+  using C = ai::pipestream::parse::v1::ConvertDocumentOptions;
+  switch (options.ocr_options_case()) {
+    case C::kOcrAuto:
+      return &options.ocr_auto().base();
+    case C::kEasyocr:
+      return &options.easyocr().base();
+    case C::kTesseract:
+      return &options.tesseract().base();
+    case C::kTesseractCli:
+      return &options.tesseract_cli().base();
+    case C::kRapidocr:
+      return &options.rapidocr().base();
+    case C::kOcrmac:
+      return &options.ocrmac().base();
+    case C::kNemotronOcr:
+      return &options.nemotron_ocr().base();
+    case C::kKserveV2Ocr:
+      return &options.kserve_v2_ocr().base();
+    case C::OCR_OPTIONS_NOT_SET:
+      return nullptr;
+  }
+  return nullptr;
+}
+
+bool ocr_options_engine_unimplemented(
+    const ai::pipestream::parse::v1::ConvertDocumentOptions& options) {
+  using C = ai::pipestream::parse::v1::ConvertDocumentOptions;
+  switch (options.ocr_options_case()) {
+    case C::kOcrAuto:
+    case C::kRapidocr:
+    case C::OCR_OPTIONS_NOT_SET:
+      return false;
+    case C::kEasyocr:
+    case C::kTesseract:
+    case C::kTesseractCli:
+    case C::kOcrmac:
+    case C::kNemotronOcr:
+    case C::kKserveV2Ocr:
+      return true;
+  }
+  return false;
+}
+
+}  // namespace
+
+grpc::Status resolve_replace_broken_text_layer(
+    const ai::pipestream::parse::v1::ConvertDocumentOptions& options,
+    std::optional<bool>* out) {
+  if (ocr_options_engine_unimplemented(options)) {
+    return grpc::Status(grpc::StatusCode::UNIMPLEMENTED,
+                        "option 'ocr_options' names an OCR engine this server "
+                        "does not run (only ocr_auto and rapidocr are served)");
+  }
+  std::optional<bool> nested;
+  if (const auto* base = ocr_options_base(options)) {
+    if (base->has_replace_broken_text_layer()) {
+      nested = base->replace_broken_text_layer();
+    }
+  }
+  if (options.has_force_ocr() && options.force_ocr() && nested && *nested) {
+    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                        "option 'force_ocr' true contradicts "
+                        "ocr_options.*.base.replace_broken_text_layer true");
+  }
+  *out = nested;
+  return grpc::Status::OK;
+}
+
+grpc::Status resolve_rapidocr_detect_orientation(
+    const ai::pipestream::parse::v1::ConvertDocumentOptions& options,
+    std::optional<bool>* out) {
+  if (ocr_options_engine_unimplemented(options)) {
+    return grpc::Status(grpc::StatusCode::UNIMPLEMENTED,
+                        "option 'ocr_options' names an OCR engine this server "
+                        "does not run (only ocr_auto and rapidocr are served)");
+  }
+  std::optional<bool> nested;
+  if (options.has_rapidocr() && options.rapidocr().has_detect_orientation()) {
+    nested = options.rapidocr().detect_orientation();
+  }
+  *out = nested;
+  return grpc::Status::OK;
+}
+
+
 
 namespace {
 

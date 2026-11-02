@@ -792,16 +792,29 @@ class PageScheduler::Impl final {
             // source applied its own rotation), so only layerless pages are
             // candidates for a turn.
             if (!digital_layer) {
-              OrientationOutcome outcome;
-              {
-                const StageTimer stage(timings.orientation_ms);
-                outcome = recover_orientation(recognizer_, options_.orientation, &job.image, &ocr);
+              const auto detect = job.page->request->tuning.detect_orientation;
+              // Unset or true: keep today's recovery. Explicit false skips it
+              // (RapidOCR detect_orientation=false).
+              if (!detect.has_value() || *detect) {
+                OrientationOutcome outcome;
+                {
+                  const StageTimer stage(timings.orientation_ms);
+                  outcome = recover_orientation(recognizer_, options_.orientation, &job.image, &ocr);
+                }
+                timings.orientation_passes = outcome.passes;
+                record_orientation(job.page->page_number, outcome);
               }
-              timings.orientation_passes = outcome.passes;
-              record_orientation(job.page->page_number, outcome);
             }
             if (digital_layer) {
-              assembled = merge_digital_and_ocr(std::move(*job.digital_seed), std::move(ocr));
+              // replace_broken_text_layer: the embedded layer is incomplete
+              // (we only OCR when skip_ocr is false), so drop it and keep the
+              // OCR read alone, matching docling's broken-layer replacement.
+              if (job.page->request->tuning.replace_broken_text_layer) {
+                assembled = std::move(ocr);
+                assembled.text_layer_replaced = true;
+              } else {
+                assembled = merge_digital_and_ocr(std::move(*job.digital_seed), std::move(ocr));
+              }
             } else {
               assembled = std::move(ocr);
             }

@@ -95,6 +95,15 @@ class PageScheduler final {
     // layer.  kForce and kOff ignore it: an explicit recognition override
     // outranks the classification.
     std::unordered_set<int> ocr_pages;
+    // When true, a page whose embedded layer is incomplete (skip_ocr false)
+    // is recognized and the OCR text replaces that layer instead of merging
+    // with it. Complete pages (skip_ocr true) keep their embedded text.
+    // Unset/false keeps the selective merge. Distinct from Mode::kForce.
+    bool replace_broken_text_layer = false;
+    // RapidOCR detect_orientation (slim 2.145.0). Unset keeps today's
+    // orientation recovery policy; false skips recovery; true forces it on
+    // layerless pages (same as today's on behaviour).
+    std::optional<bool> detect_orientation;
     // Inclusive 1-indexed page span to process (Docling page_range). Unset
     // means every page. Original PDF page numbers are preserved on emitted
     // pages; only which pages run changes.

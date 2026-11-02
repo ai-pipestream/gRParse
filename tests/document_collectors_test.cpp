@@ -100,6 +100,8 @@ class ServerFixture {
 
 class FakeAsrService final : public asrv1::AsrService::Service {
  public:
+  asrv1::TranscribeOptions last_options;
+
   grpc::Status Transcribe(
       grpc::ServerContext*,
       grpc::ServerReaderWriter<asrv1::TranscribeResponse, asrv1::TranscribeRequest>*
@@ -110,13 +112,14 @@ class FakeAsrService final : public asrv1::AsrService::Service {
     std::string bytes;
     while (stream->Read(&request)) {
       if (request.has_options()) {
+        last_options = request.options();
         model = request.options().model();
         emit_document = request.options().emit_document();
       } else {
         bytes += request.chunk().data();
       }
     }
-    if (model != "small" || !emit_document || bytes.empty()) {
+    if (model.empty() || !emit_document || bytes.empty()) {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                           "fake asr expects model, emit_document, and media bytes");
     }
@@ -158,6 +161,39 @@ void verify_asr_collects_document() {
               outcome.document.texts(0).text().base().text() == "from asr",
           "the collector's own Document arrives unchanged");
   require(outcome.warnings.empty(), "asr has no trailer warnings to surface");
+}
+
+void verify_asr_forwards_pipeline_options() {
+  FakeAsrService service;
+  ServerFixture server(&service);
+  parsev1::AsrPipelineOptions asr;
+  asr.set_language("de");
+  asr.set_task(parsev1::ASR_TASK_TRANSLATE);
+  asr.set_word_timestamps(true);
+  asr.set_diarize(false);
+  asr.set_model_type(parsev1::ASR_MODEL_TYPE_WHISPER_TINY);
+  asr.set_engine(parsev1::ASR_ENGINE_KIND_WHISPER_CPP);
+  asr.mutable_mlx_whisper()->set_condition_on_previous_text(false);
+  asr.mutable_mlx_whisper()->set_hallucination_silence_threshold(2.0);
+  asr.mutable_mlx_whisper()->set_initial_prompt("names");
+  const auto outcome = grparse::collect_asr_document(
+      server.channel(), "small", "clip.wav", "abc", asr);
+  require(outcome.success, "asr with pipeline options succeeds: " + outcome.error);
+  require(service.last_options.language() == "de", "language forwarded");
+  require(service.last_options.task() == asrv1::TASK_TRANSLATE, "task forwarded");
+  require(service.last_options.word_timestamps(), "word_timestamps forwarded");
+  require(!service.last_options.diarize(), "diarize override forwarded");
+  require(service.last_options.model_type() == asrv1::ASR_MODEL_TYPE_WHISPER_TINY,
+          "model_type forwarded");
+  require(service.last_options.engine() == asrv1::ASR_ENGINE_KIND_WHISPER_CPP,
+          "engine forwarded");
+  require(service.last_options.has_mlx_whisper() &&
+              service.last_options.mlx_whisper().condition_on_previous_text() == false &&
+              service.last_options.mlx_whisper().hallucination_silence_threshold() == 2.0 &&
+              service.last_options.mlx_whisper().initial_prompt() == "names",
+          "mlx_whisper slim 2.145.0 fields forwarded typed");
+  require(service.last_options.model() == "small",
+          "deployment model kept when asr_options.model unset");
 }
 
 void verify_transport_class_collapses_to_unavailable() {
@@ -3159,6 +3195,7 @@ int main() {
   return grparse_test::run_test_main({.on_failure = "FAILED", .on_success = "document collectors test passed"}, {
       verify_source_title_promotes_to_a_title_item,
       verify_asr_collects_document,
+      verify_asr_forwards_pipeline_options,
       verify_transport_class_collapses_to_unavailable,
       verify_email_collects_document_and_warnings,
       verify_missing_trailer_fails,

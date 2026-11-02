@@ -113,6 +113,22 @@ std::string add_section(docv1::Document* document, const std::string& text, int 
   return ref;
 }
 
+
+std::string add_empty_section_with_text_child(docv1::Document* document,
+                                              const std::string& child_text, int level) {
+  const std::string header_ref = next_text_ref(*document);
+  auto* header = document->add_texts()->mutable_section_header();
+  header->set_level(level);
+  fill_base(header->mutable_base(), header_ref, "", 0);
+  document->mutable_body()->add_children()->set_ref(header_ref);
+  const std::string child_ref = next_text_ref(*document);
+  fill_base(document->add_texts()->mutable_text()->mutable_base(), child_ref, child_text, 0);
+  header->mutable_base()->add_children()->set_ref(child_ref);
+  // The child is owned by the heading, not the body: #924 folds it into the
+  // heading context and the hierarchical walk must not emit it twice.
+  return header_ref;
+}
+
 // A list group plus its items. The items are the group's children only, never
 // the body's, which is the shape a list arrives in.
 std::string add_list(docv1::Document* document, bool ordered,
@@ -315,6 +331,41 @@ void verify_chunking_is_byte_identical_across_runs_and_threads() {
 }
 
 // -- hierarchical shape -----------------------------------------------------
+
+
+void verify_rich_heading_text_from_single_child() {
+  docv1::Document document = new_document();
+  add_title(&document, "Guide");
+  add_empty_section_with_text_child(&document, "Birds of the field", 1);
+  add_paragraph(&document, "Sparrows are small.", 1);
+  const auto chunks = chunk_hierarchical(document, {}, {}, "guide.pdf");
+  const auto* sparrows = find_chunk(chunks, "Sparrows are small");
+  require(sparrows != nullptr, "the paragraph must chunk");
+  require(headings_of(*sparrows) == std::vector<std::string>({"Guide", "Birds of the field"}),
+          "an empty heading with one text child uses that child as heading context (#924)");
+  for (const auto& chunk : chunks) {
+    require(chunk.text() != "Birds of the field",
+            "the rich-heading child must not emit a chunk of its own");
+  }
+
+  // Own text wins over a child.
+  docv1::Document own = new_document();
+  add_title(&own, "Guide");
+  add_section(&own, "Mammals", 1);
+  // Attach a child that would otherwise be used; own text must win.
+  {
+    auto* header = own.mutable_texts(1)->mutable_section_header();
+    const std::string child_ref = next_text_ref(own);
+    fill_base(own.add_texts()->mutable_text()->mutable_base(), child_ref, "Ignored child", 0);
+    header->mutable_base()->add_children()->set_ref(child_ref);
+  }
+  add_paragraph(&own, "Bears hibernate.", 1);
+  const auto own_chunks = chunk_hierarchical(own, {}, {}, "guide.pdf");
+  const auto* bears = find_chunk(own_chunks, "Bears hibernate");
+  require(bears != nullptr, "own-text paragraph must chunk");
+  require(headings_of(*bears) == std::vector<std::string>({"Guide", "Mammals"}),
+          "a heading with its own text keeps that text even with a child");
+}
 
 void verify_heading_trail_shadows_and_pops() {
   const docv1::Document document = field_guide();
@@ -1300,6 +1351,7 @@ struct Case {
 
 const Case kCases[] = {
     {"determinism across runs and threads", verify_chunking_is_byte_identical_across_runs_and_threads},
+    {"rich heading text from single child", verify_rich_heading_text_from_single_child},
     {"heading trail shadowing", verify_heading_trail_shadows_and_pops},
     {"list group consumption", verify_list_group_consumes_its_items},
     {"list item children", verify_list_items_carry_their_children},

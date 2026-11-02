@@ -465,6 +465,28 @@ class Chunker {
   }
 
   // A heading shadows every recorded heading at or below its own level.
+  // docling-core #924: when a heading's own text is empty and it has exactly
+  // one inline text, formula, or code child, that child's serialized text is
+  // the heading context stored in DocMeta.headings.
+  std::string rich_heading_text(const docv1::SectionHeaderItem& header) const {
+    const std::string& own = header.base().text();
+    if (!trimmed(own).empty()) return own;
+    if (header.base().children_size() != 1) return own;
+    const std::string& ref = header.base().children(0).ref();
+    const auto* child = text_at(ref);
+    if (child == nullptr) return own;
+    switch (child->item_case()) {
+      case docv1::BaseTextItem::kText:
+        return child->text().base().text();
+      case docv1::BaseTextItem::kFormula:
+        return child->formula().base().text();
+      case docv1::BaseTextItem::kCode:
+        return child->code().text();
+      default:
+        return own;
+    }
+  }
+
   void record_heading(int level, const std::string& text) {
     while (!trail_.empty() && trail_.back().first >= level) trail_.pop_back();
     if (!trimmed(text).empty()) trail_.emplace_back(level, text);
@@ -594,7 +616,24 @@ class Chunker {
       return;
     }
     if (item.item_case() == docv1::BaseTextItem::kSectionHeader) {
-      record_heading(item.section_header().level(), item.section_header().base().text());
+      const auto& header = item.section_header();
+      record_heading(header.level(), rich_heading_text(header));
+      // When #924 folds a single inline child into the heading context, that
+      // child must not also walk as its own chunk under the header.
+      if (trimmed(header.base().text()).empty() && header.base().children_size() == 1) {
+        const std::string& child_ref = header.base().children(0).ref();
+        if (const auto* child = text_at(child_ref)) {
+          switch (child->item_case()) {
+            case docv1::BaseTextItem::kText:
+            case docv1::BaseTextItem::kFormula:
+            case docv1::BaseTextItem::kCode:
+              visited_.insert(child_ref);
+              break;
+            default:
+              break;
+          }
+        }
+      }
       return;
     }
     WorkChunk chunk;

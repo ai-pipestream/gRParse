@@ -227,6 +227,9 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     output->mutable_page_meta()->mutable_quality()->set_rotation_degrees(
         static_cast<double>(source.rotation_degrees));
   }
+  if (source.text_layer_replaced) {
+    output->mutable_page_meta()->mutable_quality()->set_text_layer_replaced(true);
+  }
   // Multi-backend reconciliation (consensus mode only): the page's word
   // links to the other backends' streams ride onto the wire as transport
   // metadata, like text_offsets.

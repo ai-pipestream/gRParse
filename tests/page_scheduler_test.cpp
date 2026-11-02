@@ -968,6 +968,56 @@ void verify_ocr_off_still_runs_layout() {
 
 // kForce recognizes every page, full-digital ones included, and the
 // recognized text replaces the embedded layer instead of merging with it.
+void verify_replace_broken_text_layer_replaces_only_weak_pages() {
+  // Two pages: page 1 dense (skip_ocr true), page 2 weak (skip_ocr false).
+  class MixedSource final : public grparse::PageSource {
+   public:
+    int page_count() const override { return 2; }
+    std::optional<grparse::OcrPage> extract_digital_page(int page_number) const override {
+      grparse::OcrPage page{100, 100,
+                            {{"digital-" + std::to_string(page_number),
+                              {{0, 50}, {40, 50}, {40, 58}, {0, 58}}, std::nullopt,
+                              grparse::TextOrigin::kDigitalPdf}}};
+      page.source = grparse::OcrPage::Source::kDigitalPdf;
+      page.skip_ocr = (page_number == 1);
+      return page;
+    }
+    cv::Mat render_page(int page_number) const override {
+      return cv::Mat(1, 1, CV_8UC1, cv::Scalar(page_number)).clone();
+    }
+  };
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 2, 2, 2, 1, 1, 1},
+      [](std::shared_ptr<const std::string>, bool, double) {
+        return std::make_shared<MixedSource>();
+      });
+  grparse::PageScheduler::OcrTuning tuning;
+  tuning.replace_broken_text_layer = true;
+  Result result;
+  std::mutex pages_mutex;
+  std::vector<std::shared_ptr<const grparse::OcrPage>> delivered;
+  scheduler.submit(std::make_shared<const std::string>("memory"), true, tuning,
+                   capturing_callbacks_for(&result, &pages_mutex, &delivered));
+  wait_until_finished(&result);
+
+  require(!result.failure, "replace_broken document failed");
+  {
+    std::lock_guard<std::mutex> lock(pages_mutex);
+    require(delivered.size() == 2, "both pages delivered");
+    // Delivery order is page order.
+    require(delivered[0]->source == grparse::OcrPage::Source::kDigitalPdf &&
+                !delivered[0]->text_layer_replaced &&
+                delivered[0]->lines[0].text.starts_with("digital-"),
+            "complete page keeps embedded layer and no replace flag");
+    require(delivered[1]->text_layer_replaced &&
+                delivered[1]->source == grparse::OcrPage::Source::kOcr &&
+                delivered[1]->lines[0].text.starts_with("page-"),
+            "weak page is OCR-only with text_layer_replaced");
+  }
+  require(recognizer.calls.load() == 1, "only the weak page is recognized");
+}
+
 void verify_force_ocr_replaces_the_embedded_layer() {
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(
@@ -1568,6 +1618,7 @@ int main() {
       verify_recognition_modes_outrank_the_page_set,
       verify_ocr_off_reads_only_the_embedded_layer,
       verify_ocr_off_still_runs_layout,
+      verify_replace_broken_text_layer_replaces_only_weak_pages,
       verify_force_ocr_replaces_the_embedded_layer,
       verify_render_dpi_reaches_source_factory,
       verify_passwords_reach_the_source_before_it_opens,
