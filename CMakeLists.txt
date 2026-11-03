@@ -912,6 +912,7 @@ if(BUILD_TESTING)
     docling-map-test
     document-assembly-test
     convert-options-test
+    docling-parity-golden-test
     document-collectors-test
     document-merge-test
     document-render-test
@@ -1013,6 +1014,8 @@ if(BUILD_TESTING)
     "Per-test ctest timeout in seconds for the grparse suite")
   set_tests_properties(${GRPARSE_TESTS} PROPERTIES
     TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
+  set_tests_properties(docling-parity-golden-test PROPERTIES
+    ENVIRONMENT "GRPARSE_SOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}")
   # The layout golden needs the real model file; without it the test skips
   # (exit 77) so environments that never download models stay green while any
   # environment with models proves the decode against the reference output.

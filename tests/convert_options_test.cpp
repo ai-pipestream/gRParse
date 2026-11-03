@@ -6,6 +6,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 
@@ -1160,17 +1161,28 @@ void verify_replace_broken_and_rapidocr_orientation_options() {
   }
   {
     parsev1::ConvertDocumentOptions options;
-    options.mutable_easyocr();
-    require_equal(static_cast<int>(grparse::validate_options(options, kSurface).error_code()),
-                  static_cast<int>(grpc::StatusCode::UNIMPLEMENTED),
-                  "easyocr arm is UNIMPLEMENTED");
+    options.mutable_ocr_auto();
+    require(grparse::validate_options(options, kSurface).ok(),
+            "ocr_auto arm is implemented");
   }
   {
     parsev1::ConvertDocumentOptions options;
-    options.mutable_nemotron_ocr();
+    options.mutable_rapidocr();
+    require(grparse::validate_options(options, kSurface).ok(),
+            "rapidocr arm is implemented");
+  }
+  for (const char* arm : {"easyocr", "tesseract", "tesseract_cli", "ocrmac",
+                          "nemotron_ocr", "kserve_v2_ocr"}) {
+    parsev1::ConvertDocumentOptions options;
+    if (std::string_view(arm) == "easyocr") options.mutable_easyocr();
+    else if (std::string_view(arm) == "tesseract") options.mutable_tesseract();
+    else if (std::string_view(arm) == "tesseract_cli") options.mutable_tesseract_cli();
+    else if (std::string_view(arm) == "ocrmac") options.mutable_ocrmac();
+    else if (std::string_view(arm) == "nemotron_ocr") options.mutable_nemotron_ocr();
+    else options.mutable_kserve_v2_ocr();
     require_equal(static_cast<int>(grparse::validate_options(options, kSurface).error_code()),
                   static_cast<int>(grpc::StatusCode::UNIMPLEMENTED),
-                  "nemotron_ocr arm is UNIMPLEMENTED");
+                  std::string(arm) + " arm is UNIMPLEMENTED");
   }
   {
     parsev1::ConvertDocumentOptions options;
