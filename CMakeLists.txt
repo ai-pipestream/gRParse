@@ -1234,6 +1234,35 @@ target_sources(grparse_proto PRIVATE
   "${GENERATED_DIR}/ai/pipestream/vlm/v1/vlm_convert.pb.cc"
   "${GENERATED_DIR}/ai/pipestream/vlm/v1/vlm_convert.grpc.pb.cc")
 target_sources(grparse_core PRIVATE src/vlm_convert.cpp)
+
+# LightOnOCR-3 contract. The collector owns the proto; this stages a
+# byte-identical copy so the coordinator can generate stubs. The parse leg
+# that streams pages is not in this tree yet.
+file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/lightonocr/v1")
+configure_file(collectors/lighton_ocr.proto
+  "${STAGED_PROTO_DIR}/ai/pipestream/lightonocr/v1/lighton_ocr.proto" COPYONLY)
+set(LIGHTON_OCR_PROTO "${STAGED_PROTO_DIR}/ai/pipestream/lightonocr/v1/lighton_ocr.proto")
+set(LIGHTON_OCR_GENERATED
+  "${GENERATED_DIR}/ai/pipestream/lightonocr/v1/lighton_ocr.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/lightonocr/v1/lighton_ocr.pb.h"
+  "${GENERATED_DIR}/ai/pipestream/lightonocr/v1/lighton_ocr.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/lightonocr/v1/lighton_ocr.grpc.pb.h")
+add_custom_command(
+  OUTPUT ${LIGHTON_OCR_GENERATED}
+  COMMAND $<TARGET_FILE:protoc>
+  ARGS --proto_path=${STAGED_PROTO_DIR}
+       --proto_path=${protobuf_SOURCE_DIR}/src
+       --cpp_out=${GENERATED_DIR}
+       --grpc_out=${GENERATED_DIR}
+       --plugin=protoc-gen-grpc=$<TARGET_FILE:grpc_cpp_plugin>
+       ${LIGHTON_OCR_PROTO}
+  DEPENDS collectors/lighton_ocr.proto document.proto
+          "${GENERATED_DIR}/ai/pipestream/document/v1/document.pb.h"
+          protoc grpc_cpp_plugin
+  VERBATIM)
+target_sources(grparse_proto PRIVATE
+  "${GENERATED_DIR}/ai/pipestream/lightonocr/v1/lighton_ocr.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/lightonocr/v1/lighton_ocr.grpc.pb.cc")
 if(BUILD_TESTING)
   set(GRPARSE_VLM_TESTS vlm-convert-test)
   foreach(test_name IN LISTS GRPARSE_VLM_TESTS)
