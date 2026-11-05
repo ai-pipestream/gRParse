@@ -384,6 +384,7 @@ CollectorTargets read_collector_targets() {
       .fastwarc = collector_env("GRPARSE_FASTWARC_TARGET"),
       .pdf = collector_env("GRPARSE_PDF_TARGET"),
       .calamine = collector_env("GRPARSE_CALAMINE_TARGET"),
+      .lighton_ocr = collector_env("GRPARSE_LIGHTON_OCR_TARGET"),
       // The chart derender leg through grpc-enrich: off unless a target
       // is named; the timeout bounds the whole leg per parse.
       .derender = std::move(derender),
@@ -426,6 +427,7 @@ void report_collector_targets(const CollectorTargets& targets, bool layout_activ
   report_collector("fastwarc", targets.fastwarc);
   report_collector("pdf", targets.pdf);
   report_collector("calamine", targets.calamine);
+  report_collector("lighton-ocr", targets.lighton_ocr);
   if (targets.derender.enabled()) {
     std::println("gRParse chart derender (enrich): {} ({} ms{})", targets.derender.target,
                  targets.derender.timeout.count(),
