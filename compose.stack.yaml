@@ -13,9 +13,9 @@
 #              grpc-asr or point ASR models elsewhere), enrich,
 #              vlm-convert (needs an external VLM endpoint via
 #              VLM_ENDPOINT; its tab shows an amber "no VLM endpoint"
-#              state otherwise), and lighton-ocr (its own container,
-#              GRPARSE_LIGHTON_OCR_TARGET; the native engine is not linked
-#              yet, so a page returns engine-unavailable).
+#              state otherwise), and lighton-ocr (LightOnOCR-3 on 50074;
+#              the coordinator does not dial it yet, and its native engine
+#              is not linked, so a page returns ENGINE_UNAVAILABLE).
 #   calamine - existing opt-in, unchanged.
 #   pdf-backends - grpc-qparse, a second Apache-2.0 PDF backend for the
 #              consensus vote (set GRPARSE_PDF_BACKEND to a comma list).
@@ -134,10 +134,6 @@ services:
       # PROCESSING_PIPELINE_VLM dials grpc-vlm-convert with full-page PNGs.
       GRPARSE_VLM_CONVERT_TARGET: "vlm-convert:50058"
       GRPARSE_VLM_CONVERT_TIMEOUT_MS: "120000"
-      # LightOnOCR-3 is its own collector so it can scale apart from the
-      # CV path and from grpc-vlm-convert. The service is in the heavy
-      # profile; with the profile down this target fails UNAVAILABLE.
-      GRPARSE_LIGHTON_OCR_TARGET: "lighton-ocr:50074"
     # Start order only: the backend is dialed per document, so a PDF that
     # arrives before pdfium's worker pool is up fails UNAVAILABLE and the
     # next one goes through.
