@@ -1,0 +1,147 @@
+// grpc-lighton-ocr wire contract: whole-document parsing by LightOnOCR on
+// this service's own engine. The client streams page rasters; the service
+// streams per-page Document fragments and the folded Document.
+//
+// Every fact is a typed field. No JSON string, map, Struct, or opaque bytes
+// stands in for structure. The page raster is the only bytes field.
+syntax = "proto3";
+
+package ai.pipestream.lightonocr.v1;
+
+import "ai/pipestream/document/v1/document.proto";
+
+// LightOn OCR collector.
+service LightOnOcrService {
+  // Parses one document.
+  //
+  // The client sends ParseOptions first, then one PageImage per page, then
+  // half-closes. The server streams PageDocument as each page closes and,
+  // when asked, the folded Document, then one ParseComplete trailer.
+  //
+  // Errors: a missing or repeated ParseOptions, a page_count of zero, a
+  // page_no outside 1..page_count or sent twice, or fewer pages than
+  // page_count at half-close is INVALID_ARGUMENT. More pages or bytes than
+  // the server's caps is RESOURCE_EXHAUSTED.
+  rpc ParseDocument(stream ParseDocumentRequest) returns (stream ParseDocumentResponse);
+
+  // Build and model facts for this server process.
+  rpc GetServiceInfo(GetServiceInfoRequest) returns (GetServiceInfoResponse);
+}
+
+// One client-to-server message on the ParseDocument stream.
+message ParseDocumentRequest {
+  // Exactly one payload kind per message.
+  oneof payload {
+    // Must be the first message on the stream and must not repeat.
+    ParseOptions options = 1;
+    // One page raster.
+    PageImage page = 2;
+  }
+}
+
+// Per-document options, sent once as the first message.
+message ParseOptions {
+  // Which LightOnOCR-3 checkpoint to run. Unspecified means the 0.8B model.
+  LightonModel model = 1;
+  // Number of pages in the document. Required, and at least 1.
+  uint32 page_count = 2;
+  // Sampling temperature. 0 means the server default (0.1).
+  float temperature = 3;
+  // Decode step cap for one page. 0 means the server default.
+  uint32 max_tokens_per_page = 4;
+  // Stream a Document fragment as each page closes.
+  bool emit_page_documents = 5;
+  // Send the folded Document before ParseComplete.
+  bool emit_document = 6;
+}
+
+// Which LightOnOCR-3 checkpoint this request runs.
+enum LightonModel {
+  // The server default, the 0.8B checkpoint.
+  LIGHTON_MODEL_UNSPECIFIED = 0;
+  // lightonai/LightOnOCR-3-0.8B.
+  LIGHTON_MODEL_0_8B = 1;
+  // lightonai/LightOnOCR-3-4B.
+  LIGHTON_MODEL_4B = 2;
+}
+
+// One page raster.
+message PageImage {
+  // 1-based page number, at most ParseOptions.page_count.
+  uint32 page_no = 1;
+  // The page raster, PNG or JPEG. The only bytes field on this contract:
+  // it is the page itself, not structure.
+  bytes png = 2;
+  // Raster width in pixels. 0 means read it from the image.
+  uint32 width_px = 3;
+  // Raster height in pixels. 0 means read it from the image.
+  uint32 height_px = 4;
+}
+
+// One server-to-client event on the ParseDocument stream.
+message ParseDocumentResponse {
+  // Exactly one event kind per message.
+  oneof event {
+    // A page closed: its Document fragment.
+    PageDocument page_document = 1;
+    // A page failed or was not decoded.
+    PageFailure page_failure = 2;
+    // The folded Document, when emit_document is set.
+    ai.pipestream.document.v1.Document document = 3;
+    // The trailer, last on every stream that completes.
+    ParseComplete complete = 4;
+  }
+}
+
+// A converted page.
+message PageDocument {
+  // 1-based page number.
+  uint32 page_no = 1;
+  // Items, pictures, and provenance for this page alone.
+  ai.pipestream.document.v1.Document document = 2;
+}
+
+// A page the service could not turn into items.
+message PageFailure {
+  // 1-based page number.
+  uint32 page_no = 1;
+  // Why the page produced no items.
+  PageFailureCode code = 2;
+  // The same fact as prose, for a log line.
+  string message = 3;
+}
+
+// Why a page produced no items.
+enum PageFailureCode {
+  // No code was set.
+  PAGE_FAILURE_CODE_UNSPECIFIED = 0;
+  // The native engine or its weights are not available in this process.
+  PAGE_FAILURE_CODE_ENGINE_UNAVAILABLE = 1;
+  // The raster was empty or not an image this server can read.
+  PAGE_FAILURE_CODE_BAD_IMAGE = 2;
+}
+
+// Trailer for one ParseDocument stream.
+message ParseComplete {
+  // Pages the client sent.
+  uint32 pages = 1;
+  // Pages that produced a Document fragment.
+  uint32 pages_ok = 2;
+  // Pages that produced a PageFailure.
+  uint32 pages_failed = 3;
+}
+
+// Empty request for GetServiceInfo.
+message GetServiceInfoRequest {}
+
+// What this process can do.
+message GetServiceInfoResponse {
+  // gRPC listen address, host:port.
+  string listen_address = 1;
+  // True when a native engine is linked and its weights loaded.
+  bool engine_loaded = 2;
+  // Hugging Face repo of the checkpoint this process would run.
+  string model_repo = 3;
+  // Checkpoint revision, empty when no weights are loaded.
+  string revision = 4;
+}

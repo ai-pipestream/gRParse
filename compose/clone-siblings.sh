@@ -158,7 +158,7 @@ default_branch_for() {
 repos="gRParse \
 grpc-lol-html grpc-libreoffice grpc-calamine grpc-pdf-inspector \
 grpc-epub grpc-xml grpc-markup grpc-ebcdic grpc-email grpc-enrich \
-grpc-asr grpc-vlm-convert fastwarc-grpc grpc-pdfium grpc-qparse \
+grpc-asr grpc-vlm-convert grpc-lighton-ocr fastwarc-grpc grpc-pdfium grpc-qparse \
 grpc-poppler parser-protos"
 
 clone_base="$GIT_BASE"
@@ -213,6 +213,7 @@ done
 # start when a bind-mount source is missing, so make sure it exists even
 # before any whisper weights are downloaded into it.
 mkdir -p "$parent/grpc-asr/models"
+mkdir -p "$parent/grpc-lighton-ocr/models"
 
 echo
 echo "Done. Workspace is ready at: $parent"
