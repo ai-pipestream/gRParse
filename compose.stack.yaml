@@ -10,10 +10,12 @@
 #              xml, markup, ebcdic, email (proxied tabs), plus fastwarc
 #              (a native shell tab, no UI container of its own).
 #   heavy    - asr (CPU whisper image; mount ggml weights into ./models of
-#              grpc-asr or point ASR models elsewhere), enrich, and
-#              vlm-convert (both need an external VLM endpoint via
-#              ENRICH_VLM_URL / VLM_ENDPOINT to do real work; their tabs
-#              show an amber "no VLM endpoint" state otherwise).
+#              grpc-asr or point ASR models elsewhere), enrich,
+#              vlm-convert (needs an external VLM endpoint via
+#              VLM_ENDPOINT; its tab shows an amber "no VLM endpoint"
+#              state otherwise), and lighton-ocr (its own container,
+#              GRPARSE_LIGHTON_OCR_TARGET; the native engine is not linked
+#              yet, so a page returns engine-unavailable).
 #   calamine - existing opt-in, unchanged.
 #   pdf-backends - grpc-qparse, a second Apache-2.0 PDF backend for the
 #              consensus vote (set GRPARSE_PDF_BACKEND to a comma list).
@@ -132,6 +134,10 @@ services:
       # PROCESSING_PIPELINE_VLM dials grpc-vlm-convert with full-page PNGs.
       GRPARSE_VLM_CONVERT_TARGET: "vlm-convert:50058"
       GRPARSE_VLM_CONVERT_TIMEOUT_MS: "120000"
+      # LightOnOCR-3 is its own collector so it can scale apart from the
+      # CV path and from grpc-vlm-convert. The service is in the heavy
+      # profile; with the profile down this target fails UNAVAILABLE.
+      GRPARSE_LIGHTON_OCR_TARGET: "lighton-ocr:50074"
     # Start order only: the backend is dialed per document, so a PDF that
     # arrives before pdfium's worker pool is up fails UNAVAILABLE and the
     # next one goes through.
@@ -368,6 +374,23 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  lighton-ocr:
+    profiles: ["heavy"]
+    image: pipestreamai/grpc-lighton-ocr:${STACK_TAG:-latest}
+    build: ../grpc-lighton-ocr
+    expose:
+      - "50074"
+    environment:
+      GRPC_LIGHTON_MODELS_DIR: /models
+      GRPC_LIGHTON_MODEL: "${LIGHTON_MODEL:-0.8b}"
+    volumes:
+      - ../grpc-lighton-ocr/models:/models:ro
+    read_only: true
     cap_drop:
       - ALL
     security_opt:

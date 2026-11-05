@@ -51,6 +51,10 @@ struct CollectorTargets {
   // routed office plan when configured (libreoffice stays the routed
   // default).
   std::string calamine;
+  // grpc-lighton-ocr (GRPARSE_LIGHTON_OCR_TARGET). Recorded so the stack
+  // can dial the collector; the parse leg that streams pages lands with
+  // the native engine.
+  std::string lighton_ocr;
   // The chart derender leg (grpc-enrich, GRPARSE_ENRICH_TARGET): not a
   // collector but a peer dialed after the merge; an empty target means the
   // leg does not exist in this deployment.
