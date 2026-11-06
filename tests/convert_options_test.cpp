@@ -1139,6 +1139,19 @@ void verify_picture_description_custom_config_is_wired() {
   require(call.has_value() && call->prompt.empty(), "nothing set sends no prompt");
 }
 
+void verify_unimplemented_nested_ocr_options() {
+  for (const bool value : {false, true}) {
+    parsev1::ConvertDocumentOptions options;
+    options.mutable_rapidocr()->set_use_rec(value);
+    require(grparse::validate_options(options, kSurface).error_code() == grpc::StatusCode::UNIMPLEMENTED,
+            "unsupported rapidocr.use_rec must not silently succeed");
+    options.clear_rapidocr();
+    options.mutable_ocr_auto()->mutable_base()->set_force_full_page_ocr(value);
+    require(grparse::validate_options(options, kSurface).error_code() == grpc::StatusCode::UNIMPLEMENTED,
+            "unsupported nested force_full_page_ocr must not silently succeed");
+  }
+}
+
 void verify_replace_broken_and_rapidocr_orientation_options() {
   {
     parsev1::ConvertDocumentOptions options;
@@ -1191,6 +1204,7 @@ void verify_replace_broken_and_rapidocr_orientation_options() {
 
 int main() {
   return grparse_test::run_test_main("convert-options-test", "ok", {
+      verify_unimplemented_nested_ocr_options,
       verify_replace_broken_and_rapidocr_orientation_options,
       verify_picture_description_custom_config_is_wired,
       verify_typed_rejections_and_heading_options,

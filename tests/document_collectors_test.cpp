@@ -36,6 +36,7 @@
 #include "grparse/document_parser_service.h"
 #include "lolhtml/v1/lolhtml_service.grpc.pb.h"
 #include "support/check.h"
+#include "../src/parse_support.h"
 
 namespace asrv1 = ai::pipestream::asr::v1;
 namespace calaminev1 = calamine::v1;
@@ -86,6 +87,8 @@ class ServerFixture {
     if (server_ != nullptr) server_->Shutdown();
   }
 
+  std::string address() const { return "127.0.0.1:" + std::to_string(port_); }
+
   std::shared_ptr<grpc::Channel> channel() const {
     return grpc::CreateChannel("127.0.0.1:" + std::to_string(port_),
                                grpc::InsecureChannelCredentials());
@@ -119,7 +122,7 @@ class FakeAsrService final : public asrv1::AsrService::Service {
         bytes += request.chunk().data();
       }
     }
-    if (model.empty() || !emit_document || bytes.empty()) {
+    if ((model.empty() && !last_options.has_model_type()) || !emit_document || bytes.empty()) {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                           "fake asr expects model, emit_document, and media bytes");
     }
@@ -138,6 +141,7 @@ class FakeAsrService final : public asrv1::AsrService::Service {
 
 class FailingAsrService final : public asrv1::AsrService::Service {
  public:
+  grpc::StatusCode code = grpc::StatusCode::INTERNAL;
   grpc::Status Transcribe(
       grpc::ServerContext*,
       grpc::ServerReaderWriter<asrv1::TranscribeResponse, asrv1::TranscribeRequest>*
@@ -145,9 +149,24 @@ class FailingAsrService final : public asrv1::AsrService::Service {
     asrv1::TranscribeRequest request;
     while (stream->Read(&request)) {
     }
-    return grpc::Status(grpc::StatusCode::INTERNAL, "decoder blew up");
+    return grpc::Status(code, "decoder blew up");
   }
 };
+
+void verify_asr_forwarded_enum_numbers_match_contract() {
+  const auto compare = [](const google::protobuf::EnumDescriptor* parse,
+                          const google::protobuf::EnumDescriptor* asr) {
+    for (int i = 0; i < parse->value_count(); ++i) {
+      const auto* value = parse->value(i);
+      const auto* peer = asr->FindValueByName(value->name());
+      require(peer != nullptr && peer->number() == value->number(),
+              "ASR enum numeric forwarding must match the owning service contract");
+    }
+  };
+  compare(parsev1::AsrModelType_descriptor(), asrv1::AsrModelType_descriptor());
+  compare(parsev1::AsrEngineKind_descriptor(), asrv1::AsrEngineKind_descriptor());
+  compare(parsev1::AsrModelFamily_descriptor(), asrv1::AsrModelFamily_descriptor());
+}
 
 void verify_asr_collects_document() {
   FakeAsrService service;
@@ -171,8 +190,8 @@ void verify_asr_forwards_pipeline_options() {
   asr.set_task(parsev1::ASR_TASK_TRANSLATE);
   asr.set_word_timestamps(true);
   asr.set_diarize(false);
-  asr.set_model_type(parsev1::ASR_MODEL_TYPE_WHISPER_TINY);
-  asr.set_engine(parsev1::ASR_ENGINE_KIND_WHISPER_CPP);
+  asr.set_model_type(parsev1::ASR_MODEL_TYPE_WHISPER_TINY_MLX);
+  asr.set_engine(parsev1::ASR_ENGINE_KIND_MLX_WHISPER);
   asr.mutable_mlx_whisper()->set_condition_on_previous_text(false);
   asr.mutable_mlx_whisper()->set_hallucination_silence_threshold(2.0);
   asr.mutable_mlx_whisper()->set_initial_prompt("names");
@@ -183,17 +202,42 @@ void verify_asr_forwards_pipeline_options() {
   require(service.last_options.task() == asrv1::TASK_TRANSLATE, "task forwarded");
   require(service.last_options.word_timestamps(), "word_timestamps forwarded");
   require(!service.last_options.diarize(), "diarize override forwarded");
-  require(service.last_options.model_type() == asrv1::ASR_MODEL_TYPE_WHISPER_TINY,
+  require(service.last_options.model_type() == asrv1::ASR_MODEL_TYPE_WHISPER_TINY_MLX,
           "model_type forwarded");
-  require(service.last_options.engine() == asrv1::ASR_ENGINE_KIND_WHISPER_CPP,
+  require(service.last_options.engine() == asrv1::ASR_ENGINE_KIND_MLX_WHISPER,
           "engine forwarded");
   require(service.last_options.has_mlx_whisper() &&
               service.last_options.mlx_whisper().condition_on_previous_text() == false &&
               service.last_options.mlx_whisper().hallucination_silence_threshold() == 2.0 &&
               service.last_options.mlx_whisper().initial_prompt() == "names",
           "mlx_whisper slim 2.145.0 fields forwarded typed");
-  require(service.last_options.model() == "small",
-          "deployment model kept when asr_options.model unset");
+  require(service.last_options.model().empty(),
+          "request preset must not be overridden by deployment model");
+  asr.set_model("tiny.en");
+  require(grparse::collect_asr_document(server.channel(), "small", "clip.wav", "abc", asr).success,
+          "explicit model request succeeds");
+  require(service.last_options.model() == "tiny.en", "explicit model wins");
+  asr.Clear();
+  asr.set_task(static_cast<parsev1::AsrTask>(12345));
+  require(grparse::collect_asr_document(server.channel(), "small", "clip.wav", "abc", asr).success,
+          "fake accepts unknown task for forwarding inspection");
+  require(static_cast<int>(service.last_options.task()) == 12345,
+          "unknown task must reach ASR validation without becoming unspecified");
+  require(service.last_options.model() == "small", "partial request retains deployment model");
+}
+
+void verify_asr_request_model_needs_no_deployment_model() {
+  FakeAsrService service;
+  ServerFixture server(&service);
+  grparse::CollectorTargets targets;
+  targets.asr = server.address();
+  auto endpoints = std::make_shared<grparse::CollectorEndpoints>(targets);
+  grparse::CollectorRules rules;
+  rules.asr_options.emplace().set_model_type(parsev1::ASR_MODEL_TYPE_WHISPER_TINY);
+  const auto outcome = grparse::run_remote_collector(parsev1::COLLECTOR_ASR, endpoints,
+      "id", "clip.wav", "audio/wav", "abc", rules, grparse::kNoCollectorDeadline);
+  require(outcome.success, "request preset must work without GRPARSE_ASR_MODEL: " + outcome.error);
+  require(service.last_options.model().empty(), "no deployment model fabricated");
 }
 
 void verify_transport_class_collapses_to_unavailable() {
@@ -205,6 +249,17 @@ void verify_transport_class_collapses_to_unavailable() {
           "non-caller status classes collapse to UNAVAILABLE");
   require(outcome.error.contains("decoder blew up"),
           "the collector's own message survives");
+}
+
+void verify_asr_option_failure_status_survives() {
+  for (const auto code : {grpc::StatusCode::UNIMPLEMENTED, grpc::StatusCode::INVALID_ARGUMENT}) {
+    FailingAsrService service;
+    service.code = code;
+    ServerFixture server(&service);
+    const auto outcome = grparse::collect_asr_document(server.channel(), "small", "clip.wav", "abc");
+    require(!outcome.success && outcome.code == code,
+            "ASR option rejection must remain explicit at the coordinator");
+  }
 }
 
 // ---- email -----------------------------------------------------------------
@@ -3194,6 +3249,9 @@ void verify_source_title_promotes_to_a_title_item() {
 int main() {
   return grparse_test::run_test_main({.on_failure = "FAILED", .on_success = "document collectors test passed"}, {
       verify_source_title_promotes_to_a_title_item,
+      verify_asr_forwarded_enum_numbers_match_contract,
+      verify_asr_request_model_needs_no_deployment_model,
+      verify_asr_option_failure_status_survives,
       verify_asr_collects_document,
       verify_asr_forwards_pipeline_options,
       verify_transport_class_collapses_to_unavailable,

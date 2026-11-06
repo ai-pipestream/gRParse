@@ -1573,6 +1573,28 @@ void verify_digital_layer_and_disabled_recovery_never_rerecognize() {
   }
 }
 
+void verify_request_orientation_overrides_server_default() {
+  for (const bool enabled : {false, true}) {
+    MarkerRecognizer recognizer;
+    grparse::PageScheduler::Options options{2, 2, 2, 2, 1, 1, 1};
+    options.orientation.enabled = !enabled;
+    grparse::PageScheduler scheduler(recognizer, options,
+        [](std::shared_ptr<const std::string>, bool, double) {
+          return std::make_shared<TurnedSource>(90);
+        });
+    grparse::PageScheduler::OcrTuning tuning;
+    tuning.detect_orientation = enabled;
+    Result result;
+    DeliveredPage delivered;
+    scheduler.submit(std::make_shared<const std::string>("memory"), false, tuning,
+                     capturing_callbacks(&result, &delivered));
+    wait_until_finished(&result);
+    require(!result.failure, "request orientation override succeeds");
+    require(recognizer.calls.load() == (enabled ? 2 : 1),
+            "explicit orientation controls recovery regardless of server default");
+  }
+}
+
 // Docling page_range: only the inclusive span is scheduled; original page
 // numbers are preserved on the delivered pages.
 void verify_page_range_restricts_scheduled_pages() {
@@ -1629,6 +1651,7 @@ int main() {
       verify_uncredited_document_survives_later_submissions,
       verify_turned_scan_is_rerecognized_upright,
       verify_upside_down_scan_takes_one_extra_pass,
+      verify_request_orientation_overrides_server_default,
       verify_digital_layer_and_disabled_recovery_never_rerecognize,
       verify_page_range_restricts_scheduled_pages,
   });

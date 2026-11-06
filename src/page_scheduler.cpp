@@ -799,7 +799,9 @@ class PageScheduler::Impl final {
                 OrientationOutcome outcome;
                 {
                   const StageTimer stage(timings.orientation_ms);
-                  outcome = recover_orientation(recognizer_, options_.orientation, &job.image, &ocr);
+                  auto orientation = options_.orientation;
+                  if (detect.has_value()) orientation.enabled = *detect;
+                  outcome = recover_orientation(recognizer_, orientation, &job.image, &ocr);
                 }
                 timings.orientation_passes = outcome.passes;
                 record_orientation(job.page->page_number, outcome);

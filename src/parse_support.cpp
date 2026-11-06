@@ -134,7 +134,12 @@ CollectorOutcome run_remote_collector(
                                      inbound_deadline, cancelled, rules.passwords);
     }
     case pipestream::parse::v1::COLLECTOR_ASR:
-      if (endpoints->asr_model().empty()) {
+      if (endpoints->asr_model().empty() &&
+          !(rules.asr_options &&
+            ((!rules.asr_options->model().empty()) ||
+             rules.asr_options->model_type() != pipestream::parse::v1::ASR_MODEL_TYPE_UNSPECIFIED ||
+             !rules.asr_options->model_type_raw().empty() ||
+             rules.asr_options->has_remote()))) {
         outcome.error = "asr collector has no model configured (GRPARSE_ASR_MODEL)";
         outcome.code = grpc::StatusCode::FAILED_PRECONDITION;
         return outcome;
@@ -280,8 +285,29 @@ grpc::Status resolve_replace_broken_text_layer(
                         "option 'ocr_options' names an OCR engine this server "
                         "does not run (only ocr_auto and rapidocr are served)");
   }
+  // These messages also describe engines/configuration this implementation
+  // cannot apply. Reject every explicitly present unsupported field, including
+  // explicit defaults, rather than silently accepting a different request.
+  if (options.has_rapidocr()) {
+    std::vector<const google::protobuf::FieldDescriptor*> fields;
+    options.rapidocr().GetReflection()->ListFields(options.rapidocr(), &fields);
+    for (const auto* field : fields) {
+      if (field->name() != "base" && field->name() != "detect_orientation") {
+        return grpc::Status(grpc::StatusCode::UNIMPLEMENTED,
+                            "option 'rapidocr." + std::string(field->name()) + "' is not implemented");
+      }
+    }
+  }
   std::optional<bool> nested;
   if (const auto* base = ocr_options_base(options)) {
+    std::vector<const google::protobuf::FieldDescriptor*> fields;
+    base->GetReflection()->ListFields(*base, &fields);
+    for (const auto* field : fields) {
+      if (field->name() != "replace_broken_text_layer") {
+        return grpc::Status(grpc::StatusCode::UNIMPLEMENTED,
+                            "option 'ocr_options.base." + std::string(field->name()) + "' is not implemented");
+      }
+    }
     if (base->has_replace_broken_text_layer()) {
       nested = base->replace_broken_text_layer();
     }
