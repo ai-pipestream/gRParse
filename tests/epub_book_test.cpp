@@ -177,6 +177,26 @@ void verify_chapters_plug_into_their_groups() {
           "the chapter's text/html origin does not overwrite the book's");
 }
 
+// A chapter's body can name an item that does not exist, with an index no
+// int holds: a collector bug or a hostile reply. The fold leaves the
+// reference unresolved, as it does for any other dangling one, instead of
+// failing the whole book.
+void verify_oversized_chapter_reference_is_left_unresolved() {
+  docv1::Document book = skeleton({"OPS/ch01.xhtml"}, {});
+  std::vector<grparse::ParsedChapter> chapters;
+  docv1::Document chapter = chapter_document("One", "");
+  *chapter.mutable_body()->add_children() = ref("#/texts/99999999999999999999");
+  chapters.push_back({"OPS/ch01.xhtml", std::move(chapter)});
+  std::vector<std::string> warnings;
+  grparse::fold_epub_book(std::move(chapters), {}, &book, &warnings);
+
+  require(book.texts_size() == 2, "the chapter's real items landed in the book");
+  const auto& group = *group_named(book, "OPS/ch01.xhtml");
+  require(group.children_size() == 3 && group.children(2).ref() == "#/texts/99999999999999999999",
+          "the dangling reference rides along unresolved under the chapter group");
+  require(text_of(book, group.children(0).ref()) == "One", "the real items keep their place");
+}
+
 void verify_images_are_placed_and_inlined() {
   docv1::Document book = skeleton({"OPS/ch01.xhtml"}, {"OPS/images/a.jpg", "OPS/cover.png"});
   std::vector<grparse::ParsedChapter> chapters;
@@ -319,6 +339,7 @@ int main() {
   return grparse_test::run_test_main({.on_failure = "FAILED", .on_success = "epub book test passed"}, {
       verify_href_resolution,
       verify_chapters_plug_into_their_groups,
+      verify_oversized_chapter_reference_is_left_unresolved,
       verify_images_are_placed_and_inlined,
       verify_degradations_are_reported,
       verify_inlining_is_once_per_image_and_budgeted,

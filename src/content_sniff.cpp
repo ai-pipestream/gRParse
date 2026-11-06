@@ -623,9 +623,18 @@ class File {
     return bytes_.substr(static_cast<size_t>(offset), sector_bytes_);
   }
 
+  // The FAT sectors the file can use: one entry per sector the file holds,
+  // whatever the header declares. A header that declares more, or a DIFAT
+  // chain that names one sector over and over, cannot grow the FAT past it.
+  size_t fat_sector_limit() const {
+    const size_t entries_per_sector = sector_bytes_ / 4;
+    const size_t needed = (sector_count_ + entries_per_sector - 1) / entries_per_sector;
+    return std::min<size_t>(u32(bytes_, 44), needed);
+  }
+
   bool read_fat() {
     std::vector<uint32_t> fat_sectors;
-    const size_t declared = u32(bytes_, 44);
+    const size_t declared = fat_sector_limit();
     for (size_t i = 0; i < kHeaderDifatEntries && fat_sectors.size() < declared; ++i) {
       const uint32_t id = u32(bytes_, 76 + 4 * i);
       if (id > kMaxRegularSector) break;

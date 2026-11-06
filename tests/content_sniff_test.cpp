@@ -1,9 +1,12 @@
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <map>
 #include <print>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -293,6 +296,49 @@ void verify_damaged_compound_files_are_not_encrypted() {
                         "a signature followed by noise");
 }
 
+// The peak resident size of this process so far, from the kernel's
+// high-water mark, in bytes.
+uint64_t peak_resident_bytes() {
+  std::ifstream status("/proc/self/status");
+  std::string line;
+  while (std::getline(status, line)) {
+    if (!line.starts_with("VmHWM:")) continue;
+    uint64_t kib = 0;
+    std::istringstream(line.substr(6)) >> kib;
+    return kib * 1024;
+  }
+  return 0;
+}
+
+// A compound file's header declares how many FAT sectors it has and its
+// DIFAT names them. A hostile file declares a count no file could hold and
+// names one FAT sector over and over through a DIFAT chain that loops back
+// on itself, so a reader that trusts the two reads that sector once per
+// name and grows its FAT far past the file: a few megabytes become
+// hundreds. The FAT can only be as large as the file's sectors need.
+void verify_repeated_fat_sectors_do_not_inflate_the_fat() {
+  using grparse_test::compound_detail::put32;
+  std::string hostile = office::encrypted_package();
+  constexpr std::size_t kSector = 512;
+  constexpr std::uint32_t kDifatSectors = 4096;  // 2 MB of DIFAT
+  const auto first_difat = static_cast<std::uint32_t>(hostile.size() / kSector - 1);
+  for (std::uint32_t i = 0; i < kDifatSectors; ++i) {
+    std::string difat(kSector, '\0');  // every entry names sector 0, the FAT
+    const std::uint32_t next = i + 1 < kDifatSectors ? first_difat + i + 1 : first_difat;
+    put32(difat, kSector - 4, next);
+    hostile += difat;
+  }
+  put32(hostile, 44, 0xFFFFFFFF);  // FAT sector count
+  put32(hostile, 68, first_difat);  // first DIFAT sector
+  put32(hostile, 72, kDifatSectors);
+  const uint64_t before = peak_resident_bytes();
+  grparse::encrypted_office_document(hostile);
+  const uint64_t grown = peak_resident_bytes() - before;
+  require(grown < 64U * 1024U * 1024U,
+          "a repeated FAT sector grew the process by " + std::to_string(grown >> 20) +
+              " MiB; the FAT must be sized by the file's sectors");
+}
+
 void verify_container_signatures() {
   require_sniff(zip_with_mimetype_entry("application/vnd.oasis.opendocument.text"),
                 "application/vnd.oasis.opendocument.text", "odt by mimetype entry");
@@ -498,6 +544,7 @@ int main() {
       verify_encrypted_office_packages_are_recognised,
       verify_encrypted_legacy_office_files_are_recognised,
       verify_damaged_compound_files_are_not_encrypted,
+      verify_repeated_fat_sectors_do_not_inflate_the_fat,
       verify_embedded_packages_do_not_decide_the_type,
       verify_binary_signatures,
       verify_text_signatures,

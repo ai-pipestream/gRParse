@@ -947,7 +947,16 @@ void absorb(docv1::TextItemBase* head, docv1::TextItemBase* tail) {
     head->set_orig(joined_text(head->orig().empty() ? head_text : head->orig(),
                                tail->orig().empty() ? tail->text() : tail->orig()));
   }
-  for (auto& entry : *tail->mutable_prov()) *head->add_prov() = std::move(entry);
+  // A provenance charspan measures code points from the item's start too,
+  // so it moves with the text it covers.
+  for (auto& entry : *tail->mutable_prov()) {
+    if (entry.has_charspan()) {
+      auto* charspan = entry.mutable_charspan();
+      charspan->set_start(static_cast<int32_t>(charspan->start() + shift));
+      charspan->set_end(static_cast<int32_t>(charspan->end() + shift));
+    }
+    *head->add_prov() = std::move(entry);
+  }
   for (auto& span : *tail->mutable_spans()) {
     auto* range = span.mutable_range();
     range->set_start(static_cast<int32_t>(range->start() + shift));
