@@ -4,7 +4,7 @@ set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-unset LIGHTON_MODEL LIGHTON_MODELS_DIR STACK_TAG
+unset LIGHTON_MODEL LIGHTON_MODELS_DIR LIGHTON_IMAGE STACK_TAG
 compose=(docker compose --project-directory "$root" -f "$root/compose.stack.yaml")
 "${compose[@]}" --profile heavy config --services > "$work/heavy"
 if grep -qx lighton-ocr "$work/heavy"; then
@@ -12,7 +12,7 @@ if grep -qx lighton-ocr "$work/heavy"; then
   exit 1
 fi
 "${compose[@]}" --profile lighton config --format json > "$work/base.json"
-LIGHTON_MODEL=4b LIGHTON_MODELS_DIR="$work/models" STACK_TAG=0.3.0 \
+LIGHTON_MODEL=4b LIGHTON_MODELS_DIR="$work/models" LIGHTON_IMAGE=lighton:test STACK_TAG=0.3.0 \
   "${compose[@]}" --profile lighton config --format json > "$work/custom.json"
 "${compose[@]}" -f "$root/compose.stack.standalone.yaml" --profile lighton \
   config --format json > "$work/standalone.json"
@@ -35,12 +35,17 @@ for config in configs.values():
     assert 'GRPARSE_LIGHTON_OCR_TARGET' not in config['services']['grparse']['environment']
 base = configs['base']['services']['lighton-ocr']
 assert base['environment']['GRPC_LIGHTON_MODEL'] == '0.8b'
-assert base['image'] == 'pipestreamai/grpc-lighton-ocr:latest'
+assert base['image'] == 'grpc-lighton-ocr:local'
 custom = configs['custom']['services']['lighton-ocr']
 assert custom['environment']['GRPC_LIGHTON_MODEL'] == '4b'
-assert custom['image'] == 'pipestreamai/grpc-lighton-ocr:0.3.0'
+assert custom['image'] == 'lighton:test'
 assert custom['volumes'][0]['source'] == str(work / 'models')
 standalone = configs['standalone']['services']['lighton-ocr']
 assert standalone['volumes'][0]['source'] == str(root / 'protos/grpc-lighton-ocr/models')
 print('lighton-compose-test: three compose configurations passed')
 PY
+
+if python3 "$root/scripts/release-stack.py" images --version 0.3.0 | grep -q grpc-lighton-ocr; then
+  echo 'experimental LightOn must not block a versioned fleet release' >&2
+  exit 1
+fi

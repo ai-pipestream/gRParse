@@ -27,6 +27,5 @@ grpc-pdfium         main         grpc-pdfium:{v}
 grpc-poppler        main         grpc-poppler:{v}
 grpc-qparse         main         grpc-qparse:{v}
 grpc-vlm-convert    main         grpc-vlm-convert:{v}
-grpc-lighton-ocr    main         grpc-lighton-ocr:{v}
 grpc-xml            main         grpc-xml:{v} grpc-xml-ui:{v}
 fastwarc-grpc       main         fastwarc-grpc:{v}

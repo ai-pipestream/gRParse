@@ -182,7 +182,10 @@ selection. Selecting a checkpoint does not load an engine.
 and a missing directory fails instead of creating a root-owned host path.
 With `compose.stack.standalone.yaml`, the default becomes
 `./protos/grpc-lighton-ocr/models`; create it before starting the profile.
-Image-only startup requires a published image or one loaded from a local build.
+The image defaults to `grpc-lighton-ocr:local`. Set `LIGHTON_IMAGE` to an
+image loaded from a local build or to a verified published reference. This
+experimental service is outside `STACK_TAG` and the versioned release fleet;
+a fleet release does not wait for the missing LightOn artifact.
 
 The server runs with a read-only root and dropped capabilities. Page bytes
 stay in memory; the model mount is not a request-data store. The gRPC health

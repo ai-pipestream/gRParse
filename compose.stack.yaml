@@ -377,7 +377,8 @@ services:
 
   lighton-ocr:
     profiles: ["lighton"]
-    image: pipestreamai/grpc-lighton-ocr:${STACK_TAG:-latest}
+    # Experimental local build, outside the versioned release fleet.
+    image: ${LIGHTON_IMAGE:-grpc-lighton-ocr:local}
     build: ../grpc-lighton-ocr
     expose:
       - "50074"
