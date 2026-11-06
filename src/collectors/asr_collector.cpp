@@ -24,7 +24,7 @@ asrv1::Task map_task(parsev1::AsrTask task) {
     case parsev1::ASR_TASK_TRANSCRIBE:
       return asrv1::TASK_TRANSCRIBE;
     default:
-      return asrv1::TASK_UNSPECIFIED;
+      return static_cast<asrv1::Task>(static_cast<int>(task));
   }
 }
 
@@ -103,7 +103,14 @@ CollectorOutcome collect_asr_document(
 
   asrv1::TranscribeRequest request;
   auto* options = request.mutable_options();
-  options->set_model(model);
+  // An explicit request selector must reach ASR without the deployment model:
+  // grpc-asr gives a nonempty model name precedence over a preset.
+  const bool request_selector = asr_options &&
+      ((asr_options->has_model() && !asr_options->model().empty()) ||
+       asr_options->model_type() != parsev1::ASR_MODEL_TYPE_UNSPECIFIED ||
+       !asr_options->model_type_raw().empty() ||
+       asr_options->has_remote());
+  if (!request_selector) options->set_model(model);
   options->set_emit_document(true);
   options->set_filename(filename);
   static const bool diarize_default = [] {
@@ -112,10 +119,6 @@ CollectorOutcome collect_asr_document(
   }();
   options->set_diarize(diarize_default);
   if (asr_options.has_value()) apply_asr_pipeline_options(*asr_options, options);
-  // Request options may clear the configured model only when they set another
-  // explicit model or a model_type grpc-asr can resolve; otherwise keep the
-  // deployment default so a partial asr_options still dials the pool.
-  if (options->model().empty()) options->set_model(model);
 
   ConcurrentUpload upload(
       context, *stream, request, bytes, /*always_send_chunk=*/false,
