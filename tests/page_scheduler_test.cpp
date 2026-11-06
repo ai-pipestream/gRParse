@@ -17,6 +17,8 @@
 #include <opencv2/imgcodecs.hpp>
 
 #include "grparse/page_scheduler.h"
+#include "grparse/document_assembly.h"
+#include "ai/pipestream/parse/v1/parse_stream.pb.h"
 #include "support/check.h"
 #include "support/fake_pdf_backend.h"
 
@@ -966,8 +968,7 @@ void verify_ocr_off_still_runs_layout() {
           "layout keeps the recognition-off page on the raster path");
 }
 
-// kForce recognizes every page, full-digital ones included, and the
-// recognized text replaces the embedded layer instead of merging with it.
+// Replace only weak embedded layers, and carry that fact onto the page wire.
 void verify_replace_broken_text_layer_replaces_only_weak_pages() {
   // Two pages: page 1 dense (skip_ocr true), page 2 weak (skip_ocr false).
   class MixedSource final : public grparse::PageSource {
@@ -1014,10 +1015,22 @@ void verify_replace_broken_text_layer_replaces_only_weak_pages() {
                 delivered[1]->source == grparse::OcrPage::Source::kOcr &&
                 delivered[1]->lines[0].text.starts_with("page-"),
             "weak page is OCR-only with text_layer_replaced");
+    grparse::AssemblyCursor cursor;
+    ai::pipestream::parse::v1::PageData complete_page;
+    ai::pipestream::parse::v1::PageData replaced_page;
+    grparse::append_page_data(*delivered[0], 1, &cursor, &complete_page);
+    grparse::append_page_data(*delivered[1], 2, &cursor, &replaced_page);
+    require(!complete_page.page_meta().quality().has_text_layer_replaced(),
+            "complete page must not claim text replacement on the wire");
+    require(replaced_page.page_meta().quality().has_text_layer_replaced() &&
+                replaced_page.page_meta().quality().text_layer_replaced(),
+            "weak page replacement must reach PageQuality on the wire");
   }
   require(recognizer.calls.load() == 1, "only the weak page is recognized");
 }
 
+// kForce recognizes every page, full-digital ones included, and the
+// recognized text replaces the embedded layer instead of merging with it.
 void verify_force_ocr_replaces_the_embedded_layer() {
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(
