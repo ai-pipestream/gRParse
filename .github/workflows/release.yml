@@ -32,6 +32,7 @@ on:
       - scripts/release-notes.sh
       - scripts/release-stack.py
       - scripts/test/release-test.sh
+      - scripts/test/lighton-compose-test.sh
       - compose.stack*.yaml
       - .github/workflows/release.yml
   push:
@@ -42,6 +43,7 @@ on:
       - scripts/release-notes.sh
       - scripts/release-stack.py
       - scripts/test/release-test.sh
+      - scripts/test/lighton-compose-test.sh
       - compose.stack*.yaml
       - .github/workflows/release.yml
   workflow_run:
@@ -72,6 +74,8 @@ jobs:
         run: |
           command -v shellcheck >/dev/null || { apt-get update && apt-get install -y --no-install-recommends shellcheck; }
           shellcheck scripts/release.sh scripts/release-notes.sh scripts/test/release-test.sh
+      - name: Check optional LightOn compose wiring
+        run: scripts/test/lighton-compose-test.sh
       - name: Tag a throwaway fleet
         run: scripts/test/release-test.sh
 
