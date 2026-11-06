@@ -23,3 +23,12 @@ Every other compared field must match exactly under the typed comparison in
 - Docling: `texts_size=1` (pages 1 and 2 fused), `pages_size=2`
 - gRParse: `texts_size=2` (one item per page), `pages_size=2`
 - Reading-order text, page sizes (612x792), tables (0), pictures (0) must match
+
+## Scope of this gate
+
+This test compares committed snapshots. It checks wire compatibility and the
+comparison rules, including mutation tests for missing geometry and reordered
+body references. It does not run the current parser. A live parse against the
+same fixture is still required before claiming parser-output parity. The current
+fixture contains no tables or pictures, so their comparison loops provide no
+coverage of extraction quality.
