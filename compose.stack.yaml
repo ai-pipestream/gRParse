@@ -10,12 +10,12 @@
 #              xml, markup, ebcdic, email (proxied tabs), plus fastwarc
 #              (a native shell tab, no UI container of its own).
 #   heavy    - asr (CPU whisper image; mount ggml weights into ./models of
-#              grpc-asr or point ASR models elsewhere), enrich,
-#              vlm-convert (needs an external VLM endpoint via
-#              VLM_ENDPOINT; its tab shows an amber "no VLM endpoint"
-#              state otherwise), and lighton-ocr (LightOnOCR-3 on 50074;
-#              the coordinator does not dial it yet, and its native engine
-#              is not linked, so a page returns ENGINE_UNAVAILABLE).
+#              grpc-asr or point ASR models elsewhere), enrich and
+#              vlm-convert (need ENRICH_VLM_URL / VLM_ENDPOINT).
+#   lighton  - experimental LightOnOCR-3 service on 50074. Build locally
+#              until its image is published. No coordinator route or native
+#              inference engine yet; pages return ENGINE_UNAVAILABLE.
+#              See compose/README.md for startup and readiness checks.
 #   calamine - existing opt-in, unchanged.
 #   pdf-backends - grpc-qparse, a second Apache-2.0 PDF backend for the
 #              consensus vote (set GRPARSE_PDF_BACKEND to a comma list).
@@ -376,7 +376,7 @@ services:
       - no-new-privileges:true
 
   lighton-ocr:
-    profiles: ["heavy"]
+    profiles: ["lighton"]
     image: pipestreamai/grpc-lighton-ocr:${STACK_TAG:-latest}
     build: ../grpc-lighton-ocr
     expose:
@@ -385,7 +385,12 @@ services:
       GRPC_LIGHTON_MODELS_DIR: /models
       GRPC_LIGHTON_MODEL: "${LIGHTON_MODEL:-0.8b}"
     volumes:
-      - ../grpc-lighton-ocr/models:/models:ro
+      - type: bind
+        source: ${LIGHTON_MODELS_DIR:-../grpc-lighton-ocr/models}
+        target: /models
+        read_only: true
+        bind:
+          create_host_path: false
     read_only: true
     cap_drop:
       - ALL

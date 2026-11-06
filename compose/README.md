@@ -159,3 +159,38 @@ the provisioned datasource (`compose/grafana/provisioning/datasources/prometheus
 and dashboards (`compose/grafana/dashboards/grparse-pipeline-overview.json` and
 `compose/grafana/dashboards/grparse-corpus-eval.json`).
 
+
+## Experimental LightOn OCR service
+
+The `lighton` profile starts the LightOnOCR-3 service shell on the compose
+network at `lighton-ocr:50074`. It is separate from `heavy`: the published
+`pipestreamai/grpc-lighton-ocr:latest` image is not available yet, and neither
+the native inference engine nor the gRParse parse leg is implemented. There
+is no shell tab or coordinator target. This profile does not add working OCR
+to gRParse.
+
+From a sibling workspace, build and start only this service:
+
+```sh
+mkdir -p ../grpc-lighton-ocr/models
+docker compose -f compose.stack.yaml --profile lighton up -d --build lighton-ocr
+```
+
+`LIGHTON_MODEL` defaults to `0.8b`; `4b` is the other accepted checkpoint
+selection. Selecting a checkpoint does not load an engine.
+`LIGHTON_MODELS_DIR` overrides the host model directory; the bind is read-only
+and a missing directory fails instead of creating a root-owned host path.
+With `compose.stack.standalone.yaml`, the default becomes
+`./protos/grpc-lighton-ocr/models`; create it before starting the profile.
+Image-only startup requires a published image or one loaded from a local build.
+
+The server runs with a read-only root and dropped capabilities. Page bytes
+stay in memory; the model mount is not a request-data store. The gRPC health
+RPC reports transport availability, not inference readiness. Check
+`ai.pipestream.lightonocr.v1.LightOnOcrService/GetServiceInfo`: currently
+`engine_loaded` is false. A nonempty raster produces a typed
+`PAGE_FAILURE_CODE_ENGINE_UNAVAILABLE` event followed by a completion trailer
+with zero successful pages. An OK stream status alone is not parse success.
+
+The separate Unlimited-OCR 2 project has a native engine but no gRPC server
+yet. It is not enabled by this profile.
