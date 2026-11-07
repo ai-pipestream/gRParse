@@ -99,7 +99,8 @@ const KNOWN_UIS = {
     proto: "proto/fastwarc/v1/warc_service.proto",
     include: "proto",
     service: "fastwarc.v1.WarcService",
-    method: "GetServiceInfo",
+    // No info RPC in the 1.1.0 contract: the native tab probes
+    // grpc.health.v1 instead (server.js, FastWARC bridge).
   },
   pdf: {
     repo: "grpc-pdf-inspector",

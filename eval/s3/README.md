@@ -171,7 +171,6 @@ red on purpose so every report says whose they are:
 
 | check | owner | what |
 |---|---|---|
-| `parse_succeeds` (WARC) | fastwarc-grpc | the stack leaves `GRPARSE_FASTWARC_TARGET` unset until the vendored `fastwarc.v1` dialect and the published image agree |
 | `parse_succeeds` (`corners.xlsx`) | grpc-libreoffice | a sheet with cells at the far corners of the grid runs past the office core's per-document timeout |
 | `table_grids` (`streaming-markup.html`, `html-spec.html`) | grpc-markup | a header cell spanning columns yields a ragged grid (the 15 MB page parses since the collector channels took the server's message limit; 23 of its tables are ragged) |
 

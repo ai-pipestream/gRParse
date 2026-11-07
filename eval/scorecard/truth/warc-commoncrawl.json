@@ -1,0 +1,18 @@
+{
+ "doc_id": "warc-commoncrawl",
+ "source": "the archive read directly (zcat), record headers and the warcinfo payload",
+ "notes": [
+  "A WARC archive has no headings, tables or figures: each record folds into a group of metadata lines plus its payload when that reads as text.",
+  "Anchors walk the first records in stream order: the warcinfo record and its payload fields, then the first request record."
+ ],
+ "headings": [],
+ "anchors": [
+  "warc-type: warcinfo",
+  "isPartOf: CC-MAIN-2020-34",
+  "publisher: Common Crawl",
+  "format: WARC File Format 1.1",
+  "warc-type: request"
+ ],
+ "tables": [],
+ "figures": []
+}

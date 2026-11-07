@@ -69,7 +69,7 @@ flowchart LR
     shell -- "/api/parse relay" --> grparse["gRParse :50051"]
     shell -- "/ui/&lt;name&gt;/ reverse proxy" --> proxied["proxied frontends<br/>lol-html, libreoffice, calamine, ..."]
     proxied --> theirs["their gRPC services"]
-    shell -- "native bridges<br/>/api/fastwarc /api/asr<br/>/api/enrich /api/vlm-convert" --> native["fastwarc-grpc :50061,<br/>grpc-asr :50055, grpc-enrich :50056,<br/>grpc-vlm-convert :50058"]
+    shell -- "native bridges<br/>/api/fastwarc /api/asr<br/>/api/enrich /api/vlm-convert" --> native["fastwarc-grpc :50060,<br/>grpc-asr :50055, grpc-enrich :50056,<br/>grpc-vlm-convert :50058"]
     shell -. "/api/uis GetServiceInfo probes" .-> theirs
 ```
 
@@ -682,10 +682,9 @@ collector selection stays verbatim, readings and all, and a fan-out leg
 whose primary failed keeps its full reading, which is what keeps a workbook
 parsing when libreoffice fails on it (a partial success with the
 libreoffice failure listed under `collector:libreoffice`). fastwarc is
-the other way round: a collector here, but
-the stack leaves `GRPARSE_FASTWARC_TARGET` unset because the vendored
-`fastwarc.v1` dialect is not wire-compatible with the published image; the
-shell dials it itself.
+both: gRParse dials it as a collector (`GRPARSE_FASTWARC_TARGET`) and the
+shell keeps its native tab. Both speak the contract of the fastwarc-grpc
+crate the stack pins (1.1.0 on crates.io).
 
 The libreoffice leg is a hybrid: office text, tables, and typed content are
 exact from the office core, so gRParse does not OCR office documents — but

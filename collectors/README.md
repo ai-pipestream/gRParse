@@ -13,7 +13,7 @@ re-copy the file and rebuild.
 | `epub_types.proto`, `epub_service.proto` | grpc-epub `proto/ai/pipestream/epub/v1/` (`types.proto` is renamed here to stay unambiguous; it stages back to `ai/pipestream/epub/v1/types.proto`) |
 | `markup.proto`, `markup_service.proto` | grpc-markup `proto/ai/pipestream/markup/v1/` |
 | `lolhtml_types.proto`, `lolhtml_service.proto` | grpc-lol-html `proto/lolhtml/v1/` (`types.proto` is renamed here to stay unambiguous; it stages back to `lolhtml/v1/types.proto`) |
-| `warc.proto`, `warc_service.proto` | fastwarc-grpc `proto/fastwarc/v1/` (stages back to `fastwarc/v1/`) |
+| `warc.proto`, `warc_service.proto` | The `fastwarc-grpc` crate on crates.io, version 1.1.0, `proto/fastwarc/v1/` (published from chatnoir-resiliparse `fastwarc-grpc/`, tag `v1.1.0`; the ai-pipestream fastwarc-grpc repo carries the same bytes and pins the same version in its image). Stages back to `fastwarc/v1/` |
 | `pdf_types.proto`, `pdf_service.proto` | grpc-pdf-inspector `proto/ai/pipestream/pdf/v1/` (`types.proto` is renamed here to stay unambiguous; it stages back to `ai/pipestream/pdf/v1/types.proto`) |
 | `calamine_types.proto`, `calamine_service.proto` | grpc-calamine `proto/calamine/v1/` (`types.proto` is renamed here to stay unambiguous; it stages back to `calamine/v1/types.proto`. The package is `calamine.v1`, not `ai.pipestream.*`. Copied from that repo's GitHub `main`, which carries the fleet port, the UiInfo block, and the `row_gap` event; `development` is behind it) |
 | `enrich_service.proto` | grpc-enrich `proto/ai/pipestream/enrich/v1/enrich_service.proto` (the chart derender leg, `GRPARSE_ENRICH_TARGET`; an enrichment peer rather than a collector, dialed after the merge) |

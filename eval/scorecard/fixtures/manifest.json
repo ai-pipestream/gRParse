@@ -18,6 +18,10 @@
    "sha256": "8b7d704d72cec25ac37b0a3fb2d76b794d13fd2f45a3885ecea288ab2cc708ff",
    "bytes": 10894
   },
+  "commoncrawl-sample.warc.gz": {
+   "sha256": "5cb22a7ab6d90664d69d5d17bdb4054b8eccc9b0a3b0e766dbf6469f32613221",
+   "bytes": 135896
+  },
   "cover-first.epub": {
    "sha256": "bf52a4d7618d086fd7ec9326807343d0d3b39f5c516623d48c2e651301e5a28c",
    "bytes": 1762

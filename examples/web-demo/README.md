@@ -197,23 +197,24 @@ The standalone fastwarc-grpc server (`fastwarc.v1.WarcService`, default port
 **native tab**: in shell mode the tab bar always shows "FastWARC" next to
 the registry tabs, pointing at the bridge's own `/fastwarc.html`, whether or
 not the server is reachable (its status dot and the page's badge follow
-`GET /api/fastwarc/status`, a `GetServiceInfo` probe with a
-`grpc.health.v1.Health/Check` fallback, at the same 1.5s deadline and 5s
+`GET /api/fastwarc/status`, a `grpc.health.v1.Health/Check` probe (the
+1.1.0 contract has no info RPC), at the same 1.5s deadline and 5s
 cache as the `/api/uis` probes). The page is also served standalone at
 `/fastwarc.html` when shell mode is off.
 
 The page posts archive bytes to `POST /api/fastwarc/parse` (same 500 MiB cap
-as `/api/parse`; `parse_http`/`verify_digests` as query flags), the bridge
-opens the bidirectional `ParseWarc` stream, uploads the body in 256 KiB
-chunks, and relays the response stream as NDJSON: one `start` line per
-record, a `preview` line with the first 4 KiB of payload when it reads as
-text, an `end` line (with digest verification results when requested),
+as `/api/parse`; `parse_http`/`verify_digests` as query flags, where
+`verify_digests` drops records whose block digest is missing or invalid),
+the bridge opens the bidirectional `ParseWarc` stream with batched
+responses, uploads the body in 256 KiB chunks, and relays the events as
+NDJSON: one `start` line per record, a `preview` line with the first 4 KiB
+of payload when it reads as text, an `end` line with the payload length,
 `error` lines for record failures, and a final `done` summary. The contract
 resolves from the sibling `fastwarc-grpc` checkout (or the vendored
 `peer-protos/fastwarc-grpc/proto` copy the image carries) through the same
-`KNOWN_UIS` registry as the other native tabs; the vendored
-`collectors/warc*.proto` files speak the legacy chatnoir dialect and are
-used only by the C++ collector's own client, never by this bridge.
+`KNOWN_UIS` registry as the other native tabs. It is the same contract as
+the C++ collector's `collectors/warc*.proto`: both are copies of the
+fastwarc-grpc 1.1.0 crate's protos.
 
 ## Native ASR, Enrich, and VLM Convert tabs
 
