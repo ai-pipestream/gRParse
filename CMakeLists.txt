@@ -1360,6 +1360,40 @@ if(BUILD_TESTING)
 endif()
 
 include(cmake/Embeddings.cmake)
+# ---- golden corpus: every InputFormat has a fixture, read directly --------
+# Appended as one block. The corpus manifest (tests/golden/
+# corpus_manifest.textproto) is typed by a test-only proto that imports the
+# staged parse_types.proto for its InputFormat and Collector enums, so it is
+# compiled by its own protoc step against the staged tree. The test reads
+# tests/golden/corpus itself, sniffs and routes every fixture, and needs no
+# service: it is unit tier.
+if(BUILD_TESTING)
+  set(GOLDEN_MANIFEST_DIR "${CMAKE_CURRENT_BINARY_DIR}/golden_manifest")
+  file(MAKE_DIRECTORY "${GOLDEN_MANIFEST_DIR}")
+  add_custom_command(
+    OUTPUT "${GOLDEN_MANIFEST_DIR}/corpus_manifest.pb.cc"
+           "${GOLDEN_MANIFEST_DIR}/corpus_manifest.pb.h"
+    COMMAND $<TARGET_FILE:protoc>
+    ARGS --proto_path=${CMAKE_CURRENT_SOURCE_DIR}/tests/golden
+         --proto_path=${STAGED_PROTO_DIR}
+         --proto_path=${protobuf_SOURCE_DIR}/src
+         --cpp_out=${GOLDEN_MANIFEST_DIR}
+         ${CMAKE_CURRENT_SOURCE_DIR}/tests/golden/corpus_manifest.proto
+    DEPENDS tests/golden/corpus_manifest.proto parse_types.proto protoc
+    VERBATIM)
+  add_library(grparse_golden_manifest STATIC "${GOLDEN_MANIFEST_DIR}/corpus_manifest.pb.cc")
+  target_include_directories(grparse_golden_manifest PUBLIC "${GOLDEN_MANIFEST_DIR}")
+  target_link_libraries(grparse_golden_manifest PUBLIC grparse_proto)
+  add_executable(golden-corpus-test tests/golden_corpus_test.cpp)
+  target_include_directories(golden-corpus-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+  target_link_libraries(golden-corpus-test PRIVATE grparse_core grparse_golden_manifest grparse_flags)
+  add_test(NAME golden-corpus-test COMMAND golden-corpus-test)
+  add_dependencies(grparse-tests golden-corpus-test)
+  set_tests_properties(golden-corpus-test PROPERTIES
+    TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse
+    ENVIRONMENT "GRPARSE_SOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+
 # Tier labels for every test above, the compose-stack suites, and the
 # check that keeps each test in exactly one tier (#244).
 include(cmake/TestTiers.cmake)

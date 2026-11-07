@@ -1,0 +1,59 @@
+// The typed manifest of tests/golden/corpus: every fixture, the InputFormat
+// its bytes and name resolve to, the collector the default route sends it
+// to, and where a full golden of its parse can run. Test-only; read by
+// golden-corpus-test (tests/golden_corpus_test.cpp) from
+// tests/golden/corpus_manifest.textproto.
+syntax = "proto3";
+
+package grparse.test.golden;
+
+import "ai/pipestream/parse/v1/parse_types.proto";
+
+// Where a full golden of a fixture's parse (the whole Document, not only the
+// sniff) can run, named after the tiers of cmake/TestTiers.cmake. The sniff
+// and route of every fixture are checked in the unit tier whatever this says.
+enum GoldenTier {
+  GOLDEN_TIER_UNSPECIFIED = 0;
+  // In the image build with nothing but the fixture: gRParse parses the
+  // format in process (the wiki storage handler is the one such path).
+  GOLDEN_TIER_UNIT = 1;
+  // In process on the CV path, which needs the layout and OCR model files
+  // under models/: raster images.
+  GOLDEN_TIER_MODELS = 2;
+  // Needs a service from a compose stack: the collector the format routes to,
+  // or for a PDF the PdfBackendService GRPARSE_PDF_BACKEND names.
+  GOLDEN_TIER_STACK = 3;
+  // Nowhere: the fixture carries only what the sniff needs (header_only), or
+  // the default route sends the format to the CV path, which cannot decode
+  // it, because no collector reads it.
+  GOLDEN_TIER_NONE = 4;
+}
+
+message CorpusFixture {
+  // Path relative to tests/golden/corpus.
+  string path = 1;
+  // The InputFormat the fixture resolves to: resolve_mimetype over its bytes
+  // and file name with no declared type, then input_format_for.
+  // INPUT_FORMAT_UNSPECIFIED states that it resolves to none (a WARC archive
+  // is outside the enum).
+  ai.pipestream.parse.v1.InputFormat format = 2;
+  // The collector that parses it: what route_document picks from the name
+  // and bytes, or for a declared_only fixture the one a caller must select.
+  ai.pipestream.parse.v1.Collector collector = 3;
+  // Where a full golden of this fixture can run.
+  GoldenTier full_golden = 4;
+  // The bytes hold only the container or record headers the sniff reads; no
+  // parser could produce a document from them.
+  bool header_only = 5;
+  // Neither bytes nor name can say what the format is, so a caller declares
+  // it (EBCDIC records need a caller-supplied layout and COLLECTOR_EBCDIC).
+  // The fixture must then resolve to no InputFormat at all, which is what
+  // keeps it from being misread as something else.
+  bool declared_only = 6;
+  // What the fixture holds and where it came from.
+  string note = 7;
+}
+
+message CorpusManifest {
+  repeated CorpusFixture fixtures = 1;
+}

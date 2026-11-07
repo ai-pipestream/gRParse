@@ -58,6 +58,8 @@ void verify_common_mime_mappings() {
 // and template variants, and plain text (which parses as Markdown).
 void verify_container_and_variant_mappings() {
   require_format("application/zip", "a.dclx", parsev1::INPUT_FORMAT_DCLX, "dclx");
+  require_format("application/xml", "notes.dclg", parsev1::INPUT_FORMAT_XML_DOCLANG,
+                 "a DocLang document by its own extension, not bare XML read as JATS");
   require_format("application/gzip", "books.TAR.GZ", parsev1::INPUT_FORMAT_METS_GBS, "mets");
   require_format("application/json", "a.boxnote", parsev1::INPUT_FORMAT_BOXNOTE, "boxnote");
   require_format("text/plain", "a.txt", parsev1::INPUT_FORMAT_MD, "text/plain");
