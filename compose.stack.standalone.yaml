@@ -18,8 +18,8 @@ services:
     volumes: !override
       - ./protos/grpc-asr/models:/models:ro
 
-  # Optional experimental service; an empty directory is enough while its
-  # native engine is unavailable. Create it before enabling --profile lighton.
+  # Optional CPU 0.8B service. Prepare the verified model and vision GGUF
+  # files before enabling --profile lighton; an empty directory fails startup.
   lighton-ocr:
     volumes: !override
       - type: bind

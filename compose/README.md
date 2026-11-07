@@ -162,38 +162,41 @@ and dashboards (`compose/grafana/dashboards/grparse-pipeline-overview.json` and
 
 ## Experimental LightOn OCR service
 
-The `lighton` profile starts the LightOnOCR-3 service shell on the compose
-network at `lighton-ocr:50074`. It is separate from `heavy`: the published
-`pipestreamai/grpc-lighton-ocr:latest` image is not available yet, and neither
-the native inference engine nor the gRParse parse leg is implemented. There
-is no shell tab or coordinator target. This profile does not add working OCR
-to gRParse.
+The `lighton` profile starts the native CPU LightOnOCR-3-0.8B service on the
+compose network at `lighton-ocr:50074`. It is separate from `heavy` and uses
+a local image by default. There is no shell tab or coordinator target; this
+profile does not add an OCR route to gRParse. Native inference has a
+committed-source Dockerfile and read-only RPC qualification in the
+[service receipt](https://git.rokkon.com/ai-pipestream/grpc-lighton-ocr/src/branch/main/docs/native-proof.md).
+That receipt covers CPU 0.8B, not 4B, ARM, GPU, or general OCR accuracy.
 
+Prepare the pinned `model-bf16.gguf` and `vision-bf16.gguf` files using the
+[service instructions](https://git.rokkon.com/ai-pipestream/grpc-lighton-ocr/src/branch/main/README.md).
 From a sibling workspace, build and start only this service:
 
 ```sh
-mkdir -p ../grpc-lighton-ocr/models
+export LIGHTON_MODELS_DIR=/path/to/prepared-lighton-models
 docker compose -f compose.stack.yaml --profile lighton up -d --build lighton-ocr
 ```
 
-`LIGHTON_MODEL` defaults to `0.8b`; `4b` is the other accepted checkpoint
-selection. Selecting a checkpoint does not load an engine.
+`LIGHTON_MODEL` defaults to `0.8b`. Production startup rejects `4b`, missing
+weights, and files whose hashes do not match the pinned artifacts.
 `LIGHTON_MODELS_DIR` overrides the host model directory; the bind is read-only
 and a missing directory fails instead of creating a root-owned host path.
 With `compose.stack.standalone.yaml`, the default becomes
-`./protos/grpc-lighton-ocr/models`; create it before starting the profile.
+`./protos/grpc-lighton-ocr/models`; populate it before starting the profile.
 The image defaults to `grpc-lighton-ocr:local`. Set `LIGHTON_IMAGE` to an
 image loaded from a local build or to a verified published reference. This
 experimental service is outside `STACK_TAG` and the versioned release fleet;
-a fleet release does not wait for the missing LightOn artifact.
+a fleet release does not wait for LightOn publication.
 
 The server runs with a read-only root and dropped capabilities. Page bytes
-stay in memory; the model mount is not a request-data store. The gRPC health
-RPC reports transport availability, not inference readiness. Check
-`ai.pipestream.lightonocr.v1.LightOnOcrService/GetServiceInfo`: currently
-`engine_loaded` is false. A nonempty raster produces a typed
-`PAGE_FAILURE_CODE_ENGINE_UNAVAILABLE` event followed by a completion trailer
-with zero successful pages. An OK stream status alone is not parse success.
+stay in memory; the model mount is not a request-data store. The empty-name
+gRPC health check reports transport availability. For OCR readiness, check
+health with service `ai.pipestream.lightonocr.v1.LightOnOcrService` and require
+`SERVING`, plus `GetServiceInfo.engine_loaded = true`. Explicit diagnostic
+mode has no engine and reports `NOT_SERVING` for that service. Inspect page
+failures and completion counts; an OK stream status alone is not parse success.
 
-The separate Unlimited-OCR 2 project has a native engine but no gRPC server
-yet. It is not enabled by this profile.
+The separate Unlimited-OCR 2 project is not enabled by this profile and has
+no native gRParse collector route.
