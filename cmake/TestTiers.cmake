@@ -6,6 +6,9 @@
 #   loopback   an in-process gRPC server, fake backend or loopback HTTP
 #   models     the model files under models/ (skip 77 without them, a
 #              failure under GRPARSE_TEST_REQUIRE_MODELS=1)
+#   embeddings the embedding model bundle (GRPARSE_EMBEDDING_TEST_MODELS);
+#              skip 77 inside every image build, run after the openvino build
+#              through the shipped grparse-embedding-check binaries
 #   emulators  storage and VLM emulators the cpu-image CI job starts after
 #              the build (skip 77 inside the image build)
 #   stack      a docker compose stack; opt-in through GRPARSE_STACK_SUITES
@@ -30,7 +33,8 @@ set(GRPARSE_TIER_LOOPBACK
   ort-session-ep-test)
 set(GRPARSE_TIER_MODELS
   layout-engine-test table-structure-engine-test figure-classifier-test
-  chunk-hf-model-test embedding-model-test embedding-reference-test)
+  chunk-hf-model-test)
+set(GRPARSE_TIER_EMBEDDINGS embedding-model-test embedding-reference-test)
 set(GRPARSE_TIER_EMULATORS
   storage-connectors-e2e-test remote-sources-e2e-test chart-outputs-e2e-test)
 
@@ -51,7 +55,7 @@ endforeach()
 
 set(GRPARSE_TIER_BENCH)
 
-foreach(tier loopback models emulators bench)
+foreach(tier loopback models embeddings emulators bench)
   string(TOUPPER "${tier}" tier_var)
   foreach(test_name IN LISTS GRPARSE_TIER_${tier_var})
     if(NOT TEST ${test_name})
@@ -71,7 +75,7 @@ set_tests_properties(ctest-tiers PROPERTIES LABELS grparse TIMEOUT 60)
 
 # Everything else in the grparse suite is a unit test.
 get_property(grparse_all_tests DIRECTORY PROPERTY TESTS)
-set(grparse_tier_names loopback models emulators stack bench)
+set(grparse_tier_names loopback models embeddings emulators stack bench)
 foreach(test_name IN LISTS grparse_all_tests)
   get_test_property(${test_name} LABELS test_labels)
   if(NOT test_labels OR NOT "grparse" IN_LIST test_labels)

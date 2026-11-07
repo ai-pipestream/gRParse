@@ -3,7 +3,7 @@
 # Every test in the grparse suite carries exactly one tier label
 # (cmake/TestTiers.cmake, #244), so a test added without one fails here
 # instead of landing in no tier or two. Reads ctest's own JSON listing.
-set(tiers unit loopback models emulators stack bench)
+set(tiers unit loopback models embeddings emulators stack bench)
 
 execute_process(
   COMMAND "${CTEST_COMMAND}" --test-dir "${GRPARSE_BINARY_DIR}" -N --show-only=json-v1

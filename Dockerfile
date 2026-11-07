@@ -107,6 +107,10 @@ ARG GRPARSE_BUILD_CACHE_SCOPE=
 # COPY-ed proto as newer than a cached generated header, so a content stamp
 # decides: any proto change discards the staged and generated trees, which
 # forces regeneration; everything else stays warm.
+# Which tier labels the in-build ctest may skip (scripts/check-skips.sh,
+# #247). No models, embedding bundle or emulators in this build, so those
+# three; any other skip fails the build.
+ARG GRPARSE_EXPECTED_SKIPS=models,embeddings,emulators
 RUN --mount=type=cache,id=grparse-ubuntu26-cuda13.4-trt11.4-grpc1.84.1-ort1.30.0-cxx23-sessionep2-static1-simdutf9-ocv500-tokcpp1${GRPARSE_BUILD_CACHE_SCOPE},sharing=locked,target=/build \
     --mount=type=cache,id=grparse-ccache-cuda-amd64,target=/ccache \
     if [ -d /opt/grparse-seed ] && [ ! -f /build/CMakeCache.txt ]; then \
@@ -124,6 +128,8 @@ RUN --mount=type=cache,id=grparse-ubuntu26-cuda13.4-trt11.4-grpc1.84.1-ort1.30.0
  && cmake --build /build --target grparse-server grparse-stream-client grparse-embed-text grparse-tests --parallel ${GRPARSE_BUILD_JOBS} \
  && ccache --show-stats \
  && LD_LIBRARY_PATH=/opt/opencv/lib ctest --test-dir /build --output-on-failure -L grparse -LE "stack|eval|bench" -j "${GRPARSE_BUILD_JOBS}" \
+      --output-junit /build/ctest-junit.xml \
+ && sh scripts/check-skips.sh /build/ctest-junit.xml "${GRPARSE_EXPECTED_SKIPS}" \
  && mkdir -p /out \
  && cp /build/grparse-server /out/grparse-server \
  && cp /build/grparse-stream-client /out/grparse-stream-client \
