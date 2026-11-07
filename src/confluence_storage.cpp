@@ -1,7 +1,7 @@
-// The wiki storage handler's entry points: format detection and the guarded
-// parse. The dialect itself is split across src/confluence/ - the character
-// and entity helpers, the node tree, the pull parser, and the fold into a
-// Document.
+// The wiki storage handler's entry point: the guarded parse (the name rules
+// are in confluence_storage_format.cpp). The dialect itself is split across
+// src/confluence/ - the character and entity helpers, the node tree, the
+// pull parser, and the fold into a Document.
 #include "grparse/confluence_storage.h"
 
 #include <exception>
@@ -12,7 +12,6 @@
 #include "confluence/storage_fold.h"
 #include "confluence/storage_node.h"
 #include "confluence/storage_parser.h"
-#include "confluence/storage_text.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 
@@ -53,15 +52,6 @@ CollectorOutcome parse_storage_body(const std::string& bytes) {
 }
 
 }  // namespace
-
-bool confluence_storage_format(const std::string& filename,
-                               const std::string& content_type) {
-  const std::string name = confluence::lowercase(filename);
-  const std::string type = confluence::lowercase(content_type);
-  return confluence::ends_with(name, ".confluence") ||
-         confluence::ends_with(name, ".storage.xhtml") ||
-         type == kConfluenceStorageMimetype;
-}
 
 CollectorOutcome parse_confluence_storage(const std::string& bytes) {
   CollectorOutcome outcome;

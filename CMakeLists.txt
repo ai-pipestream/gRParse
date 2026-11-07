@@ -740,6 +740,7 @@ add_library(grparse_core STATIC
   src/call_executor.cpp
   src/collector_coordinator.cpp
   src/confluence_storage.cpp
+  src/confluence_storage_format.cpp
   src/confluence/storage_blocks.cpp
   src/confluence/storage_fold.cpp
   src/confluence/storage_node.cpp
@@ -1068,8 +1069,10 @@ if(BUILD_TESTING)
   add_dependencies(grparse-tests ${GRPARSE_DATA_TESTS})
   set_tests_properties(${GRPARSE_DATA_TESTS} PROPERTIES
     TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
+  # The fuzz regressions tier replays the inputs the fuzzers found
+  # (fuzz/regressions/), under the fuzzers' heap budget.
   set_tests_properties(content-sniff-test PROPERTIES
-    ENVIRONMENT "GRPARSE_TEST_CORPUS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/golden/corpus")
+    ENVIRONMENT "GRPARSE_TEST_CORPUS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/golden/corpus;GRPARSE_FUZZ_REGRESSIONS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/fuzz/regressions")
   # The response cap's setting lives in the server's own source, not the
   # library, like the rest of the startup configuration.
   target_sources(unary-response-cap-test PRIVATE src/server_config.cpp)
