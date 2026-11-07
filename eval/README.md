@@ -205,6 +205,19 @@ baseline was recorded on. Gatsby prose is public domain (Project
 Gutenberg transcription); every other fixture text was written for the
 fixture. Fixtures stay under 2 MB each.
 
+`tests/golden/corpus/formats/` is not part of the scored corpus: it holds one
+small synthetic fixture for each `InputFormat` the scored files do not cover
+(AsciiDoc, CSV, LaTeX, WebVTT, the legacy and OpenDocument office formats,
+RTF, MHTML, DocLang, METS, XBRL, BoxNote, Docling JSON, iWork, AFP, EBCDIC,
+audio, video) plus `table-picture.pdf`, the pending Docling parity fixture.
+`tests/golden/build_format_fixtures.py` regenerates them (LibreOffice and
+ffmpeg needed). `tests/golden/corpus_manifest.textproto`, typed by
+`tests/golden/corpus_manifest.proto`, lists every file under
+`tests/golden/corpus` with the `InputFormat` it must resolve to, the
+collector it must route to, and the tier a full golden of its parse needs;
+`golden-corpus-test` (unit tier) reads the directory against it and fails
+when an `InputFormat` value has no fixture.
+
 Metric and summary code lives outside the service; the CTest registration
 (`LABELS eval`, `SKIP_RETURN_CODE 77`, like `vlm-oracle-eval`) is a
 `CMakeLists.txt` change made alongside the runner.

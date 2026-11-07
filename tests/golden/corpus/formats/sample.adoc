@@ -1,0 +1,19 @@
+= Golden Corpus Notes
+:author: gRParse fixtures
+
+This AsciiDoc fixture was written for the gRParse golden corpus.
+
+== A Section
+
+A paragraph under the first section, with *bold* and _italic_ words.
+
+[cols="1,1"]
+|===
+|Item |Count
+
+|Apples
+|3
+
+|Pears
+|5
+|===
