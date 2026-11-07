@@ -35,6 +35,22 @@ size_t configured_size(const char* name, size_t fallback, size_t maximum = 1024)
   return fallback;
 }
 
+// A millisecond setting inside [minimum, maximum]: unset takes `fallback`,
+// anything else set refuses startup naming the variable and the range.
+std::chrono::milliseconds configured_milliseconds(const char* name, int fallback, int minimum,
+                                                  int maximum) {
+  const char* configured = std::getenv(name);
+  if (configured == nullptr) return std::chrono::milliseconds{fallback};
+  char* end = nullptr;
+  const long long parsed = std::strtoll(configured, &end, 10);
+  if (end == configured || *end != '\0' || parsed < minimum || parsed > maximum) {
+    throw std::invalid_argument(std::string(name) + " must be an integer number of " +
+                                "milliseconds between " + std::to_string(minimum) + " and " +
+                                std::to_string(maximum));
+  }
+  return std::chrono::milliseconds{parsed};
+}
+
 // An index or a switch whose 0 is meaningful: same contract, floor of 0.
 int configured_index(const char* name, int fallback, int maximum = 63) {
   const char* configured = std::getenv(name);
@@ -401,6 +417,18 @@ CollectorTargets read_collector_targets() {
       // Request-named model endpoints: off unless the operator opts in.
       .enable_remote_services =
           configured_mode("GRPARSE_ENABLE_REMOTE_SERVICES", "off", {"on", "off"}) == "on",
+      // How many HTTP/2 connections each collector is dialed over, and the
+      // client keepalive of every collector and backend channel.
+      .channel_options = CollectorChannelOptions{
+          .channels = configured_size("GRPARSE_COLLECTOR_CHANNELS", kDefaultCollectorChannels,
+                                      kMaxCollectorChannels),
+          .keepalive_time = configured_milliseconds(
+              "GRPARSE_COLLECTOR_KEEPALIVE_TIME_MS", kDefaultCollectorKeepaliveTimeMs,
+              kMinCollectorKeepaliveTimeMs, kMaxCollectorKeepaliveTimeMs),
+          .keepalive_timeout = configured_milliseconds(
+              "GRPARSE_COLLECTOR_KEEPALIVE_TIMEOUT_MS", kDefaultCollectorKeepaliveTimeoutMs,
+              kMinCollectorKeepaliveTimeoutMs, kMaxCollectorKeepaliveTimeoutMs),
+      },
   };
 }
 
@@ -426,6 +454,11 @@ void report_collector_targets(const CollectorTargets& targets, bool layout_activ
   report_collector("fastwarc", targets.fastwarc);
   report_collector("pdf", targets.pdf);
   report_collector("calamine", targets.calamine);
+  std::println("gRParse collector channels: {} per collector (GRPARSE_COLLECTOR_CHANNELS), "
+               "keepalive {} ms (GRPARSE_COLLECTOR_KEEPALIVE_TIME_MS), {} ms timeout "
+               "(GRPARSE_COLLECTOR_KEEPALIVE_TIMEOUT_MS)",
+               targets.channel_options.channels, targets.channel_options.keepalive_time.count(),
+               targets.channel_options.keepalive_timeout.count());
   if (targets.derender.enabled()) {
     std::println("gRParse chart derender (enrich): {} ({} ms{})", targets.derender.target,
                  targets.derender.timeout.count(),

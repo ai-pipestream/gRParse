@@ -21,6 +21,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "ai/protomolt/parse/pdf/v1/pdf_backend_service.grpc.pb.h"
+#include "grparse/document_parser_service.h"
 #include "grparse/pdf_page_frame.h"
 #include "targets/sha256.h"
 
@@ -29,9 +30,6 @@ namespace {
 
 namespace pdfv1 = ai::protomolt::parse::pdf::v1;
 
-// Same limits as the collector channels: a page raster at model DPI must
-// fit in one message.
-constexpr int kMaxMessageBytes = 520 * 1024 * 1024;
 constexpr double kPdfUserSpaceDpi = 72.0;
 
 // A hung backend must not hang the document; consensus mode multiplies
@@ -607,17 +605,38 @@ std::optional<std::string> remote_pdf_backend_target() {
   return target;
 }
 
-std::shared_ptr<grpc::Channel> pdf_backend_channel(const std::string& target) {
+namespace {
+
+std::mutex& pdf_backend_channel_mutex() {
   static std::mutex mutex;
+  return mutex;
+}
+
+// Guarded by pdf_backend_channel_mutex().
+CollectorChannelOptions& pdf_backend_channel_options() {
+  static CollectorChannelOptions options;
+  return options;
+}
+
+}  // namespace
+
+void set_pdf_backend_channel_options(const CollectorChannelOptions& options) {
+  const std::lock_guard<std::mutex> lock(pdf_backend_channel_mutex());
+  pdf_backend_channel_options() = options;
+}
+
+std::shared_ptr<grpc::Channel> pdf_backend_channel(const std::string& target) {
   static std::map<std::string, std::shared_ptr<grpc::Channel>> channels;
-  const std::lock_guard<std::mutex> lock(mutex);
+  const std::lock_guard<std::mutex> lock(pdf_backend_channel_mutex());
   auto it = channels.find(target);
   if (it != channels.end()) return it->second;
-  grpc::ChannelArguments args;
-  args.SetMaxReceiveMessageSize(kMaxMessageBytes);
-  args.SetMaxSendMessageSize(kMaxMessageBytes);
+  // The collector channels' arguments: their message limit (a page raster
+  // at model DPI must fit in one message) and their keepalive, so a backend
+  // that went silent mid-render fails the page instead of holding it to its
+  // ten-minute deadline.
   auto channel = grpc::CreateCustomChannel(
-      target, grpc::InsecureChannelCredentials(), args);
+      target, grpc::InsecureChannelCredentials(),
+      collector_channel_arguments(pdf_backend_channel_options()));
   channels.emplace(target, channel);
   return channel;
 }

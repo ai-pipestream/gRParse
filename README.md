@@ -659,6 +659,59 @@ and merges what the collector itself attributed. The vendored wire
 contracts live in `collectors/` (see its README); each collector repo owns
 its contract.
 
+Each remote collector is dialed over a pool of `GRPARSE_COLLECTOR_CHANNELS`
+channels (default `2`, 1 to 64; anything else stops startup naming the
+variable), each its own HTTP/2 connection, handed out round-robin per leg.
+One connection carries at most the peer's `SETTINGS_MAX_CONCURRENT_STREAMS`
+calls at once (grpc-java's Netty default is 100, so grpc-email and
+grpc-enrich cap there) and queues the rest inside the client, where no
+admission gauge sees them; two connections let 150 concurrent legs to such a
+peer all start. The pool's channels differ in one channel argument
+(`grparse.channel_index`) so grpc-core gives each its own subchannel instead
+of sharing one connection. The startup log prints the pool size and the
+keepalive in one line (`gRParse collector channels: ...`). The enrich and
+vlm-convert legs keep one channel each; they are peers, not collectors.
+
+Every collector, enrich, vlm-convert and PDF backend channel carries
+keepalive: while a call is open, a connection that has read nothing for
+`GRPARSE_COLLECTOR_KEEPALIVE_TIME_MS` (default `330000`, 10000 to 7200000)
+sends a ping, and a ping unanswered for
+`GRPARSE_COLLECTOR_KEEPALIVE_TIMEOUT_MS` (default `20000`, 1000 to 600000)
+closes the connection and fails its calls `UNAVAILABLE`. A value outside
+its range, or not a plain integer of milliseconds, stops startup naming the
+variable; the startup line `gRParse collector channels: ...` shows both. A
+collector container that compose restarted, or an idle NAT or Tailscale
+path that dropped the connection without a reset, therefore ends the leg
+within the time plus the timeout instead of at its deadline. Idle
+connections are not pinged, pings between data frames are not capped, and
+grpc-core's own retries are off (a leg's retry is the coordinator's
+policy).
+
+The default is 330 s because every server in the fleet runs a default ping
+policy that punishes anything faster. A grpc-core server (the C++
+collectors, such as pdfium and poppler) accepts a ping on a call it writes
+nothing on at most every 5 minutes
+(`GRPC_ARG_HTTP2_MIN_RECV_PING_INTERVAL_WITHOUT_DATA_MS`) and allows two
+strikes, which reset only when the server writes data; grpc-java (email,
+enrich) does the same with `permitKeepAliveTime` of 5 minutes. Pinging every
+30 s would draw GOAWAY `ENHANCE_YOUR_CALM` (`too_many_pings`) about 90 s
+into a quiet call and kill a long libreoffice, asr or VLM leg. 330 s stays
+above the 5 minutes with margin. A 30 s keepalive becomes safe once every
+collector permits pings every 20 s (grpc-core
+`GRPC_ARG_HTTP2_MIN_RECV_PING_INTERVAL_WITHOUT_DATA_MS=20000`, grpc-java
+`permitKeepAliveTime(20, SECONDS)`), as gRParse's own port already does.
+
+grpc-core's internal ping timeout (`grpc.http2.ping_timeout_ms`) is set to
+the keepalive timeout on every channel and on the server. In grpc 1.84 the
+keepalive watchdog arms only when one is already armed
+(`grpc_chttp2_end_write` in `writing.cc`), so a connection's first
+unanswered keepalive ping is caught by the ping timeout alone, whose
+default is one minute; without the setting a dead peer would be detected a
+minute after the ping instead of after the keepalive timeout.
+
+The server's own port pings an idle client after 30 s (10 s timeout) and
+accepts client pings as often as every 20 s, with or without calls open.
+
 Two family members are *not* collectors, whatever `compose.stack.yaml` runs
 next to them: grpc-enrich and grpc-vlm-convert are dialed by the demo shell
 directly and never by gRParse as collectors (enrich is dialed after the

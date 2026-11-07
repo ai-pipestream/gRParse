@@ -1,5 +1,7 @@
 #pragma once
 
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -29,6 +31,43 @@
 namespace grparse {
 
 struct SourceParse;
+
+// GRPARSE_COLLECTOR_CHANNELS when unset: two HTTP/2 connections per
+// collector, so a peer's SETTINGS_MAX_CONCURRENT_STREAMS (grpc-java's
+// Netty default is 100) is not the coordinator's ceiling on that peer.
+inline constexpr size_t kDefaultCollectorChannels = 2;
+inline constexpr size_t kMaxCollectorChannels = 64;
+
+// The client keepalive (GRPARSE_COLLECTOR_KEEPALIVE_TIME_MS and
+// GRPARSE_COLLECTOR_KEEPALIVE_TIMEOUT_MS) when unset, and the range startup
+// accepts. 330 s is above the default ping policy of every server in the
+// fleet: grpc-core (GRPC_ARG_HTTP2_MIN_RECV_PING_INTERVAL_WITHOUT_DATA_MS,
+// 5 min, two strikes) and grpc-java (permitKeepAliveTime, 5 min) both send
+// GOAWAY too_many_pings to a client that pings more often during a call on
+// which the server writes nothing, which would kill a long libreoffice, asr
+// or VLM leg. A shorter time is safe only against peers that permit it.
+inline constexpr int kDefaultCollectorKeepaliveTimeMs = 330000;
+inline constexpr int kMinCollectorKeepaliveTimeMs = 10000;
+inline constexpr int kMaxCollectorKeepaliveTimeMs = 7200000;
+inline constexpr int kDefaultCollectorKeepaliveTimeoutMs = 20000;
+inline constexpr int kMinCollectorKeepaliveTimeoutMs = 1000;
+inline constexpr int kMaxCollectorKeepaliveTimeoutMs = 600000;
+
+// How every collector and backend channel is dialed: the pool size
+// (GRPARSE_COLLECTOR_CHANNELS) and the keepalive timings
+// (GRPARSE_COLLECTOR_KEEPALIVE_TIME_MS, GRPARSE_COLLECTOR_KEEPALIVE_TIMEOUT_MS).
+// Tests set short timings here directly.
+struct CollectorChannelOptions {
+  // Channels per collector target, each its own HTTP/2 connection, handed
+  // out round-robin.
+  size_t channels = kDefaultCollectorChannels;
+  // A ping after this much silence on a connection with calls in flight;
+  // no ack within keepalive_timeout closes the connection and fails its
+  // calls UNAVAILABLE, so a restarted collector or a dead NAT path ends a
+  // leg then instead of at its deadline.
+  std::chrono::milliseconds keepalive_time{kDefaultCollectorKeepaliveTimeMs};
+  std::chrono::milliseconds keepalive_timeout{kDefaultCollectorKeepaliveTimeoutMs};
+};
 
 // The dial targets of the out-of-process collectors, one per wire-capable
 // Collector value. An empty target means that collector is not configured;
@@ -77,6 +116,9 @@ struct CollectorTargets {
   // endpoints (GRPARSE_ENRICH_VLM_ENDPOINT, GRPARSE_VLM_CONVERT_ENDPOINT)
   // are not requests and are unaffected.
   bool enable_remote_services = false;
+  // The collector pool size and the keepalive every collector, enrich, vlm
+  // and PDF backend channel is created with (collector_channel_arguments).
+  CollectorChannelOptions channel_options;
 };
 
 // The largest message this server accepts on its own port and the largest
@@ -97,12 +139,37 @@ inline constexpr int kMaxMessageBytes = 520 * 1024 * 1024;
 grpc::Status refuse_oversized_response(const google::protobuf::MessageLite& response,
                                        uint64_t cap, const std::string& surface);
 
-// The channel arguments every collector channel is created with.
-grpc::ChannelArguments collector_channel_arguments();
+// The channel arguments every collector, enrich, vlm and PDF backend
+// channel is created with: the server's message limit in both directions,
+// keepalive pings while calls are in flight (none on an idle connection,
+// and no cap on pings between data frames, since a long leg may go minutes
+// without a byte), and gRPC's own retries off (the legs retry by policy).
+// `channel_index` is set as the "grparse.channel_index" argument, so the
+// channels of one pool differ in their arguments and grpc-core gives each
+// its own subchannel, hence its own connection, instead of sharing one.
+inline constexpr const char* kChannelIndexArgument = "grparse.channel_index";
+// grpc-core's own ping timeout ("grpc.http2.ping_timeout_ms", an internal
+// argument name with no public macro), set to the keepalive timeout on every
+// channel and on the server. grpc-core 1.84 arms its keepalive watchdog only
+// when one is already armed (writing.cc, grpc_chttp2_end_write), so the
+// first unanswered keepalive ping is caught by this timeout alone, whose
+// default is one minute.
+inline constexpr const char* kPingTimeoutArgument = "grpc.http2.ping_timeout_ms";
+grpc::ChannelArguments collector_channel_arguments(const CollectorChannelOptions& options = {},
+                                                   size_t channel_index = 0);
+
+// The keepalive policy this server's own port enforces on its clients, set
+// by start_server: it pings idle clients itself and lets a client ping as
+// often as every 20 s, calls or not, without being sent GOAWAY
+// too_many_pings.
+inline constexpr int kServerKeepaliveTimeMs = 30000;
+inline constexpr int kServerKeepaliveTimeoutMs = 10000;
+inline constexpr int kServerMinRecvPingIntervalMs = 20000;
 
 // Shared handle to the out-of-process collectors the coordinator can fan
-// out to: the targets plus one lazily created channel per collector, shared
-// by every parse.
+// out to: the targets plus a lazily created pool of channels per collector
+// (CollectorChannelOptions::channels, each its own connection), shared by
+// every parse and handed out round-robin.
 class CollectorEndpoints {
  public:
   explicit CollectorEndpoints(CollectorTargets targets,
@@ -116,13 +183,16 @@ class CollectorEndpoints {
   // The configured dial target for `id`; empty when unconfigured or when
   // `id` is not a remote collector.
   const std::string& target(ai::pipestream::parse::v1::Collector id) const;
-  // The lazily created channel for `id`; one channel per collector serves
-  // every parse. Null when the target is unconfigured.
+  // The next channel of `id`'s pool, round-robin; the pool is created on
+  // first use and serves every parse. Null when the target is unconfigured.
   std::shared_ptr<grpc::Channel> channel(ai::pipestream::parse::v1::Collector id);
+  // How many channels each pool holds (GRPARSE_COLLECTOR_CHANNELS).
+  size_t channels_per_collector() const { return targets_.channel_options.channels; }
 
   const std::string& asr_model() const { return targets_.asr_model; }
 
-  // The chart derender leg's options and its lazily created channel; null
+  // The chart derender leg's options and its lazily created channel (one,
+  // with the collector channels' arguments; enrich is not a collector); null
   // when GRPARSE_ENRICH_TARGET is unset.
   const ChartDerenderOptions& derender() const { return targets_.derender; }
   bool has_derender() const { return targets_.derender.enabled(); }
@@ -130,8 +200,9 @@ class CollectorEndpoints {
   const ChartExtractionPolicy& chart_policy() const { return targets_.chart_policy; }
   const OcrPresetPolicy& ocr_policy() const { return targets_.ocr_policy; }
 
-  // The VLM convert leg's options and its lazily created channel; null when
-  // GRPARSE_VLM_CONVERT_TARGET is unset.
+  // The VLM convert leg's options and its lazily created channel (one, with
+  // the collector channels' arguments); null when GRPARSE_VLM_CONVERT_TARGET
+  // is unset.
   const VlmConvertOptions& vlm() const { return targets_.vlm; }
   bool has_vlm() const { return targets_.vlm.enabled(); }
   std::shared_ptr<grpc::Channel> vlm_channel();
@@ -145,13 +216,22 @@ class CollectorEndpoints {
   const OfficeCvEnrichment& cv_enrichment() const { return cv_enrichment_; }
 
  private:
+  // One target's channels and the index the next call is handed.
+  struct ChannelPool {
+    std::vector<std::shared_ptr<grpc::Channel>> channels;
+    size_t next = 0;
+  };
+  // The next channel of `pool`, creating the whole pool of `size` channels
+  // against `target` on first use. Called with mutex_ held.
+  std::shared_ptr<grpc::Channel> next_channel(ChannelPool& pool, const std::string& target,
+                                              size_t size);
+
   CollectorTargets targets_;
   OfficeCvEnrichment cv_enrichment_;
   std::mutex mutex_;
-  std::map<ai::pipestream::parse::v1::Collector, std::shared_ptr<grpc::Channel>>
-      channels_;
-  std::shared_ptr<grpc::Channel> enrich_channel_;
-  std::shared_ptr<grpc::Channel> vlm_channel_;
+  std::map<ai::pipestream::parse::v1::Collector, ChannelPool> channels_;
+  ChannelPool enrich_channel_;
+  ChannelPool vlm_channel_;
 };
 
 // Every unary surface runs on gRPC's callback API. The parsing surfaces block

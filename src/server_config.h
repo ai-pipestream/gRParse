@@ -95,7 +95,11 @@ PageScheduler::Options read_scheduler_options(const WorkerConfig& workers, bool 
 // Unset leaves that collector unconfigured: documents routed to it then
 // fail that collector with a clear error instead of being converted
 // through any intermediate. GRPARSE_ASR_MODEL names the whisper model
-// grpc-asr must serve; the asr wire requires one.
+// grpc-asr must serve; the asr wire requires one. GRPARSE_COLLECTOR_CHANNELS
+// (default 2, 1 to 64) sizes every collector's channel pool;
+// GRPARSE_COLLECTOR_KEEPALIVE_TIME_MS (default 330000, 10000 to 7200000) and
+// GRPARSE_COLLECTOR_KEEPALIVE_TIMEOUT_MS (default 20000, 1000 to 600000) set
+// the client keepalive of every collector and backend channel.
 CollectorTargets read_collector_targets();
 
 // One startup line per collector, then the chart derender leg and the
