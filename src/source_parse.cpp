@@ -699,6 +699,38 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
     if (auto s = require_model_spec(cfg.model_spec(), "vlm_pipeline_custom_config"); !s.ok()) {
       return s;
     }
+    // The convert peer has no equivalent for these generation, engine,
+    // batching, or text-merging controls. Presence matters, including an
+    // explicitly supplied zero, false, or empty optional string.
+    const auto require_supported_fields = [&](const google::protobuf::Message& message,
+                                              const std::string& path,
+                                              std::initializer_list<std::string_view> supported) {
+      std::vector<const google::protobuf::FieldDescriptor*> fields;
+      message.GetReflection()->ListFields(message, &fields);
+      for (const auto* field : fields) {
+        if (std::find(supported.begin(), supported.end(), field->name()) == supported.end()) {
+          return grpc::Status(grpc::StatusCode::UNIMPLEMENTED,
+                              surface + ": " + path + "." + std::string(field->name()) +
+                                  " is not implemented by the VLM convert path");
+        }
+      }
+      return grpc::Status::OK;
+    };
+    if (auto s = require_supported_fields(cfg, "vlm_pipeline_custom_config",
+                                         {"engine_options", "model_spec", "scale"}); !s.ok()) {
+      return s;
+    }
+    if (auto s = require_supported_fields(cfg.model_spec(), "vlm_pipeline_custom_config.model_spec",
+                                         {"name", "default_repo_id", "prompt", "response_format",
+                                          "response_format_raw", "trust_remote_code"}); !s.ok()) {
+      return s;
+    }
+    if (cfg.model_spec().trust_remote_code()) {
+      return grpc::Status(grpc::StatusCode::UNIMPLEMENTED,
+                          surface + ": vlm_pipeline_custom_config.model_spec.trust_remote_code"
+                                    " = true is not implemented; no gRParse leg runs"
+                                    " model-repository code");
+    }
   }
   if (options.has_picture_description_custom_config()) {
     const auto& cfg = options.picture_description_custom_config();
