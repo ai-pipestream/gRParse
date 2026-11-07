@@ -1364,6 +1364,51 @@ if(BUILD_TESTING)
   endforeach()
 endif()
 
+# ---- performance regression tier (#251) --------------------------------------
+# grparse-bench times six cases over fixed in-memory fixtures (no models, no
+# network) and compares them with tests/bench/baseline.textproto, a typed
+# BenchBaseline in a test-only proto read with TextFormat, like the storage
+# fixture's config above. It carries the `bench` tier label
+# (cmake/TestTiers.cmake), so the image builds compile it with grparse-tests
+# but never run it; it skips (77) unless GRPARSE_BENCH_ENFORCE=1, which the
+# nightly sets, turns a case slower than baseline x 1.5 into a failure.
+# bench-baseline-test is a unit test: the baseline parses and names every
+# case. The source tree's path is a define of those two translation units
+# only, so --record knows which file to rewrite.
+if(BUILD_TESTING)
+  set(BENCH_PROTO_DIR "${CMAKE_CURRENT_BINARY_DIR}/bench_proto")
+  file(MAKE_DIRECTORY "${BENCH_PROTO_DIR}")
+  add_custom_command(
+    OUTPUT "${BENCH_PROTO_DIR}/bench_baseline.pb.cc" "${BENCH_PROTO_DIR}/bench_baseline.pb.h"
+    COMMAND $<TARGET_FILE:protoc>
+    ARGS --proto_path=${CMAKE_CURRENT_SOURCE_DIR}/tests/bench
+         --proto_path=${protobuf_SOURCE_DIR}/src
+         --cpp_out=${BENCH_PROTO_DIR}
+         ${CMAKE_CURRENT_SOURCE_DIR}/tests/bench/bench_baseline.proto
+    DEPENDS tests/bench/bench_baseline.proto protoc
+    VERBATIM)
+  add_library(grparse_bench_baseline STATIC "${BENCH_PROTO_DIR}/bench_baseline.pb.cc")
+  target_include_directories(grparse_bench_baseline PUBLIC "${BENCH_PROTO_DIR}")
+  target_link_libraries(grparse_bench_baseline PUBLIC grparse_proto)
+  set_source_files_properties(tests/bench/grparse_bench.cpp tests/bench/bench_baseline_test.cpp
+    PROPERTIES COMPILE_DEFINITIONS "GRPARSE_BENCH_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
+  add_executable(grparse-bench tests/bench/grparse_bench.cpp)
+  target_link_libraries(grparse-bench PRIVATE grparse_core grparse_bench_baseline grparse_flags)
+  add_executable(bench-baseline-test tests/bench/bench_baseline_test.cpp)
+  target_link_libraries(bench-baseline-test PRIVATE grparse_bench_baseline grparse_flags)
+  foreach(target_name grparse-bench bench-baseline-test)
+    target_include_directories(${target_name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+    add_test(NAME ${target_name} COMMAND ${target_name})
+  endforeach()
+  add_dependencies(grparse-tests grparse-bench bench-baseline-test)
+  # Serial, so a parallel ctest run does not time the cases against each
+  # other; the issue's budget is under 60 s on the self-hosted runner.
+  set_tests_properties(grparse-bench PROPERTIES
+    LABELS grparse SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 300)
+  set_tests_properties(bench-baseline-test PROPERTIES
+    LABELS grparse TIMEOUT ${GRPARSE_TEST_TIMEOUT})
+endif()
+
 include(cmake/Embeddings.cmake)
 # Tier labels for every test above, the compose-stack suites, and the
 # check that keeps each test in exactly one tier (#244).

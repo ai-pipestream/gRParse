@@ -1328,14 +1328,14 @@ against the `default` configure preset's `build/`):
 | `emulators` | fake-gcs, Azurite, RustFS, grpc-enrich and an emulated VLM | skip inside every image build; `cpu-image` runs them afterwards from the e2e image with the emulators up | all three, in-build |
 | `stack` | a docker compose stack | nightly (`nightly` preset), only the suites `GRPARSE_STACK_SUITES` names (`scripts/test/stack-suite.sh`); never in an image build | every one not named |
 | `eval` | a running stack and an oracle (`vlm-oracle-eval`, `structural-scorecard`) | nightly and release | without `GRPARSE_TARGET`/`VLM_ENDPOINT` |
-| `bench` | timing on fixed fixtures | nightly (none registered yet) | n/a |
+| `bench` | timing on fixed fixtures (`grparse-bench`, below) | nightly, enforced; every image build compiles it but never runs it | without `GRPARSE_BENCH_ENFORCE=1` |
 
 `ctest -N -L stack` lists the six compose-stack suites (`stack-e2e`,
 `s3-corpus-eval`, `ocr-presets-e2e`, `embedding-rpc`, `compose-preflight`,
 `observability-compose`); each runs exactly as its script runs by hand, the
 wrapper only decides whether it runs. The `release` preset sets
-`EVAL_REQUIRE=1`, `GRPARSE_TEST_REQUIRE_MODELS=1` and
-`GRPARSE_STACK_SUITES=all`, so a skip there is a failure. Every image build
+`EVAL_REQUIRE=1`, `GRPARSE_BENCH_ENFORCE=1`, `GRPARSE_TEST_REQUIRE_MODELS=1`
+and `GRPARSE_STACK_SUITES=all`, so a skip there is a failure. Every image build
 also passes its ctest JUnit file to `scripts/check-skips.sh` with the tiers it
 may skip (`GRPARSE_EXPECTED_SKIPS`; cuda and openvino `models,embeddings,emulators`,
 cpu `embeddings,emulators` when CI provides the models), so a test that
@@ -1373,3 +1373,44 @@ the contract protos also stages `collectors/ebcdic.proto` as
 `ai/pipestream/ebcdic/v1/ebcdic.proto` and `collectors/lolhtml_types.proto`
 and `collectors/lolhtml_service.proto` under `lolhtml/v1/` (as
 `types.proto` and `lolhtml_service.proto`), the way `examples/clients/*/generate.sh` do.
+
+### Benchmarks
+
+`grparse-bench` (`tests/bench/`, #251) is the `bench` tier: six cases over
+fixed in-memory fixtures, with no models and no network. They are
+`ttfp_inspector_fast_path` (a 200-page text PDF through
+`StreamProcessDocument` against a fake PDF backend and a fake inspector;
+ns/op is the time to the first `PageData`, items/s is pages per second over
+the whole stream), `assembly_200_pages`, `fold_and_delta`, `render_exports`,
+`sniff_corpus` (every file in `tests/golden/corpus`) and `base64_10mib`. Each
+case prints one line, `name ns/op items/s` and its ratio to
+`tests/bench/baseline.textproto`. That file is a typed `BenchBaseline`
+(`tests/bench/bench_baseline.proto`) in protobuf text format.
+
+```bash
+ctest --test-dir build -L bench -V                           # print the numbers; skips (77)
+GRPARSE_BENCH_ENFORCE=1 ctest --test-dir build -L bench -V   # fail a case slower than baseline x 1.5
+```
+
+Without `GRPARSE_BENCH_ENFORCE=1` the run prints its numbers and reports a
+skip, so an unenforced run never claims that it passed. The nightly
+workflow's `bench` job runs it enforced on the self-hosted runner and
+uploads the printed numbers (`ctest-bench.log`) and the measured run in the
+baseline's format (`measured.textproto`, from
+`GRPARSE_BENCH_REPORT=<path>`). Pull requests only compile it, as part of
+`grparse-tests`. `bench-baseline-test`, a unit test, fails the image build
+when the baseline does not parse or misses a case.
+
+To re-baseline, run the bench on the machine whose numbers the gate should
+hold, and say why in the commit-style reason, as the scorecard's baseline
+rule asks:
+
+```bash
+build/grparse-bench --record --reason "<commit>: why the numbers moved"
+```
+
+This rewrites `tests/bench/baseline.textproto` in place (`--baseline PATH`
+writes another file). Commit it with the change that moved the numbers. The
+first baseline came from a cloud container, which is not stable hardware.
+Re-record it on the self-hosted runner (#258) before the gate's 1.5x margin
+means much.
