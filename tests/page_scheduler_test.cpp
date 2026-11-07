@@ -172,7 +172,7 @@ void verify_worker_count_does_not_change_pages() {
             .assembly_workers = workers,
             .page_window = 8,
         },
-        [](std::shared_ptr<const std::string>, bool, double) {
+        [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
           return std::make_shared<FakeSource>(kPages);
         });
     auto result = std::make_unique<Result>();

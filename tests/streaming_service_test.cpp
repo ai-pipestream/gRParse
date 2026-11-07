@@ -3245,7 +3245,7 @@ void verify_collector_document_moves_into_its_event() {
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(
       recognizer, {2, 3, 2, 3, 2, 2, 2},
-      [](std::shared_ptr<const std::string>, bool, double) {
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
         return std::make_shared<RoutableDigitalSource>();
       });
   grparse::CollectorTargets targets;
@@ -3943,7 +3943,7 @@ class WorkerCountServer final {
                        .assembly_workers = assembly_workers,
                        .page_window = 8,
                    },
-                   [](std::shared_ptr<const std::string>, bool, double) {
+                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
                      return std::make_shared<SyntheticSource>();
                    },
                    &detector_),
