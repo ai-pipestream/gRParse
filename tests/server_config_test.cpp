@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -116,6 +117,93 @@ void verify_remote_fetch_concurrency_setting() {
   ::unsetenv("GRPARSE_REMOTE_FETCH_CONCURRENCY");
 }
 
+// GRPARSE_COLLECTOR_CHANNELS (issue #250) defaults to a pool of two per
+// collector, takes a count up to 64, refuses anything else naming the
+// variable, and the startup report says what the pools are.
+void verify_collector_channels_setting() {
+  ::unsetenv("GRPARSE_COLLECTOR_CHANNELS");
+  const grparse::CollectorTargets defaults = grparse::read_collector_targets();
+  require(defaults.channel_options.channels == 2, "unset, two channels per collector");
+  require(defaults.channel_options.keepalive_time.count() == 330000 &&
+              defaults.channel_options.keepalive_timeout.count() == 20000,
+          "the keepalive timings default to 330 s / 20 s");
+  ::setenv("GRPARSE_COLLECTOR_CHANNELS", "4", 1);
+  const grparse::CollectorTargets four = grparse::read_collector_targets();
+  require(four.channel_options.channels == 4, "the setting sizes the pools");
+  const std::string out =
+      captured_stdout([&] { grparse::report_collector_targets(four, false, false); });
+  require(out.contains("gRParse collector channels: 4 per collector "
+                       "(GRPARSE_COLLECTOR_CHANNELS)") &&
+              out.contains("keepalive 330000 ms (GRPARSE_COLLECTOR_KEEPALIVE_TIME_MS), "
+                           "20000 ms timeout (GRPARSE_COLLECTOR_KEEPALIVE_TIMEOUT_MS)"),
+          "the startup report names the pool size and the keepalive:\n" + out);
+  for (const char* refused : {"0", "-1", "two", "65", ""}) {
+    ::setenv("GRPARSE_COLLECTOR_CHANNELS", refused, 1);
+    bool threw = false;
+    try {
+      grparse::read_collector_targets();
+    } catch (const std::invalid_argument& error) {
+      threw = std::string(error.what()).contains("GRPARSE_COLLECTOR_CHANNELS");
+    }
+    require(threw, std::string("'") + refused + "' is refused at startup, naming the variable");
+  }
+  ::unsetenv("GRPARSE_COLLECTOR_CHANNELS");
+}
+
+// GRPARSE_COLLECTOR_KEEPALIVE_TIME_MS and GRPARSE_COLLECTOR_KEEPALIVE_TIMEOUT_MS
+// (issue #250 follow-up): unset, 330 s and 20 s, above every default server
+// ping policy; set, milliseconds inside 10 s..2 h and 1 s..10 min, shown in
+// the startup report; anything else refuses startup naming the variable.
+void verify_collector_keepalive_settings() {
+  ::unsetenv("GRPARSE_COLLECTOR_KEEPALIVE_TIME_MS");
+  ::unsetenv("GRPARSE_COLLECTOR_KEEPALIVE_TIMEOUT_MS");
+  const grparse::CollectorTargets defaults = grparse::read_collector_targets();
+  require(defaults.channel_options.keepalive_time == std::chrono::milliseconds{330000},
+          "unset, the keepalive time is 330 s");
+  require(defaults.channel_options.keepalive_timeout == std::chrono::milliseconds{20000},
+          "unset, the keepalive timeout is 20 s");
+
+  ::setenv("GRPARSE_COLLECTOR_KEEPALIVE_TIME_MS", "30000", 1);
+  ::setenv("GRPARSE_COLLECTOR_KEEPALIVE_TIMEOUT_MS", "5000", 1);
+  const grparse::CollectorTargets set = grparse::read_collector_targets();
+  require(set.channel_options.keepalive_time == std::chrono::milliseconds{30000},
+          "the time setting is the channels' keepalive time");
+  require(set.channel_options.keepalive_timeout == std::chrono::milliseconds{5000},
+          "the timeout setting is the channels' keepalive timeout");
+  const std::string out =
+      captured_stdout([&] { grparse::report_collector_targets(set, false, false); });
+  require(out.contains("keepalive 30000 ms (GRPARSE_COLLECTOR_KEEPALIVE_TIME_MS), "
+                       "5000 ms timeout (GRPARSE_COLLECTOR_KEEPALIVE_TIMEOUT_MS)"),
+          "the startup report shows both settings:\n" + out);
+
+  ::setenv("GRPARSE_COLLECTOR_KEEPALIVE_TIME_MS", "10000", 1);
+  ::setenv("GRPARSE_COLLECTOR_KEEPALIVE_TIMEOUT_MS", "1000", 1);
+  const grparse::CollectorTargets floors = grparse::read_collector_targets();
+  require(floors.channel_options.keepalive_time == std::chrono::milliseconds{10000} &&
+              floors.channel_options.keepalive_timeout == std::chrono::milliseconds{1000},
+          "10 s and 1 s are the lowest accepted values");
+
+  const auto refused = [](const char* name, const char* value) {
+    ::setenv(name, value, 1);
+    bool threw = false;
+    try {
+      grparse::read_collector_targets();
+    } catch (const std::invalid_argument& error) {
+      threw = std::string(error.what()).contains(name);
+    }
+    require(threw, std::string(name) + "='" + value + "' is refused, naming the variable");
+  };
+  ::unsetenv("GRPARSE_COLLECTOR_KEEPALIVE_TIMEOUT_MS");
+  for (const char* value : {"9999", "0", "-1", "330s", "", "7200001"}) {
+    refused("GRPARSE_COLLECTOR_KEEPALIVE_TIME_MS", value);
+  }
+  ::unsetenv("GRPARSE_COLLECTOR_KEEPALIVE_TIME_MS");
+  for (const char* value : {"999", "0", "20s", "", "600001"}) {
+    refused("GRPARSE_COLLECTOR_KEEPALIVE_TIMEOUT_MS", value);
+  }
+  ::unsetenv("GRPARSE_COLLECTOR_KEEPALIVE_TIMEOUT_MS");
+}
+
 }  // namespace
 
 int main() {
@@ -123,5 +211,7 @@ int main() {
       verify_every_reported_endpoint_is_redacted,
       verify_retired_poi_target_is_reported,
       verify_remote_fetch_concurrency_setting,
+      verify_collector_channels_setting,
+      verify_collector_keepalive_settings,
   });
 }

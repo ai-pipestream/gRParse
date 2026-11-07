@@ -25,6 +25,7 @@
 #include "grparse/office_cv_enrichment.h"
 #include "grparse/page_scheduler.h"
 #include "grparse/prometheus_metrics.h"
+#include "grparse/remote_page_source.h"
 #include "grparse_session_ep.h"
 #include "server_config.h"
 
@@ -218,6 +219,15 @@ std::unique_ptr<grpc::Server> start_server(const std::string& listen_address,
   builder.SetResourceQuota(quota);
   builder.AddChannelArgument(GRPC_ARG_MAX_CONCURRENT_STREAMS,
                              static_cast<int>(limits.max_concurrent_streams));
+  // Keepalive both ways: the server probes its clients on the schedule the
+  // collector channels use, and lets a client probe it as often as every
+  // 20 s, idle or not, without a GOAWAY too_many_pings.
+  builder.AddChannelArgument(GRPC_ARG_KEEPALIVE_TIME_MS, grparse::kServerKeepaliveTimeMs);
+  builder.AddChannelArgument(GRPC_ARG_KEEPALIVE_TIMEOUT_MS, grparse::kServerKeepaliveTimeoutMs);
+  builder.AddChannelArgument(grparse::kPingTimeoutArgument, grparse::kServerKeepaliveTimeoutMs);
+  builder.AddChannelArgument(GRPC_ARG_HTTP2_MIN_RECV_PING_INTERVAL_WITHOUT_DATA_MS,
+                             grparse::kServerMinRecvPingIntervalMs);
+  builder.AddChannelArgument(GRPC_ARG_KEEPALIVE_PERMIT_WITHOUT_CALLS, 1);
   builder.RegisterService(&service);
   builder.RegisterService(&streaming_service);
   return builder.BuildAndStart();
@@ -289,6 +299,9 @@ int main() {
     grparse::PageScheduler scheduler(*engines, options, grparse::PageSourceFactory{},
                                      layout.get(), table_structure.get(), figure_classes.get());
     const grparse::CollectorTargets targets = grparse::read_collector_targets();
+    // Before any parse can dial a PDF backend: its channels take the same
+    // keepalive as the collector channels.
+    grparse::set_pdf_backend_channel_options(targets.channel_options);
     // The hybrid leg: office documents' page renders run through the same
     // layout/classifier/barcode engines the CV path uses, sharing its pools.
     const grparse::OfficeCvEnrichment office_cv{
