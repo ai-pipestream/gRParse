@@ -1268,7 +1268,8 @@ against the `default` configure preset's `build/`):
 |---|---|---|---|
 | `unit` | nothing: pure functions on fixtures | every image build, every PR (`pr` preset) | none |
 | `loopback` | an in-process gRPC server, fake backend or loopback HTTP | every image build, every PR | none |
-| `models` | the files under `models/` | every image build; they pass only on `cpu-image`, which provides the models and sets `GRPARSE_TEST_REQUIRE_MODELS=1` (`models` preset) | cuda and openvino builds skip these six |
+| `models` | the files under `models/` | every image build; they pass only on `cpu-image`, which provides the models and sets `GRPARSE_TEST_REQUIRE_MODELS=1` (`models` preset) | cuda and openvino builds skip these four |
+| `embeddings` | the embedding model bundle (`GRPARSE_EMBEDDING_TEST_MODELS`) | skip inside every image build; the openvino CI job runs both through the shipped binaries afterwards | all three, in-build |
 | `emulators` | fake-gcs, Azurite, RustFS, grpc-enrich and an emulated VLM | skip inside every image build; `cpu-image` runs them afterwards from the e2e image with the emulators up | all three, in-build |
 | `stack` | a docker compose stack | nightly (`nightly` preset), only the suites `GRPARSE_STACK_SUITES` names (`scripts/test/stack-suite.sh`); never in an image build | every one not named |
 | `eval` | a running stack and an oracle (`vlm-oracle-eval`, `structural-scorecard`) | nightly and release | without `GRPARSE_TARGET`/`VLM_ENDPOINT` |
@@ -1279,7 +1280,12 @@ against the `default` configure preset's `build/`):
 `observability-compose`); each runs exactly as its script runs by hand, the
 wrapper only decides whether it runs. The `release` preset sets
 `EVAL_REQUIRE=1`, `GRPARSE_TEST_REQUIRE_MODELS=1` and
-`GRPARSE_STACK_SUITES=all`, so a skip there is a failure.
+`GRPARSE_STACK_SUITES=all`, so a skip there is a failure. Every image build
+also passes its ctest JUnit file to `scripts/check-skips.sh` with the tiers it
+may skip (`GRPARSE_EXPECTED_SKIPS`; cuda and openvino `models,embeddings,emulators`,
+cpu `embeddings,emulators` when CI provides the models), so a test that
+skips outside those tiers, by a missing fixture or a mis-set variable, fails
+the build with its name.
 `.github/workflows/nightly.yml` runs the stack tier every night on a
 self-hosted runner that has docker compose (Forgejo's `heavy` runner; on
 GitHub only once `vars.NIGHTLY_RUNS_ON` names a registered self-hosted runner

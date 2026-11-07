@@ -971,6 +971,11 @@ if(BUILD_TESTING)
   add_test(NAME stage-runtime-closure-script
     COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test/stage-runtime-closure-test.sh)
   set_tests_properties(stage-runtime-closure-script PROPERTIES TIMEOUT 120 LABELS grparse)
+  # The checker every image build runs after ctest, over synthetic JUnit
+  # files: a skip outside the allowed tiers fails it (scripts/check-skips.sh).
+  add_test(NAME check-skips-script
+    COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test/check-skips-test.sh)
+  set_tests_properties(check-skips-script PROPERTIES TIMEOUT 60 LABELS grparse)
   # Opt-in oracle battery (eval/README.md): skips (77) unless GRPARSE_TARGET,
   # VLM_ENDPOINT and EVAL_CORPUS are set in the environment, so a green
   # build never claims it ran.
