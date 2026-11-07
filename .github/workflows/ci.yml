@@ -82,10 +82,9 @@ jobs:
         # into /build and the build outgrow the runner's free space. The
         # preinstalled SDKs removed here are unused by this job.
         if: ${{ github.server_url == 'https://github.com' }}
-        run: |
-          df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h /
+        # In the background (#245): it overlaps the next steps, and the
+        # build waits for it in "Wait for the freed runner disk".
+        run: sh scripts/free-runner-disk.sh start
       - name: Log in to Docker Hub (docker.io)
         # The deps seeds live on Docker Hub; logging in also lifts the
         # anonymous pull rate limit for the public bases.
@@ -115,6 +114,9 @@ jobs:
       - name: Load the compile cache into the build's ccache mount
         if: ${{ github.server_url == 'https://github.com' }}
         run: sh scripts/ccache-mount.sh load cuda amd64 "$RUNNER_TEMP/ccache"
+      - name: Wait for the freed runner disk
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: sh scripts/free-runner-disk.sh wait
       - name: Build full image and run non-GPU tests
         # The full build (not just the build stage) also assembles the
         # runtime stage, so a runtime library missing from the staged
@@ -162,10 +164,9 @@ jobs:
         # into /build and the build outgrow the runner's free space. The
         # preinstalled SDKs removed here are unused by this job.
         if: ${{ github.server_url == 'https://github.com' }}
-        run: |
-          df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h /
+        # In the background (#245): it overlaps the next steps, and the
+        # build waits for it in "Wait for the freed runner disk".
+        run: sh scripts/free-runner-disk.sh start
       - name: Log in to Docker Hub (docker.io)
         # The deps seeds live on Docker Hub; logging in also lifts the
         # anonymous pull rate limit for the public bases.
@@ -195,6 +196,9 @@ jobs:
       - name: Load the compile cache into the build's ccache mount
         if: ${{ github.server_url == 'https://github.com' }}
         run: sh scripts/ccache-mount.sh load openvino amd64 "$RUNNER_TEMP/ccache"
+      - name: Wait for the freed runner disk
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: sh scripts/free-runner-disk.sh wait
       - name: Build Intel/OpenVINO image and run non-GPU tests
         run: |
           docker build --progress=plain -f Dockerfile.openvino \
@@ -265,13 +269,23 @@ jobs:
           registry: dhi.io
           username: ${{ secrets.DOCKER_USER }}
           password: ${{ secrets.DOCKER_TOKEN }}
+      - name: Restore the pinned model files
+        # Keyed on models/MANIFEST, so a hit is the same pinned files;
+        # --verify below checks every sha256 either way (#245).
+        id: models-cache
+        uses: actions/cache@v6
+        with:
+          path: models
+          key: models-all-tokenizer-${{ hashFiles('models/MANIFEST') }}
       - name: Provide the pinned model files
         run: |
-          docker build --progress=plain -f Dockerfile.models \
-            --build-arg MODELS_LAYOUT=all --build-arg MODELS_TOKENIZER=1 -t grparse-ci-models .
-          id=$(docker create grparse-ci-models)
-          docker cp "$id:/models/." models/
-          docker rm "$id"
+          if [ "${{ steps.models-cache.outputs.cache-hit }}" != true ]; then
+            docker build --progress=plain -f Dockerfile.models \
+              --build-arg MODELS_LAYOUT=all --build-arg MODELS_TOKENIZER=1 -t grparse-ci-models .
+            id=$(docker create grparse-ci-models)
+            docker cp "$id:/models/." models/
+            docker rm "$id"
+          fi
           scripts/fetch-models.sh --verify --dir models --layout all --tokenizer
       - name: Free runner disk for the seeded build
         # GitHub's hosted runner only: the seed image (about 9 GB unpacked
@@ -279,10 +293,9 @@ jobs:
         # into /build and the build outgrow the runner's free space. The
         # preinstalled SDKs removed here are unused by this job.
         if: ${{ github.server_url == 'https://github.com' }}
-        run: |
-          df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h /
+        # In the background (#245): it overlaps the next steps, and the
+        # build waits for it in "Wait for the freed runner disk".
+        run: sh scripts/free-runner-disk.sh start
       - name: Log in to Docker Hub (docker.io)
         # The deps seeds live on Docker Hub; logging in also lifts the
         # anonymous pull rate limit for the public bases.
@@ -312,6 +325,9 @@ jobs:
       - name: Load the compile cache into the build's ccache mount
         if: ${{ github.server_url == 'https://github.com' }}
         run: sh scripts/ccache-mount.sh load cpu amd64 "$RUNNER_TEMP/ccache"
+      - name: Wait for the freed runner disk
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: sh scripts/free-runner-disk.sh wait
       - name: Build CPU image and run the tests, model goldens included
         run: |
           docker build --progress=plain -f Dockerfile.cpu \

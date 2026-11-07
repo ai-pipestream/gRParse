@@ -74,19 +74,29 @@ jobs:
           registry: docker.io
           username: ${{ secrets.DOCKER_USER }}
           password: ${{ secrets.DOCKER_TOKEN }}
+      - name: Restore the pinned model files
+        # Keyed on models/MANIFEST, so a hit is the same pinned files;
+        # --verify below checks every sha256 either way (#245).
+        id: models-cache
+        uses: actions/cache@v6
+        with:
+          path: models
+          key: models-all-tokenizer-${{ hashFiles('models/MANIFEST') }}
       - name: Provide the pinned model files
         run: |
-          docker build --progress=plain -f Dockerfile.models \
-            --build-arg MODELS_LAYOUT=all --build-arg MODELS_TOKENIZER=1 -t grparse-san-models .
-          id=$(docker create grparse-san-models)
-          docker cp "$id:/models/." models/
-          docker rm "$id"
+          if [ "${{ steps.models-cache.outputs.cache-hit }}" != true ]; then
+            docker build --progress=plain -f Dockerfile.models \
+              --build-arg MODELS_LAYOUT=all --build-arg MODELS_TOKENIZER=1 -t grparse-san-models .
+            id=$(docker create grparse-san-models)
+            docker cp "$id:/models/." models/
+            docker rm "$id"
+          fi
           scripts/fetch-models.sh --verify --dir models --layout all --tokenizer
       - name: Free runner disk for the seeded build
         if: ${{ github.server_url == 'https://github.com' }}
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h /
+        # In the background (#245): it overlaps the next steps, and the
+        # build waits for it in "Wait for the freed runner disk".
+        run: sh scripts/free-runner-disk.sh start
       - name: Find the cpu deps seed
         id: seed
         run: sh scripts/find-seed.sh Dockerfile.cpu cpu amd64 >> "$GITHUB_OUTPUT"
@@ -99,6 +109,9 @@ jobs:
           path: ${{ runner.temp }}/ccache
           key: ccache-asan-amd64-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: ccache-asan-amd64-
+      - name: Wait for the freed runner disk
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: sh scripts/free-runner-disk.sh wait
       - name: Configure, build and run the suite under ASan/UBSan/LSan
         # detect_container_overflow is off because instrumented first-party
         # code exchanges std::string/std::vector with the uninstrumented

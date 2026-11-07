@@ -25,6 +25,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libnvonnxparsers-dev=${GRPARSE_TENSORRT_VERSION} \
     libnvonnxparsers11=${GRPARSE_TENSORRT_VERSION} \
     && rm -rf /var/lib/apt/lists/*
+# cuDNN rides in the deps stage, and so in the published seed, instead of
+# being downloaded (441 MB) by every build stage (#245). ONNX Runtime
+# dlopens it at run time; the build stage only copies it into the closure.
+RUN apt-get update && apt-get install -y --no-install-recommends libcudnn9-cuda-13 \
+    && rm -rf /var/lib/apt/lists/*
 
 ENV DEBIAN_FRONTEND=noninteractive
 # cargo/rustc build the Rust tokenizers crate inside tokenizers-cpp, the
@@ -137,12 +142,11 @@ RUN --mount=type=cache,id=grparse-ubuntu26-cuda13.4-trt11.4-grpc1.84.1-ort1.30.0
 # shared library the binaries need ships from this stage, except two families
 # the base must own: glibc (the loader and its libraries are inseparable) and
 # the CUDA runtime math libraries (cublas, cufft, curand), which are the
-# reason the base is a CUDA image at all. cuDNN is installed here only to be
-# copied out; ONNX Runtime dlopens it, so ldd alone would never surface it.
-# The last line holds this image to the invariant the vendored OpenCV
-# exists for: no poppler in the staged closure.
-RUN apt-get update && apt-get install -y --no-install-recommends libcudnn9-cuda-13 \
-    && rm -rf /var/lib/apt/lists/* \
+# reason the base is a CUDA image at all. cuDNN comes from the deps stage
+# only to be copied out here; ONNX Runtime dlopens it, so ldd alone would
+# never surface it. The last line holds this image to the invariant the
+# vendored OpenCV exists for: no poppler in the staged closure.
+RUN ls /usr/lib/x86_64-linux-gnu/libcudnn.so.9* >/dev/null \
     && mkdir -p /out/runtime-libs \
     && cp -a /usr/lib/x86_64-linux-gnu/libcudnn* /out/runtime-libs/ \
     && cp -a /usr/lib/x86_64-linux-gnu/libnvinfer*.so* /usr/lib/x86_64-linux-gnu/libnvonnxparser*.so* /out/runtime-libs/ \
