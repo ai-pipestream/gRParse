@@ -77,6 +77,10 @@ class StorageFold {
 
   docv1::GroupItem* group_by_ref(const std::string& ref);
   void link_child(const std::string& parent_ref, const std::string& child_ref);
+  // Removes a list group that folded to no items (an empty <ul>, a task
+  // list whose children are all damaged): docling-core's EMPTY_GROUP rule
+  // rejects an empty group, and an ENFORCE request with it.
+  void drop_empty_list(const std::string& group_ref, const std::string& parent_ref);
   void stamp_source(
       google::protobuf::RepeatedPtrField<docv1::SourceType>* source);
   template <typename Meta>

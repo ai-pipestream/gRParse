@@ -1218,10 +1218,11 @@ in [docs/RELEASING.md](docs/RELEASING.md). With models present locally (or
 `scripts/smoke-test.sh <image> --full` additionally boots the server on the
 CPU provider and streams a fixture through the bundled client.
 
-Every push and PR also runs a short libFuzzer window over the in-process
-ingest door (OpenCV raster decode; PDFs parse in the backend service) — see
-[fuzz/README.md](fuzz/README.md) for the standalone fuzz project and longer
-campaigns. A weekly `sanitize.yml` workflow (also manually dispatchable)
+Every push and PR also runs a short libFuzzer window over each in-process
+door that reads request bytes (OpenCV raster decode, the compound-file
+walker, the content sniff, the wiki storage parser, the base64 codec; PDFs
+parse in the backend service), and the nightly tier runs them for longer.
+See [fuzz/README.md](fuzz/README.md) for the standalone fuzz project. A weekly `sanitize.yml` workflow (also manually dispatchable)
 builds the whole test battery with `-DGRPARSE_SANITIZE=address,undefined` in
 the image toolchain (the `deps` stage of `Dockerfile.cpu`) under
 `docker run --cap-add SYS_PTRACE`, not inside `docker build`, whose seccomp

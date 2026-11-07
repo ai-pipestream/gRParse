@@ -8,6 +8,7 @@
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "grparse/confluence_storage.h"
 #include "grparse/docling_map.h"
+#include "grparse/structure_rules.h"
 #include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
@@ -665,6 +666,36 @@ void verify_real_page_fixture_shape() {
           "the panel names itself on the item");
 }
 
+// The confluence-storage fuzzer's finding (its reproducer is
+// fuzz/regressions/confluence-storage-fuzzer/empty-lists.storage.xhtml): a
+// list that folds to no items, an empty <ul> or a task list whose children
+// are all damaged, used to leave an empty list group, which docling-core's
+// EMPTY_GROUP rule (and so an ENFORCE request) rejects. It is dropped, with
+// a warning, and so is a list left empty once its empty sublist is.
+void verify_empty_lists_are_dropped() {
+  const auto outcome = parse(
+      "<ul></ul><ac:task-list><ac:tack><ac:task-body>damaged</ac:task-body></ac:tack>"
+      "</ac:task-list><p>after</p>");
+  const auto& document = outcome.document;
+  require(document.groups_size() == 0, "an empty list and an empty task list leave no group");
+  require(document.body().children_size() == 1 && document.texts_size() == 1 &&
+              base_of(document.texts(0)).text() == "after",
+          "the body keeps only the paragraph");
+  require(outcome.warnings.size() == 2, "each dropped list is reported as a warning");
+  require(grparse::docling_structure_findings(document).empty(),
+          "the document passes every structural rule");
+
+  const auto nested = parse("<ol><li><p>kept</p></li><ul></ul></ol><ul><ol></ol></ul>");
+  require(nested.document.groups_size() == 1 &&
+              nested.document.groups(0).children_size() == 1 &&
+              nested.document.body().children_size() == 1,
+          "an empty sublist is dropped from its list, and a list left empty by that goes too");
+  for (const auto& finding : grparse::docling_structure_findings(nested.document)) {
+    require(finding.rule != grparse::StructureRule::kEmptyGroup,
+            "no empty group survives: " + finding.message);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -694,5 +725,6 @@ int main() {
       verify_declaration_run_is_linear,
       verify_empty_body_is_rejected,
       verify_real_page_fixture_shape,
+      verify_empty_lists_are_dropped,
   });
 }

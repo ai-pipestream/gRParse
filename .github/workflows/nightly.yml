@@ -73,24 +73,64 @@ jobs:
             -f compose.stack.e2e.yaml --profile parsers --profile heavy --profile e2e \
             down --remove-orphans || true
 
+  # Every in-process door for 20 minutes each, as fuzz-smoke runs them for
+  # 90 s. -rss_limit_mb=2048 ends a memory blowup like #225 (the raster
+  # door keeps 4096: a legitimate decode of a large page needs it), and the
+  # corpora each campaign grew are kept as an artifact either way.
   fuzz-long:
     name: Long fuzz campaign
     if: ${{ vars.NIGHTLY_RUNS_ON != '' }}
     runs-on: ${{ vars.NIGHTLY_RUNS_ON }}
-    timeout-minutes: 60
+    timeout-minutes: 130
+    env:
+      LSAN_OPTIONS: suppressions=tests/lsan.supp
     steps:
       - uses: actions/checkout@v7
-      - name: Build the fuzzers with clang (the runner needs clang, libclang-rt-dev and libopencv-dev)
+      - name: Build the fuzzers with clang (the runner needs clang, libclang-rt-dev, libopencv-dev, libprotobuf-dev and protobuf-compiler)
+        id: build
         run: |
           cmake -S fuzz -B build-fuzz -G Ninja -DCMAKE_CXX_COMPILER=clang++
           cmake --build build-fuzz
-      - name: Fuzz the raster ingest door for 30 minutes
-        env:
-          LSAN_OPTIONS: suppressions=tests/lsan.supp
+      - name: Fuzz the raster ingest door for 20 minutes
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           mkdir -p corpus-raster
           ./build-fuzz/raster-source-fuzzer corpus-raster tests/data \
-            -max_total_time=1800 -max_len=1048576 -rss_limit_mb=4096 -print_final_stats=1
+            -max_total_time=1200 -max_len=1048576 -rss_limit_mb=4096 -timeout=25 -print_final_stats=1
+      - name: Fuzz the compound-file walker for 20 minutes
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          mkdir -p corpus-cfb
+          ./build-fuzz/cfb-fuzzer corpus-cfb fuzz/corpus/cfb fuzz/regressions/cfb-fuzzer \
+            -max_total_time=1200 -max_len=1048576 -rss_limit_mb=2048 -timeout=25 -print_final_stats=1
+      - name: Fuzz the content sniff for 20 minutes
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          mkdir -p corpus-content-sniff
+          ./build-fuzz/content-sniff-fuzzer corpus-content-sniff tests/golden/corpus \
+            fuzz/corpus/cfb fuzz/regressions/cfb-fuzzer \
+            -max_total_time=1200 -max_len=1048576 -rss_limit_mb=2048 -timeout=25 -print_final_stats=1
+      - name: Fuzz the wiki storage parser for 20 minutes
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          mkdir -p corpus-confluence-storage
+          ./build-fuzz/confluence-storage-fuzzer corpus-confluence-storage \
+            fuzz/corpus/confluence-storage fuzz/regressions/confluence-storage-fuzzer \
+            -max_total_time=1200 -max_len=65536 -rss_limit_mb=2048 -timeout=25 -print_final_stats=1
+      - name: Fuzz base64 against its scalar oracle for 20 minutes
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          mkdir -p corpus-base64
+          ./build-fuzz/base64-differential-fuzzer corpus-base64 \
+            fuzz/corpus/base64 fuzz/regressions/base64-differential-fuzzer \
+            -max_total_time=1200 -max_len=16384 -rss_limit_mb=2048 -timeout=25 -print_final_stats=1
+      - name: Keep the grown corpora
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-fuzz-corpora-${{ github.run_id }}
+          path: corpus-*/
+          if-no-files-found: ignore
       - name: Keep any crash input
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
@@ -101,6 +141,7 @@ jobs:
             leak-*
             timeout-*
             oom-*
+            slow-unit-*
           if-no-files-found: ignore
 
   # The performance regression tier (#251): grparse-bench's six cases,
