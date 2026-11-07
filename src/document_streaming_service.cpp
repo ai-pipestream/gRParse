@@ -6,6 +6,7 @@
 #include <deque>
 #include <exception>
 #include <filesystem>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -18,8 +19,6 @@
 #include <thread>
 #include <utility>
 #include <vector>
-
-#include <google/protobuf/arena.h>
 
 #include "grparse/collector_coordinator.h"
 #include "grparse/confidence.h"
@@ -62,17 +61,29 @@ bool is_stream_rejection_code(grpc::StatusCode code) {
   }
 }
 
-class ArenaEvent final {
- public:
-  ArenaEvent() : message(google::protobuf::Arena::Create<pipestream::parse::v1::DocumentStreamEvent>(&arena)) {}
-
-  google::protobuf::Arena arena;
-  pipestream::parse::v1::DocumentStreamEvent* message;
+// One queued write. The message lives on the heap, as the Documents and
+// pages moved into it do: a message on an arena of its own would turn each
+// of those moves into a deep copy, a second Document held until the write.
+struct Event {
+  pipestream::parse::v1::DocumentStreamEvent message;
   // True for a CV page the scheduler delivered against a window credit:
   // writing it is what hands that credit back. Collector-projected page
   // events never took one.
   bool scheduler_credit = false;
 };
+
+// The page events one projection builds, keyed by page number so they go
+// out in page order whatever order the projection touched them in.
+using PageEvents = std::map<int, std::unique_ptr<Event>>;
+
+// Where project_page_data_into builds each page: in its own event.
+std::function<pipestream::parse::v1::PageData*(int)> page_in(PageEvents* events) {
+  return [events](int page_number) {
+    auto& event = (*events)[page_number];
+    if (event == nullptr) event = std::make_unique<Event>();
+    return event->message.mutable_page();
+  };
+}
 
 class DocumentStreamReactor final
     : public grpc::ServerBidiReactor<pipestream::parse::v1::DocumentChunk,
@@ -880,8 +891,9 @@ class DocumentStreamReactor final
     std::lock_guard<std::mutex> lock(mutex_);
     if (client_cancelled_ || finish_requested_) return false;
     total_pages_ = std::max({total_pages_, slice.page_count, slice.page_no});
-    auto pages = project_page_data(slice.document, pipestream::parse::v1::TEXT_SOURCE_DIGITAL_PDF,
-                                   &assembly_cursor_.utf_offset);
+    PageEvents pages;
+    project_page_data_into(slice.document, pipestream::parse::v1::TEXT_SOURCE_DIGITAL_PDF,
+                           page_in(&pages), &assembly_cursor_.utf_offset);
     assembly_cursor_.text_index += static_cast<uint64_t>(slice.document.texts_size());
     assembly_cursor_.table_index += static_cast<uint64_t>(slice.document.tables_size());
     assembly_cursor_.picture_index += static_cast<uint64_t>(slice.document.pictures_size());
@@ -889,17 +901,14 @@ class DocumentStreamReactor final
     // A slice names its own page; a page with nothing on it still goes out
     // as an empty page, so the client sees every page number once.
     if (pages.empty()) {
-      pipestream::parse::v1::PageData empty;
-      empty.set_page_number(slice.page_no);
-      empty.mutable_page_meta()->set_page_no(slice.page_no);
-      pages.push_back(std::move(empty));
+      auto* empty = page_in(&pages)(slice.page_no);
+      empty->set_page_number(slice.page_no);
+      empty->mutable_page_meta()->set_page_no(slice.page_no);
     }
-    for (auto& page : pages) {
-      stream_fold_.fold(page);
-      auto event = std::make_unique<ArenaEvent>();
-      event->message->set_document_id(document_id_);
-      event->message->set_total_pages(total_pages_);
-      *event->message->mutable_page() = std::move(page);
+    for (auto& [_, event] : pages) {
+      stream_fold_.fold(event->message.page());
+      event->message.set_document_id(document_id_);
+      event->message.set_total_pages(total_pages_);
       events_.push_back(std::move(event));
     }
     next_page_ = slice.page_no + 1;
@@ -929,17 +938,17 @@ class DocumentStreamReactor final
     while (true) {
       auto page_it = completed_pages_.find(next_page_);
       if (page_it == completed_pages_.end()) break;
-      auto event = std::make_unique<ArenaEvent>();
-      event->message->set_document_id(document_id_);
-      event->message->set_total_pages(total_pages_);
-      append_page_data(*page_it->second, next_page_, &assembly_cursor_, event->message->mutable_page(),
+      auto event = std::make_unique<Event>();
+      event->message.set_document_id(document_id_);
+      event->message.set_total_pages(total_pages_);
+      append_page_data(*page_it->second, next_page_, &assembly_cursor_, event->message.mutable_page(),
                        &assembly_warnings_);
       page_scores_.push_back(page_confidence(*page_it->second, next_page_));
-      stream_fold_.fold(event->message->page());
+      stream_fold_.fold(event->message.page());
       fold_has_cv_ = true;
       // Heading depth needs every page's heights; the terminal event ships
       // the clustered result for the level-0 headers streamed here.
-      collect_header_heights(event->message->page(), &header_heights_);
+      collect_header_heights(event->message.page(), &header_heights_);
       completed_pages_.erase(page_it);
       event->scheduler_credit = true;
       events_.push_back(std::move(event));
@@ -1013,12 +1022,14 @@ class DocumentStreamReactor final
       // as the collector-document event for consumers that want it intact.
       // The pdf collector's text is the document's own text layer; other
       // collectors' text has no OCR-or-digital story to tell.
-      auto pages = pages_streamed
-                       ? std::vector<pipestream::parse::v1::PageData>{}
-                       : project_page_data(outcome.document,
-                                           collector == pipestream::parse::v1::COLLECTOR_PDF
-                                               ? pipestream::parse::v1::TEXT_SOURCE_DIGITAL_PDF
-                                               : pipestream::parse::v1::TEXT_SOURCE_UNSPECIFIED);
+      PageEvents pages;
+      if (!pages_streamed) {
+        project_page_data_into(outcome.document,
+                               collector == pipestream::parse::v1::COLLECTOR_PDF
+                                   ? pipestream::parse::v1::TEXT_SOURCE_DIGITAL_PDF
+                                   : pipestream::parse::v1::TEXT_SOURCE_UNSPECIFIED,
+                               page_in(&pages));
+      }
       // What a client folding these pages still lacks to hold the
       // collector's Document: the repair pass's changes for pages that
       // streamed before it ran, and the tree the projection flattened for
@@ -1031,32 +1042,30 @@ class DocumentStreamReactor final
         }
       } else if (!pages.empty()) {
         PageFold fold;
-        for (const auto& page : pages) fold.fold(page);
+        for (const auto& [_, event] : pages) fold.fold(event->message.page());
         delta = repair_delta(fold.document(), outcome.document, {}, collector);
       }
       const bool paged = pages_streamed || !pages.empty();
       if (!pages.empty()) {
         total_pages_ = std::max(total_pages_, static_cast<int>(pages.size()));
-        for (auto& page : pages) {
-          auto page_event = std::make_unique<ArenaEvent>();
-          page_event->message->set_document_id(document_id_);
-          page_event->message->set_total_pages(total_pages_);
-          *page_event->message->mutable_page() = std::move(page);
+        for (auto& [_, page_event] : pages) {
+          page_event->message.set_document_id(document_id_);
+          page_event->message.set_total_pages(total_pages_);
           events_.push_back(std::move(page_event));
         }
       }
       if (delta.has_value()) {
-        auto delta_event = std::make_unique<ArenaEvent>();
-        delta_event->message->set_document_id(document_id_);
-        delta_event->message->set_total_pages(total_pages_);
-        *delta_event->message->mutable_repair() = std::move(*delta);
+        auto delta_event = std::make_unique<Event>();
+        delta_event->message.set_document_id(document_id_);
+        delta_event->message.set_total_pages(total_pages_);
+        *delta_event->message.mutable_repair() = std::move(*delta);
         events_.push_back(std::move(delta_event));
       }
       if (paged && slim_collector_documents_.value_or(false)) slim(&outcome.document);
-      auto event = std::make_unique<ArenaEvent>();
-      event->message->set_document_id(document_id_);
-      event->message->set_total_pages(total_pages_);
-      auto* collector_document = event->message->mutable_collector_document();
+      auto event = std::make_unique<Event>();
+      event->message.set_document_id(document_id_);
+      event->message.set_total_pages(total_pages_);
+      auto* collector_document = event->message.mutable_collector_document();
       collector_document->set_collector(collector);
       *collector_document->mutable_document() = std::move(outcome.document);
       for (auto& warning : outcome.warnings) {
@@ -1099,10 +1108,10 @@ class DocumentStreamReactor final
     std::map<std::string, int32_t> levels;
     if (!header_heights_.empty()) levels = section_header_levels(std::move(header_heights_));
     emit_fold_delta_locked(levels);
-    auto event = std::make_unique<ArenaEvent>();
-    event->message->set_document_id(document_id_);
-    event->message->set_total_pages(total_pages_);
-    auto* complete = event->message->mutable_complete();
+    auto event = std::make_unique<Event>();
+    event->message.set_document_id(document_id_);
+    event->message.set_total_pages(total_pages_);
+    auto* complete = event->message.mutable_complete();
     auto* origin = complete->mutable_origin();
     origin->set_filename(filename_.string());
     origin->set_mimetype(origin_mimetype_.mimetype);
@@ -1154,10 +1163,10 @@ class DocumentStreamReactor final
                                 fold_has_cv_ ? pipestream::parse::v1::COLLECTOR_GRPARSE_CV
                                              : pipestream::parse::v1::COLLECTOR_PDF);
       if (!delta.has_value()) return;
-      auto event = std::make_unique<ArenaEvent>();
-      event->message->set_document_id(document_id_);
-      event->message->set_total_pages(total_pages_);
-      *event->message->mutable_repair() = std::move(*delta);
+      auto event = std::make_unique<Event>();
+      event->message.set_document_id(document_id_);
+      event->message.set_total_pages(total_pages_);
+      *event->message.mutable_repair() = std::move(*delta);
       events_.push_back(std::move(event));
     } catch (const std::exception& error) {
       assembly_warnings_.push_back(std::string("the streamed pages' repair event was skipped: ") +
@@ -1220,7 +1229,7 @@ class DocumentStreamReactor final
   void pump_locked() {
     if (!write_in_flight_ && !events_.empty()) {
       write_in_flight_ = true;
-      StartWrite(events_.front()->message);
+      StartWrite(&events_.front()->message);
       return;
     }
     if (finish_requested_ && !write_in_flight_ && events_.empty() && !finish_started_) {
@@ -1265,7 +1274,7 @@ class DocumentStreamReactor final
   MimetypeResolution origin_mimetype_;
   PageScheduler::Ticket ticket_;
   std::map<int, std::shared_ptr<const OcrPage>> completed_pages_;
-  std::deque<std::unique_ptr<ArenaEvent>> events_;
+  std::deque<std::unique_ptr<Event>> events_;
   AssemblyCursor assembly_cursor_;
   // Level-less section headers streamed so far, clustered into depths for
   // the terminal event.
