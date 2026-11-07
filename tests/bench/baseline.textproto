@@ -1,0 +1,42 @@
+# proto-file: tests/bench/bench_baseline.proto
+# proto-message: grparse.test.bench.BenchBaseline
+# Written by grparse-bench --record --reason "<commit>: why" (README,
+# "Benchmarks"); re-record instead of editing the numbers by hand.
+reason: "f9c2fa2 + #251: first baseline. Measured in a shared cloud container, which is not stable hardware; re-record on the self-hosted runner (#258) before relying on the 1.5x gate."
+host: "Intel(R) Xeon(R) Processor @ 2.10GHz, 4 hardware threads"
+cases {
+  name: "ttfp_inspector_fast_path"
+  ns_per_op: 1515715
+  items_per_second: 3544.7657298004451
+  item: "pages"
+}
+cases {
+  name: "assembly_200_pages"
+  ns_per_op: 7250100
+  items_per_second: 27585.82640239445
+  item: "pages"
+}
+cases {
+  name: "fold_and_delta"
+  ns_per_op: 26580545.75
+  items_per_second: 7524.2999854508253
+  item: "pages"
+}
+cases {
+  name: "render_exports"
+  ns_per_op: 20469715.25
+  items_per_second: 9770.531614991567
+  item: "pages"
+}
+cases {
+  name: "sniff_corpus"
+  ns_per_op: 115068.474609375
+  items_per_second: 330238.1484502969
+  item: "files"
+}
+cases {
+  name: "base64_10mib"
+  ns_per_op: 32847080
+  items_per_second: 304.4410644720931
+  item: "MiB"
+}

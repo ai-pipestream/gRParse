@@ -10,7 +10,8 @@
 #              the build (skip 77 inside the image build)
 #   stack      a docker compose stack; opt-in through GRPARSE_STACK_SUITES
 #              (scripts/test/stack-suite.sh), skip 77 otherwise
-#   bench      timing benchmarks (none yet)
+#   bench      timing benchmarks: grparse-bench (#251), skip 77 unless
+#              GRPARSE_BENCH_ENFORCE=1 gates it on tests/bench/baseline.textproto
 #
 # The image builds run `-L grparse -LE "stack|eval|bench"`; CMakePresets.json
 # names the same filters (pr, models, nightly, release), and README
@@ -49,7 +50,7 @@ foreach(suite IN LISTS GRPARSE_TIER_STACK)
     LABELS "grparse;stack" SKIP_RETURN_CODE 77 TIMEOUT 3600)
 endforeach()
 
-set(GRPARSE_TIER_BENCH)
+set(GRPARSE_TIER_BENCH grparse-bench)
 
 foreach(tier loopback models emulators bench)
   string(TOUPPER "${tier}" tier_var)
