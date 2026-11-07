@@ -1,0 +1,64 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {"major": 3, "minor": 25, "patch": 0},
+  "configurePresets": [
+    {
+      "name": "default",
+      "displayName": "Release build with tests in build/",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": "ON",
+        "GRPARSE_TEST_TIMEOUT": "600"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "default",
+      "configurePreset": "default",
+      "targets": ["grparse-server", "grparse-stream-client", "grparse-tests"]
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "pr",
+      "displayName": "Pull request tier: unit, loopback, models (skip without them), emulators (skip without them)",
+      "configurePreset": "default",
+      "output": {"outputOnFailure": true},
+      "filter": {
+        "include": {"label": "grparse"},
+        "exclude": {"label": "stack|eval|bench"}
+      },
+      "execution": {"jobs": 4, "noTestsAction": "error"}
+    },
+    {
+      "name": "models",
+      "displayName": "Model-backed goldens; a missing model fails",
+      "configurePreset": "default",
+      "output": {"outputOnFailure": true},
+      "environment": {"GRPARSE_TEST_REQUIRE_MODELS": "1"},
+      "filter": {"include": {"label": "models"}},
+      "execution": {"jobs": 4, "noTestsAction": "error"}
+    },
+    {
+      "name": "nightly",
+      "displayName": "Nightly tier: stack suites, eval, bench and models (GRPARSE_STACK_SUITES picks the stack suites)",
+      "configurePreset": "default",
+      "output": {"outputOnFailure": true},
+      "filter": {"include": {"label": "stack|eval|bench|models"}},
+      "execution": {"jobs": 1, "noTestsAction": "error"}
+    },
+    {
+      "name": "release",
+      "displayName": "Release tier: the nightly set with every skip a failure",
+      "inherits": "nightly",
+      "environment": {
+        "EVAL_REQUIRE": "1",
+        "GRPARSE_TEST_REQUIRE_MODELS": "1",
+        "GRPARSE_STACK_SUITES": "all"
+      }
+    }
+  ]
+}

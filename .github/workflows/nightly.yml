@@ -1,0 +1,128 @@
+# Nightly heavy tier (#244): the compose-stack suites, the long fuzz
+# campaign, and the compose checks, on a self-hosted runner. Nothing here
+# runs on a GitHub-hosted runner, so it costs no hosted minutes.
+#
+# Where it runs: the runner label in the repository (or organisation)
+# variable NIGHTLY_RUNS_ON, on GitHub and on Forgejo alike. With the variable
+# unset every job is skipped, so the workflow stays inert until a runner
+# that can do this work is registered (the self-hosted runner issue under
+# #238 has the steps). That runner needs docker with the compose plugin and
+# must run jobs on the host, not in a job container: the Playwright service
+# bind-mounts ./e2e and ./tests/golden/corpus from the checkout, and a job
+# container talking to the host daemon would hand it empty directories.
+#
+# Every suite runs exactly as it runs by hand, through the same
+# scripts/test/stack-suite.sh that `ctest -L stack` uses. Each step's exit
+# code is the suite's own (Playwright's for stack-e2e).
+name: Nightly heavy tier
+
+on:
+  schedule:
+    - cron: "41 6 * * *"
+  workflow_dispatch:
+    inputs:
+      suites:
+        description: Comma list of stack suites to run (default all of this workflow's)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  stack:
+    name: Compose stack suites
+    if: ${{ vars.NIGHTLY_RUNS_ON != '' }}
+    runs-on: ${{ vars.NIGHTLY_RUNS_ON }}
+    timeout-minutes: 120
+    env:
+      # The CPU overlay: the nightly host need not have a GPU.
+      NO_GPU: "1"
+      E2E_DOWN: "1"
+      E2E_PROJECT: grparse-nightly
+      GRPARSE_STACK_SUITES: ${{ inputs.suites || 'stack-e2e,compose-preflight,observability-compose' }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Pull the published images the stack runs
+        run: |
+          docker compose -p "$E2E_PROJECT" -f compose.stack.yaml -f compose.stack.cpu.yaml \
+            -f compose.stack.e2e.yaml --profile parsers --profile heavy --profile e2e pull
+      - name: Compose checks (preflight, observability overlay)
+        run: |
+          sh scripts/test/stack-suite.sh compose-preflight
+          sh scripts/test/stack-suite.sh observability-compose
+      - name: Playwright suite against the whole stack
+        run: sh scripts/test/stack-suite.sh stack-e2e
+      - name: Keep the Playwright reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-e2e-${{ github.run_id }}
+          path: e2e/out/
+          if-no-files-found: ignore
+      - name: Tear the stack down
+        if: ${{ always() }}
+        run: |
+          docker compose -p "$E2E_PROJECT" -f compose.stack.yaml -f compose.stack.cpu.yaml \
+            -f compose.stack.e2e.yaml --profile parsers --profile heavy --profile e2e \
+            down --remove-orphans || true
+
+  fuzz-long:
+    name: Long fuzz campaign
+    if: ${{ vars.NIGHTLY_RUNS_ON != '' }}
+    runs-on: ${{ vars.NIGHTLY_RUNS_ON }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the fuzzers with clang (the runner needs clang, libclang-rt-dev and libopencv-dev)
+        run: |
+          cmake -S fuzz -B build-fuzz -G Ninja -DCMAKE_CXX_COMPILER=clang++
+          cmake --build build-fuzz
+      - name: Fuzz the raster ingest door for 30 minutes
+        env:
+          LSAN_OPTIONS: suppressions=tests/lsan.supp
+        run: |
+          mkdir -p corpus-raster
+          ./build-fuzz/raster-source-fuzzer corpus-raster tests/data \
+            -max_total_time=1800 -max_len=1048576 -rss_limit_mb=4096 -print_final_stats=1
+      - name: Keep any crash input
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-fuzz-${{ github.run_id }}
+          path: |
+            crash-*
+            leak-*
+            timeout-*
+            oom-*
+          if-no-files-found: ignore
+
+  # One open issue labelled `nightly` carries the failures: opened on the
+  # first red night, commented on after that. GitHub only; Forgejo keeps
+  # issues off and its run list is the record there.
+  report:
+    name: Report a red night
+    needs: [stack, fuzz-long]
+    if: ${{ failure() && github.server_url == 'https://github.com' && github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Open or update the nightly issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          number=$(gh issue list --label nightly --state open --json number --jq '.[0].number // empty')
+          body="Nightly heavy tier failed: $RUN_URL"
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "Nightly heavy tier is red" --label nightly --body "$body"
+          fi

@@ -1244,8 +1244,34 @@ and no typed fact degraded into a colon-keyed custom field). Third-party depende
 suites, so the label filter is what keeps `ctest` scoped to this project:
 
 ```bash
-ctest --test-dir /build --output-on-failure -L grparse
+ctest --test-dir /build --output-on-failure -L grparse -LE "stack|eval|bench" -j 4
 ```
+
+Every test in the `grparse` suite also carries exactly one tier label
+(`cmake/TestTiers.cmake`; the `ctest-tiers` test fails on a test with none or
+two), and `CMakePresets.json` names the filters (`ctest --preset pr` and so on
+against the `default` configure preset's `build/`):
+
+| Tier | What it needs | Where it runs | Skips to read |
+|---|---|---|---|
+| `unit` | nothing: pure functions on fixtures | every image build, every PR (`pr` preset) | none |
+| `loopback` | an in-process gRPC server, fake backend or loopback HTTP | every image build, every PR | none |
+| `models` | the files under `models/` | every image build; they pass only on `cpu-image`, which provides the models and sets `GRPARSE_TEST_REQUIRE_MODELS=1` (`models` preset) | cuda and openvino builds skip these six |
+| `emulators` | fake-gcs, Azurite, RustFS, grpc-enrich and an emulated VLM | skip inside every image build; `cpu-image` runs them afterwards from the e2e image with the emulators up | all three, in-build |
+| `stack` | a docker compose stack | nightly (`nightly` preset), only the suites `GRPARSE_STACK_SUITES` names (`scripts/test/stack-suite.sh`); never in an image build | every one not named |
+| `eval` | a running stack and an oracle (`vlm-oracle-eval`, `structural-scorecard`) | nightly and release | without `GRPARSE_TARGET`/`VLM_ENDPOINT` |
+| `bench` | timing on fixed fixtures | nightly (none registered yet) | n/a |
+
+`ctest -N -L stack` lists the six compose-stack suites (`stack-e2e`,
+`s3-corpus-eval`, `ocr-presets-e2e`, `embedding-rpc`, `compose-preflight`,
+`observability-compose`); each runs exactly as its script runs by hand, the
+wrapper only decides whether it runs. The `release` preset sets
+`EVAL_REQUIRE=1`, `GRPARSE_TEST_REQUIRE_MODELS=1` and
+`GRPARSE_STACK_SUITES=all`, so a skip there is a failure.
+`.github/workflows/nightly.yml` runs the stack tier every night on a
+self-hosted runner that has docker compose (Forgejo's `heavy` runner; on
+GitHub only once `vars.NIGHTLY_RUNS_ON` names a registered self-hosted runner
+label, so no hosted minutes are spent).
 
 Two CMake options exist for local work: `-DGRPARSE_WERROR=OFF` relaxes the
 warning gate, and `-DGRPARSE_SANITIZE=address` (or `thread`, `undefined`, or a

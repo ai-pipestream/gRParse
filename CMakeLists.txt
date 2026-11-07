@@ -1360,3 +1360,6 @@ if(BUILD_TESTING)
 endif()
 
 include(cmake/Embeddings.cmake)
+# Tier labels for every test above, the compose-stack suites, and the
+# check that keeps each test in exactly one tier (#244).
+include(cmake/TestTiers.cmake)

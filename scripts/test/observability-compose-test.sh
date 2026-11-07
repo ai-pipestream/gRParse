@@ -60,7 +60,7 @@ for needle in (
     "host.docker.internal:host-gateway",
     "127.0.0.1:${GRAFANA_PORT:-3000}:3000",
     'GF_AUTH_ANONYMOUS_ENABLED: "true"',
-    'GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"',
+    'GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"',
 ):
     assert needle in overlay_text, f"compose.stack.observability.yaml missing {needle!r}"
 
