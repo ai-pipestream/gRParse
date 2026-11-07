@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 #include "ai/pipestream/document/v1/document.pb.h"
@@ -35,5 +36,18 @@ namespace grparse {
 std::vector<ai::pipestream::parse::v1::PageData> project_page_data(
     const ai::pipestream::document::v1::Document& document,
     ai::pipestream::parse::v1::TextSource text_source, uint64_t* utf_offset = nullptr);
+
+// The same projection, written in place: `page_at` is asked for each page
+// the result holds, once per page number and in first-touch order rather
+// than page order, and returns where that page is built; the pointer must
+// stay valid until the call returns. A caller that owns the message the
+// page lives in (a stream event) gets the page built there, without a
+// PageData to copy in afterwards. Nothing is asked for when the document
+// places nothing on a page.
+void project_page_data_into(
+    const ai::pipestream::document::v1::Document& document,
+    ai::pipestream::parse::v1::TextSource text_source,
+    const std::function<ai::pipestream::parse::v1::PageData*(int page_number)>& page_at,
+    uint64_t* utf_offset = nullptr);
 
 }  // namespace grparse
