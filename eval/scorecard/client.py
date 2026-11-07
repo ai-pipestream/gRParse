@@ -93,8 +93,8 @@ def fill_ebcdic_layout(message: Any, docling_layout: bytes) -> None:
         typed.name = record.get("name") or ""
         if record.get("selector") is not None:
             typed.selector = str(record["selector"])
-        for field in record.get("fields") or []:
-            _fill_ebcdic_field(typed.fields.add(), field)
+        for spec in record.get("fields") or []:
+            _fill_ebcdic_field(typed.fields.add(), spec)
 
 
 @dataclass
