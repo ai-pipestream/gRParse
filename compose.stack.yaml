@@ -10,10 +10,12 @@
 #              xml, markup, ebcdic, email (proxied tabs), plus fastwarc
 #              (a native shell tab, no UI container of its own).
 #   heavy    - asr (CPU whisper image; mount ggml weights into ./models of
-#              grpc-asr or point ASR models elsewhere), enrich, and
-#              vlm-convert (both need an external VLM endpoint via
-#              ENRICH_VLM_URL / VLM_ENDPOINT to do real work; their tabs
-#              show an amber "no VLM endpoint" state otherwise).
+#              grpc-asr or point ASR models elsewhere), enrich and
+#              vlm-convert (need ENRICH_VLM_URL / VLM_ENDPOINT).
+#   lighton  - experimental LightOnOCR-3 service on 50074. Build locally
+#              with verified CPU 0.8B GGUF weights. No coordinator route
+#              or shell tab is enabled; publication is a separate gate.
+#              See compose/README.md for startup and readiness checks.
 #   calamine - existing opt-in, unchanged.
 #   pdf-backends - grpc-qparse, a second Apache-2.0 PDF backend for the
 #              consensus vote (set GRPARSE_PDF_BACKEND to a comma list).
@@ -375,6 +377,29 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  lighton-ocr:
+    profiles: ["lighton"]
+    # Experimental local build, outside the versioned release fleet.
+    image: ${LIGHTON_IMAGE:-grpc-lighton-ocr:local}
+    build: ../grpc-lighton-ocr
+    expose:
+      - "50074"
+    environment:
+      GRPC_LIGHTON_MODELS_DIR: /models
+      GRPC_LIGHTON_MODEL: "${LIGHTON_MODEL:-0.8b}"
+    volumes:
+      - type: bind
+        source: ${LIGHTON_MODELS_DIR:-../grpc-lighton-ocr/models}
+        target: /models
+        read_only: true
+        bind:
+          create_host_path: false
+    read_only: true
     cap_drop:
       - ALL
     security_opt:

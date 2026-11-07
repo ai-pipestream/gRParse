@@ -51,6 +51,10 @@ std::optional<std::string_view> doc_item_label_string(docv1::DocItemLabel label)
     case docv1::DOC_ITEM_LABEL_FIELD_VALUE: return "field_value";
     case docv1::DOC_ITEM_LABEL_FIELD_HINT: return "field_hint";
     case docv1::DOC_ITEM_LABEL_MARKER: return "marker";
+    // No upstream name: the nearest upstream label (document.proto).
+    case docv1::DOC_ITEM_LABEL_SEAL: return "picture";
+    case docv1::DOC_ITEM_LABEL_ASIDE: return "text";
+    case docv1::DOC_ITEM_LABEL_ALGORITHM: return "code";
     default: return std::nullopt;
   }
 }

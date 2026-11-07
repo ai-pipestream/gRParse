@@ -6,6 +6,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 
@@ -1139,8 +1140,147 @@ void verify_picture_description_custom_config_is_wired() {
   require(call.has_value() && call->prompt.empty(), "nothing set sends no prompt");
 }
 
+void verify_unsupported_vlm_custom_fields() {
+  const auto valid = [] {
+    parsev1::ConvertDocumentOptions options;
+    auto* cfg = options.mutable_vlm_pipeline_custom_config();
+    cfg->mutable_engine_options()->set_engine_type(parsev1::VLM_ENGINE_TYPE_TRANSFORMERS);
+    cfg->mutable_engine_options()->set_trust_remote_code(false);
+    cfg->mutable_model_spec()->set_name("custom");
+    cfg->mutable_model_spec()->set_default_repo_id("example/model");
+    cfg->mutable_model_spec()->set_trust_remote_code(false);
+    cfg->mutable_model_spec()->set_prompt("Convert the page.");
+    cfg->mutable_model_spec()->set_response_format(parsev1::RESPONSE_FORMAT_HTML);
+    cfg->set_scale(1.25);
+    return options;
+  };
+  require(grparse::validate_options(valid(), kSurface).ok(),
+          "existing VLM defaults and explicit safe trust settings remain valid");
+  grparse::VlmConvertOptions forwarded;
+  grparse::apply_vlm_convert_options(valid(), &forwarded);
+  require(forwarded.preset_raw == "example/model" && forwarded.prompt == "Convert the page." &&
+              forwarded.scale == 1.25 && forwarded.response_format_raw == "html",
+          "supported VLM custom settings retain their forwarding");
+  for (const bool nondefault : {false, true}) {
+    for (const std::string field_name : {
+             "max_size", "batch_size", "force_backend_text", "model_spec.revision",
+             "model_spec.supported_engines", "model_spec.engine_overrides",
+             "model_spec.api_overrides", "model_spec.stop_strings", "model_spec.temperature",
+             "model_spec.max_new_tokens", "model_spec.extra_generation_config"}) {
+      auto options = valid();
+      auto* cfg = options.mutable_vlm_pipeline_custom_config();
+      const bool spec_field = field_name.starts_with("model_spec.");
+      google::protobuf::Message* message = spec_field
+          ? static_cast<google::protobuf::Message*>(cfg->mutable_model_spec()) : cfg;
+      const auto name = spec_field ? field_name.substr(11) : field_name;
+      const auto* field = message->GetDescriptor()->FindFieldByName(name);
+      require(field != nullptr, "VLM test field exists: " + field_name);
+      const auto* reflection = message->GetReflection();
+      using Field = google::protobuf::FieldDescriptor;
+      if (field->is_repeated()) {
+        if (field->cpp_type() == Field::CPPTYPE_MESSAGE) reflection->AddMessage(message, field);
+        else if (field->cpp_type() == Field::CPPTYPE_ENUM)
+          reflection->AddEnumValue(message, field, parsev1::VLM_ENGINE_TYPE_TRANSFORMERS);
+        else reflection->AddString(message, field, nondefault ? "stop" : "");
+      } else if (field->cpp_type() == Field::CPPTYPE_STRING)
+        reflection->SetString(message, field, nondefault ? "revision" : "");
+      else if (field->cpp_type() == Field::CPPTYPE_BOOL)
+        reflection->SetBool(message, field, nondefault);
+      else if (field->cpp_type() == Field::CPPTYPE_DOUBLE)
+        reflection->SetDouble(message, field, nondefault ? 0.5 : 0.0);
+      else reflection->SetInt32(message, field, nondefault ? 10 : 0);
+      const auto status = grparse::validate_options(options, kSurface);
+      require(status.error_code() == grpc::StatusCode::UNIMPLEMENTED &&
+                  status.error_message().find("vlm_pipeline_custom_config." + field_name) !=
+                      std::string::npos,
+              "unsupported VLM field must be rejected by path: " + field_name);
+    }
+  }
+  auto trust = valid();
+  trust.mutable_vlm_pipeline_custom_config()->mutable_model_spec()->set_trust_remote_code(true);
+  require(grparse::validate_options(trust, kSurface).error_code() == grpc::StatusCode::UNIMPLEMENTED,
+          "model spec must not silently enable repository code");
+}
+
+void verify_unimplemented_nested_ocr_options() {
+  for (const bool value : {false, true}) {
+    parsev1::ConvertDocumentOptions options;
+    options.mutable_rapidocr()->set_use_rec(value);
+    require(grparse::validate_options(options, kSurface).error_code() == grpc::StatusCode::UNIMPLEMENTED,
+            "unsupported rapidocr.use_rec must not silently succeed");
+    options.clear_rapidocr();
+    options.mutable_ocr_auto()->mutable_base()->set_force_full_page_ocr(value);
+    require(grparse::validate_options(options, kSurface).error_code() == grpc::StatusCode::UNIMPLEMENTED,
+            "unsupported nested force_full_page_ocr must not silently succeed");
+  }
+}
+
+void verify_replace_broken_and_rapidocr_orientation_options() {
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.mutable_rapidocr()->mutable_base()->set_replace_broken_text_layer(true);
+    require(grparse::validate_options(options, kSurface).ok(),
+            "rapidocr.base.replace_broken_text_layer true is accepted");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.set_force_ocr(true);
+    options.mutable_ocr_auto()->mutable_base()->set_replace_broken_text_layer(true);
+    require_invalid(grparse::validate_options(options, kSurface), "force_ocr");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.mutable_rapidocr()->set_detect_orientation(true);
+    require(grparse::validate_options(options, kSurface).ok(),
+            "rapidocr.detect_orientation true is accepted");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.mutable_ocr_auto();
+    require(grparse::validate_options(options, kSurface).ok(),
+            "ocr_auto arm is implemented");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.mutable_rapidocr();
+    require(grparse::validate_options(options, kSurface).ok(),
+            "rapidocr arm is implemented");
+  }
+  for (const char* arm : {"easyocr", "tesseract", "tesseract_cli", "ocrmac",
+                          "nemotron_ocr", "kserve_v2_ocr"}) {
+    parsev1::ConvertDocumentOptions options;
+    if (std::string_view(arm) == "easyocr") options.mutable_easyocr();
+    else if (std::string_view(arm) == "tesseract") options.mutable_tesseract();
+    else if (std::string_view(arm) == "tesseract_cli") options.mutable_tesseract_cli();
+    else if (std::string_view(arm) == "ocrmac") options.mutable_ocrmac();
+    else if (std::string_view(arm) == "nemotron_ocr") options.mutable_nemotron_ocr();
+    else options.mutable_kserve_v2_ocr();
+    require_equal(static_cast<int>(grparse::validate_options(options, kSurface).error_code()),
+                  static_cast<int>(grpc::StatusCode::UNIMPLEMENTED),
+                  std::string(arm) + " arm is UNIMPLEMENTED");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.mutable_page_range()->set_start(0);
+    options.mutable_page_range()->set_end(3);
+    // start < 1 is clamped at apply time; validation accepts the span shape.
+    require(grparse::validate_options(options, kSurface).ok(),
+            "page_range start below 1 is accepted for clamp");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.mutable_page_range()->set_start(5);
+    options.mutable_page_range()->set_end(2);
+    require_invalid(grparse::validate_options(options, kSurface), "page_range");
+  }
+}
+
+
 int main() {
   return grparse_test::run_test_main("convert-options-test", "ok", {
+      verify_unsupported_vlm_custom_fields,
+      verify_unimplemented_nested_ocr_options,
+      verify_replace_broken_and_rapidocr_orientation_options,
       verify_picture_description_custom_config_is_wired,
       verify_typed_rejections_and_heading_options,
       verify_vlm_response_formats_are_typed,

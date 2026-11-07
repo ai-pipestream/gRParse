@@ -938,6 +938,18 @@
    "reason": "new document: Common Crawl WARC sample for the fastwarc-grpc 1.1.0 collector, recorded on the krick-1 CPU image",
    "service": "gRParse grparse-0.3.0-cpu",
    "timestamp": "2026-10-27T04:47:39+00:00"
+  },
+  {
+   "documents": [
+    "xlsx-sample3",
+    "xlsx-formula-issue",
+    "xlsx-sixty-sheets",
+    "xlsx-charts"
+   ],
+   "partial": true,
+   "reason": "Review ticket fixes: Calamine now retains source workbook properties; existing spreadsheet rank selects matching metadata and preserves LibreOffice claims. Verified core.xml source metadata, unchanged content/truth, stable repeated output.",
+   "service": "gRParse grparse-0.3.0-cpu",
+   "timestamp": "2026-10-31T04:56:01+00:00"
   }
  ],
  "manifest": "eval/scorecard/corpus.json",

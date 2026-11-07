@@ -17,6 +17,8 @@
 #include <opencv2/imgcodecs.hpp>
 
 #include "grparse/page_scheduler.h"
+#include "grparse/document_assembly.h"
+#include "ai/pipestream/parse/v1/parse_stream.pb.h"
 #include "support/check.h"
 #include "support/fake_pdf_backend.h"
 
@@ -966,6 +968,67 @@ void verify_ocr_off_still_runs_layout() {
           "layout keeps the recognition-off page on the raster path");
 }
 
+// Replace only weak embedded layers, and carry that fact onto the page wire.
+void verify_replace_broken_text_layer_replaces_only_weak_pages() {
+  // Two pages: page 1 dense (skip_ocr true), page 2 weak (skip_ocr false).
+  class MixedSource final : public grparse::PageSource {
+   public:
+    int page_count() const override { return 2; }
+    std::optional<grparse::OcrPage> extract_digital_page(int page_number) const override {
+      grparse::OcrPage page{100, 100,
+                            {{"digital-" + std::to_string(page_number),
+                              {{0, 50}, {40, 50}, {40, 58}, {0, 58}}, std::nullopt,
+                              grparse::TextOrigin::kDigitalPdf}}};
+      page.source = grparse::OcrPage::Source::kDigitalPdf;
+      page.skip_ocr = (page_number == 1);
+      return page;
+    }
+    cv::Mat render_page(int page_number) const override {
+      return cv::Mat(1, 1, CV_8UC1, cv::Scalar(page_number)).clone();
+    }
+  };
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 2, 2, 2, 1, 1, 1},
+      [](std::shared_ptr<const std::string>, bool, double) {
+        return std::make_shared<MixedSource>();
+      });
+  grparse::PageScheduler::OcrTuning tuning;
+  tuning.replace_broken_text_layer = true;
+  Result result;
+  std::mutex pages_mutex;
+  std::vector<std::shared_ptr<const grparse::OcrPage>> delivered;
+  scheduler.submit(std::make_shared<const std::string>("memory"), true, tuning,
+                   capturing_callbacks_for(&result, &pages_mutex, &delivered));
+  wait_until_finished(&result);
+
+  require(!result.failure, "replace_broken document failed");
+  {
+    std::lock_guard<std::mutex> lock(pages_mutex);
+    require(delivered.size() == 2, "both pages delivered");
+    // Delivery order is page order.
+    require(delivered[0]->source == grparse::OcrPage::Source::kDigitalPdf &&
+                !delivered[0]->text_layer_replaced &&
+                delivered[0]->lines[0].text.starts_with("digital-"),
+            "complete page keeps embedded layer and no replace flag");
+    require(delivered[1]->text_layer_replaced &&
+                delivered[1]->source == grparse::OcrPage::Source::kOcr &&
+                delivered[1]->lines[0].text.starts_with("page-"),
+            "weak page is OCR-only with text_layer_replaced");
+    grparse::AssemblyCursor cursor;
+    ai::pipestream::parse::v1::PageData complete_page;
+    ai::pipestream::parse::v1::PageData replaced_page;
+    grparse::append_page_data(*delivered[0], 1, &cursor, &complete_page);
+    grparse::append_page_data(*delivered[1], 2, &cursor, &replaced_page);
+    require(!complete_page.page_meta().quality().has_text_layer_replaced(),
+            "complete page must not claim text replacement on the wire");
+    require(replaced_page.page_meta().quality().has_text_layer_replaced() &&
+                replaced_page.page_meta().quality().text_layer_replaced(),
+            "weak page replacement must reach PageQuality on the wire");
+  }
+  require(recognizer.calls.load() == 1, "only the weak page is recognized");
+}
+
 // kForce recognizes every page, full-digital ones included, and the
 // recognized text replaces the embedded layer instead of merging with it.
 void verify_force_ocr_replaces_the_embedded_layer() {
@@ -1523,6 +1586,28 @@ void verify_digital_layer_and_disabled_recovery_never_rerecognize() {
   }
 }
 
+void verify_request_orientation_overrides_server_default() {
+  for (const bool enabled : {false, true}) {
+    MarkerRecognizer recognizer;
+    grparse::PageScheduler::Options options{2, 2, 2, 2, 1, 1, 1};
+    options.orientation.enabled = !enabled;
+    grparse::PageScheduler scheduler(recognizer, options,
+        [](std::shared_ptr<const std::string>, bool, double) {
+          return std::make_shared<TurnedSource>(90);
+        });
+    grparse::PageScheduler::OcrTuning tuning;
+    tuning.detect_orientation = enabled;
+    Result result;
+    DeliveredPage delivered;
+    scheduler.submit(std::make_shared<const std::string>("memory"), false, tuning,
+                     capturing_callbacks(&result, &delivered));
+    wait_until_finished(&result);
+    require(!result.failure, "request orientation override succeeds");
+    require(recognizer.calls.load() == (enabled ? 2 : 1),
+            "explicit orientation controls recovery regardless of server default");
+  }
+}
+
 // Docling page_range: only the inclusive span is scheduled; original page
 // numbers are preserved on the delivered pages.
 void verify_page_range_restricts_scheduled_pages() {
@@ -1568,6 +1653,7 @@ int main() {
       verify_recognition_modes_outrank_the_page_set,
       verify_ocr_off_reads_only_the_embedded_layer,
       verify_ocr_off_still_runs_layout,
+      verify_replace_broken_text_layer_replaces_only_weak_pages,
       verify_force_ocr_replaces_the_embedded_layer,
       verify_render_dpi_reaches_source_factory,
       verify_passwords_reach_the_source_before_it_opens,
@@ -1578,6 +1664,7 @@ int main() {
       verify_uncredited_document_survives_later_submissions,
       verify_turned_scan_is_rerecognized_upright,
       verify_upside_down_scan_takes_one_extra_pass,
+      verify_request_orientation_overrides_server_default,
       verify_digital_layer_and_disabled_recovery_never_rerecognize,
       verify_page_range_restricts_scheduled_pages,
   });

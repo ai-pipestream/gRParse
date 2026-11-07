@@ -4,8 +4,8 @@
 #
 # The shell image carries every peer's proto contract (vendored under
 # examples/web-demo/peer-protos and copied in at build time), so the only
-# host path compose.stack.yaml still borrows from a sibling is the whisper
-# weights: asr mounts ../grpc-asr/models. On a host that only holds this
+# host paths borrowed from siblings are the ASR and optional LightOn
+# model directories. ASR mounts ../grpc-asr/models. On a host that only holds this
 # directory (krick-1 runs it from ~/parse-stack), put the weights under
 # ./protos/grpc-asr/models first, from a workspace checkout:
 #
@@ -17,3 +17,14 @@ services:
   asr:
     volumes: !override
       - ./protos/grpc-asr/models:/models:ro
+
+  # Optional CPU 0.8B service. Prepare the verified model and vision GGUF
+  # files before enabling --profile lighton; an empty directory fails startup.
+  lighton-ocr:
+    volumes: !override
+      - type: bind
+        source: ${LIGHTON_MODELS_DIR:-./protos/grpc-lighton-ocr/models}
+        target: /models
+        read_only: true
+        bind:
+          create_host_path: false

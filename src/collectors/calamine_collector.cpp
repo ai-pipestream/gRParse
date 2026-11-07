@@ -14,6 +14,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <format>
+#include <limits>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -21,6 +23,7 @@
 #include "calamine/v1/calamine_service.grpc.pb.h"
 #include "collector_support.h"
 #include "grparse/workbook_cells.h"
+#include "google/protobuf/util/time_util.h"
 
 namespace calaminev1 = calamine::v1;
 namespace docv1 = ai::pipestream::document::v1;
@@ -203,6 +206,28 @@ class CalamineFold {
   // The sheet's merged areas, from the range header.
   void merged(const calaminev1::RangeStarted& started) {
     merged_.clear();
+    formats_.clear();
+    for (const auto& format : started.number_formats()) {
+      formats_.emplace(format.style_id(), format);
+    }
+    for (const auto& declared : started.tables()) {
+      const auto& first = declared.range().start();
+      const auto& last = declared.range().end();
+      constexpr auto limit = static_cast<uint32_t>(std::numeric_limits<int32_t>::max());
+      if (last.row() < first.row() || last.col() < first.col()
+          || last.row() >= limit || last.col() >= limit) continue;
+      auto* table = current_->add_declared_tables();
+      table->set_name(declared.name());
+      table->mutable_range()->mutable_start()->set_row(static_cast<int32_t>(first.row()));
+      table->mutable_range()->mutable_start()->set_col(static_cast<int32_t>(first.col()));
+      table->mutable_range()->mutable_start()->set_sheet(sheet_name_);
+      table->mutable_range()->mutable_end()->set_row(static_cast<int32_t>(last.row()));
+      table->mutable_range()->mutable_end()->set_col(static_cast<int32_t>(last.col()));
+      table->mutable_range()->mutable_end()->set_sheet(sheet_name_);
+      table->set_header_row_count(declared.header_row_count());
+      table->set_totals_row_count(declared.totals_row_count());
+      *table->mutable_columns() = declared.columns();
+    }
     for (const calaminev1::Dimensions& area : started.merged_regions()) {
       const auto& start = area.start();
       const auto& end = area.end();
@@ -221,12 +246,47 @@ class CalamineFold {
     current_->set_num_cols(static_cast<int32_t>(num_cols_));
     apply_merged_areas(current_, merged_);
     merged_.clear();
+    const bool declared = !current_->declared_tables().empty();
     const int marked = mark_sheet_header(current_);
     current_ = nullptr;
-    return marked;
+    return declared ? 0 : marked;
   }
 
   void defined_names(const calaminev1::Metadata& metadata) {
+    if (metadata.has_properties()) {
+      const auto& properties = metadata.properties();
+      auto* meta = document_.mutable_source_meta();
+      if (properties.has_title()) meta->set_title(properties.title());
+      if (properties.has_subject()) meta->set_subject(properties.subject());
+      if (properties.has_description()) meta->set_description(properties.description());
+      if (properties.has_last_modified_by()) meta->set_modified_by(properties.last_modified_by());
+      if (properties.has_category()) meta->set_category(properties.category());
+      if (properties.has_content_status()) meta->set_content_status(properties.content_status());
+      if (properties.has_revision()) meta->set_revision(properties.revision());
+      if (properties.has_version()) meta->set_format_version(properties.version());
+      if (properties.has_application()) meta->set_authoring_tool(properties.application());
+      if (properties.has_app_version()) meta->set_application_version(properties.app_version());
+      if (properties.has_company()) meta->set_company(properties.company());
+      if (properties.has_template_()) meta->set_template_(properties.template_());
+      if (properties.has_manager()) meta->set_manager(properties.manager());
+      if (properties.has_creator()) meta->add_authors(properties.creator());
+      // Keywords are a source string; do not guess separators or discard spelling.
+      if (properties.has_keywords()) meta->add_keywords(properties.keywords());
+      if (properties.has_created()) {
+        meta->set_created_raw(properties.created());
+        google::protobuf::Timestamp stamp;
+        if (google::protobuf::util::TimeUtil::FromString(properties.created(), &stamp)) {
+          *meta->mutable_created() = stamp;
+        }
+      }
+      if (properties.has_modified()) {
+        meta->set_modified_raw(properties.modified());
+        google::protobuf::Timestamp stamp;
+        if (google::protobuf::util::TimeUtil::FromString(properties.modified(), &stamp)) {
+          *meta->mutable_modified() = stamp;
+        }
+      }
+    }
     for (const calaminev1::DefinedName& name : metadata.defined_names()) {
       docv1::NamedRange* range = document_.add_named_ranges();
       range->set_name(name.name());
@@ -246,7 +306,9 @@ class CalamineFold {
     bool typed = true;
     switch (data.value_case()) {
       case calaminev1::CellData::kEmpty:
-        return;
+        if (!data.has_formula() && !data.has_style_id()) return;
+        typed = false;
+        break;
       case calaminev1::CellData::kIntValue:
         value.set_number(static_cast<double>(data.int_value()));
         text = std::to_string(data.int_value());
@@ -304,6 +366,18 @@ class CalamineFold {
     out->set_col_span(1);
     out->set_text(text);
     if (typed) *out->mutable_value() = std::move(value);
+    // Formula source is independent of the cached value (including strings
+    // and empty caches), so neither reading replaces the other.
+    if (data.has_formula()) out->mutable_value()->set_formula_source(data.formula());
+    if (data.has_style_id()) {
+      auto* typed_value = out->mutable_value();
+      typed_value->set_style_id(data.style_id());
+      const auto found = formats_.find(data.style_id());
+      if (found != formats_.end()) {
+        typed_value->set_number_format_id(found->second.format_id());
+        if (found->second.has_code()) typed_value->set_number_format(found->second.code());
+      }
+    }
     num_cols_ = std::max(num_cols_, static_cast<uint64_t>(column) + 1);
     num_rows_ = std::max(num_rows_, static_cast<uint64_t>(row_index) + 1);
   }
@@ -311,6 +385,7 @@ class CalamineFold {
   docv1::Document& document_;
   docv1::TableData* current_ = nullptr;
   std::vector<MergedArea> merged_;
+  std::map<uint32_t, calaminev1::NumberFormat> formats_;
   docv1::ContentLayer layer_ = docv1::CONTENT_LAYER_BODY;
   std::string sheet_name_;
   uint64_t num_rows_ = 0;
@@ -385,6 +460,7 @@ CollectorOutcome collect_calamine_document(const std::shared_ptr<grpc::Channel>&
     const CancelWatch sheet_watch(sheet_context, cancelled);
     calaminev1::StreamWorksheetRangeRequest request;
     request.set_workbook_id(opened.workbook_id());
+    request.set_include_formulas(true);
     request.mutable_sheet()->set_sheet_index(static_cast<uint32_t>(sheet_index));
     auto stream = stub->StreamWorksheetRange(&sheet_context, request);
 

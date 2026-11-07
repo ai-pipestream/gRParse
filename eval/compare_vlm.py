@@ -74,6 +74,8 @@ def stage_protos(into: Path) -> None:
         # document.proto imports the OpenNLP analysis document (Document.analyses).
         "collectors/opennlp_document.proto": "org/apache/opennlp/grpc/v1/opennlp_document.proto",
         "collectors/opennlp_annotations.proto": "org/apache/opennlp/grpc/v1/opennlp_annotations.proto",
+        # parse_types.proto imports RemoteTranscriptionOptions from grpc-asr.
+        "collectors/asr_service.proto": "ai/pipestream/asr/v1/asr_service.proto",
     }
     for source, target in layout.items():
         destination = into / target
@@ -96,6 +98,7 @@ def load_stubs(staged: Path):
         str(staged / "lolhtml/v1/lolhtml_service.proto"),
         str(staged / "org/apache/opennlp/grpc/v1/opennlp_document.proto"),
         str(staged / "org/apache/opennlp/grpc/v1/opennlp_annotations.proto"),
+        str(staged / "ai/pipestream/asr/v1/asr_service.proto"),
         str(staged / "ai/pipestream/document/v1/document.proto"),
         str(staged / "ai/pipestream/parse/v1/parse_types.proto"),
         str(staged / "ai/pipestream/parse/v1/parse.proto"),

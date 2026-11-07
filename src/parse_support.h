@@ -60,6 +60,9 @@ CollectorOutcome run_local_collector(ai::pipestream::parse::v1::Collector id,
 struct CollectorRules {
   ai::pipestream::ebcdic::v1::ParseOptions ebcdic;
   std::optional<lolhtml::v1::ExtractOptions> lol_html;
+  // Typed ASR options forwarded to grpc-asr when the ASR collector runs.
+  // Empty keeps today's GRPARSE_ASR_MODEL / GRPARSE_ASR_DIARIZE defaults.
+  std::optional<ai::pipestream::parse::v1::AsrPipelineOptions> asr_options;
   // The call's candidate passwords, for the collector that opens an
   // encrypted document itself (libreoffice). Never logged.
   DocumentPasswords passwords;
@@ -93,6 +96,20 @@ grpc::Status validate_ocr_tuning(bool has_do_ocr, bool do_ocr, bool force_ocr,
 // their own inputs and never see them.
 PageScheduler::OcrTuning ocr_tuning(bool has_do_ocr, bool do_ocr, bool force_ocr,
                                     bool has_render_scale, double render_scale);
+
+// Resolves replace_broken_text_layer from ocr_options.*.base. Unset means unset.
+// Unsupported engine arms are UNIMPLEMENTED.
+grpc::Status resolve_replace_broken_text_layer(
+    const ai::pipestream::parse::v1::ConvertDocumentOptions& options,
+    std::optional<bool>* out);
+
+// Resolves rapidocr.detect_orientation from the rapidocr arm. Unsupported
+// engine arms are UNIMPLEMENTED.
+grpc::Status resolve_rapidocr_detect_orientation(
+    const ai::pipestream::parse::v1::ConvertDocumentOptions& options,
+    std::optional<bool>* out);
+
+
 
 // The status a thrown failure reports as: each exception this pipeline
 // raises has one status class, and everything else is INTERNAL.

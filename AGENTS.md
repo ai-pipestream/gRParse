@@ -66,7 +66,7 @@ file under `collectors/` copied byte-identical from the sister repo.
 | `grpc-markup` | `main` | Rust (Cargo, buf) | 50065 | `markup.proto`, `markup_service.proto` | `.md`, `.html`, `.adoc`, `.tex`, `.vtt`, `.boxnote`, `.json` |
 | `grpc-ebcdic` | `main` | Rust (Cargo, buf) | 50063 | `ebcdic.proto`, `ebcdic_service.proto` | never by format; explicit `ebcdic_layout` only |
 | `grpc-lol-html` | `master` | Rust (Cargo, buf) | 50057 | `lolhtml_types.proto`, `lolhtml_service.proto` | never by format; explicit `lol_html_options` only |
-| `grpc-asr` | `main` | C++ (CMake, buf, whisper.cpp) | 50055 | `asr_service.proto` | audio and video (`GRPARSE_ASR_MODEL` required) |
+| `grpc-asr` | `main` | C++ (CMake, buf, whisper.cpp) | 50055 | `asr_service.proto` | audio and video (request-level ASR model or preset, with `GRPARSE_ASR_MODEL` as an optional fallback; unsupported selectors fail explicitly) |
 | `fastwarc-grpc` | `main` | Docker packaging of the crates.io `fastwarc-grpc` crate (pinned 1.1.0) | 50060 | `warc.proto`, `warc_service.proto` (the pinned crate's protos) | `.warc`, `.warc.gz/.zst/.lz4`, `application/warc`; the shell also keeps a native tab on it. See "fastwarc and the crate" below |
 | `grpc-calamine` | `main` on GitHub (`development` was the working branch; check) | Rust (Cargo, buf) | 50062 | `calamine_types.proto`, `calamine_service.proto` (package `calamine.v1`; vendored from GitHub `main`, which carries the fleet port, the UiInfo block, and the `row_gap` event that `development` lacks) | never routed by itself; a routed workbook plan (never CSV) fans a calamine leg out beside libreoffice when configured, folded client-side through the OpenWorkbook/StreamWorksheetRange/CloseWorkbook handle lifecycle (`src/collectors/calamine_collector.cpp`). Meant to be hosted by an external project, so nothing in that repo may mention gRParse or the shell |
 
@@ -157,26 +157,48 @@ contract in its image, see step 3):
   grpc-lol-html/  grpc-asr/  fastwarc-grpc/
   grpc-calamine/  grpc-enrich/  grpc-vlm-convert/
   grpc-pdfium/             the core stack's PDF backend
+  grpc-qparse/             consensus PDF backend (--full)
+  grpc-poppler/            differential PDF backend (--full)
+  parser-protos/           shared PDF backend contract (--full)
   worktrees/               feature worktrees, one per repo-feature
 ```
 
 The directory above is a plain directory, not a git repository. There is no
 top-level build; build and test inside each repo with its own toolchain.
 
+`compose/clone-siblings.sh` bootstraps or updates the entire workspace on any
+machine, either from an existing `gRParse` checkout or directly over `curl`
+on an empty host:
+
 ```bash
-WS=/work/main/grpc-services            # any path; the layout is what matters
-mkdir -p "$WS/worktrees" && cd "$WS"
-for repo in gRParse grpc-libreoffice grpc-pdf-inspector grpc-email grpc-xml \
-            grpc-epub grpc-markup grpc-ebcdic grpc-lol-html grpc-asr fastwarc-grpc \
-            grpc-calamine grpc-enrich grpc-vlm-convert grpc-pdfium; do
-  [ -d "$repo" ] || git clone "https://git.rokkon.com/ai-pipestream/$repo.git"
-  git -C "$repo" remote get-url github >/dev/null 2>&1 || \
-    git -C "$repo" remote add github "https://github.com/ai-pipestream/$repo.git"
-done
+# On a brand-new machine (clones gRParse + all 17 sibling repos into ./grpc-services):
+curl -fsSL https://raw.githubusercontent.com/ai-pipestream/gRParse/main/compose/clone-siblings.sh \
+  | sh -s -- --full --pull --dual-remotes /work/main/grpc-services
+
+# Or from an existing gRParse checkout:
+./compose/clone-siblings.sh --full --pull --dual-remotes
 ```
 
-Without Forgejo access, clone from GitHub and add the Forgejo URL as
-`origin` later; the names matter because the push rule below uses them.
+Flags:
+- *(no flags)*: clones the 14 compose-mounted sibling repos (`compose.stack.yaml`).
+- `--full`: also clones `grpc-qparse`, `grpc-poppler`, and `parser-protos` (all 17 siblings + `gRParse` = 18 repos), plus creates `<workspace>/worktrees/`.
+- `--pull`: fetches `origin` and fast-forwards every already-cloned repo that is clean and on its default branch (`main`, or `master` for `grpc-lol-html`), skipping dirty checkouts or feature branches.
+- `--dual-remotes`: sets `origin` = `https://git.rokkon.com/ai-pipestream/<repo>.git` (Forgejo primary) and `github` = `https://github.com/ai-pipestream/<repo>.git` (GitHub mirror) on every repo. Without Forgejo access, pass `GIT_BASE=https://github.com/ai-pipestream` and omit `--dual-remotes`.
+
+#### Ready-to-paste agent prompt for a new machine
+
+When starting an AI coding agent on a fresh machine that needs the full
+`grpc-services` workspace and `gRParse` stack set up from scratch, give it
+this prompt:
+
+```text
+Bootstrap the ai-pipestream gRParse workspace in /work/main/grpc-services (or my current workspace directory):
+1. Run the standalone bootstrap script from ai-pipestream/gRParse to clone gRParse and all 17 sibling repositories side by side, configure dual remotes (origin = git.rokkon.com/ai-pipestream, github = github.com/ai-pipestream, falling back to GitHub if Forgejo is unreachable), and create the worktrees/ directory:
+   curl -fsSL https://raw.githubusercontent.com/ai-pipestream/gRParse/main/compose/clone-siblings.sh | sh -s -- --full --pull --dual-remotes /work/main/grpc-services
+2. Read /work/main/grpc-services/gRParse/AGENTS.md in full and follow its rules.
+3. Verify that all 18 repositories are on their default branch (main everywhere except grpc-lol-html on master) and that all vendored copies of document.proto and examples/web-demo/peer-protos agree (`./examples/web-demo/sync-peer-protos.sh --check`).
+4. Fetch the gRParse ONNX models (`./scripts/fetch-models.sh`) and pull or build the stack images (`docker compose -f compose.stack.yaml --profile parsers --profile heavy --profile calamine --profile pdf-backends --profile poppler pull`).
+```
 
 ### 2. Check the branch before basing work
 

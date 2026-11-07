@@ -3,6 +3,7 @@ syntax = "proto3";
 package ai.pipestream.parse.v1;
 
 import "ai/pipestream/document/v1/document.proto";
+import "ai/pipestream/asr/v1/asr_service.proto";
 import "ai/pipestream/ebcdic/v1/ebcdic.proto";
 import "google/protobuf/any.proto";
 import "lolhtml/v1/lolhtml_service.proto";
@@ -1082,6 +1083,255 @@ message StructureRepairs {
 }
 
 // ConvertDocumentOptions mirrors all conversion settings from the REST API.
+// ASR model family (docling slim AsrModelFamily).
+enum AsrModelFamily {
+  ASR_MODEL_FAMILY_UNSPECIFIED = 0;
+  ASR_MODEL_FAMILY_WHISPER = 1;
+  ASR_MODEL_FAMILY_GRANITE = 2;
+  ASR_MODEL_FAMILY_GRANITE_CTC = 3;
+  ASR_MODEL_FAMILY_PARAKEET = 4;
+  ASR_MODEL_FAMILY_NEMOTRON = 5;
+}
+
+// ASR decode task. Mirrors grpc-asr Task and docling's transcribe/translate.
+enum AsrTask {
+  ASR_TASK_UNSPECIFIED = 0;
+  ASR_TASK_TRANSCRIBE = 1;
+  ASR_TASK_TRANSLATE = 2;
+}
+
+// Closed preset enum matching docling slim AsrModelType (2.145.0). Values
+// this deployment cannot run stay on the wire and grpc-asr answers
+// UNIMPLEMENTED with a typed reason; gRParse forwards them unchanged.
+enum AsrModelType {
+  ASR_MODEL_TYPE_UNSPECIFIED = 0;
+  ASR_MODEL_TYPE_WHISPER_TINY = 1;
+  ASR_MODEL_TYPE_WHISPER_SMALL = 2;
+  ASR_MODEL_TYPE_WHISPER_MEDIUM = 3;
+  ASR_MODEL_TYPE_WHISPER_BASE = 4;
+  ASR_MODEL_TYPE_WHISPER_LARGE = 5;
+  ASR_MODEL_TYPE_WHISPER_TURBO = 6;
+  ASR_MODEL_TYPE_WHISPER_TINY_MLX = 7;
+  ASR_MODEL_TYPE_WHISPER_SMALL_MLX = 8;
+  ASR_MODEL_TYPE_WHISPER_MEDIUM_MLX = 9;
+  ASR_MODEL_TYPE_WHISPER_BASE_MLX = 10;
+  ASR_MODEL_TYPE_WHISPER_LARGE_MLX = 11;
+  ASR_MODEL_TYPE_WHISPER_TURBO_MLX = 12;
+  ASR_MODEL_TYPE_WHISPER_NATIVE = 13;
+  ASR_MODEL_TYPE_WHISPER_S2T = 14;
+  ASR_MODEL_TYPE_GRANITE_SPEECH_5_0_2B = 15;
+  ASR_MODEL_TYPE_GRANITE_SPEECH_5_0_470M_TURBOCTC = 16;
+  ASR_MODEL_TYPE_GRANITE_SPEECH_5_0_470M_TURBOCTC_NC = 17;
+  ASR_MODEL_TYPE_GRANITE_SPEECH_4_1_2B = 18;
+  ASR_MODEL_TYPE_GRANITE_SPEECH_4_1_2B_PLUS = 19;
+  ASR_MODEL_TYPE_NEMOTRON_SPEECH_STREAMING_EN_0_6B = 20;
+  ASR_MODEL_TYPE_PARAKEET_CTC_1_1B = 21;
+  ASR_MODEL_TYPE_GRANITE_4_0_1B_SPEECH = 22;
+  ASR_MODEL_TYPE_NEMOTRON_3_5_ASR_STREAMING = 23;
+  ASR_MODEL_TYPE_WHISPER_TINY_TRANSFORMERS = 24;
+  ASR_MODEL_TYPE_WHISPER_BASE_TRANSFORMERS = 25;
+  ASR_MODEL_TYPE_WHISPER_SMALL_TRANSFORMERS = 26;
+  ASR_MODEL_TYPE_WHISPER_MEDIUM_TRANSFORMERS = 27;
+  ASR_MODEL_TYPE_WHISPER_LARGE_TRANSFORMERS = 28;
+  ASR_MODEL_TYPE_WHISPER_TURBO_TRANSFORMERS = 29;
+}
+
+// Engine arm for ASR (docling AsrEngineConfig / inline vs API).
+enum AsrEngineKind {
+  ASR_ENGINE_KIND_UNSPECIFIED = 0;
+  ASR_ENGINE_KIND_WHISPER_CPP = 1;       // grpc-asr local whisper.cpp
+  ASR_ENGINE_KIND_TRANSFORMERS = 2;     // not served: UNIMPLEMENTED
+  ASR_ENGINE_KIND_MLX_WHISPER = 3;      // not served: UNIMPLEMENTED
+  ASR_ENGINE_KIND_NATIVE_WHISPER = 4;   // not served: UNIMPLEMENTED
+  ASR_ENGINE_KIND_REMOTE = 5;           // OpenAI-compatible remote (typed on grpc-asr)
+}
+
+message InlineAsrTransformersOptions {
+  optional string revision = 1;
+  optional AsrModelFamily model_family = 2;
+  optional string model_family_raw = 3;
+  optional string prompt = 4;
+  optional string language = 5;
+  optional AsrTask task = 6;
+  optional string task_raw = 7;
+}
+
+message InlineAsrMlxWhisperOptions {
+  // Unset leaves the mlx-whisper default (true); explicit false is distinct.
+  optional bool condition_on_previous_text = 1;
+  optional double hallucination_silence_threshold = 2;
+  optional string initial_prompt = 3;
+}
+
+message InlineAsrNativeWhisperOptions {
+  optional bool condition_on_previous_text = 1;
+}
+
+// Options gRParse forwards to grpc-asr for audio/video. Fields the peer
+// cannot run stay typed and return UNIMPLEMENTED from that peer.
+message AsrPipelineOptions {
+  optional AsrModelType model_type = 1;
+  optional string model_type_raw = 2;
+  optional AsrEngineKind engine = 3;
+  optional string language = 4;
+  optional AsrTask task = 5;
+  optional string task_raw = 6;
+  optional bool word_timestamps = 7;
+  optional bool emit_keyframes = 8;
+  optional uint32 keyframe_interval_seconds = 9;
+  optional bool diarize = 10;
+  optional string model = 11;  // whisper.cpp model id when engine is whisper_cpp
+  optional InlineAsrTransformersOptions transformers = 12;
+  optional InlineAsrMlxWhisperOptions mlx_whisper = 13;
+  optional InlineAsrNativeWhisperOptions native_whisper = 14;
+  // Remote OpenAI-compatible transcription (docling ApiAsrOptions); forwarded
+  // as grpc-asr RemoteTranscriptionOptions.
+  optional ai.pipestream.asr.v1.RemoteTranscriptionOptions remote = 15;
+}
+
+// OcrMode mirrors docling slim OcrOptions.mode / serve OcrMode.
+enum OcrMode {
+  OCR_MODE_UNSPECIFIED = 0;
+  OCR_MODE_FULL_PAGE = 1;
+  OCR_MODE_LAYOUT_REGIONS = 2;
+  OCR_MODE_PDF_AWARE_LAYOUT_REGIONS = 3;
+  OCR_MODE_DEFAULT = 4;
+}
+
+enum RapidOcrBackend {
+  RAPID_OCR_BACKEND_UNSPECIFIED = 0;
+  RAPID_OCR_BACKEND_ONNXRUNTIME = 1;
+  RAPID_OCR_BACKEND_OPENVINO = 2;
+  RAPID_OCR_BACKEND_PADDLE = 3;
+  RAPID_OCR_BACKEND_TORCH = 4;
+}
+
+enum RapidOcrModelSize {
+  RAPID_OCR_MODEL_SIZE_UNSPECIFIED = 0;
+  RAPID_OCR_MODEL_SIZE_TINY = 1;
+  RAPID_OCR_MODEL_SIZE_SMALL = 2;
+  RAPID_OCR_MODEL_SIZE_MEDIUM = 3;
+}
+
+enum NemotronOcrMergeLevel {
+  NEMOTRON_OCR_MERGE_LEVEL_UNSPECIFIED = 0;
+  NEMOTRON_OCR_MERGE_LEVEL_WORD = 1;
+  NEMOTRON_OCR_MERGE_LEVEL_SENTENCE = 2;
+  NEMOTRON_OCR_MERGE_LEVEL_PARAGRAPH = 3;
+}
+
+enum KserveV2Transport {
+  KSERVE_V2_TRANSPORT_UNSPECIFIED = 0;
+  KSERVE_V2_TRANSPORT_GRPC = 1;
+  KSERVE_V2_TRANSPORT_HTTP = 2;
+}
+
+// Presence wrapper: omitted lang leaves the engine default; empty values is
+// explicit empty (same as serve OcrLang).
+message OcrLang {
+  repeated string values = 1;
+}
+
+message KserveGrpcChannelArg {
+  optional string key = 1;
+  ScalarValue value = 2;
+}
+
+// Shared OCR fields (docling-serve 3fc831e OcrOptionsBase / slim 2.145.0).
+message OcrOptionsBase {
+  optional OcrMode mode = 1;
+  optional string mode_raw = 2;
+  OcrLang lang = 3;
+  optional double scale = 4;
+  // When true, a page whose embedded text layer is incomplete is recognized
+  // at full-page scope and the recognized text replaces that layer; complete
+  // pages keep their embedded text. Unset keeps today's selective merge.
+  // Distinct from force_ocr / force_full_page_ocr, which replace every page.
+  optional bool replace_broken_text_layer = 5;
+  // Deprecated alias of mode = FULL_PAGE. Kept for serve parity.
+  optional bool force_full_page_ocr = 6;
+}
+
+message OcrAutoOptions {
+  OcrOptionsBase base = 1;
+}
+
+message EasyOcrOptions {
+  OcrOptionsBase base = 1;
+  optional bool use_gpu = 2;
+  optional double confidence_threshold = 3;
+  optional string model_storage_directory = 4;
+  optional string recog_network = 5;
+  optional bool download_enabled = 6;
+  optional bool suppress_mps_warnings = 7;
+}
+
+message TesseractOcrOptions {
+  OcrOptionsBase base = 1;
+  optional string path = 2;
+  optional int32 psm = 3;
+}
+
+message TesseractCliOcrOptions {
+  OcrOptionsBase base = 1;
+  optional string tesseract_cmd = 2;
+  optional string path = 3;
+  optional int32 psm = 4;
+}
+
+message RapidOcrOptions {
+  OcrOptionsBase base = 1;
+  optional RapidOcrBackend backend = 2;
+  optional string backend_raw = 3;
+  optional RapidOcrModelSize model_size = 4;
+  optional string model_size_raw = 5;
+  optional double text_score = 6;
+  optional bool use_det = 7;
+  optional bool use_cls = 8;
+  // Detect page orientation before recognition (slim 2.145.0). Unset keeps
+  // the engine default (false). Distinct from use_cls.
+  optional bool detect_orientation = 9;
+  optional bool use_rec = 10;
+  optional bool print_verbose = 11;
+  optional string det_model_path = 12;
+  optional string cls_model_path = 13;
+  optional string rec_model_path = 14;
+  optional string rec_keys_path = 15;
+  optional string rec_font_path = 16;
+  optional string font_path = 17;
+  map<string, ScalarValue> rapidocr_params = 18;
+}
+
+message OcrMacOptions {
+  OcrOptionsBase base = 1;
+  optional string recognition = 2;
+  optional string framework = 3;
+}
+
+message NemotronOcrOptions {
+  OcrOptionsBase base = 1;
+  optional NemotronOcrMergeLevel merge_level = 2;
+  optional string merge_level_raw = 3;
+  optional int32 batch_size = 4;
+}
+
+message KserveV2OcrOptions {
+  OcrOptionsBase base = 1;
+  optional string url = 2;
+  optional string model_name = 3;
+  optional string model_version = 4;
+  optional KserveV2Transport transport = 5;
+  optional string transport_raw = 6;
+  map<string, string> headers = 7;
+  map<string, string> grpc_metadata = 8;
+  optional bool grpc_use_tls = 9;
+  optional int64 grpc_max_message_bytes = 10;
+  repeated KserveGrpcChannelArg grpc_channel_args = 11;
+  optional bool use_binary_data = 12;
+  optional double timeout = 13;
+  map<string, ScalarValue> request_parameters = 14;
+}
+
 message ConvertDocumentOptions {
   // Input format(s) to convert from
   repeated InputFormat from_formats = 1;
@@ -1285,6 +1535,28 @@ message ConvertDocumentOptions {
   // are docling-core's defaults. Setting it while structure_validation is
   // OFF is rejected as contradictory.
   optional StructureTableCellLimits structure_table_cell_limits = 66;
+  // Typed OCR engine options (mirror docling-serve 3fc831e / slim 2.145).
+  // Field numbers differ from serve (54-61) because those numbers are already
+  // used here by chunking/structure. The arm is the factory kind. RapidOCR is
+  // the only engine this server runs; other arms validate as UNIMPLEMENTED.
+  // ocr_custom_config remains the fallback for keys the selected message does
+  // not define.
+  oneof ocr_options {
+    OcrAutoOptions ocr_auto = 67;
+    EasyOcrOptions easyocr = 68;
+    // kind "tesserocr"
+    TesseractOcrOptions tesseract = 69;
+    // kind "tesseract"
+    TesseractCliOcrOptions tesseract_cli = 70;
+    RapidOcrOptions rapidocr = 71;
+    OcrMacOptions ocrmac = 72;
+    NemotronOcrOptions nemotron_ocr = 73;
+    KserveV2OcrOptions kserve_v2_ocr = 74;
+  }
+  // Typed ASR options forwarded to grpc-asr when COLLECTOR_ASR runs (or when
+  // audio/video routes there by format). Unset keeps today's whisper.cpp
+  // defaults (model from GRPARSE_ASR_MODEL, diarize from GRPARSE_ASR_DIARIZE).
+  optional AsrPipelineOptions asr_options = 75;
 }
 
 // HeadingHierarchyOptions mirrors the upstream PdfHeadingHierarchyOptions.

@@ -36,6 +36,7 @@
 #include "grparse/document_parser_service.h"
 #include "lolhtml/v1/lolhtml_service.grpc.pb.h"
 #include "support/check.h"
+#include "../src/parse_support.h"
 
 namespace asrv1 = ai::pipestream::asr::v1;
 namespace calaminev1 = calamine::v1;
@@ -86,6 +87,8 @@ class ServerFixture {
     if (server_ != nullptr) server_->Shutdown();
   }
 
+  std::string address() const { return "127.0.0.1:" + std::to_string(port_); }
+
   std::shared_ptr<grpc::Channel> channel() const {
     return grpc::CreateChannel("127.0.0.1:" + std::to_string(port_),
                                grpc::InsecureChannelCredentials());
@@ -100,6 +103,8 @@ class ServerFixture {
 
 class FakeAsrService final : public asrv1::AsrService::Service {
  public:
+  asrv1::TranscribeOptions last_options;
+
   grpc::Status Transcribe(
       grpc::ServerContext*,
       grpc::ServerReaderWriter<asrv1::TranscribeResponse, asrv1::TranscribeRequest>*
@@ -110,13 +115,14 @@ class FakeAsrService final : public asrv1::AsrService::Service {
     std::string bytes;
     while (stream->Read(&request)) {
       if (request.has_options()) {
+        last_options = request.options();
         model = request.options().model();
         emit_document = request.options().emit_document();
       } else {
         bytes += request.chunk().data();
       }
     }
-    if (model != "small" || !emit_document || bytes.empty()) {
+    if ((model.empty() && !last_options.has_model_type()) || !emit_document || bytes.empty()) {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                           "fake asr expects model, emit_document, and media bytes");
     }
@@ -135,6 +141,7 @@ class FakeAsrService final : public asrv1::AsrService::Service {
 
 class FailingAsrService final : public asrv1::AsrService::Service {
  public:
+  grpc::StatusCode code = grpc::StatusCode::INTERNAL;
   grpc::Status Transcribe(
       grpc::ServerContext*,
       grpc::ServerReaderWriter<asrv1::TranscribeResponse, asrv1::TranscribeRequest>*
@@ -142,9 +149,24 @@ class FailingAsrService final : public asrv1::AsrService::Service {
     asrv1::TranscribeRequest request;
     while (stream->Read(&request)) {
     }
-    return grpc::Status(grpc::StatusCode::INTERNAL, "decoder blew up");
+    return grpc::Status(code, "decoder blew up");
   }
 };
+
+void verify_asr_forwarded_enum_numbers_match_contract() {
+  const auto compare = [](const google::protobuf::EnumDescriptor* parse,
+                          const google::protobuf::EnumDescriptor* asr) {
+    for (int i = 0; i < parse->value_count(); ++i) {
+      const auto* value = parse->value(i);
+      const auto* peer = asr->FindValueByName(value->name());
+      require(peer != nullptr && peer->number() == value->number(),
+              "ASR enum numeric forwarding must match the owning service contract");
+    }
+  };
+  compare(parsev1::AsrModelType_descriptor(), asrv1::AsrModelType_descriptor());
+  compare(parsev1::AsrEngineKind_descriptor(), asrv1::AsrEngineKind_descriptor());
+  compare(parsev1::AsrModelFamily_descriptor(), asrv1::AsrModelFamily_descriptor());
+}
 
 void verify_asr_collects_document() {
   FakeAsrService service;
@@ -160,6 +182,64 @@ void verify_asr_collects_document() {
   require(outcome.warnings.empty(), "asr has no trailer warnings to surface");
 }
 
+void verify_asr_forwards_pipeline_options() {
+  FakeAsrService service;
+  ServerFixture server(&service);
+  parsev1::AsrPipelineOptions asr;
+  asr.set_language("de");
+  asr.set_task(parsev1::ASR_TASK_TRANSLATE);
+  asr.set_word_timestamps(true);
+  asr.set_diarize(false);
+  asr.set_model_type(parsev1::ASR_MODEL_TYPE_WHISPER_TINY_MLX);
+  asr.set_engine(parsev1::ASR_ENGINE_KIND_MLX_WHISPER);
+  asr.mutable_mlx_whisper()->set_condition_on_previous_text(false);
+  asr.mutable_mlx_whisper()->set_hallucination_silence_threshold(2.0);
+  asr.mutable_mlx_whisper()->set_initial_prompt("names");
+  const auto outcome = grparse::collect_asr_document(
+      server.channel(), "small", "clip.wav", "abc", asr);
+  require(outcome.success, "asr with pipeline options succeeds: " + outcome.error);
+  require(service.last_options.language() == "de", "language forwarded");
+  require(service.last_options.task() == asrv1::TASK_TRANSLATE, "task forwarded");
+  require(service.last_options.word_timestamps(), "word_timestamps forwarded");
+  require(!service.last_options.diarize(), "diarize override forwarded");
+  require(service.last_options.model_type() == asrv1::ASR_MODEL_TYPE_WHISPER_TINY_MLX,
+          "model_type forwarded");
+  require(service.last_options.engine() == asrv1::ASR_ENGINE_KIND_MLX_WHISPER,
+          "engine forwarded");
+  require(service.last_options.has_mlx_whisper() &&
+              service.last_options.mlx_whisper().condition_on_previous_text() == false &&
+              service.last_options.mlx_whisper().hallucination_silence_threshold() == 2.0 &&
+              service.last_options.mlx_whisper().initial_prompt() == "names",
+          "mlx_whisper slim 2.145.0 fields forwarded typed");
+  require(service.last_options.model().empty(),
+          "request preset must not be overridden by deployment model");
+  asr.set_model("tiny.en");
+  require(grparse::collect_asr_document(server.channel(), "small", "clip.wav", "abc", asr).success,
+          "explicit model request succeeds");
+  require(service.last_options.model() == "tiny.en", "explicit model wins");
+  asr.Clear();
+  asr.set_task(static_cast<parsev1::AsrTask>(12345));
+  require(grparse::collect_asr_document(server.channel(), "small", "clip.wav", "abc", asr).success,
+          "fake accepts unknown task for forwarding inspection");
+  require(static_cast<int>(service.last_options.task()) == 12345,
+          "unknown task must reach ASR validation without becoming unspecified");
+  require(service.last_options.model() == "small", "partial request retains deployment model");
+}
+
+void verify_asr_request_model_needs_no_deployment_model() {
+  FakeAsrService service;
+  ServerFixture server(&service);
+  grparse::CollectorTargets targets;
+  targets.asr = server.address();
+  auto endpoints = std::make_shared<grparse::CollectorEndpoints>(targets);
+  grparse::CollectorRules rules;
+  rules.asr_options.emplace().set_model_type(parsev1::ASR_MODEL_TYPE_WHISPER_TINY);
+  const auto outcome = grparse::run_remote_collector(parsev1::COLLECTOR_ASR, endpoints,
+      "id", "clip.wav", "audio/wav", "abc", rules, grparse::kNoCollectorDeadline);
+  require(outcome.success, "request preset must work without GRPARSE_ASR_MODEL: " + outcome.error);
+  require(service.last_options.model().empty(), "no deployment model fabricated");
+}
+
 void verify_transport_class_collapses_to_unavailable() {
   FailingAsrService service;
   ServerFixture server(&service);
@@ -169,6 +249,17 @@ void verify_transport_class_collapses_to_unavailable() {
           "non-caller status classes collapse to UNAVAILABLE");
   require(outcome.error.contains("decoder blew up"),
           "the collector's own message survives");
+}
+
+void verify_asr_option_failure_status_survives() {
+  for (const auto code : {grpc::StatusCode::UNIMPLEMENTED, grpc::StatusCode::INVALID_ARGUMENT}) {
+    FailingAsrService service;
+    service.code = code;
+    ServerFixture server(&service);
+    const auto outcome = grparse::collect_asr_document(server.channel(), "small", "clip.wav", "abc");
+    require(!outcome.success && outcome.code == code,
+            "ASR option rejection must remain explicit at the coordinator");
+  }
 }
 
 // ---- email -----------------------------------------------------------------
@@ -260,20 +351,31 @@ class FakeXmlService final : public xmlv1::XmlParseService::Service {
       override {
     xmlv1::ParseXmlRequest request;
     bool emit_document = false;
+    bool emit_inline_spans = false;
+    bool emit_source_metadata = false;
     std::string bytes;
     while (stream->Read(&request)) {
       if (request.has_options()) {
         emit_document = request.options().emit_document();
+        emit_inline_spans = request.options().emit_inline_spans();
+        emit_source_metadata = request.options().emit_source_metadata();
       } else {
         bytes += request.chunk();
       }
     }
-    if (!emit_document || bytes.empty()) {
+    if (!emit_document || !emit_inline_spans || !emit_source_metadata || bytes.empty()) {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                          "fake xml expects emit_document and bytes");
+                          "fake xml expects document, inline spans, source metadata, and bytes");
     }
     xmlv1::ParseXmlResponse event;
-    *event.mutable_document() = canned_document("xml");
+    auto* document = event.mutable_document();
+    *document = canned_document("xml");
+    auto* span = document->mutable_texts(0)->mutable_text()->mutable_base()->add_spans();
+    span->mutable_range()->set_start(0);
+    span->mutable_range()->set_end(4);
+    span->set_hyperlink("https://example.org/reference");
+    span->mutable_formatting()->set_italic(true);
+    document->mutable_source_meta()->mutable_license()->set_statement("CC BY 4.0");
     stream->Write(event);
     event.Clear();
     auto* warning = event.mutable_status()->add_warnings();
@@ -305,6 +407,11 @@ void verify_xml_collects_document_and_formats_warnings() {
   require(outcome.success, "xml collection succeeds: " + outcome.error);
   require(outcome.document.texts(0).text().base().text() == "from xml",
           "the xml Document arrives unchanged");
+  const auto& span = outcome.document.texts(0).text().base().spans(0);
+  require(span.hyperlink() == "https://example.org/reference" && span.formatting().italic(),
+          "XML links and inline formatting survive collection");
+  require(outcome.document.source_meta().license().statement() == "CC BY 4.0",
+          "XML structured source metadata survives collection");
   require(outcome.warnings.size() == 1 &&
               outcome.warnings[0] ==
                   "WARNING_CODE_UNMAPPED_ELEMENT: mystery element (x3)",
@@ -1161,10 +1268,489 @@ void verify_lol_html_captures_page_identity() {
               "<a title=\"na\xC3\xAFve \xE2\x98\x83\" href=\"/na\xC3\xAFve\">",
           "the anchor folds as its verbatim pseudo-tag");
   require(anchor.spans_size() == 1 && anchor.spans(0).hyperlink() == "/na\xC3\xAFve" &&
+              anchor.spans(0).link_title() == "na\xC3\xAFve \xE2\x98\x83" &&
               anchor.spans(0).range().start() == 25 &&
               anchor.spans(0).range().end() == 31,
           "hyperlink runs are code-point ranges, unshifted by a multi-byte "
-          "attribute value before them");
+          "attribute value before them, and carry the link title");
+}
+
+class FullApiLolHtmlService final : public lolv1::LolHtmlService::Service {
+ public:
+  explicit FullApiLolHtmlService(bool raw_chunks) : raw_chunks_(raw_chunks) {}
+
+  grpc::Status Extract(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<lolv1::ExtractResponse, lolv1::ExtractRequest>*
+          stream) override {
+    lolv1::ExtractRequest request;
+    while (stream->Read(&request)) {
+    }
+
+    lolv1::ExtractResponse event;
+    event.mutable_started()->set_rule_count(3);
+    event.mutable_started()->set_encoding("UTF-8");
+    stream->Write(event);
+    event.Clear();
+
+    if (raw_chunks_) {
+      auto* el = event.mutable_element();
+      el->set_rule_id("body");
+      el->set_tag_name("p");
+      el->set_tag_name_raw("P");
+      el->set_namespace_(lolv1::NAMESPACE_HTML);
+      el->set_can_have_content(true);
+      stream->Write(event);
+      event.Clear();
+
+      auto* t1 = event.mutable_text();
+      t1->set_rule_id("body");
+      t1->set_text("Tom &amp; ");
+      t1->set_text_type(lolv1::TEXT_TYPE_DATA);
+      t1->set_last_in_node(false);
+      t1->mutable_span()->set_start(3);
+      t1->mutable_span()->set_end(13);
+      stream->Write(event);
+      event.Clear();
+
+      auto* t2 = event.mutable_text();
+      t2->set_rule_id("body");
+      t2->set_text("Jerry &#x2603;");
+      t2->set_text_type(lolv1::TEXT_TYPE_DATA);
+      t2->set_last_in_node(false);
+      t2->mutable_span()->set_start(13);
+      t2->mutable_span()->set_end(27);
+      stream->Write(event);
+      event.Clear();
+
+      // lol_html frequently closes a text node with an empty final chunk.
+      auto* t3 = event.mutable_text();
+      t3->set_rule_id("body");
+      t3->set_text("");
+      t3->set_text_type(lolv1::TEXT_TYPE_DATA);
+      t3->set_last_in_node(true);
+      stream->Write(event);
+      event.Clear();
+
+      auto* end = event.mutable_end_tag();
+      end->set_rule_id("body");
+      end->set_name("p");
+      end->set_name_raw("P");
+      end->mutable_span()->set_start(27);
+      end->mutable_span()->set_end(31);
+      stream->Write(event);
+      event.Clear();
+
+      auto* done = event.mutable_finished();
+      done->set_bytes_parsed(31);
+      (*done->mutable_matches_by_rule())["body"] = 1;
+      stream->Write(event);
+      return grpc::Status::OK;
+    }
+
+    // 1. DoctypeFound with name, public_id, system_id, and span.
+    auto* dt = event.mutable_doctype();
+    dt->set_rule_id("doc");
+    dt->set_name("html");
+    dt->set_public_id("-//W3C//DTD XHTML 1.0 Strict//EN");
+    dt->set_system_id("http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd");
+    dt->mutable_span()->set_start(0);
+    dt->mutable_span()->set_end(109);
+    stream->Write(event);
+    event.Clear();
+
+    // 2. CommentFound with span.
+    auto* cm = event.mutable_comment();
+    cm->set_rule_id("doc");
+    cm->set_text(" header note ");
+    cm->mutable_span()->set_start(110);
+    cm->mutable_span()->set_end(130);
+    stream->Write(event);
+    event.Clear();
+
+    // 3. Meta tags: charset, author, generator, keywords, subject, content-language.
+    auto write_meta = [&](const std::vector<std::pair<std::string, std::string>>& attrs) {
+      lolv1::ExtractResponse m;
+      auto* el = m.mutable_element();
+      el->set_rule_id("meta");
+      el->set_tag_name("meta");
+      el->set_namespace_(lolv1::NAMESPACE_HTML);
+      el->set_can_have_content(false);
+      for (const auto& [k, v] : attrs) {
+        auto* a = el->add_attributes();
+        a->set_name(k);
+        a->set_value(v);
+      }
+      stream->Write(m);
+    };
+    write_meta({{"charset", "utf-8"}});
+    write_meta({{"name", "Author"}, {"content", "Ada Lovelace"}});
+    write_meta({{"name", "generator"}, {"content", "Hugo 0.135"}});
+    write_meta({{"name", "keywords"}, {"content", "html, streaming, parser"}});
+    write_meta({{"name", "subject"}, {"content", "Web Parsing"}});
+    write_meta({{"http-equiv", "Content-Language"}, {"content", "en-US"}});
+
+    // 4. SVG foreign-namespace element with case-sensitive tag/attribute names,
+    // self_closing = true, element span, and attribute name/value spans.
+    auto* svg = event.mutable_element();
+    svg->set_rule_id("svg");
+    svg->set_tag_name("lineargradient");
+    svg->set_tag_name_raw("linearGradient");
+    svg->set_namespace_(lolv1::NAMESPACE_SVG);
+    svg->set_self_closing(true);
+    svg->set_can_have_content(false);
+    svg->mutable_span()->set_start(200);
+    svg->mutable_span()->set_end(244);
+    auto* vb = svg->add_attributes();
+    vb->set_name("gradientunits");
+    vb->set_name_raw("gradientUnits");
+    vb->set_value("userSpaceOnUse");
+    vb->mutable_name_span()->set_start(216);
+    vb->mutable_name_span()->set_end(229);
+    vb->mutable_value_span()->set_start(231);
+    vb->mutable_value_span()->set_end(245);
+    stream->Write(event);
+    event.Clear();
+
+    // 5. JSON-LD <script type="application/ld+json; charset=utf-8"> + TEXT_TYPE_SCRIPT_DATA + EndTagFound.
+    auto* script = event.mutable_element();
+    script->set_rule_id("ld");
+    script->set_tag_name("script");
+    script->set_tag_name_raw("SCRIPT");
+    script->set_namespace_(lolv1::NAMESPACE_HTML);
+    script->set_can_have_content(true);
+    auto* stype = script->add_attributes();
+    stype->set_name("type");
+    stype->set_name_raw("TYPE");
+    stype->set_value("application/ld+json; charset=utf-8");
+    stream->Write(event);
+    event.Clear();
+
+    auto* ld_text = event.mutable_text();
+    ld_text->set_rule_id("ld");
+    ld_text->set_text("  {\"@context\":\"https://schema.org\",\"@type\":\"Article\"}  ");
+    ld_text->set_text_type(lolv1::TEXT_TYPE_SCRIPT_DATA);
+    ld_text->set_last_in_node(true);
+    ld_text->mutable_span()->set_start(300);
+    ld_text->mutable_span()->set_end(355);
+    stream->Write(event);
+    event.Clear();
+
+    auto* script_end = event.mutable_end_tag();
+    script_end->set_rule_id("ld");
+    script_end->set_name("script");
+    script_end->set_name_raw("SCRIPT");
+    script_end->mutable_span()->set_start(355);
+    script_end->mutable_span()->set_end(364);
+    stream->Write(event);
+    event.Clear();
+
+    // Text arriving on rule "ld" after EndTagFound must no longer be treated as script data.
+    auto* trailing = event.mutable_text();
+    trailing->set_rule_id("ld");
+    trailing->set_text("outside script");
+    trailing->set_text_type(lolv1::TEXT_TYPE_DATA);
+    trailing->set_last_in_node(true);
+    stream->Write(event);
+    event.Clear();
+
+    auto* done = event.mutable_finished();
+    done->set_bytes_parsed(512);
+    done->set_bailed_out(true);
+    done->set_bail_out_reason("budget reached");
+    (*done->mutable_matches_by_rule())["doc"] = 2;
+    (*done->mutable_matches_by_rule())["meta"] = 6;
+    (*done->mutable_matches_by_rule())["svg"] = 1;
+    (*done->mutable_matches_by_rule())["ld"] = 1;
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+
+ private:
+  bool raw_chunks_;
+};
+
+void verify_lol_html_folds_full_api_surface() {
+  FullApiLolHtmlService service(/*raw_chunks=*/false);
+  ServerFixture server(&service);
+  const auto outcome = grparse::collect_lol_html_document(
+      server.channel(), lol_html_options(), "<!DOCTYPE html>");
+  require(outcome.success, "full lol-html API collection succeeds: " + outcome.error);
+
+  const auto& custom = outcome.document.body().meta().custom_fields();
+  const auto enc = custom.find("lol_html.encoding");
+  require(enc != custom.end() && enc->second.string_value() == "UTF-8",
+          "ExtractStarted.encoding lands in body.meta.custom_fields");
+
+  // Doctype with public_id, system_id, and byte span.
+  const auto& dt = outcome.document.texts(0).text().base();
+  require(dt.text() ==
+              "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" "
+              "\"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\">",
+          "DoctypeFound renders name, public_id, and system_id");
+  require(dt.prov_size() == 1 && dt.prov(0).byte_range().start() == 0 &&
+              dt.prov(0).byte_range().end() == 109 &&
+              dt.prov(0).charspan().end() == static_cast<int32_t>(dt.text().size()),
+          "DoctypeFound span lands in ProvenanceItem.byte_range");
+
+  // Comment with byte span.
+  const auto& cm = outcome.document.texts(1).text().base();
+  require(cm.text() == "<!-- header note -->" && cm.prov_size() == 1 &&
+              cm.prov(0).byte_range().start() == 110 &&
+              cm.prov(0).byte_range().end() == 130,
+          "CommentFound span lands in ProvenanceItem.byte_range");
+
+  // Promoted DocumentMeta and WebMeta fields from <meta>.
+  const auto& sm = outcome.document.source_meta();
+  require(sm.authors_size() == 1 && sm.authors(0) == "Ada Lovelace",
+          "meta author populates source_meta.authors");
+  require(sm.generator() == "Hugo 0.135",
+          "meta generator populates source_meta.generator");
+  require(sm.keywords_size() == 3 && sm.keywords(0) == "html" &&
+              sm.keywords(1) == "streaming" && sm.keywords(2) == "parser",
+          "meta keywords split into source_meta.keywords");
+  require(sm.subject() == "Web Parsing",
+          "meta subject populates source_meta.subject");
+  require(sm.language() == "en-US" &&
+              outcome.document.origin().web().content_language() == "en-US",
+          "meta http-equiv Content-Language populates source_meta.language and web.content_language");
+  require(outcome.document.meta_tags_size() == 6 &&
+              outcome.document.meta_tags(0).name() == "charset" &&
+              outcome.document.meta_tags(0).content() == "utf-8",
+          "meta charset is captured alongside name/property/http-equiv pairs");
+
+  // Foreign-namespace SVG element with raw casing, self_closing, and attribute spans.
+  const auto& svg = outcome.document.texts(8).text().base();
+  require(svg.text() == "<linearGradient gradientUnits=\"userSpaceOnUse\"/>" &&
+              svg.orig() == "<linearGradient gradientUnits=\"userSpaceOnUse\"/>",
+          "SVG foreign element preserves raw tag/attribute casing and self-closing syntax");
+  require(svg.source_element_name() == "linearGradient" &&
+              svg.source_namespace() == "http://www.w3.org/2000/svg",
+          "SVG element stamps source_element_name and source_namespace");
+  require(svg.prov_size() == 3 &&
+              svg.prov(0).byte_range().start() == 200 &&
+              svg.prov(0).byte_range().end() == 244 &&
+              svg.prov(1).byte_range().start() == 216 &&
+              svg.prov(1).charspan().start() == 16 &&
+              svg.prov(1).charspan().end() == 29 &&
+              svg.prov(2).byte_range().start() == 231 &&
+              svg.prov(2).charspan().start() == 31 &&
+              svg.prov(2).charspan().end() == 45,
+          "element span, attribute name_span, and value_span map to ProvenanceItems");
+
+  // HTML <SCRIPT TYPE="..."> normalizes text while keeping raw casing in orig.
+  const auto& script_open = outcome.document.texts(9).text().base();
+  require(script_open.text() ==
+              "<script type=\"application/ld+json; charset=utf-8\">" &&
+              script_open.orig() ==
+                  "<SCRIPT TYPE=\"application/ld+json; charset=utf-8\">" &&
+              script_open.source_element_name() == "script" &&
+              script_open.source_namespace() == "http://www.w3.org/1999/xhtml",
+          "HTML element normalizes text, keeps raw casing in orig, and stamps XHTML namespace");
+
+  // JSON-LD text node stamps source_element_name, byte_range, and structured_data.
+  const auto& ld_node = outcome.document.texts(10).text().base();
+  require(ld_node.source_element_name() == "script" &&
+              ld_node.source_namespace() == "http://www.w3.org/1999/xhtml" &&
+              ld_node.prov_size() == 1 &&
+              ld_node.prov(0).byte_range().start() == 300 &&
+              ld_node.prov(0).byte_range().end() == 355,
+          "text node inherits active element origin and records its byte span");
+  require(outcome.document.structured_data_size() == 1 &&
+              outcome.document.structured_data(0).kind() == "json-ld" &&
+              outcome.document.structured_data(0).json() ==
+                  "{\"@context\":\"https://schema.org\",\"@type\":\"Article\"}",
+          "JSON-LD script text populates Document.structured_data");
+
+  // EndTagFound folds as closing tag and clears active element state.
+  const auto& script_close = outcome.document.texts(11).text().base();
+  require(script_close.text() == "</script>" &&
+              script_close.orig() == "</SCRIPT>" &&
+              script_close.source_element_name() == "script" &&
+              script_close.source_namespace() == "http://www.w3.org/1999/xhtml" &&
+              script_close.prov_size() == 1 &&
+              script_close.prov(0).byte_range().start() == 355 &&
+              script_close.prov(0).byte_range().end() == 364,
+          "EndTagFound folds with normalized text, raw orig, element origin, and byte span");
+
+  const auto& after_close = outcome.document.texts(12).text().base();
+  require(!after_close.has_source_element_name() &&
+              outcome.document.structured_data_size() == 1,
+          "EndTagFound clears the active element on the rule");
+
+  require(outcome.warnings.size() == 1 &&
+              outcome.warnings[0] ==
+                  "bailed out before the end of the document after 512 bytes: budget reached",
+          "bail-out warning reports bytes_parsed");
+}
+
+void verify_lol_html_reassembles_raw_text_chunks() {
+  FullApiLolHtmlService service(/*raw_chunks=*/true);
+  ServerFixture server(&service);
+  auto options = lol_html_options();
+  options->set_raw_text_chunks(true);
+  const auto outcome = grparse::collect_lol_html_document(
+      server.channel(), options, "<P>Tom &amp; Jerry &#x2603;</P>");
+  require(outcome.success, "raw_text_chunks collection succeeds: " + outcome.error);
+  require(outcome.document.texts_size() == 3,
+          "open tag, reassembled text node (empty final chunk dropped), and end tag");
+  const auto& text = outcome.document.texts(1).text().base();
+  require(text.text() == "Tom & Jerry \xE2\x98\x83" &&
+              text.orig() == "Tom &amp; Jerry &#x2603;",
+          "raw text chunks reassemble until last_in_node, decoding entities in text and keeping raw in orig");
+  require(text.prov_size() == 1 &&
+              text.prov(0).byte_range().start() == 3 &&
+              text.prov(0).byte_range().end() == 27,
+          "reassembled raw text chunks merge their byte span from first to last fragment");
+  require(text.source_element_name() == "p" &&
+              text.source_namespace() == "http://www.w3.org/1999/xhtml",
+          "reassembled text node inherits the enclosing element's name and namespace");
+}
+
+class IdentityLolHtmlService final : public lolv1::LolHtmlService::Service {
+ public:
+  grpc::Status Extract(grpc::ServerContext*,
+      grpc::ServerReaderWriter<lolv1::ExtractResponse, lolv1::ExtractRequest>* stream) override {
+    lolv1::ExtractRequest request;
+    while (stream->Read(&request)) {}
+    const auto element = [&](uint64_t ordinal, uint32_t open, const std::string& tag) {
+      lolv1::ExtractResponse event;
+      auto* el = event.mutable_element();
+      el->set_rule_id("links");
+      el->set_match_ordinal(ordinal);
+      el->set_open_matches(open);
+      el->set_tag_name(tag);
+      el->set_tag_name_raw(tag);
+      el->set_namespace_(lolv1::NAMESPACE_HTML);
+      el->set_can_have_content(tag != "img");
+      if (tag == "a") {
+        auto* attr = el->add_attributes();
+        attr->set_name("href");
+        attr->set_name_raw("HREF");
+        attr->set_value("/about");
+        attr->set_value_present(true);
+        attr = el->add_attributes();
+        attr->set_name("disabled");
+        attr->set_name_raw("DISABLED");
+        attr->set_value_present(false);
+        attr->mutable_name_span()->set_start(3);
+        attr->mutable_name_span()->set_end(11);
+        attr = el->add_attributes();
+        attr->set_name("data-empty");
+        attr->set_value_present(true);
+        attr->mutable_name_span()->set_start(12);
+        attr->mutable_name_span()->set_end(22);
+        attr->mutable_value_span()->set_start(24);
+        attr->mutable_value_span()->set_end(24);
+      }
+      if (tag == "img") {
+        auto* attr = el->add_attributes();
+        attr->set_name("alt");
+        attr->set_value("An image");
+        attr->set_value_present(true);
+      }
+      stream->Write(event);
+    };
+    const auto text = [&](uint64_t ordinal, const std::string& value, bool last,
+                           lolv1::TextType type = lolv1::TEXT_TYPE_DATA) {
+      lolv1::ExtractResponse event;
+      auto* node = event.mutable_text();
+      node->set_rule_id("links");
+      node->set_match_ordinal(ordinal);
+      node->set_text(value);
+      node->set_last_in_node(last);
+      node->set_text_type(type);
+      stream->Write(event);
+    };
+    const auto end = [&](uint64_t ordinal, const std::string& name) {
+      lolv1::ExtractResponse event;
+      event.mutable_end_tag()->set_rule_id("links");
+      event.mutable_end_tag()->set_match_ordinal(ordinal);
+      event.mutable_end_tag()->set_name(name);
+      stream->Write(event);
+    };
+    element(1, 0, "a");
+    text(1, "Abo", false);
+    element(2, 1, "a");
+    text(2, "Nested", true);
+    // Delivery names the enclosing instance, rather than whichever match
+    // happened to arrive most recently on the same rule.
+    text(1, "ut &am", false);
+    text(1, "p; us", true);
+    end(2, "a");
+    end(1, "a");
+    element(3, 0, "title");
+    text(3, "A ti", false, lolv1::TEXT_TYPE_RCDATA);
+    element(4, 1, "img");
+    text(3, "tle &copy;", true, lolv1::TEXT_TYPE_RCDATA);
+    end(3, "title");
+    element(5, 0, "script");
+    text(5, "const x='&am", false, lolv1::TEXT_TYPE_SCRIPT_DATA);
+    text(5, "p;';", true, lolv1::TEXT_TYPE_SCRIPT_DATA);
+    end(5, "script");
+    // Document-rule copy must not create a second body reading.
+    lolv1::ExtractResponse duplicate;
+    duplicate.mutable_text()->set_rule_id("document");
+    duplicate.mutable_text()->set_text("About &amp; us");
+    duplicate.mutable_text()->set_also_reported_by_rule(true);
+    duplicate.mutable_text()->set_last_in_node(true);
+    stream->Write(duplicate);
+    lolv1::ExtractResponse event;
+    event.mutable_finished()->set_bytes_parsed(300);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+};
+
+void verify_lol_html_instance_identity_and_raw_nodes() {
+  IdentityLolHtmlService service;
+  ServerFixture server(&service);
+  auto options = lol_html_options();
+  options->set_raw_text_chunks(true);
+  const auto outcome = grparse::collect_lol_html_document(server.channel(), options, "<a/>");
+  require(outcome.success, "identity-aware lol-html parse succeeds: " + outcome.error);
+  require(outcome.warnings.empty(), "valid identity-aware events produce no warnings");
+  const docv1::TextItemBase* anchor = nullptr;
+  const docv1::TextItemBase* nested = nullptr;
+  bool script = false;
+  bool image = false;
+  int body_items = 0;
+  for (const auto& item : outcome.document.texts()) {
+    const auto& base = item.text().base();
+    if (base.content_layer() == docv1::CONTENT_LAYER_FURNITURE) {
+      require(base.label() == docv1::DOC_ITEM_LABEL_CODE && base.parent().ref() == "#/furniture",
+              "tag transcripts are code in furniture");
+      require(!base.text().contains("DISABLED=\"\""), "bare attributes gain no invented value");
+      continue;
+    }
+    ++body_items;
+    if (base.text() == "About & us") anchor = &base;
+    if (base.text() == "Nested") nested = &base;
+    script = script || base.text() == "const x='&amp;';";
+    image = image || base.text() == "An image";
+  }
+  require(body_items == 5 && anchor && nested && script && image,
+          "each match owns one visible item; raw script text stays verbatim and document copies drop");
+  require(anchor->hyperlink() == "/about" && anchor->spans_size() == 1 &&
+              anchor->spans(0).range().start() == 0 && anchor->spans(0).range().end() == 10,
+          "anchor link range covers visible coalesced text");
+  require(anchor->source_attributes_size() == 3 &&
+              anchor->source_attributes(0).name_raw() == "HREF" &&
+              anchor->source_attributes(1).has_name_span() &&
+              !anchor->source_attributes(1).has_value_span() &&
+              !anchor->source_attributes(1).value_present() &&
+              !anchor->source_attributes(1).has_value() &&
+              anchor->source_attributes(2).value_present() &&
+              anchor->source_attributes(2).has_value() &&
+              anchor->source_attributes(2).value().empty() &&
+              anchor->source_attributes(2).value_span().start() == 24,
+          "typed ordered attributes preserve bare vs explicit empty values and exact source spans");
+  require(outcome.document.source_meta().title() == "A title ©",
+          "title fragments retain their instance despite an unrelated element event");
+  const auto group_index = [](const std::string& ref) { return std::stoi(ref.substr(9)); };
+  const auto& nested_group = outcome.document.groups(group_index(nested->parent().ref()));
+  require(nested_group.parent().ref() == anchor->parent().ref(),
+          "nested match group is parented to the enclosing instance group");
 }
 
 void verify_lol_html_without_rules_never_dials() {
@@ -1657,6 +2243,14 @@ class FakeCalamineService final : public calaminev1::CalamineService::Service {
     response->set_workbook_id("wb-1");
     response->set_detected_format(calaminev1::WORKBOOK_FORMAT_XLSX);
     calaminev1::Metadata* metadata = response->mutable_metadata();
+    auto* properties = metadata->mutable_properties();
+    properties->set_title("Quarterly totals");
+    properties->set_creator("Example author");
+    properties->set_created("2026-01-02T03:04:05Z");
+    properties->set_modified("source-specific date");
+    properties->set_revision("003");
+    properties->set_company("Example Ltd");
+    properties->set_description("Declared workbook metadata");
     calaminev1::Sheet* first = metadata->add_sheets();
     first->set_name("First");
     first->set_typ(calaminev1::SHEET_TYPE_WORKSHEET);
@@ -1677,9 +2271,29 @@ class FakeCalamineService final : public calaminev1::CalamineService::Service {
     if (request->workbook_id() != "wb-1") {
       return grpc::Status(grpc::StatusCode::NOT_FOUND, "unknown handle");
     }
+    if (!request->include_formulas()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "formulas must be requested");
+    }
     calaminev1::StreamWorksheetRangeResponse event;
     event.mutable_started()->set_sheet_name(
         request->sheet().sheet_index() == 0 ? "First" : "Second");
+    if (request->sheet().sheet_index() == 0) {
+      auto* declared = event.mutable_started()->add_tables();
+      declared->set_name("Scores");
+      declared->mutable_range()->mutable_start()->set_row(0);
+      declared->mutable_range()->mutable_start()->set_col(0);
+      declared->mutable_range()->mutable_end()->set_row(2);
+      declared->mutable_range()->mutable_end()->set_col(5);
+      declared->set_header_row_count(1);
+      for (const auto* name : {"Name", "Score", "Enabled", "When", "Date", "Error"}) {
+        declared->add_columns(name);
+      }
+      auto* format = event.mutable_started()->add_number_formats();
+      format->set_style_id(2);
+      format->set_format_id(2);
+      format->set_code("0.00");
+      format->set_kind(calaminev1::NUMBER_FORMAT_KIND_OTHER);
+    }
     if (request->sheet().sheet_index() == 1) {
       // B1:C1 is merged: the ISO date at B1 spans it, C1 is covered.
       calaminev1::Dimensions* area = event.mutable_started()->add_merged_regions();
@@ -1696,6 +2310,9 @@ class FakeCalamineService final : public calaminev1::CalamineService::Service {
       header->set_row_index(0);
       header->add_values()->set_string_value("Name");
       header->add_values()->set_string_value("Score");
+      auto* styled_empty = header->add_values();
+      styled_empty->mutable_empty();
+      styled_empty->set_style_id(2);
       writer->Write(event);
       // Row 1 holds nothing: the contract says so with one row_gap event
       // rather than a blank row, and the fold must not count it as data.
@@ -1709,7 +2326,10 @@ class FakeCalamineService final : public calaminev1::CalamineService::Service {
       calaminev1::WorksheetRow* data = batch->add_rows();
       data->set_row_index(2);
       data->add_values()->set_int_value(7);
-      data->add_values()->set_float_value(2.5);
+      auto* formula_cell = data->add_values();
+      formula_cell->set_float_value(2.5);
+      formula_cell->set_formula("5/2");
+      formula_cell->set_style_id(2);
       data->add_values()->set_bool_value(true);
       // 45943.5 is 2025-10-13 12:00:00 in the 1900 date system (the
       // contract's own example); 45000 is 2023-03-15 with no time of day.
@@ -1814,12 +2434,30 @@ void verify_calamine_folds_sheets() {
               document.named_ranges(0).kind() == "named",
           "defined names fold into named ranges");
 
+  require(document.source_meta().title() == "Quarterly totals"
+              && document.source_meta().authors(0) == "Example author"
+              && document.source_meta().has_created()
+              && document.source_meta().created_raw() == "2026-01-02T03:04:05Z"
+              && !document.source_meta().has_modified()
+              && document.source_meta().modified_raw() == "source-specific date"
+              && document.source_meta().revision() == "003"
+              && document.source_meta().company() == "Example Ltd",
+          "workbook metadata preserves typed facts and unparseable raw dates");
   const docv1::TableData& data = document.tables(0).data();
   require(document.tables(0).source(0).collector().collector() == "calamine",
           "the sheet table carries the calamine collector source");
+  require(data.declared_tables_size() == 1 && data.declared_tables(0).name() == "Scores"
+              && data.columns_size() == 6 && data.columns(1).name() == "Score"
+              && data.table_cells(0).column_header(),
+          "declared table headers and column names replace inference");
+  require(outcome.warnings.empty(), "declared headers produce no inference warning");
   require(data.num_rows() == 3 && data.num_cols() == 6,
           "the table sizes from the populated cells, gaps included");
-  require(data.table_cells_size() == 8, "empty cells fold to nothing");
+  require(data.table_cells_size() == 9, "only unstyled empty cells fold to nothing");
+  require(data.table_cells(2).text().empty()
+              && data.table_cells(2).value().style_id() == 2
+              && data.table_cells(2).value().number_format() == "0.00",
+          "styled empty cells retain their source format");
 
   const docv1::TableCell* cells[6] = {nullptr};
   for (const auto& cell : data.table_cells()) {
@@ -1832,8 +2470,12 @@ void verify_calamine_folds_sheets() {
               cells[0]->value().number() == 7,
           "an int cell folds as a number");
   require(cells[1] != nullptr && cells[1]->text() == "2.5" &&
-              cells[1]->value().number() == 2.5,
+              cells[1]->value().number() == 2.5 && cells[1]->value().formula_source() == "5/2",
           "a float cell folds as a number with its shortest spelling");
+  require(cells[1]->value().number_format() == "0.00"
+              && cells[1]->value().style_id() == 2
+              && cells[1]->value().number_format_id() == 2,
+          "calamine-only cells retain format code and source style identity");
   require(cells[2] != nullptr && cells[2]->text() == "TRUE" &&
               cells[2]->value().boolean(),
           "a bool cell folds as a boolean");
@@ -2023,11 +2665,17 @@ void verify_calamine_fanout_merges_without_a_second_body() {
               result.document.named_ranges_size() == 0,
           "the fan-out leg's sheet groups, tables and named ranges drop with its "
           "body reading");
-  require(result.document.source_meta().title() == "Office Title" &&
+  require(result.document.source_meta().title() == "Quarterly totals" &&
               meta_source_of(result.document.source_meta(), "title") != nullptr &&
               meta_source_of(result.document.source_meta(), "title")->source().collector() ==
-                  "libreoffice",
-          "the primary's metadata stands, attributed to libreoffice");
+                  "calamine",
+          "source workbook metadata follows the existing spreadsheet claim rank");
+  bool kept_office_title = false;
+  for (const auto& claim : result.document.claims()) {
+    if (claim.source().collector() == "libreoffice"
+        && claim.source_meta().title() == "Office Title") kept_office_title = true;
+  }
+  require(kept_office_title, "the competing office title remains a typed claim");
 }
 
 // A workbook whose libreoffice leg fails still parses: the calamine leg is
@@ -2670,7 +3318,11 @@ void verify_source_title_promotes_to_a_title_item() {
 int main() {
   return grparse_test::run_test_main({.on_failure = "FAILED", .on_success = "document collectors test passed"}, {
       verify_source_title_promotes_to_a_title_item,
+      verify_asr_forwarded_enum_numbers_match_contract,
+      verify_asr_request_model_needs_no_deployment_model,
+      verify_asr_option_failure_status_survives,
       verify_asr_collects_document,
+      verify_asr_forwards_pipeline_options,
       verify_transport_class_collapses_to_unavailable,
       verify_email_collects_document_and_warnings,
       verify_missing_trailer_fails,
@@ -2694,6 +3346,9 @@ int main() {
       verify_lol_html_without_rules_never_dials,
       verify_lol_html_in_band_error_is_terminal,
       verify_lol_html_captures_page_identity,
+      verify_lol_html_folds_full_api_surface,
+      verify_lol_html_reassembles_raw_text_chunks,
+      verify_lol_html_instance_identity_and_raw_nodes,
       verify_fastwarc_folds_records_and_warnings,
       verify_fastwarc_captures_web_provenance,
       verify_fastwarc_response_supersedes_the_request_record,

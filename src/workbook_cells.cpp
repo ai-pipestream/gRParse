@@ -67,24 +67,35 @@ docv1::TableCell adopted_cell(const docv1::TableCell& calamine,
   cell.set_column_header(false);
   cell.set_row_header(false);
   cell.set_row_section(false);
-  if (cell.text() != calamine.text()) cell.clear_spans();
-  cell.set_text(calamine.text());
-  const bool formula = libre->has_value()
-                       && libre->value().kind_case() == docv1::CellValue::kFormula;
-  if (!formula) {
-    std::optional<std::string> number_format;
-    if (cell.has_value() && cell.value().has_number_format()) {
-      number_format = cell.value().number_format();
-    }
-    if (calamine.has_value()) {
-      *cell.mutable_value() = calamine.value();
-      if (number_format.has_value() && !cell.value().has_number_format()) {
-        cell.mutable_value()->set_number_format(*number_format);
-      }
-    } else {
-      cell.clear_value();
+  // Preserve a source display string only when both readers agree on the
+  // numeric value. An imported date or a genuinely different number must
+  // still yield to calamine's stored value.
+  const bool same_formatted_number = libre->has_value() && calamine.has_value()
+      && libre->value().has_number_format()
+      && libre->value().kind_case() == docv1::CellValue::kNumber
+      && calamine.value().kind_case() == docv1::CellValue::kNumber
+      && libre->value().number() == calamine.value().number();
+  if (!same_formatted_number) {
+    if (cell.text() != calamine.text()) cell.clear_spans();
+    cell.set_text(calamine.text());
+  }
+  std::optional<std::string> number_format;
+  std::optional<std::string> formula;
+  if (libre->has_value()) {
+    if (libre->value().has_number_format()) number_format = libre->value().number_format();
+    if (libre->value().has_formula_source()) formula = libre->value().formula_source();
+    else if (libre->value().kind_case() == docv1::CellValue::kFormula) {
+      formula = libre->value().formula();
     }
   }
+  if (calamine.has_value()) *cell.mutable_value() = calamine.value();
+  else cell.clear_value();
+  if (number_format && !cell.value().has_number_format()) {
+    cell.mutable_value()->set_number_format(*number_format);
+  }
+  // Keep the primary's formula source, but retain calamine's cached value.
+  // A calamine-only cell already carries its own formula_source.
+  if (formula) cell.mutable_value()->set_formula_source(*formula);
   return cell;
 }
 
@@ -137,6 +148,7 @@ void adopt_table(const docv1::TableData& calamine, docv1::TableData* libre) {
   libre->set_num_rows(rows);
   libre->set_num_cols(columns);
   libre->clear_grid();
+  *libre->mutable_declared_tables() = calamine.declared_tables();
   // A column schema describes libreoffice's columns; it no longer fits when
   // calamine's sheet is a different width.
   if (libre->columns_size() != columns) libre->clear_columns();
@@ -173,6 +185,42 @@ void apply_merged_areas(docv1::TableData* data, const std::vector<MergedArea>& a
 }
 
 int mark_sheet_header(docv1::TableData* data) {
+  if (!data->declared_tables().empty()) {
+    int marked = 0;
+    for (auto& cell : *data->mutable_table_cells()) {
+      cell.set_column_header(false);
+      cell.set_row_section(false);
+      for (const auto& table : data->declared_tables()) {
+        const auto& first = table.range().start();
+        const auto& last = table.range().end();
+        const int64_t header_end = std::min<int64_t>(
+            static_cast<int64_t>(last.row()) + 1,
+            static_cast<int64_t>(first.row()) + table.header_row_count());
+        if (cell.start_row_offset_idx() >= first.row()
+            && cell.start_row_offset_idx() < header_end
+            && cell.start_col_offset_idx() >= first.col()
+            && cell.start_col_offset_idx() <= last.col()) {
+          cell.set_column_header(true);
+          ++marked;
+          break;
+        }
+      }
+    }
+    // A sheet can contain several separately named tables. Only a single
+    // width-spanning declaration describes the sheet table's whole schema.
+    if (data->declared_tables_size() == 1) {
+      const auto& table = data->declared_tables(0);
+      if (table.range().start().col() == 0
+          && static_cast<int64_t>(table.range().end().col()) + 1 == data->num_cols()
+          && table.columns_size() == data->num_cols()) {
+        while (data->columns_size() < data->num_cols()) data->add_columns();
+        for (int i = 0; i < table.columns_size(); ++i) {
+          data->mutable_columns(i)->set_name(table.columns(i));
+        }
+      }
+    }
+    return marked;
+  }
   std::map<int, std::vector<docv1::TableCell*>> rows;
   for (docv1::TableCell& cell : *data->mutable_table_cells()) {
     cell.set_column_header(false);
@@ -226,7 +274,8 @@ int adopt_calamine_cells(const docv1::Document& calamine, docv1::Document* merge
     // over these cells, so the mark is not reported a second time here.
     // When the band finds nothing, libreoffice's header stands: a database
     // range can declare a header the rule would not infer.
-    if (mark_sheet_header(table->mutable_data()) == 0) {
+    if (mark_sheet_header(table->mutable_data()) == 0
+        && table->data().declared_tables().empty()) {
       for (docv1::TableCell& cell : *table->mutable_data()->mutable_table_cells()) {
         if (libre_header.contains(position_of(cell))) cell.set_column_header(true);
       }

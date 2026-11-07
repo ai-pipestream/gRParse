@@ -143,14 +143,16 @@ message EnrichOptions {
   // name or value HTTP does not allow, are INVALID_ARGUMENT.
   repeated VlmHeader vlm_headers = 20;
   // Code/formula crop margin as a fraction of the element's width and
-  // height (Docling CodeFormulaVlmOptions.expansion_factor). Unset keeps the
-  // service default of 0.18; a set value is finite and >= 0.
+  // height (Docling CodeFormulaVlmOptions.expansion_factor). A set value
+  // must be finite and >= 0. This server accepts zero (use the supplied crop)
+  // and rejects positive values UNIMPLEMENTED; unset preserves supplied crops.
   optional double code_formula_expansion_factor = 21;
   // Watch each code/formula generation as it streams and cancel the call
   // once it keeps repeating the same short unit; the repeated tail is cut
   // and the annotation is marked truncated_on_repetition (Docling
-  // CodeFormulaVlmOptions.stop_on_repetition). Unset keeps the service
-  // default of true.
+  // CodeFormulaVlmOptions.stop_on_repetition). This server has no streaming
+  // repetition detector: explicit true is UNIMPLEMENTED, while unset or false
+  // preserves the existing non-streaming behavior.
   optional bool code_formula_stop_on_repetition = 22;
 }
 

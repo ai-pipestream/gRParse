@@ -1,0 +1,7 @@
+docling=2.145.0
+docling-core=2.105.0
+docling-serve=1.38.2
+docling-slim=2.145.0
+docling_source=DocumentConverter local (do_ocr=false)
+grparse_source=live 127.0.0.1:50051 (do_ocr=false) via ConvertSource protobuf bytes
+fixture=tests/golden/corpus/hello-text.pdf
