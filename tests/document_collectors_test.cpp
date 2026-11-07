@@ -4,9 +4,18 @@
 // warning surfacing, and the failure paths are proven without any collector
 // binary.
 
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdio>
 #include <limits>
 #include <memory>
@@ -88,6 +97,7 @@ class ServerFixture {
   }
 
   std::string address() const { return "127.0.0.1:" + std::to_string(port_); }
+  int port() const { return port_; }
 
   std::shared_ptr<grpc::Channel> channel() const {
     return grpc::CreateChannel("127.0.0.1:" + std::to_string(port_),
@@ -478,6 +488,218 @@ void verify_cancellation_ends_a_hanging_collector() {
   require(!outcome.success, "a cancelled leg is not a success");
   require(elapsed < std::chrono::seconds{30},
           "the leg ends on the cancellation, not on its own ceiling");
+}
+
+// A loopback TCP relay in front of a real server that can go silent: once
+// frozen it forwards nothing in either direction and closes nothing, so the
+// client's connection stays open and unanswered, which is what a collector
+// container that restarted behind it, or a NAT or Tailscale path that went
+// dead, looks like from the coordinator. No RST, no FIN: only keepalive can
+// tell. Closing the relay closes every socket it holds.
+class FreezableRelay {
+ public:
+  explicit FreezableRelay(int upstream_port) : upstream_port_(upstream_port) {
+    listener_ = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    socklen_t length = sizeof(address);
+    if (listener_ < 0 || ::bind(listener_, reinterpret_cast<sockaddr*>(&address), length) != 0 ||
+        ::listen(listener_, 16) != 0 ||
+        ::getsockname(listener_, reinterpret_cast<sockaddr*>(&address), &length) != 0 ||
+        ::pipe2(wake_, O_CLOEXEC) != 0) {
+      throw std::runtime_error("the relay could not listen");
+    }
+    port_ = ntohs(address.sin_port);
+    thread_ = std::thread([this] { run(); });
+  }
+  FreezableRelay(const FreezableRelay&) = delete;
+  FreezableRelay& operator=(const FreezableRelay&) = delete;
+  ~FreezableRelay() {
+    stop_.store(true);
+    wake();
+    thread_.join();
+    for (const auto& [client, upstream] : pairs_) {
+      ::close(client);
+      ::close(upstream);
+    }
+    ::close(listener_);
+    ::close(wake_[0]);
+    ::close(wake_[1]);
+  }
+
+  std::string address() const { return "127.0.0.1:" + std::to_string(port_); }
+
+  // From now on nothing is read from or written to any connection.
+  void freeze() {
+    frozen_.store(true);
+    wake();
+  }
+
+ private:
+  void wake() {
+    const char byte = 0;
+    if (::write(wake_[1], &byte, 1) < 0) {
+      // The loop is awake already or gone; either way nothing to do.
+    }
+  }
+
+  int dial_upstream() const {
+    const int upstream = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(static_cast<uint16_t>(upstream_port_));
+    if (upstream >= 0 &&
+        ::connect(upstream, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0) {
+      return upstream;
+    }
+    if (upstream >= 0) ::close(upstream);
+    return -1;
+  }
+
+  // Copies what `from` has to `to`; false when `from` is done.
+  static bool forward(int from, int to) {
+    char buffer[64 * 1024];
+    const ssize_t got = ::read(from, buffer, sizeof(buffer));
+    if (got <= 0) return false;
+    for (ssize_t sent = 0; sent < got;) {
+      const ssize_t wrote = ::write(to, buffer + sent, static_cast<size_t>(got - sent));
+      if (wrote <= 0) return false;
+      sent += wrote;
+    }
+    return true;
+  }
+
+  void run() {
+    while (!stop_.load()) {
+      std::vector<pollfd> polled{{wake_[0], POLLIN, 0}, {listener_, POLLIN, 0}};
+      const bool frozen = frozen_.load();
+      if (!frozen) {
+        for (const auto& [client, upstream] : pairs_) {
+          polled.push_back({client, POLLIN, 0});
+          polled.push_back({upstream, POLLIN, 0});
+        }
+      }
+      if (::poll(polled.data(), polled.size(), 1000) < 0 && errno != EINTR) return;
+      if ((polled[0].revents & POLLIN) != 0) {
+        char drained[64];
+        if (::read(wake_[0], drained, sizeof(drained)) < 0) return;
+      }
+      if ((polled[1].revents & POLLIN) != 0) {
+        const int client = ::accept4(listener_, nullptr, nullptr, SOCK_CLOEXEC);
+        if (client >= 0) {
+          const int upstream = dial_upstream();
+          if (upstream < 0) {
+            ::close(client);
+          } else {
+            pairs_.emplace_back(client, upstream);
+          }
+        }
+      }
+      if (frozen) continue;
+      for (size_t i = 2; i < polled.size(); i += 2) {
+        const auto [client, upstream] = std::pair{polled[i].fd, polled[i + 1].fd};
+        bool open = true;
+        if ((polled[i].revents & (POLLIN | POLLHUP | POLLERR)) != 0) {
+          open = forward(client, upstream);
+        }
+        if (open && (polled[i + 1].revents & (POLLIN | POLLHUP | POLLERR)) != 0) {
+          open = forward(upstream, client);
+        }
+        if (!open) {
+          ::close(client);
+          ::close(upstream);
+          std::erase(pairs_, std::pair{client, upstream});
+        }
+      }
+    }
+  }
+
+  int upstream_port_ = 0;
+  int listener_ = -1;
+  int port_ = 0;
+  int wake_[2] = {-1, -1};
+  std::atomic<bool> frozen_{false};
+  std::atomic<bool> stop_{false};
+  // Touched only by the relay thread until it is joined.
+  std::vector<std::pair<int, int>> pairs_;
+  std::thread thread_;
+};
+
+// Takes the whole upload, says so, and then never writes a byte, holding
+// the call open until it is released or cancelled.
+class SilentXmlService final : public xmlv1::XmlParseService::Service {
+ public:
+  grpc::Status ParseXml(
+      grpc::ServerContext* context,
+      grpc::ServerReaderWriter<xmlv1::ParseXmlResponse, xmlv1::ParseXmlRequest>* stream)
+      override {
+    xmlv1::ParseXmlRequest request;
+    while (stream->Read(&request)) {
+    }
+    std::unique_lock lock(mutex_);
+    accepted_ = true;
+    changed_.notify_all();
+    changed_.wait_for(lock, std::chrono::seconds{30},
+                      [&] { return released_ || context->IsCancelled(); });
+    return grpc::Status::OK;
+  }
+
+  bool wait_until_accepted(std::chrono::milliseconds patience) {
+    std::unique_lock lock(mutex_);
+    return changed_.wait_for(lock, patience, [&] { return accepted_; });
+  }
+  void release() {
+    std::lock_guard lock(mutex_);
+    released_ = true;
+    changed_.notify_all();
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable changed_;
+  bool accepted_ = false;
+  bool released_ = false;
+};
+
+// Issue #250: a collector that accepts the stream and then goes silent at
+// the transport (no reply, no RST) fails the leg UNAVAILABLE within the
+// channel's keepalive time plus its keepalive timeout, not at the leg's
+// deadline. The pool's channels come from CollectorEndpoints, so this is
+// the production channel arguments with only the two timings shortened.
+void verify_silent_collector_fails_on_keepalive() {
+  SilentXmlService service;
+  ServerFixture server(&service);
+  FreezableRelay relay(server.port());
+  grparse::CollectorTargets targets;
+  targets.xml = relay.address();
+  targets.channel_options.keepalive_time = std::chrono::milliseconds{1000};
+  targets.channel_options.keepalive_timeout = std::chrono::milliseconds{1000};
+  auto endpoints = std::make_shared<grparse::CollectorEndpoints>(targets);
+
+  std::thread freezer([&] {
+    if (service.wait_until_accepted(std::chrono::seconds{10})) relay.freeze();
+  });
+  const auto started = std::chrono::steady_clock::now();
+  const auto deadline = std::chrono::system_clock::now() + std::chrono::seconds{12};
+  const auto outcome = grparse::run_remote_collector(parsev1::COLLECTOR_XML, endpoints, "id",
+                                                     "a.xml", "application/xml", "<a/>", {},
+                                                     deadline);
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  freezer.join();
+  service.release();
+  require(!outcome.success, "a silent collector is not a success");
+  require(outcome.code == grpc::StatusCode::UNAVAILABLE,
+          "a silent collector fails UNAVAILABLE, not DEADLINE_EXCEEDED: " + outcome.error);
+  // Keepalive time + timeout is 2 s; a ping is throttled to one a second
+  // and the timer counts from the last frame read, so allow up to 6 s,
+  // still half the 12 s deadline.
+  require(elapsed < std::chrono::seconds{6},
+          "the leg fails on the keepalive, well before its deadline (" +
+              std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed)
+                                 .count()) +
+              " ms)");
 }
 
 // ---- ebcdic ----------------------------------------------------------------
@@ -3333,6 +3555,7 @@ int main() {
       verify_caller_status_classes_survive,
       verify_inbound_deadline_bounds_a_hanging_collector,
       verify_cancellation_ends_a_hanging_collector,
+      verify_silent_collector_fails_on_keepalive,
       verify_ebcdic_forwards_layout_and_collects,
       verify_ebcdic_without_layout_never_dials,
       verify_epub_collects_document,

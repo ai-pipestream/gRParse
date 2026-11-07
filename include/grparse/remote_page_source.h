@@ -10,6 +10,8 @@
 
 namespace grparse {
 
+struct CollectorChannelOptions;
+
 // The PDF backend target from GRPARSE_PDF_BACKEND: a gRPC target
 // ("host:port"), or a comma list of them, for a PdfBackendService
 // (ai.protomolt.parse.pdf.v1) such as grpc-pdfium. Unset or empty means no
@@ -20,6 +22,12 @@ std::optional<std::string> remote_pdf_backend_target();
 // Returns the shared multiplexed gRPC channel for a PdfBackendService target,
 // configured with the 520 MiB message size ceiling.
 std::shared_ptr<grpc::Channel> pdf_backend_channel(const std::string& target);
+
+// The keepalive timings every PdfBackendService channel made after this call
+// is created with (the collector channels' options; the pool size does not
+// apply, each target has one channel). main sets it once at startup, before
+// the first channel; until then the defaults apply.
+void set_pdf_backend_channel_options(const CollectorChannelOptions& options);
 
 // Opens a PageSource whose pages come from a PdfBackendService. Loading is
 // verified through Probe, before this returns (SourceOpening::kNow) or on
