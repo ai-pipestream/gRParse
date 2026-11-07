@@ -1,0 +1,82 @@
+schema_name: "DoclingDocument"
+version: "1.10.0"
+name: "hello-text"
+origin {
+  mimetype: "application/pdf"
+  binary_hash: 16732697662683021735
+  filename: "hello-text.pdf"
+}
+body {
+  self_ref: "#/body"
+  children {
+    ref: "#/texts/0"
+  }
+  content_layer: CONTENT_LAYER_BODY
+  name: "_root_"
+}
+texts {
+  text {
+    base {
+      self_ref: "#/texts/0"
+      parent {
+        ref: "#/body"
+      }
+      content_layer: CONTENT_LAYER_BODY
+      label: DOC_ITEM_LABEL_TEXT
+      prov {
+        page_no: 1
+        bbox {
+          l: 50.0
+          t: 758.616
+          r: 478.77200000000033
+          b: 733.516
+          coord_origin: COORD_ORIGIN_BOTTOMLEFT
+        }
+        charspan {
+          end: 108
+        }
+      }
+      prov {
+        page_no: 2
+        bbox {
+          l: 50.0
+          t: 758.616
+          r: 478.77200000000033
+          b: 733.516
+          coord_origin: COORD_ORIGIN_BOTTOMLEFT
+        }
+        charspan {
+          start: 109
+          end: 217
+        }
+      }
+      orig: "hello from the demo, page 1 lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet hello from the demo, page 2 lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet"
+      text: "hello from the demo, page 1 lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet hello from the demo, page 2 lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet"
+    }
+  }
+}
+pages {
+  key: 1
+  value {
+    size {
+      width: 612.0
+      height: 792.0
+    }
+    page_no: 1
+  }
+}
+pages {
+  key: 2
+  value {
+    size {
+      width: 612.0
+      height: 792.0
+    }
+    page_no: 2
+  }
+}
+furniture {
+  self_ref: "#/furniture"
+  content_layer: CONTENT_LAYER_FURNITURE
+  name: "_root_"
+}
