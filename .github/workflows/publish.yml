@@ -61,6 +61,12 @@ on:
 permissions:
   contents: read
 
+# Two pushes to main queue instead of racing for the same tags; a publish is
+# never cancelled half way (#240).
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   HUB_REPO: docker.io/pipestreamai/grparse
   FORGEJO_REPO: git.rokkon.com/ai-pipestream/grparse

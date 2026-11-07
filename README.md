@@ -1144,8 +1144,11 @@ and `openvino-image` legs run only when the PR changes what they add, the
 execution-provider code and their image plumbing (`scripts/ci-changes.sh`
 lists the paths; `scripts/test/ci-changes-test.sh` pins them), or when the PR
 carries the `ci:full` label (it takes effect on the next run, so add it before
-the push you want fully built). Pushes to main and manual `workflow_dispatch`
-runs build all three.
+the push you want fully built). Manual `workflow_dispatch` runs build all
+three. A push to main builds each image once: on GitHub `publish.yml` is the
+main gate (it builds, tests and smoke-tests every leg before any tag) and
+`ci.yml` runs only its non-image jobs there, while Forgejo, which skips
+`publish.yml`, builds all three in `ci.yml`.
 
 CI builds the images (CUDA, CPU and OpenVINO) and then boot-proofs each runtime
 stage with `scripts/smoke-test.sh`: library closure of the shipped binaries

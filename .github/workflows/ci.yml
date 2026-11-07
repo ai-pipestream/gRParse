@@ -23,7 +23,14 @@ jobs:
   # run on a PR only when execution-provider code or the image plumbing
   # changed (scripts/ci-changes.sh), when the PR carries the `ci:full`
   # label, and always on main pushes and manual runs.
+  #
+  # On a push to main on GitHub the whole image set is skipped here (#240):
+  # publish.yml builds, tests and smoke-tests every image of that commit
+  # already, so building them twice only made the two workflows queue behind
+  # each other. demo-shell, fuzz-smoke and eval-tests still run on main.
+  # Forgejo skips publish.yml, so its runners keep building on main.
   changes:
+    if: ${{ github.event_name != 'push' || github.server_url != 'https://github.com' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -47,9 +54,10 @@ jobs:
   cuda-image:
     needs: changes
     if: >-
+      needs.changes.result == 'success' && (
       needs.changes.outputs.ep == 'true' ||
       github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'ci:full')
+      contains(github.event.pull_request.labels.*.name, 'ci:full'))
     # Heavy image build: the Forgejo `heavy` label exists only on krick-host
     # (64g/20cpu). nas-1/nas-2 cap jobs at 16g/5cpu and openvino-image failed
     # there (run 453). GitHub has no `heavy` runner, so it keeps ubuntu-latest.
@@ -134,9 +142,10 @@ jobs:
   openvino-image:
     needs: changes
     if: >-
+      needs.changes.result == 'success' && (
       needs.changes.outputs.ep == 'true' ||
       github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'ci:full')
+      contains(github.event.pull_request.labels.*.name, 'ci:full'))
     # Heavy image build: the Forgejo `heavy` label exists only on krick-host
     # (64g/20cpu). nas-1/nas-2 cap jobs at 16g/5cpu and openvino-image failed
     # there (run 453). GitHub has no `heavy` runner, so it keeps ubuntu-latest.
@@ -235,6 +244,9 @@ jobs:
   # the build context's models/, and GRPARSE_TEST_REQUIRE_MODELS=1 makes a
   # missing model fail the in-build ctest instead of skipping.
   cpu-image:
+    # Skipped with the other image legs on a GitHub main push (see changes).
+    needs: changes
+    if: ${{ needs.changes.result == 'success' }}
     # Heavy image build: the Forgejo `heavy` label exists only on krick-host
     # (64g/20cpu). nas-1/nas-2 cap jobs at 16g/5cpu and openvino-image failed
     # there (run 453). GitHub has no `heavy` runner, so it keeps ubuntu-latest.
