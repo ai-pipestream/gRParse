@@ -80,7 +80,7 @@ inputs the vector decoder used to accept, and `confluence-storage-test`
 carries the empty lists that used to leave an empty group
 (`verify_empty_lists_are_dropped`).
 
-CI runs every target for a 90 s smoke window on every push and PR (the
+CI runs every target for a 30 s smoke window on every push and PR (the
 `fuzz-smoke` job in `.github/workflows/ci.yml`), and for 20 minutes each in
 the nightly heavy tier (`fuzz-long` in `.github/workflows/nightly.yml`),
 which keeps the grown corpora as an artifact. Longer campaigns run with the

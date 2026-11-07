@@ -422,7 +422,8 @@ jobs:
   # wiki storage parser, the base64 codec; PDFs go to a PdfBackendService).
   # The fuzz project builds standalone in about a minute - no gRPC or ONNX
   # Runtime fetch - so this fits in a PR gate. Every target gets the same
-  # 90 s window, and every step after the build runs even when an earlier
+  # 30 s window (five targets stay inside the cpu-image leg's time, so the
+  # gate waits on neither), and every step after the build runs even when an earlier
   # target failed, so one finding does not hide another. Long campaigns run
   # nightly (fuzz-long in nightly.yml); see fuzz/README.md.
   fuzz-smoke:
@@ -454,7 +455,7 @@ jobs:
         run: |
           mkdir -p corpus-raster
           ./build-fuzz/raster-source-fuzzer corpus-raster tests/data \
-            -max_total_time=90 -max_len=1048576 -rss_limit_mb=4096 -timeout=25 -print_final_stats=1
+            -max_total_time=30 -max_len=1048576 -rss_limit_mb=4096 -timeout=25 -print_final_stats=1
       - name: Fuzz the compound-file walker
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         env:
@@ -462,7 +463,7 @@ jobs:
         run: |
           mkdir -p corpus-cfb
           ./build-fuzz/cfb-fuzzer corpus-cfb fuzz/corpus/cfb fuzz/regressions/cfb-fuzzer \
-            -max_total_time=90 -max_len=1048576 -rss_limit_mb=2048 -timeout=25 -print_final_stats=1
+            -max_total_time=30 -max_len=1048576 -rss_limit_mb=2048 -timeout=25 -print_final_stats=1
       - name: Fuzz the content sniff
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         env:
@@ -471,7 +472,7 @@ jobs:
           mkdir -p corpus-content-sniff
           ./build-fuzz/content-sniff-fuzzer corpus-content-sniff tests/golden/corpus \
             fuzz/corpus/cfb fuzz/regressions/cfb-fuzzer \
-            -max_total_time=90 -max_len=1048576 -rss_limit_mb=2048 -timeout=25 -print_final_stats=1
+            -max_total_time=30 -max_len=1048576 -rss_limit_mb=2048 -timeout=25 -print_final_stats=1
       - name: Fuzz the wiki storage parser
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         env:
@@ -480,7 +481,7 @@ jobs:
           mkdir -p corpus-confluence-storage
           ./build-fuzz/confluence-storage-fuzzer corpus-confluence-storage \
             fuzz/corpus/confluence-storage fuzz/regressions/confluence-storage-fuzzer \
-            -max_total_time=90 -max_len=65536 -rss_limit_mb=2048 -timeout=25 -print_final_stats=1
+            -max_total_time=30 -max_len=65536 -rss_limit_mb=2048 -timeout=25 -print_final_stats=1
       - name: Fuzz base64 against its scalar oracle
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         env:
@@ -489,7 +490,7 @@ jobs:
           mkdir -p corpus-base64
           ./build-fuzz/base64-differential-fuzzer corpus-base64 \
             fuzz/corpus/base64 fuzz/regressions/base64-differential-fuzzer \
-            -max_total_time=90 -max_len=16384 -rss_limit_mb=2048 -timeout=25 -print_final_stats=1
+            -max_total_time=30 -max_len=16384 -rss_limit_mb=2048 -timeout=25 -print_final_stats=1
       - name: Keep any crash input
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
