@@ -8,9 +8,22 @@
 # Deliberately build-then-run under `docker run`, NOT inside `docker build`:
 # LeakSanitizer needs ptrace, which BuildKit's default seccomp profile denies,
 # so leak detection inside an image build either aborts or silently reports
-# nothing. `--cap-add SYS_PTRACE` on a plain container grants it. Weekly +
-# manual because the gRPC source build makes this a long job; it is not a
-# PR gate.
+# nothing. `--cap-add SYS_PTRACE` on a plain container grants it.
+#
+# Since #243 it starts from the published cpu deps seed instead of building
+# the toolchain and every fetched dependency from scratch (71-82 min before):
+# the seed's /opt/grparse-seed tree holds the third-party objects built
+# without GRPARSE_SANITIZE, which is exactly the split below (first-party
+# instrumented, fetched trees not), so only this repository compiles, through
+# ccache carried in the Actions cache. The build type stays Release, the
+# seed's, because changing it would rebuild every dependency; the sanitizer
+# flags add -g. The pinned models are provided as in ci.yml's cpu-image job
+# and GRPARSE_TEST_REQUIRE_MODELS=1 makes the model-backed tests run
+# instrumented instead of skipping. Nightly, on demand, and as a non-required
+# PR check when the code the models run through changes. When no seed is
+# published for the current seed inputs (find-seed.sh prints "deps"), the
+# job builds Dockerfile.cpu's deps stage and the dependencies inline, as it
+# did before.
 #
 # ThreadSanitizer is intentionally absent: TSan is only sound when every
 # object in the process is instrumented, and the fetched gRPC/protobuf/
@@ -20,8 +33,18 @@ name: Sanitizer battery
 
 on:
   schedule:
-    - cron: "17 5 * * 1"
+    - cron: "17 5 * * *"
   workflow_dispatch:
+  pull_request:
+    paths:
+      - "patches/**"
+      - "src/layout_engine.cpp"
+      - "src/ort_session_ep.cpp"
+      - "src/ocr_engine.cpp"
+      - "src/table_structure_engine.cpp"
+      - "src/figure_classifier.cpp"
+      - "tests/lsan.supp"
+      - ".github/workflows/sanitize.yml"
 
 permissions:
   contents: read
@@ -29,41 +52,103 @@ permissions:
 # The weekly run and a manual dispatch queue rather than race; neither is
 # cancelled, since a sanitizer run is only worth its 70+ minutes complete.
 concurrency:
-  group: sanitize-${{ github.ref }}
-  cancel-in-progress: false
+  group: sanitize-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   asan-ubsan:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
-      - name: Build the toolchain image (ubuntu 26.04, GCC 15, OpenCV 5, libcurl, cargo)
+      - name: Log in to dhi.io
+        # Dockerfile.models' runtime stage is a Docker Hardened Image.
+        uses: docker/login-action@v4
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+      - name: Log in to Docker Hub (docker.io)
+        uses: docker/login-action@v4
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+      - name: Provide the pinned model files
+        run: |
+          docker build --progress=plain -f Dockerfile.models \
+            --build-arg MODELS_LAYOUT=all --build-arg MODELS_TOKENIZER=1 -t grparse-san-models .
+          id=$(docker create grparse-san-models)
+          docker cp "$id:/models/." models/
+          docker rm "$id"
+          scripts/fetch-models.sh --verify --dir models --layout all --tokenizer
+      - name: Free runner disk for the seeded build
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Find the cpu deps seed
+        id: seed
+        run: sh scripts/find-seed.sh Dockerfile.cpu cpu amd64 >> "$GITHUB_OUTPUT"
+      - name: Build the toolchain image when no seed is published
+        if: ${{ steps.seed.outputs.image == 'deps' }}
         run: docker build --progress=plain -f Dockerfile.cpu --target deps -t grparse-san-deps .
+      - name: Restore the sanitizer compile cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-asan-amd64-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ccache-asan-amd64-
       - name: Configure, build and run the suite under ASan/UBSan/LSan
         # detect_container_overflow is off because instrumented first-party
         # code exchanges std::string/std::vector with the uninstrumented
         # fetched dependencies, which is the documented false-positive case.
-        # -DGRPARSE_ORT_PACKAGE=cpu keeps the CUDA ORT package off a GPU-less
-        # runner. fast_unwind_on_malloc=0 records full malloc stacks: the
-        # ONNX Runtime suppression in tests/lsan.supp names the first frame
-        # outside that stripped library, which the frame-pointer unwinder
-        # never reaches.
-        # The checkout is copied into the container rather than bind-mounted:
-        # on Forgejo the job itself runs in a container and the Docker daemon
-        # is the host's, so "$PWD" names a path the daemon cannot see.
+        # -DGRPARSE_ORT_PACKAGE=cpu is the seed's package. fast_unwind_on_malloc=0
+        # records full malloc stacks: the ONNX Runtime suppression in
+        # tests/lsan.supp names the first frame outside that stripped
+        # library, which the frame-pointer unwinder never reaches.
+        # The checkout and the ccache directory are copied into and out of
+        # the container rather than bind-mounted: on Forgejo the job itself
+        # runs in a container and the Docker daemon is the host's, so "$PWD"
+        # names a path the daemon cannot see. /build and /src are the paths
+        # the seed tree was configured with.
+        env:
+          SEED_IMAGE: ${{ steps.seed.outputs.image == 'deps' && 'grparse-san-deps' || steps.seed.outputs.image }}
         run: |
+          mkdir -p "$RUNNER_TEMP/ccache"
           cid=$(docker create --cap-add SYS_PTRACE -w /src \
             -e ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1:detect_container_overflow=0:fast_unwind_on_malloc=0 \
             -e UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
             -e LSAN_OPTIONS=suppressions=/src/tests/lsan.supp \
             -e LD_LIBRARY_PATH=/opt/opencv/lib \
-            grparse-san-deps sh -c '
-              cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -e GRPARSE_TEST_REQUIRE_MODELS=1 \
+            -e CCACHE_DIR=/ccache -e CCACHE_MAXSIZE=2G \
+            "$SEED_IMAGE" sh -c '
+              set -e
+              apt-get update -qq && apt-get install -y -qq --no-install-recommends ccache >/dev/null
+              if [ -d /opt/grparse-seed ]; then cp -a /opt/grparse-seed/. /build/; fi
+              sh scripts/stamp-sources.sh /build
+              ccache --zero-stats
+              cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release \
                 -DBUILD_TESTING=ON -DGRPARSE_SANITIZE=address,undefined \
-                -DGRPARSE_ORT_PACKAGE=cpu -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv5 &&
-              cmake --build build-asan --target grparse-tests --parallel 4 &&
-              ctest --test-dir build-asan --output-on-failure -L grparse')
+                -DGRPARSE_ORT_PACKAGE=cpu -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv5 \
+                -DGRPARSE_COMPILER_LAUNCHER=ccache
+              cmake --build /build --target grparse-tests --parallel "$(nproc)"
+              ccache --show-stats
+              ctest --test-dir /build --output-on-failure -L grparse -LE "stack|eval|bench" -j 2')
           trap 'docker rm -f "$cid" >/dev/null' EXIT
           docker cp "$PWD/." "$cid:/src"
+          docker cp "$RUNNER_TEMP/ccache/." "$cid:/ccache"
+          set +e
           docker start -a "$cid"
+          status=$?
+          set -e
+          rm -rf "$RUNNER_TEMP/ccache"
+          docker cp "$cid:/ccache" "$RUNNER_TEMP/ccache" || true
+          exit "$status"
+      - name: Save the sanitizer compile cache
+        if: ${{ always() }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-asan-amd64-${{ github.run_id }}-${{ github.run_attempt }}
