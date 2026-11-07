@@ -27,6 +27,18 @@ itself all the way to production. `tests/warc_stub_wire_test.cpp` guards the
 fastwarc pair by decoding hand-written wire bytes; a pair that carries real
 traffic deserves the same.
 
+`PINS.tsv` makes the rule a CI check (#246): one row per copy (`file`, owning
+`repo`, `path` there, `commit`), the backend contract under `backends/` and
+every sibling's `document.proto` copy included, and
+`scripts/test/vendored-protos-test.sh` fetches each owner's file at its pinned
+commit and fails with the diff on any byte of difference. Re-vendoring is two
+moves in one commit: copy the file, move its pin. A `document.proto` change
+moves the sibling pins as the fleet sweep lands in each repo. The two OpenNLP
+files are pinned to the grpc-asr copy, the fleet's vendored copy of the
+opennlp-sandbox branch above. The same CI job runs `buf breaking` over the
+staged protos against the pull request's base, so a renumbered or removed
+field fails even where every copy agrees.
+
 Every one of these except the lol-html, fastwarc, and calamine pairs
 imports `ai/pipestream/document/v1/document.proto`, which
 resolves to this repository's own `document.proto` — the fleet-wide source of

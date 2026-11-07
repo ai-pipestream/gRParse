@@ -434,6 +434,52 @@ jobs:
           ./build-fuzz/raster-source-fuzzer corpus-raster tests/data \
             -max_total_time=90 -max_len=1048576 -rss_limit_mb=4096 -print_final_stats=1
 
+  # The fleet contracts (#246). buf breaking (FILE category) fails a
+  # pull request that renumbers, removes or retypes anything in the protos
+  # gRParse stages (document.proto, parse*.proto, office_service.proto,
+  # collectors/, backends/) against its base; buf lint only reports, since
+  # the files predate buf. scripts/stage-protos.py stages both trees with the
+  # same configure_file mapping the build uses. vendored-protos-test.sh then
+  # proves every vendored copy, and every sibling's document.proto, is
+  # byte-identical to its owner at the commit collectors/PINS.tsv names.
+  # Public repositories only; no secrets.
+  proto-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - name: Install buf
+        env:
+          BUF_VERSION: 1.59.0
+          BUF_SHA256: d7462609e3814629c642ac10f0e7e27ec7e8e21d1dd75742f4434c31619e986b
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/buf" \
+            "https://github.com/bufbuild/buf/releases/download/v$BUF_VERSION/buf-Linux-x86_64"
+          echo "$BUF_SHA256  $RUNNER_TEMP/buf" | sha256sum -c
+          chmod +x "$RUNNER_TEMP/buf"
+      - name: Stage this tree and its base the way the build does
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          base=${BASE_SHA:-HEAD~1}
+          git fetch --no-tags --depth=1 origin "$base" 2>/dev/null || true
+          mkdir -p "$RUNNER_TEMP/base-src"
+          git archive "$base" | tar -x -C "$RUNNER_TEMP/base-src"
+          python3 scripts/stage-protos.py . "$RUNNER_TEMP/proto-head"
+          python3 scripts/stage-protos.py "$RUNNER_TEMP/base-src" "$RUNNER_TEMP/proto-base"
+      - name: buf build and lint (lint reports only)
+        run: |
+          "$RUNNER_TEMP/buf" build "$RUNNER_TEMP/proto-head"
+          "$RUNNER_TEMP/buf" lint "$RUNNER_TEMP/proto-head" || echo "buf lint: findings above are reported, not gating"
+      - name: buf breaking against the base (additive only)
+        run: '"$RUNNER_TEMP/buf" breaking "$RUNNER_TEMP/proto-head" --against "$RUNNER_TEMP/proto-base"'
+      - name: Vendored copies match their pinned owners
+        run: |
+          sh scripts/test/vendored-protos-test.sh --self-test
+          sh scripts/test/vendored-protos-test.sh
+
   # The Python under eval/: the corpus runner and drift analyzer, the S3
   # battery checks, the scorecard metrics, ruff, and the one-command corpus
   # eval wrapper's dry run. Stdlib only; no service, no network beyond ruff.
