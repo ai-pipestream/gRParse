@@ -119,7 +119,7 @@ def convert_object(client: Any, key: str, data: bytes, ext: str, *, repeat: int,
     if passwords:
         kwargs["passwords"] = passwords
     if layout is not None:
-        kwargs.update(collectors=("EBCDIC",), ebcdic_layout_json=layout)
+        kwargs.update(collectors=("EBCDIC",), ebcdic_layout=layout)
     first = convert_once(client, data, name, kwargs)
     for fewer in ("CANONICAL_JSON", "MARKDOWN"):
         if not over_unary_limit(first) or fewer not in formats:

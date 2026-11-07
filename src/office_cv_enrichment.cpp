@@ -155,13 +155,12 @@ std::string append_figure(const LayoutRegion& region, int page_number, double sc
       predicted->set_confidence(figure_class.confidence);
     }
   }
+  // Decoded payloads ride on the typed barcode arm only, as on the CV path.
   for (const auto& barcode : region.barcodes) {
-    auto* misc = picture->add_annotations()->mutable_misc();
-    misc->set_kind("barcode");
-    auto& fields = *misc->mutable_content()->mutable_fields();
-    fields["format"].set_string_value(barcode.format);
-    fields["value"].set_string_value(barcode.text);
-    fields["provenance"].set_string_value("zxing-cpp");
+    auto* typed = picture->add_annotations()->mutable_barcode();
+    typed->set_format(barcode.format);
+    typed->set_value(barcode.text);
+    typed->set_provenance("zxing-cpp");
   }
   return ref;
 }

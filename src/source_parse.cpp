@@ -25,7 +25,7 @@
 #include <google/protobuf/descriptor.h>
 #include <google/protobuf/io/coded_stream.h>
 #include <google/protobuf/io/zero_copy_stream_impl_lite.h>
-#include <google/protobuf/util/json_util.h>
+#include <google/protobuf/unknown_field_set.h>
 
 #include "ai/protomolt/parse/pdf/v1/pdf_backend_types.pb.h"
 #include "google/rpc/status.pb.h"
@@ -153,9 +153,7 @@ bool implemented_option(std::string_view name) {
       "to_formats",
       "collectors",
       "ebcdic_layout",
-      "ebcdic_layout_json",
       "lol_html_options",
-      "lol_html_options_json",
       "do_ocr",
       "force_ocr",
       "render_scale",
@@ -923,41 +921,16 @@ grpc::Status validate_heading_options(
   return grpc::Status::OK;
 }
 
-// The per-collector rules in each collector's typed form. The typed fields
-// are the contract; the deprecated JSON fields still work alone (the ebcdic
-// layout JSON is the collector's own layout_json input, forwarded as is;
-// the lol-html JSON is read here into the typed message), and a request
-// that sets both forms of one is refused rather than guessed at.
+// The per-collector rules in each collector's typed form, forwarded as is.
+// The typed fields are the only form: the JSON spellings that once sat at
+// tags 45 and 46 are retired and refused up front (retired_option_status).
 grpc::Status resolve_collector_rules(const pipestream::parse::v1::ConvertDocumentOptions& options,
-                                     const std::string& surface, CollectorRules* rules) {
-  if (options.has_ebcdic_layout() && options.has_ebcdic_layout_json()) {
-    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                        surface + ": ebcdic_layout and the deprecated ebcdic_layout_json are "
-                                  "mutually exclusive");
-  }
-  if (options.has_lol_html_options() && options.has_lol_html_options_json()) {
-    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                        surface + ": lol_html_options and the deprecated lol_html_options_json "
-                                  "are mutually exclusive");
-  }
+                                     const std::string& /*surface*/, CollectorRules* rules) {
   if (options.has_ebcdic_layout()) {
     *rules->ebcdic.mutable_layout() = options.ebcdic_layout();
-  } else if (!options.ebcdic_layout_json().empty()) {
-    rules->ebcdic.set_layout_json(options.ebcdic_layout_json());
   }
   if (options.has_lol_html_options()) {
     rules->lol_html = options.lol_html_options();
-  } else if (!options.lol_html_options_json().empty()) {
-    lolhtml::v1::ExtractOptions parsed;
-    const auto status =
-        google::protobuf::util::JsonStringToMessage(options.lol_html_options_json(), &parsed);
-    if (!status.ok()) {
-      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                          surface + ": lol_html_options_json does not parse as "
-                                    "lolhtml.v1.ExtractOptions: " +
-                              std::string(status.message()));
-    }
-    rules->lol_html = std::move(parsed);
   }
   if (options.has_asr_options()) {
     rules->asr_options = options.asr_options();
@@ -1165,6 +1138,39 @@ uint64_t decoded_file_bytes(const pipestream::parse::v1::FileSource& file) {
   return file.base64_string().size() / 4 * 3 + 3;
 }
 
+// The ConvertDocumentOptions tags that were retired in favour of a typed
+// twin, with the field to send instead. The schema reserves them, so a
+// request that still carries one parses with the tag in the unknown-field
+// set; it is refused by name rather than silently dropped, since dropping
+// the rules would run the collector without them.
+struct RetiredOption {
+  int tag;
+  std::string_view name;
+  std::string_view replacement;
+};
+constexpr RetiredOption kRetiredOptions[] = {
+    {45, "ebcdic_layout_json", "ebcdic_layout"},
+    {46, "lol_html_options_json", "lol_html_options"},
+};
+
+grpc::Status retired_option_status(const pipestream::parse::v1::ConvertDocumentOptions& options,
+                                   const std::string& surface) {
+  const google::protobuf::UnknownFieldSet& unknown =
+      options.GetReflection()->GetUnknownFields(options);
+  for (int index = 0; index < unknown.field_count(); ++index) {
+    const int tag = unknown.field(index).number();
+    for (const RetiredOption& retired : kRetiredOptions) {
+      if (retired.tag != tag) continue;
+      return option_rejected(
+          std::string(retired.name), pipestream::parse::v1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED,
+          "",
+          std::format("{}: option '{}' (tag {}) is retired; send the typed {} instead", surface,
+                      retired.name, retired.tag, retired.replacement));
+    }
+  }
+  return grpc::Status::OK;
+}
+
 }  // namespace
 
 uint64_t decoded_source_bytes(
@@ -1180,6 +1186,8 @@ uint64_t decoded_source_bytes(
 // conversion surfaces turned its request down.
 grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOptions& options,
                               const std::string& surface) {
+  const grpc::Status retired_status = retired_option_status(options, surface);
+  if (!retired_status.ok()) return retired_status;
   std::vector<const google::protobuf::FieldDescriptor*> populated;
   options.GetReflection()->ListFields(options, &populated);
   for (const auto* field : populated) {
