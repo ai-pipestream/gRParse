@@ -416,17 +416,22 @@ jobs:
       - name: Load every peer contract inside the built image
         run: docker run --rm grparse-ci-demo-shell node server.js --check-protos
 
-  # Short fuzz window on the raster ingest door (the only in-process code that
-  # touches attacker-controlled bytes before a model runs; PDFs go to a
-  # PdfBackendService).  The fuzz project builds
-  # standalone in seconds - no gRPC or ONNX Runtime fetch - so this fits in a
-  # PR gate.  Long campaigns run manually; see fuzz/README.md.
+  # Short fuzz window on every in-process door: the code that reads
+  # attacker-controlled request bytes before a model or collector runs (the
+  # raster ingest door, the compound-file walker, the content sniff, the
+  # wiki storage parser, the base64 codec; PDFs go to a PdfBackendService).
+  # The fuzz project builds standalone in about a minute - no gRPC or ONNX
+  # Runtime fetch - so this fits in a PR gate. Every target gets the same
+  # 30 s window (five targets stay inside the cpu-image leg's time, so the
+  # gate waits on neither), and every step after the build runs even when an earlier
+  # target failed, so one finding does not hide another. Long campaigns run
+  # nightly (fuzz-long in nightly.yml); see fuzz/README.md.
   fuzz-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - name: Install Clang and the ingest-door dependencies
+      - name: Install Clang and the in-process door dependencies
         # The self-hosted runner image runs jobs as root and ships no sudo;
         # GitHub-hosted runners need it. Use sudo only when it exists.
         # The install takes 34-38 s; it once hung 36 min on a mirror (run
@@ -436,19 +441,68 @@ jobs:
           SUDO=$(command -v sudo || true)
           $SUDO apt-get -o Acquire::Retries=3 update
           $SUDO apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
-            clang libclang-rt-dev ninja-build cmake pkg-config \
-            libopencv-dev
+            clang libclang-rt-dev ninja-build cmake pkg-config git ca-certificates \
+            libopencv-dev libprotobuf-dev protobuf-compiler
       - name: Build the fuzzers
+        id: build
         run: |
           cmake -S fuzz -B build-fuzz -G Ninja -DCMAKE_CXX_COMPILER=clang++
           cmake --build build-fuzz
       - name: Fuzz the raster ingest door
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         env:
           LSAN_OPTIONS: suppressions=tests/lsan.supp
         run: |
           mkdir -p corpus-raster
           ./build-fuzz/raster-source-fuzzer corpus-raster tests/data \
-            -max_total_time=90 -max_len=1048576 -rss_limit_mb=4096 -print_final_stats=1
+            -max_total_time=30 -max_len=1048576 -rss_limit_mb=4096 -timeout=25 -print_final_stats=1
+      - name: Fuzz the compound-file walker
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          LSAN_OPTIONS: suppressions=tests/lsan.supp
+        run: |
+          mkdir -p corpus-cfb
+          ./build-fuzz/cfb-fuzzer corpus-cfb fuzz/corpus/cfb fuzz/regressions/cfb-fuzzer \
+            -max_total_time=30 -max_len=1048576 -rss_limit_mb=2048 -timeout=25 -print_final_stats=1
+      - name: Fuzz the content sniff
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          LSAN_OPTIONS: suppressions=tests/lsan.supp
+        run: |
+          mkdir -p corpus-content-sniff
+          ./build-fuzz/content-sniff-fuzzer corpus-content-sniff tests/golden/corpus \
+            fuzz/corpus/cfb fuzz/regressions/cfb-fuzzer \
+            -max_total_time=30 -max_len=1048576 -rss_limit_mb=2048 -timeout=25 -print_final_stats=1
+      - name: Fuzz the wiki storage parser
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          LSAN_OPTIONS: suppressions=tests/lsan.supp
+        run: |
+          mkdir -p corpus-confluence-storage
+          ./build-fuzz/confluence-storage-fuzzer corpus-confluence-storage \
+            fuzz/corpus/confluence-storage fuzz/regressions/confluence-storage-fuzzer \
+            -max_total_time=30 -max_len=65536 -rss_limit_mb=2048 -timeout=25 -print_final_stats=1
+      - name: Fuzz base64 against its scalar oracle
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          LSAN_OPTIONS: suppressions=tests/lsan.supp
+        run: |
+          mkdir -p corpus-base64
+          ./build-fuzz/base64-differential-fuzzer corpus-base64 \
+            fuzz/corpus/base64 fuzz/regressions/base64-differential-fuzzer \
+            -max_total_time=30 -max_len=16384 -rss_limit_mb=2048 -timeout=25 -print_final_stats=1
+      - name: Keep any crash input
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-smoke-${{ github.run_id }}
+          path: |
+            crash-*
+            leak-*
+            oom-*
+            timeout-*
+            slow-unit-*
+          if-no-files-found: ignore
 
   # The fleet contracts (#246). buf breaking (FILE category) fails a
   # pull request that renumbers, removes or retypes anything in the protos

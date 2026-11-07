@@ -36,6 +36,13 @@ int main() {
         expect_invalid("====");
         expect_invalid("a===");
         expect_invalid("ab=c");
+        // The base64-differential fuzzer's reproducers
+        // (fuzz/regressions/base64-differential-fuzzer/): whitespace alone is
+        // no payload, which the scalar contract rejects and the vector kernel
+        // used to accept as an empty one.
+        expect_invalid(" \n ");
+        expect_invalid("\t");
+        expect_invalid("\r\n\v\f ");
         require(grparse::encode_base64("memory", 6) == "bWVtb3J5", "basic encode");
         require(grparse::encode_base64("a", 1) == "YQ==", "encode pads one char");
         require(grparse::encode_base64("ab", 2) == "YWI=", "encode pads two chars");

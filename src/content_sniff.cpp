@@ -10,7 +10,7 @@
 #include <string_view>
 #include <vector>
 
-#include "grparse/confluence_storage.h"
+#include "grparse/confluence_storage_format.h"
 
 namespace grparse {
 namespace {
@@ -625,7 +625,14 @@ class File {
 
   bool read_fat() {
     std::vector<uint32_t> fat_sectors;
-    const size_t declared = u32(bytes_, 44);
+    // The FAT needs one entry per sector of the file and no more, so the
+    // header's count is trusted only up to the sectors that would hold
+    // those entries. A DIFAT chain naming one FAT sector over and over
+    // (#225) otherwise appended that sector's entries once per name, a few
+    // hundred megabytes from a 2 MB file.
+    const size_t entries_per_sector = sector_bytes_ / 4;
+    const size_t needed = (sector_count_ + entries_per_sector - 1) / entries_per_sector;
+    const size_t declared = std::min<size_t>(u32(bytes_, 44), needed);
     for (size_t i = 0; i < kHeaderDifatEntries && fat_sectors.size() < declared; ++i) {
       const uint32_t id = u32(bytes_, 76 + 4 * i);
       if (id > kMaxRegularSector) break;
