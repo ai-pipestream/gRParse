@@ -2732,7 +2732,7 @@ ai::pipestream::document::v1::ParseIdentity parse_identity(
   identity.set_producer(std::string(kServiceVersion));
   identity.set_options_digest(options_digest(options));
   identity.set_settings_digest(settings_digest());
-  identity.set_build(std::string(kSourceDigest));
+  identity.set_build(std::string(source_digest()));
   return identity;
 }
 

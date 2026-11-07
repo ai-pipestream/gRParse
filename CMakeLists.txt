@@ -811,6 +811,7 @@ add_library(grparse_core STATIC
   src/parse_support.cpp
   src/input_format.cpp
   src/source_parse.cpp
+  src/service_identity.cpp
   src/structure_validation.cpp
   src/document_parser_service.cpp
   src/document_streaming_service.cpp
@@ -858,33 +859,24 @@ target_include_directories(grparse_core PUBLIC include)
 # The served version string is "grparse-<version>-<flavor>": the version is
 # the project() line at the top of this file (the one place a release bumps,
 # docs/RELEASING.md) and the flavor names the accelerator this build carries.
-# PUBLIC so the contract test asserts the exact string the server serves.
+# PUBLIC so the contract test asserts the exact string the server serves;
+# both change once per release or per flavor, so they never bust ccache.
+target_compile_definitions(grparse_core
+  PUBLIC GRPARSE_VERSION="${PROJECT_VERSION}"
+         GRPARSE_ORT_PACKAGE_NAME="${GRPARSE_ORT_PACKAGE}")
 # The parse identity's build field (Document.parse.build): SHA-256 over the
 # path and SHA-256 of every file that can change what a parse produces, so
 # two builds that carry the same unbumped version still tell apart. Taken
 # when CMake configures, which every image build does from scratch; a dev
 # tree that edits sources without reconfiguring keeps its old digest.
-file(GLOB_RECURSE GRPARSE_IDENTITY_SOURCES LIST_DIRECTORIES false
-  RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/*"
-  "${CMAKE_CURRENT_SOURCE_DIR}/include/*"
-  "${CMAKE_CURRENT_SOURCE_DIR}/collectors/*.proto"
-  "${CMAKE_CURRENT_SOURCE_DIR}/backends/*.proto"
-  "${CMAKE_CURRENT_SOURCE_DIR}/patches/*"
-  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/*"
-  "${CMAKE_CURRENT_SOURCE_DIR}/*.proto")
-list(APPEND GRPARSE_IDENTITY_SOURCES CMakeLists.txt)
-list(SORT GRPARSE_IDENTITY_SOURCES)
-set(GRPARSE_IDENTITY_MANIFEST "")
-foreach(identity_source IN LISTS GRPARSE_IDENTITY_SOURCES)
-  file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${identity_source}" identity_digest)
-  string(APPEND GRPARSE_IDENTITY_MANIFEST "${identity_source} ${identity_digest}\n")
-endforeach()
-string(SHA256 GRPARSE_SOURCE_DIGEST "${GRPARSE_IDENTITY_MANIFEST}")
-target_compile_definitions(grparse_core
-  PUBLIC GRPARSE_VERSION="${PROJECT_VERSION}"
-         GRPARSE_ORT_PACKAGE_NAME="${GRPARSE_ORT_PACKAGE}"
-         GRPARSE_SOURCE_DIGEST="${GRPARSE_SOURCE_DIGEST}")
+# The digest changes on every commit, so it is a define of one translation
+# unit (src/service_identity.cpp, read through grparse::source_digest()) and
+# never of the target: on the command line of every object it made each
+# commit miss ccache on all of grparse_core and every test (#239).
+include(cmake/SourceDigest.cmake)
+grparse_source_digest(GRPARSE_SOURCE_DIGEST "${CMAKE_CURRENT_SOURCE_DIR}")
+set_source_files_properties(src/service_identity.cpp PROPERTIES
+  COMPILE_DEFINITIONS "GRPARSE_SOURCE_DIGEST=\"${GRPARSE_SOURCE_DIGEST}\"")
 target_link_libraries(grparse_core
   # grparse_curl is PUBLIC for its link options alone: they belong to every
   # executable that ends up with both TLS stacks in its link closure.
@@ -951,13 +943,25 @@ if(BUILD_TESTING)
     heading-hierarchy-test
     list-marker-test
     input-format-test
-    paragraph-split-test)
+    paragraph-split-test
+    service-identity-test)
   foreach(test_name IN LISTS GRPARSE_TESTS)
     string(REPLACE "-" "_" test_source "${test_name}")
     add_executable(${test_name} "tests/${test_source}.cpp")
     target_link_libraries(${test_name} PRIVATE grparse_core grparse_flags)
     add_test(NAME ${test_name} COMMAND ${test_name})
   endforeach()
+  # The identity test compares source_digest() with the configure-time value
+  # under another name, so GRPARSE_SOURCE_DIGEST stays on one command line.
+  set_source_files_properties(tests/service_identity_test.cpp PROPERTIES
+    COMPILE_DEFINITIONS "GRPARSE_STAMPED_DIGEST=\"${GRPARSE_SOURCE_DIGEST}\"")
+  # The digest function itself, over scratch trees: stable for one tree,
+  # moved by any identity source (cmake/SourceDigest.cmake, #239).
+  add_test(NAME source-digest-script
+    COMMAND ${CMAKE_COMMAND} -DGRPARSE_SOURCE_ROOT=${CMAKE_SOURCE_DIR}
+      -DSCRATCH=${CMAKE_CURRENT_BINARY_DIR}/source-digest-test
+      -P ${CMAKE_SOURCE_DIR}/tests/source_digest_test.cmake)
+  set_tests_properties(source-digest-script PROPERTIES TIMEOUT 60 LABELS grparse)
   # The YAML export test loads its output back to check the scalar tags.
   target_link_libraries(document-render-test PRIVATE yaml-cpp::yaml-cpp)
   # The image builds stage the runtime library closure with
