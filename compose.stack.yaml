@@ -13,8 +13,8 @@
 #              grpc-asr or point ASR models elsewhere), enrich and
 #              vlm-convert (need ENRICH_VLM_URL / VLM_ENDPOINT).
 #   lighton  - experimental LightOnOCR-3 service on 50074. Build locally
-#              until its image is published. No coordinator route or native
-#              inference engine yet; pages return ENGINE_UNAVAILABLE.
+#              with verified CPU 0.8B GGUF weights. No coordinator route
+#              or shell tab is enabled; publication is a separate gate.
 #              See compose/README.md for startup and readiness checks.
 #   calamine - existing opt-in, unchanged.
 #   pdf-backends - grpc-qparse, a second Apache-2.0 PDF backend for the
