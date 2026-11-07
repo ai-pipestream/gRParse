@@ -1138,7 +1138,16 @@ nothing outside a git checkout; `scripts/build-image.sh` and
 `scripts/stack-e2e.sh` pass it by themselves, and a plain `docker compose
 build` without it leaves the label empty.
 
-CI builds both images (CUDA and OpenVINO) and then boot-proofs each runtime
+On a pull request `cpu-image` is the required gate: it always runs, with the
+models, and its ctest is the same suite the other images run. The `cuda-image`
+and `openvino-image` legs run only when the PR changes what they add, the
+execution-provider code and their image plumbing (`scripts/ci-changes.sh`
+lists the paths; `scripts/test/ci-changes-test.sh` pins them), or when the PR
+carries the `ci:full` label (it takes effect on the next run, so add it before
+the push you want fully built). Pushes to main and manual `workflow_dispatch`
+runs build all three.
+
+CI builds the images (CUDA, CPU and OpenVINO) and then boot-proofs each runtime
 stage with `scripts/smoke-test.sh`: library closure of the shipped binaries
 (asked of the dynamic loader itself, so no shell is needed in the image), a
 boot-to-main check that needs no GPU and no models, and the image's user

@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # A manual run builds every image leg, like a push to main.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,7 +18,38 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Whether this run needs the cuda and openvino legs (#241). cpu-image is
+  # the required pull request gate and always runs; the other two image legs
+  # run on a PR only when execution-provider code or the image plumbing
+  # changed (scripts/ci-changes.sh), when the PR carries the `ci:full`
+  # label, and always on main pushes and manual runs.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      ep: ${{ steps.diff.outputs.ep }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: List the paths this pull request changes
+        id: diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ -z "$BASE_SHA" ]; then
+            echo "ep=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --name-only "$BASE_SHA"...HEAD | tee changed-paths.txt
+          sh scripts/ci-changes.sh < changed-paths.txt | tee -a "$GITHUB_OUTPUT"
+
   cuda-image:
+    needs: changes
+    if: >-
+      needs.changes.outputs.ep == 'true' ||
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full')
     # Heavy image build: the Forgejo `heavy` label exists only on krick-host
     # (64g/20cpu). nas-1/nas-2 cap jobs at 16g/5cpu and openvino-image failed
     # there (run 453). GitHub has no `heavy` runner, so it keeps ubuntu-latest.
@@ -99,6 +132,11 @@ jobs:
         run: ./scripts/smoke-test.sh grparse-ci-cuda
 
   openvino-image:
+    needs: changes
+    if: >-
+      needs.changes.outputs.ep == 'true' ||
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full')
     # Heavy image build: the Forgejo `heavy` label exists only on krick-host
     # (64g/20cpu). nas-1/nas-2 cap jobs at 16g/5cpu and openvino-image failed
     # there (run 453). GitHub has no `heavy` runner, so it keeps ubuntu-latest.
@@ -412,3 +450,5 @@ jobs:
         run: /tmp/eval-venv/bin/ruff check eval/
       - name: eval-corpus.sh dry run
         run: scripts/test/eval-corpus-test.sh
+      - name: Which paths pull the cuda and openvino legs into a PR
+        run: sh scripts/test/ci-changes-test.sh
