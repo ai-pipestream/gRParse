@@ -26,6 +26,12 @@ on:
 permissions:
   contents: read
 
+# The weekly run and a manual dispatch queue rather than race; neither is
+# cancelled, since a sanitizer run is only worth its 70+ minutes complete.
+concurrency:
+  group: sanitize-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   asan-ubsan:
     runs-on: ubuntu-latest

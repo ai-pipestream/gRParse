@@ -8,12 +8,23 @@ on:
 permissions:
   contents: read
 
+# A newer push to a pull request cancels the run it replaces, so superseded
+# runs stop burning runner minutes; pushes to main queue instead, so every
+# main commit keeps a complete run (#242).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   cuda-image:
     # Heavy image build: the Forgejo `heavy` label exists only on krick-host
     # (64g/20cpu). nas-1/nas-2 cap jobs at 16g/5cpu and openvino-image failed
     # there (run 453). GitHub has no `heavy` runner, so it keeps ubuntu-latest.
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'heavy' }}
+    # Longest observed leg is 23 min with a cold seed and 58 min when a seed
+    # input changed; 75 min keeps that case green and still ends a hung
+    # build hours before GitHub's 6 h default (#242).
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v7
       - name: Log in to dhi.io
@@ -92,6 +103,10 @@ jobs:
     # (64g/20cpu). nas-1/nas-2 cap jobs at 16g/5cpu and openvino-image failed
     # there (run 453). GitHub has no `heavy` runner, so it keeps ubuntu-latest.
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'heavy' }}
+    # Longest observed leg is 23 min with a cold seed and 58 min when a seed
+    # input changed; 75 min keeps that case green and still ends a hung
+    # build hours before GitHub's 6 h default (#242).
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v7
       - name: Free runner disk for the seeded build
@@ -186,6 +201,10 @@ jobs:
     # (64g/20cpu). nas-1/nas-2 cap jobs at 16g/5cpu and openvino-image failed
     # there (run 453). GitHub has no `heavy` runner, so it keeps ubuntu-latest.
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'heavy' }}
+    # Longest observed leg is 23 min with a cold seed and 58 min when a seed
+    # input changed; 75 min keeps that case green and still ends a hung
+    # build hours before GitHub's 6 h default (#242).
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v7
       - name: Log in to dhi.io
@@ -310,6 +329,7 @@ jobs:
   # diff (sync-peer-protos.sh --check) stays a developer-side step.
   demo-shell:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - name: Log in to dhi.io
@@ -337,15 +357,19 @@ jobs:
   # PR gate.  Long campaigns run manually; see fuzz/README.md.
   fuzz-smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - name: Install Clang and the ingest-door dependencies
         # The self-hosted runner image runs jobs as root and ships no sudo;
         # GitHub-hosted runners need it. Use sudo only when it exists.
+        # The install takes 34-38 s; it once hung 36 min on a mirror (run
+        # 42319435370), so retries plus a step timeout end that early (#242).
+        timeout-minutes: 5
         run: |
           SUDO=$(command -v sudo || true)
-          $SUDO apt-get update
-          $SUDO apt-get install -y --no-install-recommends \
+          $SUDO apt-get -o Acquire::Retries=3 update
+          $SUDO apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
             clang libclang-rt-dev ninja-build cmake pkg-config \
             libopencv-dev
       - name: Build the fuzzers
@@ -365,14 +389,17 @@ jobs:
   # eval wrapper's dry run. Stdlib only; no service, no network beyond ruff.
   eval-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - name: Install Python
-        # Same sudo rule as fuzz-smoke: the self-hosted image runs as root.
+        # Same sudo rule and apt timeout as fuzz-smoke: the self-hosted
+        # image runs as root.
+        timeout-minutes: 5
         run: |
           SUDO=$(command -v sudo || true)
-          $SUDO apt-get update
-          $SUDO apt-get install -y --no-install-recommends python3 python3-venv
+          $SUDO apt-get -o Acquire::Retries=3 update
+          $SUDO apt-get -o Acquire::Retries=3 install -y --no-install-recommends python3 python3-venv
           python3 -m venv /tmp/eval-venv
           /tmp/eval-venv/bin/pip install --quiet 'ruff==0.17.1'
       - name: eval/corpus tests
