@@ -28,7 +28,9 @@ from .formats import (  # noqa: E402
     PAGED,
     TEXT_BEARING,
     acceptable_mimetypes,
+    collectors_of,
     declared_mimetype,
+    expected_collectors,
     pdf_has_text_layer,
 )
 from .integrity import integrity_errors  # noqa: E402
@@ -61,6 +63,8 @@ class ObjectContext:
     runs: list[ConvertResult]
     sniff: ConvertResult | None = None
     view: View | None = None
+    # The stack runs a calamine leg beside libreoffice for workbooks.
+    calamine_leg: bool = True
 
     @property
     def first(self) -> ConvertResult:
@@ -120,6 +124,28 @@ def parse_succeeds(ctx: ObjectContext) -> list[Failure]:
         return [_fail("parse_succeeds", f"status {result.status}", status=result.status,
                       errors=[e.get("message", "")[:SNIPPET] for e in result.errors])]
     return []
+
+
+@check("expected_collector", "the collector the router hands the file type to answered with items (both epub "
+                             "and markup for a book; calamine beside libreoffice for a workbook when the stack runs "
+                             "it and the workbook is not an encrypted package; when pages came back with no items "
+                             "on them, a blank raster or scan, the collectors that claimed the Document count)",
+       applies=lambda ctx: has_view(ctx) and bool(expected_collectors(ctx.ext, ctx.family, ctx.calamine_leg)))
+def expected_collector(ctx: ObjectContext) -> list[Failure]:
+    doc = ctx.view.doc
+    answered = collectors_of(doc)
+    if not answered and doc.get("pages"):
+        # A blank raster or scan: pages came back with nothing on them, so the
+        # collectors that claimed the document are the ones that replied.
+        answered = {(claim.get("source") or {}).get("collector", "") for claim in doc.get("claims", []) or []}
+    # gRParse never fans an encrypted workbook out to calamine.
+    calamine_leg = ctx.calamine_leg and not ctx.facts.encrypted_package
+    missing = [sorted(wanted) for wanted in expected_collectors(ctx.ext, ctx.family, calamine_leg)
+               if not wanted & answered]
+    if not missing:
+        return []
+    names = " or ".join(missing[0])
+    return [_fail("expected_collector", f"{names} did not answer", missing=missing, answered=sorted(answered))]
 
 
 @check("integrity", "docling_integrity_errors is empty: references resolve, parents list children, page-plane "

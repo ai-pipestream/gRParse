@@ -102,3 +102,10 @@ def test_pdf_page_count_reads_the_page_tree() -> None:
     packed = b"%PDF-1.5\n7 0 obj << /Type /ObjStm /N 2 /Filter /FlateDecode >> stream\n" + body + b"\nendstream"
     assert pdf_page_count(packed) == 955
     assert pdf_page_count(b"%PDF-1.4 no tree") == 0
+
+
+def test_encrypted_package_is_an_ole2_file_under_a_zip_container_name() -> None:
+    ole2 = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 504
+    assert source_facts("xlsx", "sheet", ole2).encrypted_package
+    assert not source_facts("xls", "sheet", ole2).encrypted_package
+    assert not source_facts("xlsx", "sheet", b"PK\x03\x04").encrypted_package

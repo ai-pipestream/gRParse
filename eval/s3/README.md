@@ -40,6 +40,7 @@ not a pass.
 | `EVAL_S3_CONCURRENCY` | objects converted at once, 1 to 16, default 1. Repeats of one object run back to back; the report, findings and log keep selection order. Overlapping objects share the server, so reported latencies include waiting on other objects |
 | `EVAL_S3_SNIFF_PER_EXTENSION` | objects per extension parsed once more under an extension-less name, default 1 |
 | `EVAL_OUT`, `EVAL_LABEL` | output root (default `eval/out`) and run label (default `live`) |
+| `EVAL_CALAMINE_LEG` | default `1`: a workbook must show the calamine leg beside libreoffice; `0` for a stack started without the `calamine` profile |
 | `EVAL_REQUIRE` | `1` makes a skipped object (an `.ebc` without a layout) a failure |
 | `EVAL_S3_PASSWORDS_FILE` | optional UTF-8 file, one candidate document password per line (blank lines skipped, at most 16); every conversion sends them as `document-password-bin` call metadata and gRParse tries them only on a document that will not open without one. Never printed, never written into a report |
 
@@ -110,6 +111,7 @@ workbook's sheets, a CSV's grid).
 | check | applies to | rule |
 |---|---|---|
 | `parse_succeeds` | every object | the unary parse returns a Document with `CONVERSION_STATUS_SUCCESS` and no RPC error |
+| `expected_collector` | file types the router sends to a fixed collector | the collector `route_collector` picks answered with items: `pdf` or the CV path for a PDF, the CV path for an image, `libreoffice` for word, sheet and deck types, `markup` for html, markdown, text and JSON, `epub` and `markup` both for a book, `xml`, `email`, `fastwarc`, `asr`, `ebcdic`; a workbook (`xls xlsx xlsm xlsb ods`, never CSV) also needs the `calamine` leg unless it is an encrypted package (gRParse never fans one out) or `EVAL_CALAMINE_LEG=0` says the stack runs without the calamine profile. A blank raster or scan (pages, no items) counts the collectors that claimed the Document |
 | `integrity` | every Document | `docling_integrity_errors` is empty: references resolve, parents list their children, page-plane provenance names a 1-based page, comment/span/change/anchor targets exist |
 | `placement` | every Document | every arena item is reachable from exactly one of `#/body` or `#/furniture` (through children, captions and footnotes), is listed once, and every captions/footnotes/references entry resolves |
 | `custom_field_keys` | every Document | no `custom_fields` key contains `:` except the pinned `cell:?` |
