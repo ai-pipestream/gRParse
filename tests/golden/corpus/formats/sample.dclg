@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<doclang xmlns="http://docling-project.org/ns/doclang/v1">
+  <title>Golden Corpus Notes</title>
+  <section-header level="1">A Section</section-header>
+  <paragraph>This DocLang fixture was written for the gRParse golden corpus.</paragraph>
+</doclang>

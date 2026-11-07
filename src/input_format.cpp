@@ -113,7 +113,10 @@ std::optional<parsev1::InputFormat> input_format_for(
     if (filename.string().find("uspto") != std::string::npos) {
       return parsev1::INPUT_FORMAT_XML_USPTO;
     }
-    if (ext == ".doclang" || filename.string().find("doclang") != std::string::npos) {
+    // .dclg is the DocLang document's own extension (the xml collector's
+    // XML_DIALECT_DOCLANG); without it a DocLang file fell through to JATS.
+    if (ext == ".dclg" || ext == ".doclang" ||
+        filename.string().find("doclang") != std::string::npos) {
       return parsev1::INPUT_FORMAT_XML_DOCLANG;
     }
     return parsev1::INPUT_FORMAT_XML_JATS;
