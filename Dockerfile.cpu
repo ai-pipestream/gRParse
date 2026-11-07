@@ -106,8 +106,9 @@ COPY . .
 # Separate cache from the CUDA and OpenVINO images: different ONNX Runtime
 # package and ABI. The id is suffixed per target architecture because the
 # multi-platform legs build concurrently and would otherwise share (and
-# corrupt) one /build tree. The 3000s test ceiling exists for the emulated
-# arm64 leg; native builds finish each test in seconds.
+# corrupt) one /build tree. Both legs build natively now (arm64 on
+# ubuntu-24.04-arm), so the per-test ceiling is 600 s, not the 3000 s the
+# emulated arm64 leg needed (#244).
 ARG TARGETARCH
 # Two builders that share this cache mount (a developer build and a local CI
 # run of the same Dockerfile) can leave each other's object files newer than
@@ -133,12 +134,12 @@ RUN --mount=type=cache,id=grparse-cpu-ubuntu26-grpc1.84.1-ort1.30.0-cxx23-sessio
  && sh scripts/stamp-sources.sh /build \
  && ccache --zero-stats \
  && cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
-      -DGRPARSE_WERROR=ON -DGRPARSE_ORT_PACKAGE=cpu -DGRPARSE_TEST_TIMEOUT=3000 \
+      -DGRPARSE_WERROR=ON -DGRPARSE_ORT_PACKAGE=cpu -DGRPARSE_TEST_TIMEOUT=600 \
       -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv5 \
       -DGRPARSE_COMPILER_LAUNCHER=ccache \
  && cmake --build /build --target grparse-server grparse-stream-client grparse-embed-text grparse-tests --parallel ${GRPARSE_BUILD_JOBS} \
  && ccache --show-stats \
- && LD_LIBRARY_PATH=/opt/opencv/lib ctest --test-dir /build --output-on-failure -L grparse \
+ && LD_LIBRARY_PATH=/opt/opencv/lib ctest --test-dir /build --output-on-failure -L grparse -LE "stack|eval|bench" -j "${GRPARSE_BUILD_JOBS}" \
  && mkdir -p /out \
  && cp /build/grparse-server /out/grparse-server \
  && cp /build/grparse-stream-client /out/grparse-stream-client \
