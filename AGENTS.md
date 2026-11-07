@@ -66,7 +66,7 @@ file under `collectors/` copied byte-identical from the sister repo.
 | `grpc-markup` | `main` | Rust (Cargo, buf) | 50065 | `markup.proto`, `markup_service.proto` | `.md`, `.html`, `.adoc`, `.tex`, `.vtt`, `.boxnote`, `.json` |
 | `grpc-ebcdic` | `main` | Rust (Cargo, buf) | 50063 | `ebcdic.proto`, `ebcdic_service.proto` | never by format; explicit `ebcdic_layout` only |
 | `grpc-lol-html` | `master` | Rust (Cargo, buf) | 50057 | `lolhtml_types.proto`, `lolhtml_service.proto` | never by format; explicit `lol_html_options` only |
-| `grpc-asr` | `main` | C++ (CMake, buf, whisper.cpp) | 50055 | `asr_service.proto` | audio and video (`GRPARSE_ASR_MODEL` required) |
+| `grpc-asr` | `main` | C++ (CMake, buf, whisper.cpp) | 50055 | `asr_service.proto` | audio and video (request-level ASR model or preset, with `GRPARSE_ASR_MODEL` as an optional fallback; unsupported selectors fail explicitly) |
 | `fastwarc-grpc` | `main` | Rust (Cargo) | 50060 | `warc.proto`, `warc_service.proto` | `.warc*`; see the fastwarc caveat below |
 | `grpc-calamine` | `main` on GitHub (`development` was the working branch; check) | Rust (Cargo, buf) | 50062 | `calamine_types.proto`, `calamine_service.proto` (package `calamine.v1`; vendored from GitHub `main`, which carries the fleet port, the UiInfo block, and the `row_gap` event that `development` lacks) | never routed by itself; a routed workbook plan (never CSV) fans a calamine leg out beside libreoffice when configured, folded client-side through the OpenWorkbook/StreamWorksheetRange/CloseWorkbook handle lifecycle (`src/collectors/calamine_collector.cpp`). Meant to be hosted by an external project, so nothing in that repo may mention gRParse or the shell |
 
