@@ -313,7 +313,7 @@ services:
         # The crates.io release the image installs. collectors/warc.proto and
         # collectors/warc_service.proto must be that release's protos; bump
         # all three together.
-        FASTWARC_GRPC_VERSION: "1.1.0"
+        FASTWARC_GRPC_VERSION: "2.0.1"
     expose:
       - "50060"
     read_only: true
