@@ -1029,7 +1029,8 @@ message OcrPresetRegistry {
 }
 
 // A list-valued server setting (allowed presets, allowed engines) in its
-// JSON array form, read as {"names": [...]}.
+// protobuf text format form, such as names: "a" names: "b". The same
+// settings also take a comma-separated list.
 message ServerSettingNameList {
   repeated string names = 1;
 }
