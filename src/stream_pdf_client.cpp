@@ -8,6 +8,7 @@
 #include <print>
 #include <string>
 #include <string_view>
+#include <system_error>
 
 #include <grpcpp/grpcpp.h>
 
@@ -135,12 +136,22 @@ int main(int argc, char** argv) {
   auto stream = client->StreamProcessDocument(&context);
   const std::string document_id = pdf.filename().string();
   const std::string content_type = content_type_for(pdf);
+  // The file's size rides the first chunk as total_bytes, so the server
+  // reserves the buffer once and refuses an oversized upload before any of
+  // it crosses. A size the filesystem cannot report is simply left out.
+  std::error_code size_error;
+  const std::uintmax_t file_size = fs::file_size(pdf, size_error);
+  bool first_chunk = true;
   std::string buffer(1024 * 1024, '\0');
   while (input.read(buffer.data(), static_cast<std::streamsize>(buffer.size())) || input.gcount() > 0) {
     pipestream::parse::v1::DocumentChunk chunk;
     chunk.set_document_id(document_id);
     chunk.set_filename(pdf.filename().string());
     chunk.set_content_type(content_type);
+    if (first_chunk && !size_error && file_size > 0) {
+      chunk.set_total_bytes(static_cast<std::uint64_t>(file_size));
+    }
+    first_chunk = false;
     chunk.set_data(buffer.data(), input.gcount());
     if (!stream->Write(chunk)) break;
   }

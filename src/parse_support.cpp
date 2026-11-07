@@ -58,12 +58,9 @@ const char* collector_target_env(pipestream::parse::v1::Collector collector) {
 }  // namespace
 
 uint64_t content_hash(const std::string& document) {
-  uint64_t hash = 14695981039346656037ULL;
-  for (const unsigned char byte : document) {
-    hash ^= byte;
-    hash *= 1099511628211ULL;
-  }
-  return hash;
+  ContentHash hash;
+  hash.update(document);
+  return hash.value();
 }
 
 bool is_pdf(const std::string& content, const fs::path& filename) {

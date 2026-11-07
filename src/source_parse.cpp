@@ -1539,12 +1539,23 @@ class CvCollector {
         offsets_(std::move(offsets)),
         confidence_(std::move(confidence)),
         heading_options_(std::move(heading_options)),
-        deadline_(deadline) {}
+        deadline_(deadline),
+        sha256_(std::make_shared<RequestDigest>()) {}
 
   CollectorOutcome operator()(const PageScheduler::OcrTuning& tuning) const {
     try {
       PageSet pages;
-      if (std::optional<CollectorOutcome> failure = collect_pages(tuning, &pages)) {
+      // A PDF's source addresses its backend by the document's SHA-256,
+      // computed here once per request (the routing leg can run the
+      // collector twice) and handed through the tuning, so no source hashes
+      // the upload itself.
+      PageScheduler::OcrTuning hashed = tuning;
+      if (pdf_ && hashed.sha256_hex.empty() && bytes_ != nullptr) {
+        std::lock_guard<std::mutex> lock(sha256_->mutex);
+        if (sha256_->hex.empty()) sha256_->hex = targets::sha256_hex(*bytes_);
+        hashed.sha256_hex = sha256_->hex;
+      }
+      if (std::optional<CollectorOutcome> failure = collect_pages(hashed, &pages)) {
         return std::move(*failure);
       }
       return assemble(pages);
@@ -1553,7 +1564,21 @@ class CvCollector {
     }
   }
 
+  // The request's SHA-256 if a CV run already computed it, else empty, so
+  // a later backend call on the same bytes can reuse it.
+  std::string computed_sha256() const {
+    std::lock_guard<std::mutex> lock(sha256_->mutex);
+    return sha256_->hex;
+  }
+
  private:
+  // The request's SHA-256, shared by every copy of this collector; empty
+  // until a CV run needed it.
+  struct RequestDigest {
+    std::mutex mutex;
+    std::string hex;
+  };
+
   // Every page one submission produced, in page order.
   struct PageSet {
     std::map<int, std::shared_ptr<const OcrPage>> pages;
@@ -1673,6 +1698,7 @@ class CvCollector {
   CvConfidence confidence_;
   HeadingOptions heading_options_;
   CollectorDeadline deadline_;
+  std::shared_ptr<RequestDigest> sha256_;
 };
 
 // Everything one parse's collector legs read: the request's bytes and
@@ -2573,7 +2599,8 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     }
     if (pdf && !form_fields_off && !context->IsCancelled()) {
       if (auto warning = fold_pdf_form_widgets_from_backend(*bytes, inputs.inbound_deadline,
-                                                            &result.document)) {
+                                                            &result.document,
+                                                            run_cv.computed_sha256())) {
         result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
                                      std::move(*warning));
         record_collector_warnings(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, 1);

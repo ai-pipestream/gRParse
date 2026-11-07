@@ -242,15 +242,17 @@ class ConsensusPdfPageSource final : public PageSource {
  public:
   ConsensusPdfPageSource(std::shared_ptr<const std::string> bytes,
                          const std::vector<std::string>& targets,
-                         double render_dpi)
+                         double render_dpi, std::string precomputed_sha256)
       : render_dpi_(render_dpi) {
-    // Hash the PDF once for the whole consensus group instead of once per leg.
+    // Hash the PDF once for the whole consensus group instead of once per
+    // leg, and not at all when the caller already did.
     const char* configured = std::getenv("GRPARSE_PDF_BACKEND_HANDSHAKE");
     const bool handshake =
         configured == nullptr || std::string_view(configured) != "off";
     const std::string sha256 =
         (handshake && bytes != nullptr && !targets.empty())
-            ? targets::sha256_hex(*bytes)
+            ? (precomputed_sha256.empty() ? targets::sha256_hex(*bytes)
+                                          : std::move(precomputed_sha256))
             : std::string();
     // No backend call yet: every leg opens on first use, so the request's
     // deadline and cancel reach the opening Probes too.
@@ -708,9 +710,10 @@ std::vector<std::string> split_backend_targets(const std::string& value) {
 std::shared_ptr<PageSource> open_consensus_pdf_document(
     std::shared_ptr<const std::string> bytes,
     const std::vector<std::string>& targets, double render_dpi,
-    SourceOpening opening) {
+    SourceOpening opening, std::string precomputed_sha256) {
   auto source = std::make_shared<ConsensusPdfPageSource>(std::move(bytes), targets,
-                                                         render_dpi);
+                                                         render_dpi,
+                                                         std::move(precomputed_sha256));
   if (opening == SourceOpening::kNow) static_cast<void>(source->page_count());
   return source;
 }

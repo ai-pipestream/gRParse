@@ -1,6 +1,7 @@
 #include "grparse/document_parser_service.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <deque>
@@ -14,6 +15,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <utility>
@@ -36,6 +38,7 @@
 #include "grparse/stream_delta.h"
 #include "parse_support.h"
 #include "structure_validation.h"
+#include "targets/sha256.h"
 
 namespace fs = std::filesystem;
 namespace pipestream = ai::pipestream;
@@ -48,6 +51,21 @@ namespace {
 constexpr size_t kMaximumDocumentBytes = 500U * 1024U * 1024U;
 // The surface the structural option rejections name.
 constexpr const char* kStreamSurface = "StreamProcessDocument";
+
+// Whether an upload whose first data is `prefix` may turn out to be a PDF,
+// judged the cheap way: the declared type, the name, or the header readers
+// accept anywhere in the first kilobyte. Only such an upload is worth the
+// SHA-256 its PDF source would otherwise compute; a wrong guess either way
+// costs time, never correctness (an unhashed PDF's source hashes itself).
+bool upload_may_be_pdf(std::string_view prefix, const fs::path& filename,
+                       const std::string& content_type) {
+  if (content_type == "application/pdf") return true;
+  if (prefix.substr(0, 1024 + 4).find("%PDF-") != std::string_view::npos) return true;
+  std::string extension = filename.extension().string();
+  std::ranges::transform(extension, extension.begin(),
+                         [](unsigned char c) { return std::tolower(c); });
+  return extension == ".pdf";
+}
 
 bool is_stream_rejection_code(grpc::StatusCode code) {
   switch (code) {
@@ -177,8 +195,10 @@ class DocumentStreamReactor final
   }
 
   // One chunk of the upload: identity and options resolve from the first
-  // chunk that carries them, the payload accumulates behind the size limit,
-  // and the next read starts. Anything a chunk contradicts finishes the call.
+  // chunk that carries them, the payload accumulates behind the size limit
+  // (or inside the declared total_bytes, which was charged up front), both
+  // digests take the chunk as it lands, and the next read starts. Anything
+  // a chunk contradicts finishes the call.
   void accept_chunk_locked() {
     if (finish_requested_) return;
     if (complete_seen_) {
@@ -188,24 +208,93 @@ class DocumentStreamReactor final
     }
     if (!resolve_identity_locked()) return;
     resolve_options_locked();
-    if (incoming_.data().size() > kMaximumDocumentBytes - bytes_.size()) {
-      request_finish_locked(grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
-                                         "document exceeds 500 MiB streaming limit"));
-      return;
-    }
-    if (inflight_ != nullptr) {
-      if (!inflight_->try_acquire(incoming_.data().size())) {
+    if (!resolve_total_bytes_locked()) return;
+    const std::string& data = incoming_.data();
+    if (total_bytes_.has_value()) {
+      if (data.size() > *total_bytes_ - bytes_.size()) {
         request_finish_locked(grpc::Status(
-            grpc::StatusCode::RESOURCE_EXHAUSTED,
-            "in-flight document bytes would exceed GRPARSE_MAX_INFLIGHT_BYTES"));
+            grpc::StatusCode::INVALID_ARGUMENT,
+            "document exceeds its declared total_bytes of " + std::to_string(*total_bytes_)));
         return;
       }
-      charged_bytes_ += incoming_.data().size();
+    } else {
+      if (data.size() > kMaximumDocumentBytes - bytes_.size()) {
+        request_finish_locked(grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
+                                           "document exceeds 500 MiB streaming limit"));
+        return;
+      }
+      if (inflight_ != nullptr) {
+        if (!inflight_->try_acquire(data.size())) {
+          request_finish_locked(grpc::Status(
+              grpc::StatusCode::RESOURCE_EXHAUSTED,
+              "in-flight document bytes would exceed GRPARSE_MAX_INFLIGHT_BYTES"));
+          return;
+        }
+        charged_bytes_ += data.size();
+      }
     }
-    bytes_.append(incoming_.data());
+    if (bytes_.empty() && !data.empty() && upload_may_be_pdf(data, filename_, content_type_)) {
+      upload_sha256_.emplace();
+    }
+    upload_hash_.update(data);
+    if (upload_sha256_.has_value()) upload_sha256_->update(data);
+    bytes_.append(data);
     complete_seen_ = incoming_.complete();
+    if (complete_seen_ && total_bytes_.has_value() && bytes_.size() != *total_bytes_) {
+      request_finish_locked(grpc::Status(
+          grpc::StatusCode::INVALID_ARGUMENT,
+          "stream completed after " + std::to_string(bytes_.size()) + " of the " +
+              std::to_string(*total_bytes_) + " bytes its total_bytes declared"));
+      return;
+    }
     incoming_.Clear();
     StartRead(&incoming_);
+  }
+
+  // The upload's declared size: taken from the first chunk that sets it,
+  // which must come before any data, and repeated unchanged if at all. It
+  // is checked against the size limit and the in-flight budget before a
+  // byte is accepted, charged once, and reserved once, so the buffer never
+  // regrows. False when the call was finished over it.
+  bool resolve_total_bytes_locked() {
+    if (!incoming_.has_total_bytes()) return true;
+    const uint64_t declared = incoming_.total_bytes();
+    if (total_bytes_.has_value()) {
+      if (declared == *total_bytes_) return true;
+      request_finish_locked(grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                                         "total_bytes changed between chunks"));
+      return false;
+    }
+    if (!bytes_.empty()) {
+      request_finish_locked(grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                                         "total_bytes must arrive before the first data"));
+      return false;
+    }
+    if (declared == 0) {
+      request_finish_locked(grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                                         "total_bytes must be positive when set"));
+      return false;
+    }
+    if (declared > kMaximumDocumentBytes) {
+      request_finish_locked(grpc::Status(
+          grpc::StatusCode::RESOURCE_EXHAUSTED,
+          "document exceeds 500 MiB streaming limit (total_bytes " + std::to_string(declared) +
+              ")"));
+      return false;
+    }
+    if (inflight_ != nullptr) {
+      if (!inflight_->try_acquire(declared)) {
+        request_finish_locked(grpc::Status(
+            grpc::StatusCode::RESOURCE_EXHAUSTED,
+            "in-flight document bytes would exceed GRPARSE_MAX_INFLIGHT_BYTES (total_bytes " +
+                std::to_string(declared) + ")"));
+        return false;
+      }
+      charged_bytes_ += declared;
+    }
+    bytes_.reserve(static_cast<size_t>(declared));
+    total_bytes_ = declared;
+    return true;
   }
 
   // The document's identity: the first chunk names it and every later chunk
@@ -274,6 +363,8 @@ class DocumentStreamReactor final
   // either by an invalid tuning or by a plan with no runnable leg in it.
   struct StreamPlan {
     std::shared_ptr<const std::string> bytes;
+    // The upload's FNV-1a, finished from the per-chunk state.
+    uint64_t content_hash = 0;
     PageScheduler::OcrTuning tuning;
     std::vector<pipestream::parse::v1::Collector> remotes;
     std::vector<pipestream::parse::v1::Collector> locals;
@@ -290,8 +381,9 @@ class DocumentStreamReactor final
     MimetypeResolution mimetype;
   };
 
-  // The processing thread resolves the plan, hashes and sniffs the whole
-  // upload (up to 500 MiB) and spawns the legs, which is not work a gRPC
+  // The processing thread resolves the plan, sniffs the upload (up to
+  // 500 MiB; its digests were fed chunk by chunk) and spawns the legs, which
+  // is not work a gRPC
   // event-manager thread may be handed: every call multiplexed on it,
   // Health included, would stall behind it. It reaches the reactor through
   // the gate like every other off-reactor callback.
@@ -343,7 +435,8 @@ class DocumentStreamReactor final
       filename = reactor.filename_;
     });
     if (!plan.has_value() || !plan->started) return;
-    const DocumentOrigin origin = read_origin(*plan->bytes, content_type, filename);
+    const DocumentOrigin origin =
+        read_origin(plan->content_hash, *plan->bytes, content_type, filename);
     with_reactor(weak_gate, [&](DocumentStreamReactor& reactor) {
       reactor.launch(*plan, origin);
     });
@@ -420,11 +513,18 @@ class DocumentStreamReactor final
                              render_scale_.value_or(0.0));
     plan.tuning.deadline = context_->deadline();
     plan.tuning.passwords = passwords_;
+    plan.content_hash = upload_hash_.value();
     plan.bytes = take_bytes_locked();
     doctype_ = classify_doctype(pipestream::parse::v1::INPUT_FORMAT_UNSPECIFIED,
                                 filename_.string(), content_type_, *plan.bytes);
     plan.pdf = content_type_ == "application/pdf" || is_pdf(*plan.bytes, filename_);
     pdf_ = plan.pdf;
+    // The SHA-256 the chunks fed rides the tuning to the PDF source, which
+    // then addresses its backend without hashing the upload again.
+    if (plan.pdf && upload_sha256_.has_value()) {
+      plan.tuning.sha256_hex = upload_sha256_->hex_digest();
+    }
+    upload_sha256_.reset();
     // The selection validates like the unary options: a value outside the
     // enum is the caller's mistake, not a collector that failed.
     for (const auto id : requested_collectors_) {
@@ -509,14 +609,14 @@ class DocumentStreamReactor final
     }
   }
 
-  // Reads the request's hash and sniffed mimetype once, before the legs
-  // start and outside every lock: the hash is a linear pass over up to
-  // 500 MiB, and the bytes are gone by the time the completion event is
-  // built.
-  static DocumentOrigin read_origin(const std::string& bytes, const std::string& content_type,
+  // Stamps the request's hash, which the chunks already fed, and sniffs the
+  // mimetype once, before the legs start and outside every lock: the bytes
+  // are gone by the time the completion event is built.
+  static DocumentOrigin read_origin(uint64_t hash, const std::string& bytes,
+                                    const std::string& content_type,
                                     const fs::path& filename) {
     DocumentOrigin origin;
-    origin.hash = content_hash(bytes);
+    origin.hash = hash;
     origin.mimetype = resolve_mimetype(content_type, bytes, filename);
     if (origin.mimetype.evidence == "magic") {
       data_counters().mimetypes_sniffed.fetch_add(1, std::memory_order_relaxed);
@@ -703,16 +803,48 @@ class DocumentStreamReactor final
       });
       return accepted;
     };
+    // An info event that already forces recognition on every page settles
+    // the route before the inspector has read a page: the CV run starts
+    // right there, beside the inspector's drain, instead of after its
+    // trailer. Its tuning is the one the trailer would have produced (kForce
+    // and kOff ignore the OCR page set the trailer could still widen).
+    bool submitted_early = false;
+    const auto submit_on_info = [&weak_gate, &leg, &submitted_early](const PdfClassification& info) {
+      if (!pdf_info_forces_ocr(info)) return;
+      PageScheduler::OcrTuning tuning = leg.tuning;
+      if (tuning.mode == PageScheduler::OcrTuning::Mode::kSelective) {
+        tuning.mode = PageScheduler::OcrTuning::Mode::kForce;
+      }
+      with_reactor(weak_gate, [&](DocumentStreamReactor& reactor) {
+        submitted_early = true;
+        reactor.hold_for_inspector();
+        reactor.submit_cv(leg.bytes, leg.pdf, std::move(tuning));
+      });
+    };
     const auto pdf_started = std::chrono::steady_clock::now();
     PdfParseResult parsed = collect_pdf(
         leg.endpoints == nullptr
             ? nullptr
             : leg.endpoints->channel(pipestream::parse::v1::COLLECTOR_PDF),
-        *leg.bytes, leg.deadline, leg.tuning.page_range, leg_cancelled(weak_gate), stream_page);
+        *leg.bytes, leg.deadline, leg.tuning.page_range, leg_cancelled(weak_gate), stream_page,
+        submit_on_info);
     const auto pdf_elapsed_ns = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - pdf_started)
             .count());
+    if (submitted_early) {
+      // The CV run owns the result; the drained inspector settles the hold
+      // it kept on the terminal event, adding its failure if it failed.
+      preview_session.reset();
+      record_collector_call(
+          pipestream::parse::v1::COLLECTOR_PDF,
+          collector_call_status_for(parsed.outcome.success, parsed.outcome.code),
+          pdf_elapsed_ns, parsed.outcome.warnings.size());
+      with_reactor(weak_gate, [&parsed](DocumentStreamReactor& reactor) {
+        reactor.release_inspector_hold(parsed.outcome);
+      });
+      return;
+    }
     const PdfRouteDecision route = route_pdf_by_classification(parsed.classification);
     const bool streamed = parsed.streamed_pages > 0;
     if (parsed.outcome.success && route.fast_path) {
@@ -795,6 +927,27 @@ class DocumentStreamReactor final
         "pages 1-" + std::to_string(first_left - 1) +
         " streamed from the pdf inspector's text layer as they were read; pages " +
         std::to_string(first_left) + " onward went through the CV path");
+  }
+
+  // The CV run started on the info event while the inspector still
+  // streams: the terminal event waits for the inspector as one more part,
+  // so a failure it ends with still rides the complete event.
+  void hold_for_inspector() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++pending_parts_;
+  }
+
+  void release_inspector_hold(const CollectorOutcome& outcome) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!outcome.success) {
+      record_part_failure_locked(
+          pipestream::parse::v1::COLLECTOR_PDF,
+          grpc::Status(outcome.code, outcome.error +
+                                         "; the CV path was already reading the document on "
+                                         "the inspector's OCR recommendation"));
+    }
+    part_done_locked();
+    pump_locked();
   }
 
   void note_pdf_fallback(const CollectorOutcome& outcome) {
@@ -1259,6 +1412,14 @@ class DocumentStreamReactor final
   fs::path filename_;
   std::string content_type_;
   std::string bytes_;
+  // The payload size the first chunk declared (DocumentChunk.total_bytes),
+  // already charged and reserved; unset when no chunk declared one.
+  std::optional<uint64_t> total_bytes_;
+  // The upload's digests, fed chunk by chunk as the payload lands: the
+  // origin's FNV-1a, and the SHA-256 a PDF source addresses its backend
+  // by, kept only for an upload that may be a PDF.
+  ContentHash upload_hash_;
+  std::optional<targets::Sha256> upload_sha256_;
   uint64_t document_bytes_hash_ = 0;
   // The origin mimetype and its evidence, resolved while the bytes were
   // still in hand.

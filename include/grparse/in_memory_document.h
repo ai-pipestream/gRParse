@@ -112,17 +112,25 @@ enum class SourceOpening {
 // threads, ties the source to the request, and only then asks for the page
 // count; a factory that returns a SourceOpening::kOnFirstUse source lets
 // the request's deadline and cancel reach the opening Probe.
+// precomputed_sha256 is the lowercase hex SHA-256 of `*bytes` when the
+// caller already has it (the streaming surface hashes each chunk as it
+// lands; OcrTuning::sha256_hex carries it here), or empty. A PDF source
+// addresses its backend by it instead of reading the whole upload again.
 using PageSourceFactory = std::function<std::shared_ptr<PageSource>(
-    std::shared_ptr<const std::string> bytes, bool pdf, double render_dpi)>;
+    std::shared_ptr<const std::string> bytes, bool pdf, double render_dpi,
+    const std::string& precomputed_sha256)>;
 
 // Rasters (PNG, JPEG, TIFF) decode in process. PDFs are read through the
 // PdfBackendService targets GRPARSE_PDF_BACKEND names: one target dials that
 // backend, a comma-separated list runs the consensus vote across all of
 // them. With the variable unset or empty a PDF raises
 // PdfBackendNotConfigured. `opening` says when a PDF source makes its first
-// backend call; rasters decode here either way.
+// backend call; rasters decode here either way. `precomputed_sha256`, when
+// non-empty, is the hex SHA-256 of `*bytes`, handed to the PDF source so it
+// does not hash the document itself; rasters ignore it.
 std::shared_ptr<PageSource> open_in_memory_document(std::shared_ptr<const std::string> bytes, bool pdf,
                                                     double render_dpi = kDefaultRenderDpi,
-                                                    SourceOpening opening = SourceOpening::kNow);
+                                                    SourceOpening opening = SourceOpening::kNow,
+                                                    std::string precomputed_sha256 = {});
 
 }  // namespace grparse

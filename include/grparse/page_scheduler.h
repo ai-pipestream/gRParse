@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <unordered_set>
 #include <utility>
 
@@ -135,6 +136,11 @@ class PageScheduler final {
     // The call's candidate passwords for an encrypted PDF, handed to the
     // document's source before its opening backend call. Empty means none.
     DocumentPasswords passwords;
+    // The lowercase hex SHA-256 of the submitted bytes when the caller
+    // already computed it, handed to the source factory so the PDF source
+    // does not read the whole document again to address its backend.
+    // Empty means the source hashes the bytes itself.
+    std::string sha256_hex;
   };
 
   enum class DeliveryResult { kAccepted, kAcceptedAndRelease, kCancelled };
