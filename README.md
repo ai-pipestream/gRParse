@@ -405,6 +405,23 @@ rasterization scale as the unary options, each resolved from the first chunk
 that sets it (the same doctrine as `collectors`); an invalid value fails the
 stream with `INVALID_ARGUMENT` naming the offender.
 
+A client that knows the upload's size sets `total_bytes` on the first chunk
+(at the latest on a chunk before any data; later chunks may repeat it
+unchanged). The server then reserves the buffer once, checks the size
+against the 500 MiB limit and the `GRPARSE_MAX_INFLIGHT_BYTES` budget before
+it accepts any data (both refusals are `RESOURCE_EXHAUSTED`, the same
+statuses the per-chunk checks return), and charges the budget once instead
+of chunk by chunk. The chunks' data must then add up to exactly
+`total_bytes`: more, or a complete chunk short of it, fails the stream with
+`INVALID_ARGUMENT` naming `total_bytes`, and so does zero. Without it the
+checks run per chunk as before. `grparse-stream-client` sets it from the
+file's size. Either way the server hashes each chunk as it arrives (the
+origin's `binary_hash`, and for a PDF the SHA-256 its backend handshake
+addresses the document by), so neither costs another pass over the upload
+once it ends. A PDF routed through the pdf inspector whose info event
+recommends OCR for the whole document starts the CV run at that event,
+while the inspector's stream still drains, instead of after its trailer.
+
 The CV pipeline emits one `DocumentStreamEvent.page` per page in page-number
 order. Each other collector's finished document arrives as page events
 projected from it, interleaved with the CV pages, and then whole as one
@@ -483,7 +500,8 @@ not the documents behind them, so `GRPARSE_MAX_INFLIGHT_BYTES` (default 4 GiB,
 printed at startup) caps the document bytes every parse holds at once across
 the process: a unary call is charged on admission for its request message
 plus the copy its base64 source decodes to (the chunk RPCs also for the
-sources they copy into the parse), a stream each chunk as it arrives, and a
+sources they copy into the parse), a stream each chunk as it arrives (or
+its declared `total_bytes` once, up front), and a
 call that would pass the cap is refused with `RESOURCE_EXHAUSTED`. A remote
 source (S3, HTTP, Azure Blob, Cloud Storage, Drive, a plugin) is a small
 request whose document is only known once fetched, so the parse charges the

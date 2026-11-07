@@ -266,6 +266,16 @@ struct PdfRouteDecision {
 
 PdfRouteDecision route_pdf_by_classification(const PdfClassification& classification);
 
+// Whether the info event alone already settles force_ocr: `info` is the
+// classification as the info event left it, before any page or the
+// trailer. True when it recommends OCR for reasons that are not only the
+// scanned pages of a MIXED document; nothing that arrives later can then
+// undo the decision (pages only add to the OCR set, and encoding issues
+// only force recognition harder), so route_pdf_by_classification of the
+// finished classification forces OCR too and never takes the fast path.
+// False leaves the routing to the trailer.
+bool pdf_info_forces_ocr(const PdfClassification& info);
+
 // One page's share of the inspector's fold (its page_document event): the
 // items folding that page made, under the refs they carry in the whole
 // Document, plus the page count the info event reported.
@@ -280,6 +290,11 @@ struct PdfPageSlice {
 // false once nobody is listening (the call is gone), which stops the
 // streaming for the rest of the parse.
 using PdfPageSink = std::function<bool(PdfPageSlice slice)>;
+
+// Receives the classification once the info event is read, before any page
+// or the trailer, so a caller can act on what the info event already
+// decides (see pdf_info_forces_ocr) while the rest of the stream drains.
+using PdfInfoSink = std::function<void(const PdfClassification& info)>;
 
 // The pdf client's full return: the collector outcome (its Document, which
 // the server folds whenever emit_document is set) plus the classification
@@ -314,12 +329,14 @@ bool pdf_page_is_clean(bool needs_ocr, bool encoding_issues, const std::string& 
 // sink as it arrives. The first page that is not clean ends the run; the
 // slices after it are held for the caller to route once the trailer is in.
 // An inspector that predates page documents sends none, and the parse is
-// exactly what it was without a sink.
+// exactly what it was without a sink. An info sink is called once, right
+// after the info event, on the calling thread.
 PdfParseResult collect_pdf(
     const std::shared_ptr<grpc::Channel>& channel, const std::string& bytes,
     CollectorDeadline inbound_deadline = kNoCollectorDeadline,
     std::optional<std::pair<int, int>> page_range = std::nullopt,
-    CollectorCancelled cancelled = {}, PdfPageSink page_sink = {});
+    CollectorCancelled cancelled = {}, PdfPageSink page_sink = {},
+    PdfInfoSink info_sink = {});
 
 // The plain collector leg for a selection the pdf collector shares with
 // other collectors: the collector's Document is the contribution, whatever

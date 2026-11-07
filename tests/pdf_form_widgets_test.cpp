@@ -524,7 +524,7 @@ class ParseServer final {
  public:
   ParseServer()
       : scheduler_(recognizer_, {},
-                   [](std::shared_ptr<const std::string>, bool, double) {
+                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
                      return std::make_shared<BlankSource>();
                    }),
         service_(scheduler_,

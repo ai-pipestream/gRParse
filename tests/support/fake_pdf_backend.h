@@ -98,6 +98,17 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
     return probe_calls_;
   }
 
+  // Probes that carried the document's bytes (the handshake's one upload),
+  // and the sha256 each of them carried beside the bytes, in arrival order.
+  int probes_with_bytes() const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return static_cast<int>(probe_upload_hashes_.size());
+  }
+  std::vector<std::string> probe_upload_hashes() const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return probe_upload_hashes_;
+  }
+
   // Holds every Render this long before answering, unless the client
   // cancels the call first: a backend stuck on a page.
   void stall_renders(std::chrono::milliseconds stall) {
@@ -138,6 +149,9 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
     {
       std::unique_lock<std::mutex> lock(mutex_);
       ++probe_calls_;
+      if (!request->document().data().empty()) {
+        probe_upload_hashes_.push_back(request->document().sha256());
+      }
       if (blocked_.contains(request->document().data())) {
         ++held_probes_;
         while (blocked_.contains(request->document().data()) && !context->IsCancelled()) {
@@ -329,6 +343,7 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
   std::map<std::string, std::vector<FakePdfPage>> by_hash_;
   int render_calls_ = 0;
   int probe_calls_ = 0;
+  std::vector<std::string> probe_upload_hashes_;
   std::chrono::milliseconds render_stall_{0};
   pdfv1::PageSpace page_space_ = pdfv1::PAGE_SPACE_UNSPECIFIED;
   std::set<std::string> blocked_;

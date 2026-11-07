@@ -307,9 +307,10 @@ class PageScheduler::Impl final {
       // Deferred: the source makes no backend call until coordinate() has
       // tied it to the request, so the opening Probe honors the request's
       // deadline and cancel.
-      source_factory_ = [](std::shared_ptr<const std::string> bytes, bool pdf, double render_dpi) {
+      source_factory_ = [](std::shared_ptr<const std::string> bytes, bool pdf, double render_dpi,
+                           const std::string& precomputed_sha256) {
         return open_in_memory_document(std::move(bytes), pdf, render_dpi,
-                                       SourceOpening::kOnFirstUse);
+                                       SourceOpening::kOnFirstUse, precomputed_sha256);
       };
     }
     // Any thread that fails to start must not leave the already-started ones
@@ -624,7 +625,8 @@ class PageScheduler::Impl final {
         const double render_dpi = document.request->tuning.render_dpi > 0.0
                                       ? document.request->tuning.render_dpi
                                       : kDefaultRenderDpi;
-        auto source = source_factory_(document.bytes, document.pdf, render_dpi);
+        auto source = source_factory_(document.bytes, document.pdf, render_dpi,
+                                      document.request->tuning.sha256_hex);
         if (!source) throw InvalidDocument("Document source could not be opened");
         source->set_deadline(document.request->tuning.deadline);
         source->set_passwords(document.request->tuning.passwords);
