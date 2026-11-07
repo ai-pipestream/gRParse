@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <print>
@@ -77,6 +78,7 @@ struct Result {
   std::condition_variable changed;
   int total_pages = 0;
   std::vector<int> completed_pages;
+  std::map<int, std::shared_ptr<const grparse::OcrPage>> pages;
   std::exception_ptr failure;
   bool finished = false;
   int finish_calls = 0;
@@ -88,9 +90,10 @@ grparse::PageScheduler::Callbacks callbacks_for(Result* result) {
             result->total_pages = total_pages;
             result->changed.notify_all();
           },
-          [result](int page_number, std::shared_ptr<const grparse::OcrPage>) {
+          [result](int page_number, std::shared_ptr<const grparse::OcrPage> page) {
             std::lock_guard<std::mutex> lock(result->mutex);
             result->completed_pages.push_back(page_number);
+            result->pages.emplace(page_number, std::move(page));
             return grparse::PageScheduler::DeliveryResult::kAcceptedAndRelease;
           },
           [result](std::exception_ptr failure) {
@@ -130,6 +133,66 @@ void verify_pipeline_and_metrics() {
   uint64_t delivered = 0;
   for (const uint64_t bucket : metrics.page_latency) delivered += bucket;
   require(delivered == 6, "every completed page must land in one latency bucket");
+}
+
+// Whether two recognized pages are the same page: every field assembly
+// reads.
+bool same_page(const grparse::OcrPage& a, const grparse::OcrPage& b) {
+  const auto same_line = [](const grparse::OcrLine& x, const grparse::OcrLine& y) {
+    return x.text == y.text && x.polygon == y.polygon && x.confidence == y.confidence &&
+           x.origin == y.origin && x.font_name == y.font_name &&
+           x.font_size_pt == y.font_size_pt && x.flipped == y.flipped;
+  };
+  const auto same_region = [](const grparse::LayoutRegion& x, const grparse::LayoutRegion& y) {
+    return x.label == y.label && x.confidence == y.confidence && x.left == y.left &&
+           x.top == y.top && x.right == y.right && x.bottom == y.bottom;
+  };
+  return a.width == b.width && a.height == b.height && a.source == b.source &&
+         a.skip_ocr == b.skip_ocr && a.rotation_degrees == b.rotation_degrees &&
+         a.layout_model == b.layout_model && a.preview_png == b.preview_png &&
+         a.text_layer_replaced == b.text_layer_replaced &&
+         std::ranges::equal(a.lines, b.lines, same_line) &&
+         std::ranges::equal(a.regions, b.regions, same_region);
+}
+
+// The page sequence a document produces does not depend on the worker
+// counts that produced it: one worker per stage and four per stage, with
+// the jittered recognizer finishing pages out of order, deliver the same
+// OcrPage for every page number.
+void verify_worker_count_does_not_change_pages() {
+  static constexpr int kPages = 24;
+  const auto run_with = [](size_t workers) {
+    FakeRecognizer recognizer;
+    grparse::PageScheduler scheduler(
+        recognizer,
+        grparse::PageScheduler::Options{
+            .render_workers = workers,
+            .inference_workers = workers,
+            .assembly_workers = workers,
+            .page_window = 8,
+        },
+        [](std::shared_ptr<const std::string>, bool, double) {
+          return std::make_shared<FakeSource>(kPages);
+        });
+    auto result = std::make_unique<Result>();
+    scheduler.submit(std::make_shared<const std::string>("memory"), false,
+                     callbacks_for(result.get()));
+    wait_until_finished(result.get());
+    std::lock_guard<std::mutex> lock(result->mutex);
+    require(!result->failure, "worker-count scheduler returned a failure");
+    require(result->total_pages == kPages && result->pages.size() == static_cast<size_t>(kPages),
+            "every page is delivered once");
+    return std::move(result->pages);
+  };
+  const auto one = run_with(1);
+  const auto four = run_with(4);
+  for (int page_number = 1; page_number <= kPages; ++page_number) {
+    require(one.contains(page_number) && four.contains(page_number),
+            "page " + std::to_string(page_number) + " is delivered under both worker counts");
+    require(same_page(*one.at(page_number), *four.at(page_number)),
+            "page " + std::to_string(page_number) +
+                " differs between one worker and four per stage");
+  }
 }
 
 void verify_cancellation_drains_bounded_work() {
@@ -1637,6 +1700,7 @@ void verify_page_range_restricts_scheduled_pages() {
 int main() {
   return grparse_test::run_test_main("page-scheduler-test", {
       verify_pipeline_and_metrics,
+      verify_worker_count_does_not_change_pages,
       verify_cancellation_drains_bounded_work,
       verify_digital_pages_bypass_render_and_inference,
       verify_layout_labels_digital_pages_without_ocr,

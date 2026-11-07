@@ -13,7 +13,9 @@
 #include <mutex>
 #include <print>
 #include <stdexcept>
+#include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -34,6 +36,8 @@
 #include "grparse/confluence_storage.h"
 #include "grparse/document_assembly.h"
 #include "grparse/document_parser_service.h"
+#include "grparse/document_render.h"
+#include "grparse/layout_engine.h"
 #include "grparse/page_scheduler.h"
 #include "grparse/service_version.h"
 #include "grparse/stream_delta.h"
@@ -3554,6 +3558,301 @@ void verify_streamed_pages_plus_repair_rebuild_the_document() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Worker-count invariance. One synthetic 24-page scan whose whole-document
+// passes all have work to do: section headers at three heights (levels
+// cluster over every page's heights at stream end), a running header in
+// the top band of every page (demoted by the repair pass), a paragraph a
+// page break splits between pages three and four (rejoined, renumbering
+// every text after it), a table spanning pages seven and eight and a list
+// running from page twelve onto thirteen. Pixel (0, 0) of each raster is
+// its page number, so the recognizer and the detector agree on the page.
+
+constexpr int kInvariancePages = 24;
+constexpr int kSyntheticWidth = 600;
+constexpr int kSyntheticHeight = 800;
+
+struct SyntheticPage {
+  std::vector<grparse::OcrLine> lines;
+  std::vector<grparse::LayoutRegion> regions;
+};
+
+SyntheticPage synthetic_page(int page) {
+  static const std::vector<std::string> names{
+      "",        "alpha",  "bravo",  "charlie", "delta",   "echo",    "foxtrot",
+      "golf",    "hotel",  "india",  "juliett", "kilo",    "lima",    "mike",
+      "november", "oscar", "papa",   "quebec",  "romeo",   "sierra",  "tango",
+      "uniform", "victor", "whiskey", "xray"};
+  const std::string& name = names.at(page);
+  SyntheticPage out;
+  const auto line = [&out](std::string text, int left, int top, int right, int bottom) {
+    out.lines.push_back(
+        {std::move(text), {{left, top}, {right, top}, {right, bottom}, {left, bottom}}, 0.9F});
+  };
+  const auto region = [&out](std::string label, int left, int top, int right, int bottom) {
+    out.regions.push_back({std::move(label), 0.9F, left, top, right, bottom});
+  };
+  line("SYNTHETIC REPORT", 40, 20, 260, 40);
+  // Pages that open on a continuation carry no heading above it, and page
+  // one none at all (a first-page heading is a title candidate).
+  const bool continues_from_before = page == 4 || page == 8 || page == 13;
+  if (page != 1 && !continues_from_before) {
+    const int height = page % 6 == 2 ? 40 : (page % 2 == 0 ? 28 : 20);
+    const std::string kind = height == 40 ? "Survey " : (height == 28 ? "Method " : "Detail ");
+    region("section_header", 36, 316, 400, 320 + height + 4);
+    line(kind + name, 40, 320, 360, 320 + height);
+  }
+  region("text", 36, 396, 564, 450);
+  line("Findings for " + name + " open the page body and", 40, 400, 540, 420);
+  line("close it again on a second line.", 40, 425, 500, 445);
+  if (page == 3) {
+    region("text", 36, 646, 564, 674);
+    line("The committee decided that the", 40, 650, 400, 670);
+  }
+  if (page == 4) {
+    region("text", 36, 116, 564, 144);
+    line("budget would be approved by the board.", 40, 120, 520, 140);
+  }
+  // The table: three rows at the foot of page seven, two more at the head
+  // of page eight, the same two columns.
+  if (page == 7 || page == 8) {
+    const int top = page == 7 ? 500 : 120;
+    const int rows = page == 7 ? 3 : 2;
+    region("table", 36, top - 4, 564, top + rows * 60);
+    for (int row = 0; row < rows; ++row) {
+      const std::string id = std::to_string(page * 10 + row);
+      const int y = top + row * 60;
+      line("Metric " + id, 40, y, 240, y + 20);
+      line("Value " + id, 320, y, 520, y + 20);
+    }
+  }
+  // The list: three items at the foot of page twelve, two at the head of
+  // page thirteen.
+  if (page == 12 || page == 13) {
+    const int top = page == 12 ? 520 : 120;
+    const int items = page == 12 ? 3 : 2;
+    for (int item = 0; item < items; ++item) {
+      const int y = top + item * 50;
+      region("list_item", 36, y - 4, 564, y + 24);
+      line("• point " + names.at(page + item) + " of the running list", 40, y, 500, y + 20);
+    }
+  }
+  return out;
+}
+
+class SyntheticSource final : public grparse::PageSource {
+ public:
+  int page_count() const override { return kInvariancePages; }
+  cv::Mat render_page(int page_number) const override {
+    return cv::Mat(kSyntheticHeight, kSyntheticWidth, CV_8UC1, cv::Scalar(page_number)).clone();
+  }
+};
+
+// page_scheduler_test's jitter: within each run of eight pages the later
+// ones finish first, so completion order is never document order.
+class JitteredRecognizer final : public grparse::PageRecognizer {
+ public:
+  grparse::OcrPage extract_page(const cv::Mat& image) override {
+    const int page = image.at<unsigned char>(0, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds((8 - page % 8) * 2));
+    return {kSyntheticWidth, kSyntheticHeight, synthetic_page(page).lines};
+  }
+};
+
+class SyntheticDetector final : public grparse::RegionDetector {
+ public:
+  std::vector<grparse::LayoutRegion> detect_regions(const cv::Mat& image) override {
+    return synthetic_page(image.at<unsigned char>(0, 0)).regions;
+  }
+};
+
+// TestServer's shape with the scheduler's three worker pools chosen by the
+// caller (GRPARSE_RENDER_WORKERS, GRPARSE_PAGE_WORKERS and
+// GRPARSE_ASSEMBLY_WORKERS in a deployment).
+class WorkerCountServer final {
+ public:
+  WorkerCountServer(size_t render_workers, size_t inference_workers, size_t assembly_workers)
+      : scheduler_(recognizer_,
+                   grparse::PageScheduler::Options{
+                       .render_workers = render_workers,
+                       .inference_workers = inference_workers,
+                       .assembly_workers = assembly_workers,
+                       .page_window = 8,
+                   },
+                   [](std::shared_ptr<const std::string>, bool, double) {
+                     return std::make_shared<SyntheticSource>();
+                   },
+                   &detector_),
+        parser_service_(scheduler_,
+                        std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{})),
+        streaming_service_(scheduler_,
+                           std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{})) {
+    grpc::ServerBuilder builder;
+    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port_);
+    builder.RegisterService(&parser_service_);
+    builder.RegisterService(&streaming_service_);
+    server_ = builder.BuildAndStart();
+    if (!server_ || port_ == 0) throw std::runtime_error("worker-count server failed to start");
+  }
+
+  ~WorkerCountServer() {
+    server_->Shutdown(std::chrono::system_clock::now() + 2s);
+    server_->Wait();
+  }
+
+  std::unique_ptr<pipestream::parse::v1::ParseStreamingService::Stub> stub() const {
+    return pipestream::parse::v1::ParseStreamingService::NewStub(
+        grpc::CreateChannel("127.0.0.1:" + std::to_string(port_), grpc::InsecureChannelCredentials()));
+  }
+
+  std::unique_ptr<pipestream::parse::v1::ParseService::Stub> unary_stub() const {
+    return pipestream::parse::v1::ParseService::NewStub(
+        grpc::CreateChannel("127.0.0.1:" + std::to_string(port_), grpc::InsecureChannelCredentials()));
+  }
+
+ private:
+  JitteredRecognizer recognizer_;
+  SyntheticDetector detector_;
+  grparse::PageScheduler scheduler_;
+  grparse::DocumentParserService parser_service_;
+  grparse::DocumentStreamingService streaming_service_;
+  std::unique_ptr<grpc::Server> server_;
+  int port_ = 0;
+};
+
+// What a client holds once the stream ends: the page events folded, the
+// complete event's heading levels applied, then the repair event.
+docv1::Document fold_stream(const WorkerCountServer& server, const std::string& label) {
+  auto client = server.stub();
+  const StreamRun run = run_chunks(client.get(), {chunk(true)});
+  require(run.status.ok(), label + ": stream failed: " + run.status.error_message());
+  require(!run.events.empty() && run.events.back().has_complete(),
+          label + ": the stream closes with the complete event");
+  grparse::PageFold fold;
+  int pages = 0;
+  int repairs = 0;
+  for (const auto& event : run.events) {
+    if (event.has_page()) {
+      require(event.page().page_number() == ++pages, label + ": pages stream in document order");
+      fold.fold(event.page());
+    } else if (event.has_repair()) {
+      ++repairs;
+    }
+  }
+  require(pages == kInvariancePages, label + ": every page streams once");
+  require(repairs == 1, label + ": one repair event; got " + std::to_string(repairs));
+  const auto& complete = run.events.back().complete();
+  const std::map<std::string, int32_t> levels(complete.section_header_levels().begin(),
+                                              complete.section_header_levels().end());
+  docv1::Document rebuilt = fold.document();
+  grparse::apply_section_header_levels(levels, &rebuilt);
+  for (const auto& event : run.events) {
+    if (event.has_repair()) {
+      require(grparse::apply_repair_delta(event.repair(), &rebuilt),
+              label + ": the repair event applies to the fold");
+    }
+  }
+  return rebuilt;
+}
+
+docv1::Document convert_unary(const WorkerCountServer& server, const std::string& label) {
+  auto client = server.unary_stub();
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 20s);
+  pipestream::parse::v1::ConvertSourceResponse response;
+  const grpc::Status status = client->ConvertSource(&context, unary_request(), &response);
+  require(status.ok(), label + ": unary conversion failed: " + status.error_message());
+  return response.response().document().doc();
+}
+
+// Where two renderings first part, with a little of each side.
+std::string first_difference(const std::string& expected, const std::string& actual) {
+  const auto mismatch = std::ranges::mismatch(expected, actual);
+  const auto at = static_cast<size_t>(mismatch.in1 - expected.begin());
+  const size_t from = at > 160 ? at - 160 : 0;
+  return std::format("first difference at byte {} of {} vs {}:\n  expected ...{}\n  actual   ...{}",
+                     at, expected.size(), actual.size(), expected.substr(from, 320),
+                     actual.substr(from, 320));
+}
+
+// Proves the synthetic document reaches every whole-document pass the
+// comparison is meant to cover, so the identity below is not vacuous.
+void require_synthetic_structure(const docv1::Document& document) {
+  std::set<int32_t> levels;
+  int headers = 0;
+  bool rejoined = false;
+  for (const auto& text : document.texts()) {
+    if (text.has_section_header()) {
+      ++headers;
+      levels.insert(text.section_header().level());
+    }
+    if (text.has_text() &&
+        text.text().base().text() == "The committee decided that the budget would be approved by the board.") {
+      rejoined = true;
+    }
+  }
+  require(headers == kInvariancePages - 4, "one heading on every page that opens fresh");
+  require(levels.size() == 3 && !levels.contains(0),
+          "three heading heights cluster into three levels; got " + std::to_string(levels.size()));
+  require(rejoined, "the paragraph split across pages three and four is rejoined");
+  require(document.furniture().children_size() == kInvariancePages,
+          "the running header is furniture on every page; got " +
+              std::to_string(document.furniture().children_size()));
+  std::set<int> table_pages;
+  for (const auto& table : document.tables()) {
+    for (const auto& prov : table.prov()) table_pages.insert(prov.page_no());
+  }
+  require(table_pages == std::set<int>{7, 8}, "the table spans pages seven and eight");
+  std::set<int> list_pages;
+  bool grouped = false;
+  for (const auto& group : document.groups()) {
+    if (group.label() == docv1::GROUP_LABEL_LIST) grouped = true;
+  }
+  for (const auto& text : document.texts()) {
+    if (!text.has_list_item()) continue;
+    for (const auto& prov : text.list_item().base().prov()) list_pages.insert(prov.page_no());
+  }
+  require(grouped && list_pages == std::set<int>{12, 13},
+          "the list runs from page twelve onto thirteen, grouped");
+}
+
+// The scheduler's output must not depend on its worker counts or on the
+// order pages finish: three worker configurations, each streamed twice
+// against the jittered recognizer, fold to byte-identical canonical JSON,
+// and to the unary ConvertSource of the same input. Heading levels
+// clustered over every page, the ref cursor that spans the stream and the
+// reorder buffer are where an interleaving would show.
+void verify_stream_is_invariant_under_worker_counts() {
+  struct Workers {
+    size_t render;
+    size_t inference;
+    size_t assembly;
+  };
+  std::optional<std::string> expected;
+  std::string expected_label;
+  for (const Workers workers : {Workers{1, 1, 1}, Workers{4, 2, 2}, Workers{2, 4, 1}}) {
+    WorkerCountServer server(workers.render, workers.inference, workers.assembly);
+    const std::string config = std::format("workers ({},{},{})", workers.render, workers.inference,
+                                           workers.assembly);
+    for (int attempt = 1; attempt <= 2; ++attempt) {
+      const std::string label = std::format("{} run {}", config, attempt);
+      const docv1::Document streamed = fold_stream(server, label + " stream");
+      if (!expected.has_value()) require_synthetic_structure(streamed);
+      const std::string stream_json = grparse::render_canonical_json(rebuilt_part(streamed));
+      if (!expected.has_value()) {
+        expected = stream_json;
+        expected_label = label + " stream";
+      }
+      require(stream_json == *expected, label + " stream differs from " + expected_label + ": " +
+                                            first_difference(*expected, stream_json));
+      const std::string unary_json =
+          grparse::render_canonical_json(rebuilt_part(convert_unary(server, label + " unary")));
+      require(unary_json == *expected, label + " unary differs from " + expected_label + ": " +
+                                           first_difference(*expected, unary_json));
+    }
+  }
+}
+
 // gRParse reads PDFs only through a PdfBackendService. With none configured
 // a PDF on the CV path fails the way an unconfigured collector does
 // (FAILED_PRECONDITION), naming the variable that fixes it.
@@ -4240,6 +4539,7 @@ int main() {
         verify_streaming_pdf_fast_path_streams_page_by_page();
         verify_streaming_pdf_hands_the_rest_to_the_cv_path();
         verify_streamed_pages_plus_repair_rebuild_the_document();
+        verify_stream_is_invariant_under_worker_counts();
         verify_streaming_pdf_fast_path_renders_previews();
         verify_streaming_pdf_fast_path_skips_previews_when_off();
         verify_pdf_without_backend_fails_precondition();
