@@ -34,7 +34,7 @@ services:
 
   grafana:
     profiles: ["observability"]
-    image: grafana/grafana:13.2.4
+    image: grafana/grafana:13.3.0
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
