@@ -56,6 +56,7 @@
       "inherits": "nightly",
       "environment": {
         "EVAL_REQUIRE": "1",
+        "GRPARSE_BENCH_ENFORCE": "1",
         "GRPARSE_TEST_REQUIRE_MODELS": "1",
         "GRPARSE_STACK_SUITES": "all"
       }

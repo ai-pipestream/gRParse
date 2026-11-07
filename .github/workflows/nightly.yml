@@ -1,6 +1,7 @@
 # Nightly heavy tier (#244): the compose-stack suites, the long fuzz
-# campaign, and the compose checks, on a self-hosted runner. Nothing here
-# runs on a GitHub-hosted runner, so it costs no hosted minutes.
+# campaign, the compose checks and the performance regression tier (#251),
+# on a self-hosted runner. Nothing here runs on a GitHub-hosted runner, so
+# it costs no hosted minutes.
 #
 # Where it runs: the runner label in the repository (or organisation)
 # variable NIGHTLY_RUNS_ON, on GitHub and on Forgejo alike. With the variable
@@ -102,12 +103,82 @@ jobs:
             oom-*
           if-no-files-found: ignore
 
+  # The performance regression tier (#251): grparse-bench's six cases,
+  # gated on tests/bench/baseline.textproto (GRPARSE_BENCH_ENFORCE=1 fails a
+  # case slower than baseline x 1.5). It runs after the other jobs so it does
+  # not time itself against a compose stack on the same host. The build
+  # copies sanitize.yml's: the published cpu deps seed (or the deps stage
+  # when none is published) as the toolchain, the checkout copied into the
+  # container rather than bind-mounted, and only grparse-bench compiled. The
+  # compile cache is a named volume, which the host daemon keeps between
+  # nights. Every run uploads the printed numbers and the measured run as a
+  # BenchBaseline (measured.textproto), which re-baselining on this runner
+  # (#258) commits after `--record --reason` rewrites its reason.
+  bench:
+    name: Performance regression tier
+    needs: [stack, fuzz-long]
+    if: ${{ always() && vars.NIGHTLY_RUNS_ON != '' }}
+    runs-on: ${{ vars.NIGHTLY_RUNS_ON }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - name: Name the runner's image architecture
+        id: arch
+        run: |
+          case "$(uname -m)" in
+            aarch64 | arm64) echo "arch=arm64" >> "$GITHUB_OUTPUT" ;;
+            *) echo "arch=amd64" >> "$GITHUB_OUTPUT" ;;
+          esac
+      - name: Find the cpu deps seed
+        id: seed
+        run: sh scripts/find-seed.sh Dockerfile.cpu cpu "${{ steps.arch.outputs.arch }}" >> "$GITHUB_OUTPUT"
+      - name: Build the toolchain image when no seed is published
+        if: ${{ steps.seed.outputs.image == 'deps' }}
+        run: docker build --progress=plain -f Dockerfile.cpu --target deps -t grparse-bench-deps .
+      - name: Build grparse-bench and run the bench tier, enforced
+        env:
+          SEED_IMAGE: ${{ steps.seed.outputs.image == 'deps' && 'grparse-bench-deps' || steps.seed.outputs.image }}
+        run: |
+          mkdir -p bench-out
+          cid=$(docker create -w /src \
+            -e LD_LIBRARY_PATH=/opt/opencv/lib \
+            -e GRPARSE_BENCH_ENFORCE=1 \
+            -e GRPARSE_BENCH_REPORT=/bench-out/measured.textproto \
+            -e CCACHE_DIR=/ccache -e CCACHE_MAXSIZE=2G \
+            -v grparse-bench-ccache:/ccache \
+            "$SEED_IMAGE" sh -c '
+              set -e
+              apt-get update -qq && apt-get install -y -qq --no-install-recommends ccache >/dev/null
+              if [ -d /opt/grparse-seed ]; then cp -a /opt/grparse-seed/. /build/; fi
+              sh scripts/stamp-sources.sh /build
+              cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
+                -DGRPARSE_ORT_PACKAGE=cpu -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv5 \
+                -DGRPARSE_COMPILER_LAUNCHER=ccache
+              cmake --build /build --target grparse-bench --parallel "$(nproc)"
+              mkdir -p /bench-out
+              ctest --test-dir /build -L bench -V --output-log /bench-out/ctest-bench.log')
+          trap 'docker rm -f "$cid" >/dev/null' EXIT
+          docker cp "$PWD/." "$cid:/src"
+          set +e
+          docker start -a "$cid"
+          status=$?
+          set -e
+          docker cp "$cid:/bench-out/." bench-out/ || true
+          exit "$status"
+      - name: Keep the bench numbers
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-bench-${{ github.run_id }}
+          path: bench-out/
+          if-no-files-found: ignore
+
   # One open issue labelled `nightly` carries the failures: opened on the
   # first red night, commented on after that. GitHub only; Forgejo keeps
   # issues off and its run list is the record there.
   report:
     name: Report a red night
-    needs: [stack, fuzz-long]
+    needs: [stack, fuzz-long, bench]
     if: ${{ failure() && github.server_url == 'https://github.com' && github.event_name == 'schedule' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
