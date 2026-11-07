@@ -37,7 +37,8 @@ moves the sibling pins as the fleet sweep lands in each repo. The two OpenNLP
 files are pinned to the grpc-asr copy, the fleet's vendored copy of the
 opennlp-sandbox branch above. The same CI job runs `buf breaking` over the
 staged protos against the pull request's base, so a renumbered or removed
-field fails even where every copy agrees.
+field fails even where every copy agrees. A field leaves the contract only
+with both its number and its name reserved.
 
 Every one of these except the lol-html, fastwarc, and calamine pairs
 imports `ai/pipestream/document/v1/document.proto`, which

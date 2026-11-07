@@ -450,7 +450,8 @@ jobs:
           ./build-fuzz/raster-source-fuzzer corpus-raster tests/data \
             -max_total_time=90 -max_len=1048576 -rss_limit_mb=4096 -print_final_stats=1
 
-  # The fleet contracts (#246). buf breaking (FILE category) fails a
+  # The fleet contracts (#246). buf breaking (FILE category; a field may
+  # leave only with its number and name reserved) fails a
   # pull request that renumbers, removes or retypes anything in the protos
   # gRParse stages (document.proto, parse*.proto, office_service.proto,
   # collectors/, backends/) against its base; buf lint only reports, since
