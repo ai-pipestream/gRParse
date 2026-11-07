@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ai/pipestream/parse/v1/parse_types.pb.h"
 #include <functional>
 #include <memory>
 #include <optional>
@@ -38,13 +39,12 @@ std::string collector_status_text(const char* name, const grpc::Status& status);
 
 // grpc-asr. `model` is the whisper model name the collector must have
 // loaded; the caller resolves it from configuration, never guesses.
-CollectorOutcome collect_asr_document(const std::shared_ptr<grpc::Channel>& channel,
-                                      const std::string& model,
-                                      const std::string& filename,
-                                      const std::string& bytes,
-                                      CollectorDeadline inbound_deadline =
-                                          kNoCollectorDeadline,
-                                      CollectorCancelled cancelled = {});
+CollectorOutcome collect_asr_document(
+    const std::shared_ptr<grpc::Channel>& channel, const std::string& model,
+    const std::string& filename, const std::string& bytes,
+    const std::optional<ai::pipestream::parse::v1::AsrPipelineOptions>& asr_options = std::nullopt,
+    CollectorDeadline inbound_deadline = kNoCollectorDeadline,
+    CollectorCancelled cancelled = {});
 
 // grpc-email (.eml / .msg bytes). The email fold maps text/plain bodies
 // only and leaves HTML to the HTML collector, so a message with no plain

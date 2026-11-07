@@ -125,3 +125,25 @@ Deviations kept: HTML footnotes carry no `dir="rtl"` (this HTML export marks dir
 - `vlm_pipeline_custom_config`: `model_spec.default_repo_id` (the model, unless `vlm_pipeline_model`, `_local`, `_api` or `vlm_pipeline_preset` names one), `model_spec.prompt`, `model_spec.response_format` and `scale` are forwarded to grpc-vlm-convert. `engine_options` beyond `engine_type` and `trust_remote_code`, the spec's `revision`, `stop_strings`, `temperature`, `max_new_tokens`, `extra_generation_config` and engine overrides, plus `max_size`, `batch_size` and `force_backend_text`, are accepted and not forwarded: `ConvertOptions` has no field for them.
 - `extract_form_fields` unset folds widgets (gRParse default); docling's unset is false. Kept so existing callers keep `field_items`.
 - docling-serve numbering for `ResponseFormat` 6 to 13 is not yet confirmed.
+
+## docling-core 2.105.0 / docling-slim 2.145.0 / docling-serve 1.38.2 (2026-11-02)
+
+### New typed fields
+
+| Upstream change | gRParse | Notes |
+|---|---|---|
+| `OcrOptions.replace_broken_text_layer` | `OcrOptionsBase.replace_broken_text_layer` on each `ConvertDocumentOptions.ocr_options` arm (fields 67-74; serve uses 54-61). Per-page `PageQuality.text_layer_replaced = 5`. | Unset keeps selective OCR merge. `true` replaces the digital text on weak pages only (other pages unchanged) and stamps `text_layer_replaced` on those pages. Conflicts with `force_ocr` when both claim the page. |
+| `RapidOcrOptions.detect_orientation` | `RapidOcrOptions.detect_orientation` under `ocr_options.rapidocr` (field 71). | Unset keeps today's orientation path. `ocr_options` oneof mirrors docling-serve 3fc831e (`ocr_auto`, `easyocr`, `tesseract`, `tesseract_cli`, `rapidocr`, `ocrmac`, `nemotron_ocr`, `kserve_v2_ocr`) with shared `OcrOptionsBase`. Only `ocr_auto` and `rapidocr` are served; other arms are `UNIMPLEMENTED` at validate. Only `base.replace_broken_text_layer` and `rapidocr.detect_orientation` are implemented inside the typed arms. Other explicitly present nested fields return `UNIMPLEMENTED`, including explicit default values. |
+| Inline ASR options and `AsrModelType` presets (slim 2.145.0) | `ConvertDocumentOptions.asr_options = 75` (`AsrPipelineOptions`), with closed `AsrModelType` / `AsrModelFamily` / `AsrEngineKind` / `AsrTask` enums and `InlineAsrTransformersOptions` / `InlineAsrMlxWhisperOptions` (including `condition_on_previous_text`, `hallucination_silence_threshold`, `initial_prompt`) / `InlineAsrNativeWhisperOptions`. Forwarded typed to grpc-asr `TranscribeOptions` fields 11 to 16. | grpc-asr serves whisper.cpp and typed remote options. `engine=TRANSFORMERS` / `MLX_WHISPER` / `NATIVE_WHISPER`, the matching inline option messages, and presets that do not map to a whisper.cpp model id return `UNIMPLEMENTED` by name from grpc-asr. Whisper.cpp-servable presets (`WHISPER_TINY` .. `WHISPER_TURBO`) fill `TranscribeOptions.model` when it is empty. |
+| Rich heading text in chunk headings (docling-core #924) | Hierarchical (and hybrid) chunking: when a section header's own text is empty and it has exactly one inline text, formula, or code child, that child's text is the heading context in `DocMeta.headings`. | Own text always wins over a child. |
+| Page range clamp to int32 (jobkit #282) | `page_range` rejects only `end < start`. At apply time `start` and `end` clamp into `[1, 2147483647]`. | Matches jobkit's int32 clamp so a client that sends 0 or a value above INT32_MAX does not silently select nothing. |
+| `ZipArchiveResult.filename` (slim 2.143.0) | Not on gRParse's parse wire. | Serve/jobkit result field; tracked on the docling-serve fork. gRParse does not expand multi-file ZIP inputs as a container (ZIP bytes route by content sniff to office/epub/iWork collectors), so `__MACOSX/`, `._*`, and `.DS_Store` member skipping does not apply here. |
+| ASR `is_valid_end` / new serve-only fields | Not taken. | Not on docling-serve's request model for convert; no gRParse option. |
+
+### Open
+
+- `mineru2` conversion remains `UNIMPLEMENTED` (enum value 13 is on the wire and mapped; the two-pass protocol is not driven).
+- transformers / mlx-whisper / native-whisper ASR engines stay typed and `UNIMPLEMENTED` in grpc-asr until those backends exist.
+- `trust_remote_code = true` on inline VLM engines stays `NOT_IMPLEMENTED`.
+- `extract_form_fields` unset still folds widgets (gRParse default); docling unset is false.
+- Remaining nested OCR fields are represented on the wire but rejected until implemented; they must not silently change the requested configuration.

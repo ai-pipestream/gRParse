@@ -54,10 +54,11 @@ function stageProtos() {
     ["parse.proto", "ai/pipestream/parse/v1/parse.proto"],
     ["parse_stream.proto", "ai/pipestream/parse/v1/parse_stream.proto"],
     // parse_types.proto imports the collector contracts whose typed rules it
-    // carries (ebcdic_layout, lol_html_options).
+    // carries (ebcdic_layout, lol_html_options, asr_options.remote).
     ["collectors/ebcdic.proto", "ai/pipestream/ebcdic/v1/ebcdic.proto"],
     ["collectors/lolhtml_types.proto", "lolhtml/v1/types.proto"],
     ["collectors/lolhtml_service.proto", "lolhtml/v1/lolhtml_service.proto"],
+    ["collectors/asr_service.proto", "ai/pipestream/asr/v1/asr_service.proto"],
     // document.proto imports the OpenNLP analysis document (Document.analyses).
     ["collectors/opennlp_document.proto", "org/apache/opennlp/grpc/v1/opennlp_document.proto"],
     ["collectors/opennlp_annotations.proto", "org/apache/opennlp/grpc/v1/opennlp_annotations.proto"],

@@ -1139,8 +1139,73 @@ void verify_picture_description_custom_config_is_wired() {
   require(call.has_value() && call->prompt.empty(), "nothing set sends no prompt");
 }
 
+void verify_unimplemented_nested_ocr_options() {
+  for (const bool value : {false, true}) {
+    parsev1::ConvertDocumentOptions options;
+    options.mutable_rapidocr()->set_use_rec(value);
+    require(grparse::validate_options(options, kSurface).error_code() == grpc::StatusCode::UNIMPLEMENTED,
+            "unsupported rapidocr.use_rec must not silently succeed");
+    options.clear_rapidocr();
+    options.mutable_ocr_auto()->mutable_base()->set_force_full_page_ocr(value);
+    require(grparse::validate_options(options, kSurface).error_code() == grpc::StatusCode::UNIMPLEMENTED,
+            "unsupported nested force_full_page_ocr must not silently succeed");
+  }
+}
+
+void verify_replace_broken_and_rapidocr_orientation_options() {
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.mutable_rapidocr()->mutable_base()->set_replace_broken_text_layer(true);
+    require(grparse::validate_options(options, kSurface).ok(),
+            "rapidocr.base.replace_broken_text_layer true is accepted");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.set_force_ocr(true);
+    options.mutable_ocr_auto()->mutable_base()->set_replace_broken_text_layer(true);
+    require_invalid(grparse::validate_options(options, kSurface), "force_ocr");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.mutable_rapidocr()->set_detect_orientation(true);
+    require(grparse::validate_options(options, kSurface).ok(),
+            "rapidocr.detect_orientation true is accepted");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.mutable_easyocr();
+    require_equal(static_cast<int>(grparse::validate_options(options, kSurface).error_code()),
+                  static_cast<int>(grpc::StatusCode::UNIMPLEMENTED),
+                  "easyocr arm is UNIMPLEMENTED");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.mutable_nemotron_ocr();
+    require_equal(static_cast<int>(grparse::validate_options(options, kSurface).error_code()),
+                  static_cast<int>(grpc::StatusCode::UNIMPLEMENTED),
+                  "nemotron_ocr arm is UNIMPLEMENTED");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.mutable_page_range()->set_start(0);
+    options.mutable_page_range()->set_end(3);
+    // start < 1 is clamped at apply time; validation accepts the span shape.
+    require(grparse::validate_options(options, kSurface).ok(),
+            "page_range start below 1 is accepted for clamp");
+  }
+  {
+    parsev1::ConvertDocumentOptions options;
+    options.mutable_page_range()->set_start(5);
+    options.mutable_page_range()->set_end(2);
+    require_invalid(grparse::validate_options(options, kSurface), "page_range");
+  }
+}
+
+
 int main() {
   return grparse_test::run_test_main("convert-options-test", "ok", {
+      verify_unimplemented_nested_ocr_options,
+      verify_replace_broken_and_rapidocr_orientation_options,
       verify_picture_description_custom_config_is_wired,
       verify_typed_rejections_and_heading_options,
       verify_vlm_response_formats_are_typed,

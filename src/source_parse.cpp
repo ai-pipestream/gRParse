@@ -218,6 +218,16 @@ bool implemented_option(std::string_view name) {
       "structure_repairs",
       "structure_table_cell_limits",
       "extract_form_fields",
+      "ocr_options",
+      "ocr_auto",
+      "easyocr",
+      "tesseract",
+      "tesseract_cli",
+      "rapidocr",
+      "ocrmac",
+      "nemotron_ocr",
+      "kserve_v2_ocr",
+      "asr_options",
   };
   return std::ranges::find(kImplemented, name) != std::end(kImplemented);
 }
@@ -917,6 +927,9 @@ grpc::Status resolve_collector_rules(const pipestream::parse::v1::ConvertDocumen
     }
     rules->lol_html = std::move(parsed);
   }
+  if (options.has_asr_options()) {
+    rules->asr_options = options.asr_options();
+  }
   return grpc::Status::OK;
 }
 
@@ -1149,6 +1162,14 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
       validate_ocr_tuning(options.has_do_ocr(), options.do_ocr(), options.force_ocr(),
                           options.has_render_scale(), options.render_scale());
   if (!tuning_status.ok()) return tuning_status;
+  std::optional<bool> replace_broken;
+  const grpc::Status replace_status =
+      resolve_replace_broken_text_layer(options, &replace_broken);
+  if (!replace_status.ok()) return replace_status;
+  std::optional<bool> detect_orientation;
+  const grpc::Status orientation_status =
+      resolve_rapidocr_detect_orientation(options, &detect_orientation);
+  if (!orientation_status.ok()) return orientation_status;
   const grpc::Status unread_status = validate_unread_options(options, surface);
   if (!unread_status.ok()) return unread_status;
   CollectorRules rules;
@@ -1253,7 +1274,11 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
   if (options.has_page_range()) {
     const int start = options.page_range().start();
     const int end = options.page_range().end();
-    if (start < 1 || end < start) {
+    // Reject only inverted spans. Ends above int32 max cannot arrive on the
+    // wire (IntSpan is int32); a start below 1 is clamped at apply time to
+    // match jobkit normalize_page_range, but an explicit end < start stays
+    // INVALID_ARGUMENT so clients see the mistake.
+    if (end < start) {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                           surface + " page_range must be a 1-indexed inclusive span");
     }
@@ -1805,9 +1830,24 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   inputs.content_type = std::move(content_type);
   inputs.tuning = ocr_tuning(options.has_do_ocr(), options.do_ocr(), options.force_ocr(),
                              options.has_render_scale(), options.render_scale());
+  {
+    // validate_options already refused disagreeing / unsupported OCR arms.
+    std::optional<bool> replace_broken;
+    static_cast<void>(resolve_replace_broken_text_layer(options, &replace_broken));
+    if (replace_broken.value_or(false)) inputs.tuning.replace_broken_text_layer = true;
+    std::optional<bool> detect_orientation;
+    static_cast<void>(resolve_rapidocr_detect_orientation(options, &detect_orientation));
+    inputs.tuning.detect_orientation = detect_orientation;
+  }
   if (options.has_page_range()) {
-    inputs.tuning.page_range =
-        std::make_pair(options.page_range().start(), options.page_range().end());
+    // jobkit #282 / slim safe page clamp: [1, 2147483647], start <= end.
+    constexpr int kMaxSafePage = 2147483647;
+    int start = options.page_range().start();
+    int end = options.page_range().end();
+    if (start < 1) start = 1;
+    if (end > kMaxSafePage) end = kMaxSafePage;
+    if (start > end) end = start;
+    inputs.tuning.page_range = std::make_pair(start, end);
   }
   if (options.has_include_images()) {
     inputs.tuning.capture_picture_images = options.include_images();
