@@ -301,13 +301,13 @@ class FakeClient:
             raise Unreachable("down")
         return ServiceInfo(name="gRParse", version="test", target=self.target)
 
-    def convert_bytes(self, data: bytes, filename: str, *, formats=(), collectors=(), ebcdic_layout_json=None,
+    def convert_bytes(self, data: bytes, filename: str, *, formats=(), collectors=(), ebcdic_layout=None,
                       timeout=None, passwords=()):
         from scorecard.client import Unreachable
 
         from s3.formats import extension_of
 
-        self.calls.append((filename, tuple(collectors), ebcdic_layout_json))
+        self.calls.append((filename, tuple(collectors), ebcdic_layout))
         self.timeouts = getattr(self, "timeouts", []) + [timeout]
         self.passwords = getattr(self, "passwords", []) + [tuple(passwords)]
         self.formats = getattr(self, "formats", []) + [tuple(formats)]

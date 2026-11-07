@@ -10,6 +10,8 @@
 #include <system_error>
 #include <utility>
 
+#include <google/protobuf/unknown_field_set.h>
+
 #include "../src/parse_support.h"
 #include "../src/source_parse.h"
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
@@ -236,9 +238,37 @@ void verify_unread_options_are_rejected_unless_default() {
   }
 }
 
-// The per-collector rules travel typed; the deprecated JSON forms still work
-// alone, a request that sets both forms of one is refused, and lol-html JSON
-// that does not parse is refused up front instead of failing the leg.
+// A request built against an older contract that still carries one of the
+// retired JSON tags: the bytes a client stub of that contract would put on
+// the wire, parsed by today's schema, where the tag is reserved and lands in
+// the unknown-field set.
+parsev1::ConvertDocumentOptions options_with_retired_tag(int tag, const std::string& payload) {
+  google::protobuf::UnknownFieldSet old_contract;
+  old_contract.AddLengthDelimited(tag, payload);
+  std::string wire;
+  require(old_contract.SerializeToString(&wire), "the old-contract bytes serialize");
+  parsev1::ConvertDocumentOptions options;
+  require(options.ParseFromString(wire), "the retired tag still parses as an unknown field");
+  return options;
+}
+
+void require_retired(const grpc::Status& status, const std::string& retired,
+                     const std::string& typed) {
+  require_invalid(status, retired);
+  require(status.error_message().contains("send the typed " + typed + " instead"),
+          "the rejection names the typed field: " + status.error_message());
+  google::rpc::Status detail;
+  require(detail.ParseFromString(status.error_details()) && detail.details_size() == 1,
+          "the rejection carries one typed detail");
+  parsev1::OptionRejection rejection;
+  require(detail.details(0).UnpackTo(&rejection), "the detail is an OptionRejection");
+  require_equal(rejection.option_path(), retired, "the detail names the retired option");
+}
+
+// The per-collector rules travel typed and only typed: the JSON spellings
+// at tags 45 and 46 are reserved, and a request that still sends either is
+// refused by name, pointing at the typed field, rather than having its rules
+// silently dropped.
 void verify_collector_rules_are_typed() {
   {
     parsev1::ConvertDocumentOptions options;
@@ -248,31 +278,71 @@ void verify_collector_rules_are_typed() {
     require(status.ok(), "the typed rules pass: " + status.error_message());
   }
   {
-    parsev1::ConvertDocumentOptions options;
-    options.set_ebcdic_layout_json(R"({"records": []})");
-    options.set_lol_html_options_json(R"({"rules":[{"id":"links","selector":"a"}]})");
-    const grpc::Status status = grparse::validate_options(options, kSurface);
-    require(status.ok(), "the deprecated JSON forms still pass alone: " + status.error_message());
+    const auto* descriptor = parsev1::ConvertDocumentOptions::descriptor();
+    require(descriptor->FindFieldByNumber(45) == nullptr &&
+                descriptor->FindFieldByNumber(46) == nullptr,
+            "tags 45 and 46 are no longer fields");
+    require(descriptor->IsReservedNumber(45) && descriptor->IsReservedNumber(46),
+            "tags 45 and 46 are reserved, never reused");
+    require(descriptor->IsReservedName("ebcdic_layout_json") &&
+                descriptor->IsReservedName("lol_html_options_json"),
+            "the retired names are reserved");
   }
   {
-    parsev1::ConvertDocumentOptions options;
-    options.mutable_ebcdic_layout()->add_records()->set_name("CUSTOMER");
-    options.set_ebcdic_layout_json(R"({"records": []})");
-    require_invalid(grparse::validate_options(options, kSurface),
-                    "ebcdic_layout and the deprecated ebcdic_layout_json");
+    const auto options = options_with_retired_tag(45, R"({"records": []})");
+    require(options.GetReflection()->GetUnknownFields(options).field_count() == 1,
+            "tag 45 survives the parse as an unknown field");
+    require_retired(grparse::validate_options(options, kSurface), "ebcdic_layout_json",
+                    "ebcdic_layout");
   }
   {
-    parsev1::ConvertDocumentOptions options;
+    const auto options =
+        options_with_retired_tag(46, R"({"rules":[{"id":"links","selector":"a"}]})");
+    require_retired(grparse::validate_options(options, kSurface), "lol_html_options_json",
+                    "lol_html_options");
+  }
+  {
+    // The typed twin beside the retired tag does not excuse it: the old
+    // bytes would otherwise vanish without a word.
+    auto options = options_with_retired_tag(46, "not json");
     options.mutable_lol_html_options()->add_rules()->set_id("links");
-    options.set_lol_html_options_json(R"({"rules":[]})");
-    require_invalid(grparse::validate_options(options, kSurface),
-                    "lol_html_options and the deprecated lol_html_options_json");
+    require_retired(grparse::validate_options(options, kSurface), "lol_html_options_json",
+                    "lol_html_options");
   }
   {
-    parsev1::ConvertDocumentOptions options;
-    options.set_lol_html_options_json("not json");
-    require_invalid(grparse::validate_options(options, kSurface), "lolhtml.v1.ExtractOptions");
+    auto options = options_with_retired_tag(45, "");
+    options.mutable_ebcdic_layout()->add_records()->set_name("CUSTOMER");
+    require_retired(grparse::validate_options(options, kSurface), "ebcdic_layout_json",
+                    "ebcdic_layout");
   }
+  {
+    // An unknown tag that was never one of these is not mistaken for one.
+    parsev1::ConvertDocumentOptions options;
+    options.GetReflection()->MutableUnknownFields(&options)->AddVarint(999, 1);
+    const grpc::Status status = grparse::validate_options(options, kSurface);
+    require(status.ok(), "an unrelated unknown tag is not a retired option: " +
+                             status.error_message());
+  }
+}
+
+// The open bags beside typed twins are retired additively: the failure
+// detail map is reserved (number and name), and the stringified chunk
+// metadata keeps its tag but is marked deprecated while typed_metadata and
+// text_source carry its content.
+void verify_retired_bags_stay_reserved() {
+  const auto* failure = parsev1::PublicFailureInfo::descriptor();
+  require(failure->FindFieldByNumber(5) == nullptr && failure->IsReservedNumber(5) &&
+              failure->IsReservedName("details"),
+          "PublicFailureInfo.details is reserved, number and name");
+  const auto* chunk = parsev1::Chunk::descriptor();
+  const auto* metadata = chunk->FindFieldByNumber(10);
+  require(metadata != nullptr && metadata->name() == "metadata" &&
+              metadata->options().deprecated(),
+          "Chunk.metadata keeps its tag for existing readers, deprecated");
+  const auto* text_source = chunk->FindFieldByName("text_source");
+  require(text_source != nullptr && text_source->number() == 18 &&
+              text_source->enum_type() == parsev1::ChunkTextSource_descriptor(),
+          "Chunk.text_source is the typed enum at a new tag");
 }
 
 // The PDF signature outranks the name: a header in the first kilobyte is a
@@ -1290,6 +1360,7 @@ int main() {
       verify_hybrid_chunking_is_validated,
       verify_unread_options_are_rejected_unless_default,
       verify_collector_rules_are_typed,
+      verify_retired_bags_stay_reserved,
       verify_is_pdf_prefers_the_signature,
       verify_status_from_exception_covers_every_throw,
       verify_outcome_from_exception_is_a_failure,

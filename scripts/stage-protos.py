@@ -20,12 +20,21 @@ PATTERN = re.compile(
     r'configure_file\(\s*(?P<src>[^\s)]+\.proto)\s+"\$\{STAGED_PROTO_DIR\}/(?P<dest>[^"]+\.proto)"\s+COPYONLY\s*\)'
 )
 
+# breaking: FILE, except that a field may be deleted once both its number
+# and its name are reserved (the way a retired field leaves the contract,
+# #253), and a message may be deleted (a map field's synthetic entry goes with
+# it; a message still referenced fails as a field type change).
 BUF_YAML = """version: v2
 modules:
   - path: .
 breaking:
   use:
     - FILE
+    - FIELD_NO_DELETE_UNLESS_NUMBER_RESERVED
+    - FIELD_NO_DELETE_UNLESS_NAME_RESERVED
+  except:
+    - FIELD_NO_DELETE
+    - MESSAGE_NO_DELETE
 lint:
   use:
     - STANDARD

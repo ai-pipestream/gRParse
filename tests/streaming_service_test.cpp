@@ -3668,8 +3668,10 @@ void verify_hierarchical_chunk_rpc_carries_digest_and_offsets(TestServer* server
             "the chunk span is the parse's own offset entry");
     require(chunk.page_numbers_size() == 1 && chunk.page_numbers(0) == index + 1,
             "the chunk carries the page it came from");
-    require(chunk.metadata().at("text_source") == "ocr",
-            "the recognized-text source rides as metadata");
+    require(chunk.metadata().empty() &&
+                chunk.typed_metadata().at("text_source").string_value() == "ocr" &&
+                chunk.text_source() == ai::pipestream::parse::v1::CHUNK_TEXT_SOURCE_OCR,
+            "the recognized-text source rides typed, never as string metadata");
     const std::string producer =
         std::string("grparse-") + GRPARSE_VERSION + "-" + GRPARSE_ORT_PACKAGE_NAME;
     require(chunk.producer() == producer, "every chunk names the build that produced it");
