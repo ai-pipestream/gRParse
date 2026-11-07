@@ -500,7 +500,7 @@ enum Collector {
   COLLECTOR_XML = 7;
   // The grpc-ebcdic collector. Never routed by format: raw EBCDIC has no
   // extension or magic worth trusting, and a parse needs a layout. Select
-  // it explicitly and supply ebcdic_layout_json.
+  // it explicitly and supply ebcdic_layout.
   COLLECTOR_EBCDIC = 8;
   // The grpc-epub collector. The default for .epub inputs; requires a
   // configured endpoint.
@@ -513,7 +513,7 @@ enum Collector {
   // The grpc-lol-html selector-extraction collector. Never routed by
   // format: it reports what its CSS selector rules match and nothing else,
   // so a parse needs rules. Select it explicitly and supply
-  // lol_html_options_json; HTML with no selection routes to
+  // lol_html_options; HTML with no selection routes to
   // COLLECTOR_MARKUP for whole-document conversion instead.
   COLLECTOR_LOL_HTML = 11;
   // The fastwarc-grpc WARC archive collector. The default for .warc and its
@@ -1448,16 +1448,12 @@ message ConvertDocumentOptions {
   // a failed collector degrades to an error entry instead of failing the
   // parse while any collector succeeds.
   repeated Collector collectors = 44;
-  // Deprecated: use ebcdic_layout. Parsing rules for COLLECTOR_EBCDIC as
-  // the JSON serialization of that collector's EbcdicLayout model,
-  // forwarded verbatim to the collector's ParseOptions.layout_json. Setting
-  // it together with ebcdic_layout is rejected.
-  optional bytes ebcdic_layout_json = 45;
-  // Deprecated: use lol_html_options. Extraction rules for
-  // COLLECTOR_LOL_HTML as the protobuf JSON serialization of
-  // lolhtml.v1.ExtractOptions. Setting it together with lol_html_options is
-  // rejected, and so is JSON that does not parse as that message.
-  optional bytes lol_html_options_json = 46;
+  // 45 and 46 were ebcdic_layout_json and lol_html_options_json, the JSON
+  // spellings of ebcdic_layout (63) and lol_html_options (64). They are
+  // retired: a request that still carries either tag is rejected with
+  // INVALID_ARGUMENT naming the typed field to use instead.
+  reserved 45, 46;
+  reserved "ebcdic_layout_json", "lol_html_options_json";
   // The CV path's rasterization scale, in multiples of 72 DPI (1.0 renders
   // pages at 72 DPI). Unset keeps the server default of 200 DPI (about
   // 2.78). The accepted range is [1.0, 8.0]; values outside it are rejected
@@ -1512,15 +1508,13 @@ message ConvertDocumentOptions {
   // Opt-in structural repairs, applied before structure_validation runs.
   optional StructureRepairs structure_repairs = 62;
   // Parsing rules for COLLECTOR_EBCDIC: that collector's own typed layout,
-  // forwarded as its ParseOptions.layout. Required (this or the deprecated
-  // ebcdic_layout_json) when COLLECTOR_EBCDIC is selected: that collector
-  // cannot decode a byte without a layout, and raw EBCDIC is never routed by
-  // format.
+  // forwarded as its ParseOptions.layout. Required when COLLECTOR_EBCDIC is
+  // selected: that collector cannot decode a byte without a layout, and raw
+  // EBCDIC is never routed by format.
   optional ai.pipestream.ebcdic.v1.EbcdicLayout ebcdic_layout = 63;
   // Extraction rules for COLLECTOR_LOL_HTML: that collector's own typed
   // ExtractOptions (rules, document_rule, encoding, limits, and so on),
-  // forwarded as is. Required (this or the deprecated
-  // lol_html_options_json) when COLLECTOR_LOL_HTML is selected: that
+  // forwarded as is. Required when COLLECTOR_LOL_HTML is selected: that
   // collector extracts what its CSS selector rules name, and this client
   // never invents rules.
   optional lolhtml.v1.ExtractOptions lol_html_options = 64;
@@ -1684,14 +1678,17 @@ message ErrorItem {
 
 // PublicFailureInfo is the client-facing account of a failed task or stream:
 // classified, with whether a retry can help and where in the task's life it
-// happened. `details` is free-form producer detail (a collector name, a
-// deadline), never a stringified structure.
+// happened. Producer detail is typed: a producer that needs to name a
+// collector or a deadline adds a typed field for it (a Collector, a
+// google.protobuf.Timestamp), never an open string map.
 message PublicFailureInfo {
   FailureCategory category = 1;
   string message = 2;
   bool retryable = 3;
   FailurePhase phase = 4;
-  map<string, string> details = 5;
+  // 5 was `map<string, string> details`, an open bag no producer wrote.
+  reserved 5;
+  reserved "details";
   optional string category_raw = 6;
   optional string phase_raw = 7;
 }
@@ -2008,9 +2005,11 @@ message Chunk {
   repeated string captions = 7;
   repeated string doc_items = 8;
   repeated int32 page_numbers = 9;
-  // Chunk metadata, stringified. Kept for existing readers; `typed_metadata`
-  // carries the same keys with their types.
-  map<string, string> metadata = 10;
+  // Deprecated and no longer written: always empty. It was the stringified
+  // twin of `typed_metadata`, which carries the same keys with their types;
+  // read that (and `text_source`) instead. The tag is reserved in a later
+  // release.
+  map<string, string> metadata = 10 [deprecated = true];
   // Half-open [start_offset, end_offset) span of the chunk in the document's
   // concatenated text stream (furniture included), counted in UTF-8 CODE
   // POINTS, not bytes.
@@ -2030,10 +2029,11 @@ message Chunk {
   //                 (one line on the wire, T "wordish/1" or "hf/1",
   //                  N decimal, B "true" or "false")
   string rules_digest = 13;
-  // The same metadata as `metadata`, typed:
+  // The chunk's metadata, typed:
   //   "min_confidence"  double, the weakest OCR confidence among the chunk's
   //                     items (absent when no item carried one)
-  //   "text_source"     string, "digital" | "ocr" | "mixed"
+  //   "text_source"     string, "digital" | "ocr" | "mixed" (the same
+  //                     reading as the `text_source` enum field)
   //   "language"        string, the language tag every text item of the
   //                     chunk carries (each item's own meta.language, else
   //                     the document's source_meta.language), in canonical
@@ -2058,6 +2058,22 @@ message Chunk {
   // its binary_hash or parse identity. A stored vector whose key a fresh
   // chunking no longer produces is stale.
   string chunk_key = 17;
+  // Where the chunk's text came from, by the offset table's per-item source:
+  // DIGITAL or OCR when every item with a source agrees, MIXED when they
+  // differ, UNSPECIFIED when the offset table gives no item of the chunk a
+  // source.
+  ChunkTextSource text_source = 18;
+}
+
+// ChunkTextSource is where one chunk's text came from (Chunk.text_source).
+enum ChunkTextSource {
+  CHUNK_TEXT_SOURCE_UNSPECIFIED = 0;
+  // Every item read from a digital text layer.
+  CHUNK_TEXT_SOURCE_DIGITAL = 1;
+  // Every item recognized by OCR.
+  CHUNK_TEXT_SOURCE_OCR = 2;
+  // Items of both kinds.
+  CHUNK_TEXT_SOURCE_MIXED = 3;
 }
 
 // ChunkDocumentResponse mirrors the REST chunk response body.

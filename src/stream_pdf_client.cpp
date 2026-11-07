@@ -188,7 +188,7 @@ int main(int argc, char** argv) {
       for (const auto& picture : event.page().pictures()) {
         if (picture.has_image()) ++picture_images;
         for (const auto& annotation : picture.annotations()) {
-          if (annotation.has_misc() && annotation.misc().kind() == "barcode") ++barcodes;
+          if (annotation.has_barcode()) ++barcodes;
         }
       }
       std::println("page={} text_items={} digital_items={} ocr_items={} labelled={} tables={} "

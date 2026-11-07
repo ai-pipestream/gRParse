@@ -312,6 +312,26 @@ void require_no_colon_keys(const docv1::Document& document, const std::string& w
   }
 }
 
+// Structured facts ride typed annotation arms (a decoded code is the
+// barcode arm); the open MiscAnnotation Struct is the bag they degrade into,
+// and no producer writes one.
+void require_no_misc_annotations(const docv1::Document& document, const std::string& what) {
+  for (const docv1::PictureItem& item : document.pictures()) {
+    for (const docv1::PictureAnnotation& annotation : item.annotations()) {
+      require(!annotation.has_misc(),
+              what + " wrote a misc annotation on " + item.self_ref() + ": " +
+                  annotation.misc().kind());
+    }
+  }
+  for (const docv1::TableItem& item : document.tables()) {
+    for (const docv1::TableAnnotation& annotation : item.annotations()) {
+      require(!annotation.has_misc(),
+              what + " wrote a misc annotation on " + item.self_ref() + ": " +
+                  annotation.misc().kind());
+    }
+  }
+}
+
 const docv1::TableCell* cell_at(const docv1::TableData& data, int row, int column) {
   for (const docv1::TableCell& cell : data.table_cells()) {
     if (cell.start_row_offset_idx() == row && cell.start_col_offset_idx() == column) return &cell;
@@ -374,6 +394,7 @@ void verify_the_chart_composite_is_exactly_one_of_each() {
   require(after.charts_bound - before.charts_bound == 1, "one chart binding is counted");
   require(after.chart_captions - before.chart_captions == 1, "one minted caption is counted");
   require_no_colon_keys(document, "the chart fold");
+  require_no_misc_annotations(document, "the chart fold");
   require(integrity_errors(document).empty(), "the chart composite is well formed");
 }
 
@@ -402,6 +423,7 @@ void verify_sheet_header_marking_keeps_the_spans() {
   require(after.sheet_header_rows - before.sheet_header_rows == 1,
           "one marked header row is counted");
   require_no_colon_keys(document, "the sheet fold");
+  require_no_misc_annotations(document, "the sheet fold");
   require(integrity_errors(document).empty(), "the sheet stays well formed");
 }
 
@@ -430,6 +452,7 @@ void verify_inline_drawings_keep_their_place_and_their_types() {
             "each drawing carries page-local provenance");
   }
   require_no_colon_keys(document, "the text document fold");
+  require_no_misc_annotations(document, "the text document fold");
   require(integrity_errors(document).empty(),
           "the inline drawings stay well formed");
 }

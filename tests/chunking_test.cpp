@@ -2,10 +2,12 @@
 #include <cmath>
 #include <cstdlib>
 #include <format>
+#include <initializer_list>
 #include <print>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <google/protobuf/io/coded_stream.h>
@@ -609,12 +611,21 @@ void verify_pages_items_and_offsets_propagate() {
               static_cast<std::uint64_t>(sparrows->end_offset()) == entry.end,
           "the span is the item's own entry");
   require_eq(sparrows->page_numbers(0), 1, "the chunk carries the item's page");
-  require_eq(sparrows->metadata().at("min_confidence"), "0.94",
-             "the lowest collector confidence rides as metadata");
-  require_eq(sparrows->metadata().at("text_source"), "digital",
-             "the offset table's source rides as metadata");
-  // The typed twin carries the same keys with their types, plus the source
-  // document's identity when the origin states it.
+  // The deprecated string map is no longer written; the typed map carries
+  // the keys with their types, plus the source document's identity when the
+  // origin states it.
+  require(sparrows->metadata().empty(), "the stringified metadata map stays empty");
+  require(sparrows->typed_metadata().at("min_confidence").kind_case() ==
+                  parsev1::ScalarValue::kDoubleValue &&
+              std::abs(sparrows->typed_metadata().at("min_confidence").double_value() - 0.94) <
+                  1e-6,
+          "the lowest collector confidence rides typed, as a double");
+  require(sparrows->typed_metadata().at("text_source").kind_case() ==
+                  parsev1::ScalarValue::kStringValue &&
+              sparrows->typed_metadata().at("text_source").string_value() == "digital",
+          "the offset table's source rides typed, as a string");
+  require(sparrows->text_source() == parsev1::CHUNK_TEXT_SOURCE_DIGITAL,
+          "the offset table's source rides as the enum field too");
   require(!sparrows->typed_metadata().contains("binary_hash") &&
               !sparrows->typed_metadata().contains("mimetype"),
           "an origin without a hash or mimetype stamps neither");
@@ -626,9 +637,10 @@ void verify_pages_items_and_offsets_propagate() {
   require(stamped != nullptr, "the paragraph must chunk with an origin too");
   const auto& typed = stamped->typed_metadata();
   require(std::abs(typed.at("min_confidence").double_value() - 0.94) < 1e-6,
-          "typed min_confidence is the double the string spells");
+          "typed min_confidence is the item's confidence as a double");
   require_eq(typed.at("text_source").string_value(), "digital",
-             "typed text_source matches the string form");
+             "typed text_source names the source");
+  require(stamped->metadata().empty(), "an origin does not bring the string map back");
   require(typed.at("binary_hash").uint_value() == 0xFFFFFFFFFFFFFFF0ULL,
           "the chunk names its document's origin hash, above int64 range intact");
   require_eq(typed.at("mimetype").string_value(), "application/pdf",
@@ -642,8 +654,9 @@ void verify_pages_items_and_offsets_propagate() {
           static_cast<std::uint64_t>(list->end_offset()) ==
               offsets.at(list->doc_items(2)).end,
           "the list span is the union of its items' entries");
-  require_eq(list->metadata().at("min_confidence"), "0.62",
-             "the list reports the lowest confidence of its items");
+  require(std::abs(list->typed_metadata().at("min_confidence").double_value() - 0.62) < 1e-6,
+          "the list reports the lowest confidence of its items");
+  require(list->metadata().empty(), "the list writes no string metadata");
 
   // A single missing entry withdraws the whole span rather than reporting a
   // partial one.
@@ -659,7 +672,8 @@ void verify_pages_items_and_offsets_propagate() {
   for (const auto& chunk : no_offsets) {
     require(!chunk.has_start_offset() && !chunk.has_end_offset(),
             "a document with no offset table yields no invented spans");
-    require(!chunk.metadata().contains("text_source"),
+    require(!chunk.typed_metadata().contains("text_source") &&
+                chunk.text_source() == parsev1::CHUNK_TEXT_SOURCE_UNSPECIFIED,
             "text_source is reported only when the offset table provides it");
   }
 }
@@ -677,12 +691,20 @@ void verify_mixed_text_source_is_reported() {
   offsets[items.at(1)] = OffsetEntry{10, 11, parsev1::TEXT_SOURCE_OCR};
   const auto chunks = chunk_hierarchical(document, offsets, {}, "mix.pdf");
   require(chunks.size() == 3, "one chunk per paragraph plus the list");
-  require_eq(find_chunk(chunks, "one")->metadata().at("text_source"), "digital",
-             "a digital-only chunk");
-  require_eq(find_chunk(chunks, "two")->metadata().at("text_source"), "ocr",
-             "an OCR-only chunk");
-  require_eq(find_chunk(chunks, "- a")->metadata().at("text_source"), "mixed",
-             "a chunk spanning both sources");
+  const auto source_of = [&chunks](const std::string& text) {
+    const auto* chunk = find_chunk(chunks, text);
+    require(chunk != nullptr, "the chunk must exist: " + text);
+    require(chunk->metadata().empty(), "no string metadata on: " + text);
+    return std::pair{chunk->typed_metadata().at("text_source").string_value(),
+                     chunk->text_source()};
+  };
+  require(source_of("one") == std::pair{std::string("digital"),
+                                        parsev1::CHUNK_TEXT_SOURCE_DIGITAL},
+          "a digital-only chunk");
+  require(source_of("two") == std::pair{std::string("ocr"), parsev1::CHUNK_TEXT_SOURCE_OCR},
+          "an OCR-only chunk");
+  require(source_of("- a") == std::pair{std::string("mixed"), parsev1::CHUNK_TEXT_SOURCE_MIXED},
+          "a chunk spanning both sources");
 }
 
 void verify_non_body_layers_are_skipped() {
@@ -1140,14 +1162,49 @@ void set_language(docv1::Document* document, const std::string& ref, const std::
 }
 
 std::string language_key(const parsev1::Chunk& chunk) {
+  require(chunk.metadata().empty(), "the language rides typed only");
   const auto typed = chunk.typed_metadata().find("language");
-  const auto plain = chunk.metadata().find("language");
-  require((typed == chunk.typed_metadata().end()) == (plain == chunk.metadata().end()),
-          "metadata and typed_metadata agree on whether a language is reported");
   if (typed == chunk.typed_metadata().end()) return {};
-  require(typed->second.string_value() == plain->second,
-          "metadata and typed_metadata report the same language");
-  return plain->second;
+  require(typed->second.kind_case() == parsev1::ScalarValue::kStringValue,
+          "typed_metadata reports the language as a string");
+  return typed->second.string_value();
+}
+
+// Both chunkers write the chunk's metadata typed only: the deprecated string
+// map stays empty, and typed_metadata carries min_confidence as a double,
+// text_source and language as strings, beside the text_source enum field.
+void verify_chunk_metadata_is_typed_only() {
+  docv1::Document document = new_document();
+  document.mutable_source_meta()->set_language("en");
+  const std::string scanned = add_paragraph(&document, "scanned words", 1);
+  set_confidence(&document, scanned, 0.5);
+  OffsetTable offsets;
+  offsets[scanned] = OffsetEntry{0, 13, parsev1::TEXT_SOURCE_OCR};
+  std::vector<parsev1::Chunk> hybrid;
+  require(chunk_hybrid(document, offsets, hybrid_options(64), "scan.pdf", &hybrid).ok(),
+          "hybrid chunking succeeds");
+  const auto hierarchical = chunk_hierarchical(document, offsets, {}, "scan.pdf");
+  for (const std::vector<parsev1::Chunk>* chunks :
+       std::initializer_list<const std::vector<parsev1::Chunk>*>{&hierarchical, &hybrid}) {
+    require(chunks->size() == 1, "one paragraph, one chunk");
+    const parsev1::Chunk& chunk = chunks->front();
+    require(chunk.metadata().empty(), "the stringified metadata map is never written");
+    const auto& typed = chunk.typed_metadata();
+    require(typed.contains("min_confidence") &&
+                typed.at("min_confidence").kind_case() == parsev1::ScalarValue::kDoubleValue &&
+                std::abs(typed.at("min_confidence").double_value() - 0.5) < 1e-9,
+            "min_confidence is a double");
+    require(typed.contains("text_source") &&
+                typed.at("text_source").kind_case() == parsev1::ScalarValue::kStringValue &&
+                typed.at("text_source").string_value() == "ocr",
+            "text_source is a string");
+    require(typed.contains("language") &&
+                typed.at("language").kind_case() == parsev1::ScalarValue::kStringValue &&
+                typed.at("language").string_value() == "en",
+            "language is a string");
+    require(chunk.text_source() == parsev1::CHUNK_TEXT_SOURCE_OCR,
+            "the enum field names the same source");
+  }
 }
 
 void verify_chunk_language_is_the_declared_one() {
@@ -1363,6 +1420,7 @@ const Case kCases[] = {
     {"shared caption claiming", verify_a_shared_caption_is_claimed_once},
     {"pages, items and offsets", verify_pages_items_and_offsets_propagate},
     {"text source metadata", verify_mixed_text_source_is_reported},
+    {"chunk metadata is typed only", verify_chunk_metadata_is_typed_only},
     {"content layers", verify_non_body_layers_are_skipped},
     {"span contiguity", verify_chunk_spans_are_ordered_and_disjoint},
     {"wordish/1 counts", verify_wordish_token_counts},

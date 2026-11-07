@@ -9,6 +9,7 @@ the summary and metric layers never import grpc or the generated stubs.
 from __future__ import annotations
 
 import base64
+import json
 import sys
 import tempfile
 import time
@@ -57,6 +58,43 @@ EXPORT_FIELDS = {
     "CANONICAL_JSON": "canonical_json", "GDOCS_JSON": "gdocs_json", "DOCTAGS": "doctags",
     "DOCLANG": "doclang", "VTT": "vtt", "HTML_SPLIT_PAGE": "html_split_page", "YAML": "yaml",
 }
+
+
+def _fill_ebcdic_field(message: Any, field: dict[str, Any]) -> None:
+    message.name = field.get("name", "")
+    message.size = int(field.get("size", 0))
+    kind = str(field.get("type") or "string").upper()
+    if not kind.startswith("FIELD_TYPE_"):
+        kind = f"FIELD_TYPE_{kind}"
+    values = message.DESCRIPTOR.fields_by_name["type"].enum_type.values_by_name
+    if kind not in values:
+        raise ValueError(f"EBCDIC layout field {message.name!r}: unknown type {field.get('type')!r}")
+    message.type = values[kind].number
+    message.scale = int(field.get("scale") or 0)
+    message.picture = field.get("picture") or ""
+    if field.get("offset") is not None:
+        message.offset = int(field["offset"])
+
+
+def fill_ebcdic_layout(message: Any, docling_layout: bytes) -> None:
+    """Copy a Docling ``EbcdicLayout`` file onto the typed
+    ``ai.pipestream.ebcdic.v1.EbcdicLayout``, which mirrors that model one
+    for one (collectors/ebcdic.proto). gRParse takes the layout typed only;
+    the JSON spelling it once forwarded is retired."""
+    layout = json.loads(docling_layout)
+    message.description = layout.get("description") or ""
+    message.header_size = int(layout.get("header_size") or 0)
+    message.footer_size = int(layout.get("footer_size") or 0)
+    for prefix in ("record_length_field", "record_type_field"):
+        if layout.get(prefix) is not None:
+            _fill_ebcdic_field(getattr(message, prefix), layout[prefix])
+    for record in layout.get("records") or []:
+        typed = message.records.add()
+        typed.name = record.get("name") or ""
+        if record.get("selector") is not None:
+            typed.selector = str(record["selector"])
+        for field in record.get("fields") or []:
+            _fill_ebcdic_field(typed.fields.add(), field)
 
 
 @dataclass
@@ -111,11 +149,15 @@ class GrparseClient:
         return self.convert_bytes(path.read_bytes(), filename or path.name)
 
     def convert_bytes(self, data: bytes, filename: str, *, formats: tuple[str, ...] = DEFAULT_FORMATS,
-                      collectors: tuple[str, ...] = (), ebcdic_layout_json: bytes | None = None,
+                      collectors: tuple[str, ...] = (), ebcdic_layout: bytes | None = None,
                       timeout: float | None = None, passwords: tuple[str, ...] = ()) -> ConvertResult:
         """One ConvertSource over in-memory bytes (nothing touches disk). ``formats``
         are OutputFormat names without the prefix, ``collectors`` Collector enum
-        names without theirs; RPC failures are returned, not raised. ``passwords``
+        names without theirs; RPC failures are returned, not raised.
+        ``ebcdic_layout`` is a Docling ``EbcdicLayout`` file (the companion an
+        ``.ebc`` object travels with); it is sent as the typed
+        ``ConvertDocumentOptions.ebcdic_layout``, the only form gRParse
+        accepts. ``passwords``
         are candidates for an encrypted document: they ride the call's metadata
         (``document-password-bin``, one entry each, in order), never the request."""
         import grpc
@@ -131,8 +173,8 @@ class GrparseClient:
         for name in collectors:
             request.request.options.collectors.append(
                 self._parse_types_pb2.Collector.Value(f"COLLECTOR_{name}"))
-        if ebcdic_layout_json is not None:
-            request.request.options.ebcdic_layout_json = ebcdic_layout_json
+        if ebcdic_layout is not None:
+            fill_ebcdic_layout(request.request.options.ebcdic_layout, ebcdic_layout)
         started = time.monotonic()
         try:
             metadata = [(PASSWORD_METADATA_KEY, candidate.encode("utf-8")) for candidate in passwords]

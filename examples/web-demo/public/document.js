@@ -750,9 +750,8 @@ function buildPicture(record, ctx) {
         badges.appendChild(badge(`${top.className} ${Math.round((top.confidence || 0) * 100)}%`));
       }
     }
-    if (annotation.misc && annotation.misc.kind === "barcode") {
-      const content = structToPlain(annotation.misc.content);
-      if (content.value) badges.appendChild(badge(`${content.format || "barcode"}: ${content.value}`));
+    if (annotation.barcode && annotation.barcode.value) {
+      badges.appendChild(badge(`${annotation.barcode.format || "barcode"}: ${annotation.barcode.value}`));
     }
     if (annotation.description && annotation.description.text) {
       const description = el("div", "dv-figure-desc");

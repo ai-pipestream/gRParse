@@ -92,7 +92,8 @@ carries warm-up latency and, with a fresh stack, the first-touch caches).
 
 EBCDIC: raw records cannot be decoded without a layout, so an `.ebc` object
 is parsed with `COLLECTOR_EBCDIC` and the `<stem>.layout.json` object
-beside it; without one it is reported as skipped (a failure under
+beside it (a Docling `EbcdicLayout` file, sent as the typed
+`ConvertDocumentOptions.ebcdic_layout`); without one it is reported as skipped (a failure under
 `EVAL_REQUIRE=1`).
 
 ## The battery

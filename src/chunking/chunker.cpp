@@ -793,18 +793,36 @@ std::optional<std::string> chunk_language(const WorkChunk& work) {
   return *work.languages.begin();
 }
 
-// The typed twin of `metadata`: the same keys with their types, plus the
-// source document's identity (origin hash and mimetype), which the reference
-// chunker carries on every chunk's meta.
+// Where the chunk's text came from, by its items' offset table sources.
+parsev1::ChunkTextSource chunk_text_source(const WorkChunk& work) {
+  if (work.saw_digital && work.saw_ocr) return parsev1::CHUNK_TEXT_SOURCE_MIXED;
+  if (work.saw_digital) return parsev1::CHUNK_TEXT_SOURCE_DIGITAL;
+  if (work.saw_ocr) return parsev1::CHUNK_TEXT_SOURCE_OCR;
+  return parsev1::CHUNK_TEXT_SOURCE_UNSPECIFIED;
+}
+
+// The typed_metadata spelling of a text source; empty for UNSPECIFIED.
+std::string_view text_source_name(parsev1::ChunkTextSource source) {
+  switch (source) {
+    case parsev1::CHUNK_TEXT_SOURCE_DIGITAL: return "digital";
+    case parsev1::CHUNK_TEXT_SOURCE_OCR: return "ocr";
+    case parsev1::CHUNK_TEXT_SOURCE_MIXED: return "mixed";
+    default: return {};
+  }
+}
+
+// The chunk's typed metadata (the deprecated string `metadata` is no longer
+// written), plus the source document's identity (origin hash and mimetype),
+// which the reference chunker carries on every chunk's meta.
 void stamp_typed_metadata(const WorkChunk& work, const docv1::DocumentOrigin& origin,
                           parsev1::Chunk* chunk) {
   auto& typed = *chunk->mutable_typed_metadata();
   if (work.min_confidence.has_value()) {
     typed["min_confidence"].set_double_value(*work.min_confidence);
   }
-  if (work.saw_digital || work.saw_ocr) {
-    typed["text_source"].set_string_value(
-        work.saw_digital && work.saw_ocr ? "mixed" : (work.saw_digital ? "digital" : "ocr"));
+  if (const std::string_view source = text_source_name(chunk_text_source(work));
+      !source.empty()) {
+    typed["text_source"].set_string_value(std::string(source));
   }
   if (const auto language = chunk_language(work)) typed["language"].set_string_value(*language);
   if (origin.binary_hash() != 0) typed["binary_hash"].set_uint_value(origin.binary_hash());
@@ -847,17 +865,7 @@ parsev1::Chunk to_proto(const WorkChunk& work, int index, std::string_view filen
   for (const auto& caption : work.captions) chunk.add_captions(caption);
   for (const auto& item : work.doc_items) chunk.add_doc_items(item);
   for (const int page : work.pages) chunk.add_page_numbers(page);
-  if (work.min_confidence.has_value()) {
-    (*chunk.mutable_metadata())["min_confidence"] =
-        render::canonical_double(*work.min_confidence);
-  }
-  if (work.saw_digital || work.saw_ocr) {
-    (*chunk.mutable_metadata())["text_source"] =
-        work.saw_digital && work.saw_ocr ? "mixed" : (work.saw_digital ? "digital" : "ocr");
-  }
-  if (const auto language = chunk_language(work)) {
-    (*chunk.mutable_metadata())["language"] = *language;
-  }
+  chunk.set_text_source(chunk_text_source(work));
   if (work.offsets_known && work.offsets_complete) {
     chunk.set_start_offset(static_cast<std::int64_t>(work.start));
     chunk.set_end_offset(static_cast<std::int64_t>(work.end));

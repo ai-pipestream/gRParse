@@ -315,9 +315,29 @@ void verify_page_preview_becomes_page_image() {
   require(!bare_data.page_meta().has_image(), "no preview, no page image");
 }
 
-// Decoded barcode payloads become misc annotations with a machine-readable
-// struct, one annotation per payload, alongside any classification.
-void verify_barcode_payloads_become_misc_annotations() {
+// A decoded QR code on an unclassified figure yields exactly one
+// annotation, and it is the typed barcode arm.
+void verify_a_decoded_qr_is_exactly_one_typed_annotation() {
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1000, 1000, {line("caption", 100)}};
+  grparse::LayoutRegion figure{"picture", 0.7F, 0, 500, 1000, 800};
+  figure.barcodes = {{"QRCode", "https://example.com/qr"}};
+  page.regions = {figure};
+
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(page, 1, &cursor, &data);
+  require(data.pictures_size() == 1, "figure region must emit a picture");
+  const auto& picture = data.pictures(0);
+  require(picture.annotations_size() == 1, "one payload, one annotation");
+  require(picture.annotations(0).has_barcode() &&
+              picture.annotations(0).barcode().value() == "https://example.com/qr" &&
+              picture.annotations(0).barcode().format() == "QRCode",
+          "the one annotation is the typed barcode arm");
+}
+
+// Decoded barcode payloads become typed barcode annotations, one per
+// payload, alongside any classification; no misc-annotation Struct copy.
+void verify_barcode_payloads_become_typed_annotations() {
   grparse::AssemblyCursor cursor;
   grparse::OcrPage page{1000, 1000, {line("caption", 100)}};
   grparse::LayoutRegion figure{"picture", 0.7F, 0, 500, 1000, 800};
@@ -329,24 +349,19 @@ void verify_barcode_payloads_become_misc_annotations() {
   grparse::append_page_data(page, 1, &cursor, &data);
   require(data.pictures_size() == 1, "figure region must emit a picture");
   const auto& picture = data.pictures(0);
-  require(picture.annotations_size() == 5,
-          "classification plus a typed arm and a legacy misc per payload");
+  require(picture.annotations_size() == 3,
+          "classification plus exactly one typed arm per payload");
   require(picture.annotations(0).has_classification(), "classification annotation stays first");
   const auto& typed = picture.annotations(1).barcode();
   require(picture.annotations(1).has_barcode() && typed.format() == "QRCode" &&
               typed.value() == "https://example.com/a" && typed.provenance() == "zxing-cpp",
           "the typed arm carries format, value, and provenance");
-  const auto& first = picture.annotations(2).misc();
-  require(first.kind() == "barcode", "misc annotation kind");
-  const auto& fields = first.content().fields();
-  require(fields.at("format").string_value() == "QRCode" &&
-              fields.at("value").string_value() == "https://example.com/a" &&
-              fields.at("provenance").string_value() == "zxing-cpp",
-          "the legacy misc struct stays emitted alongside");
-  require(picture.annotations(3).barcode().value() == "SKU-1234" &&
-              picture.annotations(4).misc().content().fields().at("value").string_value() ==
-                  "SKU-1234",
-          "every payload gets both shapes");
+  require(picture.annotations(2).has_barcode() &&
+              picture.annotations(2).barcode().value() == "SKU-1234",
+          "every payload gets its own typed arm");
+  for (const auto& annotation : picture.annotations()) {
+    require(!annotation.has_misc(), "no legacy misc-annotation Struct is written");
+  }
   require(!picture.has_meta() ||
               picture.meta().custom_fields().count("pipestream__barcodes") == 0,
           "the wire carries barcodes typed only; exporters derive the "
@@ -990,7 +1005,8 @@ int main() {
       verify_structured_cells_override_geometry,
       verify_captured_figure_bytes_become_image_refs,
       verify_page_preview_becomes_page_image,
-      verify_barcode_payloads_become_misc_annotations,
+      verify_barcode_payloads_become_typed_annotations,
+      verify_a_decoded_qr_is_exactly_one_typed_annotation,
       verify_items_carry_collector_sources,
       verify_region_lines_merge_into_one_item,
       verify_unclaimed_table_line_stays_body_text,

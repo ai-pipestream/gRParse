@@ -40,7 +40,7 @@ def describe_page(page) -> str:
         1
         for picture in page.pictures
         for annotation in picture.annotations
-        if annotation.HasField("misc") and annotation.misc.kind == "barcode"
+        if annotation.HasField("barcode")
     )
     return (
         f"page={page.page_number} text_items={len(page.texts)} digital={digital} ocr={ocr} "
