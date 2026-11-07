@@ -87,6 +87,17 @@ message DocumentChunk {
   // Document for clients that read it intact. Resolved from the first chunk
   // that sets it.
   optional bool slim_collector_documents = 13;
+  // Total payload bytes of this document, set on the first chunk when the
+  // client knows it (at the latest on a chunk before any data; later chunks
+  // may repeat it unchanged). The server reserves the buffer once, rejects
+  // an upload over its 500 MiB limit or over the in-flight byte budget
+  // (GRPARSE_MAX_INFLIGHT_BYTES) with RESOURCE_EXHAUSTED before accepting
+  // any data, and charges the budget once instead of per chunk. The data
+  // the chunks carry must then add up to exactly this many bytes: more, or
+  // a complete chunk short of it, fails the stream with INVALID_ARGUMENT
+  // naming total_bytes. Zero is invalid when set; unset keeps the per-chunk
+  // checks.
+  optional uint64 total_bytes = 15;
 }
 
 // DocumentStreamEvent is the page-batched incremental conversion result.

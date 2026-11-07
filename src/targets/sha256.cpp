@@ -1,5 +1,6 @@
 #include "sha256.h"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstdint>
@@ -77,39 +78,65 @@ void compress(std::array<uint32_t, 8>& state, const unsigned char* block) {
 
 }  // namespace
 
-std::string sha256(std::string_view data) {
-  // FIPS 180-4, section 5.3.3: the first 32 bits of the fractional parts of
-  // the square roots of the first eight primes.
-  std::array<uint32_t, 8> state{0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
-                                0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u};
+Sha256::Sha256()
+    // FIPS 180-4, section 5.3.3: the first 32 bits of the fractional parts
+    // of the square roots of the first eight primes.
+    : state_{0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
+             0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u} {}
 
+void Sha256::update(std::string_view data) {
   const auto* bytes = reinterpret_cast<const unsigned char*>(data.data());
   size_t offset = 0;
-  for (; offset + kBlockBytes <= data.size(); offset += kBlockBytes) {
-    compress(state, bytes + offset);
+  total_bytes_ += data.size();
+  // Top up a block a previous piece left partial first.
+  if (pending_size_ > 0) {
+    const size_t take = std::min(kBlockBytes - pending_size_, data.size());
+    std::memcpy(pending_.data() + pending_size_, bytes, take);
+    pending_size_ += take;
+    offset = take;
+    if (pending_size_ < kBlockBytes) return;
+    compress(state_, pending_.data());
+    pending_size_ = 0;
   }
+  for (; offset + kBlockBytes <= data.size(); offset += kBlockBytes) {
+    compress(state_, bytes + offset);
+  }
+  const size_t remainder = data.size() - offset;
+  if (remainder > 0) {
+    std::memcpy(pending_.data(), bytes + offset, remainder);
+    pending_size_ = remainder;
+  }
+}
 
+std::string Sha256::digest() {
   // The tail: the remainder, the 0x80 terminator, zero padding, and the
   // 64-bit big-endian bit length.  Two blocks cover every case because the
   // remainder is under 64 bytes.
   std::array<unsigned char, kBlockBytes * 2> tail{};
-  const size_t remainder = data.size() - offset;
-  if (remainder > 0) std::memcpy(tail.data(), bytes + offset, remainder);
-  tail[remainder] = 0x80;
-  const size_t tail_blocks = remainder + 1 + 8 > kBlockBytes ? 2 : 1;
-  const uint64_t bits = static_cast<uint64_t>(data.size()) * 8;
+  if (pending_size_ > 0) std::memcpy(tail.data(), pending_.data(), pending_size_);
+  tail[pending_size_] = 0x80;
+  const size_t tail_blocks = pending_size_ + 1 + 8 > kBlockBytes ? 2 : 1;
+  const uint64_t bits = total_bytes_ * 8;
   unsigned char* length_field = tail.data() + tail_blocks * kBlockBytes - 8;
   write_be32(static_cast<uint32_t>(bits >> 32), length_field);
   write_be32(static_cast<uint32_t>(bits), length_field + 4);
   for (size_t block = 0; block < tail_blocks; ++block) {
-    compress(state, tail.data() + block * kBlockBytes);
+    compress(state_, tail.data() + block * kBlockBytes);
   }
 
   std::string digest(kDigestBytes, '\0');
-  for (size_t word = 0; word < state.size(); ++word) {
-    write_be32(state[word], reinterpret_cast<unsigned char*>(digest.data()) + word * 4);
+  for (size_t word = 0; word < state_.size(); ++word) {
+    write_be32(state_[word], reinterpret_cast<unsigned char*>(digest.data()) + word * 4);
   }
   return digest;
+}
+
+std::string Sha256::hex_digest() { return to_hex(digest()); }
+
+std::string sha256(std::string_view data) {
+  Sha256 context;
+  context.update(data);
+  return context.digest();
 }
 
 std::string sha256_hex(std::string_view data) { return to_hex(sha256(data)); }

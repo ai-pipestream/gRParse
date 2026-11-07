@@ -22,6 +22,7 @@
 #include "ai/pipestream/parse/v1/parse_stream.pb.h"
 #include "support/check.h"
 #include "support/fake_pdf_backend.h"
+#include "../src/targets/sha256.h"
 
 namespace {
 
@@ -114,7 +115,7 @@ void verify_pipeline_and_metrics() {
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(
       recognizer, {2, 3, 2, 3, 2, 2, 2},
-      [](std::shared_ptr<const std::string>, bool, double) { return std::make_shared<FakeSource>(6); });
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) { return std::make_shared<FakeSource>(6); });
   Result result;
   const auto ticket = scheduler.submit(std::make_shared<const std::string>("memory"), false,
                                        callbacks_for(&result));
@@ -199,7 +200,7 @@ void verify_cancellation_drains_bounded_work() {
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(
       recognizer, {1, 2, 1, 2, 1, 1, 1},
-      [](std::shared_ptr<const std::string>, bool, double) { return std::make_shared<FakeSource>(20); });
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) { return std::make_shared<FakeSource>(20); });
   Result result;
   const auto ticket = scheduler.submit(std::make_shared<const std::string>("memory"), false,
                                        callbacks_for(&result));
@@ -219,7 +220,7 @@ void verify_digital_pages_bypass_render_and_inference() {
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(
       recognizer, {1, 2, 1, 2, 1, 1, 1},
-      [](std::shared_ptr<const std::string>, bool, double) { return std::make_shared<DigitalSource>(); });
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) { return std::make_shared<DigitalSource>(); });
   Result result;
   scheduler.submit(std::make_shared<const std::string>("memory"), true, callbacks_for(&result));
   wait_until_finished(&result);
@@ -266,7 +267,7 @@ void verify_layout_labels_digital_pages_without_ocr() {
   FakeDetector detector;
   grparse::PageScheduler scheduler(
       recognizer, {2, 2, 2, 2, 1, 1, 1},
-      [](std::shared_ptr<const std::string>, bool, double) {
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
         return std::make_shared<RenderableDigitalSource>();
       },
       &detector);
@@ -334,7 +335,7 @@ void verify_table_structure_runs_on_crops() {
   FakeStructurer structurer;
   grparse::PageScheduler scheduler(
       recognizer, {2, 2, 2, 2, 1, 1, 1},
-      [](std::shared_ptr<const std::string>, bool, double) {
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
         return std::make_shared<RenderableDigitalSource>();
       },
       &detector, &structurer);
@@ -383,7 +384,7 @@ void verify_do_table_structure_false_skips_structure() {
   FakeStructurer structurer;
   grparse::PageScheduler scheduler(
       recognizer, {2, 2, 2, 2, 1, 1, 1},
-      [](std::shared_ptr<const std::string>, bool, double) {
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
         return std::make_shared<RenderableDigitalSource>();
       },
       &detector, &structurer);
@@ -423,7 +424,7 @@ void verify_figure_classification_runs_on_crops() {
   FakeClassifier classifier;
   grparse::PageScheduler scheduler(
       recognizer, {2, 2, 2, 2, 1, 1, 1},
-      [](std::shared_ptr<const std::string>, bool, double) {
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
         return std::make_shared<RenderableDigitalSource>();
       },
       &detector, nullptr, &classifier);
@@ -469,7 +470,7 @@ void verify_do_picture_classification_false_skips() {
   FakeClassifier classifier;
   grparse::PageScheduler scheduler(
       recognizer, {2, 2, 2, 2, 1, 1, 1},
-      [](std::shared_ptr<const std::string>, bool, double) {
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
         return std::make_shared<RenderableDigitalSource>();
       },
       &detector, nullptr, &classifier);
@@ -498,7 +499,7 @@ void verify_picture_capture_encodes_figure_crops() {
   options.capture_picture_images = true;
   grparse::PageScheduler scheduler(
       recognizer, options,
-      [](std::shared_ptr<const std::string>, bool, double) {
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
         return std::make_shared<RenderableDigitalSource>();
       },
       &detector);
@@ -542,7 +543,7 @@ void verify_page_capture_encodes_previews() {
   options.capture_page_images = true;
   grparse::PageScheduler scheduler(
       recognizer, options,
-      [](std::shared_ptr<const std::string>, bool, double) {
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
         return std::make_shared<RenderableDigitalSource>();
       });
   Result result;
@@ -648,7 +649,7 @@ void verify_barcode_decode_triggers_on_class() {
   options.barcode_mode = grparse::PageScheduler::BarcodeMode::kClassTriggered;
   grparse::PageScheduler scheduler(
       recognizer, options,
-      [&](std::shared_ptr<const std::string>, bool, double) { return std::make_shared<QrPageSource>(page); },
+      [&](std::shared_ptr<const std::string>, bool, double, const std::string&) { return std::make_shared<QrPageSource>(page); },
       &detector, nullptr, &classifier);
   std::vector<std::shared_ptr<const grparse::OcrPage>> delivered;
   run_qr_document(scheduler, &delivered);
@@ -678,7 +679,7 @@ void verify_barcode_gate_and_forced_mode() {
     options.barcode_mode = grparse::PageScheduler::BarcodeMode::kClassTriggered;
     grparse::PageScheduler scheduler(
         recognizer, options,
-        [&](std::shared_ptr<const std::string>, bool, double) {
+        [&](std::shared_ptr<const std::string>, bool, double, const std::string&) {
           return std::make_shared<QrPageSource>(page);
         },
         &detector, nullptr, &classifier);
@@ -695,7 +696,7 @@ void verify_barcode_gate_and_forced_mode() {
     options.barcode_mode = grparse::PageScheduler::BarcodeMode::kAll;
     grparse::PageScheduler scheduler(
         recognizer, options,
-        [&](std::shared_ptr<const std::string>, bool, double) {
+        [&](std::shared_ptr<const std::string>, bool, double, const std::string&) {
           return std::make_shared<QrPageSource>(page);
         },
         &detector);
@@ -714,7 +715,7 @@ void verify_delivery_cancellation_drains_queued_work() {
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(
       recognizer, {1, 4, 2, 2, 2, 2, 1},
-      [](std::shared_ptr<const std::string>, bool, double) { return std::make_shared<FakeSource>(20); });
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) { return std::make_shared<FakeSource>(20); });
   Result result;
   auto callbacks = callbacks_for(&result);
   callbacks.on_page = [](int, std::shared_ptr<const grparse::OcrPage>) {
@@ -733,7 +734,7 @@ void verify_page_credits_bound_a_document() {
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(
       recognizer, {1, 4, 2, 2, 2, 2, 1, 2, 4},
-      [](std::shared_ptr<const std::string>, bool, double) { return std::make_shared<FakeSource>(8); });
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) { return std::make_shared<FakeSource>(8); });
   Result result;
   auto callbacks = callbacks_for(&result);
   callbacks.on_page = [&result](int page_number, std::shared_ptr<const grparse::OcrPage>) {
@@ -788,7 +789,7 @@ void verify_uncredited_document_survives_later_submissions() {
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(
       recognizer, {4, 4, 2, 2, 2, 2, 1, 2, 4},
-      [](std::shared_ptr<const std::string>, bool, double) { return std::make_shared<FakeSource>(6); });
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) { return std::make_shared<FakeSource>(6); });
 
   Result first;
   auto first_callbacks = callbacks_for(&first);
@@ -875,7 +876,7 @@ void verify_partial_digital_merges_with_ocr() {
   BodyRecognizer recognizer;
   grparse::PageScheduler scheduler(
       recognizer, {1, 2, 1, 2, 1, 1, 1},
-      [](std::shared_ptr<const std::string>, bool, double) { return std::make_shared<PartialDigitalSource>(); });
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) { return std::make_shared<PartialDigitalSource>(); });
 
   struct Capture {
     std::mutex mutex;
@@ -948,7 +949,7 @@ void verify_ocr_off_reads_only_the_embedded_layer() {
     BodyRecognizer recognizer;
     grparse::PageScheduler scheduler(
         recognizer, {1, 2, 1, 2, 1, 1, 1},
-        [](std::shared_ptr<const std::string>, bool, double) {
+        [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
           return std::make_shared<PartialDigitalSource>();
         });
     grparse::PageScheduler::OcrTuning tuning;
@@ -975,7 +976,7 @@ void verify_ocr_off_reads_only_the_embedded_layer() {
     BodyRecognizer recognizer;
     grparse::PageScheduler scheduler(
         recognizer, {1, 2, 1, 2, 1, 1, 1},
-        [](std::shared_ptr<const std::string>, bool, double) {
+        [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
           return std::make_shared<FakeSource>(1);
         });
     grparse::PageScheduler::OcrTuning tuning;
@@ -1005,7 +1006,7 @@ void verify_ocr_off_still_runs_layout() {
   FakeDetector detector;
   grparse::PageScheduler scheduler(
       recognizer, {1, 2, 1, 2, 1, 1, 1},
-      [](std::shared_ptr<const std::string>, bool, double) {
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
         return std::make_shared<PartialDigitalSource>();
       },
       &detector);
@@ -1053,7 +1054,7 @@ void verify_replace_broken_text_layer_replaces_only_weak_pages() {
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(
       recognizer, {2, 2, 2, 2, 1, 1, 1},
-      [](std::shared_ptr<const std::string>, bool, double) {
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
         return std::make_shared<MixedSource>();
       });
   grparse::PageScheduler::OcrTuning tuning;
@@ -1098,7 +1099,7 @@ void verify_force_ocr_replaces_the_embedded_layer() {
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(
       recognizer, {2, 2, 2, 2, 1, 1, 1},
-      [](std::shared_ptr<const std::string>, bool, double) {
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
         return std::make_shared<RenderableDigitalSource>();
       });
   grparse::PageScheduler::OcrTuning tuning;
@@ -1162,7 +1163,7 @@ void verify_inspector_page_set_restricts_ocr() {
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(
       recognizer, {2, 3, 2, 3, 1, 1, 1},
-      [](std::shared_ptr<const std::string>, bool, double) {
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
         return std::make_shared<WeakDigitalSource>();
       });
   grparse::PageScheduler::OcrTuning tuning;
@@ -1215,7 +1216,7 @@ void verify_recognition_modes_outrank_the_page_set() {
     FakeRecognizer recognizer;
     grparse::PageScheduler scheduler(
         recognizer, {2, 2, 2, 2, 1, 1, 1},
-        [](std::shared_ptr<const std::string>, bool, double) {
+        [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
           return std::make_shared<RenderableDigitalSource>();
         });
     grparse::PageScheduler::OcrTuning tuning;
@@ -1232,7 +1233,7 @@ void verify_recognition_modes_outrank_the_page_set() {
     FakeRecognizer recognizer;
     grparse::PageScheduler scheduler(
         recognizer, {2, 2, 2, 2, 1, 1, 1},
-        [](std::shared_ptr<const std::string>, bool, double) {
+        [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
           return std::make_shared<RenderableDigitalSource>();
         });
     grparse::PageScheduler::OcrTuning tuning;
@@ -1302,7 +1303,7 @@ void verify_cancel_and_deadline_reach_the_source() {
   const auto source = std::make_shared<BlockingSource>();
   grparse::PageScheduler scheduler(
       recognizer, {2, 3, 2, 3, 2, 2, 2},
-      [source](std::shared_ptr<const std::string>, bool, double) { return source; });
+      [source](std::shared_ptr<const std::string>, bool, double, const std::string&) { return source; });
   grparse::PageScheduler::OcrTuning tuning;
   tuning.deadline = std::chrono::system_clock::now() + 1h;
   Result result;
@@ -1404,7 +1405,7 @@ void verify_render_dpi_reaches_source_factory() {
   std::atomic<double> factory_dpi{0.0};
   grparse::PageScheduler scheduler(
       recognizer, {2, 3, 2, 3, 2, 2, 2},
-      [&factory_dpi](std::shared_ptr<const std::string>, bool, double render_dpi) {
+      [&factory_dpi](std::shared_ptr<const std::string>, bool, double render_dpi, const std::string&) {
         factory_dpi.store(render_dpi);
         return std::make_shared<FakeSource>(1);
       });
@@ -1425,6 +1426,81 @@ void verify_render_dpi_reaches_source_factory() {
   wait_until_finished(&tuned);
   require(!tuned.failure, "tuned-DPI document failed");
   require(factory_dpi.load() == 300.0, "a tuned render DPI must reach the source factory");
+}
+
+// The digest a caller computed rides OcrTuning::sha256_hex to the source
+// factory and on to the PDF source, which addresses the backend by it
+// instead of hashing the bytes again. The proof that it did not re-hash: a
+// digest that is not the bytes' own is the one the backend receives beside
+// the single upload. Without one the source hashes the bytes itself.
+void verify_precomputed_digest_reaches_the_backend() {
+  grparse_test::ScopedPdfBackend pdf_backend;
+  auto& backend = pdf_backend.backend();
+  const std::string handed = "%PDF-digest-handed";
+  const std::string unhashed = "%PDF-digest-unhashed";
+  const std::string defaulted = "%PDF-digest-default-factory";
+  for (const auto* bytes : {&handed, &unhashed, &defaulted}) {
+    backend.add_document(*bytes, {grparse_test::text_page({"Digest"})});
+  }
+  FakeRecognizer recognizer;
+  std::mutex seen_mutex;
+  std::vector<std::string> seen;
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 3, 2, 3, 2, 2, 2},
+      [&seen_mutex, &seen](std::shared_ptr<const std::string> bytes, bool pdf, double render_dpi,
+                           const std::string& precomputed_sha256) {
+        {
+          std::lock_guard<std::mutex> lock(seen_mutex);
+          seen.push_back(precomputed_sha256);
+        }
+        return grparse::open_in_memory_document(std::move(bytes), pdf, render_dpi,
+                                                grparse::SourceOpening::kOnFirstUse,
+                                                precomputed_sha256);
+      });
+  const std::string foreign = grparse::targets::sha256_hex("not the submitted bytes");
+
+  grparse::PageScheduler::OcrTuning tuning;
+  tuning.sha256_hex = foreign;
+  Result handed_result;
+  scheduler.submit(std::make_shared<const std::string>(handed), true, tuning,
+                   callbacks_for(&handed_result));
+  wait_until_finished(&handed_result);
+  require(!handed_result.failure && handed_result.completed_pages.size() == 1,
+          "a document with a precomputed digest reads");
+  {
+    std::lock_guard<std::mutex> lock(seen_mutex);
+    require(seen.size() == 1 && seen.front() == foreign,
+            "the tuning's digest reaches the source factory, once per document");
+  }
+  require(backend.probes_with_bytes() == 1 && backend.probe_upload_hashes().back() == foreign,
+          "the source uploads once, addressed by the digest it was handed");
+
+  Result unhashed_result;
+  scheduler.submit(std::make_shared<const std::string>(unhashed), true,
+                   callbacks_for(&unhashed_result));
+  wait_until_finished(&unhashed_result);
+  require(!unhashed_result.failure, "a document without a digest reads");
+  {
+    std::lock_guard<std::mutex> lock(seen_mutex);
+    require(seen.size() == 2 && seen.back().empty(), "no digest reaches the factory as empty");
+  }
+  require(backend.probes_with_bytes() == 2 &&
+              backend.probe_upload_hashes().back() == grparse::targets::sha256_hex(unhashed),
+          "without a digest the source hashes the bytes itself");
+
+  // The scheduler's own factory hands the digest on the same way. A digest
+  // of its own, since the backend now holds the first one's document.
+  const std::string other_foreign = grparse::targets::sha256_hex("nor are these the bytes");
+  tuning.sha256_hex = other_foreign;
+  grparse::PageScheduler default_scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2});
+  Result default_result;
+  default_scheduler.submit(std::make_shared<const std::string>(defaulted), true, tuning,
+                           callbacks_for(&default_result));
+  wait_until_finished(&default_result);
+  require(!default_result.failure, "the default factory reads a digested document");
+  require(backend.probes_with_bytes() == 3 &&
+              backend.probe_upload_hashes().back() == other_foreign,
+          "the default factory's source is addressed by the handed digest");
 }
 
 // A one-page source that records the passwords it was handed and refuses
@@ -1451,7 +1527,7 @@ void verify_passwords_reach_the_source_before_it_opens() {
   const auto seen = std::make_shared<std::vector<std::string>>();
   grparse::PageScheduler scheduler(
       recognizer, {2, 3, 2, 3, 2, 2, 2},
-      [seen](std::shared_ptr<const std::string>, bool, double) {
+      [seen](std::shared_ptr<const std::string>, bool, double, const std::string&) {
         return std::make_shared<PasswordRecordingSource>(seen);
       });
   grparse::PageScheduler::OcrTuning tuning;
@@ -1558,7 +1634,7 @@ void verify_turned_scan_is_rerecognized_upright() {
   options.capture_page_images = true;
   grparse::PageScheduler scheduler(
       recognizer, options,
-      [](std::shared_ptr<const std::string>, bool, double) { return std::make_shared<TurnedSource>(90); });
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) { return std::make_shared<TurnedSource>(90); });
   Result result;
   DeliveredPage delivered;
   scheduler.submit(std::make_shared<const std::string>("memory"), false,
@@ -1590,7 +1666,7 @@ void verify_upside_down_scan_takes_one_extra_pass() {
   MarkerRecognizer recognizer;
   grparse::PageScheduler scheduler(
       recognizer, {2, 2, 2, 2, 1, 1, 1},
-      [](std::shared_ptr<const std::string>, bool, double) { return std::make_shared<TurnedSource>(180); });
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) { return std::make_shared<TurnedSource>(180); });
   Result result;
   DeliveredPage delivered;
   scheduler.submit(std::make_shared<const std::string>("memory"), false,
@@ -1614,7 +1690,7 @@ void verify_digital_layer_and_disabled_recovery_never_rerecognize() {
     MarkerRecognizer recognizer;
     grparse::PageScheduler scheduler(
         recognizer, {2, 2, 2, 2, 1, 1, 1},
-        [](std::shared_ptr<const std::string>, bool, double) {
+        [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
           return std::make_shared<TurnedSource>(90, true);
         });
     Result result;
@@ -1635,7 +1711,7 @@ void verify_digital_layer_and_disabled_recovery_never_rerecognize() {
     options.orientation.enabled = false;
     grparse::PageScheduler scheduler(
         recognizer, options,
-        [](std::shared_ptr<const std::string>, bool, double) { return std::make_shared<TurnedSource>(90); });
+        [](std::shared_ptr<const std::string>, bool, double, const std::string&) { return std::make_shared<TurnedSource>(90); });
     Result result;
     DeliveredPage delivered;
     scheduler.submit(std::make_shared<const std::string>("memory"), false,
@@ -1655,7 +1731,7 @@ void verify_request_orientation_overrides_server_default() {
     grparse::PageScheduler::Options options{2, 2, 2, 2, 1, 1, 1};
     options.orientation.enabled = !enabled;
     grparse::PageScheduler scheduler(recognizer, options,
-        [](std::shared_ptr<const std::string>, bool, double) {
+        [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
           return std::make_shared<TurnedSource>(90);
         });
     grparse::PageScheduler::OcrTuning tuning;
@@ -1677,7 +1753,7 @@ void verify_page_range_restricts_scheduled_pages() {
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(
       recognizer, {2, 3, 2, 3, 1, 1, 1},
-      [](std::shared_ptr<const std::string>, bool, double) {
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
         return std::make_shared<FakeSource>(5);
       });
   grparse::PageScheduler::OcrTuning tuning;
@@ -1720,6 +1796,7 @@ int main() {
       verify_replace_broken_text_layer_replaces_only_weak_pages,
       verify_force_ocr_replaces_the_embedded_layer,
       verify_render_dpi_reaches_source_factory,
+      verify_precomputed_digest_reaches_the_backend,
       verify_passwords_reach_the_source_before_it_opens,
       verify_cancel_and_deadline_reach_the_source,
     verify_blocked_open_does_not_stall_scheduling,

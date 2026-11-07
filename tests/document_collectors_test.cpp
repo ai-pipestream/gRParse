@@ -3202,6 +3202,29 @@ void verify_pdf_ocr_recommendation_routing() {
   require(grparse::route_pdf_by_classification(garbled_beside_scan).force_ocr,
           "encoding issues still force recognition on a mixed document that names its pages");
 
+  // What the info event alone settles: a forcing recommendation stays
+  // forcing whatever the pages and the trailer add, and the named-scans
+  // shape is left to the trailer, since its page set can still grow.
+  require(grparse::pdf_info_forces_ocr(newspaper) && grparse::pdf_info_forces_ocr(template_form) &&
+              grparse::pdf_info_forces_ocr(older_inspector) &&
+              grparse::pdf_info_forces_ocr(ocr_layer) &&
+              grparse::pdf_info_forces_ocr(unknown_reason),
+          "an info event recommending OCR beyond the named scans settles the forced route");
+  require(!grparse::pdf_info_forces_ocr(text_beside_scan) && !grparse::pdf_info_forces_ocr(unnamed),
+          "a recommendation about scanned pages alone waits for the trailer");
+  grparse::PdfClassification unrecommended = newspaper;
+  unrecommended.ocr_recommended = false;
+  require(!grparse::pdf_info_forces_ocr(unrecommended),
+          "an info event without a recommendation settles nothing");
+  for (const auto* settled : {&newspaper, &template_form, &older_inspector, &ocr_layer,
+                              &unknown_reason}) {
+    grparse::PdfClassification finished = *settled;
+    finished.pages_needing_ocr.push_back(3);
+    const auto route = grparse::route_pdf_by_classification(finished);
+    require(route.force_ocr && !route.fast_path,
+            "whatever pages the stream adds, an info-settled route stays forced");
+  }
+
   FakePdfService service(pdfv1::PDF_TYPE_TEXT_BASED, {});
   service.set_ocr_recommended(true);
   service.set_ocr_recommendation_reasons({pdfv1::OCR_RECOMMENDATION_REASON_DENSE_LAYOUT});

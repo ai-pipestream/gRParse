@@ -15,6 +15,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include <grpcpp/grpcpp.h>
 
@@ -31,6 +32,24 @@ namespace grparse {
 // The document's identity hash, stamped on the origin: FNV-1a over the
 // bytes as they arrived.
 uint64_t content_hash(const std::string& document);
+
+// content_hash fed piecewise: update() with consecutive pieces of the
+// document, and value() is content_hash of the pieces concatenated. The
+// streaming surface feeds each chunk as it lands, so the hash is ready when
+// the upload ends instead of costing another pass over it.
+class ContentHash {
+ public:
+  void update(std::string_view piece) {
+    for (const unsigned char byte : piece) {
+      hash_ ^= byte;
+      hash_ *= 1099511628211ULL;
+    }
+  }
+  uint64_t value() const { return hash_; }
+
+ private:
+  uint64_t hash_ = 14695981039346656037ULL;
+};
 
 // True when the bytes or the name say PDF. The bytes are asked first
 // because a name is a claim and a signature is evidence: a %PDF- header in

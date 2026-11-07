@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -29,8 +30,10 @@
 #include <google/protobuf/util/message_differencer.h>
 #include <grpcpp/grpcpp.h>
 
+#include "../src/parse_support.h"
 #include "../src/render/renderer_base.h"
 #include "../src/source_parse.h"
+#include "../src/targets/sha256.h"
 #include "ai/pipestream/email/v1/email_service.grpc.pb.h"
 #include "ai/pipestream/parse/v1/parse_stream.grpc.pb.h"
 #include "ai/pipestream/pdf/v1/pdf_service.grpc.pb.h"
@@ -122,7 +125,7 @@ class TestServer final {
                       bool remote_services = false)
       : recognizer_(inference_delay),
         scheduler_(recognizer_, {2, 3, 2, 3, 2, 2, 2},
-                   [this, digital](std::shared_ptr<const std::string>, bool, double render_dpi) {
+                   [this, digital](std::shared_ptr<const std::string>, bool, double render_dpi, const std::string&) {
                      last_render_dpi_.store(render_dpi);
                      return std::make_shared<FakeSource>(digital);
                    }),
@@ -210,7 +213,7 @@ void verify_wide_page_window_streams_completely() {
 
   HeadOfLineRecognizer recognizer;
   grparse::PageScheduler scheduler(recognizer, options,
-                                   [pages = kPages](std::shared_ptr<const std::string>, bool, double) {
+                                   [pages = kPages](std::shared_ptr<const std::string>, bool, double, const std::string&) {
                                      return std::make_shared<WideSource>(pages);
                                    });
   grparse::DocumentStreamingService streaming_service(
@@ -1132,7 +1135,7 @@ void verify_stream_resolves_recognition_options() {
   std::atomic<double> factory_dpi{0.0};
   grparse::PageScheduler scheduler(
       recognizer, {2, 3, 2, 3, 2, 2, 2},
-      [&factory_dpi](std::shared_ptr<const std::string>, bool, double render_dpi) {
+      [&factory_dpi](std::shared_ptr<const std::string>, bool, double render_dpi, const std::string&) {
         factory_dpi.store(render_dpi);
         return std::make_shared<WeakDigitalSource>();
       });
@@ -1584,7 +1587,7 @@ void verify_unary_callback_path_admits_concurrent_conversions() {
   };
   RendezvousRecognizer recognizer(kCalls);
   grparse::PageScheduler scheduler(recognizer, options,
-                                   [](std::shared_ptr<const std::string>, bool, double) {
+                                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
                                      return std::make_shared<SinglePageSource>();
                                    });
   grparse::DocumentParserService service(
@@ -1723,6 +1726,14 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
   void set_ocr_recommendation_reasons(std::vector<pdfv1::OcrRecommendationReason> reasons) {
     ocr_recommendation_reasons_ = std::move(reasons);
   }
+  // Holds the folded document and the status trailer back this long after
+  // the info event: an inspector still reading a long document.
+  void set_trailer_delay(std::chrono::milliseconds delay) { trailer_delay_ = delay; }
+  // When the trailer went out (steady clock); the epoch until then.
+  std::chrono::steady_clock::time_point trailer_sent_at() const {
+    std::lock_guard<std::mutex> lock(trailer_mutex_);
+    return trailer_sent_at_;
+  }
 
   grpc::Status ParsePdf(
       grpc::ServerContext*,
@@ -1759,6 +1770,7 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
         event.Clear();
       }
     }
+    if (trailer_delay_ > 0ms) std::this_thread::sleep_for(trailer_delay_);
     docv1::Document document;
     document.mutable_body()->set_self_ref("#/body");
     document.mutable_furniture()->set_self_ref("#/furniture");
@@ -1812,6 +1824,10 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
     event.Clear();
     event.mutable_status()->set_pages_extracted(searchable_scan_ ? 3 : 0);
     event.mutable_status()->set_has_invisible_text(searchable_scan_);
+    {
+      std::lock_guard<std::mutex> lock(trailer_mutex_);
+      trailer_sent_at_ = std::chrono::steady_clock::now();
+    }
     stream->Write(event);
     return grpc::Status::OK;
   }
@@ -1824,6 +1840,9 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
   bool ocr_recommended_ = false;
   std::vector<pdfv1::OcrRecommendationReason> ocr_recommendation_reasons_;
   std::atomic<int> dials_{0};
+  std::chrono::milliseconds trailer_delay_{0};
+  mutable std::mutex trailer_mutex_;
+  std::chrono::steady_clock::time_point trailer_sent_at_{};
 };
 
 class FailingPdfInspector final : public pdfv1::PdfParseService::Service {
@@ -1870,7 +1889,7 @@ UnaryPdfRun run_unary_pdf(const std::string& pdf_target) {
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(
       recognizer, {2, 3, 2, 3, 2, 2, 2},
-      [](std::shared_ptr<const std::string>, bool, double) {
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
         return std::make_shared<RoutableDigitalSource>();
       });
   grparse::CollectorTargets targets;
@@ -1935,7 +1954,7 @@ void verify_remote_legs_get_a_per_call_document_id() {
 
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
-                                   [](std::shared_ptr<const std::string>, bool, double) {
+                                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
                                      return std::make_shared<FakeSource>();
                                    });
   grparse::CollectorTargets targets;
@@ -1994,7 +2013,7 @@ void verify_collector_pages_return_no_scheduler_credit(const std::string& pdf_ta
   HeadOfLineRecognizer recognizer;
   grparse::PageScheduler scheduler(recognizer, options,
                                    [pages = kPages](std::shared_ptr<const std::string>, bool,
-                                                    double) {
+                                                    double, const std::string&) {
                                      return std::make_shared<WideSource>(pages);
                                    });
   grparse::CollectorTargets targets;
@@ -2078,7 +2097,7 @@ void verify_document_timeout_bounds_the_cv_leg() {
 void verify_inflight_byte_budget() {
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
-                                   [](std::shared_ptr<const std::string>, bool, double) {
+                                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
                                      return std::make_shared<FakeSource>();
                                    });
   const auto endpoints = std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{});
@@ -2227,7 +2246,7 @@ class BudgetedParseServer final {
                       std::chrono::milliseconds inference_delay = 0ms)
       : recognizer_(inference_delay),
         scheduler_(recognizer_, {2, 3, 2, 3, 2, 2, 2},
-                   [](std::shared_ptr<const std::string>, bool, double) {
+                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
                      return std::make_shared<FakeSource>();
                    }),
         service_(scheduler_,
@@ -2521,7 +2540,7 @@ StreamPdfRun run_stream_pdf(
   options.capture_page_images = capture_page_images;
   grparse::PageScheduler scheduler(
       recognizer, options,
-      [](std::shared_ptr<const std::string>, bool, double) {
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
         return std::make_shared<RoutableDigitalSource>();
       });
   grparse::CollectorTargets targets;
@@ -2574,7 +2593,7 @@ void verify_stream_charge_follows_the_bytes() {
     FakeRecognizer recognizer;
     grparse::PageScheduler scheduler(
         recognizer, {2, 3, 2, 3, 2, 2, 2},
-        [&held_mutex, &held](std::shared_ptr<const std::string> bytes, bool, double) {
+        [&held_mutex, &held](std::shared_ptr<const std::string> bytes, bool, double, const std::string&) {
           const std::lock_guard<std::mutex> lock(held_mutex);
           held = std::move(bytes);
           return std::make_shared<FakeSource>();
@@ -2663,7 +2682,7 @@ void verify_streaming_pdf_router_cancels_with_the_client() {
   PdfInspectorServer inspector_server(&inspector);
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
-                                   [](std::shared_ptr<const std::string>, bool, double) {
+                                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
                                      return std::make_shared<RoutableDigitalSource>();
                                    });
   grparse::CollectorTargets targets;
@@ -2780,6 +2799,46 @@ void verify_streaming_pdf_ocr_recommendation_takes_the_cv_path() {
   for (const auto& event : run.events) {
     require(!event.has_collector_document(),
             "the streamed leg does not deliver the fold as the fast-path result");
+  }
+}
+
+// An info event that recommends OCR for the whole document settles the
+// route before the inspector reads on: the CV run starts at once, so its
+// first page reaches the client while the inspector still holds its
+// trailer back, and the terminal event still waits for that trailer.
+void verify_streaming_forced_ocr_starts_before_the_inspector_trailer() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {});
+  inspector.set_ocr_recommended(true);
+  inspector.set_trailer_delay(1s);
+  PdfInspectorServer inspector_server(&inspector);
+  std::optional<std::chrono::steady_clock::time_point> first_page_at;
+  std::optional<std::chrono::steady_clock::time_point> complete_at;
+  const StreamPdfRun run = run_stream_pdf(
+      inspector_server.target(), false, "%PDF-in-memory",
+      [&first_page_at, &complete_at](const pipestream::parse::v1::DocumentStreamEvent& event) {
+        if (event.has_page() && !first_page_at.has_value()) {
+          first_page_at = std::chrono::steady_clock::now();
+        }
+        if (event.has_complete()) complete_at = std::chrono::steady_clock::now();
+      });
+  require(run.status.ok(), "early forced-OCR stream failed: " + run.status.error_message());
+  require(run.recognizer_calls == 3,
+          "the early CV run still recognizes every page, got " +
+              std::to_string(run.recognizer_calls));
+  const auto trailer_at = inspector.trailer_sent_at();
+  require(first_page_at.has_value() && trailer_at != std::chrono::steady_clock::time_point{},
+          "the stream delivered a page and the inspector sent its trailer");
+  require(*first_page_at < trailer_at,
+          "the first CV page arrives before the inspector's trailer, " +
+              std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 trailer_at - *first_page_at)
+                                 .count()) +
+              " ms ahead");
+  require(complete_at.has_value() && *complete_at >= trailer_at,
+          "the complete event waits for the inspector to drain");
+  for (const auto& event : run.events) {
+    require(!event.has_collector_document(),
+            "the early route never delivers the fold as the fast-path result");
   }
 }
 
@@ -2924,7 +2983,7 @@ void verify_queued_then_cancelled_call_never_dials_a_collector() {
   GateRecognizer recognizer;
   grparse::PageScheduler scheduler(
       recognizer, {2, 3, 2, 3, 2, 2, 2},
-      [](std::shared_ptr<const std::string>, bool, double) {
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
         return std::make_shared<RoutableDigitalSource>();
       });
   grparse::CollectorTargets targets;
@@ -3367,7 +3426,7 @@ void verify_pages_stream_before_the_document_finishes() {
   LastPageGate gate(kPages);
   const std::vector<int> pages = stream_behind_gate(
       gate, kPages,
-      [count = kPages](std::shared_ptr<const std::string>, bool, double) {
+      [count = kPages](std::shared_ptr<const std::string>, bool, double, const std::string&) {
         return std::make_shared<WideSource>(count);
       },
       grparse::CollectorTargets{}, "scan.png", "image/png", "in-memory-source");
@@ -3389,7 +3448,7 @@ void verify_routed_scan_pages_stream_before_the_document_finishes() {
   LastPageGate gate(3);
   const std::vector<int> pages = stream_behind_gate(
       gate, 3,
-      [](std::shared_ptr<const std::string>, bool, double) {
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
         return std::make_shared<RoutableDigitalSource>();
       },
       std::move(targets), "scan.pdf", "application/pdf", "%PDF-in-memory");
@@ -4347,7 +4406,7 @@ void verify_stream_chunks_returns_its_charge_when_the_reader_cancels() {
   const auto inflight = std::make_shared<grparse::InflightBytes>(256ULL << 20U);
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
-                                   [](std::shared_ptr<const std::string>, bool, double) {
+                                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
                                      return std::make_shared<FakeSource>();
                                    });
   grparse::DocumentParserService parser_service(
@@ -4464,7 +4523,7 @@ void verify_vlm_pipeline_document_carries_the_parse_identity() {
 
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
-                                   [](std::shared_ptr<const std::string>, bool, double) {
+                                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
                                      return std::make_shared<FakeSource>();
                                    });
   grparse::CollectorTargets targets;
@@ -4689,6 +4748,275 @@ void verify_disabled_embeddings_and_unimplemented_chunk_rpcs(TestServer* server)
 
 }  // namespace
 
+// The digests the reactor feeds chunk by chunk equal the whole-upload
+// functions they replace, however the upload is cut: no chunk, one, two,
+// and a thousand of mixed sizes crossing the SHA-256 block boundary every
+// which way.
+void verify_incremental_digests_match_the_whole_upload() {
+  std::string upload;
+  for (int index = 0; index < 300'000; ++index) {
+    upload.push_back(static_cast<char>((index * 131 + index / 7) & 0xff));
+  }
+  const auto check = [](const std::vector<std::string_view>& pieces, const std::string& label) {
+    std::string whole;
+    grparse::ContentHash fnv;
+    grparse::targets::Sha256 sha;
+    for (const auto piece : pieces) {
+      whole.append(piece);
+      fnv.update(piece);
+      sha.update(piece);
+    }
+    require(fnv.value() == grparse::content_hash(whole),
+            label + ": the incremental FNV-1a equals content_hash");
+    require(sha.hex_digest() == grparse::targets::sha256_hex(whole),
+            label + ": the incremental SHA-256 equals sha256_hex");
+  };
+  const std::string_view view(upload);
+  check({}, "no chunk");
+  check({view.substr(0, 1)}, "one one-byte chunk");
+  check({view}, "one chunk");
+  check({view.substr(0, 63), view.substr(63, 1000)}, "two chunks");
+  std::vector<std::string_view> mixed;
+  size_t offset = 0;
+  for (size_t index = 0; index < 1000; ++index) {
+    // 0, 1, 63, 64, 65 and longer pieces, so pieces end inside, on, and
+    // past a block, and an empty piece lands mid-stream.
+    static constexpr std::array<size_t, 8> kSizes{0, 1, 63, 64, 65, 127, 200, 500};
+    const size_t size = std::min(kSizes[index % kSizes.size()] + index % 3, view.size() - offset);
+    mixed.push_back(view.substr(offset, size));
+    offset += size;
+  }
+  require(offset > 64 * 1000, "the thousand chunks cover many blocks");
+  check(mixed, "a thousand mixed chunks");
+  require(grparse::targets::Sha256().hex_digest() == grparse::targets::sha256_hex(""),
+          "an unfed context digests the empty string");
+}
+
+// Reads any raster, the fake backend's blank white pages included.
+class ConstantRecognizer final : public grparse::PageRecognizer {
+ public:
+  grparse::OcrPage extract_page(const cv::Mat&) override {
+    return {100, 200, {{"recognized", {{1, 2}, {20, 2}, {20, 12}, {1, 12}}, 0.9F}}};
+  }
+};
+
+// A PDF streamed in chunks is hashed as it lands: the source factory gets
+// the upload's SHA-256 (so no source reads the bytes again), the backend
+// sees the one upload addressed by it, and the origin's binary_hash is the
+// whole upload's FNV-1a. The unary CV leg hands its source the digest the
+// same way, computed once per request.
+void verify_stream_hands_the_chunk_digest_to_the_source() {
+  grparse_test::ScopedPdfBackend pdf_backend;
+  auto& backend = pdf_backend.backend();
+  const std::string streamed = "%PDF-1.7\n" + std::string(5000, 's') + "\n%%EOF streamed";
+  const std::string unary = "%PDF-1.7\n" + std::string(3000, 'u') + "\n%%EOF unary";
+  backend.add_document(streamed, {grparse_test::text_page({"Streamed"})});
+  backend.add_document(unary, {grparse_test::text_page({"Unary"})});
+  ConstantRecognizer recognizer;
+  std::mutex seen_mutex;
+  std::vector<std::string> seen;
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 3, 2, 3, 2, 2, 2},
+      [&seen_mutex, &seen](std::shared_ptr<const std::string> bytes, bool pdf, double render_dpi,
+                           const std::string& precomputed_sha256) {
+        {
+          std::lock_guard<std::mutex> lock(seen_mutex);
+          seen.push_back(precomputed_sha256);
+        }
+        return grparse::open_in_memory_document(std::move(bytes), pdf, render_dpi,
+                                                grparse::SourceOpening::kOnFirstUse,
+                                                precomputed_sha256);
+      });
+  const auto endpoints = std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{});
+  grparse::DocumentParserService parser_service(scheduler, endpoints);
+  grparse::DocumentStreamingService streaming_service(scheduler, endpoints);
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&parser_service);
+  builder.RegisterService(&streaming_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "digest test server failed to start");
+  const auto channel =
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials());
+
+  auto stream_client = pipestream::parse::v1::ParseStreamingService::NewStub(channel);
+  std::vector<pipestream::parse::v1::DocumentChunk> chunks;
+  for (size_t offset = 0; offset < streamed.size(); offset += 1500) {
+    pipestream::parse::v1::DocumentChunk part;
+    part.set_document_id("digest-stream");
+    part.set_filename("digest.pdf");
+    part.set_data(streamed.substr(offset, 1500));
+    part.set_complete(offset + 1500 >= streamed.size());
+    chunks.push_back(std::move(part));
+  }
+  require(chunks.size() == 4, "the PDF streams in four chunks");
+  const StreamRun run = run_chunks(stream_client.get(), chunks);
+  require(run.status.ok(), "digest stream failed: " + run.status.error_message());
+  require(!run.events.empty() && run.events.back().has_complete() &&
+              run.events.back().complete().origin().binary_hash() ==
+                  grparse::content_hash(streamed),
+          "the origin's binary_hash is the whole upload's FNV-1a");
+  {
+    std::lock_guard<std::mutex> lock(seen_mutex);
+    require(seen.size() == 1 && seen.front() == grparse::targets::sha256_hex(streamed),
+            "the source factory gets the streamed upload's SHA-256, once");
+  }
+  require(backend.probes_with_bytes() == 1 &&
+              backend.probe_upload_hashes().front() == grparse::targets::sha256_hex(streamed),
+          "the backend sees exactly one upload of the streamed PDF, addressed by its digest");
+
+  auto unary_client = pipestream::parse::v1::ParseService::NewStub(channel);
+  pipestream::parse::v1::ConvertSourceRequest request;
+  auto* source = request.mutable_request()->add_sources()->mutable_file();
+  source->set_filename("digest.pdf");
+  source->set_base64_string(grparse::encode_base64(unary.data(), unary.size()));
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  pipestream::parse::v1::ConvertSourceResponse response;
+  const grpc::Status status = unary_client->ConvertSource(&context, request, &response);
+  require(status.ok(), "digest unary parse failed: " + status.error_message());
+  {
+    std::lock_guard<std::mutex> lock(seen_mutex);
+    require(seen.size() == 2 && seen.back() == grparse::targets::sha256_hex(unary),
+            "the unary CV leg hands its source the request's SHA-256");
+  }
+  require(backend.probes_with_bytes() == 2 &&
+              backend.probe_upload_hashes().back() == grparse::targets::sha256_hex(unary),
+          "the backend sees exactly one upload of the unary PDF");
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+}
+
+// DocumentChunk.total_bytes: the declared size is checked against the size
+// limit and the in-flight budget before any data is accepted, charged once
+// up front, and binding: an upload that runs past it, or completes short of
+// it, fails INVALID_ARGUMENT naming the field.
+void verify_stream_total_bytes_hint() {
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 3, 2, 3, 2, 2, 2},
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+        return std::make_shared<FakeSource>();
+      });
+  constexpr uint64_t kBudget = 4096;
+  const auto inflight = std::make_shared<grparse::InflightBytes>(kBudget);
+  grparse::DocumentStreamingService streaming_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{}),
+      grparse::RepairOptions{}, inflight);
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&streaming_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "total_bytes test server failed to start");
+  auto client = pipestream::parse::v1::ParseStreamingService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+  const auto declared = [](uint64_t total, std::string data, bool complete) {
+    auto value = chunk(complete);
+    value.set_total_bytes(total);
+    value.set_data(std::move(data));
+    return value;
+  };
+  const auto wait_for_in_use = [&inflight](uint64_t expected) {
+    for (int attempt = 0; attempt < 500 && inflight->in_use() != expected; ++attempt) {
+      std::this_thread::sleep_for(10ms);
+    }
+    return inflight->in_use() == expected;
+  };
+  // A refusal that comes before the data: the client sends the declaring
+  // chunk and nothing else, and the server ends the call on it alone.
+  const auto refused_on_first_chunk = [&client](const pipestream::parse::v1::DocumentChunk& first) {
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    auto stream = client->StreamProcessDocument(&context);
+    stream->Write(first);
+    pipestream::parse::v1::DocumentStreamEvent ignored;
+    while (stream->Read(&ignored)) {
+    }
+    return stream->Finish();
+  };
+
+  {
+    const grpc::Status status =
+        refused_on_first_chunk(declared(501ULL * 1024U * 1024U, "", false));
+    require(status.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED &&
+                status.error_message().contains("500 MiB") &&
+                status.error_message().contains("total_bytes"),
+            "a declared size over the streaming limit is refused before any data: " +
+                status.error_message());
+  }
+  {
+    const grpc::Status status = refused_on_first_chunk(declared(kBudget + 1, "abc", false));
+    require(status.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED &&
+                status.error_message().contains("GRPARSE_MAX_INFLIGHT_BYTES") &&
+                status.error_message().contains("total_bytes"),
+            "a declared size over the in-flight budget is refused before its data is accepted: " +
+                status.error_message());
+    require(wait_for_in_use(0), "a refused declaration charges nothing");
+  }
+  {
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    auto stream = client->StreamProcessDocument(&context);
+    stream->Write(declared(8, std::string(16, 'x'), true));
+    stream->WritesDone();
+    pipestream::parse::v1::DocumentStreamEvent ignored;
+    while (stream->Read(&ignored)) {
+    }
+    const grpc::Status status = stream->Finish();
+    require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+                status.error_message().contains("total_bytes"),
+            "an upload past its declared total_bytes fails by name: " + status.error_message());
+  }
+  {
+    const StreamRun run =
+        run_chunks(client.get(), {declared(64, std::string(16, 'x'), false),
+                                  declared(64, std::string(16, 'y'), true)});
+    require(run.status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+                run.status.error_message().contains("total_bytes"),
+            "an upload that completes short of total_bytes fails by name: " +
+                run.status.error_message());
+  }
+  {
+    auto later = chunk(true);
+    later.set_total_bytes(16);
+    const StreamRun run = run_chunks(client.get(), {declared(32, "first-half-bytes", false), later});
+    require(run.status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+                run.status.error_message().contains("total_bytes"),
+            "a total_bytes that changes between chunks fails by name: " + run.status.error_message());
+  }
+  {
+    // The whole declared size is charged on the first chunk, before the
+    // rest of the data arrives, and returned when the parse is done.
+    const std::string payload = "in-memory-source";
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    auto stream = client->StreamProcessDocument(&context);
+    require(stream->Write(declared(payload.size(), payload.substr(0, 4), false)),
+            "the declaring chunk goes out");
+    require(wait_for_in_use(payload.size()),
+            "the declared size is charged once, up front, got " +
+                std::to_string(inflight->in_use()));
+    auto rest = chunk(true);
+    rest.set_data(payload.substr(4));
+    require(stream->Write(rest), "the rest of the payload goes out");
+    stream->WritesDone();
+    std::vector<pipestream::parse::v1::DocumentStreamEvent> events;
+    pipestream::parse::v1::DocumentStreamEvent event;
+    while (stream->Read(&event)) events.push_back(event);
+    const grpc::Status status = stream->Finish();
+    require(status.ok(), "an upload matching its total_bytes parses: " + status.error_message());
+    require(events.size() == 4 && events.back().has_complete(),
+            "three pages and the complete event");
+    require(events.back().complete().origin().binary_hash() == grparse::content_hash(payload),
+            "the declared upload's origin hash is its bytes' FNV-1a");
+  }
+  require(wait_for_in_use(0), "every declared charge is returned");
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+}
+
 int main() {
   return grparse_test::run_test_main("streaming-service-test", {
       [] {
@@ -4721,6 +5049,7 @@ int main() {
         verify_pdf_classification_restricts_recognition();
         verify_pdf_ocr_recommendation_takes_the_cv_path();
         verify_streaming_pdf_ocr_recommendation_takes_the_cv_path();
+        verify_streaming_forced_ocr_starts_before_the_inspector_trailer();
         verify_pdf_mixed_recommendation_stays_on_named_pages();
         verify_pdf_template_form_recommendation_forces_every_page();
         verify_pdf_mixed_recommendation_without_reasons_forces_every_page();
@@ -4736,6 +5065,9 @@ int main() {
         verify_stream_rejects_invalid_collectors(&server);
         verify_document_timeout_bounds_the_cv_leg();
         verify_inflight_byte_budget();
+        verify_incremental_digests_match_the_whole_upload();
+        verify_stream_hands_the_chunk_digest_to_the_source();
+        verify_stream_total_bytes_hint();
         verify_remote_source_is_charged_after_the_fetch();
         verify_remote_fetches_wait_for_a_slot();
         verify_stream_chunks_holds_the_fetched_charge_until_written();
