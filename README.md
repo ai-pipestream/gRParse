@@ -684,7 +684,7 @@ parsing when libreoffice fails on it (a partial success with the
 libreoffice failure listed under `collector:libreoffice`). fastwarc is
 both: gRParse dials it as a collector (`GRPARSE_FASTWARC_TARGET`) and the
 shell keeps its native tab. Both speak the contract of the fastwarc-grpc
-crate the stack pins (1.1.0 on crates.io).
+crate the stack pins (2.0.1 on crates.io).
 
 The libreoffice leg is a hybrid: office text, tables, and typed content are
 exact from the office core, so gRParse does not OCR office documents — but
