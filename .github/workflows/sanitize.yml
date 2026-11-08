@@ -129,7 +129,10 @@ jobs:
           SEED_IMAGE: ${{ steps.seed.outputs.image == 'deps' && 'grparse-san-deps' || steps.seed.outputs.image }}
         run: |
           mkdir -p "$RUNNER_TEMP/ccache"
+          # Docker does not inherit runner environment variables. Preserve CI
+          # detection so ORT does not start its optional telemetry uploader here.
           cid=$(docker create --cap-add SYS_PTRACE -w /src \
+            -e CI=true \
             -e ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=1:detect_container_overflow=0:fast_unwind_on_malloc=0 \
             -e UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
             -e LSAN_OPTIONS=suppressions=/src/tests/lsan.supp \
