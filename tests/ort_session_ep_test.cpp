@@ -356,6 +356,9 @@ void verify_cpu_selection_failure_does_not_count() {
 }  // namespace
 
 int main() {
+  // ORT requires an Env before any other API use. Keep it alive for the
+  // options-only checks too, just as the OCR engines do before appending an EP.
+  Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "grparse-ep-test");
   return grparse_test::run_test_main("ort-session-ep-test", "all checks passed", {
       verify_default_selection_is_cpu,
       verify_legacy_negative_index_appends_nothing_but_counts,
