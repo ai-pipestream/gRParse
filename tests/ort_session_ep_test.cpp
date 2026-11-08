@@ -7,6 +7,8 @@
 #include <print>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 #include <unistd.h>
 
 #include "grparse_session_ep.h"
@@ -107,6 +109,83 @@ void verify_ocr_batch_size_follows_provider() {
   grparse::set_ort_ep_selection(other);
   require_equal(grparse::ocr_batch_size(), size_t{16}, "CUDA reads 16 crops per call");
   grparse::set_ort_ep_selection(kept);
+}
+
+// GRPARSE_CUDA_CONV_SEARCH takes exactly heuristic, exhaustive, or default;
+// unset or empty is heuristic, and anything else is refused, so a typo
+// fails startup instead of quietly benchmarking every shape again.
+void verify_cuda_conv_search_parses_strictly() {
+  using grparse::CudaConvSearch;
+  require(std::getenv("GRPARSE_CUDA_CONV_SEARCH") == nullptr,
+          "the test runs without GRPARSE_CUDA_CONV_SEARCH");
+  require(grparse::cuda_conv_search() == CudaConvSearch::kHeuristic,
+          "unset, the process searches heuristically");
+  require(grparse::parse_cuda_conv_search(nullptr) == CudaConvSearch::kHeuristic,
+          "unset is heuristic");
+  require(grparse::parse_cuda_conv_search("") == CudaConvSearch::kHeuristic,
+          "empty is heuristic");
+  require(grparse::parse_cuda_conv_search("heuristic") == CudaConvSearch::kHeuristic,
+          "heuristic parses");
+  require(grparse::parse_cuda_conv_search("exhaustive") == CudaConvSearch::kExhaustive,
+          "exhaustive parses");
+  require(grparse::parse_cuda_conv_search("default") == CudaConvSearch::kDefault,
+          "default parses");
+  for (const CudaConvSearch search :
+       {CudaConvSearch::kHeuristic, CudaConvSearch::kExhaustive, CudaConvSearch::kDefault}) {
+    const std::string name(grparse::cuda_conv_search_name(search));
+    require(grparse::parse_cuda_conv_search(name.c_str()) == search,
+            "a mode's name parses back to it: " + name);
+  }
+  for (const char* malformed : {"Heuristic", "HEURISTIC", " heuristic", "heuristic ", "fast",
+                                "0", "1", "heuristic,exhaustive", "exhaustive\n"}) {
+    std::string message;
+    try {
+      (void)grparse::parse_cuda_conv_search(malformed);
+    } catch (const std::invalid_argument& error) {
+      message = error.what();
+    }
+    require(message.find("GRPARSE_CUDA_CONV_SEARCH") != std::string::npos,
+            std::format("{:?} must be refused with the knob's name", std::string(malformed)));
+  }
+}
+
+// The CUDA session options, by name: heuristic cuDNN search unless asked
+// otherwise, the largest cuDNN workspace, an arena that grows by what is
+// requested, copies on the default stream, and the 2 GiB arena limit.
+void verify_cuda_provider_options() {
+  using grparse::CudaConvSearch;
+  const auto value_of = [](const std::vector<std::pair<std::string, std::string>>& options,
+                           const std::string& key) {
+    std::string found;
+    int count = 0;
+    for (const auto& [name, value] : options) {
+      if (name == key) {
+        found = value;
+        ++count;
+      }
+    }
+    require_equal(count, 1, "the CUDA options set " + key + " exactly once");
+    return found;
+  };
+  const auto heuristic = grparse::cuda_provider_options(3, CudaConvSearch::kHeuristic);
+  require_equal(heuristic.size(), size_t{6}, "the CUDA options set six keys");
+  require_equal(value_of(heuristic, "device_id"), "3", "the selected device");
+  require_equal(value_of(heuristic, "gpu_mem_limit"), "2147483648", "a 2 GiB arena");
+  require_equal(value_of(heuristic, "arena_extend_strategy"), "kSameAsRequested",
+                "the arena grows by what is requested");
+  require_equal(value_of(heuristic, "cudnn_conv_algo_search"), "HEURISTIC",
+                "heuristic cuDNN search");
+  require_equal(value_of(heuristic, "cudnn_conv_use_max_workspace"), "1",
+                "the largest cuDNN workspace");
+  require_equal(value_of(heuristic, "do_copy_in_default_stream"), "1",
+                "copies stay on the default stream");
+  require_equal(
+      value_of(grparse::cuda_provider_options(0, CudaConvSearch::kExhaustive),
+               "cudnn_conv_algo_search"),
+      "EXHAUSTIVE", "exhaustive cuDNN search on request");
+  require_equal(value_of(grparse::cuda_provider_options(0, CudaConvSearch::kDefault),
+                         "cudnn_conv_algo_search"),
+                "DEFAULT", "cuDNN's default algorithm on request");
 }
 
 // The minimal ONNX model a fallback can rebuild on CPU: ir_version 8, opset
@@ -302,6 +381,8 @@ int main() {
       verify_explicit_cpu_overrides_legacy_gpu_index,
       verify_latest_selection_wins,
       verify_ocr_batch_size_follows_provider,
+      verify_cuda_conv_search_parses_strictly,
+      verify_cuda_provider_options,
       verify_make_session_falls_back_and_counts,
       verify_cpu_selection_failure_does_not_count,
       verify_make_session_retries_on_openvino_then_falls_back,

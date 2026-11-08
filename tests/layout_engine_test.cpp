@@ -1,7 +1,9 @@
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <iterator>
 #include <print>
@@ -10,6 +12,7 @@
 #include <vector>
 
 #include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include "grparse/layout_engine.h"
 #include "support/check.h"
@@ -151,6 +154,87 @@ void verify_cpu_fallback_after_failed_probe(const fs::path& model,
   verify_matches_reference(engine, engine.detect_regions(image), expected, expected_count);
 }
 
+// The per-pixel loops the detectors' preprocessing used before it went to
+// cv::split and cv::LUT, kept verbatim as the oracle: the tensors must stay
+// bit-identical, or the goldens above move.
+std::vector<uint8_t> scalar_query_planes(const cv::Mat& resized) {
+  const int rows = resized.rows;
+  const int cols = resized.cols;
+  std::vector<uint8_t> pixels(static_cast<size_t>(3) * rows * cols);
+  const size_t plane = static_cast<size_t>(rows) * cols;
+  for (int row = 0; row < rows; ++row) {
+    const cv::Vec3b* source = resized.ptr<cv::Vec3b>(row);
+    for (int column = 0; column < cols; ++column) {
+      const size_t offset = static_cast<size_t>(row) * cols + column;
+      for (int channel = 0; channel < 3; ++channel) {
+        // BGR pixel -> RGB tensor channel.
+        pixels[plane * static_cast<size_t>(channel) + offset] = source[column][2 - channel];
+      }
+    }
+  }
+  return pixels;
+}
+
+std::vector<float> scalar_anchor_free_planes(const cv::Mat& resized) {
+  constexpr float kMean[] = {0.485F, 0.456F, 0.406F};
+  constexpr float kStd[] = {0.229F, 0.224F, 0.225F};
+  const int rows = resized.rows;
+  const int cols = resized.cols;
+  std::vector<float> tensor(static_cast<size_t>(3) * rows * cols);
+  const size_t plane = static_cast<size_t>(rows) * cols;
+  for (int row = 0; row < rows; ++row) {
+    const cv::Vec3b* pixels = resized.ptr<cv::Vec3b>(row);
+    for (int column = 0; column < cols; ++column) {
+      const size_t offset = static_cast<size_t>(row) * cols + column;
+      for (int channel = 0; channel < 3; ++channel) {
+        tensor[plane * static_cast<size_t>(channel) + offset] =
+            (static_cast<float>(pixels[column][channel]) / 255.0F - kMean[channel]) /
+            kStd[channel];
+      }
+    }
+  }
+  return tensor;
+}
+
+void require_planes_match(const cv::Mat& resized, const std::string& what) {
+  const auto expected_bytes = scalar_query_planes(resized);
+  std::vector<uint8_t> bytes(expected_bytes.size(), 0xA5);
+  grparse::layout_query_planes(resized, bytes.data());
+  require(bytes == expected_bytes,
+          what + ": the query detector's planes differ from the per-pixel loop");
+
+  const auto expected_floats = scalar_anchor_free_planes(resized);
+  std::vector<float> floats(expected_floats.size(), -1.0F);
+  grparse::layout_anchor_free_planes(resized, floats.data());
+  require(std::memcmp(floats.data(), expected_floats.data(), floats.size() * sizeof(float)) == 0,
+          what + ": the anchor-free detector's planes differ from the per-pixel loop");
+}
+
+// Model-free: runs on every host, unlike the goldens.  Both model input
+// sizes, exactly as the engine resizes to them, plus the page itself at its
+// own odd size and a cropped view whose rows are not contiguous.
+void verify_vectorised_preprocess_matches_scalar_loop(const cv::Mat& image) {
+  cv::Mat query_input;
+  cv::resize(image, query_input, cv::Size(640, 640), 0, 0, cv::INTER_LINEAR);
+  require_planes_match(query_input, "report page at 640x640");
+  cv::Mat anchor_free_input;
+  cv::resize(image, anchor_free_input, cv::Size(608, 800));
+  require_planes_match(anchor_free_input, "report page at 608x800");
+  require_planes_match(image, "report page at its own size");
+  const cv::Mat view = image(cv::Rect(7, 11, image.cols / 2 + 3, image.rows / 3 + 5));
+  require(!view.isContinuous(), "the cropped view must not be contiguous");
+  require_planes_match(view, "a non-contiguous view of the report page");
+
+  bool threw = false;
+  std::vector<uint8_t> unused(16 * 16 * 3);
+  try {
+    grparse::layout_query_planes(cv::Mat(16, 16, CV_8UC1, cv::Scalar(0)), unused.data());
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  require(threw, "a raster that is not BGR must be refused, not read past its rows");
+}
+
 // One model's whole leg: skipped when its file is not provisioned, so a host
 // that fetched only one of the two still proves that one.
 bool run_model(grparse::LayoutModel selection, const fs::path& models_dir, const cv::Mat& image,
@@ -187,6 +271,9 @@ int main() {
     require(fs::exists(image_path), "test image missing: " + image_path.string());
     const cv::Mat image = cv::imread(image_path.string(), cv::IMREAD_COLOR);
     require(!image.empty(), "test image must load: " + image_path.string());
+    verify_vectorised_preprocess_matches_scalar_loop(image);
+    // Say so: without a model the test exits as skipped, and this part ran.
+    std::println(stderr, "layout-engine-test: preprocessing matches the per-pixel loop");
 
     const bool heron = run_model(grparse::LayoutModel::kHeron, models_dir, image, kReportPageHeron,
                                  std::size(kReportPageHeron));

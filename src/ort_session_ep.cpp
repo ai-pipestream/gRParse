@@ -39,15 +39,16 @@ constexpr int kEpBuildMaxAttempts = 3;
 std::mutex compile_mutex;
 
 void append_cuda(Ort::SessionOptions& options, int device) {
-  // Same options upstream RapidOcrOnnx used, with the 2 GiB arena limit
-  // computed in 64 bits (upstream's int expression overflowed).
-  OrtCUDAProviderOptions cuda_options;
-  cuda_options.device_id = device;
-  cuda_options.arena_extend_strategy = 0;
-  cuda_options.gpu_mem_limit = 2ULL * 1024ULL * 1024ULL * 1024ULL;
-  cuda_options.cudnn_conv_algo_search = OrtCudnnConvAlgoSearch::OrtCudnnConvAlgoSearchExhaustive;
-  cuda_options.do_copy_in_default_stream = 1;
-  options.AppendExecutionProvider_CUDA(cuda_options);
+  // The V2 options take every setting by name; cuda_provider_options()
+  // lists them all and says why each is set.  The provider copies them, so
+  // the handle may go when this returns.
+  Ort::CUDAProviderOptions cuda_options;
+  std::unordered_map<std::string, std::string> settings;
+  for (auto& [key, value] : cuda_provider_options(device, cuda_conv_search())) {
+    settings.emplace(std::move(key), std::move(value));
+  }
+  cuda_options.Update(settings);
+  options.AppendExecutionProvider_CUDA_V2(*cuda_options);
 }
 
 // Resolves what a session actually asks for: its own explicit count, or the
@@ -172,6 +173,54 @@ size_t ocr_batch_size() {
   }();
   if (configured != 0) return configured;
   return ort_ep_selection().ep == OrtEp::kCuda ? 16 : 1;
+}
+
+std::string_view cuda_conv_search_name(CudaConvSearch search) {
+  switch (search) {
+    case CudaConvSearch::kExhaustive: return "exhaustive";
+    case CudaConvSearch::kDefault: return "default";
+    case CudaConvSearch::kHeuristic: break;
+  }
+  return "heuristic";
+}
+
+CudaConvSearch parse_cuda_conv_search(const char* value) {
+  if (value == nullptr || *value == '\0') return CudaConvSearch::kHeuristic;
+  const std::string_view configured(value);
+  for (const CudaConvSearch search :
+       {CudaConvSearch::kHeuristic, CudaConvSearch::kExhaustive, CudaConvSearch::kDefault}) {
+    if (configured == cuda_conv_search_name(search)) return search;
+  }
+  throw std::invalid_argument("GRPARSE_CUDA_CONV_SEARCH must be heuristic, exhaustive, or default");
+}
+
+CudaConvSearch cuda_conv_search() {
+  static const CudaConvSearch configured =
+      parse_cuda_conv_search(std::getenv("GRPARSE_CUDA_CONV_SEARCH"));
+  return configured;
+}
+
+std::vector<std::pair<std::string, std::string>> cuda_provider_options(int device,
+                                                                      CudaConvSearch search) {
+  std::string algo_search = "HEURISTIC";
+  if (search == CudaConvSearch::kExhaustive) algo_search = "EXHAUSTIVE";
+  if (search == CudaConvSearch::kDefault) algo_search = "DEFAULT";
+  return {
+      {"device_id", std::to_string(device)},
+      // The 2 GiB arena limit upstream RapidOcrOnnx used, in 64 bits
+      // (upstream's int expression overflowed).
+      {"gpu_mem_limit", std::to_string(2ULL * 1024ULL * 1024ULL * 1024ULL)},
+      // Grow the arena by what a run asks for rather than by doubling
+      // extensions, so the few detector input sizes do not each reserve
+      // more of the 2 GiB than they use.
+      {"arena_extend_strategy", "kSameAsRequested"},
+      // Exhaustive search benchmarks every algorithm on the first run of
+      // every new input shape; heuristic (the default) asks cuDNN instead.
+      {"cudnn_conv_algo_search", std::move(algo_search)},
+      // Let cuDNN take the workspace its fastest algorithm wants.
+      {"cudnn_conv_use_max_workspace", "1"},
+      {"do_copy_in_default_stream", "1"},
+  };
 }
 
 void set_ort_intra_op_threads(int threads) { intra_op_threads.store(threads > 0 ? threads : 0); }

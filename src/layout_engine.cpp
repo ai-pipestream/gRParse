@@ -81,17 +81,7 @@ class QueryDetectorStrategy final : public LayoutStrategy {
     cv::Mat resized;
     cv::resize(image, resized, cv::Size(kQueryInputSide, kQueryInputSide), 0, 0, cv::INTER_LINEAR);
     std::vector<uint8_t> pixels(static_cast<size_t>(3) * kQueryInputSide * kQueryInputSide);
-    const size_t plane = static_cast<size_t>(kQueryInputSide) * kQueryInputSide;
-    for (int row = 0; row < kQueryInputSide; ++row) {
-      const cv::Vec3b* source = resized.ptr<cv::Vec3b>(row);
-      for (int column = 0; column < kQueryInputSide; ++column) {
-        const size_t offset = static_cast<size_t>(row) * kQueryInputSide + column;
-        for (int channel = 0; channel < 3; ++channel) {
-          // BGR pixel -> RGB tensor channel.
-          pixels[plane * static_cast<size_t>(channel) + offset] = source[column][2 - channel];
-        }
-      }
-    }
+    layout_query_planes(resized, pixels.data());
 
     // Width first: the graph rescales its normalized boxes by this pair, so
     // transposing it silently produces boxes for a page of the wrong shape.
@@ -220,18 +210,7 @@ class AnchorFreeStrategy final : public LayoutStrategy {
     cv::Mat resized;
     cv::resize(image, resized, cv::Size(kGridWidth, kGridHeight));
     std::vector<float> tensor(static_cast<size_t>(3) * kGridHeight * kGridWidth);
-    const size_t plane = static_cast<size_t>(kGridHeight) * kGridWidth;
-    for (int row = 0; row < kGridHeight; ++row) {
-      const cv::Vec3b* pixels = resized.ptr<cv::Vec3b>(row);
-      for (int column = 0; column < kGridWidth; ++column) {
-        const size_t offset = static_cast<size_t>(row) * kGridWidth + column;
-        for (int channel = 0; channel < 3; ++channel) {
-          tensor[plane * static_cast<size_t>(channel) + offset] =
-              (static_cast<float>(pixels[column][channel]) / 255.0F - kMean[channel]) /
-              kStd[channel];
-        }
-      }
-    }
+    layout_anchor_free_planes(resized, tensor.data());
 
     const std::array<int64_t, 4> input_shape = {1, 3, kGridHeight, kGridWidth};
     const Ort::MemoryInfo memory = cpu_memory();
@@ -339,12 +318,75 @@ class AnchorFreeStrategy final : public LayoutStrategy {
 
 std::atomic<int> injected_probe_failures{0};
 
+// The anchor-free detector's normalization as one table per channel: the
+// value each byte becomes, computed with the very expression the per-pixel
+// loop used, so the tensor stays bit-identical to it (a fused scale and
+// offset would round differently and move the goldens).
+const std::array<std::array<float, 256>, 3>& anchor_free_tables() {
+  static const auto tables = [] {
+    std::array<std::array<float, 256>, 3> built{};
+    for (size_t channel = 0; channel < 3; ++channel) {
+      for (int value = 0; value < 256; ++value) {
+        built[channel][static_cast<size_t>(value)] =
+            (static_cast<float>(value) / 255.0F - kMean[channel]) / kStd[channel];
+      }
+    }
+    return built;
+  }();
+  return tables;
+}
+
+void require_bgr(const cv::Mat& resized) {
+  if (resized.empty() || resized.type() != CV_8UC3) {
+    throw std::invalid_argument("Layout preprocessing expects a non-empty BGR image");
+  }
+}
+
+// OpenCV writes into an output that already has the right size and type
+// without reallocating it; if it ever did, the tensor would silently stay
+// zero, so say so instead.
+void require_in_place(const cv::Mat& output, const void* tensor_plane) {
+  if (static_cast<const void*>(output.data) != tensor_plane) {
+    throw std::logic_error("Layout preprocessing wrote outside the input tensor");
+  }
+}
+
 std::unique_ptr<LayoutStrategy> make_strategy(LayoutModel model) {
   if (model == LayoutModel::kHeron) return std::make_unique<QueryDetectorStrategy>();
   return std::make_unique<AnchorFreeStrategy>();
 }
 
 }  // namespace
+
+void layout_query_planes(const cv::Mat& resized, uint8_t* planes) {
+  require_bgr(resized);
+  const size_t plane = static_cast<size_t>(resized.rows) * static_cast<size_t>(resized.cols);
+  // cv::split fills Mats that already have its size and type in place, so
+  // each channel lands straight in its tensor plane; listing the planes
+  // last-first is the BGR to RGB swap.
+  cv::Mat channels[3] = {cv::Mat(resized.size(), CV_8UC1, planes + 2 * plane),
+                         cv::Mat(resized.size(), CV_8UC1, planes + plane),
+                         cv::Mat(resized.size(), CV_8UC1, planes)};
+  cv::split(resized, channels);
+  require_in_place(channels[0], planes + 2 * plane);
+  require_in_place(channels[1], planes + plane);
+  require_in_place(channels[2], planes);
+}
+
+void layout_anchor_free_planes(const cv::Mat& resized, float* planes) {
+  require_bgr(resized);
+  const size_t plane = static_cast<size_t>(resized.rows) * static_cast<size_t>(resized.cols);
+  cv::Mat bytes[3];
+  cv::split(resized, bytes);
+  const auto& tables = anchor_free_tables();
+  for (size_t channel = 0; channel < 3; ++channel) {
+    // Channel order as loaded (BGR): the reference normalizes it that way.
+    const cv::Mat table(1, 256, CV_32FC1, const_cast<float*>(tables[channel].data()));
+    cv::Mat target(resized.size(), CV_32FC1, planes + channel * plane);
+    cv::LUT(bytes[channel], table, target);
+    require_in_place(target, planes + channel * plane);
+  }
+}
 
 void layout_engine_test_inject_probe_failures(int failures) {
   injected_probe_failures.store(failures < 0 ? 0 : failures);

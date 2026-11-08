@@ -6,6 +6,8 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include <onnxruntime/core/session/onnxruntime_cxx_api.h>
 
@@ -67,6 +69,33 @@ int ort_intra_op_threads();
 // multiplies.  1 reads one crop per call, the upstream behavior.  A
 // malformed value throws std::invalid_argument.
 size_t ocr_batch_size();
+
+// How the CUDA provider picks a cuDNN convolution algorithm
+// (GRPARSE_CUDA_CONV_SEARCH).  kExhaustive benchmarks every algorithm for
+// each new input shape, which the dynamic-shape OCR detector pays on the
+// first page of every page size, right on time-to-first-page; kHeuristic
+// asks cuDNN's own heuristics and benchmarks nothing; kDefault takes
+// cuDNN's default algorithm.
+enum class CudaConvSearch { kHeuristic, kExhaustive, kDefault };
+
+// The knob's spelling: heuristic, exhaustive, or default.
+std::string_view cuda_conv_search_name(CudaConvSearch search);
+
+// Parses a GRPARSE_CUDA_CONV_SEARCH value.  Null or empty is the default,
+// kHeuristic; anything but the three exact lowercase spellings throws
+// std::invalid_argument.
+CudaConvSearch parse_cuda_conv_search(const char* value);
+
+// The process's setting, read from the environment once.  The server calls
+// it at startup so a malformed value refuses to start instead of failing
+// the first CUDA session build.
+CudaConvSearch cuda_conv_search();
+
+// The CUDA provider options (OrtCUDAProviderOptionsV2 keys and values) every
+// CUDA session is built with, exposed so the choice is testable without a
+// GPU.
+std::vector<std::pair<std::string, std::string>> cuda_provider_options(int device,
+                                                                      CudaConvSearch search);
 
 // Must be called before any OCR engine is constructed.  Later sessions use
 // the newest selection; sessions already built keep the provider they bound.

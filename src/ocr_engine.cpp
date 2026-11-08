@@ -2,10 +2,17 @@
 
 #include "grparse/text_geometry.h"
 
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
 #include <cstdlib>
+#include <iterator>
 #include <optional>
 #include <stdexcept>
 #include <string>
+
+#include <opencv2/core.hpp>
 
 #include "grparse_session_ep.h"
 
@@ -53,7 +60,70 @@ OcrDetectOptions detect_options_from_env() {
   return options;
 }
 
+int round_down_32(int value) { return std::max(32, value / 32 * 32); }
+
+int round_up_32(int value) { return std::max(32, (value + 31) / 32 * 32); }
+
 }  // namespace
+
+int ocr_detector_side(int longest_side, int max_side_len) {
+  const int cap = round_down_32(max_side_len);
+  // The ladder below the cap, then the cap.
+  std::array<int, std::size(kOcrDetectorLadder) + 1> sides{};
+  size_t count = 0;
+  for (const int side : kOcrDetectorLadder) {
+    if (side < cap) sides[count++] = side;
+  }
+  sides[count++] = cap;
+  if (longest_side <= sides[0]) return sides[0];
+  for (size_t index = 1; index < count; ++index) {
+    if (longest_side > sides[index]) continue;
+    // Between two sizes: the nearer by ratio, the larger on a tie, so the
+    // page is scaled by as little as the ladder allows either way.
+    const int64_t below = sides[index - 1];
+    const int64_t above = sides[index];
+    const int64_t side = longest_side;
+    return side * side < below * above ? sides[index - 1] : sides[index];
+  }
+  return sides[count - 1];
+}
+
+OcrDetectGeometry ocr_detect_geometry(int page_width, int page_height, int padding,
+                                      int max_side_len) {
+  const int padded_width = page_width + 2 * padding;
+  const int padded_height = page_height + 2 * padding;
+  const int longest = std::max(padded_width, padded_height);
+  const int side = ocr_detector_side(longest, max_side_len);
+  OcrDetectGeometry geometry;
+  if (longest <= ocr_detector_side(1, max_side_len)) {
+    // Below the ladder's first size: padded out to it, not scaled up, so
+    // the canvas is the input and white past the page.
+    const bool wide = padded_width >= padded_height;
+    geometry.input_width = wide ? side : std::min(side, round_up_32(padded_width));
+    geometry.input_height = wide ? std::min(side, round_up_32(padded_height)) : side;
+    geometry.canvas_width = geometry.input_width;
+    geometry.canvas_height = geometry.input_height;
+    return geometry;
+  }
+  // Scaled by side / longest on both axes, so pages of one shape share one
+  // input whatever their size.  The longest side maps exactly; the other
+  // rounds up to a multiple of 32, and the canvas grows on that axis by
+  // what the extra input pixels cover, so the resize stays isotropic and
+  // the page keeps its aspect ratio.
+  const double scale = static_cast<double>(side) / static_cast<double>(longest);
+  const auto letterbox = [&](int padded, int* input, int* canvas) {
+    if (padded == longest) {
+      *input = side;
+      *canvas = padded;
+      return;
+    }
+    *input = std::min(side, round_up_32(static_cast<int>(std::ceil(padded * scale))));
+    *canvas = std::max(padded, static_cast<int>(std::lround(*input / scale)));
+  };
+  letterbox(padded_width, &geometry.input_width, &geometry.canvas_width);
+  letterbox(padded_height, &geometry.input_height, &geometry.canvas_height);
+  return geometry;
+}
 
 const OcrDetectOptions& ocr_detect_options() {
   // Parsed once: extract_page() runs per page and must not re-read the
@@ -95,8 +165,27 @@ OcrEngine::Page OcrEngine::extract_page(const cv::Mat& image) {
     throw std::runtime_error("RapidOCR could not decode the in-memory image");
   }
   const OcrDetectOptions& options = ocr_detect_options();
+  // The page on a white canvas sized for one of a few detector inputs (see
+  // ocr_detect_geometry), so pages of every size share a handful of shapes.
+  // One border call does the padding RapidOCR would have added and the
+  // letterbox margin together.
+  const OcrDetectGeometry geometry =
+      ocr_detect_geometry(image.cols, image.rows, options.padding, options.max_side_len);
+  cv::Mat canvas;
+  cv::copyMakeBorder(image, canvas, options.padding,
+                     geometry.canvas_height - image.rows - options.padding, options.padding,
+                     geometry.canvas_width - image.cols - options.padding, cv::BORDER_ISOLATED,
+                     cv::Scalar(255, 255, 255));
+  cv::Rect page_rect(options.padding, options.padding, image.cols, image.rows);
+  ScaleParam scale{
+      geometry.canvas_width,
+      geometry.canvas_height,
+      geometry.input_width,
+      geometry.input_height,
+      static_cast<float>(geometry.input_width) / static_cast<float>(geometry.canvas_width),
+      static_cast<float>(geometry.input_height) / static_cast<float>(geometry.canvas_height)};
   const auto result =
-      engine_->detect(image, options.padding, options.max_side_len, options.box_score_thresh,
+      engine_->detect(nullptr, nullptr, canvas, page_rect, scale, options.box_score_thresh,
                       options.box_thresh, options.un_clip_ratio, options.do_angle, options.most_angle);
   Page page{image.cols, image.rows, {}};
   page.source = OcrPage::Source::kOcr;

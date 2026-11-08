@@ -81,6 +81,18 @@ class LayoutEngine final : public RegionDetector {
   LayoutModel model_;
 };
 
+// The detectors' input tensors, CHW, built from a BGR raster already at the
+// model's input size into `planes` (3 * rows * cols values).  Each channel
+// is one vectorised OpenCV pass instead of a per-pixel loop; exposed so the
+// tests hold them to that loop.  Both throw std::invalid_argument for
+// anything but a non-empty CV_8UC3 image.
+//
+// Query-based detector: RGB planes of raw bytes.
+void layout_query_planes(const cv::Mat& resized, uint8_t* planes);
+// Anchor-free detector: planes in the order loaded (BGR), each byte v as
+// (v / 255 - mean) / std with the reference's per-channel constants.
+void layout_anchor_free_planes(const cv::Mat& resized, float* planes);
+
 // Test-only: makes the next `failures` construction probes throw, standing in
 // for a provider whose first inference fails, so the CPU retreat (which binds
 // the strategy a second time) is testable without a GPU.  Production builds

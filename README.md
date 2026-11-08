@@ -481,7 +481,18 @@ one of it. Select the NVIDIA device with
 provider: `cuda` (default, fails startup if CUDA cannot initialize),
 `openvino` (Intel GPU/CPU/NPU through the OpenVINO build — see below), `cpu`
 (explicit CPU inference), or `auto` (prefers CUDA, then OpenVINO, then CPU,
-logging each fallback). `GRPARSE_OCR_BATCH` (1 to 256) sets how many line
+logging each fallback). Every CUDA session is built with ONNX Runtime's
+`OrtCUDAProviderOptionsV2`: a 2 GiB arena that grows by what each run
+requests (`kSameAsRequested`), the largest cuDNN workspace
+(`cudnn_conv_use_max_workspace=1`), copies on the default stream, and the
+cuDNN convolution search `GRPARSE_CUDA_CONV_SEARCH` picks: `heuristic`
+(default) takes cuDNN's own heuristic choice, `exhaustive` benchmarks every
+algorithm the first time a session sees each input shape (the dynamic-shape
+OCR detector pays that on the first page of every new size, right on
+time-to-first-page), and `default` takes cuDNN's default algorithm. Any
+other value, including another capitalization, refuses startup on every
+provider; the startup line for CUDA names the search in use.
+`GRPARSE_OCR_BATCH` (1 to 256) sets how many line
 crops the angle classifier and recognizer take per call: 16 under CUDA, 1
 under CPU (where padding costs more than batching saves) and OpenVINO (whose
 GPU plugin compiles kernels for every new input shape).
@@ -493,7 +504,19 @@ staying in the pool poisoned. Optional RapidOCR detect knobs:
 `GRPARSE_OCR_PADDING`, `GRPARSE_OCR_MAX_SIDE`, `GRPARSE_OCR_BOX_SCORE`,
 `GRPARSE_OCR_BOX_THRESH`, `GRPARSE_OCR_UNCLIP`. These are read and range-checked
 once at startup: a malformed or out-of-range value fails the server immediately
-rather than being silently ignored per page. gRPC memory, thread,
+rather than being silently ignored per page. The detector does not see each
+page at its own size, since every new input shape costs the accelerated
+providers a cuDNN algorithm choice or an OpenVINO kernel compile: the page,
+with `GRPARSE_OCR_PADDING` (default 50) white pixels around it, is scaled on
+both axes alike so its longest side lands on the nearest of 960, 1280, 1600,
+2048, and sizes about a quarter larger each step from there to 16384 (at
+most about 13% down or 15% up), and its short side is padded with white to a
+multiple of 32. A
+page smaller than 960 is padded out to it, not scaled up.
+`GRPARSE_OCR_MAX_SIDE` (default 2048, 32 to 16384) caps that longest side,
+padding included: sizes above it leave the ladder, and the cap itself,
+rounded down to a multiple of 32, is the largest. Line crops for the angle
+and text models are still cut from the page at its rendered resolution. gRPC memory, thread,
 and stream limits use `GRPARSE_GRPC_MEMORY_MIB`, `GRPARSE_GRPC_MAX_THREADS`,
 and `GRPARSE_MAX_CONCURRENT_STREAMS`. Those bound transport buffers and calls,
 not the documents behind them, so `GRPARSE_MAX_INFLIGHT_BYTES` (default 4 GiB,
