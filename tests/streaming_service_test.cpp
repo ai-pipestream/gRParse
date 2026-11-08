@@ -28,7 +28,9 @@
 #include <malloc.h>
 
 #if defined(__SANITIZE_ADDRESS__)
-#include <sanitizer/allocator_interface.h>
+// From the sanitizer runtime's allocator interface; declared here because
+// the image toolchain ships the runtime without its headers.
+extern "C" std::size_t __sanitizer_get_current_allocated_bytes();
 #endif
 
 #include <google/protobuf/util/message_differencer.h>
