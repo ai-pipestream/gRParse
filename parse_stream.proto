@@ -98,6 +98,21 @@ message DocumentChunk {
   // naming total_bytes. Zero is invalid when set; unset keeps the per-chunk
   // checks.
   optional uint64 total_bytes = 15;
+  // Whether the stream follows the page events of each collector (and of
+  // the CV pages) with a repair event (DocumentRepairDelta) once the
+  // whole-document passes ran. Unset or true keeps it. False tells the
+  // server the client will not fold page events into a Document: it then
+  // keeps no fold of the pages it streams, computes and sends no repair
+  // event, and marks the complete event repair_delta_omitted. The page
+  // events are exactly what they are with the repair event on, so pages
+  // that streamed before the passes ran stay unrepaired (no rejoined
+  // paragraphs, demoted running headers or grouped lists); the
+  // collector_document event still carries each collector's repaired
+  // Document, and the complete event's section_header_levels still ship.
+  // With slim_collector_documents as well, nothing on the stream rebuilds
+  // a collector's repaired items. Resolved from the first chunk that sets
+  // it.
+  optional bool repair_delta = 16;
 }
 
 // DocumentStreamEvent is the page-batched incremental conversion result.
@@ -299,6 +314,10 @@ message DocumentComplete {
   // same way as ConvertDocumentResponse.confidence. Absent when no CV page
   // was read.
   optional ConfidenceScores confidence = 5;
+  // True when the stream's DocumentChunk.repair_delta resolved to false,
+  // so a reader of a recorded stream knows the missing repair events were
+  // asked for, not lost.
+  bool repair_delta_omitted = 6;
 }
 
 message StreamDocumentRequest {

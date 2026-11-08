@@ -1,6 +1,7 @@
 #include "grparse/document_parser_service.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdint>
@@ -111,7 +112,8 @@ class DocumentStreamReactor final
                         std::shared_ptr<CollectorEndpoints> endpoints,
                         std::optional<RepairOptions> repair,
                         std::shared_ptr<InflightBytes> inflight,
-                        std::shared_ptr<const CollectorDocumentTransferObserver> transfer_observer)
+                        std::shared_ptr<const CollectorDocumentTransferObserver> transfer_observer,
+                        std::shared_ptr<std::atomic<uint64_t>> folded_pages)
       : context_(context),
         scheduler_(scheduler),
         endpoints_(std::move(endpoints)),
@@ -124,7 +126,8 @@ class DocumentStreamReactor final
         maximum_buffered_pages_(scheduler.page_window()),
         callback_gate_(std::make_shared<CallbackGate>()),
         inflight_(std::move(inflight)),
-        transfer_observer_(std::move(transfer_observer)) {
+        transfer_observer_(std::move(transfer_observer)),
+        folded_pages_(std::move(folded_pages)) {
     callback_gate_->reactor = this;
     StartRead(&incoming_);
   }
@@ -368,6 +371,9 @@ class DocumentStreamReactor final
     }
     if (!slim_collector_documents_.has_value() && incoming_.has_slim_collector_documents()) {
       slim_collector_documents_ = incoming_.slim_collector_documents();
+    }
+    if (!repair_delta_.has_value() && incoming_.has_repair_delta()) {
+      repair_delta_ = incoming_.repair_delta();
     }
   }
 
@@ -1061,7 +1067,7 @@ class DocumentStreamReactor final
       empty->mutable_page_meta()->set_page_no(slice.page_no);
     }
     for (auto& [_, event] : pages) {
-      stream_fold_.fold(event->message.page());
+      fold_locked(event->message.page());
       event->message.set_document_id(document_id_);
       event->message.set_total_pages(total_pages_);
       events_.push_back(std::move(event));
@@ -1099,7 +1105,7 @@ class DocumentStreamReactor final
       append_page_data(*page_it->second, next_page_, &assembly_cursor_, event->message.mutable_page(),
                        &assembly_warnings_);
       page_scores_.push_back(page_confidence(*page_it->second, next_page_));
-      stream_fold_.fold(event->message.page());
+      fold_locked(event->message.page());
       fold_has_cv_ = true;
       // Heading depth needs every page's heights; the terminal event ships
       // the clustered result for the level-0 headers streamed here.
@@ -1188,9 +1194,13 @@ class DocumentStreamReactor final
       // What a client folding these pages still lacks to hold the
       // collector's Document: the repair pass's changes for pages that
       // streamed before it ran, and the tree the projection flattened for
-      // pages projected from the finished Document.
+      // pages projected from the finished Document. A client that opted
+      // out of the repair event folds no pages, so the stream builds no
+      // fold to diff against.
       std::optional<pipestream::parse::v1::DocumentRepairDelta> delta;
-      if (pages_streamed) {
+      if (!repair_delta_wanted()) {
+        // No delta.
+      } else if (pages_streamed) {
         if (!fold_has_cv_ && !fold_settled_) {
           fold_settled_ = true;
           delta = repair_delta(stream_fold_.document(), outcome.document, renamed, collector);
@@ -1198,6 +1208,7 @@ class DocumentStreamReactor final
       } else if (!pages.empty()) {
         PageFold fold;
         for (const auto& [_, event] : pages) fold.fold(event->message.page());
+        count_folded_pages(pages.size());
         delta = repair_delta(fold.document(), outcome.document, {}, collector);
       }
       const bool paged = pages_streamed || !pages.empty();
@@ -1280,6 +1291,7 @@ class DocumentStreamReactor final
     origin->set_binary_hash(document_bytes_hash_);
     *complete->mutable_collector_failures() = collector_failures_;
     complete->mutable_section_header_levels()->insert(levels.begin(), levels.end());
+    if (!repair_delta_wanted()) complete->set_repair_delta_omitted(true);
     for (std::string& warning : assembly_warnings_) {
       complete->add_warnings(std::move(warning));
     }
@@ -1333,6 +1345,22 @@ class DocumentStreamReactor final
       assembly_warnings_.push_back(std::string("the streamed pages' repair event was skipped: ") +
                                    error.what());
     }
+  }
+
+  // DocumentChunk.repair_delta: unset or true keeps the repair events.
+  bool repair_delta_wanted() const { return repair_delta_.value_or(true); }
+
+  // Folds one streamed page event into stream_fold_, unless the client
+  // opted out of the repair event: then the stream keeps no second copy of
+  // the pages it sent, and emit_fold_delta_locked finds the fold empty.
+  void fold_locked(const pipestream::parse::v1::PageData& page) {
+    if (!repair_delta_wanted()) return;
+    stream_fold_.fold(page);
+    count_folded_pages(1);
+  }
+
+  void count_folded_pages(size_t pages) const {
+    if (folded_pages_ != nullptr) folded_pages_->fetch_add(pages, std::memory_order_relaxed);
   }
 
   // What slim_collector_documents drops from a collector Document whose
@@ -1457,6 +1485,13 @@ class DocumentStreamReactor final
   bool fold_has_cv_ = false;
   bool fold_settled_ = false;
   std::optional<bool> slim_collector_documents_;
+  // DocumentChunk.repair_delta, resolved from the first chunk that sets it
+  // and fixed before any page streams (the plan starts on the complete
+  // chunk).
+  std::optional<bool> repair_delta_;
+  // The service's count of page events folded for repair events, shared
+  // by every stream it serves (DocumentStreamingService::folded_page_events).
+  std::shared_ptr<std::atomic<uint64_t>> folded_pages_;
   // Each streamed CV page's read quality, folded into the terminal event.
   std::vector<PageConfidence> page_scores_;
   // What the page assembly had to approximate rather than map, shipped with
@@ -1505,7 +1540,8 @@ DocumentStreamingService::DocumentStreamingService(PageScheduler& scheduler,
 
 grpc::ServerBidiReactor<pipestream::parse::v1::DocumentChunk, pipestream::parse::v1::DocumentStreamEvent>*
 DocumentStreamingService::StreamProcessDocument(grpc::CallbackServerContext* context) {
-  return new DocumentStreamReactor(context, scheduler_, endpoints_, repair_, inflight_, transfer_observer_);
+  return new DocumentStreamReactor(context, scheduler_, endpoints_, repair_, inflight_,
+                                   transfer_observer_, folded_pages_);
 }
 
 }  // namespace grparse

@@ -2534,13 +2534,15 @@ struct StreamPdfRun {
   grpc::Status status;
   std::vector<pipestream::parse::v1::DocumentStreamEvent> events;
   int recognizer_calls = 0;
+  // DocumentStreamingService::folded_page_events once the stream ended.
+  uint64_t folded_page_events = 0;
 };
 
 StreamPdfRun run_stream_pdf(
     const std::string& pdf_target, bool capture_page_images = false,
     const std::string& pdf_bytes = "%PDF-in-memory",
     const std::function<void(const pipestream::parse::v1::DocumentStreamEvent&)>& observe = {},
-    bool slim_collector_documents = false) {
+    bool slim_collector_documents = false, std::optional<bool> repair_delta = std::nullopt) {
   FakeRecognizer recognizer;
   grparse::PageScheduler::Options options{2, 3, 2, 3, 2, 2, 2};
   options.capture_page_images = capture_page_images;
@@ -2571,6 +2573,7 @@ StreamPdfRun run_stream_pdf(
   chunk.set_data(pdf_bytes);
   chunk.set_complete(true);
   if (slim_collector_documents) chunk.set_slim_collector_documents(true);
+  if (repair_delta.has_value()) chunk.set_repair_delta(*repair_delta);
   require(stream->Write(chunk), "pdf routing client could not write the source chunk");
   stream->WritesDone();
   StreamPdfRun run;
@@ -2583,6 +2586,7 @@ StreamPdfRun run_stream_pdf(
   server->Shutdown(std::chrono::system_clock::now() + 2s);
   server->Wait();
   run.recognizer_calls = recognizer.calls.load();
+  run.folded_page_events = streaming_service.folded_page_events();
   return run;
 }
 
@@ -4014,6 +4018,8 @@ class WorkerCountServer final {
         grpc::CreateChannel("127.0.0.1:" + std::to_string(port_), grpc::InsecureChannelCredentials()));
   }
 
+  uint64_t folded_page_events() const { return streaming_service_.folded_page_events(); }
+
  private:
   JitteredRecognizer recognizer_;
   SyntheticDetector detector_;
@@ -4154,6 +4160,132 @@ void verify_stream_is_invariant_under_worker_counts() {
       require(unary_json == *expected, label + " unary differs from " + expected_label + ": " +
                                            first_difference(*expected, unary_json));
     }
+  }
+}
+
+// DocumentChunk.repair_delta = false: the client folds no page events, so
+// the server keeps no fold of them (the service's fold counter does not
+// move), computes and sends no repair event, and says so on the complete
+// event. Everything else is the stream the default sends: the same page
+// events, the repaired collector document, and the complete event's
+// heading levels. Unset or true keeps the repair event and the fold.
+void verify_repair_delta_opt_out_keeps_no_fold() {
+  using Events = std::vector<pipestream::parse::v1::DocumentStreamEvent>;
+  const auto count_repairs = [](const Events& events) {
+    return std::ranges::count_if(events, [](const auto& event) { return event.has_repair(); });
+  };
+  const auto pages_of = [](const Events& events) {
+    std::vector<pipestream::parse::v1::PageData> pages;
+    for (const auto& event : events) {
+      if (event.has_page()) pages.push_back(event.page());
+    }
+    return pages;
+  };
+  const auto same_pages = [](const std::vector<pipestream::parse::v1::PageData>& left,
+                             const std::vector<pipestream::parse::v1::PageData>& right) {
+    if (left.size() != right.size()) return false;
+    for (size_t index = 0; index < left.size(); ++index) {
+      if (!google::protobuf::util::MessageDifferencer::Equals(left[index], right[index])) {
+        return false;
+      }
+    }
+    return true;
+  };
+  const auto levels_of = [](const pipestream::parse::v1::DocumentComplete& complete) {
+    return std::map<std::string, int32_t>(complete.section_header_levels().begin(),
+                                          complete.section_header_levels().end());
+  };
+  {
+    // The inspector's streamed fast path, whose pages go out before the
+    // repair pass rejoins a paragraph and demotes the running header.
+    RepairablePdfInspector inspector;
+    PdfInspectorServer inspector_server(&inspector);
+    for (const std::optional<bool> wanted : {std::optional<bool>{}, std::optional<bool>{true}}) {
+      const std::string label = wanted.has_value() ? "repair_delta = true" : "repair_delta unset";
+      const StreamPdfRun run =
+          run_stream_pdf(inspector_server.target(), false, "%PDF-in-memory", {}, false, wanted);
+      require(run.status.ok(), label + ": stream failed: " + run.status.error_message());
+      require(count_repairs(run.events) == 1, label + ": the repair event is sent");
+      require(run.folded_page_events == 3, label + ": the server folds the three streamed pages");
+      require(run.events.back().has_complete() &&
+                  !run.events.back().complete().repair_delta_omitted(),
+              label + ": the complete event reports no omission");
+    }
+    const StreamPdfRun kept = run_stream_pdf(inspector_server.target());
+    const StreamPdfRun run =
+        run_stream_pdf(inspector_server.target(), false, "%PDF-in-memory", {}, false, false);
+    require(run.status.ok(), "opted-out stream failed: " + run.status.error_message());
+    require(run.events.size() == 5,
+            "three pages, the collector document, then complete; got " +
+                std::to_string(run.events.size()));
+    require(count_repairs(run.events) == 0, "an opted-out stream sends no repair event");
+    require(run.folded_page_events == 0, "an opted-out stream keeps no fold of its pages");
+    require(same_pages(pages_of(run.events), pages_of(kept.events)),
+            "the page events are the ones the default stream sends");
+    const auto& collector = run.events.at(3);
+    require(collector.has_collector_document() &&
+                collector.collector_document().document().furniture().children_size() == 3 &&
+                collector.collector_document().document().texts_size() == 6,
+            "the collector document is still the repaired one");
+    require(run.events.at(4).has_complete() && run.events.at(4).complete().repair_delta_omitted(),
+            "the complete event records the requested omission");
+  }
+  {
+    // Pages projected from a finished collector Document build no fold
+    // either.
+    FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {}, /*paged_document=*/true);
+    PdfInspectorServer inspector_server(&inspector);
+    const StreamPdfRun kept = run_stream_pdf(inspector_server.target());
+    require(kept.status.ok() && kept.folded_page_events == 2,
+            "the default projected stream folds its two pages for the delta");
+    const StreamPdfRun run =
+        run_stream_pdf(inspector_server.target(), false, "%PDF-in-memory", {}, false, false);
+    require(run.status.ok(), "opted-out projected stream failed: " + run.status.error_message());
+    require(run.folded_page_events == 0, "an opted-out projected stream folds nothing");
+    require(count_repairs(run.events) == 0 && run.events.size() == 4 &&
+                run.events.back().has_complete() &&
+                run.events.back().complete().repair_delta_omitted(),
+            "two pages, the collector document, then the complete event marking the omission");
+  }
+  {
+    // CV pages: the default folds every page and sends what the list
+    // grouping and the repair pass changed; the opt-out (resolved from the
+    // first chunk that sets it, so a later true does not undo it) keeps
+    // neither, while the heading levels still ship.
+    WorkerCountServer server(2, 2, 2);
+    auto client = server.stub();
+    const StreamRun kept = run_chunks(client.get(), {chunk(true)});
+    require(kept.status.ok(), "default CV stream failed: " + kept.status.error_message());
+    require(count_repairs(kept.events) == 1, "the default CV stream sends its repair event");
+    require(server.folded_page_events() == kInvariancePages,
+            "the default CV stream folds every page; got " +
+                std::to_string(server.folded_page_events()));
+    require(!kept.events.empty() && kept.events.back().has_complete() &&
+                !kept.events.back().complete().repair_delta_omitted(),
+            "the default reports no omission");
+    auto first = chunk(false);
+    first.set_repair_delta(false);
+    auto last = chunk(true);
+    last.set_repair_delta(true);
+    const StreamRun run = run_chunks(client.get(), {first, last});
+    require(run.status.ok(), "opted-out CV stream failed: " + run.status.error_message());
+    require(count_repairs(run.events) == 0, "the opted-out CV stream sends no repair event");
+    require(server.folded_page_events() == kInvariancePages,
+            "the opted-out CV stream folds no page; the counter moved to " +
+                std::to_string(server.folded_page_events()));
+    require(pages_of(run.events).size() == static_cast<size_t>(kInvariancePages),
+            "every CV page still streams");
+    require(!run.events.empty() && run.events.back().has_complete(),
+            "the opted-out CV stream closes with the complete event");
+    const auto& complete = run.events.back().complete();
+    require(complete.repair_delta_omitted(), "the complete event records the omission");
+    std::set<int32_t> levels;
+    for (const auto& [_, level] : complete.section_header_levels()) levels.insert(level);
+    require(complete.section_header_levels_size() == kInvariancePages - 4 && levels.size() == 3,
+            "the heading levels still ship with the complete event; got " +
+                std::to_string(complete.section_header_levels_size()));
+    require(levels_of(complete) == levels_of(kept.events.back().complete()),
+            "the levels match the default stream's");
   }
 }
 
@@ -5118,6 +5250,7 @@ int main() {
         verify_streaming_pdf_hands_the_rest_to_the_cv_path();
         verify_streamed_pages_plus_repair_rebuild_the_document();
         verify_stream_is_invariant_under_worker_counts();
+        verify_repair_delta_opt_out_keeps_no_fold();
         verify_streaming_pdf_fast_path_renders_previews();
         verify_streaming_pdf_fast_path_skips_previews_when_off();
         verify_pdf_without_backend_fails_precondition();
