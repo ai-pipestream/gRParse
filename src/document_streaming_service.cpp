@@ -112,6 +112,7 @@ class DocumentStreamReactor final
                         std::shared_ptr<CollectorEndpoints> endpoints,
                         std::optional<RepairOptions> repair,
                         std::shared_ptr<InflightBytes> inflight,
+                        std::shared_ptr<const CollectorDocumentTransferObserver> transfer_observer,
                         std::shared_ptr<std::atomic<uint64_t>> folded_pages)
       : context_(context),
         scheduler_(scheduler),
@@ -125,6 +126,7 @@ class DocumentStreamReactor final
         maximum_buffered_pages_(scheduler.page_window()),
         callback_gate_(std::make_shared<CallbackGate>()),
         inflight_(std::move(inflight)),
+        transfer_observer_(std::move(transfer_observer)),
         folded_pages_(std::move(folded_pages)) {
     callback_gate_->reactor = this;
     StartRead(&incoming_);
@@ -1231,7 +1233,13 @@ class DocumentStreamReactor final
       event->message.set_total_pages(total_pages_);
       auto* collector_document = event->message.mutable_collector_document();
       collector_document->set_collector(collector);
+      if (transfer_observer_ && transfer_observer_->before_transfer) {
+        transfer_observer_->before_transfer();
+      }
       *collector_document->mutable_document() = std::move(outcome.document);
+      if (transfer_observer_ && transfer_observer_->after_transfer) {
+        transfer_observer_->after_transfer();
+      }
       for (auto& warning : outcome.warnings) {
         collector_document->add_warnings(std::move(warning));
       }
@@ -1436,6 +1444,7 @@ class DocumentStreamReactor final
   const size_t maximum_buffered_pages_;
   std::shared_ptr<CallbackGate> callback_gate_;
   std::shared_ptr<InflightBytes> inflight_;
+  std::shared_ptr<const CollectorDocumentTransferObserver> transfer_observer_;
   // What this stream's chunks charged to inflight_ and still owns: moved
   // onto the shared buffer when the legs take the bytes, else returned on
   // teardown.
@@ -1521,16 +1530,18 @@ class DocumentStreamReactor final
 DocumentStreamingService::DocumentStreamingService(PageScheduler& scheduler,
                                                    std::shared_ptr<CollectorEndpoints> endpoints,
                                                    std::optional<RepairOptions> repair,
-                                                   std::shared_ptr<InflightBytes> inflight)
+                                                   std::shared_ptr<InflightBytes> inflight,
+                                                   std::shared_ptr<const CollectorDocumentTransferObserver> transfer_observer)
     : scheduler_(scheduler),
       endpoints_(std::move(endpoints)),
       repair_(std::move(repair)),
-      inflight_(std::move(inflight)) {}
+      inflight_(std::move(inflight)),
+      transfer_observer_(std::move(transfer_observer)) {}
 
 grpc::ServerBidiReactor<pipestream::parse::v1::DocumentChunk, pipestream::parse::v1::DocumentStreamEvent>*
 DocumentStreamingService::StreamProcessDocument(grpc::CallbackServerContext* context) {
   return new DocumentStreamReactor(context, scheduler_, endpoints_, repair_, inflight_,
-                                   folded_pages_);
+                                   transfer_observer_, folded_pages_);
 }
 
 }  // namespace grparse

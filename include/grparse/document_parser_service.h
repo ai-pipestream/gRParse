@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -334,6 +335,14 @@ class DocumentParserService final
   CallExecutor executor_;
 };
 
+// Optional synchronous instrumentation for the collector-to-event transfer.
+// Both callbacks run on the collector thread under the reactor lock. They must
+// not block or throw. The source Document remains alive through after_transfer.
+struct CollectorDocumentTransferObserver {
+  std::function<void()> before_transfer;
+  std::function<void()> after_transfer;
+};
+
 class DocumentStreamingService final : public ai::pipestream::parse::v1::ParseStreamingService::CallbackService {
  public:
   // The stream has no merged Document: each collector's finished Document
@@ -345,7 +354,8 @@ class DocumentStreamingService final : public ai::pipestream::parse::v1::ParseSt
   DocumentStreamingService(PageScheduler& scheduler,
                            std::shared_ptr<CollectorEndpoints> endpoints,
                            std::optional<RepairOptions> repair = RepairOptions{},
-                           std::shared_ptr<InflightBytes> inflight = {});
+                           std::shared_ptr<InflightBytes> inflight = {},
+                           std::shared_ptr<const CollectorDocumentTransferObserver> transfer_observer = {});
 
   grpc::ServerBidiReactor<ai::pipestream::parse::v1::DocumentChunk,
                           ai::pipestream::parse::v1::DocumentStreamEvent>*
@@ -361,6 +371,7 @@ class DocumentStreamingService final : public ai::pipestream::parse::v1::ParseSt
   std::shared_ptr<CollectorEndpoints> endpoints_;
   std::optional<RepairOptions> repair_;
   std::shared_ptr<InflightBytes> inflight_;
+  std::shared_ptr<const CollectorDocumentTransferObserver> transfer_observer_;
   std::shared_ptr<std::atomic<uint64_t>> folded_pages_ =
       std::make_shared<std::atomic<uint64_t>>(0);
 };

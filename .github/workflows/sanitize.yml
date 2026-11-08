@@ -139,6 +139,8 @@ jobs:
             "$SEED_IMAGE" sh -c '
               set -e
               apt-get update -qq && apt-get install -y -qq --no-install-recommends ccache >/dev/null
+              # The deps fallback image has no seed tree and so no /build (#286).
+              mkdir -p /build
               if [ -d /opt/grparse-seed ]; then cp -a /opt/grparse-seed/. /build/; fi
               sh scripts/stamp-sources.sh /build
               ccache --zero-stats

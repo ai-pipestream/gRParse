@@ -27,6 +27,12 @@
 
 #include <malloc.h>
 
+#if defined(__SANITIZE_ADDRESS__)
+// From the sanitizer runtime's allocator interface; declared here because
+// the image toolchain ships the runtime without its headers.
+extern "C" std::size_t __sanitizer_get_current_allocated_bytes();
+#endif
+
 #include <google/protobuf/util/message_differencer.h>
 #include <grpcpp/grpcpp.h>
 
@@ -3124,7 +3130,7 @@ void verify_streaming_pdf_fast_path_projects_pages() {
 }
 
 // One "<field>: <n> kB" line of /proc/self/status, in bytes.
-uint64_t proc_status_bytes(std::string_view field) {
+[[maybe_unused]] uint64_t proc_status_bytes(std::string_view field) {
   std::ifstream status("/proc/self/status");
   std::string line;
   while (std::getline(status, line)) {
@@ -3138,7 +3144,7 @@ uint64_t proc_status_bytes(std::string_view field) {
 // Resets VmHWM to the current resident set (clear_refs value 5, proc(5)),
 // so the peak read later belongs to what ran after this call and not to an
 // earlier case in the same process.
-void reset_peak_rss() {
+[[maybe_unused]] void reset_peak_rss() {
   std::ofstream clear_refs("/proc/self/clear_refs");
   clear_refs << "5";
   clear_refs.flush();
@@ -3254,8 +3260,25 @@ void verify_collector_document_moves_into_its_event() {
       });
   grparse::CollectorTargets targets;
   targets.pdf = inspector_server.target();
+  auto transfer_observer = std::make_shared<grparse::CollectorDocumentTransferObserver>();
+  std::atomic<int> transfer_observations{0};
+#if defined(__SANITIZE_ADDRESS__)
+  uint64_t transfer_baseline = 0;
+  std::atomic<uint64_t> transfer_growth{0};
+  transfer_observer->before_transfer = [&] {
+    transfer_baseline = __sanitizer_get_current_allocated_bytes();
+  };
+#endif
+  transfer_observer->after_transfer = [&] {
+#if defined(__SANITIZE_ADDRESS__)
+    const uint64_t live = __sanitizer_get_current_allocated_bytes();
+    transfer_growth.store(live > transfer_baseline ? live - transfer_baseline : 0);
+#endif
+    ++transfer_observations;
+  };
   grparse::DocumentStreamingService streaming_service(
-      scheduler, std::make_shared<grparse::CollectorEndpoints>(targets));
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(targets),
+      grparse::RepairOptions{}, nullptr, transfer_observer);
   int port = 0;
   grpc::ServerBuilder builder;
   builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
@@ -3279,17 +3302,21 @@ void verify_collector_document_moves_into_its_event() {
   require(stream->Write(chunk), "large document client could not write the source chunk");
   stream->WritesDone();
   require(inspector.wait_until_written(10s), "the inspector never wrote the large document");
-  // The trailer's write returning puts the Document's bytes on the
-  // coordinator's side; a moment more lets its read finish parsing them.
+#if !defined(__SANITIZE_ADDRESS__)
+  // RSS includes serialization, so measure while the unread client's small
+  // HTTP/2 window retains the event. The synchronous ASan transfer probe
+  // needs neither these timing assumptions nor malloc_trim.
   std::this_thread::sleep_for(300ms);
-  // Freed pages go back first, so whatever the emission allocates shows in
-  // the resident set instead of reusing memory an earlier case left behind.
   malloc_trim(0);
   reset_peak_rss();
   const uint64_t baseline = proc_status_bytes("VmHWM");
+#endif
   inspector.release();
+#if !defined(__SANITIZE_ADDRESS__)
   std::this_thread::sleep_for(500ms);
   const uint64_t peak = proc_status_bytes("VmHWM");
+  const uint64_t growth = peak > baseline ? peak - baseline : 0;
+#endif
   int collector_documents = 0;
   int pages = 0;
   int texts = 0;
@@ -3315,14 +3342,27 @@ void verify_collector_document_moves_into_its_event() {
   require(texts == kLargePictureTexts &&
               image_bytes == kLargePictureImageBytes + std::string_view("data:image/png;base64,").size(),
           "the collector-document event carries the whole Document");
-  const uint64_t growth = peak > baseline ? peak - baseline : 0;
+  require(transfer_observations.load() == 1, "the collector transfer was observed exactly once");
+#if defined(__SANITIZE_ADDRESS__)
+  // Sample synchronously at the assignment, before outcome.document can be
+  // destroyed. A copy must coexist with its source here; HTTP/2 backpressure
+  // and thread scheduling cannot hide it. Serialization has not started yet,
+  // so allow only half a Document of incidental allocations, not the 1.5x
+  // RSS allowance (which includes serialized transport bytes).
+  const uint64_t growth = transfer_growth.load();
+  std::println("collector-document transfer: live heap growth {} bytes, Document serialized {} bytes",
+               growth, serialized);
+  require(growth < serialized / 2,
+          std::format("collector transfer allocated {} live bytes, at least half the Document's "
+                      "{} serialized bytes: expected a move, not a copy", growth, serialized));
+#else
   std::println("collector-document emission: peak RSS growth {} bytes, Document serialized {} bytes",
                growth, serialized);
   require(growth < serialized * 3 / 2,
           std::format("emitting the collector document grew the peak RSS by {} bytes, at least "
                       "1.5x the Document's {} serialized bytes: the Document was copied into its "
-                      "event instead of moved",
-                      growth, serialized));
+                      "event instead of moved", growth, serialized));
+#endif
 }
 
 // Holds the last page's recognition until the client has read page one. A
