@@ -23,7 +23,7 @@
 ARG MODELS_LAYOUT=heron
 ARG MODELS_TOKENIZER=0
 
-FROM --platform=$BUILDPLATFORM dhi.io/python:3.14-debian13-dev@sha256:debbc2a523d09b60d89c0d1f5792609a3cc8840726871b0ca278e9533a6c342e AS fetch
+FROM --platform=$BUILDPLATFORM dhi.io/python:3.15-debian13-dev@sha256:bf6e3ca018ffb2e5b1450f9a918965cc1bd239a30d4791d84d974fd4297d431d AS fetch
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 # onnx rewrites the figure classifier graph; onnxruntime and numpy let the
@@ -48,7 +48,7 @@ RUN set -eu; \
     && cp models/MANIFEST /models/MANIFEST \
     && mkdir -p /target
 
-FROM dhi.io/debian-base:trixie-debian13@sha256:de80b468d8c492508f24b30e529accfaa8c59fe4505ddd72e969b324d276ad21
+FROM dhi.io/debian-base:trixie-debian13@sha256:5c9d8c2c90a0a4672f44a42a485c99e1b95f4bfad5c8ef49934f34b7ffb6e23b
 LABEL org.opencontainers.image.title="grparse-models" \
       org.opencontainers.image.description="Model files for pipestreamai/grparse under /models; run to copy them into a volume" \
       org.opencontainers.image.source="https://github.com/ai-pipestream/gRParse"
