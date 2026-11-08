@@ -128,8 +128,8 @@ std::string_view classify_doctype(ai::pipestream::parse::v1::InputFormat format,
 // and the data-plane totals as grparse_data_changes_total{kind=...}, plus the
 // process_resident_memory_bytes and process_cpu_seconds_total gauges the
 // standard client libraries export.  Execution-provider fallbacks export as
-// grparse_ort_ep_fallbacks_total: how many sessions were rebuilt on CPU after
-// their selected provider refused the graph or the device failed, and
+// grparse_ort_ep_fallbacks_total is retained for compatibility and stays zero
+// under strict accelerator selection (provider failures throw), and
 // grparse_ort_ep_build_retries_total counts the session builds retried
 // after a transient OpenVINO provider failure.  Per-doctype completions and
 // latency export as grparse_documents_completed_total and

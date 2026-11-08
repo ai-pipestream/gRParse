@@ -4,7 +4,12 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <fstream>
+#include <iterator>
+#include <memory>
 #include <optional>
+#include <print>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -12,6 +17,10 @@
 #include <opencv2/imgproc.hpp>
 
 #include "grparse_session_ep.h"
+
+#ifdef GRPARSE_EMBED_OPENVINO
+#include <openvino/c/openvino.h>
+#endif
 
 namespace grparse {
 namespace {
@@ -25,6 +34,153 @@ constexpr int kInputSize = 488;
 // loaded (BGR); replicated verbatim so goldens match.
 constexpr std::array<float, 3> kMean = {0.485F, 0.456F, 0.406F};
 constexpr std::array<float, 3> kStd = {0.229F, 0.224F, 0.225F};
+
+// Only direct GPU selectors use the normalized native table graph. Other
+// OpenVINO devices (including NPU) retain the strict ORT provider path.
+bool is_openvino_gpu_device(std::string_view device) {
+  return device == "GPU" ||
+         (device.starts_with("GPU.") && device.size() > 4 &&
+          std::all_of(device.begin() + 4, device.end(),
+                      [](unsigned char c) { return c >= '0' && c <= '9'; }));
+}
+
+struct TableOutput {
+  std::vector<int64_t> shape;
+  std::vector<float> values;
+};
+
+#ifdef GRPARSE_EMBED_OPENVINO
+void check_table_ov(ov_status_e status) {
+  if (status != OK) {
+    const char* detail = ov_get_last_err_msg();
+    throw std::runtime_error(std::string("Native OpenVINO table operation failed: ") +
+                             (detail == nullptr ? "unknown runtime error" : detail));
+  }
+}
+
+template <typename T, void (*Free)(T*)>
+using OvHandle = std::unique_ptr<T, decltype(Free)>;
+
+// Use the ABI-neutral C API, like embeddings. ORT's nested Loop partitioning
+// cannot execute this model on OpenVINO without exporting nested fused nodes.
+class NativeTableBackend {
+ public:
+  NativeTableBackend(const std::filesystem::path& path, std::string device)
+      : device_(std::move(device)) {
+    if (!is_openvino_gpu_device(device_)) {
+      throw std::invalid_argument("Native OpenVINO tables require an explicit GPU device");
+    }
+    std::ifstream file(path, std::ios::binary);
+    if (!file) throw std::runtime_error("OpenVINO table model is missing: " + path.string());
+    model_bytes_.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    if (model_bytes_.empty() || file.bad()) {
+      throw std::runtime_error("Cannot read OpenVINO table model: " + path.string());
+    }
+    OvCompileGate gate;
+    ov_core_t* core = nullptr;
+    check_table_ov(ov_core_create(&core));
+    core_.reset(core);
+    // Eager compilation preserves startup failure semantics. This instance is
+    // consumed by the first call; every subsequent call gets a fresh model.
+    const auto execution_devices = compile();
+    std::println(stderr,
+                 "gRParse table structure: native OpenVINO ({}) using {} "
+                 "(fresh compilation per recognition)",
+                 execution_devices, path.string());
+  }
+
+  std::array<TableOutput, 2> infer(std::vector<float>& values) {
+    if (!compiled_) compile();
+    // Release even after an exception: a compiled Loop retains decoder state
+    // across requests in the shipped runtime. Fresh requests alone are unsafe.
+    auto compiled = std::move(compiled_);
+    ov_infer_request_t* raw_request = nullptr;
+    check_table_ov(ov_compiled_model_create_infer_request(compiled.get(), &raw_request));
+    OvHandle<ov_infer_request_t, ov_infer_request_free> request(raw_request, ov_infer_request_free);
+    std::array<int64_t, 4> dims{1, 3, kInputSize, kInputSize};
+    const ov_shape_t shape{4, dims.data()};
+    ov_tensor_t* raw_input = nullptr;
+    check_table_ov(ov_tensor_create_from_host_ptr(F32, shape, values.data(), &raw_input));
+    OvHandle<ov_tensor_t, ov_tensor_free> input(raw_input, ov_tensor_free);
+    check_table_ov(ov_infer_request_set_tensor(request.get(), "x", input.get()));
+    check_table_ov(ov_infer_request_infer(request.get()));
+
+    ov_profiling_info_list_t profile{};
+    check_table_ov(ov_infer_request_get_profiling_info(request.get(), &profile));
+    std::string cpu_node;
+    for (size_t i = 0; i < profile.size; ++i) {
+      const auto& info = profile.profiling_infos[i];
+      const std::string execution = info.exec_type == nullptr ? "" : info.exec_type;
+      const std::string type = info.node_type == nullptr ? "" : info.node_type;
+      // The GPU plugin's Loop/If implementations orchestrate GPU body networks
+      // on the host. Their CPU marker describes control, not CPU tensor math.
+      if (info.status == ov_profiling_info_t::EXECUTED &&
+          execution.find("CPU") != std::string::npos && type != "Loop" && type != "If") {
+        cpu_node = info.node_name == nullptr ? type : info.node_name;
+        if (cpu_node.empty()) cpu_node = "unnamed CPU node";
+        break;
+      }
+    }
+    ov_profiling_info_list_free(&profile);
+    if (!cpu_node.empty()) {
+      throw std::runtime_error("OpenVINO table executed a numerical node on CPU: " + cpu_node);
+    }
+
+    std::array<TableOutput, 2> outputs;
+    for (size_t i = 0; i < outputs.size(); ++i) {
+      ov_tensor_t* raw_output = nullptr;
+      check_table_ov(ov_infer_request_get_output_tensor_by_index(request.get(), i, &raw_output));
+      OvHandle<ov_tensor_t, ov_tensor_free> output(raw_output, ov_tensor_free);
+      ov_element_type_e type = UNDEFINED;
+      check_table_ov(ov_tensor_get_element_type(output.get(), &type));
+      ov_shape_t actual{};
+      check_table_ov(ov_tensor_get_shape(output.get(), &actual));
+      const bool valid = type == F32 && actual.rank == 3 && actual.dims[0] == 1 &&
+                         actual.dims[1] > 0 && actual.dims[1] <= 501 &&
+                         (actual.dims[2] == 8 || actual.dims[2] == 50);
+      if (valid) outputs[i].shape.assign(actual.dims, actual.dims + actual.rank);
+      ov_shape_free(&actual);
+      if (!valid) throw std::runtime_error("OpenVINO table output shape or precision mismatch");
+      void* raw = nullptr;
+      check_table_ov(ov_tensor_data(output.get(), &raw));
+      const auto* data = static_cast<const float*>(raw);
+      const size_t count = static_cast<size_t>(outputs[i].shape[1] * outputs[i].shape[2]);
+      outputs[i].values.assign(data, data + count);
+    }
+    return outputs;
+  }
+
+ private:
+  std::string compile() {
+    ov_model_t* raw_model = nullptr;
+    check_table_ov(ov_core_read_model_from_memory_buffer(
+        core_.get(), model_bytes_.data(), model_bytes_.size(), nullptr, &raw_model));
+    OvHandle<ov_model_t, ov_model_free> model(raw_model, ov_model_free);
+    ov_compiled_model_t* raw_compiled = nullptr;
+    check_table_ov(ov_core_compile_model(core_.get(), model.get(), device_.c_str(), 6,
+        &raw_compiled, "INFERENCE_PRECISION_HINT", "f32", "PERFORMANCE_HINT", "LATENCY",
+        "PERF_COUNT", "YES"));
+    OvHandle<ov_compiled_model_t, ov_compiled_model_free> compiled(raw_compiled, ov_compiled_model_free);
+    char* raw_devices = nullptr;
+    check_table_ov(ov_compiled_model_get_property(compiled.get(), "EXECUTION_DEVICES", &raw_devices));
+    const std::string devices = raw_devices == nullptr ? "" : raw_devices;
+    ov_free(raw_devices);
+    const bool generic_gpu = device_ == "GPU" && devices.starts_with("GPU.") &&
+        devices.size() > 4 && std::all_of(devices.begin() + 4, devices.end(),
+                                        [](unsigned char c) { return c >= '0' && c <= '9'; });
+    if (devices != device_ && !generic_gpu) {
+      throw std::runtime_error("OpenVINO table execution device mismatch: " + devices);
+    }
+    compiled_ = std::move(compiled);
+    return devices;
+  }
+
+  std::string device_;
+  std::string model_bytes_;
+  OvHandle<ov_core_t, ov_core_free> core_{nullptr, ov_core_free};
+  OvHandle<ov_compiled_model_t, ov_compiled_model_free> compiled_{nullptr, ov_compiled_model_free};
+};
+#endif
 
 bool starts_with(const std::string& value, const char* prefix) {
   return value.starts_with(prefix);
@@ -138,27 +294,46 @@ class TableStructureEngine::Impl {
     if (!std::filesystem::exists(model_path)) {
       throw std::runtime_error("Table structure model is missing: " + model_path.string());
     }
-    // Same provider decision point as the OCR and layout sessions.
-    session_ = make_session(env_, model_path, "table structure");
+    std::string vocabulary;
+    const auto selection = ort_ep_selection();
+    if (selection.ep == OrtEp::kOpenVino && is_openvino_gpu_device(selection.openvino_device)) {
+#ifdef GRPARSE_EMBED_OPENVINO
+      const auto directory = model_path.parent_path();
+      const auto tokens_path = directory / "slanet_plus_openvino.tokens";
+      std::ifstream tokens(tokens_path, std::ios::binary);
+      if (!tokens) throw std::runtime_error("OpenVINO table vocabulary is missing: " + tokens_path.string());
+      vocabulary.assign(std::istreambuf_iterator<char>(tokens), std::istreambuf_iterator<char>());
+      if (vocabulary.empty() || tokens.bad()) {
+        throw std::runtime_error("Cannot read OpenVINO table vocabulary: " + tokens_path.string());
+      }
+      native_ = std::make_unique<NativeTableBackend>(
+          directory / "slanet_plus_openvino.onnx", selection.openvino_device);
+#else
+      throw std::runtime_error("Native OpenVINO table support is not built");
+#endif
+    } else {
+      session_ = make_session(env_, model_path, "table structure");
 
-    Ort::AllocatorWithDefaultOptions allocator;
-    input_name_ = session_.GetInputNameAllocated(0, allocator).get();
-    if (session_.GetOutputCount() != 2) {
-      throw std::runtime_error("Table structure model has an unexpected output count");
-    }
-    for (size_t index = 0; index < 2; ++index) {
-      output_names_.push_back(session_.GetOutputNameAllocated(index, allocator).get());
-    }
-    for (const auto& name : output_names_) output_name_pointers_.push_back(name.c_str());
+      Ort::AllocatorWithDefaultOptions allocator;
+      input_name_ = session_.GetInputNameAllocated(0, allocator).get();
+      if (session_.GetOutputCount() != 2) {
+        throw std::runtime_error("Table structure model has an unexpected output count");
+      }
+      for (size_t index = 0; index < 2; ++index) {
+        output_names_.push_back(session_.GetOutputNameAllocated(index, allocator).get());
+      }
+      for (const auto& name : output_names_) output_name_pointers_.push_back(name.c_str());
 
-    // The token vocabulary rides in the model metadata, one token per line,
-    // exactly as the reference reads it.
-    Ort::ModelMetadata metadata = session_.GetModelMetadata();
-    const auto characters = metadata.LookupCustomMetadataMapAllocated("character", allocator);
-    if (characters == nullptr) {
-      throw std::runtime_error("Table structure model metadata lacks its token vocabulary");
+      // The token vocabulary rides in the model metadata, one token per line,
+      // exactly as the reference reads it.
+      Ort::ModelMetadata metadata = session_.GetModelMetadata();
+      const auto characters = metadata.LookupCustomMetadataMapAllocated("character", allocator);
+      if (characters == nullptr) {
+        throw std::runtime_error("Table structure model metadata lacks its token vocabulary");
+      }
+      vocabulary = characters.get();
     }
-    std::istringstream lines(characters.get());
+    std::istringstream lines(vocabulary);
     std::string line;
     while (std::getline(lines, line)) {
       if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -177,7 +352,13 @@ class TableStructureEngine::Impl {
     // The first inference on a fresh session compiles the provider's kernels;
     // serialize it process-wide (see grparse_session_ep.h).
     std::optional<OvCompileGate> compile_gate;
-    if (!warmed_) compile_gate.emplace();
+    // Native Loop state requires recompilation per call (~0.4s with a warm
+    // kernel cache on B70), so every native invocation takes the JIT gate.
+    bool needs_compile = !warmed_;
+#ifdef GRPARSE_EMBED_OPENVINO
+    needs_compile = needs_compile || native_ != nullptr;
+#endif
+    if (needs_compile) compile_gate.emplace();
     if (crop.empty() || crop.type() != CV_8UC3) {
       throw std::invalid_argument("Table structure expects a non-empty BGR crop");
     }
@@ -207,19 +388,36 @@ class TableStructureEngine::Impl {
       }
     }
 
-    const std::array<int64_t, 4> input_shape = {1, 3, kInputSize, kInputSize};
-    Ort::MemoryInfo memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-    Ort::Value input = Ort::Value::CreateTensor<float>(memory, tensor.data(), tensor.size(),
-                                                       input_shape.data(), input_shape.size());
-    const char* input_names[] = {input_name_.c_str()};
-    auto outputs = session_.Run(Ort::RunOptions{nullptr}, input_names, &input, 1,
-                                output_name_pointers_.data(), output_name_pointers_.size());
+    std::array<TableOutput, 2> outputs;
+#ifdef GRPARSE_EMBED_OPENVINO
+    if (native_) {
+      outputs = native_->infer(tensor);
+    } else
+#endif
+    {
+      const std::array<int64_t, 4> input_shape = {1, 3, kInputSize, kInputSize};
+      Ort::MemoryInfo memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+      Ort::Value input = Ort::Value::CreateTensor<float>(memory, tensor.data(), tensor.size(),
+                                                         input_shape.data(), input_shape.size());
+      const char* input_names[] = {input_name_.c_str()};
+      auto ort_outputs = session_.Run(Ort::RunOptions{nullptr}, input_names, &input, 1,
+                                      output_name_pointers_.data(), output_name_pointers_.size());
+      for (size_t i = 0; i < outputs.size(); ++i) {
+        const auto info = ort_outputs[i].GetTensorTypeAndShapeInfo();
+        outputs[i].shape = info.GetShape();
+        const float* data = ort_outputs[i].GetTensorData<float>();
+        outputs[i].values.assign(data, data + info.GetElementCount());
+      }
+    }
 
-    // Outputs are (cell corner boxes [1, S, 8], token probs [1, S, vocab]);
-    // identify by trailing dimension instead of trusting declaration order.
-    const auto shape_of = [&](size_t index) {
-      return outputs[index].GetTensorTypeAndShapeInfo().GetShape();
-    };
+    // Identify boxes/probabilities by trailing dimension, preserving the
+    // original reference decoder for both native and ORT execution.
+    for (const auto& output : outputs) {
+      if (output.shape.size() != 3 || output.shape[0] != 1 || output.shape[1] <= 0) {
+        throw std::runtime_error("Table structure model output rank or batch mismatch");
+      }
+    }
+    const auto shape_of = [&](size_t index) { return outputs[index].shape; };
     size_t box_output = 0;
     size_t prob_output = 1;
     if (shape_of(0).back() != 8) std::swap(box_output, prob_output);
@@ -230,8 +428,8 @@ class TableStructureEngine::Impl {
         box_shape[1] != prob_shape[1]) {
       throw std::runtime_error("Table structure model output shape mismatch");
     }
-    const float* boxes = outputs[box_output].GetTensorData<float>();
-    const float* probs = outputs[prob_output].GetTensorData<float>();
+    const float* boxes = outputs[box_output].values.data();
+    const float* probs = outputs[prob_output].values.data();
     const int64_t steps = prob_shape[1];
     const auto vocab_size = static_cast<int64_t>(vocab_.size());
     const size_t eos_index = vocab_.size() - 1;
@@ -290,6 +488,9 @@ class TableStructureEngine::Impl {
   }
 
  private:
+#ifdef GRPARSE_EMBED_OPENVINO
+  std::unique_ptr<NativeTableBackend> native_;
+#endif
   Ort::Env env_;
   Ort::Session session_{nullptr};
   std::string input_name_;

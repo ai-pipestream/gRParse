@@ -735,6 +735,7 @@ target_link_libraries(grparse_proto PUBLIC grpc++)
 # build tree mounted).  gRPC 1.83.0 did exactly that: green build, image
 # whose server could not load libgrparse_core.so.
 add_library(grparse_core STATIC
+  src/gpu_selection.cpp
   src/barcode_decoder.cpp
   src/base64.cpp
   src/call_executor.cpp
@@ -1413,6 +1414,13 @@ if(BUILD_TESTING)
 endif()
 
 include(cmake/Embeddings.cmake)
+if(BUILD_TESTING AND GRPARSE_EMBED_OPENVINO)
+  # The opt-in B70 golden test verifies the actual device identity through
+  # the same native runtime used for table inference.
+  target_compile_definitions(table-structure-engine-test PRIVATE GRPARSE_TEST_NATIVE_OPENVINO=1)
+  target_include_directories(table-structure-engine-test SYSTEM PRIVATE "${GRPARSE_OPENVINO_INCLUDE}")
+  target_link_libraries(table-structure-engine-test PRIVATE "${GRPARSE_OPENVINO_C_LIBRARY}")
+endif()
 # ---- golden corpus: every InputFormat has a fixture, read directly --------
 # Appended as one block. The corpus manifest (tests/golden/
 # corpus_manifest.textproto) is typed by a test-only proto that imports the

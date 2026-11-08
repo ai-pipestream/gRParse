@@ -79,11 +79,9 @@ OrtEpSelection ort_ep_selection();
 // is active.
 uint64_t ep_hook_invocations();
 
-// How many sessions make_session has rebuilt on CPU after the selected
-// execution provider refused the graph or the device failed.  A monitoring
-// surface: every increment is also a stderr line, and a rising count on a
-// deployment that was promised GPU acceleration is the earliest signal that
-// the promise broke.
+// Legacy monitoring surface, retained so dashboards keep their series.
+// Strict execution-provider selection never rebuilds an accelerator session
+// on CPU; this count must remain zero.
 uint64_t ep_fallback_count();
 
 // How many session builds were retried after a transient OpenVINO
@@ -137,28 +135,14 @@ class OvCompileGate final {
   std::unique_lock<std::mutex> lock_;
 };
 
-// Builds one session for a model file on the configured provider.
-//
-// A provider that refuses the graph - an unsupported operator, a device that
-// will not initialize, an export the plugin rejects outright, the OpenVINO
-// toolchain's JIT compiler failing intermittently - costs that model its
-// acceleration, not the whole server: an OpenVINO build retries a small
-// bounded number of times with short jittered backoff (the failures are
-// intermittent and usually pass on a later attempt, still on the GPU), then
-// the session is rebuilt on CPU with the error logged in full.  Other
-// providers keep their single-attempt behavior.  `what` names the model in
-// that message.  A model file that does not parse at all still throws, on
-// every attempt.  CPU selections build once, with no retries: a CPU failure
-// is deterministic.
-//
-// This fallback is pre-existing policy and applies to the models that build
-// through make_session (table structure, layout, figure classification).  The
-// OCR nets are deliberately different: they build through
-// make_rapidocr_session, which never retreats to CPU.
-//
-// The OpenVINO toolchain's other failure class - heap corruption or a
-// longjmp across the stack inside the compile - kills the process outright
-// and is out of scope here; no in-process policy can recover from it.
+// Builds one session on the configured provider. An OpenVINO build retries
+// bounded transient failures on the same selected device; an exhausted
+// failure throws. Unsupported accelerator nodes are rejected by ORT instead
+// of being assigned to its implicit CPU execution provider. Layout, table,
+// figure and OCR models follow the same no-degradation contract.
+// Explicit CPU operation remains supported and builds once. OpenVINO CPU is
+// also an intentional CPU selection; mixed device lists that could silently
+// execute accelerator work on CPU are rejected.
 Ort::Session make_session(Ort::Env& env, const std::filesystem::path& model_path,
                           std::string_view what,
                           OrtPrecision precision = OrtPrecision::kProviderDefault,
@@ -166,7 +150,7 @@ Ort::Session make_session(Ort::Env& env, const std::filesystem::path& model_path
 
 // Builds one Ort::Session for the patched RapidOcrOnnx nets.  On the
 // OpenVINO provider the build retries a bounded number of times with short
-// jittered backoff, exactly like make_session; unlike make_session it never
+// jittered backoff, exactly like make_session; it never
 // retreats to CPU: after the retries exhaust the exception propagates out of
 // the net's initModel and fails the engine loudly.  The openvino flavor must
 // never silently degrade an OCR model to CPU.  CPU selections build once and
@@ -177,9 +161,8 @@ Ort::Session make_session(Ort::Env& env, const std::filesystem::path& model_path
 Ort::Session* make_rapidocr_session(Ort::Env& env, const std::filesystem::path& model_path,
                                     std::string_view what, int num_thread);
 
-// The CPU-only session make_session falls back to, exposed for callers that
-// must retreat AFTER creation: some provider failures only surface at the
-// first inference (a runtime kernel compile), which make_session cannot see.
+// Builds a CPU session for an intentional CPU selection. Accelerator
+// failures must never call this helper to change execution providers.
 Ort::Session make_cpu_session(Ort::Env& env, const std::filesystem::path& model_path,
                               int intra_op_threads = kIntraOpProcessDefault);
 

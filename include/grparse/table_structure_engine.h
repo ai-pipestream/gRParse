@@ -39,13 +39,19 @@ class TableStructurer {
   virtual TableStructure recognize(const cv::Mat& crop) = 0;
 };
 
-// SLANet-plus table structure recognition (RapidTable export) on ONNX
-// Runtime.  The session binds the process-wide execution provider selection,
-// pooled exactly like OCR and layout sessions.
+// SLANet-plus table recognition binds the process-wide provider selection.
+// CPU/CUDA and OpenVINO NPU use ONNX Runtime with the original model.
+// Only OpenVINO GPU/GPU.<n> use native OpenVINO with the sibling
+// slanet_plus_openvino.onnx and raw vocabulary slanet_plus_openvino.tokens.
+// Native GPU compilation is fresh per call because the shipped runtime retains
+// Loop decoder state across requests (~0.4s warm-cache compile cost on B70).
+// Construction compiles eagerly; accelerator failures never select a CPU backend.
+// NPU requests retain the strict OpenVINO EP path; hardware/model support
+// must be validated on an NPU and is not established by the B70 golden test.
 //
 // Anti-seesaw contract: recognize is a batch=1 device call on a table crop
 // of the raster the inference stage already holds; it neither retains the
-// crop nor blocks on anything but its own inference.
+// crop nor blocks on anything but compilation/inference and the GPU JIT gate.
 class TableStructureEngine final {
  public:
   // Throws when the model is missing or the configured execution provider
@@ -63,12 +69,12 @@ class TableStructureEngine final {
   std::unique_ptr<Impl> impl_;
 };
 
-// Warm exclusive-lease pool over TableStructureEngine, one session per slot.
+// Exclusive-lease pool over TableStructureEngine, one engine per slot.
 class TableStructureEnginePool final : public TableStructurer {
  public:
   using Stats = ResourcePool<TableStructureEngine>::Stats;
 
-  // Builds every session eagerly so a bad model or provider fails startup.
+  // Initializes every engine eagerly so a bad model or provider fails startup.
   TableStructureEnginePool(const std::filesystem::path& model_path, size_t worker_count);
 
   TableStructure recognize(const cv::Mat& crop) override;

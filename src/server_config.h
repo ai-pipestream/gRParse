@@ -126,12 +126,13 @@ EmbeddingConfig read_embedding_config(const std::filesystem::path& models_dir);
 // off skips it; debug runs it and prints one line per document it changed.
 std::optional<RepairOptions> configure_repair();
 
-// GRPARSE_ORT_EP selects the ONNX Runtime execution provider.  cuda is
-// the default and keeps the fail-loud behaviour; cpu is a deliberate choice,
-// never a silent fallback; openvino targets Intel GPUs/NPUs through the
-// OpenVINO build of ONNX Runtime; auto prefers CUDA, then OpenVINO, then CPU,
-// logging each fallback.  Requesting a provider this binary was not built
-// with fails with the list that is actually available.
+// GRPARSE_ORT_EP selects the provider. Unset/auto discovers PCI GPU hardware
+// before model initialization: B70 prefers OpenVINO, then supported NVIDIA
+// and Intel devices select their matching provider. Only a host with no
+// supported GPU hardware selects CPU automatically. Present but unusable or
+// unsupported GPUs fail clearly; initialization errors never change the
+// provider. Explicit cpu remains intentional CPU operation. Images set their
+// own explicit provider defaults.
 std::unique_ptr<OcrEnginePool> build_engine_pool(const std::filesystem::path& models,
                                                  size_t worker_count, int gpu_index);
 

@@ -25,14 +25,13 @@
 #include <utility>
 #include <vector>
 
-#include <malloc.h>
-
 #include <google/protobuf/util/message_differencer.h>
 #include <grpcpp/grpcpp.h>
 
 #include "../src/parse_support.h"
 #include "../src/render/renderer_base.h"
 #include "../src/source_parse.h"
+#include "../src/stream_event.h"
 #include "../src/targets/sha256.h"
 #include "ai/pipestream/email/v1/email_service.grpc.pb.h"
 #include "ai/pipestream/parse/v1/parse_stream.grpc.pb.h"
@@ -3119,28 +3118,6 @@ void verify_streaming_pdf_fast_path_projects_pages() {
   require(run.events.at(3).has_complete(), "the stream closes with the complete event");
 }
 
-// One "<field>: <n> kB" line of /proc/self/status, in bytes.
-uint64_t proc_status_bytes(std::string_view field) {
-  std::ifstream status("/proc/self/status");
-  std::string line;
-  while (std::getline(status, line)) {
-    if (line.size() > field.size() && line.starts_with(field) && line[field.size()] == ':') {
-      return std::stoull(line.substr(field.size() + 1)) * 1024U;
-    }
-  }
-  throw std::runtime_error("no " + std::string(field) + " line in /proc/self/status");
-}
-
-// Resets VmHWM to the current resident set (clear_refs value 5, proc(5)),
-// so the peak read later belongs to what ran after this call and not to an
-// earlier case in the same process.
-void reset_peak_rss() {
-  std::ofstream clear_refs("/proc/self/clear_refs");
-  clear_refs << "5";
-  clear_refs.flush();
-  require(clear_refs.good(), "could not reset the peak RSS through /proc/self/clear_refs");
-}
-
 constexpr std::size_t kLargePictureImageBytes = 4U << 20U;
 constexpr int kLargePictureTexts = 2000;
 
@@ -3172,11 +3149,32 @@ docv1::Document large_picture_document() {
   return document;
 }
 
-// The inspector's fast path with large_picture_document(), held open at the
-// end so the test can mark where the coordinator's emission of it begins:
-// the handler writes the classification, the Document and the trailer,
-// says so, and returns only once the test releases it. The collector call
-// ends on that return, and the outcome goes straight on to the stream.
+// Exercise the actual production event builder, including the queued event's
+// storage policy. This replaces the peak-RSS proxy for deep-copy detection:
+// allocator quarantine, shadow memory and transport timing under sanitizers
+// are not evidence of a Document copy. It is not a general serialization
+// memory budget; the wire test below separately verifies complete delivery.
+void verify_collector_document_moves_into_its_event() {
+  auto document = large_picture_document();
+  const docv1::Document expected = document;
+  const auto* picture = &document.pictures(0);
+  const auto* text = &document.texts(0);
+  const char* image_data = document.pictures(0).image().uri().data();
+  require(document.GetArena() == nullptr, "collector document starts on the heap");
+
+  const auto event = grparse::detail::make_collector_document_event(std::move(document));
+  const auto& emitted = event->message.collector_document().document();
+  require(event->message.GetArena() == nullptr && emitted.GetArena() == nullptr,
+          "queued event and collector document must remain on the heap");
+  require(same_message(expected, emitted), "event construction preserves every Document field");
+  require(&emitted.pictures(0) == picture && &emitted.texts(0) == text &&
+              emitted.pictures(0).image().uri().data() == image_data,
+          "event construction must transfer existing items and picture storage, not copy them");
+  require(!event->scheduler_credit, "collector document events hold no scheduler credit");
+}
+
+// The inspector's fast path with large_picture_document(), held until the
+// test has observed that the full Document and trailer were written.
 class LargeDocumentInspector final : public pdfv1::PdfParseService::Service {
  public:
   grpc::Status ParsePdf(
@@ -3193,7 +3191,7 @@ class LargeDocumentInspector final : public pdfv1::PdfParseService::Service {
       stream->Write(event);
     }
     {
-      // Scoped, so this side's copy is gone before the test resets the peak.
+      // Release the inspector's own Document after writing it.
       pdfv1::ParsePdfResponse event;
       *event.mutable_document() = large_picture_document();
       stream->Write(event);
@@ -3228,18 +3226,9 @@ class LargeDocumentInspector final : public pdfv1::PdfParseService::Service {
   bool released_ = false;
 };
 
-// A collector Document moves into its collector-document event; it is not
-// copied. The peak resident set is reset once the coordinator holds the
-// collector's Document and read again after the emission (the event built
-// and its write serialized), while the client reads nothing: with BDP
-// probing off its stream window stays at the 64 KiB default, so the event
-// waits on the server side rather than in the client's transport. The
-// write's serialized bytes are one Document's worth of growth; a deep copy
-// into the event adds a second Document. Measured (CPU image, 8 runs each):
-// 1.04-1.05x the serialized size with the move, 2.30-2.32x with the copy;
-// the 1.5x line sits about 2 MB clear of either.
-void verify_collector_document_moves_into_its_event() {
-  const uint64_t serialized = large_picture_document().ByteSizeLong();
+// Independently verify that the full large Document travels through the
+// collector and streaming RPC as one intact event followed by completion.
+void verify_large_collector_document_streams_intact() {
   LargeDocumentInspector inspector;
   PdfInspectorServer inspector_server(&inspector);
   FakeRecognizer recognizer;
@@ -3275,17 +3264,7 @@ void verify_collector_document_moves_into_its_event() {
   require(stream->Write(chunk), "large document client could not write the source chunk");
   stream->WritesDone();
   require(inspector.wait_until_written(10s), "the inspector never wrote the large document");
-  // The trailer's write returning puts the Document's bytes on the
-  // coordinator's side; a moment more lets its read finish parsing them.
-  std::this_thread::sleep_for(300ms);
-  // Freed pages go back first, so whatever the emission allocates shows in
-  // the resident set instead of reusing memory an earlier case left behind.
-  malloc_trim(0);
-  reset_peak_rss();
-  const uint64_t baseline = proc_status_bytes("VmHWM");
   inspector.release();
-  std::this_thread::sleep_for(500ms);
-  const uint64_t peak = proc_status_bytes("VmHWM");
   int collector_documents = 0;
   int pages = 0;
   int texts = 0;
@@ -3311,14 +3290,6 @@ void verify_collector_document_moves_into_its_event() {
   require(texts == kLargePictureTexts &&
               image_bytes == kLargePictureImageBytes + std::string_view("data:image/png;base64,").size(),
           "the collector-document event carries the whole Document");
-  const uint64_t growth = peak > baseline ? peak - baseline : 0;
-  std::println("collector-document emission: peak RSS growth {} bytes, Document serialized {} bytes",
-               growth, serialized);
-  require(growth < serialized * 3 / 2,
-          std::format("emitting the collector document grew the peak RSS by {} bytes, at least "
-                      "1.5x the Document's {} serialized bytes: the Document was copied into its "
-                      "event instead of moved",
-                      growth, serialized));
 }
 
 // Holds the last page's recognition until the client has read page one. A
@@ -5074,6 +5045,7 @@ int main() {
         verify_streaming_pdf_fast_path_emits_the_collector_document();
         verify_streaming_pdf_fast_path_projects_pages();
         verify_collector_document_moves_into_its_event();
+        verify_large_collector_document_streams_intact();
         verify_streaming_pdf_fast_path_streams_page_by_page();
         verify_streaming_pdf_hands_the_rest_to_the_cv_path();
         verify_streamed_pages_plus_repair_rebuild_the_document();

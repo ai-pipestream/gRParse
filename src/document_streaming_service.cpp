@@ -36,6 +36,7 @@
 #include "grparse/prometheus_metrics.h"
 #include "grparse/stream_delta.h"
 #include "parse_support.h"
+#include "stream_event.h"
 #include "structure_validation.h"
 #include "targets/sha256.h"
 
@@ -79,16 +80,7 @@ bool is_stream_rejection_code(grpc::StatusCode code) {
   }
 }
 
-// One queued write. The message lives on the heap, as the Documents and
-// pages moved into it do: a message on an arena of its own would turn each
-// of those moves into a deep copy, a second Document held until the write.
-struct Event {
-  pipestream::parse::v1::DocumentStreamEvent message;
-  // True for a CV page the scheduler delivered against a window credit:
-  // writing it is what hands that credit back. Collector-projected page
-  // events never took one.
-  bool scheduler_credit = false;
-};
+using Event = detail::StreamEvent;
 
 // The page events one projection builds, keyed by page number so they go
 // out in page order whatever order the projection touched them in.
@@ -1215,12 +1207,11 @@ class DocumentStreamReactor final
         events_.push_back(std::move(delta_event));
       }
       if (paged && slim_collector_documents_.value_or(false)) slim(&outcome.document);
-      auto event = std::make_unique<Event>();
+      auto event = detail::make_collector_document_event(std::move(outcome.document));
       event->message.set_document_id(document_id_);
       event->message.set_total_pages(total_pages_);
       auto* collector_document = event->message.mutable_collector_document();
       collector_document->set_collector(collector);
-      *collector_document->mutable_document() = std::move(outcome.document);
       for (auto& warning : outcome.warnings) {
         collector_document->add_warnings(std::move(warning));
       }

@@ -114,9 +114,12 @@ and `github` in each, and `gh` logged in.
    `grparse_ort_ep_build_retries_total` may be non-zero on a contended host
    (OpenVINO builds retry under pressure, see README "Intermittent IGC
    failures and VRAM headroom"), and `grparse_ort_ep_fallbacks_total` must
-   reflect only the pre-decided table-structure retreat; the openvino flavor
-   never degrades OCR to CPU, so anything beyond the table pool is a failed
-   leg, not a fallback. Confirm the host has real VRAM headroom: a co-tenant
+   remain zero. Verify the derived SLANet graph and token hashes with
+   `scripts/fetch-models.sh --verify`; test repeated native OpenVINO table
+   inference against the original CPU golden output on the real GPU.
+   Prove OCR, layout, table and figure inference on the selected
+   GPU, including per-node execution-provider evidence; a model that fails
+   to compile or runs a CPU subgraph is a failed accelerator leg. Confirm the host has real VRAM headroom: a co-tenant
    holding the card near-full turns kernel compiles into crashes (exit 139).
 
 6. Verify what was published:

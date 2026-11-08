@@ -46,12 +46,20 @@ printf 'heron\n' >"$work/upstream/heron.onnx"
 printf 'picodet\n' >"$work/upstream/picodet.onnx"
 printf 'figure upstream\n' >"$work/upstream/figure_up.onnx"
 printf 'figure upstream\npatched\n' >"$work/patched.onnx"
+printf 'slanet source\n' >"$work/upstream/slanet.onnx"
+printf 'slanet source\npatched\n' >"$work/slanet-derived.onnx"
+printf '<td>\n</td>' >"$work/slanet.tokens"
 printf '{"tok":1}\n' >"$work/upstream/sub/tokenizer.json"
 
 cat >"$work/fakepython" <<'EOF'
 #!/usr/bin/env bash
-# stands in for `python patch_figure_classifier.py SOURCE DEST`
-{ cat "$2"; printf 'patched\n'; } >"$3"
+# Stand-in preserves separate model/token derivation and can fail before output.
+if [[ $1 == *patch_slanet_openvino.py && ${FAIL_SLANET_PATCH:-0} == 1 ]]; then exit 23; fi
+if [[ ${4:-} == --tokens-only ]]; then
+  printf '<td>\n</td>' >"$3"
+else
+  { cat "$2"; printf 'patched\n'; } >"$3"
+fi
 EOF
 chmod +x "$work/fakepython"
 export FETCH_MODELS_PYTHON=$work/fakepython
@@ -65,6 +73,9 @@ manifest=$work/MANIFEST
   printf '%s %s %s %s %s %s\n' picodet.onnx "$(sha_of "$work/upstream/picodet.onnx")" 8 layout-picodet X "file://$work/upstream/picodet.onnx"
   printf '%s %s %s %s %s %s\n' figure_up.onnx "$(sha_of "$work/upstream/figure_up.onnx")" 16 figure-upstream X "file://$work/upstream/figure_up.onnx"
   printf '%s %s %s %s %s %s\n' figure.onnx "$(sha_of "$work/patched.onnx")" 24 figure X patch:figure_up.onnx
+  printf '%s %s %s %s %s %s\n' slanet.onnx "$(sha_of "$work/upstream/slanet.onnx")" 14 table X "file://$work/upstream/slanet.onnx"
+  printf '%s %s %s %s %s %s\n' slanet_plus_openvino.onnx "$(sha_of "$work/slanet-derived.onnx")" 22 table X slanet-openvino:slanet.onnx
+  printf '%s %s %s %s %s %s\n' slanet_plus_openvino.tokens "$(sha_of "$work/slanet.tokens")" 9 table X slanet-tokens:slanet.onnx
   printf '%s %s %s %s %s %s\n' chunk/tokenizer.json "$(sha_of "$work/upstream/sub/tokenizer.json")" 10 tokenizer X "file://$work/upstream/sub/tokenizer.json"
 } >"$manifest"
 
@@ -72,6 +83,12 @@ dir=$work/models
 check "fresh fetch" 0 "$fetch" --manifest "$manifest" --dir "$dir"
 check "fetched files present" 0 test -f "$dir/det.onnx" -a -f "$dir/heron.onnx" -a -f "$dir/figure.onnx"
 check "patched bytes" 0 cmp "$dir/figure.onnx" "$work/patched.onnx"
+check "derived SLANet bytes" 0 cmp "$dir/slanet_plus_openvino.onnx" "$work/slanet-derived.onnx"
+check "exact token bytes" 0 cmp "$dir/slanet_plus_openvino.tokens" "$work/slanet.tokens"
+rm "$dir/slanet_plus_openvino.onnx"
+check "failed derivation fails fetch" 1 env FAIL_SLANET_PATCH=1 "$fetch" --manifest "$manifest" --dir "$dir"
+check "failed derivation leaves no model" 1 test -f "$dir/slanet_plus_openvino.onnx"
+check "derivation resumes" 0 "$fetch" --manifest "$manifest" --dir "$dir"
 check "picodet not fetched by default" 1 test -f "$dir/picodet.onnx"
 check "tokenizer not fetched by default" 1 test -f "$dir/chunk/tokenizer.json"
 check "second run is a no-op" 0 "$fetch" --manifest "$manifest" --dir "$dir"

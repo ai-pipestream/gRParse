@@ -137,18 +137,19 @@ void verify_rejects_empty_image(const fs::path& model, grparse::LayoutModel sele
   require(threw, "an empty image must be rejected");
 }
 
-// A provider whose first inference fails retreats to CPU and binds the same
-// strategy to the new session.  That rebind must replace the cached names, not
-// append to them: appending reallocated the name storage under the pointers
-// handed to Run, so the fallback engine read freed memory.
-void verify_cpu_fallback_after_failed_probe(const fs::path& model,
-                                            grparse::LayoutModel selection, const cv::Mat& image,
-                                            const ExpectedRegion* expected,
-                                            size_t expected_count) {
+// A failed first inference must not be hidden by rebuilding the session on
+// CPU. Injection exercises this startup boundary even on a CPU-only runner.
+void verify_failed_probe_stops_startup(const fs::path& model,
+                                      grparse::LayoutModel selection) {
   grparse::layout_engine_test_inject_probe_failures(1);
-  grparse::LayoutEngine engine(model, selection);
+  bool threw = false;
+  try {
+    grparse::LayoutEngine engine(model, selection);
+  } catch (const std::exception& error) {
+    threw = std::string(error.what()).contains("injected layout probe failure");
+  }
   grparse::layout_engine_test_inject_probe_failures(0);
-  verify_matches_reference(engine, engine.detect_regions(image), expected, expected_count);
+  require(threw, "a failed layout probe must stop startup instead of switching providers");
 }
 
 // One model's whole leg: skipped when its file is not provisioned, so a host
@@ -169,7 +170,7 @@ bool run_model(grparse::LayoutModel selection, const fs::path& models_dir, const
   const auto regions = engine.detect_regions(image);
   verify_matches_reference(engine, regions, expected, expected_count);
   verify_shared_session_serves_repeat_calls(engine, image, regions);
-  verify_cpu_fallback_after_failed_probe(model, selection, image, expected, expected_count);
+  verify_failed_probe_stops_startup(model, selection);
   return true;
 }
 

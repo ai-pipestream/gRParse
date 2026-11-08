@@ -231,7 +231,7 @@ excludes special tokens. It is guidance rather than an acceptance guarantee:
 unsplittable content or an oversized heading trail can still exceed the model
 limit, which the embedding tokenizer checks independently.
 
-The `Health` RPC reports readiness. The server intentionally fails at startup if a required model is absent or the OCR sessions cannot initialize on the configured provider, instead of silently running CPU OCR. The optional layout, table, and figure models are the one exception: a provider that will not build one of those graphs costs that model its acceleration, not the whole server, and the session is rebuilt on CPU with the provider's own error logged. The `GetServiceInfo` RPC reports the service name, build version, and the shared-shell UI advertisement (`UiInfo`: tab title, mount path, tooltip).
+The `Health` RPC reports readiness. The server fails at startup if a required model is absent or any enabled OCR, layout, table, or figure model cannot initialize on the selected provider. A failed layout first-inference probe also stops startup. Accelerator sessions forbid ONNX Runtime's implicit CPU node placement, so a GPU provider in the startup log cannot conceal CPU execution of unsupported subgraphs. Explicit `GRPARSE_ORT_EP=cpu` and OpenVINO device `CPU` remain intentional CPU operation. The `GetServiceInfo` RPC reports the service name, build version, and the shared-shell UI advertisement (`UiInfo`: tab title, mount path, tooltip).
 
 To stream a PDF with the supplied client, start the service and run:
 
@@ -478,10 +478,13 @@ worker count - on a small machine that costs more than the extra worker earns.
 The shared layout session is exempt and takes all cores, since there is only
 one of it. Select the NVIDIA device with
 `GRPARSE_CUDA_DEVICE`. `GRPARSE_ORT_EP` picks the ONNX Runtime execution
-provider: `cuda` (default, fails startup if CUDA cannot initialize),
-`openvino` (Intel GPU/CPU/NPU through the OpenVINO build — see below), `cpu`
-(explicit CPU inference), or `auto` (prefers CUDA, then OpenVINO, then CPU,
-logging each fallback). `GRPARSE_OCR_BATCH` (1 to 256) sets how many line
+provider: `cuda`, `openvino` (Intel GPU/CPU/NPU through the OpenVINO build),
+`cpu` (explicit CPU inference), or `auto` (the standalone default). Auto
+reads PCI hardware before initializing models: it prefers a B70, otherwise
+selects a compatible NVIDIA or Intel GPU, and chooses CPU only when no
+compute GPU is present. A present card with a missing provider, broken
+driver, or failing model stops startup instead of becoming CPU. The images
+keep their explicit provider defaults. `GRPARSE_OCR_BATCH` (1 to 256) sets how many line
 crops the angle classifier and recognizer take per call: 16 under CUDA, 1
 under CPU (where padding costs more than batching saves) and OpenVINO (whose
 GPU plugin compiles kernels for every new input shape).
@@ -1092,18 +1095,36 @@ stages the NEO compute runtime, the OpenCL loader and the graphics compiler
 from the build stage; its runtime base is plain `ubuntu:26.04` behind the
 `GRPARSE_RUNTIME_IMAGE` build arg ("Runtime image" above says why).
 
-Verified on an Arc B70 (Battlemage): detection/recognition/classification,
-layout, and figure classification all compile and run on the GPU plugin.
-One model does not: `slanet_plus.onnx` uses a dynamic-rank `While`/`Loop`
-the OpenVINO plugin rejects on every device. That no longer stops the
-server - the table session is rebuilt on CPU with the plugin's own error
-logged, and everything else stays on OpenVINO - so no setting is needed;
-`GRPARSE_TABLE_STRUCTURE=off` remains available for anyone who would rather
-not pay for it on CPU at all.
+OpenVINO GPU table inference uses the native OpenVINO C API and the derived
+`slanet_plus_openvino.onnx` graph with its `slanet_plus_openvino.tokens`
+vocabulary. `scripts/fetch-models.sh` derives both from the pinned original
+SLANet export and verifies their manifest hashes. The normalization fixes
+Loop formal-name collisions, passthrough outputs and control/state ranks,
+and specializes the existing batch-one 488x488 input contract. Trained
+weights and decoder arithmetic are unchanged. CPU and CUDA retain the
+original graph. Only direct `GPU` and `GPU.<n>` selections use this native
+backend. Missing derived files or a GPU compile/inference error fail
+explicitly; no CPU session replaces the selected GPU.
+
+`NPU` selections retain the original graph through ONNX Runtime's OpenVINO
+execution provider, with CPU fallback disabled. They do not require the
+GPU-derived table files. NPU driver and model/operator compatibility must be
+validated on actual NPU hardware; the B70 checks do not establish NPU table
+support. A device or model failure propagates instead of selecting CPU.
+
+The native table path compiles a fresh GPU model for each crop to avoid
+mutable Loop state surviving between requests in the bundled OpenVINO
+runtime. On the B70 this adds roughly 0.4 seconds of compilation per crop.
+A release must prove repeated real table inference on the selected GPU,
+including output agreement with the original CPU model; startup alone is
+not a full pipeline test.
 
 The image defaults to `GRPARSE_ORT_EP=openvino` with
-`GRPARSE_OPENVINO_DEVICE=GPU`; set the device to `GPU.<n>`, `CPU`, `NPU`, or
-an `AUTO:`/`HETERO:` list. `GRPARSE_OPENVINO_CACHE_DIR` points the plugin at a
+`GRPARSE_OPENVINO_DEVICE=GPU`; generic `GPU` selects a visible B70 by its
+OpenVINO device identity when present. Set `GPU.<n>` to choose an exact GPU,
+`NPU` for that accelerator, or `CPU` for intentional CPU execution. Mixed
+`AUTO:`/`HETERO:` lists containing CPU and bare automatic selectors are
+rejected because they can conceal CPU execution. `GRPARSE_OPENVINO_CACHE_DIR` points the plugin at a
 writable directory to keep compiled blobs in, which skips the recompile on
 every session create (unset by default: the container runs read-only). Give
 it room: the GPU plugin compiles a kernel set per input size, so OCR crops
@@ -1136,11 +1157,9 @@ OpenVINO provider retry up to three attempts with short jittered backoff,
 one attempt at a time under the process-wide compile gate, and the retries
 stay on the GPU. If the build still fails, the openvino flavor fails loudly:
 the OCR session build throws and takes startup down with a clear error, and
-no OCR model ever silently degrades to CPU. The one sanctioned CPU retreat
-is the pre-decided table-structure case (`slanet_plus.onnx`, rejected by the
-plugin on every device), which is logged in full and counted in
-`grparse_ort_ep_fallbacks_total`; `grparse_ort_ep_build_retries_total`
-counts the retried builds. A rising retry line is the earliest signal that
+no enabled model silently degrades to CPU. `grparse_ort_ep_fallbacks_total`
+is retained for dashboard compatibility and must remain zero;
+`grparse_ort_ep_build_retries_total` counts the retried builds. A rising retry line is the earliest signal that
 the host is contended.
 
 The fatal class remains fatal: heap corruption or a `longjmp` across the

@@ -197,14 +197,33 @@ void append_execution_provider(Ort::SessionOptions& options, int legacy_gpu_inde
   }
   if (!selected) {
     // Upstream RapidOcrOnnx behaviour for callers that never chose a provider.
-    if (legacy_gpu_index >= 0) append_cuda(options, legacy_gpu_index);
+    if (legacy_gpu_index >= 0) {
+      options.AddConfigEntry("session.disable_cpu_ep_fallback", "1");
+      append_cuda(options, legacy_gpu_index);
+    }
     return;
+  }
+  // Selecting an accelerator is a contract for every graph node, not only
+  // the provider named in the startup log. ORT otherwise assigns unsupported
+  // nodes to its implicit CPU EP without going through our fallback code.
+  const bool intentional_cpu = selection.ep == OrtEp::kCpu ||
+      (selection.ep == OrtEp::kOpenVino && selection.openvino_device == "CPU");
+  if (!intentional_cpu) {
+    options.AddConfigEntry("session.disable_cpu_ep_fallback", "1");
   }
   switch (selection.ep) {
     case OrtEp::kCuda:
       append_cuda(options, selection.cuda_device);
       return;
     case OrtEp::kOpenVino: {
+      if (selection.openvino_device != "CPU" &&
+          (selection.openvino_device.find("CPU") != std::string::npos ||
+           selection.openvino_device == "AUTO" || selection.openvino_device == "HETERO" ||
+           selection.openvino_device == "MULTI")) {
+        throw std::invalid_argument(
+            "OpenVINO accelerator selection must not include an implicit CPU fallback; "
+            "select GPU, GPU.<n>, NPU, or explicitly CPU");
+      }
       // Throws if this ONNX Runtime build lacks the OpenVINO provider or the
       // device cannot initialize; make_session decides what that costs.
       std::unordered_map<std::string, std::string> openvino_options{
@@ -256,17 +275,10 @@ Ort::Session make_session(Ort::Env& env, const std::filesystem::path& model_path
     });
   } catch (const std::exception& error) {
     if (ep == OrtEp::kCpu) throw;
-    // Pre-existing policy, unchanged: this model loses its acceleration,
-    // not the whole server (the slanet_plus table model lands here by
-    // design).  The OCR nets are different: they build through
-    // make_rapidocr_session and fail loudly instead.
-    ep_fallbacks.fetch_add(1);
-    std::println(stderr,
-                 "gRParse {}: the {} execution provider would not build {} ({}); this model "
-                 "runs on CPU",
-                 what, ort_ep_name(ep), model_path.string(), error.what());
+    throw std::runtime_error(std::string("gRParse ") + std::string(what) + ": " +
+                             std::string(ort_ep_name(ep)) + " failed to build " +
+                             model_path.string() + "; refusing CPU fallback: " + error.what());
   }
-  return make_cpu_session(env, model_path, intra_op_threads);
 }
 
 Ort::Session* make_rapidocr_session(Ort::Env& env, const std::filesystem::path& model_path,

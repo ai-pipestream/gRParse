@@ -28,8 +28,7 @@ class LayoutStrategy {
   virtual ~LayoutStrategy() = default;
   // Validates the graph against what the decode expects and caches its
   // input/output names.  Throws when the file is not the model it claims.
-  // Rebinding to another session replaces the cache: the CPU fallback binds
-  // the same strategy twice.
+  // Rebinding to another session replaces the cache.
   virtual void bind(Ort::Session& session) = 0;
   virtual std::vector<LayoutRegion> detect(Ort::Session& session, const cv::Mat& image) const = 0;
 };
@@ -377,12 +376,10 @@ class LayoutEngine::Impl {
                                        : OrtPrecision::kProviderDefault;
     session_ = make_session(env_, model_path, "layout", precision, kIntraOpAllCores);
     strategy_->bind(session_);
-    // Some provider failures only surface at the first inference (a runtime
-    // kernel compile, not session creation), which would otherwise leave a
-    // running server failing every page. Probe once; on failure retreat to
-    // CPU exactly like a creation failure would have.  The probe is this
-    // engine's cold first inference, so it takes the compile gate like every
-    // other engine's first inference does (see grparse_session_ep.h).
+    // Some provider failures only surface on the first inference. Probe
+    // before reporting readiness, and fail startup if the selected backend
+    // cannot execute the graph. Changing providers here would hide a broken
+    // accelerator after a successful session build.
     const cv::Mat probe(64, 64, CV_8UC3, cv::Scalar(255, 255, 255));
     try {
       const OvCompileGate compile_gate;
@@ -392,13 +389,9 @@ class LayoutEngine::Impl {
       }
       (void)strategy_->detect(session_, probe);
     } catch (const std::exception& error) {
-      std::println(stderr,
-                   "gRParse layout: the configured execution provider failed its first "
-                   "inference ({}); this model runs on CPU",
-                   error.what());
-      session_ = make_cpu_session(env_, model_path, kIntraOpAllCores);
-      strategy_->bind(session_);
-      (void)strategy_->detect(session_, probe);  // a CPU failure is fatal
+      throw std::runtime_error(std::string("gRParse layout: the configured execution provider "
+                                           "failed its first inference; refusing CPU fallback: ") +
+                               error.what());
     }
   }
 
