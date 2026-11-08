@@ -91,7 +91,10 @@ FetchContent_Declare(rapidocr SOURCE_SUBDIR disabled
         COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-confident-angle-vote.patch"
         # Line crops cut from the page in place, the debug result image built
         # only when saved, and recognizer scores decoded in place.
-        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-ocr-copies.patch")
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-ocr-copies.patch"
+        # The detect overload that takes a page already padded and sized is
+        # public, so grparse buckets the detector input (src/ocr_engine.cpp).
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-prepared-detect.patch")
 FetchContent_MakeAvailable(rapidocr)
 # FetchContent only patches when it populates, so a dependency tree cached
 # before the patch existed would build the upstream provider wiring and the
@@ -166,6 +169,16 @@ if(GRPARSE_DBNET_GEOMETRY_AT EQUAL -1)
     "directory (or the docker build cache) and re-run CMake.")
 endif()
 unset(GRPARSE_DBNET_HEADER)
+# A tree cached before this patch keeps the overload private and fails to
+# compile src/ocr_engine.cpp with an access error; fail the configure instead.
+file(READ "${rapidocr_SOURCE_DIR}/include/OcrLite.h" GRPARSE_OCRLITE_HEADER)
+string(FIND "${GRPARSE_OCRLITE_HEADER}" "rapidocr-prepared-detect.patch" GRPARSE_OCRLITE_PREPARED_AT)
+if(GRPARSE_OCRLITE_PREPARED_AT EQUAL -1)
+  message(FATAL_ERROR "include/OcrLite.h is unpatched: the rapidocr source tree is older "
+    "than patches/rapidocr-prepared-detect.patch. Delete _deps/rapidocr-* from the build "
+    "directory (or the docker build cache) and re-run CMake.")
+endif()
+unset(GRPARSE_OCRLITE_HEADER)
 
 # Which ONNX Runtime binary package to link.  `cuda` is Microsoft's NVIDIA GPU
 # release.  `openvino` takes headers from the matching official release and
@@ -920,6 +933,7 @@ if(BUILD_TESTING)
     office-collector-test
     office-fallback-test
     office-cv-enrichment-test
+    ocr-engine-test
     ort-session-ep-test
     page-previews-test
     page-projection-test

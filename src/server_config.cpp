@@ -559,6 +559,10 @@ std::optional<RepairOptions> configure_repair() {
 
 std::unique_ptr<OcrEnginePool> build_engine_pool(const std::filesystem::path& models,
                                                  size_t worker_count, int gpu_index) {
+  // Read on every provider, so a malformed value refuses startup even on a
+  // host that would never build a CUDA session.
+  const std::string_view conv_search =
+      grparse::cuda_conv_search_name(grparse::cuda_conv_search());
   const char* configured = std::getenv("GRPARSE_ORT_EP");
   const std::string ep = configured == nullptr || *configured == '\0' ? "cuda" : configured;
   if (ep == "cuda") {
@@ -568,7 +572,8 @@ std::unique_ptr<OcrEnginePool> build_engine_pool(const std::filesystem::path& mo
           "(available: " + available_providers() + ")");
     }
     auto pool = build_pool_with(grparse::OrtEp::kCuda, models, worker_count, gpu_index);
-    std::println("gRParse OCR execution provider: CUDA (device {})", gpu_index);
+    std::println("gRParse OCR execution provider: CUDA (device {}, cuDNN conv search {})",
+                 gpu_index, conv_search);
     return pool;
   }
   if (ep == "openvino") {
@@ -591,8 +596,10 @@ std::unique_ptr<OcrEnginePool> build_engine_pool(const std::filesystem::path& mo
     if (provider_available("CUDAExecutionProvider")) {
       try {
         auto pool = build_pool_with(grparse::OrtEp::kCuda, models, worker_count, gpu_index);
-        std::println("gRParse OCR execution provider: CUDA (device {}, selected by GRPARSE_ORT_EP=auto)",
-                     gpu_index);
+        std::println(
+            "gRParse OCR execution provider: CUDA (device {}, cuDNN conv search {}, selected by "
+            "GRPARSE_ORT_EP=auto)",
+            gpu_index, conv_search);
         return pool;
       } catch (const std::exception& error) {
         std::println(stderr, "GRPARSE_ORT_EP=auto: CUDA initialization failed ({})", error.what());
