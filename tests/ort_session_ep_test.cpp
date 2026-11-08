@@ -47,6 +47,18 @@ void verify_legacy_negative_index_appends_nothing_but_counts() {
           "every call increments the invocation count by one");
 }
 
+void verify_legacy_cuda_forbids_cpu_nodes() {
+  Ort::SessionOptions options;
+  try {
+    grparse::append_execution_provider(options, 999999);
+  } catch (const std::exception&) {
+    // The legacy caller still selected CUDA even when this package lacks it.
+  }
+  require(options.HasConfigEntry("session.disable_cpu_ep_fallback") &&
+              options.GetConfigEntry("session.disable_cpu_ep_fallback") == "1",
+          "legacy CUDA selection cannot silently place graph nodes on CPU");
+}
+
 void verify_selection_round_trips_and_copies() {
   grparse::OrtEpSelection selection;
   selection.ep = grparse::OrtEp::kCpu;
@@ -109,7 +121,7 @@ void verify_ocr_batch_size_follows_provider() {
   grparse::set_ort_ep_selection(kept);
 }
 
-// The minimal ONNX model a fallback can rebuild on CPU: ir_version 8, opset
+// A minimal ONNX model that can load on CPU, so silent fallback would succeed: ir_version 8, opset
 // 13, one Identity from input "x" to output "y", hand-encoded protobuf so the
 // fixture carries no generator dependency.
 constexpr unsigned char kTinyModelBytes[] = {
@@ -139,50 +151,98 @@ std::filesystem::path write_tiny_model() {
   return path;
 }
 
-void verify_make_session_falls_back_and_counts() {
+void verify_make_session_rejects_cuda_failure() {
   const std::filesystem::path model = write_tiny_model();
-  // CUDA is never available in the test binaries (CPU and OpenVINO ONNX
-  // Runtime packages reject the provider outright; CI has no GPU for the
-  // CUDA package), so a CUDA selection always drives make_session down its
-  // catch block: the fallback counter must move and the CPU rebuild must
-  // load the model.  Retries are scoped to OpenVINO, so CUDA must not
-  // retry: one attempt, one fallback.
   grparse::OrtEpSelection selection;
   selection.ep = grparse::OrtEp::kCuda;
+  selection.cuda_device = 999999;  // invalid even on a GPU-enabled test host
   grparse::set_ort_ep_selection(selection);
   const uint64_t before = grparse::ep_fallback_count();
   const uint64_t retries_before = grparse::ep_build_retry_count();
   Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "grparse-test");
-  Ort::Session session = grparse::make_session(env, model, "tiny test model");
-  require_equal(grparse::ep_fallback_count(), before + 1,
-                "a refused provider counts one fallback");
+  bool threw = false;
+  try {
+    (void)grparse::make_session(env, model, "tiny test model");
+  } catch (const std::exception&) {
+    threw = true;
+  }
+  require(threw, "a refused CUDA device must not return a working CPU session");
+  require_equal(grparse::ep_fallback_count(), before, "no CPU fallback took place");
   require_equal(grparse::ep_build_retry_count(), retries_before,
                 "a refused CUDA build is not retried");
-  require(session.GetInputCount() == 1 && session.GetOutputCount() == 1,
-          "the CPU fallback session loads the tiny model");
   std::filesystem::remove(model);
 }
 
-void verify_make_session_retries_on_openvino_then_falls_back() {
-  // The OpenVINO provider is unusable in the test binaries too (absent from
-  // the CPU package, present but device-less in the OpenVINO package), but
-  // it is the retryable provider: the build must be attempted three times
-  // before the pre-existing CPU fallback fires.
+void verify_make_session_retries_on_openvino_then_throws() {
   grparse::OrtEpSelection selection;
   selection.ep = grparse::OrtEp::kOpenVino;
+  selection.openvino_device = "GPU.999999";
   grparse::set_ort_ep_selection(selection);
   const std::filesystem::path model = write_tiny_model();
   const uint64_t before = grparse::ep_fallback_count();
   const uint64_t retries_before = grparse::ep_build_retry_count();
   Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "grparse-test");
-  Ort::Session session = grparse::make_session(env, model, "tiny test model");
+  bool threw = false;
+  try {
+    (void)grparse::make_session(env, model, "table structure");
+  } catch (const std::exception&) {
+    threw = true;
+  }
+  require(threw, "a refused OpenVINO device must not rebuild the table model on CPU");
   require_equal(grparse::ep_build_retry_count(), retries_before + 2,
-                "a refused OpenVINO build retries twice before falling back");
-  require_equal(grparse::ep_fallback_count(), before + 1,
-                "the pre-existing fallback still counts once");
-  require(session.GetInputCount() == 1 && session.GetOutputCount() == 1,
-          "the CPU fallback session loads the tiny model");
+                "a refused OpenVINO build retries twice before failing");
+  require_equal(grparse::ep_fallback_count(), before, "no CPU fallback took place");
   std::filesystem::remove(model);
+}
+
+void verify_accelerator_options_forbid_cpu_nodes() {
+  for (const auto& selection : {
+           grparse::OrtEpSelection{.ep = grparse::OrtEp::kCuda},
+           grparse::OrtEpSelection{.ep = grparse::OrtEp::kOpenVino},
+           grparse::OrtEpSelection{.ep = grparse::OrtEp::kOpenVino, .openvino_device = "NPU"}}) {
+    grparse::set_ort_ep_selection(selection);
+    Ort::SessionOptions options;
+    try {
+      grparse::append_execution_provider(options, -1);
+    } catch (const std::exception&) {
+      // A provider may be absent from this build; its CPU-placement guard
+      // must already be present before trying to initialize it.
+    }
+    require(options.HasConfigEntry("session.disable_cpu_ep_fallback"),
+            "accelerator options prohibit ORT's implicit CPU node placement");
+    require(options.GetConfigEntry("session.disable_cpu_ep_fallback") == "1",
+            "CPU node placement is disabled, not only reported");
+  }
+  grparse::OrtEpSelection cpu;
+  grparse::set_ort_ep_selection(cpu);
+  Ort::SessionOptions options;
+  grparse::append_execution_provider(options, -1);
+  require(!options.HasConfigEntry("session.disable_cpu_ep_fallback"),
+          "intentional CPU operation remains available");
+
+  grparse::OrtEpSelection ov_cpu;
+  ov_cpu.ep = grparse::OrtEp::kOpenVino;
+  ov_cpu.openvino_device = "CPU";
+  grparse::set_ort_ep_selection(ov_cpu);
+  Ort::SessionOptions cpu_device;
+  try { grparse::append_execution_provider(cpu_device, -1); }
+  catch (const std::exception&) { /* OpenVINO is absent in CPU-only builds. */ }
+  require(!cpu_device.HasConfigEntry("session.disable_cpu_ep_fallback"),
+          "an explicitly selected OpenVINO CPU device remains intentional CPU operation");
+
+  grparse::OrtEpSelection mixed;
+  mixed.ep = grparse::OrtEp::kOpenVino;
+  mixed.openvino_device = "AUTO:GPU,CPU";
+  grparse::set_ort_ep_selection(mixed);
+  bool refused = false;
+  try {
+    Ort::SessionOptions automatic;
+    grparse::append_execution_provider(automatic, -1);
+  } catch (const std::invalid_argument& error) {
+    refused = std::string(error.what()).contains("implicit CPU fallback");
+  }
+  require(refused, "OpenVINO AUTO must not conceal CPU fallback inside the provider");
+  grparse::set_ort_ep_selection(cpu);
 }
 
 void verify_make_session_retries_then_succeeds() {
@@ -255,6 +315,7 @@ void verify_make_rapidocr_session_fails_loudly_on_openvino() {
   // OCR on CPU.
   grparse::OrtEpSelection selection;
   selection.ep = grparse::OrtEp::kOpenVino;
+  selection.openvino_device = "GPU.999999";
   grparse::set_ort_ep_selection(selection);
   const std::filesystem::path model = write_tiny_model();
   const uint64_t before = grparse::ep_fallback_count();
@@ -298,13 +359,15 @@ int main() {
   return grparse_test::run_test_main("ort-session-ep-test", "all checks passed", {
       verify_default_selection_is_cpu,
       verify_legacy_negative_index_appends_nothing_but_counts,
+      verify_legacy_cuda_forbids_cpu_nodes,
       verify_selection_round_trips_and_copies,
       verify_explicit_cpu_overrides_legacy_gpu_index,
       verify_latest_selection_wins,
       verify_ocr_batch_size_follows_provider,
-      verify_make_session_falls_back_and_counts,
+      verify_make_session_rejects_cuda_failure,
       verify_cpu_selection_failure_does_not_count,
-      verify_make_session_retries_on_openvino_then_falls_back,
+      verify_make_session_retries_on_openvino_then_throws,
+      verify_accelerator_options_forbid_cpu_nodes,
       verify_make_session_retries_then_succeeds,
       verify_injected_failures_exhaust_and_throw_on_cpu,
       verify_make_rapidocr_session_retries_then_succeeds,

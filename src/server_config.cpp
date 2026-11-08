@@ -15,6 +15,7 @@
 #include "grparse/remote_page_source.h"
 #include "grparse/vlm_convert.h"
 #include "grparse_session_ep.h"
+#include "grparse/gpu_selection.h"
 
 namespace grparse {
 namespace {
@@ -138,7 +139,7 @@ std::string configured_openvino_device() {
       throw std::invalid_argument("GRPARSE_OPENVINO_DEVICE contains unsupported characters");
     }
   }
-  return device;
+  return preferred_openvino_device(device);
 }
 
 // GRPARSE_OPENVINO_CACHE_DIR: where the OpenVINO plugin may keep compiled
@@ -158,7 +159,7 @@ std::unique_ptr<grparse::OcrEnginePool> build_pool_with(grparse::OrtEp ep,
   grparse::OrtEpSelection selection{
       .ep = ep,
       .cuda_device = gpu_index,
-      .openvino_device = configured_openvino_device(),
+      .openvino_device = ep == grparse::OrtEp::kOpenVino ? configured_openvino_device() : "GPU",
       .openvino_cache_dir = configured_openvino_cache_dir(),
   };
   grparse::set_ort_ep_selection(selection);
@@ -560,7 +561,7 @@ std::optional<RepairOptions> configure_repair() {
 std::unique_ptr<OcrEnginePool> build_engine_pool(const std::filesystem::path& models,
                                                  size_t worker_count, int gpu_index) {
   const char* configured = std::getenv("GRPARSE_ORT_EP");
-  const std::string ep = configured == nullptr || *configured == '\0' ? "cuda" : configured;
+  const std::string ep = configured == nullptr || *configured == '\0' ? "auto" : configured;
   if (ep == "cuda") {
     if (!provider_available("CUDAExecutionProvider")) {
       throw std::invalid_argument(
@@ -579,7 +580,7 @@ std::unique_ptr<OcrEnginePool> build_engine_pool(const std::filesystem::path& mo
           "Dockerfile.openvino");
     }
     auto pool = build_pool_with(grparse::OrtEp::kOpenVino, models, worker_count, gpu_index);
-    std::println("gRParse OCR execution provider: OpenVINO ({})", configured_openvino_device());
+    std::println("gRParse OCR execution provider: OpenVINO ({})", ort_ep_selection().openvino_device);
     return pool;
   }
   if (ep == "cpu") {
@@ -588,29 +589,16 @@ std::unique_ptr<OcrEnginePool> build_engine_pool(const std::filesystem::path& mo
     return pool;
   }
   if (ep == "auto") {
-    if (provider_available("CUDAExecutionProvider")) {
-      try {
-        auto pool = build_pool_with(grparse::OrtEp::kCuda, models, worker_count, gpu_index);
-        std::println("gRParse OCR execution provider: CUDA (device {}, selected by GRPARSE_ORT_EP=auto)",
-                     gpu_index);
-        return pool;
-      } catch (const std::exception& error) {
-        std::println(stderr, "GRPARSE_ORT_EP=auto: CUDA initialization failed ({})", error.what());
-      }
-    }
-    if (provider_available("OpenVINOExecutionProvider")) {
-      try {
-        auto pool = build_pool_with(grparse::OrtEp::kOpenVino, models, worker_count, gpu_index);
-        std::println("gRParse OCR execution provider: OpenVINO ({}, selected by GRPARSE_ORT_EP=auto)",
-                     configured_openvino_device());
-        return pool;
-      } catch (const std::exception& error) {
-        std::println(stderr, "GRPARSE_ORT_EP=auto: OpenVINO initialization failed ({})",
-                     error.what());
-      }
-    }
-    auto pool = build_pool_with(grparse::OrtEp::kCpu, models, worker_count, gpu_index);
-    std::println("gRParse OCR execution provider: CPU (selected by GRPARSE_ORT_EP=auto)");
+    const OrtEp selected = choose_auto_execution_provider(
+        read_gpu_hardware(), provider_available("CUDAExecutionProvider"),
+        provider_available("OpenVINOExecutionProvider"));
+    // Device selection happens before model construction. Once selected,
+    // errors propagate: a failed driver/model is not evidence of no GPU.
+    auto pool = build_pool_with(selected, models, worker_count, gpu_index);
+    const std::string device = selected == OrtEp::kOpenVino ? ort_ep_selection().openvino_device :
+                               selected == OrtEp::kCuda ? std::to_string(gpu_index) : "CPU";
+    std::println("gRParse OCR execution provider: {} (device {}, selected by GRPARSE_ORT_EP=auto)",
+                 ort_ep_name(selected), device);
     return pool;
   }
   throw std::invalid_argument("GRPARSE_ORT_EP must be cuda, openvino, cpu, or auto");

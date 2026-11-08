@@ -34,7 +34,8 @@ COPY scripts/models-requirements.txt /tmp/models-requirements.txt
 RUN pip install --no-cache-dir --no-deps -r /tmp/models-requirements.txt
 WORKDIR /src
 COPY models/MANIFEST models/MANIFEST
-COPY scripts/fetch-models.sh scripts/patch_figure_classifier.py scripts/
+COPY scripts/fetch-models.sh scripts/patch_figure_classifier.py \
+     scripts/patch_slanet_openvino.py scripts/patch-slanet-openvino-test.py scripts/
 ARG MODELS_LAYOUT
 ARG MODELS_TOKENIZER
 # Every download is checked against the manifest's sha256 before it is kept;
@@ -44,6 +45,7 @@ RUN set -eu; \
     tokenizer=""; [ "$MODELS_TOKENIZER" = 1 ] && tokenizer=--tokenizer; \
     FETCH_MODELS_PYTHON=python3 scripts/fetch-models.sh --dir /models \
       --layout "$MODELS_LAYOUT" $tokenizer \
+    && python3 scripts/patch-slanet-openvino-test.py /models/slanet_plus.onnx \
     && rm -f /models/figure_classifier_upstream.onnx \
     && cp models/MANIFEST /models/MANIFEST \
     && mkdir -p /target

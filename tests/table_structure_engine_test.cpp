@@ -1,9 +1,12 @@
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iterator>
+#include <memory>
 #include <print>
 #include <stdexcept>
 #include <string>
@@ -12,6 +15,12 @@
 #include <opencv2/imgcodecs.hpp>
 
 #include "grparse/table_structure_engine.h"
+#include "grparse/gpu_selection.h"
+#include "grparse_session_ep.h"
+
+#ifdef GRPARSE_TEST_NATIVE_OPENVINO
+#include <openvino/c/openvino.h>
+#endif
 #include "support/check.h"
 
 namespace {
@@ -28,6 +37,69 @@ void verify_missing_model_fails_loudly() {
     threw = true;
   }
   require(threw, "a missing structure model must throw at construction");
+}
+
+// Exercise actual constructor routing without depending on accelerator hardware.
+// The deliberately invalid original model must fail on the selected ORT EP;
+// only native GPU routes may request the derived model/vocabulary artifacts.
+void verify_table_backend_routing() {
+  const fs::path directory = fs::temp_directory_path() /
+      ("grparse-table-artifacts-" + std::to_string(
+          std::chrono::steady_clock::now().time_since_epoch().count()));
+  struct Cleanup {
+    fs::path directory;
+    grparse::OrtEpSelection selection;
+    ~Cleanup() {
+      grparse::set_ort_ep_selection(selection);
+      std::error_code error;
+      fs::remove_all(directory, error);
+    }
+  } cleanup{directory, grparse::ort_ep_selection()};
+  require(fs::create_directory(directory), "create isolated table artifact test directory");
+  const auto model = directory / "slanet_plus.onnx";
+  std::ofstream(model) << "unparsed original model placeholder";
+  grparse::OrtEpSelection npu;
+  npu.ep = grparse::OrtEp::kOpenVino;
+  npu.openvino_device = "NPU";
+  grparse::set_ort_ep_selection(npu);
+  const auto hooks_before = grparse::ep_hook_invocations();
+  const auto fallbacks_before = grparse::ep_fallback_count();
+  std::string npu_error;
+  try {
+    grparse::TableStructureEngine engine(model);
+  } catch (const std::exception& failure) {
+    npu_error = failure.what();
+  }
+  require(npu_error.find("gRParse table structure: OpenVINO failed to build") != std::string::npos &&
+              npu_error.find("refusing CPU fallback") != std::string::npos,
+          "NPU tables must use the strict ORT factory with the original model: " + npu_error);
+  require(grparse::ep_hook_invocations() > hooks_before,
+          "NPU table construction must reach the configured ORT provider");
+  require(grparse::ep_fallback_count() == fallbacks_before,
+          "a failed NPU table must never rebuild on CPU");
+  require(grparse::ort_ep_selection().openvino_device == "NPU",
+          "NPU table failures must preserve the requested device");
+  std::println("table-structure-engine-test: NPU routes through strict ORT; invalid model rejected");
+#ifdef GRPARSE_TEST_NATIVE_OPENVINO
+  grparse::OrtEpSelection gpu;
+  gpu.ep = grparse::OrtEp::kOpenVino;
+  for (const char* device : {"GPU", "GPU.0", "GPU.12"}) {
+    gpu.openvino_device = device;
+    grparse::set_ort_ep_selection(gpu);
+    for (const char* missing : {"slanet_plus_openvino.tokens", "slanet_plus_openvino.onnx"}) {
+      std::string error;
+      try {
+        grparse::TableStructureEngine engine(model);
+      } catch (const std::exception& failure) {
+        error = failure.what();
+      }
+      require(error.find(missing) != std::string::npos,
+              std::string(device) + " must use native table artifacts: " + missing + ": " + error);
+      std::ofstream(directory / "slanet_plus_openvino.tokens") << "<td></td>\n";
+    }
+    fs::remove(directory / "slanet_plus_openvino.tokens");
+  }
+#endif
 }
 
 // The token grid placement is pure logic and must hold without a model.
@@ -99,12 +171,7 @@ float iou(const grparse::StructuredCell& cell, const ExpectedCell& expected) {
   return intersection / (area_cell + area_expected - intersection);
 }
 
-void verify_span_table_matches_reference(const fs::path& model, const fs::path& image_path) {
-  grparse::TableStructureEnginePool pool(model, 2);
-  const cv::Mat image = cv::imread(image_path.string(), cv::IMREAD_COLOR);
-  require(!image.empty(), "test image must load: " + image_path.string());
-
-  const auto structure = pool.recognize(image);
+void verify_reference(const grparse::TableStructure& structure) {
   require(structure.rows == 4 && structure.cols == 3,
           "grid shape diverged from the reference (got " + std::to_string(structure.rows) + "x" +
               std::to_string(structure.cols) + ")");
@@ -126,12 +193,58 @@ void verify_span_table_matches_reference(const fs::path& model, const fs::path& 
     require(matched, "no cell matched reference grid position (" + std::to_string(expected.row) +
                          "," + std::to_string(expected.col) + ")");
   }
+}
 
-  // Warm reuse: a second call must not rebuild sessions.
+void verify_span_table_matches_reference(const fs::path& model, const fs::path& image_path) {
+  grparse::TableStructureEnginePool pool(model, 2);
+  const cv::Mat image = cv::imread(image_path.string(), cv::IMREAD_COLOR);
+  require(!image.empty(), "test image must load: " + image_path.string());
+  const auto structure = pool.recognize(image);
+  verify_reference(structure);
+
+  // Reuse the pool: both calls must preserve the complete reference grid.
   const auto again = pool.recognize(image);
+  verify_reference(again);
   require(again.cells.size() == structure.cells.size(), "repeat recognition must be deterministic");
   require(pool.stats().acquires >= 2 && pool.stats().discards == 0,
           "pool must lease warm sessions without discards");
+}
+
+void verify_b70(const fs::path& model, const fs::path& image_path) {
+#ifdef GRPARSE_TEST_NATIVE_OPENVINO
+  require(grparse::read_gpu_hardware().intel_b70, "B70 test requires the actual Intel B70 PCI device");
+  ov_core_t* raw_core = nullptr;
+  require(ov_core_create(&raw_core) == OK, "B70 test must create native OpenVINO core");
+  const std::unique_ptr<ov_core_t, decltype(&ov_core_free)> core(raw_core, ov_core_free);
+  char* raw_name = nullptr;
+  require(ov_core_get_property(core.get(), "GPU.0", "FULL_DEVICE_NAME", &raw_name) == OK,
+          "B70 test must identify GPU.0");
+  const std::string name = raw_name == nullptr ? "" : raw_name;
+  ov_free(raw_name);
+  require(grparse::is_b70_openvino_device_name(name), "GPU.0 must identify B70: " + name);
+  std::println("table-structure-engine-test: strict B70 GPU.0: {}", name);
+  grparse::OrtEpSelection selection;
+  selection.ep = grparse::OrtEp::kOpenVino;
+  selection.openvino_device = "GPU.0";
+  grparse::set_ort_ep_selection(selection);
+  const auto fallbacks = grparse::ep_fallback_count();
+  grparse::TableStructureEngine engine(model);
+  const cv::Mat image = cv::imread(image_path.string(), cv::IMREAD_COLOR);
+  require(!image.empty(), "B70 golden image must load");
+  // Same engine is essential: a reused compiled Loop used to return only two
+  // decoder steps on its second call. Both calls must match every golden cell.
+  for (int call = 0; call < 2; ++call) {
+    const auto structure = engine.recognize(image);
+    verify_reference(structure);
+    std::println("table-structure-engine-test: B70 call {}: {}x{}, {} cells, score {}",
+                 call + 1, structure.rows, structure.cols, structure.cells.size(), structure.score);
+  }
+  require(grparse::ep_fallback_count() == fallbacks, "B70 table calls must never fall back to CPU");
+#else
+  static_cast<void>(model);
+  static_cast<void>(image_path);
+  throw std::runtime_error("B70 test requires a build with native OpenVINO support");
+#endif
 }
 
 void verify_rejects_empty_image(const fs::path& model) {
@@ -151,6 +264,7 @@ int main() {
   try {
     verify_missing_model_fails_loudly();
     verify_token_parsing();
+    verify_table_backend_routing();
 
     const char* models_dir = std::getenv("GRPARSE_TEST_MODELS_DIR");
     const char* data_dir = std::getenv("GRPARSE_TEST_DATA_DIR");
@@ -158,12 +272,19 @@ int main() {
         fs::path(models_dir == nullptr ? "models" : models_dir) / "slanet_plus.onnx";
     const fs::path image =
         fs::path(data_dir == nullptr ? "tests/data" : data_dir) / "span_table.png";
+    const char* b70 = std::getenv("GRPARSE_TEST_B70");
+    const bool strict_b70 = b70 != nullptr && std::string(b70) == "1";
+    if (strict_b70) require(fs::exists(model), "strict B70 test requires the model");
     if (!fs::exists(model)) {
       std::println(stderr, "table-structure-engine-test: skipped, model not present: {:?}", model.string());
       return grparse_test::missing_model_exit_code();
     }
     require(fs::exists(image), "test image missing: " + image.string());
 
+    if (strict_b70) {
+      verify_b70(model, image);
+      return EXIT_SUCCESS;
+    }
     verify_rejects_empty_image(model);
     verify_span_table_matches_reference(model, image);
     return EXIT_SUCCESS;

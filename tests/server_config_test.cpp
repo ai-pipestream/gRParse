@@ -9,12 +9,16 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <stdexcept>
 #include <string>
 
 #include "grparse/chart_extraction_policy.h"
 #include "server_config.h"
+#include "grparse/gpu_selection.h"
+#include "grparse_session_ep.h"
 #include "support/check.h"
 
 namespace {
@@ -204,6 +208,80 @@ void verify_collector_keepalive_settings() {
   ::unsetenv("GRPARSE_COLLECTOR_KEEPALIVE_TIMEOUT_MS");
 }
 
+void verify_auto_selection_uses_hardware_before_initialization() {
+  using grparse::GpuHardware;
+  using grparse::OrtEp;
+  require(grparse::choose_auto_execution_provider({}, true, true) == OrtEp::kCpu,
+          "compiled GPU providers do not invent a GPU on a CPU-only host");
+  require(grparse::choose_auto_execution_provider(GpuHardware{.nvidia = true}, true, false) ==
+              OrtEp::kCuda, "a visible NVIDIA GPU selects CUDA");
+  require(grparse::choose_auto_execution_provider(GpuHardware{.intel = true}, false, true) ==
+              OrtEp::kOpenVino, "a visible Intel GPU selects OpenVINO");
+  require(grparse::choose_auto_execution_provider(
+              GpuHardware{.nvidia = true, .intel = true, .intel_b70 = true}, true, true) ==
+              OrtEp::kOpenVino, "B70 is preferred even when CUDA is available too");
+  for (const GpuHardware hardware : {GpuHardware{.nvidia = true}, GpuHardware{.intel = true},
+                                     GpuHardware{.amd = true}, GpuHardware{.other = true},
+                                     GpuHardware{.intel = true, .intel_b70 = true}}) {
+    bool threw = false;
+    try {
+      (void)grparse::choose_auto_execution_provider(hardware, false, false);
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    require(threw, "present GPU without a matching provider must not select CPU");
+  }
+  require(grparse::is_b70_openvino_device_name("Intel(R) Arc(TM) Pro B70 Graphics (dGPU)"),
+          "newer drivers expose the B70 marketing name");
+  require(grparse::is_b70_openvino_device_name("Intel(R) Graphics [0xe223] (dGPU)"),
+          "the shipped older driver exposes the same B70 by its PCI device ID");
+  require(!grparse::is_b70_openvino_device_name("Intel(R) Graphics [0xe20b] (dGPU)"),
+          "a different Intel GPU is not mistaken for B70");
+  require(grparse::preferred_openvino_device("CPU") == "CPU",
+          "explicit CPU device remains intentional CPU operation");
+  require(grparse::preferred_openvino_device("GPU.3") == "GPU.3",
+          "explicit GPU indices are not replaced by automatic preference");
+}
+
+void verify_gpu_discovery_distinguishes_missing_drivers_from_no_hardware() {
+  namespace fs = std::filesystem;
+  char pattern[] = "/tmp/grparse-gpu-selection-XXXXXX";
+  const char* created = ::mkdtemp(pattern);
+  require(created != nullptr, "the PCI fixture directory is created");
+  const fs::path root(created);
+  struct Cleanup {
+    fs::path path;
+    ~Cleanup() { std::error_code ignored; fs::remove_all(path, ignored); }
+  } cleanup{root};
+  const auto device = [&](const char* name, const char* pci_class, const char* vendor,
+                          const char* id) {
+    const auto directory = root / name;
+    fs::create_directory(directory);
+    std::ofstream(directory / "class") << pci_class;
+    std::ofstream(directory / "vendor") << vendor;
+    std::ofstream(directory / "device") << id;
+  };
+  require(!grparse::read_gpu_hardware(root).intel, "an empty PCI tree has no Intel GPU");
+  device("network", "0x020000", "0x8086", "0xe223");
+  require(!grparse::read_gpu_hardware(root).intel_b70, "non-display PCI devices do not select a GPU");
+  device("virtual-vga", "0x030000", "0x1234", "0x1111");
+  device("bmc", "0x030000", "0x1a03", "0x2000");
+  require(grparse::choose_auto_execution_provider(grparse::read_gpu_hardware(root), true, true) ==
+              grparse::OrtEp::kCpu,
+          "VM and BMC console displays do not invent a compute GPU on CPU-only hosts");
+  device("b70", "0x030000", "0x8086", "0xe223");
+  const auto hardware = grparse::read_gpu_hardware(root);
+  require(hardware.intel && hardware.intel_b70,
+          "B70 is detected without requiring a driver symlink or usable render node");
+  device("unknown-gpu", "0x030200", "0x9999", "0x5678");
+  require(grparse::read_gpu_hardware(root).other,
+          "an unrecognized display vendor is not silently treated as no GPU");
+  bool threw = false;
+  try { (void)grparse::read_gpu_hardware(root / "missing"); }
+  catch (const std::runtime_error&) { threw = true; }
+  require(threw, "failed hardware discovery is not treated as proof of no GPU");
+}
+
 }  // namespace
 
 int main() {
@@ -213,5 +291,7 @@ int main() {
       verify_remote_fetch_concurrency_setting,
       verify_collector_channels_setting,
       verify_collector_keepalive_settings,
+      verify_auto_selection_uses_hardware_before_initialization,
+      verify_gpu_discovery_distinguishes_missing_drivers_from_no_hardware,
   });
 }

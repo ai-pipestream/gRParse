@@ -23,6 +23,9 @@ on:
       - scripts/fetch-models.sh
       - scripts/models-populate.sh
       - scripts/patch_figure_classifier.py
+      - scripts/patch_slanet_openvino.py
+      - scripts/patch-slanet-openvino-test.py
+      - scripts/fetch-models-test.sh
       - .github/workflows/publish-models.yml
     tags: ['v*']
   workflow_dispatch:

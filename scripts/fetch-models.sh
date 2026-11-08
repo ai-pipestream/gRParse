@@ -11,6 +11,8 @@
 # .part file). The figure classifier is derived, not downloaded: the
 # published export is fetched under its own name and
 # scripts/patch_figure_classifier.py writes the graph the server loads.
+# The OpenVINO table graph and vocabulary are derived from pinned SLANet
+# bytes by scripts/patch_slanet_openvino.py; CPU/CUDA keep the original graph.
 #
 # --verify touches nothing. It exits 0 when every present file matches the
 # manifest and every required (ocr) file is present; it exits 1 naming each
@@ -110,7 +112,7 @@ resolve_python() {
       return 1
     fi
   else
-    echo "neither uv nor python3 found; the figure classifier patch needs one" >&2
+    echo "neither uv nor python3 found; the model patches need one" >&2
     return 1
   fi
 }
@@ -124,14 +126,14 @@ download() {
 }
 
 patch_from() {
-  local source=$1 target=$2
+  local source=$1 target=$2 script=${4:-$patch_script} mode=${5:-}
   if ! matches "$source" "$3"; then
     echo "  patch source $source is absent or does not match the manifest" >&2
     return 1
   fi
   resolve_python || return 1
   # shellcheck disable=SC2086  # the prefix is a command line on purpose
-  $python_cmd "$patch_script" "$source" "$target.part" >/dev/null
+  $python_cmd "$script" "$source" "$target.part" ${mode:+"$mode"} >/dev/null || return 1
   mv "$target.part" "$target"
 }
 
@@ -175,6 +177,14 @@ fetch_one() {
   fi
   echo "  ${m_path[$i]}: ${m_url[$i]}"
   case ${m_url[$i]} in
+    slanet-openvino:*|slanet-tokens:*)
+      local source=${m_url[$i]#*:} mode=
+      status=patched
+      case ${m_url[$i]} in slanet-tokens:*) mode=--tokens-only ;; esac
+      source_sha=$(sha_for_path "$source") || exit $?
+      patch_from "$dir/$source" "$file" "$source_sha" \
+        "$script_dir/patch_slanet_openvino.py" "$mode" || { record "${m_path[$i]}" "patch failed" NO; fail "${m_path[$i]}" "SLANet derivation failed"; return 0; }
+      ;;
     patch:*)
       status=patched
       source_sha=$(sha_for_path "${m_url[$i]#patch:}") || exit $?

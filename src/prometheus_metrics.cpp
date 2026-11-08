@@ -630,8 +630,7 @@ std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
   counter(out, "grparse_ocr_pool_discards_total",
           "OCR sessions rebuilt after a device error.", ocr_pool.discards);
   counter(out, "grparse_ort_ep_fallbacks_total",
-          "Sessions rebuilt on CPU after their selected execution provider refused the graph "
-          "or the device failed.",
+          "Legacy CPU fallback count; remains zero under strict accelerator selection.",
           ep_fallbacks);
   counter(out, "grparse_ort_ep_build_retries_total",
           "Session builds retried after a transient OpenVINO execution-provider failure "

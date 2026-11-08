@@ -14,6 +14,8 @@
 #          tokenizer       --tokenizer only
 # url    is the upstream download, or patch:<path> for a file the script
 #        derives by running scripts/patch_figure_classifier.py on <path>.
+#        slanet-openvino:<path> and slanet-tokens:<path> derive the native
+#        OpenVINO table graph and raw vocabulary with patch_slanet_openvino.py.
 #
 # Every sha256 is the byte-exact file the server was verified with; a
 # download that hashes differently is a different model and is refused.
@@ -31,6 +33,8 @@ layout_publaynet.onnx                958aa6dcef1cc1a542d0a513b5976a3d5edbcc37d76
 
 # Table structure
 slanet_plus.onnx                     d57a942af6a2f57d6a4a0372573c696a2379bf5857c45e2ac69993f3b334514b  7758305    table           Apache-2.0  https://www.modelscope.cn/models/RapidAI/RapidTable/resolve/v2.0.0/slanet-plus.onnx
+slanet_plus_openvino.onnx            2b75d7ea35fd6e825a503fb620245fdcb570173697d08090722c3bc64934755e  7879655    table           Apache-2.0  slanet-openvino:slanet_plus.onnx
+slanet_plus_openvino.tokens          6df9c4ae78ad9f390833b5bf7f7980fb05692ba3dbeb2e1da16df26a45fe42a6  582        table           Apache-2.0  slanet-tokens:slanet_plus.onnx
 
 # Figure classifier: the published export, then the corrected graph the server loads
 figure_classifier_upstream.onnx      27ffc48c27ae4e12c99b6f6de0dd730005245e47b70dd0c1339e62cbac3ec4c0  16940439   figure-upstream MIT         https://huggingface.co/docling-project/DocumentFigureClassifier-v2.5/resolve/main/model.onnx
