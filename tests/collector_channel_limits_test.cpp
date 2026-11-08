@@ -217,6 +217,17 @@ StreamCount open_streams_through_pool(size_t pool_size, size_t streams, size_t e
   int port = 0;
   builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
   builder.AddChannelArgument(GRPC_ARG_MAX_CONCURRENT_STREAMS, 100);
+  // grpc-java's Netty frees a stream's slot once both ends have closed it.
+  // grpc-core's overload protection instead counts a stream until the
+  // server application has released it, and refuses (REFUSED_STREAM) a new
+  // stream that arrives past the limit before then. On a loaded runner the
+  // queued streams of the single-connection case then race the 100 being
+  // torn down and some fail UNAVAILABLE (#281), which is grpc-core server
+  // behavior, not the client pool under test. Turning it off makes this
+  // fake count streams the way the Netty collectors it stands for do. The
+  // key is GRPC_ARG_MAX_CONCURRENT_STREAMS_OVERLOAD_PROTECTION, which
+  // grpc-core defines only in an internal header.
+  builder.AddChannelArgument("grpc.http.overload_protection", 0);
   builder.RegisterService(&service);
   const auto server = builder.BuildAndStart();
   require(server != nullptr && port != 0, "the fake collector listens");
