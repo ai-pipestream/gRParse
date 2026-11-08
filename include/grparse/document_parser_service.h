@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -350,11 +351,18 @@ class DocumentStreamingService final : public ai::pipestream::parse::v1::ParseSt
                           ai::pipestream::parse::v1::DocumentStreamEvent>*
   StreamProcessDocument(grpc::CallbackServerContext* context) override;
 
+  // Page events this service's streams folded server side to compute their
+  // repair events, summed over every stream since construction. A stream
+  // that set DocumentChunk.repair_delta to false adds nothing. For tests.
+  uint64_t folded_page_events() const { return folded_pages_->load(); }
+
  private:
   PageScheduler& scheduler_;
   std::shared_ptr<CollectorEndpoints> endpoints_;
   std::optional<RepairOptions> repair_;
   std::shared_ptr<InflightBytes> inflight_;
+  std::shared_ptr<std::atomic<uint64_t>> folded_pages_ =
+      std::make_shared<std::atomic<uint64_t>>(0);
 };
 
 }  // namespace grparse

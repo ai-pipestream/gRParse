@@ -448,6 +448,17 @@ pages can set `slim_collector_documents` on the first chunk, and each
 collector document whose pages streamed then omits the arenas, page map
 and children the pages already carried.
 
+To compute the repair event the server folds every page it streams, a
+second copy of the document's items held until the stream ends. A client
+that does not fold pages (one that indexes them as they arrive and reads
+the collector document for the tree) sets `repair_delta = false` on the
+first chunk: the server then keeps no fold, sends no repair event, and
+sets `repair_delta_omitted` on the complete event. The page events,
+collector documents and `section_header_levels` are unchanged, so pages
+that streamed before the whole-document passes stay unrepaired; combined
+with `slim_collector_documents`, nothing on the stream carries the
+repaired items. Unset or `true` keeps the repair event.
+
 Each outbound event and its nested protobuf messages are allocated in a
 short-lived `google::protobuf::Arena`. The arena stays alive until the
 asynchronous gRPC write completes. Protobuf Arena does not own OpenCV or ONNX Runtime buffers;
