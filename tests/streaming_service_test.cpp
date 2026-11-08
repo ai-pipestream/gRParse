@@ -27,6 +27,10 @@
 
 #include <malloc.h>
 
+#if defined(__SANITIZE_ADDRESS__)
+#include <sanitizer/allocator_interface.h>
+#endif
+
 #include <google/protobuf/util/message_differencer.h>
 #include <grpcpp/grpcpp.h>
 
@@ -3120,7 +3124,7 @@ void verify_streaming_pdf_fast_path_projects_pages() {
 }
 
 // One "<field>: <n> kB" line of /proc/self/status, in bytes.
-uint64_t proc_status_bytes(std::string_view field) {
+[[maybe_unused]] uint64_t proc_status_bytes(std::string_view field) {
   std::ifstream status("/proc/self/status");
   std::string line;
   while (std::getline(status, line)) {
@@ -3134,12 +3138,76 @@ uint64_t proc_status_bytes(std::string_view field) {
 // Resets VmHWM to the current resident set (clear_refs value 5, proc(5)),
 // so the peak read later belongs to what ran after this call and not to an
 // earlier case in the same process.
-void reset_peak_rss() {
+[[maybe_unused]] void reset_peak_rss() {
   std::ofstream clear_refs("/proc/self/clear_refs");
   clear_refs << "5";
   clear_refs.flush();
   require(clear_refs.good(), "could not reset the peak RSS through /proc/self/clear_refs");
 }
+
+// The peak memory growth over a window, from its construction to growth().
+// Image builds read VmHWM. Under AddressSanitizer the resident set also
+// holds the sanitizer's redzones, its quarantine of freed chunks and its
+// shadow memory, which put the same move at about 2.4x the Document (#288),
+// so there the window samples the allocator's live bytes instead. Anything
+// held across the window, such as a copied Document waiting in its event,
+// shows in every sample.
+class PeakMemoryWindow {
+ public:
+  PeakMemoryWindow() {
+#if defined(__SANITIZE_ADDRESS__)
+    baseline_ = __sanitizer_get_current_allocated_bytes();
+    peak_.store(baseline_);
+    sampler_ = std::thread([this] {
+      while (!stop_.load()) {
+        const uint64_t live = __sanitizer_get_current_allocated_bytes();
+        uint64_t seen = peak_.load();
+        while (live > seen && !peak_.compare_exchange_weak(seen, live)) {
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds{200});
+      }
+    });
+#else
+    reset_peak_rss();
+    baseline_ = proc_status_bytes("VmHWM");
+#endif
+  }
+  PeakMemoryWindow(const PeakMemoryWindow&) = delete;
+  PeakMemoryWindow& operator=(const PeakMemoryWindow&) = delete;
+  ~PeakMemoryWindow() { stop(); }
+
+  uint64_t growth() {
+#if defined(__SANITIZE_ADDRESS__)
+    stop();
+    const uint64_t peak = peak_.load();
+#else
+    const uint64_t peak = proc_status_bytes("VmHWM");
+#endif
+    return peak > baseline_ ? peak - baseline_ : 0;
+  }
+
+  static constexpr std::string_view kMeasure =
+#if defined(__SANITIZE_ADDRESS__)
+      "live heap";
+#else
+      "peak RSS";
+#endif
+
+ private:
+  void stop() {
+#if defined(__SANITIZE_ADDRESS__)
+    stop_.store(true);
+    if (sampler_.joinable()) sampler_.join();
+#endif
+  }
+
+  uint64_t baseline_ = 0;
+#if defined(__SANITIZE_ADDRESS__)
+  std::atomic<uint64_t> peak_{0};
+  std::atomic<bool> stop_{false};
+  std::thread sampler_;
+#endif
+};
 
 constexpr std::size_t kLargePictureImageBytes = 4U << 20U;
 constexpr int kLargePictureTexts = 2000;
@@ -3281,11 +3349,10 @@ void verify_collector_document_moves_into_its_event() {
   // Freed pages go back first, so whatever the emission allocates shows in
   // the resident set instead of reusing memory an earlier case left behind.
   malloc_trim(0);
-  reset_peak_rss();
-  const uint64_t baseline = proc_status_bytes("VmHWM");
+  PeakMemoryWindow window;
   inspector.release();
   std::this_thread::sleep_for(500ms);
-  const uint64_t peak = proc_status_bytes("VmHWM");
+  const uint64_t growth = window.growth();
   int collector_documents = 0;
   int pages = 0;
   int texts = 0;
@@ -3311,14 +3378,13 @@ void verify_collector_document_moves_into_its_event() {
   require(texts == kLargePictureTexts &&
               image_bytes == kLargePictureImageBytes + std::string_view("data:image/png;base64,").size(),
           "the collector-document event carries the whole Document");
-  const uint64_t growth = peak > baseline ? peak - baseline : 0;
-  std::println("collector-document emission: peak RSS growth {} bytes, Document serialized {} bytes",
-               growth, serialized);
+  std::println("collector-document emission: {} growth {} bytes, Document serialized {} bytes",
+               PeakMemoryWindow::kMeasure, growth, serialized);
   require(growth < serialized * 3 / 2,
-          std::format("emitting the collector document grew the peak RSS by {} bytes, at least "
+          std::format("emitting the collector document grew the {} by {} bytes, at least "
                       "1.5x the Document's {} serialized bytes: the Document was copied into its "
                       "event instead of moved",
-                      growth, serialized));
+                      PeakMemoryWindow::kMeasure, growth, serialized));
 }
 
 // Holds the last page's recognition until the client has read page one. A
