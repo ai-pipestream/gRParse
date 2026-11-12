@@ -1188,6 +1188,16 @@ message AsrPipelineOptions {
   // Remote OpenAI-compatible transcription (docling ApiAsrOptions); forwarded
   // as grpc-asr RemoteTranscriptionOptions.
   optional ai.pipestream.asr.v1.RemoteTranscriptionOptions remote = 15;
+  // Per-request streaming window duration in seconds (clamped by grpc-asr to
+  // its configured [min_window_seconds, window_seconds] bounds; 0 or unset
+  // uses the server default).
+  optional uint32 window_seconds = 16;
+  // Whisper decoding quality controls (sampling strategy, beam size,
+  // temperature, initial prompt, and suppression thresholds).
+  optional ai.pipestream.asr.v1.DecodingOptions decoding = 17;
+  // Multi-channel handling (downmix to mono vs independent per-channel
+  // transcription with C1, C2, ... speaker attribution).
+  optional ai.pipestream.asr.v1.ChannelMode channel_mode = 18;
 }
 
 // OcrMode mirrors docling slim OcrOptions.mode / serve OcrMode.

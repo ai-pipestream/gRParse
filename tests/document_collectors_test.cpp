@@ -198,6 +198,7 @@ void verify_asr_forwards_pipeline_options() {
   parsev1::AsrPipelineOptions asr;
   asr.set_language("de");
   asr.set_task(parsev1::ASR_TASK_TRANSLATE);
+  asr.set_task_raw("translate");
   asr.set_word_timestamps(true);
   asr.set_diarize(false);
   asr.set_model_type(parsev1::ASR_MODEL_TYPE_WHISPER_TINY_MLX);
@@ -205,11 +206,20 @@ void verify_asr_forwards_pipeline_options() {
   asr.mutable_mlx_whisper()->set_condition_on_previous_text(false);
   asr.mutable_mlx_whisper()->set_hallucination_silence_threshold(2.0);
   asr.mutable_mlx_whisper()->set_initial_prompt("names");
+  asr.set_window_seconds(15);
+  asr.mutable_decoding()->set_strategy(asrv1::SAMPLING_STRATEGY_BEAM_SEARCH);
+  asr.mutable_decoding()->set_beam_size(4);
+  asr.mutable_decoding()->set_best_of(3);
+  asr.mutable_decoding()->set_initial_prompt("domain glossary");
+  asr.mutable_decoding()->set_no_speech_threshold(0.7f);
+  asr.mutable_decoding()->set_suppress_non_speech_tokens(true);
+  asr.set_channel_mode(asrv1::CHANNEL_MODE_PER_CHANNEL);
   const auto outcome = grparse::collect_asr_document(
       server.channel(), "small", "clip.wav", "abc", asr);
   require(outcome.success, "asr with pipeline options succeeds: " + outcome.error);
   require(service.last_options.language() == "de", "language forwarded");
   require(service.last_options.task() == asrv1::TASK_TRANSLATE, "task forwarded");
+  require(service.last_options.task_raw() == "translate", "task_raw forwarded");
   require(service.last_options.word_timestamps(), "word_timestamps forwarded");
   require(!service.last_options.diarize(), "diarize override forwarded");
   require(service.last_options.model_type() == asrv1::ASR_MODEL_TYPE_WHISPER_TINY_MLX,
@@ -221,6 +231,17 @@ void verify_asr_forwards_pipeline_options() {
               service.last_options.mlx_whisper().hallucination_silence_threshold() == 2.0 &&
               service.last_options.mlx_whisper().initial_prompt() == "names",
           "mlx_whisper slim 2.145.0 fields forwarded typed");
+  require(service.last_options.window_seconds() == 15, "window_seconds forwarded");
+  require(service.last_options.has_decoding() &&
+              service.last_options.decoding().strategy() == asrv1::SAMPLING_STRATEGY_BEAM_SEARCH &&
+              service.last_options.decoding().beam_size() == 4 &&
+              service.last_options.decoding().best_of() == 3 &&
+              service.last_options.decoding().initial_prompt() == "domain glossary" &&
+              service.last_options.decoding().no_speech_threshold() == 0.7f &&
+              service.last_options.decoding().suppress_non_speech_tokens(),
+          "decoding options forwarded typed");
+  require(service.last_options.channel_mode() == asrv1::CHANNEL_MODE_PER_CHANNEL,
+          "channel_mode forwarded");
   require(service.last_options.model().empty(),
           "request preset must not be overridden by deployment model");
   asr.set_model("tiny.en");
@@ -229,10 +250,16 @@ void verify_asr_forwards_pipeline_options() {
   require(service.last_options.model() == "tiny.en", "explicit model wins");
   asr.Clear();
   asr.set_task(static_cast<parsev1::AsrTask>(12345));
+  asr.set_task_raw("summarize");
+  asr.set_channel_mode(static_cast<asrv1::ChannelMode>(54321));
   require(grparse::collect_asr_document(server.channel(), "small", "clip.wav", "abc", asr).success,
           "fake accepts unknown task for forwarding inspection");
   require(static_cast<int>(service.last_options.task()) == 12345,
           "unknown task must reach ASR validation without becoming unspecified");
+  require(service.last_options.task_raw() == "summarize",
+          "task_raw reaches ASR validation verbatim");
+  require(static_cast<int>(service.last_options.channel_mode()) == 54321,
+          "unknown channel_mode reaches ASR validation without becoming unspecified");
   require(service.last_options.model() == "small", "partial request retains deployment model");
 }
 

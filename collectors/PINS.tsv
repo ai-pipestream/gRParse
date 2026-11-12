@@ -1,5 +1,5 @@
 # file	repo	path	commit
-collectors/asr_service.proto	grpc-asr	proto/ai/pipestream/asr/v1/asr_service.proto	4acf7beddc8c4a592b5234396c75b42b2f0f1a18
+collectors/asr_service.proto	grpc-asr	proto/ai/pipestream/asr/v1/asr_service.proto	9f99c57579d9df92924cab875402b9bdbbe64da4
 collectors/calamine_service.proto	grpc-calamine	proto/calamine/v1/calamine_service.proto	232edf105587b4ed0c9fdf6795e71ba3a320fe01
 collectors/calamine_types.proto	grpc-calamine	proto/calamine/v1/types.proto	232edf105587b4ed0c9fdf6795e71ba3a320fe01
 collectors/ebcdic.proto	grpc-ebcdic	proto/ai/pipestream/ebcdic/v1/ebcdic.proto	0e4e2cfa3b6ec2fed6cc8a2e23414ccb2b0ac7f2
@@ -12,8 +12,8 @@ collectors/lolhtml_service.proto	grpc-lol-html	proto/lolhtml/v1/lolhtml_service.
 collectors/lolhtml_types.proto	grpc-lol-html	proto/lolhtml/v1/types.proto	03c0a2888e11009f01769efd3f7ae7907913f3dc
 collectors/markup.proto	grpc-markup	proto/ai/pipestream/markup/v1/markup.proto	cc88700960cf81383da847dacfe1f0709022a5cd
 collectors/markup_service.proto	grpc-markup	proto/ai/pipestream/markup/v1/markup_service.proto	cc88700960cf81383da847dacfe1f0709022a5cd
-collectors/opennlp_annotations.proto	grpc-asr	proto/org/apache/opennlp/grpc/v1/opennlp_annotations.proto	4acf7beddc8c4a592b5234396c75b42b2f0f1a18
-collectors/opennlp_document.proto	grpc-asr	proto/org/apache/opennlp/grpc/v1/opennlp_document.proto	4acf7beddc8c4a592b5234396c75b42b2f0f1a18
+collectors/opennlp_annotations.proto	grpc-asr	proto/org/apache/opennlp/grpc/v1/opennlp_annotations.proto	9f99c57579d9df92924cab875402b9bdbbe64da4
+collectors/opennlp_document.proto	grpc-asr	proto/org/apache/opennlp/grpc/v1/opennlp_document.proto	9f99c57579d9df92924cab875402b9bdbbe64da4
 collectors/pdf_service.proto	grpc-pdf-inspector	proto/ai/pipestream/pdf/v1/pdf_service.proto	7502cb7e9a9f943b522a64bb91ce891d18540c06
 collectors/pdf_types.proto	grpc-pdf-inspector	proto/ai/pipestream/pdf/v1/types.proto	7502cb7e9a9f943b522a64bb91ce891d18540c06
 collectors/vlm_convert.proto	grpc-vlm-convert	proto/ai/pipestream/vlm/v1/vlm_convert.proto	ea3990a2eb1e950c2e07d466b62340a82b111778
@@ -23,7 +23,8 @@ collectors/warc.proto	fastwarc-grpc	proto/fastwarc/v1/warc.proto	6c3a6398d4d86f5
 collectors/warc_service.proto	fastwarc-grpc	proto/fastwarc/v1/warc_service.proto	6c3a6398d4d86f5ee65e635a58078e043a4028b1
 backends/pdf_backend_types.proto	parser-protos	proto/ai/protomolt/parse/pdf/v1/pdf_backend_types.proto	f8c47dcad321b64f965af4d6376f51bdd54145a0
 backends/pdf_backend_service.proto	parser-protos	proto/ai/protomolt/parse/pdf/v1/pdf_backend_service.proto	f8c47dcad321b64f965af4d6376f51bdd54145a0
-document.proto	grpc-asr	proto/ai/pipestream/document/v1/document.proto	4acf7beddc8c4a592b5234396c75b42b2f0f1a18
+examples/web-demo/peer-protos/grpc-asr/proto/ai/pipestream/media/v1/media.proto	grpc-asr	proto/ai/pipestream/media/v1/media.proto	9f99c57579d9df92924cab875402b9bdbbe64da4
+document.proto	grpc-asr	proto/ai/pipestream/document/v1/document.proto	9f99c57579d9df92924cab875402b9bdbbe64da4
 document.proto	grpc-ebcdic	proto/ai/pipestream/document/v1/document.proto	0e4e2cfa3b6ec2fed6cc8a2e23414ccb2b0ac7f2
 document.proto	grpc-email	proto/ai/pipestream/document/v1/document.proto	d17b72a80ac49b15cb59025d90e0a70155afb588
 document.proto	grpc-enrich	proto/ai/pipestream/document/v1/document.proto	3f7df0aa8ed9e92800470c7980feaa1f10eda26f

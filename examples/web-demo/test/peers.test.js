@@ -61,6 +61,28 @@ test("vendored document.proto copies are identical to each other", () => {
   for (const copy of copies) assert.ok(copy.equals(copies[0]));
 });
 
+test("every collectors/PINS.tsv file for a demo-shell peer matches peer-protos byte-for-byte", () => {
+  const repoRoot = path.resolve(demoDir, "../..");
+  const pinsPath = path.join(repoRoot, "collectors/PINS.tsv");
+  const vendoredRepos = new Set(peers.includeTrees().map((tree) => tree.repo));
+  let checked = 0;
+  for (const line of fs.readFileSync(pinsPath, "utf8").split("\n")) {
+    if (!line || line.startsWith("#")) continue;
+    const [localFile, repo, remotePath] = line.split("\t");
+    if (!vendoredRepos.has(repo)) continue;
+    const localAbs = path.join(repoRoot, localFile);
+    const peerAbs = path.join(peers.PEER_PROTOS_DIR, repo, remotePath);
+    assert.ok(fs.existsSync(localAbs), `pinned local file exists: ${localFile}`);
+    assert.ok(fs.existsSync(peerAbs), `peer-protos mirror exists: ${repo}/${remotePath}`);
+    assert.ok(
+      fs.readFileSync(localAbs).equals(fs.readFileSync(peerAbs)),
+      `${localFile} matches peer-protos/${repo}/${remotePath} byte-for-byte`,
+    );
+    checked++;
+  }
+  assert.ok(checked >= 15, `checked ${checked} PINS.tsv rows against peer-protos/`);
+});
+
 test("peers.js --list prints repo and include per line", () => {
   const result = spawnSync(process.execPath, [path.join(demoDir, "peers.js"), "--list"], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);

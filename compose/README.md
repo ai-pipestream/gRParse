@@ -151,7 +151,8 @@ and Grafana (`grafana/grafana:13.2.4`) under the `observability` profile:
 docker compose -f compose.stack.yaml -f compose.stack.observability.yaml --profile observability up -d
 ```
 
-Prometheus scrapes `grparse:9464` (`job_name: "grparse"`) and
+Prometheus scrapes `grparse:9464` (`job_name: "grparse"`), `asr:9464`
+(`job_name: "grpc-asr"` when `--profile heavy` is active), and
 `host.docker.internal:9465` (`job_name: "grparse-corpus-eval"`) every `5s`
 using `compose/prometheus/prometheus.yml`. Grafana publishes
 `127.0.0.1:${GRAFANA_PORT:-3000}:3000` with anonymous local access and mounts

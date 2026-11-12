@@ -5,22 +5,24 @@
 #   docker compose -f compose.stack.yaml -f compose.stack.openvino.yaml up
 #
 # What it changes, and why:
-#   - swaps gRParse to the Intel image (pipestreamai/grparse:latest-openvino,
-#     built from Dockerfile.openvino, or ${STACK_TAG}-openvino when the
-#     release pin from compose.stack.yaml's header is set), which carries
-#     no CUDA toolchain,
-#   - drops `gpus: all` and passes the render device instead, which is how
-#     OpenVINO reaches the GPU,
-#   - sets GRPARSE_ORT_EP=openvino and names the OpenVINO device (GPU by
-#     default; CPU or NPU are the other values the plugin accepts), with a
-#     compiled-kernel cache so a later boot does not recompile.
-#   - stores that cache in a named volume, not on the 256 MB /tmp tmpfs: the
-#     GPU plugin compiles a kernel set per input size, OCR crops and turned
-#     rasters add new sizes all the time, and a full tmpfs means truncated
-#     blobs that the next load cannot open (clCreateProgramWithBinary, exit
-#     139, krick-1 2026-09-01 after a handful of documents). The image owns
-#     that directory as 65532, so a fresh named volume comes up writable by
-#     the container user; a bind mount in its place needs a chown to 65532.
+#   - swaps gRParse and grpc-asr (in the opt-in `heavy` profile) to their
+#     Intel images (pipestreamai/grparse:${STACK_TAG}-openvino and
+#     pipestreamai/grpc-asr:${STACK_TAG}-openvino, built from each repo's
+#     Dockerfile.openvino), which carry no CUDA toolchain,
+#   - drops `gpus: all` on gRParse and passes the render device to both,
+#     which is how OpenVINO reaches the GPU,
+#   - sets GRPARSE_ORT_EP=openvino / GRPC_ASR_BACKEND=openvino and names
+#     the OpenVINO device (GPU by default; CPU or NPU are the other values
+#     the plugin accepts), with compiled-kernel caches so a later boot does
+#     not recompile.
+#   - stores each service's cache in its own named volume, not on the 256 MB
+#     /tmp tmpfs: the GPU plugin compiles a kernel set per input size, OCR
+#     crops and turned rasters add new sizes all the time, and a full tmpfs
+#     means truncated blobs that the next load cannot open
+#     (clCreateProgramWithBinary, exit 139, krick-1 2026-09-01 after a
+#     handful of documents). Both images pre-create /var/cache/openvino owned
+#     by 65532, so fresh named volumes come up writable by the container user;
+#     a bind mount in its place needs a chown to 65532.
 #   - adds the host's render group to the container user: the image runs as
 #     the numeric non-root user 65532 and a render node that is 0660
 #     root:render on the host (Ubuntu's udev default) is closed to it
@@ -47,5 +49,22 @@ services:
       - ./models:/models:ro
       - openvino-cache:/var/cache/openvino
 
+  asr:
+    image: pipestreamai/grpc-asr:${STACK_TAG:-latest}-openvino
+    build:
+      context: ../grpc-asr
+      dockerfile: Dockerfile.openvino
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "${GRPARSE_RENDER_GID:-990}"
+    environment:
+      GRPC_ASR_BACKEND: openvino
+      GRPC_ASR_OPENVINO_DEVICE: GPU
+      GRPC_ASR_OPENVINO_CACHE_DIR: /var/cache/openvino
+    volumes:
+      - asr-openvino-cache:/var/cache/openvino
+
 volumes:
   openvino-cache:
+  asr-openvino-cache:

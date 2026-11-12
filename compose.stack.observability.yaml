@@ -16,6 +16,12 @@ services:
     environment:
       GRPARSE_METRICS_PORT: "9464"
 
+  asr:
+    expose:
+      - "9464"
+    environment:
+      GRPC_ASR_METRICS_ADDRESS: "0.0.0.0:9464"
+
   prometheus:
     profiles: ["observability"]
     image: prom/prometheus:v3.16.0

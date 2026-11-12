@@ -45,6 +45,7 @@ void apply_asr_pipeline_options(const parsev1::AsrPipelineOptions& in,
   if (in.has_model() && !in.model().empty()) out->set_model(in.model());
   if (in.has_language()) out->set_language(in.language());
   if (in.has_task()) out->set_task(map_task(in.task()));
+  if (in.has_task_raw()) out->set_task_raw(in.task_raw());
   if (in.has_word_timestamps()) out->set_word_timestamps(in.word_timestamps());
   if (in.has_emit_keyframes()) out->set_emit_keyframes(in.emit_keyframes());
   if (in.has_keyframe_interval_seconds()) {
@@ -86,6 +87,9 @@ void apply_asr_pipeline_options(const parsev1::AsrPipelineOptions& in,
     }
   }
   if (in.has_remote()) *out->mutable_remote() = in.remote();
+  if (in.has_window_seconds()) out->set_window_seconds(in.window_seconds());
+  if (in.has_decoding()) *out->mutable_decoding() = in.decoding();
+  if (in.has_channel_mode()) out->set_channel_mode(in.channel_mode());
 }
 
 }  // namespace

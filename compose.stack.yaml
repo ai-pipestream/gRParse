@@ -330,8 +330,15 @@ services:
       dockerfile: Dockerfile.cpu
     expose:
       - "50055"
+    environment:
+      # Empty disables outbound RemoteTranscriptionOptions (#19) and the
+      # Prometheus /metrics HTTP listener (#17) until explicitly set or
+      # layered via compose.stack.observability.yaml.
+      GRPC_ASR_REMOTE_ALLOWED_HOSTS: "${GRPC_ASR_REMOTE_ALLOWED_HOSTS:-}"
+      GRPC_ASR_METRICS_ADDRESS: "${GRPC_ASR_METRICS_ADDRESS:-}"
     # ggml weights; drop whisper models into grpc-asr/models (see that
-    # repo's README for download pointers). The CUDA image is a manual
+    # repo's README for download pointers). compose.stack.openvino.yaml
+    # swaps this to the OpenVINO encoder image; the CUDA image is a manual
     # swap: image pipestreamai/grpc-asr:latest plus a gpus: all stanza.
     volumes:
       - ../grpc-asr/models:/models:ro
