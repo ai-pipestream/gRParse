@@ -150,14 +150,16 @@ class GrparseClient:
 
     def convert_bytes(self, data: bytes, filename: str, *, formats: tuple[str, ...] = DEFAULT_FORMATS,
                       collectors: tuple[str, ...] = (), ebcdic_layout: bytes | None = None,
-                      timeout: float | None = None, passwords: tuple[str, ...] = ()) -> ConvertResult:
+                      timeout: float | None = None, passwords: tuple[str, ...] = (),
+                      include_page_images: bool | None = None) -> ConvertResult:
         """One ConvertSource over in-memory bytes (nothing touches disk). ``formats``
         are OutputFormat names without the prefix, ``collectors`` Collector enum
         names without theirs; RPC failures are returned, not raised.
         ``ebcdic_layout`` is a Docling ``EbcdicLayout`` file (the companion an
         ``.ebc`` object travels with); it is sent as the typed
         ``ConvertDocumentOptions.ebcdic_layout``, the only form gRParse
-        accepts. ``passwords``
+        accepts. ``include_page_images`` sets the request's override of the
+        server's GRPARSE_PAGE_IMAGES (None defers to the server). ``passwords``
         are candidates for an encrypted document: they ride the call's metadata
         (``document-password-bin``, one entry each, in order), never the request."""
         import grpc
@@ -175,6 +177,8 @@ class GrparseClient:
                 self._parse_types_pb2.Collector.Value(f"COLLECTOR_{name}"))
         if ebcdic_layout is not None:
             fill_ebcdic_layout(request.request.options.ebcdic_layout, ebcdic_layout)
+        if include_page_images is not None:
+            request.request.options.include_page_images = include_page_images
         started = time.monotonic()
         try:
             metadata = [(PASSWORD_METADATA_KEY, candidate.encode("utf-8")) for candidate in passwords]

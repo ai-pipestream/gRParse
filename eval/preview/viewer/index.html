@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Page preview</title>
+<link rel="stylesheet" href="viewer.css">
+</head>
+<body>
+<header>
+  <strong>Page preview</strong>
+  <span id="run-info" class="muted"></span>
+</header>
+<div id="layout">
+  <aside id="sidebar">
+    <input id="filter" type="search" placeholder="Filter by name">
+    <select id="sort">
+      <option value="path">Sort: path</option>
+      <option value="agreement">Sort: least agreement first</option>
+      <option value="failures">Sort: failures first</option>
+      <option value="slowest">Sort: slowest gRParse first</option>
+    </select>
+    <div id="corpus-summary" class="muted"></div>
+    <ol id="doc-list"></ol>
+  </aside>
+  <main>
+    <div id="toolbar">
+      <div id="doc-title">Pick a document</div>
+      <div class="controls">
+        <button id="prev-doc" title="Previous document (p)">&laquo;</button>
+        <button id="prev-page" title="Previous page (k)">&lsaquo;</button>
+        <span id="page-label">-</span>
+        <button id="next-page" title="Next page (j)">&rsaquo;</button>
+        <button id="next-doc" title="Next document (n)">&raquo;</button>
+        <label><input id="show-tags" type="checkbox" checked> tags</label>
+        <label><input id="show-unmatched" type="checkbox"> only unmatched</label>
+      </div>
+      <div id="legend"></div>
+      <div id="doc-stats" class="muted"></div>
+    </div>
+    <div id="panes">
+      <section class="pane" data-side="ours">
+        <h2>gRParse <span class="pane-info muted"></span></h2>
+        <div class="page"><img alt=""><svg></svg></div>
+        <table class="counts"></table>
+      </section>
+      <section class="pane" data-side="docling">
+        <h2>Docling <span class="pane-info muted"></span></h2>
+        <div class="page"><img alt=""><svg></svg></div>
+        <table class="counts"></table>
+      </section>
+    </div>
+  </main>
+</div>
+<div id="tooltip" hidden></div>
+<script src="viewer.js"></script>
+</body>
+</html>

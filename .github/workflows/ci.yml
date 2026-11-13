@@ -575,6 +575,8 @@ jobs:
         run: python3 eval/s3/tests/run_tests.py
       - name: eval/scorecard tests
         run: python3 eval/scorecard/tests/run_tests.py
+      - name: eval/preview tests
+        run: python3 eval/preview/tests/run_tests.py
       - name: ruff over eval/
         run: /tmp/eval-venv/bin/ruff check eval/
       - name: eval-corpus.sh dry run
