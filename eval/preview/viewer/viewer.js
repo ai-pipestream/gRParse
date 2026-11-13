@@ -167,7 +167,7 @@ function renderList() {
     const value = doc.agreement && doc.agreement.score !== null && doc.agreement.score !== undefined
       ? `${Math.round(doc.agreement.score * 100)}%` : "";
     item.append(el("span", { class: failed(doc) ? "score fail" : "score" }, failed(doc) ? "fail" : value));
-    item.addEventListener("click", () => openDoc(doc, 1));
+    item.addEventListener("click", () => openDoc(doc, null));
     list.append(item);
   }
 }
@@ -220,7 +220,27 @@ async function openDoc(doc, page) {
     pane.textContent = [info.status, timing, info.error].filter(Boolean).join(" · ");
   }
   renderList();
+  if (page === null) page = $("#sort").value === "agreement" ? mostUnmatchedPage() : null;
   showPage(state.pages.includes(page) ? page : state.pages[0] || 1);
+}
+
+// The page with the most boxes that found no partner on the other side:
+// where a least-agreement document is worth looking at first.
+function mostUnmatchedPage() {
+  if (!state.data.ours || !state.data.docling) return null;
+  let best = null;
+  let bestCount = -1;
+  for (const pageNo of state.pages) {
+    const left = boxesOnPage(state.data.ours, pageNo);
+    const right = boxesOnPage(state.data.docling, pageNo);
+    match(left, right);
+    const unmatched = [...left, ...right].filter((entry) => !entry.partner).length;
+    if (unmatched > bestCount) {
+      best = pageNo;
+      bestCount = unmatched;
+    }
+  }
+  return best;
 }
 
 function showPage(pageNo) {
@@ -357,7 +377,7 @@ function stepPage(delta) {
 function stepDoc(delta) {
   const list = state.visible;
   const index = list.findIndex((d) => state.current && d.id === state.current.id) + delta;
-  if (index >= 0 && index < list.length) openDoc(list[index], 1);
+  if (index >= 0 && index < list.length) openDoc(list[index], null);
 }
 
 function wire() {
@@ -395,7 +415,7 @@ async function main() {
   const params = new URLSearchParams(location.hash.slice(1));
   const wanted = params.get("doc") ? state.docs.find((d) => d.id === params.get("doc")) : null;
   const first = wanted || state.visible.find((d) => d.id);
-  if (first) openDoc(first, Number(params.get("page")) || 1);
+  if (first) openDoc(first, Number(params.get("page")) || null);
 }
 
 main();

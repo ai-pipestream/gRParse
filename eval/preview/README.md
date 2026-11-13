@@ -55,8 +55,9 @@ refreshes the viewer files.
   more. A dashed box has no match on the other side. Hovering a box
   highlights its match and shows both labels, the IoU and the text.
 - Agreement is boxes matched with the same label over all boxes on both
-  sides. "Sort: least agreement first" puts the documents worth looking at
-  on top. It is a pointer to where the two differ, not a quality score:
+  sides. "Sort: least agreement first" is the default and puts the
+  documents worth looking at on top; a document opened from it starts on
+  the page with the most unmatched boxes. It is a pointer to where the two differ, not a quality score:
   Docling is not ground truth.
 - Keys: `j`/`k` next and previous page, `n`/`p` next and previous document.
 
