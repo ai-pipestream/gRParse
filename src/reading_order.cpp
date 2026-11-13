@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -277,34 +278,66 @@ std::vector<size_t> visual_line_order(const OcrPage& page, std::vector<size_t> l
     if (box_a.top != box_b.top) return box_a.top < box_b.top;
     return box_a.left < box_b.left;
   });
+  // A cell over one and a half times the median height spans two visual
+  // lines (a word hyphenated across a line break comes back as one cell
+  // covering both). It must not glue the two lines into one row, so rows
+  // form from the ordinary cells first and a tall cell then joins the row
+  // its top line belongs to, read after that row's words: its first part
+  // ends the upper line.
+  std::vector<int64_t> heights;
+  heights.reserve(lines.size());
+  for (const size_t index : lines) heights.push_back(bounding_box(page.lines[index]).height());
+  int64_t median = 0;
+  if (!heights.empty()) {
+    std::ranges::nth_element(heights, heights.begin() + static_cast<std::ptrdiff_t>(heights.size() / 2));
+    median = heights[heights.size() / 2];
+  }
+  const auto is_tall = [&page, median](size_t index) {
+    return median > 0 && 2 * bounding_box(page.lines[index]).height() > 3 * median;
+  };
+
   struct Row {
     int top;
     int bottom;
     std::vector<size_t> members;
+    std::vector<size_t> tall;
   };
   std::vector<Row> rows;
-  for (const size_t index : lines) {
-    const AxisAlignedBox box = bounding_box(page.lines[index]);
+  const auto level_row = [&rows, &page](const AxisAlignedBox& box) -> Row* {
     // A box joins the row it is level with: their vertical overlap is over
     // half the shorter of the box and the row's first member, so a taller
     // glyph run (a capital, a descender) one pixel higher is the same row,
     // and the next line down, overlapping by a pixel of leading, is not.
-    Row* level = nullptr;
     for (Row& row : rows) {
       const AxisAlignedBox first = bounding_box(page.lines[row.members.front()]);
       const int64_t shorter = std::min(box.height(), first.height());
       const int64_t overlap =
           static_cast<int64_t>(std::min(box.bottom, row.bottom)) - std::max(box.top, row.top);
-      if (shorter > 0 && 2 * overlap > shorter) {
-        level = &row;
-        break;
-      }
+      if (shorter > 0 && 2 * overlap > shorter) return &row;
     }
+    return nullptr;
+  };
+  for (const size_t index : lines) {
+    if (is_tall(index)) continue;
+    const AxisAlignedBox box = bounding_box(page.lines[index]);
+    Row* level = level_row(box);
     if (level == nullptr) {
-      rows.push_back(Row{box.top, box.bottom, {index}});
+      rows.push_back(Row{box.top, box.bottom, {index}, {}});
     } else {
       level->members.push_back(index);
       level->bottom = std::max(level->bottom, box.bottom);
+    }
+  }
+  for (const size_t index : lines) {
+    if (!is_tall(index)) continue;
+    AxisAlignedBox top_line = bounding_box(page.lines[index]);
+    top_line.bottom = top_line.top + static_cast<int>(median);
+    Row* level = level_row(top_line);
+    if (level == nullptr) {
+      rows.push_back(Row{top_line.top, top_line.bottom, {index}, {}});
+      std::ranges::stable_sort(rows, [](const Row& a, const Row& b) { return a.top < b.top; });
+    } else {
+      level->tall.push_back(index);
     }
   }
   std::vector<size_t> ordered;
@@ -314,6 +347,7 @@ std::vector<size_t> visual_line_order(const OcrPage& page, std::vector<size_t> l
       return bounding_box(page.lines[a]).left < bounding_box(page.lines[b]).left;
     });
     ordered.insert(ordered.end(), row.members.begin(), row.members.end());
+    ordered.insert(ordered.end(), row.tall.begin(), row.tall.end());
   }
   return ordered;
 }

@@ -314,6 +314,21 @@ void verify_word_cells_read_by_visual_line() {
   require(ordered_texts(page) == expected, "words read along their visual line, rows top to bottom");
 }
 
+// A word hyphenated across a line break comes back from the text layer as
+// one cell covering both lines. It must not glue the two lines into one row:
+// it ends the upper line and the lower line reads after it.
+void verify_cell_spanning_two_lines_keeps_them_apart() {
+  grparse::OcrPage page{1000, 1000,
+                        {line_at("molecular", 80, 100, 80, 18), line_at("Sci-", 300, 100, 30, 18),
+                         line_at("entific", 80, 100, 250, 40), line_at("conformations", 180, 101, 100, 17),
+                         line_at("Data", 160, 122, 40, 18), line_at("9,", 210, 122, 20, 18)}};
+  page.lines.erase(page.lines.begin() + 1);  // the hyphenated word is the one tall cell
+  page.regions = {{"list_item", 0.9F, 40, 90, 600, 150}};
+  const std::vector<std::string> expected = {"molecular", "conformations", "entific", "Data", "9,"};
+  require(ordered_texts(page) == expected,
+          "a two-line cell ends the upper row; the lower row stays its own");
+}
+
 }  // namespace
 
 int main() {
@@ -335,5 +350,6 @@ int main() {
       verify_units_order_by_their_lines_not_their_detector_boxes,
       verify_degenerate_inputs,
       verify_word_cells_read_by_visual_line,
+      verify_cell_spanning_two_lines_keeps_them_apart,
   });
 }
