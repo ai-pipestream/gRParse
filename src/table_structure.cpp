@@ -134,4 +134,75 @@ TableGrid build_table_grid(const OcrPage& page, const LayoutRegion& table) {
   return grid;
 }
 
+namespace {
+
+bool center_inside(const AxisAlignedBox& box, const StructuredCell& cell) {
+  const cv::Point center = box.center();
+  return center.x >= cell.left && center.x <= cell.right && center.y >= cell.top &&
+         center.y <= cell.bottom;
+}
+
+int64_t overlap_area(const AxisAlignedBox& box, const StructuredCell& cell) {
+  const int64_t width =
+      static_cast<int64_t>(std::min(box.right, cell.right)) - std::max(box.left, cell.left);
+  const int64_t height =
+      static_cast<int64_t>(std::min(box.bottom, cell.bottom)) - std::max(box.top, cell.top);
+  return width > 0 && height > 0 ? width * height : 0;
+}
+
+int64_t axis_gap(int low_a, int high_a, int low_b, int high_b) {
+  return std::max<int64_t>({0, static_cast<int64_t>(low_b) - high_a, static_cast<int64_t>(low_a) - high_b});
+}
+
+}  // namespace
+
+TableLineAssignment assign_table_lines(const OcrPage& page, const LayoutRegion& table) {
+  TableLineAssignment out;
+  out.cell_of_line.assign(page.lines.size(), -1);
+  const auto& cells = table.structured_cells;
+  std::vector<size_t> members;
+  for (size_t index = 0; index < page.lines.size(); ++index) {
+    const auto& line = page.lines[index];
+    if (line.text.empty() || line.polygon.empty()) continue;
+    if (region_for_line(page, line) == &table) members.push_back(index);
+  }
+  if (cells.empty()) return out;
+  out.structured = true;
+  for (const size_t index : members) {
+    const AxisAlignedBox box = bounding_box(page.lines[index]);
+    int chosen = -1;
+    for (size_t at = 0; at < cells.size() && chosen < 0; ++at) {
+      if (center_inside(box, cells[at])) chosen = static_cast<int>(at);
+    }
+    if (chosen < 0) {
+      int64_t best_area = 0;
+      for (size_t at = 0; at < cells.size(); ++at) {
+        const int64_t shared = overlap_area(box, cells[at]);
+        if (shared > best_area) {
+          best_area = shared;
+          chosen = static_cast<int>(at);
+        }
+      }
+    }
+    if (chosen < 0) {
+      // Only a cell of the line's own row band: no further below or above
+      // than the line is tall. A stray line rows away from every cell (a
+      // total under the last row) stays body text rather than polluting
+      // the nearest amount.
+      std::pair<int64_t, int64_t> best{box.height() + 1, 0};
+      for (size_t at = 0; at < cells.size(); ++at) {
+        const auto& cell = cells[at];
+        const std::pair<int64_t, int64_t> gap{axis_gap(box.top, box.bottom, cell.top, cell.bottom),
+                                              axis_gap(box.left, box.right, cell.left, cell.right)};
+        if (gap < best) {
+          best = gap;
+          chosen = static_cast<int>(at);
+        }
+      }
+    }
+    out.cell_of_line[index] = chosen;
+  }
+  return out;
+}
+
 }  // namespace grparse

@@ -168,6 +168,37 @@ void verify_determinism() {
   }
 }
 
+// Model cell boxes that come out small and offset (a wide numeric table)
+// still take every word of the table: a word whose center misses every box
+// goes to the cell it overlaps, else the nearest cell of its row, so none is
+// left to stream as body text; a line rows away from every cell gets none.
+void verify_model_cells_take_every_word() {
+  grparse::OcrPage page{1000, 1000,
+                        {line_at("Model", 100, 100, 60), line_at("MSE", 300, 100, 40),
+                         line_at("A", 100, 140, 20), line_at("0.429", 290, 140, 50),
+                         line_at("0.421", 420, 140, 50)}};
+  grparse::LayoutRegion table{"table", 0.9F, 80, 80, 600, 400};
+  // Cells: header row fits its words; row 1's boxes are short and offset.
+  table.structured_cells = {{0, 0, 1, 1, true, 90, 95, 170, 125},
+                            {0, 1, 1, 1, true, 280, 95, 350, 125},
+                            {1, 0, 1, 1, false, 95, 138, 125, 162},
+                            {1, 1, 1, 1, false, 330, 141, 360, 146},
+                            {1, 2, 1, 1, false, 480, 141, 500, 146}};
+  page.regions = {table};
+  const grparse::TableLineAssignment assignment =
+      grparse::assign_table_lines(page, page.regions[0]);
+  require(assignment.structured, "model cells make a structured table");
+  const std::vector<int> expected = {0, 1, 2, 3, 4};
+  require(assignment.cell_of_line == expected,
+          "a word the boxes miss goes to the overlapping cell, else the nearest one in its row");
+
+  // A line rows below every cell (a total under the table) gets no cell.
+  page.lines.push_back(line_at("Total", 100, 300, 60));
+  const grparse::TableLineAssignment with_stray =
+      grparse::assign_table_lines(page, page.regions[0]);
+  require(with_stray.cell_of_line[5] == -1, "a line rows away from every cell stays unassigned");
+}
+
 }  // namespace
 
 int main() {
@@ -178,5 +209,6 @@ int main() {
       verify_multi_table_pages,
       verify_region_crops,
       verify_determinism,
+      verify_model_cells_take_every_word,
   });
 }

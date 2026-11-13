@@ -34,4 +34,22 @@ struct TableGrid {
 // for fixed input.  Returns an empty grid when no text binds to the table.
 TableGrid build_table_grid(const OcrPage& page, const LayoutRegion& table);
 
+// How the lines bound to a table region land in its structure model's cells.
+// `structured` is false when the region has no model cells; the table then
+// reads through build_table_grid. When structured, a bound line takes the
+// first cell whose box holds its center, else the cell its box overlaps
+// most, else the nearest cell of its own row band (vertical gap at most the
+// line's height, then the smallest horizontal gap): the model's boxes come
+// out small and offset on a wide table of small numbers, and a word they
+// miss belongs to its row's cell, not to the body after the table. A line
+// further than that from every cell gets none and stays body text.
+struct TableLineAssignment {
+  bool structured = false;
+  // Indexed like page.lines: the structured cell's index in
+  // region.structured_cells, or -1 for a line not bound to this table or
+  // too far from every cell.
+  std::vector<int> cell_of_line = {};
+};
+TableLineAssignment assign_table_lines(const OcrPage& page, const LayoutRegion& table);
+
 }  // namespace grparse

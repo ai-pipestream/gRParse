@@ -5,6 +5,7 @@
 #include <utility>
 #include <vector>
 
+#include "grparse/reading_order.h"
 #include "grparse/region_geometry.h"
 #include "grparse/table_structure.h"
 
@@ -21,11 +22,15 @@ void set_bounding_box(const AxisAlignedBox& box, pipestream::document::v1::Bound
 }
 
 // Model table structure (D3): the recognized cells carry real spans and
-// header rows.  Lines bound to the table land in the first cell whose box
-// contains their center; the flat cell list holds each cell once while the
-// row grid repeats spanning cells across every position they cover, with
-// empty unit cells filling positions no recognized cell claims.
+// header rows. Each line bound to the table lands in exactly the cell
+// assign_table_lines gives it, words in visual line order, so overlapping
+// model boxes never duplicate text and a line the boxes miss still lands in
+// the nearest cell instead of leaking out as body text. The flat cell list
+// holds each cell once while the row grid repeats spanning cells across
+// every position they cover, with empty unit cells filling positions no
+// recognized cell claims.
 void fill_structured_table_data(const OcrPage& page, const LayoutRegion& region,
+                                const TableLineAssignment& assignment,
                                 pipestream::document::v1::TableData* data) {
   int rows = 0;
   int cols = 0;
@@ -36,29 +41,17 @@ void fill_structured_table_data(const OcrPage& page, const LayoutRegion& region,
   data->set_num_rows(rows);
   data->set_num_cols(cols);
 
-  struct MemberLine {
-    size_t index = 0;
-    AxisAlignedBox box;
-  };
-  std::vector<MemberLine> lines;
-  for (size_t index = 0; index < page.lines.size(); ++index) {
-    const auto& line = page.lines[index];
-    if (line.text.empty() || line.polygon.empty()) continue;
-    if (region_for_line(page, line) == &region) lines.push_back({index, bounding_box(line)});
+  std::vector<std::vector<size_t>> cell_lines(region.structured_cells.size());
+  for (size_t index = 0; index < assignment.cell_of_line.size(); ++index) {
+    const int cell = assignment.cell_of_line[index];
+    if (cell >= 0) cell_lines[static_cast<size_t>(cell)].push_back(index);
   }
-  std::ranges::sort(lines, [](const MemberLine& a, const MemberLine& b) {
-    if (a.box.top != b.box.top) return a.box.top < b.box.top;
-    return a.box.left < b.box.left;
-  });
 
   std::vector<int> owner(static_cast<size_t>(rows) * static_cast<size_t>(cols), -1);
-  // Each line belongs to exactly one cell: the first whose box contains its
-  // center, matching table_claimed_lines. Overlapping model boxes must not
-  // duplicate the same text into two cells.
-  std::vector<bool> line_taken(lines.size(), false);
   std::vector<pipestream::document::v1::TableCell> protos;
   protos.reserve(region.structured_cells.size());
-  for (const auto& cell : region.structured_cells) {
+  for (size_t cell_at = 0; cell_at < region.structured_cells.size(); ++cell_at) {
+    const auto& cell = region.structured_cells[cell_at];
     pipestream::document::v1::TableCell proto_cell;
     proto_cell.set_row_span(cell.row_span);
     proto_cell.set_col_span(cell.col_span);
@@ -68,16 +61,9 @@ void fill_structured_table_data(const OcrPage& page, const LayoutRegion& region,
     proto_cell.set_end_col_offset_idx(cell.col + cell.col_span);
     proto_cell.set_column_header(cell.header);
     std::string text;
-    for (size_t member_index = 0; member_index < lines.size(); ++member_index) {
-      if (line_taken[member_index]) continue;
-      const auto& member = lines[member_index];
-      const cv::Point center = member.box.center();
-      const bool contains = center.x >= cell.left && center.x <= cell.right &&
-                            center.y >= cell.top && center.y <= cell.bottom;
-      if (!contains) continue;
-      line_taken[member_index] = true;
+    for (const size_t line_index : visual_line_order(page, std::move(cell_lines[cell_at]))) {
       if (!text.empty()) text.push_back(' ');
-      text += page.lines[member.index].text;
+      text += page.lines[line_index].text;
     }
     proto_cell.set_text(std::move(text));
     AxisAlignedBox box{cell.left, cell.top, cell.right, cell.bottom};
@@ -116,8 +102,9 @@ void fill_structured_table_data(const OcrPage& page, const LayoutRegion& region,
 // Header flags stay false; geometry cannot tell a header from a body row.
 void fill_table_data(const OcrPage& page, const LayoutRegion& region,
                      pipestream::document::v1::TableData* data) {
-  if (!region.structured_cells.empty()) {
-    fill_structured_table_data(page, region, data);
+  const TableLineAssignment assignment = assign_table_lines(page, region);
+  if (assignment.structured) {
+    fill_structured_table_data(page, region, assignment, data);
     return;
   }
   const TableGrid grid = build_table_grid(page, region);

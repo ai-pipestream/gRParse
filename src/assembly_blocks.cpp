@@ -14,24 +14,15 @@ namespace grparse {
 namespace {
 
 // Which page lines a table's own item carries, so those lines do not stream
-// a second time as body prose. Structured cells claim a line when its center
-// falls inside a recognized cell; the geometry grid claims every line it
+// a second time as body prose: with model cells, every line
+// assign_table_lines gives a cell; otherwise every line the geometry grid
 // clustered. A line neither claims stays ordinary body text.
 std::vector<bool> table_claimed_lines(const OcrPage& page, const LayoutRegion& region) {
   std::vector<bool> claimed(page.lines.size(), false);
-  if (!region.structured_cells.empty()) {
+  const TableLineAssignment assignment = assign_table_lines(page, region);
+  if (assignment.structured) {
     for (size_t index = 0; index < page.lines.size(); ++index) {
-      const auto& line = page.lines[index];
-      if (line.text.empty() || line.polygon.empty()) continue;
-      if (region_for_line(page, line) != &region) continue;
-      const cv::Point center = bounding_box(line).center();
-      for (const auto& cell : region.structured_cells) {
-        if (center.x >= cell.left && center.x <= cell.right && center.y >= cell.top &&
-            center.y <= cell.bottom) {
-          claimed[index] = true;
-          break;
-        }
-      }
+      claimed[index] = assignment.cell_of_line[index] >= 0;
     }
     return claimed;
   }
@@ -42,12 +33,16 @@ std::vector<bool> table_claimed_lines(const OcrPage& page, const LayoutRegion& r
   return claimed;
 }
 
-// Whether consecutive lines of this region merge into one item. Lists stay
-// per-line (each line is its own item) and unbound lines never merge,
-// because nothing proves either belongs with its neighbor.
+// Whether consecutive lines of this region merge into one item. A list
+// region (a detector that boxes the whole list) stays per-line, each line
+// its own item; unbound lines never merge, because nothing proves either
+// belongs with its neighbor. A list_item region is the box of one item, as
+// the reference reads it: its wrapped lines are one item (a bibliography
+// entry over three lines is one entry), split only where a later visual
+// line opens with a marker like the item's own (opens_next_item).
 bool region_aggregates(const LayoutRegion* region) {
   if (region == nullptr) return false;
-  return region->label != "list" && region->label != "list_item" && region->label != "table";
+  return region->label != "list" && region->label != "table";
 }
 
 // Whether a list line goes on reading the visual line the block ended on:
@@ -73,6 +68,23 @@ bool continues_visual_line(const OcrPage& page, const TextBlock& block, const Oc
   const bool only_marker = block.lines.size() == 1 && is_sibling_list_marker(lead.text, lead.text);
   const int64_t reach = (only_marker ? 2 : 1) * std::max(last.height(), next.height());
   return 2 * overlap > shorter && next.left >= last.left && gap <= reach;
+}
+
+// Whether a line inside one list_item region opens a further item: it is a
+// marker like the one the block opened with ("[2]" after "[1]", a second
+// bullet) and it starts a new visual line instead of going on with the
+// block's last one. A detector box that swallowed two neighbouring items
+// splits there; a wrapped line of one item never starts with its sibling's
+// marker.
+bool opens_next_item(const OcrPage& page, const TextBlock& block, const OcrLine& line) {
+  const OcrLine& lead = page.lines[block.lines.front()];
+  if (!is_sibling_list_marker(lead.text, line.text)) return false;
+  const AxisAlignedBox last = bounding_box(page.lines[block.lines.back()]);
+  const AxisAlignedBox next = bounding_box(line);
+  const int64_t shorter = std::min(last.height(), next.height());
+  const int64_t overlap = static_cast<int64_t>(std::min(last.bottom, next.bottom)) -
+                          std::max(last.top, next.top);
+  return shorter <= 0 || 2 * overlap <= shorter;
 }
 
 bool is_list_region(const LayoutRegion* region) {
@@ -146,9 +158,12 @@ std::vector<TextBlock> build_text_blocks(const OcrPage& page) {
     if (const auto claim = claims.find(region); claim != claims.end()) {
       suppressed = claim->second[line_index];
     }
-    const bool merges = suppressed || region_aggregates(region);
     const bool same_region =
         !blocks.empty() && blocks.back().region == region && blocks.back().suppressed == suppressed;
+    const bool merges =
+        suppressed ||
+        (region_aggregates(region) &&
+         !(region->label == "list_item" && same_region && opens_next_item(page, blocks.back(), line)));
     if (same_region &&
         (merges || (is_list_region(region) && continues_visual_line(page, blocks.back(), line)))) {
       blocks.back().lines.push_back(line_index);

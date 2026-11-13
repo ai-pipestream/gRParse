@@ -301,6 +301,19 @@ void verify_box_cut_policy() {
           "above still reads first and the code line last");
 }
 
+// A text layer's word cells on one visual line differ in top by a pixel
+// (a capital, a bracket): inside one region they still read left to right,
+// row by row, instead of interleaving with the row below by top.
+void verify_word_cells_read_by_visual_line() {
+  grparse::OcrPage page{1000, 1000,
+                        {line_at("[1]", 50, 101, 20, 18), line_at("Simon", 80, 102, 50, 17),
+                         line_at("Axelrod.", 140, 102, 70, 17), line_at("energy", 400, 100, 60, 18),
+                         line_at("annotated", 80, 124, 90, 17), line_at("data", 180, 123, 40, 18)}};
+  page.regions = {{"list_item", 0.9F, 40, 90, 600, 150}};
+  const std::vector<std::string> expected = {"[1]", "Simon", "Axelrod.", "energy", "annotated", "data"};
+  require(ordered_texts(page) == expected, "words read along their visual line, rows top to bottom");
+}
+
 }  // namespace
 
 int main() {
@@ -321,5 +334,6 @@ int main() {
       verify_short_or_offset_right_column_still_reads_after_the_left,
       verify_units_order_by_their_lines_not_their_detector_boxes,
       verify_degenerate_inputs,
+      verify_word_cells_read_by_visual_line,
   });
 }

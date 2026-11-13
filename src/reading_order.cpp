@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <optional>
 #include <utility>
@@ -262,16 +263,59 @@ std::vector<size_t> reading_order(const OcrPage& page, bool trust_source_order) 
     return result;
   }
   for (const size_t unit_index : xy_cut_order(boxes)) {
-    std::vector<size_t> lines = with_lines[unit_index]->line_indices;
-    std::ranges::stable_sort(lines, [&page](size_t a, size_t b) {
-      const AxisAlignedBox box_a = bounding_box(page.lines[a]);
-      const AxisAlignedBox box_b = bounding_box(page.lines[b]);
-      if (box_a.top != box_b.top) return box_a.top < box_b.top;
-      return box_a.left < box_b.left;
-    });
+    const std::vector<size_t> lines = visual_line_order(page, with_lines[unit_index]->line_indices);
     result.insert(result.end(), lines.begin(), lines.end());
   }
   return result;
+}
+
+std::vector<size_t> visual_line_order(const OcrPage& page, std::vector<size_t> lines) {
+  // Top first, so each visual row opens with its highest member.
+  std::ranges::stable_sort(lines, [&page](size_t a, size_t b) {
+    const AxisAlignedBox box_a = bounding_box(page.lines[a]);
+    const AxisAlignedBox box_b = bounding_box(page.lines[b]);
+    if (box_a.top != box_b.top) return box_a.top < box_b.top;
+    return box_a.left < box_b.left;
+  });
+  struct Row {
+    int top;
+    int bottom;
+    std::vector<size_t> members;
+  };
+  std::vector<Row> rows;
+  for (const size_t index : lines) {
+    const AxisAlignedBox box = bounding_box(page.lines[index]);
+    // A box joins the row it is level with: their vertical overlap is over
+    // half the shorter of the box and the row's first member, so a taller
+    // glyph run (a capital, a descender) one pixel higher is the same row,
+    // and the next line down, overlapping by a pixel of leading, is not.
+    Row* level = nullptr;
+    for (Row& row : rows) {
+      const AxisAlignedBox first = bounding_box(page.lines[row.members.front()]);
+      const int64_t shorter = std::min(box.height(), first.height());
+      const int64_t overlap =
+          static_cast<int64_t>(std::min(box.bottom, row.bottom)) - std::max(box.top, row.top);
+      if (shorter > 0 && 2 * overlap > shorter) {
+        level = &row;
+        break;
+      }
+    }
+    if (level == nullptr) {
+      rows.push_back(Row{box.top, box.bottom, {index}});
+    } else {
+      level->members.push_back(index);
+      level->bottom = std::max(level->bottom, box.bottom);
+    }
+  }
+  std::vector<size_t> ordered;
+  ordered.reserve(lines.size());
+  for (Row& row : rows) {
+    std::ranges::stable_sort(row.members, [&page](size_t a, size_t b) {
+      return bounding_box(page.lines[a]).left < bounding_box(page.lines[b]).left;
+    });
+    ordered.insert(ordered.end(), row.members.begin(), row.members.end());
+  }
+  return ordered;
 }
 
 }  // namespace grparse

@@ -313,7 +313,7 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
       provenance->set_page_no(page_number);
       set_region_bounding_box(region, provenance->mutable_bbox());
       fill_table_data(source, region, table->mutable_data());
-      add_collector_source(region.structured_cells.empty() ? "geometry" : "slanet-plus",
+      add_collector_source(assign_table_lines(source, region).structured ? "slanet-plus" : "geometry",
                            region.confidence, table->mutable_source());
       floats.push_back({&region, self_ref, table->mutable_captions(), table->mutable_children()});
       body_order.push_back(self_ref);
