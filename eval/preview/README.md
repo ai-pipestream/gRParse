@@ -32,7 +32,9 @@ either, the viewer shows gRParse alone.
   `eval/preview/viewer/`.
 
 `<id>` is the first 16 hex digits of the PDF's SHA-256. A rerun skips
-documents already built; `--force` rebuilds them.
+documents already built; `--force` rebuilds them. `--rescore` redoes the box
+comparison for documents already in `--out`, with no new conversions, and
+refreshes the viewer files.
 
 ## Reading the viewer
 
@@ -40,8 +42,15 @@ documents already built; `--force` rebuilds them.
   sides measure in different units (gRParse's CV path in pixels, Docling in
   points, origin top-left or bottom-left); both scale to the image by the
   page size, so they line up without conversion.
-- Each item is one box per page: the union of its provenance boxes there.
-  gRParse gives a text item one prov per word or line, Docling one per item.
+- Provenance boxes of one item on one page are merged when they touch:
+  on one line within 2% of the page width, or stacked in a column within
+  1.5% of the page height. gRParse gives a text item one prov per word or
+  line, so the words become the paragraph. Docling splits a paragraph that
+  continues into the next column into separate provs, and those remain
+  separate boxes.
+- Text found inside a figure (a text item with a picture as parent) is left
+  out. Docling reports it, gRParse mostly does not, so including it would
+  only penalise one side.
 - Boxes are matched one to one per page, highest IoU first, at IoU 0.5 or
   more. A dashed box has no match on the other side. Hovering a box
   highlights its match and shows both labels, the IoU and the text.

@@ -67,13 +67,45 @@ def test_agreement_matches_across_units_and_origins() -> None:
 def test_word_provs_merge_into_one_box_per_item() -> None:
     words = {"label": "text", "text": "two words",
              "prov": [{"page_no": 1, "bbox": {"l": 100, "t": 300, "r": 480, "b": 500, "coord_origin": "TOPLEFT"}},
-                      {"page_no": 1, "bbox": {"l": 520, "t": 300, "r": 900, "b": 500, "coord_origin": "TOPLEFT"}}]}
+                      {"page_no": 1, "bbox": {"l": 490, "t": 300, "r": 900, "b": 500, "coord_origin": "TOPLEFT"}}]}
     ours = ours_doc()
     ours["texts"][1] = words
     result = build.agreement(ours, docling_doc())
     assert result["same_label"] == 1
     assert result["ours_only"] == 1  # still just the page_footer
     assert build.boxes_by_page(ours)[1][1] == ("text", (0.1, 0.3, 0.9, 0.5))
+
+
+def test_column_continuation_stays_two_boxes() -> None:
+    # One paragraph whose second half continues in the right column.
+    para = {"label": "text", "text": "a b",
+            "prov": [{"page_no": 1, "bbox": {"l": 80, "t": 500, "r": 480, "b": 950, "coord_origin": "TOPLEFT"}},
+                     {"page_no": 1, "bbox": {"l": 520, "t": 50, "r": 920, "b": 300, "coord_origin": "TOPLEFT"}}]}
+    doc = {"pages": {"1": page(1000, 1000)}, "texts": [para]}
+    assert [box for _, box in build.boxes_by_page(doc)[1]] == [(0.08, 0.5, 0.48, 0.95), (0.52, 0.05, 0.92, 0.3)]
+
+
+def test_text_inside_a_picture_is_not_matched() -> None:
+    doc = docling_doc()
+    label = item("text", 20, 90, 60, 80, "BOTTOMLEFT")
+    label["parent"] = {"$ref": "#/pictures/0"}
+    doc["texts"].append(label)
+    assert build.agreement(ours_doc(), doc)["docling_only"] == 1  # still just the picture
+
+
+def test_rescore_rewrites_agreement() -> None:
+    with tempfile.TemporaryDirectory() as name:
+        tmp = Path(name)
+        doc_dir = tmp / "docs" / "abc"
+        doc_dir.mkdir(parents=True)
+        (doc_dir / "ours.json").write_text(json.dumps(ours_doc()))
+        (doc_dir / "docling.json").write_text(json.dumps(docling_doc()))
+        (doc_dir / "meta.json").write_text(json.dumps({"id": "abc", "path": "a.pdf", "agreement": {"score": 0.0}}))
+        (tmp / "manifest.json").write_text(json.dumps({"run": {"started": "x"}, "documents": [{"id": "abc"}]}))
+        assert build.rescore(tmp) == 0
+        manifest = json.loads((tmp / "manifest.json").read_text())
+        assert manifest["documents"][0]["agreement"]["score"] == 0.25
+        assert manifest["run"]["started"] == "x" and "rescored" in manifest["run"]
 
 
 def test_split_images_writes_files_and_rewrites_uri() -> None:

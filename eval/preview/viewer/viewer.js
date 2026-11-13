@@ -55,6 +55,44 @@ function normalizedBox(bbox, size) {
   return { x0: xs[0], y0: ys[0], x1: xs[1], y1: ys[1] };
 }
 
+// Text found inside a figure (axis labels, legends) belongs to the picture:
+// Docling keeps it as child items, gRParse mostly does not.
+function insidePicture(item) {
+  return String((item.parent && item.parent.$ref) || "").startsWith("#/pictures/");
+}
+
+const LINE_GAP = 0.02; // page widths between two boxes on one line
+const STACK_GAP = 0.015; // page heights between two stacked boxes in one column
+
+function touching(a, b) {
+  const xOverlap = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0);
+  const yOverlap = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0);
+  const sameLine = yOverlap >= 0.5 * Math.min(a.y1 - a.y0, b.y1 - b.y0) && -xOverlap <= LINE_GAP;
+  const stacked = xOverlap >= 0.5 * Math.min(a.x1 - a.x0, b.x1 - b.x0) && -yOverlap <= STACK_GAP;
+  return sameLine || stacked;
+}
+
+// gRParse gives one prov per word or line, Docling one per item but split
+// across columns: merging touching boxes yields the paragraph and keeps
+// column parts apart. Same rule as build.py's merge_touching.
+function mergeTouching(boxes) {
+  const merged = boxes.slice();
+  for (let changed = true; changed;) {
+    changed = false;
+    outer: for (let i = 0; i < merged.length; i++) {
+      for (let j = i + 1; j < merged.length; j++) {
+        if (!touching(merged[i], merged[j])) continue;
+        const a = merged[i], b = merged.splice(j, 1)[0];
+        merged[i] = { x0: Math.min(a.x0, b.x0), y0: Math.min(a.y0, b.y0),
+          x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1) };
+        changed = true;
+        break outer;
+      }
+    }
+  }
+  return merged;
+}
+
 function boxesOnPage(doc, pageNo) {
   const page = pageEntry(doc, pageNo);
   const size = page && page.size ? { width: Number(page.size.width), height: Number(page.size.height) } : null;
@@ -62,22 +100,17 @@ function boxesOnPage(doc, pageNo) {
   const boxes = [];
   for (const arena of ARENAS) {
     (doc[arena] || []).forEach((item, index) => {
-      // One box per item: the union of its provenance boxes on this page
-      // (gRParse gives one prov per word or line, Docling one per item).
-      let union = null;
-      for (const prov of item.prov || []) {
-        if (Number(prov.page_no) !== pageNo || !prov.bbox) continue;
-        const b = normalizedBox(prov.bbox, size);
-        union = union ? { x0: Math.min(union.x0, b.x0), y0: Math.min(union.y0, b.y0),
-          x1: Math.max(union.x1, b.x1), y1: Math.max(union.y1, b.y1) } : b;
-      }
-      if (union) {
+      if (insidePicture(item)) return;
+      const raw = (item.prov || [])
+        .filter((prov) => Number(prov.page_no) === pageNo && prov.bbox)
+        .map((prov) => normalizedBox(prov.bbox, size));
+      for (const box of mergeTouching(raw)) {
         boxes.push({
           label: String(item.label || "unknown"),
           ref: item.self_ref || `#/${arena}/${index}`,
           text: item.text || item.orig || (item.data && item.data.num_rows !== undefined
             ? `table ${item.data.num_rows} x ${item.data.num_cols}` : ""),
-          box: union,
+          box,
           partner: null,
         });
       }

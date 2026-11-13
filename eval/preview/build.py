@@ -86,31 +86,67 @@ def boxes_by_page(doc: dict[str, Any]) -> dict[int, list[tuple[str, tuple[float,
     pages: dict[int, list[tuple[str, tuple[float, float, float, float]]]] = {}
     for arena in ARENAS:
         for item in doc.get(arena) or []:
+            if inside_picture(item):
+                continue
             label = str(item.get("label") or "unknown")
-            for page_no, box in item_boxes(doc, item).items():
-                pages.setdefault(page_no, []).append((label, box))
+            for page_no, boxes in item_boxes(doc, item).items():
+                pages.setdefault(page_no, []).extend((label, box) for box in boxes)
     return pages
 
 
-def item_boxes(doc: dict[str, Any], item: dict[str, Any]) -> dict[int, tuple[float, float, float, float]]:
-    """One box per page for an item: the union of its provenance boxes there.
+def inside_picture(item: dict[str, Any]) -> bool:
+    """Text found inside a figure (axis labels, legends) is the picture's, not the page layout's.
 
-    gRParse gives a text item one prov per word or line (each with its own
-    charspan) where Docling gives one per item, so matching prov by prov
-    would compare words against paragraphs.
+    Docling keeps it as child text items of the picture; gRParse mostly does
+    not, so matching it would only count against the side that keeps it.
     """
-    boxes: dict[int, tuple[float, float, float, float]] = {}
+    return str((item.get("parent") or {}).get("$ref") or "").startswith("#/pictures/")
+
+
+def item_boxes(doc: dict[str, Any], item: dict[str, Any]) -> dict[int, list[tuple[float, float, float, float]]]:
+    """An item's layout boxes per page: its provenance boxes, merged where they touch.
+
+    gRParse gives a text item one prov per word or line where Docling gives
+    one per item, but Docling also splits a paragraph that continues into the
+    next column into two provs. Merging boxes that sit on one line or stack
+    in one column turns words into the paragraph and keeps column parts apart.
+    """
+    raw: dict[int, list[tuple[float, float, float, float]]] = {}
     for prov in item.get("prov") or []:
         page_no, bbox = int(prov.get("page_no") or 0), prov.get("bbox")
         size = page_size(doc, page_no)
-        if not bbox or size is None:
-            continue
-        box = normalized_box(bbox, size)
-        if page_no in boxes:
-            seen = boxes[page_no]
-            box = (min(seen[0], box[0]), min(seen[1], box[1]), max(seen[2], box[2]), max(seen[3], box[3]))
-        boxes[page_no] = box
-    return boxes
+        if bbox and size is not None:
+            raw.setdefault(page_no, []).append(normalized_box(bbox, size))
+    return {page_no: merge_touching(boxes) for page_no, boxes in raw.items()}
+
+
+LINE_GAP = 0.02  # page widths between two boxes on one line
+STACK_GAP = 0.015  # page heights between two stacked boxes in one column
+
+
+def touching(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:
+    x_overlap = min(a[2], b[2]) - max(a[0], b[0])
+    y_overlap = min(a[3], b[3]) - max(a[1], b[1])
+    same_line = y_overlap >= 0.5 * min(a[3] - a[1], b[3] - b[1]) and -x_overlap <= LINE_GAP
+    stacked = x_overlap >= 0.5 * min(a[2] - a[0], b[2] - b[0]) and -y_overlap <= STACK_GAP
+    return same_line or stacked
+
+
+def merge_touching(boxes: list[tuple[float, float, float, float]]) -> list[tuple[float, float, float, float]]:
+    merged = list(boxes)
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(merged)):
+            for j in range(i + 1, len(merged)):
+                if touching(merged[i], merged[j]):
+                    a, b = merged[i], merged.pop(j)
+                    merged[i] = (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
+                    changed = True
+                    break
+            if changed:
+                break
+    return merged
 
 
 def label_counts(doc: dict[str, Any]) -> dict[str, int]:
@@ -315,6 +351,29 @@ def write_manifest(out: Path, entries: list[dict[str, Any]], run: dict[str, Any]
     os.replace(temporary, out / "manifest.json")
 
 
+def rescore(out: Path) -> int:
+    """Recompute agreement for documents already built under ``out`` without converting again."""
+    manifest_path = out / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    entries = []
+    for slim in manifest.get("documents") or []:
+        doc_dir = out / "docs" / str(slim.get("id"))
+        meta_path = doc_dir / "meta.json"
+        entry = json.loads(meta_path.read_text()) if meta_path.is_file() else slim
+        sides = [doc_dir / f"{side}.json" for side in ("ours", "docling")]
+        if all(path.is_file() for path in sides):
+            entry["agreement"] = agreement(*(json.loads(path.read_text()) for path in sides))
+            meta_path.write_text(json.dumps(entry, ensure_ascii=False, indent=1))
+        entries.append(entry)
+    for asset in VIEWER_DIR.iterdir():
+        shutil.copy2(asset, out / asset.name)
+    run = dict(manifest.get("run") or {})
+    run["rescored"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    write_manifest(out, entries, run)
+    print(f"rescored {len(entries)} documents in {manifest_path}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--pdf-dir", type=Path, required=True)
@@ -329,7 +388,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--timeout", type=float, default=600.0)
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--rescore", action="store_true",
+                        help="recompute agreement for the documents already in --out, without converting")
     args = parser.parse_args(argv)
+    if args.rescore:
+        return rescore(args.out)
 
     pdfs = find_pdfs(args.pdf_dir)[:: max(1, args.every)]
     if args.limit:
