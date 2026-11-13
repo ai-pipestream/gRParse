@@ -62,14 +62,22 @@ function boxesOnPage(doc, pageNo) {
   const boxes = [];
   for (const arena of ARENAS) {
     (doc[arena] || []).forEach((item, index) => {
+      // One box per item: the union of its provenance boxes on this page
+      // (gRParse gives one prov per word or line, Docling one per item).
+      let union = null;
       for (const prov of item.prov || []) {
         if (Number(prov.page_no) !== pageNo || !prov.bbox) continue;
+        const b = normalizedBox(prov.bbox, size);
+        union = union ? { x0: Math.min(union.x0, b.x0), y0: Math.min(union.y0, b.y0),
+          x1: Math.max(union.x1, b.x1), y1: Math.max(union.y1, b.y1) } : b;
+      }
+      if (union) {
         boxes.push({
           label: String(item.label || "unknown"),
           ref: item.self_ref || `#/${arena}/${index}`,
           text: item.text || item.orig || (item.data && item.data.num_rows !== undefined
             ? `table ${item.data.num_rows} x ${item.data.num_cols}` : ""),
-          box: normalizedBox(prov.bbox, size),
+          box: union,
           partner: null,
         });
       }

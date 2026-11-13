@@ -15,7 +15,8 @@ python3 -m http.server -d /tmp/acm-preview 8090
 ```
 
 Docling comes from a running docling-serve (`--docling-url`, its
-`/v1/convert/file` with `image_export_mode=embedded`) or from a directory of
+`/v1/convert/file` with `image_export_mode=embedded` and
+`include_page_images=true`) or from a directory of
 Docling JSON files that mirrors `--pdf-dir` (`--docling-json-dir`). Without
 either, the viewer shows gRParse alone.
 
@@ -39,6 +40,8 @@ documents already built; `--force` rebuilds them.
   sides measure in different units (gRParse's CV path in pixels, Docling in
   points, origin top-left or bottom-left); both scale to the image by the
   page size, so they line up without conversion.
+- Each item is one box per page: the union of its provenance boxes there.
+  gRParse gives a text item one prov per word or line, Docling one per item.
 - Boxes are matched one to one per page, highest IoU first, at IoU 0.5 or
   more. A dashed box has no match on the other side. Hovering a box
   highlights its match and shows both labels, the IoU and the text.

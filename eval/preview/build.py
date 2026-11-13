@@ -87,13 +87,30 @@ def boxes_by_page(doc: dict[str, Any]) -> dict[int, list[tuple[str, tuple[float,
     for arena in ARENAS:
         for item in doc.get(arena) or []:
             label = str(item.get("label") or "unknown")
-            for prov in item.get("prov") or []:
-                page_no, bbox = int(prov.get("page_no") or 0), prov.get("bbox")
-                size = page_size(doc, page_no)
-                if not bbox or size is None:
-                    continue
-                pages.setdefault(page_no, []).append((label, normalized_box(bbox, size)))
+            for page_no, box in item_boxes(doc, item).items():
+                pages.setdefault(page_no, []).append((label, box))
     return pages
+
+
+def item_boxes(doc: dict[str, Any], item: dict[str, Any]) -> dict[int, tuple[float, float, float, float]]:
+    """One box per page for an item: the union of its provenance boxes there.
+
+    gRParse gives a text item one prov per word or line (each with its own
+    charspan) where Docling gives one per item, so matching prov by prov
+    would compare words against paragraphs.
+    """
+    boxes: dict[int, tuple[float, float, float, float]] = {}
+    for prov in item.get("prov") or []:
+        page_no, bbox = int(prov.get("page_no") or 0), prov.get("bbox")
+        size = page_size(doc, page_no)
+        if not bbox or size is None:
+            continue
+        box = normalized_box(bbox, size)
+        if page_no in boxes:
+            seen = boxes[page_no]
+            box = (min(seen[0], box[0]), min(seen[1], box[1]), max(seen[2], box[2]), max(seen[3], box[3]))
+        boxes[page_no] = box
+    return boxes
 
 
 def label_counts(doc: dict[str, Any]) -> dict[str, int]:
@@ -183,6 +200,7 @@ def docling_serve(url: str, data: bytes, name: str, timeout: float, images_scale
         "to_formats": "json",
         "image_export_mode": "embedded",
         "include_images": "true",
+        "include_page_images": "true",
         "images_scale": str(images_scale),
     }
     body = bytearray()

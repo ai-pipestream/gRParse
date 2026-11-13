@@ -64,6 +64,18 @@ def test_agreement_matches_across_units_and_origins() -> None:
     assert result["score"] == 0.25
 
 
+def test_word_provs_merge_into_one_box_per_item() -> None:
+    words = {"label": "text", "text": "two words",
+             "prov": [{"page_no": 1, "bbox": {"l": 100, "t": 300, "r": 480, "b": 500, "coord_origin": "TOPLEFT"}},
+                      {"page_no": 1, "bbox": {"l": 520, "t": 300, "r": 900, "b": 500, "coord_origin": "TOPLEFT"}}]}
+    ours = ours_doc()
+    ours["texts"][1] = words
+    result = build.agreement(ours, docling_doc())
+    assert result["same_label"] == 1
+    assert result["ours_only"] == 1  # still just the page_footer
+    assert build.boxes_by_page(ours)[1][1] == ("text", (0.1, 0.3, 0.9, 0.5))
+
+
 def test_split_images_writes_files_and_rewrites_uri() -> None:
     doc = ours_doc()
     with tempfile.TemporaryDirectory() as tmp:
