@@ -189,4 +189,11 @@ struct OcrPage {
 // Digital lines win on overlap; OCR fills the gaps. Result is reading-order sorted.
 OcrPage merge_digital_and_ocr(OcrPage digital, OcrPage ocr);
 
+// Adds a recognizer's read of one region crop (a picture on a digital
+// page: a chart whose labels live only in its bitmap) to `page`. The crop's
+// lines shift by the crop origin into page space, take the OCR origin, and
+// drop where they repeat a line the page already has (the text layer's own
+// labels of a vector chart). Returns how many lines were added.
+size_t add_region_read(OcrPage* page, OcrPage crop_read, int crop_left, int crop_top);
+
 }  // namespace grparse

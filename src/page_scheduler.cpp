@@ -27,6 +27,12 @@
 #include "grparse/region_geometry.h"
 
 namespace grparse {
+
+namespace {
+// A picture crop narrower or shorter than this holds no label worth a
+// recognizer pass (an icon, a rule).
+constexpr int kMinPictureReadSide = 32;
+}  // namespace
 namespace {
 
 // The class-triggered barcode gate: decode only when the classifier's top
@@ -781,6 +787,7 @@ class PageScheduler::Impl final {
           // fed in turned, and every device call after it (layout, table
           // crops, figure crops, the preview) must see the upright raster.
           OcrPage assembled;
+          const bool settled_by_text_layer = !job.run_ocr && job.digital_seed.has_value();
           if (job.run_ocr) {
             OcrPage ocr;
             {
@@ -845,6 +852,23 @@ class PageScheduler::Impl final {
             // structure or classifier call.
             resolve_region_overlaps(regions, assembled.lines, job.image.cols, job.image.rows);
             pages_layout_labelled_.fetch_add(1);
+          }
+          // A digital page settled by its text layer still has words that
+          // live only in a picture's bitmap (a chart's axes and legend
+          // drawn into the image). The reference OCRs a digital page's
+          // bitmap areas by default; here each picture region is read and
+          // its lines join the page where the text layer has none.
+          // Selective mode only: kOff means no recognition, and a page that
+          // already ran OCR read its pictures with the rest.
+          if (settled_by_text_layer &&
+              job.page->request->tuning.mode == OcrTuning::Mode::kSelective) {
+            for (const auto& region : regions) {
+              if (region.label != "picture") continue;
+              const cv::Rect roi = clip_region(region, job.image.cols, job.image.rows);
+              if (roi.width < kMinPictureReadSide || roi.height < kMinPictureReadSide) continue;
+              const StageTimer stage(timings.ocr_ms);
+              add_region_read(&assembled, recognizer_.extract_page(job.image(roi)), roi.x, roi.y);
+            }
           }
           // Structure runs on table crops only, grouped with the other device
           // calls while the raster is alive; cells shift into page coordinates
