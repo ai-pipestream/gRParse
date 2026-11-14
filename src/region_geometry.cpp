@@ -215,6 +215,21 @@ void resolve_region_overlaps(std::vector<LayoutRegion>& regions, const std::vect
       has_panels[outer] = true;
     }
   }
+  // A box around some of a figure's panels, inside the figure and with no
+  // caption of its own, is a grouping the detector drew (a column of two
+  // panels): it goes, and its panels hang off the figure itself.
+  for (const size_t inner : pictures) {
+    if (dropped[inner] || !has_panels[inner]) continue;
+    for (const size_t outer : pictures) {
+      if (outer == inner || dropped[outer] || !has_panels[outer]) continue;
+      if (inside_share(regions[inner], regions[outer]) > kNestedShare &&
+          area(regions[inner]) < area(regions[outer]) &&
+          captions_opened_in(regions[inner], lines) == 0) {
+        dropped[inner] = true;
+        break;
+      }
+    }
+  }
   for (const size_t inner : pictures) {
     if (dropped[inner]) continue;
     for (const size_t outer : pictures) {

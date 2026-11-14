@@ -227,6 +227,21 @@ void verify_figure_keeps_its_panels() {
           "the figure and its four panels stay; the duplicate panel goes");
 }
 
+void verify_column_box_inside_a_figure_is_dropped() {
+  // Compositional p1, Figure 1: the detector boxed the left column, panels
+  // (a) and (c), again inside the figure.
+  std::vector<grparse::LayoutRegion> regions = {
+      make_region("picture", 0.575F, 918, 666, 1514, 1001),   // the figure
+      make_region("picture", 0.522F, 919, 666, 1207, 1001),   // left column
+      make_region("picture", 0.757F, 918, 666, 1206, 823),    // (a)
+      make_region("picture", 0.813F, 919, 842, 1206, 1001),   // (c)
+      make_region("picture", 0.775F, 1223, 671, 1514, 825),   // (b)
+      make_region("picture", 0.828F, 1231, 847, 1511, 1001)}; // (d)
+  grparse::resolve_region_overlaps(regions, {}, 1700, 2200);
+  require(regions.size() == 5 && regions[0].right == 1514 && regions[1].bottom == 823,
+          "the column box goes; the figure and its four panels stay");
+}
+
 }  // namespace
 
 int main() {
@@ -239,5 +254,6 @@ int main() {
       verify_regions_nested_in_a_table_join_it,
       verify_picture_around_pictures_is_dropped,
       verify_figure_keeps_its_panels,
+      verify_column_box_inside_a_figure_is_dropped,
   });
 }

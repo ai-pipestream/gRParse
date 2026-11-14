@@ -1090,6 +1090,37 @@ void verify_figure_caption_binds_to_the_figure_above() {
   require(data.pictures(2).captions_size() == 0, "the last figure has no caption on this page");
 }
 
+void verify_panel_label_is_the_panel_caption() {
+  // Next Token p2: "(a) Augmentation recognition" has no layout region of
+  // its own and falls into panel (a); it is that panel's caption.
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1000, 1000,
+                        {boxed_line("(a) Augmentation recognition", 150, 380, 450, 395),
+                         boxed_line("(b)Test", 550, 380, 650, 395),
+                         boxed_line("(%)", 560, 200, 590, 215)}};
+  page.regions = {{"picture", 0.9F, 100, 100, 900, 445},
+                  {"picture", 0.9F, 110, 110, 490, 400},
+                  {"picture", 0.9F, 510, 110, 890, 400}};
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(page, 1, &cursor, &data);
+  std::vector<std::string> captions;
+  for (const auto& picture : data.pictures()) {
+    for (const auto& ref : picture.captions()) {
+      for (const auto& item : data.texts()) {
+        if (item.text().base().self_ref() == ref.ref()) {
+          require(item.text().base().label() == ai::pipestream::document::v1::DOC_ITEM_LABEL_CAPTION,
+                  "a panel label is a caption");
+          require(item.text().base().parent().ref() == picture.self_ref(), "and hangs off its panel");
+          captions.push_back(item.text().base().text());
+        }
+      }
+    }
+  }
+  std::ranges::sort(captions);
+  require(captions == std::vector<std::string>{"(a) Augmentation recognition", "(b)Test"},
+          "each panel takes its label; a unit in brackets stays a picture label");
+}
+
 void verify_line_break_hyphens_join_the_word() {
   // pdfium leaves U+FFFE where it took a hyphen for a line break; the ACM
   // sample read "nar\uFFFE ratives" in a quarter of its paragraphs.
@@ -1147,5 +1178,6 @@ int main() {
       verify_line_break_hyphens_join_the_word,
       verify_panels_hang_off_their_figure,
       verify_figure_caption_binds_to_the_figure_above,
+      verify_panel_label_is_the_panel_caption,
   });
 }
