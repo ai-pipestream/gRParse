@@ -1063,6 +1063,33 @@ void verify_panels_hang_off_their_figure() {
   require(body_refs(data) == std::vector<std::string>{figure}, "panels and captions leave the body");
 }
 
+void verify_figure_caption_binds_to_the_figure_above() {
+  // Next Token p10: "Figure 13" sits between Figure 13 and Figure 14, nearer
+  // the one below; it labels the one above.
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1000, 1000,
+                        {boxed_line("Figure 13: Cross-dataset", 100, 312, 600, 327),
+                         boxed_line("Figure 14: Few-shot", 100, 642, 600, 657)}};
+  page.regions = {{"picture", 0.9F, 100, 100, 900, 300},
+                  {"caption", 0.9F, 90, 310, 610, 330},
+                  {"picture", 0.9F, 100, 335, 900, 630},
+                  {"caption", 0.9F, 90, 640, 610, 660},
+                  {"picture", 0.9F, 100, 665, 900, 950}};
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(page, 1, &cursor, &data);
+  require(data.pictures_size() == 3, "three figures");
+  const auto caption_of = [&data](const ai::pipestream::document::v1::PictureItem& picture) {
+    if (picture.captions_size() != 1) return std::string("(none)");
+    for (const auto& item : data.texts()) {
+      if (item.text().base().self_ref() == picture.captions(0).ref()) return item.text().base().text();
+    }
+    return std::string("(missing)");
+  };
+  require(caption_of(data.pictures(0)) == "Figure 13: Cross-dataset", "Figure 13 takes the caption under it");
+  require(caption_of(data.pictures(1)) == "Figure 14: Few-shot", "Figure 14 takes the caption under it");
+  require(data.pictures(2).captions_size() == 0, "the last figure has no caption on this page");
+}
+
 void verify_line_break_hyphens_join_the_word() {
   // pdfium leaves U+FFFE where it took a hyphen for a line break; the ACM
   // sample read "nar\uFFFE ratives" in a quarter of its paragraphs.
@@ -1119,5 +1146,6 @@ int main() {
       verify_picture_text_hangs_off_the_picture,
       verify_line_break_hyphens_join_the_word,
       verify_panels_hang_off_their_figure,
+      verify_figure_caption_binds_to_the_figure_above,
   });
 }

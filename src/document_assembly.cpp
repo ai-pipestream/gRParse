@@ -723,8 +723,16 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     const double width = caption.region->right - caption.region->left;
     const double height = caption.region->bottom - caption.region->top;
     if (width <= 0 || height <= 0) continue;
+    // A figure caption sits under its figure and a table caption over its
+    // table, as papers set them: between two stacked figures, "Figure 13"
+    // labels the one above it even when the one below is nearer. A float on
+    // the expected side wins; the nearest gap decides among the rest.
+    const std::string_view caption_text = caption.base->text();
+    const bool labels_a_figure = caption_text.starts_with("Fig") || caption_text.starts_with("FIG");
+    const bool labels_a_table = caption_text.starts_with("Table") || caption_text.starts_with("TABLE");
     const EmittedFloat* best = nullptr;
     double best_gap = 0;
+    bool best_expected = false;
     for (const auto& target : floats) {
       // A panel's own caption sits inside its figure: it labels the panel
       // above it, not the figure around it.
@@ -736,18 +744,28 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
                              std::max(caption.region->left, target.region->left);
       if (overlap < 0.3 * width) continue;
       double gap = 0;
-      if (caption.region->top >= target.region->bottom) {
+      const bool below_target = caption.region->top >= target.region->bottom;
+      const bool above_target = caption.region->bottom <= target.region->top;
+      if (below_target) {
         gap = caption.region->top - target.region->bottom;
-      } else if (caption.region->bottom <= target.region->top) {
+      } else if (above_target) {
         gap = target.region->top - caption.region->bottom;
       }
       if (gap > 1.5 * height) continue;
+      const bool picture = target.region->label == "picture";
+      const bool expected = (labels_a_figure && picture && below_target) ||
+                            (labels_a_table && !picture && above_target);
       // On a tie (the figure caption under a figure and its bottom panels)
       // the larger float, the whole figure, takes it.
-      if (best == nullptr || gap < best_gap ||
-          (gap == best_gap && float_area(*target.region) > float_area(*best->region))) {
+      const bool better =
+          best == nullptr || (expected && !best_expected) ||
+          (expected == best_expected &&
+           (gap < best_gap ||
+            (gap == best_gap && float_area(*target.region) > float_area(*best->region))));
+      if (better) {
         best = &target;
         best_gap = gap;
+        best_expected = expected;
       }
     }
     if (best == nullptr) continue;
