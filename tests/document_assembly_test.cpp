@@ -1018,6 +1018,51 @@ void verify_picture_text_hangs_off_the_picture() {
           "picture labels stay out of the body order");
 }
 
+void verify_panels_hang_off_their_figure() {
+  // A figure of two panels, each with its own "(a)" caption inside the
+  // figure, and the figure caption below it all.
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1000, 1000,
+                        {boxed_line("(a) Train", 150, 420, 300, 435),
+                         boxed_line("(b) Test", 550, 420, 700, 435),
+                         boxed_line("Figure 2: Overview", 100, 460, 600, 475)}};
+  page.regions = {{"picture", 0.9F, 100, 100, 900, 445},
+                  {"picture", 0.9F, 110, 110, 490, 410},
+                  {"picture", 0.9F, 510, 110, 890, 410},
+                  {"caption", 0.9F, 140, 415, 310, 440},
+                  {"caption", 0.9F, 540, 415, 710, 440},
+                  {"caption", 0.9F, 90, 455, 610, 480}};
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(page, 1, &cursor, &data);
+  require(data.pictures_size() == 3, "the figure and both panels are pictures");
+  std::string figure;
+  for (const auto& picture : data.pictures()) {
+    if (picture.parent().ref() == "#/body") {
+      require(figure.empty(), "only the figure sits in the body");
+      figure = picture.self_ref();
+    }
+  }
+  size_t panels = 0;
+  for (const auto& picture : data.pictures()) {
+    if (picture.self_ref() == figure) continue;
+    require(picture.parent().ref() == figure, "a panel hangs off its figure");
+    require(picture.captions_size() == 1, "a panel keeps its own caption");
+    ++panels;
+  }
+  require(panels == 2, "two panels");
+  for (const auto& picture : data.pictures()) {
+    if (picture.self_ref() != figure) continue;
+    require(picture.captions_size() == 1, "the figure caption binds to the figure");
+    const auto& caption_ref = picture.captions(0).ref();
+    for (const auto& item : data.texts()) {
+      if (item.text().base().self_ref() == caption_ref) {
+        require(item.text().base().text() == "Figure 2: Overview", "the figure takes its own caption");
+      }
+    }
+  }
+  require(body_refs(data) == std::vector<std::string>{figure}, "panels and captions leave the body");
+}
+
 void verify_line_break_hyphens_join_the_word() {
   // pdfium leaves U+FFFE where it took a hyphen for a line break; the ACM
   // sample read "nar\uFFFE ratives" in a quarter of its paragraphs.
@@ -1073,5 +1118,6 @@ int main() {
       verify_page_sized_picture_over_a_ledger_is_dropped,
       verify_picture_text_hangs_off_the_picture,
       verify_line_break_hyphens_join_the_word,
+      verify_panels_hang_off_their_figure,
   });
 }

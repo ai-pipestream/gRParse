@@ -209,6 +209,11 @@ uint64_t utf8_codepoint_count(const std::string& text) {
 
 namespace {
 
+double float_area(const LayoutRegion& region) {
+  return static_cast<double>(std::max(0, region.right - region.left)) *
+         std::max(0, region.bottom - region.top);
+}
+
 constexpr std::string_view kHyphenationMark = "\xEF\xBF\xBE";
 
 bool keeps_hyphen_before(std::string_view rest) {
@@ -342,6 +347,7 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     std::string self_ref;
     google::protobuf::RepeatedPtrField<pipestream::document::v1::RefItem>* captions;
     google::protobuf::RepeatedPtrField<pipestream::document::v1::RefItem>* children;
+    pipestream::document::v1::RefItem* parent;
   };
   std::vector<EmittedFloat> floats;
   struct EmittedCaption {
@@ -366,7 +372,8 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
       fill_table_data(source, region, table->mutable_data());
       add_collector_source(assign_table_lines(source, region).structured ? "slanet-plus" : "geometry",
                            region.confidence, table->mutable_source());
-      floats.push_back({&region, self_ref, table->mutable_captions(), table->mutable_children()});
+      floats.push_back({&region, self_ref, table->mutable_captions(), table->mutable_children(),
+                        table->mutable_parent()});
       body_order.push_back(self_ref);
       return;
     }
@@ -410,7 +417,7 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
       typed->set_provenance("zxing-cpp");
     }
     floats.push_back({&region, self_ref, picture->mutable_captions(),
-                      picture->mutable_children()});
+                      picture->mutable_children(), picture->mutable_parent()});
     body_order.push_back(self_ref);
   };
 
@@ -678,6 +685,29 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     if (!blocks[index].suppressed) emit_block(blocks[index]);
   }
 
+  // A figure made of panels keeps them as its children: each picture inside
+  // another hangs off the smallest picture around it and leaves body order.
+  std::unordered_set<const LayoutRegion*> figures_with_panels;
+  for (const auto& panel : floats) {
+    if (panel.region->label != "picture") continue;
+    const EmittedFloat* figure = nullptr;
+    for (const auto& outer : floats) {
+      if (&outer == &panel || outer.region->label != "picture") continue;
+      if (!region_nested_in(*panel.region, *outer.region) ||
+          float_area(*outer.region) <= float_area(*panel.region)) {
+        continue;
+      }
+      if (figure == nullptr || float_area(*outer.region) < float_area(*figure->region)) {
+        figure = &outer;
+      }
+    }
+    if (figure == nullptr) continue;
+    figures_with_panels.insert(figure->region);
+    panel.parent->set_ref(figure->self_ref);
+    figure->children->Add()->set_ref(panel.self_ref);
+    std::erase(body_order, panel.self_ref);
+  }
+
   // A caption binds to the nearest table or picture it visually labels: at
   // least 30% of the caption's width overlapping horizontally and a vertical
   // gap of at most 1.5 caption heights, nearest gap wins. The claimed
@@ -696,6 +726,12 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     const EmittedFloat* best = nullptr;
     double best_gap = 0;
     for (const auto& target : floats) {
+      // A panel's own caption sits inside its figure: it labels the panel
+      // above it, not the figure around it.
+      if (figures_with_panels.contains(target.region) &&
+          region_nested_in(*caption.region, *target.region)) {
+        continue;
+      }
       const double overlap = std::min(caption.region->right, target.region->right) -
                              std::max(caption.region->left, target.region->left);
       if (overlap < 0.3 * width) continue;
@@ -706,7 +742,10 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
         gap = target.region->top - caption.region->bottom;
       }
       if (gap > 1.5 * height) continue;
-      if (best == nullptr || gap < best_gap) {
+      // On a tie (the figure caption under a figure and its bottom panels)
+      // the larger float, the whole figure, takes it.
+      if (best == nullptr || gap < best_gap ||
+          (gap == best_gap && float_area(*target.region) > float_area(*best->region))) {
         best = &target;
         best_gap = gap;
       }

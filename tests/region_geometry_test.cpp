@@ -200,10 +200,31 @@ void verify_picture_around_pictures_is_dropped() {
       make_region("picture", 0.99F, 120, 800, 1580, 1480),  // fig 15
       make_region("picture", 0.60F, 200, 900, 700, 1300),   // piece of fig 15
       make_region("picture", 0.90F, 1700, 100, 2000, 400)};  // apart, stays
-  grparse::resolve_region_overlaps(regions, {}, 2200, 1701);
+  // Next Token p10: each figure carries its own caption inside the box.
+  std::vector<grparse::OcrLine> lines = {make_line(130, 610, 600, 640),
+                                         make_line(910, 610, 1400, 640)};
+  lines[0].text = "Figure 13: Cross-dataset";
+  lines[1].text = "Figure 14: Few-shot";
+  grparse::resolve_region_overlaps(regions, lines, 2200, 1701);
   require(regions.size() == 4 && regions[0].left == 120 && regions[1].left == 900 &&
               regions[2].top == 800 && regions[3].left == 1700,
           "the composite and the nested piece go; the figures and the far one stay");
+}
+
+void verify_figure_keeps_its_panels() {
+  // Next Token p2, Figure 2: four panels under one caption below the figure.
+  std::vector<grparse::LayoutRegion> regions = {
+      make_region("picture", 0.90F, 100, 100, 1600, 900),  // the figure
+      make_region("picture", 0.95F, 110, 110, 840, 490),   // (a)
+      make_region("picture", 0.95F, 860, 110, 1590, 490),  // (b)
+      make_region("picture", 0.95F, 110, 510, 840, 890),   // (c)
+      make_region("picture", 0.95F, 860, 510, 1590, 890),  // (d)
+      make_region("picture", 0.50F, 900, 150, 1500, 450)}; // (b) again
+  std::vector<grparse::OcrLine> lines = {make_line(100, 920, 1500, 950)};
+  lines[0].text = "Figure 2: Overview";
+  grparse::resolve_region_overlaps(regions, lines, 2200, 1701);
+  require(regions.size() == 5 && regions[0].left == 100 && regions[0].bottom == 900,
+          "the figure and its four panels stay; the duplicate panel goes");
 }
 
 }  // namespace
@@ -217,5 +238,6 @@ int main() {
       verify_overlapping_tables_keep_one,
       verify_regions_nested_in_a_table_join_it,
       verify_picture_around_pictures_is_dropped,
+      verify_figure_keeps_its_panels,
   });
 }

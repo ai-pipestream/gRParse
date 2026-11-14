@@ -33,6 +33,9 @@ const LayoutRegion* region_for_line(const OcrPage& page, const OcrLine& line);
 //
 // `lines` are the page's lines in the regions' coordinate space; the page
 // size is the raster the regions were detected on. Region order is kept.
+// True when more than 80% of `inner` lies inside `outer`: the share at
+// which a region counts as part of the one around it.
+bool region_nested_in(const LayoutRegion& inner, const LayoutRegion& outer);
 void resolve_region_overlaps(std::vector<LayoutRegion>& regions, const std::vector<OcrLine>& lines,
                              int page_width, int page_height);
 
