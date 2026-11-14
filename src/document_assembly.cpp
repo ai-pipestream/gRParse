@@ -356,6 +356,15 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     pipestream::document::v1::TextItemBase* base;
   };
   std::vector<EmittedCaption> captions;
+  // A panel label whose panel is emitted after it: it hangs off the figure
+  // until the panel exists, then moves (see the pass after emission).
+  struct PendingPanelCaption {
+    const LayoutRegion* panel;
+    size_t figure;
+    std::string self_ref;
+    pipestream::document::v1::TextItemBase* base;
+  };
+  std::vector<PendingPanelCaption> pending_panel_captions;
   std::vector<std::string> body_order;
 
   const auto emit_float = [&](const LayoutRegion& region) {
@@ -525,9 +534,18 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     // picture item, out of the body order, so it neither streams as prose
     // nor is lost. The picture was emitted first (region_anchor rule 1).
     EmittedFloat* holder = nullptr;
+    bool panel_pending = false;
     if (owner != nullptr && owner->label == "picture") {
       for (auto& emitted : floats) {
         if (emitted.region == owner) holder = &emitted;
+      }
+      // The block's own picture is always out before it (region_anchor rule
+      // 1); a panel it moved to may not be yet.
+      if (holder == nullptr && owner != region) {
+        for (auto& emitted : floats) {
+          if (emitted.region == region) holder = &emitted;
+        }
+        panel_pending = holder != nullptr;
       }
     }
     base->set_self_ref(self_ref);
@@ -535,7 +553,12 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
                                     : furniture       ? "#/furniture"
                                                       : "#/body");
     if (holder != nullptr) holder->children->Add()->set_ref(self_ref);
-    if (holder != nullptr && panel_caption) holder->captions->Add()->set_ref(self_ref);
+    if (panel_pending) {
+      pending_panel_captions.push_back(
+          {owner, static_cast<size_t>(holder - floats.data()), self_ref, base});
+    } else if (holder != nullptr && panel_caption) {
+      holder->captions->Add()->set_ref(self_ref);
+    }
     base->set_content_layer(furniture ? pipestream::document::v1::CONTENT_LAYER_FURNITURE
                                       : pipestream::document::v1::CONTENT_LAYER_BODY);
     base->set_label(label);
@@ -716,6 +739,27 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     }
     if (index == blocks.size()) break;
     if (!blocks[index].suppressed) emit_block(blocks[index]);
+  }
+
+  for (const auto& pending : pending_panel_captions) {
+    EmittedFloat& figure = floats[pending.figure];
+    bool moved = false;
+    for (auto& panel : floats) {
+      if (panel.region != pending.panel) continue;
+      auto* children = figure.children;
+      for (int index = 0; index < children->size(); ++index) {
+        if (children->Get(index).ref() == pending.self_ref) {
+          children->DeleteSubrange(index, 1);
+          break;
+        }
+      }
+      pending.base->mutable_parent()->set_ref(panel.self_ref);
+      panel.children->Add()->set_ref(pending.self_ref);
+      panel.captions->Add()->set_ref(pending.self_ref);
+      moved = true;
+      break;
+    }
+    if (!moved) figure.captions->Add()->set_ref(pending.self_ref);
   }
 
   // A figure made of panels keeps them as its children: each picture inside
