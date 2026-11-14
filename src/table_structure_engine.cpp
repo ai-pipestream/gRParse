@@ -337,36 +337,44 @@ TableStructure recognize_in_bands(TableStructurer& structurer, const cv::Mat& cr
     return nearest;
   };
 
-  // The header rows, which every band crop repeats on top so the model sees
-  // the same columns it saw on the first band.
+  // The header's bottom row, which every band crop repeats on top so the
+  // model sees the columns it saw on the first band. One row is enough to
+  // set the columns, and each repeated row spends decode steps.
+  int header_row = -1;
+  for (const auto& cell : structure.cells) {
+    if (cell.header) header_row = std::max(header_row, cell.row + cell.row_span - 1);
+  }
+  if (header_row < 0) header_row = 0;
+  int header_top = crop.rows;
   int header_bottom = 0;
   for (const auto& cell : structure.cells) {
-    if (cell.header) header_bottom = std::max(header_bottom, cell.bottom);
+    if (cell.row + cell.row_span - 1 != header_row) continue;
+    header_top = std::min(header_top, cell.top);
+    header_bottom = std::max(header_bottom, cell.bottom);
   }
-  if (header_bottom == 0) {
-    for (const auto& cell : structure.cells) {
-      if (cell.row == 0) header_bottom = std::max(header_bottom, cell.bottom);
-    }
-  }
+  const int header_height = header_bottom > header_top ? header_bottom - header_top : 0;
 
   double weighted_score = static_cast<double>(structure.score) * structure.cells.size();
   size_t scored_cells = structure.cells.size();
   for (int band = 1; band < max_bands && structure.truncated; ++band) {
     // The decode degrades as it nears its cap, so the last row it reached
     // is read again with the band: the band starts at that row's top.
-    const int last_row = structure.rows - 1;
+    // A cut-off decode can open rows it never fills: the last row is the
+    // last one holding a cell.
+    int last_row = -1;
+    for (const auto& cell : structure.cells) last_row = std::max(last_row, cell.row);
     int cut = crop.rows;
     for (const auto& cell : structure.cells) {
       if (cell.row == last_row) cut = std::min(cut, cell.top);
     }
-    if (last_row <= 0 || cut <= header_bottom || crop.rows - cut < 8) break;
+    if (last_row <= header_row || cut <= header_bottom || crop.rows - cut < 8) break;
     std::erase_if(structure.cells, [last_row](const StructuredCell& cell) { return cell.row >= last_row; });
     structure.rows = last_row;
 
     cv::Mat band_crop;
-    const bool with_header = header_bottom > 0;
+    const bool with_header = header_height > 0;
     if (with_header) {
-      cv::vconcat(crop(cv::Rect(0, 0, crop.cols, header_bottom)),
+      cv::vconcat(crop(cv::Rect(0, header_top, crop.cols, header_height)),
                   crop(cv::Rect(0, cut, crop.cols, crop.rows - cut)), band_crop);
     } else {
       band_crop = crop(cv::Rect(0, cut, crop.cols, crop.rows - cut));
@@ -376,7 +384,7 @@ TableStructure recognize_in_bands(TableStructurer& structurer, const cv::Mat& cr
     // Rows of the repeated header go; the rest shift back under the cut.
     int first_body_row = std::numeric_limits<int>::max();
     for (const auto& cell : next.cells) {
-      if (!with_header || (cell.top + cell.bottom) / 2 >= header_bottom) {
+      if (!with_header || (cell.top + cell.bottom) / 2 >= header_height) {
         first_body_row = std::min(first_body_row, cell.row);
       }
     }
@@ -387,17 +395,17 @@ TableStructure recognize_in_bands(TableStructurer& structurer, const cv::Mat& cr
     int band_rows = 0;
     for (auto cell : next.cells) {
       if (cell.row < first_body_row) continue;
-      const int shift = with_header ? cut - header_bottom : cut;
+      const int shift = with_header ? cut - header_height : cut;
       cell.top += shift;
       cell.bottom += shift;
       cell.row = cell.row - first_body_row + structure.rows;
       cell.header = false;
-      if (!same_columns) {
-        const int column = column_of((cell.left + cell.right) / 2);
-        if (column >= 0) {
-          cell.col = column;
-          cell.col_span = 1;
-        }
+      // Columns go by position, not by the band's own index: even with the
+      // header repeated, the model can count the band's columns from
+      // another edge.
+      if (const int column = column_of((cell.left + cell.right) / 2); column >= 0) {
+        if (column != cell.col || !same_columns) cell.col_span = 1;
+        cell.col = column;
       }
       band_rows = std::max(band_rows, cell.row - structure.rows + cell.row_span);
       // Two band cells mapped onto one slot are one cell: their boxes join.

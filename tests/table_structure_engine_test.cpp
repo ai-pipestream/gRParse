@@ -159,8 +159,9 @@ class BandedStructurer final : public grparse::TableStructurer {
     grparse::TableStructure structure;
     structure.cols = 2;
     if (crop_rows.size() == 1) {
-      // Header, one body row, and a degraded last row at 80..120.
-      structure.rows = 3;
+      // Header, one body row, a degraded row at 80..120, and a row the
+      // cut-off decode opened but never filled.
+      structure.rows = 4;
       structure.score = 0.9F;
       structure.truncated = true;
       structure.cells = {{0, 0, 1, 1, true, 0, 0, 100, 40},  {0, 1, 1, 1, true, 100, 0, 200, 40},
@@ -186,7 +187,7 @@ void verify_truncated_decode_structures_the_rest() {
   require(structurer.crop_rows == std::vector<int>{200, 160},
           "the band repeats the 40 px header over the table from the last row's top");
   require(structure.rows == 4 && structure.cols == 2 && structure.cells.size() == 8,
-          "the degraded last row is read again, the repeated header goes");
+          "the empty and the degraded last rows are read again, the repeated header goes");
   require(!structure.truncated, "the last band reached eos");
   const auto& tail = structure.cells.back();
   require(tail.row == 3 && tail.col == 1 && tail.top == 120 && tail.bottom == 160 && !tail.header,
