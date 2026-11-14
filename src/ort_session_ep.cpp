@@ -39,12 +39,15 @@ constexpr int kEpBuildMaxAttempts = 3;
 // never block a caller that only wants to change or read it.
 std::mutex compile_mutex;
 
-// GRPARSE_CUDA_TF32: unset keeps ONNX Runtime's own default (TF32 on for
-// convolutions and matmuls on Ampere and newer); "off" computes in full FP32,
-// "on" asks for TF32 explicitly.  Anything else throws.
+// GRPARSE_CUDA_TF32: "off" (the default) computes convolutions and matmuls in
+// full FP32; "on" allows TF32, the ONNX Runtime default on Ampere and newer.
+// On 101 ACM papers TF32 moved layout detections near the threshold on an
+// RTX 4080 (3 papers with one picture more or less than the CPU and B70
+// runs); FP32 removed those differences for +18% total time.  Any other value
+// throws.
 std::optional<bool> cuda_tf32_setting() {
   const char* value = std::getenv("GRPARSE_CUDA_TF32");
-  if (value == nullptr || *value == '\0') return std::nullopt;
+  if (value == nullptr || *value == '\0') return false;
   const std::string mode = value;
   if (mode == "on") return true;
   if (mode == "off") return false;
