@@ -233,7 +233,24 @@ void verify_rows_past_a_cut_off_decode_come_from_the_lines() {
       line_at("ETT", 100, 140, 40), line_at("0.429", 290, 140, 50), line_at("0.421", 430, 140, 50),
       line_at("96", 100, 180, 30), line_at("0.153", 440, 180, 50)};
   grparse::extend_truncated_table(gated, skewed);
-  require(gated.structured_cells.size() == 6, "an empty model column below the cut leaves the table as it was");
+  require(gated.structured_cells.size() == 7 && gated.structured_cells[6].col_span == 3 &&
+              gated.structured_cells[6].row == 2,
+          "a third of the body columns unreached: the row is one cell across the table");
+
+  // A header-only column gets no data row and does not gate.
+  grparse::LayoutRegion header_only{"table", 0.9F, 80, 80, 700, 400};
+  header_only.structured_cells = {{0, 0, 1, 1, true, 90, 95, 200, 125},   {0, 1, 1, 1, true, 280, 95, 380, 125},
+                                  {0, 2, 1, 1, true, 420, 95, 520, 125},  {0, 3, 1, 1, true, 560, 95, 660, 125},
+                                  {1, 0, 1, 1, false, 90, 135, 200, 165}, {1, 1, 1, 1, false, 280, 135, 380, 165},
+                                  {1, 2, 1, 1, false, 420, 135, 520, 165}};
+  const std::vector<grparse::OcrLine> header_lines = {
+      line_at("Model", 100, 100, 60), line_at("MSE", 300, 100, 40), line_at("MAE", 440, 100, 40),
+      line_at("Best", 580, 100, 40), line_at("ETT", 100, 140, 40), line_at("0.429", 290, 140, 50),
+      line_at("0.421", 430, 140, 50), line_at("ECL", 100, 180, 40), line_at("0.154", 300, 180, 50),
+      line_at("0.153", 440, 180, 50)};
+  grparse::extend_truncated_table(header_only, header_lines);
+  require(header_only.structured_cells.size() == 10 && header_only.structured_cells[9].col == 2,
+          "a header-only column does not stop the extension");
 
   grparse::LayoutRegion empty{"table", 0.9F, 80, 80, 600, 400};
   grparse::extend_truncated_table(empty, lines);

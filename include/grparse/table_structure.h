@@ -57,9 +57,12 @@ TableLineAssignment assign_table_lines(const OcrPage& page, const LayoutRegion& 
 // fall out as body text. Rows past that point are built from the page's own
 // lines instead: lines inside the table and under the model's cells group
 // into rows by vertical overlap, and each word takes the model's column
-// whose x-interval holds its centre, or the nearest. The model's columns are
-// kept, and no cell is guessed where no word is. Cells are in page space,
-// like `lines`. Does nothing when the table has no model cells.
+// whose x-interval holds its centre, or the nearest; the intervals come from
+// the words the model's rows put in each column. When the row-label column
+// or over a quarter of the model's body columns get no word below the cut,
+// the columns are off, and each row past the cut becomes one cell across
+// the table instead. Cells are in page space, like `lines`. Does nothing
+// when the table has no model cells.
 void extend_truncated_table(LayoutRegion& table, const std::vector<OcrLine>& lines);
 
 }  // namespace grparse

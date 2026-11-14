@@ -178,6 +178,9 @@ void extend_truncated_table(LayoutRegion& table, const std::vector<OcrLine>& lin
   std::vector<std::pair<int, int>> words(static_cast<size_t>(cols),
                                          {std::numeric_limits<int>::max(), std::numeric_limits<int>::min()});
   std::vector<std::pair<int, int>> boxes = words;
+  // Columns the model's body rows hold words in; a header-only column or a
+  // spacer never gets data rows and says nothing about the cut.
+  std::vector<bool> body_used(static_cast<size_t>(cols), false);
   for (const auto& cell : table.structured_cells) {
     if (cell.col_span != 1) continue;
     auto& column = boxes[static_cast<size_t>(cell.col)];
@@ -193,12 +196,11 @@ void extend_truncated_table(LayoutRegion& table, const std::vector<OcrLine>& lin
     auto& column = words[static_cast<size_t>(cell.col)];
     column.first = std::min(column.first, box.left);
     column.second = std::max(column.second, box.right);
+    if (!cell.header) body_used[static_cast<size_t>(cell.col)] = true;
   }
   std::vector<std::pair<int, int>> columns(static_cast<size_t>(cols));
-  std::vector<bool> used(static_cast<size_t>(cols), false);
   for (size_t index = 0; index < columns.size(); ++index) {
-    used[index] = words[index].first <= words[index].second;
-    columns[index] = used[index] ? words[index] : boxes[index];
+    columns[index] = words[index].first <= words[index].second ? words[index] : boxes[index];
   }
   const auto column_of = [&columns](int center) {
     int nearest = -1;
@@ -295,14 +297,35 @@ void extend_truncated_table(LayoutRegion& table, const std::vector<OcrLine>& lin
                            box.right, box.bottom});
     }
   }
-  // Every column the model's rows hold words in must get words below the
-  // cut too; a column that never does means the intervals miss the words
-  // (the model's own columns are off), and wrong numbers in wrong columns
-  // are worse than a table that ends where the model stopped.
-  for (size_t index = 0; index < used.size(); ++index) {
-    if (used[index] && !reached[index]) return;
+  // The model's body columns must get words below the cut too: the
+  // row-label column always, and all but a quarter of the rest (a "best"
+  // marker or a sparse column can stay empty). More missing means the
+  // intervals miss the words, and wrong numbers in wrong columns are worse
+  // than rows without columns: each row past the cut is then one cell
+  // across the table, its words kept in the table and out of the body.
+  size_t used_count = 0;
+  size_t missed = 0;
+  for (size_t index = 0; index < body_used.size(); ++index) {
+    if (!body_used[index]) continue;
+    ++used_count;
+    if (!reached[index]) ++missed;
   }
-  table.structured_cells.insert(table.structured_cells.end(), extension.begin(), extension.end());
+  const bool label_missed = !body_used.empty() && body_used[0] && !reached[0];
+  if (!label_missed && missed * 4 <= used_count) {
+    table.structured_cells.insert(table.structured_cells.end(), extension.begin(), extension.end());
+    return;
+  }
+  for (size_t index = 0; index < built.size(); ++index) {
+    AxisAlignedBox row_box = built[index].members.front();
+    for (const auto& box : built[index].members) {
+      row_box.left = std::min(row_box.left, box.left);
+      row_box.top = std::min(row_box.top, box.top);
+      row_box.right = std::max(row_box.right, box.right);
+      row_box.bottom = std::max(row_box.bottom, box.bottom);
+    }
+    table.structured_cells.push_back({rows + static_cast<int>(index), 0, 1, cols, false, row_box.left,
+                                      row_box.top, row_box.right, row_box.bottom});
+  }
 }
 
 TableLineAssignment assign_table_lines(const OcrPage& page, const LayoutRegion& table) {
