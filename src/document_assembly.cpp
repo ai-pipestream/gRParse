@@ -214,6 +214,8 @@ double float_area(const LayoutRegion& region) {
          std::max(0, region.bottom - region.top);
 }
 
+constexpr double kCaptionPageReach = 0.04;
+
 constexpr std::string_view kHyphenationMark = "\xEF\xBF\xBE";
 
 bool keeps_hyphen_before(std::string_view rest) {
@@ -827,7 +829,16 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
       } else if (above_target) {
         gap = target.region->top - caption.region->bottom;
       }
-      if (gap > 1.5 * height) continue;
+      // A one-line caption allows little by its own height (1.5 x 27 px at
+      // 200 dpi), and papers set captions a body line or two under their
+      // figure: a real float also reaches 4% of the page height. An icon or
+      // a logo (a licence badge) is no figure and keeps the tight reach.
+      const bool badge = !target.region->figure_classes.empty() &&
+                         (target.region->figure_classes.front().label == "icon" ||
+                          target.region->figure_classes.front().label == "logo");
+      const double reach = badge ? 1.5 * height
+                                 : std::max(1.5 * height, kCaptionPageReach * source.height);
+      if (gap > reach) continue;
       const bool picture = target.region->label == "picture";
       // "Figure 2: ..." set inside the figure's own box is that figure's.
       const bool expected = (labels_a_figure && picture && (below_target || inside_figure)) ||

@@ -1158,6 +1158,27 @@ void verify_panel_caption_and_figure_caption_in_one_box_split() {
   require(panel_captions == std::vector<std::string>{"(c) Average ARI"}, "the panel takes its label");
 }
 
+void verify_caption_a_body_line_under_its_figure_binds() {
+  // Next Token p3: "Figure 3: Framework of NextHAR." sits 41 px under its
+  // figure on a 2200 px page; a CC badge with a caption as far off does not
+  // take it.
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1700, 2200,
+                        {boxed_line("Figure 3: Framework of NextHAR.", 300, 941, 900, 968),
+                         boxed_line("Figure 4: Badge", 1300, 1975, 1600, 2002)}};
+  grparse::LayoutRegion badge{"picture", 0.9F, 1300, 1800, 1600, 1900};
+  badge.figure_classes = {{"icon", 0.9F}};
+  page.regions = {{"picture", 0.9F, 200, 300, 1000, 900},
+                  {"caption", 0.9F, 290, 936, 910, 972},
+                  badge,
+                  {"caption", 0.9F, 1290, 1970, 1610, 2006}};
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(page, 1, &cursor, &data);
+  require(data.pictures_size() == 2, "two pictures");
+  require(data.pictures(0).captions_size() == 1, "the figure takes the caption a line under it");
+  require(data.pictures(1).captions_size() == 0, "a badge keeps the tight reach");
+}
+
 void verify_line_break_hyphens_join_the_word() {
   // pdfium leaves U+FFFE where it took a hyphen for a line break; the ACM
   // sample read "nar\uFFFE ratives" in a quarter of its paragraphs.
@@ -1217,5 +1238,6 @@ int main() {
       verify_figure_caption_binds_to_the_figure_above,
       verify_panel_label_is_the_panel_caption,
       verify_panel_caption_and_figure_caption_in_one_box_split,
+      verify_caption_a_body_line_under_its_figure_binds,
   });
 }
