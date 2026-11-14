@@ -115,6 +115,8 @@ class RemotePdfPageSource final : public PageSource {
       fill_document(request.mutable_document(), sent_bytes);
       request.add_families(pdfv1::PDF_FAMILY_TEXT_CELLS);
       request.add_families(pdfv1::PDF_FAMILY_FONTS);
+      // Placements only (no pixels): where the page's rasters sit, for OCR.
+      request.add_families(pdfv1::PDF_FAMILY_PLACED_IMAGES);
       auto* range = request.mutable_pages();
       range->set_begin(static_cast<uint32_t>(page_number - 1));
       range->set_end(static_cast<uint32_t>(page_number));
@@ -126,6 +128,7 @@ class RemotePdfPageSource final : public PageSource {
       std::string header_load_detail;
       std::map<uint32_t, std::string> font_names;
       std::vector<pdfv1::TextCell> cells;
+      std::vector<pdfv1::BoundingBox> images;
       while (reader->Read(&message)) {
         switch (message.payload_case()) {
           case pdfv1::ParseResponse::kHeader:
@@ -145,6 +148,9 @@ class RemotePdfPageSource final : public PageSource {
           case pdfv1::ParseResponse::kPage:
             for (const auto& cell : message.page().text_cells()) {
               cells.push_back(cell);
+            }
+            for (const auto& image : message.page().images()) {
+              images.push_back(image.bbox());
             }
             break;
           default:
@@ -229,6 +235,14 @@ class RemotePdfPageSource final : public PageSource {
         result.lines.push_back(std::move(line));
       }
       if (result.lines.empty()) return std::nullopt;
+      for (const auto& bbox : images) {
+        auto [left_pts, top_pts, right_pts, bottom_pts] = frame->place(bbox);
+        const int left = scaled(std::clamp(left_pts, 0.0, frame->display_width()));
+        const int top = scaled(std::clamp(top_pts, 0.0, frame->display_height()));
+        const int right = scaled(std::clamp(right_pts, 0.0, frame->display_width()));
+        const int bottom = scaled(std::clamp(bottom_pts, 0.0, frame->display_height()));
+        if (right > left && bottom > top) result.image_placements.emplace_back(left, top, right - left, bottom - top);
+      }
 
       const double vertical_coverage =
           (text_bottom - text_top) / frame->display_height();

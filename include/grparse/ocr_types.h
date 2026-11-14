@@ -148,6 +148,10 @@ struct OcrPage {
   bool skip_ocr = false;
   // Layout detections for this page; empty when no layout model is active.
   std::vector<LayoutRegion> regions = {};
+  // Where the PDF places images on this page, in the same frame as `lines`
+  // (digital pages only; empty otherwise). The OCR of a text-layer page reads
+  // these (ocr_image_regions.h).
+  std::vector<cv::Rect> image_placements = {};
   // Which detector produced `regions`, for item source attribution; empty
   // when no layout model ran.
   std::string layout_model = {};

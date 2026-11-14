@@ -1,4 +1,6 @@
 #include "grparse/page_scheduler.h"
+
+#include "grparse/ocr_image_regions.h"
 #include "grparse/page_previews.h"
 
 #include <algorithm>
@@ -855,18 +857,18 @@ class PageScheduler::Impl final {
             pages_layout_labelled_.fetch_add(1);
           }
           // A digital page settled by its text layer still has words that
-          // live only in a picture's bitmap (a chart's axes and legend
-          // drawn into the image). The reference OCRs a digital page's
-          // bitmap areas by default; here each picture region is read and
-          // its lines join the page where the text layer has none.
+          // live only in its rasters (a chart's axes drawn into the image, a
+          // screenshot, a scanned checklist). The reference OCRs every layout
+          // cluster over a bitmap; here the picture regions and the PDF's own
+          // image placements are read (ocr_image_regions.h), and their lines
+          // join the page where the text layer has none (add_region_read).
           // Selective mode only: kOff means no recognition, and a page that
           // already ran OCR read its pictures with the rest.
           if (settled_by_text_layer &&
               job.page->request->tuning.mode == OcrTuning::Mode::kSelective) {
-            for (const auto& region : regions) {
-              if (region.label != "picture") continue;
-              const cv::Rect roi = clip_region(region, job.image.cols, job.image.rows);
-              if (roi.width < kMinPictureReadSide || roi.height < kMinPictureReadSide) continue;
+            for (const cv::Rect& roi :
+                 ocr_image_rects(regions, assembled.image_placements, job.image.cols,
+                                 job.image.rows, kMinPictureReadSide)) {
               const StageTimer stage(timings.ocr_ms);
               add_region_read(&assembled, recognizer_.extract_page(job.image(roi)), roi.x, roi.y);
             }
