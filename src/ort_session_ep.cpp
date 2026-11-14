@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <mutex>
+#include <optional>
 #include <print>
 #include <random>
 #include <stdexcept>
@@ -38,7 +39,32 @@ constexpr int kEpBuildMaxAttempts = 3;
 // never block a caller that only wants to change or read it.
 std::mutex compile_mutex;
 
+// GRPARSE_CUDA_TF32: unset keeps ONNX Runtime's own default (TF32 on for
+// convolutions and matmuls on Ampere and newer); "off" computes in full FP32,
+// "on" asks for TF32 explicitly.  Anything else throws.
+std::optional<bool> cuda_tf32_setting() {
+  const char* value = std::getenv("GRPARSE_CUDA_TF32");
+  if (value == nullptr || *value == '\0') return std::nullopt;
+  const std::string mode = value;
+  if (mode == "on") return true;
+  if (mode == "off") return false;
+  throw std::invalid_argument("GRPARSE_CUDA_TF32 must be on or off");
+}
+
 void append_cuda(Ort::SessionOptions& options, int device) {
+  if (const std::optional<bool> tf32 = cuda_tf32_setting()) {
+    // The V2 options carry use_tf32; every other value matches the legacy
+    // struct below.
+    Ort::CUDAProviderOptions cuda_options;
+    cuda_options.Update({{"device_id", std::to_string(device)},
+                         {"arena_extend_strategy", "kNextPowerOfTwo"},
+                         {"gpu_mem_limit", std::to_string(2ULL * 1024ULL * 1024ULL * 1024ULL)},
+                         {"cudnn_conv_algo_search", "EXHAUSTIVE"},
+                         {"do_copy_in_default_stream", "1"},
+                         {"use_tf32", *tf32 ? "1" : "0"}});
+    options.AppendExecutionProvider_CUDA_V2(*cuda_options);
+    return;
+  }
   // Same options upstream RapidOcrOnnx used, with the 2 GiB arena limit
   // computed in 64 bits (upstream's int expression overflowed).
   OrtCUDAProviderOptions cuda_options;
