@@ -48,6 +48,9 @@ refreshes the viewer files.
   line, so the words become the paragraph. Docling splits a paragraph that
   continues into the next column into separate provs, and those remain
   separate boxes.
+- A formula is always one box per page: the union of all of its provenance
+  boxes on that page. Display math stacks parts above and below one another,
+  so the line and column rule would cut one equation into pieces.
 - Text found inside a figure (a text item with a picture as parent) is left
   out. Docling reports it, gRParse mostly does not, so including it would
   only penalise one side.

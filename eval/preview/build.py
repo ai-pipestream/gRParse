@@ -117,7 +117,19 @@ def item_boxes(doc: dict[str, Any], item: dict[str, Any]) -> dict[int, list[tupl
         size = page_size(doc, page_no)
         if bbox and size is not None:
             raw.setdefault(page_no, []).append(normalized_box(bbox, size))
+    if str(item.get("label") or "") in WHOLE_LABELS:
+        return {page_no: [union(boxes)] for page_no, boxes in raw.items()}
     return {page_no: merge_touching(boxes) for page_no, boxes in raw.items()}
+
+
+# A display formula is laid out in two dimensions (fractions, sub- and
+# superscripts), so its glyph-run provs neither share a line nor stack in a
+# column; it is always one box per page.
+WHOLE_LABELS = frozenset({"formula"})
+
+
+def union(boxes: list[tuple[float, float, float, float]]) -> tuple[float, float, float, float]:
+    return (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes))
 
 
 LINE_GAP = 0.02  # page widths between two boxes on one line

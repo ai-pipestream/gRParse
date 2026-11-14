@@ -85,6 +85,16 @@ def test_column_continuation_stays_two_boxes() -> None:
     assert [box for _, box in build.boxes_by_page(doc)[1]] == [(0.08, 0.5, 0.48, 0.95), (0.52, 0.05, 0.92, 0.3)]
 
 
+def test_formula_is_one_box_per_page() -> None:
+    # Numerator, fraction bar and denominator: neither one line nor one column.
+    formula = {"label": "formula", "text": "a/b",
+               "prov": [{"page_no": 1, "bbox": {"l": 400, "t": 100, "r": 600, "b": 130, "coord_origin": "TOPLEFT"}},
+                        {"page_no": 1, "bbox": {"l": 300, "t": 150, "r": 350, "b": 180, "coord_origin": "TOPLEFT"}},
+                        {"page_no": 1, "bbox": {"l": 800, "t": 140, "r": 850, "b": 160, "coord_origin": "TOPLEFT"}}]}
+    doc = {"pages": {"1": page(1000, 1000)}, "texts": [formula]}
+    assert build.boxes_by_page(doc)[1] == [("formula", (0.3, 0.1, 0.85, 0.18))]
+
+
 def test_text_inside_a_picture_is_not_matched() -> None:
     doc = docling_doc()
     label = item("text", 20, 90, 60, 80, "BOTTOMLEFT")

@@ -61,6 +61,7 @@ function insidePicture(item) {
   return String((item.parent && item.parent.$ref) || "").startsWith("#/pictures/");
 }
 
+const WHOLE_LABELS = new Set(["formula"]);
 const LINE_GAP = 0.02; // page widths between two boxes on one line
 const STACK_GAP = 0.015; // page heights between two stacked boxes in one column
 
@@ -104,7 +105,12 @@ function boxesOnPage(doc, pageNo) {
       const raw = (item.prov || [])
         .filter((prov) => Number(prov.page_no) === pageNo && prov.bbox)
         .map((prov) => normalizedBox(prov.bbox, size));
-      for (const box of mergeTouching(raw)) {
+      // A display formula is two-dimensional: one box per page (build.py WHOLE_LABELS).
+      const merged = WHOLE_LABELS.has(String(item.label || "")) && raw.length
+        ? [raw.reduce((u, b) => ({ x0: Math.min(u.x0, b.x0), y0: Math.min(u.y0, b.y0),
+          x1: Math.max(u.x1, b.x1), y1: Math.max(u.y1, b.y1) }))]
+        : mergeTouching(raw);
+      for (const box of merged) {
         boxes.push({
           label: String(item.label || "unknown"),
           ref: item.self_ref || `#/${arena}/${index}`,
