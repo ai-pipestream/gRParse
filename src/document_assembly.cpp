@@ -215,6 +215,7 @@ double float_area(const LayoutRegion& region) {
 }
 
 constexpr double kCaptionPageReach = 0.04;
+constexpr double kCaptionExpectedReach = 0.06;
 
 constexpr std::string_view kHyphenationMark = "\xEF\xBF\xBE";
 
@@ -767,6 +768,7 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
   // A figure made of panels keeps them as its children: each picture inside
   // another hangs off the smallest picture around it and leaves body order.
   std::unordered_set<const LayoutRegion*> figures_with_panels;
+  std::unordered_map<const LayoutRegion*, EmittedFloat*> figure_of;
   for (const auto& panel : floats) {
     if (panel.region->label != "picture") continue;
     const EmittedFloat* figure = nullptr;
@@ -782,6 +784,7 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     }
     if (figure == nullptr) continue;
     figures_with_panels.insert(figure->region);
+    figure_of[panel.region] = const_cast<EmittedFloat*>(figure);
     panel.parent->set_ref(figure->self_ref);
     figure->children->Add()->set_ref(panel.self_ref);
     std::erase(body_order, panel.self_ref);
@@ -798,26 +801,37 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
   // is the one-sided link the integrity check reports and the opt-in
   // repair_referenced_orphans pass exists to mend in foreign documents; a
   // document this assembler produces never needs it.
-  for (auto& caption : captions) {
+  // A figure caption sits under its figure and a table caption over its
+  // table, as papers set them. Those captions bind first, each to a float
+  // on its expected side; only then may one still free take a float on the
+  // other side, and not one that already holds a caption of its own, so
+  // "Figure 3" over a row of panels never takes the figure below that
+  // "Figure 4" labels. A "Figure N" caption that lands on a panel labels
+  // the panel's figure.
+  struct CaptionKind {
+    bool figure = false;
+    bool table = false;
+  };
+  const auto kind_of = [](const EmittedCaption& caption) {
+    const std::string_view text = caption.base->text();
+    return CaptionKind{text.starts_with("Fig") || text.starts_with("FIG"),
+                       text.starts_with("Table") || text.starts_with("TABLE")};
+  };
+  std::unordered_set<const EmittedFloat*> titled;
+  const auto choose = [&](const EmittedCaption& caption, CaptionKind kind,
+                          bool expected_only) -> EmittedFloat* {
     const double width = caption.region->right - caption.region->left;
     const double height = caption.region->bottom - caption.region->top;
-    if (width <= 0 || height <= 0) continue;
-    // A figure caption sits under its figure and a table caption over its
-    // table, as papers set them: between two stacked figures, "Figure 13"
-    // labels the one above it even when the one below is nearer. A float on
-    // the expected side wins; the nearest gap decides among the rest.
-    const std::string_view caption_text = caption.base->text();
-    const bool labels_a_figure = caption_text.starts_with("Fig") || caption_text.starts_with("FIG");
-    const bool labels_a_table = caption_text.starts_with("Table") || caption_text.starts_with("TABLE");
-    const EmittedFloat* best = nullptr;
+    if (width <= 0 || height <= 0) return nullptr;
+    EmittedFloat* best = nullptr;
     double best_gap = 0;
-    bool best_expected = false;
-    for (const auto& target : floats) {
+    for (auto& target : floats) {
       // A panel's own caption sits inside its figure: it labels the panel
       // above it, not the figure around it.
       const bool inside_figure = figures_with_panels.contains(target.region) &&
                                  region_nested_in(*caption.region, *target.region);
-      if (inside_figure && !labels_a_figure) continue;
+      if (inside_figure && !kind.figure) continue;
+      if (!expected_only && (kind.figure || kind.table) && titled.contains(&target)) continue;
       const double overlap = std::min(caption.region->right, target.region->right) -
                              std::max(caption.region->left, target.region->left);
       if (overlap < 0.3 * width) continue;
@@ -829,38 +843,61 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
       } else if (above_target) {
         gap = target.region->top - caption.region->bottom;
       }
+      const bool picture = target.region->label == "picture";
+      // "Figure 2: ..." set inside the figure's own box is that figure's.
+      const bool expected = (kind.figure && picture && (below_target || inside_figure)) ||
+                            (kind.table && !picture && above_target);
+      if (expected_only && !expected) continue;
       // A one-line caption allows little by its own height (1.5 x 27 px at
-      // 200 dpi), and papers set captions a body line or two under their
-      // figure: a real float also reaches 4% of the page height. An icon or
-      // a logo (a licence badge) is no figure and keeps the tight reach.
+      // 200 dpi), and papers set captions a body line or two from their
+      // float: a real float also reaches 4% of the page height, 6% on the
+      // side the caption labels. An icon or a logo (a licence badge) is no
+      // figure and keeps the tight reach.
       const bool badge = !target.region->figure_classes.empty() &&
                          (target.region->figure_classes.front().label == "icon" ||
                           target.region->figure_classes.front().label == "logo");
-      const double reach = badge ? 1.5 * height
-                                 : std::max(1.5 * height, kCaptionPageReach * source.height);
+      const double page_reach = expected ? kCaptionExpectedReach : kCaptionPageReach;
+      const double reach = badge ? 1.5 * height : std::max(1.5 * height, page_reach * source.height);
       if (gap > reach) continue;
-      const bool picture = target.region->label == "picture";
-      // "Figure 2: ..." set inside the figure's own box is that figure's.
-      const bool expected = (labels_a_figure && picture && (below_target || inside_figure)) ||
-                            (labels_a_table && !picture && above_target);
       // On a tie (the figure caption under a figure and its bottom panels)
       // the larger float, the whole figure, takes it.
-      const bool better =
-          best == nullptr || (expected && !best_expected) ||
-          (expected == best_expected &&
-           (gap < best_gap ||
-            (gap == best_gap && float_area(*target.region) > float_area(*best->region))));
-      if (better) {
+      if (best == nullptr || gap < best_gap ||
+          (gap == best_gap && float_area(*target.region) > float_area(*best->region))) {
         best = &target;
         best_gap = gap;
-        best_expected = expected;
       }
     }
-    if (best == nullptr) continue;
-    caption.base->mutable_parent()->set_ref(best->self_ref);
-    best->captions->Add()->set_ref(caption.self_ref);
-    best->children->Add()->set_ref(caption.self_ref);
+    if (best != nullptr && kind.figure) {
+      for (auto figure = figure_of.find(best->region); figure != figure_of.end();
+           figure = figure_of.find(best->region)) {
+        best = figure->second;
+      }
+    }
+    return best;
+  };
+  const auto bind = [&](const EmittedCaption& caption, EmittedFloat* target) {
+    caption.base->mutable_parent()->set_ref(target->self_ref);
+    target->captions->Add()->set_ref(caption.self_ref);
+    target->children->Add()->set_ref(caption.self_ref);
     std::erase(body_order, caption.self_ref);
+  };
+  std::vector<bool> bound(captions.size(), false);
+  for (size_t index = 0; index < captions.size(); ++index) {
+    const CaptionKind kind = kind_of(captions[index]);
+    if (!kind.figure && !kind.table) continue;
+    if (EmittedFloat* target = choose(captions[index], kind, true); target != nullptr) {
+      bind(captions[index], target);
+      titled.insert(target);
+      bound[index] = true;
+    }
+  }
+  for (size_t index = 0; index < captions.size(); ++index) {
+    if (bound[index]) continue;
+    const CaptionKind kind = kind_of(captions[index]);
+    if (EmittedFloat* target = choose(captions[index], kind, false); target != nullptr) {
+      bind(captions[index], target);
+      if (kind.figure || kind.table) titled.insert(target);
+    }
   }
 
   for (const auto& ref : body_order) output->add_body_order()->set_ref(ref);

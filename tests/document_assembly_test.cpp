@@ -1179,6 +1179,53 @@ void verify_caption_a_body_line_under_its_figure_binds() {
   require(data.pictures(1).captions_size() == 0, "a badge keeps the tight reach");
 }
 
+void verify_titled_captions_bind_to_their_own_figure() {
+  // Quantifying Event Impacts p8: "Figure 3" sits under a row of narrow
+  // panels with no figure box, and over the wide figure that "Figure 4"
+  // labels; the wide figure keeps only its own caption.
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1700, 2200,
+                        {boxed_line("Figure 3: Analysis", 200, 610, 1500, 637),
+                         boxed_line("Figure 4: Prices", 200, 1010, 1500, 1037)}};
+  page.regions = {{"picture", 0.9F, 200, 300, 600, 560},
+                  {"picture", 0.9F, 650, 300, 1050, 560},
+                  {"picture", 0.9F, 1100, 300, 1500, 560},
+                  {"caption", 0.9F, 190, 605, 1510, 642},
+                  {"picture", 0.9F, 200, 660, 1500, 980},
+                  {"caption", 0.9F, 190, 1005, 1510, 1042}};
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(page, 1, &cursor, &data);
+  const auto text_of = [&data](const std::string& ref) {
+    for (const auto& item : data.texts()) {
+      if (item.text().base().self_ref() == ref) return item.text().base().text();
+    }
+    return std::string("(missing)");
+  };
+  bool figure_four = false;
+  for (const auto& picture : data.pictures()) {
+    require(picture.captions_size() <= 1, "no figure holds two captions");
+    if (picture.captions_size() == 1 && text_of(picture.captions(0).ref()) == "Figure 4: Prices") {
+      figure_four = true;
+    }
+  }
+  require(figure_four, "the wide figure keeps its own caption");
+
+  // MTBTime p2: the right-hand panel reaches below its figure's box, nearer
+  // the caption; "Figure 1" still labels the figure.
+  grparse::AssemblyCursor second_cursor;
+  grparse::OcrPage second{1700, 2200, {boxed_line("Figure 1: Backdoor", 520, 445, 880, 470)}};
+  second.regions = {{"picture", 0.9F, 100, 100, 900, 400},
+                    {"picture", 0.9F, 110, 110, 480, 390},
+                    {"picture", 0.9F, 500, 150, 890, 430},
+                    {"caption", 0.9F, 515, 440, 885, 475}};
+  ai::pipestream::parse::v1::PageData second_data;
+  grparse::append_page_data(second, 1, &second_cursor, &second_data);
+  for (const auto& picture : second_data.pictures()) {
+    const bool figure = picture.parent().ref() == "#/body";
+    require(picture.captions_size() == (figure ? 1 : 0), "the figure, not its panel, takes Figure 1");
+  }
+}
+
 void verify_line_break_hyphens_join_the_word() {
   // pdfium leaves U+FFFE where it took a hyphen for a line break; the ACM
   // sample read "nar\uFFFE ratives" in a quarter of its paragraphs.
@@ -1239,5 +1286,6 @@ int main() {
       verify_panel_label_is_the_panel_caption,
       verify_panel_caption_and_figure_caption_in_one_box_split,
       verify_caption_a_body_line_under_its_figure_binds,
+      verify_titled_captions_bind_to_their_own_figure,
   });
 }
