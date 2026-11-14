@@ -821,6 +821,8 @@ add_library(grparse_core STATIC
   src/office_cv_enrichment.cpp
   src/figure_classifier.cpp
   src/document_assembly.cpp
+  src/assembly_floats.cpp
+  src/line_joiner.cpp
   src/list_marker.cpp
   src/assembly_blocks.cpp
   src/assembly_headings.cpp
@@ -904,6 +906,7 @@ if(BUILD_TESTING)
     confluence-storage-test
     docling-map-test
     document-assembly-test
+    assembly-floats-test
     convert-options-test
     docling-parity-golden-test
     document-collectors-test
