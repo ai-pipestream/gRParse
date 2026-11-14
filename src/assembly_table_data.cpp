@@ -5,6 +5,7 @@
 #include <utility>
 #include <vector>
 
+#include "grparse/document_assembly.h"
 #include "grparse/reading_order.h"
 #include "grparse/region_geometry.h"
 #include "grparse/table_structure.h"
@@ -60,12 +61,9 @@ void fill_structured_table_data(const OcrPage& page, const LayoutRegion& region,
     proto_cell.set_start_col_offset_idx(cell.col);
     proto_cell.set_end_col_offset_idx(cell.col + cell.col_span);
     proto_cell.set_column_header(cell.header);
-    std::string text;
-    for (const size_t line_index : visual_line_order(page, std::move(cell_lines[cell_at]))) {
-      if (!text.empty()) text.push_back(' ');
-      text += page.lines[line_index].text;
-    }
-    proto_cell.set_text(std::move(text));
+    LineJoiner text;
+    for (const size_t line_index : visual_line_order(page, std::move(cell_lines[cell_at]))) text.add(page.lines[line_index].text);
+    proto_cell.set_text(text.take());
     AxisAlignedBox box{cell.left, cell.top, cell.right, cell.bottom};
     set_bounding_box(box, proto_cell.mutable_bbox());
     const int cell_index = static_cast<int>(protos.size());
@@ -121,12 +119,9 @@ void fill_table_data(const OcrPage& page, const LayoutRegion& region,
     proto_cell.set_end_row_offset_idx(cell.row + 1);
     proto_cell.set_start_col_offset_idx(cell.col);
     proto_cell.set_end_col_offset_idx(cell.col + 1);
-    std::string text;
-    for (const size_t line_index : cell.line_indices) {
-      if (!text.empty()) text.push_back(' ');
-      text += page.lines[line_index].text;
-    }
-    proto_cell.set_text(std::move(text));
+    LineJoiner text;
+    for (const size_t line_index : cell.line_indices) text.add(page.lines[line_index].text);
+    proto_cell.set_text(text.take());
     if (!cell.line_indices.empty()) set_bounding_box(cell.box, proto_cell.mutable_bbox());
     *data->add_table_cells() = proto_cell;
     *rows[static_cast<size_t>(cell.row)]->add_cells() = std::move(proto_cell);

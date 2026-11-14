@@ -1018,6 +1018,29 @@ void verify_picture_text_hangs_off_the_picture() {
           "picture labels stay out of the body order");
 }
 
+void verify_line_break_hyphens_join_the_word() {
+  // pdfium leaves U+FFFE where it took a hyphen for a line break; the ACM
+  // sample read "nar\uFFFE ratives" in a quarter of its paragraphs.
+  const std::string mark = "\xEF\xBF\xBE";
+  grparse::LineJoiner prose;
+  require(prose.add("telling nar" + mark) == 0, "first line starts at zero");
+  require(prose.add("ratives and Sci" + mark + " entific") == 11, "a broken word joins with no separator");
+  require(prose.add("COVID" + mark) == 34, "a whole line takes a separator");
+  prose.add("19 cases");
+  require(prose.text() == "telling narratives and Scientific COVID-19 cases",
+          "marks go, and stay a hyphen before a digit");
+  require(prose.code_points() == prose.text().size(), "code points follow the cleaned text");
+
+  grparse::LineJoiner trailing;
+  trailing.add("end" + mark);
+  require(trailing.text() == "end", "a mark with no next line leaves no trace");
+
+  grparse::LineJoiner code('\n');
+  code.add("a = 1");
+  code.add("b = 2");
+  require(code.text() == "a = 1\nb = 2", "code lines keep their separator");
+}
+
 int main() {
   return grparse_test::run_test_main("document-assembly-test", {
       verify_contract_shape,
@@ -1049,5 +1072,6 @@ int main() {
       verify_ledger_detected_twice_reads_as_one_table,
       verify_page_sized_picture_over_a_ledger_is_dropped,
       verify_picture_text_hangs_off_the_picture,
+      verify_line_break_hyphens_join_the_word,
   });
 }

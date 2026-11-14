@@ -207,6 +207,56 @@ uint64_t utf8_codepoint_count(const std::string& text) {
   return count;
 }
 
+namespace {
+
+constexpr std::string_view kHyphenationMark = "\xEF\xBF\xBE";
+
+bool keeps_hyphen_before(std::string_view rest) {
+  return !rest.empty() &&
+         (std::isupper(static_cast<unsigned char>(rest.front())) != 0 ||
+          std::isdigit(static_cast<unsigned char>(rest.front())) != 0);
+}
+
+}  // namespace
+
+uint64_t LineJoiner::add(const std::string& line) {
+  std::string clean;
+  clean.reserve(line.size());
+  bool ends_open = false;
+  size_t i = 0;
+  while (i < line.size()) {
+    if (line.compare(i, kHyphenationMark.size(), kHyphenationMark) != 0) {
+      clean.push_back(line[i++]);
+      continue;
+    }
+    i += kHyphenationMark.size();
+    size_t next = i;
+    while (next < line.size() && std::isspace(static_cast<unsigned char>(line[next])) != 0) ++next;
+    if (next == line.size()) {
+      ends_open = true;
+    } else if (keeps_hyphen_before(std::string_view(line).substr(next))) {
+      clean.push_back('-');
+    }
+    i = next;
+  }
+  if (open_break_) {
+    if (keeps_hyphen_before(clean)) {
+      text_.push_back('-');
+      ++code_points_;
+    }
+  } else if (!text_.empty()) {
+    text_.push_back(separator_);
+    ++code_points_;
+  }
+  const uint64_t start = code_points_;
+  code_points_ += utf8_codepoint_count(clean);
+  text_ += clean;
+  // A mark at the very end of the text has no next line to join, so the
+  // break only stays open while there is text before it.
+  open_break_ = ends_open && !text_.empty();
+  return start;
+}
+
 void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cursor,
                       pipestream::parse::v1::PageData* output,
                       std::vector<std::string>* warnings) {
@@ -368,7 +418,6 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     const LayoutRegion* region = block.region;
     // Code lines keep their line structure; prose members join with spaces.
     const char separator = region != nullptr && region->label == "code" ? '\n' : ' ';
-    std::string merged;
     struct MemberSpan {
       size_t line;
       uint64_t start;
@@ -376,18 +425,13 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     };
     std::vector<MemberSpan> spans;
     spans.reserve(block.lines.size());
-    uint64_t code_points = 0;
+    LineJoiner joiner(separator);
     for (const size_t line_index : block.lines) {
-      const auto& line = source.lines[line_index];
-      if (!merged.empty()) {
-        merged.push_back(separator);
-        ++code_points;
-      }
-      const uint64_t length = utf8_codepoint_count(line.text);
-      spans.push_back({line_index, code_points, code_points + length});
-      code_points += length;
-      merged += line.text;
+      const uint64_t start = joiner.add(source.lines[line_index].text);
+      spans.push_back({line_index, start, joiner.code_points()});
     }
+    const uint64_t code_points = joiner.code_points();
+    std::string merged = joiner.take();
     if (code_points > static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
       throw std::length_error("Text block exceeds document charspan range");
     }
