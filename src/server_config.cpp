@@ -10,6 +10,7 @@
 #include <thread>
 
 #include "grparse/chart_derender.h"
+#include "grparse/ocr_rect_render.h"
 #include "grparse/chart_extraction_policy.h"
 #include "grparse/in_memory_document.h"
 #include "grparse/remote_page_source.h"
@@ -368,6 +369,10 @@ PageScheduler::Options read_scheduler_options(const WorkerConfig& workers, bool 
   options.max_active_documents = configured_size("GRPARSE_MAX_ACTIVE_DOCUMENTS", 32, 1024);
   options.capture_picture_images = configure_picture_images(layout_active);
   options.capture_page_images = configure_page_images();
+  // OCR DPI for image rectangles on text-layer pages; at or below the render
+  // DPI (200) they are read from the page raster, as before this setting.
+  options.ocr_image_dpi = static_cast<double>(
+      configured_size("GRPARSE_OCR_IMAGE_DPI", static_cast<size_t>(kDefaultOcrImageDpi), 1200));
   options.barcode_mode = configure_barcode_mode(layout_active, classifier_active);
   options.orientation.enabled = configure_ocr_rotation();
   // Read per input; read here too so a malformed value fails startup.

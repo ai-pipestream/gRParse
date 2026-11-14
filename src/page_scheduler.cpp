@@ -1,6 +1,7 @@
 #include "grparse/page_scheduler.h"
 
 #include "grparse/ocr_image_regions.h"
+#include "grparse/ocr_rect_render.h"
 #include "grparse/page_previews.h"
 
 #include <algorithm>
@@ -193,6 +194,7 @@ struct PageScheduler::Ticket::State {
       open_source = source;
     }
     if (open_source) open_source->cancel();
+    if (ocr_renderer) ocr_renderer->cancel();
   }
 
   void fail(std::exception_ptr value) {
@@ -231,6 +233,9 @@ struct PageScheduler::Ticket::State {
   std::exception_ptr failure;
   std::mutex schedule_mutex;
   std::shared_ptr<PageSource> source;
+  // The document at the OCR DPI for image rectangles; set before any page
+  // is scheduled, null when the rectangles are read from the page raster.
+  std::shared_ptr<OcrRectRenderer> ocr_renderer;
   int total_pages = 0;
   int next_page_to_schedule = 1;
   size_t available_slots = 0;
@@ -645,6 +650,10 @@ class PageScheduler::Impl final {
         {
           std::lock_guard<std::mutex> lock(document.request->schedule_mutex);
           document.request->source = source;
+          const auto& tuning = document.request->tuning;
+          document.request->ocr_renderer = make_ocr_rect_renderer(
+              source_factory_, document.bytes, document.pdf, render_dpi, options_.ocr_image_dpi,
+              tuning.sha256_hex, tuning.deadline, tuning.passwords);
         }
         if (document.request->cancelled.load()) source->cancel();
         const int pages = source->page_count();
@@ -866,11 +875,24 @@ class PageScheduler::Impl final {
           // already ran OCR read its pictures with the rest.
           if (settled_by_text_layer &&
               job.page->request->tuning.mode == OcrTuning::Mode::kSelective) {
-            for (const cv::Rect& roi :
-                 ocr_image_rects(regions, assembled.image_placements, job.image.cols,
-                                 job.image.rows, kMinPictureReadSide)) {
+            const auto rects = ocr_image_rects(regions, assembled.image_placements, job.image.cols,
+                                               job.image.rows, kMinPictureReadSide);
+            // Rectangles read sharper from a second render at the OCR DPI
+            // when one is configured; the page raster otherwise.
+            const auto& renderer = job.page->request->ocr_renderer;
+            const cv::Mat sharp = rects.empty() || !renderer ? cv::Mat()
+                                                             : renderer->render(job.page->page_number);
+            for (const cv::Rect& roi : rects) {
               const StageTimer stage(timings.ocr_ms);
-              add_region_read(&assembled, recognizer_.extract_page(job.image(roi)), roi.x, roi.y);
+              if (sharp.empty()) {
+                add_region_read(&assembled, recognizer_.extract_page(job.image(roi)), roi.x, roi.y);
+                continue;
+              }
+              const cv::Rect fine = scaled_rect(roi, renderer->scale(), sharp.size());
+              if (fine.empty()) continue;
+              OcrPage read = recognizer_.extract_page(sharp(fine));
+              scale_read(&read, renderer->scale());
+              add_region_read(&assembled, std::move(read), roi.x, roi.y);
             }
           }
           // Structure runs on table crops only, grouped with the other device

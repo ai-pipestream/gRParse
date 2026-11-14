@@ -837,6 +837,7 @@ add_library(grparse_core STATIC
   src/layout_decode.cpp
   src/layout_engine.cpp
   src/ocr_image_regions.cpp
+  src/ocr_rect_render.cpp
   src/page_previews.cpp
   src/page_source_watch.cpp
   src/page_projection.cpp
@@ -926,6 +927,7 @@ if(BUILD_TESTING)
     office-cv-enrichment-test
     ort-session-ep-test
     ocr-image-regions-test
+    ocr-rect-render-test
     page-previews-test
     page-projection-test
     stream-delta-test

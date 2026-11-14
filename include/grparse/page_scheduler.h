@@ -61,6 +61,10 @@ class PageScheduler final {
     // Forces rasterization of full-digital pages (like layout does).  Off by
     // default: previews add bytes to every page event.
     bool capture_page_images = false;
+    // DPI the image rectangles of a text-layer page are OCRed at
+    // (ocr_rect_render.h); the page raster and layout stay at the render DPI.
+    // At or below the render DPI the rectangles are read from the page raster.
+    double ocr_image_dpi = 0.0;
     // Decode barcode/QR payloads from figure crops in the inference stage.
     BarcodeMode barcode_mode = BarcodeMode::kOff;
     // Orientation recovery for recognized pages (orientation_recovery.h):
