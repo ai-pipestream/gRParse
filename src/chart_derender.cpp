@@ -422,7 +422,8 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
                                     const ChartDerenderOptions& options,
                                     docv1::Document* document,
                                     CollectorDeadline inbound_deadline,
-                                    CollectorCancelled cancelled) {
+                                    CollectorCancelled cancelled,
+                                    std::vector<ChartCandidate> item_crops) {
   ChartDerenderReport report;
   if (!options.any_job()) return report;
 
@@ -444,6 +445,7 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
   };
   add_images(chart_candidates);
   add_images(describe_candidates);
+  if (options.do_code_enrichment || options.do_formula_enrichment) add_images(item_crops);
 
   const bool needs_full_document =
       options.do_picture_description || options.do_code_enrichment ||
@@ -493,6 +495,7 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
   }
   if (options.do_code_enrichment || options.do_formula_enrichment) {
     request_options->set_code_formula_preset(options.code_formula_preset);
+    request_options->set_formula_prompt(options.formula_prompt);
     if (options.code_formula_expansion_factor.has_value()) {
       request_options->set_code_formula_expansion_factor(*options.code_formula_expansion_factor);
     }

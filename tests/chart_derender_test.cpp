@@ -5,6 +5,7 @@
 // the skip and empty-table paths, the deadline path, an unreachable peer,
 // and the off-by-default path in which nothing is dialed.
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -942,6 +943,54 @@ void verify_code_formula_options_reach_enrich_typed() {
   require(!default_seen.options.has_code_formula_expansion_factor() &&
               !default_seen.options.has_code_formula_stop_on_repetition(),
           "unset tunables stay unset so enrich applies Docling's defaults");
+  require(default_seen.options.formula_prompt() == enrichv1::FORMULA_PROMPT_UNSPECIFIED,
+          "an unset formula prompt lets enrich choose by model");
+
+  FakeEnrichService pinned_fake(FakeMode::kAnswer);
+  ServerFixture pinned_server(&pinned_fake);
+  docv1::Document third = sample_document();
+  grparse::ChartDerenderOptions pinned = options_for(pinned_server.target());
+  pinned.do_chart_extraction = false;
+  pinned.do_formula_enrichment = true;
+  pinned.formula_prompt = enrichv1::FORMULA_PROMPT_CODEFORMULA_TOKEN;
+  grparse::derender_charts(pinned_server.channel(), pinned, &third);
+  require(pinned_fake.seen().options.formula_prompt() == enrichv1::FORMULA_PROMPT_CODEFORMULA_TOKEN,
+          "a pinned formula prompt reaches enrich");
+}
+
+// Code and formula crops ride the stream as ItemImage frames under the item's
+// self_ref, ahead of the completing chunk, and only when one of those jobs
+// is on: a chart-only call never carries them.
+void verify_item_crops_reach_enrich_with_code_formula_jobs() {
+  grparse::ChartCandidate crop;
+  crop.picture_index = -1;
+  crop.self_ref = "#/texts/3";
+  crop.mimetype = "image/png";
+  crop.bytes = kPng + "formula";
+
+  FakeEnrichService fake(FakeMode::kAnswer);
+  ServerFixture server(&fake);
+  docv1::Document document = sample_document();
+  grparse::ChartDerenderOptions options = options_for(server.target());
+  options.do_chart_extraction = false;
+  options.do_formula_enrichment = true;
+  grparse::derender_charts(server.channel(), options, &document, grparse::kNoCollectorDeadline, {},
+                           {crop});
+  const FakeEnrichService::Seen seen = fake.seen();
+  require(std::ranges::find(seen.image_refs, "#/texts/3") != seen.image_refs.end(),
+          "the formula crop goes out under its self_ref");
+  const auto at = std::ranges::find(seen.image_refs, "#/texts/3") - seen.image_refs.begin();
+  require(seen.image_bytes[static_cast<size_t>(at)] == crop.bytes, "with its pixels unchanged");
+  require(seen.images_before_complete, "before the completing document chunk");
+
+  FakeEnrichService chart_fake(FakeMode::kAnswer);
+  ServerFixture chart_server(&chart_fake);
+  docv1::Document second = sample_document();
+  grparse::derender_charts(chart_server.channel(), options_for(chart_server.target()), &second,
+                           grparse::kNoCollectorDeadline, {}, {crop});
+  const FakeEnrichService::Seen chart_seen = chart_fake.seen();
+  require(std::ranges::find(chart_seen.image_refs, "#/texts/3") == chart_seen.image_refs.end(),
+          "a chart-only call sends no code/formula crop");
 }
 
 void verify_repetition_truncation_folds_typed() {
@@ -1009,5 +1058,6 @@ int main() {
       verify_picture_description_api_call_reaches_enrich,
       verify_code_formula_options_reach_enrich_typed,
       verify_repetition_truncation_folds_typed,
+      verify_item_crops_reach_enrich_with_code_formula_jobs,
   });
 }

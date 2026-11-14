@@ -34,6 +34,7 @@
 
 #include "grparse/base64.h"
 #include "grparse/chart_derender.h"
+#include "grparse/code_formula_crops.h"
 #include "grparse/confidence.h"
 #include "grparse/content_sniff.h"
 #include "grparse/data_totals.h"
@@ -2301,9 +2302,15 @@ void derender_charts_if_configured(const std::shared_ptr<CollectorEndpoints>& co
   enrich.picture_description_deny = inputs.picture_description_deny;
   enrich.picture_description_min_confidence = inputs.picture_description_min_confidence;
   if (!enrich.any_job()) return;
+  std::vector<ChartCandidate> item_crops = enrich_item_crops(
+      enrich, inputs.bytes, result->document,
+      [context, inbound_deadline] {
+        return context->IsCancelled() || std::chrono::system_clock::now() >= inbound_deadline;
+      },
+      inbound_deadline);
   const ChartDerenderReport derendered =
       derender_charts(collectors->enrich_channel(), enrich, &result->document, inbound_deadline,
-                      [context] { return context->IsCancelled(); });
+                      [context] { return context->IsCancelled(); }, std::move(item_crops));
   for (const std::string& warning : derendered.warnings) {
     result->warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, warning);
   }

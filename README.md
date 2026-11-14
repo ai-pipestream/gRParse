@@ -936,7 +936,11 @@ gRParse has no VLM client of its own. The opt-in chart derender leg hands
 that to grpc-enrich, the fleet's VLM face: set `GRPARSE_ENRICH_TARGET`
 (unset means the leg does not exist; `GRPARSE_ENRICH_TIMEOUT_MS`, default
 5000, bounds the whole leg per parse; `GRPARSE_ENRICH_VLM_ENDPOINT`
-optionally overrides the enrich service's VLM per request) and, after the
+optionally overrides the enrich service's VLM per request;
+`GRPARSE_ENRICH_FORMULA_PROMPT` = `auto` (default: grpc-enrich picks the
+`<formula>` token for a CodeFormula model and a LaTeX prompt with the text
+layer as a hint for a general VLM), `codeformula` (Docling's token, for
+like-for-like comparisons), `latex` or `latex_hint`) and, after the
 merge and the repair pass, every picture with a chart verdict, inline pixels
 (`GRPARSE_PICTURE_IMAGES=on` for CV crops) and no typed table yet is sent
 through `EnrichService.EnrichDocument` with `do_chart_extraction`. Each
