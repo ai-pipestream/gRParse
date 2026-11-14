@@ -148,33 +148,33 @@ void verify_rejects_empty_image(const fs::path& model) {
 }  // namespace
 
 // slanet-plus stops at 500 tokens: on a tall table the first decode ends
-// partway down. The rest is structured again under the last row reached,
-// and its cells land on the first band's columns.
+// partway down. The rest is structured again from the top of the last row
+// it reached, with the header rows repeated on top so the model sees the
+// same columns; the repeated header goes, and the rest follows.
 class BandedStructurer final : public grparse::TableStructurer {
  public:
   std::vector<int> crop_rows;
   grparse::TableStructure recognize(const cv::Mat& crop) override {
     crop_rows.push_back(crop.rows);
     grparse::TableStructure structure;
+    structure.cols = 2;
     if (crop_rows.size() == 1) {
-      structure.rows = 2;
-      structure.cols = 2;
+      // Header, one body row, and a degraded last row at 80..120.
+      structure.rows = 3;
       structure.score = 0.9F;
       structure.truncated = true;
-      structure.cells = {{0, 0, 1, 1, true, 0, 0, 100, 40},
-                         {0, 1, 1, 1, true, 100, 0, 200, 40},
-                         {1, 0, 1, 1, false, 0, 40, 100, 80},
-                         {1, 1, 1, 1, false, 100, 40, 200, 80}};
+      structure.cells = {{0, 0, 1, 1, true, 0, 0, 100, 40},  {0, 1, 1, 1, true, 100, 0, 200, 40},
+                         {1, 0, 1, 1, false, 0, 40, 100, 80}, {1, 1, 1, 1, false, 100, 40, 200, 80},
+                         {2, 0, 1, 2, false, 0, 80, 200, 120}};
       return structure;
     }
-    // The band below row 1, in its own crop: the model splits it into
-    // three columns, which fold onto the first band's two.
-    structure.rows = 1;
-    structure.cols = 3;
+    // The band crop: the 40 px header, then the table from y 80 down
+    // (rows 80..120 and 120..160 of the table at 40..80 and 80..120 here).
+    structure.rows = 3;
     structure.score = 0.7F;
-    structure.cells = {{0, 0, 1, 1, true, 0, 0, 60, 40},
-                       {0, 1, 1, 1, false, 60, 0, 120, 40},
-                       {0, 2, 1, 1, false, 140, 0, 200, 40}};
+    structure.cells = {{0, 0, 1, 1, true, 0, 0, 100, 40},   {0, 1, 1, 1, true, 100, 0, 200, 40},
+                       {1, 0, 1, 1, false, 0, 40, 100, 80},  {1, 1, 1, 1, false, 100, 40, 200, 80},
+                       {2, 0, 1, 1, false, 0, 80, 100, 120}, {2, 1, 1, 1, false, 100, 80, 200, 120}};
     return structure;
   }
 };
@@ -183,15 +183,17 @@ void verify_truncated_decode_structures_the_rest() {
   BandedStructurer structurer;
   const cv::Mat crop(200, 200, CV_8UC3, cv::Scalar(255, 255, 255));
   const grparse::TableStructure structure = grparse::recognize_in_bands(structurer, crop);
-  require(structurer.crop_rows == std::vector<int>{200, 120}, "the second band starts under the last row");
-  require(structure.rows == 3 && structure.cols == 2 && structure.cells.size() == 7,
-          "the band's row follows the first band's rows");
+  require(structurer.crop_rows == std::vector<int>{200, 160},
+          "the band repeats the 40 px header over the table from the last row's top");
+  require(structure.rows == 4 && structure.cols == 2 && structure.cells.size() == 8,
+          "the degraded last row is read again, the repeated header goes");
   require(!structure.truncated, "the last band reached eos");
   const auto& tail = structure.cells.back();
-  require(tail.row == 2 && tail.col == 1 && tail.top == 80 && tail.bottom == 120 && !tail.header,
-          "band cells shift into the crop and take the first band's columns");
-  require(structure.cells[4].col == 0 && structure.cells[5].col == 0, "a narrower column folds onto its column");
-  require(std::abs(structure.score - (0.9F * 4 + 0.7F * 3) / 7) < 1e-4F, "score weighs each band by its cells");
+  require(tail.row == 3 && tail.col == 1 && tail.top == 120 && tail.bottom == 160 && !tail.header,
+          "band cells shift back under the cut");
+  require(structure.cells[4].row == 2 && structure.cells[4].col_span == 1 && structure.cells[4].top == 80,
+          "the re-read row replaces the degraded one");
+  require(std::abs(structure.score - (0.9F * 5 + 0.7F * 4) / 9) < 1e-4F, "score weighs each band by its cells");
 }
 
 int main() {

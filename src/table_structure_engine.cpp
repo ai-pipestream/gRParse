@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -336,31 +337,86 @@ TableStructure recognize_in_bands(TableStructurer& structurer, const cv::Mat& cr
     return nearest;
   };
 
+  // The header rows, which every band crop repeats on top so the model sees
+  // the same columns it saw on the first band.
+  int header_bottom = 0;
+  for (const auto& cell : structure.cells) {
+    if (cell.header) header_bottom = std::max(header_bottom, cell.bottom);
+  }
+  if (header_bottom == 0) {
+    for (const auto& cell : structure.cells) {
+      if (cell.row == 0) header_bottom = std::max(header_bottom, cell.bottom);
+    }
+  }
+
   double weighted_score = static_cast<double>(structure.score) * structure.cells.size();
   size_t scored_cells = structure.cells.size();
   for (int band = 1; band < max_bands && structure.truncated; ++band) {
-    int cut = 0;
-    for (const auto& cell : structure.cells) cut = std::max(cut, cell.bottom);
-    // Too little left under the last row to hold another row of text.
-    if (cut <= 0 || crop.rows - cut < 8) break;
-    TableStructure next = structurer.recognize(crop(cv::Rect(0, cut, crop.cols, crop.rows - cut)));
-    structure.truncated = next.truncated;
-    if (next.cells.empty() || next.rows <= 0) break;
-    for (auto cell : next.cells) {
-      cell.top += cut;
-      cell.bottom += cut;
-      cell.row += structure.rows;
-      cell.header = false;
-      const int column = column_of((cell.left + cell.right) / 2);
-      if (column >= 0) {
-        cell.col = column;
-        cell.col_span = 1;
-      }
-      structure.cells.push_back(cell);
+    // The decode degrades as it nears its cap, so the last row it reached
+    // is read again with the band: the band starts at that row's top.
+    const int last_row = structure.rows - 1;
+    int cut = crop.rows;
+    for (const auto& cell : structure.cells) {
+      if (cell.row == last_row) cut = std::min(cut, cell.top);
     }
-    structure.rows += next.rows;
-    weighted_score += static_cast<double>(next.score) * next.cells.size();
-    scored_cells += next.cells.size();
+    if (last_row <= 0 || cut <= header_bottom || crop.rows - cut < 8) break;
+    std::erase_if(structure.cells, [last_row](const StructuredCell& cell) { return cell.row >= last_row; });
+    structure.rows = last_row;
+
+    cv::Mat band_crop;
+    const bool with_header = header_bottom > 0;
+    if (with_header) {
+      cv::vconcat(crop(cv::Rect(0, 0, crop.cols, header_bottom)),
+                  crop(cv::Rect(0, cut, crop.cols, crop.rows - cut)), band_crop);
+    } else {
+      band_crop = crop(cv::Rect(0, cut, crop.cols, crop.rows - cut));
+    }
+    TableStructure next = structurer.recognize(band_crop);
+    structure.truncated = next.truncated;
+    // Rows of the repeated header go; the rest shift back under the cut.
+    int first_body_row = std::numeric_limits<int>::max();
+    for (const auto& cell : next.cells) {
+      if (!with_header || (cell.top + cell.bottom) / 2 >= header_bottom) {
+        first_body_row = std::min(first_body_row, cell.row);
+      }
+    }
+    if (first_body_row == std::numeric_limits<int>::max()) break;
+    const bool same_columns = next.cols == structure.cols;
+    std::map<std::pair<int, int>, size_t> slots;
+    size_t added = 0;
+    int band_rows = 0;
+    for (auto cell : next.cells) {
+      if (cell.row < first_body_row) continue;
+      const int shift = with_header ? cut - header_bottom : cut;
+      cell.top += shift;
+      cell.bottom += shift;
+      cell.row = cell.row - first_body_row + structure.rows;
+      cell.header = false;
+      if (!same_columns) {
+        const int column = column_of((cell.left + cell.right) / 2);
+        if (column >= 0) {
+          cell.col = column;
+          cell.col_span = 1;
+        }
+      }
+      band_rows = std::max(band_rows, cell.row - structure.rows + cell.row_span);
+      // Two band cells mapped onto one slot are one cell: their boxes join.
+      const auto slot = std::make_pair(cell.row, cell.col);
+      if (const auto taken = slots.find(slot); taken != slots.end()) {
+        auto& kept = structure.cells[taken->second];
+        kept.left = std::min(kept.left, cell.left);
+        kept.top = std::min(kept.top, cell.top);
+        kept.right = std::max(kept.right, cell.right);
+        kept.bottom = std::max(kept.bottom, cell.bottom);
+        continue;
+      }
+      slots.emplace(slot, structure.cells.size());
+      structure.cells.push_back(cell);
+      ++added;
+    }
+    structure.rows += band_rows;
+    weighted_score += static_cast<double>(next.score) * static_cast<double>(added);
+    scored_cells += added;
   }
   structure.score = scored_cells == 0 ? 0.0F : static_cast<float>(weighted_score / scored_cells);
   return structure;
