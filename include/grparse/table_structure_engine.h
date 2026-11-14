@@ -20,6 +20,10 @@ struct TableStructure {
   // Mean probability over the emitted structure tokens.
   float score = 0.0F;
   std::vector<StructuredCell> cells;
+  // True when the decode used every step the model has without reaching
+  // eos: slanet-plus stops at 500 tokens, so a large table's lower rows
+  // are missing, not absent.
+  bool truncated = false;
 };
 
 // Places the decoded HTML structure tokens on a grid.  `tokens` is the raw
@@ -38,6 +42,15 @@ class TableStructurer {
   virtual ~TableStructurer() = default;
   virtual TableStructure recognize(const cv::Mat& crop) = 0;
 };
+
+// Structures a crop, and when the decode runs out of steps, structures the
+// part under the last row it reached again, up to `max_bands` crops in all.
+// Rows of a later band follow the earlier ones; its cells take the column
+// of the first band whose x-interval holds their centre, or the nearest,
+// so the table keeps one column grid. `truncated` stays set when the last
+// band still ran out.
+TableStructure recognize_in_bands(TableStructurer& structurer, const cv::Mat& crop,
+                                  int max_bands = 4);
 
 // SLANet-plus table structure recognition (RapidTable export) on ONNX
 // Runtime.  The session binds the process-wide execution provider selection,

@@ -888,7 +888,7 @@ class PageScheduler::Impl final {
               if (region.label != "table") continue;
               const cv::Rect roi = clip_region(region, job.image.cols, job.image.rows);
               if (roi.empty()) continue;
-              TableStructure structure = table_structurer_->recognize(job.image(roi));
+              TableStructure structure = recognize_in_bands(*table_structurer_, job.image(roi));
               tables_structured_.fetch_add(1);
               region.structured_cells = std::move(structure.cells);
               if (!region.structured_cells.empty()) region.structure_score = structure.score;

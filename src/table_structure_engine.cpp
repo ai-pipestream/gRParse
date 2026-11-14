@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -247,13 +248,17 @@ class TableStructureEngine::Impl {
     std::vector<AxisAlignedBox> cell_boxes;
     double score_total = 0.0;
     size_t score_count = 0;
+    bool reached_eos = false;
     for (int64_t step = 0; step < steps; ++step) {
       const float* step_probs = probs + step * vocab_size;
       int64_t best = 0;
       for (int64_t index = 1; index < vocab_size; ++index) {
         if (step_probs[index] > step_probs[best]) best = index;
       }
-      if (step > 0 && static_cast<size_t>(best) == eos_index) break;
+      if (step > 0 && static_cast<size_t>(best) == eos_index) {
+        reached_eos = true;
+        break;
+      }
       if (best == 0 || static_cast<size_t>(best) == eos_index) continue;  // sos/eos
       const std::string& token = vocab_[static_cast<size_t>(best)];
       if (is_cell_open(token)) {
@@ -285,6 +290,7 @@ class TableStructureEngine::Impl {
     TableStructure structure = structure_from_tokens(tokens, cell_boxes);
     structure.score =
         score_count == 0 ? 0.0F : static_cast<float>(score_total / static_cast<double>(score_count));
+    structure.truncated = !reached_eos;
     warmed_ = true;
     return structure;
   }
@@ -299,6 +305,66 @@ class TableStructureEngine::Impl {
   // First inference compiles provider kernels; see the gate in recognize().
   bool warmed_ = false;
 };
+
+TableStructure recognize_in_bands(TableStructurer& structurer, const cv::Mat& crop, int max_bands) {
+  TableStructure structure = structurer.recognize(crop);
+  if (!structure.truncated || structure.cells.empty() || structure.rows <= 0) return structure;
+  // The first band's columns, as the x-interval each single-column cell
+  // covers.
+  std::vector<std::pair<int, int>> columns(static_cast<size_t>(std::max(structure.cols, 0)),
+                                           {std::numeric_limits<int>::max(), std::numeric_limits<int>::min()});
+  for (const auto& cell : structure.cells) {
+    if (cell.col_span != 1 || cell.col < 0 || cell.col >= structure.cols) continue;
+    auto& column = columns[static_cast<size_t>(cell.col)];
+    column.first = std::min(column.first, cell.left);
+    column.second = std::max(column.second, cell.right);
+  }
+  const auto column_of = [&columns](int center) {
+    int nearest = -1;
+    int64_t nearest_distance = std::numeric_limits<int64_t>::max();
+    for (size_t index = 0; index < columns.size(); ++index) {
+      const auto [left, right] = columns[index];
+      if (left > right) continue;
+      if (center >= left && center <= right) return static_cast<int>(index);
+      const int64_t distance = center < left ? static_cast<int64_t>(left) - center
+                                             : static_cast<int64_t>(center) - right;
+      if (distance < nearest_distance) {
+        nearest = static_cast<int>(index);
+        nearest_distance = distance;
+      }
+    }
+    return nearest;
+  };
+
+  double weighted_score = static_cast<double>(structure.score) * structure.cells.size();
+  size_t scored_cells = structure.cells.size();
+  for (int band = 1; band < max_bands && structure.truncated; ++band) {
+    int cut = 0;
+    for (const auto& cell : structure.cells) cut = std::max(cut, cell.bottom);
+    // Too little left under the last row to hold another row of text.
+    if (cut <= 0 || crop.rows - cut < 8) break;
+    TableStructure next = structurer.recognize(crop(cv::Rect(0, cut, crop.cols, crop.rows - cut)));
+    structure.truncated = next.truncated;
+    if (next.cells.empty() || next.rows <= 0) break;
+    for (auto cell : next.cells) {
+      cell.top += cut;
+      cell.bottom += cut;
+      cell.row += structure.rows;
+      cell.header = false;
+      const int column = column_of((cell.left + cell.right) / 2);
+      if (column >= 0) {
+        cell.col = column;
+        cell.col_span = 1;
+      }
+      structure.cells.push_back(cell);
+    }
+    structure.rows += next.rows;
+    weighted_score += static_cast<double>(next.score) * next.cells.size();
+    scored_cells += next.cells.size();
+  }
+  structure.score = scored_cells == 0 ? 0.0F : static_cast<float>(weighted_score / scored_cells);
+  return structure;
+}
 
 TableStructureEngine::TableStructureEngine(const std::filesystem::path& model_path)
     : impl_(std::make_unique<Impl>(model_path)) {}

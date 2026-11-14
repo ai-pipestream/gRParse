@@ -147,10 +147,58 @@ void verify_rejects_empty_image(const fs::path& model) {
 
 }  // namespace
 
+// slanet-plus stops at 500 tokens: on a tall table the first decode ends
+// partway down. The rest is structured again under the last row reached,
+// and its cells land on the first band's columns.
+class BandedStructurer final : public grparse::TableStructurer {
+ public:
+  std::vector<int> crop_rows;
+  grparse::TableStructure recognize(const cv::Mat& crop) override {
+    crop_rows.push_back(crop.rows);
+    grparse::TableStructure structure;
+    if (crop_rows.size() == 1) {
+      structure.rows = 2;
+      structure.cols = 2;
+      structure.score = 0.9F;
+      structure.truncated = true;
+      structure.cells = {{0, 0, 1, 1, true, 0, 0, 100, 40},
+                         {0, 1, 1, 1, true, 100, 0, 200, 40},
+                         {1, 0, 1, 1, false, 0, 40, 100, 80},
+                         {1, 1, 1, 1, false, 100, 40, 200, 80}};
+      return structure;
+    }
+    // The band below row 1, in its own crop: the model splits it into
+    // three columns, which fold onto the first band's two.
+    structure.rows = 1;
+    structure.cols = 3;
+    structure.score = 0.7F;
+    structure.cells = {{0, 0, 1, 1, true, 0, 0, 60, 40},
+                       {0, 1, 1, 1, false, 60, 0, 120, 40},
+                       {0, 2, 1, 1, false, 140, 0, 200, 40}};
+    return structure;
+  }
+};
+
+void verify_truncated_decode_structures_the_rest() {
+  BandedStructurer structurer;
+  const cv::Mat crop(200, 200, CV_8UC3, cv::Scalar(255, 255, 255));
+  const grparse::TableStructure structure = grparse::recognize_in_bands(structurer, crop);
+  require(structurer.crop_rows == std::vector<int>{200, 120}, "the second band starts under the last row");
+  require(structure.rows == 3 && structure.cols == 2 && structure.cells.size() == 7,
+          "the band's row follows the first band's rows");
+  require(!structure.truncated, "the last band reached eos");
+  const auto& tail = structure.cells.back();
+  require(tail.row == 2 && tail.col == 1 && tail.top == 80 && tail.bottom == 120 && !tail.header,
+          "band cells shift into the crop and take the first band's columns");
+  require(structure.cells[4].col == 0 && structure.cells[5].col == 0, "a narrower column folds onto its column");
+  require(std::abs(structure.score - (0.9F * 4 + 0.7F * 3) / 7) < 1e-4F, "score weighs each band by its cells");
+}
+
 int main() {
   try {
     verify_missing_model_fails_loudly();
     verify_token_parsing();
+    verify_truncated_decode_structures_the_rest();
 
     const char* models_dir = std::getenv("GRPARSE_TEST_MODELS_DIR");
     const char* data_dir = std::getenv("GRPARSE_TEST_DATA_DIR");
