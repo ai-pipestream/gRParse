@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
+#include <map>
 #include <utility>
 
 #include "grparse/region_geometry.h"
@@ -155,6 +156,91 @@ int64_t axis_gap(int low_a, int high_a, int low_b, int high_b) {
 }
 
 }  // namespace
+
+void extend_truncated_table(LayoutRegion& table, const std::vector<OcrLine>& lines) {
+  auto& cells = table.structured_cells;
+  if (cells.empty()) return;
+  int rows = 0;
+  int cols = 0;
+  int cut = 0;
+  for (const auto& cell : cells) {
+    rows = std::max(rows, cell.row + cell.row_span);
+    cols = std::max(cols, cell.col + cell.col_span);
+    cut = std::max(cut, cell.bottom);
+  }
+  // Each column's x-interval, from the cells that span it alone.
+  std::vector<std::pair<int, int>> columns(static_cast<size_t>(cols),
+                                           {std::numeric_limits<int>::max(), std::numeric_limits<int>::min()});
+  for (const auto& cell : cells) {
+    if (cell.col_span != 1) continue;
+    auto& column = columns[static_cast<size_t>(cell.col)];
+    column.first = std::min(column.first, cell.left);
+    column.second = std::max(column.second, cell.right);
+  }
+  const auto column_of = [&columns](int center) {
+    int nearest = -1;
+    int64_t nearest_distance = std::numeric_limits<int64_t>::max();
+    for (size_t index = 0; index < columns.size(); ++index) {
+      const auto [left, right] = columns[index];
+      if (left > right) continue;
+      if (center >= left && center <= right) return static_cast<int>(index);
+      const int64_t distance = center < left ? static_cast<int64_t>(left) - center
+                                             : static_cast<int64_t>(center) - right;
+      if (distance < nearest_distance) {
+        nearest = static_cast<int>(index);
+        nearest_distance = distance;
+      }
+    }
+    return nearest;
+  };
+
+  // The lines inside the table whose centre lies under every model cell.
+  std::vector<AxisAlignedBox> below;
+  for (const auto& line : lines) {
+    if (line.text.empty() || line.polygon.empty()) continue;
+    const AxisAlignedBox box = bounding_box(line);
+    const int64_t center_x = (static_cast<int64_t>(box.left) + box.right) / 2;
+    const int64_t center_y = (static_cast<int64_t>(box.top) + box.bottom) / 2;
+    if (center_x < table.left || center_x > table.right || center_y > table.bottom || center_y <= cut) {
+      continue;
+    }
+    below.push_back(box);
+  }
+  if (below.empty()) return;
+  std::ranges::sort(below, [](const AxisAlignedBox& a, const AxisAlignedBox& b) {
+    return a.top != b.top ? a.top < b.top : a.left < b.left;
+  });
+
+  // Rows by vertical overlap with the row's first line; within a row, one
+  // cell per column holding the union of its words.
+  int row = rows - 1;
+  AxisAlignedBox row_lead;
+  bool open_row = false;
+  std::map<int, size_t> row_cells;
+  for (const auto& box : below) {
+    const int64_t shorter = std::min(row_lead.height(), box.height());
+    const int64_t overlap = static_cast<int64_t>(std::min(row_lead.bottom, box.bottom)) -
+                            std::max(row_lead.top, box.top);
+    if (!open_row || shorter <= 0 || 2 * overlap <= shorter) {
+      ++row;
+      row_lead = box;
+      open_row = true;
+      row_cells.clear();
+    }
+    const int column = column_of(static_cast<int>((static_cast<int64_t>(box.left) + box.right) / 2));
+    if (column < 0) continue;
+    if (const auto taken = row_cells.find(column); taken != row_cells.end()) {
+      auto& cell = cells[taken->second];
+      cell.left = std::min(cell.left, box.left);
+      cell.top = std::min(cell.top, box.top);
+      cell.right = std::max(cell.right, box.right);
+      cell.bottom = std::max(cell.bottom, box.bottom);
+      continue;
+    }
+    row_cells.emplace(column, cells.size());
+    cells.push_back({row, column, 1, 1, false, box.left, box.top, box.right, box.bottom});
+  }
+}
 
 TableLineAssignment assign_table_lines(const OcrPage& page, const LayoutRegion& table) {
   TableLineAssignment out;

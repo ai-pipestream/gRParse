@@ -25,6 +25,7 @@
 #include "grparse/data_totals.h"
 #include "grparse/orientation_recovery.h"
 #include "grparse/region_geometry.h"
+#include "grparse/table_structure.h"
 
 namespace grparse {
 
@@ -888,7 +889,7 @@ class PageScheduler::Impl final {
               if (region.label != "table") continue;
               const cv::Rect roi = clip_region(region, job.image.cols, job.image.rows);
               if (roi.empty()) continue;
-              TableStructure structure = recognize_in_bands(*table_structurer_, job.image(roi));
+              TableStructure structure = table_structurer_->recognize(job.image(roi));
               tables_structured_.fetch_add(1);
               region.structured_cells = std::move(structure.cells);
               if (!region.structured_cells.empty()) region.structure_score = structure.score;
@@ -898,6 +899,7 @@ class PageScheduler::Impl final {
                 cell.top += roi.y;
                 cell.bottom += roi.y;
               }
+              if (structure.truncated) extend_truncated_table(region, assembled.lines);
             }
           }
           // Classification also runs on picture crops only, same grouping.

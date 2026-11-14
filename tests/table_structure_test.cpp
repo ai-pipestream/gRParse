@@ -199,6 +199,33 @@ void verify_model_cells_take_every_word() {
   require(with_stray.cell_of_line[5] == -1, "a line rows away from every cell stays unassigned");
 }
 
+void verify_rows_past_a_cut_off_decode_come_from_the_lines() {
+  // LSPP p7: the model stopped after row 1; rows 2 and 3 are only words.
+  grparse::LayoutRegion table{"table", 0.9F, 80, 80, 600, 400};
+  table.structured_cells = {{0, 0, 1, 1, true, 90, 95, 200, 125},
+                            {0, 1, 1, 1, true, 280, 95, 380, 125},
+                            {0, 2, 1, 1, true, 420, 95, 520, 125},
+                            {1, 0, 1, 1, false, 90, 135, 200, 165},
+                            {1, 1, 1, 1, false, 280, 135, 380, 165},
+                            {1, 2, 1, 1, false, 420, 135, 520, 165}};
+  const std::vector<grparse::OcrLine> lines = {
+      line_at("ECL", 100, 180, 40), line_at("96", 150, 180, 30), line_at("0.154", 300, 180, 50),
+      line_at("0.153", 440, 180, 50), line_at("Avg", 100, 220, 40), line_at("0.240", 445, 220, 50),
+      line_at("Note", 100, 420, 40)};
+  grparse::extend_truncated_table(table, lines);
+  require(table.structured_cells.size() == 11, "two rows of cells built from the words");
+  const auto& first = table.structured_cells[6];
+  require(first.row == 2 && first.col == 0 && first.left == 100 && first.right == 180,
+          "the label and the horizon share their column's cell");
+  require(table.structured_cells[7].row == 2 && table.structured_cells[7].col == 1, "a value takes its column");
+  require(table.structured_cells[10].row == 3 && table.structured_cells[10].col == 2,
+          "a row with a gap leaves the gap empty");
+
+  grparse::LayoutRegion empty{"table", 0.9F, 80, 80, 600, 400};
+  grparse::extend_truncated_table(empty, lines);
+  require(empty.structured_cells.empty(), "no model cells, nothing to extend");
+}
+
 }  // namespace
 
 int main() {
@@ -210,5 +237,6 @@ int main() {
       verify_region_crops,
       verify_determinism,
       verify_model_cells_take_every_word,
+      verify_rows_past_a_cut_off_decode_come_from_the_lines,
   });
 }
