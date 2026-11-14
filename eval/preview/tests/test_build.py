@@ -95,6 +95,19 @@ def test_formula_is_one_box_per_page() -> None:
     assert build.boxes_by_page(doc)[1] == [("formula", (0.3, 0.1, 0.85, 0.18))]
 
 
+def test_caption_under_a_picture_is_matched_and_panels_are_not() -> None:
+    ours = ours_doc()
+    figure = item("picture", 100, 600, 900, 900, "TOPLEFT")
+    panel = item("picture", 120, 620, 480, 880, "TOPLEFT")
+    panel["parent"] = {"$ref": "#/pictures/0"}
+    caption = item("caption", 100, 910, 900, 940, "TOPLEFT")
+    caption["parent"] = {"$ref": "#/pictures/0"}
+    ours["pictures"] = [figure, panel]
+    ours["texts"].append(caption)
+    labels = sorted(label for label, _ in build.boxes_by_page(ours)[1])
+    assert labels.count("picture") == 1 and "caption" in labels
+
+
 def test_text_inside_a_picture_is_not_matched() -> None:
     doc = docling_doc()
     label = item("text", 20, 90, 60, 80, "BOTTOMLEFT")

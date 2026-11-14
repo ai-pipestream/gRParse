@@ -51,9 +51,11 @@ refreshes the viewer files.
 - A formula is always one box per page: the union of all of its provenance
   boxes on that page. Display math stacks parts above and below one another,
   so the line and column rule would cut one equation into pieces.
-- Text found inside a figure (a text item with a picture as parent) is left
-  out. Docling reports it, gRParse mostly does not, so including it would
-  only penalise one side.
+- Items whose parent is a picture are left out, except captions: text found
+  inside a figure (axis labels, legends) and the panel pictures of a figure
+  belong to the figure, so only the figure itself and its captions are
+  scored. gRParse hangs captions off the picture while Docling keeps them in
+  the body, so captions count on both sides.
 - Boxes are matched one to one per page, highest IoU first, at IoU 0.5 or
   more. A dashed box has no match on the other side. Hovering a box
   highlights its match and shows both labels, the IoU and the text.

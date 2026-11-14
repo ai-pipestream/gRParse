@@ -58,6 +58,9 @@ function normalizedBox(bbox, size) {
 // Text found inside a figure (axis labels, legends) belongs to the picture:
 // Docling keeps it as child items, gRParse mostly does not.
 function insidePicture(item) {
+  // Figure text and panel pictures belong to their figure; captions are scored
+  // (gRParse hangs them off the picture, Docling keeps them in the body).
+  if (String(item.label || "") === "caption") return false;
   return String((item.parent && item.parent.$ref) || "").startsWith("#/pictures/");
 }
 

@@ -95,11 +95,15 @@ def boxes_by_page(doc: dict[str, Any]) -> dict[int, list[tuple[str, tuple[float,
 
 
 def inside_picture(item: dict[str, Any]) -> bool:
-    """Text found inside a figure (axis labels, legends) is the picture's, not the page layout's.
+    """Text found inside a figure (axis labels, legends) and a figure's panel
+    pictures belong to the figure, not the page layout; only the figure and
+    its captions are matched.
 
     Docling keeps it as child text items of the picture; gRParse mostly does
     not, so matching it would only count against the side that keeps it.
     """
+    if str(item.get("label") or "") == "caption":
+        return False  # gRParse hangs a caption off its picture; Docling keeps it in the body
     return str((item.get("parent") or {}).get("$ref") or "").startswith("#/pictures/")
 
 
