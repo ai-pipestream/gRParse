@@ -1095,7 +1095,8 @@ void verify_panel_label_is_the_panel_caption() {
   // its own and falls into panel (a); it is that panel's caption.
   grparse::AssemblyCursor cursor;
   grparse::OcrPage page{1000, 1000,
-                        {boxed_line("(a) Augmentation recognition", 150, 404, 450, 419),
+                        {boxed_line("(a)", 150, 404, 175, 419), boxed_line("Augmentation", 180, 404, 330, 419),
+                         boxed_line("recognition", 335, 404, 450, 419),
                          boxed_line("(b)Test", 550, 380, 650, 395),
                          boxed_line("(%)", 560, 200, 590, 215),
                          boxed_line("(1) Personal Validity", 120, 520, 300, 535),
@@ -1123,6 +1124,38 @@ void verify_panel_label_is_the_panel_caption() {
   require(captions == std::vector<std::string>{"(a) Augmentation recognition", "(b)Test"},
           "each panel takes its label, one just under its panel too; a unit, a number "
           "outside a panel and a figure caption stay picture text");
+}
+
+void verify_panel_caption_and_figure_caption_in_one_box_split() {
+  // Attribution-Aware p5: one caption box holds panel (c)'s label and the
+  // figure's own caption under it, both inside the figure.
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1000, 1000,
+                        {boxed_line("(c)", 520, 410, 545, 425), boxed_line("Average", 550, 410, 640, 425),
+                         boxed_line("ARI", 645, 410, 690, 425),
+                         boxed_line("Figure", 300, 440, 370, 455), boxed_line("2:", 375, 440, 395, 455),
+                         boxed_line("Query", 400, 440, 470, 455)}};
+  page.regions = {{"picture", 0.9F, 100, 100, 900, 460},
+                  {"picture", 0.9F, 110, 110, 490, 400},
+                  {"picture", 0.9F, 510, 110, 890, 400},
+                  {"caption", 0.9F, 290, 405, 700, 458}};
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(page, 1, &cursor, &data);
+  const auto text_of = [&data](const std::string& ref) {
+    for (const auto& item : data.texts()) {
+      if (item.text().base().self_ref() == ref) return item.text().base().text();
+    }
+    return std::string("(missing)");
+  };
+  std::vector<std::string> figure_captions;
+  std::vector<std::string> panel_captions;
+  for (const auto& picture : data.pictures()) {
+    for (const auto& ref : picture.captions()) {
+      (picture.parent().ref() == "#/body" ? figure_captions : panel_captions).push_back(text_of(ref.ref()));
+    }
+  }
+  require(figure_captions == std::vector<std::string>{"Figure 2: Query"}, "the figure takes its own caption");
+  require(panel_captions == std::vector<std::string>{"(c) Average ARI"}, "the panel takes its label");
 }
 
 void verify_line_break_hyphens_join_the_word() {
@@ -1183,5 +1216,6 @@ int main() {
       verify_panels_hang_off_their_figure,
       verify_figure_caption_binds_to_the_figure_above,
       verify_panel_label_is_the_panel_caption,
+      verify_panel_caption_and_figure_caption_in_one_box_split,
   });
 }

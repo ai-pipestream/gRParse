@@ -39,21 +39,7 @@ const LayoutRegion* region_for_line(const OcrPage& page, const OcrLine& line) {
     if (region.label == "caption") return &region;
     if (region.label == "picture" && box_area(region) < box_area(*picture)) picture = &region;
   }
-  if (picture != best || !opens_panel_caption(line.text, true)) return picture;
-  // A panel label set just under its panel, outside the panel's box but
-  // inside the figure, labels the panel directly above it.
-  const AxisAlignedBox box = bounding_box(line);
-  const LayoutRegion* above = nullptr;
-  for (const auto& region : page.regions) {
-    if (&region == best || region.label != "picture" || !region_nested_in(region, *best)) continue;
-    const int64_t overlap = static_cast<int64_t>(std::min(box.right, region.right)) -
-                            std::max(box.left, region.left);
-    const int64_t gap = static_cast<int64_t>(box.top) - region.bottom;
-    const int64_t height = static_cast<int64_t>(box.bottom) - box.top;
-    if (overlap * 2 < box.width() || gap < 0 || gap * 2 > height * 3) continue;
-    if (above == nullptr || region.bottom > above->bottom) above = &region;
-  }
-  return above != nullptr ? above : picture;
+  return picture;
 }
 
 namespace {

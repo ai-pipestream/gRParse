@@ -1,6 +1,7 @@
 #include "grparse/assembly_blocks.h"
 
 #include <algorithm>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 
@@ -104,6 +105,24 @@ bool opens_next_item(const OcrPage& page, const TextBlock& block, const OcrLine&
   return shorter <= 0 || 2 * overlap <= shorter;
 }
 
+// Whether a caption line opens a second caption: a line starting a new
+// visual line with "Figure", "Fig." or "Table" while the block began with
+// something else. The layout model draws one caption box around a panel's
+// "(c) ..." label and the figure's "Figure 2: ..." under it; they are two.
+bool opens_float_caption(const OcrPage& page, const TextBlock& block, const OcrLine& line) {
+  const auto opens = [](std::string_view text) {
+    return text.starts_with("Figure") || text.starts_with("Fig.") || text.starts_with("FIGURE") ||
+           text.starts_with("Table") || text.starts_with("TABLE");
+  };
+  if (!opens(line.text) || opens(page.lines[block.lines.front()].text)) return false;
+  const AxisAlignedBox last = bounding_box(page.lines[block.lines.back()]);
+  const AxisAlignedBox next = bounding_box(line);
+  const int64_t shorter = std::min(last.height(), next.height());
+  const int64_t overlap = static_cast<int64_t>(std::min(last.bottom, next.bottom)) -
+                          std::max(last.top, next.top);
+  return shorter <= 0 || 2 * overlap <= shorter;
+}
+
 bool is_list_region(const LayoutRegion* region) {
   return region != nullptr && (region->label == "list" || region->label == "list_item");
 }
@@ -180,7 +199,8 @@ std::vector<TextBlock> build_text_blocks(const OcrPage& page) {
     const bool merges =
         suppressed ||
         (region_aggregates(region) &&
-         !(region->label == "list_item" && same_region && opens_next_item(page, blocks.back(), line)));
+         !(region->label == "list_item" && same_region && opens_next_item(page, blocks.back(), line)) &&
+         !(region->label == "caption" && same_region && opens_float_caption(page, blocks.back(), line)));
     const bool picture = region != nullptr && region->label == "picture";
     if (same_region &&
         (merges || (is_list_region(region) && continues_visual_line(page, blocks.back(), line)) ||

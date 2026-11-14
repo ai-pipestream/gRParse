@@ -454,10 +454,34 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     // A line inside a picture that opens "(a) ", "(b) " is the panel's own
     // caption: the layout model gives these labels no region, so they fall
     // into the panel's picture, and the panel lists them as its caption.
+    // A panel label set just under its panel, outside the panel's box but
+    // inside the figure, labels the panel directly above it. A text layer
+    // splits "(a) Augmentation recognition" into word cells, so this is
+    // judged on the whole block, never on a single word.
+    const LayoutRegion* owner = region;
+    if (region != nullptr && region->label == "picture" && opens_panel_caption(merged, true)) {
+      AxisAlignedBox box = bounding_box(source.lines[block.lines.front()]);
+      for (const size_t line_index : block.lines) {
+        const AxisAlignedBox line_box = bounding_box(source.lines[line_index]);
+        box.left = std::min(box.left, line_box.left);
+        box.top = std::min(box.top, line_box.top);
+        box.right = std::max(box.right, line_box.right);
+        box.bottom = std::max(box.bottom, line_box.bottom);
+      }
+      const int64_t line_height = bounding_box(source.lines[block.lines.front()]).height();
+      for (const auto& panel : source.regions) {
+        if (&panel == region || panel.label != "picture" || !region_nested_in(panel, *region)) continue;
+        const int64_t overlap = static_cast<int64_t>(std::min(box.right, panel.right)) -
+                                std::max(box.left, panel.left);
+        const int64_t gap = static_cast<int64_t>(box.top) - panel.bottom;
+        if (overlap * 2 < box.width() || gap < 0 || gap * 2 > line_height * 3) continue;
+        if (owner == region || panel.bottom > owner->bottom) owner = &panel;
+      }
+    }
     const bool panel_caption =
-        region != nullptr && region->label == "picture" &&
-        opens_panel_caption(merged, std::ranges::any_of(source.regions, [region](const LayoutRegion& other) {
-          return &other != region && other.label == "picture" && region_nested_in(*region, other);
+        owner != nullptr && owner->label == "picture" &&
+        opens_panel_caption(merged, std::ranges::any_of(source.regions, [owner](const LayoutRegion& other) {
+          return &other != owner && other.label == "picture" && region_nested_in(*owner, other);
         }));
     const auto label = panel_caption    ? pipestream::document::v1::DOC_ITEM_LABEL_CAPTION
                        : region == nullptr ? pipestream::document::v1::DOC_ITEM_LABEL_TEXT
@@ -501,9 +525,9 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     // picture item, out of the body order, so it neither streams as prose
     // nor is lost. The picture was emitted first (region_anchor rule 1).
     EmittedFloat* holder = nullptr;
-    if (region != nullptr && region->label == "picture") {
+    if (owner != nullptr && owner->label == "picture") {
       for (auto& emitted : floats) {
-        if (emitted.region == region) holder = &emitted;
+        if (emitted.region == owner) holder = &emitted;
       }
     }
     base->set_self_ref(self_ref);
@@ -745,10 +769,9 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     for (const auto& target : floats) {
       // A panel's own caption sits inside its figure: it labels the panel
       // above it, not the figure around it.
-      if (figures_with_panels.contains(target.region) &&
-          region_nested_in(*caption.region, *target.region)) {
-        continue;
-      }
+      const bool inside_figure = figures_with_panels.contains(target.region) &&
+                                 region_nested_in(*caption.region, *target.region);
+      if (inside_figure && !labels_a_figure) continue;
       const double overlap = std::min(caption.region->right, target.region->right) -
                              std::max(caption.region->left, target.region->left);
       if (overlap < 0.3 * width) continue;
@@ -762,7 +785,8 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
       }
       if (gap > 1.5 * height) continue;
       const bool picture = target.region->label == "picture";
-      const bool expected = (labels_a_figure && picture && below_target) ||
+      // "Figure 2: ..." set inside the figure's own box is that figure's.
+      const bool expected = (labels_a_figure && picture && (below_target || inside_figure)) ||
                             (labels_a_table && !picture && above_target);
       // On a tie (the figure caption under a figure and its bottom panels)
       // the larger float, the whole figure, takes it.
