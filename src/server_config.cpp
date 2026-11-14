@@ -382,6 +382,16 @@ CollectorTargets read_collector_targets() {
   derender.timeout = std::chrono::milliseconds(
       configured_size("GRPARSE_ENRICH_TIMEOUT_MS", 5000, 600000));
   derender.vlm_endpoint = collector_env("GRPARSE_ENRICH_VLM_ENDPOINT");
+  // auto lets the enrich service pick the formula prompt by model; the others
+  // pin it (codeformula = Docling's "<formula>" token, for like-for-like runs).
+  namespace enrichv1 = ai::pipestream::enrich::v1;
+  const std::string formula_prompt = configured_mode("GRPARSE_ENRICH_FORMULA_PROMPT", "auto",
+                                                     {"auto", "codeformula", "latex", "latex_hint"});
+  if (formula_prompt == "codeformula") derender.formula_prompt = enrichv1::FORMULA_PROMPT_CODEFORMULA_TOKEN;
+  if (formula_prompt == "latex") derender.formula_prompt = enrichv1::FORMULA_PROMPT_LATEX;
+  if (formula_prompt == "latex_hint") {
+    derender.formula_prompt = enrichv1::FORMULA_PROMPT_LATEX_WITH_TEXT_HINT;
+  }
   VlmConvertOptions vlm;
   vlm.target = collector_env("GRPARSE_VLM_CONVERT_TARGET");
   vlm.timeout = std::chrono::milliseconds(

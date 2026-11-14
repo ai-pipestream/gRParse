@@ -495,6 +495,7 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
   }
   if (options.do_code_enrichment || options.do_formula_enrichment) {
     request_options->set_code_formula_preset(options.code_formula_preset);
+    request_options->set_formula_prompt(options.formula_prompt);
     if (options.code_formula_expansion_factor.has_value()) {
       request_options->set_code_formula_expansion_factor(*options.code_formula_expansion_factor);
     }

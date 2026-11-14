@@ -72,6 +72,11 @@ struct ChartDerenderOptions {
   // unset leaves the enrich service on Docling's defaults (0.18, true).
   std::optional<double> code_formula_expansion_factor;
   std::optional<bool> code_formula_stop_on_repetition;
+  // EnrichOptions.formula_prompt (GRPARSE_ENRICH_FORMULA_PROMPT). Unspecified
+  // lets the enrich service choose by model: the token for a CodeFormula
+  // model, the hinted LaTeX prompt for a general VLM.
+  ai::pipestream::enrich::v1::FormulaPrompt formula_prompt =
+      ai::pipestream::enrich::v1::FORMULA_PROMPT_UNSPECIFIED;
   // The picture_description_api prompt, generation params and headers.
   PictureDescriptionCall picture_description_call;
   // The chart-extraction preset the server policy resolved for this request

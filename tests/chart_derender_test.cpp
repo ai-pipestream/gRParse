@@ -943,6 +943,19 @@ void verify_code_formula_options_reach_enrich_typed() {
   require(!default_seen.options.has_code_formula_expansion_factor() &&
               !default_seen.options.has_code_formula_stop_on_repetition(),
           "unset tunables stay unset so enrich applies Docling's defaults");
+  require(default_seen.options.formula_prompt() == enrichv1::FORMULA_PROMPT_UNSPECIFIED,
+          "an unset formula prompt lets enrich choose by model");
+
+  FakeEnrichService pinned_fake(FakeMode::kAnswer);
+  ServerFixture pinned_server(&pinned_fake);
+  docv1::Document third = sample_document();
+  grparse::ChartDerenderOptions pinned = options_for(pinned_server.target());
+  pinned.do_chart_extraction = false;
+  pinned.do_formula_enrichment = true;
+  pinned.formula_prompt = enrichv1::FORMULA_PROMPT_CODEFORMULA_TOKEN;
+  grparse::derender_charts(pinned_server.channel(), pinned, &third);
+  require(pinned_fake.seen().options.formula_prompt() == enrichv1::FORMULA_PROMPT_CODEFORMULA_TOKEN,
+          "a pinned formula prompt reaches enrich");
 }
 
 // Code and formula crops ride the stream as ItemImage frames under the item's
