@@ -60,13 +60,26 @@ void verify_reads_clip_merge_and_order() {
   const auto off = grparse::ocr_image_rects({region("text", 1600, 2050, 1700, 2200)},
                                             {cv::Rect(1650, 2100, 400, 400)}, kWidth, kHeight, 32);
   require(off.size() == 1 && off[0] == cv::Rect(1650, 2100, 50, 100), "a placement past the edge is clipped");
-  const auto merged = grparse::ocr_image_rects({region("picture", 200, 200, 800, 600)},
-                                               {cv::Rect(210, 210, 600, 400)}, kWidth, kHeight, 32);
-  require(merged.size() == 1 && merged[0] == cv::Rect(200, 200, 610, 410),
-          "a figure and the picture region over it are one read, their union");
+  const auto covered = grparse::ocr_image_rects({region("picture", 200, 200, 800, 600)},
+                                                {cv::Rect(210, 210, 600, 400)}, kWidth, kHeight, 32);
+  require(covered.size() == 1 && covered[0] == cv::Rect(200, 200, 600, 400),
+          "a placement the picture region already reads adds no second read");
+  // Quantized Contrastive p7: one wide raster strip, read panel by panel.
+  const auto strip = grparse::ocr_image_rects(
+      {region("picture", 150, 260, 380, 480), region("picture", 390, 260, 610, 480),
+       region("picture", 620, 260, 850, 480), region("picture", 860, 260, 1080, 480),
+       region("picture", 1090, 260, 1310, 480), region("picture", 1320, 260, 1550, 480)},
+      {cv::Rect(150, 250, 1400, 240)}, kWidth, kHeight, 32);
+  require(strip.size() == 6, "a strip the panels cover is not read whole: " + std::to_string(strip.size()));
+  const auto merged = grparse::ocr_image_rects({}, {cv::Rect(200, 200, 600, 400), cv::Rect(210, 210, 600, 400)},
+                                               kWidth, kHeight, 32);
+  require(merged.size() == 1 && merged[0] == cv::Rect(200, 200, 610, 410), "overlapping placements merge");
   const auto ordered = grparse::ocr_image_rects(
       {region("picture", 900, 1200, 1500, 1600), region("picture", 100, 300, 700, 700)}, {}, kWidth, kHeight, 32);
   require(ordered.size() == 2 && ordered[0].y == 300 && ordered[1].y == 1200, "reads go top to bottom");
+  const auto first = grparse::ocr_image_rects({region("picture", 100, 1500, 400, 1800)},
+                                              {cv::Rect(100, 100, 600, 400)}, kWidth, kHeight, 32);
+  require(first.size() == 2 && first[0].y == 1500, "pictures are read before placements");
 }
 
 }  // namespace

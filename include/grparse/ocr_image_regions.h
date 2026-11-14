@@ -18,15 +18,17 @@ inline constexpr double kImageReadMinPageShare = 0.01;
 //
 // Docling's default OCR mode reads every layout cluster that overlaps a
 // bitmap, whatever its label; it keys on the PDF's own image placements,
-// not on the picture label. Here a rectangle is:
-//   - every picture region (as before: a chart's labels drawn into it), and
+// not on the picture label. Here the reads are:
+//   - every picture region, each on its own, as before (a chart's labels
+//     drawn into it), first, so their lines win where reads overlap; then
 //   - every image placement that a layout region of any label overlaps, or
-//     that covers at least `min_page_share` of the page on its own.
-// The placement itself is read, not its intersection with the region: a
-// detector that splits a raster figure into icons would otherwise read only
-// the icons. Rectangles that overlap by more than half of the smaller one
-// merge into their union, so a figure is read once. Placements narrower or
-// shorter than `min_side` pixels are skipped. Pure.
+//     that covers at least `min_page_share` of the page on its own, unless
+//     the picture regions already cover half of it or more.
+// A placement is read whole, not its overlap with a region: a detector that
+// splits a raster figure into icons would otherwise read only the icons.
+// Placements that overlap by more than half of the smaller one merge into
+// their union. Rectangles narrower or shorter than `min_side` pixels are
+// skipped. Each group runs top to bottom. Pure.
 std::vector<cv::Rect> ocr_image_rects(const std::vector<LayoutRegion>& regions,
                                       const std::vector<cv::Rect>& placements,
                                       int raster_width, int raster_height, int min_side,
