@@ -184,11 +184,14 @@ struct ChartDerenderReport {
 // the slim candidate document; picture/code/formula jobs send the full
 // document so enrich can select every matching item. `cancelled` is polled
 // while the call runs and cancels it once the inbound call is gone. The
-// frames go out on a writer thread while the answers are read.
+// frames go out on a writer thread while the answers are read. `item_crops`
+// go out as ItemImage frames beside the picture crops: the code and formula
+// crops (code_formula_crops.h) the enrich service reads those items from.
 ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channel,
                                     const ChartDerenderOptions& options,
                                     ai::pipestream::document::v1::Document* document,
                                     CollectorDeadline inbound_deadline = kNoCollectorDeadline,
-                                    CollectorCancelled cancelled = {});
+                                    CollectorCancelled cancelled = {},
+                                    std::vector<ChartCandidate> item_crops = {});
 
 }  // namespace grparse
