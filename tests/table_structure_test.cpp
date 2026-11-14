@@ -252,6 +252,59 @@ void verify_rows_past_a_cut_off_decode_come_from_the_lines() {
   require(header_only.structured_cells.size() == 10 && header_only.structured_cells[9].col == 2,
           "a header-only column does not stop the extension");
 
+  // A group label sits on the first row of its min/avg/max run and leaves
+  // column 0 empty under it, so rows past the cut need not reach it.
+  grparse::LayoutRegion grouped{"table", 0.9F, 80, 80, 600, 400};
+  grouped.structured_cells = {{0, 0, 1, 1, true, 90, 95, 200, 125},    {0, 1, 1, 1, true, 240, 95, 300, 125},
+                              {0, 2, 1, 1, true, 380, 95, 440, 125},   {1, 0, 1, 1, false, 90, 135, 200, 165},
+                              {1, 1, 1, 1, false, 240, 135, 300, 165}, {1, 2, 1, 1, false, 380, 135, 440, 165},
+                              {2, 1, 1, 1, false, 240, 175, 300, 205}, {2, 2, 1, 1, false, 380, 175, 440, 205}};
+  const std::vector<grparse::OcrLine> grouped_lines = {
+      line_at("Grade", 100, 100, 60), line_at("Stat", 250, 100, 40), line_at("Score", 390, 100, 40),
+      line_at("High", 100, 140, 40),  line_at("min", 250, 140, 30),  line_at("0.163", 390, 140, 40),
+      line_at("avg", 250, 180, 30),   line_at("0.347", 390, 180, 40), line_at("max", 250, 220, 30),
+      line_at("0.451", 390, 220, 40)};
+  grparse::extend_truncated_table(grouped, grouped_lines);
+  require(grouped.structured_cells.size() == 10 && grouped.structured_cells[8].col == 1 &&
+              grouped.structured_cells[9].col == 2,
+          "an empty group-label column does not stop the extension");
+
+  // A model cell holding two numbers stretches its word interval over the
+  // next column; the cell boxes then place the rows past the cut.
+  grparse::LayoutRegion crowded{"table", 0.9F, 80, 80, 600, 400};
+  crowded.structured_cells = {{0, 0, 1, 1, true, 90, 95, 200, 125},    {0, 1, 1, 1, true, 240, 95, 300, 125},
+                              {0, 2, 1, 1, true, 380, 95, 440, 125},   {1, 0, 1, 1, false, 90, 135, 200, 165},
+                              {1, 1, 1, 1, false, 240, 135, 300, 165}, {1, 2, 1, 1, false, 380, 135, 440, 165}};
+  const std::vector<grparse::OcrLine> crowded_lines = {
+      line_at("Model", 100, 100, 60), line_at("MSE", 250, 100, 40),       line_at("MAE", 390, 100, 40),
+      line_at("ETT", 100, 140, 40),   line_at("0.4 0.5", 240, 140, 180), line_at("0.421", 430, 140, 50),
+      line_at("ECL", 100, 180, 40),   line_at("0.15", 250, 180, 40),     line_at("0.16", 390, 180, 40)};
+  grparse::extend_truncated_table(crowded, crowded_lines);
+  require(crowded.structured_cells.size() == 9 && crowded.structured_cells[8].col == 2 &&
+              crowded.structured_cells[8].col_span == 1,
+          "overlapping word intervals fall back to the cell boxes");
+
+  // A wide label line ("avg 0.347 +-") stretches column 1's word interval
+  // over column 2, so a value past the cut would join the label. It sits
+  // nearer column 2's centre, so the word intervals are refused and the
+  // cell boxes place it.
+  grparse::LayoutRegion shifted{"table", 0.9F, 80, 80, 700, 400};
+  shifted.structured_cells = {{1, 0, 1, 1, false, 90, 135, 160, 165},  {1, 1, 1, 1, false, 200, 135, 320, 165},
+                              {1, 2, 1, 1, false, 400, 135, 460, 165}, {1, 3, 1, 1, false, 500, 135, 560, 165},
+                              {1, 4, 1, 1, false, 600, 135, 660, 165}, {2, 0, 1, 1, false, 90, 175, 160, 205},
+                              {2, 1, 1, 1, false, 200, 175, 320, 205}, {2, 2, 1, 1, false, 400, 175, 460, 205},
+                              {2, 3, 1, 1, false, 500, 175, 560, 205}, {2, 4, 1, 1, false, 600, 175, 660, 205}};
+  const std::vector<grparse::OcrLine> shifted_lines = {
+      line_at("X", 100, 140, 40),   line_at("min", 200, 140, 60),          line_at("0.1", 410, 140, 40),
+      line_at("0.2", 510, 140, 40), line_at("0.3", 610, 140, 40),          line_at("Y", 100, 180, 40),
+      line_at("avg 0.347 +-", 200, 180, 220), line_at("0.4", 410, 180, 40), line_at("0.5", 510, 180, 40),
+      line_at("0.6", 610, 180, 40), line_at("Z", 100, 220, 40),            line_at("max", 200, 220, 60),
+      line_at("0.7", 395, 220, 20), line_at("0.8", 510, 220, 40),          line_at("0.9", 610, 220, 40)};
+  grparse::extend_truncated_table(shifted, shifted_lines);
+  require(shifted.structured_cells.size() == 15 && shifted.structured_cells[12].col == 2 &&
+              shifted.structured_cells[12].left == 395,
+          "a value nearer the next column's centre is not fused into the label");
+
   grparse::LayoutRegion empty{"table", 0.9F, 80, 80, 600, 400};
   grparse::extend_truncated_table(empty, lines);
   require(empty.structured_cells.empty(), "no model cells, nothing to extend");
