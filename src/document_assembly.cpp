@@ -214,21 +214,6 @@ double float_area(const LayoutRegion& region) {
          std::max(0, region.bottom - region.top);
 }
 
-// "(a) Train", "(b)Test", "(12) ...": a panel label opening a line.
-bool opens_panel_caption(std::string_view text) {
-  if (text.size() < 4 || text[0] != '(') return false;
-  size_t close = 1;
-  while (close < text.size() && close <= 3 && std::isalnum(static_cast<unsigned char>(text[close])) != 0) {
-    ++close;
-  }
-  if (close == 1 || close >= text.size() || text[close] != ')') return false;
-  // A label is a letter or a short number, never a word in brackets.
-  const std::string_view mark = text.substr(1, close - 1);
-  const bool letter = mark.size() == 1 && std::isalpha(static_cast<unsigned char>(mark[0])) != 0;
-  const bool number = std::ranges::all_of(mark, [](char c) { return std::isdigit(static_cast<unsigned char>(c)) != 0; });
-  return (letter || number) && close + 1 < text.size();
-}
-
 constexpr std::string_view kHyphenationMark = "\xEF\xBF\xBE";
 
 bool keeps_hyphen_before(std::string_view rest) {
@@ -469,8 +454,11 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     // A line inside a picture that opens "(a) ", "(b) " is the panel's own
     // caption: the layout model gives these labels no region, so they fall
     // into the panel's picture, and the panel lists them as its caption.
-    const bool panel_caption = region != nullptr && region->label == "picture" &&
-                               opens_panel_caption(merged);
+    const bool panel_caption =
+        region != nullptr && region->label == "picture" &&
+        opens_panel_caption(merged, std::ranges::any_of(source.regions, [region](const LayoutRegion& other) {
+          return &other != region && other.label == "picture" && region_nested_in(*region, other);
+        }));
     const auto label = panel_caption    ? pipestream::document::v1::DOC_ITEM_LABEL_CAPTION
                        : region == nullptr ? pipestream::document::v1::DOC_ITEM_LABEL_TEXT
                                         : label_for_region(region->label, &recognized_label);

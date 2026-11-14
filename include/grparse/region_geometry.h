@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string_view>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -36,6 +37,12 @@ const LayoutRegion* region_for_line(const OcrPage& page, const OcrLine& line);
 // True when more than 80% of `inner` lies inside `outer`: the share at
 // which a region counts as part of the one around it.
 bool region_nested_in(const LayoutRegion& inner, const LayoutRegion& outer);
+// True when the text opens with a panel label, "(a) Train" or "(b)Test":
+// one letter in brackets, or with `numbers` a short number ("(2) ..."),
+// then a word. Numbered boxes inside a diagram read the same way, so the
+// caller allows numbers only on a panel. A text that also holds a figure
+// or table caption is not a panel label.
+bool opens_panel_caption(std::string_view text, bool numbers);
 void resolve_region_overlaps(std::vector<LayoutRegion>& regions, const std::vector<OcrLine>& lines,
                              int page_width, int page_height);
 

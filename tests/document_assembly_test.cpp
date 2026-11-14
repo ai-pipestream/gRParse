@@ -1095,12 +1095,15 @@ void verify_panel_label_is_the_panel_caption() {
   // its own and falls into panel (a); it is that panel's caption.
   grparse::AssemblyCursor cursor;
   grparse::OcrPage page{1000, 1000,
-                        {boxed_line("(a) Augmentation recognition", 150, 380, 450, 395),
+                        {boxed_line("(a) Augmentation recognition", 150, 404, 450, 419),
                          boxed_line("(b)Test", 550, 380, 650, 395),
-                         boxed_line("(%)", 560, 200, 590, 215)}};
+                         boxed_line("(%)", 560, 200, 590, 215),
+                         boxed_line("(1) Personal Validity", 120, 520, 300, 535),
+                         boxed_line("(c) Figure 5:", 520, 120, 700, 135)}};
   page.regions = {{"picture", 0.9F, 100, 100, 900, 445},
                   {"picture", 0.9F, 110, 110, 490, 400},
-                  {"picture", 0.9F, 510, 110, 890, 400}};
+                  {"picture", 0.9F, 510, 110, 890, 400},
+                  {"picture", 0.9F, 100, 500, 900, 700}};  // a diagram, no panels
   ai::pipestream::parse::v1::PageData data;
   grparse::append_page_data(page, 1, &cursor, &data);
   std::vector<std::string> captions;
@@ -1118,7 +1121,8 @@ void verify_panel_label_is_the_panel_caption() {
   }
   std::ranges::sort(captions);
   require(captions == std::vector<std::string>{"(a) Augmentation recognition", "(b)Test"},
-          "each panel takes its label; a unit in brackets stays a picture label");
+          "each panel takes its label, one just under its panel too; a unit, a number "
+          "outside a panel and a figure caption stay picture text");
 }
 
 void verify_line_break_hyphens_join_the_word() {
