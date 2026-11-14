@@ -181,9 +181,11 @@ int column_of(const std::vector<std::pair<int, int>>& columns, int center) {
 }
 
 // One cell per row and column the rows' lines fall in, numbered on from
-// first_row; reached marks the columns that got a line.
+// first_row; reached marks the columns that got a line, and placed holds
+// each line's centre with the column it went to.
 std::vector<StructuredCell> place_rows(const std::vector<Row>& built, const std::vector<std::pair<int, int>>& columns,
-                                       int first_row, std::vector<bool>& reached) {
+                                       int first_row, std::vector<bool>& reached,
+                                       std::vector<std::pair<int, int>>& placed) {
   std::vector<StructuredCell> extension;
   for (size_t index = 0; index < built.size(); ++index) {
     std::map<int, size_t> row_cells;
@@ -191,6 +193,7 @@ std::vector<StructuredCell> place_rows(const std::vector<Row>& built, const std:
       const int column = column_of(columns, static_cast<int>((static_cast<int64_t>(box.left) + box.right) / 2));
       if (column < 0) continue;
       reached[static_cast<size_t>(column)] = true;
+      placed.emplace_back(static_cast<int>((static_cast<int64_t>(box.left) + box.right) / 2), column);
       if (const auto taken = row_cells.find(column); taken != row_cells.end()) {
         auto& cell = extension[taken->second];
         cell.left = std::min(cell.left, box.left);
@@ -205,6 +208,27 @@ std::vector<StructuredCell> place_rows(const std::vector<Row>& built, const std:
     }
   }
   return extension;
+}
+
+// Share of placed lines that sit nearest their own column's centre (from
+// the model's body rows), give or take a few pixels. Lines whose column
+// has no centre do not count.
+double placement_agreement(const std::vector<std::pair<int, int>>& placed, const std::vector<int>& centers) {
+  constexpr int kSlack = 8;
+  size_t counted = 0;
+  size_t agreed = 0;
+  for (const auto& [center, column] : placed) {
+    const int own = centers[static_cast<size_t>(column)];
+    if (own < 0) continue;
+    ++counted;
+    const int own_distance = std::abs(center - own);
+    bool nearest = true;
+    for (const int other : centers) {
+      if (other >= 0 && std::abs(center - other) + kSlack < own_distance) nearest = false;
+    }
+    if (nearest) ++agreed;
+  }
+  return counted == 0 ? 1.0 : static_cast<double>(agreed) / static_cast<double>(counted);
 }
 
 }  // namespace
@@ -232,6 +256,7 @@ void extend_truncated_table(LayoutRegion& table, const std::vector<OcrLine>& lin
   // Columns the model's body rows hold words in; a header-only column or a
   // spacer never gets data rows and says nothing about the cut.
   std::vector<bool> body_used(static_cast<size_t>(cols), false);
+  std::vector<std::vector<int>> body_centers(static_cast<size_t>(cols));
   for (const auto& cell : table.structured_cells) {
     if (cell.col_span != 1) continue;
     auto& column = boxes[static_cast<size_t>(cell.col)];
@@ -247,7 +272,16 @@ void extend_truncated_table(LayoutRegion& table, const std::vector<OcrLine>& lin
     auto& column = words[static_cast<size_t>(cell.col)];
     column.first = std::min(column.first, box.left);
     column.second = std::max(column.second, box.right);
-    if (!cell.header) body_used[static_cast<size_t>(cell.col)] = true;
+    if (cell.header) continue;
+    body_used[static_cast<size_t>(cell.col)] = true;
+    body_centers[static_cast<size_t>(cell.col)].push_back((box.left + box.right) / 2);
+  }
+  std::vector<int> centers(static_cast<size_t>(cols), -1);
+  for (size_t index = 0; index < centers.size(); ++index) {
+    auto& column = body_centers[index];
+    if (column.empty()) continue;
+    std::ranges::nth_element(column, column.begin() + static_cast<std::ptrdiff_t>(column.size() / 2));
+    centers[index] = column[column.size() / 2];
   }
   // A label column filled on every body row must be reached below the
   // cut. A group-label column (one label over a run of min/avg/max rows)
@@ -330,9 +364,12 @@ void extend_truncated_table(LayoutRegion& table, const std::vector<OcrLine>& lin
   // Missing more means the intervals miss the words, and wrong numbers in
   // wrong columns are worse than rows without columns: each row past the
   // cut is then one cell across the table, its words kept out of the body.
+  // The same holds when more than a tenth of the placed lines sit nearer
+  // another column's centre than their own: the intervals shift the row.
   for (const auto* columns : {&word_columns, &boxes}) {
     std::vector<bool> reached(static_cast<size_t>(cols), false);
-    std::vector<StructuredCell> extension = place_rows(built, *columns, rows, reached);
+    std::vector<std::pair<int, int>> placed;
+    std::vector<StructuredCell> extension = place_rows(built, *columns, rows, reached, placed);
     size_t used_count = 0;
     size_t missed = 0;
     for (size_t index = label_required ? 0 : 1; index < body_used.size(); ++index) {
@@ -341,7 +378,7 @@ void extend_truncated_table(LayoutRegion& table, const std::vector<OcrLine>& lin
       if (!reached[index]) ++missed;
     }
     const bool label_missed = label_required && body_used[0] && !reached[0];
-    if (!label_missed && missed * 4 <= used_count) {
+    if (!label_missed && missed * 4 <= used_count && placement_agreement(placed, centers) >= 0.9) {
       table.structured_cells.insert(table.structured_cells.end(), extension.begin(), extension.end());
       return;
     }
