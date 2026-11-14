@@ -66,6 +66,25 @@ refreshes the viewer files.
   Docling is not ground truth.
 - Keys: `j`/`k` next and previous page, `n`/`p` next and previous document.
 
+## Difference catalog
+
+`diff_catalog.py` sorts every difference in a built preview into categories,
+with counts, the papers each touches and example viewer links. It uses the
+viewer's box rules but keeps text inside pictures, since that is a
+difference too.
+
+```sh
+python3 eval/preview/diff_catalog.py /tmp/acm-preview --out catalog.json \
+    --viewer-url http://localhost:8090
+python3 eval/preview/diff_catalog.py --themes before=old.json after=catalog.json
+```
+
+`--themes` rolls the categories up into QA themes, one column per catalog,
+so a fix shows up as one theme shrinking with no other theme growing. A
+panel label that gRParse makes a caption of its panel while Docling keeps it
+as text under the figure is counted in "7b Known structure", not as a label
+disagreement. Nothing here changes the agreement score.
+
 ## Relation to gRParse#306
 
 The service still returns page images inline as data URIs; this tool splits
