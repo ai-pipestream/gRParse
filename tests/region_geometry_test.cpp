@@ -189,6 +189,23 @@ void verify_regions_nested_in_a_table_join_it() {
   require(bound != nullptr && bound->label == "table", "the amount binds to the table");
 }
 
+// Three bar charts boxed once each and once more as a whole (ACM paper,
+// p10): the box around them is no figure of its own and goes; a piece
+// detected inside one chart goes too; the three charts stay.
+void verify_picture_around_pictures_is_dropped() {
+  std::vector<grparse::LayoutRegion> regions = {
+      make_region("picture", 0.93F, 100, 100, 1600, 1500),   // all three
+      make_region("picture", 0.99F, 120, 120, 800, 600),     // fig 13
+      make_region("picture", 0.99F, 900, 120, 1580, 600),    // fig 14
+      make_region("picture", 0.99F, 120, 800, 1580, 1480),  // fig 15
+      make_region("picture", 0.60F, 200, 900, 700, 1300),   // piece of fig 15
+      make_region("picture", 0.90F, 1700, 100, 2000, 400)};  // apart, stays
+  grparse::resolve_region_overlaps(regions, {}, 2200, 1701);
+  require(regions.size() == 4 && regions[0].left == 120 && regions[1].left == 900 &&
+              regions[2].top == 800 && regions[3].left == 1700,
+          "the composite and the nested piece go; the figures and the far one stay");
+}
+
 }  // namespace
 
 int main() {
@@ -199,5 +216,6 @@ int main() {
       verify_full_page_picture_with_text_is_dropped,
       verify_overlapping_tables_keep_one,
       verify_regions_nested_in_a_table_join_it,
+      verify_picture_around_pictures_is_dropped,
   });
 }

@@ -155,6 +155,33 @@ void resolve_region_overlaps(std::vector<LayoutRegion>& regions, const std::vect
     }
   }
 
+  // Pictures: a box around two or more detected pictures is the union of
+  // the real figures (a row of subfigures boxed again as one), not a figure
+  // of its own; it goes, and the figures stay. Then a picture lying inside
+  // another remaining picture is a piece of it and goes.
+  std::vector<size_t> pictures;
+  for (size_t index = 0; index < regions.size(); ++index) {
+    if (!dropped[index] && regions[index].label == "picture") pictures.push_back(index);
+  }
+  for (const size_t outer : pictures) {
+    size_t inside = 0;
+    for (const size_t inner : pictures) {
+      if (inner != outer && inside_share(regions[inner], regions[outer]) > kNestedShare) ++inside;
+    }
+    if (inside >= 2) dropped[outer] = true;
+  }
+  for (const size_t inner : pictures) {
+    if (dropped[inner]) continue;
+    for (const size_t outer : pictures) {
+      if (outer == inner || dropped[outer]) continue;
+      if (inside_share(regions[inner], regions[outer]) > kNestedShare &&
+          area(regions[inner]) < area(regions[outer])) {
+        dropped[inner] = true;
+        break;
+      }
+    }
+  }
+
   std::vector<LayoutRegion> kept;
   kept.reserve(regions.size());
   for (size_t index = 0; index < regions.size(); ++index) {

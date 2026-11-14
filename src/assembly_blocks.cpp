@@ -42,7 +42,24 @@ std::vector<bool> table_claimed_lines(const OcrPage& page, const LayoutRegion& r
 // line opens with a marker like the item's own (opens_next_item).
 bool region_aggregates(const LayoutRegion* region) {
   if (region == nullptr) return false;
-  return region->label != "list" && region->label != "table";
+  return region->label != "list" && region->label != "table" && region->label != "picture";
+}
+
+// Whether a line inside a picture goes on the label the block holds: level
+// with the block's last line and starting within one line height after it.
+// A chart's words are its labels (an axis title, a tick value, a legend
+// entry), so they join along a visual line only, and tick values a column
+// apart stay one item each, as the reference keeps them.
+bool continues_picture_label(const OcrPage& page, const TextBlock& block, const OcrLine& line) {
+  const AxisAlignedBox last = bounding_box(page.lines[block.lines.back()]);
+  const AxisAlignedBox next = bounding_box(line);
+  const int64_t shorter = std::min(last.height(), next.height());
+  if (shorter <= 0) return false;
+  const int64_t overlap = static_cast<int64_t>(std::min(last.bottom, next.bottom)) -
+                          std::max(last.top, next.top);
+  const int64_t gap = static_cast<int64_t>(next.left) - last.right;
+  return 2 * overlap > shorter && gap >= -shorter &&
+         gap <= std::max(last.height(), next.height());
 }
 
 // Whether a list line goes on reading the visual line the block ended on:
@@ -164,8 +181,10 @@ std::vector<TextBlock> build_text_blocks(const OcrPage& page) {
         suppressed ||
         (region_aggregates(region) &&
          !(region->label == "list_item" && same_region && opens_next_item(page, blocks.back(), line)));
+    const bool picture = region != nullptr && region->label == "picture";
     if (same_region &&
-        (merges || (is_list_region(region) && continues_visual_line(page, blocks.back(), line)))) {
+        (merges || (is_list_region(region) && continues_visual_line(page, blocks.back(), line)) ||
+         (picture && continues_picture_label(page, blocks.back(), line)))) {
       blocks.back().lines.push_back(line_index);
       continue;
     }

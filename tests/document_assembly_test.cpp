@@ -993,6 +993,31 @@ void verify_page_sized_picture_over_a_ledger_is_dropped() {
           "the title and the ledger text keep their regions");
 }
 
+// A chart's words are the picture's content: each label (words along one
+// visual line) is a child text item of the picture, out of the body order,
+// and tick values a column apart stay one item each.
+void verify_picture_text_hangs_off_the_picture() {
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1000, 1000,
+                        {boxed_line("Accuracy", 120, 200, 200, 215), boxed_line("(%)", 205, 200, 230, 215),
+                         boxed_line("100", 300, 300, 330, 315), boxed_line("80", 500, 300, 520, 315),
+                         boxed_line("Body", 100, 700, 160, 715)}};
+  page.regions = {{"picture", 0.9F, 100, 150, 900, 400}, {"text", 0.9F, 90, 690, 900, 720}};
+
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(page, 1, &cursor, &data);
+  require(data.pictures_size() == 1 && data.texts_size() == 4, "one picture, three labels and the body line");
+  std::vector<std::string> labels;
+  for (const auto& item : data.texts()) {
+    if (item.text().base().parent().ref() == "#/pictures/0") labels.push_back(item.text().base().text());
+  }
+  require(labels == std::vector<std::string>{"Accuracy (%)", "100", "80"},
+          "words of one label join, tick values stay apart, all under the picture");
+  require(data.pictures(0).children_size() == 3, "the picture lists its labels as children");
+  require(body_refs(data) == std::vector<std::string>{"#/pictures/0", "#/texts/3"},
+          "picture labels stay out of the body order");
+}
+
 int main() {
   return grparse_test::run_test_main("document-assembly-test", {
       verify_contract_shape,
@@ -1023,5 +1048,6 @@ int main() {
       verify_ledger_amount_in_a_nested_box_lands_in_its_cell,
       verify_ledger_detected_twice_reads_as_one_table,
       verify_page_sized_picture_over_a_ledger_is_dropped,
+      verify_picture_text_hangs_off_the_picture,
   });
 }

@@ -63,7 +63,8 @@ pipestream::parse::v1::TextSource text_source_for(const OcrPage& page, const Ocr
 }
 
 // Region label -> document item label for the text lines inside it.  Covers
-// both detectors' vocabularies; lines inside table/picture regions keep TEXT,
+// both detectors' vocabularies; lines inside table/picture regions keep TEXT
+// (a picture's lines hang off the picture item as its children),
 // because the region itself is emitted as a TableItem/PictureItem whose cells
 // come from fill_table_data and whose captions bind once the page is
 // assembled (append_page_data). `recognized` false means the label
@@ -436,8 +437,21 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
         break;
     }
     const bool furniture = is_furniture_region(region);
+    // Text inside a picture (a chart's axis titles, ticks and legend) is the
+    // picture's own content, as the reference files it: a child of the
+    // picture item, out of the body order, so it neither streams as prose
+    // nor is lost. The picture was emitted first (region_anchor rule 1).
+    EmittedFloat* holder = nullptr;
+    if (region != nullptr && region->label == "picture") {
+      for (auto& emitted : floats) {
+        if (emitted.region == region) holder = &emitted;
+      }
+    }
     base->set_self_ref(self_ref);
-    base->mutable_parent()->set_ref(furniture ? "#/furniture" : "#/body");
+    base->mutable_parent()->set_ref(holder != nullptr ? holder->self_ref
+                                    : furniture       ? "#/furniture"
+                                                      : "#/body");
+    if (holder != nullptr) holder->children->Add()->set_ref(self_ref);
     base->set_content_layer(furniture ? pipestream::document::v1::CONTENT_LAYER_FURNITURE
                                       : pipestream::document::v1::CONTENT_LAYER_BODY);
     base->set_label(label);
@@ -607,7 +621,7 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     if (code_item == nullptr && region != nullptr && region->label == "caption") {
       captions.push_back({region, self_ref, base});
     }
-    if (!furniture) body_order.push_back(self_ref);
+    if (!furniture && holder == nullptr) body_order.push_back(self_ref);
   };
 
   size_t next_placed = 0;
