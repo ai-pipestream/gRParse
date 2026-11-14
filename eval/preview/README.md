@@ -64,6 +64,10 @@ refreshes the viewer files.
   documents worth looking at on top; a document opened from it starts on
   the page with the most unmatched boxes. It is a pointer to where the two differ, not a quality score:
   Docling is not ground truth.
+- "Table cells" (off by default) outlines every table cell each side reports
+  on the page. A cell that shares its row and column slot with another is
+  drawn in red. Hovering a cell shows its row, column and text. The overlay
+  is for reading table structure; it is not matched or scored.
 - Keys: `j`/`k` next and previous page, `n`/`p` next and previous document.
 
 ## Difference catalog

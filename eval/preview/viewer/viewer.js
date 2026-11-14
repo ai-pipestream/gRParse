@@ -272,6 +272,38 @@ function showPage(pageNo) {
     const size = page && page.size ? page.size : null;
     const aspect = size && Number(size.width) > 0 ? Number(size.height) / Number(size.width) : 11 / 8.5;
     renderPane(side, boxes[side], pageImage(side, pageNo) || pageImage(other, pageNo), aspect);
+    if ($("#show-cells").checked) renderCells(side, pageNo, aspect);
+  }
+}
+
+// Optional overlay: each table cell this side reports on the page, as a thin
+// outline. Cells that share a (row, column) slot are drawn as clashes. The
+// overlay is for reading table structure only; it is not matched or scored.
+function renderCells(side, pageNo, aspect) {
+  const doc = state.data[side];
+  const page = pageEntry(doc, pageNo);
+  const size = page && page.size ? { width: Number(page.size.width), height: Number(page.size.height) } : null;
+  if (!doc || !size || !(size.width > 0) || !(size.height > 0)) return;
+  const svg = document.querySelector(`.pane[data-side="${side}"] .page svg`);
+  const height = 1000 * aspect;
+  for (const table of doc.tables || []) {
+    if (!(table.prov || []).some((prov) => Number(prov.page_no) === pageNo)) continue;
+    const cells = ((table.data || {}).table_cells || []).filter((cell) => cell.bbox);
+    const slots = new Map();
+    for (const cell of cells) {
+      const key = `${cell.start_row_offset_idx},${cell.start_col_offset_idx}`;
+      slots.set(key, (slots.get(key) || 0) + 1);
+    }
+    for (const cell of cells) {
+      const { x0, y0, x1, y1 } = normalizedBox(cell.bbox, size);
+      const clash = slots.get(`${cell.start_row_offset_idx},${cell.start_col_offset_idx}`) > 1;
+      const rect = el("rect", {
+        x: x0 * 1000, y: y0 * height, width: Math.max(1, (x1 - x0) * 1000), height: Math.max(1, (y1 - y0) * height),
+        class: clash ? "cell clash" : "cell",
+      });
+      rect.append(el("title", {}, `r${cell.start_row_offset_idx} c${cell.start_col_offset_idx}${clash ? " (shared slot)" : ""}: ${cell.text || ""}`));
+      svg.append(rect);
+    }
   }
 }
 
@@ -398,6 +430,7 @@ function wire() {
   $("#next-doc").addEventListener("click", () => stepDoc(1));
   $("#show-tags").addEventListener("change", () => showPage(state.page));
   $("#show-unmatched").addEventListener("change", () => showPage(state.page));
+  $("#show-cells").addEventListener("change", () => showPage(state.page));
   document.addEventListener("keydown", (event) => {
     if (event.target.matches("input[type=search]")) return;
     if (event.key === "j" || event.key === "ArrowRight") stepPage(1);
