@@ -1,6 +1,7 @@
 #include "grparse/table_structure.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
@@ -158,24 +159,46 @@ int64_t axis_gap(int low_a, int high_a, int low_b, int high_b) {
 }  // namespace
 
 void extend_truncated_table(LayoutRegion& table, const std::vector<OcrLine>& lines) {
-  auto& cells = table.structured_cells;
-  if (cells.empty()) return;
+  if (table.structured_cells.empty()) return;
   int rows = 0;
   int cols = 0;
   int cut = 0;
-  for (const auto& cell : cells) {
+  for (const auto& cell : table.structured_cells) {
     rows = std::max(rows, cell.row + cell.row_span);
     cols = std::max(cols, cell.col + cell.col_span);
     cut = std::max(cut, cell.bottom);
   }
-  // Each column's x-interval, from the cells that span it alone.
-  std::vector<std::pair<int, int>> columns(static_cast<size_t>(cols),
-                                           {std::numeric_limits<int>::max(), std::numeric_limits<int>::min()});
-  for (const auto& cell : cells) {
+  // Each column's x-interval from the words the model's own rows put in it,
+  // not from its cell boxes, which on some tables sit tens of pixels off
+  // their words. A column with no single-column word keeps its box extent.
+  OcrPage page;
+  page.lines = lines;
+  page.regions = {table};
+  const TableLineAssignment assignment = assign_table_lines(page, page.regions[0]);
+  std::vector<std::pair<int, int>> words(static_cast<size_t>(cols),
+                                         {std::numeric_limits<int>::max(), std::numeric_limits<int>::min()});
+  std::vector<std::pair<int, int>> boxes = words;
+  for (const auto& cell : table.structured_cells) {
     if (cell.col_span != 1) continue;
-    auto& column = columns[static_cast<size_t>(cell.col)];
+    auto& column = boxes[static_cast<size_t>(cell.col)];
     column.first = std::min(column.first, cell.left);
     column.second = std::max(column.second, cell.right);
+  }
+  for (size_t index = 0; index < lines.size(); ++index) {
+    const int at = assignment.cell_of_line[index];
+    if (at < 0) continue;
+    const auto& cell = table.structured_cells[static_cast<size_t>(at)];
+    if (cell.col_span != 1) continue;
+    const AxisAlignedBox box = bounding_box(lines[index]);
+    auto& column = words[static_cast<size_t>(cell.col)];
+    column.first = std::min(column.first, box.left);
+    column.second = std::max(column.second, box.right);
+  }
+  std::vector<std::pair<int, int>> columns(static_cast<size_t>(cols));
+  std::vector<bool> used(static_cast<size_t>(cols), false);
+  for (size_t index = 0; index < columns.size(); ++index) {
+    used[index] = words[index].first <= words[index].second;
+    columns[index] = used[index] ? words[index] : boxes[index];
   }
   const auto column_of = [&columns](int center) {
     int nearest = -1;
@@ -207,39 +230,79 @@ void extend_truncated_table(LayoutRegion& table, const std::vector<OcrLine>& lin
     below.push_back(box);
   }
   if (below.empty()) return;
+  std::vector<int64_t> heights;
+  for (const auto& box : below) heights.push_back(box.height());
+  std::ranges::nth_element(heights, heights.begin() + static_cast<std::ptrdiff_t>(heights.size() / 2));
+  const int64_t median_height = heights[heights.size() / 2];
   std::ranges::sort(below, [](const AxisAlignedBox& a, const AxisAlignedBox& b) {
     return a.top != b.top ? a.top < b.top : a.left < b.left;
   });
 
-  // Rows by vertical overlap with the row's first line; within a row, one
-  // cell per column holding the union of its words.
-  int row = rows - 1;
-  AxisAlignedBox row_lead;
-  bool open_row = false;
-  std::map<int, size_t> row_cells;
+  // Rows from ordinary lines: a line joins the row whose first line holds
+  // its centre. A line over 1.5 median heights (a label set across two
+  // rows) joins the row its top line belongs to, so it never fuses two.
+  struct Row {
+    AxisAlignedBox lead;
+    std::vector<AxisAlignedBox> members;
+  };
+  std::vector<Row> built;
+  std::vector<AxisAlignedBox> tall;
   for (const auto& box : below) {
-    const int64_t shorter = std::min(row_lead.height(), box.height());
-    const int64_t overlap = static_cast<int64_t>(std::min(row_lead.bottom, box.bottom)) -
-                            std::max(row_lead.top, box.top);
-    if (!open_row || shorter <= 0 || 2 * overlap <= shorter) {
-      ++row;
-      row_lead = box;
-      open_row = true;
-      row_cells.clear();
-    }
-    const int column = column_of(static_cast<int>((static_cast<int64_t>(box.left) + box.right) / 2));
-    if (column < 0) continue;
-    if (const auto taken = row_cells.find(column); taken != row_cells.end()) {
-      auto& cell = cells[taken->second];
-      cell.left = std::min(cell.left, box.left);
-      cell.top = std::min(cell.top, box.top);
-      cell.right = std::max(cell.right, box.right);
-      cell.bottom = std::max(cell.bottom, box.bottom);
+    if (box.height() * 2 > median_height * 3) {
+      tall.push_back(box);
       continue;
     }
-    row_cells.emplace(column, cells.size());
-    cells.push_back({row, column, 1, 1, false, box.left, box.top, box.right, box.bottom});
+    const int64_t center_y = (static_cast<int64_t>(box.top) + box.bottom) / 2;
+    if (built.empty() || center_y > built.back().lead.bottom) {
+      built.push_back({box, {}});
+    }
+    built.back().members.push_back(box);
   }
+  if (built.empty()) return;
+  for (const auto& box : tall) {
+    const int64_t anchor = static_cast<int64_t>(box.top) + median_height / 2;
+    size_t best = 0;
+    int64_t best_distance = std::numeric_limits<int64_t>::max();
+    for (size_t index = 0; index < built.size(); ++index) {
+      const auto& lead = built[index].lead;
+      const int64_t distance = anchor < lead.top ? lead.top - anchor : anchor > lead.bottom ? anchor - lead.bottom : 0;
+      if (distance < best_distance) {
+        best = index;
+        best_distance = distance;
+      }
+    }
+    built[best].members.push_back(box);
+  }
+
+  std::vector<StructuredCell> extension;
+  std::vector<bool> reached(static_cast<size_t>(cols), false);
+  for (size_t index = 0; index < built.size(); ++index) {
+    std::map<int, size_t> row_cells;
+    for (const auto& box : built[index].members) {
+      const int column = column_of(static_cast<int>((static_cast<int64_t>(box.left) + box.right) / 2));
+      if (column < 0) continue;
+      reached[static_cast<size_t>(column)] = true;
+      if (const auto taken = row_cells.find(column); taken != row_cells.end()) {
+        auto& cell = extension[taken->second];
+        cell.left = std::min(cell.left, box.left);
+        cell.top = std::min(cell.top, box.top);
+        cell.right = std::max(cell.right, box.right);
+        cell.bottom = std::max(cell.bottom, box.bottom);
+        continue;
+      }
+      row_cells.emplace(column, extension.size());
+      extension.push_back({rows + static_cast<int>(index), column, 1, 1, false, box.left, box.top,
+                           box.right, box.bottom});
+    }
+  }
+  // Every column the model's rows hold words in must get words below the
+  // cut too; a column that never does means the intervals miss the words
+  // (the model's own columns are off), and wrong numbers in wrong columns
+  // are worse than a table that ends where the model stopped.
+  for (size_t index = 0; index < used.size(); ++index) {
+    if (used[index] && !reached[index]) return;
+  }
+  table.structured_cells.insert(table.structured_cells.end(), extension.begin(), extension.end());
 }
 
 TableLineAssignment assign_table_lines(const OcrPage& page, const LayoutRegion& table) {
