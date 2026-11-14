@@ -1,0 +1,82 @@
+diff --git a/src/CrnnNet.cpp b/src/CrnnNet.cpp
+index 8bc7393..c299af2 100644
+--- a/src/CrnnNet.cpp
++++ b/src/CrnnNet.cpp
+@@ -107,7 +107,25 @@ TextLine CrnnNet::getTextLine(const cv::Mat &src) {
+     cv::Mat srcResize;
+     resize(src, srcResize, cv::Size(dstWidth, dstHeight));
+     std::vector<float> inputTensorValues = substractMeanNormalize(srcResize, meanValues, normValues);
+-    std::array<int64_t, 4> inputShape{1, srcResize.channels(), srcResize.rows, srcResize.cols};
++    // gRParse: on a provider that compiles per input shape, the line is padded
++    // to a bucket width with zeros (the batched path's own padding) and only
++    // the time steps over the real width are decoded.
++    int tensorWidth = srcResize.cols;
++    if (grparse::ocr_shape_buckets()) {
++        tensorWidth = grparse::ocr_rec_bucket(srcResize.cols);
++        if (tensorWidth != srcResize.cols) {
++            const size_t channels = srcResize.channels();
++            std::vector<float> padded(channels * dstHeight * tensorWidth, 0.0F);
++            for (size_t ch = 0; ch < channels; ++ch) {
++                for (int row = 0; row < dstHeight; ++row) {
++                    const float *from = inputTensorValues.data() + (ch * dstHeight + row) * srcResize.cols;
++                    std::copy(from, from + srcResize.cols, padded.data() + (ch * dstHeight + row) * tensorWidth);
++                }
++            }
++            inputTensorValues.swap(padded);
++        }
++    }
++    std::array<int64_t, 4> inputShape{1, srcResize.channels(), srcResize.rows, tensorWidth};
+     auto memoryInfo = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
+     Ort::Value inputTensor = Ort::Value::CreateTensor<float>(memoryInfo, inputTensorValues.data(),
+                                                              inputTensorValues.size(), inputShape.data(),
+@@ -123,7 +141,12 @@ TextLine CrnnNet::getTextLine(const cv::Mat &src) {
+                                           std::multiplies<int64_t>());
+     float *floatArray = outputTensor.front().GetTensorMutableData<float>();
+     std::vector<float> outputData(floatArray, floatArray + outputCount);
+-    return scoreToTextLine(outputData, outputShape[1], outputShape[2]);
++    int64_t steps = outputShape[1];
++    if (tensorWidth != srcResize.cols) {
++        steps = (std::max)(int64_t{1}, (steps * srcResize.cols + tensorWidth - 1) / tensorWidth);
++        outputData.resize(static_cast<size_t>(steps * outputShape[2]));
++    }
++    return scoreToTextLine(outputData, steps, outputShape[2]);
+ }
+ 
+ std::vector<TextLine> CrnnNet::getTextLineBatch(const std::vector<cv::Mat> &srcs) {
+diff --git a/src/DbNet.cpp b/src/DbNet.cpp
+index 2bd440c..686845a 100644
+--- a/src/DbNet.cpp
++++ b/src/DbNet.cpp
+@@ -114,6 +114,17 @@ std::vector<TextBox>
+ DbNet::getTextBoxes(cv::Mat &src, ScaleParam &s, float boxScoreThresh, float boxThresh, float unClipRatio) {
+     cv::Mat srcResize;
+     resize(src, srcResize, cv::Size(s.dstWidth, s.dstHeight));
++    // gRParse: on a provider that compiles per input shape, pad the page to a
++    // fixed bucket with white (page background) and crop the map back below,
++    // so the network is compiled for a handful of shapes instead of each page.
++    if (grparse::ocr_shape_buckets()) {
++        const int bucketW = grparse::ocr_det_bucket(s.dstWidth);
++        const int bucketH = grparse::ocr_det_bucket(s.dstHeight);
++        if (bucketW != s.dstWidth || bucketH != s.dstHeight) {
++            cv::copyMakeBorder(srcResize, srcResize, 0, bucketH - s.dstHeight, 0, bucketW - s.dstWidth,
++                               cv::BORDER_CONSTANT, cv::Scalar(255, 255, 255));
++        }
++    }
+     std::vector<float> inputTensorValues = substractMeanNormalize(srcResize, meanValues, normValues);
+     std::array<int64_t, 4> inputShape{1, srcResize.channels(), srcResize.rows, srcResize.cols};
+     auto memoryInfo = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
+@@ -135,6 +146,14 @@ DbNet::getTextBoxes(cv::Mat &src, ScaleParam &s, float boxScoreThresh, float box
+     //-----Data preparation-----
+     int outHeight = (int) outputShape[2];
+     int outWidth = (int) outputShape[3];
++    if (outWidth > s.dstWidth || outHeight > s.dstHeight) {
++        // gRParse: the bucket padding comes off before the boxes are traced.
++        cv::Mat full(outHeight, outWidth, CV_32F, outputData.data());
++        cv::Mat real = full(cv::Rect(0, 0, (std::min)(outWidth, s.dstWidth), (std::min)(outHeight, s.dstHeight))).clone();
++        outHeight = real.rows;
++        outWidth = real.cols;
++        outputData.assign((float *) real.datastart, (float *) real.dataend);
++    }
+     size_t area = outHeight * outWidth;
+ 
+     std::vector<float> predData(area, 0.0);

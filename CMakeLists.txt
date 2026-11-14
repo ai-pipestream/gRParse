@@ -91,7 +91,8 @@ FetchContent_Declare(rapidocr SOURCE_SUBDIR disabled
         COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-confident-angle-vote.patch"
         # Line crops cut from the page in place, the debug result image built
         # only when saved, and recognizer scores decoded in place.
-        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-ocr-copies.patch")
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-ocr-copies.patch"
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-shape-buckets.patch")
 FetchContent_MakeAvailable(rapidocr)
 # FetchContent only patches when it populates, so a dependency tree cached
 # before the patch existed would build the upstream provider wiring and the
@@ -158,6 +159,14 @@ if(GRPARSE_CRNN_DECODE_AT EQUAL -1)
     "(or the docker build cache) and re-run CMake.")
 endif()
 unset(GRPARSE_CRNN_SOURCE)
+file(READ "${rapidocr_SOURCE_DIR}/src/DbNet.cpp" GRPARSE_DBNET_SOURCE)
+string(FIND "${GRPARSE_DBNET_SOURCE}" "ocr_det_bucket" GRPARSE_DBNET_BUCKETS_AT)
+if(GRPARSE_DBNET_BUCKETS_AT EQUAL -1)
+  message(FATAL_ERROR "src/DbNet.cpp is unpatched: the rapidocr source tree predates "
+    "patches/rapidocr-shape-buckets.patch. Delete _deps/rapidocr-* from the build directory "
+    "(or the docker build cache) and re-run CMake.")
+endif()
+unset(GRPARSE_DBNET_SOURCE)
 file(READ "${rapidocr_SOURCE_DIR}/include/DbNet.h" GRPARSE_DBNET_HEADER)
 string(FIND "${GRPARSE_DBNET_HEADER}" "opencv2/geometry.hpp" GRPARSE_DBNET_GEOMETRY_AT)
 if(GRPARSE_DBNET_GEOMETRY_AT EQUAL -1)
@@ -378,7 +387,7 @@ target_link_libraries(grparse_curl INTERFACE CURL::libcurl)
 target_link_options(grparse_curl INTERFACE "LINKER:--exclude-libs,ALL")
 
 # The execution-provider hook the patched RapidOcrOnnx nets call into.
-add_library(grparse_ort_ep STATIC src/ort_session_ep.cpp)
+add_library(grparse_ort_ep STATIC src/ort_session_ep.cpp src/ocr_shape_buckets.cpp)
 target_include_directories(grparse_ort_ep PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/compat")
 target_link_libraries(grparse_ort_ep PUBLIC onnxruntime PRIVATE grparse_flags)
 
@@ -926,6 +935,7 @@ if(BUILD_TESTING)
     office-collector-test
     office-fallback-test
     office-cv-enrichment-test
+    ocr-shape-buckets-test
     ort-session-ep-test
     code-formula-crops-test
     ocr-image-regions-test
