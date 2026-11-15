@@ -9,9 +9,9 @@
 # The build stage starts from the local deps stage unless CI names a published
 # seed image (see the seed stage below).
 ARG GRPARSE_DEPS_IMAGE=deps
-ARG GRPARSE_RUNTIME_IMAGE=nvidia/cuda:13.4.3-runtime-ubuntu26.04
+ARG GRPARSE_RUNTIME_IMAGE=nvidia/cuda:13.5.0-runtime-ubuntu26.04
 
-FROM nvidia/cuda:13.4.3-devel-ubuntu26.04 AS deps
+FROM nvidia/cuda:13.5.0-devel-ubuntu26.04 AS deps
 ARG GRPARSE_BUILD_JOBS=2
 ENV CARGO_BUILD_JOBS=${GRPARSE_BUILD_JOBS}
 
@@ -116,7 +116,7 @@ ARG GRPARSE_BUILD_CACHE_SCOPE=
 # #247). No models, embedding bundle or emulators in this build, so those
 # three; any other skip fails the build.
 ARG GRPARSE_EXPECTED_SKIPS=models,embeddings,emulators
-RUN --mount=type=cache,id=grparse-ubuntu26-cuda13.4-trt11.4-grpc1.84.1-ort1.30.0-cxx23-sessionep2-static1-simdutf9-ocv500-tokcpp1${GRPARSE_BUILD_CACHE_SCOPE},sharing=locked,target=/build \
+RUN --mount=type=cache,id=grparse-ubuntu26-cuda13.5-trt11.4-grpc1.84.1-ort1.30.0-cxx23-sessionep2-static1-simdutf9-ocv500-tokcpp1${GRPARSE_BUILD_CACHE_SCOPE},sharing=locked,target=/build \
     --mount=type=cache,id=grparse-ccache-cuda-amd64,target=/ccache \
     if [ -d /opt/grparse-seed ] && [ ! -f /build/CMakeCache.txt ]; then \
       cp -a /opt/grparse-seed/. /build/ && echo "seed: /build seeded from /opt/grparse-seed"; \
