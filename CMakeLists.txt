@@ -954,7 +954,8 @@ if(BUILD_TESTING)
     list-marker-test
     input-format-test
     paragraph-split-test
-    service-identity-test)
+    service-identity-test
+    ocr-box-rescue-test)
   foreach(test_name IN LISTS GRPARSE_TESTS)
     string(REPLACE "-" "_" test_source "${test_name}")
     add_executable(${test_name} "tests/${test_source}.cpp")
