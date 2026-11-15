@@ -1,5 +1,5 @@
 // Proves the OCR input buckets (patches/rapidocr-shape-buckets.patch): the
-// detector side rounds up to a multiple of 256, the recognizer width to its
+// detector side rounds up to a multiple of 64, the recognizer width to its
 // fixed list and then to multiples of 640, and every bucket covers its input
 // (GRPARSE_OCR_SHAPE_BUCKETS=on for this process).
 
@@ -16,13 +16,13 @@ namespace {
 using grparse_test::require;
 
 void verify_detector_buckets() {
-  require(grparse::ocr_det_bucket(1) == 256 && grparse::ocr_det_bucket(256) == 256, "256 holds up to 256");
-  require(grparse::ocr_det_bucket(257) == 512 && grparse::ocr_det_bucket(960) == 1024, "rounds up by 256");
+  require(grparse::ocr_det_bucket(1) == 64 && grparse::ocr_det_bucket(64) == 64, "64 covers up to 64");
+  require(grparse::ocr_det_bucket(65) == 128 && grparse::ocr_det_bucket(960) == 960, "rounds up by 64");
   require(grparse::ocr_det_bucket(2048) == 2048, "the default max side is its own bucket");
-  require(grparse::ocr_det_bucket(0) == 256, "an empty side still gets a bucket");
-  std::set<int> shapes;
-  for (int side = 32; side <= 2048; side += 32) shapes.insert(grparse::ocr_det_bucket(side));
-  require(shapes.size() == 8, "the detector sees 8 sizes per side up to 2048: " + std::to_string(shapes.size()));
+  require(grparse::ocr_det_bucket(0) == 64, "an empty side still gets a bucket");
+  std::set<int> sizes;
+  for (int side = 32; side <= 2048; side += 32) sizes.insert(grparse::ocr_det_bucket(side));
+  require(sizes.size() == 32, "the detector gets 32 sizes per side up to 2048: " + std::to_string(sizes.size()));
 }
 
 void verify_recognizer_buckets() {

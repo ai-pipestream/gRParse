@@ -74,10 +74,12 @@ size_t ocr_batch_size();
 // run left 16,822 compiled blobs and made OCR 11x slower than CUDA.  When on,
 // the detector input is padded with white to a bucketed size and its map is
 // cropped back, and a line is padded to a bucketed width whose extra time
-// steps are not decoded.  GRPARSE_OCR_SHAPE_BUCKETS=auto (default: on for the
-// OpenVINO provider on a GPU device), on or off.
+// steps are not decoded.  GRPARSE_OCR_SHAPE_BUCKETS=auto (default: the
+// detector only, for the OpenVINO provider on a GPU device), on, det, rec or
+// off.
 bool ocr_shape_buckets();
-// The smallest detector bucket (a multiple of 256) at least `side` pixels.
+// The smallest detector bucket (a multiple of GRPARSE_OCR_DET_STEP, default
+// 64) at least `side` pixels.
 int ocr_det_bucket(int side);
 // The smallest recognizer width bucket at least `width` pixels.
 int ocr_rec_bucket(int width);

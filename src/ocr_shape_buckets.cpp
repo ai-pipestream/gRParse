@@ -13,7 +13,7 @@ namespace {
 // Line widths at height 48: short labels to full-width lines; past the last
 // entry the width rounds up to a multiple of 640.
 constexpr std::array<int, 10> kRecWidths = {160, 320, 480, 640, 960, 1280, 1600, 1920, 2560, 3200};
-constexpr int kDetStepDefault = 256;
+constexpr int kDetStepDefault = 64;
 
 int env_step(const char* name, int fallback) {
   const char* value = std::getenv(name);
@@ -27,7 +27,7 @@ int env_step(const char* name, int fallback) {
 }
 
 // GRPARSE_OCR_DET_STEP: the detector side rounds up to a multiple of it
-// (default 256). GRPARSE_OCR_REC_STEP: the recognizer width rounds up to a
+// (default 64). GRPARSE_OCR_REC_STEP: the recognizer width rounds up to a
 // multiple of it; 0 (the default) uses the fixed width list.
 int det_step() {
   static const int step = env_step("GRPARSE_OCR_DET_STEP", kDetStepDefault);
@@ -46,7 +46,7 @@ bool on_gpu_device(const std::string& device) {
 }  // namespace
 
 // Which nets get fixed shapes: both, the detector only, the recognizer only,
-// or neither (GRPARSE_OCR_SHAPE_BUCKETS=on|det|rec|off; auto is "on" for the
+// or neither (GRPARSE_OCR_SHAPE_BUCKETS=on|det|rec|off; auto is "det" for the
 // OpenVINO provider on a GPU device, "off" otherwise).
 struct BucketMode {
   bool det = false;
@@ -64,9 +64,13 @@ const BucketMode& bucket_mode() {
     if (name != "auto") {
       throw std::invalid_argument("GRPARSE_OCR_SHAPE_BUCKETS must be auto, on, det, rec or off");
     }
+    // auto buckets the detector only: padding a line changes the recognizer
+    // output (its context spans the full line), while the detector at
+    // multiples of 64 with repeated edges stays within GPU noise of the
+    // unpadded run (101 ACM papers, OpenVINO CPU: 150 figure items, 0 body).
     const OrtEpSelection selection = ort_ep_selection();
     const bool gpu = selection.ep == OrtEp::kOpenVino && on_gpu_device(selection.openvino_device);
-    return BucketMode{gpu, gpu};
+    return BucketMode{gpu, false};
   }();
   return mode;
 }
