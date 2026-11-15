@@ -160,7 +160,7 @@ if(GRPARSE_CRNN_DECODE_AT EQUAL -1)
 endif()
 unset(GRPARSE_CRNN_SOURCE)
 file(READ "${rapidocr_SOURCE_DIR}/src/DbNet.cpp" GRPARSE_DBNET_SOURCE)
-string(FIND "${GRPARSE_DBNET_SOURCE}" "ocr_det_bucket" GRPARSE_DBNET_BUCKETS_AT)
+string(FIND "${GRPARSE_DBNET_SOURCE}" "ocr_pad_replicate" GRPARSE_DBNET_BUCKETS_AT)
 if(GRPARSE_DBNET_BUCKETS_AT EQUAL -1)
   message(FATAL_ERROR "src/DbNet.cpp is unpatched: the rapidocr source tree predates "
     "patches/rapidocr-shape-buckets.patch. Delete _deps/rapidocr-* from the build directory "

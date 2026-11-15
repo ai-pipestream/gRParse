@@ -116,7 +116,7 @@ ARG GRPARSE_BUILD_CACHE_SCOPE=
 # #247). No models, embedding bundle or emulators in this build, so those
 # three; any other skip fails the build.
 ARG GRPARSE_EXPECTED_SKIPS=models,embeddings,emulators
-RUN --mount=type=cache,id=grparse-ubuntu26-cuda13.4-trt11.4-grpc1.84.1-ort1.30.0-cxx23-sessionep2-static1-simdutf9-ocv500-tokcpp1-ocrbuckets1${GRPARSE_BUILD_CACHE_SCOPE},sharing=locked,target=/build \
+RUN --mount=type=cache,id=grparse-ubuntu26-cuda13.4-trt11.4-grpc1.84.1-ort1.30.0-cxx23-sessionep2-static1-simdutf9-ocv500-tokcpp1-ocrbuckets2${GRPARSE_BUILD_CACHE_SCOPE},sharing=locked,target=/build \
     --mount=type=cache,id=grparse-ccache-cuda-amd64,target=/ccache \
     if [ -d /opt/grparse-seed ] && [ ! -f /build/CMakeCache.txt ]; then \
       cp -a /opt/grparse-seed/. /build/ && echo "seed: /build seeded from /opt/grparse-seed"; \
