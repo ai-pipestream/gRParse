@@ -21,27 +21,42 @@ bool on_gpu_device(const std::string& device) {
 
 }  // namespace
 
-bool ocr_shape_buckets() {
-  static const bool enabled = [] {
+// Which nets get fixed shapes: both, the detector only, the recognizer only,
+// or neither (GRPARSE_OCR_SHAPE_BUCKETS=on|det|rec|off; auto is "on" for the
+// OpenVINO provider on a GPU device, "off" otherwise).
+struct BucketMode {
+  bool det = false;
+  bool rec = false;
+};
+
+const BucketMode& bucket_mode() {
+  static const BucketMode mode = [] {
     const char* value = std::getenv("GRPARSE_OCR_SHAPE_BUCKETS");
-    const std::string mode = value == nullptr || *value == '\0' ? "auto" : value;
-    if (mode == "on") return true;
-    if (mode == "off") return false;
-    if (mode != "auto") {
-      throw std::invalid_argument("GRPARSE_OCR_SHAPE_BUCKETS must be auto, on or off");
+    const std::string name = value == nullptr || *value == '\0' ? "auto" : value;
+    if (name == "on") return BucketMode{true, true};
+    if (name == "off") return BucketMode{};
+    if (name == "det") return BucketMode{true, false};
+    if (name == "rec") return BucketMode{false, true};
+    if (name != "auto") {
+      throw std::invalid_argument("GRPARSE_OCR_SHAPE_BUCKETS must be auto, on, det, rec or off");
     }
     const OrtEpSelection selection = ort_ep_selection();
-    return selection.ep == OrtEp::kOpenVino && on_gpu_device(selection.openvino_device);
+    const bool gpu = selection.ep == OrtEp::kOpenVino && on_gpu_device(selection.openvino_device);
+    return BucketMode{gpu, gpu};
   }();
-  return enabled;
+  return mode;
 }
 
+bool ocr_shape_buckets() { return bucket_mode().det || bucket_mode().rec; }
+
 int ocr_det_bucket(int side) {
+  if (!bucket_mode().det) return side;
   if (side <= 0) return kDetStep;
   return (side + kDetStep - 1) / kDetStep * kDetStep;
 }
 
 int ocr_rec_bucket(int width) {
+  if (!bucket_mode().rec) return width;
   for (const int bucket : kRecWidths) {
     if (width <= bucket) return bucket;
   }

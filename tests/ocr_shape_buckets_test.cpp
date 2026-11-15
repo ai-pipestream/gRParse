@@ -1,11 +1,11 @@
 // Proves the OCR input buckets (patches/rapidocr-shape-buckets.patch): the
 // detector side rounds up to a multiple of 256, the recognizer width to its
-// fixed list and then to multiples of 640, every bucket covers its input, and
-// auto mode keeps buckets off for a provider that does not compile per shape
-// (the CPU here), so CPU and CUDA output stays as it was.
+// fixed list and then to multiples of 640, and every bucket covers its input
+// (GRPARSE_OCR_SHAPE_BUCKETS=on for this process).
 
 #include <cstdlib>
 #include <set>
+#include <stdlib.h>
 #include <string>
 
 #include "grparse_session_ep.h"
@@ -33,20 +33,13 @@ void verify_recognizer_buckets() {
   }
 }
 
-void verify_auto_is_off_on_cpu() {
-  unsetenv("GRPARSE_OCR_SHAPE_BUCKETS");
-  grparse::OrtEpSelection cpu;
-  cpu.ep = grparse::OrtEp::kCpu;
-  grparse::set_ort_ep_selection(cpu);
-  require(!grparse::ocr_shape_buckets(), "auto leaves the CPU provider on exact shapes");
-}
-
 }  // namespace
 
 int main() {
+  // The mode is read once per process; "on" buckets both nets.
+  setenv("GRPARSE_OCR_SHAPE_BUCKETS", "on", 1);
   return grparse_test::run_test_main("ocr-shape-buckets-test", "all checks passed", {
       verify_detector_buckets,
       verify_recognizer_buckets,
-      verify_auto_is_off_on_cpu,
   });
 }
