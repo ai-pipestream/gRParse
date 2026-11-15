@@ -13,7 +13,31 @@ namespace {
 // Line widths at height 48: short labels to full-width lines; past the last
 // entry the width rounds up to a multiple of 640.
 constexpr std::array<int, 10> kRecWidths = {160, 320, 480, 640, 960, 1280, 1600, 1920, 2560, 3200};
-constexpr int kDetStep = 256;
+constexpr int kDetStepDefault = 256;
+
+int env_step(const char* name, int fallback) {
+  const char* value = std::getenv(name);
+  if (value == nullptr || *value == '\0') return fallback;
+  char* end = nullptr;
+  const long parsed = std::strtol(value, &end, 10);
+  if (*end != '\0' || parsed < 0 || parsed > 4096 || (parsed != 0 && parsed % 32 != 0)) {
+    throw std::invalid_argument(std::string(name) + " must be 0 or a multiple of 32 up to 4096");
+  }
+  return static_cast<int>(parsed);
+}
+
+// GRPARSE_OCR_DET_STEP: the detector side rounds up to a multiple of it
+// (default 256). GRPARSE_OCR_REC_STEP: the recognizer width rounds up to a
+// multiple of it; 0 (the default) uses the fixed width list.
+int det_step() {
+  static const int step = env_step("GRPARSE_OCR_DET_STEP", kDetStepDefault);
+  return step == 0 ? kDetStepDefault : step;
+}
+
+int rec_step() {
+  static const int step = env_step("GRPARSE_OCR_REC_STEP", 0);
+  return step;
+}
 
 bool on_gpu_device(const std::string& device) {
   return device.rfind("GPU", 0) == 0 || device.find("GPU") != std::string::npos;
@@ -51,17 +75,30 @@ bool ocr_shape_buckets() { return bucket_mode().det || bucket_mode().rec; }
 
 int ocr_det_bucket(int side) {
   if (!bucket_mode().det) return side;
-  if (side <= 0) return kDetStep;
-  return (side + kDetStep - 1) / kDetStep * kDetStep;
+  const int step = det_step();
+  if (side <= 0) return step;
+  return (side + step - 1) / step * step;
 }
 
 int ocr_rec_bucket(int width) {
   if (!bucket_mode().rec) return width;
+  if (const int step = rec_step(); step > 0) return (std::max(width, 1) + step - 1) / step * step;
   for (const int bucket : kRecWidths) {
     if (width <= bucket) return bucket;
   }
   constexpr int kStep = 640;
   return (width + kStep - 1) / kStep * kStep;
+}
+
+bool ocr_pad_replicate() {
+  static const bool replicate = [] {
+    const char* value = std::getenv("GRPARSE_OCR_BUCKET_PAD");
+    const std::string mode = value == nullptr || *value == '\0' ? "replicate" : value;
+    if (mode == "replicate") return true;
+    if (mode == "zero") return false;
+    throw std::invalid_argument("GRPARSE_OCR_BUCKET_PAD must be replicate or zero");
+  }();
+  return replicate;
 }
 
 }  // namespace grparse

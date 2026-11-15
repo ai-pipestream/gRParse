@@ -81,6 +81,10 @@ bool ocr_shape_buckets();
 int ocr_det_bucket(int side);
 // The smallest recognizer width bucket at least `width` pixels.
 int ocr_rec_bucket(int width);
+// How bucket padding is filled: true repeats the edge pixels
+// (GRPARSE_OCR_BUCKET_PAD=replicate, the default), false pads the detector
+// with white and the recognizer with zeros (=zero).
+bool ocr_pad_replicate();
 
 // Must be called before any OCR engine is constructed.  Later sessions use
 // the newest selection; sessions already built keep the provider they bound.
