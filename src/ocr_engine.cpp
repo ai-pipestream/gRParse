@@ -46,7 +46,9 @@ OcrDetectOptions detect_options_from_env() {
   const OcrDetectOptions defaults;
   OcrDetectOptions options;
   options.padding = env_int("GRPARSE_OCR_PADDING", defaults.padding, 0, 4096);
-  options.max_side_len = env_int("GRPARSE_OCR_MAX_SIDE", defaults.max_side_len, 32, 16384);
+  // Native OpenVINO caps the detector at its bucket ladder's top (1600).
+  options.max_side_len =
+      ocr_det_max_side(env_int("GRPARSE_OCR_MAX_SIDE", defaults.max_side_len, 32, 16384));
   options.box_score_thresh = env_float("GRPARSE_OCR_BOX_SCORE", defaults.box_score_thresh, 0.0F, 1.0F);
   options.box_thresh = env_float("GRPARSE_OCR_BOX_THRESH", defaults.box_thresh, 0.0F, 1.0F);
   options.un_clip_ratio = env_float("GRPARSE_OCR_UNCLIP", defaults.un_clip_ratio, 0.1F, 10.0F);
@@ -84,6 +86,9 @@ OcrEngine::OcrEngine(const std::filesystem::path& model_directory, int gpu_index
     // false here means the model wiring itself failed.
     throw std::runtime_error("RapidOCR failed to initialize its models");
   }
+  // Native OpenVINO compiles every bucketed shape now: boot fails here,
+  // naming the net, if the GPU will not take one.
+  engine_->prewarm();
 }
 
 OcrEngine::Page OcrEngine::extract_page(const cv::Mat& image) {

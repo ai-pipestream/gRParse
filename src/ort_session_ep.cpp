@@ -219,6 +219,14 @@ OvCompileGate::OvCompileGate() {
 
 OvCompileGate::~OvCompileGate() = default;
 
+bool native_openvino_build() {
+#ifdef GRPARSE_NATIVE_OPENVINO
+  return true;
+#else
+  return false;
+#endif
+}
+
 size_t ocr_batch_size() {
   static const size_t configured = [] {
     const char* value = std::getenv("GRPARSE_OCR_BATCH");
@@ -231,7 +239,10 @@ size_t ocr_batch_size() {
     return static_cast<size_t>(parsed);
   }();
   if (configured != 0) return configured;
-  return ort_ep_selection().ep == OrtEp::kCuda ? 16 : 1;
+  const OrtEp ep = ort_ep_selection().ep;
+  if (ep == OrtEp::kCuda) return 16;
+  // Native OpenVINO runs fixed batches of 8 (ocr_net_shapes).
+  return ep == OrtEp::kOpenVino && native_openvino_build() ? 8 : 1;
 }
 
 void set_ort_intra_op_threads(int threads) { intra_op_threads.store(threads > 0 ? threads : 0); }

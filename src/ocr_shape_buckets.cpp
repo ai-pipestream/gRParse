@@ -3,7 +3,9 @@
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
+#include "grparse_inference_model.h"
 #include "grparse_session_ep.h"
 
 namespace grparse {
@@ -14,6 +16,44 @@ namespace {
 // entry the width rounds up to a multiple of 640.
 constexpr std::array<int, 10> kRecWidths = {160, 320, 480, 640, 960, 1280, 1600, 1920, 2560, 3200};
 constexpr int kDetStepDefault = 64;
+// Native OpenVINO compiles one model per static input shape, so the
+// detector input is letterboxed (padded right and bottom with repeated edge
+// pixels, the map cropped back) into one of a few buckets: longest side 640,
+// 960, 1280 or 1600, short side three quarters of it, portrait or landscape.
+// The page is scaled so its longest side is at most 1600, which also keeps
+// the B70 clear of the full 2048 x 1600 detector input that faulted it
+// (2026-11-16).  GRPARSE_OCR_DET_LADDER=grid selects the older 7 x 7 grid of
+// independent sides (320..1600) for comparison.
+constexpr std::array<int, 4> kDetLongSides = {640, 960, 1280, 1600};
+constexpr std::array<int, 7> kDetSides = {320, 480, 640, 800, 960, 1280, 1600};
+constexpr int kDetMaxSide = 1600;
+
+int short_side_of(int long_side) { return long_side * 3 / 4 / 32 * 32; }
+
+bool det_grid_ladder() {
+  static const bool grid = [] {
+    const char* value = std::getenv("GRPARSE_OCR_DET_LADDER");
+    const std::string mode = value == nullptr || *value == '\0' ? "letterbox" : value;
+    if (mode == "letterbox") return false;
+    if (mode == "grid") return true;
+    throw std::invalid_argument("GRPARSE_OCR_DET_LADDER must be letterbox or grid");
+  }();
+  return grid;
+}
+
+// The direction and recognition nets' fixed batch on native OpenVINO.
+constexpr int64_t kNativeBatch = 8;
+constexpr int kRecHeight = 48;
+constexpr int kClsWidth = 192;
+
+// Native OpenVINO, on any device: it compiles per static shape everywhere.
+bool native_openvino() {
+#ifdef GRPARSE_NATIVE_OPENVINO
+  return ort_ep_selection().ep == OrtEp::kOpenVino;
+#else
+  return false;
+#endif
+}
 
 int env_step(const char* name, int fallback) {
   const char* value = std::getenv(name);
@@ -68,6 +108,9 @@ const BucketMode& bucket_mode() {
     // output (its context spans the full line), while the detector at
     // multiples of 64 with repeated edges stays within GPU noise of the
     // unpadded run (101 ACM papers, OpenVINO CPU: 150 figure items, 0 body).
+    // Native OpenVINO buckets both nets: it compiles one model per static
+    // shape, so every shape has to come from a finite set.
+    if (native_openvino()) return BucketMode{true, true};
     const OrtEpSelection selection = ort_ep_selection();
     const bool gpu = selection.ep == OrtEp::kOpenVino && on_gpu_device(selection.openvino_device);
     return BucketMode{gpu, false};
@@ -79,6 +122,11 @@ bool ocr_shape_buckets() { return bucket_mode().det || bucket_mode().rec; }
 
 int ocr_det_bucket(int side) {
   if (!bucket_mode().det) return side;
+  if (native_openvino() && det_grid_ladder()) {
+    for (const int bucket : kDetSides) {
+      if (side <= bucket) return bucket;
+    }
+  }
   const int step = det_step();
   if (side <= 0) return step;
   return (side + step - 1) / step * step;
@@ -103,6 +151,71 @@ bool ocr_pad_replicate() {
     throw std::invalid_argument("GRPARSE_OCR_BUCKET_PAD must be replicate or zero");
   }();
   return replicate;
+}
+
+int ocr_det_max_side(int configured) {
+  return native_openvino() ? std::min(configured, kDetMaxSide) : configured;
+}
+
+std::pair<int, int> ocr_det_bucket_shape(int width, int height) {
+  if (!bucket_mode().det) return {width, height};
+  if (!native_openvino() || det_grid_ladder()) return {ocr_det_bucket(width), ocr_det_bucket(height)};
+  const bool landscape = width > height;
+  const int long_side = landscape ? width : height;
+  const int short_side = landscape ? height : width;
+  for (const int bucket : kDetLongSides) {
+    if (long_side <= bucket && short_side <= short_side_of(bucket)) {
+      return landscape ? std::pair{bucket, short_side_of(bucket)} : std::pair{short_side_of(bucket), bucket};
+    }
+  }
+  // Squarer than 4:3 at the cap: a square bucket of the long side.
+  const int side = ocr_det_bucket(long_side);
+  return {std::max(side, width), std::max(side, height)};
+}
+
+std::string_view ocr_net_name(OcrNet net) {
+  switch (net) {
+    case OcrNet::kDetection: return "OCR detection";
+    case OcrNet::kDirection: return "OCR direction";
+    case OcrNet::kRecognition: return "OCR recognition";
+  }
+  return "OCR";
+}
+
+ModelShapePolicy ocr_net_shapes(OcrNet net) {
+  if (!native_openvino() || net == OcrNet::kDetection) return {};
+  return ModelShapePolicy{{kNativeBatch}};
+}
+
+std::vector<std::vector<TensorSpec>> ocr_prewarm_sets(OcrNet net) {
+  std::vector<std::vector<TensorSpec>> sets;
+  if (!native_openvino()) return sets;
+  switch (net) {
+    case OcrNet::kDetection:
+      if (det_grid_ladder()) {
+        for (const int height : kDetSides) {
+          for (const int width : kDetSides) {
+            sets.push_back({{TensorElement::kFloat32, {1, 3, height, width}}});
+          }
+        }
+      } else {
+        for (const int bucket : kDetLongSides) {
+          const int narrow = short_side_of(bucket);
+          sets.push_back({{TensorElement::kFloat32, {1, 3, bucket, narrow}}});
+          sets.push_back({{TensorElement::kFloat32, {1, 3, narrow, bucket}}});
+        }
+      }
+      break;
+    case OcrNet::kDirection:
+      sets.push_back({{TensorElement::kFloat32, {kNativeBatch, 3, kRecHeight, kClsWidth}}});
+      break;
+    case OcrNet::kRecognition:
+      for (const int width : kRecWidths) {
+        sets.push_back({{TensorElement::kFloat32, {kNativeBatch, 3, kRecHeight, width}}});
+      }
+      break;
+  }
+  return sets;
 }
 
 }  // namespace grparse

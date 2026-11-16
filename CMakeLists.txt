@@ -92,7 +92,11 @@ FetchContent_Declare(rapidocr SOURCE_SUBDIR disabled
         # Line crops cut from the page in place, the debug result image built
         # only when saved, and recognizer scores decoded in place.
         COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-ocr-copies.patch"
-        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-shape-buckets.patch")
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-shape-buckets.patch"
+        # The nets run through grparse::InferenceModel: an ONNX Runtime
+        # session on cpu/cuda, native OpenVINO (IR, static shapes) on the
+        # openvino flavor; bucketed batches and a startup prewarm.
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-model-backend.patch")
 FetchContent_MakeAvailable(rapidocr)
 # FetchContent only patches when it populates, so a dependency tree cached
 # before the patch existed would build the upstream provider wiring and the
@@ -107,27 +111,20 @@ foreach(patched_net DbNet AngleNet CrnnNet)
   endif()
 endforeach()
 unset(GRPARSE_NET_SOURCE)
-# The patch also default-initializes the session pointers the destructors
-# delete; a tree cached before that hunk existed would pass the hook check
-# above and segfault in the destructor when a session build throws. Fail the
-# configure instead, same remedy.
-file(READ "${rapidocr_SOURCE_DIR}/include/CrnnNet.h" GRPARSE_CRNN_HEADER)
-string(FIND "${GRPARSE_CRNN_HEADER}" "session = nullptr" GRPARSE_CRNN_NULLPTR_AT)
-if(GRPARSE_CRNN_NULLPTR_AT EQUAL -1)
-  message(FATAL_ERROR "include/CrnnNet.h is unpatched: the rapidocr source tree predates the "
-    "session-nullptr hunk of patches/rapidocr-session-ep.patch. Delete _deps/rapidocr-* from "
-    "the build directory (or the docker build cache) and re-run CMake.")
-endif()
-unset(GRPARSE_CRNN_HEADER)
+# The session-pointer default the session-ep patch added is gone with the
+# model-backend patch (the nets own a grparse::InferenceModel); the
+# model-backend check below covers a tree cached before either.
 # The patch also reroutes the nets' session construction through grparse's
 # retrying builder; a tree cached with only the older hunks would pass the
 # checks above and still build bare `new Ort::Session` calls that die on the
 # first provider failure.  Fail the configure instead, same remedy.
 file(READ "${rapidocr_SOURCE_DIR}/src/DbNet.cpp" GRPARSE_DBNET_SOURCE)
-string(FIND "${GRPARSE_DBNET_SOURCE}" "grparse::make_rapidocr_session" GRPARSE_DBNET_BUILDER_AT)
+# make_rapidocr_model (patches/rapidocr-model-backend.patch) builds through
+# that retrying builder on ONNX Runtime and natively on OpenVINO.
+string(FIND "${GRPARSE_DBNET_SOURCE}" "grparse::make_rapidocr_model" GRPARSE_DBNET_BUILDER_AT)
 if(GRPARSE_DBNET_BUILDER_AT EQUAL -1)
-  message(FATAL_ERROR "src/DbNet.cpp is unpatched: the rapidocr source tree predates the "
-    "retrying-builder hunk of patches/rapidocr-session-ep.patch. Delete _deps/rapidocr-* from "
+  message(FATAL_ERROR "src/DbNet.cpp is unpatched: the rapidocr source tree predates "
+    "patches/rapidocr-model-backend.patch. Delete _deps/rapidocr-* from "
     "the build directory (or the docker build cache) and re-run CMake.")
 endif()
 unset(GRPARSE_DBNET_SOURCE)
@@ -387,7 +384,8 @@ target_link_libraries(grparse_curl INTERFACE CURL::libcurl)
 target_link_options(grparse_curl INTERFACE "LINKER:--exclude-libs,ALL")
 
 # The execution-provider hook the patched RapidOcrOnnx nets call into.
-add_library(grparse_ort_ep STATIC src/ort_session_ep.cpp src/ocr_shape_buckets.cpp)
+add_library(grparse_ort_ep STATIC src/ort_session_ep.cpp src/ocr_shape_buckets.cpp
+  src/inference_model.cpp)
 target_include_directories(grparse_ort_ep PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/compat")
 target_link_libraries(grparse_ort_ep PUBLIC onnxruntime PRIVATE grparse_flags)
 

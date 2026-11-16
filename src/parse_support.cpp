@@ -1,3 +1,4 @@
+#include "grparse_inference_model.h"
 #include "parse_support.h"
 
 #include <algorithm>
@@ -366,6 +367,10 @@ grpc::Status status_from_exception(std::exception_ptr failure) {
   } catch (const SchedulerSaturated& error) {
     return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED, error.what());
   } catch (const SchedulerShuttingDown& error) {
+    return grpc::Status(grpc::StatusCode::UNAVAILABLE, error.what());
+  } catch (const InferenceDeviceError& error) {
+    // The accelerator failed (an OpenVINO GPU reset): retryable, and the
+    // models rebuild on the next call.
     return grpc::Status(grpc::StatusCode::UNAVAILABLE, error.what());
   } catch (const std::bad_alloc& error) {
     return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED, error.what());

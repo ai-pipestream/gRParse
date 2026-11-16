@@ -45,6 +45,11 @@ if(GRPARSE_EMBED_OPENVINO)
   target_compile_definitions(grparse_core PRIVATE GRPARSE_EMBED_OPENVINO=1)
   target_include_directories(grparse_core SYSTEM PRIVATE "${GRPARSE_OPENVINO_INCLUDE}")
   target_link_libraries(grparse_core PRIVATE "${GRPARSE_OPENVINO_C_LIBRARY}")
+  # The openvino flavor's models run on native OpenVINO (IR, static shapes,
+  # GPU only) through the same C API, not ONNX Runtime's OpenVINO provider.
+  target_compile_definitions(grparse_ort_ep PRIVATE GRPARSE_NATIVE_OPENVINO=1)
+  target_include_directories(grparse_ort_ep SYSTEM PRIVATE "${GRPARSE_OPENVINO_INCLUDE}")
+  target_link_libraries(grparse_ort_ep PRIVATE "${GRPARSE_OPENVINO_C_LIBRARY}")
 endif()
 
 # Independent reference owns its tokenizer configuration, native session and

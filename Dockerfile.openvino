@@ -19,8 +19,9 @@
 # Why the default stays ubuntu:26.04 while the CPU image runs on a Docker
 # Hardened Image (dhi.io/debian-base:trixie-debian13): Debian 13 carries no
 # NEO packages (intel-opencl-icd, libigc2, libigdfcl2 have no trixie
-# candidates, checked 2026-09-07), so a trixie build stage could not stage
-# the GPU compute runtime, and a binary built on ubuntu 26.04 (glibc 2.43)
+# candidates, checked 2026-09-07; the build stage now installs Intel's own
+# release .debs, see below), so a trixie build stage could not stage the GPU
+# compute runtime from the archive, and a binary built on ubuntu 26.04 (glibc 2.43)
 # does not load on trixie (glibc 2.41). dhi.io publishes no ubuntu base.
 # Intel's own Ubuntu .deb releases of NEO installed onto a trixie build
 # stage are the route to a hardened default; the ARG above is the seam.
@@ -137,7 +138,7 @@ ARG GRPARSE_BUILD_CACHE_SCOPE=
 # #247). No models, embedding bundle or emulators in this build, so those
 # three; any other skip fails the build.
 ARG GRPARSE_EXPECTED_SKIPS=models,embeddings,emulators
-RUN --mount=type=cache,id=grparse-openvino-ubuntu26-grpc1.84.1-ort1.24.1-cxx23-sessionep2-static1-simdutf9-ocv500-tokcpp1-ocrbuckets2${GRPARSE_BUILD_CACHE_SCOPE},sharing=locked,target=/build \
+RUN --mount=type=cache,id=grparse-openvino-ubuntu26-grpc1.84.1-ort1.24.1-cxx23-sessionep2-static1-simdutf9-ocv500-tokcpp1-ocrbackend3${GRPARSE_BUILD_CACHE_SCOPE},sharing=locked,target=/build \
     --mount=type=cache,id=grparse-ccache-openvino-amd64,target=/ccache \
     if [ -d /opt/grparse-seed ] && [ ! -f /build/CMakeCache.txt ]; then \
       cp -a /opt/grparse-seed/. /build/ && echo "seed: /build seeded from /opt/grparse-seed"; \
@@ -182,10 +183,33 @@ RUN --mount=type=cache,id=grparse-openvino-ubuntu26-grpc1.84.1-ort1.24.1-cxx23-s
 # the path /etc/OpenCL/vendors/intel.icd names.
 # The last line holds this image to the invariant the vendored OpenCV
 # exists for: no poppler in the staged closure.
+# NEO comes from Intel's release .debs, pinned by sha256, not Ubuntu's
+# archive: 26.04 ships 26.05.37020 (2026-02), and on the Arc Pro B70 that
+# build faults the compute engine under inference load ("Engine memory CAT
+# error", "Fault response: Unsuccessful -ENOENT/-EINVAL", engine reset;
+# intel/compute-runtime#948, and the residency fix of #973 landed in 26.35).
+ARG NEO_VERSION=26.40.40196.8
+ARG IGC_VERSION=2.42.6+23070
+ARG IGC_TAG=v2.42.6
+ARG GMMLIB_VERSION=22.10.2
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ocl-icd-libopencl1 intel-opencl-icd \
+    ocl-icd-libopencl1 curl ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && neo_libs=$(dpkg -L intel-opencl-icd ocl-icd-libopencl1 libigc2 libigdfcl2 libigdgmm12 \
+    && mkdir /tmp/neo && cd /tmp/neo \
+    && neo=https://github.com/intel/compute-runtime/releases/download/${NEO_VERSION} \
+    && igc=https://github.com/intel/intel-graphics-compiler/releases/download/${IGC_TAG} \
+    && curl -fsSLO "$neo/intel-opencl-icd_${NEO_VERSION}-0_amd64.deb" \
+    && curl -fsSLO "$neo/libigdgmm12_${GMMLIB_VERSION}_amd64.deb" \
+    && curl -fsSLO "$igc/intel-igc-core-2_${IGC_VERSION}_amd64.deb" \
+    && curl -fsSLO "$igc/intel-igc-opencl-2_${IGC_VERSION}_amd64.deb" \
+    && printf '%s\n' \
+       "96046069e94680b761df6e83ddc64244721178b826e3e1f8af3ca104cfd0c7c2  intel-opencl-icd_${NEO_VERSION}-0_amd64.deb" \
+       "053fceadb84a1d2f9a30a0d1bc9b16424b3f1a90cc49900fcd80aadcf25c8a4d  libigdgmm12_${GMMLIB_VERSION}_amd64.deb" \
+       "e20539632f2d99875d8f8b225d5da58b31f98baa54bb47c6328aa98ec473ab9d  intel-igc-core-2_${IGC_VERSION}_amd64.deb" \
+       "7f5593cf828503ffb8450967768bde9209e22753bc576296e846b5a751011fa3  intel-igc-opencl-2_${IGC_VERSION}_amd64.deb" \
+       | sha256sum -c - \
+    && dpkg -i ./*.deb && cd / && rm -rf /tmp/neo \
+    && neo_libs=$(dpkg -L intel-opencl-icd ocl-icd-libopencl1 intel-igc-core-2 intel-igc-opencl-2 libigdgmm12 \
                   | grep -E '\.so\.[0-9]+$') \
     && LD_LIBRARY_PATH=/out/ort-libs:/opt/opencv/lib \
        STAGE_KEEP_ON_BASE='^/out/ort-libs/' \

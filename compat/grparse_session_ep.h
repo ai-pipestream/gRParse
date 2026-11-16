@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <onnxruntime/core/session/onnxruntime_cxx_api.h>
@@ -71,6 +72,10 @@ int ort_intra_op_threads();
 // malformed value throws std::invalid_argument.
 size_t ocr_batch_size();
 
+// True when this build runs the openvino flavor's models on native OpenVINO
+// (src/inference_model.cpp) instead of ONNX Runtime's OpenVINO provider.
+bool native_openvino_build();
+
 // Fixed input shapes for the OCR nets (patches/rapidocr-shape-buckets.patch,
 // src/ocr_shape_buckets.cpp).  The OpenVINO GPU plugin compiles the network
 // for every new input shape; with dynamic page and line sizes one 101-paper
@@ -82,8 +87,16 @@ size_t ocr_batch_size();
 // off.
 bool ocr_shape_buckets();
 // The smallest detector bucket (a multiple of GRPARSE_OCR_DET_STEP, default
-// 64) at least `side` pixels.
+// 64; on native OpenVINO the 320..1600 side ladder) at least `side` pixels.
 int ocr_det_bucket(int side);
+// The detector's longest side: `configured`, capped at 1600 on native
+// OpenVINO.
+int ocr_det_max_side(int configured);
+// The detector input shape (width, height) a `width` x `height` resize is
+// padded to: unchanged without buckets, each side bucketed on its own for
+// ONNX Runtime's OpenVINO provider, one of eight letterbox buckets on native
+// OpenVINO (GRPARSE_OCR_DET_LADDER=letterbox, or =grid for 7 x 7).
+std::pair<int, int> ocr_det_bucket_shape(int width, int height);
 // The smallest recognizer width bucket at least `width` pixels.
 int ocr_rec_bucket(int width);
 // How bucket padding is filled: true repeats the edge pixels

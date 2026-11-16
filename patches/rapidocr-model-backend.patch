@@ -1,0 +1,470 @@
+diff --git a/include/AngleNet.h b/include/AngleNet.h
+index 8f65217..7e1530c 100644
+--- a/include/AngleNet.h
++++ b/include/AngleNet.h
+@@ -3,6 +3,8 @@
+ 
+ #include "OcrStruct.h"
+ #include <onnxruntime/core/session/onnxruntime_cxx_api.h>
++#include "grparse_inference_model.h"
++#include <memory>
+ #include <opencv2/opencv.hpp>
+ 
+ class AngleNet {
+@@ -14,6 +16,9 @@ public:
+ 
+     void setGpuIndex(int gpuIndex);
+ 
++    // gRParse: compiles every bucketed input shape now (native OpenVINO).
++    void prewarm();
++
+     void initModel(const std::string &pathStr);
+ 
+     std::vector<Angle> getAngles(std::vector<cv::Mat> &partImgs, const char *path,
+@@ -22,15 +27,15 @@ public:
+ private:
+     bool isOutputAngleImg = false;
+ 
+-    // gRParse: initialized so a Session construction failure leaves a defined
+-    // value for the destructor (patches/rapidocr-session-ep.patch).
+-    Ort::Session *session = nullptr;
+     Ort::Env env = Ort::Env(ORT_LOGGING_LEVEL_ERROR, "AngleNet");
+     Ort::SessionOptions sessionOptions = Ort::SessionOptions();
++    // gRParse: the net runs through grparse::InferenceModel
++    // (patches/rapidocr-model-backend.patch): an ONNX Runtime session on the
++    // cpu and cuda flavors, native OpenVINO on the openvino flavor.  Declared
++    // after env so it is destroyed first.
++    std::unique_ptr<grparse::InferenceModel> model;
+     int numThread = 0;
+ 
+-    std::vector<Ort::AllocatedStringPtr> inputNamesPtr;
+-    std::vector<Ort::AllocatedStringPtr> outputNamesPtr;
+ 
+     const float meanValues[3] = {127.5, 127.5, 127.5};
+     const float normValues[3] = {1.0 / 127.5, 1.0 / 127.5, 1.0 / 127.5};
+diff --git a/include/CrnnNet.h b/include/CrnnNet.h
+index 0a111d3..7fdd251 100644
+--- a/include/CrnnNet.h
++++ b/include/CrnnNet.h
+@@ -3,6 +3,8 @@
+ 
+ #include "OcrStruct.h"
+ #include <onnxruntime/core/session/onnxruntime_cxx_api.h>
++#include "grparse_inference_model.h"
++#include <memory>
+ #include <opencv2/opencv.hpp>
+ 
+ class CrnnNet {
+@@ -14,21 +16,24 @@ public:
+ 
+     void setGpuIndex(int gpuIndex);
+ 
++    // gRParse: compiles every bucketed input shape now (native OpenVINO).
++    void prewarm();
++
+     void initModel(const std::string &pathStr, const std::string &keysPath);
+ 
+     std::vector<TextLine> getTextLines(std::vector<cv::Mat> &partImg, const char *path, const char *imgName);
+ 
+ private:
+     bool isOutputDebugImg = false;
+-    // gRParse: initialized so a Session construction failure leaves a defined
+-    // value for the destructor (patches/rapidocr-session-ep.patch).
+-    Ort::Session *session = nullptr;
+     Ort::Env env = Ort::Env(ORT_LOGGING_LEVEL_ERROR, "CrnnNet");
+     Ort::SessionOptions sessionOptions = Ort::SessionOptions();
++    // gRParse: the net runs through grparse::InferenceModel
++    // (patches/rapidocr-model-backend.patch): an ONNX Runtime session on the
++    // cpu and cuda flavors, native OpenVINO on the openvino flavor.  Declared
++    // after env so it is destroyed first.
++    std::unique_ptr<grparse::InferenceModel> model;
+     int numThread = 0;
+ 
+-    std::vector<Ort::AllocatedStringPtr> inputNamesPtr;
+-    std::vector<Ort::AllocatedStringPtr> outputNamesPtr;
+ 
+     const float meanValues[3] = {127.5, 127.5, 127.5};
+     const float normValues[3] = {1.0 / 127.5, 1.0 / 127.5, 1.0 / 127.5};
+diff --git a/include/DbNet.h b/include/DbNet.h
+index a9da912..38363d4 100644
+--- a/include/DbNet.h
++++ b/include/DbNet.h
+@@ -3,6 +3,8 @@
+ 
+ #include "OcrStruct.h"
+ #include <onnxruntime/core/session/onnxruntime_cxx_api.h>
++#include "grparse_inference_model.h"
++#include <memory>
+ #include <opencv2/opencv.hpp>
+ // gRParse: OpenCV 5 moved minAreaRect, boxPoints and getPerspectiveTransform
+ // into the geometry module, and opencv.hpp does not include it
+@@ -17,21 +19,24 @@ public:
+ 
+     void setGpuIndex(int gpuIndex);
+ 
++    // gRParse: compiles every bucketed input shape now (native OpenVINO).
++    void prewarm();
++
+     void initModel(const std::string &pathStr);
+ 
+     std::vector<TextBox> getTextBoxes(cv::Mat &src, ScaleParam &s, float boxScoreThresh,
+                                       float boxThresh, float unClipRatio);
+ 
+ private:
+-    // gRParse: initialized so a Session construction failure leaves a defined
+-    // value for the destructor (patches/rapidocr-session-ep.patch).
+-    Ort::Session *session = nullptr;
+     Ort::Env env = Ort::Env(ORT_LOGGING_LEVEL_ERROR, "DbNet");
+     Ort::SessionOptions sessionOptions = Ort::SessionOptions();
++    // gRParse: the net runs through grparse::InferenceModel
++    // (patches/rapidocr-model-backend.patch): an ONNX Runtime session on the
++    // cpu and cuda flavors, native OpenVINO on the openvino flavor.  Declared
++    // after env so it is destroyed first.
++    std::unique_ptr<grparse::InferenceModel> model;
+     int numThread = 0;
+ 
+-    std::vector<Ort::AllocatedStringPtr> inputNamesPtr;
+-    std::vector<Ort::AllocatedStringPtr> outputNamesPtr;
+ 
+     const float meanValues[3] = {0.485 * 255, 0.456 * 255, 0.406 * 255};
+     const float normValues[3] = {1.0 / 0.229 / 255.0, 1.0 / 0.224 / 255.0, 1.0 / 0.225 / 255.0};
+diff --git a/include/OcrLite.h b/include/OcrLite.h
+index 9084648..8f7814a 100644
+--- a/include/OcrLite.h
++++ b/include/OcrLite.h
+@@ -25,6 +25,10 @@ public:
+     bool initModels(const std::string &detPath, const std::string &clsPath,
+                     const std::string &recPath, const std::string &keysPath);
+ 
++    // gRParse: compiles every bucketed shape of the three nets now, so none
++    // compiles under load (patches/rapidocr-model-backend.patch).
++    void prewarm();
++
+     void Logger(const char *format, ...);
+ 
+     OcrResult detect(const char *path, const char *imgName,
+diff --git a/src/AngleNet.cpp b/src/AngleNet.cpp
+index b8e3496..5807eef 100644
+--- a/src/AngleNet.cpp
++++ b/src/AngleNet.cpp
+@@ -1,6 +1,8 @@
+ #include "AngleNet.h"
+ #include "OcrUtils.h"
+ #include "grparse_session_ep.h"
++#include "grparse_inference_model.h"
++#include <span>
+ #include <algorithm>
+ #include <numeric>
+ 
+@@ -11,9 +13,7 @@ void AngleNet::setGpuIndex(int gpuIndex) {
+ }
+ 
+ AngleNet::~AngleNet() {
+-    delete session;
+-    inputNamesPtr.clear();
+-    outputNamesPtr.clear();
++    model.reset();
+ }
+ 
+ void AngleNet::setNumThread(int numOfThread) {
+@@ -48,9 +48,7 @@ void AngleNet::initModel(const std::string &pathStr) {
+ #else
+     std::string clsPath = pathStr;
+ #endif
+-    session = grparse::make_rapidocr_session(env, clsPath, "OCR direction", numThread);
+-    inputNamesPtr = getInputNames(session);
+-    outputNamesPtr = getOutputNames(session);
++    model = grparse::make_rapidocr_model(env, clsPath, grparse::OcrNet::kDirection, numThread);
+ }
+ 
+ Angle scoreToAngle(const std::vector<float> &outputData) {
+@@ -68,20 +66,15 @@ Angle scoreToAngle(const std::vector<float> &outputData) {
+ Angle AngleNet::getAngle(cv::Mat &src) {
+     std::vector<float> inputTensorValues = substractMeanNormalize(src, meanValues, normValues);
+     std::array<int64_t, 4> inputShape{1, src.channels(), src.rows, src.cols};
+-    auto memoryInfo = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
+-    Ort::Value inputTensor = Ort::Value::CreateTensor<float>(memoryInfo, inputTensorValues.data(),
+-                                                             inputTensorValues.size(), inputShape.data(),
+-                                                             inputShape.size());
+-    assert(inputTensor.IsTensor());
+-    std::vector<const char *> inputNames = {inputNamesPtr.data()->get()};
+-    std::vector<const char *> outputNames = {outputNamesPtr.data()->get()};
+-    auto outputTensor = session->Run(Ort::RunOptions{nullptr}, inputNames.data(), &inputTensor,
+-                                     inputNames.size(), outputNames.data(), outputNames.size());
+-    assert(outputTensor.size() == 1 && outputTensor.front().IsTensor());
+-    std::vector<int64_t> outputShape = outputTensor[0].GetTensorTypeAndShapeInfo().GetShape();
++    // gRParse: one typed run through grparse::InferenceModel
++    // (patches/rapidocr-model-backend.patch).
++    const grparse::TensorView inputView{grparse::TensorElement::kFloat32, inputTensorValues.data(),
++                                        {inputShape.begin(), inputShape.end()}};
++    const std::vector<grparse::Tensor> outputTensor = model->run(std::span(&inputView, 1));
++    std::vector<int64_t> outputShape = outputTensor[0].shape;
+     int64_t outputCount = std::accumulate(outputShape.begin(), outputShape.end(), 1,
+                                           std::multiplies<int64_t>());
+-    float *floatArray = outputTensor.front().GetTensorMutableData<float>();
++    const float *floatArray = outputTensor.front().floats();
+     std::vector<float> outputData(floatArray, floatArray + outputCount);
+     return scoreToAngle(outputData);
+ }
+@@ -99,17 +92,14 @@ std::vector<Angle> AngleNet::getAngleBatch(const std::vector<cv::Mat> &angleImgs
+     }
+     std::array<int64_t, 4> inputShape{static_cast<int64_t>(count), static_cast<int64_t>(channels),
+                                       dstHeight, dstWidth};
+-    auto memoryInfo = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
+-    Ort::Value inputTensor = Ort::Value::CreateTensor<float>(memoryInfo, inputTensorValues.data(),
+-                                                             inputTensorValues.size(), inputShape.data(),
+-                                                             inputShape.size());
+-    std::vector<const char *> inputNames = {inputNamesPtr.data()->get()};
+-    std::vector<const char *> outputNames = {outputNamesPtr.data()->get()};
+-    auto outputTensor = session->Run(Ort::RunOptions{nullptr}, inputNames.data(), &inputTensor,
+-                                     inputNames.size(), outputNames.data(), outputNames.size());
+-    std::vector<int64_t> outputShape = outputTensor[0].GetTensorTypeAndShapeInfo().GetShape();
++    // gRParse: one typed run through grparse::InferenceModel
++    // (patches/rapidocr-model-backend.patch).
++    const grparse::TensorView inputView{grparse::TensorElement::kFloat32, inputTensorValues.data(),
++                                        {inputShape.begin(), inputShape.end()}};
++    const std::vector<grparse::Tensor> outputTensor = model->run(std::span(&inputView, 1));
++    std::vector<int64_t> outputShape = outputTensor[0].shape;
+     const size_t classes = static_cast<size_t>(outputShape.back());
+-    const float *floatArray = outputTensor.front().GetTensorMutableData<float>();
++    const float *floatArray = outputTensor.front().floats();
+     std::vector<Angle> angles;
+     angles.reserve(count);
+     for (size_t i = 0; i < count; ++i) {
+@@ -188,4 +178,8 @@ std::vector<Angle> AngleNet::getAngles(std::vector<cv::Mat> &partImgs, const cha
+     }
+ 
+     return angles;
+-}
+\ No newline at end of file
++}
++void AngleNet::prewarm() {
++    const auto sets = grparse::ocr_prewarm_sets(grparse::OcrNet::kDirection);
++    if (!sets.empty()) model->prewarm(sets);
++}
+diff --git a/src/CrnnNet.cpp b/src/CrnnNet.cpp
+index fa043ef..94dfce2 100644
+--- a/src/CrnnNet.cpp
++++ b/src/CrnnNet.cpp
+@@ -1,6 +1,8 @@
+ #include "CrnnNet.h"
+ #include "OcrUtils.h"
+ #include "grparse_session_ep.h"
++#include "grparse_inference_model.h"
++#include <span>
+ #include <algorithm>
+ #include <fstream>
+ #include <numeric>
+@@ -12,9 +14,7 @@ void CrnnNet::setGpuIndex(int gpuIndex) {
+ }
+ 
+ CrnnNet::~CrnnNet() {
+-    delete session;
+-    inputNamesPtr.clear();
+-    outputNamesPtr.clear();
++    model.reset();
+ }
+ 
+ void CrnnNet::setNumThread(int numOfThread) {
+@@ -49,9 +49,7 @@ void CrnnNet::initModel(const std::string &pathStr, const std::string &keysPath)
+ #else
+     std::string crnnPath = pathStr;
+ #endif
+-    session = grparse::make_rapidocr_session(env, crnnPath, "OCR recognition", numThread);
+-    inputNamesPtr = getInputNames(session);
+-    outputNamesPtr = getOutputNames(session);
++    model = grparse::make_rapidocr_model(env, crnnPath, grparse::OcrNet::kRecognition, numThread);
+ 
+     //load keys
+     std::ifstream in(keysPath.c_str());
+@@ -133,20 +131,15 @@ TextLine CrnnNet::getTextLine(const cv::Mat &src) {
+         }
+     }
+     std::array<int64_t, 4> inputShape{1, srcResize.channels(), srcResize.rows, tensorWidth};
+-    auto memoryInfo = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
+-    Ort::Value inputTensor = Ort::Value::CreateTensor<float>(memoryInfo, inputTensorValues.data(),
+-                                                             inputTensorValues.size(), inputShape.data(),
+-                                                             inputShape.size());
+-    assert(inputTensor.IsTensor());
+-    std::vector<const char *> inputNames = {inputNamesPtr.data()->get()};
+-    std::vector<const char *> outputNames = {outputNamesPtr.data()->get()};
+-    auto outputTensor = session->Run(Ort::RunOptions{nullptr}, inputNames.data(), &inputTensor,
+-                                     inputNames.size(), outputNames.data(), outputNames.size());
+-    assert(outputTensor.size() == 1 && outputTensor.front().IsTensor());
+-    std::vector<int64_t> outputShape = outputTensor[0].GetTensorTypeAndShapeInfo().GetShape();
++    // gRParse: one typed run through grparse::InferenceModel
++    // (patches/rapidocr-model-backend.patch).
++    const grparse::TensorView inputView{grparse::TensorElement::kFloat32, inputTensorValues.data(),
++                                        {inputShape.begin(), inputShape.end()}};
++    const std::vector<grparse::Tensor> outputTensor = model->run(std::span(&inputView, 1));
++    std::vector<int64_t> outputShape = outputTensor[0].shape;
+     int64_t outputCount = std::accumulate(outputShape.begin(), outputShape.end(), 1,
+                                           std::multiplies<int64_t>());
+-    float *floatArray = outputTensor.front().GetTensorMutableData<float>();
++    const float *floatArray = outputTensor.front().floats();
+     std::vector<float> outputData(floatArray, floatArray + outputCount);
+     int64_t steps = outputShape[1];
+     if (tensorWidth != realWidth) {
+@@ -166,6 +159,12 @@ std::vector<TextLine> CrnnNet::getTextLineBatch(const std::vector<cv::Mat> &srcs
+         cv::resize(srcs[i], resized[i], cv::Size(dstWidth, dstHeight));
+         batchWidth = (std::max)(batchWidth, dstWidth);
+     }
++    // gRParse: on a provider that compiles per shape the batch width snaps
++    // to the recognizer's bucket ladder (patches/rapidocr-model-backend.patch),
++    // and each line decodes only the time steps over its own width, as the
++    // single-line bucketed path does.
++    const bool bucketed = grparse::ocr_shape_buckets();
++    if (bucketed) batchWidth = grparse::ocr_rec_bucket(batchWidth);
+     const size_t channels = resized.front().channels();
+     const size_t plane = static_cast<size_t>(dstHeight) * batchWidth;
+     // Zero after normalization is mid-grey, the padding PaddleOCR's own
+@@ -184,22 +183,24 @@ std::vector<TextLine> CrnnNet::getTextLineBatch(const std::vector<cv::Mat> &srcs
+     }
+     std::array<int64_t, 4> inputShape{static_cast<int64_t>(count), static_cast<int64_t>(channels),
+                                       dstHeight, batchWidth};
+-    auto memoryInfo = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
+-    Ort::Value inputTensor = Ort::Value::CreateTensor<float>(memoryInfo, inputTensorValues.data(),
+-                                                             inputTensorValues.size(), inputShape.data(),
+-                                                             inputShape.size());
+-    std::vector<const char *> inputNames = {inputNamesPtr.data()->get()};
+-    std::vector<const char *> outputNames = {outputNamesPtr.data()->get()};
+-    auto outputTensor = session->Run(Ort::RunOptions{nullptr}, inputNames.data(), &inputTensor,
+-                                     inputNames.size(), outputNames.data(), outputNames.size());
+-    std::vector<int64_t> outputShape = outputTensor[0].GetTensorTypeAndShapeInfo().GetShape();
++    // gRParse: one typed run through grparse::InferenceModel
++    // (patches/rapidocr-model-backend.patch).
++    const grparse::TensorView inputView{grparse::TensorElement::kFloat32, inputTensorValues.data(),
++                                        {inputShape.begin(), inputShape.end()}};
++    const std::vector<grparse::Tensor> outputTensor = model->run(std::span(&inputView, 1));
++    std::vector<int64_t> outputShape = outputTensor[0].shape;
+     const size_t steps = static_cast<size_t>(outputShape[1]);
+     const size_t classes = static_cast<size_t>(outputShape[2]);
+-    const float *floatArray = outputTensor.front().GetTensorMutableData<float>();
++    const float *floatArray = outputTensor.front().floats();
+     std::vector<TextLine> textLines;
+     textLines.reserve(count);
+     for (size_t i = 0; i < count; ++i) {
+-        textLines.push_back(decodeScores(floatArray + i * steps * classes, steps, classes));
++        size_t lineSteps = steps;
++        if (bucketed) {
++            const size_t width = static_cast<size_t>(resized[i].cols);
++            lineSteps = (std::max)(size_t{1}, (steps * width + batchWidth - 1) / batchWidth);
++        }
++        textLines.push_back(decodeScores(floatArray + i * steps * classes, lineSteps, classes));
+     }
+     return textLines;
+ }
+@@ -281,4 +282,8 @@ std::vector<TextLine> CrnnNet::getTextLines(std::vector<cv::Mat> &partImg, const
+         textLines[i] = textLine;
+     }
+     return textLines;
+-}
+\ No newline at end of file
++}
++void CrnnNet::prewarm() {
++    const auto sets = grparse::ocr_prewarm_sets(grparse::OcrNet::kRecognition);
++    if (!sets.empty()) model->prewarm(sets);
++}
+diff --git a/src/DbNet.cpp b/src/DbNet.cpp
+index 089a141..fc81051 100644
+--- a/src/DbNet.cpp
++++ b/src/DbNet.cpp
+@@ -1,6 +1,8 @@
+ #include "DbNet.h"
+ #include "OcrUtils.h"
+ #include "grparse_session_ep.h"
++#include "grparse_inference_model.h"
++#include <span>
+ 
+ void DbNet::setGpuIndex(int gpuIndex) {
+     // gRParse: execution-provider selection is centralized so CUDA, OpenVINO,
+@@ -9,9 +11,7 @@ void DbNet::setGpuIndex(int gpuIndex) {
+ }
+ 
+ DbNet::~DbNet() {
+-    delete session;
+-    inputNamesPtr.clear();
+-    outputNamesPtr.clear();
++    model.reset();
+ }
+ 
+ void DbNet::setNumThread(int numOfThread) {
+@@ -46,9 +46,7 @@ void DbNet::initModel(const std::string &pathStr) {
+ #else
+     std::string detPath = pathStr;
+ #endif
+-    session = grparse::make_rapidocr_session(env, detPath, "OCR detection", numThread);
+-    inputNamesPtr = getInputNames(session);
+-    outputNamesPtr = getOutputNames(session);
++    model = grparse::make_rapidocr_model(env, detPath, grparse::OcrNet::kDetection, numThread);
+ }
+ 
+ std::vector<TextBox> findRsBoxes(const cv::Mat &predMat, const cv::Mat &dilateMat, ScaleParam &s,
+@@ -118,8 +116,9 @@ DbNet::getTextBoxes(cv::Mat &src, ScaleParam &s, float boxScoreThresh, float box
+     // fixed bucket with white (page background) and crop the map back below,
+     // so the network is compiled for a handful of shapes instead of each page.
+     if (grparse::ocr_shape_buckets()) {
+-        const int bucketW = grparse::ocr_det_bucket(s.dstWidth);
+-        const int bucketH = grparse::ocr_det_bucket(s.dstHeight);
++        // gRParse: one (width, height) bucket for the pair, so native
++        // OpenVINO can letterbox (patches/rapidocr-model-backend.patch).
++        const auto [bucketW, bucketH] = grparse::ocr_det_bucket_shape(s.dstWidth, s.dstHeight);
+         if (bucketW != s.dstWidth || bucketH != s.dstHeight) {
+             if (grparse::ocr_pad_replicate()) {
+                 cv::copyMakeBorder(srcResize, srcResize, 0, bucketH - s.dstHeight, 0, bucketW - s.dstWidth,
+@@ -132,20 +131,15 @@ DbNet::getTextBoxes(cv::Mat &src, ScaleParam &s, float boxScoreThresh, float box
+     }
+     std::vector<float> inputTensorValues = substractMeanNormalize(srcResize, meanValues, normValues);
+     std::array<int64_t, 4> inputShape{1, srcResize.channels(), srcResize.rows, srcResize.cols};
+-    auto memoryInfo = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
+-    Ort::Value inputTensor = Ort::Value::CreateTensor<float>(memoryInfo, inputTensorValues.data(),
+-                                                             inputTensorValues.size(), inputShape.data(),
+-                                                             inputShape.size());
+-    assert(inputTensor.IsTensor());
+-    std::vector<const char *> inputNames = {inputNamesPtr.data()->get()};
+-    std::vector<const char *> outputNames = {outputNamesPtr.data()->get()};
+-    auto outputTensor = session->Run(Ort::RunOptions{nullptr}, inputNames.data(), &inputTensor,
+-                                     inputNames.size(), outputNames.data(), outputNames.size());
+-    assert(outputTensor.size() == 1 && outputTensor.front().IsTensor());
+-    std::vector<int64_t> outputShape = outputTensor[0].GetTensorTypeAndShapeInfo().GetShape();
++    // gRParse: one typed run through grparse::InferenceModel
++    // (patches/rapidocr-model-backend.patch).
++    const grparse::TensorView inputView{grparse::TensorElement::kFloat32, inputTensorValues.data(),
++                                        {inputShape.begin(), inputShape.end()}};
++    const std::vector<grparse::Tensor> outputTensor = model->run(std::span(&inputView, 1));
++    std::vector<int64_t> outputShape = outputTensor[0].shape;
+     int64_t outputCount = std::accumulate(outputShape.begin(), outputShape.end(), 1,
+                                           std::multiplies<int64_t>());
+-    float *floatArray = outputTensor.front().GetTensorMutableData<float>();
++    const float *floatArray = outputTensor.front().floats();
+     std::vector<float> outputData(floatArray, floatArray + outputCount);
+ 
+     //-----Data preparation-----
+@@ -184,4 +178,8 @@ DbNet::getTextBoxes(cv::Mat &src, ScaleParam &s, float boxScoreThresh, float box
+     cv::dilate(thresholdMat, dilateMat, dilateElement);
+ 
+     return findRsBoxes(predMat, dilateMat, s, boxScoreThresh, unClipRatio);
+-}
+\ No newline at end of file
++}
++void DbNet::prewarm() {
++    const auto sets = grparse::ocr_prewarm_sets(grparse::OcrNet::kDetection);
++    if (!sets.empty()) model->prewarm(sets);
++}
+diff --git a/src/OcrLite.cpp b/src/OcrLite.cpp
+index 4930772..43245b7 100755
+--- a/src/OcrLite.cpp
++++ b/src/OcrLite.cpp
+@@ -51,6 +51,12 @@ bool OcrLite::initModels(const std::string &detPath, const std::string &clsPath,
+     return true;
+ }
+ 
++void OcrLite::prewarm() {
++    dbNet.prewarm();
++    angleNet.prewarm();
++    crnnNet.prewarm();
++}
++
+ void OcrLite::Logger(const char *format, ...) {
+     if (!(isOutputConsole || isOutputResultTxt)) return;
+     char *buffer = (char *) malloc(8192);
