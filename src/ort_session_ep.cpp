@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <mutex>
+#include <optional>
 #include <print>
 #include <random>
 #include <stdexcept>
@@ -38,16 +39,33 @@ constexpr int kEpBuildMaxAttempts = 3;
 // never block a caller that only wants to change or read it.
 std::mutex compile_mutex;
 
+// GRPARSE_CUDA_TF32: "off" (the default) computes convolutions and matmuls in
+// full FP32; "on" allows TF32, the ONNX Runtime default on Ampere and newer.
+// On 101 ACM papers TF32 moved layout detections near the threshold on an
+// RTX 4080 (3 papers with one picture more or less than the CPU and B70
+// runs); FP32 removed those differences for +18% total time.  Any other value
+// throws.
+bool cuda_tf32_setting() {
+  const char* value = std::getenv("GRPARSE_CUDA_TF32");
+  if (value == nullptr || *value == '\0') return false;
+  const std::string mode = value;
+  if (mode == "on") return true;
+  if (mode == "off") return false;
+  throw std::invalid_argument("GRPARSE_CUDA_TF32 must be on or off");
+}
+
 void append_cuda(Ort::SessionOptions& options, int device) {
-  // Same options upstream RapidOcrOnnx used, with the 2 GiB arena limit
-  // computed in 64 bits (upstream's int expression overflowed).
-  OrtCUDAProviderOptions cuda_options;
-  cuda_options.device_id = device;
-  cuda_options.arena_extend_strategy = 0;
-  cuda_options.gpu_mem_limit = 2ULL * 1024ULL * 1024ULL * 1024ULL;
-  cuda_options.cudnn_conv_algo_search = OrtCudnnConvAlgoSearch::OrtCudnnConvAlgoSearchExhaustive;
-  cuda_options.do_copy_in_default_stream = 1;
-  options.AppendExecutionProvider_CUDA(cuda_options);
+  // The settings upstream RapidOcrOnnx used (the 2 GiB arena limit computed in
+  // 64 bits, since the upstream int expression wrapped), set through the V2
+  // struct, which has the use_tf32 key.
+  Ort::CUDAProviderOptions cuda_options;
+  cuda_options.Update({{"device_id", std::to_string(device)},
+                       {"arena_extend_strategy", "kNextPowerOfTwo"},
+                       {"gpu_mem_limit", std::to_string(2ULL * 1024ULL * 1024ULL * 1024ULL)},
+                       {"cudnn_conv_algo_search", "EXHAUSTIVE"},
+                       {"do_copy_in_default_stream", "1"},
+                       {"use_tf32", cuda_tf32_setting() ? "1" : "0"}});
+  options.AppendExecutionProvider_CUDA_V2(*cuda_options);
 }
 
 // Resolves what a session actually asks for: its own explicit count, or the
