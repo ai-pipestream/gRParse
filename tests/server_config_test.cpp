@@ -9,13 +9,16 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <map>
 #include <stdexcept>
 #include <string>
 
 #include "grparse/chart_extraction_policy.h"
+#include "grparse_session_ep.h"
 #include "server_config.h"
 #include "support/check.h"
+#include "support/tiny_onnx_model.h"
 
 namespace {
 
@@ -204,6 +207,53 @@ void verify_collector_keepalive_settings() {
   ::unsetenv("GRPARSE_COLLECTOR_KEEPALIVE_TIMEOUT_MS");
 }
 
+// One device, never a list that lets OpenVINO move work to its CPU plugin.
+void verify_openvino_device_setting() {
+  ::unsetenv("GRPARSE_OPENVINO_DEVICE");
+  require(grparse::openvino_device_setting() == "GPU", "the default device is GPU");
+  for (const char* accepted : {"GPU", "GPU.0", "GPU.12", "NPU", "NPU.1", "CPU"}) {
+    ::setenv("GRPARSE_OPENVINO_DEVICE", accepted, 1);
+    require(grparse::openvino_device_setting() == accepted,
+            std::string("a single device is accepted: ") + accepted);
+  }
+  for (const char* refused : {"AUTO:GPU,CPU", "AUTO", "HETERO:GPU,CPU", "MULTI:GPU,CPU",
+                              "BATCH:GPU", "GPU.", "GPU.x", "GPUX", "gpu", "GPU;rm"}) {
+    ::setenv("GRPARSE_OPENVINO_DEVICE", refused, 1);
+    bool threw = false;
+    try {
+      (void)grparse::openvino_device_setting();
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    require(threw, std::string("a device list or malformed device is refused: ") + refused);
+  }
+  ::unsetenv("GRPARSE_OPENVINO_DEVICE");
+}
+
+// The startup report names each model's provider and device, and a CPU pin
+// under a GPU selection carries its reason.
+void verify_model_placements_are_reported() {
+  grparse::reset_ort_placements();
+  grparse::OrtEpSelection selection;
+  selection.ep = grparse::OrtEp::kOpenVino;
+  grparse::set_ort_ep_selection(selection);
+  require(captured_stdout([] { grparse::report_model_placements(); }).empty(),
+          "no sessions, no placement lines");
+  const std::filesystem::path model = grparse_test::write_tiny_model();
+  Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "grparse-test");
+  for (int session = 0; session < 2; ++session) {
+    (void)grparse::make_pinned_cpu_session(env, model, "table structure", "test pin");
+  }
+  const std::string out = captured_stdout([] { grparse::report_model_placements(); });
+  require(out == "gRParse model placement: table structure on CPU, 2 sessions, pinned to CPU "
+                 "under OpenVINO: test pin\n",
+          "a pinned model reports its provider, count and reason: " + out);
+  std::filesystem::remove(model);
+  grparse::reset_ort_placements();
+  selection.ep = grparse::OrtEp::kCpu;
+  grparse::set_ort_ep_selection(selection);
+}
+
 }  // namespace
 
 int main() {
@@ -213,5 +263,7 @@ int main() {
       verify_remote_fetch_concurrency_setting,
       verify_collector_channels_setting,
       verify_collector_keepalive_settings,
+      verify_openvino_device_setting,
+      verify_model_placements_are_reported,
   });
 }
