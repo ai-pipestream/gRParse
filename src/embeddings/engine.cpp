@@ -70,7 +70,8 @@ class LocalEmbeddingEngine final : public EmbeddingEngine {
       case EmbeddingBackend::openvino:
 #ifdef GRPARSE_EMBED_OPENVINO
         identity_.backend = "openvino";
-        backend_ = embedding::detail::make_intel_backend(model, config.device);
+        backend_ = embedding::detail::make_intel_backend(model, config.device,
+                                                         config.openvino_cache_dir);
         break;
 #else
         throw std::invalid_argument("this image was built without native OpenVINO embeddings");

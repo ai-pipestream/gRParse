@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <print>
 #include <stdexcept>
 #include <openvino/c/openvino.h>
 
@@ -16,7 +17,7 @@ using Handle = std::unique_ptr<T, decltype(Free)>;
 
 class IntelBackend final : public TensorBackend {
  public:
-  IntelBackend(std::string_view model, const std::string& device) {
+  IntelBackend(std::string_view model, const std::string& device, const std::string& cache_dir) {
     const bool indexed_gpu = device.starts_with("GPU.") && device.size() > 4 &&
         std::all_of(device.begin() + 4, device.end(),
                     [](unsigned char c) { return c >= '0' && c <= '9'; });
@@ -31,9 +32,21 @@ class IntelBackend final : public TensorBackend {
     check(ov_core_read_model_from_memory_buffer(core_.get(), model.data(), model.size(), nullptr, &network));
     Handle<ov_model_t, ov_model_free> model_handle(network, ov_model_free);
     ov_compiled_model_t* compiled = nullptr;
-    check(ov_core_compile_model(core_.get(), network, device.c_str(), 4, &compiled,
-                               "INFERENCE_PRECISION_HINT", "f32", "PERFORMANCE_HINT", "LATENCY"));
+    if (cache_dir.empty()) {
+      check(ov_core_compile_model(core_.get(), network, device.c_str(), 4, &compiled,
+                                 "INFERENCE_PRECISION_HINT", "f32", "PERFORMANCE_HINT", "LATENCY"));
+    } else {
+      check(ov_core_compile_model(core_.get(), network, device.c_str(), 6, &compiled,
+                                 "INFERENCE_PRECISION_HINT", "f32", "PERFORMANCE_HINT", "LATENCY",
+                                 "CACHE_DIR", cache_dir.c_str()));
+    }
     compiled_.reset(compiled);
+    // Name the device the model compiled for, so an integrated GPU picked
+    // by a bare "GPU" on a two-GPU host is visible in the startup log.
+    char* full_name = nullptr;
+    check(ov_core_get_property(core_.get(), device.c_str(), "FULL_DEVICE_NAME", &full_name));
+    std::println("gRParse embeddings: OpenVINO {} is {}", device, full_name);
+    ov_free(full_name);
     ov_infer_request_t* request = nullptr;
     check(ov_compiled_model_create_infer_request(compiled_.get(), &request));
     request_.reset(request);
@@ -78,7 +91,8 @@ class IntelBackend final : public TensorBackend {
 };
 }  // namespace
 
-std::unique_ptr<TensorBackend> make_intel_backend(std::string_view model, const std::string& device) {
-  return std::make_unique<IntelBackend>(model, device);
+std::unique_ptr<TensorBackend> make_intel_backend(std::string_view model, const std::string& device,
+                                                  const std::string& cache_dir) {
+  return std::make_unique<IntelBackend>(model, device, cache_dir);
 }
 }  // namespace grparse::embedding::detail
