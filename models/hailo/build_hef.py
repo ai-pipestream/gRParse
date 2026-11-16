@@ -12,6 +12,8 @@ applies is printed in its own log.
 Writes OUT_DIR/<VARIANT>.q.har (quantized) and OUT_DIR/<VARIANT>.hef.
 """
 import hashlib
+import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -39,29 +41,117 @@ AVGPOOL_REDUCTION = {
 }
 
 
-def model_script(variant: str) -> str:
+# Optimization level 2+ needs >= 1024 calibration samples (or a GPU) or the DFC
+# silently drops to 0; the level is set explicitly so a drop is an error in
+# the log, not a quiet accuracy loss. HAILO_OPT_LEVEL / HAILO_PRECISION=0
+# reproduce the first (level 0, all 8-bit) build.
+OPT_LEVEL = int(os.environ.get("HAILO_OPT_LEVEL", "2"))
+SIXTEEN_BIT = os.environ.get("HAILO_PRECISION", "1") != "0"
+
+
+def short(name: str) -> str:
+    return name.split("/", 1)[1]
+
+
+def tail_until(layers: dict, stop_type: str) -> list[str]:
+    """Layers walked back from the output layer until (excluding) stop_type."""
+    out = next(n for n, l in layers.items() if l["type"] == "output_layer")
+    chain, cur = [], layers[out]["input"][0]
+    while layers[cur]["type"] != stop_type:
+        chain.append(cur)
+        cur = layers[cur]["input"][0]
+    return chain
+
+
+def sixteen_bit_layers(variant: str, layers: dict) -> list[str]:
+    """Layers kept at a16_w16, named as in the expanded (optimization-time) graph.
+
+    rec: the convolutional backbone (input normalization .. last avgpool). det: the whole graph.
+    """
+    names = list(layers)
+    skip = {"input_layer", "output_layer"}
+    picked = []
+    if variant.startswith("rec"):
+        # The MobileNetV1-enhance backbone, input normalization through the
+        # last avgpool. PP-OCRv3 rec does not survive 8-bit activations there:
+        # the DFC's layer noise analysis puts the output at -17 dB and every
+        # line decodes empty; a16_w16 on the backbone alone brings CER vs
+        # float to ~2% at level 0. The SVTR neck and CTC head stay at the
+        # DFC's defaults: forcing them wider leaves the DFC's own
+        # precision_change layers at a16_w16_a8, which hailo10h rejects
+        # ("Unsupported layers for the target OptimizationTarget.MERCURY").
+        last_pool = max(i for i, n in enumerate(names) if layers[n]["type"] == "avgpool")
+        picked = [n for n in names[:last_pool + 1] if layers[n]["type"] not in skip | {"layer_normalization"}
+                  and not short(n).startswith("precision_change")]
+    elif variant.startswith("det"):
+        # Every layer. 16-bit on the SE blocks and head alone leaves the
+        # binary map at IoU 0.53-0.85 vs float; the whole graph at a16_w16
+        # matches every float box with mean IoU 0.93-0.96 (level 0, det_640).
+        # det has no matmul or LayerNorm, so no precision_change boundary.
+        picked = [n for n in names if layers[n]["type"] not in skip]
+    return [short(n) for n in names if n in set(picked)]
+
+
+def base_script(variant: str) -> str:
     # The rec graph already has normalization layers (normalization1..5, its
     # LayerNorms), so the input normalization takes a distinct name.
-    lines = [f"input_normalization1 = {SCRIPTS[variant]}"]
+    lines = [f"input_normalization1 = {SCRIPTS[variant]}",
+             f"model_optimization_flavor(optimization_level={OPT_LEVEL}, compression_level=0)"]
     for layer, k in AVGPOOL_REDUCTION.get(variant, {}).items():
         lines.append(f"pre_quantization_optimization(global_avgpool_reduction, layers={layer}, "
                      f"division_factors=[{k}, {k}])")
     return "\n".join(lines) + "\n"
 
 
+def precision_lines(modes: dict) -> str:
+    by_mode = {}
+    for layer, mode in modes.items():
+        by_mode.setdefault(mode, []).append(layer)
+    return "".join(f"quantization_param([{', '.join(layers)}], precision_mode={mode})\n"
+                   for mode, layers in by_mode.items())
+
+
+def expanded_layers(har: Path, arch: str, script: str, calib) -> dict:
+    """The graph as the quantizer sees it: base script applied, full precision."""
+    runner = ClientRunner(har=str(har), hw_arch=arch)
+    runner.load_model_script(script)
+    runner.optimize_full_precision(calib)
+    return runner.get_hn_dict()["layers"]
+
+
 def main() -> None:
     variant, har_dir, calib_dir, out = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])
     arch = sys.argv[5] if len(sys.argv) > 5 else "hailo10h"
     out.mkdir(parents=True, exist_ok=True)
-    runner = ClientRunner(har=str(har_dir / f"{variant}.har"), hw_arch=arch)
-    script = model_script(variant)
-    print(f"{variant}: model script:\n{script}", flush=True)
-    runner.load_model_script(script)
+    har = har_dir / f"{variant}.har"
     calib = np.load(calib_dir / f"{variant}_calib.npy")
     print(f"{variant}: calibration set {calib.shape} {calib.dtype}", flush=True)
+    base = base_script(variant)
+    modes = {}
+    if SIXTEEN_BIT:
+        modes = {n: "a16_w16" for n in sixteen_bit_layers(variant, expanded_layers(har, arch, base, calib))}
 
     t0 = time.time()
-    runner.optimize(calib)
+    while True:
+        script = base + precision_lines(modes)
+        print(f"{variant}: model script:\n{script}", flush=True)
+        runner = ClientRunner(har=str(har), hw_arch=arch)
+        runner.load_model_script(script)
+        try:
+            runner.optimize(calib)
+            break
+        except ValueError as err:
+            # The DFC names one layer whose type does not take the asked mode;
+            # 16-bit output (a8_w8_a16) is the next widest most types accept.
+            hit = re.search(r"Unsupported value .* in layer \S+?/(\S+?)\.", str(err))
+            if not hit or hit.group(1) not in modes:
+                raise
+            layer = hit.group(1)
+            if modes[layer] == "a16_w16":
+                modes[layer] = "a8_w8_a16"
+            else:
+                del modes[layer]
+            print(f"{variant}: {layer} rejected that precision, now {modes.get(layer, 'default')}", flush=True)
     q_har = out / f"{variant}.q.har"
     runner.save_har(str(q_har))
     print(f"{variant}: optimize done in {time.time() - t0:.0f} s -> {q_har}", flush=True)

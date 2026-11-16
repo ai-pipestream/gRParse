@@ -18,8 +18,11 @@ Text lines come from gRParse's own CPU OCR (fetch_lines.py): one box and
 one recognized string per OCR line. Each crop is re-recognized here with the
 float rec model; a crop whose float text is far from gRParse's text
 (CER > 0.5 at natural width, e.g. a box reported in a recovered-orientation
-frame) is dropped and counted. cls sets carry every kept crop upright and turned 180 degrees,
-so both classes are represented.
+frame) is dropped and counted. Calibration uses every natural-scale window of every kept line (320 and 640
+for rec, 192 for cls, each cls window also turned 180 degrees), sampled to
+MAX_PER_SET; det uses a letterbox of each page plus tiles cut at a random
+page scale in DET_TILE_SCALES. Eval sets keep one tensor per line (its
+leftmost window) and one letterbox per page, unchanged across runs.
 
 Usage: python prep_calib.py PAGES_DIR MODELS_DIR OUT_DIR LINES_DIR
 """
@@ -37,7 +40,8 @@ SEED = 1234
 EVAL_PAGES = {"quickstart-sample-2.png", "scanned-image-1.png", "two-column-1.png", "report_page.png"}
 DET_MEAN = np.array([0.485, 0.456, 0.406], np.float32) * 255
 DET_STD = np.array([0.229, 0.224, 0.225], np.float32) * 255
-MAX_PER_SET = 256
+MAX_PER_SET = 1024  # the DFC's recommended minimum for optimization level 2+
+DET_TILE_SCALES = (0.5, 1.5)  # page scale jitter for det tiles
 
 
 def load_pages(pages_dir):
@@ -73,6 +77,23 @@ def random_tiles(img, size, count, rng):
         y, x = rng.integers(0, h - size + 1), rng.integers(0, w - size + 1)
         tiles.append(img[y:y + size, x:x + size])
     return tiles
+
+
+def scaled(img, scale):
+    h, w = img.shape[:2]
+    nh, nw = max(1, round(h * scale)), max(1, round(w * scale))
+    return np.asarray(Image.fromarray(img[:, :, ::-1]).resize((nw, nh), Image.BILINEAR))[:, :, ::-1]
+
+
+def windows(line, width, fill):
+    """Every non-overlapping natural-scale window of a height-48 line, padded."""
+    out = []
+    for x in range(0, line.shape[1], width):
+        part = line[:, x:x + width]
+        tile = np.full((48, width, 3), fill, np.uint8)
+        tile[:, :part.shape[1]] = part
+        out.append((x, tile))
+    return out
 
 
 def det_input(img_bgr):
@@ -180,9 +201,12 @@ def main():
 
     for size in (960, 640):
         tiles = []
+        per_page = -(-int(MAX_PER_SET * 1.1) // len(calib_pages)) - 1
         for name, _, img in calib_pages:
             tiles.append(("letterbox", name, letterbox(img, size)))
-            tiles += [("tile", name, t) for t in random_tiles(img, size, 4, rng)]
+            for _ in range(per_page):
+                s_ = float(rng.uniform(*DET_TILE_SCALES))
+                tiles += [(f"tile@{s_:.3f}", name, t) for t in random_tiles(scaled(img, s_), size, 1, rng)]
         tiles = pick(tiles, rng)
         np.save(out / f"det_{size}_calib.npy", np.stack([t for _, _, t in tiles]))
         np.save(out / f"det_{size}_eval.npy", np.stack([letterbox(img, size) for _, _, img in eval_pages]))
@@ -215,10 +239,27 @@ def main():
                 rows.append((name, box, line["text"], crop))
         return rows, dropped
 
-    for split, page_set in (("calib", calib_pages), ("eval", eval_pages)):
+    rows, dropped = lines_of(calib_pages)
+    sets = {"rec_48x320": [], "rec_48x640": [], "cls_48x192": []}
+    for name, box, gtext, crop in rows:
+        line = to_height(crop)
+        for width, key, fill in ((320, "rec_48x320", 128), (640, "rec_48x640", 128), (192, "cls_48x192", 255)):
+            for x, tile in windows(line, width, fill):
+                sets[key].append(({"page": name, "box": box, "x": x}, tile))
+                if key == "cls_48x192":
+                    sets[key].append(({"page": name, "box": box, "x": x, "rot180": True},
+                                      np.ascontiguousarray(tile[::-1, ::-1])))
+    calib_meta = {"lines": len(rows), "dropped_cer_gt_0.5": dropped}
+    for key, items in sets.items():
+        chosen = pick(items, rng)
+        np.save(out / f"{key}_calib.npy", np.stack([t for _, t in chosen]))
+        calib_meta[key] = {"windows_available": len(items), "count": len(chosen), "sources": [m for m, _ in chosen]}
+        print(f"{key}: {len(chosen)} calibration windows of {len(items)} from {len(rows)} lines")
+    manifest["lines_calib"] = calib_meta
+    print(f"calib lines dropped: {dropped}")
+
+    for split, page_set in (("eval", eval_pages),):
         rows, dropped = lines_of(page_set)
-        if split == "calib":
-            rows = pick(rows, rng)
         r320, r640, c192, c192_rot, meta = [], [], [], [], []
         for name, box, gtext, crop in rows:
             t320, used = rec_tensor(crop, 320)
@@ -235,8 +276,6 @@ def main():
         np.save(out / f"rec_48x320_{split}.npy", np.stack(r320))
         np.save(out / f"rec_48x640_{split}.npy", np.stack(r640))
         cls_set = np.stack(c192 + c192_rot)
-        if split == "calib":
-            cls_set = cls_set[rng.permutation(len(cls_set))[:MAX_PER_SET]]
         np.save(out / f"cls_48x192_{split}.npy", cls_set)
         (out / f"lines_{split}.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
         manifest[f"lines_{split}"] = {"count": len(meta), "dropped_cer_gt_0.5": dropped, "cls_count": len(cls_set)}
