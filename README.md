@@ -1366,9 +1366,11 @@ against the `default` configure preset's `build/`):
 | `eval` | a running stack and an oracle (`vlm-oracle-eval`, `structural-scorecard`) | nightly and release | without `GRPARSE_TARGET`/`VLM_ENDPOINT` |
 | `bench` | timing on fixed fixtures (`grparse-bench`, below) | nightly, enforced; every image build compiles it but never runs it | without `GRPARSE_BENCH_ENFORCE=1` |
 
-`ctest -N -L stack` lists the six compose-stack suites (`stack-e2e`,
+`ctest -N -L stack` lists the seven compose-stack suites (`stack-e2e`,
 `s3-corpus-eval`, `ocr-presets-e2e`, `embedding-rpc`, `compose-preflight`,
-`observability-compose`); each runs exactly as its script runs by hand, the
+`observability-compose`, `gpu-placement`); `gpu-placement` needs an Intel GPU
+host (krick-1), `GRPARSE_STACK_OPENVINO_IMAGE` and `GRPARSE_STACK_MODELS_DIR`,
+and fails rather than skips without a render node; each runs exactly as its script runs by hand, the
 wrapper only decides whether it runs. The `release` preset sets
 `EVAL_REQUIRE=1`, `GRPARSE_BENCH_ENFORCE=1`, `GRPARSE_TEST_REQUIRE_MODELS=1`
 and `GRPARSE_STACK_SUITES=all`, so a skip there is a failure. Every image build
