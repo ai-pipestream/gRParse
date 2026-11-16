@@ -68,6 +68,26 @@ int ort_intra_op_threads();
 // malformed value throws std::invalid_argument.
 size_t ocr_batch_size();
 
+// Fixed input shapes for the OCR nets (patches/rapidocr-shape-buckets.patch,
+// src/ocr_shape_buckets.cpp).  The OpenVINO GPU plugin compiles the network
+// for every new input shape; with dynamic page and line sizes one 101-paper
+// run left 16,822 compiled blobs and made OCR 11x slower than CUDA.  When on,
+// the detector input is padded with white to a bucketed size and its map is
+// cropped back, and a line is padded to a bucketed width whose extra time
+// steps are not decoded.  GRPARSE_OCR_SHAPE_BUCKETS=auto (default: the
+// detector only, for the OpenVINO provider on a GPU device), on, det, rec or
+// off.
+bool ocr_shape_buckets();
+// The smallest detector bucket (a multiple of GRPARSE_OCR_DET_STEP, default
+// 64) at least `side` pixels.
+int ocr_det_bucket(int side);
+// The smallest recognizer width bucket at least `width` pixels.
+int ocr_rec_bucket(int width);
+// How bucket padding is filled: true repeats the edge pixels
+// (GRPARSE_OCR_BUCKET_PAD=replicate, the default), false pads the detector
+// with white and the recognizer with zeros (=zero).
+bool ocr_pad_replicate();
+
 // Must be called before any OCR engine is constructed.  Later sessions use
 // the newest selection; sessions already built keep the provider they bound.
 void set_ort_ep_selection(OrtEpSelection selection);
