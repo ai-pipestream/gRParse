@@ -821,6 +821,8 @@ add_library(grparse_core STATIC
   src/parse_support.cpp
   src/input_format.cpp
   src/source_parse.cpp
+  src/vlm_custom_options.cpp
+  src/option_rejection.cpp
   src/service_identity.cpp
   src/structure_validation.cpp
   src/document_parser_service.cpp
@@ -920,7 +922,7 @@ if(BUILD_TESTING)
     document-assembly-test
     assembly-floats-test
     convert-options-test
-    validator-link-test
+    vlm-custom-options-test
     engine-model-config-wire-test
     docling-parity-golden-test
     document-collectors-test
