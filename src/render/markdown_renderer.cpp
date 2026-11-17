@@ -343,6 +343,54 @@ class MarkdownRenderer : public MarkdownWalk {
     return out;
   }
 
+  // Longest run of consecutive backticks. Zero when the text has none.
+  static int longest_backtick_run(std::string_view text) {
+    int best = 0;
+    int run = 0;
+    for (const char c : text) {
+      if (c == '`') {
+        ++run;
+        if (run > best) best = run;
+      } else {
+        run = 0;
+      }
+    }
+    return best;
+  }
+
+  // CommonMark code span: one more tick than any run inside, and a padding
+  // space when the text starts or ends with a tick or with a space on both
+  // ends (after newlines are read as spaces) and is not only spaces.
+  static std::string code_span(const std::string& text) {
+    const std::string ticks(static_cast<std::size_t>(longest_backtick_run(text) + 1), '`');
+    std::string normalized;
+    normalized.reserve(text.size());
+    for (std::size_t i = 0; i < text.size(); ++i) {
+      if (text[i] == '\r' && i + 1 < text.size() && text[i + 1] == '\n') {
+        normalized.push_back(' ');
+        ++i;
+      } else if (text[i] == '\n' || text[i] == '\r') {
+        normalized.push_back(' ');
+      } else {
+        normalized.push_back(text[i]);
+      }
+    }
+    const bool only_spaces = normalized.find_first_not_of(' ') == std::string::npos;
+    const bool edge_spaces = !normalized.empty() && normalized.front() == ' ' &&
+                             normalized.back() == ' ' && !only_spaces;
+    const bool pad =
+        (!text.empty() && (text.front() == '`' || text.back() == '`')) || edge_spaces;
+    const std::string gap = pad ? " " : "";
+    return ticks + gap + text + gap + ticks;
+  }
+
+  // A fence longer than any backtick run inside, and at least three.
+  static std::string code_fence(const std::string& text) {
+    const int length = std::max(3, longest_backtick_run(text) + 1);
+    const std::string fence(static_cast<std::size_t>(length), '`');
+    return fence + "\n" + text + "\n" + fence;
+  }
+
   // A code item reaches the renderer two ways: through its own variant, or
   // through the generic text arm carrying a code label, which the model
   // rebuilds into a code item with the base fields and no captions.
@@ -364,11 +412,11 @@ class MarkdownRenderer : public MarkdownWalk {
         !has_hyperlink ? nullptr
         : own_variant  ? &item.code().hyperlink()
                        : &base->hyperlink();
-    // Inline code, and any code carrying a hyperlink, uses single backticks;
-    // everything else uses a plain fence with no info string.
+    // Inline code, and any code carrying a hyperlink, uses a code span whose
+    // delimiter no backtick run inside can close. A block uses a fence.
     const bool backticks = inline_scope || hyperlink != nullptr;
     std::vector<std::string> res_parts;
-    res_parts.push_back(backticks ? "`" + text + "`" : "```\n" + text + "\n```");
+    res_parts.push_back(backticks ? code_span(text) : code_fence(text));
     *first_span = ref;
     if (own_variant) {
       const std::string footnotes = serialize_footnotes(item.code().footnotes());

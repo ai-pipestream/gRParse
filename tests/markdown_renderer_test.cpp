@@ -110,6 +110,35 @@ void verify_hyperlinks_are_filtered_and_encoded() {
                 "destination characters that end a link are percent-encoded");
 }
 
+std::string inline_code(const std::string& text) {
+  docv1::Document document = base_document("span.md");
+  const std::string group =
+      grparse_test::add_group(&document, "#/body", docv1::GROUP_LABEL_INLINE);
+  add_code(&document, group, text, docv1::CODE_LANGUAGE_LABEL_PYTHON);
+  return render_markdown(document);
+}
+
+void verify_code_spans_outlast_internal_backticks() {
+  require_equal(inline_code("x"), std::string("`x`"), "plain inline code uses one tick");
+  require_equal(inline_code("a`b"), std::string("``a`b``"),
+                "a span uses one more tick than the longest run inside");
+  require_equal(inline_code("`a"), std::string("`` `a ``"),
+                "a leading tick is padded so the delimiter stays unambiguous");
+  require_equal(inline_code("a`"), std::string("`` a` ``"),
+                "a trailing tick is padded");
+  require_equal(inline_code("  a  "), std::string("`   a   `"),
+                "a span that starts and ends with a space is padded");
+  require_equal(inline_code("   "), std::string("`   `"),
+                "a span that is only spaces is not padded");
+  require_equal(inline_code("a\nb"), std::string("`a\nb`"),
+                "a newline is not padding by itself");
+
+  docv1::Document fenced = base_document("fence.md");
+  add_code(&fenced, "#/body", "```", docv1::CODE_LANGUAGE_LABEL_PYTHON);
+  require_equal(render_markdown(fenced), std::string("````\n```\n````"),
+                "a fence is longer than any backtick run inside and at least three");
+}
+
 void verify_image_destinations_are_encoded() {
   docv1::Document document = base_document("image.md");
   add_picture(&document, "#/body", "data:image/png;base64,x\"><script>1</script>)<b>(");
@@ -129,6 +158,7 @@ int main() {
       verify_table_footnotes_follow_the_body_under_a_caption,
       verify_picture_footnotes_follow_the_image,
       verify_code_footnotes_follow_the_code,
+      verify_code_spans_outlast_internal_backticks,
       verify_hyperlinks_are_filtered_and_encoded,
       verify_image_destinations_are_encoded,
   });
