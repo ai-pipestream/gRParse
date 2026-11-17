@@ -869,8 +869,16 @@ add_library(grparse_core STATIC
   src/document_geometry.cpp
   src/document_reading_order.cpp
   src/heading_hierarchy.cpp
-  src/paragraph_split.cpp)
+  src/paragraph_split.cpp
+  src/inference_tensor.cpp
+  src/hailo/hailo_models.cpp
+  src/hailo/hailo_ocr.cpp
+  src/hailo/hailo_ocr_plan.cpp
+  src/hailo/hailo_placement.cpp
+  src/hailo/hailo_metrics.cpp
+  src/hailo/hailo_vision.cpp)
 target_include_directories(grparse_core PUBLIC include)
+include(cmake/Hailo.cmake)
 # The served version string is "grparse-<version>-<flavor>": the version is
 # the project() line at the top of this file (the one place a release bumps,
 # docs/RELEASING.md) and the flavor names the accelerator this build carries.
@@ -953,6 +961,9 @@ if(BUILD_TESTING)
     assembly-blocks-test
     region-geometry-test
     resource-pool-test
+    hailo-ocr-plan-test
+    hailo-ocr-test
+    hailo-placement-test
     streaming-service-test
     table-structure-engine-test
     table-structure-test

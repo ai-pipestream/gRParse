@@ -23,6 +23,10 @@
 #   gpu-placement         scripts/test/gpu-placement-test.sh with
 #                         GRPARSE_STACK_OPENVINO_IMAGE and
 #                         GRPARSE_STACK_MODELS_DIR, on a host with an Intel GPU
+#   hailo-placement       scripts/test/hailo-placement-test.sh with
+#                         GRPARSE_STACK_HAILO_IMAGE (an image, or a directory
+#                         holding its root filesystem) and
+#                         GRPARSE_STACK_MODELS_DIR, on a host with a Hailo-10H
 set -eu
 
 suite=${1:?usage: stack-suite.sh <suite>}
@@ -71,6 +75,10 @@ case "$suite" in
     need GRPARSE_STACK_OPENVINO_IMAGE
     need GRPARSE_STACK_MODELS_DIR
     exec bash scripts/test/gpu-placement-test.sh "$GRPARSE_STACK_OPENVINO_IMAGE" "$GRPARSE_STACK_MODELS_DIR" ;;
+  hailo-placement)
+    need GRPARSE_STACK_HAILO_IMAGE
+    need GRPARSE_STACK_MODELS_DIR
+    exec bash scripts/test/hailo-placement-test.sh "$GRPARSE_STACK_HAILO_IMAGE" "$GRPARSE_STACK_MODELS_DIR" ;;
   *)
     echo "stack-suite: unknown suite '$suite'" >&2
     exit 64 ;;

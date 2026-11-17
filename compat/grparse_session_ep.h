@@ -22,7 +22,12 @@
 
 namespace grparse {
 
-enum class OrtEp { kCpu, kCuda, kOpenVino };
+// kHailo is not an ONNX Runtime provider: it selects the native HailoRT
+// backend (src/hailo/), which runs HEFs on a Hailo-10H.  It lives in this
+// enum because the selection, the placement ledger and the metrics are the
+// same ones; no ONNX Runtime session can be built for it, so a model that is
+// neither on the device nor pinned to CPU in code fails startup.
+enum class OrtEp { kCpu, kCuda, kOpenVino, kHailo };
 
 // Numeric precision a session asks its provider for.  kProviderDefault leaves
 // the provider's own choice alone, which for the OpenVINO GPU plugin is half
@@ -41,6 +46,10 @@ struct OrtEpSelection {
   // create reuses the previous compile instead of repeating it.  Empty
   // disables the cache.
   std::string openvino_cache_dir = {};
+  // The Hailo device as it identified itself (HAILO10H), for the ledger.
+  std::string hailo_device = {};
+  // Directory holding the HEFs (GRPARSE_HAILO_HEF_DIR).
+  std::string hailo_hef_dir = {};
 };
 
 // Human-readable name of a provider, for logs.
@@ -131,6 +140,11 @@ struct OrtPlacement {
   std::string pin_reason;
   uint64_t sessions = 0;
 };
+
+// Records one model built by a native backend (not an ONNX Runtime session)
+// on the selected device, in the same placements as the sessions, so
+// grparse_ort_sessions shows every model of the flavor.
+void record_native_placement(std::string_view what);
 
 // Every placement recorded so far, one entry per (model, requested, actual,
 // device), in first-built order.  Deterministic for a fixed build sequence.
