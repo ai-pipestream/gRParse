@@ -497,11 +497,11 @@ void verify_a_host_renders_its_inline_runs_inside_its_element() {
            "nested");
 
   require_equal(body_of(document),
-                "  <footnote>① Yanchi county gazetteer</footnote>\n"
-                "  <footnote>See p. 4</footnote>\n"
+                "  <footnote>①Yanchi county gazetteer</footnote>\n"
+                "  <footnote>Seep.4</footnote>\n"
                 "  <paragraph>a later child</paragraph>\n"
                 "  <list ordered=\"false\">\n"
-                "    <list-item>bold lead</list-item>\n"
+                "    <list-item>boldlead</list-item>\n"
                 "    <list ordered=\"false\">\n"
                 "      <list-item>nested</list-item>\n"
                 "    </list>\n"
@@ -522,8 +522,17 @@ void verify_a_body_inline_group_folds_into_one_paragraph() {
   add_paragraph(&document, runs, "");
   add_text(&document, runs, docv1::BaseTextItem::kFormula, docv1::DOC_ITEM_LABEL_FORMULA,
            "H_2O");
-  require_equal(body_of(document), "  <paragraph>Water is wet H_2O</paragraph>\n",
-                "the runs join with a space into one paragraph, formatting kept as text");
+  require_equal(body_of(document), "  <paragraph>Water iswetH_2O</paragraph>\n",
+                "inline runs concatenate as written, formatting kept as text");
+}
+
+void verify_inline_runs_keep_their_own_spaces() {
+  docv1::Document document = base_document("spaces.pdf");
+  const std::string runs = add_group(&document, "#/body", docv1::GROUP_LABEL_INLINE);
+  add_paragraph(&document, runs, "hello ");
+  add_paragraph(&document, runs, "world");
+  require_equal(body_of(document), "  <paragraph>hello world</paragraph>\n",
+                "a trailing space on a run is the only space between runs");
 }
 
 // A table's footnotes render after it, each holding its
@@ -600,7 +609,7 @@ void verify_float_captions_keep_their_nested_content() {
   require_equal(body_of(document),
                 "  <caption>A chart</caption>\n"
                 "  <caption>\n"
-                "    Source: survey\n"
+                "    Source:survey\n"
                 "    <paragraph>n = 40</paragraph>\n"
                 "  </caption>\n"
                 "  <picture uri=\"figs/a.png\"/>\n"
@@ -632,7 +641,7 @@ void verify_nested_content_is_xml_escaped() {
   document.mutable_tables(0)->add_captions()->set_ref(caption);
 
   require_equal(body_of(document),
-                "  <footnote>a &lt; b &amp; c</footnote>\n"
+                "  <footnote>a &lt; b&amp; c</footnote>\n"
                 "  <caption>\n"
                 "    <href uri=\"https://e.x/?a=1&amp;b=&quot;2&quot;\"/>\n"
                 "    T&lt;1&gt;\n"
@@ -673,7 +682,7 @@ void verify_lists_keep_their_nested_blocks() {
   require_equal(body_of(document),
                 "  <list ordered=\"false\">\n"
                 "    <list-item>one</list-item>\n"
-                "    <paragraph>run a run b</paragraph>\n"
+                "    <paragraph>run arun b</paragraph>\n"
                 "    <table>\n"
                 "      <tr>\n"
                 "        <td>cell</td>\n"
@@ -717,7 +726,7 @@ void verify_a_rich_cell_keeps_hosts_and_satellites() {
                 "    <tr>\n"
                 "      <td>\n"
                 "        <list ordered=\"false\">\n"
-                "          <list-item>x &lt;y&gt;</list-item>\n"
+                "          <list-item>x&lt;y&gt;</list-item>\n"
                 "        </list>\n"
                 "        <table>\n"
                 "          <tr>\n"
@@ -966,6 +975,7 @@ int main() {
       verify_a_transparent_group_adds_no_element_and_no_indent,
       verify_a_host_renders_its_inline_runs_inside_its_element,
       verify_a_body_inline_group_folds_into_one_paragraph,
+      verify_inline_runs_keep_their_own_spaces,
       verify_float_footnotes_render_after_their_float_with_nested_content,
       verify_float_captions_keep_their_nested_content,
       verify_nested_content_is_xml_escaped,
