@@ -446,9 +446,25 @@ void verify_a_calendar_input_is_not_implemented(TestServer* server) {
               status.error_message().contains("INPUT_FORMAT_CALENDAR"),
           "a detected calendar input is refused: " + status.error_message());
 
+  // unary_request names image.png but its bytes are the text "memory", so
+  // the sniffed type is text/plain and the detected InputFormat is MD.
   request = unary_request();
   request.mutable_request()->mutable_options()->add_from_formats(
       pipestream::parse::v1::INPUT_FORMAT_IMAGE);
+  request.mutable_request()->mutable_options()->add_from_formats(
+      pipestream::parse::v1::INPUT_FORMAT_CALENDAR);
+  grpc::ClientContext image_only;
+  pipestream::parse::v1::ConvertSourceResponse image_only_response;
+  const grpc::Status image_only_status =
+      client->ConvertSource(&image_only, request, &image_only_response);
+  require(image_only_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              image_only_status.error_message().contains("INPUT_FORMAT_MD"),
+          "CALENDAR beside IMAGE does not allow the detected markdown bytes: " +
+              image_only_status.error_message());
+
+  request = unary_request();
+  request.mutable_request()->mutable_options()->add_from_formats(
+      pipestream::parse::v1::INPUT_FORMAT_MD);
   request.mutable_request()->mutable_options()->add_from_formats(
       pipestream::parse::v1::INPUT_FORMAT_CALENDAR);
   grpc::ClientContext allowed;
@@ -456,7 +472,7 @@ void verify_a_calendar_input_is_not_implemented(TestServer* server) {
   const grpc::Status allowed_status =
       client->ConvertSource(&allowed, request, &allowed_response);
   require(allowed_status.ok(),
-          "from_formats may name CALENDAR beside a format that is parsed: " +
+          "from_formats may name CALENDAR beside the detected format: " +
               allowed_status.error_message());
 }
 
