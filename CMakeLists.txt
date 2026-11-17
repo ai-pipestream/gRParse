@@ -92,7 +92,10 @@ FetchContent_Declare(rapidocr SOURCE_SUBDIR disabled
         # Line crops cut from the page in place, the debug result image built
         # only when saved, and recognizer scores decoded in place.
         COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-ocr-copies.patch"
-        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-shape-buckets.patch")
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-shape-buckets.patch"
+        # Each net reports the input shape of every run to the shape ledger
+        # (compat/grparse_ocr_shapes.h, grparse_ocr_input_shapes).
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-shape-ledger.patch")
 FetchContent_MakeAvailable(rapidocr)
 # FetchContent only patches when it populates, so a dependency tree cached
 # before the patch existed would build the upstream provider wiring and the
@@ -160,13 +163,26 @@ if(GRPARSE_CRNN_DECODE_AT EQUAL -1)
 endif()
 unset(GRPARSE_CRNN_SOURCE)
 file(READ "${rapidocr_SOURCE_DIR}/src/DbNet.cpp" GRPARSE_DBNET_SOURCE)
-string(FIND "${GRPARSE_DBNET_SOURCE}" "ocr_pad_replicate" GRPARSE_DBNET_BUCKETS_AT)
+string(FIND "${GRPARSE_DBNET_SOURCE}" "grparse::ocr_det_pad" GRPARSE_DBNET_BUCKETS_AT)
 if(GRPARSE_DBNET_BUCKETS_AT EQUAL -1)
   message(FATAL_ERROR "src/DbNet.cpp is unpatched: the rapidocr source tree predates "
     "patches/rapidocr-shape-buckets.patch. Delete _deps/rapidocr-* from the build directory "
     "(or the docker build cache) and re-run CMake.")
 endif()
 unset(GRPARSE_DBNET_SOURCE)
+# A tree cached before the ledger patch would build and report no shapes, and
+# one cached before the detector buckets took a width and a height together
+# would not compile against compat/grparse_ocr_shapes.h.  Same remedy.
+foreach(ledger_net DbNet AngleNet CrnnNet)
+  file(READ "${rapidocr_SOURCE_DIR}/src/${ledger_net}.cpp" GRPARSE_NET_SOURCE)
+  string(FIND "${GRPARSE_NET_SOURCE}" "grparse::note_ocr_input_shape" GRPARSE_LEDGER_AT)
+  if(GRPARSE_LEDGER_AT EQUAL -1)
+    message(FATAL_ERROR "src/${ledger_net}.cpp is unpatched: the rapidocr source tree predates "
+      "patches/rapidocr-shape-ledger.patch. Delete _deps/rapidocr-* from the build directory "
+      "(or the docker build cache) and re-run CMake.")
+  endif()
+endforeach()
+unset(GRPARSE_NET_SOURCE)
 file(READ "${rapidocr_SOURCE_DIR}/include/DbNet.h" GRPARSE_DBNET_HEADER)
 string(FIND "${GRPARSE_DBNET_HEADER}" "opencv2/geometry.hpp" GRPARSE_DBNET_GEOMETRY_AT)
 if(GRPARSE_DBNET_GEOMETRY_AT EQUAL -1)
@@ -387,7 +403,8 @@ target_link_libraries(grparse_curl INTERFACE CURL::libcurl)
 target_link_options(grparse_curl INTERFACE "LINKER:--exclude-libs,ALL")
 
 # The execution-provider hook the patched RapidOcrOnnx nets call into.
-add_library(grparse_ort_ep STATIC src/ort_session_ep.cpp src/ocr_shape_buckets.cpp)
+add_library(grparse_ort_ep STATIC src/ort_session_ep.cpp src/ocr_shape_buckets.cpp
+  src/ocr_shape_ledger.cpp)
 target_include_directories(grparse_ort_ep PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/compat")
 target_link_libraries(grparse_ort_ep PUBLIC onnxruntime PRIVATE grparse_flags)
 
@@ -936,6 +953,7 @@ if(BUILD_TESTING)
     office-fallback-test
     office-cv-enrichment-test
     ocr-shape-buckets-test
+    ocr-shape-bound-test
     ort-session-ep-test
     code-formula-crops-test
     ocr-image-regions-test
@@ -996,6 +1014,12 @@ if(BUILD_TESTING)
   add_test(NAME check-skips-script
     COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test/check-skips-test.sh)
   set_tests_properties(check-skips-script PROPERTIES TIMEOUT 60 LABELS grparse)
+  # The GPU OCR compile receipt (scripts/test/gpu-ocr-shapes-test.sh, stack
+  # tier, needs an Intel GPU) run against a fake docker and curl: a bounded
+  # server passes it and each kind of unbounded one fails it.
+  add_test(NAME gpu-ocr-shapes-script
+    COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/test/gpu-ocr-shapes-selftest.sh)
+  set_tests_properties(gpu-ocr-shapes-script PROPERTIES TIMEOUT 120 LABELS grparse)
   # Opt-in oracle battery (eval/README.md): skips (77) unless GRPARSE_TARGET,
   # VLM_ENDPOINT and EVAL_CORPUS are set in the environment, so a green
   # build never claims it ran.
@@ -1050,7 +1074,12 @@ if(BUILD_TESTING)
   # environment with models proves the decode against the reference output.
   # GRPARSE_TEST_REQUIRE_MODELS=1 in the environment turns that skip into a
   # failure; the CI cpu-image job provides the models and sets it.
-  set_tests_properties(figure-classifier-test layout-engine-test table-structure-engine-test PROPERTIES
+  # The shape-bound test reads a page and its regions twice with the real OCR
+  # nets on one thread, the slowest test of the suite.
+  math(EXPR GRPARSE_OCR_BOUND_TEST_TIMEOUT "${GRPARSE_TEST_TIMEOUT} * 3")
+  set_tests_properties(ocr-shape-bound-test PROPERTIES TIMEOUT ${GRPARSE_OCR_BOUND_TEST_TIMEOUT})
+  set_tests_properties(figure-classifier-test layout-engine-test table-structure-engine-test
+    ocr-shape-bound-test PROPERTIES
     SKIP_RETURN_CODE 77
     ENVIRONMENT
       "GRPARSE_TEST_MODELS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/models;GRPARSE_TEST_DATA_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/data")

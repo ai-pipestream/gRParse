@@ -495,7 +495,8 @@ provider: `cuda` (default, fails startup if CUDA cannot initialize),
 logging each fallback). `GRPARSE_OCR_BATCH` (1 to 256) sets how many line
 crops the angle classifier and recognizer take per call: 16 under CUDA, 1
 under CPU (where padding costs more than batching saves) and OpenVINO (whose
-GPU plugin compiles kernels for every new input shape).
+GPU plugin compiles kernels for every new input shape; "OCR input shapes on
+the GPU" below).
 Crops are sorted by width before batching, and each batch is padded to its
 widest crop; 1 reads one crop per call. Requesting a provider the linked ONNX Runtime does not
 offer fails with the list that is actually available. An OCR session that
@@ -1123,9 +1124,9 @@ or `CPU`. Device lists (`AUTO:`, `HETERO:`, `MULTI:`, `BATCH:`) are refused at
 startup, because they let OpenVINO move work to its CPU plugin on its own. `GRPARSE_OPENVINO_CACHE_DIR` points the plugin at a
 writable directory to keep compiled blobs in, which skips the recompile on
 every session create (unset by default: the container runs read-only). Give
-it room: the GPU plugin compiles a kernel set per input size, so OCR crops
-and turned rasters add blobs continually (2400 files after a handful of
-documents); the compose overlay uses a named volume, because a small tmpfs
+it room: the GPU plugin compiles a kernel set per input size (the OCR nets
+run a fixed list of sizes for that reason, see "OCR input shapes on the GPU"
+below); the compose overlay uses a named volume, because a small tmpfs
 fills up, and a truncated blob then makes the OpenCL loader abort. The
 directory has to be writable by uid 65532: the image ships
 `/var/cache/openvino` owned by that user, so a named volume mounted there
@@ -1134,6 +1135,76 @@ inherits the ownership on first use, while a bind mount needs
 layout session asks for single precision explicitly; the GPU plugin's default
 half precision loses that detector real detections and drifts its boxes, while
 the OCR, table, and classifier nets keep the plugin's own choice.
+
+### OCR input shapes on the GPU
+
+The OpenVINO GPU plugin compiles a network again for every new input shape,
+and on an Arc B70 the first page of each new size spent 7 to 15 s in OCR that
+way. Left alone, the text detector meets a new shape for nearly every picture
+it reads and the recognizer a new width for nearly every line: the reads of
+20 ACM papers plus the test corpus are 153 detector sizes over 273 detector
+runs (104 when each side is rounded up to a multiple of 64) and 1,311 line
+widths over 40,332 lines. With the OpenVINO provider on
+a GPU device both nets therefore run a short fixed list of shapes
+(`GRPARSE_OCR_SHAPE_BUCKETS=auto`, the default):
+
+- The detector input is padded to one of nine sizes, the one of the smallest
+  area that covers the read, and its output map is cropped back before boxes
+  are traced: 320x320, 640x480, 1088x544, 1088x832, 1088x1472, 2144x1088,
+  1664x2144, 2144x1664 and 2144x2144 (width x height). The 1088 and 2144
+  widths are a column-wide and a page-wide picture at 200 DPI, 1664x2144 is a
+  full letter page (an A4 page fits inside it), 2144x1664 the same page
+  turned. Over the survey the padded area is 1.31 times the real area.
+- A line is padded to one of 14 widths at height 48 (64, 96, 128, 192, 256,
+  320, 448, 576, 768, 1024, 1280, 1600, 2048, 2560, then multiples of 640),
+  and only the time steps over the real line are decoded. Over the survey the
+  padded width is 1.11 times the real width.
+
+The detector padding is the image itself, tiled, and a line is padded with
+zeros after normalization, the padding the recognizer was trained with
+(`GRPARSE_OCR_BUCKET_PAD=auto`; `replicate` repeats the edge pixels for both
+nets, `zero` pads the detector with white). The detector pools over its whole
+input, so white or smeared padding shifts its boxes, and tiling keeps what it
+pools over the same as the page.
+`GRPARSE_OCR_SHAPE_BUCKETS` also takes `on` (both nets on any provider),
+`det`, `rec` and `off`. On the CPU and CUDA providers, and on the OpenVINO
+CPU device, `auto` buckets nothing and every read keeps its exact size.
+`GRPARSE_OCR_DET_STEP` and `GRPARSE_OCR_REC_STEP` (multiples of 32) replace a
+list with rounding up to a multiple, for experiments. With
+`GRPARSE_OCR_BATCH` above 1 the recognizer pads each batch to its widest
+crop instead and the width list is not used.
+
+`grparse_ocr_input_shapes{net="det"|"cls"|"rec"}` exports how many distinct
+input shapes each OCR net has run since start. On the GPU that is the number
+of compiles the net has caused: with the default lists it stays at or below
+9, 1 and 14 (more only for lines wider than 2560 or a raised
+`GRPARSE_OCR_MAX_SIDE`), and a value that keeps climbing means the buckets
+are off.
+
+Padding changes what a read returns a little, so bucketed reads were compared
+with exact-size reads on CPU, where the kernels are the same and only the
+input differs. Over the pictures of those 20 papers (219 pages, 6,635 OCR
+lines) 3.3% of the document's text items and 0.09% of its characters differ,
+nearly all of them labels inside figures; over the test corpus 5 of 283 items
+and 10 of 67,884 characters differ. Read in full, the papers agree with their
+own text layer about as well with the buckets as without (word F1 0.9606
+against 0.9613 over 184,449 words). `tests/ocr_shape_bound_test.cpp` holds both properties
+in the model tier: a page and eleven regions of it run 6 detector and at most
+14 recognizer shapes instead of 12 and 95, and the bucketed read of
+`tests/data/report_page.png` changes at most 4 of its 36 lines.
+
+The figure classifier always runs one 224x224 crop per call, but its model
+leaves the batch dimension free, and the GPU plugin compiles such a network
+on its first inference (4.6 s on the B70, then 40 ms a figure). Under
+OpenVINO the session fixes the batch to 1, so the network is compiled inside
+the session build (2 ms a figure in the same measurement).
+
+The lists and the fixed batch were chosen and checked on CPU.
+`scripts/test/gpu-ocr-shapes-test.sh` (stack suite `gpu-ocr-shapes`) is the
+GPU receipt: on a host with an Intel render node it converts documents of
+different sizes on a cold cache and asserts how many shapes and cache files
+each new size may add, that a repeat adds none, and that a restart on the
+warm cache writes nothing.
 
 ### Intermittent IGC failures and VRAM headroom
 
@@ -1359,18 +1430,19 @@ against the `default` configure preset's `build/`):
 |---|---|---|---|
 | `unit` | nothing: pure functions on fixtures | every image build, every PR (`pr` preset) | none |
 | `loopback` | an in-process gRPC server, fake backend or loopback HTTP | every image build, every PR | none |
-| `models` | the files under `models/` | every image build; they pass only on `cpu-image`, which provides the models and sets `GRPARSE_TEST_REQUIRE_MODELS=1` (`models` preset) | cuda and openvino builds skip these four |
+| `models` | the files under `models/` | every image build; they pass only on `cpu-image`, which provides the models and sets `GRPARSE_TEST_REQUIRE_MODELS=1` (`models` preset) | cuda and openvino builds skip these five |
 | `embeddings` | the embedding model bundle (`GRPARSE_EMBEDDING_TEST_MODELS`) | skip inside every image build; the openvino CI job runs both through the shipped binaries afterwards | all three, in-build |
 | `emulators` | fake-gcs, Azurite, RustFS, grpc-enrich and an emulated VLM | skip inside every image build; `cpu-image` runs them afterwards from the e2e image with the emulators up | all three, in-build |
 | `stack` | a docker compose stack | nightly (`nightly` preset), only the suites `GRPARSE_STACK_SUITES` names (`scripts/test/stack-suite.sh`); never in an image build | every one not named |
 | `eval` | a running stack and an oracle (`vlm-oracle-eval`, `structural-scorecard`) | nightly and release | without `GRPARSE_TARGET`/`VLM_ENDPOINT` |
 | `bench` | timing on fixed fixtures (`grparse-bench`, below) | nightly, enforced; every image build compiles it but never runs it | without `GRPARSE_BENCH_ENFORCE=1` |
 
-`ctest -N -L stack` lists the seven compose-stack suites (`stack-e2e`,
+`ctest -N -L stack` lists the eight compose-stack suites (`stack-e2e`,
 `s3-corpus-eval`, `ocr-presets-e2e`, `embedding-rpc`, `compose-preflight`,
-`observability-compose`, `gpu-placement`); `gpu-placement` needs an Intel GPU
-host (krick-1), `GRPARSE_STACK_OPENVINO_IMAGE` and `GRPARSE_STACK_MODELS_DIR`,
-and fails rather than skips without a render node; each runs exactly as its script runs by hand, the
+`observability-compose`, `gpu-placement`, `gpu-ocr-shapes`); the two `gpu-`
+suites need an Intel GPU host (krick-1), `GRPARSE_STACK_OPENVINO_IMAGE` and
+`GRPARSE_STACK_MODELS_DIR`, and fail rather than skip without a render node;
+each runs exactly as its script runs by hand, the
 wrapper only decides whether it runs. The `release` preset sets
 `EVAL_REQUIRE=1`, `GRPARSE_BENCH_ENFORCE=1`, `GRPARSE_TEST_REQUIRE_MODELS=1`
 and `GRPARSE_STACK_SUITES=all`, so a skip there is a failure. Every image build

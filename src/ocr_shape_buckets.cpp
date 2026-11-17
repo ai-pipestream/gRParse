@@ -1,6 +1,9 @@
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdlib>
+#include <deque>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 
@@ -10,14 +13,42 @@ namespace grparse {
 
 namespace {
 
-// Line widths at height 48: short labels to full-width lines; past the last
-// entry the width rounds up to a multiple of 640.
-constexpr std::array<int, 10> kRecWidths = {160, 320, 480, 640, 960, 1280, 1600, 1920, 2560, 3200};
-constexpr int kDetStepDefault = 64;
+// Detector input sizes, width x height.  A read is padded to the listed size
+// of the smallest area that covers it.  Chosen from the reads of 20 ACM
+// papers in selective mode plus the test corpus (273 detector runs, 153
+// distinct sizes without buckets, 104 at multiples of 64): the widths are a
+// small picture, a column-wide picture and a page-wide one at 200 DPI, and
+// the last three are full pages (letter upright and turned, A4 inside the
+// first) and the square that covers every read at the default
+// GRPARSE_OCR_MAX_SIDE.  Over those reads the padded area is 1.31 times the
+// unpadded area.
+constexpr std::array<OcrDetSize, 9> kDetSizes = {{
+    {320, 320},
+    {640, 480},
+    {1088, 544},
+    {1088, 832},
+    {1088, 1472},
+    {2144, 1088},
+    {1664, 2144},
+    {2144, 1664},
+    {2144, 2144},
+}};
+// Past the list (GRPARSE_OCR_MAX_SIDE above its default) each side rounds up
+// to a multiple of this.
+constexpr int kDetOverflowStep = 512;
 
-int env_step(const char* name, int fallback) {
+// Line widths at height 48, about a quarter apart.  Chosen from the 40,332
+// lines of the same reads plus the papers read in full (1,311 distinct
+// widths without buckets): over them the padded width is 1.11 times the
+// unpadded width.  Past the last entry the width rounds up to a multiple of
+// kRecOverflowStep.
+constexpr std::array<int, 14> kRecWidths = {64,  96,  128,  192,  256,  320,  448,
+                                            576, 768, 1024, 1280, 1600, 2048, 2560};
+constexpr int kRecOverflowStep = 640;
+
+int env_step(const char* name) {
   const char* value = std::getenv(name);
-  if (value == nullptr || *value == '\0') return fallback;
+  if (value == nullptr || *value == '\0') return 0;
   char* end = nullptr;
   const long parsed = std::strtol(value, &end, 10);
   if (*end != '\0' || parsed < 0 || parsed > 4096 || (parsed != 0 && parsed % 32 != 0)) {
@@ -26,83 +57,130 @@ int env_step(const char* name, int fallback) {
   return static_cast<int>(parsed);
 }
 
-// GRPARSE_OCR_DET_STEP: the detector side rounds up to a multiple of it
-// (default 64). GRPARSE_OCR_REC_STEP: the recognizer width rounds up to a
-// multiple of it; 0 (the default) uses the fixed width list.
-int det_step() {
-  static const int step = env_step("GRPARSE_OCR_DET_STEP", kDetStepDefault);
-  return step == 0 ? kDetStepDefault : step;
+bool on_gpu_device(const std::string& device) { return device.find("GPU") != std::string::npos; }
+
+// Everything the bucket functions read, resolved together from the
+// environment and the provider selection.
+struct BucketConfig {
+  // Which nets get fixed shapes (GRPARSE_OCR_SHAPE_BUCKETS).
+  bool det = false;
+  bool rec = false;
+  // GRPARSE_OCR_DET_STEP / GRPARSE_OCR_REC_STEP: a multiple of 32 rounds the
+  // detector sides or the line width up to a multiple of it instead of using
+  // the lists; 0 (the default) uses the lists.
+  int det_step = 0;
+  int rec_step = 0;
+  // GRPARSE_OCR_BUCKET_PAD.
+  OcrPad det_pad = OcrPad::kTile;
+  OcrPad rec_pad = OcrPad::kConstant;
+};
+
+BucketConfig read_config() {
+  BucketConfig config;
+  const char* value = std::getenv("GRPARSE_OCR_SHAPE_BUCKETS");
+  const std::string name = value == nullptr || *value == '\0' ? "auto" : value;
+  if (name == "on") {
+    config.det = config.rec = true;
+  } else if (name == "det") {
+    config.det = true;
+  } else if (name == "rec") {
+    config.rec = true;
+  } else if (name == "auto") {
+    // Both nets on the provider that compiles per input shape; CPU and CUDA
+    // run every shape with the same kernels and keep their exact inputs.
+    const OrtEpSelection selection = ort_ep_selection();
+    config.det = config.rec =
+        selection.ep == OrtEp::kOpenVino && on_gpu_device(selection.openvino_device);
+  } else if (name != "off") {
+    throw std::invalid_argument("GRPARSE_OCR_SHAPE_BUCKETS must be auto, on, det, rec or off");
+  }
+  config.det_step = env_step("GRPARSE_OCR_DET_STEP");
+  config.rec_step = env_step("GRPARSE_OCR_REC_STEP");
+  const char* pad = std::getenv("GRPARSE_OCR_BUCKET_PAD");
+  const std::string pad_mode = pad == nullptr || *pad == '\0' ? "auto" : pad;
+  if (pad_mode == "replicate") {
+    config.det_pad = config.rec_pad = OcrPad::kReplicate;
+  } else if (pad_mode == "zero") {
+    config.det_pad = OcrPad::kConstant;
+  } else if (pad_mode != "auto" && pad_mode != "tile") {
+    throw std::invalid_argument("GRPARSE_OCR_BUCKET_PAD must be auto, tile, replicate or zero");
+  }
+  return config;
 }
 
-int rec_step() {
-  static const int step = env_step("GRPARSE_OCR_REC_STEP", 0);
-  return step;
+// The resolved settings.  Read on every line, so the fast path is one atomic
+// load; a reset swaps in a null and the next reader resolves again.  Earlier
+// configs stay alive in `resolved` because a reader may still hold one.
+std::mutex config_mutex;
+std::deque<BucketConfig> resolved;
+std::atomic<const BucketConfig*> active{nullptr};
+
+const BucketConfig& config() {
+  if (const BucketConfig* current = active.load(std::memory_order_acquire)) return *current;
+  std::lock_guard<std::mutex> lock(config_mutex);
+  if (const BucketConfig* current = active.load(std::memory_order_acquire)) return *current;
+  const BucketConfig& fresh = resolved.emplace_back(read_config());
+  active.store(&fresh, std::memory_order_release);
+  return fresh;
 }
 
-bool on_gpu_device(const std::string& device) {
-  return device.rfind("GPU", 0) == 0 || device.find("GPU") != std::string::npos;
+int round_up(int value, int step) { return (std::max(value, 1) + step - 1) / step * step; }
+
+// The listed size of the smallest area that covers the read; the first one
+// when two tie.  A read no listed size covers gets its own rounded sides.
+OcrDetSize listed_det_size(int width, int height) {
+  const OcrDetSize* best = nullptr;
+  for (const OcrDetSize& size : kDetSizes) {
+    if (size.width < width || size.height < height) continue;
+    if (best == nullptr || size.width * size.height < best->width * best->height) best = &size;
+  }
+  if (best != nullptr) return *best;
+  return {round_up(width, kDetOverflowStep), round_up(height, kDetOverflowStep)};
 }
 
 }  // namespace
 
-// Which nets get fixed shapes: both, the detector only, the recognizer only,
-// or neither (GRPARSE_OCR_SHAPE_BUCKETS=on|det|rec|off; auto is "det" for the
-// OpenVINO provider on a GPU device, "off" otherwise).
-struct BucketMode {
-  bool det = false;
-  bool rec = false;
-};
-
-const BucketMode& bucket_mode() {
-  static const BucketMode mode = [] {
-    const char* value = std::getenv("GRPARSE_OCR_SHAPE_BUCKETS");
-    const std::string name = value == nullptr || *value == '\0' ? "auto" : value;
-    if (name == "on") return BucketMode{true, true};
-    if (name == "off") return BucketMode{};
-    if (name == "det") return BucketMode{true, false};
-    if (name == "rec") return BucketMode{false, true};
-    if (name != "auto") {
-      throw std::invalid_argument("GRPARSE_OCR_SHAPE_BUCKETS must be auto, on, det, rec or off");
-    }
-    // auto buckets the detector only: padding a line changes the recognizer
-    // output (its context spans the full line), while the detector at
-    // multiples of 64 with repeated edges stays within GPU noise of the
-    // unpadded run (101 ACM papers, OpenVINO CPU: 150 figure items, 0 body).
-    const OrtEpSelection selection = ort_ep_selection();
-    const bool gpu = selection.ep == OrtEp::kOpenVino && on_gpu_device(selection.openvino_device);
-    return BucketMode{gpu, false};
-  }();
-  return mode;
+void reset_ocr_shape_buckets() {
+  std::lock_guard<std::mutex> lock(config_mutex);
+  active.store(nullptr, std::memory_order_release);
 }
 
-bool ocr_shape_buckets() { return bucket_mode().det || bucket_mode().rec; }
+bool ocr_shape_buckets() { return config().det || config().rec; }
 
-int ocr_det_bucket(int side) {
-  if (!bucket_mode().det) return side;
-  const int step = det_step();
-  if (side <= 0) return step;
-  return (side + step - 1) / step * step;
+OcrDetSize ocr_det_bucket(int width, int height) {
+  const BucketConfig& settings = config();
+  if (!settings.det) return {width, height};
+  if (settings.det_step > 0) {
+    return {round_up(width, settings.det_step), round_up(height, settings.det_step)};
+  }
+  return listed_det_size(width, height);
 }
 
 int ocr_rec_bucket(int width) {
-  if (!bucket_mode().rec) return width;
-  if (const int step = rec_step(); step > 0) return (std::max(width, 1) + step - 1) / step * step;
+  const BucketConfig& settings = config();
+  if (!settings.rec) return width;
+  if (settings.rec_step > 0) return round_up(width, settings.rec_step);
   for (const int bucket : kRecWidths) {
     if (width <= bucket) return bucket;
   }
-  constexpr int kStep = 640;
-  return (width + kStep - 1) / kStep * kStep;
+  return round_up(width, kRecOverflowStep);
 }
 
-bool ocr_pad_replicate() {
-  static const bool replicate = [] {
-    const char* value = std::getenv("GRPARSE_OCR_BUCKET_PAD");
-    const std::string mode = value == nullptr || *value == '\0' ? "replicate" : value;
-    if (mode == "replicate") return true;
-    if (mode == "zero") return false;
-    throw std::invalid_argument("GRPARSE_OCR_BUCKET_PAD must be replicate or zero");
-  }();
-  return replicate;
+OcrPad ocr_det_pad() { return config().det_pad; }
+
+OcrPad ocr_rec_pad() { return config().rec_pad; }
+
+size_t ocr_det_bucket_count() { return kDetSizes.size(); }
+
+size_t ocr_rec_bucket_count(int max_rec_width) {
+  size_t count = 0;
+  for (const int bucket : kRecWidths) {
+    ++count;
+    if (max_rec_width <= bucket) return count;
+  }
+  // The last listed width is itself a multiple of the overflow step.
+  return count + static_cast<size_t>(round_up(max_rec_width, kRecOverflowStep) - kRecWidths.back()) /
+                     kRecOverflowStep;
 }
 
 }  // namespace grparse
