@@ -120,6 +120,19 @@ std::vector<std::vector<TensorSpec>> ocr_prewarm_sets(OcrNet net);
 std::unique_ptr<InferenceModel> make_rapidocr_model(Ort::Env& env, const std::filesystem::path& path,
                                                     OcrNet net, int num_thread);
 
+// GRPARSE_OPENVINO_ISOLATION=process (default) runs native OpenVINO in a
+// supervised child process (src/inference_host.cpp) so a device loss or a
+// crash inside the GPU stack fails calls with UNAVAILABLE instead of taking
+// the server down; =none runs it in the server process.
+bool openvino_process_isolation();
+
+// Runs the inference host when argv is `--grparse-inference-host <fd>`
+// (main() calls it first) and never returns in that case; false otherwise.
+bool maybe_run_inference_host(int argc, char** argv);
+
+// Inference host restarts since start (grparse_openvino_host_restarts_total).
+uint64_t openvino_host_restart_count();
+
 // Device failures counted since start (grparse_openvino_device_errors_total)
 // and shapes compiled after startup prewarm (grparse_openvino_runtime_compiles_total).
 uint64_t openvino_device_error_count();

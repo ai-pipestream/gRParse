@@ -575,11 +575,34 @@ const int64_t* Tensor::int64s() const {
   return reinterpret_cast<const int64_t*>(bytes.data());
 }
 
+#ifdef GRPARSE_NATIVE_OPENVINO
+std::unique_ptr<InferenceModel> make_remote_openvino_model(const std::filesystem::path& ir,
+                                                           std::string what,
+                                                           ModelShapePolicy shapes);
+
+std::unique_ptr<InferenceModel> make_native_openvino_model(const std::filesystem::path& ir,
+                                                           std::string what,
+                                                           ModelShapePolicy shapes) {
+  return std::make_unique<NativeOpenVinoModel>(ir, std::move(what), std::move(shapes));
+}
+
+namespace {
+// In the server: a proxy to the inference host (or the model itself when
+// isolation is off).  In the host, make_native_openvino_model runs.
+std::unique_ptr<InferenceModel> openvino_model(const std::filesystem::path& onnx, std::string what,
+                                               ModelShapePolicy shapes) {
+  if (openvino_process_isolation()) {
+    return make_remote_openvino_model(ir_path(onnx), std::move(what), std::move(shapes));
+  }
+  return make_native_openvino_model(ir_path(onnx), std::move(what), std::move(shapes));
+}
+}  // namespace
+#endif
+
 std::unique_ptr<InferenceModel> make_inference_model(const ModelSpec& spec) {
 #ifdef GRPARSE_NATIVE_OPENVINO
   if (ort_ep_selection().ep == OrtEp::kOpenVino) {
-    return std::make_unique<NativeOpenVinoModel>(ir_path(spec.path), std::string(spec.what),
-                                                 spec.shapes);
+    return openvino_model(spec.path, std::string(spec.what), spec.shapes);
   }
 #endif
   static Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "grparse-models");
@@ -592,7 +615,7 @@ std::unique_ptr<InferenceModel> make_rapidocr_model(Ort::Env& env, const std::fi
   const std::string what(ocr_net_name(net));
 #ifdef GRPARSE_NATIVE_OPENVINO
   if (ort_ep_selection().ep == OrtEp::kOpenVino) {
-    return std::make_unique<NativeOpenVinoModel>(ir_path(path), what, ocr_net_shapes(net));
+    return openvino_model(path, what, ocr_net_shapes(net));
   }
 #endif
   return std::make_unique<OrtModel>(make_rapidocr_session(env, path, what, num_thread));

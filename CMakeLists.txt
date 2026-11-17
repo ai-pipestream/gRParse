@@ -385,7 +385,7 @@ target_link_options(grparse_curl INTERFACE "LINKER:--exclude-libs,ALL")
 
 # The execution-provider hook the patched RapidOcrOnnx nets call into.
 add_library(grparse_ort_ep STATIC src/ort_session_ep.cpp src/ocr_shape_buckets.cpp
-  src/inference_model.cpp)
+  src/inference_model.cpp src/inference_host.cpp)
 target_include_directories(grparse_ort_ep PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/compat")
 target_link_libraries(grparse_ort_ep PUBLIC onnxruntime PRIVATE grparse_flags)
 
@@ -935,6 +935,7 @@ if(BUILD_TESTING)
     office-cv-enrichment-test
     ocr-shape-buckets-test
     ort-session-ep-test
+    inference-model-test
     code-formula-crops-test
     ocr-image-regions-test
     ocr-rect-render-test

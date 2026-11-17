@@ -94,7 +94,7 @@ int ocr_det_bucket(int side);
 int ocr_det_max_side(int configured);
 // The detector input shape (width, height) a `width` x `height` resize is
 // padded to: unchanged without buckets, each side bucketed on its own for
-// ONNX Runtime's OpenVINO provider, one of eight letterbox buckets on native
+// ONNX Runtime's OpenVINO provider, one of twelve letterbox buckets on native
 // OpenVINO (GRPARSE_OCR_DET_LADDER=letterbox, or =grid for 7 x 7).
 std::pair<int, int> ocr_det_bucket_shape(int width, int height);
 // The smallest recognizer width bucket at least `width` pixels.

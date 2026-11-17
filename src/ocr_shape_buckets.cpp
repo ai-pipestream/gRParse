@@ -18,8 +18,9 @@ constexpr std::array<int, 10> kRecWidths = {160, 320, 480, 640, 960, 1280, 1600,
 constexpr int kDetStepDefault = 64;
 // Native OpenVINO compiles one model per static input shape, so the
 // detector input is letterboxed (padded right and bottom with repeated edge
-// pixels, the map cropped back) into one of a few buckets: longest side 640,
-// 960, 1280 or 1600, short side three quarters of it, portrait or landscape.
+// pixels, the map cropped back) into one of twelve buckets: longest side
+// 640, 960, 1280 or 1600, and short side three quarters of it (portrait or
+// landscape) or square for inputs squarer than 4:3.
 // The page is scaled so its longest side is at most 1600, which also keeps
 // the B70 clear of the full 2048 x 1600 detector input that faulted it
 // (2026-11-16).  GRPARSE_OCR_DET_LADDER=grid selects the older 7 x 7 grid of
@@ -160,17 +161,24 @@ int ocr_det_max_side(int configured) {
 std::pair<int, int> ocr_det_bucket_shape(int width, int height) {
   if (!bucket_mode().det) return {width, height};
   if (!native_openvino() || det_grid_ladder()) return {ocr_det_bucket(width), ocr_det_bucket(height)};
-  const bool landscape = width > height;
-  const int long_side = landscape ? width : height;
-  const int short_side = landscape ? height : width;
+  // The smallest-area bucket that covers the input: the least padding, so
+  // the least detector work.
+  std::pair<int, int> best{0, 0};
+  int64_t best_area = -1;
   for (const int bucket : kDetLongSides) {
-    if (long_side <= bucket && short_side <= short_side_of(bucket)) {
-      return landscape ? std::pair{bucket, short_side_of(bucket)} : std::pair{short_side_of(bucket), bucket};
+    const int narrow = short_side_of(bucket);
+    for (const std::pair<int, int>& candidate :
+         {std::pair{bucket, narrow}, std::pair{narrow, bucket}, std::pair{bucket, bucket}}) {
+      if (candidate.first < width || candidate.second < height) continue;
+      const int64_t area = int64_t{candidate.first} * candidate.second;
+      if (best_area < 0 || area < best_area) {
+        best = candidate;
+        best_area = area;
+      }
     }
   }
-  // Squarer than 4:3 at the cap: a square bucket of the long side.
-  const int side = ocr_det_bucket(long_side);
-  return {std::max(side, width), std::max(side, height)};
+  if (best_area >= 0) return best;
+  return {std::max(width, kDetMaxSide), std::max(height, kDetMaxSide)};
 }
 
 std::string_view ocr_net_name(OcrNet net) {
@@ -203,6 +211,7 @@ std::vector<std::vector<TensorSpec>> ocr_prewarm_sets(OcrNet net) {
           const int narrow = short_side_of(bucket);
           sets.push_back({{TensorElement::kFloat32, {1, 3, bucket, narrow}}});
           sets.push_back({{TensorElement::kFloat32, {1, 3, narrow, bucket}}});
+          sets.push_back({{TensorElement::kFloat32, {1, 3, bucket, bucket}}});
         }
       }
       break;
