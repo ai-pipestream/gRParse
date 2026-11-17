@@ -259,6 +259,7 @@ class Host {
           ModelShapePolicy shapes;
           const auto rungs = reader.pod<uint32_t>();
           for (uint32_t i = 0; i < rungs; ++i) shapes.batch_ladder.push_back(reader.pod<int64_t>());
+          shapes.static_shapes = reader.pod<uint32_t>() != 0;
           const auto precision = static_cast<OrtPrecision>(reader.pod<uint32_t>());
           auto model = make_native_openvino_model(ir, what, shapes, precision);
           reply.pod(Outcome::kOk);
@@ -593,6 +594,7 @@ class RemoteModel final : public InferenceModel {
     body.text(what_);
     body.pod(static_cast<uint32_t>(shapes_.batch_ladder.size()));
     for (const int64_t rung : shapes_.batch_ladder) body.pod(rung);
+    body.pod(static_cast<uint32_t>(shapes_.static_shapes ? 1 : 0));
     body.pod(static_cast<uint32_t>(precision_));
     Reply reply = HostClient::instance().call(Kind::kOpen, body, -1);
     if (reply.outcome != Outcome::kOk) throw_reply(reply, what_);

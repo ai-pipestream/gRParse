@@ -327,15 +327,17 @@ class LayoutEngine::Impl {
     // failure on its graph on Intel devices, so it keeps the provider
     // default. One session serves every worker, so it is the one that may
     // have all the cores; the pooled sessions divide them.
-    // Native OpenVINO is the exception: on the Arc Pro B70 its FP32 path
-    // miscomputes heron (5-10 regions instead of 56-118) while FP16 matches
-    // the reference, so the native IR keeps the process precision.
-    const bool native = ort_ep_selection().ep == OrtEp::kOpenVino && native_openvino_build();
-    const OrtPrecision precision = model == LayoutModel::kHeron && !native
+    const OrtPrecision precision = model == LayoutModel::kHeron
                                        ? OrtPrecision::kFloat32
                                        : OrtPrecision::kProviderDefault;
+    // On native OpenVINO heron keeps the exported graph's own shapes: the
+    // B70's GPU plugin computes it exactly at FP32 only that way (a static
+    // reshape fails to compile, and FP16 shifts boxes by up to 0.7 px, which
+    // moves table crops enough to change the table decoder's cells).
+    ModelShapePolicy shapes;
+    shapes.static_shapes = model != LayoutModel::kHeron;
     model_ = make_inference_model(
-        ModelSpec{model_path, "layout", precision, kIntraOpAllCores, {}});
+        ModelSpec{model_path, "layout", precision, kIntraOpAllCores, shapes});
     strategy_->bind(*model_);
     // Some provider failures only surface at the first inference (a runtime
     // kernel compile, not session creation), which would otherwise leave a

@@ -501,15 +501,7 @@ class NativeOpenVinoModel final : public InferenceModel {
     return key;
   }
 
-  std::shared_ptr<CompiledShape> compiled_for(std::span<const TensorView> views, bool warming) {
-    const std::string key = key_of(views);
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      if (auto found = compiled_.find(key); found != compiled_.end()) return found->second;
-    }
-    // Compile outside the map lock; two threads racing on one new shape both
-    // compile and the second insert loses, which only costs a duplicate.
-    Handle<ov_model_t, ov_model_free> model = read_model();
+  void reshape_to(ov_model_t* model, std::span<const TensorView> views, const std::string& key) {
     std::vector<ov_partial_shape_t> partial(views.size());
     std::vector<const char*> names;
     for (size_t i = 0; i < views.size(); ++i) {
@@ -517,12 +509,24 @@ class NativeOpenVinoModel final : public InferenceModel {
                                      views[i].shape.data(), &partial[i]);
       names.push_back(input_names_[i].c_str());
     }
-    const ov_status_e reshaped = ov_model_reshape(model.get(), names.data(), partial.data(), partial.size());
+    const ov_status_e reshaped = ov_model_reshape(model, names.data(), partial.data(), partial.size());
     for (auto& shape : partial) ov_partial_shape_free(&shape);
     if (reshaped != OK) {
       throw std::runtime_error("gRParse " + what_ + ": OpenVINO reshape to " + key + ": " +
                                last_error(reshaped));
     }
+  }
+
+  std::shared_ptr<CompiledShape> compiled_for(std::span<const TensorView> views, bool warming) {
+    const std::string key = shapes_.static_shapes ? key_of(views) : std::string("dynamic");
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (auto found = compiled_.find(key); found != compiled_.end()) return found->second;
+    }
+    // Compile outside the map lock; two threads racing on one new shape both
+    // compile and the second insert loses, which only costs a duplicate.
+    Handle<ov_model_t, ov_model_free> model = read_model();
+    if (shapes_.static_shapes) reshape_to(model.get(), views, key);
     const NativeCore& core = NativeCore::instance();
     ov_compiled_model_t* compiled = nullptr;
     const ov_status_e status = ov_core_compile_model(
@@ -711,6 +715,8 @@ std::unique_ptr<InferenceModel> make_rapidocr_model(Ort::Env& env, const std::fi
   const std::string what(ocr_net_name(net));
 #ifdef GRPARSE_NATIVE_OPENVINO
   if (ort_ep_selection().ep == OrtEp::kOpenVino) {
+    // The OCR nets run at the process precision (FP16): at FP32 the detector
+    // faults the Arc Pro B70 (CAT error) at its first inference.
     return openvino_model(path, what, ocr_net_shapes(net), OrtPrecision::kProviderDefault);
   }
 #endif

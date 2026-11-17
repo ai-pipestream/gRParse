@@ -62,6 +62,10 @@ class InferenceDeviceError : public std::runtime_error {
 // the batch dimension as the caller sends it.
 struct ModelShapePolicy {
   std::vector<int64_t> batch_ladder;
+  // False keeps the model's own (dynamic) input shapes: one compiled model
+  // for every call, never reshaped.  For a model with one input shape that
+  // the GPU plugin only computes correctly as exported (heron at FP32).
+  bool static_shapes = true;
 };
 
 struct ModelSpec {
