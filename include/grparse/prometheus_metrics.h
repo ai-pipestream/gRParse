@@ -121,6 +121,11 @@ std::string_view classify_doctype(ai::pipestream::parse::v1::InputFormat format,
 // its input.
 std::string render_ort_session_placements(const std::vector<OrtPlacement>& placements);
 
+// grparse_ocr_input_shapes{net="det"|"cls"|"rec"}: how many distinct input
+// shapes each OCR net has run (ocr_input_shapes).  All three series are
+// always present.  Pure in its input.
+std::string render_ocr_input_shapes(const std::vector<OcrInputShape>& shapes);
+
 // One Prometheus text-format exposition (version 0.0.4) of the pipeline
 // counters the stdout metrics line already reports.  Counters and gauges map
 // one to one; the page-latency buckets become a histogram (cumulative

@@ -1,5 +1,6 @@
 #include "grparse_session_ep.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -207,9 +208,14 @@ void set_ort_ep_selection(OrtEpSelection selection) {
     throw std::invalid_argument(
         "TensorRT is not a selection: select CUDA in a build that carries native TensorRT");
   }
-  std::lock_guard<std::mutex> lock(selection_mutex);
-  current_selection = std::move(selection);
-  explicitly_selected = true;
+  {
+    std::lock_guard<std::mutex> lock(selection_mutex);
+    current_selection = std::move(selection);
+    explicitly_selected = true;
+  }
+  // GRPARSE_OCR_SHAPE_BUCKETS=auto follows the provider, so a new selection
+  // (each GRPARSE_ORT_EP=auto attempt makes one) resolves the buckets again.
+  reset_ocr_shape_buckets();
 }
 
 OrtEpSelection ort_ep_selection() {
@@ -372,9 +378,12 @@ void reset_ort_placements() {
   placements.clear();
 }
 
-Ort::Session make_session(Ort::Env& env, const std::filesystem::path& model_path,
-                          std::string_view what, OrtPrecision precision,
-                          int intra_op_threads) {
+namespace {
+
+// make_session and make_fixed_shape_session: the one strict, retrying build.
+Ort::Session build_session(Ort::Env& env, const std::filesystem::path& model_path,
+                           std::string_view what, OrtPrecision precision, int intra_op_threads,
+                           const std::vector<OrtDimOverride>& fixed_dims) {
   const OrtEp ep = ort_ep_selection().ep;
   refuse_ort_session_under_tensorrt(ep, what, model_path);
   // A CPU failure is a broken model file, deterministic, and the caller wants
@@ -400,6 +409,11 @@ Ort::Session make_session(Ort::Env& env, const std::filesystem::path& model_path
         return make_cpu_session(env, model_path, intra_op_threads);
       }
       Ort::SessionOptions options = session_options(precision, intra_op_threads);
+      if (ep == OrtEp::kOpenVino) {
+        for (const OrtDimOverride& dim : fixed_dims) {
+          options.AddFreeDimensionOverrideByName(dim.name.c_str(), dim.value);
+        }
+      }
       throw_if_build_failure_injected();
       return Ort::Session(env, model_path.c_str(), options);
     });
@@ -411,6 +425,46 @@ Ort::Session make_session(Ort::Env& env, const std::filesystem::path& model_path
   }
   record_placement(what, ep, {});
   return session;
+}
+
+}  // namespace
+
+Ort::Session make_session(Ort::Env& env, const std::filesystem::path& model_path,
+                          std::string_view what, OrtPrecision precision,
+                          int intra_op_threads) {
+  return build_session(env, model_path, what, precision, intra_op_threads, {});
+}
+
+Ort::Session make_fixed_shape_session(Ort::Env& env, const std::filesystem::path& model_path,
+                                      std::string_view what,
+                                      const std::vector<OrtDimOverride>& fixed_dims) {
+  return build_session(env, model_path, what, OrtPrecision::kProviderDefault,
+                       kIntraOpProcessDefault, fixed_dims);
+}
+
+std::vector<OrtDimOverride> unit_batch_overrides(Ort::Env& env,
+                                                 const std::filesystem::path& model_path) {
+  // Reading a model's dimension names takes a session; this one is built on
+  // CPU with no graph optimization, records no placement and is dropped here.
+  Ort::SessionOptions options;
+  options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_DISABLE_ALL);
+  options.SetIntraOpNumThreads(1);
+  const Ort::Session probe(env, model_path.c_str(), options);
+  std::vector<OrtDimOverride> overrides;
+  for (size_t input = 0; input < probe.GetInputCount(); ++input) {
+    const auto type_info = probe.GetInputTypeInfo(input);
+    const auto shape_info = type_info.GetTensorTypeAndShapeInfo();
+    const std::vector<int64_t> shape = shape_info.GetShape();
+    if (shape.empty() || shape.front() >= 0) continue;
+    std::vector<const char*> names(shape.size(), nullptr);
+    shape_info.GetSymbolicDimensions(names.data(), names.size());
+    if (names.front() == nullptr || *names.front() == '\0') continue;
+    const std::string name = names.front();
+    const bool listed = std::ranges::any_of(
+        overrides, [&](const OrtDimOverride& seen) { return seen.name == name; });
+    if (!listed) overrides.push_back({.name = name, .value = 1});
+  }
+  return overrides;
 }
 
 Ort::Session* make_rapidocr_session(Ort::Env& env, const std::filesystem::path& model_path,

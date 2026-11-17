@@ -170,6 +170,27 @@ void verify_render_ort_session_placements() {
                    "the live exposition carries the placement gauge");
 }
 
+void verify_render_ocr_input_shapes() {
+  using grparse::OcrNet;
+  const std::vector<grparse::OcrInputShape> shapes{
+      {.net = OcrNet::kDetection, .batch = 1, .height = 1088, .width = 800, .runs = 3},
+      {.net = OcrNet::kDetection, .batch = 1, .height = 2144, .width = 1664, .runs = 40},
+      {.net = OcrNet::kRecognition, .batch = 1, .height = 48, .width = 320, .runs = 900},
+  };
+  const std::string text = grparse::render_ocr_input_shapes(shapes);
+  require_contains(text, "# TYPE grparse_ocr_input_shapes gauge\n", "shape gauge type line");
+  require_contains(text, "grparse_ocr_input_shapes{net=\"det\"} 2\n", "two detector shapes");
+  require_contains(text, "grparse_ocr_input_shapes{net=\"cls\"} 0\n",
+                   "a net that has not run still has its series");
+  require_contains(text, "grparse_ocr_input_shapes{net=\"rec\"} 1\n",
+                   "runs of one shape count once");
+  const std::string live = grparse::render_prometheus_metrics(
+      grparse::PageScheduler::Metrics{}, grparse::OcrEnginePool::Stats{},
+      grparse::PageScheduler::Options{});
+  require_contains(live, "# TYPE grparse_ocr_input_shapes gauge\n",
+                   "the live exposition carries the shape gauge");
+}
+
 void verify_render_ep_fallback_counter() {
   const std::string text = grparse::render_prometheus_metrics(
       grparse::PageScheduler::Metrics{}, grparse::OcrEnginePool::Stats{},
@@ -607,6 +628,7 @@ int main() {
       verify_render_counters_and_gauges,
       verify_render_rotation_repair_and_office_cv_families,
       verify_render_histogram_is_cumulative,
+      verify_render_ocr_input_shapes,
       verify_render_ep_fallback_counter,
       verify_render_ort_session_placements,
       verify_render_doctype_and_collector_families,

@@ -51,9 +51,13 @@ class FigureClassifierEngine::Impl {
     }
     // Same provider decision point as the other models.
     // One crop per call: the free batch dimension is fixed for a backend
-    // that builds for its shapes (native TensorRT).
+    // that builds for its shapes.  Native TensorRT reads the profile; under
+    // ONNX Runtime's OpenVINO provider unit_batch fixes the dimension in the
+    // session, so the network compiles once, inside the build, and not on
+    // the first figure of a document.
     ModelShapePolicy shapes;
     shapes.profiles.push_back(static_profile({{1, 3, kInputSize, kInputSize}}));
+    shapes.unit_batch = true;
     model_ = make_inference_model(ModelSpec{model_path, "figure classes",
                                             OrtPrecision::kProviderDefault, kIntraOpProcessDefault,
                                             std::move(shapes)});
