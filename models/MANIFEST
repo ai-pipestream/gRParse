@@ -12,8 +12,13 @@
 #          figure-upstream always; the published export, patched into `figure`
 #          figure          always; derived, never downloaded (url patch:<source>)
 #          tokenizer       --tokenizer only
-# url    is the upstream download, or patch:<path> for a file the script
-#        derives by running scripts/patch_figure_classifier.py on <path>.
+#          openvino-src    --openvino only; the original files the IR is built from
+#          openvino        --openvino only; OpenVINO IR the openvino flavor loads,
+#                          derived, never downloaded (url convert:<converter>)
+# url    is the upstream download, patch:<path> for a file the script
+#        derives by running scripts/patch_figure_classifier.py on <path>, or
+#        convert:<script> for IR scripts/build-openvino-irs.sh builds with the
+#        named converter under models/openvino/ (pinned toolchain; byte-exact).
 #
 # Every sha256 is the byte-exact file the server was verified with; a
 # download that hashes differently is a different model and is refused.
@@ -38,3 +43,26 @@ figure_classifier.onnx               8f24abc627f0451aae9a4320af887fba4b6c0a82af0
 
 # Chunk tokenizer for the hf/1 counter (opt-in)
 chunk/tokenizer.json                 be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037  466247     tokenizer       Apache-2.0  https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json
+
+# OpenVINO IR for the openvino flavor (native OpenVINO, GPU only; see
+# models/openvino/README.md).  Sources first, then the IR built from them.
+openvino-src/ch_PP-OCRv3_det_infer.tar           8682b39d9b9edb03cb91cf0b0fa8bc2dabf87bf941a88049efc97e62328f1892  3829760    openvino-src  Apache-2.0  https://paddleocr.bj.bcebos.com/PP-OCRv3/chinese/ch_PP-OCRv3_det_infer.tar
+openvino-src/ch_PP-OCRv3_rec_infer.tar           f92b13dc91c92e0f220d095412695c429f7e70907467d2f780f339eeb83bb7b1  11909120   openvino-src  Apache-2.0  https://paddleocr.bj.bcebos.com/PP-OCRv3/chinese/ch_PP-OCRv3_rec_infer.tar
+openvino-src/ch_ppocr_mobile_v2.0_cls_infer.tar  507352585040d035da3b1e6374694ad679a850acb0a36a8d0d47984176357717  2188800    openvino-src  Apache-2.0  https://paddleocr.bj.bcebos.com/dygraph_v2.0/ch/ch_ppocr_mobile_v2.0_cls_infer.tar
+openvino-src/figure_classifier/config.json       dbed0349fb8b12fad95d8ff7f43b062c40971e06d9d957b25e90d91dfd3bd77e  2522       openvino-src  MIT         https://huggingface.co/docling-project/DocumentFigureClassifier-v2.5/resolve/f859dfbff5c9916cd996942d4b0db7fa25808220/config.json
+openvino-src/figure_classifier/model.safetensors 6bf1e44d6bce316dcade6eb9929d8f8d23b6e8d9d29062b3b4011cff87c7c3cd  16378200   openvino-src  MIT         https://huggingface.co/docling-project/DocumentFigureClassifier-v2.5/resolve/f859dfbff5c9916cd996942d4b0db7fa25808220/model.safetensors
+openvino/ch_PP-OCRv3_det_infer.xml               0be786c6149e6e572f67d59b909a64493468483db6c9eb52e63e5a77741c3ad2  306387     openvino      Apache-2.0  convert:convert_paddle_ocr.py
+openvino/ch_PP-OCRv3_det_infer.bin               07e3f7a4f7ea00ed9c5ee25a01ed8735ccae1111f7f1fc10040ff7a9f655ca1e  1147878    openvino      Apache-2.0  convert:convert_paddle_ocr.py
+openvino/ch_PP-OCRv3_rec_infer.xml               3a19f73206ec3d59f1a19956df06e50022825b7df350001b1aac11cc95bf807c  230595     openvino      Apache-2.0  convert:convert_paddle_ocr.py
+openvino/ch_PP-OCRv3_rec_infer.bin               3bd78e548d3d925b4542bbdd1946888e5502e73a82c26736b39a80485fd9435f  5266986    openvino      Apache-2.0  convert:convert_paddle_ocr.py
+openvino/ch_ppocr_mobile_v2.0_cls_infer.xml      ddeeeafd7a8c429a12ea43d4c858c0bd1266e69a560abb818d1c1e467d3e9563  227373     openvino      Apache-2.0  convert:convert_paddle_ocr.py
+openvino/ch_ppocr_mobile_v2.0_cls_infer.bin      28c779a6649e843b792613336045f5c0a294a454576e37e8ff8b309ca235ed36  254476     openvino      Apache-2.0  convert:convert_paddle_ocr.py
+openvino/layout_heron.xml                        fa686ea627f4d09c9ad691492dcf4b69e1e6eeba0d7364849d3ba1c3ea871653  1101183    openvino      Apache-2.0  convert:convert_heron_docling.py
+openvino/layout_heron.bin                        12bf962f443668ed0975c5b3789857454757a55477c64819af1f2d468523bfe0  168506796  openvino      Apache-2.0  convert:convert_heron_docling.py
+openvino/figure_classifier.xml                   a4fa7f4572b04a983394aafa11db41028754cf6a4d3822533e6e07fe0aaedbfc  355503     openvino      MIT         convert:convert_figure_classifier.py
+openvino/figure_classifier.bin                   7e6a49bec9c0f4cc667aea437d371ca4e2d396eda2b6d5f5e61295704a47ab6a  8039724    openvino      MIT         convert:convert_figure_classifier.py
+openvino/slanet_plus_encoder.xml                 143e56e4f8a71d21cfbfb750c735c690e292e551362b2e61cdf0c38e583a3c98  303952     openvino      Apache-2.0  convert:convert_slanet.py
+openvino/slanet_plus_encoder.bin                 876160729926f1c8b6c8777df8464b7b1096d4d513b2ad64909ad3e33f08d0dc  2682884    openvino      Apache-2.0  convert:convert_slanet.py
+openvino/slanet_plus_step.xml                    2054f58c4a5e4a1899563af1e599f645c8199f46baa948953fdaf5e36932db8a  45510      openvino      Apache-2.0  convert:convert_slanet.py
+openvino/slanet_plus_step.bin                    7fbb21dc9b217be4bdb600bc5abbfac8cfaa5b76d563fd0f8a9d1d43387bb5e0  1094814    openvino      Apache-2.0  convert:convert_slanet.py
+openvino/slanet_plus.vocab                       6df9c4ae78ad9f390833b5bf7f7980fb05692ba3dbeb2e1da16df26a45fe42a6  582        openvino      Apache-2.0  convert:convert_slanet.py

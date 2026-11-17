@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Fetch, patch and verify the model files gRParse loads from GRPARSE_MODELS_DIR.
 #
-#   scripts/fetch-models.sh [--dir DIR] [--layout heron|picodet|all] [--tokenizer]
-#   scripts/fetch-models.sh --verify [--dir DIR] [--layout ...] [--tokenizer]
+#   scripts/fetch-models.sh [--dir DIR] [--layout heron|picodet|all] [--tokenizer] [--openvino]
+#   scripts/fetch-models.sh --verify [--dir DIR] [--layout ...] [--tokenizer] [--openvino]
 #
 # models/MANIFEST is the source of truth: every file's sha256, size, group,
 # license and upstream URL. A download is kept only when its sha256 matches;
@@ -11,6 +11,9 @@
 # .part file). The figure classifier is derived, not downloaded: the
 # published export is fetched under its own name and
 # scripts/patch_figure_classifier.py writes the graph the server loads.
+# --openvino adds the openvino flavor's IR: the original files are fetched
+# (group openvino-src) and scripts/build-openvino-irs.sh converts them
+# (group openvino, convert:<script>); every output is checked by sha256.
 #
 # --verify touches nothing. It exits 0 when every present file matches the
 # manifest and every required (ocr) file is present; it exits 1 naming each
@@ -35,12 +38,13 @@ repo_root=$(cd "$script_dir/.." && pwd)
 dir=./models
 layout=heron
 tokenizer=0
+openvino=0
 verify=0
 manifest=${FETCH_MODELS_MANIFEST:-$repo_root/models/MANIFEST}
 patch_script=$script_dir/patch_figure_classifier.py
 
 usage() {
-  echo "Usage: $0 [--dir DIR] [--layout heron|picodet|all] [--tokenizer] [--verify] [--manifest FILE]" >&2
+  echo "Usage: $0 [--dir DIR] [--layout heron|picodet|all] [--tokenizer] [--openvino] [--verify] [--manifest FILE]" >&2
   exit 64
 }
 
@@ -51,6 +55,7 @@ parse_args() {
       --layout) [ $# -ge 2 ] || usage; layout=$2; shift 2 ;;
       --manifest) [ $# -ge 2 ] || usage; manifest=$2; shift 2 ;;
       --tokenizer) tokenizer=1; shift ;;
+      --openvino) openvino=1; shift ;;
       --verify) verify=1; shift ;;
       -h|--help) usage ;;
       *) echo "unknown argument: $1" >&2; usage ;;
@@ -82,6 +87,7 @@ selected() {
     layout-heron) [ "$layout" = heron ] || [ "$layout" = all ] ;;
     layout-picodet) [ "$layout" = picodet ] || [ "$layout" = all ] ;;
     tokenizer) [ "$tokenizer" = 1 ] ;;
+    openvino-src|openvino) [ "$openvino" = 1 ] ;;
     *) echo "unknown manifest group: $1" >&2; exit 64 ;;
   esac
 }
@@ -135,6 +141,15 @@ patch_from() {
   mv "$target.part" "$target"
 }
 
+# Builds every openvino IR once per run (the converters write them together),
+# after the openvino-src sources and the ONNX models they read are in place.
+openvino_built=0
+convert_openvino() {
+  [ "$openvino_built" = 1 ] && return 0
+  openvino_built=1
+  "$script_dir/build-openvino-irs.sh" "$(cd "$dir" && pwd)"
+}
+
 # Per-file outcome for the final table.
 r_path=() r_status=() r_ok=()
 record() { r_path+=("$1"); r_status+=("$2"); r_ok+=("$3"); }
@@ -175,6 +190,10 @@ fetch_one() {
   fi
   echo "  ${m_path[$i]}: ${m_url[$i]}"
   case ${m_url[$i]} in
+    convert:*)
+      status=converted
+      convert_openvino || { record "${m_path[$i]}" "convert failed" NO; fail "${m_path[$i]}" "IR conversion failed"; return 0; }
+      ;;
     patch:*)
       status=patched
       source_sha=$(sha_for_path "${m_url[$i]#patch:}") || exit $?

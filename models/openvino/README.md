@@ -2,7 +2,13 @@
 
 The openvino flavor runs every model on native OpenVINO (`src/inference_model.cpp`), from IR, on the GPU only. It never loads ONNX at runtime. The server reads `<GRPARSE_MODELS_DIR>/openvino/<stem>.xml` (and its `.bin`), where `<stem>` is the ONNX file name the other flavors use. A missing IR, or a model the GPU will not compile, fails boot and names the model.
 
-Each IR is converted from the model's original framework, with FP16 weights. Shapes stay dynamic in the IR; the server reshapes them to its static buckets when it loads them. These files are not published yet (#334 model zoo).
+To get them:
+
+    scripts/fetch-models.sh --dir ./models --openvino
+
+The script downloads the original files (MANIFEST group `openvino-src`) and runs `scripts/build-openvino-irs.sh`, which uses the converters here and the pinned toolchain in `scripts/models-openvino-requirements.txt` (torch 2.8.0 from the CPU index). It then checks every IR against its sha256 in MANIFEST (group `openvino`). The converters are byte-deterministic for that toolchain. The models image carries them with `docker build -f Dockerfile.models --build-arg MODELS_OPENVINO=1`.
+
+Each IR is converted from the model's original framework where OpenVINO can read it. Shapes stay dynamic in the IR; the server reshapes them to its static buckets when it loads them. These files are not published yet (#334 model zoo).
 
 | IR stem | Source | Converter |
 |---|---|---|

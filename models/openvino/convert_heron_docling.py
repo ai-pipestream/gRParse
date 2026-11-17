@@ -20,7 +20,10 @@ import openvino as ov
 
 
 def main():
-    model = ov.convert_model(sys.argv[1])
+    # read_model (the runtime's ONNX frontend), not convert_model: this is
+    # the graph that was checked exact on the B70, and it converts
+    # byte-identically run to run.
+    model = ov.Core().read_model(sys.argv[1])
     ov.save_model(model, sys.argv[2], compress_to_fp16=False)
 
 

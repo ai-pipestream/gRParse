@@ -12,6 +12,9 @@
 # Build args:
 #   MODELS_LAYOUT=heron|picodet|all   which layout detector(s) to include
 #   MODELS_TOKENIZER=0|1              add chunk/tokenizer.json (hf/1 counter)
+#   MODELS_OPENVINO=0|1               add the openvino flavor's IR under
+#                                     /models/openvino (built from the
+#                                     original models, sha256-checked)
 #
 # Multi-arch for free: the model bytes are the same on every architecture,
 # so the fetch stage runs on the build host's own platform and the final
@@ -22,6 +25,7 @@
 
 ARG MODELS_LAYOUT=heron
 ARG MODELS_TOKENIZER=0
+ARG MODELS_OPENVINO=0
 
 FROM --platform=$BUILDPLATFORM dhi.io/python:3.15-debian13-dev@sha256:bf6e3ca018ffb2e5b1450f9a918965cc1bd239a30d4791d84d974fd4297d431d AS fetch
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
@@ -48,6 +52,30 @@ RUN set -eu; \
     && cp models/MANIFEST /models/MANIFEST \
     && mkdir -p /target
 
+# The openvino IR, converted from the original models with the pinned
+# toolchain (torch has no wheel for the fetch stage's Python), and checked
+# file by file against models/MANIFEST by the same fetch script.  With
+# MODELS_OPENVINO=0 the stage only leaves an empty directory.
+FROM --platform=$BUILDPLATFORM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS openvino-ir
+ARG MODELS_OPENVINO
+ARG MODELS_LAYOUT
+WORKDIR /src
+COPY scripts/models-openvino-requirements.txt /tmp/models-openvino-requirements.txt
+COPY models/MANIFEST models/MANIFEST
+COPY models/openvino models/openvino
+COPY scripts/fetch-models.sh scripts/build-openvino-irs.sh scripts/patch_figure_classifier.py scripts/
+COPY --from=fetch /models /models
+RUN set -eu; mkdir -p /models/openvino; \
+    if [ "$MODELS_OPENVINO" = 1 ]; then \
+      apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+        && rm -rf /var/lib/apt/lists/* \
+        && pip install --no-cache-dir -r /tmp/models-openvino-requirements.txt \
+        && pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.8.0 \
+        && FETCH_MODELS_OPENVINO_PYTHON="python3 -I" scripts/fetch-models.sh --dir /models \
+             --layout "$MODELS_LAYOUT" --openvino \
+        && rm -rf /models/openvino-src; \
+    fi
+
 FROM dhi.io/debian-base:trixie-debian13@sha256:5c9d8c2c90a0a4672f44a42a485c99e1b95f4bfad5c8ef49934f34b7ffb6e23b
 LABEL org.opencontainers.image.title="grparse-models" \
       org.opencontainers.image.description="Model files for pipestreamai/grparse under /models; run to copy them into a volume" \
@@ -57,6 +85,7 @@ LABEL org.opencontainers.image.title="grparse-models" \
 # directory's owner when the container starts, which is what lets that user
 # write into it.
 COPY --from=fetch --chown=65532:65532 /models /models
+COPY --from=openvino-ir --chown=65532:65532 /models/openvino /models/openvino
 COPY --from=fetch --chown=65532:65532 /target /target
 COPY --chmod=755 scripts/fetch-models.sh scripts/models-populate.sh /usr/local/bin/
 ENTRYPOINT ["/usr/local/bin/models-populate.sh"]
