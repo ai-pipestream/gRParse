@@ -162,8 +162,11 @@ std::string render_doclang(const ai::pipestream::document::v1::Document& documen
 // document title item's text when present), then one cue per body text item
 // whose source list carries a TrackSource, in document order, as
 // "HH:MM:SS.mmm --> HH:MM:SS.mmm" timings with the cue's identifier line and
-// a "<v Voice>" span when the track names them. Consecutive items with the
-// same identifier and timing merge into one multi-line cue. Cue text escapes
+// a "<v Voice>" span when the track names them. A cue whose end is not
+// strictly after its start (zero-length, negative-length, or both ends
+// rounding to the same millisecond) is lengthened by 1 ms, matching
+// docling-core's WebVTT floor. Consecutive items with the same identifier
+// and timing merge into one multi-line cue. Cue text escapes
 // & < > and collapses blank lines, so it cannot end its cue early. A document
 // with no timed items renders the bare "WEBVTT" header, matching docling.
 std::string render_vtt(const ai::pipestream::document::v1::Document& document);
