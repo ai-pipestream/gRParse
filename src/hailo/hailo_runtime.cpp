@@ -80,24 +80,27 @@ class Model final : public HailoModel {
       output_names_.push_back(output.name());
       shapes_.outputs.push_back({TensorElement::kFloat32, frame_shape(output.shape())});
       output_frame_bytes_.push_back(frame_elements(output.shape()) * sizeof(float));
-      const hailo_format_type_t type = output.format().type;
+      // The frame size is what the device will write: one or two bytes a
+      // value for the chip's own 8 or 16 bit numbers.
+      const size_t elements = frame_elements(output.shape());
+      const size_t width = elements == 0 ? 0 : output.get_frame_size() / elements;
       const std::vector<hailo_quant_info_t> quant = output.get_quant_infos();
-      if ((type != HAILO_FORMAT_TYPE_UINT8 && type != HAILO_FORMAT_TYPE_UINT16) ||
-          (quant.size() != 1 && quant.size() != output.shape().features) ||
-          output.get_frame_size() !=
-              frame_elements(output.shape()) * (type == HAILO_FORMAT_TYPE_UINT8 ? 1 : 2)) {
+      if ((width != 1 && width != 2) || output.get_frame_size() != elements * width ||
+          (quant.size() != 1 && quant.size() != output.shape().features)) {
         throw std::runtime_error(std::format(
             "gRParse {}: output {} of {} is not a plain 8 or 16 bit quantized tensor", spec_.what,
             output.name(), spec_.hef.string()));
       }
-      raw_outputs_.push_back(RawOutput{.wide = type == HAILO_FORMAT_TYPE_UINT16,
+      raw_outputs_.push_back(RawOutput{.wide = width == 2,
                                        .frame_bytes = output.get_frame_size(),
                                        .features = output.shape().features,
                                        .quant = quant});
     }
   }
 
-  ~Model() override { (void)configured_.shutdown(); }
+  ~Model() override {
+    if (configured_ok_) (void)configured_.shutdown();
+  }
 
   std::vector<Tensor> run(std::span<const TensorView> inputs) override {
     if (inputs.size() != input_names_.size()) {
@@ -178,7 +181,8 @@ class Model final : public HailoModel {
   // Puts the HEF on the device: uint8 in (the chip normalizes), quantized
   // out.  Throws std::runtime_error with HailoRT's status.
   void load() {
-    (void)configured_.shutdown();
+    if (configured_ok_) (void)configured_.shutdown();
+    configured_ok_ = false;
     auto infer_model = vdevice_->create_infer_model(spec_.hef.string());
     if (!infer_model) {
       throw std::runtime_error(std::format("gRParse {}: the Hailo device refused {}: {}",
@@ -200,6 +204,7 @@ class Model final : public HailoModel {
                                            status_text(configured.status())));
     }
     configured_ = configured.release();
+    configured_ok_ = true;
   }
 
   // load() for a model the device aborted; a device that will not take it
@@ -303,6 +308,9 @@ class Model final : public HailoModel {
   std::shared_ptr<ModelCounters> counters_;
   std::shared_ptr<hailort::InferModel> infer_model_;
   hailort::ConfiguredInferModel configured_;
+  // configured_ holds a model on the device (it is empty before the first
+  // load and after a load that failed).
+  bool configured_ok_ = false;
   std::vector<std::string> input_names_;
   std::vector<std::string> output_names_;
   HailoModelShapes shapes_;
