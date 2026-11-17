@@ -168,6 +168,25 @@ RUN --mount=type=cache,id=grparse-openvino-ubuntu26-grpc1.84.1-ort1.24.1-cxx23-s
  && cp -a /build/ort-openvino/onnxruntime/capi /out/ort-libs \
  && cp -a /opt/openvino-sdk/runtime/lib/intel64/libopenvino_ir_frontend.so* /out/ort-libs/
 
+# The OpenVINO runtime the image ships is Intel's own 2025.4.1 release
+# archive, not the copy inside the ONNX Runtime wheel: the openvino flavor
+# runs its models on native OpenVINO (src/inference_model.cpp) and no longer
+# loads ONNX Runtime's OpenVINO provider, and the wheel's GPU plugin (an
+# 18 MB build against the archive's 38 MB) needed about five times the VRAM
+# per compiled shape on the Arc Pro B70 (recognizer 8x48x3200: 1374 MiB
+# against 256 MiB), which ran the device out of resources at boot.  The
+# archive's libraries replace the wheel's under the same SONAMEs; it is
+# downloaded here rather than in the deps stage so the seed hash stays put.
+RUN curl -fsSL --retry 5 -o /tmp/openvino.tgz \
+    https://storage.openvinotoolkit.org/repositories/openvino/packages/2025.4.1/linux/openvino_toolkit_ubuntu24_2025.4.1.20426.82bbf0292c5_x86_64.tgz \
+ && echo "21527afce98e57f9febe77bdf2b69ec97c1be4828c3f8803c07f7d580cd28600  /tmp/openvino.tgz" | sha256sum -c - \
+ && mkdir -p /tmp/openvino-runtime \
+ && tar -xzf /tmp/openvino.tgz -C /tmp/openvino-runtime --strip-components=1 \
+      --wildcards '*/runtime/lib/intel64/*' '*/runtime/3rdparty/tbb/lib/*' \
+ && cp -a /tmp/openvino-runtime/runtime/lib/intel64/*.so* /tmp/openvino-runtime/runtime/lib/intel64/cache.json \
+      /tmp/openvino-runtime/runtime/3rdparty/tbb/lib/*.so* /out/ort-libs/ \
+ && rm -rf /tmp/openvino.tgz /tmp/openvino-runtime
+
 # Stage the runtime library closure. The runtime base is assumed minimal
 # (hardened images carry no shell, no package manager, no ldconfig), so every
 # shared library the binaries need ships from this stage, except glibc,
