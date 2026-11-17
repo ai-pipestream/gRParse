@@ -208,7 +208,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        "e20539632f2d99875d8f8b225d5da58b31f98baa54bb47c6328aa98ec473ab9d  intel-igc-core-2_${IGC_VERSION}_amd64.deb" \
        "7f5593cf828503ffb8450967768bde9209e22753bc576296e846b5a751011fa3  intel-igc-opencl-2_${IGC_VERSION}_amd64.deb" \
        | sha256sum -c - \
-    && dpkg -i ./*.deb && cd / && rm -rf /tmp/neo \
+    && dpkg -i ./*.deb && cd /src && rm -rf /tmp/neo \
     && neo_libs=$(dpkg -L intel-opencl-icd ocl-icd-libopencl1 intel-igc-core-2 intel-igc-opencl-2 libigdgmm12 \
                   | grep -E '\.so\.[0-9]+$') \
     && LD_LIBRARY_PATH=/out/ort-libs:/opt/opencv/lib \
