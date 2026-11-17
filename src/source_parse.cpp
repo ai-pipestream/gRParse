@@ -676,6 +676,11 @@ grpc::Status validate_torch_dtype(const pipestream::parse::v1::EngineModelConfig
                         path + ".torch_dtype");
 }
 
+}  // namespace
+
+// Exported from this translation unit. An anonymous namespace would give
+// these internal linkage, and a test that calls the header declarations
+// would fail to link.
 grpc::Status validate_engine_overrides(const pipestream::parse::v1::VlmModelSpec& spec,
                                        const std::string& path, const std::string& surface) {
   for (int i = 0; i < spec.engine_overrides_size(); ++i) {
@@ -726,6 +731,8 @@ grpc::Status validate_nemotron_parse(const pipestream::parse::v1::NemotronParseO
   }
   return grpc::Status::OK;
 }
+
+namespace {
 
 // Custom-config fields mirror Docling: typed VLM option messages plus open
 // ScalarValue maps for dict[str, Any]. Known keys are soft-validated; empty

@@ -920,6 +920,7 @@ if(BUILD_TESTING)
     document-assembly-test
     assembly-floats-test
     convert-options-test
+    validator-link-test
     engine-model-config-wire-test
     docling-parity-golden-test
     document-collectors-test
