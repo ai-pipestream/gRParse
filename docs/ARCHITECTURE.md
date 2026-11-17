@@ -114,8 +114,11 @@ Env knobs:
   an explicit choice, never a silent fallback; `auto` prefers CUDA, then
   OpenVINO, then CPU, logging each fallback. Requesting a provider the linked
   ONNX Runtime does not offer fails with the list that is available.
-- `GRPARSE_OPENVINO_DEVICE=GPU|GPU.<n>|CPU|NPU|AUTO:…` — OpenVINO device
-  string, passed through and validated by OpenVINO itself at startup.
+- `GRPARSE_OPENVINO_DEVICE=GPU|GPU.<n>|NPU|NPU.<n>|CPU` — one OpenVINO
+  device; `AUTO:`/`HETERO:`/`MULTI:`/`BATCH:` lists are refused because they
+  let OpenVINO move work to CPU on its own. Placement is strict: a model the
+  selected provider refuses fails startup; only an in-code pin
+  (`make_pinned_cpu_session`, with a reason) runs on CPU under a GPU EP.
 - existing `GRPARSE_PAGE_WORKERS`, `GRPARSE_MODELS_DIR`
 
 

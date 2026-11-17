@@ -231,7 +231,7 @@ excludes special tokens. It is guidance rather than an acceptance guarantee:
 unsplittable content or an oversized heading trail can still exceed the model
 limit, which the embedding tokenizer checks independently.
 
-The `Health` RPC reports readiness. The server intentionally fails at startup if a required model is absent or the OCR sessions cannot initialize on the configured provider, instead of silently running CPU OCR. The optional layout, table, and figure models are the one exception: a provider that will not build one of those graphs costs that model its acceleration, not the whole server, and the session is rebuilt on CPU with the provider's own error logged. The `GetServiceInfo` RPC reports the service name, build version, and the shared-shell UI advertisement (`UiInfo`: tab title, mount path, tooltip).
+The `Health` RPC reports readiness. The server intentionally fails at startup if a required model is absent or the OCR sessions cannot initialize on the configured provider, instead of silently running CPU OCR. The same holds for the layout, table, and figure models: placement is strict, so a provider that will not build one of those graphs, or fails its first inference, stops startup with the provider's own error and a count in `grparse_ort_ep_fallbacks_total`; no model is ever rebuilt on CPU. On OpenVINO every session also sets ONNX Runtime's `session.disable_cpu_ep_fallback`, so a node the GPU plugin does not claim fails the build instead of running on CPU. The startup log prints one `gRParse model placement:` line per model, and `grparse_ort_sessions{model,requested,actual,device,pin}` exports the same. The `GetServiceInfo` RPC reports the service name, build version, and the shared-shell UI advertisement (`UiInfo`: tab title, mount path, tooltip).
 
 To stream a PDF with the supplied client, start the service and run:
 
@@ -1110,15 +1110,17 @@ from the build stage; its runtime base is plain `ubuntu:26.04` behind the
 Verified on an Arc B70 (Battlemage): detection/recognition/classification,
 layout, and figure classification all compile and run on the GPU plugin.
 One model does not: `slanet_plus.onnx` uses a dynamic-rank `While`/`Loop`
-the OpenVINO plugin rejects on every device. That no longer stops the
-server - the table session is rebuilt on CPU with the plugin's own error
-logged, and everything else stays on OpenVINO - so no setting is needed;
-`GRPARSE_TABLE_STRUCTURE=off` remains available for anyone who would rather
-not pay for it on CPU at all.
+the OpenVINO plugin rejects on every device. Under OpenVINO the table
+session is therefore pinned to CPU in code (`make_pinned_cpu_session`, with
+its reason), not retried and not counted as a refusal; the pin is visible as
+`pin="..."` on its `grparse_ort_sessions` series and in its startup placement
+line. `GRPARSE_TABLE_STRUCTURE=off` remains available for anyone who would
+rather not pay for it on CPU at all.
 
 The image defaults to `GRPARSE_ORT_EP=openvino` with
-`GRPARSE_OPENVINO_DEVICE=GPU`; set the device to `GPU.<n>`, `CPU`, `NPU`, or
-an `AUTO:`/`HETERO:` list. `GRPARSE_OPENVINO_CACHE_DIR` points the plugin at a
+`GRPARSE_OPENVINO_DEVICE=GPU`; set the device to `GPU.<n>`, `NPU`, `NPU.<n>`
+or `CPU`. Device lists (`AUTO:`, `HETERO:`, `MULTI:`, `BATCH:`) are refused at
+startup, because they let OpenVINO move work to its CPU plugin on its own. `GRPARSE_OPENVINO_CACHE_DIR` points the plugin at a
 writable directory to keep compiled blobs in, which skips the recompile on
 every session create (unset by default: the container runs read-only). Give
 it room: the GPU plugin compiles a kernel set per input size, so OCR crops
@@ -1151,11 +1153,11 @@ OpenVINO provider retry up to three attempts with short jittered backoff,
 one attempt at a time under the process-wide compile gate, and the retries
 stay on the GPU. If the build still fails, the openvino flavor fails loudly:
 the OCR session build throws and takes startup down with a clear error, and
-no OCR model ever silently degrades to CPU. The one sanctioned CPU retreat
-is the pre-decided table-structure case (`slanet_plus.onnx`, rejected by the
-plugin on every device), which is logged in full and counted in
-`grparse_ort_ep_fallbacks_total`; `grparse_ort_ep_build_retries_total`
-counts the retried builds. A rising retry line is the earliest signal that
+no model ever silently degrades to CPU. Each refused build is logged in full
+and counted in `grparse_ort_ep_fallbacks_total` (the name predates strict
+placement; every count is a failed build, not a CPU session), and the only
+CPU session under OpenVINO is the table model's declared pin;
+`grparse_ort_ep_build_retries_total` counts the retried builds. A rising retry line is the earliest signal that
 the host is contended.
 
 The fatal class remains fatal: heap corruption or a `longjmp` across the
@@ -1364,9 +1366,11 @@ against the `default` configure preset's `build/`):
 | `eval` | a running stack and an oracle (`vlm-oracle-eval`, `structural-scorecard`) | nightly and release | without `GRPARSE_TARGET`/`VLM_ENDPOINT` |
 | `bench` | timing on fixed fixtures (`grparse-bench`, below) | nightly, enforced; every image build compiles it but never runs it | without `GRPARSE_BENCH_ENFORCE=1` |
 
-`ctest -N -L stack` lists the six compose-stack suites (`stack-e2e`,
+`ctest -N -L stack` lists the seven compose-stack suites (`stack-e2e`,
 `s3-corpus-eval`, `ocr-presets-e2e`, `embedding-rpc`, `compose-preflight`,
-`observability-compose`); each runs exactly as its script runs by hand, the
+`observability-compose`, `gpu-placement`); `gpu-placement` needs an Intel GPU
+host (krick-1), `GRPARSE_STACK_OPENVINO_IMAGE` and `GRPARSE_STACK_MODELS_DIR`,
+and fails rather than skips without a render node; each runs exactly as its script runs by hand, the
 wrapper only decides whether it runs. The `release` preset sets
 `EVAL_REQUIRE=1`, `GRPARSE_BENCH_ENFORCE=1`, `GRPARSE_TEST_REQUIRE_MODELS=1`
 and `GRPARSE_STACK_SUITES=all`, so a skip there is a failure. Every image build

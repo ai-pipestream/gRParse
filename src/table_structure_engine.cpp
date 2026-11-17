@@ -139,8 +139,22 @@ class TableStructureEngine::Impl {
     if (!std::filesystem::exists(model_path)) {
       throw std::runtime_error("Table structure model is missing: " + model_path.string());
     }
-    // Same provider decision point as the OCR and layout sessions.
-    session_ = make_session(env_, model_path, "table structure");
+    // Same provider decision point as the OCR and layout sessions, with one
+    // declared exception: on OpenVINO this model is pinned to CPU, in the
+    // open.  slanet_plus decodes with a Loop whose tensors have dynamic rank,
+    // and the OpenVINO GPU plugin cannot compile it (rank().is_static()); on
+    // an Arc B70 with OpenVINO 2025.4.1 no precision, shape override, static
+    // re-export or optimization level made it build, and the plugin's own
+    // CPU device rejects it through ONNX Runtime too.  The pin skips the
+    // three doomed GPU compiles per pooled session and shows up as
+    // pin="..." in grparse_ort_sessions; remove it when a GPU build works.
+    if (ort_ep_selection().ep == OrtEp::kOpenVino) {
+      session_ = make_pinned_cpu_session(
+          env_, model_path, "table structure",
+          "slanet_plus has a dynamic-rank Loop the OpenVINO GPU plugin cannot compile");
+    } else {
+      session_ = make_session(env_, model_path, "table structure");
+    }
 
     Ort::AllocatorWithDefaultOptions allocator;
     input_name_ = session_.GetInputNameAllocated(0, allocator).get();

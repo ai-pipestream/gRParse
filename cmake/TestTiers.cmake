@@ -45,7 +45,7 @@ set(GRPARSE_TIER_EMULATORS
 # GRPARSE_STACK_SUITES names it or says `all`.
 set(GRPARSE_TIER_STACK
   stack-e2e s3-corpus-eval ocr-presets-e2e embedding-rpc
-  compose-preflight observability-compose)
+  compose-preflight observability-compose gpu-placement)
 foreach(suite IN LISTS GRPARSE_TIER_STACK)
   add_test(NAME ${suite}
     COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test/stack-suite.sh ${suite}

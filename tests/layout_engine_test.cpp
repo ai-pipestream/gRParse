@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <iterator>
@@ -12,6 +13,7 @@
 #include <opencv2/imgcodecs.hpp>
 
 #include "grparse/layout_engine.h"
+#include "grparse_session_ep.h"
 #include "support/check.h"
 
 namespace {
@@ -137,17 +139,29 @@ void verify_rejects_empty_image(const fs::path& model, grparse::LayoutModel sele
   require(threw, "an empty image must be rejected");
 }
 
-// A provider whose first inference fails retreats to CPU and binds the same
-// strategy to the new session.  That rebind must replace the cached names, not
-// append to them: appending reallocated the name storage under the pointers
-// handed to Run, so the fallback engine read freed memory.
-void verify_cpu_fallback_after_failed_probe(const fs::path& model,
+// A first inference that fails at construction fails the engine: there is no
+// CPU retreat.  Under the CPU selection these tests run with, the probe's own
+// error escapes unchanged (under a GPU selection it would be ep_refusal's
+// counted error), and the next construction, with no failure injected, still
+// works and matches the reference.
+void verify_failed_probe_fails_construction(const fs::path& model,
                                             grparse::LayoutModel selection, const cv::Mat& image,
                                             const ExpectedRegion* expected,
                                             size_t expected_count) {
+  const uint64_t refusals_before = grparse::ep_fallback_count();
   grparse::layout_engine_test_inject_probe_failures(1);
-  grparse::LayoutEngine engine(model, selection);
+  std::string message;
+  try {
+    grparse::LayoutEngine engine(model, selection);
+  } catch (const std::exception& error) {
+    message = error.what();
+  }
   grparse::layout_engine_test_inject_probe_failures(0);
+  require(message == "injected layout probe failure",
+          "a failed first inference fails construction: " + message);
+  require(grparse::ep_fallback_count() == refusals_before,
+          "a CPU probe failure is not a provider refusal");
+  grparse::LayoutEngine engine(model, selection);
   verify_matches_reference(engine, engine.detect_regions(image), expected, expected_count);
 }
 
@@ -169,7 +183,7 @@ bool run_model(grparse::LayoutModel selection, const fs::path& models_dir, const
   const auto regions = engine.detect_regions(image);
   verify_matches_reference(engine, regions, expected, expected_count);
   verify_shared_session_serves_repeat_calls(engine, image, regions);
-  verify_cpu_fallback_after_failed_probe(model, selection, image, expected, expected_count);
+  verify_failed_probe_fails_construction(model, selection, image, expected, expected_count);
   return true;
 }
 

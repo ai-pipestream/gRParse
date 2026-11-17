@@ -1,0 +1,6 @@
+grparse_ort_sessions{model="OCR detection",requested="OpenVINO",actual="OpenVINO",device="GPU",pin=""} 2
+grparse_ort_sessions{model="OCR direction",requested="OpenVINO",actual="OpenVINO",device="GPU",pin=""} 2
+grparse_ort_sessions{model="OCR recognition",requested="OpenVINO",actual="OpenVINO",device="GPU",pin=""} 2
+grparse_ort_sessions{model="layout",requested="OpenVINO",actual="OpenVINO",device="GPU",pin=""} 1
+grparse_ort_sessions{model="table structure",requested="OpenVINO",actual="CPU",device="",pin="slanet_plus has a dynamic-rank Loop the OpenVINO GPU plugin cannot compile"} 2
+grparse_ort_sessions{model="figure classes",requested="OpenVINO",actual="OpenVINO",device="GPU",pin=""} 2
