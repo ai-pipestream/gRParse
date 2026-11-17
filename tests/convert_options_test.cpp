@@ -1285,6 +1285,14 @@ void verify_unimplemented_nested_ocr_options() {
   }
 }
 
+void verify_from_formats_may_name_calendar() {
+  parsev1::ConvertDocumentOptions options;
+  options.add_from_formats(parsev1::INPUT_FORMAT_PDF);
+  options.add_from_formats(parsev1::INPUT_FORMAT_CALENDAR);
+  require(grparse::validate_options(options, kSurface).ok(),
+          "from_formats may include INPUT_FORMAT_CALENDAR");
+}
+
 void verify_replace_broken_and_rapidocr_orientation_options() {
   {
     parsev1::ConvertDocumentOptions options;
@@ -1350,6 +1358,7 @@ int main() {
   return grparse_test::run_test_main("convert-options-test", "ok", {
       verify_unsupported_vlm_custom_fields,
       verify_unimplemented_nested_ocr_options,
+      verify_from_formats_may_name_calendar,
       verify_replace_broken_and_rapidocr_orientation_options,
       verify_picture_description_custom_config_is_wired,
       verify_typed_rejections_and_heading_options,

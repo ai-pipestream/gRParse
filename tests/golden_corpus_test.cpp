@@ -100,6 +100,8 @@ std::string joined(const std::vector<std::string>& names) {
 // else; every other collector is a compose-stack service.
 golden::GoldenTier tier_the_route_allows(const golden::CorpusFixture& fixture) {
   if (fixture.header_only()) return golden::GOLDEN_TIER_NONE;
+  // Typed, then refused before any collector runs, so a full golden cannot.
+  if (fixture.format() == parsev1::INPUT_FORMAT_CALENDAR) return golden::GOLDEN_TIER_NONE;
   switch (fixture.collector()) {
     case parsev1::COLLECTOR_CONFLUENCE:
       return golden::GOLDEN_TIER_UNIT;

@@ -62,6 +62,10 @@ enum InputFormat {
   // Routed to the libreoffice collector, whose Calc import reads the
   // workbook, so each sheet arrives as a typed table.
   INPUT_FORMAT_IWORK_NUMBERS = 36;
+  // iCalendar / ICS (Docling InputFormat.CALENDAR; serve tag 37).
+  // No collector reads it. A detected calendar input is NOT_IMPLEMENTED.
+  // Naming it in from_formats does not reject other formats.
+  INPUT_FORMAT_CALENDAR = 37;
 }
 
 // Output format types for converted documents.

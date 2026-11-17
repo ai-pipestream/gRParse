@@ -435,6 +435,47 @@ void verify_unsupported_options_are_rejected(TestServer* server) {
               unspecified_status.error_message());
 }
 
+void verify_a_calendar_input_is_not_implemented(TestServer* server) {
+  auto client = server->unary_stub();
+  auto request = unary_request();
+  request.mutable_request()->mutable_sources(0)->mutable_file()->set_filename("invite.ics");
+  grpc::ClientContext context;
+  pipestream::parse::v1::ConvertSourceResponse response;
+  const grpc::Status status = client->ConvertSource(&context, request, &response);
+  require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              status.error_message().contains("INPUT_FORMAT_CALENDAR"),
+          "a detected calendar input is refused: " + status.error_message());
+
+  // unary_request names image.png but its bytes are the text "memory", so
+  // the sniffed type is text/plain and the detected InputFormat is MD.
+  request = unary_request();
+  request.mutable_request()->mutable_options()->add_from_formats(
+      pipestream::parse::v1::INPUT_FORMAT_IMAGE);
+  request.mutable_request()->mutable_options()->add_from_formats(
+      pipestream::parse::v1::INPUT_FORMAT_CALENDAR);
+  grpc::ClientContext image_only;
+  pipestream::parse::v1::ConvertSourceResponse image_only_response;
+  const grpc::Status image_only_status =
+      client->ConvertSource(&image_only, request, &image_only_response);
+  require(image_only_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              image_only_status.error_message().contains("INPUT_FORMAT_MD"),
+          "CALENDAR beside IMAGE does not allow the detected markdown bytes: " +
+              image_only_status.error_message());
+
+  request = unary_request();
+  request.mutable_request()->mutable_options()->add_from_formats(
+      pipestream::parse::v1::INPUT_FORMAT_MD);
+  request.mutable_request()->mutable_options()->add_from_formats(
+      pipestream::parse::v1::INPUT_FORMAT_CALENDAR);
+  grpc::ClientContext allowed;
+  pipestream::parse::v1::ConvertSourceResponse allowed_response;
+  const grpc::Status allowed_status =
+      client->ConvertSource(&allowed, request, &allowed_response);
+  require(allowed_status.ok(),
+          "from_formats may name CALENDAR beside the detected format: " +
+              allowed_status.error_message());
+}
+
 // The docling-serve parity options: the export and heading tunings are
 // accepted, a STANDARD pipeline is the default path, and the response carries
 // the CV leg's confidence report. Pipelines gRParse has no models for are
@@ -5199,6 +5240,7 @@ int main() {
         verify_data_after_complete_is_rejected(&server);
         verify_unary_uses_scheduler_and_shared_assembly(&server);
         verify_unsupported_options_are_rejected(&server);
+        verify_a_calendar_input_is_not_implemented(&server);
         verify_parity_options_and_confidence(&server);
         verify_remote_services_are_opt_in();
         verify_recognition_options_steer_the_cv_leg(&server);
