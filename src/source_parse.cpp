@@ -162,6 +162,7 @@ bool implemented_option(std::string_view name) {
       "include_page_images",
       "md_page_break_placeholder",
       "md_compact_tables",
+      "formatting_fallback_mode",
       "do_pdf_heading_hierarchy",
       "pdf_heading_hierarchy_options",
       "chunking_preset",
@@ -1231,6 +1232,15 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
   if (!vlm_selection_status.ok()) return vlm_selection_status;
   const grpc::Status custom_config_status = validate_custom_configs(options, surface);
   if (!custom_config_status.ok()) return custom_config_status;
+  if (options.has_formatting_fallback_mode() &&
+      !pipestream::parse::v1::FormattingFallbackMode_IsValid(
+          options.formatting_fallback_mode())) {
+    return option_rejected(
+        "formatting_fallback_mode",
+        pipestream::parse::v1::OPTION_REJECTION_REASON_UNKNOWN_VALUE,
+        std::to_string(static_cast<int>(options.formatting_fallback_mode())),
+        surface + ": formatting_fallback_mode is not a known value");
+  }
   const grpc::Status heading_status = validate_heading_options(options, surface);
   if (!heading_status.ok()) return heading_status;
   if (auto preset = resolve_code_formula_preset(options, surface); !preset.has_value()) {
@@ -2731,6 +2741,7 @@ std::string options_digest(const pipestream::parse::v1::ConvertDocumentOptions& 
   decisive.clear_image_export_mode();
   decisive.clear_md_page_break_placeholder();
   decisive.clear_md_compact_tables();
+  decisive.clear_formatting_fallback_mode();
   decisive.clear_doclang_include_namespace();
   decisive.clear_document_timeout();
   decisive.clear_abort_on_error();

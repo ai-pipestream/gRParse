@@ -68,7 +68,8 @@ class MarkdownRenderer : public MarkdownWalk {
       : MarkdownWalk(document),
         compact_tables_(options.compact_tables),
         image_export_mode_(options.image_export_mode),
-        caption_placement_(options.caption_placement) {
+        caption_placement_(options.caption_placement),
+        html_formatting_fallback_(options.html_formatting_fallback) {
     if (options.page_break_placeholder.has_value()) {
       set_page_break_placeholder(*options.page_break_placeholder);
     }
@@ -88,6 +89,7 @@ class MarkdownRenderer : public MarkdownWalk {
   const bool compact_tables_;
   const MarkdownOptions::ImageExportMode image_export_mode_;
   const MarkdownOptions::CaptionPlacement caption_placement_;
+  const bool html_formatting_fallback_;
 
   // How the table formatter resolves a cell that points at another item.
   CellTextResolver cell_resolver() {
@@ -237,8 +239,14 @@ class MarkdownRenderer : public MarkdownWalk {
     if (formatting != nullptr) {
       if (formatting->bold()) out = "**" + out + "**";
       if (formatting->italic()) out = "*" + out + "*";
-      // Underline, subscript, and superscript have no Markdown rendering.
       if (formatting->strikethrough()) out = "~~" + out + "~~";
+      const auto fallback = [this](const std::string& body, std::string_view tag) {
+        if (!html_formatting_fallback_) return body;
+        return "<" + std::string(tag) + ">" + body + "</" + std::string(tag) + ">";
+      };
+      if (formatting->underline()) out = fallback(out, "u");
+      if (formatting->script() == docv1::SCRIPT_SUB) out = fallback(out, "sub");
+      if (formatting->script() == docv1::SCRIPT_SUPER) out = fallback(out, "sup");
     }
     // An unsafe scheme keeps only the text; a kept destination is encoded so
     // it cannot end the link early (docling-core #920).

@@ -47,6 +47,9 @@ struct MarkdownOptions {
   // the standard order when the position cannot be determined.
   enum class CaptionPlacement { kStandard, kLayout };
   CaptionPlacement caption_placement = CaptionPlacement::kStandard;
+  // Underline, subscript, and superscript. False keeps the text and drops
+  // the marker. True wraps it in <u>, <sub>, or <sup> after HTML escaping.
+  bool html_formatting_fallback = false;
 };
 
 std::string render_markdown(const ai::pipestream::document::v1::Document& document,

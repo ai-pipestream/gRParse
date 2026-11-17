@@ -1285,6 +1285,17 @@ void verify_unimplemented_nested_ocr_options() {
   }
 }
 
+void verify_formatting_fallback_mode_is_a_closed_set() {
+  parsev1::ConvertDocumentOptions none;
+  none.set_formatting_fallback_mode(parsev1::FORMATTING_FALLBACK_MODE_NONE);
+  require(grparse::validate_options(none, kSurface).ok(), "NONE is accepted");
+  parsev1::ConvertDocumentOptions html;
+  html.set_formatting_fallback_mode(parsev1::FORMATTING_FALLBACK_MODE_HTML);
+  require(grparse::validate_options(html, kSurface).ok(), "HTML is accepted");
+  parsev1::ConvertDocumentOptions unset;
+  require(grparse::validate_options(unset, kSurface).ok(), "unset matches the renderer default");
+}
+
 void verify_replace_broken_and_rapidocr_orientation_options() {
   {
     parsev1::ConvertDocumentOptions options;
@@ -1350,6 +1361,7 @@ int main() {
   return grparse_test::run_test_main("convert-options-test", "ok", {
       verify_unsupported_vlm_custom_fields,
       verify_unimplemented_nested_ocr_options,
+      verify_formatting_fallback_mode_is_a_closed_set,
       verify_replace_broken_and_rapidocr_orientation_options,
       verify_picture_description_custom_config_is_wired,
       verify_typed_rejections_and_heading_options,

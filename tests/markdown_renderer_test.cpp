@@ -110,6 +110,28 @@ void verify_hyperlinks_are_filtered_and_encoded() {
                 "destination characters that end a link are percent-encoded");
 }
 
+void verify_formatting_fallback_is_off_unless_html_is_requested() {
+  docv1::Document plain = base_document("format.md");
+  add_paragraph(&plain, "#/body", "x<y");
+  plain.mutable_texts(0)->mutable_text()->mutable_base()->mutable_formatting()->set_underline(true);
+  require_equal(render_markdown(plain), std::string("x&lt;y"),
+                "underline has no marker unless HTML fallback is on");
+
+  grparse::MarkdownOptions html;
+  html.html_formatting_fallback = true;
+  docv1::Document document = base_document("format.md");
+  add_paragraph(&document, "#/body", "x<y");
+  auto* formatting = document.mutable_texts(0)->mutable_text()->mutable_base()->mutable_formatting();
+  formatting->set_underline(true);
+  formatting->set_script(docv1::SCRIPT_SUB);
+  require_equal(render_markdown(document, html), std::string("<sub><u>x&lt;y</u></sub>"),
+                "HTML fallback wraps the escaped text in u and sub");
+  formatting->set_underline(false);
+  formatting->set_script(docv1::SCRIPT_SUPER);
+  require_equal(render_markdown(document, html), std::string("<sup>x&lt;y</sup>"),
+                "superscript uses sup");
+}
+
 void verify_image_destinations_are_encoded() {
   docv1::Document document = base_document("image.md");
   add_picture(&document, "#/body", "data:image/png;base64,x\"><script>1</script>)<b>(");
@@ -130,6 +152,7 @@ int main() {
       verify_picture_footnotes_follow_the_image,
       verify_code_footnotes_follow_the_code,
       verify_hyperlinks_are_filtered_and_encoded,
+      verify_formatting_fallback_is_off_unless_html_is_requested,
       verify_image_destinations_are_encoded,
   });
 }
