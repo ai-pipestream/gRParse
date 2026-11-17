@@ -15,6 +15,8 @@
 #include <opencv2/imgproc.hpp>
 
 #include "grparse_session_ep.h"
+#include "hailo/hailo_models.h"
+#include "hailo/hailo_vision.h"
 
 namespace grparse {
 namespace {
@@ -195,6 +197,101 @@ void append_class_nms(std::vector<Candidate>& picked, std::vector<Candidate> can
   }
 }
 
+// The anchor-free detector's decode, shared by every backend that runs the
+// network: per-level class scores and DFL box distributions in, page regions
+// out.
+std::vector<LayoutRegion> decode_anchor_free(
+    const std::array<const float*, kStrides.size()>& level_scores,
+    const std::array<const float*, kStrides.size()>& level_distributions, const cv::Mat& image) {
+  // Decode each pyramid level: class scores [1, N, C] and the matching DFL
+  // box distributions [1, N, 4 * kRegBins].
+  const auto& names = layout_labels(LayoutModel::kPicoDet);
+  const int class_count = static_cast<int>(names.size());
+  std::vector<Candidate> candidates;
+  for (size_t level = 0; level < kStrides.size(); ++level) {
+    const float* scores = level_scores[level];
+    const float* distributions = level_distributions[level];
+    const int stride = kStrides[level];
+    const int cells_high = (kGridHeight + stride - 1) / stride;
+    const int cells_wide = (kGridWidth + stride - 1) / stride;
+    const int cells = cells_high * cells_wide;
+
+    for (int cell = 0; cell < cells; ++cell) {
+      const float* cell_scores = scores + static_cast<ptrdiff_t>(cell) * class_count;
+      // The reference thresholds every class independently, so a cell can
+      // contribute one candidate per class that clears the bar.
+      float best_score = cell_scores[0];
+      for (int label = 1; label < class_count; ++label) {
+        best_score = std::max(best_score, cell_scores[label]);
+      }
+      if (best_score <= kConfidenceThreshold) continue;
+
+      // DFL: softmax over kRegBins bins per side, expectation * stride.
+      const float* cell_bins = distributions + static_cast<ptrdiff_t>(cell) * 4 * kRegBins;
+      std::array<float, 4> distances{};
+      for (int side = 0; side < 4; ++side) {
+        const float* bins = cell_bins + static_cast<ptrdiff_t>(side) * kRegBins;
+        float highest = bins[0];
+        for (int bin = 1; bin < kRegBins; ++bin) highest = std::max(highest, bins[bin]);
+        float total = 0.0F;
+        float expectation = 0.0F;
+        for (int bin = 0; bin < kRegBins; ++bin) {
+          const float weight = std::exp(bins[bin] - highest);
+          total += weight;
+          expectation += weight * static_cast<float>(bin);
+        }
+        distances[side] = expectation / total * static_cast<float>(stride);
+      }
+
+      const float center_x =
+          (static_cast<float>(cell % cells_wide) + 0.5F) * static_cast<float>(stride);
+      const float center_y =
+          (static_cast<float>(cell / cells_wide) + 0.5F) * static_cast<float>(stride);
+      Candidate candidate;
+      // Clip in model space before rescaling, matching the reference.
+      candidate.left = std::clamp(center_x - distances[0], 0.0F, static_cast<float>(kGridWidth));
+      candidate.top = std::clamp(center_y - distances[1], 0.0F, static_cast<float>(kGridHeight));
+      candidate.right = std::clamp(center_x + distances[2], 0.0F, static_cast<float>(kGridWidth));
+      candidate.bottom =
+          std::clamp(center_y + distances[3], 0.0F, static_cast<float>(kGridHeight));
+      for (int label = 0; label < class_count; ++label) {
+        if (cell_scores[label] > kConfidenceThreshold) {
+          candidate.score = cell_scores[label];
+          candidate.label = label;
+          candidates.push_back(candidate);
+        }
+      }
+    }
+  }
+
+  // Class-wise NMS, then rescale from model input space to image pixels.
+  std::vector<Candidate> picked;
+  for (int label = 0; label < class_count; ++label) {
+    std::vector<Candidate> of_class;
+    for (const auto& candidate : candidates) {
+      if (candidate.label == label) of_class.push_back(candidate);
+    }
+    if (!of_class.empty()) append_class_nms(picked, std::move(of_class));
+  }
+
+  const float scale_x = static_cast<float>(kGridWidth) / static_cast<float>(image.cols);
+  const float scale_y = static_cast<float>(kGridHeight) / static_cast<float>(image.rows);
+  std::vector<LayoutRegion> regions;
+  regions.reserve(picked.size());
+  for (const auto& candidate : picked) {
+    LayoutRegion region;
+    region.label = names[static_cast<size_t>(candidate.label)];
+    region.confidence = candidate.score;
+    region.left = static_cast<int>(std::lround(candidate.left / scale_x));
+    region.top = static_cast<int>(std::lround(candidate.top / scale_y));
+    region.right = static_cast<int>(std::lround(candidate.right / scale_x));
+    region.bottom = static_cast<int>(std::lround(candidate.bottom / scale_y));
+    regions.push_back(std::move(region));
+  }
+  sort_regions(regions);
+  return regions;
+}
+
 class AnchorFreeStrategy final : public LayoutStrategy {
  public:
   void bind(Ort::Session& session) override {
@@ -240,94 +337,13 @@ class AnchorFreeStrategy final : public LayoutStrategy {
     auto outputs = session.Run(Ort::RunOptions{nullptr}, input_names, &input, 1,
                                output_pointers_.data(), output_pointers_.size());
 
-    // Decode each pyramid level: the first half of the outputs are class
-    // scores [1, N, C], the second half the matching DFL box distributions
-    // [1, N, 4 * kRegBins].
-    const auto& names = layout_labels(LayoutModel::kPicoDet);
-    const int class_count = static_cast<int>(names.size());
-    std::vector<Candidate> candidates;
+    std::array<const float*, kStrides.size()> level_scores{};
+    std::array<const float*, kStrides.size()> level_distributions{};
     for (size_t level = 0; level < kStrides.size(); ++level) {
-      const float* scores = outputs[level].GetTensorData<float>();
-      const float* distributions = outputs[level + kStrides.size()].GetTensorData<float>();
-      const int stride = kStrides[level];
-      const int cells_high = (kGridHeight + stride - 1) / stride;
-      const int cells_wide = (kGridWidth + stride - 1) / stride;
-      const int cells = cells_high * cells_wide;
-
-      for (int cell = 0; cell < cells; ++cell) {
-        const float* cell_scores = scores + static_cast<ptrdiff_t>(cell) * class_count;
-        // The reference thresholds every class independently, so a cell can
-        // contribute one candidate per class that clears the bar.
-        float best_score = cell_scores[0];
-        for (int label = 1; label < class_count; ++label) {
-          best_score = std::max(best_score, cell_scores[label]);
-        }
-        if (best_score <= kConfidenceThreshold) continue;
-
-        // DFL: softmax over kRegBins bins per side, expectation * stride.
-        const float* cell_bins = distributions + static_cast<ptrdiff_t>(cell) * 4 * kRegBins;
-        std::array<float, 4> distances{};
-        for (int side = 0; side < 4; ++side) {
-          const float* bins = cell_bins + static_cast<ptrdiff_t>(side) * kRegBins;
-          float highest = bins[0];
-          for (int bin = 1; bin < kRegBins; ++bin) highest = std::max(highest, bins[bin]);
-          float total = 0.0F;
-          float expectation = 0.0F;
-          for (int bin = 0; bin < kRegBins; ++bin) {
-            const float weight = std::exp(bins[bin] - highest);
-            total += weight;
-            expectation += weight * static_cast<float>(bin);
-          }
-          distances[side] = expectation / total * static_cast<float>(stride);
-        }
-
-        const float center_x =
-            (static_cast<float>(cell % cells_wide) + 0.5F) * static_cast<float>(stride);
-        const float center_y =
-            (static_cast<float>(cell / cells_wide) + 0.5F) * static_cast<float>(stride);
-        Candidate candidate;
-        // Clip in model space before rescaling, matching the reference.
-        candidate.left = std::clamp(center_x - distances[0], 0.0F, static_cast<float>(kGridWidth));
-        candidate.top = std::clamp(center_y - distances[1], 0.0F, static_cast<float>(kGridHeight));
-        candidate.right = std::clamp(center_x + distances[2], 0.0F, static_cast<float>(kGridWidth));
-        candidate.bottom =
-            std::clamp(center_y + distances[3], 0.0F, static_cast<float>(kGridHeight));
-        for (int label = 0; label < class_count; ++label) {
-          if (cell_scores[label] > kConfidenceThreshold) {
-            candidate.score = cell_scores[label];
-            candidate.label = label;
-            candidates.push_back(candidate);
-          }
-        }
-      }
+      level_scores[level] = outputs[level].GetTensorData<float>();
+      level_distributions[level] = outputs[level + kStrides.size()].GetTensorData<float>();
     }
-
-    // Class-wise NMS, then rescale from model input space to image pixels.
-    std::vector<Candidate> picked;
-    for (int label = 0; label < class_count; ++label) {
-      std::vector<Candidate> of_class;
-      for (const auto& candidate : candidates) {
-        if (candidate.label == label) of_class.push_back(candidate);
-      }
-      if (!of_class.empty()) append_class_nms(picked, std::move(of_class));
-    }
-
-    const float scale_x = static_cast<float>(kGridWidth) / static_cast<float>(image.cols);
-    const float scale_y = static_cast<float>(kGridHeight) / static_cast<float>(image.rows);
-    std::vector<LayoutRegion> regions;
-    regions.reserve(picked.size());
-    for (const auto& candidate : picked) {
-      LayoutRegion region;
-      region.label = names[static_cast<size_t>(candidate.label)];
-      region.confidence = candidate.score;
-      region.left = static_cast<int>(std::lround(candidate.left / scale_x));
-      region.top = static_cast<int>(std::lround(candidate.top / scale_y));
-      region.right = static_cast<int>(std::lround(candidate.right / scale_x));
-      region.bottom = static_cast<int>(std::lround(candidate.bottom / scale_y));
-      regions.push_back(std::move(region));
-    }
-    sort_regions(regions);
-    return regions;
+    return decode_anchor_free(level_scores, level_distributions, image);
   }
 
  private:
@@ -374,7 +390,23 @@ class LayoutEngine::Impl {
     const OrtPrecision precision = model == LayoutModel::kHeron
                                        ? OrtPrecision::kFloat32
                                        : OrtPrecision::kProviderDefault;
-    session_ = make_session(env_, model_path, "layout", precision, kIntraOpAllCores);
+    if (ort_ep_selection().ep == OrtEp::kHailo) {
+      if (model == LayoutModel::kPicoDet) {
+        // The anchor-free detector runs on the device from its HEF
+        // (model_path is that HEF); loading it ran one frame already, so
+        // there is no session and no probe.
+        device_ = std::make_unique<hailo::AnchorFreeLayout>(
+            hailo::shared_model(hailo::ModelId::kLayoutAnchorFree), kGridWidth, kGridHeight,
+            kStrides, static_cast<int>(layout_labels(model).size()), kRegBins);
+        return;
+      }
+      // The query detector does not compile for the device; it says so.
+      session_ = make_pinned_cpu_session(env_, model_path, "layout",
+                                         hailo::cpu_pin_reason(hailo::ModelId::kLayoutQuery),
+                                         kIntraOpAllCores);
+    } else {
+      session_ = make_session(env_, model_path, "layout", precision, kIntraOpAllCores);
+    }
     strategy_->bind(session_);
     // Some provider failures only surface at the first inference (a runtime
     // kernel compile, not session creation), which would otherwise leave a
@@ -407,7 +439,13 @@ class LayoutEngine::Impl {
     while (inside > peak && !peak_concurrency_.compare_exchange_weak(peak, inside)) {
     }
     try {
-      auto regions = strategy_->detect(session_, image);
+      std::vector<LayoutRegion> regions;
+      if (device_) {
+        const hailo::LayoutLevels levels = device_->run(image);
+        regions = decode_anchor_free(levels.scores, levels.distributions, image);
+      } else {
+        regions = strategy_->detect(session_, image);
+      }
       in_flight_.fetch_sub(1);
       detections_.fetch_add(1);
       return regions;
@@ -423,6 +461,8 @@ class LayoutEngine::Impl {
   Ort::Env env_;
   Ort::Session session_{nullptr};
   std::unique_ptr<LayoutStrategy> strategy_;
+  // Set instead of session_ when the detector runs on the Hailo device.
+  std::unique_ptr<hailo::AnchorFreeLayout> device_;
   std::atomic<uint64_t> in_flight_{0};
   std::atomic<uint64_t> peak_concurrency_{0};
   std::atomic<uint64_t> detections_{0};

@@ -109,8 +109,10 @@ full-device execution.
 
 Env knobs:
 
-- `GRPARSE_ORT_EP=cuda|openvino|cpu|auto` — `cuda` is the default and fails
-  loud; `openvino` targets Intel devices through the OpenVINO build; `cpu` is
+- `GRPARSE_ORT_EP=cuda|openvino|hailo|cpu|auto` — `cuda` is the default and fails
+  loud; `openvino` targets Intel devices through the OpenVINO build; `hailo`
+  runs HEFs on a Hailo-10H through HailoRT (`src/hailo/`, README "Hailo-10H")
+  and is never chosen by `auto`; `cpu` is
   an explicit choice, never a silent fallback; `auto` prefers CUDA, then
   OpenVINO, then CPU, logging each fallback. Requesting a provider the linked
   ONNX Runtime does not offer fails with the list that is available.

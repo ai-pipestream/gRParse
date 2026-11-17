@@ -8,6 +8,7 @@
 #include <string>
 
 #include "grparse_session_ep.h"
+#include "hailo/hailo_ocr.h"
 
 namespace grparse {
 namespace {
@@ -62,7 +63,19 @@ const OcrDetectOptions& ocr_detect_options() {
   return options;
 }
 
+OcrEngine::~OcrEngine() = default;
+
 OcrEngine::OcrEngine(const std::filesystem::path& model_directory, int gpu_index) {
+  if (ort_ep_selection().ep == OrtEp::kHailo) {
+    // The device reads HEFs, not the ONNX files; only the dictionary is
+    // shared with the CPU path.  The HEFs load once per process, so every
+    // pooled engine after the first costs nothing.
+    ocr_detect_options();
+    std::vector<std::string> keys = hailo::load_ocr_keys(model_directory / "ppocr_keys_v1.txt");
+    const hailo::OcrModels models = hailo::shared_ocr_models(keys.size());
+    hailo_ = std::make_unique<hailo::HailoOcr>(models, std::move(keys));
+    return;
+  }
   const auto det = model_directory / "ch_PP-OCRv3_det_infer.onnx";
   const auto cls = model_directory / "ch_ppocr_mobile_v2.0_cls_infer.onnx";
   const auto rec = model_directory / "ch_PP-OCRv3_rec_infer.onnx";
@@ -95,13 +108,17 @@ OcrEngine::Page OcrEngine::extract_page(const cv::Mat& image) {
     throw std::runtime_error("RapidOCR could not decode the in-memory image");
   }
   const OcrDetectOptions& options = ocr_detect_options();
-  const auto result =
-      engine_->detect(image, options.padding, options.max_side_len, options.box_score_thresh,
-                      options.box_thresh, options.un_clip_ratio, options.do_angle, options.most_angle);
+  const std::vector<TextBlock> blocks =
+      hailo_ ? hailo_->detect(image, options)
+             : engine_
+                   ->detect(image, options.padding, options.max_side_len, options.box_score_thresh,
+                            options.box_thresh, options.un_clip_ratio, options.do_angle,
+                            options.most_angle)
+                   .textBlocks;
   Page page{image.cols, image.rows, {}};
   page.source = OcrPage::Source::kOcr;
-  page.lines.reserve(result.textBlocks.size());
-  for (const auto& block : result.textBlocks) {
+  page.lines.reserve(blocks.size());
+  for (const auto& block : blocks) {
     float confidence = block.boxScore;
     if (!block.charScores.empty()) {
       confidence = 0.0F;
