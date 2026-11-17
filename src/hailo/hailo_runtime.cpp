@@ -5,6 +5,7 @@
 #include <chrono>
 #include <format>
 #include <mutex>
+#include <print>
 #include <stdexcept>
 #include <utility>
 
@@ -16,6 +17,8 @@ namespace {
 // Long enough for the largest batch through the slowest network on a busy
 // device; a call that takes longer is a device failure, not a slow page.
 constexpr std::chrono::milliseconds kInferTimeout{60000};
+// One call, and one more after the model is loaded again.
+constexpr int kDeviceAttempts = 2;
 
 std::string status_text(hailo_status status) {
   const char* message = hailo_get_status_message(status);
@@ -125,22 +128,27 @@ class Model final : public HailoModel {
     // One caller at a time, one device batch in flight at a time: the
     // device runs a single batch at once whatever is queued.
     const std::lock_guard<std::mutex> lock(run_mutex_);
-    if (broken_) {
-      // The last call failed on the device and left this model aborted
-      // there.  Load it again, on the device; this call then runs or fails
-      // on its own.
-      load();
-      broken_ = false;
-      counters_->reloads.fetch_add(1);
-    }
     const int64_t batch = std::max<int64_t>(1, spec_.batch_size);
-    try {
-      for (int64_t first = 0; first < frames; first += batch) {
-        run_batch(inputs, outputs, first, std::min(batch, frames - first));
+    // The chip sometimes aborts a model in the middle of a batch
+    // (HAILO_STREAM_ABORT, HailoRT 5.1.1) and every later call on it then
+    // fails.  The model is loaded onto the device again and the call runs
+    // once more, on the device; a second failure is the call's failure.
+    for (int attempt = 1;; ++attempt) {
+      try {
+        if (broken_) {
+          reload();
+          broken_ = false;
+        }
+        for (int64_t first = 0; first < frames; first += batch) {
+          run_batch(inputs, outputs, first, std::min(batch, frames - first));
+        }
+        break;
+      } catch (const InferenceDeviceError& error) {
+        broken_ = true;
+        if (attempt >= kDeviceAttempts) throw;
+        std::println(stderr, "gRParse {}: {}; loading the model onto the device again", spec_.what,
+                     error.what());
       }
-    } catch (const InferenceDeviceError&) {
-      broken_ = true;
-      throw;
     }
     counters_->frames.fetch_add(static_cast<uint64_t>(frames));
     return outputs;
@@ -192,6 +200,18 @@ class Model final : public HailoModel {
                                            status_text(configured.status())));
     }
     configured_ = configured.release();
+  }
+
+  // load() for a model the device aborted; a device that will not take it
+  // back is a device failure of the call that needed it.
+  void reload() {
+    counters_->reloads.fetch_add(1);
+    try {
+      load();
+    } catch (const std::runtime_error& error) {
+      throw InferenceDeviceError(std::format("Hailo device failed {}: reload: {}", spec_.what,
+                                             error.what()));
+    }
   }
 
   // Frames [first, first + count) as one device batch: one job, one wait.

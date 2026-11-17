@@ -72,9 +72,10 @@ struct HailoModelShapes {
 
 // run(): each input is [frames, height, width, channels] uint8 with every
 // input carrying the same frame count; each output is [frames, ...] float32.
-// Safe to call from several threads; calls take turns.  A device failure
-// throws InferenceDeviceError and nothing else answers the call; the next
-// call first loads the model onto the device again.
+// Safe to call from several threads; calls take turns.  When the device
+// aborts the model, the model is loaded onto the device again and the call
+// runs once more there; a second failure throws InferenceDeviceError, and
+// nothing but the device ever answers the call.
 class HailoModel : public InferenceModel {
  public:
   virtual const HailoModelShapes& shapes() const = 0;
@@ -86,8 +87,8 @@ class HailoModel : public InferenceModel {
 std::unique_ptr<HailoModel> make_hailo_model(const HailoModelSpec& spec);
 
 // What each model has done on the device since start, in load order:
-// frames the device completed, and how often the model was loaded again
-// after a device failure aborted it (0 on a healthy device).
+// frames of calls that completed, and how often the model was loaded again
+// after the device aborted it (0 on a healthy device).
 struct ModelFrames {
   std::string model;
   uint64_t frames = 0;

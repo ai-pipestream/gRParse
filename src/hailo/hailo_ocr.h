@@ -33,8 +33,6 @@ struct OcrShapes {
   int cls_width = 192;    // direction net input width, height 48
   int rec_width = 320;    // recognizer input width, height 48
   int rec_classes = 0;    // recognizer output classes per time step
-  // The recognizer HEF ends before its softmax and answers logits.
-  bool rec_logits = false;
 };
 
 // Not owning: the models outlive every pipeline that uses them.

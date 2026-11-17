@@ -55,17 +55,8 @@ struct StepScore {
   float score = 0.0F;
 };
 
-// The best class of each of `steps` rows of `classes` scores.  With `logits`
-// the rows are unnormalized (a recognizer HEF that ends before its softmax)
-// and a step's score is the softmax probability of its best class, so a
-// character's confidence means the same either way; a blank step's score is
-// not computed (0), since no character carries it.
-std::vector<StepScore> argmax_steps(const float* scores, size_t steps, size_t classes,
-                                    bool logits = false);
-
-// True when the rows are not probabilities: a value outside [0, 1] or a row
-// that does not sum to about 1.
-bool rows_are_logits(const float* scores, size_t steps, size_t classes);
+// The best class of each of `steps` rows of `classes` scores.
+std::vector<StepScore> argmax_steps(const float* scores, size_t steps, size_t classes);
 
 // Joins per-window steps into the line's `total_steps` steps.  Between two
 // neighbours the seam is the step, inside their shared span and nearest its

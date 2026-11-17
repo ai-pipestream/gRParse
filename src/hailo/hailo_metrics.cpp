@@ -15,7 +15,7 @@ std::string render_hailo_metrics(const std::vector<ModelFrames>& frames,
       out << "grparse_hailo_frames_total{model=\"" << model.model << "\"} " << model.frames << '\n';
     }
     out << "# HELP grparse_hailo_model_reloads_total Times a model was loaded onto the device "
-           "again after a device failure aborted it; the failed request still failed.\n"
+           "again after the device aborted it; the call that hit it was run again on the device.\n"
            "# TYPE grparse_hailo_model_reloads_total counter\n";
     for (const ModelFrames& model : frames) {
       out << "grparse_hailo_model_reloads_total{model=\"" << model.model << "\"} " << model.reloads

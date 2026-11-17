@@ -1,7 +1,6 @@
 #include "hailo_ocr_plan.h"
 
 #include <algorithm>
-#include <cmath>
 #include <cstdlib>
 #include <stdexcept>
 
@@ -54,38 +53,14 @@ RecPlan plan_rec_windows(int line_width, int window_width, int overlap_steps) {
   return plan;
 }
 
-std::vector<StepScore> argmax_steps(const float* scores, size_t steps, size_t classes,
-                                    bool logits) {
+std::vector<StepScore> argmax_steps(const float* scores, size_t steps, size_t classes) {
   std::vector<StepScore> best(steps);
   for (size_t step = 0; step < steps; ++step) {
     const float* row = scores + step * classes;
     const float* top = std::max_element(row, row + classes);
-    const int index = static_cast<int>(top - row);
-    float score = *top;
-    if (logits) {
-      score = 0.0F;
-      if (index != 0) {
-        float total = 0.0F;
-        for (size_t i = 0; i < classes; ++i) total += std::exp(row[i] - *top);
-        score = 1.0F / total;
-      }
-    }
-    best[step] = StepScore{index, score};
+    best[step] = StepScore{static_cast<int>(top - row), *top};
   }
   return best;
-}
-
-bool rows_are_logits(const float* scores, size_t steps, size_t classes) {
-  for (size_t step = 0; step < steps; ++step) {
-    const float* row = scores + step * classes;
-    float total = 0.0F;
-    for (size_t i = 0; i < classes; ++i) {
-      if (row[i] < -0.01F || row[i] > 1.01F) return true;
-      total += row[i];
-    }
-    if (std::abs(total - 1.0F) > 0.25F) return true;
-  }
-  return false;
 }
 
 namespace {

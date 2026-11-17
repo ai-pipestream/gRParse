@@ -6,7 +6,6 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
-#include <vector>
 
 #include "grparse_session_ep.h"
 #include "hailo_ocr.h"
@@ -73,14 +72,6 @@ OcrModels load_ocr_models(size_t dictionary_size) {
         std::to_string(dictionary_size) + " and the input width gives " +
         std::to_string(shapes.rec_width / kRecStepPixels) + " steps");
   }
-  // The recognizer HEF may end at its softmax or before it (models/hailo/
-  // parse.py); one frame of padding grey shows which.
-  const std::vector<uint8_t> grey(static_cast<size_t>(kRecHeight) * shapes.rec_width * 3, 127);
-  const TensorView probe{TensorElement::kUInt8, grey.data(), {1, kRecHeight, shapes.rec_width, 3}};
-  const std::vector<Tensor> answer = recognition.run(std::span(&probe, 1));
-  shapes.rec_logits = rows_are_logits(answer.at(0).floats(),
-                                      static_cast<size_t>(shapes.rec_width / kRecStepPixels),
-                                      static_cast<size_t>(shapes.rec_classes));
   return OcrModels{&detection, &direction, &recognition, shapes};
 }
 

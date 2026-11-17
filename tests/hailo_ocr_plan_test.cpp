@@ -2,7 +2,6 @@
 // recognizer windows, the seam between two windows, CTC collapse and the
 // page direction vote.  No device and no model: numbers in, numbers out.
 
-#include <cmath>
 #include <string>
 #include <vector>
 
@@ -174,24 +173,6 @@ void verify_argmax_steps() {
   require(steps[0].score == 0.7F && steps[1].score == 0.9F, "with its score");
 }
 
-void verify_logit_rows_score_as_probabilities() {
-  // Two steps of three classes: the first decides class 2, the second blank.
-  const std::vector<float> logits{0.0F, 0.0F, 2.0F, 5.0F, 1.0F, 1.0F};
-  require(grparse::hailo::rows_are_logits(logits.data(), 2, 3), "values past 1 are logits");
-  const std::vector<float> probabilities{0.1F, 0.7F, 0.2F, 0.9F, 0.05F, 0.05F};
-  require(!grparse::hailo::rows_are_logits(probabilities.data(), 2, 3),
-          "rows in [0, 1] that sum to 1 are probabilities");
-  const std::vector<float> unnormalized{0.1F, 0.1F, 0.1F, 0.9F, 0.05F, 0.05F};
-  require(grparse::hailo::rows_are_logits(unnormalized.data(), 2, 3),
-          "a row that does not sum to 1 is not a probability row");
-  const auto steps = grparse::hailo::argmax_steps(logits.data(), 2, 3, true);
-  require(steps[0].index == 2 && steps[1].index == 0, "the best class is the largest logit");
-  const float expected = 1.0F / (1.0F + 2.0F * std::exp(-2.0F));
-  require(std::abs(steps[0].score - expected) < 1e-5F,
-          "a character's score is the softmax probability of its class");
-  require(steps[1].score == 0.0F, "a blank step carries no score");
-}
-
 void verify_the_page_vote_counts_only_sure_crops() {
   const std::vector<AngleScore> unsure{{1, 0.6F}, {1, 0.7F}, {0, 0.95F}};
   require_equal(grparse::hailo::vote_page_angle(unsure), 0, "unsure flips do not turn the page");
@@ -219,7 +200,6 @@ int main() {
       verify_stitch_checks_its_input,
       verify_ctc_collapse,
       verify_argmax_steps,
-      verify_logit_rows_score_as_probabilities,
       verify_the_page_vote_counts_only_sure_crops,
   });
 }

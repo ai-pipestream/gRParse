@@ -1,6 +1,6 @@
-"""Pin the dynamic RapidOCR inputs to the fixed shapes a Hailo HEF needs.
+"""Pin the dynamic model inputs to the fixed shapes a Hailo HEF needs.
 
-Usage: python fix_shapes.py MODELS_DIR OUT_DIR
+Usage: python fix_shapes.py MODELS_DIR OUT_DIR [VARIANT ...]
 
 Each variant is the upstream ONNX (verified by models/MANIFEST hash) with its
 input overwritten to a static shape and simplified by onnxsim, so the Hailo
@@ -19,13 +19,16 @@ VARIANTS = {
     "rec_48x320": ("ch_PP-OCRv3_rec_infer.onnx", [1, 3, 48, 320]),
     "rec_48x640": ("ch_PP-OCRv3_rec_infer.onnx", [1, 3, 48, 640]),
     "cls_48x192": ("ch_ppocr_mobile_v2.0_cls_infer.onnx", [1, 3, 48, 192]),
+    "layout_800x608": ("layout_publaynet.onnx", [1, 3, 800, 608]),
+    "figure_224": ("figure_classifier.onnx", [1, 3, 224, 224]),
 }
 
 
 def main() -> None:
     src, out = Path(sys.argv[1]), Path(sys.argv[2])
     out.mkdir(parents=True, exist_ok=True)
-    for name, (file, shape) in VARIANTS.items():
+    for name in sys.argv[3:] or list(VARIANTS):
+        file, shape = VARIANTS[name]
         model = onnx.load(src / file)
         inp = model.graph.input[0].name
         simplified, ok = simplify(model, overwrite_input_shapes={inp: shape})

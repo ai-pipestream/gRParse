@@ -189,8 +189,7 @@ std::vector<TextLine> HailoOcr::read_lines(const std::vector<cv::Mat>& crops) {
     }
     for (size_t i = 0; i < count; ++i) {
       lines[pending[first + i].line].windows[pending[first + i].window] =
-          argmax_steps(outputs[0].floats() + i * steps * classes, steps, classes,
-                       models_.shapes.rec_logits);
+          argmax_steps(outputs[0].floats() + i * steps * classes, steps, classes);
     }
   }
   std::vector<TextLine> result(crops.size());
