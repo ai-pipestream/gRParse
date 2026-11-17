@@ -2468,6 +2468,14 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     // collector merge alike), so no path can return a document without it.
     *base.mutable_parse() = parse_identity(request.options());
 
+    if (const auto detected = input_format_for(base.origin().mimetype(), requested_name);
+        detected == pipestream::parse::v1::INPUT_FORMAT_CALENDAR) {
+      return option_rejected(
+          "sources[0]", pipestream::parse::v1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED,
+          "INPUT_FORMAT_CALENDAR",
+          surface + ": INPUT_FORMAT_CALENDAR has no collector");
+    }
+
     if (!request.options().from_formats().empty()) {
       const auto detected =
           input_format_for(base.origin().mimetype(), requested_name);
