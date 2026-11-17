@@ -85,6 +85,7 @@ jobs:
       - name: Provide the pinned model files
         run: |
           if [ "${{ steps.models-cache.outputs.cache-hit }}" != true ]; then
+            echo "::warning::models-all-tokenizer cache miss; building Dockerfile.models, the only step that installs scripts/models-requirements.txt"
             docker build --progress=plain -f Dockerfile.models \
               --build-arg MODELS_LAYOUT=all --build-arg MODELS_TOKENIZER=1 -t grparse-san-models .
             id=$(docker create grparse-san-models)
