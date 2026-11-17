@@ -40,7 +40,8 @@ namespace grparse {
 
 std::unique_ptr<InferenceModel> make_native_openvino_model(const std::filesystem::path& ir,
                                                            std::string what,
-                                                           ModelShapePolicy shapes);
+                                                           ModelShapePolicy shapes,
+                                                           OrtPrecision precision);
 
 namespace {
 
@@ -258,7 +259,8 @@ class Host {
           ModelShapePolicy shapes;
           const auto rungs = reader.pod<uint32_t>();
           for (uint32_t i = 0; i < rungs; ++i) shapes.batch_ladder.push_back(reader.pod<int64_t>());
-          auto model = make_native_openvino_model(ir, what, shapes);
+          const auto precision = static_cast<OrtPrecision>(reader.pod<uint32_t>());
+          auto model = make_native_openvino_model(ir, what, shapes, precision);
           reply.pod(Outcome::kOk);
           std::lock_guard<std::mutex> lock(mutex_);
           const auto id = static_cast<uint32_t>(models_.size());
@@ -530,8 +532,10 @@ class HostClient {
 
 class RemoteModel final : public InferenceModel {
  public:
-  RemoteModel(std::filesystem::path ir, std::string what, ModelShapePolicy shapes)
-      : ir_(std::move(ir)), what_(std::move(what)), shapes_(std::move(shapes)) {
+  RemoteModel(std::filesystem::path ir, std::string what, ModelShapePolicy shapes,
+              OrtPrecision precision)
+      : ir_(std::move(ir)), what_(std::move(what)), shapes_(std::move(shapes)),
+        precision_(precision) {
     std::lock_guard<std::mutex> lock(open_mutex_);
     open();  // boot fails here, naming the model, if the host cannot load it
   }
@@ -589,6 +593,7 @@ class RemoteModel final : public InferenceModel {
     body.text(what_);
     body.pod(static_cast<uint32_t>(shapes_.batch_ladder.size()));
     for (const int64_t rung : shapes_.batch_ladder) body.pod(rung);
+    body.pod(static_cast<uint32_t>(precision_));
     Reply reply = HostClient::instance().call(Kind::kOpen, body, -1);
     if (reply.outcome != Outcome::kOk) throw_reply(reply, what_);
     Reader reader(reply.payload);
@@ -635,6 +640,7 @@ class RemoteModel final : public InferenceModel {
   std::filesystem::path ir_;
   std::string what_;
   ModelShapePolicy shapes_;
+  OrtPrecision precision_ = OrtPrecision::kProviderDefault;
   std::mutex open_mutex_;
   std::atomic<uint64_t> generation_{0};
   std::atomic<uint32_t> id_{0};
@@ -658,8 +664,9 @@ bool openvino_process_isolation() {
 
 std::unique_ptr<InferenceModel> make_remote_openvino_model(const std::filesystem::path& ir,
                                                            std::string what,
-                                                           ModelShapePolicy shapes) {
-  return std::make_unique<RemoteModel>(ir, std::move(what), std::move(shapes));
+                                                           ModelShapePolicy shapes,
+                                                           OrtPrecision precision) {
+  return std::make_unique<RemoteModel>(ir, std::move(what), std::move(shapes), precision);
 }
 
 uint64_t openvino_host_restart_count() { return host_restarts.load(); }

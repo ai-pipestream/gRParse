@@ -297,8 +297,10 @@ struct CompiledShape {
 
 class NativeOpenVinoModel final : public InferenceModel {
  public:
-  NativeOpenVinoModel(std::filesystem::path ir, std::string what, ModelShapePolicy shapes)
-      : ir_(std::move(ir)), what_(std::move(what)), shapes_(std::move(shapes)) {
+  NativeOpenVinoModel(std::filesystem::path ir, std::string what, ModelShapePolicy shapes,
+                      OrtPrecision precision)
+      : ir_(std::move(ir)), what_(std::move(what)), shapes_(std::move(shapes)),
+        precision_(precision) {
     if (!std::filesystem::is_regular_file(ir_)) {
       throw std::runtime_error("gRParse " + what_ + ": OpenVINO IR " + ir_.string() +
                                " is missing (the openvino flavor loads IR, not ONNX)");
@@ -494,7 +496,8 @@ class NativeOpenVinoModel final : public InferenceModel {
     ov_compiled_model_t* compiled = nullptr;
     const ov_status_e status = ov_core_compile_model(
         core.get(), model.get(), core.device().c_str(), 4, &compiled,
-        ov_property_key_hint_inference_precision, core.precision().c_str(),
+        ov_property_key_hint_inference_precision,
+        precision_ == OrtPrecision::kFloat32 ? "f32" : core.precision().c_str(),
         ov_property_key_hint_performance_mode, "LATENCY");
     if (status != OK) {
       // No CPU anywhere: a model the device will not compile fails the
@@ -538,6 +541,7 @@ class NativeOpenVinoModel final : public InferenceModel {
   std::filesystem::path ir_;
   std::string what_;
   ModelShapePolicy shapes_;
+  OrtPrecision precision_ = OrtPrecision::kProviderDefault;
   std::vector<std::string> input_names_;
   std::vector<std::string> output_names_;
   bool warmed_ = false;
@@ -578,23 +582,25 @@ const int64_t* Tensor::int64s() const {
 #ifdef GRPARSE_NATIVE_OPENVINO
 std::unique_ptr<InferenceModel> make_remote_openvino_model(const std::filesystem::path& ir,
                                                            std::string what,
-                                                           ModelShapePolicy shapes);
+                                                           ModelShapePolicy shapes,
+                                                           OrtPrecision precision);
 
 std::unique_ptr<InferenceModel> make_native_openvino_model(const std::filesystem::path& ir,
                                                            std::string what,
-                                                           ModelShapePolicy shapes) {
-  return std::make_unique<NativeOpenVinoModel>(ir, std::move(what), std::move(shapes));
+                                                           ModelShapePolicy shapes,
+                                                           OrtPrecision precision) {
+  return std::make_unique<NativeOpenVinoModel>(ir, std::move(what), std::move(shapes), precision);
 }
 
 namespace {
 // In the server: a proxy to the inference host (or the model itself when
 // isolation is off).  In the host, make_native_openvino_model runs.
 std::unique_ptr<InferenceModel> openvino_model(const std::filesystem::path& onnx, std::string what,
-                                               ModelShapePolicy shapes) {
+                                               ModelShapePolicy shapes, OrtPrecision precision) {
   if (openvino_process_isolation()) {
-    return make_remote_openvino_model(ir_path(onnx), std::move(what), std::move(shapes));
+    return make_remote_openvino_model(ir_path(onnx), std::move(what), std::move(shapes), precision);
   }
-  return make_native_openvino_model(ir_path(onnx), std::move(what), std::move(shapes));
+  return make_native_openvino_model(ir_path(onnx), std::move(what), std::move(shapes), precision);
 }
 }  // namespace
 #endif
@@ -602,7 +608,7 @@ std::unique_ptr<InferenceModel> openvino_model(const std::filesystem::path& onnx
 std::unique_ptr<InferenceModel> make_inference_model(const ModelSpec& spec) {
 #ifdef GRPARSE_NATIVE_OPENVINO
   if (ort_ep_selection().ep == OrtEp::kOpenVino) {
-    return openvino_model(spec.path, std::string(spec.what), spec.shapes);
+    return openvino_model(spec.path, std::string(spec.what), spec.shapes, spec.precision);
   }
 #endif
   static Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "grparse-models");
@@ -615,7 +621,7 @@ std::unique_ptr<InferenceModel> make_rapidocr_model(Ort::Env& env, const std::fi
   const std::string what(ocr_net_name(net));
 #ifdef GRPARSE_NATIVE_OPENVINO
   if (ort_ep_selection().ep == OrtEp::kOpenVino) {
-    return openvino_model(path, what, ocr_net_shapes(net));
+    return openvino_model(path, what, ocr_net_shapes(net), OrtPrecision::kProviderDefault);
   }
 #endif
   return std::make_unique<OrtModel>(make_rapidocr_session(env, path, what, num_thread));

@@ -149,13 +149,16 @@ class TableStructureEngine::Impl {
       // fixed-shape step per token, driven here (models/openvino/
       // convert_slanet.py); no dynamic loop reaches the GPU.
       const auto directory = model_path.parent_path();
+      // Single precision: at half precision the decoder's 501-step feedback
+      // drifts and the table tokens fall apart (OpenVINO CPU device check,
+      // 2026-11-16: 18k Markdown words off against 1.3k at FP32).
       encoder_ = make_inference_model(ModelSpec{directory / "slanet_plus_encoder.onnx",
                                                 "table structure encoder",
-                                                OrtPrecision::kProviderDefault,
+                                                OrtPrecision::kFloat32,
                                                 kIntraOpProcessDefault, {}});
       step_ = make_inference_model(ModelSpec{directory / "slanet_plus_step.onnx",
                                              "table structure decoder",
-                                             OrtPrecision::kProviderDefault,
+                                             OrtPrecision::kFloat32,
                                              kIntraOpProcessDefault, {}});
       const auto vocab_path = directory / "openvino" / "slanet_plus.vocab";
       std::ifstream vocab_file(vocab_path);
