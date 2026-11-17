@@ -200,13 +200,6 @@ class DoclangRenderer : RendererBase {
     bool runs = false;
   };
 
-  // Inline runs carry their own boundary whitespace. Inserting a space here
-  // turns "hello " + "world" into "hello  world".
-  static void append_run(std::string& text, const std::string& run) {
-    if (run.empty()) return;
-    text.append(run);
-  }
-
   // Folds one member of an inline flow into `content`: a text run joins the
   // text (its own children folding after it), a group's members fold in
   // turn, and anything else (a list, a table, a picture) stays a block.
@@ -224,7 +217,8 @@ class DoclangRenderer : RendererBase {
       const auto* base = text_base(run);
       if (!code && base == nullptr) return;
       if (excluded_layer(code ? run.code().content_layer() : base->content_layer())) return;
-      append_run(content.text, code ? run.code().text() : base->text());
+      // Runs carry their own boundary whitespace, so they concatenate.
+      content.text.append(code ? run.code().text() : base->text());
       for (const auto& child : text_children(run)) append_inline(child.ref(), content);
       return;
     }
@@ -245,9 +239,10 @@ class DoclangRenderer : RendererBase {
   // A host's own text, then the runs of its first child when that child is
   // an inline group (a text item with no text of its own over its runs,
   // DocLang's mixed content): the runs are part of the host's text, never
-  // items of their own.
+  // items of their own. The own text and the runs are two pieces of one
+  // flow, so one space separates them, as docling joins them.
   HostContent host_content(const docv1::BaseTextItem& item, const std::string& own) {
-    HostContent content{own, {}, false};
+    HostContent content{std::string(), {}, false};
     const auto& children = text_children(item);
     for (int index = 0; index < children.size(); ++index) {
       const std::string& raw = children[index].ref();
@@ -259,6 +254,9 @@ class DoclangRenderer : RendererBase {
         continue;
       }
       content.blocks.push_back(raw);
+    }
+    if (!own.empty()) {
+      content.text = content.text.empty() ? own : own + " " + content.text;
     }
     return content;
   }
