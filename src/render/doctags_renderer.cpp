@@ -86,11 +86,19 @@ bool doctags_chart_class(const std::string& class_name) {
 
 class DocTagsRenderer : RendererBase {
  public:
-  explicit DocTagsRenderer(const docv1::Document& document) : RendererBase(document) {}
+  explicit DocTagsRenderer(const docv1::Document& document) : RendererBase(document) {
+    for (const auto& table : document_.tables()) {
+      for (const auto& ref : table.footnotes()) footnote_refs_.insert(ref.ref());
+    }
+    for (const auto& picture : document_.pictures()) {
+      for (const auto& ref : picture.footnotes()) footnote_refs_.insert(ref.ref());
+    }
+  }
 
   std::string render() {
     std::vector<std::string> parts;
     for (const auto& child : document_.body().children()) {
+      if (footnote_refs_.contains(child.ref())) continue;
       if (!consume(child.ref())) continue;
       std::string part = render_ref(child.ref());
       if (!part.empty()) parts.push_back(std::move(part));
@@ -211,6 +219,7 @@ class DocTagsRenderer : RendererBase {
     if (group.label() == docv1::GROUP_LABEL_INLINE) {
       std::string body;
       for (const auto& child : group.children()) {
+        if (footnote_refs_.contains(child.ref())) continue;
         if (!consume(child.ref())) continue;
         body.append(render_ref(child.ref()));
       }
@@ -220,6 +229,7 @@ class DocTagsRenderer : RendererBase {
     // like top-level parts.
     std::string body;
     for (const auto& child : group.children()) {
+      if (footnote_refs_.contains(child.ref())) continue;
       if (!consume(child.ref())) continue;
       const std::string part = render_ref(child.ref());
       if (part.empty()) continue;
@@ -236,6 +246,7 @@ class DocTagsRenderer : RendererBase {
   std::string render_list(const docv1::GroupItem& group) {
     std::vector<std::string> items;
     for (const auto& child : group.children()) {
+      if (footnote_refs_.contains(child.ref())) continue;
       const ArenaRef ref = parse_ref(child.ref());
       if (!consume(child.ref())) continue;
       std::string body;
@@ -283,6 +294,26 @@ class DocTagsRenderer : RendererBase {
       text.append(trimmed(caption));
     }
     return text.empty() ? text : wrap("caption", text);
+  }
+
+  // One <footnote> per note a float owns, location tokens then trimmed text,
+  // concatenated with nothing between them. Each note is consumed so the
+  // body walk does not emit it again.
+  std::string footnote_block(
+      const google::protobuf::RepeatedPtrField<docv1::RefItem>& footnotes) {
+    std::string out;
+    for (const auto& ref : footnotes) {
+      const ArenaRef resolved = parse_ref(ref.ref());
+      if (resolved.kind != ArenaRef::kText || resolved.index >= document_.texts_size()) {
+        continue;
+      }
+      if (!consume(ref.ref())) continue;
+      const auto* base = text_base(document_.texts(resolved.index));
+      if (base == nullptr || excluded_layer(base->content_layer())) continue;
+      const std::string text = location_tokens(base->prov()) + trimmed(base->text());
+      if (!text.empty()) out.append(wrap("footnote", text));
+    }
+    return out;
   }
 
   // OTSL cell tokens over the mirrored grid, docling's export_to_otsl
@@ -351,7 +382,7 @@ class DocTagsRenderer : RendererBase {
     if (excluded_layer(table.content_layer())) return std::string();
     const std::string body =
         location_tokens(table.prov()) + otsl_cells(table.data()) +
-        caption_block(table.captions());
+        caption_block(table.captions()) + footnote_block(table.footnotes());
     return body.empty() ? body : wrap("otsl", body);
   }
 
@@ -392,6 +423,7 @@ class DocTagsRenderer : RendererBase {
     }
 
     body.append(caption_block(picture.captions()));
+    body.append(footnote_block(picture.footnotes()));
     if (body.empty()) return body;
     return wrap(doctags_chart_class(predicted_class) ? "chart" : "picture", body);
   }
@@ -416,6 +448,8 @@ class DocTagsRenderer : RendererBase {
     body.append(caption_block(item.captions()));
     return wrap("key_value_region", body);
   }
+
+  std::set<std::string> footnote_refs_;
 };
 
 }  // namespace
