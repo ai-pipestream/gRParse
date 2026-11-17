@@ -380,6 +380,19 @@ Pears & 5 \\
 \end{document}
 """
 
+ICS = """BEGIN:VCALENDAR\r
+VERSION:2.0\r
+PRODID:-//gRParse//golden//EN\r
+BEGIN:VEVENT\r
+UID:golden-1@grparse\r
+DTSTAMP:20261117T000000Z\r
+DTSTART:20261117T150000Z\r
+DTEND:20261117T160000Z\r
+SUMMARY:Golden corpus\r
+END:VEVENT\r
+END:VCALENDAR\r
+"""
+
 VTT = """WEBVTT
 
 00:00:00.000 --> 00:00:01.500
@@ -544,6 +557,7 @@ def main(argv: list[str]) -> int:
     write("sample.adoc", ASCIIDOC)
     write("sample.tex", LATEX)
     write("captions.vtt", VTT)
+    write("invite.ics", ICS)
     write("table.csv", CSV)
     write("instance.xbrl", XBRL)
     write("sample.dclg", DOCLANG)

@@ -191,9 +191,12 @@ void verify_response_formats_cover_docling_and_reach_the_collector() {
       {parsev1::RESPONSE_FORMAT_NEMOTRON_PARSE_V2, "nemotron_parse_v2"},
       {parsev1::RESPONSE_FORMAT_NEMOTRON_PARSE_V3_5, "nemotron_parse_v3_5"},
       {parsev1::RESPONSE_FORMAT_MINERU2, "mineru2"},
+      {parsev1::RESPONSE_FORMAT_SURYA_HTML, "surya_html"},
+      {parsev1::RESPONSE_FORMAT_LIGHTONOCR_MARKDOWN, "lightonocr_markdown"},
+      {parsev1::RESPONSE_FORMAT_UNLIMITED_OCR2, "unlimited_ocr2"},
   };
-  require(parsev1::ResponseFormat_descriptor()->value_count() == 14,
-          "ResponseFormat is UNSPECIFIED plus docling's 13 members");
+  require(parsev1::ResponseFormat_descriptor()->value_count() == 17,
+          "ResponseFormat is UNSPECIFIED plus docling's 16 members");
   for (const auto& [format, name] : docling) {
     require(grparse::response_format_name(format) == std::string_view(name) &&
                 grparse::response_format_from_name(name) == format,
@@ -207,8 +210,19 @@ void verify_response_formats_cover_docling_and_reach_the_collector() {
   // response_format_raw beside the typed value.
   for (const auto& [format, name] : docling) {
     const auto mapped = grparse::vlm_collector_response_format(format);
-    if (format == parsev1::RESPONSE_FORMAT_MINERU2) {
-      require(!mapped.has_value(), "mineru2 has no collector format (its two-pass protocol)");
+    if (!mapped.has_value()) {
+      require(format == parsev1::RESPONSE_FORMAT_MINERU2 ||
+                  format == parsev1::RESPONSE_FORMAT_SURYA_HTML ||
+                  format == parsev1::RESPONSE_FORMAT_LIGHTONOCR_MARKDOWN ||
+                  format == parsev1::RESPONSE_FORMAT_UNLIMITED_OCR2,
+              std::string(name) + " is refused until the collector maps it");
+      parsev1::ConvertDocumentOptions refused;
+      refused.mutable_vlm_pipeline_model_api()->set_url("http://vlm.example:8080/v1");
+      refused.mutable_vlm_pipeline_model_api()->set_response_format(format);
+      const grpc::Status status = grparse::validate_options(refused, "parse");
+      require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+                  status.error_message().contains(name),
+              std::string(name) + " is refused by field: " + status.error_message());
       continue;
     }
     vlmv1::ResponseFormat expected = vlmv1::RESPONSE_FORMAT_UNSPECIFIED;

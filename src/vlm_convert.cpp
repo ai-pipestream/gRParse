@@ -143,6 +143,9 @@ constexpr ResponseFormatName kResponseFormatNames[] = {
     {parsev1::RESPONSE_FORMAT_NEMOTRON_PARSE_V2, "nemotron_parse_v2"},
     {parsev1::RESPONSE_FORMAT_NEMOTRON_PARSE_V3_5, "nemotron_parse_v3_5"},
     {parsev1::RESPONSE_FORMAT_MINERU2, "mineru2"},
+    {parsev1::RESPONSE_FORMAT_SURYA_HTML, "surya_html"},
+    {parsev1::RESPONSE_FORMAT_LIGHTONOCR_MARKDOWN, "lightonocr_markdown"},
+    {parsev1::RESPONSE_FORMAT_UNLIMITED_OCR2, "unlimited_ocr2"},
 };
 
 }  // namespace

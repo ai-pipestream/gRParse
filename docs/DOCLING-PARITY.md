@@ -147,3 +147,11 @@ Deviations kept: HTML footnotes carry no `dir="rtl"` (this HTML export marks dir
 - `trust_remote_code = true` on inline VLM engines stays `NOT_IMPLEMENTED`.
 - `extract_form_fields` unset still folds widgets (gRParse default); docling unset is false.
 - Remaining nested OCR fields are represented on the wire but rejected until implemented; they must not silently change the requested configuration.
+
+## docling-core schema 1.11 / docling-slim 2.150.0 (serve 16713d5)
+
+### New typed fields
+
+| Upstream change | gRParse | Notes |
+|---|---|---|
+| `ResponseFormat` `surya_html` = 14, `lightonocr_markdown` = 15, `unlimited_ocr2` = 16 | Same tags on `ResponseFormat`. Names round-trip. | grpc-vlm-convert's vendored enum stops at `mineru2` = 13, so a VLM leg naming 14-16 is `NOT_IMPLEMENTED` by field. Unknown raw names stay `UNKNOWN_VALUE`. |

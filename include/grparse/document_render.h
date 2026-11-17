@@ -101,7 +101,8 @@ std::string render_gdocs_json(const ai::pipestream::document::v1::Document& docu
 // line per body item, label-named tags ("<title>", "<section_header_level_N>",
 // "<text>"...), "<unordered_list>"/"<ordered_list>" with "<list_item>"
 // children, tables as "<otsl>" OTSL cell token streams
-// (fcel/ecel/ched/rhed/srow/lcel/ucel/xcel/nl) with the caption nested inside,
+// (fcel/ecel/ched/rhed/srow/lcel/ucel/xcel/nl) with the caption and each
+// "<footnote>" nested inside,
 // code with a "<_Language_>" token, and pictures carrying classification,
 // SMILES, chart-table, and caption payloads. "<loc_N>" location tokens are
 // emitted only for items whose provenance names a page with a known size;
@@ -165,8 +166,11 @@ std::string render_doclang(const ai::pipestream::document::v1::Document& documen
 // document title item's text when present), then one cue per body text item
 // whose source list carries a TrackSource, in document order, as
 // "HH:MM:SS.mmm --> HH:MM:SS.mmm" timings with the cue's identifier line and
-// a "<v Voice>" span when the track names them. Consecutive items with the
-// same identifier and timing merge into one multi-line cue. Cue text escapes
+// a "<v Voice>" span when the track names them. A cue whose end is not
+// strictly after its start (zero-length, negative-length, or both ends
+// rounding to the same millisecond) is lengthened by 1 ms, matching
+// docling-core's WebVTT floor. Consecutive items with the same identifier
+// and timing merge into one multi-line cue. Cue text escapes
 // & < > and collapses blank lines, so it cannot end its cue early. A document
 // with no timed items renders the bare "WEBVTT" header, matching docling.
 std::string render_vtt(const ai::pipestream::document::v1::Document& document);
@@ -189,14 +193,18 @@ std::string render_yaml(const ai::pipestream::document::v1::Document& document);
 
 // Renders docling-core's LaTeXDocSerializer output with its defaults: the
 // article document class and the reference's package list as the preamble,
-// the first title item hoisted into a "\title{...}" there with "\maketitle"
-// opening the body, section headers as \section/\subsection/\subsubsection
+// the first "\title{...}" hoisted into the preamble (brace depth, so a
+// nested group stays inside the title; a later title is removed) with
+// "\maketitle" opening the body, section headers as
+// \section/\subsection/\subsubsection
 // (levels outside [1, 3] clamp, where the reference raises), list groups as
 // itemize/enumerate with a two-space indent per nesting level, code blocks as
 // verbatim and inline code as \texttt, formulas as "$...$"/"$$...$$", tables
 // as a "|l|...|l|" tabular with per-row \hline inside a table[h] float that
 // carries the caption, and pictures as figure[h] floats holding the "% image"
-// placeholder. A rich table cell (its ref naming a group) renders its blocks
+// placeholder. A float's footnotes render inside it as footnotesize
+// paragraphs, one per note, and are not repeated in the body. Inline code
+// escapes "#" as "\#". A rich table cell (its ref naming a group) renders its blocks
 // folded onto the cell line: a list keeps its itemize/enumerate environment,
 // a nested table renders as the bare tabular, and a heading degrades to its
 // text. Item text is LaTeX-escaped; code, formula, and URL arguments

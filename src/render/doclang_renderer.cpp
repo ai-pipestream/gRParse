@@ -200,9 +200,10 @@ class DoclangRenderer : RendererBase {
     bool runs = false;
   };
 
+  // Inline runs carry their own boundary whitespace. Inserting a space here
+  // turns "hello " + "world" into "hello  world".
   static void append_run(std::string& text, const std::string& run) {
     if (run.empty()) return;
-    if (!text.empty()) text.push_back(' ');
     text.append(run);
   }
 

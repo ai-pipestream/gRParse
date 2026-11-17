@@ -62,6 +62,10 @@ enum InputFormat {
   // Routed to the libreoffice collector, whose Calc import reads the
   // workbook, so each sheet arrives as a typed table.
   INPUT_FORMAT_IWORK_NUMBERS = 36;
+  // iCalendar / ICS (Docling InputFormat.CALENDAR; serve tag 37).
+  // No collector reads it. A detected calendar input is NOT_IMPLEMENTED.
+  // Naming it in from_formats does not reject other formats.
+  INPUT_FORMAT_CALENDAR = 37;
 }
 
 // Output format types for converted documents.
@@ -329,6 +333,14 @@ enum ResponseFormat {
   RESPONSE_FORMAT_NEMOTRON_PARSE_V3_5 = 12;
   // "mineru2"
   RESPONSE_FORMAT_MINERU2 = 13;
+  // "surya_html" (docling-core schema 1.11 / slim 2.150). The VLM convert
+  // collector does not carry this member yet, so a VLM leg that names it is
+  // refused NOT_IMPLEMENTED rather than sent.
+  RESPONSE_FORMAT_SURYA_HTML = 14;
+  // "lightonocr_markdown"
+  RESPONSE_FORMAT_LIGHTONOCR_MARKDOWN = 15;
+  // "unlimited_ocr2"
+  RESPONSE_FORMAT_UNLIMITED_OCR2 = 16;
 }
 
 // Inference framework for local VLM models.
@@ -887,11 +899,52 @@ message BaseVlmEngineOptions {
   optional bool trust_remote_code = 2;
 }
 
+// Closed dtypes named on a VLM engine. Any other string stays in the
+// published torch_dtype string and this enum stays unset.
+enum TorchDtype {
+  TORCH_DTYPE_UNSPECIFIED = 0;
+  TORCH_DTYPE_FLOAT32 = 1;
+  TORCH_DTYPE_FLOAT16 = 2;
+  TORCH_DTYPE_BFLOAT16 = 3;
+}
+
 message EngineModelConfig {
   optional string repo_id = 1;
   optional string revision = 2;
+  // Raw dtype string. Same tag and type as serve's torch_dtype_raw.
+  // The published name stays torch_dtype: buf breaking rejects a rename.
+  // A known value also sets torch_dtype_enum. An unknown value stays here
+  // and the enum stays unset.
   optional string torch_dtype = 3;
   map<string, ScalarValue> extra_config = 4;
+  // Serve's torch_dtype enum, same tag and wire type. The proto name is
+  // torch_dtype_enum because torch_dtype is the published string.
+  optional TorchDtype torch_dtype_enum = 5;
+}
+
+// Closed pass counts for NemotronParseOptions.passes.
+enum NemotronParsePasses {
+  NEMOTRON_PARSE_PASSES_UNSPECIFIED = 0;
+  NEMOTRON_PARSE_PASSES_SINGLE = 1;
+  NEMOTRON_PARSE_PASSES_DOUBLE = 2;
+  NEMOTRON_PARSE_PASSES_TRIPLE = 3;
+}
+
+// Closed region modes for NemotronParseOptions.triple_regions.
+enum NemotronParseTripleRegions {
+  NEMOTRON_PARSE_TRIPLE_REGIONS_UNSPECIFIED = 0;
+  NEMOTRON_PARSE_TRIPLE_REGIONS_DETECTOR = 1;
+  NEMOTRON_PARSE_TRIPLE_REGIONS_UNION = 2;
+}
+
+// Multi-pass options for the nemotron_parse_v3_5 response format.
+// Tags match docling-serve 16713d5. An unknown value stays in *_raw.
+message NemotronParseOptions {
+  optional NemotronParsePasses passes = 1;
+  optional string passes_raw = 2;
+  optional NemotronParseTripleRegions triple_regions = 3;
+  optional string triple_regions_raw = 4;
+  optional int32 crop_batch_size = 5;
 }
 
 message ApiModelConfig {
@@ -935,6 +988,10 @@ message VlmConvertOptions {
   optional int32 max_size = 4;
   optional int32 batch_size = 5;
   optional bool force_backend_text = 6;
+  // Multi-pass options for nemotron_parse_v3_5. Omitted fields keep the
+  // model defaults. Validated here; the convert collector has no field for
+  // it yet, so a set message is accepted and not forwarded.
+  optional NemotronParseOptions nemotron_parse = 7;
 }
 
 message PictureDescriptionVlmEngineOptions {
