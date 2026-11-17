@@ -34,7 +34,7 @@ COPY scripts/models-requirements.txt /tmp/models-requirements.txt
 RUN pip install --no-cache-dir --no-deps -r /tmp/models-requirements.txt
 WORKDIR /src
 COPY models/MANIFEST models/MANIFEST
-COPY scripts/fetch-models.sh scripts/patch_figure_classifier.py scripts/
+COPY scripts/fetch-models.sh scripts/patch_figure_classifier.py scripts/split_slanet.py scripts/
 ARG MODELS_LAYOUT
 ARG MODELS_TOKENIZER
 # Every download is checked against the manifest's sha256 before it is kept;
