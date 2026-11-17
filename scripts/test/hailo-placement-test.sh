@@ -52,11 +52,32 @@ else
   mode=docker
 fi
 
+# Every process below $1, deepest last.
+descendants() {
+  local child
+  for child in $(ps -o pid= --ppid "$1" 2>/dev/null); do
+    echo "$child"
+    descendants "$child"
+  done
+}
+
+# Stops the server with SIGTERM and waits for it to exit, so HailoRT closes
+# the chip itself: a killed server leaves the chip held for the next boot.
 stop_server() {
   if [ "$mode" = docker ]; then
+    docker stop -t 30 "$name" >/dev/null 2>&1 || true
     docker rm -f "$name" >/dev/null 2>&1 || true
   elif [ -n "$server_pid" ]; then
-    kill "$server_pid" 2>/dev/null || true
+    local pids pid
+    pids=$(descendants "$server_pid")
+    for pid in $pids; do
+      [ "$(ps -o comm= -p "$pid" 2>/dev/null)" = grparse-server ] && kill -TERM "$pid" 2>/dev/null
+    done
+    for _ in $(seq 1 30); do
+      kill -0 "$server_pid" 2>/dev/null || break
+      sleep 1
+    done
+    kill "$server_pid" $pids 2>/dev/null || true
     wait "$server_pid" 2>/dev/null || true
     server_pid=
   fi
@@ -185,7 +206,8 @@ convert_and_check() {
     [ -n "$before" ] && [ -n "$after" ] && [ "$after" -gt "$before" ] ||
       fail "boot $pass: $model ran no frame on the Hailo device"
   done
-  echo "boot $pass: chip memory in use after loading $(grep -F 'grparse_hailo_device_ram_bytes{state="used"}' "$work/metrics-$pass-after.prom" | awk '{print $NF}') bytes"
+  ! grep '^grparse_hailo_model_reloads_total' "$work/metrics-$pass-after.prom" | grep -qv ' 0$' ||
+    fail "boot $pass: the chip aborted a model during the conversion"
 }
 
 for pass in 1 2; do
@@ -202,4 +224,5 @@ cp "$all_models/layout_heron.onnx" "$models/"
 LAYOUT_MODEL=heron boot 3 "$golden_dir/hailo-query-layout.prom"
 convert_and_check 3 "OCR detection" "OCR recognition"
 stop_server
+: > "$work/server.log"
 echo "hailo-placement: ok"

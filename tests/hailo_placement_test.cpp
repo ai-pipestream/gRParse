@@ -136,13 +136,9 @@ void verify_a_pin_and_a_device_model_are_recorded() {
 }
 
 void verify_metrics_render() {
-  require(grparse::hailo::render_hailo_metrics({}, std::nullopt).empty(),
-          "no device, no series");
+  require(grparse::hailo::render_hailo_metrics({}).empty(), "no device, no series");
   const std::string text = grparse::hailo::render_hailo_metrics(
-      {{"OCR detection", 12, 0}, {"OCR recognition", 340, 2}},
-      grparse::hailo::DeviceStats{.ram_total_bytes = 8'000'000'000,
-                                  .ram_used_bytes = 600'000'000,
-                                  .temperature_celsius = 51.0F});
+      {{"OCR detection", 12, 0}, {"OCR recognition", 340, 2}});
   require(text.contains("grparse_hailo_frames_total{model=\"OCR detection\"} 12\n"),
           "frames per model: " + text);
   require(text.contains("grparse_hailo_frames_total{model=\"OCR recognition\"} 340\n"),
@@ -151,11 +147,8 @@ void verify_metrics_render() {
           "a healthy model was never reloaded: " + text);
   require(text.contains("grparse_hailo_model_reloads_total{model=\"OCR recognition\"} 2\n"),
           "reloads after device failures are counted: " + text);
-  require(text.contains("grparse_hailo_device_ram_bytes{state=\"used\"} 600000000\n"),
-          "device memory in use");
-  require(text.contains("grparse_hailo_device_ram_bytes{state=\"total\"} 8000000000\n"),
-          "device memory total");
-  require(text.contains("grparse_hailo_device_temperature_celsius 51\n"), "die temperature");
+  require(!text.contains("device_ram") && !text.contains("utilization"),
+          "the chip's own statistics are not queried or rendered: " + text);
 }
 
 // In a build without HailoRT the device can be named but never opened.
@@ -164,7 +157,6 @@ void verify_a_build_without_hailort_cannot_open_the_device() {
   const std::string error = error_of([] { (void)grparse::hailo::open_device(); });
   require(error.contains("this build has no HailoRT"),
           "opening the device without HailoRT says so, got: " + error);
-  require(!grparse::hailo::device_stats().has_value(), "and reports no device statistics");
   require(grparse::hailo::model_frame_counts().empty(), "and no frames");
 }
 

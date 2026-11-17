@@ -16,7 +16,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -37,20 +36,6 @@ struct DeviceIdentity {
 // std::runtime_error when HailoRT finds no device, cannot open it, or the
 // chip is not a Hailo-10H; the message carries HailoRT's status.
 DeviceIdentity open_device();
-
-// What the chip reports about itself: its own memory and die temperature,
-// read from its firmware once, the first time this is asked after
-// open_device() (the server asks when the models are loaded).  The firmware
-// also has a neural-core utilization figure; HailoRT 5.1.1 answers 0 for it
-// under load on a Hailo-10H, so it is not carried.
-struct DeviceStats {
-  int64_t ram_total_bytes = 0;
-  int64_t ram_used_bytes = 0;
-  float temperature_celsius = 0.0F;
-};
-
-// Empty until open_device() has succeeded, and when the query fails.
-std::optional<DeviceStats> device_stats();
 
 struct HailoModelSpec {
   std::filesystem::path hef;

@@ -517,7 +517,7 @@ std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
   return render_prometheus_metrics(metrics, ocr_pool, options, repairs, data, office_cv,
                                    ep_fallback_count(), ep_build_retry_count()) +
          render_ort_session_placements(ort_placements()) +
-         hailo::render_hailo_metrics(hailo::model_frame_counts(), hailo::device_stats());
+         hailo::render_hailo_metrics(hailo::model_frame_counts());
 }
 
 std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,

@@ -4,8 +4,7 @@
 
 namespace grparse::hailo {
 
-std::string render_hailo_metrics(const std::vector<ModelFrames>& frames,
-                                 const std::optional<DeviceStats>& stats) {
+std::string render_hailo_metrics(const std::vector<ModelFrames>& frames) {
   std::ostringstream out;
   if (!frames.empty()) {
     out << "# HELP grparse_hailo_frames_total Frames each model ran on the Hailo device "
@@ -21,17 +20,6 @@ std::string render_hailo_metrics(const std::vector<ModelFrames>& frames,
       out << "grparse_hailo_model_reloads_total{model=\"" << model.model << "\"} " << model.reloads
           << '\n';
     }
-  }
-  if (stats) {
-    out << "# HELP grparse_hailo_device_ram_bytes The chip's own memory, total and in use, read "
-           "once after the models loaded.\n"
-           "# TYPE grparse_hailo_device_ram_bytes gauge\n"
-        << "grparse_hailo_device_ram_bytes{state=\"total\"} " << stats->ram_total_bytes << '\n'
-        << "grparse_hailo_device_ram_bytes{state=\"used\"} " << stats->ram_used_bytes << '\n'
-        << "# HELP grparse_hailo_device_temperature_celsius The chip's die temperature at that "
-           "reading.\n"
-           "# TYPE grparse_hailo_device_temperature_celsius gauge\n"
-        << "grparse_hailo_device_temperature_celsius " << stats->temperature_celsius << '\n';
   }
   return out.str();
 }

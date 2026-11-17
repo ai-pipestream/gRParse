@@ -1237,10 +1237,8 @@ at all: with the chip selected, the session builder refuses every model that
 does not carry a CPU pin with its reason. The two pins show up as `pin="..."`
 on `grparse_ort_sessions` and in the startup placement lines, like the Intel
 image's table pin. `grparse_hailo_frames_total{model}` counts the frames each
-model ran on the chip, `grparse_hailo_model_reloads_total{model}` the times a
-model had to be loaded onto the chip again after the chip aborted it, and
-`grparse_hailo_device_ram_bytes` is the chip's own memory after the models
-loaded.
+model ran on the chip and `grparse_hailo_model_reloads_total{model}` the times
+a model had to be loaded onto the chip again after the chip aborted it.
 
 A HEF has one input shape, so the page pipeline is cut to fit and joined
 back on the host (`src/hailo/hailo_ocr.cpp`, arithmetic in
@@ -1274,25 +1272,34 @@ Measured on a Raspberry Pi 5 with a Hailo-10H, HailoRT and firmware 5.1.1
 | Layout | 13 pages/s | |
 | Figure classes | 27 crops/s (70 in batches of 8) | |
 
-- Pages: three scanned 200 dpi paper pages took 5.8, 6.5 and 4.5 s with the
-  chip against 27.9, 28.4 and 20.9 s on the Pi's four cores (same build,
-  `GRPARSE_ORT_EP=cpu`, same layout model), 4.4 to 4.8 times faster. Over 23
-  such pages the CPU run averages 24 s a page.
-- Text: against the CPU run's Markdown the same three pages differ in 1.6%,
-  2.5% and 6.5% of their characters (the last includes two blocks in another
-  order). The recognizer HEF is the cause of most of it: about one doubled
-  letter in five is read once ("recuring", "paterns"), and `I`, `l`, `]` and
-  `1` are confused more often than by the float model. models/hailo/README.md
-  has each HEF's agreement with its float model.
+- Pages: 23 scanned pages (20 paper pages at 200 dpi, 3 corpus pages) took
+  115 s with the chip, 5.0 s a page, against 552 s on the Pi's four cores,
+  24.0 s a page (same build, `GRPARSE_ORT_EP=cpu`, same layout model): 4.8
+  times faster. One full-width page is 12 detector tiles and about 360
+  recognizer windows.
+- Text: against the CPU run's Markdown, 3.1% of the characters of those 23
+  pages differ (2.5% on the median page, 0.2% to 7.6% per page; blocks that
+  the two layout runs order differently count in full). The recognizer HEF
+  is the cause of most of it: about one doubled letter in five is read once
+  ("recuring", "paterns"), and `I`, `l`, `]` and `1` are confused more often
+  than by the float model. models/hailo/README.md has each HEF's agreement
+  with its float model.
 - Chip memory: the chip's own system reports 125 MiB in use of 5.8 GiB when
-  idle and 145 MiB with the five HEFs loaded.
-- Stability: under sustained load this chip and firmware abort a running
-  model now and then (`HAILO_STREAM_ABORT`, once in several thousand frames,
-  with HailoRT's own `hailortcli run2` as well as with this server). The
-  server loads the aborted model onto the chip again and runs the call once
-  more there; `grparse_hailo_model_reloads_total` counts it. In one two-minute
-  `hailortcli run2` run the chip stopped answering altogether and needed its
-  host driver reloaded.
+  idle and 145 to 150 MiB with the five HEFs loaded (read with HailoRT's
+  performance query from a separate tool; the server does not make that
+  query).
+- Stability: the chip can abort a running model (`HAILO_STREAM_ABORT`), after
+  which every call on that model fails until it is loaded again. On a freshly
+  booted Pi this was rare: one abort in about 80,000 frames of sustained
+  recognition, and none in the 23 pages above, in the placement suite, or in
+  four minutes of HailoRT's own `hailortcli run2`. On the same Pi after six
+  days of uptime and many sessions it happened about once in 6,000 frames,
+  with `hailortcli run2` as well as with this server, and one two-minute
+  `hailortcli run2` run left the chip unreachable until the Pi was rebooted
+  (reloading its driver was not enough). The server loads an aborted model
+  onto the chip again and runs the call once more there;
+  `grparse_hailo_model_reloads_total` counts it and reads 0 on a healthy
+  chip.
 
 `scripts/test/hailo-placement-test.sh <image-or-rootfs> <models-dir>` is the
 receipt, modeled on the Intel one: it fails, never skips, on a host without

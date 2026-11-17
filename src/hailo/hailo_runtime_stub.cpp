@@ -15,8 +15,6 @@ DeviceIdentity open_device() {
       "(Dockerfile.cpu) on a host with a Hailo-10H");
 }
 
-std::optional<DeviceStats> device_stats() { return std::nullopt; }
-
 std::unique_ptr<HailoModel> make_hailo_model(const HailoModelSpec&) {
   (void)open_device();
   return nullptr;

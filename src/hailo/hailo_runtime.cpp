@@ -35,16 +35,8 @@ struct ModelCounters {
 struct Runtime {
   std::mutex mutex;
   std::shared_ptr<hailort::VDevice> vdevice;
-  // A second handle on the same chip for identify and statistics; the
-  // virtual device owns inference.
-  std::unique_ptr<hailort::Device> control;
   DeviceIdentity identity;
   std::vector<std::pair<std::string, std::shared_ptr<ModelCounters>>> counters;
-  // Read once, when first asked (after the models are loaded): the query
-  // makes the chip's runtime sample itself for a tenth of a second and log
-  // every part of the answer its firmware cannot give, so it is not repeated
-  // on every scrape.
-  std::optional<DeviceStats> stats;
 };
 
 Runtime& runtime() {
@@ -132,10 +124,10 @@ class Model final : public HailoModel {
     // device runs a single batch at once whatever is queued.
     const std::lock_guard<std::mutex> lock(run_mutex_);
     const int64_t batch = std::max<int64_t>(1, spec_.batch_size);
-    // The chip sometimes aborts a model in the middle of a batch
-    // (HAILO_STREAM_ABORT, HailoRT 5.1.1) and every later call on it then
-    // fails.  The model is loaded onto the device again and the call runs
-    // once more, on the device; a second failure is the call's failure.
+    // The chip can abort a model in the middle of a batch
+    // (HAILO_STREAM_ABORT, seen on HailoRT 5.1.1) and every later call on it
+    // then fails.  The model is loaded onto the device again and the call
+    // runs once more, on the device; a second failure is the call's failure.
     for (int attempt = 1;; ++attempt) {
       try {
         if (broken_) {
@@ -370,32 +362,13 @@ DeviceIdentity open_device() {
       .firmware = std::format("{}.{}.{}", identity->fw_version.major, identity->fw_version.minor,
                               identity->fw_version.revision),
   };
-  state.control = control.release();
+  // The identify handle is closed here; the virtual device is the only
+  // handle the process keeps.  The chip's performance statistics are not
+  // read: on HailoRT 5.1.1 the query registers a second monitor on the chip,
+  // the chip logs an error for each part its firmware lacks, and the
+  // neural-core utilization it returns is 0 under load.
   state.vdevice = vdevice.release();
   return state.identity;
-}
-
-std::optional<DeviceStats> device_stats() {
-  Runtime& state = runtime();
-  const std::lock_guard<std::mutex> lock(state.mutex);
-  if (!state.control) return std::nullopt;
-  if (state.stats) return state.stats;
-  auto performance = state.control->query_performance_stats();
-  if (!performance) return std::nullopt;
-  // hailort.h documents the two RAM figures as bytes; firmware 5.1.1 answers
-  // in KiB (HailoRT reads them from the chip's own `free`, 6087196 for a
-  // module with 8 GB).  A total under 64 MiB cannot be bytes on any Hailo-10,
-  // so such an answer is read as KiB.
-  const int64_t unit = performance->ram_size_total < (int64_t{64} << 20) ? 1024 : 1;
-  DeviceStats stats{
-      .ram_total_bytes = performance->ram_size_total * unit,
-      .ram_used_bytes = performance->ram_size_used * unit,
-  };
-  if (auto health = state.control->query_health_stats()) {
-    stats.temperature_celsius = health->on_die_temperature;
-  }
-  state.stats = stats;
-  return state.stats;
 }
 
 std::unique_ptr<HailoModel> make_hailo_model(const HailoModelSpec& spec) {
