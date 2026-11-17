@@ -1400,6 +1400,14 @@ message KserveV2OcrOptions {
   map<string, ScalarValue> request_parameters = 14;
 }
 
+// Markdown has no marker for underline, subscript, or superscript.
+// NONE (and unset) drops the marker and keeps the text. HTML wraps it.
+enum FormattingFallbackMode {
+  FORMATTING_FALLBACK_MODE_UNSPECIFIED = 0;
+  FORMATTING_FALLBACK_MODE_NONE = 1;
+  FORMATTING_FALLBACK_MODE_HTML = 2;
+}
+
 message ConvertDocumentOptions {
   // Input format(s) to convert from
   repeated InputFormat from_formats = 1;
@@ -1619,6 +1627,12 @@ message ConvertDocumentOptions {
   // audio/video routes there by format). Unset keeps today's whisper.cpp
   // defaults (model from GRPARSE_ASR_MODEL, diarize from GRPARSE_ASR_DIARIZE).
   optional AsrPipelineOptions asr_options = 75;
+  // How Markdown renders underline, subscript, and superscript. Unset and
+  // NONE leave the text with no marker. HTML emits <u>, <sub>, and <sup>
+  // around the already escaped text. Not a docling-serve convert field;
+  // gRParse field 76 is reserved for it (serve's 62-70 are preset enums
+  // that this message cannot use).
+  optional FormattingFallbackMode formatting_fallback_mode = 76;
 }
 
 // HeadingHierarchyOptions mirrors the upstream PdfHeadingHierarchyOptions.
