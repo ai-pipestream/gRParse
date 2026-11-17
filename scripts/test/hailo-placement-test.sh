@@ -16,8 +16,8 @@
 # chip cannot pass.
 #
 # Checks, in order:
-#   1. no /dev/hailo0 in the container: startup must fail naming the device
-#      (no CPU session is built in its place);
+#   1. no /dev/hailo0 in the container: startup must fail saying the device
+#      was not found or did not open (no CPU session is built in its place);
 #   2. an empty HEF directory: startup must fail naming the missing HEF;
 #   3. with the device, two boots in a row with the anchor-free layout
 #      detector, from a models directory that holds the HEFs, the OCR
@@ -25,7 +25,7 @@
 #      OCR, layout or figure models is in the container, so nothing but the
 #      chip can have read the page. The grparse_ort_sessions series must
 #      equal tests/data/gpu_placement/hailo.prom on both boots, the refusal
-#      counter must read 0, and converting tests/data/report_page.png must
+#      counter must read 0, and converting tests/mnt/data/report_page.png must
 #      return OCR text and advance grparse_hailo_frames_total for the
 #      detector, the recognizer and the layout model (a frame is counted
 #      only when HailoRT reports it complete from the device);
@@ -76,19 +76,23 @@ trap cleanup EXIT
 run_in() {
   local device=$1 hefs=$2; shift 2
   local env=(GRPARSE_ORT_EP=hailo GRPARSE_PAGE_WORKERS=2 "GRPARSE_METRICS_PORT=$metrics_port"
-             "GRPARSE_LISTEN_ADDRESS=127.0.0.1:$grpc_port" GRPARSE_MODELS_DIR=/models
+             "GRPARSE_LISTEN_ADDRESS=127.0.0.1:$grpc_port" GRPARSE_MODELS_DIR=/mnt/models
              "GRPARSE_HAILO_HEF_DIR=$hefs" "GRPARSE_LAYOUT_MODEL=${LAYOUT_MODEL:-picodet}"
-             LD_LIBRARY_PATH=/usr/local/lib)
+             LD_LIBRARY_PATH=/usr/local/lib HAILORT_LOGGER_PATH=NONE)
   if [ "$mode" = docker ]; then
-    local args=(--rm --name "$name" --network host -v "$models:/models:ro"
-                -v "$root/tests/data:/data:ro" -v "$work/empty:/empty-hefs:ro")
+    local args=(--rm --name "$name" --network host -v "$models:/mnt/models:ro"
+                -v "$root/tests/data:/mnt/data:ro" -v "$work/empty:/mnt/empty-hefs:ro")
     [ "$device" = device ] && args+=(--device /dev/hailo0)
     for pair in "${env[@]}"; do args+=(-e "$pair"); done
     docker run "${args[@]}" --entrypoint "$1" "$target" "${@:2}"
   else
-    local args=(--ro-bind "$target" / --proc /proc --tmpfs /tmp --dev /dev
-                --ro-bind "$models" /models --ro-bind "$root/tests/data" /data
-                --ro-bind "$work/empty" /empty-hefs --unshare-user --share-net --die-with-parent)
+    # /sys as a container has it: HailoRT finds the device there and then
+    # opens the node, which only the device runs are given.
+    # The mounts go under /mnt, which every base image has: a read-only root
+    # cannot grow new mount points.
+    local args=(--ro-bind "$target" / --proc /proc --tmpfs /tmp --dev /dev --ro-bind /sys /sys
+                --tmpfs /mnt --ro-bind "$models" /mnt/models --ro-bind "$root/tests/data" /mnt/data
+                --ro-bind "$work/empty" /mnt/empty-hefs --unshare-user --share-net --die-with-parent)
     [ "$device" = device ] && args+=(--dev-bind /dev/hailo0 /dev/hailo0)
     for pair in "${env[@]}"; do args+=(--setenv "${pair%%=*}" "${pair#*=}"); done
     bwrap "${args[@]}" "$@"
@@ -127,13 +131,15 @@ expect_startup_failure() {
   fi
   grep -E "Startup failed|Hailo|HEF" "$work/fail.log" | head -3 || true
   [ "$code" != 0 ] && [ "$code" != 124 ] || fail "$label: startup exit $code, wanted a failure"
-  grep -qF "$text" "$work/fail.log" || fail "$label: log lacks '$text'"
+  grep -qE "$text" "$work/fail.log" || fail "$label: log lacks '$text'"
   ! grep -q "gRParse listening on" "$work/fail.log" || fail "$label: the server came up"
   echo "failed as required (exit $code)"
 }
 
-expect_startup_failure "no Hailo device" "GRPARSE_ORT_EP=hailo: no Hailo device" nodevice /models/hailo10h
-expect_startup_failure "no HEFs" "the HEF is missing" device /empty-hefs
+expect_startup_failure "no Hailo device" \
+  "Startup failed: GRPARSE_ORT_EP=hailo: (no Hailo device|Hailo device [0-9a-f:.]+ did not open)" \
+  nodevice /mnt/models/hailo10h
+expect_startup_failure "no HEFs" "the HEF is missing" device /mnt/empty-hefs
 
 metric() { awk -v key="$1" '$1 == key {print $2}' "$2" | head -1; }
 
@@ -142,9 +148,9 @@ boot() {
   echo "== boot $pass with the device (layout ${LAYOUT_MODEL:-picodet})"
   : > "$work/server.log"
   if [ "$mode" = docker ]; then
-    (run_in device /models/hailo10h grparse-server > "$work/server.log" 2>&1 &)
+    (run_in device /mnt/models/hailo10h grparse-server > "$work/server.log" 2>&1 &)
   else
-    run_in device /models/hailo10h grparse-server > "$work/server.log" 2>&1 &
+    run_in device /mnt/models/hailo10h grparse-server > "$work/server.log" 2>&1 &
     server_pid=$!
   fi
   local listening=false
@@ -164,7 +170,7 @@ boot() {
 
 convert_and_check() {
   local pass=$1; shift
-  name="$name-client" run_in nodevice /models/hailo10h grparse-stream-client /data/report_page.png \
+  name="$name-client" run_in nodevice /mnt/models/hailo10h grparse-stream-client /mnt/data/report_page.png \
     "127.0.0.1:$grpc_port" > "$work/convert-$pass.out" 2>&1 ||
     { cat "$work/convert-$pass.out"; fail "boot $pass: conversion failed"; }
   grep -E '^page=' "$work/convert-$pass.out"

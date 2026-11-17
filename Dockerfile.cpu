@@ -240,7 +240,10 @@ LABEL org.opencontainers.image.revision=${GRPARSE_REVISION}
 ENV GRPARSE_LISTEN_ADDRESS=0.0.0.0:50051 GRPARSE_MODELS_DIR=/models GRPARSE_PAGE_WORKERS=2 \
     GRPARSE_ORT_EP=cpu \
     GRPARSE_LAYOUT_MODEL=heron \
-    LD_LIBRARY_PATH=/usr/local/lib
+    LD_LIBRARY_PATH=/usr/local/lib \
+    HAILORT_LOGGER_PATH=NONE
+# HAILORT_LOGGER_PATH=NONE: HailoRT (the Hailo-10H flavor only) otherwise
+# writes hailort.log into the working directory, which this user cannot write.
 # The base carries no CA bundle, and libcurl (https S3, HTTP and storage
 # sources and targets) refuses every TLS peer without one; the build stage's
 # ca-certificates bundle is the one its tests verified against.
