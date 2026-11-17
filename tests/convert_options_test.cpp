@@ -1210,6 +1210,82 @@ void verify_picture_description_custom_config_is_wired() {
   require(call.has_value() && call->prompt.empty(), "nothing set sends no prompt");
 }
 
+parsev1::ConvertDocumentOptions vlm_custom_base() {
+  parsev1::ConvertDocumentOptions options;
+  auto* cfg = options.mutable_vlm_pipeline_custom_config();
+  cfg->mutable_engine_options()->set_engine_type(parsev1::VLM_ENGINE_TYPE_TRANSFORMERS);
+  cfg->mutable_engine_options()->set_trust_remote_code(false);
+  cfg->mutable_model_spec()->set_name("custom");
+  cfg->mutable_model_spec()->set_default_repo_id("example/model");
+  cfg->mutable_model_spec()->set_trust_remote_code(false);
+  return options;
+}
+
+void verify_nemotron_parse_and_torch_dtype() {
+  {
+    auto options = vlm_custom_base();
+    auto* nemotron = options.mutable_vlm_pipeline_custom_config()->mutable_nemotron_parse();
+    nemotron->set_passes(parsev1::NEMOTRON_PARSE_PASSES_SINGLE);
+    nemotron->set_passes_raw("single");
+    nemotron->set_triple_regions(parsev1::NEMOTRON_PARSE_TRIPLE_REGIONS_UNION);
+    nemotron->set_triple_regions_raw("union");
+    nemotron->set_crop_batch_size(8);
+    require(grparse::validate_options(options, kSurface).ok(),
+            "a known nemotron_parse message is accepted");
+  }
+  {
+    auto options = vlm_custom_base();
+    options.mutable_vlm_pipeline_custom_config()->mutable_nemotron_parse()->set_passes_raw(
+        "quadruple");
+    require(grparse::validate_options(options, kSurface).ok(),
+            "an unknown passes_raw is kept when the enum is unset");
+  }
+  {
+    auto options = vlm_custom_base();
+    auto* nemotron = options.mutable_vlm_pipeline_custom_config()->mutable_nemotron_parse();
+    nemotron->set_passes(parsev1::NEMOTRON_PARSE_PASSES_SINGLE);
+    nemotron->set_passes_raw("double");
+    const auto rejection = rejection_of(grparse::validate_options(options, kSurface));
+    require(rejection.reason() == parsev1::OPTION_REJECTION_REASON_CONFLICT &&
+                rejection.option_path() ==
+                    "vlm_pipeline_custom_config.nemotron_parse.passes_raw",
+            "a known passes value must agree with passes_raw");
+  }
+  {
+    auto options = vlm_custom_base();
+    options.mutable_vlm_pipeline_custom_config()->mutable_nemotron_parse()->set_crop_batch_size(0);
+    const auto rejection = rejection_of(grparse::validate_options(options, kSurface));
+    require(rejection.reason() == parsev1::OPTION_REJECTION_REASON_OUT_OF_RANGE &&
+                rejection.option_path() ==
+                    "vlm_pipeline_custom_config.nemotron_parse.crop_batch_size",
+            "crop_batch_size below 1 is out of range");
+  }
+  {
+    auto options = vlm_custom_base();
+    auto* config = options.mutable_vlm_pipeline_custom_config()
+                       ->mutable_model_spec()
+                       ->add_engine_overrides()
+                       ->mutable_config();
+    config->set_torch_dtype(parsev1::TORCH_DTYPE_FLOAT16);
+    config->set_torch_dtype_raw("bfloat16");
+    const auto rejection = rejection_of(grparse::validate_options(options, kSurface));
+    require(rejection.reason() == parsev1::OPTION_REJECTION_REASON_CONFLICT,
+            "torch_dtype and torch_dtype_raw must agree");
+  }
+  {
+    auto options = vlm_custom_base();
+    options.mutable_vlm_pipeline_custom_config()
+        ->mutable_model_spec()
+        ->add_engine_overrides()
+        ->mutable_config()
+        ->set_torch_dtype_raw("float8");
+    const auto status = grparse::validate_options(options, kSurface);
+    require(status.error_code() == grpc::StatusCode::UNIMPLEMENTED,
+            "an unknown torch_dtype_raw is preserved, then the override field stays unimplemented: " +
+                status.error_message());
+  }
+}
+
 void verify_unsupported_vlm_custom_fields() {
   const auto valid = [] {
     parsev1::ConvertDocumentOptions options;
@@ -1348,6 +1424,7 @@ void verify_replace_broken_and_rapidocr_orientation_options() {
 
 int main() {
   return grparse_test::run_test_main("convert-options-test", "ok", {
+      verify_nemotron_parse_and_torch_dtype,
       verify_unsupported_vlm_custom_fields,
       verify_unimplemented_nested_ocr_options,
       verify_replace_broken_and_rapidocr_orientation_options,

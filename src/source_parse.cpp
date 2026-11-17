@@ -685,6 +685,11 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
     }
     // Only the VLM pipeline's spec format reaches a collector that reads
     // it; the enrich legs' specs are checked for a known, agreeing value.
+    if (const auto dtype = validate_engine_overrides(spec, std::string(name) + ".model_spec",
+                                                    surface);
+        !dtype.ok()) {
+      return dtype;
+    }
     return validate_response_format(spec, std::string(name) + ".model_spec", surface,
                                     std::string_view(name) == "vlm_pipeline_custom_config");
   };
@@ -715,8 +720,16 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
       }
       return grpc::Status::OK;
     };
+    if (cfg.has_nemotron_parse()) {
+      if (const auto nemotron = validate_nemotron_parse(
+              cfg.nemotron_parse(), "vlm_pipeline_custom_config.nemotron_parse", surface);
+          !nemotron.ok()) {
+        return nemotron;
+      }
+    }
     if (auto s = require_supported_fields(cfg, "vlm_pipeline_custom_config",
-                                         {"engine_options", "model_spec", "scale"}); !s.ok()) {
+                                         {"engine_options", "model_spec", "scale",
+                                          "nemotron_parse"}); !s.ok()) {
       return s;
     }
     if (auto s = require_supported_fields(cfg.model_spec(), "vlm_pipeline_custom_config.model_spec",
@@ -1181,6 +1194,99 @@ uint64_t decoded_source_bytes(
     if (source.has_file()) total += decoded_file_bytes(source.file());
   }
   return total;
+}
+
+// A closed string and its enum. A known raw must agree with a set enum.
+// An unknown raw is kept only when the enum is unset.
+template <typename Enum>
+grpc::Status agree_raw_enum(const std::string& path, bool has_enum, Enum value, bool enum_valid,
+                            bool has_raw, const std::string& raw,
+                            const std::optional<Enum>& named, const std::string& surface) {
+  namespace parsev1 = pipestream::parse::v1;
+  if (has_enum && (!enum_valid || value == static_cast<Enum>(0))) {
+    return option_rejected(path, parsev1::OPTION_REJECTION_REASON_UNKNOWN_VALUE,
+                           std::to_string(static_cast<int>(value)),
+                           surface + ": " + path + " is not a known value");
+  }
+  if (!has_raw) return grpc::Status::OK;
+  if (named.has_value()) {
+    if (has_enum && *named != value) {
+      return option_rejected(path + "_raw", parsev1::OPTION_REJECTION_REASON_CONFLICT, raw,
+                             surface + ": " + path + " and " + path + "_raw disagree");
+    }
+    return grpc::Status::OK;
+  }
+  if (has_enum) {
+    return option_rejected(path + "_raw", parsev1::OPTION_REJECTION_REASON_CONFLICT, raw,
+                           surface + ": " + path + "_raw is not a known value for the set " +
+                               path);
+  }
+  return grpc::Status::OK;
+}
+
+grpc::Status validate_torch_dtype(const pipestream::parse::v1::EngineModelConfig& config,
+                                  const std::string& path, const std::string& surface) {
+  namespace parsev1 = pipestream::parse::v1;
+  std::optional<parsev1::TorchDtype> named;
+  if (config.has_torch_dtype_raw()) {
+    const std::string& raw = config.torch_dtype_raw();
+    if (raw == "float32") named = parsev1::TORCH_DTYPE_FLOAT32;
+    else if (raw == "float16") named = parsev1::TORCH_DTYPE_FLOAT16;
+    else if (raw == "bfloat16") named = parsev1::TORCH_DTYPE_BFLOAT16;
+  }
+  return agree_raw_enum(path + ".torch_dtype", config.has_torch_dtype(), config.torch_dtype(),
+                        parsev1::TorchDtype_IsValid(config.torch_dtype()),
+                        config.has_torch_dtype_raw(), config.torch_dtype_raw(), named, surface);
+}
+
+grpc::Status validate_engine_overrides(const pipestream::parse::v1::VlmModelSpec& spec,
+                                       const std::string& path, const std::string& surface) {
+  for (int i = 0; i < spec.engine_overrides_size(); ++i) {
+    const auto status = validate_torch_dtype(
+        spec.engine_overrides(i).config(),
+        path + ".engine_overrides[" + std::to_string(i) + "].config", surface);
+    if (!status.ok()) return status;
+  }
+  return grpc::Status::OK;
+}
+
+grpc::Status validate_nemotron_parse(const pipestream::parse::v1::NemotronParseOptions& options,
+                                     const std::string& path, const std::string& surface) {
+  namespace parsev1 = pipestream::parse::v1;
+  std::optional<parsev1::NemotronParsePasses> passes;
+  if (options.has_passes_raw()) {
+    const std::string& raw = options.passes_raw();
+    if (raw == "single") passes = parsev1::NEMOTRON_PARSE_PASSES_SINGLE;
+    else if (raw == "double") passes = parsev1::NEMOTRON_PARSE_PASSES_DOUBLE;
+    else if (raw == "triple") passes = parsev1::NEMOTRON_PARSE_PASSES_TRIPLE;
+  }
+  if (const auto status = agree_raw_enum(
+          path + ".passes", options.has_passes(), options.passes(),
+          parsev1::NemotronParsePasses_IsValid(options.passes()), options.has_passes_raw(),
+          options.passes_raw(), passes, surface);
+      !status.ok()) {
+    return status;
+  }
+  std::optional<parsev1::NemotronParseTripleRegions> regions;
+  if (options.has_triple_regions_raw()) {
+    const std::string& raw = options.triple_regions_raw();
+    if (raw == "detector") regions = parsev1::NEMOTRON_PARSE_TRIPLE_REGIONS_DETECTOR;
+    else if (raw == "union") regions = parsev1::NEMOTRON_PARSE_TRIPLE_REGIONS_UNION;
+  }
+  if (const auto status = agree_raw_enum(
+          path + ".triple_regions", options.has_triple_regions(), options.triple_regions(),
+          parsev1::NemotronParseTripleRegions_IsValid(options.triple_regions()),
+          options.has_triple_regions_raw(), options.triple_regions_raw(), regions, surface);
+      !status.ok()) {
+    return status;
+  }
+  if (options.has_crop_batch_size() && options.crop_batch_size() < 1) {
+    return option_rejected(path + ".crop_batch_size",
+                           parsev1::OPTION_REJECTION_REASON_OUT_OF_RANGE,
+                           std::to_string(options.crop_batch_size()),
+                           surface + ": " + path + ".crop_batch_size must be >= 1");
+  }
+  return grpc::Status::OK;
 }
 
 // `surface` names the RPC in the rejections so a caller learns which of the

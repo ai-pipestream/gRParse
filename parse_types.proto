@@ -887,11 +887,48 @@ message BaseVlmEngineOptions {
   optional bool trust_remote_code = 2;
 }
 
+// Closed dtypes named on a VLM engine. Any other string stays in
+// torch_dtype_raw and this enum stays unset.
+enum TorchDtype {
+  TORCH_DTYPE_UNSPECIFIED = 0;
+  TORCH_DTYPE_FLOAT32 = 1;
+  TORCH_DTYPE_FLOAT16 = 2;
+  TORCH_DTYPE_BFLOAT16 = 3;
+}
+
 message EngineModelConfig {
   optional string repo_id = 1;
   optional string revision = 2;
-  optional string torch_dtype = 3;
+  // Field 3 was the untyped string. A known dtype also sets torch_dtype.
+  // An unknown dtype keeps the original here and leaves the enum unset.
+  optional string torch_dtype_raw = 3;
   map<string, ScalarValue> extra_config = 4;
+  optional TorchDtype torch_dtype = 5;
+}
+
+// Closed pass counts for NemotronParseOptions.passes.
+enum NemotronParsePasses {
+  NEMOTRON_PARSE_PASSES_UNSPECIFIED = 0;
+  NEMOTRON_PARSE_PASSES_SINGLE = 1;
+  NEMOTRON_PARSE_PASSES_DOUBLE = 2;
+  NEMOTRON_PARSE_PASSES_TRIPLE = 3;
+}
+
+// Closed region modes for NemotronParseOptions.triple_regions.
+enum NemotronParseTripleRegions {
+  NEMOTRON_PARSE_TRIPLE_REGIONS_UNSPECIFIED = 0;
+  NEMOTRON_PARSE_TRIPLE_REGIONS_DETECTOR = 1;
+  NEMOTRON_PARSE_TRIPLE_REGIONS_UNION = 2;
+}
+
+// Multi-pass options for the nemotron_parse_v3_5 response format.
+// Tags match docling-serve 16713d5. An unknown value stays in *_raw.
+message NemotronParseOptions {
+  optional NemotronParsePasses passes = 1;
+  optional string passes_raw = 2;
+  optional NemotronParseTripleRegions triple_regions = 3;
+  optional string triple_regions_raw = 4;
+  optional int32 crop_batch_size = 5;
 }
 
 message ApiModelConfig {
@@ -935,6 +972,10 @@ message VlmConvertOptions {
   optional int32 max_size = 4;
   optional int32 batch_size = 5;
   optional bool force_backend_text = 6;
+  // Multi-pass options for nemotron_parse_v3_5. Omitted fields keep the
+  // model defaults. Validated here; the convert collector has no field for
+  // it yet, so a set message is accepted and not forwarded.
+  optional NemotronParseOptions nemotron_parse = 7;
 }
 
 message PictureDescriptionVlmEngineOptions {
