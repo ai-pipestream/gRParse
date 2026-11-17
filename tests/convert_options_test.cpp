@@ -1287,6 +1287,124 @@ void verify_nemotron_parse_and_torch_dtype() {
   }
 }
 
+void verify_validate_nemotron_parse_directly() {
+  const std::string path = "nemotron_parse";
+  {
+    parsev1::NemotronParseOptions options;
+    options.set_passes(parsev1::NEMOTRON_PARSE_PASSES_SINGLE);
+    options.set_triple_regions(parsev1::NEMOTRON_PARSE_TRIPLE_REGIONS_UNION);
+    options.set_crop_batch_size(8);
+    require(grparse::validate_nemotron_parse(options, path, kSurface).ok(),
+            "validate_nemotron_parse accepts a known enum with no raw");
+    require(options.passes() == parsev1::NEMOTRON_PARSE_PASSES_SINGLE &&
+                options.triple_regions() == parsev1::NEMOTRON_PARSE_TRIPLE_REGIONS_UNION,
+            "the set enums stand when raw is absent");
+  }
+  {
+    parsev1::NemotronParseOptions options;
+    options.set_passes_raw("quadruple");
+    require(grparse::validate_nemotron_parse(options, path, kSurface).ok(),
+            "validate_nemotron_parse keeps an unknown passes_raw");
+    require(options.passes_raw() == "quadruple" && !options.has_passes(),
+            "the unknown passes_raw is still on the message and the enum stays unset");
+  }
+  {
+    parsev1::NemotronParseOptions options;
+    options.set_passes(parsev1::NEMOTRON_PARSE_PASSES_SINGLE);
+    options.set_passes_raw("double");
+    const auto rejection = rejection_of(grparse::validate_nemotron_parse(options, path, kSurface));
+    require(rejection.reason() == parsev1::OPTION_REJECTION_REASON_CONFLICT &&
+                rejection.option_path() == "nemotron_parse.passes_raw" &&
+                rejection.rejected_value_raw() == "double",
+            "validate_nemotron_parse rejects a passes raw that disagrees with the enum");
+  }
+  {
+    parsev1::NemotronParseOptions options;
+    options.set_triple_regions(parsev1::NEMOTRON_PARSE_TRIPLE_REGIONS_DETECTOR);
+    options.set_triple_regions_raw("union");
+    const auto rejection = rejection_of(grparse::validate_nemotron_parse(options, path, kSurface));
+    require(rejection.reason() == parsev1::OPTION_REJECTION_REASON_CONFLICT &&
+                rejection.option_path() == "nemotron_parse.triple_regions_raw",
+            "validate_nemotron_parse rejects a triple_regions raw that disagrees");
+  }
+  {
+    parsev1::NemotronParseOptions options;
+    const auto* field = options.GetDescriptor()->FindFieldByName("passes");
+    options.GetReflection()->SetEnumValue(&options, field, 9);
+    const auto rejection = rejection_of(grparse::validate_nemotron_parse(options, path, kSurface));
+    require(rejection.reason() == parsev1::OPTION_REJECTION_REASON_UNKNOWN_VALUE &&
+                rejection.option_path() == "nemotron_parse.passes",
+            "validate_nemotron_parse rejects a passes value outside the enum");
+  }
+  {
+    parsev1::NemotronParseOptions options;
+    const auto* field = options.GetDescriptor()->FindFieldByName("triple_regions");
+    options.GetReflection()->SetEnumValue(&options, field, 9);
+    const auto rejection = rejection_of(grparse::validate_nemotron_parse(options, path, kSurface));
+    require(rejection.reason() == parsev1::OPTION_REJECTION_REASON_UNKNOWN_VALUE &&
+                rejection.option_path() == "nemotron_parse.triple_regions",
+            "validate_nemotron_parse rejects a triple_regions value outside the enum");
+  }
+  {
+    parsev1::NemotronParseOptions options;
+    options.set_crop_batch_size(0);
+    const auto rejection = rejection_of(grparse::validate_nemotron_parse(options, path, kSurface));
+    require(rejection.reason() == parsev1::OPTION_REJECTION_REASON_OUT_OF_RANGE &&
+                rejection.option_path() == "nemotron_parse.crop_batch_size" &&
+                rejection.rejected_value_raw() == "0",
+            "validate_nemotron_parse rejects crop_batch_size 0");
+  }
+}
+
+void verify_validate_engine_overrides_directly() {
+  const std::string path = "model_spec";
+  parsev1::VlmModelSpec empty;
+  require(grparse::validate_engine_overrides(empty, path, kSurface).ok(),
+          "validate_engine_overrides accepts a spec with no overrides");
+  const auto config_of = [](parsev1::VlmModelSpec* spec) {
+    return spec->add_engine_overrides()->mutable_config();
+  };
+  {
+    parsev1::VlmModelSpec spec;
+    config_of(&spec)->set_torch_dtype_enum(parsev1::TORCH_DTYPE_FLOAT16);
+    require(grparse::validate_engine_overrides(spec, path, kSurface).ok(),
+            "validate_engine_overrides accepts a known enum with no raw string");
+    require(spec.engine_overrides(0).config().torch_dtype_enum() == parsev1::TORCH_DTYPE_FLOAT16 &&
+                !spec.engine_overrides(0).config().has_torch_dtype(),
+            "the enum stands when the raw string is absent");
+  }
+  {
+    parsev1::VlmModelSpec spec;
+    auto* config = config_of(&spec);
+    config->set_torch_dtype_enum(parsev1::TORCH_DTYPE_FLOAT16);
+    config->set_torch_dtype("float16");
+    require(grparse::validate_engine_overrides(spec, path, kSurface).ok(),
+            "validate_engine_overrides accepts a raw string that names the set enum");
+  }
+  {
+    parsev1::VlmModelSpec spec;
+    auto* config = config_of(&spec);
+    config->set_torch_dtype_enum(parsev1::TORCH_DTYPE_FLOAT16);
+    config->set_torch_dtype("bfloat16");
+    const auto rejection =
+        rejection_of(grparse::validate_engine_overrides(spec, path, kSurface));
+    require(rejection.reason() == parsev1::OPTION_REJECTION_REASON_CONFLICT &&
+                rejection.option_path() ==
+                    "model_spec.engine_overrides[0].config.torch_dtype" &&
+                rejection.rejected_value_raw() == "bfloat16",
+            "validate_engine_overrides rejects a raw string that disagrees with the enum");
+  }
+  {
+    parsev1::VlmModelSpec spec;
+    config_of(&spec)->set_torch_dtype("float8");
+    require(grparse::validate_engine_overrides(spec, path, kSurface).ok(),
+            "validate_engine_overrides keeps an unknown dtype string");
+    require(spec.engine_overrides(0).config().torch_dtype() == "float8" &&
+                !spec.engine_overrides(0).config().has_torch_dtype_enum(),
+            "the unknown non-empty raw string is preserved and the enum stays unset");
+  }
+}
+
 void verify_unsupported_vlm_custom_fields() {
   const auto valid = [] {
     parsev1::ConvertDocumentOptions options;
@@ -1426,6 +1544,8 @@ void verify_replace_broken_and_rapidocr_orientation_options() {
 int main() {
   return grparse_test::run_test_main("convert-options-test", "ok", {
       verify_nemotron_parse_and_torch_dtype,
+      verify_validate_nemotron_parse_directly,
+      verify_validate_engine_overrides_directly,
       verify_unsupported_vlm_custom_fields,
       verify_unimplemented_nested_ocr_options,
       verify_replace_broken_and_rapidocr_orientation_options,

@@ -920,6 +920,7 @@ if(BUILD_TESTING)
     document-assembly-test
     assembly-floats-test
     convert-options-test
+    engine-model-config-wire-test
     docling-parity-golden-test
     document-collectors-test
     document-merge-test
@@ -971,6 +972,26 @@ if(BUILD_TESTING)
     target_link_libraries(${test_name} PRIVATE grparse_core grparse_flags)
     add_test(NAME ${test_name} COMMAND ${test_name})
   endforeach()
+  # docling-serve 16713d5 EngineModelConfig, compiled beside gRParse's so the
+  # wire test can compare tag to type and round-trip the bytes.
+  set(SERVE_ENGINE_DIR "${CMAKE_CURRENT_BINARY_DIR}/serve_engine_model")
+  file(MAKE_DIRECTORY "${SERVE_ENGINE_DIR}")
+  add_custom_command(
+    OUTPUT "${SERVE_ENGINE_DIR}/docling_serve_engine_model.pb.cc"
+           "${SERVE_ENGINE_DIR}/docling_serve_engine_model.pb.h"
+    COMMAND $<TARGET_FILE:protoc>
+    ARGS --proto_path=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures
+         --proto_path=${protobuf_SOURCE_DIR}/src
+         --cpp_out=${SERVE_ENGINE_DIR}
+         ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/docling_serve_engine_model.proto
+    DEPENDS tests/fixtures/docling_serve_engine_model.proto protoc
+    VERBATIM)
+  add_library(grparse_serve_engine_fixture STATIC
+    "${SERVE_ENGINE_DIR}/docling_serve_engine_model.pb.cc")
+  target_include_directories(grparse_serve_engine_fixture PUBLIC "${SERVE_ENGINE_DIR}")
+  target_link_libraries(grparse_serve_engine_fixture PUBLIC grparse_proto)
+  target_link_libraries(engine-model-config-wire-test PRIVATE grparse_serve_engine_fixture)
+  target_include_directories(engine-model-config-wire-test PRIVATE "${SERVE_ENGINE_DIR}")
   # The identity test compares source_digest() with the configure-time value
   # under another name, so GRPARSE_SOURCE_DIGEST stays on one command line.
   set_source_files_properties(tests/service_identity_test.cpp PROPERTIES
