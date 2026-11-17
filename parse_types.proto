@@ -887,8 +887,8 @@ message BaseVlmEngineOptions {
   optional bool trust_remote_code = 2;
 }
 
-// Closed dtypes named on a VLM engine. Any other string stays in
-// torch_dtype_raw and this enum stays unset.
+// Closed dtypes named on a VLM engine. Any other string stays in the
+// published torch_dtype string and this enum stays unset.
 enum TorchDtype {
   TORCH_DTYPE_UNSPECIFIED = 0;
   TORCH_DTYPE_FLOAT32 = 1;
@@ -899,11 +899,15 @@ enum TorchDtype {
 message EngineModelConfig {
   optional string repo_id = 1;
   optional string revision = 2;
-  // Field 3 was the untyped string. A known dtype also sets torch_dtype.
-  // An unknown dtype keeps the original here and leaves the enum unset.
-  optional string torch_dtype_raw = 3;
+  // Raw dtype string. Same tag and type as serve's torch_dtype_raw.
+  // The published name stays torch_dtype: buf breaking rejects a rename.
+  // A known value also sets torch_dtype_enum. An unknown value stays here
+  // and the enum stays unset.
+  optional string torch_dtype = 3;
   map<string, ScalarValue> extra_config = 4;
-  optional TorchDtype torch_dtype = 5;
+  // Serve's torch_dtype enum, same tag and wire type. The proto name is
+  // torch_dtype_enum because torch_dtype is the published string.
+  optional TorchDtype torch_dtype_enum = 5;
 }
 
 // Closed pass counts for NemotronParseOptions.passes.

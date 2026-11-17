@@ -1266,11 +1266,12 @@ void verify_nemotron_parse_and_torch_dtype() {
                        ->mutable_model_spec()
                        ->add_engine_overrides()
                        ->mutable_config();
-    config->set_torch_dtype(parsev1::TORCH_DTYPE_FLOAT16);
-    config->set_torch_dtype_raw("bfloat16");
+    config->set_torch_dtype_enum(parsev1::TORCH_DTYPE_FLOAT16);
+    config->set_torch_dtype("bfloat16");
     const auto rejection = rejection_of(grparse::validate_options(options, kSurface));
-    require(rejection.reason() == parsev1::OPTION_REJECTION_REASON_CONFLICT,
-            "torch_dtype and torch_dtype_raw must agree");
+    require(rejection.reason() == parsev1::OPTION_REJECTION_REASON_CONFLICT &&
+                rejection.option_path().ends_with(".torch_dtype"),
+            "torch_dtype_enum and torch_dtype must agree");
   }
   {
     auto options = vlm_custom_base();
@@ -1278,10 +1279,10 @@ void verify_nemotron_parse_and_torch_dtype() {
         ->mutable_model_spec()
         ->add_engine_overrides()
         ->mutable_config()
-        ->set_torch_dtype_raw("float8");
+        ->set_torch_dtype("float8");
     const auto status = grparse::validate_options(options, kSurface);
     require(status.error_code() == grpc::StatusCode::UNIMPLEMENTED,
-            "an unknown torch_dtype_raw is preserved, then the override field stays unimplemented: " +
+            "an unknown torch_dtype string is preserved, then the override field stays unimplemented: " +
                 status.error_message());
   }
 }
