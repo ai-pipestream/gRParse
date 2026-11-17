@@ -329,6 +329,14 @@ enum ResponseFormat {
   RESPONSE_FORMAT_NEMOTRON_PARSE_V3_5 = 12;
   // "mineru2"
   RESPONSE_FORMAT_MINERU2 = 13;
+  // "surya_html" (docling-core schema 1.11 / slim 2.150). The VLM convert
+  // collector does not carry this member yet, so a VLM leg that names it is
+  // refused NOT_IMPLEMENTED rather than sent.
+  RESPONSE_FORMAT_SURYA_HTML = 14;
+  // "lightonocr_markdown"
+  RESPONSE_FORMAT_LIGHTONOCR_MARKDOWN = 15;
+  // "unlimited_ocr2"
+  RESPONSE_FORMAT_UNLIMITED_OCR2 = 16;
 }
 
 // Inference framework for local VLM models.
