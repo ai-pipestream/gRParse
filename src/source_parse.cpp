@@ -726,8 +726,7 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
       }
     }
     if (auto s = require_supported_fields(cfg, "vlm_pipeline_custom_config",
-                                         {"engine_options", "model_spec", "scale",
-                                          "nemotron_parse"}); !s.ok()) {
+                                         {"engine_options", "model_spec", "scale"}); !s.ok()) {
       return s;
     }
     if (auto s = require_supported_fields(cfg.model_spec(), "vlm_pipeline_custom_config.model_spec",

@@ -47,16 +47,22 @@ void verify_nemotron_parse_and_torch_dtype() {
     nemotron->set_triple_regions(parsev1::NEMOTRON_PARSE_TRIPLE_REGIONS_UNION);
     nemotron->set_triple_regions_raw("union");
     nemotron->set_crop_batch_size(8);
-    require(grparse::validate_options(options, kSurface).ok(),
-            "a known nemotron_parse message is accepted");
+    const auto status = grparse::validate_options(options, kSurface);
+    require(status.error_code() == grpc::StatusCode::UNIMPLEMENTED &&
+                status.error_message().contains("vlm_pipeline_custom_config.nemotron_parse"),
+            "a valid nemotron_parse message is refused, not dropped: " + status.error_message());
   }
   {
     auto options = vlm_custom_base();
     options.mutable_vlm_pipeline_custom_config()->mutable_nemotron_parse()->set_passes_raw(
         "quadruple");
-    require(grparse::validate_options(options, kSurface).ok(),
-            "an unknown passes_raw is kept when the enum is unset");
+    const auto status = grparse::validate_options(options, kSurface);
+    require(status.error_code() == grpc::StatusCode::UNIMPLEMENTED,
+            "an unknown passes_raw passes the check, then nemotron_parse is refused: " +
+                status.error_message());
   }
+  require(grparse::validate_options(vlm_custom_base(), kSurface).ok(),
+          "the base custom config without nemotron_parse is accepted");
   {
     auto options = vlm_custom_base();
     auto* nemotron = options.mutable_vlm_pipeline_custom_config()->mutable_nemotron_parse();

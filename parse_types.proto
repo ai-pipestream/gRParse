@@ -989,8 +989,9 @@ message VlmConvertOptions {
   optional int32 batch_size = 5;
   optional bool force_backend_text = 6;
   // Multi-pass options for nemotron_parse_v3_5. Omitted fields keep the
-  // model defaults. Validated here; the convert collector has no field for
-  // it yet, so a set message is accepted and not forwarded.
+  // model defaults. A set message is checked, then refused UNIMPLEMENTED:
+  // the convert collector has no field for it, and dropping it would run a
+  // different pass count than the one asked for.
   optional NemotronParseOptions nemotron_parse = 7;
 }
 
