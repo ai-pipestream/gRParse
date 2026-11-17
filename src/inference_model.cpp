@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <map>
 #include <mutex>
 #include <numeric>
@@ -165,6 +166,18 @@ class NativeCore {
     if (current() == lost) current() = nullptr;
   }
   ov_core_t* get() const { return core_.get(); }
+  // GRPARSE_OPENVINO_INPUTS=usm (default) allocates input tensors as USM
+  // host memory of the device's context; =plain lets OpenVINO allocate them.
+  bool usm_inputs() const {
+    static const bool usm = [] {
+      const char* value = std::getenv("GRPARSE_OPENVINO_INPUTS");
+      const std::string mode = value == nullptr || *value == '\0' ? "usm" : value;
+      if (mode == "usm") return true;
+      if (mode == "plain") return false;
+      throw std::invalid_argument("GRPARSE_OPENVINO_INPUTS must be usm or plain");
+    }();
+    return usm;
+  }
   // The device's default remote context (USM host tensors), or null when the
   // device has none (the CPU device used for accuracy checks).
   ov_remote_context_t* context() const {
@@ -286,7 +299,7 @@ struct CompiledShape {
         status != OK) {
       throw InferenceDeviceError("OpenVINO infer request: " + last_error(status));
     }
-    ov_remote_context_t* context = core->context();
+    ov_remote_context_t* context = core->usm_inputs() ? core->context() : nullptr;
     for (size_t i = 0; i < inputs.size(); ++i) {
       ov_shape_t dims{};
       ov_shape_create(static_cast<int64_t>(inputs[i].shape.size()), inputs[i].shape.data(), &dims);
@@ -529,6 +542,25 @@ class NativeOpenVinoModel final : public InferenceModel {
       std::println(stderr, "gRParse {}: compiled shape {} after startup (not in the prewarm set)",
                    what_, key);
     }
+    if (std::getenv("GRPARSE_OPENVINO_DEBUG_VRAM") != nullptr) {
+      uint64_t kib = 0;
+      for (const auto& fd : std::filesystem::directory_iterator("/proc/self/fdinfo")) {
+        std::ifstream info(fd.path());
+        std::string key;
+        uint64_t value = 0;
+        while (info >> key) {
+          if (key == "drm-total-vram0:" && info >> value) kib += value;
+        }
+      }
+      char* effective = nullptr;
+      char* mode = nullptr;
+      ov_compiled_model_get_property(compiled, ov_property_key_hint_inference_precision, &effective);
+      ov_compiled_model_get_property(compiled, ov_property_key_hint_execution_mode, &mode);
+      std::println(stderr, "gRParse {}: compiled {} (process VRAM {} MiB, precision {}, mode {})", what_,
+                   key, kib / 1024, effective == nullptr ? "?" : effective, mode == nullptr ? "?" : mode);
+      if (effective != nullptr) ov_free(effective);
+      if (mode != nullptr) ov_free(mode);
+    }
     auto entry = std::make_shared<CompiledShape>();
     entry->compiled = compiled;
     entry->core = &core;
@@ -603,11 +635,48 @@ std::unique_ptr<InferenceModel> make_remote_openvino_model(const std::filesystem
                                                            ModelShapePolicy shapes,
                                                            OrtPrecision precision);
 
+namespace {
+// A handle on a model shared by every engine of the process: each compiled
+// static shape holds its own device buffers, so per-engine copies doubled
+// the VRAM (15.5 GB for the two OCR engines' buckets on the B70, after which
+// the next model's first inference ran out of device resources).  Calls from
+// several engines run concurrently through the shape's infer-request pool.
+class SharedModel final : public InferenceModel {
+ public:
+  explicit SharedModel(std::shared_ptr<InferenceModel> model) : model_(std::move(model)) {}
+  std::vector<Tensor> run(std::span<const TensorView> inputs) override { return model_->run(inputs); }
+  void prewarm(std::span<const std::vector<TensorSpec>> input_sets) override {
+    std::call_once(*warmed_for(model_.get()), [&] { model_->prewarm(input_sets); });
+  }
+  const std::vector<std::string>& input_names() const override { return model_->input_names(); }
+  const std::vector<std::string>& output_names() const override { return model_->output_names(); }
+  std::string_view backend_name() const override { return model_->backend_name(); }
+
+ private:
+  static std::once_flag* warmed_for(const InferenceModel* model) {
+    static std::mutex mutex;
+    static std::map<const InferenceModel*, std::unique_ptr<std::once_flag>> flags;
+    std::lock_guard<std::mutex> lock(mutex);
+    auto& flag = flags[model];
+    if (!flag) flag = std::make_unique<std::once_flag>();
+    return flag.get();
+  }
+  std::shared_ptr<InferenceModel> model_;
+};
+}  // namespace
+
 std::unique_ptr<InferenceModel> make_native_openvino_model(const std::filesystem::path& ir,
                                                            std::string what,
                                                            ModelShapePolicy shapes,
                                                            OrtPrecision precision) {
-  return std::make_unique<NativeOpenVinoModel>(ir, std::move(what), std::move(shapes), precision);
+  static std::mutex mutex;
+  static std::map<std::string, std::shared_ptr<InferenceModel>> shared;
+  std::string key = ir.string() + "|" + std::to_string(static_cast<int>(precision)) + "|";
+  for (const int64_t rung : shapes.batch_ladder) key += std::to_string(rung) + ",";
+  std::lock_guard<std::mutex> lock(mutex);
+  auto& model = shared[key];
+  if (!model) model = std::make_shared<NativeOpenVinoModel>(ir, std::move(what), std::move(shapes), precision);
+  return std::make_unique<SharedModel>(model);
 }
 
 namespace {
