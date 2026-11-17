@@ -558,9 +558,7 @@ grpc::Status validate_response_format(const Message& message, const std::string&
     return option_rejected(typed ? path + ".response_format" : path + ".response_format_raw",
                            parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED, name,
                            surface + ": " + path + " response format '" + name +
-                               "' is not one the VLM convert collector maps (it maps every "
-                               "docling format except mineru2, whose two-pass protocol "
-                               "it does not drive)");
+                               "' is not one the VLM convert collector maps");
   }
   return grpc::Status::OK;
 }

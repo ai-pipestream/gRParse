@@ -1017,12 +1017,12 @@ void verify_vlm_response_formats_are_typed() {
            {std::pair{&typed, std::string("vlm_pipeline_model_api.response_format")},
             std::pair{&raw, std::string("vlm_pipeline_model_local.response_format_raw")}}) {
         const grpc::Status status = grparse::validate_options(*options, kSurface);
-        if (format == parsev1::RESPONSE_FORMAT_MINERU2) {
+        if (!grparse::vlm_collector_response_format(format).has_value()) {
           const auto rejection = rejection_of(status);
           require(rejection.option_path() == path &&
                       rejection.reason() == parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED &&
-                      rejection.rejected_value_raw() == "mineru2",
-                  "mineru2 is a typed NOT_IMPLEMENTED at " + path);
+                      rejection.rejected_value_raw() == name,
+                  name + " is a typed NOT_IMPLEMENTED at " + path);
         } else {
           require(status.ok(), "the VLM pipeline accepts " + name + " at " + path + ": " +
                                    status.error_message());
