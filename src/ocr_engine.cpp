@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "grparse_inference_model.h"
 #include "grparse_session_ep.h"
 
 namespace grparse {
@@ -73,7 +74,9 @@ OcrEngine::OcrEngine(const std::filesystem::path& model_directory, int gpu_index
     }
   }
   // Surface a malformed GRPARSE_OCR_* value at startup, not on the first page.
-  ocr_detect_options();
+  const OcrDetectOptions& options = ocr_detect_options();
+  // The detector's shape range follows the configured side and padding.
+  set_ocr_detector_side_limit(options.max_side_len, options.padding);
 
   engine_ = std::make_unique<OcrLite>();
   engine_->setGpuIndex(gpu_index);
@@ -84,6 +87,9 @@ OcrEngine::OcrEngine(const std::filesystem::path& model_directory, int gpu_index
     // false here means the model wiring itself failed.
     throw std::runtime_error("RapidOCR failed to initialize its models");
   }
+  // A backend that sets up per shape does it now: boot fails here, naming
+  // the net, rather than on a page.
+  engine_->prewarm();
 }
 
 OcrEngine::Page OcrEngine::extract_page(const cv::Mat& image) {

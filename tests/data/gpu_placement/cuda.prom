@@ -1,0 +1,7 @@
+grparse_ort_sessions{model="OCR detection",requested="CUDA",actual="TensorRT",device="0",pin=""} 2
+grparse_ort_sessions{model="OCR direction",requested="CUDA",actual="TensorRT",device="0",pin=""} 2
+grparse_ort_sessions{model="OCR recognition",requested="CUDA",actual="TensorRT",device="0",pin=""} 2
+grparse_ort_sessions{model="layout",requested="CUDA",actual="TensorRT",device="0",pin=""} 1
+grparse_ort_sessions{model="table structure encoder",requested="CUDA",actual="TensorRT",device="0",pin=""} 2
+grparse_ort_sessions{model="table structure decoder",requested="CUDA",actual="TensorRT",device="0",pin=""} 2
+grparse_ort_sessions{model="figure classes",requested="CUDA",actual="TensorRT",device="0",pin=""} 2

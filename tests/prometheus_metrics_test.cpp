@@ -146,6 +146,8 @@ void verify_render_ort_session_placements() {
       {.model = "table structure", .requested = grparse::OrtEp::kOpenVino,
        .actual = grparse::OrtEp::kCpu, .device = "", .pin_reason = "say \"why\"",
        .sessions = 2},
+      {.model = "OCR detection", .requested = grparse::OrtEp::kCuda,
+       .actual = grparse::OrtEp::kTensorRt, .device = "0", .pin_reason = "", .sessions = 2},
   };
   const std::string text = grparse::render_ort_session_placements(placements);
   require_contains(text, "# TYPE grparse_ort_sessions gauge\n", "placement type line");
@@ -157,6 +159,10 @@ void verify_render_ort_session_placements() {
                    "grparse_ort_sessions{model=\"table structure\",requested=\"OpenVINO\","
                    "actual=\"CPU\",device=\"\",pin=\"say \\\"why\\\"\"} 2\n",
                    "a pinned CPU placement, label value escaped");
+  require_contains(text,
+                   "grparse_ort_sessions{model=\"OCR detection\",requested=\"CUDA\","
+                   "actual=\"TensorRT\",device=\"0\",pin=\"\"} 2\n",
+                   "a model native TensorRT runs under a CUDA selection");
   const std::string live = grparse::render_prometheus_metrics(
       grparse::PageScheduler::Metrics{}, grparse::OcrEnginePool::Stats{},
       grparse::PageScheduler::Options{});

@@ -92,7 +92,15 @@ FetchContent_Declare(rapidocr SOURCE_SUBDIR disabled
         # Line crops cut from the page in place, the debug result image built
         # only when saved, and recognizer scores decoded in place.
         COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-ocr-copies.patch"
-        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-shape-buckets.patch")
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-shape-buckets.patch"
+        # The nets run through grparse::InferenceModel: an ONNX Runtime
+        # session on the cpu flavor, native TensorRT on the cuda flavor; a
+        # startup prewarm for backends that need one.
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-model-backend.patch"
+        # A line narrower or wider than the recognizer's shape range is
+        # padded or resized into it (grparse::ocr_rec_min_width and
+        # ocr_rec_max_width; no limit on ONNX Runtime).
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-rec-width-limits.patch")
 FetchContent_MakeAvailable(rapidocr)
 # FetchContent only patches when it populates, so a dependency tree cached
 # before the patch existed would build the upstream provider wiring and the
@@ -107,30 +115,33 @@ foreach(patched_net DbNet AngleNet CrnnNet)
   endif()
 endforeach()
 unset(GRPARSE_NET_SOURCE)
-# The patch also default-initializes the session pointers the destructors
-# delete; a tree cached before that hunk existed would pass the hook check
-# above and segfault in the destructor when a session build throws. Fail the
-# configure instead, same remedy.
-file(READ "${rapidocr_SOURCE_DIR}/include/CrnnNet.h" GRPARSE_CRNN_HEADER)
-string(FIND "${GRPARSE_CRNN_HEADER}" "session = nullptr" GRPARSE_CRNN_NULLPTR_AT)
-if(GRPARSE_CRNN_NULLPTR_AT EQUAL -1)
-  message(FATAL_ERROR "include/CrnnNet.h is unpatched: the rapidocr source tree predates the "
-    "session-nullptr hunk of patches/rapidocr-session-ep.patch. Delete _deps/rapidocr-* from "
-    "the build directory (or the docker build cache) and re-run CMake.")
-endif()
-unset(GRPARSE_CRNN_HEADER)
+# The session-pointer default the session-ep patch added is gone with the
+# model-backend patch (the nets own a grparse::InferenceModel); the
+# model-backend check below covers a tree cached before either.
 # The patch also reroutes the nets' session construction through grparse's
 # retrying builder; a tree cached with only the older hunks would pass the
 # checks above and still build bare `new Ort::Session` calls that die on the
 # first provider failure.  Fail the configure instead, same remedy.
 file(READ "${rapidocr_SOURCE_DIR}/src/DbNet.cpp" GRPARSE_DBNET_SOURCE)
-string(FIND "${GRPARSE_DBNET_SOURCE}" "grparse::make_rapidocr_session" GRPARSE_DBNET_BUILDER_AT)
+# make_rapidocr_model (patches/rapidocr-model-backend.patch) builds through
+# that retrying builder on ONNX Runtime and natively on TensorRT.
+string(FIND "${GRPARSE_DBNET_SOURCE}" "grparse::make_rapidocr_model" GRPARSE_DBNET_BUILDER_AT)
 if(GRPARSE_DBNET_BUILDER_AT EQUAL -1)
-  message(FATAL_ERROR "src/DbNet.cpp is unpatched: the rapidocr source tree predates the "
-    "retrying-builder hunk of patches/rapidocr-session-ep.patch. Delete _deps/rapidocr-* from "
+  message(FATAL_ERROR "src/DbNet.cpp is unpatched: the rapidocr source tree predates "
+    "patches/rapidocr-model-backend.patch. Delete _deps/rapidocr-* from "
     "the build directory (or the docker build cache) and re-run CMake.")
 endif()
 unset(GRPARSE_DBNET_SOURCE)
+# A tree cached before the width-limits patch would hand native TensorRT a
+# line outside its recognizer profiles and fail that page.
+file(READ "${rapidocr_SOURCE_DIR}/src/CrnnNet.cpp" GRPARSE_CRNN_SOURCE)
+string(FIND "${GRPARSE_CRNN_SOURCE}" "grparse::ocr_rec_max_width" GRPARSE_CRNN_LIMITS_AT)
+if(GRPARSE_CRNN_LIMITS_AT EQUAL -1)
+  message(FATAL_ERROR "src/CrnnNet.cpp is unpatched: the rapidocr source tree predates "
+    "patches/rapidocr-rec-width-limits.patch. Delete _deps/rapidocr-* from the build directory "
+    "(or the docker build cache) and re-run CMake.")
+endif()
+unset(GRPARSE_CRNN_SOURCE)
 # The geometry include is a separate patch; a tree cached before it existed
 # fails to compile DbNet.cpp with OpenCV 5.  Fail the configure instead.
 # A tree cached before the batching patch existed would build and quietly
@@ -387,7 +398,17 @@ target_link_libraries(grparse_curl INTERFACE CURL::libcurl)
 target_link_options(grparse_curl INTERFACE "LINKER:--exclude-libs,ALL")
 
 # The execution-provider hook the patched RapidOcrOnnx nets call into.
-add_library(grparse_ort_ep STATIC src/ort_session_ep.cpp src/ocr_shape_buckets.cpp)
+# src/inference_model.cpp is the one typed model interface behind it; the
+# src/tensorrt/ files listed here hold no TensorRT type (profile choice, the
+# engine cache's naming, the OCR profiles) and build in every flavor, and
+# cmake/TensorRt.cmake adds the ones that do under GRPARSE_NATIVE_TENSORRT.
+add_library(grparse_ort_ep STATIC src/ort_session_ep.cpp src/ocr_shape_buckets.cpp
+  src/inference_model.cpp
+  src/tensorrt/engine_cache.cpp
+  src/tensorrt/ocr_profiles.cpp
+  src/tensorrt/onnx_dim_names.cpp
+  src/tensorrt/shape_profiles.cpp
+  src/targets/sha256.cpp)
 target_include_directories(grparse_ort_ep PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/compat")
 target_link_libraries(grparse_ort_ep PUBLIC onnxruntime PRIVATE grparse_flags)
 
@@ -861,7 +882,6 @@ add_library(grparse_core STATIC
   src/targets/bundle.cpp
   src/targets/s3_client.cpp
   src/targets/s3_uploader.cpp
-  src/targets/sha256.cpp
   src/targets/sigv4.cpp
   src/targets/target_step.cpp
   src/targets/zip_writer.cpp
@@ -937,6 +957,10 @@ if(BUILD_TESTING)
     office-cv-enrichment-test
     ocr-shape-buckets-test
     ort-session-ep-test
+    inference-model-test
+    tensorrt-profiles-test
+    tensorrt-engine-cache-test
+    onnx-dim-names-test
     code-formula-crops-test
     ocr-image-regions-test
     ocr-rect-render-test
@@ -991,6 +1015,12 @@ if(BUILD_TESTING)
   add_test(NAME stage-runtime-closure-script
     COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test/stage-runtime-closure-test.sh)
   set_tests_properties(stage-runtime-closure-script PROPERTIES TIMEOUT 120 LABELS grparse)
+  # The CUDA GPU placement receipt (scripts/test/gpu-placement-cuda-test.sh,
+  # stack suite gpu-placement-cuda) run against a fake docker: its own checks
+  # are tested in every build, where there is no GPU.
+  add_test(NAME gpu-placement-cuda-script
+    COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/test/gpu-placement-cuda-selftest.sh)
+  set_tests_properties(gpu-placement-cuda-script PROPERTIES TIMEOUT 300 LABELS grparse)
   # The checker every image build runs after ctest, over synthetic JUnit
   # files: a skip outside the allowed tiers fails it (scripts/check-skips.sh).
   add_test(NAME check-skips-script
@@ -1432,6 +1462,7 @@ if(BUILD_TESTING)
 endif()
 
 include(cmake/Embeddings.cmake)
+include(cmake/TensorRt.cmake)
 # ---- golden corpus: every InputFormat has a fixture, read directly --------
 # Appended as one block. The corpus manifest (tests/golden/
 # corpus_manifest.textproto) is typed by a test-only proto that imports the

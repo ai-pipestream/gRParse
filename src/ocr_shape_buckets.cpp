@@ -3,7 +3,9 @@
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
+#include "grparse_inference_model.h"
 #include "grparse_session_ep.h"
 
 namespace grparse {
@@ -103,6 +105,22 @@ bool ocr_pad_replicate() {
     throw std::invalid_argument("GRPARSE_OCR_BUCKET_PAD must be replicate or zero");
   }();
   return replicate;
+}
+
+int ocr_det_max_side(int configured) { return configured; }
+
+std::pair<int, int> ocr_det_bucket_shape(int width, int height) {
+  if (!bucket_mode().det) return {width, height};
+  return {ocr_det_bucket(width), ocr_det_bucket(height)};
+}
+
+std::string_view ocr_net_name(OcrNet net) {
+  switch (net) {
+    case OcrNet::kDetection: return "OCR detection";
+    case OcrNet::kDirection: return "OCR direction";
+    case OcrNet::kRecognition: return "OCR recognition";
+  }
+  return "OCR";
 }
 
 }  // namespace grparse

@@ -1,5 +1,8 @@
 #include "grparse/table_structure_engine.h"
 
+#include <span>
+#include <iterator>
+#include <fstream>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -12,6 +15,7 @@
 
 #include <opencv2/imgproc.hpp>
 
+#include "grparse_inference_model.h"
 #include "grparse_session_ep.h"
 
 namespace grparse {
@@ -139,41 +143,10 @@ class TableStructureEngine::Impl {
     if (!std::filesystem::exists(model_path)) {
       throw std::runtime_error("Table structure model is missing: " + model_path.string());
     }
-    // Same provider decision point as the OCR and layout sessions, with one
-    // declared exception: on OpenVINO this model is pinned to CPU, in the
-    // open.  slanet_plus decodes with a Loop whose tensors have dynamic rank,
-    // and the OpenVINO GPU plugin cannot compile it (rank().is_static()); on
-    // an Arc B70 with OpenVINO 2025.4.1 no precision, shape override, static
-    // re-export or optimization level made it build, and the plugin's own
-    // CPU device rejects it through ONNX Runtime too.  The pin skips the
-    // three doomed GPU compiles per pooled session and shows up as
-    // pin="..." in grparse_ort_sessions; remove it when a GPU build works.
-    if (ort_ep_selection().ep == OrtEp::kOpenVino) {
-      session_ = make_pinned_cpu_session(
-          env_, model_path, "table structure",
-          "slanet_plus has a dynamic-rank Loop the OpenVINO GPU plugin cannot compile");
-    } else {
-      session_ = make_session(env_, model_path, "table structure");
-    }
-
-    Ort::AllocatorWithDefaultOptions allocator;
-    input_name_ = session_.GetInputNameAllocated(0, allocator).get();
-    if (session_.GetOutputCount() != 2) {
-      throw std::runtime_error("Table structure model has an unexpected output count");
-    }
-    for (size_t index = 0; index < 2; ++index) {
-      output_names_.push_back(session_.GetOutputNameAllocated(index, allocator).get());
-    }
-    for (const auto& name : output_names_) output_name_pointers_.push_back(name.c_str());
-
-    // The token vocabulary rides in the model metadata, one token per line,
-    // exactly as the reference reads it.
-    Ort::ModelMetadata metadata = session_.GetModelMetadata();
-    const auto characters = metadata.LookupCustomMetadataMapAllocated("character", allocator);
-    if (characters == nullptr) {
-      throw std::runtime_error("Table structure model metadata lacks its token vocabulary");
-    }
-    std::istringstream lines(characters.get());
+    const bool split = native_tensorrt_build() && ort_ep_selection().ep == OrtEp::kCuda;
+    const std::string characters =
+        split ? load_split_model(model_path) : load_released_model(model_path);
+    std::istringstream lines(characters);
     std::string line;
     while (std::getline(lines, line)) {
       if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -186,6 +159,62 @@ class TableStructureEngine::Impl {
     std::erase(vocab_, "<td>");
     vocab_.insert(vocab_.begin(), "sos");
     vocab_.push_back("eos");
+  }
+
+  // Native TensorRT cannot import the released model: its decoder is one
+  // ONNX Loop whose carried tensors grow each step.  The same network runs
+  // as two static graphs instead (scripts/split_slanet.py): the encoder once
+  // per crop, the decoder one fixed-shape step per token, driven by
+  // decode_split.  A missing file fails startup, naming the script; the
+  // released model is never run on ONNX Runtime in its place.  Returns the
+  // token vocabulary, one token per line.
+  std::string load_split_model(const std::filesystem::path& model_path) {
+    const auto directory = model_path.parent_path();
+    const auto encoder_path = directory / "slanet_plus_encoder.onnx";
+    const auto step_path = directory / "slanet_plus_step.onnx";
+    const auto vocab_path = directory / "slanet_plus.vocab";
+    for (const auto& derived : {encoder_path, step_path, vocab_path}) {
+      if (std::filesystem::is_regular_file(derived)) continue;
+      throw std::runtime_error("Table structure file is missing: " + derived.string() +
+                               " (scripts/fetch-models.sh derives it from slanet_plus.onnx)");
+    }
+    encoder_ = make_inference_model(ModelSpec{encoder_path, "table structure encoder",
+                                              OrtPrecision::kFloat32, kIntraOpProcessDefault, {}});
+    step_ = make_inference_model(ModelSpec{step_path, "table structure decoder",
+                                           OrtPrecision::kFloat32, kIntraOpProcessDefault, {}});
+    std::ifstream vocab_file(vocab_path);
+    return std::string(std::istreambuf_iterator<char>(vocab_file), std::istreambuf_iterator<char>());
+  }
+
+  // ONNX Runtime: the same provider decision point as the other models, with
+  // #355's declared exception: on ONNX Runtime's OpenVINO provider this model
+  // is pinned to CPU in the open, since its dynamic-rank Loop does not
+  // compile on the GPU plugin.  Returns the token vocabulary, which rides in
+  // the model metadata, one token per line, exactly as the reference reads
+  // it.
+  std::string load_released_model(const std::filesystem::path& model_path) {
+    if (ort_ep_selection().ep == OrtEp::kOpenVino) {
+      session_ = make_pinned_cpu_session(
+          env_, model_path, "table structure",
+          "slanet_plus has a dynamic-rank Loop the OpenVINO GPU plugin cannot compile");
+    } else {
+      session_ = make_session(env_, model_path, "table structure");
+    }
+    Ort::AllocatorWithDefaultOptions allocator;
+    input_name_ = session_.GetInputNameAllocated(0, allocator).get();
+    if (session_.GetOutputCount() != 2) {
+      throw std::runtime_error("Table structure model has an unexpected output count");
+    }
+    for (size_t index = 0; index < 2; ++index) {
+      output_names_.push_back(session_.GetOutputNameAllocated(index, allocator).get());
+    }
+    for (const auto& name : output_names_) output_name_pointers_.push_back(name.c_str());
+    Ort::ModelMetadata metadata = session_.GetModelMetadata();
+    const auto stored = metadata.LookupCustomMetadataMapAllocated("character", allocator);
+    if (stored == nullptr) {
+      throw std::runtime_error("Table structure model metadata lacks its token vocabulary");
+    }
+    return stored.get();
   }
 
   TableStructure recognize(const cv::Mat& crop) {
@@ -222,33 +251,17 @@ class TableStructureEngine::Impl {
       }
     }
 
-    const std::array<int64_t, 4> input_shape = {1, 3, kInputSize, kInputSize};
-    Ort::MemoryInfo memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-    Ort::Value input = Ort::Value::CreateTensor<float>(memory, tensor.data(), tensor.size(),
-                                                       input_shape.data(), input_shape.size());
-    const char* input_names[] = {input_name_.c_str()};
-    auto outputs = session_.Run(Ort::RunOptions{nullptr}, input_names, &input, 1,
-                                output_name_pointers_.data(), output_name_pointers_.size());
-
-    // Outputs are (cell corner boxes [1, S, 8], token probs [1, S, vocab]);
-    // identify by trailing dimension instead of trusting declaration order.
-    const auto shape_of = [&](size_t index) {
-      return outputs[index].GetTensorTypeAndShapeInfo().GetShape();
-    };
-    size_t box_output = 0;
-    size_t prob_output = 1;
-    if (shape_of(0).back() != 8) std::swap(box_output, prob_output);
-    const auto box_shape = shape_of(box_output);
-    const auto prob_shape = shape_of(prob_output);
-    if (box_shape.back() != 8 ||
-        prob_shape.back() != static_cast<int64_t>(vocab_.size()) ||
-        box_shape[1] != prob_shape[1]) {
-      throw std::runtime_error("Table structure model output shape mismatch");
+    std::vector<float> box_values;
+    std::vector<float> prob_values;
+    if (encoder_ != nullptr) {
+      decode_split(tensor, &box_values, &prob_values);
+    } else {
+      run_session(tensor, &box_values, &prob_values);
     }
-    const float* boxes = outputs[box_output].GetTensorData<float>();
-    const float* probs = outputs[prob_output].GetTensorData<float>();
-    const int64_t steps = prob_shape[1];
     const auto vocab_size = static_cast<int64_t>(vocab_.size());
+    const float* boxes = box_values.data();
+    const float* probs = prob_values.data();
+    const int64_t steps = static_cast<int64_t>(prob_values.size()) / vocab_size;
     const size_t eos_index = vocab_.size() - 1;
 
     // Reference rescale for slanet-plus: normalized corners scale by the
@@ -309,9 +322,89 @@ class TableStructureEngine::Impl {
     return structure;
   }
 
+  // The released model: one ONNX Runtime run, outputs (cell corner boxes
+  // [1, S, 8], token probs [1, S, vocab]), identified by trailing dimension
+  // instead of declaration order.
+  void run_session(std::vector<float>& tensor, std::vector<float>* boxes, std::vector<float>* probs) {
+    const std::array<int64_t, 4> input_shape = {1, 3, kInputSize, kInputSize};
+    Ort::MemoryInfo memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    Ort::Value input = Ort::Value::CreateTensor<float>(memory, tensor.data(), tensor.size(),
+                                                       input_shape.data(), input_shape.size());
+    const char* input_names[] = {input_name_.c_str()};
+    auto outputs = session_.Run(Ort::RunOptions{nullptr}, input_names, &input, 1,
+                                output_name_pointers_.data(), output_name_pointers_.size());
+    const auto shape_of = [&](size_t index) {
+      return outputs[index].GetTensorTypeAndShapeInfo().GetShape();
+    };
+    size_t box_output = 0;
+    size_t prob_output = 1;
+    if (shape_of(0).back() != 8) std::swap(box_output, prob_output);
+    const auto box_shape = shape_of(box_output);
+    const auto prob_shape = shape_of(prob_output);
+    if (box_shape.back() != 8 ||
+        prob_shape.back() != static_cast<int64_t>(vocab_.size()) ||
+        box_shape[1] != prob_shape[1]) {
+      throw std::runtime_error("Table structure model output shape mismatch");
+    }
+    const float* box_data = outputs[box_output].GetTensorData<float>();
+    const float* prob_data = outputs[prob_output].GetTensorData<float>();
+    boxes->assign(box_data, box_data + box_shape[1] * 8);
+    probs->assign(prob_data, prob_data + prob_shape[1] * prob_shape.back());
+  }
+
+  // The split model: the encoder once, then one decoder step per token from
+  // sos, feeding back the argmax as a one-hot, until eos after the first
+  // step or kMaxSteps (the released loop's 501), with the softmax the
+  // released graph applies to the structure scores.
+  void decode_split(const std::vector<float>& tensor, std::vector<float>* boxes,
+                     std::vector<float>* probs) {
+    constexpr int kMaxSteps = 501;
+    constexpr int64_t kHidden = 256;
+    const auto vocab_size = static_cast<int64_t>(vocab_.size());
+    const TensorView image{TensorElement::kFloat32, tensor.data(), {1, 3, kInputSize, kInputSize}};
+    const Tensor features = encoder_->run(std::span(&image, 1)).front();
+    std::vector<float> hidden(kHidden, 0.0F);
+    std::vector<float> previous(static_cast<size_t>(vocab_size), 0.0F);
+    previous[0] = 1.0F;  // sos
+    for (int step = 0; step < kMaxSteps; ++step) {
+      const std::array<TensorView, 3> inputs = {
+          TensorView{TensorElement::kFloat32, features.bytes.data(), features.shape},
+          TensorView{TensorElement::kFloat32, hidden.data(), {1, kHidden}},
+          TensorView{TensorElement::kFloat32, previous.data(), {1, vocab_size}}};
+      const std::vector<Tensor> outputs = step_->run(inputs);
+      if (outputs.size() != 3 || outputs[0].element_count() != static_cast<size_t>(kHidden) ||
+          outputs[1].element_count() != vocab_.size() || outputs[2].element_count() != 8) {
+        throw std::runtime_error("Table structure decoder output shape mismatch");
+      }
+      const float* next_hidden = outputs[0].floats();
+      const float* scores = outputs[1].floats();
+      const float* location = outputs[2].floats();
+      hidden.assign(next_hidden, next_hidden + kHidden);
+      int64_t best = 0;
+      float highest = scores[0];
+      for (int64_t index = 1; index < vocab_size; ++index) {
+        if (scores[index] > highest) {
+          highest = scores[index];
+          best = index;
+        }
+      }
+      double total = 0.0;
+      for (int64_t index = 0; index < vocab_size; ++index) total += std::exp(scores[index] - highest);
+      for (int64_t index = 0; index < vocab_size; ++index) {
+        probs->push_back(static_cast<float>(std::exp(scores[index] - highest) / total));
+      }
+      boxes->insert(boxes->end(), location, location + 8);
+      std::ranges::fill(previous, 0.0F);
+      previous[static_cast<size_t>(best)] = 1.0F;
+      if (step > 0 && best == vocab_size - 1) break;  // eos
+    }
+  }
+
  private:
   Ort::Env env_;
   Ort::Session session_{nullptr};
+  std::unique_ptr<InferenceModel> encoder_;
+  std::unique_ptr<InferenceModel> step_;
   std::string input_name_;
   std::vector<std::string> output_names_;
   std::vector<const char*> output_name_pointers_;
