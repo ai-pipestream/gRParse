@@ -146,6 +146,9 @@ TensorElement from_ov_element(ov_element_type_e type) {
 
 // One OpenVINO core per process: it owns the GPU context, the plugin and the
 // compiled-kernel cache.
+// Bump when the shipped OpenVINO runtime or NEO changes.
+constexpr const char* kCacheGeneration = "native-ov2025.4.1-archive-neo26.40";
+
 class NativeCore {
  public:
   // The live core.  After a device loss the core is replaced (the old one
@@ -218,9 +221,16 @@ class NativeCore {
       }
     }
     if (!selection.openvino_cache_dir.empty()) {
+      // A subdirectory per runtime build: kernels another OpenVINO build
+      // compiled (the ONNX Runtime wheel's, from an older image on the same
+      // named volume) hung this one's first inference on the B70.
+      const std::filesystem::path cache =
+          std::filesystem::path(selection.openvino_cache_dir) / kCacheGeneration;
+      std::error_code ignored;
+      std::filesystem::create_directories(cache, ignored);
       const ov_status_e status = ov_core_set_property(core_.get(), device_.c_str(),
                                                       ov_property_key_cache_dir,
-                                                      selection.openvino_cache_dir.c_str());
+                                                      cache.c_str());
       if (status != OK) throw std::runtime_error("OpenVINO cache_dir: " + last_error(status));
     }
     // FP16 on the GPU: the XMX engines' native type, and on the Arc Pro B70
