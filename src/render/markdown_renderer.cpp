@@ -563,7 +563,12 @@ class MarkdownRenderer : public MarkdownWalk {
     std::vector<std::string> parts;
     if (const auto* table = table_at(ref)) {
       for (const auto& cell : table->data().table_cells()) {
-        if (!cell.text().empty()) parts.push_back(cell.text());
+        if (cell.has_ref() && !cell.ref().ref().empty()) {
+          const std::string cell_text = collect_subtree_text(cell.ref().ref());
+          if (!cell_text.empty()) parts.push_back(cell_text);
+        } else if (!cell.text().empty()) {
+          parts.push_back(cell.text());
+        }
       }
       return join(parts, " ");
     }
@@ -579,7 +584,9 @@ class MarkdownRenderer : public MarkdownWalk {
       const std::string child_text = collect_subtree_text(child);
       if (!child_text.empty()) parts.push_back(child_text);
     }
-    return join(parts, " ");
+    // Inline runs carry their own boundary whitespace. Every other node
+    // joins its pieces with a single space.
+    return join(parts, is_inline_group(ref) ? "" : " ");
   }
 
   // -- pictures -------------------------------------------------------------

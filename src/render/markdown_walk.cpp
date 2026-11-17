@@ -415,7 +415,8 @@ std::string MarkdownWalk::serialize_group_content(const std::string& ref,
   if (group.label() == docv1::GROUP_LABEL_INLINE) {
     const auto parts = get_parts(ref, list_level, true);
     if (first_span != nullptr) *first_span = first_part_span(parts);
-    return join(part_texts(parts), " ");
+    // Inline runs carry their own boundary whitespace.
+    return join(part_texts(parts), "");
   }
   // Every other group label is a transparent block container; its parts
   // start a fresh list scope.

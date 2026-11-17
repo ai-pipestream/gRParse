@@ -15,11 +15,13 @@ namespace docv1 = ai::pipestream::document::v1;
 using grparse::render_markdown;
 using grparse_test::add_cell;
 using grparse_test::add_code;
+using grparse_test::add_owned_group;
 using grparse_test::add_owned_text;
 using grparse_test::add_paragraph;
 using grparse_test::add_picture;
 using grparse_test::add_table;
 using grparse_test::base_document;
+using grparse_test::require;
 using grparse_test::require_equal;
 
 namespace {
@@ -120,6 +122,47 @@ void verify_image_destinations_are_encoded() {
                 "an embedded image uri cannot end the image destination");
 }
 
+void verify_group_text_keeps_inline_boundary_space() {
+  docv1::Document inline_doc = base_document("inline.md");
+  const std::string runs =
+      grparse_test::add_group(&inline_doc, "#/body", docv1::GROUP_LABEL_INLINE);
+  add_paragraph(&inline_doc, runs, "hello ");
+  add_paragraph(&inline_doc, runs, "world");
+  require_equal(render_markdown(inline_doc), std::string("hello world"),
+                "an inline group concatenates runs that carry their own spaces");
+
+  const auto nested = [](docv1::GroupLabel label, const std::string& left,
+                         const std::string& right) {
+    docv1::Document document = base_document("nested.md");
+    auto* outer = add_table(&document, "#/body");
+    outer->mutable_data()->set_num_rows(1);
+    outer->mutable_data()->set_num_cols(1);
+    auto* inner = document.add_tables();
+    const std::string inner_ref = "#/tables/" + std::to_string(document.tables_size() - 1);
+    inner->set_self_ref(inner_ref);
+    inner->mutable_parent()->set_ref(outer->self_ref());
+    inner->set_label(docv1::DOC_ITEM_LABEL_TABLE);
+    inner->set_content_layer(docv1::CONTENT_LAYER_BODY);
+    inner->mutable_data()->set_num_rows(1);
+    inner->mutable_data()->set_num_cols(1);
+    const std::string group = add_owned_group(&document, inner_ref, label);
+    add_paragraph(&document, group, left);
+    add_paragraph(&document, group, right);
+    add_cell(inner->mutable_data(), nullptr, "", false, 0, 0)->mutable_ref()->set_ref(group);
+    add_cell(outer->mutable_data(), nullptr, "", false, 0, 0)->mutable_ref()->set_ref(inner_ref);
+    return render_markdown(document);
+  };
+
+  const std::string inline_flat = nested(docv1::GROUP_LABEL_INLINE, "hello ", "world");
+  require(inline_flat.find("hello world") != std::string::npos &&
+              inline_flat.find("hello  world") == std::string::npos,
+          "a nested inline group keeps one boundary space");
+  const std::string block_flat = nested(docv1::GROUP_LABEL_UNSPECIFIED, "hello", "world");
+  require(block_flat.find("hello world") != std::string::npos &&
+              block_flat.find("helloworld") == std::string::npos,
+          "a nested non-inline group joins its text with one space");
+}
+
 }  // namespace
 
 int main() {
@@ -131,5 +174,6 @@ int main() {
       verify_code_footnotes_follow_the_code,
       verify_hyperlinks_are_filtered_and_encoded,
       verify_image_destinations_are_encoded,
+      verify_group_text_keeps_inline_boundary_space,
   });
 }
