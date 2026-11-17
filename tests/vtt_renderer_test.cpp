@@ -89,6 +89,30 @@ void verify_timestamps_pad_their_fields_and_round_to_milliseconds() {
                 "every field is two digits and the fractional part rounds into milliseconds");
 }
 
+void verify_a_cue_shorter_than_one_millisecond_is_lengthened() {
+  docv1::Document document = base_document("clock.wav");
+  add_cue(&document, "#/body", "zero", 1.0, 1.0);
+  add_cue(&document, "#/body", "negative", 2.0, 1.5);
+  add_cue(&document, "#/body", "same millisecond", 3.0001, 3.0004);
+  add_cue(&document, "#/body", "kept", 4.0, 4.002);
+
+  require_equal(render_vtt(document),
+                "WEBVTT\n"
+                "\n"
+                "00:00:01.000 --> 00:00:01.001\n"
+                "zero\n"
+                "\n"
+                "00:00:02.000 --> 00:00:02.001\n"
+                "negative\n"
+                "\n"
+                "00:00:03.000 --> 00:00:03.001\n"
+                "same millisecond\n"
+                "\n"
+                "00:00:04.000 --> 00:00:04.002\n"
+                "kept",
+                "a cue whose end is not after its start gains the 1 ms floor");
+}
+
 void verify_a_negative_start_reads_as_zero() {
   docv1::Document document = base_document("clock.wav");
   add_cue(&document, "#/body", "before the start", -5.0, 1.0);
@@ -222,6 +246,7 @@ int main() {
       verify_a_document_with_no_timed_items_is_the_bare_header,
       verify_the_title_item_names_the_header,
       verify_timestamps_pad_their_fields_and_round_to_milliseconds,
+      verify_a_cue_shorter_than_one_millisecond_is_lengthened,
       verify_a_negative_start_reads_as_zero,
       verify_a_voice_wraps_the_cue_text,
       verify_cue_text_is_escaped_and_keeps_its_cue_together,
