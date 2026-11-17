@@ -186,6 +186,24 @@ class NativeCore {
     core_.reset(core);
     const OrtEpSelection selection = ort_ep_selection();
     device_ = selection.openvino_device;
+    // Say plainly when the device is absent (no /dev/dri in the container,
+    // no driver) instead of the plugin's first compile error.
+    ov_available_devices_t devices{};
+    if (ov_core_get_available_devices(core_.get(), &devices) == OK) {
+      std::string available;
+      bool found = false;
+      for (size_t i = 0; i < devices.size; ++i) {
+        const std::string name = devices.devices[i];
+        if (!available.empty()) available += ", ";
+        available += name;
+        if (name == device_ || (device_ == "GPU" && name.starts_with("GPU"))) found = true;
+      }
+      ov_available_devices_free(&devices);
+      if (!found) {
+        throw std::runtime_error("OpenVINO: Device " + device_ + " is not available (available: " +
+                                 (available.empty() ? "none" : available) + ")");
+      }
+    }
     if (!selection.openvino_cache_dir.empty()) {
       const ov_status_e status = ov_core_set_property(core_.get(), device_.c_str(),
                                                       ov_property_key_cache_dir,
@@ -597,10 +615,13 @@ namespace {
 // isolation is off).  In the host, make_native_openvino_model runs.
 std::unique_ptr<InferenceModel> openvino_model(const std::filesystem::path& onnx, std::string what,
                                                ModelShapePolicy shapes, OrtPrecision precision) {
-  if (openvino_process_isolation()) {
-    return make_remote_openvino_model(ir_path(onnx), std::move(what), std::move(shapes), precision);
-  }
-  return make_native_openvino_model(ir_path(onnx), std::move(what), std::move(shapes), precision);
+  const std::string name = what;
+  std::unique_ptr<InferenceModel> model =
+      openvino_process_isolation()
+          ? make_remote_openvino_model(ir_path(onnx), std::move(what), std::move(shapes), precision)
+          : make_native_openvino_model(ir_path(onnx), std::move(what), std::move(shapes), precision);
+  record_native_placement(name);  // reached only when the device built it
+  return model;
 }
 }  // namespace
 #endif

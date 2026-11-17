@@ -145,6 +145,11 @@ struct OrtPlacement {
   uint64_t sessions = 0;
 };
 
+// Records one model built on native OpenVINO (src/inference_model.cpp) on
+// the selected device, in the same placements as the ONNX Runtime sessions,
+// so grparse_ort_sessions shows every model of the openvino flavor.
+void record_native_placement(std::string_view what);
+
 // Every placement recorded so far, one entry per (model, requested, actual,
 // device), in first-built order.  Deterministic for a fixed build sequence.
 std::vector<OrtPlacement> ort_placements();

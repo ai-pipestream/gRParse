@@ -250,6 +250,14 @@ void set_ort_intra_op_threads(int threads) { intra_op_threads.store(threads > 0 
 int ort_intra_op_threads() { return intra_op_threads.load(); }
 
 void append_execution_provider(Ort::SessionOptions& options, int legacy_gpu_index) {
+  // Only the patched RapidOCR nets' setGpuIndex calls this overload, on
+  // session options they no longer build from: a native OpenVINO build runs
+  // the nets through src/inference_model.cpp, so the hook counts and appends
+  // nothing there.
+  if (native_openvino_build() && ort_ep_selection().ep == OrtEp::kOpenVino) {
+    hook_invocations.fetch_add(1);
+    return;
+  }
   append_execution_provider(options, legacy_gpu_index, OrtPrecision::kProviderDefault,
                             kIntraOpProcessDefault);
 }
@@ -318,6 +326,8 @@ std::runtime_error ep_refusal(std::string_view what, const std::filesystem::path
 void apply_strict_placement(Ort::SessionOptions& options, OrtEp ep) {
   if (ep == OrtEp::kOpenVino) options.AddConfigEntry(kDisableCpuEpFallbackKey, "1");
 }
+
+void record_native_placement(std::string_view what) { record_placement(what, OrtEp::kOpenVino, {}); }
 
 std::vector<OrtPlacement> ort_placements() {
   std::lock_guard<std::mutex> lock(placement_mutex);

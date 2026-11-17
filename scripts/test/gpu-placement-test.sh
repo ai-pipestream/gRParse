@@ -18,9 +18,10 @@
 #   3. with the GPU, two boots in a row: the grparse_ort_sessions series must
 #      equal tests/data/gpu_placement/openvino.prom on both, the refusal
 #      counter must read 0, and converting tests/data/report_page.png must
-#      advance the server's own xe compute-engine cycles (drm-cycles-ccs in
-#      /proc/1/fdinfo), so a model that silently left the GPU shows up as
-#      either a placement diff or an idle engine.
+#      advance the container's xe compute-engine cycles (drm-cycles-ccs in
+#      every process's fdinfo: native OpenVINO runs in the server's
+#      supervised inference host), so a model that silently left the GPU
+#      shows up as either a placement diff or an idle engine.
 set -euo pipefail
 image=${1:?openvino image}
 models=${2:?models dir}
@@ -70,7 +71,7 @@ expect_startup_failure "AUTO device list" "AUTO, HETERO, MULTI and BATCH device 
 
 ccs_cycles() {
   docker exec "$server" sh -c \
-    'total=0; for f in /proc/1/fdinfo/*; do
+    'total=0; for f in /proc/[0-9]*/fdinfo/*; do
        v=$(grep -s "^drm-cycles-ccs:" "$f" | awk "{print \$2}");
        [ -n "$v" ] && total=$((total + v));
      done; echo $total'
