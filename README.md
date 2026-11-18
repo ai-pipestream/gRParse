@@ -488,11 +488,14 @@ every core per session and a pool of those is oversubscribed by exactly the
 worker count - on a small machine that costs more than the extra worker earns.
 The shared layout session is exempt and takes all cores, since there is only
 one of it. Select the NVIDIA device with
-`GRPARSE_CUDA_DEVICE`. `GRPARSE_ORT_EP` picks the ONNX Runtime execution
-provider: `cuda` (default, fails startup if CUDA cannot initialize),
-`openvino` (Intel GPU/CPU/NPU through the OpenVINO build — see below), `cpu`
-(explicit CPU inference), or `auto` (prefers CUDA, then OpenVINO, then CPU,
-logging each fallback). `GRPARSE_OCR_BATCH` (1 to 256) sets how many line
+`GRPARSE_CUDA_DEVICE`. `GRPARSE_ORT_EP` picks where the image models run:
+`cuda` (default, fails startup if CUDA cannot initialize; in the CUDA image
+this is native TensorRT, not an ONNX Runtime provider, see "NVIDIA GPUs
+(TensorRT)" below), `openvino` (Intel GPU/CPU/NPU through the OpenVINO
+build, see below), `cpu` (explicit CPU inference on ONNX Runtime), or `auto`
+(a CUDA device when one is present, then OpenVINO, then CPU, logging each
+step; with a CUDA device present the models build on it or startup fails,
+exactly as under `cuda`). `GRPARSE_OCR_BATCH` (1 to 256) sets how many line
 crops the angle classifier and recognizer take per call: 16 under CUDA, 1
 under CPU (where padding costs more than batching saves) and OpenVINO (whose
 GPU plugin compiles kernels for every new input shape).
@@ -1083,6 +1086,97 @@ The runtime stage is minimal-base compatible and runs as the non-root user
 base (`ubuntu:26.04` by default, `GRPARSE_RUNTIME_IMAGE` to swap it) only
 has to provide glibc 2.43 or newer. See "Runtime image" above for the
 pattern and for why the default is not a hardened image yet.
+
+## NVIDIA GPUs (TensorRT)
+
+The CUDA image (`Dockerfile`, `pipestreamai/grparse:latest`) runs every image
+model on native TensorRT: OCR detection, direction and recognition, the
+layout detector, table structure and the figure classifier
+(`src/tensorrt/`, behind the one model interface in
+`compat/grparse_inference_model.h`). Under `GRPARSE_ORT_EP=cuda` no ONNX
+Runtime session is created for any of them and ONNX Runtime's CUDA provider
+is never loaded. There is no second runtime behind TensorRT: a model that
+does not build as an engine fails startup with the builder's own error
+(`TensorRT (CUDA device 0) refused <model> (...)`), and
+`GRPARSE_ORT_EP=cpu` remains what it was, an explicit choice of ONNX Runtime
+on CPU.
+
+```bash
+docker run --rm --gpus all -v /path/to/models:/models:ro -p 50051:50051 \
+  -v grparse-engines:/var/cache/tensorrt -e GRPARSE_TENSORRT_CACHE_DIR=/var/cache/tensorrt \
+  pipestreamai/grparse:latest
+```
+
+**Engines and startup.** One engine per model file, shared by every worker,
+built at startup from the ONNX file with explicit optimization profiles.
+On an RTX 4080 SUPER the seven engines take about five minutes to build (30
+to 60 s each, 2 s for the table decoder step; the builder times its kernels
+on the card), and the server listens only when they are done. With a cache
+the same start takes about two seconds.
+`GRPARSE_TENSORRT_CACHE_DIR` names a directory to keep built engines in; a
+later start loads them instead (the builder's timing cache is kept there
+too). It is unset by default, so the image runs in a read-only container as
+it is and builds on every start. An engine file is used only for what it was
+built from: its name carries a digest of the model file's SHA-256, the
+TensorRT version, the GPU's name and compute capability, and the build
+recipe (TF32, profiles), so a new model, image or card builds its own and
+ignores the rest. A directory that is named and cannot be written fails
+startup. The image ships `/var/cache/tensorrt` owned by uid 65532, so a
+named volume mounted there is writable on first use (a bind mount needs
+`chown 65532`); `compose.yaml` and `compose.stack.yaml` mount one. Treat the
+directory like the models directory: an engine file is code the server
+loads.
+
+**Precision.** TensorRT 11 networks are strongly typed: an engine computes
+in the types its ONNX file declares, and the builder has no flag that lowers
+them. Every model file is FP32, so every engine is FP32, with TF32 off
+(`GRPARSE_CUDA_TF32=on` allows it). For the layout detector that is the
+requirement: its detections near the threshold move at lower precision.
+For the others half precision would need a converted model file per model,
+and a plain FP16 conversion did not hold up (the OCR detector's map differed
+by up to 1.0, the recognizer and the layout detector did not import, the
+figure classifier's logits moved by 0.04) for a gain of at most 2.4 ms on
+calls that take 1 to 11 ms. Against ONNX Runtime's CPU provider on a real
+page the FP32 engines agree to 2e-4 on the detector map, 6e-6 on the
+recognizer's probabilities, and on every box the layout detector keeps to
+under a hundredth of a pixel (`grparse-tensorrt-check` in the image repeats
+the comparison on any GPU and allows half a pixel).
+
+**Shapes.** The OCR nets take their inputs at their exact sizes, as before.
+The detector has one profile from 32 x 32 to the configured side limit
+squared (2144 at the default `GRPARSE_OCR_MAX_SIDE` and
+`GRPARSE_OCR_PADDING`), tuned for a letter page; the recognizer one for
+batches of up to `GRPARSE_OCR_BATCH` lines up to 2560 wide and one for
+single lines up to 8192 (a wider crop is resized down to that, a crop under
+16 is padded); the direction net, the layout detector, the figure classifier
+and the two table graphs run one fixed shape each. A profile per surveyed
+input size was measured and not kept: it ran no faster and multiplied the
+build time (`src/tensorrt/ocr_profiles.h`).
+
+**Table structure.** TensorRT cannot import `slanet_plus.onnx`: its decoder
+is one ONNX `Loop` whose carried tensors grow each step. The same network
+runs as two static graphs that `scripts/fetch-models.sh` derives from it
+(`scripts/split_slanet.py`: `slanet_plus_encoder.onnx`,
+`slanet_plus_step.onnx`, `slanet_plus.vocab`), the encoder once per table
+crop and the decoder one step per token, driven by the server. With
+`slanet_plus.onnx` present and a derived file missing, startup fails naming
+the file.
+
+**Placement.** `grparse_ort_sessions` (the name predates TensorRT) reports
+each model as `requested="CUDA",actual="TensorRT",device="<index>"`, and
+`grparse_ort_ep_fallbacks_total` counts refusals, each of which failed
+startup or a rebuild. `scripts/test/gpu-placement-cuda-test.sh <image>
+<models-dir>` is the receipt on a host with an NVIDIA GPU (stack suite
+`gpu-placement-cuda`): startup must fail without a GPU, with a device index
+that does not exist, with a model TensorRT cannot import and with an
+unwritable cache directory; with the GPU, a read-only boot without a cache
+and two boots with one must each match
+`tests/data/gpu_placement/cuda.prom`, hold GPU memory, keep ONNX Runtime's
+CUDA provider library out of the process and convert a page, the second
+cached boot building no engine; and `grparse-tensorrt-check` must pass.
+
+A lost device fails the call with `UNAVAILABLE` and the engines do not
+rebuild in place; restart the container.
 
 ## Intel GPUs (OpenVINO)
 

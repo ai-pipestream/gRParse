@@ -54,9 +54,12 @@ No dual ORT stacks. No torch runtime in this service. No document CV nets in the
 The target architecture is **ORT-first**, not CUDA-only. Sessions will bind to
 the configured **Execution Provider** at process start.
 
-Two image variants ship today: the CUDA image (`Dockerfile`, ONNX Runtime GPU)
-and the Intel image (`Dockerfile.openvino`, ONNX Runtime with the OpenVINO
-execution provider and its GPU/CPU/NPU plugins). `GRPARSE_ORT_EP` selects the
+Native runtimes come first and ONNX Runtime is the last resort: the CUDA image
+(`Dockerfile`) runs every image model on native TensorRT, with no ONNX
+Runtime session behind it (README "NVIDIA GPUs (TensorRT)"), and ONNX
+Runtime remains the CPU image's runtime. The Intel image
+(`Dockerfile.openvino`) is ONNX Runtime with the OpenVINO execution provider
+and its GPU/CPU/NPU plugins. `GRPARSE_ORT_EP` selects the
 provider at startup from what the linked runtime actually offers, and the
 server fails loudly when the requested provider is absent or cannot
 initialize.  An OpenVINO session build retries with bounded backoff and then
@@ -110,9 +113,12 @@ full-device execution.
 Env knobs:
 
 - `GRPARSE_ORT_EP=cuda|openvino|cpu|auto` — `cuda` is the default and fails
-  loud; `openvino` targets Intel devices through the OpenVINO build; `cpu` is
-  an explicit choice, never a silent fallback; `auto` prefers CUDA, then
-  OpenVINO, then CPU, logging each fallback. Requesting a provider the linked
+  loud (native TensorRT in the CUDA image); `openvino` targets Intel devices
+  through the OpenVINO build; `cpu` is an explicit choice, never a silent
+  fallback; `auto` takes a CUDA device when one is present (and then builds
+  on it or fails, like `cuda`), then OpenVINO, then CPU, logging each step.
+- `GRPARSE_TENSORRT_CACHE_DIR=<dir>` — where built TensorRT engines are kept
+  between starts; unset (the default) builds them at every start. Requesting a provider the linked
   ONNX Runtime does not offer fails with the list that is available.
 - `GRPARSE_OPENVINO_DEVICE=GPU|GPU.<n>|NPU|NPU.<n>|CPU` — one OpenVINO
   device; `AUTO:`/`HETERO:`/`MULTI:`/`BATCH:` lists are refused because they

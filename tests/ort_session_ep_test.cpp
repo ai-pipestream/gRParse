@@ -149,9 +149,14 @@ void verify_make_session_refuses_and_counts() {
   Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "grparse-test");
   const std::string message =
       refusal_message([&] { (void)grparse::make_session(env, model, "tiny test model"); });
-  require(message.contains("CUDA execution provider") && message.contains("tiny test model") &&
-              message.contains("will not run on CPU"),
-          "the refusal names the provider, the model and the strict policy: " + message);
+  // A build that carries native TensorRT refuses before ONNX Runtime is
+  // asked at all: a CUDA selection there never gets an ONNX Runtime session.
+  const bool native = grparse::native_tensorrt_build();
+  require(message.contains(native ? "TensorRT (CUDA device 0)" : "CUDA execution provider") &&
+              message.contains("tiny test model") &&
+              message.contains(native ? "will not run on ONNX Runtime or on CPU"
+                                      : "will not run on CPU"),
+          "the refusal names the backend, the model and the strict policy: " + message);
   require_equal(grparse::ep_fallback_count(), before + 1, "a refused provider counts once");
   require_equal(grparse::ep_build_retry_count(), retries_before,
                 "a refused CUDA build is not retried");
@@ -222,6 +227,58 @@ void verify_cpu_builds_record_placement() {
   require(placements[1].model == "ocr net" && placements[1].sessions == 1,
           "the OCR builder records its net too");
   std::filesystem::remove(model);
+}
+
+// TensorRT is where a model runs under a CUDA selection, never a selection
+// itself, and its engines sit in the same ledger as the sessions.
+void verify_native_tensorrt_placement_and_refusal() {
+  require(grparse::ort_ep_name(grparse::OrtEp::kTensorRt) == "TensorRT", "the backend has a name");
+  grparse::OrtEpSelection selection;
+  selection.ep = grparse::OrtEp::kTensorRt;
+  const std::string rejected = refusal_message([&] { grparse::set_ort_ep_selection(selection); });
+  require(rejected.contains("not a selection"), "TensorRT cannot be selected: " + rejected);
+
+  selection.ep = grparse::OrtEp::kCuda;
+  selection.cuda_device = 1;
+  grparse::set_ort_ep_selection(selection);
+  grparse::reset_ort_placements();
+  grparse::record_native_placement("layout");
+  grparse::record_native_placement("layout");
+  grparse::record_native_placement("OCR detection");
+  const auto placements = grparse::ort_placements();
+  require_equal(placements.size(), size_t{2}, "one entry per model");
+  require(placements[0].model == "layout" && placements[0].sessions == 2 &&
+              placements[0].requested == grparse::OrtEp::kCuda &&
+              placements[0].actual == grparse::OrtEp::kTensorRt && placements[0].device == "1" &&
+              placements[0].pin_reason.empty(),
+          "CUDA was asked for, TensorRT runs it, on the selected device");
+
+  const uint64_t before = grparse::ep_fallback_count();
+  const std::string message =
+      grparse::tensorrt_refusal("layout", "/models/layout_heron.onnx", "the builder said no").what();
+  require(message.contains("TensorRT (CUDA device 1) refused /models/layout_heron.onnx") &&
+              message.contains("the builder said no") &&
+              message.contains("will not run on ONNX Runtime or on CPU"),
+          "the refusal carries the builder's words and the policy: " + message);
+  require_equal(grparse::ep_fallback_count(), before + 1, "a TensorRT refusal counts once");
+
+  if (grparse::native_tensorrt_build()) {
+    // The patched nets' hook must not load ONNX Runtime's CUDA provider:
+    // it counts and appends nothing (this would throw without a GPU).
+    const uint64_t hooks = grparse::ep_hook_invocations();
+    Ort::SessionOptions options;
+    grparse::append_execution_provider(options, 0);
+    require_equal(grparse::ep_hook_invocations(), hooks + 1, "the hook still counts");
+    const std::filesystem::path model = grparse_test::write_tiny_model();
+    Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "grparse-test");
+    const std::string net = refusal_message(
+        [&] { delete grparse::make_rapidocr_session(env, model, "ocr net", 1); });
+    require(net.contains("builds no ONNX Runtime session"),
+            "no OCR net gets an ONNX Runtime session under CUDA: " + net);
+    std::filesystem::remove(model);
+  }
+  grparse::reset_ort_placements();
+  grparse::set_ort_ep_selection(grparse::OrtEpSelection{});
 }
 
 void verify_pinned_cpu_session_is_declared() {
@@ -372,6 +429,7 @@ int main() {
       verify_make_session_retries_on_openvino_then_refuses,
       verify_strict_placement_options,
       verify_cpu_builds_record_placement,
+      verify_native_tensorrt_placement_and_refusal,
       verify_pinned_cpu_session_is_declared,
       verify_make_session_retries_then_succeeds,
       verify_injected_failures_exhaust_and_throw_on_cpu,

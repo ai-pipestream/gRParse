@@ -13,7 +13,8 @@
 #          figure          always; derived, never downloaded (url patch:<source>)
 #          tokenizer       --tokenizer only
 # url    is the upstream download, or patch:<path> for a file the script
-#        derives by running scripts/patch_figure_classifier.py on <path>.
+#        derives by running scripts/patch_figure_classifier.py on <path>, or
+#        split:<path> for a file scripts/split_slanet.py derives from <path>.
 #
 # Every sha256 is the byte-exact file the server was verified with; a
 # download that hashes differently is a different model and is refused.
@@ -31,6 +32,12 @@ layout_publaynet.onnx                958aa6dcef1cc1a542d0a513b5976a3d5edbcc37d76
 
 # Table structure
 slanet_plus.onnx                     d57a942af6a2f57d6a4a0372573c696a2379bf5857c45e2ac69993f3b334514b  7758305    table           Apache-2.0  https://www.modelscope.cn/models/RapidAI/RapidTable/resolve/v2.0.0/slanet-plus.onnx
+# The same network as an encoder and one decoder step, for the runtimes that
+# cannot import the released model's decoder loop (native TensorRT), with its
+# token vocabulary; derived, never downloaded.
+slanet_plus_encoder.onnx             8ef254a883d824c04392d97888218b8c433efdcd701b93d218cb09ac833806ac  5539031    table           Apache-2.0  split:slanet_plus.onnx
+slanet_plus_step.onnx                e86a79341fdcc9ccded528df36cdefd6101a5734683664eb8f7d21bc6463b7e0  2191443    table           Apache-2.0  split:slanet_plus.onnx
+slanet_plus.vocab                    6df9c4ae78ad9f390833b5bf7f7980fb05692ba3dbeb2e1da16df26a45fe42a6  582        table           Apache-2.0  split:slanet_plus.onnx
 
 # Figure classifier: the published export, then the corrected graph the server loads
 figure_classifier_upstream.onnx      27ffc48c27ae4e12c99b6f6de0dd730005245e47b70dd0c1339e62cbac3ec4c0  16940439   figure-upstream MIT         https://huggingface.co/docling-project/DocumentFigureClassifier-v2.5/resolve/main/model.onnx

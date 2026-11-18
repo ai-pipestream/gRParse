@@ -480,9 +480,10 @@ std::string label_value(std::string_view raw) {
 
 std::string render_ort_session_placements(const std::vector<OrtPlacement>& placements) {
   std::ostringstream out;
-  out << "# HELP grparse_ort_sessions ONNX Runtime sessions by model and the execution provider "
-         "they run on; requested differs from actual only for a model pinned to CPU in code "
-         "(pin says why).\n"
+  out << "# HELP grparse_ort_sessions Model sessions by model and the backend they run on; "
+         "requested differs from actual for a model pinned to CPU in code (pin says why) and "
+         "for a model native TensorRT runs under a CUDA selection (actual TensorRT, an engine, "
+         "not an ONNX Runtime session).\n"
          "# TYPE grparse_ort_sessions gauge\n";
   for (const OrtPlacement& placement : placements) {
     out << "grparse_ort_sessions{model=\"" << label_value(placement.model) << "\",requested=\""

@@ -5,11 +5,13 @@
 #include <cmath>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 
 #include <opencv2/imgproc.hpp>
 
+#include "grparse_inference_model.h"
 #include "grparse_session_ep.h"
 
 namespace grparse {
@@ -47,24 +49,32 @@ class FigureClassifierEngine::Impl {
     if (!std::filesystem::exists(model_path)) {
       throw std::runtime_error("Figure classifier model is missing: " + model_path.string());
     }
-    // Same provider decision point as the other model sessions.
-    session_ = make_session(env_, model_path, "figure classes");
+    // Same provider decision point as the other models.
+    // One crop per call: the free batch dimension is fixed for a backend
+    // that builds for its shapes (native TensorRT).
+    ModelShapePolicy shapes;
+    shapes.profiles.push_back(static_profile({{1, 3, kInputSize, kInputSize}}));
+    model_ = make_inference_model(ModelSpec{model_path, "figure classes",
+                                            OrtPrecision::kProviderDefault, kIntraOpProcessDefault,
+                                            std::move(shapes)});
 
-    Ort::AllocatorWithDefaultOptions allocator;
-    input_name_ = session_.GetInputNameAllocated(0, allocator).get();
-    output_name_ = session_.GetOutputNameAllocated(0, allocator).get();
-
-    // The class count is static in the graph, so a model file that predates
-    // the current label set fails startup here rather than on the first
-    // figure of the first document.
-    const auto shape =
-        session_.GetOutputTypeInfo(0).GetTensorTypeAndShapeInfo().GetShape();
-    if (shape.empty() || shape.back() != static_cast<int64_t>(labels().size())) {
-      throw std::runtime_error("Figure classifier " + model_path.string() + " predicts " +
-                               std::to_string(shape.empty() ? 0 : shape.back()) +
-                               " classes; this build expects " +
-                               std::to_string(labels().size()) + " (see models/README.md)");
+    // The class count is checked on a startup inference, so a model file
+    // that predates the current label set fails startup here rather than on
+    // the first figure of the first document.
+    const std::vector<float> zeros(static_cast<size_t>(3) * kInputSize * kInputSize, 0.0F);
+    const TensorView probe{TensorElement::kFloat32, zeros.data(), {1, 3, kInputSize, kInputSize}};
+    {
+      const OvCompileGate compile_gate;
+      const auto outputs = model_->run(std::span(&probe, 1));
+      const auto& shape = outputs.front().shape;
+      if (shape.empty() || shape.back() != static_cast<int64_t>(labels().size())) {
+        throw std::runtime_error("Figure classifier " + model_path.string() + " predicts " +
+                                 std::to_string(shape.empty() ? 0 : shape.back()) +
+                                 " classes; this build expects " +
+                                 std::to_string(labels().size()) + " (see models/README.md)");
+      }
     }
+    warmed_ = true;
   }
 
   std::vector<FigureClass> classify(const cv::Mat& crop) {
@@ -93,21 +103,15 @@ class FigureClassifierEngine::Impl {
       }
     }
 
-    const std::array<int64_t, 4> input_shape = {1, 3, kInputSize, kInputSize};
-    Ort::MemoryInfo memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-    Ort::Value input = Ort::Value::CreateTensor<float>(memory, tensor.data(), tensor.size(),
-                                                       input_shape.data(), input_shape.size());
-    const char* input_names[] = {input_name_.c_str()};
-    const char* output_names[] = {output_name_.c_str()};
-    auto outputs =
-        session_.Run(Ort::RunOptions{nullptr}, input_names, &input, 1, output_names, 1);
+    const TensorView input{TensorElement::kFloat32, tensor.data(), {1, 3, kInputSize, kInputSize}};
+    const std::vector<Tensor> outputs = model_->run(std::span(&input, 1));
 
     const auto& class_labels = labels();
-    const auto shape = outputs[0].GetTensorTypeAndShapeInfo().GetShape();
+    const auto& shape = outputs[0].shape;
     if (shape.back() != static_cast<int64_t>(class_labels.size())) {
       throw std::runtime_error("Figure classifier output does not match the label set");
     }
-    const float* logits = outputs[0].GetTensorData<float>();
+    const float* logits = outputs[0].floats();
 
     float highest = logits[0];
     for (size_t index = 1; index < class_labels.size(); ++index) {
@@ -132,9 +136,7 @@ class FigureClassifierEngine::Impl {
 
  private:
   Ort::Env env_;
-  Ort::Session session_{nullptr};
-  std::string input_name_;
-  std::string output_name_;
+  std::unique_ptr<InferenceModel> model_;
   // First inference compiles provider kernels; see the gate in classify().
   bool warmed_ = false;
 };

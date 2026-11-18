@@ -73,6 +73,7 @@ std::string provider_name(grparse::OrtEp ep) {
   switch (ep) {
     case grparse::OrtEp::kCuda: return "cuda";
     case grparse::OrtEp::kOpenVino: return "openvino";
+    case grparse::OrtEp::kTensorRt:  // never selected; CUDA runs on it
     case grparse::OrtEp::kCpu: break;
   }
   return "cpu";
