@@ -142,10 +142,25 @@ void verify_validate_nemotron_parse_directly() {
   {
     parsev1::NemotronParseOptions options;
     options.set_passes_raw("quadruple");
+    const auto rejection = rejection_of(grparse::validate_nemotron_parse(options, path, kSurface));
+    require(rejection.reason() == parsev1::OPTION_REJECTION_REASON_UNKNOWN_VALUE &&
+                rejection.option_path() == "nemotron_parse.passes_raw" &&
+                rejection.rejected_value_raw() == "quadruple",
+            "validate_nemotron_parse rejects a passes_raw docling does not define");
+  }
+  {
+    parsev1::NemotronParseOptions options;
+    options.set_triple_regions_raw("both");
+    const auto rejection = rejection_of(grparse::validate_nemotron_parse(options, path, kSurface));
+    require(rejection.reason() == parsev1::OPTION_REJECTION_REASON_UNKNOWN_VALUE &&
+                rejection.option_path() == "nemotron_parse.triple_regions_raw",
+            "validate_nemotron_parse rejects a triple_regions_raw docling does not define");
+  }
+  {
+    parsev1::NemotronParseOptions options;
+    options.set_passes_raw("triple");
     require(grparse::validate_nemotron_parse(options, path, kSurface).ok(),
-            "validate_nemotron_parse keeps an unknown passes_raw");
-    require(options.passes_raw() == "quadruple" && !options.has_passes(),
-            "the unknown passes_raw is still on the message and the enum stays unset");
+            "validate_nemotron_parse accepts a known passes_raw alone");
   }
   {
     parsev1::NemotronParseOptions options;
