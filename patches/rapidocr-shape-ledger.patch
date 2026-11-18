@@ -1,0 +1,47 @@
+diff --git a/src/AngleNet.cpp b/src/AngleNet.cpp
+index b8e3496..d43a690 100644
+--- a/src/AngleNet.cpp
++++ b/src/AngleNet.cpp
+@@ -99,6 +99,8 @@ std::vector<Angle> AngleNet::getAngleBatch(const std::vector<cv::Mat> &angleImgs
+     }
+     std::array<int64_t, 4> inputShape{static_cast<int64_t>(count), static_cast<int64_t>(channels),
+                                       dstHeight, dstWidth};
++    // gRParse: every run's input shape goes in the ledger (grparse_ocr_shapes.h).
++    grparse::note_ocr_input_shape(grparse::OcrNet::kCls, inputShape[0], inputShape[2], inputShape[3]);
+     auto memoryInfo = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
+     Ort::Value inputTensor = Ort::Value::CreateTensor<float>(memoryInfo, inputTensorValues.data(),
+                                                              inputTensorValues.size(), inputShape.data(),
+diff --git a/src/CrnnNet.cpp b/src/CrnnNet.cpp
+index aff1945..7253e3e 100644
+--- a/src/CrnnNet.cpp
++++ b/src/CrnnNet.cpp
+@@ -135,6 +135,8 @@ TextLine CrnnNet::getTextLine(const cv::Mat &src) {
+         }
+     }
+     std::array<int64_t, 4> inputShape{1, srcResize.channels(), srcResize.rows, tensorWidth};
++    // gRParse: every run's input shape goes in the ledger (grparse_ocr_shapes.h).
++    grparse::note_ocr_input_shape(grparse::OcrNet::kRec, inputShape[0], inputShape[2], inputShape[3]);
+     auto memoryInfo = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
+     Ort::Value inputTensor = Ort::Value::CreateTensor<float>(memoryInfo, inputTensorValues.data(),
+                                                              inputTensorValues.size(), inputShape.data(),
+@@ -186,6 +188,7 @@ std::vector<TextLine> CrnnNet::getTextLineBatch(const std::vector<cv::Mat> &srcs
+     }
+     std::array<int64_t, 4> inputShape{static_cast<int64_t>(count), static_cast<int64_t>(channels),
+                                       dstHeight, batchWidth};
++    grparse::note_ocr_input_shape(grparse::OcrNet::kRec, inputShape[0], inputShape[2], inputShape[3]);
+     auto memoryInfo = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
+     Ort::Value inputTensor = Ort::Value::CreateTensor<float>(memoryInfo, inputTensorValues.data(),
+                                                              inputTensorValues.size(), inputShape.data(),
+diff --git a/src/DbNet.cpp b/src/DbNet.cpp
+index 332bb09..a35663d 100644
+--- a/src/DbNet.cpp
++++ b/src/DbNet.cpp
+@@ -140,6 +140,8 @@ DbNet::getTextBoxes(cv::Mat &src, ScaleParam &s, float boxScoreThresh, float box
+     }
+     std::vector<float> inputTensorValues = substractMeanNormalize(srcResize, meanValues, normValues);
+     std::array<int64_t, 4> inputShape{1, srcResize.channels(), srcResize.rows, srcResize.cols};
++    // gRParse: every run's input shape goes in the ledger (grparse_ocr_shapes.h).
++    grparse::note_ocr_input_shape(grparse::OcrNet::kDet, inputShape[0], inputShape[2], inputShape[3]);
+     auto memoryInfo = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU);
+     Ort::Value inputTensor = Ort::Value::CreateTensor<float>(memoryInfo, inputTensorValues.data(),
+                                                              inputTensorValues.size(), inputShape.data(),

@@ -47,8 +47,15 @@ class FigureClassifierEngine::Impl {
     if (!std::filesystem::exists(model_path)) {
       throw std::runtime_error("Figure classifier model is missing: " + model_path.string());
     }
-    // Same provider decision point as the other model sessions.
-    session_ = make_session(env_, model_path, "figure classes");
+    // Same provider decision point as the other model sessions.  classify()
+    // runs one crop per call, so under OpenVINO the model's free batch
+    // dimension is fixed to 1: the provider then compiles the network once,
+    // inside the session build, instead of on the first figure of a document.
+    // Other providers build exactly as before, without the name lookup.
+    const std::vector<OrtDimOverride> fixed_batch =
+        ort_ep_selection().ep == OrtEp::kOpenVino ? unit_batch_overrides(env_, model_path)
+                                                  : std::vector<OrtDimOverride>{};
+    session_ = make_fixed_shape_session(env_, model_path, "figure classes", fixed_batch);
 
     Ort::AllocatorWithDefaultOptions allocator;
     input_name_ = session_.GetInputNameAllocated(0, allocator).get();

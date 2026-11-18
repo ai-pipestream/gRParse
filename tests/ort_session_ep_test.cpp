@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -313,6 +314,59 @@ void verify_make_rapidocr_session_retries_then_succeeds() {
   std::filesystem::remove(model);
 }
 
+int64_t first_input_dim(const Ort::Session& session) {
+  return session.GetInputTypeInfo(0).GetTensorTypeAndShapeInfo().GetShape().front();
+}
+
+bool openvino_provider_built_in() {
+  const std::vector<std::string> providers = Ort::GetAvailableProviders();
+  return std::ranges::find(providers, "OpenVINOExecutionProvider") != providers.end();
+}
+
+// An engine that runs one item per call fixes the model's free batch
+// dimension, so the OpenVINO provider compiles a fixed network at session
+// build.  The name comes from the model; CPU sessions stay as they were.
+void verify_fixed_shape_session_fixes_the_free_batch() {
+  grparse::OrtEpSelection selection;
+  selection.ep = grparse::OrtEp::kCpu;
+  grparse::set_ort_ep_selection(selection);
+  Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "grparse-test");
+  const std::filesystem::path fixed = grparse_test::write_tiny_model();
+  const std::filesystem::path free_dim = grparse_test::write_tiny_free_dim_model();
+
+  require(grparse::unit_batch_overrides(env, fixed).empty(),
+          "a model with a fixed batch needs no override");
+  const std::vector<grparse::OrtDimOverride> overrides =
+      grparse::unit_batch_overrides(env, free_dim);
+  require(overrides.size() == 1 && overrides.front().name == "n" && overrides.front().value == 1,
+          "the free batch dimension is found by its own name and fixed to 1");
+
+  grparse::reset_ort_placements();
+  const Ort::Session on_cpu =
+      grparse::make_fixed_shape_session(env, free_dim, "free dim model", overrides);
+  require_equal(first_input_dim(on_cpu), int64_t{-1}, "a CPU session keeps the free dimension");
+  const auto placements = grparse::ort_placements();
+  require(placements.size() == 1 && placements.front().model == "free dim model" &&
+              placements.front().actual == grparse::OrtEp::kCpu,
+          "the fixed-shape builder records its placement like make_session");
+
+  if (openvino_provider_built_in()) {
+    // The OpenVINO CPU device: the same provider path the GPU takes, with no
+    // GPU in the test.
+    selection.ep = grparse::OrtEp::kOpenVino;
+    selection.openvino_device = "CPU";
+    grparse::set_ort_ep_selection(selection);
+    const Ort::Session on_openvino =
+        grparse::make_fixed_shape_session(env, free_dim, "free dim model", overrides);
+    require_equal(first_input_dim(on_openvino), int64_t{1},
+                  "an OpenVINO session has the batch fixed to 1");
+    selection.ep = grparse::OrtEp::kCpu;
+    grparse::set_ort_ep_selection(selection);
+  }
+  std::filesystem::remove(fixed);
+  std::filesystem::remove(free_dim);
+}
+
 void verify_make_rapidocr_session_fails_loudly_on_openvino() {
   // The no-degradation contract: with the OpenVINO provider unusable, the
   // OCR builder must retry and then THROW - never return a CPU session.  A
@@ -376,6 +430,7 @@ int main() {
       verify_make_session_retries_then_succeeds,
       verify_injected_failures_exhaust_and_throw_on_cpu,
       verify_make_rapidocr_session_retries_then_succeeds,
+      verify_fixed_shape_session_fixes_the_free_batch,
       verify_make_rapidocr_session_fails_loudly_on_openvino,
   });
 }

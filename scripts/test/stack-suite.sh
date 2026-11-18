@@ -23,6 +23,9 @@
 #   gpu-placement         scripts/test/gpu-placement-test.sh with
 #                         GRPARSE_STACK_OPENVINO_IMAGE and
 #                         GRPARSE_STACK_MODELS_DIR, on a host with an Intel GPU
+#   gpu-ocr-shapes        scripts/test/gpu-ocr-shapes-test.sh with the same two
+#                         variables, on a host with an Intel GPU
+#                         (GRPARSE_OCR_SHAPES_*: its documents and limits)
 set -eu
 
 suite=${1:?usage: stack-suite.sh <suite>}
@@ -71,6 +74,10 @@ case "$suite" in
     need GRPARSE_STACK_OPENVINO_IMAGE
     need GRPARSE_STACK_MODELS_DIR
     exec bash scripts/test/gpu-placement-test.sh "$GRPARSE_STACK_OPENVINO_IMAGE" "$GRPARSE_STACK_MODELS_DIR" ;;
+  gpu-ocr-shapes)
+    need GRPARSE_STACK_OPENVINO_IMAGE
+    need GRPARSE_STACK_MODELS_DIR
+    exec bash scripts/test/gpu-ocr-shapes-test.sh "$GRPARSE_STACK_OPENVINO_IMAGE" "$GRPARSE_STACK_MODELS_DIR" ;;
   *)
     echo "stack-suite: unknown suite '$suite'" >&2
     exit 64 ;;

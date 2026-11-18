@@ -11,6 +11,10 @@
 
 #include <onnxruntime/core/session/onnxruntime_cxx_api.h>
 
+// The OCR nets' input buckets and shape ledger; the patched nets reach both
+// through this header.
+#include "grparse_ocr_shapes.h"
+
 // Execution-provider selection for every ONNX Runtime session this process
 // creates.  RapidOcrOnnx's det/cls/rec nets each own a private
 // Ort::SessionOptions; patches/rapidocr-session-ep.patch rewires their
@@ -70,26 +74,6 @@ int ort_intra_op_threads();
 // multiplies.  1 reads one crop per call, the upstream behavior.  A
 // malformed value throws std::invalid_argument.
 size_t ocr_batch_size();
-
-// Fixed input shapes for the OCR nets (patches/rapidocr-shape-buckets.patch,
-// src/ocr_shape_buckets.cpp).  The OpenVINO GPU plugin compiles the network
-// for every new input shape; with dynamic page and line sizes one 101-paper
-// run left 16,822 compiled blobs and made OCR 11x slower than CUDA.  When on,
-// the detector input is padded with white to a bucketed size and its map is
-// cropped back, and a line is padded to a bucketed width whose extra time
-// steps are not decoded.  GRPARSE_OCR_SHAPE_BUCKETS=auto (default: the
-// detector only, for the OpenVINO provider on a GPU device), on, det, rec or
-// off.
-bool ocr_shape_buckets();
-// The smallest detector bucket (a multiple of GRPARSE_OCR_DET_STEP, default
-// 64) at least `side` pixels.
-int ocr_det_bucket(int side);
-// The smallest recognizer width bucket at least `width` pixels.
-int ocr_rec_bucket(int width);
-// How bucket padding is filled: true repeats the edge pixels
-// (GRPARSE_OCR_BUCKET_PAD=replicate, the default), false pads the detector
-// with white and the recognizer with zeros (=zero).
-bool ocr_pad_replicate();
 
 // Must be called before any OCR engine is constructed.  Later sessions use
 // the newest selection; sessions already built keep the provider they bound.
@@ -229,6 +213,33 @@ Ort::Session make_session(Ort::Env& env, const std::filesystem::path& model_path
                           std::string_view what,
                           OrtPrecision precision = OrtPrecision::kProviderDefault,
                           int intra_op_threads = kIntraOpProcessDefault);
+
+// One named free (symbolic) input dimension and the value a session fixes it
+// to.
+struct OrtDimOverride {
+  std::string name;
+  int64_t value = 1;
+};
+
+// The free leading (batch) dimension of each model input, fixed to 1: what an
+// engine that always runs one item per call passes to
+// make_fixed_shape_session.  Reads the names from a throwaway CPU session, so
+// a re-exported model with another symbol needs no code change.  Empty when
+// every batch dimension is already fixed or carries no name.
+std::vector<OrtDimOverride> unit_batch_overrides(Ort::Env& env,
+                                                 const std::filesystem::path& model_path);
+
+// make_session for a model whose only free dimensions are the ones in
+// `fixed_dims`.  The OpenVINO provider compiles a model with a free dimension
+// as a dynamic network: its kernels build on the first inference instead of
+// inside the session build, and every run is slower than the fixed network's
+// (figure classifier on an Arc Pro B70: first run 4.6 s and 40 ms after,
+// against 2 ms once the batch is fixed).  The overrides are applied for the
+// OpenVINO provider only; CPU and CUDA sessions are built exactly as
+// make_session builds them.
+Ort::Session make_fixed_shape_session(Ort::Env& env, const std::filesystem::path& model_path,
+                                      std::string_view what,
+                                      const std::vector<OrtDimOverride>& fixed_dims);
 
 // Builds one Ort::Session for the patched RapidOcrOnnx nets.  On the
 // OpenVINO provider the build retries a bounded number of times with short

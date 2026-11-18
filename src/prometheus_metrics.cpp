@@ -493,6 +493,20 @@ std::string render_ort_session_placements(const std::vector<OrtPlacement>& place
   return out.str();
 }
 
+std::string render_ocr_input_shapes(const std::vector<OcrInputShape>& shapes) {
+  std::ostringstream out;
+  out << "# HELP grparse_ocr_input_shapes Distinct input shapes each OCR net has run since "
+         "start; a provider that compiles per input shape (the OpenVINO GPU plugin) has "
+         "compiled the net this many times.\n"
+         "# TYPE grparse_ocr_input_shapes gauge\n";
+  for (const OcrNet net : {OcrNet::kDet, OcrNet::kCls, OcrNet::kRec}) {
+    const auto distinct = std::ranges::count_if(
+        shapes, [net](const OcrInputShape& shape) { return shape.net == net; });
+    out << "grparse_ocr_input_shapes{net=\"" << ocr_net_name(net) << "\"} " << distinct << '\n';
+  }
+  return out.str();
+}
+
 std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
                                       const OcrEnginePool::Stats& ocr_pool,
                                       const PageScheduler::Options& options,
@@ -514,7 +528,8 @@ std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
                                       const OfficeCvTotals& office_cv) {
   return render_prometheus_metrics(metrics, ocr_pool, options, repairs, data, office_cv,
                                    ep_fallback_count(), ep_build_retry_count()) +
-         render_ort_session_placements(ort_placements());
+         render_ort_session_placements(ort_placements()) +
+         render_ocr_input_shapes(ocr_input_shapes());
 }
 
 std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,

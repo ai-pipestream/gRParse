@@ -88,6 +88,7 @@ OcrEngine::OcrEngine(const std::filesystem::path& model_directory, int gpu_index
   }
   // Surface a malformed GRPARSE_OCR_* value at startup, not on the first page.
   ocr_detect_options();
+  (void)ocr_shape_buckets();
 
   engine_ = std::make_unique<OcrLite>();
   engine_->setGpuIndex(gpu_index);
