@@ -15,6 +15,13 @@ struct OcrDetectOptions {
   int padding = 50;
   int max_side_len = 2048;
   float box_score_thresh = 0.6F;
+  // A box scoring below box_score_thresh but at least rescue_box_score is
+  // kept when its read is confident (mean character score at least
+  // rescue_confidence): an underlined line, or one with wide gaps, scores
+  // low on the detector map while its text reads cleanly; noise boxes on
+  // textures and tiny print read with low confidence.
+  float rescue_box_score = 0.5F;
+  float rescue_confidence = 0.9F;
   float box_thresh = 0.3F;
   float un_clip_ratio = 2.0F;
   bool do_angle = true;
@@ -23,6 +30,13 @@ struct OcrDetectOptions {
 
 // Throws std::invalid_argument for a malformed GRPARSE_OCR_* value.
 const OcrDetectOptions& ocr_detect_options();
+
+// The box score the detector filters at: the lower of the two thresholds.
+float detect_box_score(const OcrDetectOptions& options);
+
+// Whether a recognized line stays: its box clears box_score_thresh, or it
+// clears rescue_box_score and reads with at least rescue_confidence.
+bool keep_ocr_line(float box_score, float confidence, const OcrDetectOptions& options);
 
 class OcrEngine final {
  public:

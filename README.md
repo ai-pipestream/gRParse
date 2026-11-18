@@ -502,7 +502,12 @@ offer fails with the list that is actually available. An OCR session that
 throws during inference is destroyed and rebuilt on next use instead of
 staying in the pool poisoned. Optional RapidOCR detect knobs:
 `GRPARSE_OCR_PADDING`, `GRPARSE_OCR_MAX_SIDE`, `GRPARSE_OCR_BOX_SCORE`,
-`GRPARSE_OCR_BOX_THRESH`, `GRPARSE_OCR_UNCLIP`. These are read and range-checked
+`GRPARSE_OCR_BOX_THRESH`, `GRPARSE_OCR_UNCLIP`, and the low-score rescue
+`GRPARSE_OCR_RESCUE_BOX_SCORE` (default 0.5) with `GRPARSE_OCR_RESCUE_CONFIDENCE`
+(default 0.9): a box scoring under `GRPARSE_OCR_BOX_SCORE` (0.6) but at least the
+rescue score is kept when its mean character score reaches the rescue confidence,
+which brings back underlined lines without the noise a lower box score lets in.
+These are read and range-checked
 once at startup: a malformed or out-of-range value fails the server immediately
 rather than being silently ignored per page. gRPC memory, thread,
 and stream limits use `GRPARSE_GRPC_MEMORY_MIB`, `GRPARSE_GRPC_MAX_THREADS`,
