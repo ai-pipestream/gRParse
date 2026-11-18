@@ -23,6 +23,7 @@
 #include "grparse/in_memory_document.h"
 #include "grparse/page_previews.h"
 #include "grparse/page_source_watch.h"
+#include "vlm_custom_options.h"
 
 namespace grparse {
 namespace {
@@ -206,6 +207,9 @@ void apply_vlm_convert_options(const parsev1::ConvertDocumentOptions& convert,
       options->prompt = custom.model_spec().prompt();
     }
     if (custom.has_scale() && custom.scale() > 0.0) options->scale = custom.scale();
+    if (custom.has_nemotron_parse()) {
+      options->nemotron_parse = collector_nemotron_parse(custom.nemotron_parse());
+    }
   }
   if (convert.has_vlm_pipeline_model() &&
       convert.vlm_pipeline_model() != parsev1::VLM_MODEL_TYPE_UNSPECIFIED) {
@@ -495,6 +499,9 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
         request_options->set_response_format_raw(options.response_format_raw);
       }
       if (!options.prompt.empty()) request_options->set_prompt(options.prompt);
+      if (options.nemotron_parse) {
+        *request_options->mutable_nemotron_parse() = *options.nemotron_parse;
+      }
       if (options.scale > 0.0) request_options->set_scale(options.scale);
       if (!options.endpoint.empty()) request_options->set_endpoint(options.endpoint);
       if (options.concurrency != 0) request_options->set_concurrency(options.concurrency);
