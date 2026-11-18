@@ -147,4 +147,27 @@ grpc::Status validate_nemotron_parse(const parsev1::NemotronParseOptions& option
   return grpc::Status::OK;
 }
 
+grpc::Status require_single_nemotron_pass(const parsev1::NemotronParseOptions& options,
+                                          const std::string& path, const std::string& surface) {
+  // validate_nemotron_parse has run, so a set enum and its raw agree and the
+  // enum decides. Without it the raw string decides, and a name docling does
+  // not define is refused like a multi-pass mode: it cannot be run either.
+  std::string asked;
+  if (options.has_passes()) {
+    if (options.passes() == parsev1::NEMOTRON_PARSE_PASSES_SINGLE) return grpc::Status::OK;
+    for (const auto& entry : kNemotronPasses) {
+      if (entry.member == options.passes()) asked = entry.name;
+    }
+  } else if (options.has_passes_raw()) {
+    if (options.passes_raw() == "single") return grpc::Status::OK;
+    asked = options.passes_raw();
+  } else {
+    return grpc::Status::OK;
+  }
+  return grpc::Status(grpc::StatusCode::UNIMPLEMENTED,
+                      surface + ": " + path + ".passes '" + asked + "'" +
+                          " is not implemented; the VLM convert collector runs only the "
+                          "single page pass");
+}
+
 }  // namespace grparse

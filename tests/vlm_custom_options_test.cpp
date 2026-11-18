@@ -1,6 +1,7 @@
 // The VLM custom-config fields docling-serve sends as an enum beside its raw
 // string: NemotronParseOptions passes and triple_regions, and an engine
-// override's torch dtype. Checked through validate_options and directly.
+// override's torch dtype. Checked through validate_options and directly,
+// along with which Nemotron Parse pass modes the convert collector runs.
 
 #include <string>
 
@@ -48,9 +49,24 @@ void verify_nemotron_parse_and_torch_dtype() {
     nemotron->set_triple_regions_raw("union");
     nemotron->set_crop_batch_size(8);
     const auto status = grparse::validate_options(options, kSurface);
+    require(status.ok(), "a single-pass nemotron_parse is the pass the collector runs: " +
+                             status.error_message());
+  }
+  {
+    auto options = vlm_custom_base();
+    options.mutable_vlm_pipeline_custom_config()->mutable_nemotron_parse();
+    require(grparse::validate_options(options, kSurface).ok(),
+            "an empty nemotron_parse keeps docling's single-pass default");
+  }
+  {
+    auto options = vlm_custom_base();
+    options.mutable_vlm_pipeline_custom_config()->mutable_nemotron_parse()->set_passes(
+        parsev1::NEMOTRON_PARSE_PASSES_TRIPLE);
+    const auto status = grparse::validate_options(options, kSurface);
     require(status.error_code() == grpc::StatusCode::UNIMPLEMENTED &&
-                status.error_message().contains("vlm_pipeline_custom_config.nemotron_parse"),
-            "a valid nemotron_parse message is refused, not dropped: " + status.error_message());
+                status.error_message().contains(
+                    "vlm_pipeline_custom_config.nemotron_parse.passes 'triple'"),
+            "triple passes are refused, not run as one: " + status.error_message());
   }
   {
     auto options = vlm_custom_base();
@@ -58,7 +74,7 @@ void verify_nemotron_parse_and_torch_dtype() {
         "quadruple");
     const auto status = grparse::validate_options(options, kSurface);
     require(status.error_code() == grpc::StatusCode::UNIMPLEMENTED,
-            "an unknown passes_raw passes the check, then nemotron_parse is refused: " +
+            "an unknown passes_raw passes the check, then cannot be run: " +
                 status.error_message());
   }
   require(grparse::validate_options(vlm_custom_base(), kSurface).ok(),
@@ -177,6 +193,45 @@ void verify_validate_nemotron_parse_directly() {
                 rejection.rejected_value_raw() == "0",
             "validate_nemotron_parse rejects crop_batch_size 0");
   }
+}
+
+void verify_only_the_single_pass_runs() {
+  const std::string path = "nemotron_parse";
+  const auto status_for = [&](const parsev1::NemotronParseOptions& options) {
+    return grparse::require_single_nemotron_pass(options, path, kSurface);
+  };
+  parsev1::NemotronParseOptions unset;
+  require(status_for(unset).ok(), "no passes is docling's single pass");
+
+  parsev1::NemotronParseOptions single;
+  single.set_passes(parsev1::NEMOTRON_PARSE_PASSES_SINGLE);
+  single.set_triple_regions(parsev1::NEMOTRON_PARSE_TRIPLE_REGIONS_DETECTOR);
+  single.set_crop_batch_size(2);
+  require(status_for(single).ok(),
+          "single pass runs; triple_regions and crop_batch_size only steer extra passes");
+
+  parsev1::NemotronParseOptions single_raw;
+  single_raw.set_passes_raw("single");
+  require(status_for(single_raw).ok(), "passes_raw single alone runs");
+
+  parsev1::NemotronParseOptions two;
+  two.set_passes(parsev1::NEMOTRON_PARSE_PASSES_DOUBLE);
+  const auto doubled = status_for(two);
+  require(doubled.error_code() == grpc::StatusCode::UNIMPLEMENTED &&
+              doubled.error_message().contains("nemotron_parse.passes 'double'"),
+          "double pass is refused by its docling name: " + doubled.error_message());
+
+  parsev1::NemotronParseOptions three_raw;
+  three_raw.set_passes_raw("triple");
+  require(status_for(three_raw).error_code() == grpc::StatusCode::UNIMPLEMENTED,
+          "passes_raw triple alone is refused");
+
+  parsev1::NemotronParseOptions unknown_raw;
+  unknown_raw.set_passes_raw("quadruple");
+  const auto unknown = status_for(unknown_raw);
+  require(unknown.error_code() == grpc::StatusCode::UNIMPLEMENTED &&
+              unknown.error_message().contains("'quadruple'"),
+          "a pass name docling does not define cannot be run: " + unknown.error_message());
 }
 
 void verify_validate_engine_overrides_directly() {
@@ -301,6 +356,7 @@ int main() {
   return grparse_test::run_test_main("vlm-custom-options-test", "ok", {
       verify_nemotron_parse_and_torch_dtype,
       verify_validate_nemotron_parse_directly,
+      verify_only_the_single_pass_runs,
       verify_validate_engine_overrides_directly,
       verify_an_unknown_raw_beside_a_set_enum_conflicts,
       verify_a_typed_value_outside_its_enum_is_unknown,
