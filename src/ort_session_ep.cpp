@@ -3,6 +3,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <format>
 #include <mutex>
 #include <optional>
 #include <print>
@@ -12,6 +13,7 @@
 #include <thread>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace grparse {
 namespace {
@@ -24,6 +26,46 @@ std::atomic<uint64_t> ep_fallbacks{0};
 std::atomic<uint64_t> ep_build_retries{0};
 std::atomic<int> injected_build_failures{0};
 std::atomic<int> intra_op_threads{0};
+
+std::mutex placement_mutex;
+std::vector<OrtPlacement> placements;
+
+OrtEpSelection selection_copy() {
+  std::lock_guard<std::mutex> lock(selection_mutex);
+  return current_selection;
+}
+
+std::string device_label(OrtEp ep, const OrtEpSelection& selection) {
+  switch (ep) {
+    case OrtEp::kCuda: return std::to_string(selection.cuda_device);
+    case OrtEp::kOpenVino: return selection.openvino_device;
+    case OrtEp::kCpu: break;
+  }
+  return {};
+}
+
+// One more session of `what` placed on `actual`; same key, same entry.
+void record_placement(std::string_view what, OrtEp actual, std::string_view pin_reason) {
+  const OrtEpSelection selection = selection_copy();
+  OrtPlacement entry{
+      .model = std::string(what),
+      .requested = selection.ep,
+      .actual = actual,
+      .device = device_label(actual, selection),
+      .pin_reason = std::string(pin_reason),
+  };
+  std::lock_guard<std::mutex> lock(placement_mutex);
+  for (OrtPlacement& existing : placements) {
+    if (existing.model == entry.model && existing.requested == entry.requested &&
+        existing.actual == entry.actual && existing.device == entry.device &&
+        existing.pin_reason == entry.pin_reason) {
+      ++existing.sessions;
+      return;
+    }
+  }
+  entry.sessions = 1;
+  placements.push_back(std::move(entry));
+}
 
 // One initial build plus two retries for a model on the OpenVINO provider.
 // Its toolchain fails intermittently even on a healthy host, and most of
@@ -237,12 +279,43 @@ void append_execution_provider(Ort::SessionOptions& options, int legacy_gpu_inde
       // ONNX Runtime intra-op setting above never reaches them; this is the
       // knob that does.
       if (threads > 0) openvino_options["num_of_threads"] = std::to_string(threads);
+      // Every node runs on the OpenVINO device or the session does not
+      // build: without this, nodes the provider does not claim run on ONNX
+      // Runtime's CPU provider with no error and no log line.
+      apply_strict_placement(options, OrtEp::kOpenVino);
       options.AppendExecutionProvider_OpenVINO_V2(openvino_options);
       return;
     }
     case OrtEp::kCpu:
       return;
   }
+}
+
+std::runtime_error ep_refusal(std::string_view what, const std::filesystem::path& model_path,
+                              std::string_view detail) {
+  const OrtEpSelection selection = selection_copy();
+  ep_fallbacks.fetch_add(1);
+  std::string message = std::format(
+      "gRParse {}: the {} execution provider ({}) refused {} ({}); GPU placement is strict "
+      "and this model will not run on CPU",
+      what, ort_ep_name(selection.ep), device_label(selection.ep, selection),
+      model_path.string(), detail);
+  std::println(stderr, "{}", message);
+  return std::runtime_error(message);
+}
+
+void apply_strict_placement(Ort::SessionOptions& options, OrtEp ep) {
+  if (ep == OrtEp::kOpenVino) options.AddConfigEntry(kDisableCpuEpFallbackKey, "1");
+}
+
+std::vector<OrtPlacement> ort_placements() {
+  std::lock_guard<std::mutex> lock(placement_mutex);
+  return placements;
+}
+
+void reset_ort_placements() {
+  std::lock_guard<std::mutex> lock(placement_mutex);
+  placements.clear();
 }
 
 Ort::Session make_session(Ort::Env& env, const std::filesystem::path& model_path,
@@ -254,10 +327,13 @@ Ort::Session make_session(Ort::Env& env, const std::filesystem::path& model_path
   // counter routes through it anyway so the tests can exercise retries
   // without a GPU.
   if (ep == OrtEp::kCpu && !build_failure_injection_pending()) {
-    return make_cpu_session(env, model_path, intra_op_threads);
+    Ort::Session session = make_cpu_session(env, model_path, intra_op_threads);
+    record_placement(what, OrtEp::kCpu, {});
+    return session;
   }
+  Ort::Session session{nullptr};
   try {
-    return build_with_ep_retries(what, ep, [&]() -> Ort::Session {
+    session = build_with_ep_retries(what, ep, [&]() -> Ort::Session {
       // The OpenVINO provider compiles the model inside the Session
       // constructor; serialize those compiles process-wide, one attempt at a
       // time.  The gate is per attempt so the backoff sleeps between attempts
@@ -274,17 +350,12 @@ Ort::Session make_session(Ort::Env& env, const std::filesystem::path& model_path
     });
   } catch (const std::exception& error) {
     if (ep == OrtEp::kCpu) throw;
-    // Pre-existing policy, unchanged: this model loses its acceleration,
-    // not the whole server (the slanet_plus table model lands here by
-    // design).  The OCR nets are different: they build through
-    // make_rapidocr_session and fail loudly instead.
-    ep_fallbacks.fetch_add(1);
-    std::println(stderr,
-                 "gRParse {}: the {} execution provider would not build {} ({}); this model "
-                 "runs on CPU",
-                 what, ort_ep_name(ep), model_path.string(), error.what());
+    // Strict placement: no CPU rebuild.  The model either runs on the
+    // provider the process selected or the build fails, loudly and counted.
+    throw ep_refusal(what, model_path, error.what());
   }
-  return make_cpu_session(env, model_path, intra_op_threads);
+  record_placement(what, ep, {});
+  return session;
 }
 
 Ort::Session* make_rapidocr_session(Ort::Env& env, const std::filesystem::path& model_path,
@@ -299,28 +370,40 @@ Ort::Session* make_rapidocr_session(Ort::Env& env, const std::filesystem::path& 
   // the error now, so CPU builds skip the retry loop.  The test-injection
   // counter routes through it anyway so the tests can exercise retries
   // without a GPU.
-  if (ep == OrtEp::kCpu && !build_failure_injection_pending()) return cpu_build();
-  // No catch: after the retries exhaust, the exception propagates out of the
-  // net's initModel and takes the engine down with a clear error.  The
-  // openvino flavor never silently degrades an OCR model to CPU.
-  return build_with_ep_retries(what, ep, [&]() -> Ort::Session* {
-    // Same gate discipline as make_session: one attempt under the gate at a
-    // time, backoff sleeps outside it.
-    const OvCompileGate compile_gate;
-    if (ep == OrtEp::kCpu) {
-      // Only reachable under test failure injection.
+  if (ep == OrtEp::kCpu && !build_failure_injection_pending()) {
+    Ort::Session* session = cpu_build();
+    record_placement(what, OrtEp::kCpu, {});
+    return session;
+  }
+  // After the retries exhaust, the refusal propagates out of the net's
+  // initModel and takes the engine down with a clear error.  No OCR model
+  // ever degrades to CPU.
+  Ort::Session* session = nullptr;
+  try {
+    session = build_with_ep_retries(what, ep, [&]() -> Ort::Session* {
+      // Same gate discipline as make_session: one attempt under the gate at
+      // a time, backoff sleeps outside it.
+      const OvCompileGate compile_gate;
+      if (ep == OrtEp::kCpu) {
+        // Only reachable under test failure injection.
+        throw_if_build_failure_injected();
+        return cpu_build();
+      }
+      // The same options the patched nets used to configure themselves: the
+      // central provider hook with the net's own thread count, exactly what
+      // cpu_build() honours, so a provider never changes the threading.
+      Ort::SessionOptions options;
+      options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
+      append_execution_provider(options, -1, OrtPrecision::kProviderDefault, num_thread);
       throw_if_build_failure_injected();
-      return cpu_build();
-    }
-    // The same options the patched nets used to configure themselves: the
-    // central provider hook with the net's own thread count, exactly what
-    // cpu_build() honours, so a provider never changes the threading.
-    Ort::SessionOptions options;
-    options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
-    append_execution_provider(options, -1, OrtPrecision::kProviderDefault, num_thread);
-    throw_if_build_failure_injected();
-    return new Ort::Session(env, model_path.c_str(), options);
-  });
+      return new Ort::Session(env, model_path.c_str(), options);
+    });
+  } catch (const std::exception& error) {
+    if (ep == OrtEp::kCpu) throw;
+    throw ep_refusal(what, model_path, error.what());
+  }
+  record_placement(what, ep, {});
+  return session;
 }
 
 Ort::Session make_cpu_session(Ort::Env& env, const std::filesystem::path& model_path,
@@ -328,6 +411,22 @@ Ort::Session make_cpu_session(Ort::Env& env, const std::filesystem::path& model_
   Ort::SessionOptions cpu_options;
   configure_cpu_options(cpu_options, intra_op_threads);
   return Ort::Session(env, model_path.c_str(), cpu_options);
+}
+
+Ort::Session make_pinned_cpu_session(Ort::Env& env, const std::filesystem::path& model_path,
+                                     std::string_view what, std::string_view reason,
+                                     int intra_op_threads) {
+  if (reason.empty()) {
+    throw std::invalid_argument(std::format("gRParse {}: a CPU pin needs a reason", what));
+  }
+  Ort::Session session = make_cpu_session(env, model_path, intra_op_threads);
+  const OrtEp requested = ort_ep_selection().ep;
+  if (requested != OrtEp::kCpu) {
+    std::println(stderr, "gRParse {}: pinned to CPU under the {} execution provider ({})", what,
+                 ort_ep_name(requested), reason);
+  }
+  record_placement(what, OrtEp::kCpu, requested == OrtEp::kCpu ? std::string_view{} : reason);
+  return session;
 }
 
 }  // namespace grparse

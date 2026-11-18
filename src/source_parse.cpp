@@ -162,6 +162,7 @@ bool implemented_option(std::string_view name) {
       "include_page_images",
       "md_page_break_placeholder",
       "md_compact_tables",
+      "formatting_fallback_mode",
       "do_pdf_heading_hierarchy",
       "pdf_heading_hierarchy_options",
       "chunking_preset",
@@ -558,9 +559,7 @@ grpc::Status validate_response_format(const Message& message, const std::string&
     return option_rejected(typed ? path + ".response_format" : path + ".response_format_raw",
                            parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED, name,
                            surface + ": " + path + " response format '" + name +
-                               "' is not one the VLM convert collector maps (it maps every "
-                               "docling format except mineru2, whose two-pass protocol "
-                               "it does not drive)");
+                               "' is not one the VLM convert collector maps");
   }
   return grpc::Status::OK;
 }
@@ -630,6 +629,110 @@ grpc::Status validate_vlm_selection(const pipestream::parse::v1::ConvertDocument
   return grpc::Status::OK;
 }
 
+// A closed string and its enum. A known raw must agree with a set enum.
+// An unknown raw is kept only when the enum is unset.
+template <typename Enum>
+grpc::Status agree_raw_enum(const std::string& path, bool has_enum, Enum value, bool enum_valid,
+                            bool has_raw, const std::string& raw,
+                            const std::optional<Enum>& named, const std::string& surface,
+                            const std::string& raw_path) {
+  namespace parsev1 = pipestream::parse::v1;
+  if (has_enum && (!enum_valid || value == static_cast<Enum>(0))) {
+    return option_rejected(path, parsev1::OPTION_REJECTION_REASON_UNKNOWN_VALUE,
+                           std::to_string(static_cast<int>(value)),
+                           surface + ": " + path + " is not a known value");
+  }
+  if (!has_raw) return grpc::Status::OK;
+  if (named.has_value()) {
+    if (has_enum && *named != value) {
+      return option_rejected(raw_path, parsev1::OPTION_REJECTION_REASON_CONFLICT, raw,
+                             surface + ": " + path + " and " + raw_path + " disagree");
+    }
+    return grpc::Status::OK;
+  }
+  if (has_enum) {
+    return option_rejected(raw_path, parsev1::OPTION_REJECTION_REASON_CONFLICT, raw,
+                           surface + ": " + raw_path + " is not a known value for the set " +
+                               path);
+  }
+  return grpc::Status::OK;
+}
+
+grpc::Status validate_torch_dtype(const pipestream::parse::v1::EngineModelConfig& config,
+                                  const std::string& path, const std::string& surface) {
+  namespace parsev1 = pipestream::parse::v1;
+  std::optional<parsev1::TorchDtype> named;
+  if (config.has_torch_dtype()) {
+    const std::string& raw = config.torch_dtype();
+    if (raw == "float32") named = parsev1::TORCH_DTYPE_FLOAT32;
+    else if (raw == "float16") named = parsev1::TORCH_DTYPE_FLOAT16;
+    else if (raw == "bfloat16") named = parsev1::TORCH_DTYPE_BFLOAT16;
+  }
+  return agree_raw_enum(path + ".torch_dtype_enum", config.has_torch_dtype_enum(),
+                        config.torch_dtype_enum(),
+                        parsev1::TorchDtype_IsValid(config.torch_dtype_enum()),
+                        config.has_torch_dtype(), config.torch_dtype(), named, surface,
+                        path + ".torch_dtype");
+}
+
+}  // namespace
+
+// Exported from this translation unit. An anonymous namespace would give
+// these internal linkage, and a test that calls the header declarations
+// would fail to link.
+grpc::Status validate_engine_overrides(const pipestream::parse::v1::VlmModelSpec& spec,
+                                       const std::string& path, const std::string& surface) {
+  for (int i = 0; i < spec.engine_overrides_size(); ++i) {
+    const auto status = validate_torch_dtype(
+        spec.engine_overrides(i).config(),
+        path + ".engine_overrides[" + std::to_string(i) + "].config", surface);
+    if (!status.ok()) return status;
+  }
+  return grpc::Status::OK;
+}
+
+grpc::Status validate_nemotron_parse(const pipestream::parse::v1::NemotronParseOptions& options,
+                                     const std::string& path, const std::string& surface) {
+  namespace parsev1 = pipestream::parse::v1;
+  std::optional<parsev1::NemotronParsePasses> passes;
+  if (options.has_passes_raw()) {
+    const std::string& raw = options.passes_raw();
+    if (raw == "single") passes = parsev1::NEMOTRON_PARSE_PASSES_SINGLE;
+    else if (raw == "double") passes = parsev1::NEMOTRON_PARSE_PASSES_DOUBLE;
+    else if (raw == "triple") passes = parsev1::NEMOTRON_PARSE_PASSES_TRIPLE;
+  }
+  if (const auto status = agree_raw_enum(
+          path + ".passes", options.has_passes(), options.passes(),
+          parsev1::NemotronParsePasses_IsValid(options.passes()), options.has_passes_raw(),
+          options.passes_raw(), passes, surface, path + ".passes_raw");
+      !status.ok()) {
+    return status;
+  }
+  std::optional<parsev1::NemotronParseTripleRegions> regions;
+  if (options.has_triple_regions_raw()) {
+    const std::string& raw = options.triple_regions_raw();
+    if (raw == "detector") regions = parsev1::NEMOTRON_PARSE_TRIPLE_REGIONS_DETECTOR;
+    else if (raw == "union") regions = parsev1::NEMOTRON_PARSE_TRIPLE_REGIONS_UNION;
+  }
+  if (const auto status = agree_raw_enum(
+          path + ".triple_regions", options.has_triple_regions(), options.triple_regions(),
+          parsev1::NemotronParseTripleRegions_IsValid(options.triple_regions()),
+          options.has_triple_regions_raw(), options.triple_regions_raw(), regions, surface,
+          path + ".triple_regions_raw");
+      !status.ok()) {
+    return status;
+  }
+  if (options.has_crop_batch_size() && options.crop_batch_size() < 1) {
+    return option_rejected(path + ".crop_batch_size",
+                           parsev1::OPTION_REJECTION_REASON_OUT_OF_RANGE,
+                           std::to_string(options.crop_batch_size()),
+                           surface + ": " + path + ".crop_batch_size must be >= 1");
+  }
+  return grpc::Status::OK;
+}
+
+namespace {
+
 // Custom-config fields mirror Docling: typed VLM option messages plus open
 // ScalarValue maps for dict[str, Any]. Known keys are soft-validated; empty
 // maps are a no-op.
@@ -685,6 +788,11 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
     }
     // Only the VLM pipeline's spec format reaches a collector that reads
     // it; the enrich legs' specs are checked for a known, agreeing value.
+    if (const auto dtype = validate_engine_overrides(spec, std::string(name) + ".model_spec",
+                                                    surface);
+        !dtype.ok()) {
+      return dtype;
+    }
     return validate_response_format(spec, std::string(name) + ".model_spec", surface,
                                     std::string_view(name) == "vlm_pipeline_custom_config");
   };
@@ -715,8 +823,16 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
       }
       return grpc::Status::OK;
     };
+    if (cfg.has_nemotron_parse()) {
+      if (const auto nemotron = validate_nemotron_parse(
+              cfg.nemotron_parse(), "vlm_pipeline_custom_config.nemotron_parse", surface);
+          !nemotron.ok()) {
+        return nemotron;
+      }
+    }
     if (auto s = require_supported_fields(cfg, "vlm_pipeline_custom_config",
-                                         {"engine_options", "model_spec", "scale"}); !s.ok()) {
+                                         {"engine_options", "model_spec", "scale",
+                                          "nemotron_parse"}); !s.ok()) {
       return s;
     }
     if (auto s = require_supported_fields(cfg.model_spec(), "vlm_pipeline_custom_config.model_spec",
@@ -1183,6 +1299,7 @@ uint64_t decoded_source_bytes(
   return total;
 }
 
+
 // `surface` names the RPC in the rejections so a caller learns which of the
 // conversion surfaces turned its request down.
 grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOptions& options,
@@ -1231,6 +1348,15 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
   if (!vlm_selection_status.ok()) return vlm_selection_status;
   const grpc::Status custom_config_status = validate_custom_configs(options, surface);
   if (!custom_config_status.ok()) return custom_config_status;
+  if (options.has_formatting_fallback_mode() &&
+      !pipestream::parse::v1::FormattingFallbackMode_IsValid(
+          options.formatting_fallback_mode())) {
+    return option_rejected(
+        "formatting_fallback_mode",
+        pipestream::parse::v1::OPTION_REJECTION_REASON_UNKNOWN_VALUE,
+        std::to_string(static_cast<int>(options.formatting_fallback_mode())),
+        surface + ": formatting_fallback_mode is not a known value");
+  }
   const grpc::Status heading_status = validate_heading_options(options, surface);
   if (!heading_status.ok()) return heading_status;
   if (auto preset = resolve_code_formula_preset(options, surface); !preset.has_value()) {
@@ -2468,6 +2594,14 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     // collector merge alike), so no path can return a document without it.
     *base.mutable_parse() = parse_identity(request.options());
 
+    if (const auto detected = input_format_for(base.origin().mimetype(), requested_name);
+        detected == pipestream::parse::v1::INPUT_FORMAT_CALENDAR) {
+      return option_rejected(
+          "sources[0]", pipestream::parse::v1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED,
+          "INPUT_FORMAT_CALENDAR",
+          surface + ": INPUT_FORMAT_CALENDAR has no collector");
+    }
+
     if (!request.options().from_formats().empty()) {
       const auto detected =
           input_format_for(base.origin().mimetype(), requested_name);
@@ -2733,6 +2867,7 @@ std::string options_digest(const pipestream::parse::v1::ConvertDocumentOptions& 
   decisive.clear_image_export_mode();
   decisive.clear_md_page_break_placeholder();
   decisive.clear_md_compact_tables();
+  decisive.clear_formatting_fallback_mode();
   decisive.clear_doclang_include_namespace();
   decisive.clear_document_timeout();
   decisive.clear_abort_on_error();

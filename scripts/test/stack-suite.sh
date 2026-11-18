@@ -20,6 +20,9 @@
 #                         with EMBEDDING_RPC_FIXTURE as its fixture when set
 #   compose-preflight     scripts/test/compose-preflight-test.sh
 #   observability-compose scripts/test/observability-compose-test.sh
+#   gpu-placement         scripts/test/gpu-placement-test.sh with
+#                         GRPARSE_STACK_OPENVINO_IMAGE and
+#                         GRPARSE_STACK_MODELS_DIR, on a host with an Intel GPU
 set -eu
 
 suite=${1:?usage: stack-suite.sh <suite>}
@@ -64,6 +67,10 @@ case "$suite" in
     exec bash scripts/test/compose-preflight-test.sh ;;
   observability-compose)
     exec bash scripts/test/observability-compose-test.sh ;;
+  gpu-placement)
+    need GRPARSE_STACK_OPENVINO_IMAGE
+    need GRPARSE_STACK_MODELS_DIR
+    exec bash scripts/test/gpu-placement-test.sh "$GRPARSE_STACK_OPENVINO_IMAGE" "$GRPARSE_STACK_MODELS_DIR" ;;
   *)
     echo "stack-suite: unknown suite '$suite'" >&2
     exit 64 ;;

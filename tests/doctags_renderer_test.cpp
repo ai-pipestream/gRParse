@@ -220,6 +220,24 @@ void verify_a_picture_caption_nests_inside_the_picture() {
                 "a caption is trimmed and nested inside its picture");
 }
 
+void verify_a_float_footnote_nests_inside_its_owner() {
+  docv1::Document picture_doc = base_document("noted.pdf");
+  auto* picture = add_picture(&picture_doc, "#/body", "fig.png");
+  const std::string note = add_owned_text(&picture_doc, picture->self_ref(),
+                                         docv1::DOC_ITEM_LABEL_FOOTNOTE, " see note ");
+  picture->add_footnotes()->set_ref(note);
+  picture_doc.mutable_body()->add_children()->set_ref(note);
+  require_equal(only_part(picture_doc), "<picture><footnote>see note</footnote></picture>",
+                "a picture footnote is trimmed, nested, and not repeated in the body");
+
+  docv1::Document table_doc = base_document("noted-table.pdf");
+  auto* table = add_table(&table_doc, "#/body");
+  table->add_footnotes()->set_ref(
+      add_owned_text(&table_doc, table->self_ref(), docv1::DOC_ITEM_LABEL_FOOTNOTE, "src"));
+  require_equal(only_part(table_doc), "<otsl><footnote>src</footnote></otsl>",
+                "a table footnote nests inside the otsl wrapper");
+}
+
 void verify_location_tokens_need_a_page_with_a_size() {
   docv1::Document sized = base_document("located.pdf");
   add_page(&sized, 1, 100, 200);
@@ -290,6 +308,7 @@ int main() {
       verify_a_molecule_rides_a_smiles_token,
       verify_a_picture_with_nothing_to_say_renders_nothing,
       verify_a_picture_caption_nests_inside_the_picture,
+      verify_a_float_footnote_nests_inside_its_owner,
       verify_location_tokens_need_a_page_with_a_size,
       verify_a_key_value_region_names_its_cells_and_links,
   });

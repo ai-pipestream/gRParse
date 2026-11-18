@@ -84,6 +84,44 @@ void verify_the_title_hoists_into_the_preamble() {
                 "the title text renders once, in the preamble only");
 }
 
+void verify_a_nested_title_keeps_its_groups() {
+  docv1::Document escaped = base_document("nested.tex");
+  add_text(&escaped, "#/body", docv1::BaseTextItem::kTitle, docv1::DOC_ITEM_LABEL_TITLE,
+           "A {B} C");
+  add_paragraph(&escaped, "#/body", "After.");
+  require_equal(grparse::render_latex(escaped),
+                kPreamble + "\\title{A \\{B\\} C}\n"
+                            "\n\\begin{document}\n"
+                            "\n\\maketitle\n"
+                            "\nAfter.\n"
+                            "\n\\end{document}",
+                "escaped braces stay inside the hoisted title");
+
+  docv1::Document nested = base_document("raw-title.tex");
+  add_text(&nested, "#/body", docv1::BaseTextItem::kFormula, docv1::DOC_ITEM_LABEL_FORMULA,
+           "\\title{A {B} C}");
+  add_paragraph(&nested, "#/body", "Kept.");
+  require_equal(grparse::render_latex(nested),
+                kPreamble + "\\title{A {B} C}\n"
+                            "\n\\begin{document}\n"
+                            "\n\\maketitle\n"
+                            "\n$$$$\n"
+                            "\nKept.\n"
+                            "\n\\end{document}",
+                "a nested title group is hoisted whole and leaves the body");
+
+  docv1::Document second = base_document("two-titles.tex");
+  add_text(&second, "#/body", docv1::BaseTextItem::kTitle, docv1::DOC_ITEM_LABEL_TITLE, "First");
+  add_text(&second, "#/body", docv1::BaseTextItem::kTitle, docv1::DOC_ITEM_LABEL_TITLE, "Second");
+  add_paragraph(&second, "#/body", "Body.");
+  const std::string rendered = grparse::render_latex(second);
+  require(rendered.find("\\title{First}") != std::string::npos &&
+              rendered.find("\\title{Second}") == std::string::npos &&
+              rendered.find("Second") == std::string::npos &&
+              rendered.find("Body.") != std::string::npos,
+          "a second title is removed and does not replace the first");
+}
+
 void verify_section_headers_map_by_level_and_clamp() {
   docv1::Document document = base_document("levels.tex");
   add_heading(&document, "#/body", "Chapter", 1);
@@ -282,9 +320,32 @@ void verify_code_uses_verbatim_blocks_and_inline_texttt() {
 
   require_equal(grparse::render_latex(document),
                 wrapped("\\begin{verbatim}\nif (a & b) { return \"x\"; }\n\\end{verbatim}\n\n"
-                        "call \\texttt{\\\\#define X 1}"),
+                        "call \\texttt{\\#define X 1}"),
                 "block code is verbatim and unescaped; inline code is \\texttt with "
                 "only the macro parameter character escaped");
+}
+
+void verify_a_float_keeps_its_footnote() {
+  docv1::Document table_doc = base_document("noted.tex");
+  auto* table = add_table(&table_doc, "#/body");
+  auto* row = table->mutable_data()->add_grid();
+  add_cell(table->mutable_data(), row, "A", false, 0, 0);
+  table->add_footnotes()->set_ref(
+      add_owned_text(&table_doc, table->self_ref(), docv1::DOC_ITEM_LABEL_FOOTNOTE, "see #1"));
+  require(grparse::render_latex(table_doc).find("{\\footnotesize see \\#1\\par}") !=
+              std::string::npos,
+          "a table footnote renders inside the float, escaped");
+
+  docv1::Document picture_doc = base_document("noted-fig.tex");
+  auto* picture = add_picture(&picture_doc, "#/body", "figs/one.png");
+  picture->add_footnotes()->set_ref(
+      add_owned_text(&picture_doc, picture->self_ref(), docv1::DOC_ITEM_LABEL_FOOTNOTE, "note"));
+  const std::string latex = grparse::render_latex(picture_doc);
+  require(latex.find("{\\footnotesize note\\par}") != std::string::npos &&
+              latex.find("{\\footnotesize note\\par}") < latex.find("\\end{figure}"),
+          "a picture footnote renders inside the figure");
+  require(latex.find("{\\footnotesize note\\par}") == latex.rfind("{\\footnotesize note\\par}"),
+          "the footnote is not also emitted as body text");
 }
 
 void verify_a_picture_is_a_figure_with_the_placeholder() {
@@ -389,6 +450,7 @@ int main() {
       verify_an_empty_document_is_the_bare_skeleton,
       verify_escaping_covers_every_special_character,
       verify_the_title_hoists_into_the_preamble,
+      verify_a_nested_title_keeps_its_groups,
       verify_section_headers_map_by_level_and_clamp,
       verify_lists_choose_their_environment_and_indent,
       verify_a_stray_list_item_gets_a_list,
@@ -398,6 +460,7 @@ int main() {
       verify_a_rich_cell_with_a_heading_renders_plain_text,
       verify_formulas_wrap_in_math_delimiters,
       verify_code_uses_verbatim_blocks_and_inline_texttt,
+      verify_a_float_keeps_its_footnote,
       verify_a_picture_is_a_figure_with_the_placeholder,
       verify_missing_items_degrade_to_comments,
       verify_a_non_body_layer_item_inside_a_group_stays_out,

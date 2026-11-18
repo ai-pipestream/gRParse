@@ -96,6 +96,18 @@ ai::pipestream::enrich::v1::CodeFormulaPreset enrich_code_formula_preset(
 grpc::Status validate_options(const ai::pipestream::parse::v1::ConvertDocumentOptions& options,
                               const std::string& surface);
 
+// NemotronParseOptions: a known raw must agree with a set enum, an unknown
+// raw is kept only when the enum is unset, and crop_batch_size is >= 1.
+grpc::Status validate_nemotron_parse(
+    const ai::pipestream::parse::v1::NemotronParseOptions& options, const std::string& path,
+    const std::string& surface);
+
+// Each engine override's torch dtype: the published string (field 3) must
+// agree with torch_dtype_enum when both are set. An unknown string is kept
+// and the enum stays unset.
+grpc::Status validate_engine_overrides(const ai::pipestream::parse::v1::VlmModelSpec& spec,
+                                       const std::string& path, const std::string& surface);
+
 // The bytes a request's sources decode to while the parse holds them: each
 // FileSource's base64 payload decoded (three bytes per four characters).
 // The unary surfaces charge it to the in-flight budget beside the wire size,

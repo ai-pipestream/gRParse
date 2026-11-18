@@ -112,6 +112,17 @@ void report_collector_targets(const CollectorTargets& targets, bool layout_activ
 // ignored without a word: GRPARSE_POI_TARGET (grPOIc is no longer used).
 void report_retired_settings();
 
+// One startup line per model naming the execution provider and device its
+// sessions run on, after every engine is built, e.g.
+// "gRParse model placement: layout on OpenVINO (GPU), 1 session".  A model
+// pinned to CPU under a GPU selection says so with its reason.
+void report_model_placements();
+
+// GRPARSE_OPENVINO_DEVICE, validated: GPU (the default), GPU.<n>, NPU,
+// NPU.<n> or CPU.  Device lists (AUTO:, HETERO:, MULTI:, BATCH:) throw
+// std::invalid_argument, since they let OpenVINO move work to CPU itself.
+std::string openvino_device_setting();
+
 // The unary executor's pool: GRPARSE_UNARY_WORKERS and GRPARSE_UNARY_QUEUE.
 CallExecutor::Options read_executor_options();
 

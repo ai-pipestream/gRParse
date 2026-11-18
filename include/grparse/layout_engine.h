@@ -82,9 +82,9 @@ class LayoutEngine final : public RegionDetector {
 };
 
 // Test-only: makes the next `failures` construction probes throw, standing in
-// for a provider whose first inference fails, so the CPU retreat (which binds
-// the strategy a second time) is testable without a GPU.  Production builds
-// never inject.
+// for a provider whose first inference fails, so the refusal (construction
+// throws under a GPU selection; there is no CPU retreat) is testable without
+// a GPU.  Production builds never inject.
 void layout_engine_test_inject_probe_failures(int failures);
 
 }  // namespace grparse

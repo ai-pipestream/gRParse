@@ -17,11 +17,11 @@ namespace {
 
 using namespace grparse::render;
 
-// "HH:MM:SS.mmm" with two-digit fields (hours widen past 99), from
-// milliseconds so 999.6 ms rounds into the seconds field instead of
-// printing a four-digit millisecond count.
-std::string vtt_timestamp(double seconds) {
-  const long long total_ms = std::llround(std::max(seconds, 0.0) * 1000.0);
+// "HH:MM:SS.mmm" with two-digit fields (hours widen past 99). The caller
+// passes milliseconds already rounded, so 999.6 ms has become the next
+// second instead of a four-digit millisecond count.
+std::string vtt_timestamp_ms(long long total_ms) {
+  if (total_ms < 0) total_ms = 0;
   const long long hours = total_ms / 3600000;
   const long long minutes = (total_ms / 60000) % 60;
   const long long secs = (total_ms / 1000) % 60;
@@ -30,6 +30,16 @@ std::string vtt_timestamp(double seconds) {
   std::snprintf(buffer, sizeof(buffer), "%02lld:%02lld:%02lld.%03lld", hours,
                 minutes, secs, millis);
   return std::string(buffer);
+}
+
+// Cue timings in milliseconds. WebVTT requires the end to be strictly after
+// the start. A zero-length or negative-length cue, or one whose ends round
+// to the same millisecond, takes docling-core's 1 ms floor: end = start + 1.
+std::pair<long long, long long> vtt_cue_bounds_ms(double start_seconds, double end_seconds) {
+  const long long start_ms = std::llround(std::max(start_seconds, 0.0) * 1000.0);
+  long long end_ms = std::llround(end_seconds * 1000.0);
+  if (end_ms <= start_ms) end_ms = start_ms + 1;
+  return {start_ms, end_ms};
 }
 
 // Cue text safe for a WebVTT payload: & < > become character references (so
@@ -94,7 +104,8 @@ class VttRenderer : RendererBase {
     if (!cue_open_) return;
     std::string block;
     if (!cue_identifier_.empty()) block.append(cue_identifier_ + "\n");
-    block.append(vtt_timestamp(cue_start_) + " --> " + vtt_timestamp(cue_end_) + "\n");
+    const auto [start_ms, end_ms] = vtt_cue_bounds_ms(cue_start_, cue_end_);
+    block.append(vtt_timestamp_ms(start_ms) + " --> " + vtt_timestamp_ms(end_ms) + "\n");
     block.append(cue_payload_ + "\n");
     blocks_.push_back(std::move(block));
     cue_open_ = false;

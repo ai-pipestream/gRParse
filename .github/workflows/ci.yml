@@ -280,6 +280,7 @@ jobs:
       - name: Provide the pinned model files
         run: |
           if [ "${{ steps.models-cache.outputs.cache-hit }}" != true ]; then
+            echo "::warning::models-all-tokenizer cache miss; building Dockerfile.models, the only step that installs scripts/models-requirements.txt"
             docker build --progress=plain -f Dockerfile.models \
               --build-arg MODELS_LAYOUT=all --build-arg MODELS_TOKENIZER=1 -t grparse-ci-models .
             id=$(docker create grparse-ci-models)
@@ -387,6 +388,67 @@ jobs:
         # A released grpc-enrich, so a push to that repo cannot turn this
         # repo's PRs red; move the tag when the chart contract moves.
         run: scripts/test/chart-outputs-e2e-test.sh grparse-ci-cpu-e2e pipestreamai/grpc-enrich:0.3.0
+
+  # The Dockerfile.models fetch stage installs scripts/models-requirements.txt.
+  # cpu-image, sanitize.yml and publish.yml build that stage only on a
+  # models-all-tokenizer cache miss, so a Python base with no onnxruntime
+  # wheel stays green until the cache misses. This job does not consult that
+  # cache. It runs on every push to main and on a pull request that changes
+  # the fetch pin, the requirements file, or the Renovate rule that guards it.
+  models-fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - name: Run when the fetch pin or its guard changes
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -eu
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          # Two-dot: both commits are present after the fetch above, including
+          # on a shallow checkout where the merge base is not.
+          git diff --name-only "$BASE_SHA" HEAD | tee changed-paths.txt
+          if grep -Eq '^(Dockerfile\.models|scripts/models-requirements\.txt|renovate\.json)$' changed-paths.txt; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Models fetch pin unchanged; skipping the wheel check and the fetch-stage build."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install pip when the runner does not have it
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          if command -v pip >/dev/null 2>&1 || command -v pip3 >/dev/null 2>&1 || python3 -m pip --version >/dev/null 2>&1; then
+            exit 0
+          fi
+          if command -v sudo >/dev/null 2>&1; then
+            sudo apt-get -o Acquire::Retries=3 update
+            sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends python3-pip
+          else
+            apt-get -o Acquire::Retries=3 update
+            apt-get -o Acquire::Retries=3 install -y --no-install-recommends python3-pip
+          fi
+      - name: Check model requirement wheels
+        if: steps.gate.outputs.run == 'true'
+        run: sh scripts/check-models-requirements.sh
+      - name: Log in to dhi.io
+        if: steps.gate.outputs.run == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+      - name: Build the fetch stage
+        if: steps.gate.outputs.run == 'true'
+        run: docker build -f Dockerfile.models --target fetch .
 
   # The demo shell image carries every peer's proto contract (vendored under
   # examples/web-demo/peer-protos); the Dockerfile's own build gate loads

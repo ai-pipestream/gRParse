@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 #include <grpcpp/support/status.h>
 
@@ -17,6 +18,7 @@
 #include "grparse/ocr_engine.h"
 #include "grparse/office_cv_enrichment.h"
 #include "grparse/page_scheduler.h"
+#include "grparse_session_ep.h"
 
 namespace grparse {
 
@@ -112,6 +114,11 @@ std::string_view classify_doctype(ai::pipestream::parse::v1::InputFormat format,
                                   std::string_view mime_type = {},
                                   std::string_view content = {});
 
+// grparse_ort_sessions{model,requested,actual,device,pin}: how many ONNX
+// Runtime sessions each model has, by the provider it asked for and the one
+// it got (ort_placements).  Pure in its input.
+std::string render_ort_session_placements(const std::vector<OrtPlacement>& placements);
+
 // One Prometheus text-format exposition (version 0.0.4) of the pipeline
 // counters the stdout metrics line already reports.  Counters and gauges map
 // one to one; the page-latency buckets become a histogram (cumulative
@@ -127,11 +134,13 @@ std::string_view classify_doctype(ai::pipestream::parse::v1::InputFormat format,
 // counter), the office CV enrichment totals as grparse_office_cv_total{kind=...}
 // and the data-plane totals as grparse_data_changes_total{kind=...}, plus the
 // process_resident_memory_bytes and process_cpu_seconds_total gauges the
-// standard client libraries export.  Execution-provider fallbacks export as
-// grparse_ort_ep_fallbacks_total: how many sessions were rebuilt on CPU after
-// their selected provider refused the graph or the device failed, and
+// standard client libraries export.  Execution-provider refusals export as
+// grparse_ort_ep_fallbacks_total (a name kept from before strict placement):
+// how many session builds or first inferences the selected provider refused,
+// each of which failed instead of running on CPU, and
 // grparse_ort_ep_build_retries_total counts the session builds retried
-// after a transient OpenVINO provider failure.  Per-doctype completions and
+// after a transient OpenVINO provider failure.  The overloads that read live
+// process state also append render_ort_session_placements.  Per-doctype completions and
 // latency export as grparse_documents_completed_total and
 // grparse_document_duration_seconds; per-collector calls, latency, and
 // warnings export as grparse_collector_calls_total,

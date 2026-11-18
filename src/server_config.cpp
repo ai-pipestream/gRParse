@@ -4,9 +4,11 @@
 #include <chrono>
 #include <cctype>
 #include <cstdlib>
+#include <format>
 #include <initializer_list>
 #include <print>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 
 #include "grparse/chart_derender.h"
@@ -127,19 +129,29 @@ std::string available_providers() {
   return joined;
 }
 
+// GRPARSE_OPENVINO_DEVICE: GPU (default), GPU.<n>, NPU, NPU.<n>, or CPU.
+// One device, never a list: AUTO:, HETERO:, MULTI: and BATCH: let OpenVINO
+// move layers or whole models to its CPU plugin on its own, which is the
+// silent fallback strict placement exists to rule out.  CPU is accepted
+// because it is an explicit choice, and the placement metric reports it.
 std::string configured_openvino_device() {
   const char* configured = std::getenv("GRPARSE_OPENVINO_DEVICE");
   const std::string device =
       configured == nullptr || *configured == '\0' ? "GPU" : configured;
-  // GPU, GPU.1, CPU, NPU, AUTO:GPU,CPU, HETERO: and friends: validate the
-  // alphabet and let OpenVINO reject unknown devices itself, at startup.
-  for (const char letter : device) {
-    if (std::isalnum(static_cast<unsigned char>(letter)) == 0 && letter != '.' &&
-        letter != ':' && letter != ',' && letter != '_' && letter != '-') {
-      throw std::invalid_argument("GRPARSE_OPENVINO_DEVICE contains unsupported characters");
-    }
+  if (device == "CPU") return device;
+  for (const std::string_view family : {"GPU", "NPU"}) {
+    if (!device.starts_with(family)) continue;
+    const std::string_view rest = std::string_view(device).substr(family.size());
+    if (rest.empty()) return device;
+    const bool indexed = rest.size() > 1 && rest.front() == '.' &&
+                         std::all_of(rest.begin() + 1, rest.end(), [](char letter) {
+                           return std::isdigit(static_cast<unsigned char>(letter)) != 0;
+                         });
+    if (indexed) return device;
   }
-  return device;
+  throw std::invalid_argument(
+      "GRPARSE_OPENVINO_DEVICE must be GPU, GPU.<n>, NPU, NPU.<n> or CPU (got " + device +
+      "); AUTO, HETERO, MULTI and BATCH device lists can move work to CPU on their own");
 }
 
 // GRPARSE_OPENVINO_CACHE_DIR: where the OpenVINO plugin may keep compiled
@@ -163,6 +175,7 @@ std::unique_ptr<grparse::OcrEnginePool> build_pool_with(grparse::OrtEp ep,
       .openvino_cache_dir = configured_openvino_cache_dir(),
   };
   grparse::set_ort_ep_selection(selection);
+  grparse::reset_ort_placements();
   auto pool = std::make_unique<grparse::OcrEnginePool>(models, worker_count, -1);
   if (grparse::ep_hook_invocations() == 0) {
     throw std::runtime_error(
@@ -539,6 +552,22 @@ void report_retired_settings() {
     std::println(stderr,
                  "gRParse warning: GRPARSE_POI_TARGET is set but ignored; grPOIc is no "
                  "longer used and libreoffice is the office text collector");
+  }
+}
+
+std::string openvino_device_setting() { return configured_openvino_device(); }
+
+void report_model_placements() {
+  for (const grparse::OrtPlacement& placement : grparse::ort_placements()) {
+    const std::string device = placement.device.empty() ? "" : " (" + placement.device + ")";
+    const std::string pin = placement.pin_reason.empty()
+                                ? ""
+                                : std::format(", pinned to CPU under {}: {}",
+                                              grparse::ort_ep_name(placement.requested),
+                                              placement.pin_reason);
+    std::println("gRParse model placement: {} on {}{}, {} session{}{}", placement.model,
+                 grparse::ort_ep_name(placement.actual), device, placement.sessions,
+                 placement.sessions == 1 ? "" : "s", pin);
   }
 }
 
