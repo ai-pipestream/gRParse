@@ -170,6 +170,11 @@ void render_exports(const pipestream::parse::v1::ConvertDocumentOptions& options
           break;
       }
     }
+    if (options.has_formatting_fallback_mode() &&
+        options.formatting_fallback_mode() ==
+            pipestream::parse::v1::FORMATTING_FALLBACK_MODE_HTML) {
+      markdown.html_formatting_fallback = true;
+    }
     exports->set_md(render_markdown(document, markdown));
   }
   if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_HTML)) {

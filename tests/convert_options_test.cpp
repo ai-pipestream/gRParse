@@ -10,6 +10,7 @@
 #include <system_error>
 #include <utility>
 
+#include <google/protobuf/descriptor.h>
 #include <google/protobuf/unknown_field_set.h>
 
 #include "../src/parse_support.h"
@@ -1285,12 +1286,46 @@ void verify_unimplemented_nested_ocr_options() {
   }
 }
 
+void verify_formatting_fallback_mode_is_a_closed_set() {
+  parsev1::ConvertDocumentOptions none;
+  none.set_formatting_fallback_mode(parsev1::FORMATTING_FALLBACK_MODE_NONE);
+  require(grparse::validate_options(none, kSurface).ok(), "NONE is accepted");
+  parsev1::ConvertDocumentOptions html;
+  html.set_formatting_fallback_mode(parsev1::FORMATTING_FALLBACK_MODE_HTML);
+  require(grparse::validate_options(html, kSurface).ok(), "HTML is accepted");
+  parsev1::ConvertDocumentOptions unset;
+  require(grparse::validate_options(unset, kSurface).ok(), "unset matches the renderer default");
+}
+
 void verify_from_formats_may_name_calendar() {
   parsev1::ConvertDocumentOptions options;
   options.add_from_formats(parsev1::INPUT_FORMAT_PDF);
   options.add_from_formats(parsev1::INPUT_FORMAT_CALENDAR);
   require(grparse::validate_options(options, kSurface).ok(),
           "from_formats may include INPUT_FORMAT_CALENDAR");
+}
+
+// Pins the merge with main: FormattingFallbackMode stays field 76, and it
+// validates beside INPUT_FORMAT_CALENDAR (enum 37 on InputFormat, a
+// different message).
+void verify_formatting_fallback_stays_field_76_beside_calendar() {
+  const auto* options = parsev1::ConvertDocumentOptions::descriptor();
+  const auto* fallback = options->FindFieldByName("formatting_fallback_mode");
+  const auto* asr = options->FindFieldByName("asr_options");
+  require(fallback != nullptr && fallback->number() == 76 &&
+              fallback->type() == google::protobuf::FieldDescriptor::TYPE_ENUM &&
+              std::string(fallback->enum_type()->name()) == "FormattingFallbackMode",
+          "formatting_fallback_mode is the FormattingFallbackMode enum on field 76");
+  require(asr != nullptr && asr->number() == 75,
+          "asr_options keeps field 75, so 76 is not reused");
+  require(parsev1::FORMATTING_FALLBACK_MODE_HTML == 2 &&
+              parsev1::INPUT_FORMAT_CALENDAR == 37,
+          "HTML is 2 and calendar is InputFormat 37");
+  parsev1::ConvertDocumentOptions both;
+  both.set_formatting_fallback_mode(parsev1::FORMATTING_FALLBACK_MODE_HTML);
+  both.add_from_formats(parsev1::INPUT_FORMAT_CALENDAR);
+  require(grparse::validate_options(both, kSurface).ok(),
+          "field 76 and INPUT_FORMAT_CALENDAR validate on one request");
 }
 
 void verify_replace_broken_and_rapidocr_orientation_options() {
@@ -1358,7 +1393,9 @@ int main() {
   return grparse_test::run_test_main("convert-options-test", "ok", {
       verify_unsupported_vlm_custom_fields,
       verify_unimplemented_nested_ocr_options,
+      verify_formatting_fallback_mode_is_a_closed_set,
       verify_from_formats_may_name_calendar,
+      verify_formatting_fallback_stays_field_76_beside_calendar,
       verify_replace_broken_and_rapidocr_orientation_options,
       verify_picture_description_custom_config_is_wired,
       verify_typed_rejections_and_heading_options,

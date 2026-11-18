@@ -112,6 +112,44 @@ void verify_hyperlinks_are_filtered_and_encoded() {
                 "destination characters that end a link are percent-encoded");
 }
 
+void verify_formatting_fallback_is_off_unless_html_is_requested() {
+  docv1::Document plain = base_document("format.md");
+  add_paragraph(&plain, "#/body", "x<y");
+  plain.mutable_texts(0)->mutable_text()->mutable_base()->mutable_formatting()->set_underline(true);
+  require_equal(render_markdown(plain), std::string("x&lt;y"),
+                "underline has no marker unless HTML fallback is on");
+
+  grparse::MarkdownOptions html;
+  html.html_formatting_fallback = true;
+  docv1::Document document = base_document("format.md");
+  add_paragraph(&document, "#/body", "x<y");
+  auto* formatting = document.mutable_texts(0)->mutable_text()->mutable_base()->mutable_formatting();
+  formatting->set_underline(true);
+  formatting->set_script(docv1::SCRIPT_SUB);
+  require_equal(render_markdown(document, html), std::string("<sub><u>x&lt;y</u></sub>"),
+                "HTML fallback wraps the escaped text in u and sub");
+  formatting->set_underline(false);
+  formatting->set_script(docv1::SCRIPT_SUPER);
+  require_equal(render_markdown(document, html), std::string("<sup>x&lt;y</sup>"),
+                "superscript uses sup");
+}
+
+// The merge with main kept HTML fallback and the sized code span. One
+// document has to render both.
+void verify_html_fallback_and_a_code_span_render_together() {
+  docv1::Document document = base_document("both.md");
+  add_paragraph(&document, "#/body", "x<y");
+  document.mutable_texts(0)->mutable_text()->mutable_base()->mutable_formatting()->set_underline(
+      true);
+  const std::string group =
+      grparse_test::add_group(&document, "#/body", docv1::GROUP_LABEL_INLINE);
+  add_code(&document, group, "a`b", docv1::CODE_LANGUAGE_LABEL_PYTHON);
+  grparse::MarkdownOptions html;
+  html.html_formatting_fallback = true;
+  require_equal(render_markdown(document, html), std::string("<u>x&lt;y</u>\n\n``a`b``"),
+                "HTML fallback and a sized code span both render");
+}
+
 std::string inline_code(const std::string& text) {
   docv1::Document document = base_document("span.md");
   const std::string group =
@@ -203,6 +241,8 @@ int main() {
       verify_code_footnotes_follow_the_code,
       verify_code_spans_outlast_internal_backticks,
       verify_hyperlinks_are_filtered_and_encoded,
+      verify_formatting_fallback_is_off_unless_html_is_requested,
+      verify_html_fallback_and_a_code_span_render_together,
       verify_image_destinations_are_encoded,
       verify_group_text_keeps_inline_boundary_space,
   });
