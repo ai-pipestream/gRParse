@@ -524,3 +524,20 @@ jobs:
           done
           ./scripts/publish-manifests.sh --suffix '' --version "$VERSION" \
             --platforms linux/amd64,linux/arm64 "${repos[@]}" "${digests[@]}"
+
+  # A red publish on main used to be invisible: ci.yml skips the image legs
+  # on main pushes (#240) and nothing else looks at this workflow. 46e84fa
+  # showed a green CI run while every production image failed to build.
+  report-failure:
+    name: Open an issue when main fails to publish
+    needs: [publish, publish-demo-shell]
+    if: ${{ failure() && github.ref == 'refs/heads/main' && github.server_url == 'https://github.com' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh scripts/report-workflow-failure.sh

@@ -150,3 +150,19 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           tags: ${{ steps.seed.outputs.ref }}
           push: true
+
+  # A red seed build on main used to go unnoticed: nothing waits on this
+  # workflow, and ci.yml skips the image legs on main pushes (#240).
+  report-failure:
+    name: Open an issue when main fails to publish seeds
+    needs: [seed]
+    if: ${{ failure() && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh scripts/report-workflow-failure.sh
