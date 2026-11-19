@@ -18,13 +18,14 @@
 # The checksums are never changed to fit a source: an archive that cannot be
 # found with its pinned sha256 is an error, not a reason to repin.
 #
-# The release tag must already exist on Forgejo and GitHub (the Forgejo push
-# mirror deletes GitHub-only tags, which would turn the release into a draft
-# whose assets 404): git push forgejo ort-archives-1 && git push origin
-# ort-archives-1. `mirror` needs GH_TOKEN with contents: write.
+# The tag ort-archives-1 points at 46e84fa and lives on Forgejo too: the
+# Forgejo push mirror deletes GitHub-only tags, which would turn the release
+# into a draft whose assets 404. When GitHub lacks the tag, the release is
+# created on that same commit. `mirror` needs GH_TOKEN with contents: write.
 set -eu
 
 tag=ort-archives-1
+tag_commit=46e84fa2656d800b66d2e49eddea099218a7aa5f
 repo="${GITHUB_REPOSITORY:-ai-pipestream/gRParse}"
 base="https://github.com/$repo/releases/download/$tag"
 deps=pipestreamai/grparse-deps
@@ -87,11 +88,14 @@ for l in sorted(json.load(sys.stdin)["layers"], key=lambda l: -l["size"]): print
     echo "mirror-ort: $name from $deps:$tagname has sha256 $got, pinned $want; not uploading" >&2
     return 1
   }
-  gh release view "$tag" --repo "$repo" >/dev/null 2>&1 \
-    || gh release create "$tag" --repo "$repo" --verify-tag --prerelease --latest=false \
-         --title "ONNX Runtime archive mirror" \
-         --notes "Byte-exact copies of the Microsoft ONNX Runtime release archives gRParse pins (MIT licensed, see LICENSE inside each archive). CMakeLists.txt verifies each against its pinned SHA-256. Maintained by scripts/mirror-ort-archives.sh."
-  gh release upload "$tag" --repo "$repo" --clobber "$work/$name"
+  if ! gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+    gh release create "$tag" --repo "$repo" --target "$tag_commit" --prerelease --latest=false \
+      --title "ONNX Runtime archive mirror" \
+      --notes "Byte-exact copies of the Microsoft ONNX Runtime release archives gRParse pins (MIT licensed, see LICENSE inside each archive). CMakeLists.txt verifies each against its pinned SHA-256. Maintained by scripts/mirror-ort-archives.sh." \
+      || { echo "mirror-ort: could not create release $tag" >&2; return 1; }
+  fi
+  gh release upload "$tag" --repo "$repo" --clobber "$work/$name" \
+    || { echo "mirror-ort: could not upload $name" >&2; return 1; }
   echo "mirror-ort: uploaded $name ($got)" >&2
 }
 
@@ -102,7 +106,7 @@ echo "$archives" | while read -r name want ref; do
   if [ "$got" = "$want" ]; then
     echo "mirror-ort: ok $name"
   elif [ "$mode" = mirror ] && [ -z "$got" ]; then
-    recover "$name" "$want" "$ref"
+    recover "$name" "$want" "$ref" || exit 1
     for _ in 1 2 3 4 5 6; do # a fresh asset can take a moment to be served
       got=$(remote_sum "$name")
       [ "$got" = "$want" ] && break
