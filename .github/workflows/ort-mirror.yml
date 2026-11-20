@@ -1,0 +1,64 @@
+# Keeps the ONNX Runtime archives CMakeLists.txt pins served from this
+# repository's `ort-archives-1` release (scripts/mirror-ort-archives.sh).
+#
+# github.com/microsoft/onnxruntime went offline on 2026-11-17 and its release
+# downloads answer 404, so CMakeLists.txt now fetches each archive from the
+# mirror first and Microsoft second, with the same pinned SHA-256 either way.
+#
+#   pull request or push touching the pins: uploads any archive the release
+#     lacks (recovered from our 2026-11-16 deps seeds), then downloads every
+#     asset and checks its checksum. Fork pull requests only check.
+#   weekly schedule: the same, so a vanished or altered asset turns this red
+#     and opens an issue instead of surfacing as a 404 in the next publish.
+on:
+  pull_request:
+    paths:
+      - CMakeLists.txt
+      - scripts/mirror-ort-archives.sh
+      - .github/workflows/ort-mirror.yml
+  push:
+    branches: [main]
+    paths:
+      - CMakeLists.txt
+      - scripts/mirror-ort-archives.sh
+      - .github/workflows/ort-mirror.yml
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ort-mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    name: ONNX Runtime archive mirror
+    if: ${{ github.server_url == 'https://github.com' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Mirror and verify the pinned archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'check' || 'mirror' }}
+        run: sh scripts/mirror-ort-archives.sh "$MODE"
+
+  report-failure:
+    name: Open an issue when the mirror fails on main
+    needs: [mirror]
+    if: ${{ failure() && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh scripts/report-workflow-failure.sh

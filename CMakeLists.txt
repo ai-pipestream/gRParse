@@ -194,18 +194,28 @@ unset(GRPARSE_DBNET_HEADER)
 # Intel GPU/CPU/NPU plugins.  `cpu` is Microsoft's plain CPU release, the only
 # package published for both x86_64 and aarch64, and what the multi-arch
 # Dockerfile.cpu image links.
+# Microsoft's ONNX Runtime release downloads have answered 404 since
+# github.com/microsoft/onnxruntime went offline on 2026-11-17.  Every archive
+# below is also kept, byte for byte, as an asset of this repository's
+# `ort-archives-1` release (scripts/mirror-ort-archives.sh, recovered from the
+# 2026-11-16 deps seeds), and that copy is tried first.  URL_HASH is the same
+# checksum either way, so a mirror can only ever serve the exact pinned file.
+set(GRPARSE_ORT_MIRROR
+  "https://github.com/ai-pipestream/gRParse/releases/download/ort-archives-1")
 set(GRPARSE_ORT_PACKAGE "cuda" CACHE STRING
   "ONNX Runtime package to link: cuda, openvino, or cpu")
 if(GRPARSE_ORT_PACKAGE STREQUAL "cuda")
   FetchContent_Declare(onnxruntime
-    URL https://github.com/microsoft/onnxruntime/releases/download/v1.30.0/onnxruntime-linux-x64-gpu_cuda13-1.30.0.tgz
+    URL "${GRPARSE_ORT_MIRROR}/onnxruntime-linux-x64-gpu_cuda13-1.30.0.tgz"
+        https://github.com/microsoft/onnxruntime/releases/download/v1.30.0/onnxruntime-linux-x64-gpu_cuda13-1.30.0.tgz
     URL_HASH SHA256=382d79133112388cf94ce5855789b7c9bef12bef76a08b6b277e5a317213adcd
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
   FetchContent_MakeAvailable(onnxruntime)
   set(GRPARSE_ORT_LIBRARY "${onnxruntime_SOURCE_DIR}/lib/libonnxruntime.so")
 elseif(GRPARSE_ORT_PACKAGE STREQUAL "openvino")
   FetchContent_Declare(onnxruntime
-    URL https://github.com/microsoft/onnxruntime/releases/download/v1.24.1/onnxruntime-linux-x64-1.24.1.tgz
+    URL "${GRPARSE_ORT_MIRROR}/onnxruntime-linux-x64-1.24.1.tgz"
+        https://github.com/microsoft/onnxruntime/releases/download/v1.24.1/onnxruntime-linux-x64-1.24.1.tgz
     URL_HASH SHA256=9142552248b735920f9390027e4512a2cacf8946a1ffcbe9071a5c210531026f
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
   set(GRPARSE_ORTOV_WHEEL_NAME
@@ -240,7 +250,8 @@ elseif(GRPARSE_ORT_PACKAGE STREQUAL "cpu")
       "for ${CMAKE_SYSTEM_PROCESSOR} (x86_64 and aarch64 only)")
   endif()
   FetchContent_Declare(onnxruntime
-    URL https://github.com/microsoft/onnxruntime/releases/download/v1.30.0/onnxruntime-linux-${GRPARSE_ORT_CPU_ARCH}-1.30.0.tgz
+    URL "${GRPARSE_ORT_MIRROR}/onnxruntime-linux-${GRPARSE_ORT_CPU_ARCH}-1.30.0.tgz"
+        https://github.com/microsoft/onnxruntime/releases/download/v1.30.0/onnxruntime-linux-${GRPARSE_ORT_CPU_ARCH}-1.30.0.tgz
     URL_HASH SHA256=${GRPARSE_ORT_CPU_SHA256}
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
   FetchContent_MakeAvailable(onnxruntime)
