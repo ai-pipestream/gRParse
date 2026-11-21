@@ -31,7 +31,8 @@ class TensorBackend {
 // their resulting native model state; none may reopen the source artifact.
 std::unique_ptr<TensorBackend> make_cpu_backend(std::string_view model);
 #ifdef GRPARSE_EMBED_OPENVINO
-std::unique_ptr<TensorBackend> make_intel_backend(std::string_view model, const std::string& device);
+std::unique_ptr<TensorBackend> make_intel_backend(std::string_view model, const std::string& device,
+                                                  const std::string& cache_dir);
 #endif
 #ifdef GRPARSE_EMBED_TENSORRT
 std::unique_ptr<TensorBackend> make_nvidia_backend(std::string_view model, int gpu_index);
