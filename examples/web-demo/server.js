@@ -431,7 +431,7 @@ async function documentTabStatus() {
 // grpc.health.v1 probe for the status badge and an NDJSON relay of the
 // bidirectional ParseWarc stream. The contract loads from the sibling
 // fastwarc-grpc checkout through KNOWN_UIS/resolveServiceProto like the other
-// native tabs; it is the same 1.1.0 crate contract the C++ collector vendors
+// native tabs; it is the same crate contract the C++ collector vendors
 // as collectors/warc*.proto.
 // ---------------------------------------------------------------------------
 

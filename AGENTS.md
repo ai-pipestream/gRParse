@@ -67,7 +67,7 @@ file under `collectors/` copied byte-identical from the sister repo.
 | `grpc-ebcdic` | `main` | Rust (Cargo, buf) | 50063 | `ebcdic.proto`, `ebcdic_service.proto` | never by format; explicit `ebcdic_layout` only |
 | `grpc-lol-html` | `master` | Rust (Cargo, buf) | 50057 | `lolhtml_types.proto`, `lolhtml_service.proto` | never by format; explicit `lol_html_options` only |
 | `grpc-asr` | `main` | C++ (CMake, buf, whisper.cpp) | 50055 | `asr_service.proto` | audio and video (request-level ASR model or preset, with `GRPARSE_ASR_MODEL` as an optional fallback; unsupported selectors fail explicitly) |
-| `fastwarc-grpc` | `main` | Docker packaging of the crates.io `fastwarc-grpc` crate (pinned 1.1.0) | 50060 | `warc.proto`, `warc_service.proto` (the pinned crate's protos) | `.warc`, `.warc.gz/.zst/.lz4`, `application/warc`; the shell also keeps a native tab on it. See "fastwarc and the crate" below |
+| `fastwarc-grpc` | `main` | Docker packaging of the crates.io `fastwarc-grpc` crate (pinned 2.0.1) | 50060 | `warc.proto`, `warc_service.proto` (the pinned crate's protos) | `.warc`, `.warc.gz/.zst/.lz4`, `application/warc`; the shell also keeps a native tab on it. See "fastwarc and the crate" below |
 | `grpc-calamine` | `main` on GitHub (`development` was the working branch; check) | Rust (Cargo, buf) | 50062 | `calamine_types.proto`, `calamine_service.proto` (package `calamine.v1`; vendored from GitHub `main`, which carries the fleet port, the UiInfo block, and the `row_gap` event that `development` lacks) | never routed by itself; a routed workbook plan (never CSV) fans a calamine leg out beside libreoffice when configured, folded client-side through the OpenWorkbook/StreamWorksheetRange/CloseWorkbook handle lifecycle (`src/collectors/calamine_collector.cpp`). Meant to be hosted by an external project, so nothing in that repo may mention gRParse or the shell |
 
 Two collectors are compiled in and have no repo: the CV path
@@ -127,7 +127,8 @@ reverted on 2026-09-04).
 ### fastwarc and the crate
 
 The WARC server is the `fastwarc-grpc` crate published to crates.io from
-chatnoir-resiliparse (1.1.0 since 2026-10-26). The `fastwarc-grpc` repo here
+chatnoir-resiliparse (1.1.0 since 2026-10-26, 2.0.1 since 2026-11-07; the
+wire contract has not changed between them). The `fastwarc-grpc` repo here
 holds no server code: its Dockerfile installs the crate at a pinned version
 (`ARG FASTWARC_GRPC_VERSION`, also set in `compose.stack.yaml`), and its
 `proto/` is that release's contract, checked by `scripts/check-proto-pin.sh`.

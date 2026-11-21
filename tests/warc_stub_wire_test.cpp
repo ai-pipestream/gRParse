@@ -11,7 +11,7 @@
 // asserts that the generated classes land those bytes in the fields the
 // server put them in. A re-vendoring of the wrong file fails here.
 //
-// The numbers below are the fastwarc-grpc 1.1.0 crate's (crates.io,
+// The numbers below are the fastwarc-grpc crate's since 1.1.0 (crates.io,
 // published from chatnoir-resiliparse). The contract gRParse vendored before
 // that carried record_index at field 1 of three messages, a HeaderBlock
 // encoding at 3, and digest verdicts on RecordEnd; 1.1.0 dropped all of
