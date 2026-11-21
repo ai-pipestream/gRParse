@@ -1,0 +1,55 @@
+diff --git a/src/CrnnNet.cpp b/src/CrnnNet.cpp
+index 94dfce2..83270c4 100644
+--- a/src/CrnnNet.cpp
++++ b/src/CrnnNet.cpp
+@@ -101,7 +101,10 @@ TextLine CrnnNet::scoreToTextLine(const std::vector<float> &outputData, size_t h
+ 
+ TextLine CrnnNet::getTextLine(const cv::Mat &src) {
+     float scale = (float) dstHeight / (float) src.rows;
+-    int dstWidth = int((float) src.cols * scale);
++    // gRParse: a backend built for a range of widths reads no wider line
++    // (patches/rapidocr-rec-width-limits.patch): past the limit the crop is
++    // resized down to it.  ONNX Runtime has no limit.
++    int dstWidth = (std::min)(int((float) src.cols * scale), grparse::ocr_rec_max_width());
+     cv::Mat srcResize;
+     resize(src, srcResize, cv::Size(dstWidth, dstHeight));
+     // gRParse: on a provider that compiles per input shape, the line is padded
+@@ -130,6 +133,19 @@ TextLine CrnnNet::getTextLine(const cv::Mat &src) {
+             inputTensorValues.swap(padded);
+         }
+     }
++    // gRParse: and no narrower one: a short crop is padded with zeros, as a
++    // batch pads its short lines, and decodes only the steps over itself.
++    if (tensorWidth < grparse::ocr_rec_min_width()) {
++        const int paddedWidth = grparse::ocr_rec_min_width();
++        const size_t channels = srcResize.channels();
++        std::vector<float> padded(channels * dstHeight * paddedWidth, 0.0F);
++        for (size_t line = 0; line < channels * dstHeight; ++line) {
++            const float *from = inputTensorValues.data() + line * tensorWidth;
++            std::copy(from, from + tensorWidth, padded.data() + line * paddedWidth);
++        }
++        inputTensorValues.swap(padded);
++        tensorWidth = paddedWidth;
++    }
+     std::array<int64_t, 4> inputShape{1, srcResize.channels(), srcResize.rows, tensorWidth};
+     // gRParse: one typed run through grparse::InferenceModel
+     // (patches/rapidocr-model-backend.patch).
+@@ -155,10 +171,17 @@ std::vector<TextLine> CrnnNet::getTextLineBatch(const std::vector<cv::Mat> &srcs
+     int batchWidth = 1;
+     for (size_t i = 0; i < count; ++i) {
+         const float scale = (float) dstHeight / (float) srcs[i].rows;
+-        const int dstWidth = (std::max)(1, int((float) srcs[i].cols * scale));
++        // gRParse: the widest line a backend built for a range of widths
++        // reads (patches/rapidocr-rec-width-limits.patch); a wider crop is
++        // resized down to it.
++        const int dstWidth = (std::clamp)(int((float) srcs[i].cols * scale), 1,
++                                          grparse::ocr_rec_max_width());
+         cv::resize(srcs[i], resized[i], cv::Size(dstWidth, dstHeight));
+         batchWidth = (std::max)(batchWidth, dstWidth);
+     }
++    // gRParse: and the narrowest: the batch pads up to it with zeros like it
++    // pads any short line.
++    batchWidth = (std::max)(batchWidth, grparse::ocr_rec_min_width());
+     // gRParse: on a provider that compiles per shape the batch width snaps
+     // to the recognizer's bucket ladder (patches/rapidocr-model-backend.patch),
+     // and each line decodes only the time steps over its own width, as the

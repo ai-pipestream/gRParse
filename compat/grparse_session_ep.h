@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <onnxruntime/core/session/onnxruntime_cxx_api.h>
@@ -22,7 +23,10 @@
 
 namespace grparse {
 
-enum class OrtEp { kCpu, kCuda, kOpenVino };
+// kTensorRt is never a selection: it is where a model actually runs when the
+// selection is kCuda in a build that carries native TensorRT
+// (native_tensorrt_build), and it appears only as a placement's `actual`.
+enum class OrtEp { kCpu, kCuda, kOpenVino, kTensorRt };
 
 // Numeric precision a session asks its provider for.  kProviderDefault leaves
 // the provider's own choice alone, which for the OpenVINO GPU plugin is half
@@ -71,6 +75,17 @@ int ort_intra_op_threads();
 // malformed value throws std::invalid_argument.
 size_t ocr_batch_size();
 
+// True when this build runs the cuda flavor's models on native TensorRT
+// (src/tensorrt/) instead of ONNX Runtime's CUDA provider.  In such a build
+// a CUDA selection never creates an ONNX Runtime session for an image model.
+bool native_tensorrt_build();
+
+// GRPARSE_CUDA_TF32: "off" (the default) computes FP32 convolutions and
+// matrix products exactly; "on" allows TF32.  Applies to ONNX Runtime's CUDA
+// provider and to native TensorRT alike.  Any other value throws
+// std::invalid_argument.
+bool cuda_tf32_enabled();
+
 // Fixed input shapes for the OCR nets (patches/rapidocr-shape-buckets.patch,
 // src/ocr_shape_buckets.cpp).  The OpenVINO GPU plugin compiles the network
 // for every new input shape; with dynamic page and line sizes one 101-paper
@@ -84,6 +99,12 @@ bool ocr_shape_buckets();
 // The smallest detector bucket (a multiple of GRPARSE_OCR_DET_STEP, default
 // 64) at least `side` pixels.
 int ocr_det_bucket(int side);
+// The detector's longest side: `configured` on every backend of this build.
+int ocr_det_max_side(int configured);
+// The detector input shape (width, height) a `width` x `height` resize is
+// padded to: unchanged without buckets, each side bucketed on its own
+// otherwise.
+std::pair<int, int> ocr_det_bucket_shape(int width, int height);
 // The smallest recognizer width bucket at least `width` pixels.
 int ocr_rec_bucket(int width);
 // How bucket padding is filled: true repeats the edge pixels
@@ -117,12 +138,23 @@ uint64_t ep_fallback_count();
 std::runtime_error ep_refusal(std::string_view what, const std::filesystem::path& model_path,
                               std::string_view detail);
 
+// The same for a model native TensorRT refused (an engine that does not
+// build, a failed first inference): "<what>: TensorRT (CUDA device <n>)
+// refused <model> (<detail>); GPU placement is strict and this model will
+// not run on ONNX Runtime or on CPU".  Also what make_session and
+// make_rapidocr_session throw under a CUDA selection in a build that
+// carries native TensorRT, where no ONNX Runtime session may stand in for
+// an engine.
+std::runtime_error tensorrt_refusal(std::string_view what, const std::filesystem::path& model_path,
+                                    std::string_view detail);
+
 // Where one model's sessions actually run, as the builders recorded them.
 // `requested` is the process selection when the session was built, `actual`
-// the provider the session was built for.  The two differ only for a model
-// that pins itself to CPU in code (make_pinned_cpu_session), which carries
-// its reason; there is no other way for them to differ.  `device` is the
-// OpenVINO device type or the CUDA device index; empty on CPU.
+// the provider the session was built for.  The two differ for a model that
+// pins itself to CPU in code (make_pinned_cpu_session), which carries its
+// reason, and for a model native TensorRT runs under a CUDA selection
+// (actual kTensorRt); there is no other way for them to differ.  `device` is
+// the OpenVINO device type or the CUDA device index; empty on CPU.
 struct OrtPlacement {
   std::string model;
   OrtEp requested = OrtEp::kCpu;
@@ -131,6 +163,11 @@ struct OrtPlacement {
   std::string pin_reason;
   uint64_t sessions = 0;
 };
+
+// Records one model built on the selection's native backend (TensorRT under
+// a CUDA selection, src/inference_model.cpp) in the same placements as the
+// ONNX Runtime sessions, so grparse_ort_sessions shows every model.
+void record_native_placement(std::string_view what);
 
 // Every placement recorded so far, one entry per (model, requested, actual,
 // device), in first-built order.  Deterministic for a fixed build sequence.

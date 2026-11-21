@@ -10,7 +10,10 @@
 # idempotent and a partial run resumes where it stopped (curl continues a
 # .part file). The figure classifier is derived, not downloaded: the
 # published export is fetched under its own name and
-# scripts/patch_figure_classifier.py writes the graph the server loads.
+# scripts/patch_figure_classifier.py writes the graph the server loads. The
+# table structure model's encoder, decoder step and vocabulary are derived
+# too: scripts/split_slanet.py writes them from slanet_plus.onnx for the
+# runtimes that cannot import its decoder loop (native TensorRT).
 #
 # --verify touches nothing. It exits 0 when every present file matches the
 # manifest and every required (ocr) file is present; it exits 1 naming each
@@ -18,8 +21,8 @@
 # listed as such and do not fail the check.
 #
 # Environment:
-#   FETCH_MODELS_PYTHON   command prefix that runs the patch script with the
-#                         onnx module importable; default is `uv run --with
+#   FETCH_MODELS_PYTHON   command prefix that runs the patch and split scripts
+#                         with the onnx module importable; default is `uv run --with
 #                         onnx --with onnxruntime --with numpy python` when uv
 #                         is installed, else `python3` (must import onnx).
 #   FETCH_MODELS_MANIFEST alternative manifest (the tests use one with
@@ -38,6 +41,7 @@ tokenizer=0
 verify=0
 manifest=${FETCH_MODELS_MANIFEST:-$repo_root/models/MANIFEST}
 patch_script=$script_dir/patch_figure_classifier.py
+split_script=$script_dir/split_slanet.py
 
 usage() {
   echo "Usage: $0 [--dir DIR] [--layout heron|picodet|all] [--tokenizer] [--verify] [--manifest FILE]" >&2
@@ -135,6 +139,28 @@ patch_from() {
   mv "$target.part" "$target"
 }
 
+# split:<source> rows: one run of the split script writes every derived file
+# into a scratch directory, and each row takes its own from there.
+split_dir=
+cleanup_split() { [ -z "$split_dir" ] || rm -rf "$split_dir"; }
+trap cleanup_split EXIT
+split_from() {
+  local source=$1 target=$2
+  if ! matches "$source" "$3"; then
+    echo "  split source $source is absent or does not match the manifest" >&2
+    return 1
+  fi
+  if [ -z "$split_dir" ]; then
+    resolve_python || return 1
+    split_dir=$(mktemp -d)
+    # shellcheck disable=SC2086  # the prefix is a command line on purpose
+    $python_cmd "$split_script" "$source" "$split_dir" >/dev/null || { rm -rf "$split_dir"; split_dir=; return 1; }
+  fi
+  [ -f "$split_dir/$(basename "$target")" ] || { echo "  the split wrote no $(basename "$target")" >&2; return 1; }
+  cp "$split_dir/$(basename "$target")" "$target.part"
+  mv "$target.part" "$target"
+}
+
 # Per-file outcome for the final table.
 r_path=() r_status=() r_ok=()
 record() { r_path+=("$1"); r_status+=("$2"); r_ok+=("$3"); }
@@ -157,7 +183,8 @@ verify_one() {
   fi
 }
 
-# The sha of the source of a patch:<path> URL, looked up in the manifest.
+# The sha of the source of a patch:<path> or split:<path> URL, looked up in
+# the manifest.
 sha_for_path() {
   local j
   for j in "${!m_path[@]}"; do
@@ -179,6 +206,11 @@ fetch_one() {
       status=patched
       source_sha=$(sha_for_path "${m_url[$i]#patch:}") || exit $?
       patch_from "$dir/${m_url[$i]#patch:}" "$file" "$source_sha" || { record "${m_path[$i]}" "patch failed" NO; fail "${m_path[$i]}" "patch step failed"; return 0; }
+      ;;
+    split:*)
+      status=split
+      source_sha=$(sha_for_path "${m_url[$i]#split:}") || exit $?
+      split_from "$dir/${m_url[$i]#split:}" "$file" "$source_sha" || { record "${m_path[$i]}" "split failed" NO; fail "${m_path[$i]}" "split step failed"; return 0; }
       ;;
     *)
       download "${m_url[$i]}" "$file" || { record "${m_path[$i]}" "download failed" NO; fail "${m_path[$i]}" "download failed"; return 0; }

@@ -17,6 +17,7 @@
 #include "grparse/ocr_rect_render.h"
 #include "grparse/remote_page_source.h"
 #include "grparse/vlm_convert.h"
+#include "grparse_inference_model.h"
 #include "grparse_session_ep.h"
 
 namespace grparse {
@@ -605,14 +606,19 @@ std::unique_ptr<OcrEnginePool> build_engine_pool(const std::filesystem::path& mo
                                                  size_t worker_count, int gpu_index) {
   const char* configured = std::getenv("GRPARSE_ORT_EP");
   const std::string ep = configured == nullptr || *configured == '\0' ? "cuda" : configured;
+  // In a build that carries native TensorRT a CUDA selection runs the image
+  // models on TensorRT and creates no ONNX Runtime session for them, so
+  // ONNX Runtime's own CUDA provider is neither needed nor asked about.
+  const bool tensorrt = grparse::native_tensorrt_build();
   if (ep == "cuda") {
-    if (!provider_available("CUDAExecutionProvider")) {
+    if (!tensorrt && !provider_available("CUDAExecutionProvider")) {
       throw std::invalid_argument(
           "GRPARSE_ORT_EP=cuda: this build's ONNX Runtime has no CUDA execution provider "
           "(available: " + available_providers() + ")");
     }
     auto pool = build_pool_with(grparse::OrtEp::kCuda, models, worker_count, gpu_index);
-    std::println("gRParse OCR execution provider: CUDA (device {})", gpu_index);
+    std::println("gRParse OCR execution provider: {} (device {})",
+                 tensorrt ? "TensorRT on CUDA" : "CUDA", gpu_index);
     return pool;
   }
   if (ep == "openvino") {
@@ -632,7 +638,22 @@ std::unique_ptr<OcrEnginePool> build_engine_pool(const std::filesystem::path& mo
     return pool;
   }
   if (ep == "auto") {
-    if (provider_available("CUDAExecutionProvider")) {
+    if (tensorrt) {
+      // auto looks for a device, not for a runtime that happens to work: with
+      // a CUDA device present the models build on TensorRT or startup fails,
+      // exactly as under GRPARSE_ORT_EP=cuda.  Only a host with no such
+      // device moves on.
+      std::string detail;
+      if (grparse::tensorrt_device_present(gpu_index, &detail)) {
+        auto pool = build_pool_with(grparse::OrtEp::kCuda, models, worker_count, gpu_index);
+        std::println(
+            "gRParse OCR execution provider: TensorRT on CUDA (device {}, selected by "
+            "GRPARSE_ORT_EP=auto)",
+            gpu_index);
+        return pool;
+      }
+      std::println(stderr, "GRPARSE_ORT_EP=auto: no CUDA device for TensorRT ({})", detail);
+    } else if (provider_available("CUDAExecutionProvider")) {
       try {
         auto pool = build_pool_with(grparse::OrtEp::kCuda, models, worker_count, gpu_index);
         std::println("gRParse OCR execution provider: CUDA (device {}, selected by GRPARSE_ORT_EP=auto)",

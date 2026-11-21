@@ -246,6 +246,13 @@ The container is the supported build environment (Ubuntu with CUDA, ONNX
 Runtime GPU, gRPC; see README "Development"). Three images exist:
 `Dockerfile` (CUDA, tag `latest`), `Dockerfile.cpu` (multi-arch,
 `latest-cpu`), `Dockerfile.openvino` (Intel GPUs, `latest-openvino`).
+The CUDA image runs every image model on native TensorRT (`src/tensorrt/`,
+README "NVIDIA GPUs (TensorRT)"); ONNX Runtime is the last resort on this
+project, never a fallback behind a native runtime. It has no GPU test in
+CI: `scripts/test/gpu-placement-cuda-test.sh <image> <models-dir>` on krick
+(RTX 4080, `--gpus all`) is its receipt, and a first start without
+`GRPARSE_TENSORRT_CACHE_DIR` builds the engines for several minutes before
+it listens.
 
 ```bash
 GRPARSE_REVISION=$(scripts/revision.sh) docker compose build   # CUDA image + tests, commit labelled

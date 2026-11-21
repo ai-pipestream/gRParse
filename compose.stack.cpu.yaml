@@ -29,5 +29,9 @@ services:
       context: .
       dockerfile: Dockerfile.cpu
     gpus: !reset null
+    # No TensorRT in this image: the engine cache volume and its variable go.
+    volumes: !override
+      - ./models:/models:ro
     environment:
       GRPARSE_ORT_EP: cpu
+      GRPARSE_TENSORRT_CACHE_DIR: !reset null

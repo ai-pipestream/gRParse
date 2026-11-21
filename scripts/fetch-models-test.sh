@@ -5,7 +5,7 @@
 #
 #   scripts/fetch-models-test.sh
 #
-# Cases: fresh fetch (download + patch), a second run copies nothing,
+# Cases: fresh fetch (download + patch + split), a second run copies nothing,
 # --verify passes on the fetched dir, fails on a corrupted file and on a
 # missing required file, a wrong upstream is refused and removed, --layout
 # and --tokenizer select the right rows, and the populate script fills an
@@ -47,11 +47,22 @@ printf 'picodet\n' >"$work/upstream/picodet.onnx"
 printf 'figure upstream\n' >"$work/upstream/figure_up.onnx"
 printf 'figure upstream\npatched\n' >"$work/patched.onnx"
 printf '{"tok":1}\n' >"$work/upstream/sub/tokenizer.json"
+printf 'table\n' >"$work/upstream/table.onnx"
+printf 'table\nencoder\n' >"$work/table_encoder.onnx"
+printf 'table\nstep\n' >"$work/table_step.onnx"
+export SPLIT_RUNS=$work/split-runs
 
 cat >"$work/fakepython" <<'EOF'
 #!/usr/bin/env bash
-# stands in for `python patch_figure_classifier.py SOURCE DEST`
-{ cat "$2"; printf 'patched\n'; } >"$3"
+# stands in for `python patch_figure_classifier.py SOURCE DEST` and for
+# `python split_slanet.py SOURCE DIRECTORY`
+case $(basename "$1") in
+  split_slanet.py)
+    { cat "$2"; printf 'encoder\n'; } >"$3/table_encoder.onnx"
+    { cat "$2"; printf 'step\n'; } >"$3/table_step.onnx"
+    echo run >>"${SPLIT_RUNS:?}" ;;
+  *) { cat "$2"; printf 'patched\n'; } >"$3" ;;
+esac
 EOF
 chmod +x "$work/fakepython"
 export FETCH_MODELS_PYTHON=$work/fakepython
@@ -65,6 +76,9 @@ manifest=$work/MANIFEST
   printf '%s %s %s %s %s %s\n' picodet.onnx "$(sha_of "$work/upstream/picodet.onnx")" 8 layout-picodet X "file://$work/upstream/picodet.onnx"
   printf '%s %s %s %s %s %s\n' figure_up.onnx "$(sha_of "$work/upstream/figure_up.onnx")" 16 figure-upstream X "file://$work/upstream/figure_up.onnx"
   printf '%s %s %s %s %s %s\n' figure.onnx "$(sha_of "$work/patched.onnx")" 24 figure X patch:figure_up.onnx
+  printf '%s %s %s %s %s %s\n' table.onnx "$(sha_of "$work/upstream/table.onnx")" 6 table X "file://$work/upstream/table.onnx"
+  printf '%s %s %s %s %s %s\n' table_encoder.onnx "$(sha_of "$work/table_encoder.onnx")" 14 table X split:table.onnx
+  printf '%s %s %s %s %s %s\n' table_step.onnx "$(sha_of "$work/table_step.onnx")" 11 table X split:table.onnx
   printf '%s %s %s %s %s %s\n' chunk/tokenizer.json "$(sha_of "$work/upstream/sub/tokenizer.json")" 10 tokenizer X "file://$work/upstream/sub/tokenizer.json"
 } >"$manifest"
 
@@ -72,10 +86,12 @@ dir=$work/models
 check "fresh fetch" 0 "$fetch" --manifest "$manifest" --dir "$dir"
 check "fetched files present" 0 test -f "$dir/det.onnx" -a -f "$dir/heron.onnx" -a -f "$dir/figure.onnx"
 check "patched bytes" 0 cmp "$dir/figure.onnx" "$work/patched.onnx"
+check "split bytes" 0 bash -c "cmp '$dir/table_encoder.onnx' '$work/table_encoder.onnx' && cmp '$dir/table_step.onnx' '$work/table_step.onnx'"
+check "one split run writes every derived file" 0 test "$(wc -l <"$SPLIT_RUNS")" = 1
 check "picodet not fetched by default" 1 test -f "$dir/picodet.onnx"
 check "tokenizer not fetched by default" 1 test -f "$dir/chunk/tokenizer.json"
 check "second run is a no-op" 0 "$fetch" --manifest "$manifest" --dir "$dir"
-check "no-op run reports every file present" 0 bash -c "! grep -qE '(downloaded|patched)' '$work/last.log'"
+check "no-op run reports every file present" 0 bash -c "! grep -qE '(downloaded|patched|split)' '$work/last.log'"
 check "verify passes" 0 "$fetch" --verify --manifest "$manifest" --dir "$dir"
 check "layout all adds picodet" 0 "$fetch" --manifest "$manifest" --dir "$dir" --layout all
 check "picodet now present" 0 test -f "$dir/picodet.onnx"
@@ -87,6 +103,15 @@ check "verify fails on a corrupted file" 1 "$fetch" --verify --manifest "$manife
 check "corruption named" 0 grep -q 'FAIL heron.onnx' "$work/last.log"
 check "fetch replaces the corrupted file" 0 "$fetch" --manifest "$manifest" --dir "$dir"
 check "verify passes again" 0 "$fetch" --verify --manifest "$manifest" --dir "$dir"
+
+rm "$dir/table_step.onnx"
+check "a missing derived file is split again" 0 "$fetch" --manifest "$manifest" --dir "$dir"
+check "the derived file is back" 0 cmp "$dir/table_step.onnx" "$work/table_step.onnx"
+printf 'changed\n' >>"$dir/table.onnx"
+rm "$dir/table_encoder.onnx"
+check "verify fails on a changed split source" 1 "$fetch" --verify --manifest "$manifest" --dir "$dir"
+check "fetch restores the source and its derived file" 0 "$fetch" --manifest "$manifest" --dir "$dir"
+check "the encoder is derived from the restored source" 0 cmp "$dir/table_encoder.onnx" "$work/table_encoder.onnx"
 
 rm "$dir/det.onnx"
 check "verify fails on a missing required file" 1 "$fetch" --verify --manifest "$manifest" --dir "$dir"

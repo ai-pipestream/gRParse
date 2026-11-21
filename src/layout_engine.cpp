@@ -9,11 +9,13 @@
 #include <numeric>
 #include <stdexcept>
 #include <string>
+#include <span>
 #include <utility>
 #include <vector>
 
 #include <opencv2/imgproc.hpp>
 
+#include "grparse_inference_model.h"
 #include "grparse_session_ep.h"
 
 namespace grparse {
@@ -27,14 +29,17 @@ class LayoutStrategy {
   virtual ~LayoutStrategy() = default;
   // Validates the graph against what the decode expects and caches its
   // input/output names.  Throws when the file is not the model it claims.
-  // Rebinding to another session replaces the cache rather than appending,
+  // Rebinding to another model replaces the cache rather than appending,
   // so a strategy may safely be bound more than once.
-  virtual void bind(Ort::Session& session) = 0;
-  virtual std::vector<LayoutRegion> detect(Ort::Session& session, const cv::Mat& image) const = 0;
+  virtual void bind(const InferenceModel& model) = 0;
+  virtual std::vector<LayoutRegion> detect(InferenceModel& model, const cv::Mat& image) const = 0;
 };
 
-Ort::MemoryInfo cpu_memory() {
-  return Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+size_t name_index(const std::vector<std::string>& names, const std::string& name) {
+  for (size_t index = 0; index < names.size(); ++index) {
+    if (names[index] == name) return index;
+  }
+  throw std::runtime_error("Layout model has no output named " + name);
 }
 
 // ---------------------------------------------------------------------------
@@ -45,35 +50,21 @@ constexpr int kQueryInputSide = 640;
 
 class QueryDetectorStrategy final : public LayoutStrategy {
  public:
-  void bind(Ort::Session& session) override {
-    Ort::AllocatorWithDefaultOptions allocator;
-    // The pointers alias the name strings, so both lists start over together.
-    input_names_.clear();
-    output_names_.clear();
-    input_pointers_.clear();
-    output_pointers_.clear();
-    if (session.GetInputCount() != 2 || session.GetOutputCount() != 3) {
+  void bind(const InferenceModel& model) override {
+    if (model.input_count() != 2 || model.output_count() != 3) {
       throw std::runtime_error(
           "Layout model does not look like the query-based detector (expected 2 inputs and 3 "
           "outputs)");
     }
-    for (size_t index = 0; index < 2; ++index) {
-      input_names_.push_back(session.GetInputNameAllocated(index, allocator).get());
-    }
-    for (size_t index = 0; index < 3; ++index) {
-      output_names_.push_back(session.GetOutputNameAllocated(index, allocator).get());
-    }
-    if (input_names_[0] != "images" || input_names_[1] != "orig_target_sizes") {
+    if (model.input_names()[0] != "images" || model.input_names()[1] != "orig_target_sizes") {
       throw std::runtime_error("Layout model inputs must be images and orig_target_sizes");
     }
-    labels_index_ = name_index("labels");
-    boxes_index_ = name_index("boxes");
-    scores_index_ = name_index("scores");
-    for (const auto& name : input_names_) input_pointers_.push_back(name.c_str());
-    for (const auto& name : output_names_) output_pointers_.push_back(name.c_str());
+    labels_index_ = name_index(model.output_names(), "labels");
+    boxes_index_ = name_index(model.output_names(), "boxes");
+    scores_index_ = name_index(model.output_names(), "scores");
   }
 
-  std::vector<LayoutRegion> detect(Ort::Session& session, const cv::Mat& image) const override {
+  std::vector<LayoutRegion> detect(InferenceModel& model, const cv::Mat& image) const override {
     // Preprocess: bilinear resize to the fixed square, channel order swapped
     // to RGB, raw bytes.  This graph rescales and normalizes internally, so
     // neither happens here.
@@ -96,39 +87,22 @@ class QueryDetectorStrategy final : public LayoutStrategy {
     // transposing it silently produces boxes for a page of the wrong shape.
     std::array<int64_t, 2> original_size = {static_cast<int64_t>(image.cols),
                                             static_cast<int64_t>(image.rows)};
-    const std::array<int64_t, 4> image_shape = {1, 3, kQueryInputSide, kQueryInputSide};
-    const std::array<int64_t, 2> size_shape = {1, 2};
-    const Ort::MemoryInfo memory = cpu_memory();
-    std::array<Ort::Value, 2> inputs = {
-        Ort::Value::CreateTensor<uint8_t>(memory, pixels.data(), pixels.size(), image_shape.data(),
-                                          image_shape.size()),
-        Ort::Value::CreateTensor<int64_t>(memory, original_size.data(), original_size.size(),
-                                          size_shape.data(), size_shape.size())};
-    auto outputs = session.Run(Ort::RunOptions{nullptr}, input_pointers_.data(), inputs.data(),
-                               inputs.size(), output_pointers_.data(), output_pointers_.size());
+    const std::array<TensorView, 2> inputs = {
+        TensorView{TensorElement::kUInt8, pixels.data(), {1, 3, kQueryInputSide, kQueryInputSide}},
+        TensorView{TensorElement::kInt64, original_size.data(), {1, 2}}};
+    const std::vector<Tensor> outputs = model.run(inputs);
 
-    const auto shape = outputs[scores_index_].GetTensorTypeAndShapeInfo().GetShape();
+    const auto& shape = outputs[scores_index_].shape;
     if (shape.size() != 2 || shape[0] != 1) {
       throw std::runtime_error("Layout model returned an unexpected score shape");
     }
-    return decode_query_detector(outputs[labels_index_].GetTensorData<int64_t>(),
-                                 outputs[boxes_index_].GetTensorData<float>(),
-                                 outputs[scores_index_].GetTensorData<float>(),
+    return decode_query_detector(outputs[labels_index_].int64s(),
+                                 outputs[boxes_index_].floats(),
+                                 outputs[scores_index_].floats(),
                                  static_cast<size_t>(shape[1]), image.cols, image.rows);
   }
 
  private:
-  size_t name_index(const std::string& name) const {
-    for (size_t index = 0; index < output_names_.size(); ++index) {
-      if (output_names_[index] == name) return index;
-    }
-    throw std::runtime_error("Layout model has no output named " + name);
-  }
-
-  std::vector<std::string> input_names_;
-  std::vector<std::string> output_names_;
-  std::vector<const char*> input_pointers_;
-  std::vector<const char*> output_pointers_;
   size_t labels_index_ = 0;
   size_t boxes_index_ = 0;
   size_t scores_index_ = 0;
@@ -197,23 +171,13 @@ void append_class_nms(std::vector<Candidate>& picked, std::vector<Candidate> can
 
 class AnchorFreeStrategy final : public LayoutStrategy {
  public:
-  void bind(Ort::Session& session) override {
-    Ort::AllocatorWithDefaultOptions allocator;
-    // The pointers alias the name strings, so both lists start over together.
-    output_names_.clear();
-    output_pointers_.clear();
-    input_name_ = session.GetInputNameAllocated(0, allocator).get();
-    const size_t output_count = session.GetOutputCount();
-    if (output_count != kStrides.size() * 2) {
+  void bind(const InferenceModel& model) override {
+    if (model.output_count() != kStrides.size() * 2) {
       throw std::runtime_error("Layout model has an unexpected output count");
     }
-    for (size_t index = 0; index < output_count; ++index) {
-      output_names_.push_back(session.GetOutputNameAllocated(index, allocator).get());
-    }
-    for (const auto& name : output_names_) output_pointers_.push_back(name.c_str());
   }
 
-  std::vector<LayoutRegion> detect(Ort::Session& session, const cv::Mat& image) const override {
+  std::vector<LayoutRegion> detect(InferenceModel& model, const cv::Mat& image) const override {
     // Preprocess: plain resize (no aspect preservation, per reference),
     // scale to [0,1], per-channel normalize, HWC -> CHW.
     cv::Mat resized;
@@ -232,13 +196,8 @@ class AnchorFreeStrategy final : public LayoutStrategy {
       }
     }
 
-    const std::array<int64_t, 4> input_shape = {1, 3, kGridHeight, kGridWidth};
-    const Ort::MemoryInfo memory = cpu_memory();
-    Ort::Value input = Ort::Value::CreateTensor<float>(memory, tensor.data(), tensor.size(),
-                                                       input_shape.data(), input_shape.size());
-    const char* input_names[] = {input_name_.c_str()};
-    auto outputs = session.Run(Ort::RunOptions{nullptr}, input_names, &input, 1,
-                               output_pointers_.data(), output_pointers_.size());
+    const TensorView input{TensorElement::kFloat32, tensor.data(), {1, 3, kGridHeight, kGridWidth}};
+    const std::vector<Tensor> outputs = model.run(std::span(&input, 1));
 
     // Decode each pyramid level: the first half of the outputs are class
     // scores [1, N, C], the second half the matching DFL box distributions
@@ -247,8 +206,8 @@ class AnchorFreeStrategy final : public LayoutStrategy {
     const int class_count = static_cast<int>(names.size());
     std::vector<Candidate> candidates;
     for (size_t level = 0; level < kStrides.size(); ++level) {
-      const float* scores = outputs[level].GetTensorData<float>();
-      const float* distributions = outputs[level + kStrides.size()].GetTensorData<float>();
+      const float* scores = outputs[level].floats();
+      const float* distributions = outputs[level + kStrides.size()].floats();
       const int stride = kStrides[level];
       const int cells_high = (kGridHeight + stride - 1) / stride;
       const int cells_wide = (kGridWidth + stride - 1) / stride;
@@ -330,10 +289,6 @@ class AnchorFreeStrategy final : public LayoutStrategy {
     return regions;
   }
 
- private:
-  std::string input_name_;
-  std::vector<std::string> output_names_;
-  std::vector<const char*> output_pointers_;
 };
 
 std::atomic<int> injected_probe_failures{0};
@@ -371,11 +326,21 @@ class LayoutEngine::Impl {
     // failure on its graph on Intel devices, so it keeps the provider
     // default. One session serves every worker, so it is the one that may
     // have all the cores; the pooled sessions divide them.
+    // Native TensorRT builds what the ONNX file says, which is single
+    // precision for both detectors, with TF32 off (GRPARSE_CUDA_TF32), and
+    // needs the query detector's free batch dimension fixed: one page per
+    // call.  The anchor-free detector's shapes are static in its file.
     const OrtPrecision precision = model == LayoutModel::kHeron
                                        ? OrtPrecision::kFloat32
                                        : OrtPrecision::kProviderDefault;
-    session_ = make_session(env_, model_path, "layout", precision, kIntraOpAllCores);
-    strategy_->bind(session_);
+    ModelShapePolicy shapes;
+    if (model == LayoutModel::kHeron) {
+      shapes.profiles.push_back(
+          static_profile({{1, 3, kQueryInputSide, kQueryInputSide}, {1, 2}}));
+    }
+    model_ = make_inference_model(
+        ModelSpec{model_path, "layout", precision, kIntraOpAllCores, std::move(shapes)});
+    strategy_->bind(*model_);
     // Some provider failures only surface at the first inference (a runtime
     // kernel compile, not session creation), which would otherwise leave a
     // running server failing every page. Probe once, at startup; a failure
@@ -390,11 +355,12 @@ class LayoutEngine::Impl {
         injected_probe_failures.fetch_sub(1);
         throw std::runtime_error("injected layout probe failure");
       }
-      (void)strategy_->detect(session_, probe);
+      (void)strategy_->detect(*model_, probe);
     } catch (const std::exception& error) {
       if (ort_ep_selection().ep == OrtEp::kCpu) throw;
-      throw ep_refusal("layout", model_path,
-                       std::string("first inference failed: ") + error.what());
+      const std::string detail = std::string("first inference failed: ") + error.what();
+      if (model_->backend_name() == "tensorrt") throw tensorrt_refusal("layout", model_path, detail);
+      throw ep_refusal("layout", model_path, detail);
     }
   }
 
@@ -407,7 +373,7 @@ class LayoutEngine::Impl {
     while (inside > peak && !peak_concurrency_.compare_exchange_weak(peak, inside)) {
     }
     try {
-      auto regions = strategy_->detect(session_, image);
+      auto regions = strategy_->detect(*model_, image);
       in_flight_.fetch_sub(1);
       detections_.fetch_add(1);
       return regions;
@@ -421,7 +387,7 @@ class LayoutEngine::Impl {
 
  private:
   Ort::Env env_;
-  Ort::Session session_{nullptr};
+  std::unique_ptr<InferenceModel> model_;
   std::unique_ptr<LayoutStrategy> strategy_;
   std::atomic<uint64_t> in_flight_{0};
   std::atomic<uint64_t> peak_concurrency_{0};

@@ -11,8 +11,13 @@ services:
       - "9464:9464"   # Prometheus /metrics
     volumes:
       - ./models:/models:ro
+      - tensorrt-cache:/var/cache/tensorrt
     environment:
       CUDA_CACHE_DISABLE: "1"
+      # The image models run on native TensorRT. Their engines are built on
+      # the first start (a few minutes) and kept in this volume, so a later
+      # start loads them; without the variable every start builds them.
+      GRPARSE_TENSORRT_CACHE_DIR: /var/cache/tensorrt
       GRPARSE_METRICS_PORT: "9464"
       GRPARSE_PAGE_IMAGES: "on"   # page previews for the demo's box overlay
       # Collectors run as their own services on the host; the demo shell
@@ -77,3 +82,8 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+
+volumes:
+  # Built TensorRT engines (GRPARSE_TENSORRT_CACHE_DIR): keyed by model hash,
+  # TensorRT version and GPU, so a new image or card builds its own.
+  tensorrt-cache:
