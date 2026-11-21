@@ -7,6 +7,7 @@
 #include "option_rejection.h"
 
 namespace parsev1 = ai::pipestream::parse::v1;
+namespace vlmv1 = ai::pipestream::vlm::v1;
 
 namespace grparse {
 namespace {
@@ -51,6 +52,9 @@ struct TypedAndRaw {
   std::string raw_path;
   std::optional<std::string> raw;
   std::span<const NamedMember> members;
+  // docling's field accepts only the members, so a raw string alone must
+  // name one.
+  bool closed = false;
 };
 
 grpc::Status check_typed_and_raw(const TypedAndRaw& field, const std::string& surface) {
@@ -59,8 +63,13 @@ grpc::Status check_typed_and_raw(const TypedAndRaw& field, const std::string& su
                            std::to_string(*field.typed),
                            surface + ": " + field.path + " is not a known value");
   }
-  if (!field.raw.has_value() || !field.typed.has_value()) return grpc::Status::OK;
+  if (!field.raw.has_value()) return grpc::Status::OK;
   const std::optional<int> named = member_named(*field.raw, field.members);
+  if (!field.typed.has_value()) {
+    if (named.has_value() || !field.closed) return grpc::Status::OK;
+    return option_rejected(field.raw_path, parsev1::OPTION_REJECTION_REASON_UNKNOWN_VALUE,
+                           *field.raw, surface + ": " + field.raw_path + " is not a known value");
+  }
   if (!named.has_value()) {
     return option_rejected(field.raw_path, parsev1::OPTION_REJECTION_REASON_CONFLICT, *field.raw,
                            surface + ": " + field.raw_path +
@@ -120,7 +129,8 @@ grpc::Status validate_nemotron_parse(const parsev1::NemotronParseOptions& option
                           passes != parsev1::NEMOTRON_PARSE_PASSES_UNSPECIFIED,
            .raw_path = path + ".passes_raw",
            .raw = present(options.has_passes_raw(), options.passes_raw()),
-           .members = kNemotronPasses},
+           .members = kNemotronPasses,
+           .closed = true},
           surface);
       !status.ok()) {
     return status;
@@ -133,7 +143,8 @@ grpc::Status validate_nemotron_parse(const parsev1::NemotronParseOptions& option
                           regions != parsev1::NEMOTRON_PARSE_TRIPLE_REGIONS_UNSPECIFIED,
            .raw_path = path + ".triple_regions_raw",
            .raw = present(options.has_triple_regions_raw(), options.triple_regions_raw()),
-           .members = kNemotronTripleRegions},
+           .members = kNemotronTripleRegions,
+           .closed = true},
           surface);
       !status.ok()) {
     return status;
@@ -147,27 +158,44 @@ grpc::Status validate_nemotron_parse(const parsev1::NemotronParseOptions& option
   return grpc::Status::OK;
 }
 
-grpc::Status require_single_nemotron_pass(const parsev1::NemotronParseOptions& options,
-                                          const std::string& path, const std::string& surface) {
-  // validate_nemotron_parse has run, so a set enum and its raw agree and the
-  // enum decides. Without it the raw string decides, and a name docling does
-  // not define is refused like a multi-pass mode: it cannot be run either.
-  std::string asked;
-  if (options.has_passes()) {
-    if (options.passes() == parsev1::NEMOTRON_PARSE_PASSES_SINGLE) return grpc::Status::OK;
-    for (const auto& entry : kNemotronPasses) {
-      if (entry.member == options.passes()) asked = entry.name;
-    }
-  } else if (options.has_passes_raw()) {
-    if (options.passes_raw() == "single") return grpc::Status::OK;
-    asked = options.passes_raw();
-  } else {
-    return grpc::Status::OK;
+vlmv1::NemotronParseOptions collector_nemotron_parse(
+    const parsev1::NemotronParseOptions& options) {
+  vlmv1::NemotronParseOptions out;
+  std::optional<int> passes = present(options.has_passes(), options.passes());
+  if (!passes && options.has_passes_raw()) {
+    passes = member_named(options.passes_raw(), kNemotronPasses);
   }
-  return grpc::Status(grpc::StatusCode::UNIMPLEMENTED,
-                      surface + ": " + path + ".passes '" + asked + "'" +
-                          " is not implemented; the VLM convert collector runs only the "
-                          "single page pass");
+  switch (passes.value_or(parsev1::NEMOTRON_PARSE_PASSES_UNSPECIFIED)) {
+    case parsev1::NEMOTRON_PARSE_PASSES_SINGLE:
+      out.set_passes(vlmv1::NEMOTRON_PARSE_PASSES_SINGLE);
+      break;
+    case parsev1::NEMOTRON_PARSE_PASSES_DOUBLE:
+      out.set_passes(vlmv1::NEMOTRON_PARSE_PASSES_DOUBLE);
+      break;
+    case parsev1::NEMOTRON_PARSE_PASSES_TRIPLE:
+      out.set_passes(vlmv1::NEMOTRON_PARSE_PASSES_TRIPLE);
+      break;
+    default:
+      break;
+  }
+  std::optional<int> regions = present(options.has_triple_regions(), options.triple_regions());
+  if (!regions && options.has_triple_regions_raw()) {
+    regions = member_named(options.triple_regions_raw(), kNemotronTripleRegions);
+  }
+  switch (regions.value_or(parsev1::NEMOTRON_PARSE_TRIPLE_REGIONS_UNSPECIFIED)) {
+    case parsev1::NEMOTRON_PARSE_TRIPLE_REGIONS_DETECTOR:
+      out.set_triple_regions(vlmv1::NEMOTRON_PARSE_TRIPLE_REGIONS_DETECTOR);
+      break;
+    case parsev1::NEMOTRON_PARSE_TRIPLE_REGIONS_UNION:
+      out.set_triple_regions(vlmv1::NEMOTRON_PARSE_TRIPLE_REGIONS_UNION);
+      break;
+    default:
+      break;
+  }
+  if (options.has_crop_batch_size()) {
+    out.set_crop_batch_size(static_cast<uint32_t>(options.crop_batch_size()));
+  }
+  return out;
 }
 
 }  // namespace grparse
