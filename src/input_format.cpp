@@ -25,11 +25,14 @@ std::optional<parsev1::InputFormat> input_format_for(
   std::ranges::transform(name, name.begin(),
                          [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
-  // Formats whose bytes sniff as their container (a zip, a gzip, JSON) and
-  // which only the name tells apart, as the collector routing does.
-  if (ext == ".ics" || ext == ".ical" || ext == ".ifb" || ext == ".icalendar") {
+  // iCalendar bodies sniff as plain text, so the name or the declared type
+  // is what tells them apart from Markdown.
+  if (mimetype == "text/calendar" || mimetype == "text/x-vcalendar" || ext == ".ics" ||
+      ext == ".ical" || ext == ".ifb" || ext == ".icalendar") {
     return parsev1::INPUT_FORMAT_CALENDAR;
   }
+  // Formats whose bytes sniff as their container (a zip, a gzip, JSON) and
+  // which only the name tells apart, as the collector routing does.
   if (ext == ".dclx") return parsev1::INPUT_FORMAT_DCLX;
   if (name.ends_with(".tar.gz")) return parsev1::INPUT_FORMAT_METS_GBS;
   if (ext == ".boxnote") return parsev1::INPUT_FORMAT_BOXNOTE;
@@ -101,12 +104,6 @@ std::optional<parsev1::InputFormat> input_format_for(
   if (mimetype == "application/x-latex" || mimetype == "text/x-tex" || ext == ".tex" ||
       ext == ".latex") {
     return parsev1::INPUT_FORMAT_LATEX;
-  }
-  // iCalendar. Checked before text/plain so a sniffed text body with an
-  // .ics name is still a calendar, not Markdown.
-  if (mimetype == "text/calendar" || mimetype == "text/x-vcalendar" || ext == ".ics" ||
-      ext == ".ical" || ext == ".ifb" || ext == ".icalendar") {
-    return parsev1::INPUT_FORMAT_CALENDAR;
   }
   // Plain text routes to the markup collector as Markdown, and that is the
   // InputFormat it parses as.

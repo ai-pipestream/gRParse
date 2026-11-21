@@ -3,10 +3,10 @@
 # for the Python version of the Dockerfile.models fetch stage.
 #
 # The fetch stage is the only place those pins are installed, and the image
-# workflows build it only on a models-all-tokenizer cache miss. A Renovate
-# bump of that Python base to a version onnxruntime does not publish (3.15
-# today) stays green until the cache misses. This check does not use that
-# cache: it reads the fetch FROM line and asks PyPI for wheels.
+# workflows build it only on a models-all-tokenizer cache miss, so a Python
+# base with no wheel for a pin stays green until the cache misses. This check
+# does not use that cache: it reads the fetch FROM line and asks PyPI for
+# wheels.
 #
 #   scripts/check-models-requirements.sh
 #

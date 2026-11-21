@@ -28,7 +28,6 @@
 #include <google/protobuf/unknown_field_set.h>
 
 #include "ai/protomolt/parse/pdf/v1/pdf_backend_types.pb.h"
-#include "google/rpc/status.pb.h"
 #include "storage/connectors.h"
 #include "grparse/ocr_preset_policy.h"
 
@@ -52,6 +51,7 @@
 #include "grparse/vlm_convert.h"
 #include "parse_support.h"
 #include "structure_validation.h"
+#include "vlm_custom_options.h"
 #include "targets/sha256.h"
 
 namespace fs = std::filesystem;
@@ -629,110 +629,6 @@ grpc::Status validate_vlm_selection(const pipestream::parse::v1::ConvertDocument
   return grpc::Status::OK;
 }
 
-// A closed string and its enum. A known raw must agree with a set enum.
-// An unknown raw is kept only when the enum is unset.
-template <typename Enum>
-grpc::Status agree_raw_enum(const std::string& path, bool has_enum, Enum value, bool enum_valid,
-                            bool has_raw, const std::string& raw,
-                            const std::optional<Enum>& named, const std::string& surface,
-                            const std::string& raw_path) {
-  namespace parsev1 = pipestream::parse::v1;
-  if (has_enum && (!enum_valid || value == static_cast<Enum>(0))) {
-    return option_rejected(path, parsev1::OPTION_REJECTION_REASON_UNKNOWN_VALUE,
-                           std::to_string(static_cast<int>(value)),
-                           surface + ": " + path + " is not a known value");
-  }
-  if (!has_raw) return grpc::Status::OK;
-  if (named.has_value()) {
-    if (has_enum && *named != value) {
-      return option_rejected(raw_path, parsev1::OPTION_REJECTION_REASON_CONFLICT, raw,
-                             surface + ": " + path + " and " + raw_path + " disagree");
-    }
-    return grpc::Status::OK;
-  }
-  if (has_enum) {
-    return option_rejected(raw_path, parsev1::OPTION_REJECTION_REASON_CONFLICT, raw,
-                           surface + ": " + raw_path + " is not a known value for the set " +
-                               path);
-  }
-  return grpc::Status::OK;
-}
-
-grpc::Status validate_torch_dtype(const pipestream::parse::v1::EngineModelConfig& config,
-                                  const std::string& path, const std::string& surface) {
-  namespace parsev1 = pipestream::parse::v1;
-  std::optional<parsev1::TorchDtype> named;
-  if (config.has_torch_dtype()) {
-    const std::string& raw = config.torch_dtype();
-    if (raw == "float32") named = parsev1::TORCH_DTYPE_FLOAT32;
-    else if (raw == "float16") named = parsev1::TORCH_DTYPE_FLOAT16;
-    else if (raw == "bfloat16") named = parsev1::TORCH_DTYPE_BFLOAT16;
-  }
-  return agree_raw_enum(path + ".torch_dtype_enum", config.has_torch_dtype_enum(),
-                        config.torch_dtype_enum(),
-                        parsev1::TorchDtype_IsValid(config.torch_dtype_enum()),
-                        config.has_torch_dtype(), config.torch_dtype(), named, surface,
-                        path + ".torch_dtype");
-}
-
-}  // namespace
-
-// Exported from this translation unit. An anonymous namespace would give
-// these internal linkage, and a test that calls the header declarations
-// would fail to link.
-grpc::Status validate_engine_overrides(const pipestream::parse::v1::VlmModelSpec& spec,
-                                       const std::string& path, const std::string& surface) {
-  for (int i = 0; i < spec.engine_overrides_size(); ++i) {
-    const auto status = validate_torch_dtype(
-        spec.engine_overrides(i).config(),
-        path + ".engine_overrides[" + std::to_string(i) + "].config", surface);
-    if (!status.ok()) return status;
-  }
-  return grpc::Status::OK;
-}
-
-grpc::Status validate_nemotron_parse(const pipestream::parse::v1::NemotronParseOptions& options,
-                                     const std::string& path, const std::string& surface) {
-  namespace parsev1 = pipestream::parse::v1;
-  std::optional<parsev1::NemotronParsePasses> passes;
-  if (options.has_passes_raw()) {
-    const std::string& raw = options.passes_raw();
-    if (raw == "single") passes = parsev1::NEMOTRON_PARSE_PASSES_SINGLE;
-    else if (raw == "double") passes = parsev1::NEMOTRON_PARSE_PASSES_DOUBLE;
-    else if (raw == "triple") passes = parsev1::NEMOTRON_PARSE_PASSES_TRIPLE;
-  }
-  if (const auto status = agree_raw_enum(
-          path + ".passes", options.has_passes(), options.passes(),
-          parsev1::NemotronParsePasses_IsValid(options.passes()), options.has_passes_raw(),
-          options.passes_raw(), passes, surface, path + ".passes_raw");
-      !status.ok()) {
-    return status;
-  }
-  std::optional<parsev1::NemotronParseTripleRegions> regions;
-  if (options.has_triple_regions_raw()) {
-    const std::string& raw = options.triple_regions_raw();
-    if (raw == "detector") regions = parsev1::NEMOTRON_PARSE_TRIPLE_REGIONS_DETECTOR;
-    else if (raw == "union") regions = parsev1::NEMOTRON_PARSE_TRIPLE_REGIONS_UNION;
-  }
-  if (const auto status = agree_raw_enum(
-          path + ".triple_regions", options.has_triple_regions(), options.triple_regions(),
-          parsev1::NemotronParseTripleRegions_IsValid(options.triple_regions()),
-          options.has_triple_regions_raw(), options.triple_regions_raw(), regions, surface,
-          path + ".triple_regions_raw");
-      !status.ok()) {
-    return status;
-  }
-  if (options.has_crop_batch_size() && options.crop_batch_size() < 1) {
-    return option_rejected(path + ".crop_batch_size",
-                           parsev1::OPTION_REJECTION_REASON_OUT_OF_RANGE,
-                           std::to_string(options.crop_batch_size()),
-                           surface + ": " + path + ".crop_batch_size must be >= 1");
-  }
-  return grpc::Status::OK;
-}
-
-namespace {
-
 // Custom-config fields mirror Docling: typed VLM option messages plus open
 // ScalarValue maps for dict[str, Any]. Known keys are soft-validated; empty
 // maps are a no-op.
@@ -786,13 +682,13 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
                           surface + ": " + std::string(name) +
                               ".model_spec requires name and default_repo_id");
     }
-    // Only the VLM pipeline's spec format reaches a collector that reads
-    // it; the enrich legs' specs are checked for a known, agreeing value.
     if (const auto dtype = validate_engine_overrides(spec, std::string(name) + ".model_spec",
                                                     surface);
         !dtype.ok()) {
       return dtype;
     }
+    // Only the VLM pipeline's spec format reaches a collector that reads
+    // it; the enrich legs' specs are checked for a known, agreeing value.
     return validate_response_format(spec, std::string(name) + ".model_spec", surface,
                                     std::string_view(name) == "vlm_pipeline_custom_config");
   };
@@ -824,10 +720,12 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
       return grpc::Status::OK;
     };
     if (cfg.has_nemotron_parse()) {
-      if (const auto nemotron = validate_nemotron_parse(
-              cfg.nemotron_parse(), "vlm_pipeline_custom_config.nemotron_parse", surface);
-          !nemotron.ok()) {
-        return nemotron;
+      const std::string path = "vlm_pipeline_custom_config.nemotron_parse";
+      if (auto s = validate_nemotron_parse(cfg.nemotron_parse(), path, surface); !s.ok()) {
+        return s;
+      }
+      if (auto s = require_single_nemotron_pass(cfg.nemotron_parse(), path, surface); !s.ok()) {
+        return s;
       }
     }
     if (auto s = require_supported_fields(cfg, "vlm_pipeline_custom_config",
@@ -1143,24 +1041,6 @@ bool s3_source_verify_ssl(const pipestream::parse::v1::S3Source& source) {
   return !source.has_verify_ssl() || source.verify_ssl();
 }
 
-grpc::Status option_rejected(const std::string& option_path,
-                             pipestream::parse::v1::OptionRejectionReason reason,
-                             const std::string& rejected_value_raw, const std::string& message) {
-  pipestream::parse::v1::OptionRejection rejection;
-  rejection.set_option_path(option_path);
-  rejection.set_reason(reason);
-  rejection.set_rejected_value_raw(rejected_value_raw);
-  google::rpc::Status status;
-  status.set_code(static_cast<int>(grpc::StatusCode::INVALID_ARGUMENT));
-  status.set_message(message);
-  if (!status.add_details()->PackFrom(rejection)) {
-    // Packing a generated message cannot fail; if it ever does the people
-    // message still stands, without the typed detail.
-    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, message);
-  }
-  return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, message, status.SerializeAsString());
-}
-
 std::expected<std::vector<pipestream::parse::v1::HeadingNumberingScheme>, grpc::Status>
 resolve_numbering_schemes(const pipestream::parse::v1::ConvertDocumentOptions& options,
                           const std::string& surface) {
@@ -1298,7 +1178,6 @@ uint64_t decoded_source_bytes(
   }
   return total;
 }
-
 
 // `surface` names the RPC in the rejections so a caller learns which of the
 // conversion surfaces turned its request down.
@@ -2594,17 +2473,14 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     // collector merge alike), so no path can return a document without it.
     *base.mutable_parse() = parse_identity(request.options());
 
-    if (const auto detected = input_format_for(base.origin().mimetype(), requested_name);
-        detected == pipestream::parse::v1::INPUT_FORMAT_CALENDAR) {
+    const auto detected = input_format_for(base.origin().mimetype(), requested_name);
+    if (detected == pipestream::parse::v1::INPUT_FORMAT_CALENDAR) {
       return option_rejected(
           "sources[0]", pipestream::parse::v1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED,
           "INPUT_FORMAT_CALENDAR",
           surface + ": INPUT_FORMAT_CALENDAR has no collector");
     }
-
     if (!request.options().from_formats().empty()) {
-      const auto detected =
-          input_format_for(base.origin().mimetype(), requested_name);
       if (!detected.has_value()) {
         return grpc::Status(
             grpc::StatusCode::INVALID_ARGUMENT,
